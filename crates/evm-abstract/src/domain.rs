@@ -121,12 +121,13 @@ impl Domain {
 
     /// 纯栈运算。参数顺序是 **先弹出的栈顶在前**，例如 SUB(a,b) = a - b。
     /// 不建模的指令/环境输入产生 Top；未知操作数上的比较仍能限制为 {0,1}。
+    /// 指令是否在所选 fork 启用由 Program/transfer 检查，这里只计算数值语义。
     pub fn apply(&self, op: u8, args: &[Value]) -> Value {
-        if !matches!(op, 0x01..=0x0b | 0x10..=0x1d) {
+        if !matches!(op, 0x01..=0x0b | 0x10..=0x1e) {
             return Value::top();
         }
         let expected = match op {
-            opcode::ISZERO | opcode::NOT => 1,
+            opcode::ISZERO | opcode::NOT | opcode::CLZ => 1,
             opcode::ADDMOD | opcode::MULMOD => 3,
             _ => 2,
         };
@@ -138,7 +139,10 @@ impl Domain {
             .map(Value::constants)
             .collect::<Option<Vec<_>>>()
         else {
-            return if matches!(op, 0x10..=0x15) {
+            return if op == opcode::CLZ {
+                // 未知 U256 的前导零数只可能是 0..=256。容量不够仍必须升到 Top。
+                self.collect((0_u64..=256).map(U256::from))
+            } else if matches!(op, 0x10..=0x15) {
                 self.collect([U256::ZERO, U256::from(1)])
             } else {
                 Value::top()
@@ -239,6 +243,8 @@ fn evaluate(op: u8, a: U256, b: U256, c: U256) -> U256 {
         opcode::OR => a | b,
         opcode::XOR => a ^ b,
         opcode::NOT => !a,
+        // EIP-7939：零的前导零数为 256；直接复用 alloy/ruint 的位运算。
+        opcode::CLZ => U256::from(a.leading_zeros()),
         opcode::BYTE => {
             if a >= U256::from(32) {
                 U256::ZERO

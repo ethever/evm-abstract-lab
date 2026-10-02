@@ -2,7 +2,7 @@
 //! 有限样本能发现反例，不能代替全部 256 bit 状态空间上的正确性证明。
 
 use evm_abstract::{
-    U256,
+    Fork, U256,
     analysis::{self, Analysis, Config, EdgeKind, Status},
     bytecode::Program,
     domain::{Domain, Value},
@@ -14,7 +14,7 @@ use revm::{
     context::TxEnv,
     database::{BENCH_CALLER, BENCH_TARGET, BenchmarkDB},
     interpreter::{Interpreter, interpreter::EthInterpreter, interpreter_types::Jumps},
-    primitives::{Bytes, TxKind, hardfork::SpecId},
+    primitives::{Bytes, TxKind},
     state::Bytecode,
 };
 
@@ -44,9 +44,9 @@ impl<CTX> Inspector<CTX, EthInterpreter> for Trace {
     }
 }
 
-fn concrete(code: &[u8], calldata: Vec<u8>) -> Trace {
+fn concrete(code: &[u8], calldata: Vec<u8>, fork: Fork) -> Trace {
     let context = Context::mainnet()
-        .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(SpecId::CANCUN))
+        .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(fork.spec_id()))
         .with_db(BenchmarkDB::new_bytecode(Bytecode::new_raw(
             Bytes::copy_from_slice(code),
         )));
@@ -69,14 +69,14 @@ fn concrete(code: &[u8], calldata: Vec<u8>) -> Trace {
     evm.inspector
 }
 
-fn arithmetic(op: u8, args: &[U256]) -> U256 {
+fn arithmetic(op: u8, args: &[U256], fork: Fork) -> U256 {
     let mut code = Vec::new();
     for value in args.iter().rev() {
         code.push(0x7f); // PUSH32，测试夹具只负责拼装，opcode 的语义交给 revm。
         code.extend(value.to_be_bytes::<32>());
     }
     code.extend([op, 0x00]);
-    let trace = concrete(&code, Vec::new());
+    let trace = concrete(&code, Vec::new(), fork);
     *trace
         .steps
         .iter()
@@ -100,23 +100,26 @@ fn all_pure_operators_match_revm_at_word_boundaries() {
         U256::from(1) << 255,
         U256::MAX,
     ];
-    for op in (0x01..=0x0b).chain(0x10..=0x1d) {
-        for index in 0..values.len() {
-            let count = match op {
-                0x15 | 0x19 => 1,
-                0x08 | 0x09 => 3,
-                _ => 2,
-            };
-            let args: Vec<_> = (0..count)
-                .map(|offset| values[(index + offset) % values.len()])
-                .collect();
-            let abstract_args: Vec<_> = args.iter().copied().map(Value::constant).collect();
-            let result = Domain::default().apply(op, &abstract_args);
-            assert_eq!(
-                result,
-                Value::constant(arithmetic(op, &args)),
-                "opcode 0x{op:02x}, args {args:?}"
-            );
+    for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
+        let last_bitwise = if fork == Fork::Osaka { 0x1e } else { 0x1d };
+        for op in (0x01..=0x0b).chain(0x10..=last_bitwise) {
+            for index in 0..values.len() {
+                let count = match op {
+                    0x15 | 0x19 | 0x1e => 1,
+                    0x08 | 0x09 => 3,
+                    _ => 2,
+                };
+                let args: Vec<_> = (0..count)
+                    .map(|offset| values[(index + offset) % values.len()])
+                    .collect();
+                let abstract_args: Vec<_> = args.iter().copied().map(Value::constant).collect();
+                let result = Domain::default().apply(op, &abstract_args);
+                assert_eq!(
+                    result,
+                    Value::constant(arithmetic(op, &args, fork)),
+                    "fork {fork}, opcode 0x{op:02x}, args {args:?}"
+                );
+            }
         }
     }
 }
@@ -124,13 +127,17 @@ fn all_pure_operators_match_revm_at_word_boundaries() {
 proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(96))]
     #[test]
-    fn random_256bit_pure_transfers_match_revm(op_index in 0usize..25, a in any::<[u64; 4]>(), b in any::<[u64; 4]>(), c in any::<[u64; 4]>()) {
-        let operators: Vec<_> = (0x01..=0x0b).chain(0x10..=0x1d).collect();
+    fn random_256bit_pure_transfers_match_revm(op_index in 0usize..26, a in any::<[u64; 4]>(), b in any::<[u64; 4]>(), c in any::<[u64; 4]>()) {
+        let operators: Vec<_> = (0x01..=0x0b).chain(0x10..=0x1e).collect();
         let op = operators[op_index];
-        let count = match op { 0x15 | 0x19 => 1, 0x08 | 0x09 => 3, _ => 2 };
+        let count = match op { 0x15 | 0x19 | 0x1e => 1, 0x08 | 0x09 => 3, _ => 2 };
         let args = [U256::from_limbs(a), U256::from_limbs(b), U256::from_limbs(c)];
         let abstract_args: Vec<_> = args[..count].iter().copied().map(Value::constant).collect();
-        prop_assert_eq!(Domain::default().apply(op, &abstract_args), Value::constant(arithmetic(op, &args[..count])));
+        for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
+            if op != 0x1e || fork == Fork::Osaka {
+                prop_assert_eq!(Domain::default().apply(op, &abstract_args), Value::constant(arithmetic(op, &args[..count], fork)));
+            }
+        }
     }
 }
 
@@ -284,6 +291,7 @@ fn example_cfgs_cover_revm_block_entries_edges_and_outputs() {
         "dynamic-jump",
         "internal-calls",
         "stack-heights",
+        "osaka-clz",
     ] {
         let hex = std::fs::read_to_string(format!(
             "{}/../../examples/{name}.hex",
@@ -291,27 +299,42 @@ fn example_cfgs_cover_revm_block_entries_edges_and_outputs() {
         ))
         .unwrap();
         let code = revm::primitives::hex::decode(hex.trim()).unwrap();
-        for depth in 0..=2 {
-            let analysis = analysis::analyze(
-                Program::decode(&code).unwrap(),
-                Config {
-                    context_depth: depth,
-                    ..Config::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(analysis.status(), Status::Converged);
-            let ir = ssa::build(&analysis).unwrap();
-            let inputs = if name == "dynamic-jump" {
-                vec![4]
-            } else {
-                vec![0, 1]
-            };
-            for input in inputs {
-                let mut calldata = vec![0_u8; 32];
-                calldata[31] = input;
-                covers_trace(&analysis, &ir, &concrete(&code, calldata));
+        for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
+            if name == "osaka-clz" && fork != Fork::Osaka {
+                continue;
+            }
+            for depth in 0..=2 {
+                let analysis = analysis::analyze(
+                    Program::decode_with_fork(&code, fork).unwrap(),
+                    Config {
+                        context_depth: depth,
+                        ..Config::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(analysis.status(), Status::Converged);
+                let ir = ssa::build(&analysis).unwrap();
+                let inputs = if name == "dynamic-jump" {
+                    vec![4]
+                } else {
+                    vec![0, 1]
+                };
+                for input in inputs {
+                    let mut calldata = vec![0_u8; 32];
+                    calldata[31] = input;
+                    covers_trace(&analysis, &ir, &concrete(&code, calldata, fork));
+                }
             }
         }
+    }
+}
+
+#[test]
+fn clz_matches_revm_for_zero_and_every_single_set_bit() {
+    for value in std::iter::once(U256::ZERO).chain((0..256).map(|bit| U256::from(1) << bit)) {
+        assert_eq!(
+            Domain::default().apply(0x1e, &[Value::constant(value)]),
+            Value::constant(arithmetic(0x1e, &[value], Fork::Osaka)),
+        );
     }
 }

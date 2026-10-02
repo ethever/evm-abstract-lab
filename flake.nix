@@ -115,8 +115,14 @@
                 ''
                   export XDG_CACHE_HOME="$TMPDIR"
                   for fixture in ${./examples}/*.hex; do
-                    evm-abstract cfg --file "$fixture" --format json | jq -e '.status == "Converged"' > /dev/null
+                    evm-abstract cfg --file "$fixture" --format json | jq -e '.status == "Converged" and .program.fork == "osaka"' > /dev/null
                     evm-abstract ssa --file "$fixture" --format json | jq -e '.ssa.value_count > 0' > /dev/null
+                  done
+                  evm-abstract cfg --file ${./examples/osaka-clz.hex} --format json |
+                    jq -e '.edges | length == 1' > /dev/null
+                  for fork in cancun prague; do
+                    evm-abstract cfg --file ${./examples/osaka-clz.hex} --fork "$fork" --format json |
+                      jq -e '.edges == [] and any(.diagnostics[]; .kind == "InvalidOpcode" and .pc == 2)' > /dev/null
                   done
                   evm-abstract cfg --file ${./examples/internal-calls.hex} --context-depth 1 --format json |
                     jq -e '[.states[] | select(.key.context != [])] | length > 0' > /dev/null

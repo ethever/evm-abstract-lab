@@ -24,6 +24,7 @@ fn stack(values: &[Value]) -> String {
 /// 指令地址、PUSH 值和基本块边界。
 pub fn disassembly(program: &Program) -> String {
     let mut output = String::new();
+    writeln!(output, "fork={}", program.fork()).unwrap();
     for block in program.blocks() {
         writeln!(output, "B{} @ 0x{:04x}:", block.id, block.start_pc).unwrap();
         for instruction in &block.instructions {
@@ -38,7 +39,7 @@ pub fn disassembly(program: &Program) -> String {
                 write!(output, " 0x{value:x}").unwrap();
             }
             if !instruction.is_valid() {
-                output.push_str(" [invalid in Cancun legacy]");
+                write!(output, " [invalid in {} legacy]", program.fork()).unwrap();
             }
             output.push('\n');
         }
@@ -52,8 +53,9 @@ pub fn disassembly(program: &Program) -> String {
 /// CFG 的状态栈、上下文、边和诊断。栈方向为底到顶。
 pub fn cfg(analysis: &Analysis) -> String {
     let mut output = format!(
-        "status={:?} states={} edges={} transfers={} context_depth={}\n",
+        "status={:?} fork={} states={} edges={} transfers={} context_depth={}\n",
         analysis.status(),
+        analysis.program().fork(),
         analysis.states().len(),
         analysis.edges().len(),
         analysis.transfers(),
@@ -120,7 +122,8 @@ pub fn dot(analysis: &Analysis) -> String {
     }
     // 把状态和前沿放在图注里；图片本身也不能隐藏预算截断。
     let label = format!(
-        "status={:?}; frontiers={}; unknown jumps={}",
+        "fork={}; status={:?}; frontiers={}; unknown jumps={}",
+        analysis.program().fork(),
         analysis.status(),
         analysis.frontiers().len(),
         analysis
@@ -141,7 +144,8 @@ pub fn dot(analysis: &Analysis) -> String {
 /// 栈 SSA。φ 注明前驱；opcode 参数保持栈顶先弹出的 EVM 顺序。
 pub fn ssa(analysis: &Analysis, ssa: &Ssa) -> String {
     let mut output = format!(
-        "stack SSA: values={} status={:?}\n",
+        "stack SSA: fork={} values={} status={:?}\n",
+        analysis.program().fork(),
         ssa.value_count(),
         analysis.status()
     );

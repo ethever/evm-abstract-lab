@@ -12,9 +12,9 @@
 
 | 部分 | 当前模型 | 影响 |
 | --- | --- | --- |
-| 输入 | 单合约的 Cancun legacy runtime bytecode，入口 pc=0、空栈 | 不自动提取 creation bytecode，不解码 EOF |
+| 输入 | 单合约的 legacy runtime bytecode，默认 Osaka，可选 Cancun/Prague，入口 pc=0、空栈 | 不自动提取 creation bytecode，不解码 EOF；EIP-7702 委托标记需提供实际执行代码 |
 | 栈 | 高度 ≤1024、有限常量集合或 Top；DUP/SWAP 保留身份 | 集合容量、逐槽独立性影响精度 |
-| 纯运算 | 支持 0x01..0x0b 与 0x10..0x1d，遵循 U256/补码规则 | 未知参数保守返回 Top 或布尔集合 |
+| 纯运算 | 支持 0x01..0x0b 与 0x10..0x1d；Osaka 额外启用 0x1e CLZ，遵循 U256/补码规则 | 未知参数保守返回 Top、布尔集合或域容量容许的 CLZ 结果集合 |
 | PC / CODESIZE | 精确常量 | 用来计算目标的表达式可以更精确 |
 | calldata/环境/余额 | 读取结果保守抽象，通常为 Top | 不假设某次交易参数或固定 sender |
 | 内存 / storage / transient storage | 保留 opcode 与 stack I/O；读取为 Top | MSTORE→MLOAD、SSTORE→SLOAD 的精度尚未保留 |
@@ -38,7 +38,7 @@
 - 域的随机性质测试核对 join 的交换、结合、幂等与覆盖。
 - 字节边界、PUSH 补零、JUMPI 零条件、栈故障等回归检查语义细节。
 - SSA 验证器检查唯一赋值、普通 use 的支配和 φ 边参数；反例测试确认它拒绝损坏的 IR。
-- revm 使用 Cancun 配置具体执行六个例子，检查实际块入口、边与出栈都被包含，并逐条核对 SSA 操作数、φ 边输入和出栈名字对应的具体值；纯运算用边界值与随机 256 bit 样本对照。
+- revm 分别使用 Cancun/Prague/Osaka 配置具体执行原有六个例子，并用 Osaka 执行 CLZ 跳转例子；实际块入口、边与出栈都被包含，SSA 操作数、φ 边输入和出栈名字对应的具体值逐条核对。纯运算用边界值与随机 256 bit 样本对照；CLZ 另核对零和全部 256 个单置位值。
 - CLI 测试核对真实输入/JSON/退出码；Nix 打包后二进制另做例子与 DOT 渲染检查。
 
 有限测试可以发现错误，不能证明覆盖全部合约、全部 calldata 或全部 256 bit 参数。请保留这个证据范围。

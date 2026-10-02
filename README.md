@@ -35,6 +35,13 @@ nix develop -c dot -Tsvg /tmp/diamond.dot -o /tmp/diamond.svg
 
 `disasm`、`cfg`、`ssa` 和 `explain` 都接受 `--hex` 或 `--file`。`cfg` 支持 text/JSON/DOT，`ssa` 支持 text/JSON。文本栈按 **底到顶** 显示。资源预算触发时退出码是 `2`，CFG 标记 `Incomplete` 并保留前沿；SSA 拒绝缺边的分析结果。
 
+默认使用 **Osaka（Fusaka 的执行层）**，这是 2026-10-02 核验的最新已激活主网规则。所有命令都支持 `--fork cancun|prague|osaka`；选择结果记录在文本、JSON 和 DOT 中。最新主网升级与尚在开发的 fork 要分开看，见[协议版本一课](docs/08-forks.md)。
+
+```bash
+nix run . -- explain --file examples/osaka-clz.hex
+nix run . -- explain --file examples/osaka-clz.hex --fork cancun
+```
+
 ## 从哪一课开始
 
 | 阅读顺序 | 你要回答的问题 | 实验与代码 |
@@ -47,17 +54,19 @@ nix develop -c dot -Tsvg /tmp/diamond.dot -o /tmp/diamond.svg
 | [05：敏感性与精度](docs/05-sensitivity.md) | 流、路径、上下文、栈高敏感分别保留什么？ | `--context-depth`、`internal-calls.hex` |
 | [06：模型边界与证据](docs/06-boundaries.md) | 收敛能证明什么？链上状态能增加哪些信息？ | revm oracle、诊断和预算 |
 | [07：练习与提示](docs/07-exercises.md) | 如何亲手扩展这个分析器？ | 由易到难的练习和验收方法 |
+| [08：协议版本与升级](docs/08-forks.md) | 为什么同一字节码在不同 fork 下会产生不同 CFG？ | `fork.rs`、`osaka-clz.hex`、EIP-7702 |
 
 每课都有真实字节偏移、栈变化或图，以及对应源码位置。无需先掌握 Datalog、SMT 或编译器理论。
 
 ## 已实现的学习材料与能力
 
-- Cancun legacy 解码、PUSH0/PUSH1..32、截断 PUSH 右侧补零、真实 JUMPDEST 索引和基本块划分。
+- Cancun/Prague/Osaka legacy 解码、按 fork 检查指令启用、PUSH0/PUSH1..32、截断 PUSH 右侧补零、真实 JUMPDEST 索引和基本块划分。
 - 256 bit 有限常量集合域、保守 Top、纯算术/位运算、逐槽 join、循环工作表。
 - 常量与计算得到的跳转目标、条件分支剪枝、未知跳转的保守展开。
 - 相同块按栈高区分；可选 `k=0..3` 的有限跳转来源历史，观察内部调用的合并与分离。
 - CFG 上的栈 SSA、循环 φ、DUP/SWAP 别名、保留 SSTORE 等副作用指令，以及结构验证器。
-- 六个可运行例子、性质测试、revm 具体执行对照测试、真实 CLI 测试和 Nix/CI 检查。
+- Osaka `CLZ` 的常量集合传播与 SSA；识别 EIP-7702 委托标记并报告目标，避免生成虚假的终止 CFG。
+- 七个可运行例子、三个 fork 的 revm 具体执行对照、性质测试、真实 CLI 测试和 Nix/CI 检查。
 
 模型针对 **单合约的 legacy runtime bytecode**。内存、storage、gas、调用结果和环境值保守抽象；没有 memory/storage SSA、外部合约分析或完整路径约束。`Converged` 表示本抽象模型的工作表完成，不能据此判断合约安全。[详细边界](docs/06-boundaries.md) 列出了每种信息如何处理。
 
