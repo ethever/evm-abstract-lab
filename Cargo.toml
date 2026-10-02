@@ -1,0 +1,28 @@
+[workspace]
+members = ["crates/evm-abstract", "crates/evm-abstract-cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/ethever/evm-abstract-lab"
+
+[workspace.dependencies]
+alloy-primitives = { version = "=1.7.3", features = ["serde"] }
+revm-bytecode = "=43.0.0"
+petgraph = "=0.8.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+thiserror = "=2.0.21"
+clap = { version = "=4.6.7", features = ["derive"] }
+proptest = "=1.11.0"
+
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+wildcard_imports = "deny"

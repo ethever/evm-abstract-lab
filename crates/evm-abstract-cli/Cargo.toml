@@ -1,0 +1,22 @@
+[package]
+name = "evm-abstract-cli"
+description = "Explore EVM bytecode, contextual CFGs and stack SSA from the terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "evm-abstract"
+path = "src/main.rs"
+# Keep the binary's Rustdoc name from overwriting the library API documentation.
+doc = false
+
+[dependencies]
+evm-abstract = { path = "../evm-abstract" }
+clap.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
