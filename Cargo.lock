@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "evm-abstract"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alloy-primitives",
  "petgraph",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "evm-abstract-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "evm-abstract",

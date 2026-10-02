@@ -71,9 +71,7 @@ fn unsupported_and_invalid_inputs_are_distinct() {
         Err(DecodeError::InvalidHex { .. })
     ));
     assert_eq!(Program::from_hex("0x60 01\n00").unwrap().byte_len(), 3);
-    for code in [
-        "0c600100", "1e600100", "4b600100", "e6600100", "fe600100", "f8600100",
-    ] {
+    for code in ["0c600100", "4b600100", "e6600100", "fe600100", "f8600100"] {
         let a = analyze(code);
         assert_eq!(a.states()[0].executed_pcs, [0]);
         assert!(

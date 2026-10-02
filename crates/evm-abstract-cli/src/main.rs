@@ -2,6 +2,7 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use evm_abstract::{
+    Fork,
     analysis::{self, Config, Status},
     bytecode::Program,
     render, ssa,
@@ -26,7 +27,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Decode Cancun legacy runtime bytecode and show basic blocks.
+    /// Decode legacy runtime bytecode under the selected fork (default: Osaka).
     Disasm {
         #[command(flatten)]
         input: Input,
@@ -55,14 +56,17 @@ enum Command {
 }
 
 #[derive(Args)]
-#[group(required = true, multiple = false)]
+#[group(skip)]
 struct Input {
     /// Hex runtime bytecode (optional 0x prefix).
-    #[arg(long)]
+    #[arg(long, required_unless_present = "file", conflicts_with = "file")]
     hex: Option<String>,
     /// UTF-8 file containing hex bytecode; whitespace is accepted.
-    #[arg(long)]
+    #[arg(long, required_unless_present = "hex", conflicts_with = "hex")]
     file: Option<PathBuf>,
+    /// Mainnet execution rules: cancun, prague or osaka (Fusaka).
+    #[arg(long, default_value_t = Fork::default())]
+    fork: Fork,
 }
 
 #[derive(Args)]
@@ -100,9 +104,9 @@ impl Input {
         let text = match (self.hex, self.file) {
             (Some(hex), None) => hex,
             (None, Some(file)) => fs::read_to_string(file)?,
-            _ => unreachable!("clap validates the input group"),
+            _ => unreachable!("clap requires exactly one bytecode source"),
         };
-        Ok(Program::from_hex(&text)?)
+        Ok(Program::from_hex_with_fork(&text, self.fork)?)
     }
 }
 

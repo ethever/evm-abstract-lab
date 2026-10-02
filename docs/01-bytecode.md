@@ -51,7 +51,9 @@ JUMPI 弹出 target，再弹出 condition。当 condition=0 时顺序执行，**
 
 ## fork 是语义的一部分
 
-上游 opcode 表包含较新 fork 的定义，这不代表它们在 Cancun 可用。本实现明确限定 Cancun legacy，包括 PUSH0、瞬态存储和 MCOPY；排除较新 CLZ/SLOTNUM、EOF 指令与 EOF 容器。无效 legacy 指令是可观察的异常路径；EOF 容器则直接返回不支持的格式错误。
+上游 opcode 表包含较新 fork 的定义，这不代表它们已在主网启用。本实现支持 Cancun、Prague 和 Osaka，默认使用最新已激活主网执行层 Osaka。CLZ 只在 Osaka 启用；SLOTNUM/DUPN/SWAPN/EXCHANGE 属于尚未上线的 Amsterdam，仍按无效指令处理。EOF 容器直接返回不支持的格式错误。
+
+选择规则发生在 `Program::from_hex_with_fork` / `decode_with_fork`；每条指令保存相同的不可修改版本。切块、transfer、SSA 与输出共享这一选择，避免“解码按 Cancun、执行按 Osaka”的混用。EIP-7702 委托标记通过 revm 识别并明确报告目标，因为它是代码指针，不是直接可执行的指令流。详见[协议版本一课](08-forks.md)。
 
 相关规则可与 [Ethereum execution-specs 控制流实现](https://github.com/ethereum/execution-specs/blob/master/src/ethereum/forks/cancun/vm/instructions/control_flow.py) 对照。
 

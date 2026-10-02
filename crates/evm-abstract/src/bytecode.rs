@@ -4,8 +4,13 @@
 //! PUSH 缺失的立即数按 EVM 规则在**右边**补零，例如 `61 ab` 推入 `0xab00`。
 //! 指令名与栈输入/输出数量来自 `revm-bytecode`，这里不维护另一套 opcode 表。
 
-use alloy_primitives::U256;
-use revm_bytecode::opcode::{self, OpCode};
+use crate::Fork;
+use alloy_primitives::{Address, Bytes, U256};
+use revm_bytecode::{
+    Bytecode,
+    eip7702::{EIP7702_MAGIC_BYTES, Eip7702DecodeError},
+    opcode::{self, OpCode},
+};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -13,6 +18,9 @@ use thiserror::Error;
 /// 一条指令。`pc` 是字节偏移，不是第几条指令。
 #[derive(Clone, Debug, Serialize)]
 pub struct Instruction {
+    // 与 Program 一起在解码时固定；调用方不能只把某一条指令改成别的 fork。
+    #[serde(skip)]
+    fork: Fork,
     /// Opcode 在原始字节码中的位置。
     pub pc: usize,
     /// 原始 opcode 字节。
@@ -29,13 +37,13 @@ impl Instruction {
         OpCode::name_by_op(self.opcode)
     }
 
-    /// 上游表也包含未来 fork 的指令；本实验只接受 Cancun legacy 指令。
+    /// 使用解码时选择的 fork。上游包含未来指令，不等于它们已在主网启用。
     pub fn is_valid(&self) -> bool {
         OpCode::new(self.opcode).is_some()
             && (self.opcode <= 0x4a
                 || (0x50..=0xa4).contains(&self.opcode)
                 || matches!(self.opcode, 0xf0..=0xf5 | 0xfa | 0xfd | 0xff))
-            && self.opcode != 0x1e // CLZ 属于后续 fork，不能提前启用。
+            && (self.opcode != opcode::CLZ || self.fork.supports_clz())
     }
 
     /// 正常控制流在这里结束，或必须分叉。
@@ -66,6 +74,7 @@ pub struct BasicBlock {
 /// 已解码的程序；索引私有，避免调用者修改指令后索引失效。
 #[derive(Clone, Debug, Serialize)]
 pub struct Program {
+    fork: Fork,
     byte_len: usize,
     blocks: Vec<BasicBlock>,
     #[serde(skip)]
@@ -87,13 +96,27 @@ pub enum DecodeError {
         character: char,
     },
     /// EOF 有独立的容器和指令语义，不能按 legacy 切块。
-    #[error("EOF containers are unsupported; provide Cancun legacy runtime bytecode")]
+    #[error("EOF containers are unsupported; provide legacy runtime bytecode")]
     UnsupportedEof,
+    /// EIP-7702 标记是账户代码指针，不是被执行的指令流。不能输出一个虚假空 CFG。
+    #[error("EIP-7702 delegates execution to {address}; analyze that account's runtime bytecode")]
+    DelegatedCode {
+        /// 原始 marker 中的目标地址，不自动访问 RPC。
+        address: Address,
+    },
+    /// 委托格式验证复用 revm 的解析器，保留长度/版本等具体错误。
+    #[error("malformed EIP-7702 delegation indicator: {0}")]
+    InvalidDelegation(#[from] Eip7702DecodeError),
 }
 
 impl Program {
-    /// 接受可含空白、可带 `0x` 前缀的十六进制 runtime bytecode。
+    /// 接受可含空白、可带 `0x` 前缀的十六进制 runtime bytecode，默认 Osaka。
     pub fn from_hex(input: &str) -> Result<Self, DecodeError> {
+        Self::from_hex_with_fork(input, Fork::default())
+    }
+
+    /// 用明确的规则集解码。选择版本后，后续分析不会再次单独选择版本。
+    pub fn from_hex_with_fork(input: &str, fork: Fork) -> Result<Self, DecodeError> {
         let compact: String = input.chars().filter(|c| !c.is_whitespace()).collect();
         let digits = compact.strip_prefix("0x").unwrap_or(&compact);
         if !digits.len().is_multiple_of(2) {
@@ -110,13 +133,26 @@ impl Program {
                 Some(first) => bytes.push((first << 4) | digit),
             }
         }
-        Self::decode(&bytes)
+        Self::decode_with_fork(&bytes, fork)
     }
 
-    /// 解码完整字节码，保留 halt 后的块供学习不可达代码。
+    /// 使用默认 Osaka 解码，保留 halt 后的块供学习不可达代码。
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::decode_with_fork(bytes, Fork::default())
+    }
+
+    /// 按指定 fork 解码完整字节码。EOF 与账户委托不能当作普通指令分析。
+    pub fn decode_with_fork(bytes: &[u8], fork: Fork) -> Result<Self, DecodeError> {
         if bytes.starts_with(&[0xef, 0x00]) {
             return Err(DecodeError::UnsupportedEof);
+        }
+        if fork.supports_delegation() && bytes.starts_with(EIP7702_MAGIC_BYTES) {
+            let delegated = Bytecode::new_eip7702_raw(Bytes::copy_from_slice(bytes))?;
+            return Err(DecodeError::DelegatedCode {
+                address: delegated
+                    .eip7702_address()
+                    .expect("revm validated a delegation indicator"),
+            });
         }
         let mut instructions = Vec::new();
         let mut pc = 0;
@@ -139,6 +175,7 @@ impl Program {
                 None
             };
             instructions.push(Instruction {
+                fork,
                 pc,
                 opcode: op,
                 immediate,
@@ -172,10 +209,16 @@ impl Program {
             })
             .collect();
         Ok(Self {
+            fork,
             byte_len: bytes.len(),
             blocks,
             jumpdest_blocks,
         })
+    }
+
+    /// 本程序的执行层规则；也是其 CFG/SSA 与 JSON 输出使用的规则。
+    pub fn fork(&self) -> Fork {
+        self.fork
     }
 
     /// 原始字节码长度，供 CODESIZE 抽象执行使用。

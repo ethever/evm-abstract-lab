@@ -106,7 +106,7 @@ pub(super) fn execute(
                     opcode::CODESIZE => Value::constant(U256::from(program.byte_len())),
                     _ => domain.apply(op, &args),
                 };
-                if !matches!(op, 0x01..=0x0b | 0x10..=0x1d | opcode::PC | opcode::CODESIZE) {
+                if !matches!(op, 0x01..=0x0b | 0x10..=0x1e | opcode::PC | opcode::CODESIZE) {
                     result.diagnostics.push((pc, DiagnosticKind::OpaqueResult));
                 }
                 result.stack.extend(std::iter::repeat_n(value, outputs));

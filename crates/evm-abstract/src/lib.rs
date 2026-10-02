@@ -1,7 +1,8 @@
 //! 从 EVM 字节码出发，学习抽象解释、控制流和栈 SSA。
 //!
 //! 阅读顺序：[`bytecode`] → [`domain`] → [`analysis`] → [`ssa`]。
-//! 库分析 **Cancun legacy runtime bytecode**；它不执行交易、不连接节点。
+//! 库分析 **legacy runtime bytecode**，默认 Osaka，可显式选择 Cancun/Prague。
+//! 它不执行交易、不连接节点；EIP-7702 委托标记需要先取得被委托账户的代码。
 //! gas、内存、storage 和外部调用结果被保守抽象，因此结果是可能执行的图，
 //! 不能直接当作漏洞证明或完整 EVM 验证器。见仓库 `docs/06-boundaries.md`。
 //!
@@ -19,7 +20,9 @@
 pub mod analysis;
 pub mod bytecode;
 pub mod domain;
+pub mod fork;
 pub mod render;
 pub mod ssa;
 
 pub use alloy_primitives::U256;
+pub use fork::Fork;

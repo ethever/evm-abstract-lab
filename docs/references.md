@@ -9,10 +9,13 @@
 | 抽象解释为什么能系统地近似执行 | [Patrick 与 Radhia Cousot，POPL 1977](https://www.di.ens.fr/~cousot/COUSOTpapers/POPL77.shtml) | 先掌握集合 join，再阅读抽象域与固定点 |
 | SSA 与 φ、dominance frontier | [Cornell CS 6120：Static Single Assignment](https://www.cs.cornell.edu/courses/cs6120/2025sp/lesson/6/) | `ssa/build.rs` 的块参数式教学构建与经典算法比较 |
 | 支配算法与定义 | [petgraph 0.8.3 dominators](https://docs.rs/petgraph/0.8.3/petgraph/algo/dominators/index.html) | 验证器复用 `simple_fast` |
-| opcode 元数据 | [revm-bytecode 43.0.0](https://docs.rs/revm-bytecode/43.0.0/revm_bytecode/) | 不另维护名称与栈 I/O 表；额外限制 Cancun fork |
+| opcode 元数据 | [revm-bytecode 43.0.0](https://docs.rs/revm-bytecode/43.0.0/revm_bytecode/) | 不另维护名称与栈 I/O 表；按程序选择的 fork 检查启用 |
+| 当前主网与未来升级 | [Ethereum 官方路线图](https://ethereum.org/roadmap/)、[Fusaka Meta EIP-7607](https://eips.ethereum.org/EIPS/eip-7607) | 2026-10-02 核验：默认 Osaka；BPO 调整不增加 opcode |
+| CLZ 数值语义 | [EIP-7939](https://eips.ethereum.org/EIPS/eip-7939) | 0x1e、单输入/单输出、零返回 256；用 revm 核对 |
+| EOA 代码委托 | [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) | 区分账户代码标记与执行代码，解析器复用 revm |
 | U256 运算 | [alloy-primitives 1.7.3](https://docs.rs/alloy-primitives/1.7.3/alloy_primitives/) | 大整数与快速幂来自库；边界用 revm 对照 |
 | Rust 稳定发行版本 | [Rust 官方发行记录](https://github.com/rust-lang/rust/releases/tag/1.99.0) | `rust-toolchain.toml` 固定创建时最新稳定版 1.99.0 |
 | Nix 与同一 Rust 文件 | [rust-overlay 的 fromRustupToolchainFile](https://github.com/oxalica/rust-overlay#cheat-sheet-common-usage-of-rust-bin) | `flake.nix` 与 rustup 共用配置 |
 | Rust 的 Nix 构建/依赖缓存 | [crane 官方文档](https://crane.dev/) | 构建、Clippy、Rustdoc 使用同一工具链与依赖锁 |
 
-链接指向上游规范或作者资料；项目依赖的确切版本由 Cargo.lock/flake.lock 决定。execution-specs 的默认分支可能更新，因此本仓库测试显式固定 revm 的 Cancun 配置，并没有把上游整套测试向量复制成当前门禁。
+链接指向上游规范或作者资料；项目依赖的确切版本由 Cargo.lock/flake.lock 决定。execution-specs 的默认分支可能更新，因此本仓库测试显式选择 revm 的 Cancun/Prague/Osaka 配置，并没有把上游整套测试向量复制成当前门禁。

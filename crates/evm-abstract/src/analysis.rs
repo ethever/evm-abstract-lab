@@ -111,7 +111,7 @@ pub enum DiagnosticKind {
     StackUnderflow,
     /// 栈超过 EVM 的 1024 槽上限，当前路径异常终止。
     StackOverflow,
-    /// Cancun legacy 下无效 opcode，当前路径异常终止。
+    /// 在程序所选 fork 下无效的 opcode，当前路径异常终止。
     InvalidOpcode,
     /// 内存、状态或环境值仅用保守摘要表示。
     OpaqueResult,
