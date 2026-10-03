@@ -30,7 +30,9 @@ flowchart TD
 
 ## 一轮传播发生什么
 
-源码分成两个职责：[`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 执行一个块；[`engine.rs`](../crates/evm-abstract/src/analysis/engine.rs) 管队列、join、状态编号和边。
+配置先经过 [`config.rs`](../crates/evm-abstract/src/analysis/config.rs) 的准入检查：原始 `Config` 可以填写任意 usize，但只有验证成功才能得到私有字段的 `ValidatedConfig`。这里也构建非零容量的域，执行引擎不用再把数字转换为 NonZero 或使用 `expect` 保证条件成立。
+
+运行时分成两个职责：[`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 执行一个块；[`engine.rs`](../crates/evm-abstract/src/analysis/engine.rs) 管队列、join、状态编号和边。
 
 ```text
 1. 弹出待处理状态 S。

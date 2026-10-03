@@ -63,7 +63,8 @@ impl Instruction {
 /// 线性执行的一段指令；编号按字节偏移递增。
 #[derive(Clone, Debug, Serialize)]
 pub struct BasicBlock {
-    /// 在 `Program::blocks()` 中的编号。
+    /// 当前 [`Program::blocks`] 中的稠密索引；不是跨程序的全局编号。
+    /// 字节地址由 `start_pc` 保存，带上下文的分析状态使用 [`crate::analysis::StateKey`]。
     pub id: usize,
     /// 首条指令的字节偏移。
     pub start_pc: usize,
@@ -147,6 +148,9 @@ impl Program {
             return Err(DecodeError::UnsupportedEof);
         }
         if fork.supports_delegation() && bytes.starts_with(EIP7702_MAGIC_BYTES) {
+            // TODO(EIP-7702): 在明确的代码来源/快照下解析委托代码并建 CFG/SSA。
+            // 后续实现跟踪：https://github.com/ethever/evm-abstract-lab/issues/10
+            // 这里先识别并报告目标，保留未解析状态，避免生成虚假的终止 CFG。
             let delegated = Bytecode::new_eip7702_raw(Bytes::copy_from_slice(bytes))?;
             return Err(DecodeError::DelegatedCode {
                 address: delegated
@@ -189,6 +193,10 @@ impl Program {
         for instruction in instructions {
             if starts_new || instruction.opcode == opcode::JUMPDEST {
                 blocks.push(BasicBlock {
+                    // 这次解码只按指令顺序追加块：已有 B0..B(n-1) 时，len=n，
+                    // 所以新块的编号 n 唯一且连续，之后可直接用 blocks[id] 查找。
+                    // Program 解码完成后只提供只读访问，不删除或重排块，编号不会失效。
+                    // 同一原始块的不同路径/上下文由 StateKey 区分，不靠这里的 B 编号。
                     id: blocks.len(),
                     start_pc: instruction.pc,
                     instructions: Vec::new(),
