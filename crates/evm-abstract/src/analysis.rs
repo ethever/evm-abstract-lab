@@ -4,51 +4,18 @@
 //! 栈高区分是必要的类型边界；有限跳转历史是可选的精度选择。
 //! 每次新输入都逐槽 join，只有输入变大才重新入队。边也只增加，不随某次
 //! 更精确的执行删除。读 `analysis/engine.rs` 中的循环时，始终检查这两个不变量。
+//!
+//! 配置在 [`Config::validate`] 阶段完成准入检查，转换成不能手工伪造的
+//! [`ValidatedConfig`] 后交给引擎；域容量的非零条件在类型中携带。
 
+mod config;
 mod engine;
 mod transfer;
 
 use crate::{bytecode::Program, domain::Value};
 use serde::Serialize;
-use thiserror::Error;
 
-/// 有限分析的精度和资源参数；由 `analyze` 统一验证。
-#[derive(Clone, Debug, Serialize)]
-pub struct Config {
-    /// 每个槽位最多保留的常量数，范围 1..=64。
-    pub max_constants: usize,
-    /// 保留最近 k 个跳转来源块，范围 0..=3；0 代表上下文不敏感。
-    pub context_depth: usize,
-    /// 可创建的状态数上限；限制触发后结果是 Incomplete。
-    pub max_states: usize,
-    /// 基本块 transfer 次数上限；一次重新执行也计数。
-    pub max_transfers: usize,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            max_constants: 8,
-            context_depth: 0,
-            max_states: 4096,
-            max_transfers: 100_000,
-        }
-    }
-}
-
-/// 配置不成立，分析尚未开始。
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    /// 域容量超出教学实现允许的范围。
-    #[error("max_constants must be in 1..=64")]
-    Constants,
-    /// 上下文增长过快，教学实现限制到三层。
-    #[error("context_depth must be in 0..=3")]
-    Context,
-    /// 资源预算不能是零。
-    #[error("max_states and max_transfers must be positive")]
-    Budget,
-}
+pub use config::{Config, ConfigError, ValidatedConfig};
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -207,14 +174,6 @@ impl Analysis {
 
 /// 从空 EVM 栈和 pc=0 开始；仅分析本合约的 runtime bytecode。
 pub fn analyze(program: Program, config: Config) -> Result<Analysis, ConfigError> {
-    if !(1..=64).contains(&config.max_constants) {
-        return Err(ConfigError::Constants);
-    }
-    if config.context_depth > 3 {
-        return Err(ConfigError::Context);
-    }
-    if config.max_states == 0 || config.max_transfers == 0 {
-        return Err(ConfigError::Budget);
-    }
-    Ok(engine::run(program, config))
+    let validated = config.validate()?;
+    Ok(engine::run(program, validated))
 }

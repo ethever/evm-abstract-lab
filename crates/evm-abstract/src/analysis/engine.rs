@@ -1,16 +1,14 @@
 //! 增量工作表求固定点：变化才入队，join 只上升，状态键永远不变。
 
 use super::{
-    Analysis, Config, Diagnostic, Edge, Frontier, Limit, State, StateKey, Status, transfer,
+    Analysis, Diagnostic, Edge, Frontier, Limit, State, StateKey, Status, ValidatedConfig, transfer,
 };
-use crate::{bytecode::Program, domain::Domain};
-use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
-    num::NonZeroUsize,
-};
+use crate::bytecode::Program;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-pub(super) fn run(program: Program, config: Config) -> Analysis {
-    let domain = Domain::new(NonZeroUsize::new(config.max_constants).expect("validated config"));
+pub(super) fn run(program: Program, validated: ValidatedConfig) -> Analysis {
+    // 配置准入阶段已经构建好非零容量的域；这里直接使用其校验结果。
+    let (config, domain) = validated.into_parts();
     let mut result = Analysis {
         program,
         config,
