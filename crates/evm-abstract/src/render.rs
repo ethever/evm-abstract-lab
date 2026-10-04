@@ -1,5 +1,7 @@
 //! 面向学习的文本和图输出。所有顺序稳定，便于 diff 和重复实验。
 
+pub mod world;
+
 use crate::{
     analysis::{Analysis, DiagnosticKind},
     bytecode::Program,

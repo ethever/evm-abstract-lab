@@ -1,0 +1,40 @@
+{
+  "fork": "osaka",
+  "provenance": "offline:proxy-storage:v1",
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000101",
+      "code": "0x60205f5f5f60076102016207a120f15060205f5f5f600b6102026207a120f15000",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0x1000000"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000201",
+      "code": "0x60205f5f5f6103006207a120f45000",
+      "storage": {
+        "0x0": "0x5"
+      },
+      "storage_unknown": false,
+      "balance": "0x0"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000202",
+      "code": "0x60205f5f5f6103006207a120f45000",
+      "storage": {
+        "0x0": "0x9"
+      },
+      "storage_unknown": false,
+      "balance": "0x0"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000300",
+      "code": "0x5f54600101805f555f5230600155336002553460035560205ff3",
+      "storage": {
+        "0x0": "0x63"
+      },
+      "storage_unknown": false,
+      "balance": "0x0"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 [package]
 name = "evm-abstract-cli"
-description = "Explore EVM bytecode, contextual CFGs and stack SSA from the terminal"
+description = "Analyze multi-account EVM worlds and inspect their cross-contract execution graphs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +16,10 @@ doc = false
 [dependencies]
 evm-abstract = { path = "../evm-abstract" }
 clap.workspace = true
+alloy-primitives.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

@@ -58,7 +58,9 @@ helper 的两次执行现在分开了。分别构建 SSA，每个上下文有自
 
 ## 为什么叫跳转历史，而不宣称完整调用串
 
-本实现不识别函数、不推断 call/return 标签，也没有跨合约摘要。条件分支和普通内部跳转也会更新历史。它是一种有界控制历史敏感性，可以在本例中作为调用来源近似，不能直接叫“完整 k-call-string 分析”。
+这个 `--context-depth` 参数不识别内部函数，也不推断 JUMP 的 call/return 标签。条件分支和普通内部跳转都会更新历史。它是一种有界控制历史敏感性，可以在本例中作为调用来源近似，不能直接叫“完整 k-call-string 分析”。
+
+外部 CALL 有另一套真实帧机制：主要 `analyze --world` 入口保存整条调用帧栈，每帧分别保留 code address、storage address、caller、call value、static 标志和局部跳转历史。CALL 暂停 caller；返回边恢复正确的继续位置。这里的 `k` 只控制各帧内部 JUMP 的历史，不会截断外部调用栈；外部栈由 `--max-call-depth` 预算控制，超限明确 `Incomplete`。见[跨合约一课](09-cross-contract.md)。
 
 如果 helper 自己又经过多个分支，k=1 可能很快忘掉调用来源。提高 k 可能保留来源更久，但不保证消除全部伪路径，也不保证状态数只线性增长。
 

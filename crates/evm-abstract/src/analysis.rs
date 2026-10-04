@@ -1,21 +1,31 @@
-//! 控制流不是先验输入，而是抽象执行逐步发现的结果。
+//! 多账户调用图与控制流由同一台抽象机逐步发现。
 //!
-//! 一个状态键是 `(block, stack_height, jump_history)`：同一块可以有多个状态。
-//! 栈高区分是必要的类型边界；有限跳转历史是可选的精度选择。
+//! [`analyze_world`] 是完整入口：工作表保存执行与暂停的调用帧，并且让所有
+//! 子调用共享事务状态和预算。代码地址与状态地址各自参与帧身份。
+//! [`analyze`] 是单账户学习视图，复用同一执行核心后投影为局部 CFG。
+//! 栈高区分是必要的类型边界；有限内部跳转历史是可选的精度选择。
 //! 每次新输入都逐槽 join，只有输入变大才重新入队。边也只增加，不随某次
 //! 更精确的执行删除。读 `analysis/engine.rs` 中的循环时，始终检查这两个不变量。
 //!
 //! 配置在 [`Config::validate`] 阶段完成准入检查，转换成不能手工伪造的
-//! [`ValidatedConfig`] 后交给引擎；域容量的非零条件在类型中携带。
+//! [`ValidatedConfig`] 后构造引擎使用的域；世界执行的附加预算在同一准入阶段
+//! 检查。域容量的非零条件在类型中携带。
 
 mod config;
 mod engine;
+mod machine;
+mod single;
 mod transfer;
 
 use crate::{bytecode::Program, domain::Value};
 use serde::Serialize;
 
 pub use config::{Config, ConfigError, ValidatedConfig};
+pub use machine::{
+    Continuation, ExecutionConfig, Frame, FrameCode, FrameKey, FrontierReason, MachineEdge,
+    MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome, MachinePayload, MachineState,
+    OutcomeKind, WorldAnalysis,
+};
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -102,6 +112,14 @@ pub enum Limit {
     States,
     /// 工作表尚有未执行的 transfer。
     Transfers,
+    /// 累计指令、域运算、合并或候选展开工作量。
+    Work,
+    /// 外部调用帧深度的分析边界。
+    CallDepth,
+    /// 抽象字节范围超过允许的资源规模。
+    Memory,
+    /// 事实缺失或尚未实现的语义；不属于 EVM 程序失败。
+    Model,
 }
 
 /// 无法继续展开的明确前沿，保留其来源和预期状态键。
@@ -120,7 +138,7 @@ pub struct Frontier {
 pub enum Status {
     /// 所有状态满足传播闭包。
     Converged,
-    /// 有未覆盖的前沿，SSA 构建会拒绝该结果。
+    /// 有资源或语义/事实尚未覆盖的前沿，SSA 构建会拒绝该结果。
     Incomplete,
 }
 
@@ -135,6 +153,8 @@ pub struct Analysis {
     pub(crate) frontiers: Vec<Frontier>,
     pub(crate) status: Status,
     pub(crate) transfers: usize,
+    #[serde(skip)]
+    execution: WorldAnalysis,
 }
 
 impl Analysis {
@@ -158,7 +178,7 @@ impl Analysis {
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }
-    /// 预算留下的分析前沿。
+    /// 资源或语义/事实边界留下的分析前沿。
     pub fn frontiers(&self) -> &[Frontier] {
         &self.frontiers
     }
@@ -170,10 +190,25 @@ impl Analysis {
     pub fn transfers(&self) -> usize {
         self.transfers
     }
+    /// Native multi-account result underlying this single-program view.
+    pub fn execution(&self) -> &WorldAnalysis {
+        &self.execution
+    }
 }
 
-/// 从空 EVM 栈和 pc=0 开始；仅分析本合约的 runtime bytecode。
+/// Analyze a declared offline world from one external entry, sharing one
+/// worklist and transaction state through all nested calls.
+pub fn analyze_world(
+    world: crate::world::World,
+    entry: crate::world::Entry,
+    config: ExecutionConfig,
+) -> Result<WorldAnalysis, ConfigError> {
+    engine::run_world(world, entry, config)
+}
+
+/// Single-bytecode learning adapter. Environment, calldata and initial
+/// persistent state remain unknown; missing external code is an explicit
+/// incomplete frontier in the same native machine used by [`analyze_world`].
 pub fn analyze(program: Program, config: Config) -> Result<Analysis, ConfigError> {
-    let validated = config.validate()?;
-    Ok(engine::run(program, validated))
+    single::analyze(program, config)
 }

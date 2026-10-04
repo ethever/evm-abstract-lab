@@ -13,6 +13,10 @@
 | 当前主网与未来升级 | [Ethereum 官方路线图](https://ethereum.org/roadmap/)、[Fusaka Meta EIP-7607](https://eips.ethereum.org/EIPS/eip-7607) | 2026-10-02 核验：默认 Osaka；BPO 调整不增加 opcode |
 | CLZ 数值语义 | [EIP-7939](https://eips.ethereum.org/EIPS/eip-7939) | 0x1e、单输入/单输出、零返回 256；用 revm 核对 |
 | EOA 代码委托 | [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) | 区分账户代码标记与执行代码，解析器复用 revm |
+| 调用后的返回数据缓冲区与越界 | [EIP-211](https://eips.ethereum.org/EIPS/eip-211) | 每帧 returndata、调用时清空、REVERT 数据与 RETURNDATACOPY |
+| 静态调用的继承与禁止效果 | [EIP-214](https://eips.ethereum.org/EIPS/eip-214) | STATICCALL、SSTORE/LOG/value CALL 故障与 CALLCODE 例外 |
+| transient storage 的帧归属与回滚 | [EIP-1153](https://eips.ethereum.org/EIPS/eip-1153) | 同一交易的跨帧状态、DELEGATECALL owner 和 REVERT checkpoint |
+| Osaka 的 P256VERIFY 预编译地址 | [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) | 地址 0x100 保留给预编译，离线例子入口选择 0x101；oracle 要实际访问字节码 |
 | U256 运算 | [alloy-primitives 1.7.3](https://docs.rs/alloy-primitives/1.7.3/alloy_primitives/) | 大整数与快速幂来自库；边界用 revm 对照 |
 | Rust 稳定发行版本 | [Rust 官方发行记录](https://github.com/rust-lang/rust/releases/tag/1.99.0) | `rust-toolchain.toml` 固定创建时最新稳定版 1.99.0 |
 | Nix 与同一 Rust 文件 | [rust-overlay 的 fromRustupToolchainFile](https://github.com/oxalica/rust-overlay#cheat-sheet-common-usage-of-rust-bin) | `flake.nix` 与 rustup 共用配置 |
