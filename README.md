@@ -1,16 +1,16 @@
 # evm-abstract-lab
 
-一个用 **Rust + Nix** 学习 EVM 静态分析的实验室：从 runtime bytecode 出发，通过抽象栈执行恢复控制流图（CFG），再构建并验证带 φ 节点的栈 SSA。代码注释和教程以中文为主，按“观察结果 → 跟踪实现 → 理解理论 → 动手改变精度”的顺序展开。
+一个用 **Rust + Nix** 学习和实现跨合约 EVM 抽象分析的实验室。主要输入是包含多个账户代码、初始 storage 和余额的离线世界，以及一次明确的入口调用。抽象执行直接维护调用栈、每帧内存、账户状态和返回数据，产出跨合约执行图与 SSA。代码注释和教程以中文为主，按“观察结果 → 跟踪实现 → 理解理论 → 动手改变精度”的顺序展开。
 
 这里的“执行”是在可能值的摘要上计算。例如，两条路径带来的 `1` 和 `2` 合成 `{1,2}`；无法继续精确表示时升到 `⊤`，表示任意 256 bit 值。循环用工作表计算固定点，动态跳转目标未知时覆盖所有真正的 `JUMPDEST`。
 
 ```mermaid
 flowchart LR
-    A[legacy runtime bytecode] --> B[解码指令与基本块]
-    B --> C[抽象栈 + 工作表]
-    C --> D[带栈高与上下文的 CFG]
-    D --> E[栈 SSA 与 φ]
-    E --> F[唯一赋值 / 支配 / 边参数验证]
+    A[多账户世界 + 入口调用] --> B[按 fork 解码账户代码]
+    B --> C[调用帧栈 + 内存 + 账户 Store]
+    C --> D[CALL / RETURN / REVERT 的全局工作表]
+    D --> E[跨合约执行图 + SSA + 状态效果]
+    E --> F[返回分支 / 代理 / 回滚 / 重入证据]
 ```
 
 ## 开始运行
@@ -19,23 +19,25 @@ flowchart LR
 
 ```bash
 nix develop
-cargo run --locked -p evm-abstract-cli -- explain --file examples/diamond.hex
-cargo run --locked -p evm-abstract-cli -- cfg --file examples/loop.hex
-cargo run --locked -p evm-abstract-cli -- ssa --file examples/internal-calls.hex --context-depth 1
+cargo run --locked -p evm-abstract-cli -- analyze --world examples/worlds/call-return-branch.json --entry 0x0000000000000000000000000000000000000101
+cargo run --locked -p evm-abstract-cli -- analyze --world examples/worlds/proxy-storage.json --entry 0x0000000000000000000000000000000000000101 --format json --ssa
 ```
 
 也可以直接使用 Nix 打包的二进制：
 
 ```bash
-nix run . -- explain --file examples/diamond.hex
-nix run . -- cfg --hex 600035565b602a60005500 --format json
-nix run . -- cfg --file examples/diamond.hex --format dot > /tmp/diamond.dot
-nix develop -c dot -Tsvg /tmp/diamond.dot -o /tmp/diamond.svg
+nix run . -- analyze --world examples/worlds/reentry.json --entry 0x0000000000000000000000000000000000000101
+nix run . -- analyze --world examples/worlds/proxy-storage.json --entry 0x0000000000000000000000000000000000000101 --format dot > /tmp/proxies.dot
+nix develop -c dot -Tsvg /tmp/proxies.dot -o /tmp/proxies.svg
 ```
 
-`disasm`、`cfg`、`ssa` 和 `explain` 都接受 `--hex` 或 `--file`。`cfg` 支持 text/JSON/DOT，`ssa` 支持 text/JSON。文本栈按 **底到顶** 显示。资源预算触发时退出码是 `2`，CFG 标记 `Incomplete` 并保留前沿；SSA 拒绝缺边的分析结果。
+`analyze` 支持 text/JSON/DOT；`--ssa` 构建并验证完整执行图的 SSA。`--caller`、`--calldata`、`--value` 和 `--static` 指定入口环境；调用深度、累计工作量、状态数、transfer 和每帧内存都有显式预算。缺少代码、未知调用目标、未支持的创建/销毁/预编译或预算耗尽产生 `Incomplete`、保留原因和前沿、退出 `2`。输入错误退出 `1`。分析从不隐式访问 RPC。
 
-默认使用 **Osaka（Fusaka 的执行层）**，这是 2026-10-02 核验的最新已激活主网规则。所有命令都支持 `--fork cancun|prague|osaka`；选择结果记录在文本、JSON 和 DOT 中。最新主网升级与尚在开发的 fork 要分开看，见[协议版本一课](docs/08-forks.md)。
+世界 JSON 的 `fork`、`provenance` 和 `accounts` 是必填项。账户地址是 20 字节 hex；代码是 runtime hex；storage slot、storage value 和余额是 `0x` 开头的 256 bit 数。缺少账户或代码表示未知，`"code":"0x"` 才表示观察到空代码。未列出的余额和 slot 默认未知；只有显式 `"storage_unknown":false` 才把未列出的 slot 视为零。[跨合约一课](docs/09-cross-contract.md) 展示完整输入和状态流。
+
+单段字节码仍可以用 `disasm`、`cfg`、`ssa` 和 `explain` 的 `--hex` / `--file` 学习；它们是主要世界分析入口的单账户视图。文本栈按 **底到顶** 显示，单账户 SSA 同样拒绝未完成的图。
+
+默认使用 **Osaka（Fusaka 的执行层）**。世界文件固定 `fork: "cancun" | "prague" | "osaka"`；单段字节码命令接受 `--fork`。选择结果记录在文本、JSON 和 DOT 中，同一世界不能混用 fork。协议规则与模型支持范围需要分别阅读，见[协议版本一课](docs/08-forks.md)。
 
 ```bash
 nix run . -- explain --file examples/osaka-clz.hex
@@ -46,7 +48,8 @@ nix run . -- explain --file examples/osaka-clz.hex --fork cancun
 
 | 阅读顺序 | 你要回答的问题 | 实验与代码 |
 | --- | --- | --- |
-| [00：环境与第一眼](docs/00-start.md) | 输入是什么？每一种输出说明什么？ | `straight-line.hex`、CLI |
+| [00：环境与第一眼](docs/00-start.md) | 世界、调用帧和返回边是什么？ | `call-return-branch.json`、CLI |
+| [09：跨合约执行](docs/09-cross-contract.md) | 代理共享哪些东西？失败和重入怎样传递状态？ | `world.rs`、`analysis/machine.rs`、离线世界 |
 | [01：字节码与基本块](docs/01-bytecode.md) | 为什么 PUSH 内部的 `5b` 不是跳转目标？ | `bytecode.rs` |
 | [02：抽象执行与域](docs/02-domain.md) | 一个集合怎么替代许多具体执行？为什么合并用并集？ | `domain.rs`、`diamond.hex` |
 | [03：CFG 与固定点](docs/03-cfg.md) | 跳转边未知时怎么继续？循环为什么会停？ | `analysis/`、`loop.hex`、`dynamic-jump.hex` |
@@ -60,15 +63,19 @@ nix run . -- explain --file examples/osaka-clz.hex --fork cancun
 
 ## 已实现的学习材料与能力
 
+- 多账户固定世界、显式入口环境、区分缺少账户与已知空代码；一个工作表分析整段嵌套调用。
+- CALL / CALLCODE / DELEGATECALL / STATICCALL 的执行帧、代码地址与状态账户分离、调用参数与返回数据传播、成功/REVERT/失败返回边。
+- 每帧抽象内存、calldata、returndata；按账户保存 persistent/transient storage 与余额，写入更新、嵌套回滚与重入观察当前状态。
+- 跨合约图和 SSA；调用边、返回边及状态效果进入 IR，完整结果经过验证器核对。
 - Cancun/Prague/Osaka legacy 解码、按 fork 检查指令启用、PUSH0/PUSH1..32、截断 PUSH 右侧补零、真实 JUMPDEST 索引和基本块划分。
 - 256 bit 有限常量集合域、保守 Top、纯算术/位运算、逐槽 join、循环工作表。
 - 常量与计算得到的跳转目标、条件分支剪枝、未知跳转的保守展开。
 - 相同块按栈高区分；可选 `k=0..3` 的有限跳转来源历史，观察内部调用的合并与分离。
 - CFG 上的栈 SSA、循环 φ、DUP/SWAP 别名、保留 SSTORE 等副作用指令，以及结构验证器。
 - Osaka `CLZ` 的常量集合传播与 SSA；识别 EIP-7702 委托标记并报告目标，避免生成虚假的终止 CFG。
-- 七个可运行例子、三个 fork 的 revm 具体执行对照、性质测试、真实 CLI 测试和 Nix/CI 检查。
+- 单账户字节码与多账户离线世界、三个 fork 的 revm 具体执行对照、性质测试、真实 CLI 测试和 Nix/CI 检查。
 
-模型针对 **单合约的 legacy runtime bytecode**。内存、storage、gas、调用结果和环境值保守抽象；没有 memory/storage SSA、外部合约分析或完整路径约束。`Converged` 表示本抽象模型的工作表完成，不能据此判断合约安全。[详细边界](docs/06-boundaries.md) 列出了每种信息如何处理。
+模型针对世界内账户的 **legacy runtime bytecode**。gas 不精确计量，未知环境和 hash 保守抽象，CREATE/CREATE2、SELFDESTRUCT、预编译和无法取得的代码保留未完成前沿；没有完整路径约束或跨交易不变量证明。`Converged` 表示本抽象模型的工作表完成，不能据此判断合约安全。[详细边界](docs/06-boundaries.md) 列出信息处理方式和证据范围。
 
 ## 工具链与依赖
 

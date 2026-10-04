@@ -8,6 +8,11 @@
 
 mod build;
 mod verify;
+mod world;
+
+pub use world::{
+    EffectId, EffectInput, EffectPhi, FramePhi, Transition, WorldBlock, WorldSsa, build_world,
+};
 
 use crate::analysis::Analysis;
 use alloy_primitives::U256;
@@ -78,7 +83,7 @@ pub struct Ssa {
 #[derive(Debug, Error)]
 pub enum SsaError {
     /// 缺边会使 φ 和 dominance 产生误导，因此拒绝截断分析。
-    #[error("SSA requires a converged CFG; analysis has unresolved budget frontiers")]
+    #[error("SSA requires a converged graph; analysis has unresolved frontiers")]
     IncompleteAnalysis,
     /// 内部不变量失败，保留可定位的信息。
     #[error("SSA invariant failed: {0}")]

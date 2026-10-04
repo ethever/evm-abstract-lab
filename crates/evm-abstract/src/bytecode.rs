@@ -50,6 +50,9 @@ impl Instruction {
     pub fn ends_block(&self) -> bool {
         !self.is_valid()
             || matches!(self.opcode, opcode::JUMP | opcode::JUMPI)
+            // A call suspends this frame. Its next instruction is a continuation
+            // block, reached only when a child returns or the call fails.
+            || matches!(self.opcode, opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL)
             || OpCode::new_or_unknown(self.opcode).info().is_terminating()
     }
 
@@ -77,6 +80,8 @@ pub struct BasicBlock {
 pub struct Program {
     fork: Fork,
     byte_len: usize,
+    #[serde(skip)]
+    bytes: Vec<u8>,
     blocks: Vec<BasicBlock>,
     #[serde(skip)]
     jumpdest_blocks: BTreeMap<usize, usize>,
@@ -148,9 +153,9 @@ impl Program {
             return Err(DecodeError::UnsupportedEof);
         }
         if fork.supports_delegation() && bytes.starts_with(EIP7702_MAGIC_BYTES) {
-            // TODO(EIP-7702): 在明确的代码来源/快照下解析委托代码并建 CFG/SSA。
-            // 后续实现跟踪：https://github.com/ethever/evm-abstract-lab/issues/10
-            // 这里先识别并报告目标，保留未解析状态，避免生成虚假的终止 CFG。
+            // Program 只表示实际执行的指令流；账户指针属于 world 的事实层。
+            // Account::from_hex 保留此目标，跨合约引擎按固定 world 做单层解析。
+            // 字节码独立入口仍返回目标，不能把 marker 误解成完成的空 CFG。
             let delegated = Bytecode::new_eip7702_raw(Bytes::copy_from_slice(bytes))?;
             return Err(DecodeError::DelegatedCode {
                 address: delegated
@@ -219,6 +224,7 @@ impl Program {
         Ok(Self {
             fork,
             byte_len: bytes.len(),
+            bytes: bytes.to_vec(),
             blocks,
             jumpdest_blocks,
         })
@@ -232,6 +238,11 @@ impl Program {
     /// 原始字节码长度，供 CODESIZE 抽象执行使用。
     pub fn byte_len(&self) -> usize {
         self.byte_len
+    }
+
+    /// Immutable source bytes used by CODECOPY and EXTCODECOPY.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 
     /// 基本块，包括尚未证明可达的块。

@@ -1,4 +1,27 @@
-# 七个可以手算的 runtime bytecode
+# 可手算的离线世界与 runtime bytecode
+
+主要入口使用 `worlds/` 的多账户 JSON。所有例子入口为 `0x...0101`，默认 caller=`0x...1000`，calldata 为空、value=0。`storage_unknown:false` 声明完整合成初始 storage；没有 RPC 依赖。
+
+| 世界 | 要观察的现象 | 具体成功轨迹中的结果 |
+| --- | --- | --- |
+| `worlds/call-return-branch.json` | B 的 RETURN 字节决定 A 的分支 | A slot 0=1 |
+| `worlds/proxy-storage.json` | 两代理 DELEGATECALL 同一实现，storage 分离 | P1/P2 slot 0=6/10；实现仍为 99 |
+| `worlds/callcode-context.json` | CALLCODE 的 state address、caller、value | caller 为代理，value=3 |
+| `worlds/returndata-copy.json` | CALL 输出区为空，随后 RETURNDATACOPY | 返回 32 字节数值 1 |
+| `worlds/revert-rollback.json` | 回滚子帧写入，同时传回 REVERT 数据 | B slot 0 保留 4，A slot 1=42 |
+| `worlds/static-write.json` | 静态子帧在 SSTORE 处故障 | CALL 成功位 0，B slot 0 保留 4 |
+| `worlds/reentry.json` | 重入读取当前交易写入 | A slot 0=2，slot 1=1 |
+| `worlds/log-rollback.json` | 子帧日志随 REVERT 回滚 | 只保留 A 的事件，B 的事件消失 |
+| `worlds/missing-code.json` | 缺少被调用账户事实 | `Incomplete`、`MissingCode`、退出 2 |
+
+```bash
+nix run . -- analyze --world examples/worlds/proxy-storage.json --entry 0x0000000000000000000000000000000000000101 --format json --ssa
+nix run . -- analyze --world examples/worlds/reentry.json --entry 0x0000000000000000000000000000000000000101
+```
+
+抽象图还保留不精确 gas 模型允许的失败分支，因此其最终值集合可能大于表里的具体成功结果。[`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 在三个 fork 对照完整具体轨迹与账户效果；[跨合约一课](../docs/09-cross-contract.md) 解释事实、帧和回滚。
+
+以下 `.hex` 示例用于单账户局部指令学习。
 
 `.hex` 文件只含十六进制字节与空白，可以直接作为 CLI 的 `--file` 输入。
 

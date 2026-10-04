@@ -1,6 +1,6 @@
 [package]
 name = "evm-abstract"
-description = "An annotated learning library for EVM abstract interpretation, CFG recovery and stack SSA"
+description = "A learning library for native cross-contract EVM abstract execution and frame-aware SSA"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

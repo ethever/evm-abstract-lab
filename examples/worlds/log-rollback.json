@@ -1,0 +1,20 @@
+{
+  "fork": "osaka",
+  "provenance": "offline:log-rollback:v1",
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000101",
+      "code": "0x60015f5260aa60205fa160205f5f5f5f6102006207a120f15000",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0x1000000"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000200",
+      "code": "0x60025f5260bb60205fa15f5ffd",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0x0"
+    }
+  ]
+}

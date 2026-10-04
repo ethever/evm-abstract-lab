@@ -89,6 +89,6 @@ head:  %i = phi(entry: %zero, head: %next)
 
 ## 栈 SSA 的边界
 
-MSTORE/SSTORE/LOG/CALL 等指令保留为顺序操作，有它们的参数与可见输出，但**没有给 memory/storage 状态分配 SSA token**。不可以据此任意重排或删除副作用。内存 SSA、storage alias 和跨调用副作用是后续课程的主题。
+这里讲解的单账户 stack SSA 保留 MSTORE/SSTORE/LOG/CALL 等顺序操作及其参数与输出。主要世界入口的 `analyze --ssa` 还构建跨合约 SSA，把整机效果、调用与返回转移显式带入 IR；它需要完整跨合约图，不能从几个彼此独立的 stack SSA 拼出调用语义。两种视图都不允许任意重排或删除副作用。世界 IR 的帧与状态流见[跨合约一课](09-cross-contract.md)。
 
 SSA 验证说明这个 IR 的定义与控制边结构成立；它不是整个 EVM 语义的形式证明，也不表示 CFG 精确。下一课研究用状态划分提高精度。

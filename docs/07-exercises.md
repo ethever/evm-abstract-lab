@@ -74,11 +74,11 @@ pc=0 是 PUSH1 0x5b，pc=2 是 STOP，pc=3 才是真正 JUMPDEST，pc=4 是 STOP
 
 ## 8. 用固定 storage 快照提高精度
 
-设计 SLOAD 常量事实的输入格式，再分析 SSTORE 后的读取。先支持固定槽位，随后讨论符号槽位与可能别名。
+使用世界 JSON 提供 SLOAD 的初始常量事实，再分析 SSTORE 后的读取。先用固定 slot，再修改字节码让写入目标来自未知 calldata，观察可能别名导致的弱更新。
 
 <details><summary>提示与验收</summary>
 
-输入应标记链、block hash 与假设。固定地址可以强更新；未知地址写入可能需要弱更新/失效相关摘要。验收必须包含“写入前读到初始值、写入后读到新值、未知别名不继续使用旧常量”的反例。
+在 provenance 中标记事实来源与假设，并明确 storage_unknown。固定 slot 使用强更新；未知 slot 写入需要弱更新。验收包含“写入前读到初始值、写入后读到新值、未知别名不继续只使用旧常量”。再把写入放到 DELEGATECALL 子帧和 REVERT 子帧，分别观察状态账户与回滚。
 
 </details>
 

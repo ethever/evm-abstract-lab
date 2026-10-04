@@ -1,5 +1,5 @@
 {
-  description = "EVM abstract interpretation learning lab: Rust, CFG and stack SSA";
+  description = "Cross-contract EVM abstract analysis learning lab: worlds, calls and SSA";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -51,7 +51,7 @@
             version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
             cargoExtraArgs = "--workspace --locked";
             meta = {
-              description = "Learn EVM abstract interpretation, contextual CFGs and stack SSA";
+              description = "Analyze multi-account EVM worlds, cross-contract graphs and SSA";
               license = pkgs.lib.licenses.mit;
               mainProgram = "evm-abstract";
             };
@@ -114,6 +114,24 @@
                 }
                 ''
                   export XDG_CACHE_HOME="$TMPDIR"
+                  for world in ${./examples/worlds}/*.json; do
+                    case "$world" in
+                      */missing-code.json) continue ;;
+                    esac
+                    evm-abstract analyze --world "$world" --entry 0x0000000000000000000000000000000000000101 --format json |
+                      jq -e '.status == "Converged" and .world.fork == "osaka" and any(.edges[]; .kind == "Call")' > /dev/null
+                    evm-abstract analyze --world "$world" --entry 0x0000000000000000000000000000000000000101 --format json --ssa |
+                      jq -e '.analysis.status == "Converged" and (.ssa | type == "object")' > /dev/null
+                  done
+                  if evm-abstract analyze --world ${./examples/worlds/missing-code.json} --entry 0x0000000000000000000000000000000000000101 --format json > missing.json; then
+                    exit 1
+                  else
+                    test "$?" -eq 2
+                  fi
+                  jq -e '.status == "Incomplete" and any(.frontiers[]; .reason | has("MissingCode"))' missing.json > /dev/null
+                  evm-abstract analyze --world ${./examples/worlds/proxy-storage.json} --entry 0x0000000000000000000000000000000000000101 --format dot > proxies.dot
+                  dot -Tsvg proxies.dot -o proxies.svg
+                  test -s proxies.svg
                   for fixture in ${./examples}/*.hex; do
                     evm-abstract cfg --file "$fixture" --format json | jq -e '.status == "Converged" and .program.fork == "osaka"' > /dev/null
                     evm-abstract ssa --file "$fixture" --format json | jq -e '.ssa.value_count > 0' > /dev/null
@@ -130,7 +148,7 @@
                   dot -Tsvg diamond.dot -o diamond.svg
                   test -s diamond.svg
                   mkdir $out
-                  cp diamond.dot diamond.svg $out/
+                  cp diamond.dot diamond.svg proxies.dot proxies.svg $out/
                 '';
           };
           devShells.default = craneLib.devShell {
