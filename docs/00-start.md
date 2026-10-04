@@ -85,7 +85,7 @@ SSA 中 `MSTORE` 和 `RETURN` 仍然保留。这些操作影响抽象内存与�
 
 `rust-toolchain.toml` 固定 Rust 官方工具链，`flake.lock` 固定开发环境与 Nix 构建工具，`Cargo.lock` 固定 Rust 依赖。它们锁住的是不同层次。Nix `fromRustupToolchainFile` 直接读取 Rust 文件，避免两处版本悄悄分叉。
 
-`nix develop` 提供 rustc、cargo、clippy、rustfmt、rust-analyzer、Graphviz 和 cargo-nextest；`nix build` 产出 `result/bin/evm-abstract`；`nix run . -- ...` 直接运行打包结果；`nix flake check` 执行门禁。
+`nix develop` 提供 rustc、cargo、clippy、rustfmt、rust-analyzer、Graphviz、cargo-nextest 和 lychee；`nix build` 产出 `result/bin/evm-abstract`；`nix run . -- ...` 直接运行打包结果；`nix flake check` 执行门禁。文档链接的[离线与联网检查](../README.md#验证与源码导航)使用同一份 lychee 配置。
 
 ## 本课完成标志
 

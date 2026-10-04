@@ -81,7 +81,7 @@ nix run . -- explain --file examples/osaka-clz.hex --fork cancun
 
 创建时核验并固定 Rust **1.99.0**（2026-10-01 稳定发布）。[`rust-toolchain.toml`](rust-toolchain.toml) 是 Nix 和 rustup 共用的版本来源，锁定 cargo、rustfmt、clippy、rust-src 和 rust-analyzer。它不会跟随浮动的 `stable` 自动变化。
 
-[`flake.lock`](flake.lock) 固定 nixpkgs、rust-overlay、crane 的提交和内容哈希；Nix 2.34.8、Graphviz、cargo-nextest、nixfmt 随 nixpkgs 固定，CI 也明确使用 Nix 2.34.8。直接依赖用精确版本，[`Cargo.lock`](Cargo.lock) 固定全部传递依赖和校验和。升级必须显式修改并重新验证。环境、测试与打包始终使用同一个 Rust 工具链。
+[`flake.lock`](flake.lock) 固定 nixpkgs、rust-overlay、crane 的提交和内容哈希；Nix 2.34.8、Graphviz、cargo-nextest、nixfmt、lychee 随 nixpkgs 固定，CI 也明确使用 Nix 2.34.8。直接依赖用精确版本，[`Cargo.lock`](Cargo.lock) 固定全部传递依赖和校验和。升级必须显式修改并重新验证。环境、测试与打包始终使用同一个 Rust 工具链。
 
 | crate | 负责什么 | 为什么复用 |
 | --- | --- | --- |
@@ -100,7 +100,7 @@ nix run . -- explain --file examples/osaka-clz.hex --fork cancun
 nix flake check --print-build-logs --option max-jobs 1 --option cores 8
 ```
 
-这个门禁运行构建、工作区测试与 doctest、Clippy、Rust 格式、Rustdoc 和打包后二进制的例子/图检查。在开发环境中也可单独运行：
+这个门禁运行构建、工作区测试与 doctest、Clippy、Rust 格式、Rustdoc、离线文档链接检查和打包后二进制的例子/图检查。在开发环境中也可单独运行：
 
 ```bash
 cargo test --workspace --locked
@@ -108,6 +108,20 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 cargo doc --workspace --no-deps --locked
 ```
+
+文档链接使用 [lychee](https://lychee.cli.rs/)；版本由同一份 `flake.lock` 固定，规则见 [`lychee.toml`](lychee.toml)。从仓库根目录运行：
+
+```bash
+nix develop --command lychee --offline --root-dir "$PWD" -- README.md '**/*.md'
+```
+
+离线门禁检查所有 Markdown 的本地文件、引用式链接和锚点，包括隐藏目录中的文档；跳过 `target`、`result*`、`.git`、`.direnv` 中的生成文件。它不访问网络，也不验证 HTTP(S) 外链。需要联网检查外链时显式运行：
+
+```bash
+nix develop --command lychee --offline=false --scheme http --scheme https --include-fragments=none -- README.md '**/*.md'
+```
+
+这条命令只检查 HTTP(S) 状态，不检查远端锚点；外站可用性和限流会影响结果，因此它不属于可复现的 Nix 门禁。失败链接会以非零状态退出，不把超时或 HTTP 错误当作通过。
 
 库位于 [`crates/evm-abstract/src`](crates/evm-abstract/src)，CLI 位于 [`crates/evm-abstract-cli`](crates/evm-abstract-cli)。源码模块顶部解释职责与不变量，算法关键处解释“为什么”。[参考资料](docs/references.md) 指向 EVM 规范、抽象解释原始论文、SSA 教学材料和依赖文档。
 
