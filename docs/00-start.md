@@ -21,7 +21,7 @@ A=`0x...0101` 调用 B=`0x...0200`；B 返回 32 字节的数值 1；A 读取返
 
 EVM 是栈机器。每次执行的局部状态包括当前字节位置 pc、栈、内存和许多环境信息。栈最后一个元素是栈顶。`PUSH1 02` 把数字 2 放在顶上；`ADD` 弹出两个值再放回它们的和。
 
-工具的输入是 legacy **runtime bytecode**。Solidity 的 creation bytecode 通常先构造并返回 runtime code，两者不相同。初学时直接使用 `examples/`；它们不需要 RPC、账户或资金。
+本节单段命令的输入是 legacy **runtime bytecode**。Solidity 的 creation bytecode 通常先构造并返回 runtime code，两者不相同。世界执行可以在 CREATE/CREATE2 新帧中执行 initcode，并在之后调用返回的 runtime，见[第 10 课](10-snapshots-summaries-creation.md)。初学时直接使用 `examples/`；它们不需要 RPC、账户或资金。
 
 `examples/straight-line.hex` 是：
 

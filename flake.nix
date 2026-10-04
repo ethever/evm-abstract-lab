@@ -50,6 +50,10 @@
             pname = "evm-abstract";
             version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
             cargoExtraArgs = "--workspace --locked";
+            # AWS-LC selects its CMake backend for supported fallback/ASM configurations.
+            nativeBuildInputs = [ pkgs.cmake ];
+            # The RPC client initializes platform TLS roots even for HTTP fixtures.
+            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
             meta = {
               description = "Analyze multi-account EVM worlds, cross-contract graphs and SSA";
               license = pkgs.lib.licenses.mit;
@@ -120,6 +124,7 @@
                   FONTCONFIG_FILE = fontConfig;
                 }
                 ''
+                  set -euo pipefail
                   export XDG_CACHE_HOME="$TMPDIR"
                   for world in ${./examples/worlds}/*.json; do
                     case "$world" in
@@ -136,6 +141,30 @@
                     test "$?" -eq 2
                   fi
                   jq -e '.status == "Incomplete" and any(.frontiers[]; .reason | has("MissingCode"))' missing.json > /dev/null
+                  evm-abstract analyze --world ${./examples/worlds/summary-reuse.json} --entry 0x0000000000000000000000000000000000000101 --format json > summary-on.json
+                  evm-abstract analyze --world ${./examples/worlds/summary-reuse.json} --entry 0x0000000000000000000000000000000000000101 --format json --no-summaries > summary-off.json
+                  jq -e '.status == "Converged" and .summary_stats.hits > 0 and .summary_stats.imported_states > 0 and any(.summaries[]; (.reused_at | length) > 0) and .world.identity.kind == "offline" and (.world.fingerprint | test("^0x[0-9a-f]{64}$"))' summary-on.json > /dev/null
+                  jq -e '.status == "Converged" and .summary_stats.hits == 0 and .summaries == []' summary-off.json > /dev/null
+                  jq -S '[.outcomes[] | {kind,data,store}] | unique' summary-on.json > on-relations.json
+                  jq -S '[.outcomes[] | {kind,data,store}] | unique' summary-off.json > off-relations.json
+                  cmp on-relations.json off-relations.json
+                  evm-abstract analyze --world ${./examples/worlds/create-runtime.json} --entry 0x0000000000000000000000000000000000000101 --format json > creation.json
+                  jq -e 'any(.states[]; .key.frames[-1].mode == "InitCode") and any(.states[]; .key.frames[-1].mode == "Runtime" and .key.frames[-1].code_hash == "0x30962a84ef989ca0f724a5b2ec94f9cbf6a731752ce2c0be5333bf96e460c9fd") and any(.outcomes[]; .store.nonces["0x0000000000000000000000000000000000000101"].Constants == ["0x1"] and any(.store.account_observations[]; .address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7" and .existence == "present" and .code_size == 8 and .nonce.Constants == ["0x1"]))' creation.json > /dev/null
+                  evm-abstract analyze --world ${./examples/worlds/created-selfdestruct.json} --entry 0x0000000000000000000000000000000000000101 --format json > destruction.json
+                  jq -e 'any(.states[]; .entry.store.pending_destruction["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"] == true and .entry.store.codes["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"].Runtime.byte_len == 8) and any(.outcomes[]; .kind == "Return" and .store.balances["0x0000000000000000000000000000000000000200"].Constants == ["0x7"] and any(.store.account_observations[]; .address == "0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb" and .existence == "absent" and .code_size == 0 and .nonce.Constants == ["0x0"]))' destruction.json > /dev/null
+                  evm-abstract analyze --world ${./examples/worlds/identity-precompile.json} --entry 0x0000000000000000000000000000000000000101 --format json > native.json
+                  jq -e 'any(.states[]; .key.frames[-1].mode == {"Precompile":"0x0000000000000000000000000000000000000004"}) and any(.outcomes[]; .kind == "Return" and ((.data.bytes["31"].Constants // []) | index("0x2a")) != null)' native.json > /dev/null
+                  evm-abstract analyze --world ${./examples/worlds/summary-reuse.json} --entry 0x0000000000000000000000000000000000000101 > summary.txt
+                  grep -Eq 'hits=[1-9][0-9]*' summary.txt
+                  grep -q 'reused_at=' summary.txt
+                  grep -q 'fingerprint=0x' summary.txt
+                  evm-abstract analyze --world ${./examples/worlds/summary-reuse.json} --entry 0x0000000000000000000000000000000000000101 --format dot > summaries.dot
+                  dot -Tsvg summaries.dot -o summaries.svg
+                  test -s summaries.svg
+                  grep -q 'label="reused"' summaries.dot
+                  evm-abstract analyze --world ${./examples/worlds/create-runtime.json} --entry 0x0000000000000000000000000000000000000101 --format dot > creation.dot
+                  dot -Tsvg creation.dot -o creation.svg
+                  test -s creation.svg
                   evm-abstract analyze --world ${./examples/worlds/proxy-storage.json} --entry 0x0000000000000000000000000000000000000101 --format dot > proxies.dot
                   dot -Tsvg proxies.dot -o proxies.svg
                   test -s proxies.svg
@@ -155,7 +184,7 @@
                   dot -Tsvg diamond.dot -o diamond.svg
                   test -s diamond.svg
                   mkdir $out
-                  cp diamond.dot diamond.svg proxies.dot proxies.svg $out/
+                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt $out/
                 '';
           };
           devShells.default = craneLib.devShell {

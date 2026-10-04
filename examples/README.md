@@ -12,6 +12,10 @@
 | `worlds/static-write.json` | 静态子帧在 SSTORE 处故障 | CALL 成功位 0，B slot 0 保留 4 |
 | `worlds/reentry.json` | 重入读取当前交易写入 | A slot 0=2，slot 1=1 |
 | `worlds/log-rollback.json` | 子帧日志随 REVERT 回滚 | 只保留 A 的事件，B 的事件消失 |
+| `worlds/summary-reuse.json` | 相同只读 callee，输出复制范围不同 | `hits > 0`；开启/关闭后的最终关系一致 |
+| `worlds/create-runtime.json` | nonce=0 的 CREATE 后 CALL 新 runtime | InitCode/Runtime 两个代码 hash；成功路径返回 42，新账户 nonce=1 |
+| `worlds/created-selfdestruct.json` | CREATE2 salt=5 后销毁并再次调用 | caller slot 1=8、slot 2=runtime hash；完整销毁路径最终目标 absent、受益人余额=7 |
+| `worlds/identity-precompile.json` | CALL identity，把返回写到另一内存区 | 成功路径输出 42，图中有原生帧及 Call/Return |
 | `worlds/missing-code.json` | 缺少被调用账户事实 | `Incomplete`、`MissingCode`、退出 2 |
 
 ```bash
@@ -19,7 +23,7 @@ nix run . -- analyze --world examples/worlds/proxy-storage.json --entry 0x000000
 nix run . -- analyze --world examples/worlds/reentry.json --entry 0x0000000000000000000000000000000000000101
 ```
 
-抽象图还保留不精确 gas 模型允许的失败分支，因此其最终值集合可能大于表里的具体成功结果。[`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 在三个 fork 对照完整具体轨迹与账户效果；[跨合约一课](../docs/09-cross-contract.md) 解释事实、帧和回滚。
+抽象图还保留不精确 gas 模型允许的失败分支，因此其最终值集合可能大于表里的具体成功结果。[`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 在三个 fork 对照完整具体轨迹与账户效果；[跨合约一课](../docs/09-cross-contract.md) 解释事实、帧和回滚。[第 10 课](../docs/10-snapshots-summaries-creation.md) 给出摘要开启/关闭、initcode/runtime、延迟删除与原生帧的可检查输出；其新增 fixture 显式声明 nonce、presence 和已确认的 absent 目标。所有账户都是合成离线假设。
 
 以下 `.hex` 示例用于单账户局部指令学习。
 

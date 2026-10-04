@@ -1,6 +1,6 @@
 # evm-abstract-lab
 
-一个用 **Rust + Nix** 学习和实现跨合约 EVM 抽象分析的实验室。主要输入是包含多个账户代码、初始 storage 和余额的离线世界，以及一次明确的入口调用。抽象执行直接维护调用栈、每帧内存、账户状态和返回数据，产出跨合约执行图与 SSA。代码注释和教程以中文为主，按“观察结果 → 跟踪实现 → 理解理论 → 动手改变精度”的顺序展开。
+一个用 **Rust + Nix** 学习和实现跨合约 EVM 抽象分析的实验室。主要输入是固定世界和一次明确的入口调用：世界保存多个账户的代码、storage、余额、nonce 和存在性，可以来自离线 JSON，也可以显式采集某条链某个区块 hash 的 RPC 事实。抽象执行维护调用栈、每帧内存、账户状态和返回数据，产出跨合约执行图与 SSA。代码注释和教程以中文为主，按“观察结果 → 跟踪实现 → 理解理论 → 动手改变精度”的顺序展开。
 
 这里的“执行”是在可能值的摘要上计算。例如，两条路径带来的 `1` 和 `2` 合成 `{1,2}`；无法继续精确表示时升到 `⊤`，表示任意 256 bit 值。循环用工作表计算固定点，动态跳转目标未知时覆盖所有真正的 `JUMPDEST`。
 
@@ -31,9 +31,11 @@ nix run . -- analyze --world examples/worlds/proxy-storage.json --entry 0x000000
 nix develop -c dot -Tsvg /tmp/proxies.dot -o /tmp/proxies.svg
 ```
 
-`analyze` 支持 text/JSON/DOT；`--ssa` 构建并验证完整执行图的 SSA。`--caller`、`--calldata`、`--value` 和 `--static` 指定入口环境；调用深度、累计工作量、状态数、transfer 和每帧内存都有显式预算。缺少代码、未知调用目标、未支持的创建/销毁/预编译或预算耗尽产生 `Incomplete`、保留原因和前沿、退出 `2`。输入错误退出 `1`。分析从不隐式访问 RPC。
+`analyze` 支持 text/JSON/DOT；`--ssa` 构建并验证完整执行图的 SSA。`--caller`、`--calldata`、`--value` 和 `--static` 指定入口环境；调用深度、累计工作量、状态数、transfer 和每帧内存都有显式预算。缺少代码、未知调用目标或创建事实、无法表示的预编译输入以及预算耗尽产生 `Incomplete`、保留原因和前沿、退出 `2`。JSON/RPC 输入错误退出 `1`，不会产出一个假收敛结果。执行器从不隐式访问网络。
 
-世界 JSON 的 `fork`、`provenance` 和 `accounts` 是必填项。账户地址是 20 字节 hex；代码是 runtime hex；storage slot、storage value 和余额是 `0x` 开头的 256 bit 数。缺少账户或代码表示未知，`"code":"0x"` 才表示观察到空代码。未列出的余额和 slot 默认未知；只有显式 `"storage_unknown":false` 才把未列出的 slot 视为零。[跨合约一课](docs/09-cross-contract.md) 展示完整输入和状态流。
+世界 JSON 的 `fork`、`provenance` 和 `accounts` 是必填项。账户地址是 20 字节 hex；代码是 runtime hex；storage slot、storage value、余额和 nonce 是 `0x` 开头的 256 bit 数。缺少账户或代码表示未知，`"code":"0x"` 表示观察到空代码。未列出的余额、nonce、存在性和 slot 默认未知；只有显式 `"storage_unknown":false` 才把未列出的 slot 视为零。旧格式保持兼容，并明确标为未锚定的离线事实；`provenance` 字符串本身不能证明链或区块身份。新增 typed `identity`、`code_hash` 和可验证的 `fingerprint`，见[固定快照、摘要和代码生命周期](docs/10-snapshots-summaries-creation.md)。
+
+四个新增离线实验展示完整路径：`summary-reuse.json` 重用完整调用关系，`create-runtime.json` 在 CREATE 后调用新 runtime，`created-selfdestruct.json` 观察 CREATE2 后的延迟删除，`identity-precompile.json` 原生调用 identity。调用摘要默认启用；`--no-summaries` 可对照最终关系与 SSA，命中时仍保留实际指令及调用/返回图。
 
 单段字节码仍可以用 `disasm`、`cfg`、`ssa` 和 `explain` 的 `--hex` / `--file` 学习；它们是主要世界分析入口的单账户视图。文本栈按 **底到顶** 显示，单账户 SSA 同样拒绝未完成的图。
 
@@ -50,6 +52,7 @@ nix run . -- explain --file examples/osaka-clz.hex --fork cancun
 | --- | --- | --- |
 | [00：环境与第一眼](docs/00-start.md) | 世界、调用帧和返回边是什么？ | `call-return-branch.json`、CLI |
 | [09：跨合约执行](docs/09-cross-contract.md) | 代理共享哪些东西？失败和重入怎样传递状态？ | `world.rs`、`analysis/machine.rs`、离线世界 |
+| [10：快照、摘要与代码生命周期](docs/10-snapshots-summaries-creation.md) | 哪些事实允许复用？部署、销毁和原生调用怎样进入图？ | 固定 hash RPC、完整调用证书、CREATE/CREATE2、EIP-6780 |
 | [01：字节码与基本块](docs/01-bytecode.md) | 为什么 PUSH 内部的 `5b` 不是跳转目标？ | `bytecode.rs` |
 | [02：抽象执行与域](docs/02-domain.md) | 一个集合怎么替代许多具体执行？为什么合并用并集？ | `domain.rs`、`diamond.hex` |
 | [03：CFG 与固定点](docs/03-cfg.md) | 跳转边未知时怎么继续？循环为什么会停？ | `analysis/`、`loop.hex`、`dynamic-jump.hex` |
@@ -66,6 +69,10 @@ nix run . -- explain --file examples/osaka-clz.hex --fork cancun
 - 多账户固定世界、显式入口环境、区分缺少账户与已知空代码；一个工作表分析整段嵌套调用。
 - CALL / CALLCODE / DELEGATECALL / STATICCALL 的执行帧、代码地址与状态账户分离、调用参数与返回数据传播、成功/REVERT/失败返回边。
 - 每帧抽象内存、calldata、returndata；按账户保存 persistent/transient storage 与余额，写入更新、嵌套回滚与重入观察当前状态。
+- 固定 fork/链/区块 hash 与账户代码 hash，显式且有界的 RPC 输入；transport、JSON-RPC、缺失/冲突事实都带有类型和快照来源。
+- 完整调用关系的精确前置条件缓存，保留返回/REVERT/失败与 Store 效果、证书图和复用位置；查找、认证和图导入共用累计工作预算。
+- 有限已知 CREATE/CREATE2 的 initcode 帧、nonce/碰撞检查、runtime 部署与后续调用；EIP-6780 的余额转移、同交易新账户延迟删除及回滚。
+- 按 fork 选择 `revm-precompile` 的原生预编译，传播可表示的具体输入/输出，并在执行前预留工作；未知输入或无法承担的工作保留前沿。
 - 跨合约图和 SSA；调用边、返回边及状态效果进入 IR，完整结果经过验证器核对。
 - Cancun/Prague/Osaka legacy 解码、按 fork 检查指令启用、PUSH0/PUSH1..32、截断 PUSH 右侧补零、真实 JUMPDEST 索引和基本块划分。
 - 256 bit 有限常量集合域、保守 Top、纯算术/位运算、逐槽 join、循环工作表。
@@ -75,7 +82,7 @@ nix run . -- explain --file examples/osaka-clz.hex --fork cancun
 - Osaka `CLZ` 的常量集合传播与 SSA；识别 EIP-7702 委托标记并报告目标，避免生成虚假的终止 CFG。
 - 单账户字节码与多账户离线世界、三个 fork 的 revm 具体执行对照、性质测试、真实 CLI 测试和 Nix/CI 检查。
 
-模型针对世界内账户的 **legacy runtime bytecode**。gas 不精确计量，未知环境和 hash 保守抽象，CREATE/CREATE2、SELFDESTRUCT、预编译和无法取得的代码保留未完成前沿；没有完整路径约束或跨交易不变量证明。`Converged` 表示本抽象模型的工作表完成，不能据此判断合约安全。[详细边界](docs/06-boundaries.md) 列出信息处理方式和证据范围。
+模型针对世界内账户的 **legacy runtime bytecode**，以及 CREATE/CREATE2 指令提供的可表示 initcode。gas 不精确计量，未知环境和一般 hash 保守抽象；未知创建事实、缺失代码、未知预编译输入和资源耗尽保留未完成前沿；没有完整路径约束或跨交易不变量证明。`Converged` 表示本抽象模型的工作表完成，不能据此判断合约安全。RPC 信任明确选择的提供者，校验固定身份及相互一致的观察，不验证 Merkle proof。[详细边界](docs/06-boundaries.md) 列出证据范围。
 
 ## 工具链与依赖
 
@@ -86,6 +93,8 @@ nix run . -- explain --file examples/osaka-clz.hex --fork cancun
 | crate | 负责什么 | 为什么复用 |
 | --- | --- | --- |
 | `revm-bytecode` | opcode 名称、立即数和栈 I/O 元数据 | 避免重复维护 opcode 表 |
+| `revm-precompile` | 所选 fork 的原生预编译 | 复用密码学实现，分析层负责输入资格、返回流和累计工作 |
+| `reqwest` | 显式固定 hash RPC 的有界 HTTP(S) 输入 | 复用 TLS、超时和传输；执行器保持纯输入分析 |
 | `alloy-primitives` / `ruint` | U256、模运算、快速幂 | 避免自己写大整数 |
 | `petgraph` | 图、DOT 导出、dominators | 避免重复写图格式和支配算法 |
 | `serde` / `serde_json` | 可检查的结构化输出 | 不手写 JSON |

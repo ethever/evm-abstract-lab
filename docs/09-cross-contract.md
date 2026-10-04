@@ -24,9 +24,9 @@
 
 `storage_unknown:false` 声明该账户初始 storage 完整，未列出的 slot 为零。省略这个字段时，未列出的 slot 为未知。省略 `balance` 时余额未知；省略 `code` 时代码未知。`code:"0x"` 表示代码确定为空。省略整个账户也表示未知；不能把“没有提供账户”理解为空账户。
 
-`provenance` 是调用者提供的事实来源标识，输出原样保存。真实快照可以包含链、区块 hash 或采集批次，但 CLI 不校验这些标识，也不会补查节点。示例使用完整合成状态，没有 RPC、交易发送或账户资金依赖。
+`provenance` 是调用者提供的事实来源描述，输出原样保存；它本身不能建立链或区块身份。旧输入被标为 offline identity。新增 `identity:{kind:"chain",chain_id,block_hash}` 绑定固定快照；提供代码时必须同时校验 `code_hash`，可用 fingerprint 校验整组事实。`--rpc` 是显式的另一种输入来源；分析阶段不补查节点。详见[第 10 课](10-snapshots-summaries-creation.md)。这里的例子使用完整合成 storage，没有 RPC、交易发送或资金依赖；省略 nonce/存在性的旧例子仍保留这些未知事实。
 
-示例入口选择 `0x101`。Osaka 的 [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) 在 `0x100` 放置 P256VERIFY 预编译；给这个地址装入普通 fixture 代码，不代表具体执行器会执行这些代码。预编译属于本分析器显式保留的未完成边界。
+示例入口选择 `0x101`。Osaka 的 [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) 在 `0x100` 放置 P256VERIFY 预编译；给这个地址装入普通 fixture 代码，不代表具体执行器会执行这些代码。分析器按 fork 选择原生预编译，具体可表示输入得到真实返回/失败，未知输入或无法预留的资源保留前沿。
 
 ```bash
 nix run . -- analyze --world examples/worlds/call-return-branch.json --entry 0x0000000000000000000000000000000000000101 --format json
@@ -80,9 +80,9 @@ DELEGATECALL 继承 caller 和 call value，使用 caller 所在账户的 storag
 
 ## 工作表保存整台机器
 
-[`world.rs`](../crates/evm-abstract/src/world.rs) 保存初始事实；[`Store`](../crates/evm-abstract/src/world/store.rs) 保存执行中的 persistent/transient storage、余额和可能日志；[`machine.rs`](../crates/evm-abstract/src/analysis/machine.rs) 保存有序调用帧和图。每帧有独立 stack、memory、calldata、returndata、call value、继续位置和调用前的 Store。CALL 保存 checkpoint，成功返回提交当前 Store，REVERT 或故障恢复 checkpoint，再续接 caller。日志按来源指令摘要，保留 topics 与数据，顺序和次数不受该域约束。
+[`world.rs`](../crates/evm-abstract/src/world.rs) 保存初始事实；[`Store`](../crates/evm-abstract/src/world/store.rs) 保存执行中的 persistent/transient storage、余额、nonce、代码 overlay、生命周期和可能日志；[`machine.rs`](../crates/evm-abstract/src/analysis/machine.rs) 保存有序调用帧和图。每帧有独立 stack、memory、calldata、returndata、call value、继续位置和调用前的 Store。CALL 保存 checkpoint，成功返回提交当前 Store，REVERT 或故障恢复 checkpoint，再续接 caller。日志按来源指令摘要，保留 topics 与数据，顺序和次数不受该域约束。
 
-状态键包含全部帧的代码账户、状态账户、caller、static 标志、块、栈高和帧内跳转历史。相同键的 payload 才 join；这让共享实现、不同代理和不同暂停 caller 保持可区分。未知 slot 的写入使用弱更新，不能继续保留可能被覆盖的旧常量。
+状态键包含全部帧的代码账户/hash/执行模式、状态账户、caller、static 标志、块、栈高和帧内跳转历史，以及 Store 的代码/生命周期身份。相同键的 payload 才 join；这让共享实现、不同代理和不同暂停 caller 保持可区分。未知 slot 的写入使用弱更新，不能继续保留可能被覆盖的旧常量。
 
 `--ssa` 让指令的栈值和整机效果进入同一份跨合约 IR；调用/返回转移显式传递帧与状态效果。验证器先要求分析完整，再核对状态、指令和边。单段 `cfg` / `ssa` 是学习这个机制的单账户入口；它们不替代完整世界中的调用语义。
 
@@ -93,6 +93,6 @@ nix run . -- analyze --world examples/worlds/missing-code.json --entry 0x0000000
 nix run . -- analyze --world examples/worlds/reentry.json --entry 0x0000000000000000000000000000000000000101 --max-call-depth 2
 ```
 
-这两条命令退出 `2`，前者保留缺少 B 代码的前沿，后者保留重入深度前沿。`--max-work` 限制累计工作，`--max-memory-bytes` 限制每帧追踪内存；状态和 transfer 预算也覆盖所有账户。无法分析的 CREATE/CREATE2、SELFDESTRUCT、预编译与未知调用目标同样产生有类型的前沿。不能把这些情况当作一次完成的无副作用调用。
+这两条命令退出 `2`，前者保留缺少 B 代码的前沿，后者保留重入深度前沿。`--max-work` 限制累计工作，`--max-memory-bytes` 限制每帧追踪内存；状态和 transfer 预算也覆盖所有账户。创建缺少 nonce/碰撞/initcode 等必要事实、未知预编译输入与未知调用目标同样产生有类型的前沿；摘要查找、认证或图导入耗尽累计预算会留下 `SummaryWork`。不能把这些情况当作一次完成的无副作用调用。
 
 [`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 用独立 revm 对照这些离线世界在三个 fork 下的指令与帧身份、block 入栈、返回字节、最终 storage、合约余额和日志，逐个验证完整图的 SSA。oracle 必须实际访问入口字节码及子帧；预编译地址被当作普通账户时不能靠空轨迹通过检查。另有 CLI 与安装后二进制检查。有限样本能够发现反例；[模型边界](06-boundaries.md) 说明为什么模型内收敛仍不能直接证明合约安全。

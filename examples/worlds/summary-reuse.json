@@ -1,0 +1,30 @@
+{
+  "fork": "osaka",
+  "provenance": "synthetic:lesson10:summary-reuse",
+  "identity": {
+    "kind": "offline",
+    "label": "summary-reuse:v1"
+  },
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000101",
+      "code": "0x60005f5f5f60006102006207a120f15060205f5f5f60006102006207a120f15060205ff3",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0xf4240",
+      "nonce": "0x0",
+      "existence": "present"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000200",
+      "code": "0x5f545f5260205ff3",
+      "storage": {
+        "0x0": "0x7"
+      },
+      "storage_unknown": false,
+      "balance": "0xf4240",
+      "nonce": "0x0",
+      "existence": "present"
+    }
+  ]
+}

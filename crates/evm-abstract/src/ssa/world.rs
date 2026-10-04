@@ -80,7 +80,7 @@ pub struct Transition {
     pub effect_input: EffectId,
     /// Bundle after call entry, continuation commit or rollback.
     pub effect_result: EffectId,
-    /// Deferred CALL boolean, defined only when a caller resumes.
+    /// Deferred CALL boolean or CREATE address, defined when a caller resumes.
     pub result: Option<ValueId>,
 }
 
@@ -124,7 +124,12 @@ fn invariant(message: impl Into<String>) -> SsaError {
 fn is_call(op: u8) -> bool {
     matches!(
         op,
-        opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL
+        opcode::CALL
+            | opcode::CALLCODE
+            | opcode::DELEGATECALL
+            | opcode::STATICCALL
+            | opcode::CREATE
+            | opcode::CREATE2
     )
 }
 
@@ -162,9 +167,8 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
         let mut exit_effect = effect.result;
         let mut effects = Vec::new();
         let mut instructions = Vec::new();
-        let original = analysis
-            .world()
-            .runtime(state.active().code_address)
+        let original = state
+            .program()
             .and_then(|program| program.blocks().get(state.active().block));
         let stack = stacks
             .last_mut()
@@ -198,7 +202,7 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
                     stack.swap(top, other);
                 } else {
                     item.operands = stack.drain(stack.len() - inputs..).rev().collect();
-                    // The boolean belongs to a continuation transition, not the
+                    // The result belongs to a continuation transition, not the
                     // suspended caller or the callee's empty entry stack.
                     for _ in 0..if is_call(op) { 0 } else { outputs } {
                         item.results.push(next);

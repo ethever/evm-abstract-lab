@@ -2,13 +2,19 @@
 
 mod world;
 
+#[cfg(test)]
+mod tests;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use evm_abstract::{
     Fork,
     analysis::{self, Config, ExecutionConfig, Status},
     bytecode::Program,
     render, ssa,
-    world::{ByteArray, Entry},
+    world::{
+        ByteArray, Entry,
+        rpc::{self, AccountRequest, RpcInput},
+    },
 };
 use std::{
     error::Error,
@@ -33,7 +39,7 @@ enum Command {
     /// Analyze an offline multi-account world, including calls, returns and state effects.
     Analyze {
         #[command(flatten)]
-        args: WorldArgs,
+        args: Box<WorldArgs>,
         #[arg(long, value_enum, default_value = "text")]
         format: CfgFormat,
         /// Build and verify SSA for the complete cross-contract execution graph.
@@ -71,8 +77,29 @@ enum Command {
 #[derive(Args)]
 struct WorldArgs {
     /// Offline JSON world snapshot; analysis never fetches missing facts from a node.
+    #[arg(long, required_unless_present = "rpc", conflicts_with = "rpc")]
+    world: Option<PathBuf>,
+    /// Explicit HTTP(S) RPC input; all state is pinned to --block-hash.
+    #[arg(long, requires_all = ["chain_id", "block_hash"], conflicts_with = "world")]
+    rpc: Option<String>,
+    /// Expected EIP-155 chain identifier, as a 0x-prefixed word.
+    #[arg(long, requires = "rpc")]
+    chain_id: Option<String>,
+    /// Exact 32-byte block hash; moving tags are never accepted.
+    #[arg(long, requires = "rpc")]
+    block_hash: Option<String>,
+    /// Additional account to fetch before analysis (repeatable); entry is automatic.
+    #[arg(long, requires = "rpc")]
+    account: Vec<String>,
+    /// Explicit storage observation ADDRESS:SLOT (repeatable, 0x-prefixed words).
+    #[arg(long, requires = "rpc", value_parser = parse_slot)]
+    slot: Vec<StorageSlot>,
+    /// RPC execution rules, selected explicitly or defaulting to Osaka.
+    #[arg(long, requires = "rpc")]
+    fork: Option<Fork>,
+    /// Disable completed call-summary reuse for oracle comparisons.
     #[arg(long)]
-    world: PathBuf,
+    no_summaries: bool,
     /// Entry account address (20 bytes of hex).
     #[arg(long)]
     entry: String,
@@ -109,6 +136,22 @@ struct WorldArgs {
     /// Maximum block transfers, including revisits.
     #[arg(long, default_value_t = 100_000)]
     max_transfers: usize,
+}
+
+#[derive(Clone)]
+struct StorageSlot {
+    address: alloy_primitives::Address,
+    slot: alloy_primitives::U256,
+}
+
+fn parse_slot(input: &str) -> Result<StorageSlot, String> {
+    let (account, slot) = input
+        .split_once(':')
+        .ok_or_else(|| "expected ADDRESS:SLOT".to_owned())?;
+    Ok(StorageSlot {
+        address: world::address(account, "storage account").map_err(|error| error.to_string())?,
+        slot: world::word(slot, "storage slot").map_err(|error| error.to_string())?,
+    })
 }
 
 #[derive(Args)]
@@ -180,9 +223,44 @@ impl AnalysisArgs {
 
 impl WorldArgs {
     fn analyze(self) -> Result<analysis::WorldAnalysis, Box<dyn Error>> {
-        let world = world::load(&self.world)?;
+        let entry_address = world::address(&self.entry, "entry")?;
+        let world = match (self.world, self.rpc) {
+            (Some(path), None) => world::load(&path)?,
+            (None, Some(endpoint)) => {
+                let mut input = RpcInput::new(
+                    endpoint,
+                    self.fork.unwrap_or_default(),
+                    world::word(
+                        self.chain_id.as_deref().expect("clap requires chain id"),
+                        "chain id",
+                    )?,
+                    world::hash(
+                        self.block_hash
+                            .as_deref()
+                            .expect("clap requires block hash"),
+                        "block",
+                    )?,
+                );
+                let mut accounts = std::collections::BTreeMap::new();
+                accounts.insert(entry_address, std::collections::BTreeSet::new());
+                for account in self.account {
+                    accounts
+                        .entry(world::address(&account, "RPC account")?)
+                        .or_default();
+                }
+                for slot in self.slot {
+                    accounts.entry(slot.address).or_default().insert(slot.slot);
+                }
+                input.accounts = accounts
+                    .into_iter()
+                    .map(|(address, slots)| AccountRequest { address, slots })
+                    .collect();
+                rpc::load(&input)?
+            }
+            _ => unreachable!("clap requires exactly one world input"),
+        };
         let entry = Entry {
-            address: world::address(&self.entry, "entry")?,
+            address: entry_address,
             caller: world::address(&self.caller, "caller")?,
             value: evm_abstract::domain::Value::constant(world::word(&self.value, "value")?),
             calldata: ByteArray::exact(&world::calldata(&self.calldata)?),
@@ -199,6 +277,7 @@ impl WorldArgs {
             max_call_depth: self.max_call_depth,
             max_memory_bytes: self.max_memory_bytes,
             symbolic_entry_environment: false,
+            use_summaries: !self.no_summaries,
         };
         Ok(analysis::analyze_world(world, entry, config)?)
     }
@@ -229,9 +308,9 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
                     }
                     CfgFormat::Json => match ir {
                         Some(ir) => serde_json::to_string_pretty(
-                            &serde_json::json!({"analysis": analysis, "ssa": ir}),
+                            &serde_json::json!({"analysis": render::world::json(&analysis)?, "ssa": ir}),
                         )?,
-                        None => serde_json::to_string_pretty(&analysis)?,
+                        None => serde_json::to_string_pretty(&render::world::json(&analysis)?)?,
                     },
                     CfgFormat::Dot => render::world::dot(&analysis),
                 },

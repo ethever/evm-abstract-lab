@@ -5,7 +5,7 @@ use crate::{
     analysis::ExecutionConfig,
     bytecode::Program,
     domain::{Domain, Value},
-    world::{Code, World},
+    world::{Code, Store},
 };
 use revm_bytecode::opcode;
 
@@ -77,7 +77,6 @@ pub(super) fn operation_work(
     program: &Program,
     domain: Domain,
     config: &ExecutionConfig,
-    world: &World,
 ) -> usize {
     let frame = result.payload.active();
     let array_size = frame
@@ -117,8 +116,13 @@ pub(super) fn operation_work(
             array_size,
             domain,
         )
-        .saturating_add(external_code_work(world, &args[0], domain, true)),
-        opcode::EXTCODEHASH => external_code_work(world, &args[0], domain, false),
+        .saturating_add(external_code_work(
+            &result.payload.store,
+            &args[0],
+            domain,
+            true,
+        )),
+        opcode::EXTCODEHASH => external_code_work(&result.payload.store, &args[0], domain, false),
         opcode::EXTCODESIZE | opcode::BALANCE => args[0]
             .constants()
             .map_or(1, |values| values.len())
@@ -139,12 +143,12 @@ pub(super) fn operation_work(
     }
 }
 
-fn external_code_work(world: &World, targets: &Value, domain: Domain, copied: bool) -> usize {
+fn external_code_work(store: &Store, targets: &Value, domain: Domain, copied: bool) -> usize {
     let Some(targets) = targets.constants() else {
         return 1;
     };
     let source_bytes = targets.iter().fold(0usize, |cost, target| {
-        let size = match world.account(address(*target)).map(|account| &account.code) {
+        let size = match store.code(address(*target)) {
             Some(Code::Runtime(program)) => program.byte_len(),
             Some(Code::Delegation(_)) => 23,
             _ => 0,

@@ -3,10 +3,11 @@
 
 use super::{Config, ConfigError, Diagnostic, EdgeKind, Limit, Status};
 use crate::{
+    bytecode::Program,
     domain::{Domain, Value},
     world::{ByteArray, Entry, Store, World},
 };
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use serde::Serialize;
 
 /// One shared budget covers the root and every callee.
@@ -22,6 +23,8 @@ pub struct ExecutionConfig {
     pub max_memory_bytes: usize,
     /// Bytecode-only compatibility analysis has no known transaction addresses.
     pub symbolic_entry_environment: bool,
+    /// Reuse only complete input-qualified callee graph certificates.
+    pub use_summaries: bool,
 }
 
 impl Default for ExecutionConfig {
@@ -32,6 +35,7 @@ impl Default for ExecutionConfig {
             max_call_depth: 32,
             max_memory_bytes: 65_536,
             symbolic_entry_environment: false,
+            use_summaries: true,
         }
     }
 }
@@ -51,6 +55,10 @@ impl ExecutionConfig {
 pub struct FrameKey {
     /// Account supplying executed runtime bytecode after delegation resolution.
     pub code_address: Address,
+    /// Hash of captured executable code, including creation initcode.
+    pub code_hash: B256,
+    /// Runtime, initcode, empty or native execution have distinct identities.
+    pub mode: FrameCode,
     /// ADDRESS value and persistent/transient storage owner.
     pub address: Address,
     /// CALLER value for this frame.
@@ -70,6 +78,8 @@ pub struct FrameKey {
 pub struct MachineKey {
     /// Oldest caller first, active frame last.
     pub frames: Vec<FrameKey>,
+    /// Code and account lifecycle variants remain distinct while numeric state joins.
+    pub code_identity: B256,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -81,6 +91,8 @@ pub struct Continuation {
     pub output_offset: Value,
     /// Requested output length; bytes beyond actual returndata stay unchanged.
     pub output_size: Value,
+    /// CREATE/CREATE2 deploy at this address and resume with an address result.
+    pub creation: Option<Address>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -90,6 +102,9 @@ pub struct Frame {
     pub key: FrameKey,
     /// Resolved execution mode, without following another delegation pointer.
     pub code: FrameCode,
+    /// Captured instruction stream. Active frames keep their original code
+    /// while future calls resolve the current transaction code overlay.
+    pub program: Option<Program>,
     /// Abstract stack in bottom-to-top order.
     pub stack: Vec<Value>,
     /// This frame's private memory.
@@ -107,11 +122,15 @@ pub struct Frame {
     pub continuation: Option<Continuation>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 /// Executable interpretation after one account-code resolution.
 pub enum FrameCode {
     /// Ordinary legacy runtime bytecode from the resolved code account.
     Runtime,
+    /// Initcode executing in a newly created account's frame.
+    InitCode,
+    /// Native execution selected by the world's fork, independently of code facts.
+    Precompile(Address),
     /// Explicit empty code, including a delegated precompile target.
     Empty,
     /// A second EIP-7702 marker executes its invalid EF opcode.
@@ -136,6 +155,7 @@ impl MachinePayload {
     /// Compute the structural key after payload stack heights have been normalized.
     pub fn key(&self) -> MachineKey {
         MachineKey {
+            code_identity: self.store.code_identity(),
             frames: self
                 .frames
                 .iter()
@@ -167,6 +187,14 @@ impl MachinePayload {
                     cost.saturating_add(value.constants().map_or(1, |values| values.len()))
                 });
                 cost.saturating_add(slots)
+                    .saturating_add(frame.program.as_ref().map_or(0, |p| {
+                        p.byte_len().saturating_add(
+                            p.blocks()
+                                .iter()
+                                .map(|b| b.instructions.len())
+                                .sum::<usize>(),
+                        )
+                    }))
                     .saturating_add(frame.memory.work_size())
                     .saturating_add(frame.calldata.work_size())
                     .saturating_add(frame.returndata.work_size())
@@ -231,6 +259,10 @@ impl MachineState {
             .last()
             .expect("an analyzed state has a frame")
     }
+    /// Captured executable bytecode for this state's active frame.
+    pub fn program(&self) -> Option<&Program> {
+        self.entry.active().program.as_ref()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -267,6 +299,8 @@ pub enum FrontierReason {
     Budget(Limit),
     /// The shared work budget cannot cover the next operation.
     Work,
+    /// A certificate lookup, clone or graph import exhausted the shared ledger.
+    SummaryWork,
     /// Another frame would exceed the external-call depth budget.
     CallDepth,
     /// A modeled byte range exceeds the cap or has unbounded size.
@@ -277,6 +311,10 @@ pub enum FrontierReason {
     MissingCode(Address),
     /// Direct native precompile execution is outside the bytecode model.
     Precompile(Address),
+    /// Native precompile input cannot be represented or its work bound is unavailable.
+    PrecompileInput(Address),
+    /// Creation requires an unobserved or unrepresentable fact.
+    Creation(super::transfer::create::CreationBoundary),
     /// Account creation or another explicitly unsupported effect.
     UnsupportedOpcode(u8),
 }
@@ -332,9 +370,19 @@ pub struct WorldAnalysis {
     pub(crate) status: Status,
     pub(crate) transfers: usize,
     pub(crate) work: usize,
+    pub(crate) summary_stats: super::summary::SummaryStats,
+    pub(crate) summaries: Vec<super::summary::SummaryRecord>,
 }
 
 impl WorldAnalysis {
+    /// Qualified summary hits, misses, publications and import work.
+    pub fn summary_stats(&self) -> &super::summary::SummaryStats {
+        &self.summary_stats
+    }
+    /// Complete callee certificates and observed reuse sites.
+    pub fn summaries(&self) -> &[super::summary::SummaryRecord] {
+        &self.summaries
+    }
     /// Fixed input world, including fork and snapshot provenance.
     pub fn world(&self) -> &World {
         &self.world

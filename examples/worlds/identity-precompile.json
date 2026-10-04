@@ -1,0 +1,19 @@
+{
+  "fork": "osaka",
+  "provenance": "synthetic:lesson10:identity-precompile",
+  "identity": {
+    "kind": "offline",
+    "label": "identity-precompile:v1"
+  },
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000101",
+      "code": "0x602a5f526020602060205f5f60045af15060206020f3",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0x64",
+      "nonce": "0x0",
+      "existence": "present"
+    }
+  ]
+}

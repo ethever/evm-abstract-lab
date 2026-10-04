@@ -130,7 +130,7 @@ pub(super) fn analyze(program: Program, config: Config) -> Result<Analysis, Conf
             );
             let limit = match f.reason {
                 FrontierReason::Budget(limit) => limit,
-                FrontierReason::Work => Limit::Work,
+                FrontierReason::Work | FrontierReason::SummaryWork => Limit::Work,
                 FrontierReason::CallDepth => Limit::CallDepth,
                 FrontierReason::Memory => Limit::Memory,
                 _ => Limit::Model,

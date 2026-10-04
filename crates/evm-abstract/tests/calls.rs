@@ -145,6 +145,29 @@ fn calldata_is_copied_from_callers_memory_and_returned_bytes_feed_parent() {
 }
 
 #[test]
+fn another_call_clears_the_suspended_callers_previous_return_buffer() {
+    let caller = format!(
+        "{}50{}5000",
+        call(0xf1, 0x200, 0, 0, 32),
+        call(0xf1, 0x300, 0, 0, 0)
+    );
+    let graph = run(&[(0x101, &caller), (0x200, "602a5f5260205ff3"), (0x300, "00")]);
+    assert_eq!(graph.status(), Status::Converged);
+    let children: Vec<_> = graph
+        .states()
+        .iter()
+        .filter(|s| s.key.frames.len() == 2 && s.active().code_address == addr(0x300))
+        .collect();
+    assert!(!children.is_empty());
+    for child in children {
+        assert_eq!(
+            *child.entry.frames[0].returndata.len(),
+            Value::constant(U256::ZERO)
+        );
+    }
+}
+
+#[test]
 fn output_copy_preserves_uncopied_suffix_and_full_returndata_size() {
     let before = "aa".repeat(32);
     let caller = format!("7f{before}5f52{}503d5f5100", call(0xf1, 0x200, 0, 0, 32));
@@ -310,27 +333,28 @@ fn unknown_target_keeps_known_candidates_and_explicit_frontier() {
 }
 
 #[test]
-fn missing_code_and_precompile_are_model_frontiers_not_empty_successes() {
-    for target in [0x300, 1] {
-        let caller = format!("{}00", call(0xf1, target, 0, 0, 0));
-        let analysis = run(&[(0x101, &caller)]);
-        assert_eq!(analysis.status(), Status::Incomplete);
-        assert!(
-            !analysis
-                .edges()
-                .iter()
-                .any(|e| e.kind == MachineEdgeKind::Call)
-        );
-        assert!(analysis.frontiers().iter().any(|f| matches!(
-            f.reason,
-            FrontierReason::MissingCode(_) | FrontierReason::Precompile(_)
-        )));
-    }
+fn missing_code_is_a_model_frontier_not_an_empty_success() {
+    let target = 0x300;
+    let caller = format!("{}00", call(0xf1, target, 0, 0, 0));
+    let analysis = run(&[(0x101, &caller)]);
+    assert_eq!(analysis.status(), Status::Incomplete);
+    assert!(
+        !analysis
+            .edges()
+            .iter()
+            .any(|e| e.kind == MachineEdgeKind::Call)
+    );
+    assert!(
+        analysis
+            .frontiers()
+            .iter()
+            .any(|f| matches!(f.reason, FrontierReason::MissingCode(_)))
+    );
 }
 
 #[test]
 fn delegation_retains_authority_storage_and_resolves_only_once() {
-    let mut world = world(&[(0x101, "60075f553000"), (0x200, "00")]);
+    let mut world = world(&[(0x101, "60075f553000")]);
     world
         .insert(
             addr(0x200),
@@ -351,7 +375,8 @@ fn delegation_retains_authority_storage_and_resolves_only_once() {
                 .read(addr(0x200), &Value::constant(U256::ZERO), Domain::default())
                 .contains(U256::from(7))
     }));
-    world
+    let mut nested = World::new(Fork::Osaka, "nested delegation");
+    nested
         .insert(
             addr(0x101),
             Account {
@@ -360,7 +385,16 @@ fn delegation_retains_authority_storage_and_resolves_only_once() {
             },
         )
         .unwrap();
-    let analysis = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    nested
+        .insert(
+            addr(0x200),
+            Account {
+                code: Code::Delegation(addr(0x101)),
+                ..Account::empty()
+            },
+        )
+        .unwrap();
+    let analysis = analyze_world(nested, entry, ExecutionConfig::default()).unwrap();
     assert_eq!(analysis.status(), Status::Converged);
     assert!(
         !analysis
@@ -371,8 +405,8 @@ fn delegation_retains_authority_storage_and_resolves_only_once() {
 }
 
 #[test]
-fn delegated_precompile_is_empty_but_direct_precompile_is_incomplete() {
-    let mut world = world(&[(0x101, "00")]);
+fn delegated_precompile_is_empty_while_direct_calls_use_native_execution() {
+    let mut world = World::new(Fork::Osaka, "delegated native address");
     world
         .insert(
             addr(0x101),

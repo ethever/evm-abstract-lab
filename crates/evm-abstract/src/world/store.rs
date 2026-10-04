@@ -1,8 +1,9 @@
-//! Sparse transaction storage with account-specific defaults and rollback.
+//! Transaction-local storage, balances, code and account lifecycle with rollback.
 
-use super::{ByteArray, World};
+use super::{ByteArray, Code, Existence, World};
+use crate::bytecode::Program;
 use crate::domain::{Domain, Value};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use serde::{Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
@@ -178,6 +179,11 @@ impl Plane {
         self.defaults.insert(address, Value::top());
     }
 
+    fn reset_account(&mut self, address: Address) {
+        self.slots.retain(|(owner, _), _| *owner != address);
+        self.defaults.insert(address, Value::constant(U256::ZERO));
+    }
+
     fn havoc_all(&mut self) {
         self.slots.clear();
         self.defaults.clear();
@@ -218,18 +224,24 @@ impl Plane {
 ///
 /// Storage ownership is an explicit address, so DELEGATECALL uses its caller's
 /// slots. Transient storage begins at zero regardless of snapshot completeness.
+/// Creation and deferred deletion change this store; the input world stays fixed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Store {
     persistent: Plane,
     transient: Plane,
     balances: BTreeMap<Address, Value>,
     balance_default: Value,
+    codes: BTreeMap<Address, Code>,
+    nonces: BTreeMap<Address, Value>,
+    existence: BTreeMap<Address, Existence>,
+    created: BTreeMap<Address, Option<bool>>,
+    pending_destruction: BTreeMap<Address, Option<bool>>,
     #[serde(serialize_with = "serialize_logs")]
     possible_logs: BTreeMap<LogKey, AbstractLog>,
     logs_unknown: bool,
 }
 
-/// An opaque savepoint covering persistent, transient, and balance changes.
+/// An opaque savepoint covering every transaction-local observation and effect.
 #[derive(Clone, Debug)]
 pub struct Snapshot(Store);
 
@@ -238,6 +250,9 @@ impl Store {
     pub fn new(world: &World) -> Self {
         let mut persistent = Plane::new(Value::top());
         let mut balances = BTreeMap::new();
+        let mut codes = BTreeMap::new();
+        let mut nonces = BTreeMap::new();
+        let mut existence = BTreeMap::new();
         for (address, account) in world.accounts() {
             persistent.defaults.insert(
                 *address,
@@ -254,12 +269,20 @@ impl Store {
                     .map(|(slot, value)| ((*address, *slot), value.clone())),
             );
             balances.insert(*address, account.balance.clone());
+            codes.insert(*address, account.code.clone());
+            nonces.insert(*address, account.nonce.clone());
+            existence.insert(*address, account.existence);
         }
         Self {
             persistent,
             transient: Plane::new(Value::constant(U256::ZERO)),
             balances,
             balance_default: Value::top(),
+            codes,
+            nonces,
+            existence,
+            created: BTreeMap::new(),
+            pending_destruction: BTreeMap::new(),
             possible_logs: BTreeMap::new(),
             logs_unknown: false,
         }
@@ -301,14 +324,221 @@ impl Store {
 
     /// Replace an account balance after a modeled transfer.
     pub fn write_balance(&mut self, address: Address, value: Value) {
+        // A positive transfer establishes account presence. A joined balance
+        // containing zero cannot discard the possibility of an absent account.
+        if value.may_be_nonzero() {
+            if !value.may_be_zero() {
+                self.mark_present(address);
+            } else if self.existence(address) == Existence::Absent {
+                self.existence.insert(address, Existence::Unknown);
+            }
+        }
         self.balances.insert(address, value);
     }
 
-    /// Forget all possible effects at a storage owner, including its balance.
+    /// Current observed code, including runtime deployed earlier in this transaction.
+    /// Omitted accounts and joins of different code observations remain unknown.
+    pub fn code(&self, address: Address) -> Option<&Code> {
+        self.codes.get(&address)
+    }
+
+    /// Structural identity for executable account versions and their lifecycle.
+    /// Values such as balances and slots can join within this identity. Different
+    /// code/deletion histories stay separate so finite creation does not become
+    /// unknown code merely by meeting an immediate failure path.
+    pub fn code_identity(&self) -> B256 {
+        let addresses: BTreeSet<_> = self
+            .codes
+            .keys()
+            .chain(self.existence.keys())
+            .chain(self.created.keys())
+            .chain(self.pending_destruction.keys())
+            .copied()
+            .collect();
+        let mut bytes = Vec::new();
+        for address in addresses {
+            bytes.extend(address.as_slice());
+            match self.code(address) {
+                Some(Code::Runtime(program)) => {
+                    bytes.push(1);
+                    bytes.extend(keccak256(program.bytes()).as_slice());
+                }
+                Some(Code::Delegation(target)) => {
+                    bytes.push(2);
+                    bytes.extend(target.as_slice());
+                }
+                Some(Code::Empty) => bytes.push(3),
+                Some(Code::Unknown) | None => bytes.push(4),
+            }
+            bytes.push(match self.existence(address) {
+                Existence::Unknown => 0,
+                Existence::Present => 1,
+                Existence::Absent => 2,
+            });
+            bytes.push(match self.created_in_transaction(address) {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            });
+            bytes.push(match self.pending_destruction(address) {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            });
+        }
+        keccak256(bytes)
+    }
+
+    /// Actual current bytes, preserving a delegation marker without following it.
+    pub fn raw_account_code(&self, address: Address) -> Option<Vec<u8>> {
+        match self.code(address)? {
+            Code::Runtime(program) => Some(program.bytes().to_vec()),
+            Code::Empty => Some(Vec::new()),
+            Code::Delegation(target) => {
+                let mut bytes = vec![0xef, 0x01, 0x00];
+                bytes.extend_from_slice(target.as_slice());
+                Some(bytes)
+            }
+            Code::Unknown => None,
+        }
+    }
+
+    /// Current account nonce; unobserved accounts carry an unknown value.
+    pub fn nonce(&self, address: Address) -> Value {
+        self.nonces
+            .get(&address)
+            .cloned()
+            .unwrap_or_else(Value::top)
+    }
+
+    /// Replace the nonce after a creation attempt or transaction-local update.
+    pub fn write_nonce(&mut self, address: Address, nonce: Value) {
+        self.nonces.insert(address, nonce);
+    }
+
+    /// Account existence is independent of an empty code observation.
+    pub fn existence(&self, address: Address) -> Existence {
+        self.existence
+            .get(&address)
+            .copied()
+            .unwrap_or(Existence::Unknown)
+    }
+
+    /// Mark an account present after a value transfer. Zero-value transfers do
+    /// not establish presence and should not invoke this method.
+    pub fn mark_present(&mut self, address: Address) {
+        self.existence.insert(address, Existence::Present);
+    }
+
+    /// Prepare a collision-free destination for initcode execution. A prefunded
+    /// balance survives; persistent and transient slots start at zero.
+    pub fn begin_creation(&mut self, address: Address) {
+        self.persistent.reset_account(address);
+        self.transient.reset_account(address);
+        self.codes.insert(address, Code::Empty);
+        self.nonces.insert(address, Value::constant(U256::from(1)));
+        self.existence.insert(address, Existence::Present);
+        self.created.insert(address, Some(true));
+        self.pending_destruction.insert(address, Some(false));
+    }
+
+    /// Install the runtime returned by successful, validated initcode.
+    pub fn deploy_code(&mut self, address: Address, program: Program) {
+        self.codes.insert(
+            address,
+            if program.byte_len() == 0 {
+                Code::Empty
+            } else {
+                Code::Runtime(program)
+            },
+        );
+    }
+
+    /// Whether this account was created in this transaction; `None` represents
+    /// a join between created and preexisting lifecycles.
+    pub fn created_in_transaction(&self, address: Address) -> Option<bool> {
+        self.created.get(&address).copied().unwrap_or(Some(false))
+    }
+
+    /// Whether EIP-6780 schedules this account for deletion at transaction end.
+    /// Code remains visible and callable while the transaction is executing.
+    pub fn pending_destruction(&self, address: Address) -> Option<bool> {
+        self.pending_destruction
+            .get(&address)
+            .copied()
+            .unwrap_or(Some(false))
+    }
+
+    /// EIP-6780 balance movement and deferred deletion for all supported forks.
+    /// The caller enumerates finite beneficiaries before invoking this operation.
+    pub fn selfdestruct(&mut self, address: Address, beneficiary: Address, domain: Domain) {
+        let balance = self.read_balance(address);
+        let created = self.created_in_transaction(address);
+        if address != beneficiary {
+            let recipient = self.read_balance(beneficiary);
+            self.write_balance(
+                beneficiary,
+                domain.apply(revm_bytecode::opcode::ADD, &[recipient, balance.clone()]),
+            );
+            self.write_balance(address, Value::constant(U256::ZERO));
+            if !balance.may_be_zero() {
+                self.mark_present(beneficiary);
+            } else if balance.may_be_nonzero() && self.existence(beneficiary) != Existence::Present
+            {
+                self.existence.insert(beneficiary, Existence::Unknown);
+            }
+        } else if created != Some(false) {
+            self.write_balance(
+                address,
+                if created == Some(true) {
+                    Value::constant(U256::ZERO)
+                } else {
+                    domain.join(&balance, &Value::constant(U256::ZERO))
+                },
+            );
+        }
+        if created != Some(false) {
+            self.pending_destruction.insert(address, created);
+        }
+    }
+
+    /// Commit deferred EIP-6780 deletion only at outermost completion. A joined
+    /// optional deletion conservatively joins the retained and deleted accounts.
+    pub fn finalize_transaction(&mut self, domain: Domain) {
+        let pending = std::mem::take(&mut self.pending_destruction);
+        for (address, pending) in pending {
+            if pending == Some(false) {
+                continue;
+            }
+            let mut deleted = self.clone();
+            deleted.persistent.reset_account(address);
+            deleted.transient.reset_account(address);
+            deleted.codes.insert(address, Code::Empty);
+            deleted.nonces.insert(address, Value::constant(U256::ZERO));
+            deleted
+                .balances
+                .insert(address, Value::constant(U256::ZERO));
+            deleted.existence.insert(address, Existence::Absent);
+            if pending == Some(true) {
+                *self = deleted;
+            } else {
+                *self = self.join(&deleted, domain);
+            }
+        }
+        // These flags describe an active transaction, never the next transaction.
+        self.created.clear();
+    }
+
+    /// Forget storage, balance, code, nonce and lifecycle facts at an account.
     pub fn havoc_account(&mut self, address: Address) {
         self.persistent.havoc_account(address);
         self.transient.havoc_account(address);
         self.balances.insert(address, Value::top());
+        self.codes.insert(address, Code::Unknown);
+        self.nonces.insert(address, Value::top());
+        self.existence.insert(address, Existence::Unknown);
+        self.created.insert(address, None);
+        self.pending_destruction.insert(address, None);
         self.logs_unknown = true;
     }
 
@@ -318,15 +548,40 @@ impl Store {
         self.transient.havoc_all();
         self.balances.clear();
         self.balance_default = Value::top();
+        for code in self.codes.values_mut() {
+            *code = Code::Unknown;
+        }
+        for nonce in self.nonces.values_mut() {
+            *nonce = Value::top();
+        }
+        for existence in self.existence.values_mut() {
+            *existence = Existence::Unknown;
+        }
+        for address in self.codes.keys() {
+            self.created.insert(*address, None);
+            self.pending_destruction.insert(*address, None);
+        }
         self.logs_unknown = true;
     }
 
     /// Join complete transaction states, treating missing keys as defaults.
+    /// Disagreeing code observations become unknown; the machine's structural
+    /// code identity keeps finite executable versions separate during execution.
     pub fn join(&self, other: &Self, domain: Domain) -> Self {
         let addresses: BTreeSet<_> = self
             .balances
             .keys()
             .chain(other.balances.keys())
+            .chain(self.codes.keys())
+            .chain(other.codes.keys())
+            .chain(self.nonces.keys())
+            .chain(other.nonces.keys())
+            .chain(self.existence.keys())
+            .chain(other.existence.keys())
+            .chain(self.created.keys())
+            .chain(other.created.keys())
+            .chain(self.pending_destruction.keys())
+            .chain(other.pending_destruction.keys())
             .copied()
             .collect();
         let mut possible_logs = self.possible_logs.clone();
@@ -352,7 +607,8 @@ impl Store {
             persistent: self.persistent.join(&other.persistent, domain),
             transient: self.transient.join(&other.transient, domain),
             balances: addresses
-                .into_iter()
+                .iter()
+                .copied()
                 .map(|address| {
                     (
                         address,
@@ -361,6 +617,69 @@ impl Store {
                 })
                 .collect(),
             balance_default: domain.join(&self.balance_default, &other.balance_default),
+            codes: addresses
+                .iter()
+                .map(|address| {
+                    (
+                        *address,
+                        match (self.code(*address), other.code(*address)) {
+                            (Some(left), Some(right)) if left == right => left.clone(),
+                            _ => Code::Unknown,
+                        },
+                    )
+                })
+                .collect(),
+            nonces: addresses
+                .iter()
+                .map(|address| {
+                    (
+                        *address,
+                        domain.join(&self.nonce(*address), &other.nonce(*address)),
+                    )
+                })
+                .collect(),
+            existence: addresses
+                .iter()
+                .map(|address| {
+                    (
+                        *address,
+                        if self.existence(*address) == other.existence(*address) {
+                            self.existence(*address)
+                        } else {
+                            Existence::Unknown
+                        },
+                    )
+                })
+                .collect(),
+            created: addresses
+                .iter()
+                .map(|address| {
+                    (
+                        *address,
+                        if self.created_in_transaction(*address)
+                            == other.created_in_transaction(*address)
+                        {
+                            self.created_in_transaction(*address)
+                        } else {
+                            None
+                        },
+                    )
+                })
+                .collect(),
+            pending_destruction: addresses
+                .iter()
+                .map(|address| {
+                    (
+                        *address,
+                        if self.pending_destruction(*address) == other.pending_destruction(*address)
+                        {
+                            self.pending_destruction(*address)
+                        } else {
+                            None
+                        },
+                    )
+                })
+                .collect(),
             possible_logs,
             logs_unknown,
         }
@@ -417,7 +736,30 @@ impl Store {
         &self.persistent.slots
     }
 
-    /// Cost estimate for joining explicit values and all missing-key defaults.
+    /// Accounts with explicit initial observations or transaction effects.
+    /// This finite set does not imply that omitted accounts are absent.
+    pub fn addresses(&self) -> BTreeSet<Address> {
+        self.balances
+            .keys()
+            .chain(self.codes.keys())
+            .chain(self.nonces.keys())
+            .chain(self.existence.keys())
+            .chain(self.created.keys())
+            .chain(self.pending_destruction.keys())
+            .chain(self.persistent.defaults.keys())
+            .chain(self.transient.defaults.keys())
+            .copied()
+            .chain(self.persistent.slots.keys().map(|(address, _)| *address))
+            .chain(self.transient.slots.keys().map(|(address, _)| *address))
+            .chain(
+                self.possible_logs
+                    .keys()
+                    .flat_map(|source| [source.address, source.code_address]),
+            )
+            .collect()
+    }
+
+    /// Cost estimate covering values, defaults, code bytes and lifecycle flags.
     pub fn work_size(&self) -> usize {
         let storage_work = self
             .persistent
@@ -427,6 +769,7 @@ impl Store {
             .chain(self.transient.slots.values())
             .chain(self.transient.defaults.values())
             .chain(self.balances.values())
+            .chain(self.nonces.values())
             .chain([
                 &self.persistent.global_default,
                 &self.transient.global_default,
@@ -435,8 +778,22 @@ impl Store {
             .fold(0_usize, |work, value| {
                 work.saturating_add(value.constants().map_or(1, |values| values.len()))
             });
-        self.possible_logs.values().fold(storage_work, |work, log| {
-            work.saturating_add(log.work_size())
-        })
+        let lifecycle_work = self
+            .codes
+            .values()
+            .fold(storage_work, |work, code| {
+                work.saturating_add(match code {
+                    Code::Runtime(program) => program.byte_len(),
+                    _ => 1,
+                })
+            })
+            .saturating_add(self.existence.len())
+            .saturating_add(self.created.len())
+            .saturating_add(self.pending_destruction.len());
+        self.possible_logs
+            .values()
+            .fold(lifecycle_work, |work, log| {
+                work.saturating_add(log.work_size())
+            })
     }
 }
