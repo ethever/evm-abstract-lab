@@ -96,10 +96,17 @@
             doc-links =
               pkgs.runCommand "evm-abstract-doc-links"
                 {
-                  nativeBuildInputs = [ pkgs.python3 ];
+                  nativeBuildInputs = [
+                    pkgs.lychee
+                    pkgs.bash
+                  ];
+                  # Lychee initializes its TLS client even with --offline.
+                  SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
                 }
                 ''
-                  python ${./scripts/check-doc-links.py} ${self}
+                  cd ${self}
+                  lychee --config ./lychee.toml --offline --root-dir "$PWD" -- README.md '**/*.md'
+                  bash ${./scripts/test-doc-links.sh} ${./lychee.toml}
                   touch $out
                 '';
             examples =
@@ -157,6 +164,7 @@
               graphviz
               cargo-nextest
               nixfmt
+              lychee
               git
               nixVersions.stable
             ];

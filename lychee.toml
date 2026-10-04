@@ -1,0 +1,17 @@
+# The reproducible Nix gate checks repository files and local anchor fragments.
+# Enable HTTP(S) explicitly with the command documented in README.md.
+offline = true
+include_fragments = "anchor-only"
+no_progress = true
+threads = 4
+
+# Explicit globs include ignored paths, including generated Rustdoc Markdown.
+# Keep hidden source documents while omitting build outputs and Git metadata.
+hidden = true
+exclude_path = ['(^|/)(target|\.git|\.direnv|result(-[^/]*)?)/']
+
+# Also used by the optional online check. Never accept errors or timeouts.
+max_concurrency = 8
+host_concurrency = 2
+timeout = 20
+max_retries = 2
