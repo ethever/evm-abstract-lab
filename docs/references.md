@@ -16,6 +16,10 @@
 | 调用后的返回数据缓冲区与越界 | [EIP-211](https://eips.ethereum.org/EIPS/eip-211) | 每帧 returndata、调用时清空、REVERT 数据与 RETURNDATACOPY |
 | 静态调用的继承与禁止效果 | [EIP-214](https://eips.ethereum.org/EIPS/eip-214) | STATICCALL、SSTORE/LOG/value CALL 故障与 CALLCODE 例外 |
 | transient storage 的帧归属与回滚 | [EIP-1153](https://eips.ethereum.org/EIPS/eip-1153) | 同一交易的跨帧状态、DELEGATECALL owner 和 REVERT checkpoint |
+| 固定 hash 的 state RPC | [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898)、[EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) | exact hash/canonical selector、账户 code hash 和一致性检查；当前 loader 信任提供者，不验证 Merkle proof |
+| CREATE2 地址与 initcode | [EIP-1014](https://eips.ethereum.org/EIPS/eip-1014)、[EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) | salt/initcode hash、创建地址、initcode 大小边界与新帧 |
+| SELFDESTRUCT 的当前生命周期 | [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) | 同交易新账户延迟删除，预先存在账户保留代码/storage，祖先 REVERT 回滚 |
+| 原生预编译实现 | [revm-precompile 43.0.3](https://docs.rs/revm-precompile/43.0.3/revm_precompile/) | 按 fork 注册表执行可表示输入，执行前预留累计工作，保留真实返回/失败 |
 | Osaka 的 P256VERIFY 预编译地址 | [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) | 地址 0x100 保留给预编译，离线例子入口选择 0x101；oracle 要实际访问字节码 |
 | U256 运算 | [alloy-primitives 1.7.3](https://docs.rs/alloy-primitives/1.7.3/alloy_primitives/) | 大整数与快速幂来自库；边界用 revm 对照 |
 | Rust 稳定发行版本 | [Rust 官方发行记录](https://github.com/rust-lang/rust/releases/tag/1.99.0) | `rust-toolchain.toml` 固定创建时最新稳定版 1.99.0 |

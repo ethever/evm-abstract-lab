@@ -2,7 +2,7 @@
 
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{ExecutionConfig, FrontierReason, OutcomeKind, Status, analyze_world},
+    analysis::{ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, Status, analyze_world},
     domain::{Domain, Value},
     ssa,
     world::{Account, ByteArray, Entry, World},
@@ -40,7 +40,7 @@ fn world(fork: Fork, code: &str) -> World {
 }
 
 #[test]
-fn osaka_p256_entry_is_a_native_precompile_frontier() {
+fn osaka_p256_entry_executes_native_code_instead_of_fixture_bytecode() {
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         let mut world = World::new(fork, "review:precompile");
         world
@@ -48,11 +48,16 @@ fn osaka_p256_entry_is_a_native_precompile_frontier() {
             .unwrap();
         let analysis = analyze_world(world, entry(0x100), ExecutionConfig::default()).unwrap();
         if fork == Fork::Osaka {
-            assert_eq!(analysis.status(), Status::Incomplete);
+            assert_eq!(analysis.status(), Status::Converged);
+            assert_eq!(
+                analysis.states()[0].entry.active().code,
+                FrameCode::Precompile(address(0x100))
+            );
             assert!(
-                analysis.frontiers().iter().any(|frontier| {
-                    frontier.reason == FrontierReason::Precompile(address(0x100))
-                })
+                analysis
+                    .outcomes()
+                    .iter()
+                    .any(|outcome| outcome.kind == OutcomeKind::Return)
             );
         } else {
             assert_eq!(analysis.status(), Status::Converged);
@@ -62,17 +67,20 @@ fn osaka_p256_entry_is_a_native_precompile_frontier() {
 
 #[test]
 fn model_frontier_key_retains_the_current_stack_height() {
-    // SELFDESTRUCT consumes beneficiary zero; retained 42 remains in the frame.
+    // A memory boundary consumes its offset; retained 42 stays in the frame.
     let analysis = analyze_world(
-        world(Fork::Osaka, "602a5fff"),
+        world(Fork::Osaka, "602a60405100"),
         entry(0x101),
-        ExecutionConfig::default(),
+        ExecutionConfig {
+            max_memory_bytes: 32,
+            ..ExecutionConfig::default()
+        },
     )
     .unwrap();
     let frontier = analysis
         .frontiers()
         .iter()
-        .find(|frontier| matches!(frontier.reason, FrontierReason::UnsupportedOpcode(0xff)))
+        .find(|frontier| frontier.reason == FrontierReason::Memory)
         .unwrap();
     let state = &analysis.states()[frontier.from.unwrap()];
     let payload = state.exit.as_ref().unwrap();

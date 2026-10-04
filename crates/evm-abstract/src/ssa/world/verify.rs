@@ -17,6 +17,8 @@ fn same_context(a: &FrameKey, b: &FrameKey) -> bool {
         && a.address == b.address
         && a.caller == b.caller
         && a.is_static == b.is_static
+        && a.code_hash == b.code_hash
+        && a.mode == b.mode
 }
 
 pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaError> {
@@ -87,7 +89,7 @@ pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaE
         if block.effect.inputs != expected_effects {
             return Err(invariant("effect phi does not cover incoming edges"));
         }
-        let program = analysis.world().runtime(state.active().code_address);
+        let program = state.program();
         let original = program.and_then(|p| p.blocks().get(state.active().block));
         if block.instructions.len() != state.executed_pcs.len()
             || block.effects.len() != block.instructions.len()

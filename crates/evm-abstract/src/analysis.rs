@@ -15,6 +15,7 @@ mod config;
 mod engine;
 mod machine;
 mod single;
+mod summary;
 mod transfer;
 
 use crate::{bytecode::Program, domain::Value};
@@ -26,6 +27,8 @@ pub use machine::{
     MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome, MachinePayload, MachineState,
     OutcomeKind, WorldAnalysis,
 };
+pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
+pub use transfer::create::CreationBoundary;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

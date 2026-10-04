@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 /// 一条指令。`pc` 是字节偏移，不是第几条指令。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Instruction {
     // 与 Program 一起在解码时固定；调用方不能只把某一条指令改成别的 fork。
     #[serde(skip)]
@@ -53,6 +53,7 @@ impl Instruction {
             // A call suspends this frame. Its next instruction is a continuation
             // block, reached only when a child returns or the call fails.
             || matches!(self.opcode, opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL)
+            || matches!(self.opcode, opcode::CREATE | opcode::CREATE2)
             || OpCode::new_or_unknown(self.opcode).info().is_terminating()
     }
 
@@ -64,7 +65,7 @@ impl Instruction {
 }
 
 /// 线性执行的一段指令；编号按字节偏移递增。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct BasicBlock {
     /// 当前 [`Program::blocks`] 中的稠密索引；不是跨程序的全局编号。
     /// 字节地址由 `start_pc` 保存，带上下文的分析状态使用 [`crate::analysis::StateKey`]。
@@ -76,7 +77,7 @@ pub struct BasicBlock {
 }
 
 /// 已解码的程序；索引私有，避免调用者修改指令后索引失效。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Program {
     fork: Fork,
     byte_len: usize,

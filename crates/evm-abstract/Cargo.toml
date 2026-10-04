@@ -13,10 +13,12 @@ revm-bytecode.workspace = true
 petgraph.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+revm-precompile = { version = "=43.0.3", default-features = false, features = ["std", "c-kzg"] }
 
 [dev-dependencies]
 proptest.workspace = true
-serde_json.workspace = true
 revm = { version = "=43.0.3", default-features = false, features = ["std"] }
 
 [lints]

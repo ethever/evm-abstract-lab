@@ -1,7 +1,8 @@
 //! Account-code resolution, frame entry and rollback-aware caller resumption.
 use super::budget::{arithmetic_work, byte_work, maximum};
 use super::{
-    Execution, Outcome, Successor, TransferContext, address, boundary, touch_memory, zero,
+    CompletedCall, Execution, Outcome, Successor, TransferContext, address, boundary, touch_memory,
+    zero,
 };
 use crate::{
     analysis::{
@@ -12,38 +13,38 @@ use crate::{
     domain::Value,
     world::{ByteArray, Code, Entry, Store, World},
 };
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use revm_bytecode::opcode;
 
 fn precompile(world: &World, address: Address) -> bool {
-    let number = U256::from_be_slice(address.as_slice());
-    (number > U256::ZERO
-        && number
-            <= U256::from(if world.fork().supports_delegation() {
-                0x11
-            } else {
-                0x0a
-            }))
-        || (world.fork() == crate::Fork::Osaka && number == U256::from(0x100))
+    super::precompile::contains(world.fork(), address)
 }
 
 /// 7702 follows exactly one pointer. The second marker is invalid executable
 /// EF code; a delegated precompile target executes as empty code.
-fn resolve(world: &World, target: Address) -> Result<(Address, FrameCode), FrontierReason> {
+fn resolve(
+    world: &World,
+    store: &Store,
+    target: Address,
+) -> Result<(Address, FrameCode, Option<Program>), FrontierReason> {
     if precompile(world, target) {
-        return Err(FrontierReason::Precompile(target));
+        return Ok((target, FrameCode::Precompile(target), None));
     }
-    match world.account(target).map(|a| &a.code) {
-        Some(Code::Runtime(_)) => Ok((target, FrameCode::Runtime)),
-        Some(Code::Empty) => Ok((target, FrameCode::Empty)),
+    match store.code(target) {
+        Some(Code::Runtime(program)) => Ok((target, FrameCode::Runtime, Some(program.clone()))),
+        Some(Code::Empty) => Ok((target, FrameCode::Empty, None)),
         Some(Code::Delegation(implementation)) => {
             if precompile(world, *implementation) {
-                return Ok((*implementation, FrameCode::Empty));
+                return Ok((*implementation, FrameCode::Empty, None));
             }
-            match world.account(*implementation).map(|a| &a.code) {
-                Some(Code::Runtime(_)) => Ok((*implementation, FrameCode::Runtime)),
-                Some(Code::Empty) => Ok((*implementation, FrameCode::Empty)),
-                Some(Code::Delegation(_)) => Ok((*implementation, FrameCode::InvalidDelegation)),
+            match store.code(*implementation) {
+                Some(Code::Runtime(program)) => {
+                    Ok((*implementation, FrameCode::Runtime, Some(program.clone())))
+                }
+                Some(Code::Empty) => Ok((*implementation, FrameCode::Empty, None)),
+                Some(Code::Delegation(_)) => {
+                    Ok((*implementation, FrameCode::InvalidDelegation, None))
+                }
                 _ => Err(FrontierReason::MissingCode(*implementation)),
             }
         }
@@ -51,13 +52,34 @@ fn resolve(world: &World, target: Address) -> Result<(Address, FrameCode), Front
     }
 }
 
+fn captured_hash(
+    program: &Option<Program>,
+    store: &Store,
+    address: Address,
+    mode: FrameCode,
+) -> B256 {
+    program.as_ref().map_or_else(
+        || {
+            if mode == FrameCode::InvalidDelegation {
+                keccak256(store.raw_account_code(address).unwrap_or_default())
+            } else {
+                keccak256([])
+            }
+        },
+        |program| keccak256(program.bytes()),
+    )
+}
+
 pub(super) fn initial(world: &World, entry: &Entry) -> Result<MachinePayload, FrontierReason> {
-    let (code_address, code) = resolve(world, entry.address)?;
     let store = Store::new(world);
+    let (code_address, code, program) = resolve(world, &store, entry.address)?;
+    let code_hash = captured_hash(&program, &store, code_address, code);
     Ok(MachinePayload {
         frames: vec![Frame {
             key: FrameKey {
                 code_address,
+                code_hash,
+                mode: code,
                 address: entry.address,
                 caller: entry.caller,
                 is_static: entry.is_static,
@@ -66,6 +88,7 @@ pub(super) fn initial(world: &World, entry: &Entry) -> Result<MachinePayload, Fr
                 jump_history: Vec::new(),
             },
             code,
+            program,
             stack: Vec::new(),
             memory: ByteArray::memory(),
             calldata: entry.calldata.clone(),
@@ -81,13 +104,24 @@ pub(super) fn initial(world: &World, entry: &Entry) -> Result<MachinePayload, Fr
 pub(super) fn finish(
     result: &mut Execution,
     mut payload: MachinePayload,
-    kind: OutcomeKind,
-    data: ByteArray,
+    mut kind: OutcomeKind,
+    mut data: ByteArray,
     context: &mut TransferContext<'_>,
     pc: usize,
 ) {
     let config = context.config;
     let domain = context.domain;
+    let completed = payload
+        .active()
+        .continuation
+        .as_ref()
+        .map(|_| (payload.clone(), kind, data.clone()));
+    if let Err(reason) =
+        super::create::finish_creation(&mut payload, &mut kind, &mut data, context, pc)
+    {
+        result.frontiers.push((pc, reason, Some(payload.key())));
+        return;
+    }
     if let Some(frame) = payload.frames.last()
         && let Some(continuation) = &frame.continuation
     {
@@ -112,6 +146,7 @@ pub(super) fn finish(
         payload.store = saved;
     }
     let Some(continuation) = frame.continuation else {
+        payload.store.finalize_transaction(domain);
         result.outcomes.push(Outcome {
             kind,
             data,
@@ -119,12 +154,20 @@ pub(super) fn finish(
         });
         return;
     };
+    let output_store = payload.store.clone();
+    let output_data = data.clone();
+    let output_kind = kind;
     let parent = payload.active_mut();
     parent.returndata = data;
     // Failure has an empty buffer. Revert exposes revert data, but both report 0.
-    parent.stack.push(Value::constant(U256::from(u8::from(
-        kind == OutcomeKind::Return,
-    ))));
+    let result_value = if kind == OutcomeKind::Return {
+        continuation.creation.map_or(U256::from(1), |address| {
+            U256::from_be_slice(address.as_slice())
+        })
+    } else {
+        U256::ZERO
+    };
+    parent.stack.push(Value::constant(result_value));
     if parent
         .memory
         .copy_return_data(
@@ -145,6 +188,16 @@ pub(super) fn finish(
         .return_block
         .expect("call continuations include synthetic end blocks");
     payload.normalize();
+    if let Some((payload, kind, data)) = completed {
+        result.completed_calls.push(CompletedCall {
+            payload,
+            kind,
+            data,
+            output_store,
+            output_kind,
+            output_data,
+        });
+    }
     result.successors.push(Successor {
         payload,
         kind: match kind {
@@ -213,6 +266,11 @@ pub(super) fn call(
     // Gas and (possibly abstract) balance can reject the call before entry.
     // This failure preserves all caller writes and clears returndata.
     immediate_call_failure(result, result.payload.clone(), next);
+    // The transaction entry has physical depth zero. No child is entered once
+    // the EVM's 1024 depth limit is exceeded, independent of analysis budgets.
+    if result.payload.frames.len() > 1024 {
+        return;
+    }
     let value = if result.payload.active().key.is_static && op == opcode::CALL {
         zero()
     } else {
@@ -250,7 +308,7 @@ pub(super) fn call(
             boundary(result, pc, FrontierReason::Work);
             break;
         }
-        let (code_address, code) = match resolve(world, target) {
+        let (code_address, code, program) = match resolve(world, &result.payload.store, target) {
             Ok(resolution) => resolution,
             Err(reason) => {
                 boundary(result, pc, reason);
@@ -292,6 +350,7 @@ pub(super) fn call(
             _ => unreachable!(),
         };
         let saved_store = result.payload.store.clone();
+        let code_hash = captured_hash(&program, &result.payload.store, code_address, code);
         let mut payload = result.payload.clone();
         if op == opcode::CALL && target != caller_address {
             let recipient = payload.store.read_balance(target);
@@ -314,6 +373,8 @@ pub(super) fn call(
         payload.frames.push(Frame {
             key: FrameKey {
                 code_address,
+                code_hash,
+                mode: code,
                 address: state_address,
                 caller: frame_caller,
                 is_static: caller.key.is_static || op == opcode::STATICCALL,
@@ -322,6 +383,7 @@ pub(super) fn call(
                 jump_history: Vec::new(),
             },
             code,
+            program,
             stack: Vec::new(),
             memory: ByteArray::memory(),
             calldata,
@@ -332,6 +394,7 @@ pub(super) fn call(
                 return_block: Some(next),
                 output_offset: args[output].clone(),
                 output_size: args[output + 1].clone(),
+                creation: None,
             }),
         });
         payload.normalize();

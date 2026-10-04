@@ -3,13 +3,13 @@
 #[cfg(test)]
 mod tests;
 
-use alloy_primitives::{Address, U256, hex};
+use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     Fork,
     bytecode::DecodeError,
     domain::Value,
     fork::ParseForkError,
-    world::{Account, World, WorldError},
+    world::{Account, Existence, World, WorldError},
 };
 use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::Path};
@@ -20,7 +20,21 @@ use thiserror::Error;
 struct Snapshot {
     fork: String,
     provenance: String,
+    identity: Option<Identity>,
+    fingerprint: Option<String>,
     accounts: Vec<SnapshotAccount>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+enum Identity {
+    Offline {
+        label: String,
+    },
+    Chain {
+        chain_id: String,
+        block_hash: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -28,15 +42,46 @@ struct Snapshot {
 struct SnapshotAccount {
     address: String,
     code: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_storage")]
     storage: BTreeMap<String, String>,
     #[serde(default = "unknown_storage")]
     storage_unknown: bool,
     balance: Option<String>,
+    nonce: Option<String>,
+    existence: Option<String>,
+    code_hash: Option<String>,
 }
 
 fn unknown_storage() -> bool {
     true
+}
+
+fn deserialize_storage<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Slots;
+    impl<'de> serde::de::Visitor<'de> for Slots {
+        type Value = BTreeMap<String, String>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a storage object with unique slot keys")
+        }
+        fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+        where
+            M: serde::de::MapAccess<'de>,
+        {
+            let mut slots = BTreeMap::new();
+            while let Some((slot, value)) = map.next_entry::<String, String>()? {
+                if slots.insert(slot.clone(), value).is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate storage key {slot}"
+                    )));
+                }
+            }
+            Ok(slots)
+        }
+    }
+    deserializer.deserialize_map(Slots)
 }
 
 #[derive(Debug, Error)]
@@ -78,8 +123,30 @@ pub(crate) enum InputError {
     Duplicate(Address),
     #[error("duplicate storage slot {slot:#x} at account {address}")]
     DuplicateSlot { address: Address, slot: U256 },
+    #[error("invalid 32-byte {field} hash: {input:?}")]
+    Hash { field: &'static str, input: String },
+    #[error(
+        "invalid account existence {input:?} at {address}; expected unknown, present or absent"
+    )]
+    Existence { address: Address, input: String },
+    #[error("anchored snapshot code at {0} requires code_hash")]
+    MissingCodeHash(Address),
+    #[error("snapshot fingerprint mismatch: expected {expected}, observed {observed}")]
+    Fingerprint { expected: B256, observed: B256 },
     #[error(transparent)]
     World(#[from] WorldError),
+}
+
+pub(crate) fn hash(input: &str, field: &'static str) -> Result<B256, InputError> {
+    input
+        .strip_prefix("0x")
+        .filter(|digits| digits.len() == 64)
+        .and_then(|digits| hex::decode(digits).ok())
+        .and_then(|bytes| B256::try_from(bytes.as_slice()).ok())
+        .ok_or_else(|| InputError::Hash {
+            field,
+            input: input.to_owned(),
+        })
 }
 
 pub(crate) fn address(input: &str, field: &'static str) -> Result<Address, InputError> {
@@ -134,12 +201,29 @@ pub(crate) fn load(path: &Path) -> Result<World, InputError> {
 fn parse(text: &str) -> Result<World, InputError> {
     let snapshot: Snapshot = serde_json::from_str(text)?;
     let fork: Fork = snapshot.fork.parse()?;
-    let mut world = World::new(fork, snapshot.provenance);
+    let anchored = matches!(snapshot.identity, Some(Identity::Chain { .. }));
+    let mut world = match snapshot.identity {
+        None => World::new(fork, snapshot.provenance),
+        Some(Identity::Offline { label }) => {
+            // The old provenance field remains a description; identity is explicit.
+            World::offline(fork, label, snapshot.provenance)
+        }
+        Some(Identity::Chain {
+            chain_id,
+            block_hash,
+        }) => World::anchored(
+            fork,
+            word(&chain_id, "chain id")?,
+            hash(&block_hash, "block")?,
+            snapshot.provenance,
+        ),
+    };
     for input in snapshot.accounts {
         let address = address(&input.address, "account")?;
         if world.account(address).is_some() {
             return Err(InputError::Duplicate(address));
         }
+        let has_code = input.code.is_some();
         let mut account = match input.code {
             Some(code) => Account::from_hex(&code, fork)
                 .map_err(|source| InputError::Code { address, source })?,
@@ -158,7 +242,38 @@ fn parse(text: &str) -> Result<World, InputError> {
             .map(|value| word(&value, "balance").map(Value::constant))
             .transpose()?
             .unwrap_or_else(Value::top);
-        world.insert(address, account)?;
+        account.nonce = input
+            .nonce
+            .map(|value| word(&value, "nonce").map(Value::constant))
+            .transpose()?
+            .unwrap_or_else(Value::top);
+        account.existence = match input.existence.as_deref() {
+            None | Some("unknown") => Existence::Unknown,
+            Some("present") => Existence::Present,
+            Some("absent") => Existence::Absent,
+            Some(input) => {
+                return Err(InputError::Existence {
+                    address,
+                    input: input.to_owned(),
+                });
+            }
+        };
+        match input.code_hash {
+            Some(declared) => {
+                world.insert_with_code_hash(address, account, hash(&declared, "code")?)?;
+            }
+            None if anchored && has_code => return Err(InputError::MissingCodeHash(address)),
+            None => {
+                world.insert(address, account)?;
+            }
+        }
+    }
+    if let Some(expected) = snapshot.fingerprint {
+        let expected = hash(&expected, "fingerprint")?;
+        let observed = world.fingerprint();
+        if expected != observed {
+            return Err(InputError::Fingerprint { expected, observed });
+        }
     }
     Ok(world)
 }

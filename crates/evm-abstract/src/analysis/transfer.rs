@@ -9,7 +9,6 @@ use super::{
     },
 };
 use crate::{
-    bytecode::Program,
     domain::{Domain, Value},
     world::{AbstractLog, ByteArray, Code, Entry, LogKey, Store, World},
 };
@@ -18,6 +17,8 @@ use revm_bytecode::opcode;
 
 mod budget;
 mod calls;
+pub(super) mod create;
+mod precompile;
 
 pub(super) use budget::WorkBudget;
 use budget::{byte_work, operation_work};
@@ -49,6 +50,51 @@ pub(super) struct Execution {
     pub diagnostics: Vec<(usize, DiagnosticKind)>,
     pub frontiers: Vec<(usize, FrontierReason, Option<MachineKey>)>,
     pub outcomes: Vec<Outcome>,
+    pub completed_calls: Vec<CompletedCall>,
+}
+
+/// A specific child terminal before caller joins, with qualified world effects.
+#[derive(Clone, Debug)]
+pub(super) struct CompletedCall {
+    pub payload: MachinePayload,
+    pub kind: OutcomeKind,
+    pub data: ByteArray,
+    pub output_store: Store,
+    pub output_kind: OutcomeKind,
+    pub output_data: ByteArray,
+}
+
+pub(super) fn resume_summary(
+    payload: MachinePayload,
+    kind: OutcomeKind,
+    data: ByteArray,
+    config: &ExecutionConfig,
+    domain: Domain,
+    budget: &mut WorkBudget,
+) -> Execution {
+    let mut result = Execution {
+        payload: payload.clone(),
+        executed_pcs: Vec::new(),
+        successors: Vec::new(),
+        diagnostics: Vec::new(),
+        frontiers: Vec::new(),
+        outcomes: Vec::new(),
+        completed_calls: Vec::new(),
+    };
+    let mut context = TransferContext {
+        config,
+        domain,
+        budget,
+    };
+    let pc = payload
+        .active()
+        .program
+        .as_ref()
+        .and_then(|p| p.blocks().get(payload.active().key.block))
+        .and_then(|b| b.instructions.last())
+        .map_or(0, |i| i.pc);
+    finish(&mut result, payload, kind, data, &mut context, pc);
+    result
 }
 
 fn address(value: U256) -> Address {
@@ -63,13 +109,6 @@ fn constant(value: usize) -> Value {
 fn zero() -> Value {
     Value::constant(U256::ZERO)
 }
-fn program(world: &World, code_address: Address) -> Option<&Program> {
-    match &world.account(code_address)?.code {
-        Code::Runtime(program) => Some(program),
-        _ => None,
-    }
-}
-
 fn boundary(result: &mut Execution, pc: usize, reason: FrontierReason) {
     result
         .frontiers
@@ -116,17 +155,8 @@ fn touch_memory(
     true
 }
 
-fn code_bytes(world: &World, target: Address) -> Option<Vec<u8>> {
-    match &world.account(target)?.code {
-        Code::Runtime(program) => Some(program.bytes().to_vec()),
-        Code::Empty => Some(Vec::new()),
-        Code::Delegation(target) => {
-            let mut bytes = vec![0xef, 0x01, 0x00];
-            bytes.extend_from_slice(target.as_slice());
-            Some(bytes)
-        }
-        Code::Unknown => None,
-    }
+fn code_bytes(store: &Store, target: Address) -> Option<Vec<u8>> {
+    store.raw_account_code(target)
 }
 
 fn environment_targets(
@@ -165,8 +195,13 @@ pub(super) fn execute(
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
         outcomes: Vec::new(),
+        completed_calls: Vec::new(),
     };
     let code = result.payload.active().code;
+    if let FrameCode::Precompile(address) = code {
+        precompile::execute(&mut result, world.fork(), address, context);
+        return result;
+    }
     if code == FrameCode::InvalidDelegation {
         result.diagnostics.push((0, DiagnosticKind::InvalidOpcode));
         failure(&mut result, context, 0);
@@ -184,8 +219,13 @@ pub(super) fn execute(
         );
         return result;
     }
-    let program = program(world, result.payload.active().key.code_address)
-        .expect("runtime frames originate from resolved world code");
+    let program = result
+        .payload
+        .active()
+        .program
+        .clone()
+        .expect("runtime and initcode frames capture their executable program");
+    let program = &program;
     let block_id = result.payload.active().key.block;
     let Some(block) = program.blocks().get(block_id) else {
         let payload = result.payload.clone();
@@ -242,9 +282,10 @@ pub(super) fn execute(
         }
         let mut args: Vec<Value> = stack.drain(stack.len() - inputs..).collect();
         args.reverse();
-        if !context.budget.charge(operation_work(
-            &result, op, &args, program, domain, config, world,
-        )) {
+        if !context
+            .budget
+            .charge(operation_work(&result, op, &args, program, domain, config))
+        {
             boundary(&mut result, pc, FrontierReason::Work);
             return result;
         }
@@ -331,7 +372,13 @@ pub(super) fn execute(
                 return result;
             }
             opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
+                result.payload.active_mut().returndata = ByteArray::empty();
                 call(&mut result, world, op, &args, program, context, pc);
+                return result;
+            }
+            opcode::CREATE | opcode::CREATE2 => {
+                result.payload.active_mut().returndata = ByteArray::empty();
+                create::create(&mut result, world, op, &args, program, context, pc);
                 return result;
             }
             opcode::STOP => {
@@ -377,8 +424,33 @@ pub(super) fn execute(
                 );
                 return result;
             }
-            opcode::CREATE | opcode::CREATE2 | opcode::SELFDESTRUCT => {
-                boundary(&mut result, pc, FrontierReason::UnsupportedOpcode(op));
+            opcode::SELFDESTRUCT => {
+                let Some(beneficiaries) = args[0].constants() else {
+                    boundary(&mut result, pc, FrontierReason::UnknownTarget);
+                    return result;
+                };
+                let owner = result.payload.active().key.address;
+                for beneficiary in beneficiaries {
+                    if !context
+                        .budget
+                        .charge(result.payload.work_size().saturating_add(1))
+                    {
+                        boundary(&mut result, pc, FrontierReason::Work);
+                        break;
+                    }
+                    let mut payload = result.payload.clone();
+                    payload
+                        .store
+                        .selfdestruct(owner, address(*beneficiary), domain);
+                    finish(
+                        &mut result,
+                        payload,
+                        OutcomeKind::Return,
+                        ByteArray::empty(),
+                        context,
+                        pc,
+                    );
+                }
                 return result;
             }
             opcode::SSTORE | opcode::TSTORE => {
@@ -451,7 +523,7 @@ pub(super) fn execute(
                     Some(targets) => targets
                         .iter()
                         .map(|target| {
-                            code_bytes(world, address(*target))
+                            code_bytes(&result.payload.store, address(*target))
                                 .map(|bytes| ByteArray::exact(&bytes))
                                 .unwrap_or_else(ByteArray::unknown)
                         })
@@ -529,6 +601,12 @@ pub(super) fn execute(
                         address_value(entry.caller)
                     }
                     opcode::CALLVALUE => frame.call_value.clone(),
+                    opcode::CHAINID => match world.identity() {
+                        crate::world::SnapshotIdentity::Chain { chain_id, .. } => {
+                            Value::constant(*chain_id)
+                        }
+                        _ => Value::top(),
+                    },
                     opcode::PC => constant(pc),
                     opcode::CODESIZE => constant(program.byte_len()),
                     opcode::CALLDATASIZE => frame.calldata.len().clone(),
@@ -550,7 +628,7 @@ pub(super) fn execute(
                         result.payload.store.read_balance(address)
                     }),
                     opcode::EXTCODESIZE => environment_targets(&args[0], domain, |target| {
-                        match world.account(target).map(|account| &account.code) {
+                        match result.payload.store.code(target) {
                             Some(Code::Runtime(program)) => constant(program.byte_len()),
                             Some(Code::Delegation(_)) => constant(23),
                             Some(Code::Empty) => zero(),
@@ -558,15 +636,22 @@ pub(super) fn execute(
                         }
                     }),
                     opcode::EXTCODEHASH => environment_targets(&args[0], domain, |target| {
-                        code_bytes(world, target)
+                        code_bytes(&result.payload.store, target)
                             .map(|bytes| {
                                 let hash = Value::constant(U256::from_be_slice(
                                     keccak256(&bytes).as_slice(),
                                 ));
-                                if bytes.is_empty()
-                                    && result.payload.store.read_balance(target).may_be_zero()
-                                {
+                                if !bytes.is_empty() {
+                                    return hash;
+                                }
+                                let balance = result.payload.store.read_balance(target);
+                                let nonce = result.payload.store.nonce(target);
+                                let may_be_empty = balance.may_be_zero() && nonce.may_be_zero();
+                                let may_exist = balance.may_be_nonzero() || nonce.may_be_nonzero();
+                                if may_be_empty && may_exist {
                                     domain.join(&hash, &zero())
+                                } else if may_be_empty {
+                                    zero()
                                 } else {
                                     hash
                                 }
