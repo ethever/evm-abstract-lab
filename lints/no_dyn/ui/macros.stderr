@@ -1,0 +1,533 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:24:20
+   |
+LL |     static ACTION: fn(u8) -> u8 = identity;
+   |                    ^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:24:35
+   |
+LL |     static ACTION: fn(u8) -> u8 = identity;
+   |                                   ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:22:1
+   |
+LL | / std::thread_local! {
+LL | |     // The type was supplied by local source to a standard library macro.
+LL | |     static ACTION: fn(u8) -> u8 = identity;
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:28:13
+   |
+LL |     let _ = format!("{:?}", nested!());
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:10:12
+   |
+LL |       () => {{
+   |  ____________^
+LL | |         let action: fn(u8) -> u8 = identity;
+LL | |         action
+LL | |     }};
+   | |_____^
+...
+LL |       let _ = format!("{:?}", nested!());
+   |               -------------------------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:10:12
+   |
+LL |       () => {{
+   |  ____________^
+LL | |         let action: fn(u8) -> u8 = identity;
+LL | |         action
+LL | |     }};
+   | |_____^
+...
+LL |       let _ = format!("{:?}", nested!());
+   |                               --------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `callback` which comes from the expansion of the macro `nested` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:11:36
+   |
+LL |         let action: fn(u8) -> u8 = identity;
+   |                                    ^^^^^^^^
+...
+LL |     let _ = format!("{:?}", nested!());
+   |                             --------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `callback` which comes from the expansion of the macro `nested` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:11:13
+   |
+LL |         let action: fn(u8) -> u8 = identity;
+   |             ^^^^^^
+...
+LL |     let _ = format!("{:?}", nested!());
+   |                             --------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `callback` which comes from the expansion of the macro `nested` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:11:21
+   |
+LL |         let action: fn(u8) -> u8 = identity;
+   |                     ^^^^^^^^^^^^
+...
+LL |     let _ = format!("{:?}", nested!());
+   |                             --------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `callback` which comes from the expansion of the macro `nested` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:12:9
+   |
+LL |         action
+   |         ^^^^^^
+...
+LL |     let _ = format!("{:?}", nested!());
+   |                             --------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `callback` which comes from the expansion of the macro `nested` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:28:22
+   |
+LL |     let _ = format!("{:?}", nested!());
+   |                      ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:29:13
+   |
+LL |     let _ = format!("{:?}", Box::new(1u8) as Box<dyn std::fmt::Debug>);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:29:29
+   |
+LL |     let _ = format!("{:?}", Box::new(1u8) as Box<dyn std::fmt::Debug>);
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:29:29
+   |
+LL |     let _ = format!("{:?}", Box::new(1u8) as Box<dyn std::fmt::Debug>);
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:29:29
+   |
+LL |     let _ = format!("{:?}", Box::new(1u8) as Box<dyn std::fmt::Debug>);
+   |                             ^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:29:46
+   |
+LL |     let _ = format!("{:?}", Box::new(1u8) as Box<dyn std::fmt::Debug>);
+   |                                              ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:29:50
+   |
+LL |     let _ = format!("{:?}", Box::new(1u8) as Box<dyn std::fmt::Debug>);
+   |                                                  ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/macros.rs:29:22
+   |
+LL |     let _ = format!("{:?}", Box::new(1u8) as Box<dyn std::fmt::Debug>);
+   |                      ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 50 previous errors
+

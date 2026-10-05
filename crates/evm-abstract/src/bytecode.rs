@@ -89,6 +89,8 @@ pub struct Program {
 }
 
 /// 文本输入或不支持的格式错误；普通 EVM 字节码中的无效操作码则是程序中的异常终止。
+/// Nested delegation failures are retained in [`DecodeError::InvalidDelegation`];
+/// callers inspect that concrete variant instead of an erased error source chain.
 #[derive(Debug, Error)]
 pub enum DecodeError {
     /// EVM bytecode 的十六进制文本必须成对。
@@ -113,7 +115,13 @@ pub enum DecodeError {
     },
     /// 委托格式验证复用 revm 的解析器，保留长度/版本等具体错误。
     #[error("malformed EIP-7702 delegation indicator: {0}")]
-    InvalidDelegation(#[from] Eip7702DecodeError),
+    InvalidDelegation(Eip7702DecodeError),
+}
+
+impl From<Eip7702DecodeError> for DecodeError {
+    fn from(error: Eip7702DecodeError) -> Self {
+        Self::InvalidDelegation(error)
+    }
 }
 
 impl Program {

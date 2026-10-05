@@ -7,18 +7,28 @@
 mod tests;
 
 use alloy_primitives::{U256, ruint::ParseError};
-use thiserror::Error;
+use std::fmt;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub(crate) enum NumberError {
-    #[error("expected nonempty ASCII decimal digits or 0x/0X-prefixed hexadecimal digits")]
     Syntax,
-    #[error("integer exceeds the maximum unsigned 256-bit value (2^256 - 1)")]
-    Overflow {
-        #[source]
-        source: ParseError,
-    },
+    Overflow { source: ParseError },
 }
+
+impl fmt::Display for NumberError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Syntax => {
+                "expected nonempty ASCII decimal digits or 0x/0X-prefixed hexadecimal digits"
+            }
+            Self::Overflow { source: _source } => {
+                "integer exceeds the maximum unsigned 256-bit value (2^256 - 1)"
+            }
+        })
+    }
+}
+
+impl std::error::Error for NumberError {}
 
 pub(crate) fn parse(input: &str) -> Result<U256, NumberError> {
     let (digits, radix) = match input

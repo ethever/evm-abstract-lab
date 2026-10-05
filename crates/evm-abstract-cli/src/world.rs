@@ -1,5 +1,7 @@
 //! 离线输入边界：JSON 中缺少的事实保持未知；解析不补查 RPC 或节点状态。
 
+mod input;
+
 #[cfg(test)]
 mod tests;
 
@@ -11,113 +13,38 @@ use evm_abstract::{
     fork::ParseForkError,
     world::{Account, Existence, World, WorldError},
 };
-use serde::Deserialize;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{fs, path::Path};
 use thiserror::Error;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Snapshot {
-    fork: String,
-    provenance: String,
-    identity: Option<Identity>,
-    fingerprint: Option<String>,
-    accounts: Vec<SnapshotAccount>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
-enum Identity {
-    Offline {
-        label: String,
-    },
-    Chain {
-        chain_id: String,
-        block_hash: String,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SnapshotAccount {
-    address: String,
-    code: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_storage")]
-    storage: BTreeMap<String, String>,
-    #[serde(default = "unknown_storage")]
-    storage_unknown: bool,
-    balance: Option<String>,
-    nonce: Option<String>,
-    existence: Option<String>,
-    code_hash: Option<String>,
-}
-
-fn unknown_storage() -> bool {
-    true
-}
-
-fn deserialize_storage<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct Slots;
-    impl<'de> serde::de::Visitor<'de> for Slots {
-        type Value = BTreeMap<String, String>;
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("a storage object with unique slot keys")
-        }
-        fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-        where
-            M: serde::de::MapAccess<'de>,
-        {
-            let mut slots = BTreeMap::new();
-            while let Some((slot, value)) = map.next_entry::<String, String>()? {
-                if slots.insert(slot.clone(), value).is_some() {
-                    return Err(serde::de::Error::custom(format!(
-                        "duplicate storage key {slot}"
-                    )));
-                }
-            }
-            Ok(slots)
-        }
-    }
-    deserializer.deserialize_map(Slots)
-}
+use input::{Identity, Snapshot};
 
 #[derive(Debug, Error)]
 pub(crate) enum InputError {
-    #[error("cannot read world snapshot {path}: {source}")]
-    Read {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("cannot read world snapshot {path}: {error}")]
+    Read { path: String, error: std::io::Error },
     #[error("invalid world JSON: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error(transparent)]
-    Fork(#[from] ParseForkError),
-    #[error("invalid {field} address {input:?}: {source}")]
+    Json(serde_json::Error),
+    #[error("{0}")]
+    Fork(ParseForkError),
+    #[error("invalid {field} address {input:?}: {error}")]
     Address {
         field: &'static str,
         input: String,
-        #[source]
-        source: hex::FromHexError,
+        error: hex::FromHexError,
     },
     #[error("{field} must be a nonempty 0x-prefixed hexadecimal word: {input:?}")]
     WordSyntax { field: &'static str, input: String },
     #[error("{field} exceeds 256 bits: {input:?}")]
     WordWidth { field: &'static str, input: String },
-    #[error("invalid {field} hex: {source}")]
+    #[error("invalid {field} hex: {error}")]
     Hex {
         field: &'static str,
-        #[source]
-        source: hex::FromHexError,
+        error: hex::FromHexError,
     },
-    #[error("invalid account code at {address}: {source}")]
+    #[error("invalid account code at {address}: {error}")]
     Code {
         address: Address,
-        #[source]
-        source: DecodeError,
+        error: DecodeError,
     },
     #[error("duplicate account address {0}")]
     Duplicate(Address),
@@ -133,8 +60,26 @@ pub(crate) enum InputError {
     MissingCodeHash(Address),
     #[error("snapshot fingerprint mismatch: expected {expected}, observed {observed}")]
     Fingerprint { expected: B256, observed: B256 },
-    #[error(transparent)]
-    World(#[from] WorldError),
+    #[error("{0}")]
+    World(WorldError),
+}
+
+impl From<serde_json::Error> for InputError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+
+impl From<ParseForkError> for InputError {
+    fn from(error: ParseForkError) -> Self {
+        Self::Fork(error)
+    }
+}
+
+impl From<WorldError> for InputError {
+    fn from(error: WorldError) -> Self {
+        Self::World(error)
+    }
 }
 
 pub(crate) fn hash(input: &str, field: &'static str) -> Result<B256, InputError> {
@@ -150,10 +95,10 @@ pub(crate) fn hash(input: &str, field: &'static str) -> Result<B256, InputError>
 }
 
 pub(crate) fn address(input: &str, field: &'static str) -> Result<Address, InputError> {
-    input.parse().map_err(|source| InputError::Address {
+    input.parse().map_err(|error| InputError::Address {
         field,
         input: input.to_owned(),
-        source,
+        error,
     })
 }
 
@@ -179,21 +124,21 @@ pub(crate) fn word(input: &str, field: &'static str) -> Result<U256, InputError>
     } else {
         digits
     };
-    let bytes = hex::decode(even).map_err(|source| InputError::Hex { field, source })?;
+    let bytes = hex::decode(even).map_err(|error| InputError::Hex { field, error })?;
     Ok(U256::from_be_slice(&bytes))
 }
 
 pub(crate) fn calldata(input: &str) -> Result<Vec<u8>, InputError> {
-    hex::decode(input.strip_prefix("0x").unwrap_or(input)).map_err(|source| InputError::Hex {
+    hex::decode(input.strip_prefix("0x").unwrap_or(input)).map_err(|error| InputError::Hex {
         field: "calldata",
-        source,
+        error,
     })
 }
 
 pub(crate) fn load(path: &Path) -> Result<World, InputError> {
-    let text = fs::read_to_string(path).map_err(|source| InputError::Read {
+    let text = fs::read_to_string(path).map_err(|error| InputError::Read {
         path: path.display().to_string(),
-        source,
+        error,
     })?;
     parse(&text)
 }
@@ -226,7 +171,7 @@ fn parse(text: &str) -> Result<World, InputError> {
         let has_code = input.code.is_some();
         let mut account = match input.code {
             Some(code) => Account::from_hex(&code, fork)
-                .map_err(|source| InputError::Code { address, source })?,
+                .map_err(|error| InputError::Code { address, error })?,
             None => Account::unknown(),
         };
         account.storage_unknown = input.storage_unknown;

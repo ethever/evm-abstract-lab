@@ -15,7 +15,6 @@ use alloy_primitives::{Address, B256, U256, hex};
 use reqwest::blocking::Client;
 use serde_json::{Value as Json, json};
 use std::{collections::BTreeSet, fmt, io::Read, time::Duration};
-use thiserror::Error;
 
 /// One explicitly requested account and its observed storage slots.
 #[derive(Clone, Debug)]
@@ -93,10 +92,12 @@ impl fmt::Display for RpcContext {
 }
 
 /// RPC failure before a world exists; callers must not report convergence.
-#[derive(Debug, Error)]
+///
+/// Nested failures remain concrete fields on their variants. Inspect those fields
+/// directly; the standard error trait does not expose an erased source chain.
+#[derive(Debug)]
 pub enum RpcError {
     /// Invalid request limits or duplicate acquisition entries.
-    #[error("invalid RPC configuration ({context}): {reason}")]
     Configuration {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
@@ -104,16 +105,13 @@ pub enum RpcError {
         reason: &'static str,
     },
     /// Transport failures, including timeout and connection errors.
-    #[error("RPC transport failure ({context}): {source}")]
     Transport {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
         /// Original transport error with endpoint credentials removed.
-        #[source]
         source: reqwest::Error,
     },
     /// Non-success HTTP status; no error payload is interpreted as state.
-    #[error("RPC HTTP status {status} ({context})")]
     Http {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
@@ -121,7 +119,6 @@ pub enum RpcError {
         status: u16,
     },
     /// Response exceeded the configured allocation bound.
-    #[error("RPC response exceeds {limit} bytes ({context})")]
     ResponseLimit {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
@@ -129,25 +126,20 @@ pub enum RpcError {
         limit: usize,
     },
     /// Failure reading the bounded response body.
-    #[error("RPC response read failure ({context}): {source}")]
     Read {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
         /// Original I/O error, including body timeout.
-        #[source]
         source: std::io::Error,
     },
     /// The body was not a JSON document.
-    #[error("RPC JSON failure ({context}): {source}")]
     Json {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
         /// Original JSON decoding error.
-        #[source]
         source: serde_json::Error,
     },
     /// JSON-RPC explicitly rejected the pinned request.
-    #[error("RPC error {code} ({context}): {message}")]
     Remote {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
@@ -157,13 +149,11 @@ pub enum RpcError {
         message: String,
     },
     /// No observation was returned; absence is never manufactured from null.
-    #[error("RPC result is missing or null ({context})")]
     MissingResult {
         /// Failing method and exact requested snapshot provenance.
         context: Box<RpcContext>,
     },
     /// Envelope or returned fact was missing, malformed or inconsistent.
-    #[error("invalid RPC response ({context}): {reason}")]
     Response {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
@@ -171,7 +161,6 @@ pub enum RpcError {
         reason: &'static str,
     },
     /// The endpoint returned a different chain identity.
-    #[error("RPC chain mismatch ({context}): returned {observed:#x}")]
     ChainMismatch {
         /// Expected chain and fixed snapshot provenance.
         context: Box<RpcContext>,
@@ -179,7 +168,6 @@ pub enum RpcError {
         observed: U256,
     },
     /// A block lookup did not resolve the exact requested hash.
-    #[error("RPC block mismatch ({context}): returned {observed}")]
     BlockMismatch {
         /// Expected block and fixed snapshot provenance.
         context: Box<RpcContext>,
@@ -187,24 +175,78 @@ pub enum RpcError {
         observed: B256,
     },
     /// Runtime code cannot be decoded under the selected fork.
-    #[error("RPC code failure ({context}): {source}")]
     Code {
         /// Account, method and fixed snapshot provenance.
         context: Box<RpcContext>,
         /// Original fork-aware decoder error.
-        #[source]
         source: DecodeError,
     },
     /// Returned account facts violate snapshot code/state consistency.
-    #[error("RPC snapshot failure ({context}): {source}")]
     World {
         /// Account, method and fixed snapshot provenance.
         context: Box<RpcContext>,
         /// Original snapshot validation error.
-        #[source]
         source: WorldError,
     },
 }
+
+impl fmt::Display for RpcError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Configuration { context, reason } => {
+                write!(formatter, "invalid RPC configuration ({context}): {reason}")
+            }
+            Self::Transport { context, source } => {
+                write!(formatter, "RPC transport failure ({context}): {source}")
+            }
+            Self::Http { context, status } => {
+                write!(formatter, "RPC HTTP status {status} ({context})")
+            }
+            Self::ResponseLimit { context, limit } => {
+                write!(formatter, "RPC response exceeds {limit} bytes ({context})")
+            }
+            Self::Read { context, source } => {
+                write!(formatter, "RPC response read failure ({context}): {source}")
+            }
+            Self::Json { context, source } => {
+                write!(formatter, "RPC JSON failure ({context}): {source}")
+            }
+            Self::Remote {
+                context,
+                code,
+                message,
+            } => {
+                write!(formatter, "RPC error {code} ({context}): {message}")
+            }
+            Self::MissingResult { context } => {
+                write!(formatter, "RPC result is missing or null ({context})")
+            }
+            Self::Response { context, reason } => {
+                write!(formatter, "invalid RPC response ({context}): {reason}")
+            }
+            Self::ChainMismatch { context, observed } => {
+                write!(
+                    formatter,
+                    "RPC chain mismatch ({context}): returned {observed:#x}"
+                )
+            }
+            Self::BlockMismatch { context, observed } => {
+                write!(
+                    formatter,
+                    "RPC block mismatch ({context}): returned {observed}"
+                )
+            }
+            Self::Code { context, source } => {
+                write!(formatter, "RPC code failure ({context}): {source}")
+            }
+            Self::World { context, source } => {
+                write!(formatter, "RPC snapshot failure ({context}): {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RpcError {}
 
 impl RpcError {
     /// Fixed provenance available without parsing a human-readable message.

@@ -217,3 +217,211 @@ fn conflicting_account_or_normalized_slot_facts_are_rejected() {
         Err(InputError::DuplicateSlot { .. })
     ));
 }
+
+fn json_error(input: &str) -> String {
+    match parse(input) {
+        Err(InputError::Json(error)) => error.to_string(),
+        Err(error) => panic!("expected JSON error, observed {error:?}"),
+        Ok(_) => panic!("invalid JSON input was accepted: {input}"),
+    }
+}
+
+#[test]
+fn snapshot_objects_reject_unknown_fields_at_each_input_level() {
+    let inputs = [
+        r#"{"fork":"osaka","provenance":"test","accounts":[],"extra":0}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":[{"address":"0x0000000000000000000000000000000000000101","extra":0}]}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"offline","label":"test","extra":0}}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"offline","label":"test","chain_id":"0x1"}}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"chain","label":"test"}}"#,
+    ];
+    for input in inputs {
+        assert!(json_error(input).contains("unknown field"), "{input}");
+    }
+}
+
+#[test]
+fn required_snapshot_and_identity_fields_remain_required() {
+    let cases = [
+        (r#"{"provenance":"test","accounts":[]}"#, "fork"),
+        (r#"{"fork":"osaka","accounts":[]}"#, "provenance"),
+        (r#"{"fork":"osaka","provenance":"test"}"#, "accounts"),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[{}]}"#,
+            "address",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"label":"test"}}"#,
+            "kind",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"offline"}}"#,
+            "label",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"chain"}}"#,
+            "chain_id",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"chain","chain_id":"0x1"}}"#,
+            "block_hash",
+        ),
+    ];
+    for (input, field) in cases {
+        assert!(
+            json_error(input).contains(&format!("missing field `{field}`")),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn null_optional_fields_match_omitted_unknown_facts() {
+    let omitted = parse(
+        r#"{
+        "fork":"osaka","provenance":"test",
+        "accounts":[{"address":"0x0000000000000000000000000000000000000101"}]
+    }"#,
+    )
+    .unwrap();
+    let explicit_null = parse(
+        r#"{
+        "fork":"osaka","provenance":"test","identity":null,"fingerprint":null,
+        "accounts":[{"address":"0x0000000000000000000000000000000000000101",
+            "code":null,"balance":null,"nonce":null,"existence":null,"code_hash":null}]
+    }"#,
+    )
+    .unwrap();
+    assert_eq!(omitted.fingerprint(), explicit_null.fingerprint());
+    let account = explicit_null.account(address(0x101)).unwrap();
+    assert!(account.storage.is_empty());
+    assert!(account.storage_unknown);
+    assert!(matches!(account.code, Code::Unknown));
+}
+
+#[test]
+fn explicit_null_does_not_default_required_fields_or_storage() {
+    let inputs = [
+        r#"{"fork":null,"provenance":"test","accounts":[]}"#,
+        r#"{"fork":"osaka","provenance":null,"accounts":[]}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":null}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":[{"address":null}]}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":[{"address":"0x0000000000000000000000000000000000000101","storage":null}]}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":[{"address":"0x0000000000000000000000000000000000000101","storage_unknown":null}]}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":null,"label":"test"}}"#,
+        r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"offline","label":null}}"#,
+    ];
+    for input in inputs {
+        assert!(json_error(input).contains("invalid type: null"), "{input}");
+    }
+}
+
+#[test]
+fn duplicate_fields_are_rejected_even_when_the_first_value_is_null() {
+    for field in ["identity", "fingerprint"] {
+        let input = format!(
+            r#"{{"fork":"osaka","provenance":"test","accounts":[],"{field}":null,"{field}":null}}"#
+        );
+        assert!(json_error(&input).contains(&format!("duplicate field `{field}`")));
+    }
+    for field in ["code", "balance", "nonce", "existence", "code_hash"] {
+        let input = format!(
+            r#"{{"fork":"osaka","provenance":"test","accounts":[{{"address":"0x0000000000000000000000000000000000000101","{field}":null,"{field}":null}}]}}"#
+        );
+        assert!(json_error(&input).contains(&format!("duplicate field `{field}`")));
+    }
+    let cases = [
+        (
+            r#"{"fork":"osaka","fork":"osaka","provenance":"test","accounts":[]}"#,
+            "fork",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","provenance":"test","accounts":[]}"#,
+            "provenance",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[],"accounts":[]}"#,
+            "accounts",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[{"address":"0x0000000000000000000000000000000000000101","address":"0x0000000000000000000000000000000000000101"}]}"#,
+            "address",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[{"address":"0x0000000000000000000000000000000000000101","storage":{},"storage":{}}]}"#,
+            "storage",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[{"address":"0x0000000000000000000000000000000000000101","storage_unknown":true,"storage_unknown":false}]}"#,
+            "storage_unknown",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"offline","label":"test","kind":"offline"}}"#,
+            "kind",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"label":"test","label":"test","kind":"offline"}}"#,
+            "label",
+        ),
+        (
+            r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"chain","chain_id":"0x1","chain_id":"0x1"}}"#,
+            "chain_id",
+        ),
+    ];
+    for (input, field) in cases {
+        assert!(
+            json_error(input).contains(&format!("duplicate field `{field}`")),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn identity_tag_can_follow_variant_fields_and_rejects_unknown_kinds() {
+    let before = parse(r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"offline","label":"example"}}"#).unwrap();
+    let after = parse(r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"label":"example","kind":"offline"}}"#).unwrap();
+    assert_eq!(before.fingerprint(), after.fingerprint());
+
+    let block_hash = alloy_primitives::B256::repeat_byte(0x11);
+    let chain = format!(
+        r#"{{"fork":"osaka","provenance":"test","accounts":[],"identity":{{"block_hash":"{block_hash}","kind":"chain","chain_id":"0x1"}}}}"#
+    );
+    assert_eq!(
+        parse(&chain).unwrap().identity(),
+        &SnapshotIdentity::Chain {
+            chain_id: U256::from(1),
+            block_hash,
+        }
+    );
+    let unknown =
+        r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"latest"}}"#;
+    assert!(json_error(unknown).contains("unknown variant `latest`"));
+}
+
+#[test]
+fn sequence_inputs_preserve_the_existing_snapshot_format() {
+    let map = parse(
+        r#"{
+        "fork":"osaka","provenance":"test","identity":{"kind":"offline","label":"example"},
+        "accounts":[{"address":"0x0000000000000000000000000000000000000101"}]
+    }"#,
+    )
+    .unwrap();
+    let sequence = parse(
+        r#"[
+        "osaka","test",["offline","example"],null,
+        [["0x0000000000000000000000000000000000000101",null,{},true,null,null,null,null]]
+    ]"#,
+    )
+    .unwrap();
+    assert_eq!(map.fingerprint(), sequence.fingerprint());
+
+    assert!(json_error(r#"["osaka","test",null,null]"#).contains("invalid length 4"));
+    assert!(json_error(r#"["osaka","test",[],null,[]]"#).contains("missing field `kind`"));
+    assert!(json_error(r#"["osaka","test",["offline"],null,[]]"#).contains("invalid length 0"));
+    let short_account =
+        r#"["osaka","test",null,null,[["0x0000000000000000000000000000000000000101",null]]]"#;
+    assert!(json_error(short_account).contains("invalid length 4"));
+    let extra_identity = r#"["osaka","test",["offline","example","extra"],null,[]]"#;
+    assert!(!json_error(extra_identity).is_empty());
+}

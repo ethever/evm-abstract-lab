@@ -124,6 +124,8 @@ gas 不精确计量，一般 hash 和未知环境采用保守近似，也没有�
 
 ## 开发环境与实现入口
 
+应用 workspace 的 Rust 使用静态派发；[动态派发检查](docs/no-dynamic-dispatch.md)说明 Dylint 命令、检查范围和具体错误类型约定。
+
 ```bash
 nix develop
 cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.hex

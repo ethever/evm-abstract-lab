@@ -4,10 +4,45 @@ use alloy_primitives::{Address, U256, keccak256};
 use evm_abstract::{
     Fork,
     domain::{Domain, Value},
-    world::{Account, Store, World},
+    world::{Account, Store, World, WorldError},
 };
 use serde::Serialize;
-use std::{error::Error, hint::black_box, io, time::Instant};
+use std::{hint::black_box, num::ParseIntError, time::Instant};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+enum ExampleError {
+    #[error("{0}")]
+    Argument(ParseIntError),
+    #[error("{name} must be between 1 and {maximum}")]
+    ArgumentRange { name: String, maximum: usize },
+    #[error("usage: state-backends [slots: 1..65536] [iterations: 1..10000]")]
+    Usage,
+    #[error("{workload} changed its input Store")]
+    StoreChanged { workload: &'static str },
+    #[error("{0}")]
+    Json(serde_json::Error),
+    #[error("{0}")]
+    World(WorldError),
+}
+
+impl From<ParseIntError> for ExampleError {
+    fn from(error: ParseIntError) -> Self {
+        Self::Argument(error)
+    }
+}
+
+impl From<serde_json::Error> for ExampleError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+
+impl From<WorldError> for ExampleError {
+    fn from(error: WorldError) -> Self {
+        Self::World(error)
+    }
+}
 
 #[derive(Serialize)]
 struct Sample {
@@ -29,14 +64,13 @@ fn bounded_argument(
     name: &str,
     default: usize,
     maximum: usize,
-) -> Result<usize, Box<dyn Error>> {
+) -> Result<usize, ExampleError> {
     let value = argument.map_or(Ok(default), |value| value.parse::<usize>())?;
     if !(1..=maximum).contains(&value) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{name} must be between 1 and {maximum}"),
-        )
-        .into());
+        return Err(ExampleError::ArgumentRange {
+            name: name.to_owned(),
+            maximum,
+        });
     }
     Ok(value)
 }
@@ -50,7 +84,7 @@ fn observation(value: Value) -> u64 {
     }
 }
 
-fn store_checksum(store: &Store) -> Result<String, Box<dyn Error>> {
+fn store_checksum(store: &Store) -> Result<String, ExampleError> {
     Ok(format!("{:#x}", keccak256(serde_json::to_vec(store)?)))
 }
 
@@ -62,7 +96,7 @@ fn sample(
     writes_per_iteration: usize,
     effect_store_checksum: &str,
     mut operation: impl FnMut(&mut Store) -> u64,
-) -> Result<Sample, Box<dyn Error>> {
+) -> Result<Sample, ExampleError> {
     // Initial construction and this per-workload clone are outside the timer.
     let mut store = baseline.clone();
     let mut checksum = 0_u64;
@@ -72,7 +106,7 @@ fn sample(
     }
     let elapsed_ns = start.elapsed().as_nanos();
     if store != *baseline {
-        return Err(io::Error::other(format!("{workload} changed its input Store")).into());
+        return Err(ExampleError::StoreChanged { workload });
     }
     let final_store_checksum = store_checksum(&store)?;
     Ok(Sample {
@@ -90,16 +124,12 @@ fn sample(
     })
 }
 
-fn run() -> Result<(), Box<dyn Error>> {
+fn run() -> Result<(), ExampleError> {
     let mut arguments = std::env::args().skip(1);
     let slots = bounded_argument(arguments.next(), "slots", 4096, 65_536)?;
     let iterations = bounded_argument(arguments.next(), "iterations", 100, 10_000)?;
     if arguments.next().is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "usage: state-backends [slots: 1..65536] [iterations: 1..10000]",
-        )
-        .into());
+        return Err(ExampleError::Usage);
     }
 
     let address = Address::from([1_u8; 20]);
@@ -201,6 +231,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), ExampleError> {
     run()
 }

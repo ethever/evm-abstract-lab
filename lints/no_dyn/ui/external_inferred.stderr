@@ -1,0 +1,83 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:9:18
+   |
+LL |     let action = dispatch_types::callback();
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:9:9
+   |
+LL |     let action = dispatch_types::callback();
+   |         ^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:10:13
+   |
+LL |     let _ = action(1);
+   |             ^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:12:18
+   |
+LL |     let object = dispatch_types::erased();
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:12:9
+   |
+LL |     let object = dispatch_types::erased();
+   |         ^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:13:13
+   |
+LL |     let _ = object.run();
+   |             ^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:16:36
+   |
+LL |     let _ = dispatch_types::accept(&1u8);
+   |                                    ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:20:13
+   |
+LL |     let _ = wrapper.run();
+   |             ^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:23:13
+   |
+LL |     let _ = Work::run(dispatch_types::borrowed(&1u8));
+   |             ^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_inferred.rs:23:23
+   |
+LL |     let _ = Work::run(dispatch_types::borrowed(&1u8));
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 10 previous errors
+

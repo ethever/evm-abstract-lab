@@ -18,27 +18,25 @@
 //!     world::{Account, ByteArray, Entry, World}, ssa};
 //! let address = Address::repeat_byte(0x11);
 //! let mut world = World::new(Fork::Osaka, "offline example");
-//! world.insert(address, Account::from_hex("602a5f5260205ff3", Fork::Osaka)?)?;
+//! world.insert(address, Account::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap()).unwrap();
 //! let graph = analysis::analyze_world(world, Entry {
 //!     address, caller: Address::repeat_byte(0x22), value: Value::constant(U256::ZERO),
 //!     calldata: ByteArray::empty(), is_static: false,
-//! }, analysis::ExecutionConfig::default())?;
+//! }, analysis::ExecutionConfig::default()).unwrap();
 //! assert_eq!(graph.status(), analysis::Status::Converged);
-//! ssa::build_world(&graph)?.verify(&graph)?;
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ssa::build_world(&graph).unwrap().verify(&graph).unwrap();
 //! ```
 //!
 //! 单字节码适配入口仍可用于栈 CFG/SSA 实验：
 //!
 //! ```
 //! use evm_abstract::{analysis::{analyze, Config, Status}, bytecode::Program, ssa};
-//! let program = Program::from_hex("600160020100")?;
-//! let analysis = analyze(program, Config::default())?;
+//! let program = Program::from_hex("600160020100").unwrap();
+//! let analysis = analyze(program, Config::default()).unwrap();
 //! assert_eq!(analysis.status(), Status::Converged);
-//! let ir = ssa::build(&analysis)?;
+//! let ir = ssa::build(&analysis).unwrap();
 //! assert_eq!(ir.value_count(), 3);
-//! ir.verify(&analysis)?;
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ir.verify(&analysis).unwrap();
 //! ```
 
 pub mod analysis;

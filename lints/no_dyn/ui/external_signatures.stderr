@@ -1,0 +1,89 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:9:16
+   |
+LL |     callbacks: Vec<dispatch_types::Callback>,
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:9:20
+   |
+LL |     callbacks: Vec<dispatch_types::Callback>,
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:10:14
+   |
+LL |     objects: Option<dispatch_types::Erased>,
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:10:21
+   |
+LL |     objects: Option<dispatch_types::Erased>,
+   |                     ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:13:18
+   |
+LL | fn callback() -> dispatch_types::Callback {
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:13:43
+   |
+LL |   fn callback() -> dispatch_types::Callback {
+   |  ___________________________________________^
+LL | |     panic!("external alias in function return")
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:14:5
+   |
+LL |     panic!("external alias in function return")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:18:20
+   |
+LL |     fn object() -> dispatch_types::Erased {
+   |                    ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:18:43
+   |
+LL |       fn object() -> dispatch_types::Erased {
+   |  ___________________________________________^
+LL | |         panic!("external alias in inherent method return")
+LL | |     }
+   | |_____^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_signatures.rs:19:9
+   |
+LL |         panic!("external alias in inherent method return")
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 10 previous errors
+

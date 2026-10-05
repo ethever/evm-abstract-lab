@@ -67,15 +67,25 @@
           };
           imblArtifacts = craneLib.buildDepsOnly imblCommon;
           imblPackage = craneLib.buildPackage (imblCommon // { cargoArtifacts = imblArtifacts; });
+          dylint = import ./nix/dylint.nix {
+            inherit
+              pkgs
+              crane
+              craneLib
+              common
+              ;
+          };
         in
         {
-          packages.default = package;
+          packages = dylint.packages // {
+            default = package;
+          };
           apps.default = {
             type = "app";
             program = "${package}/bin/evm-abstract";
             meta = package.meta;
           };
-          checks = {
+          checks = dylint.checks // {
             build-and-test = package;
             imbl-build-and-test = imblPackage;
             clippy = craneLib.cargoClippy (
@@ -147,7 +157,7 @@
                   nativeBuildInputs = [ pkgs.nixfmt ];
                 }
                 ''
-                  nixfmt --check ${./flake.nix}
+                  nixfmt --check ${./flake.nix} ${./nix/dylint.nix}
                   touch $out
                 '';
             doc-links =
@@ -242,17 +252,19 @@
           };
           devShells.default = craneLib.devShell {
             checks = self.checks.${system};
-            packages = with pkgs; [
-              graphviz
-              cargo-nextest
-              nixfmt
-              lychee
-              git
-              python3
-              coreutils
-              bash
-              nixVersions.stable
-            ];
+            packages =
+              dylint.devPackages
+              ++ (with pkgs; [
+                graphviz
+                cargo-nextest
+                nixfmt
+                lychee
+                git
+                python3
+                coreutils
+                bash
+                nixVersions.stable
+              ]);
             RUST_BACKTRACE = "1";
             FONTCONFIG_FILE = fontConfig;
           };

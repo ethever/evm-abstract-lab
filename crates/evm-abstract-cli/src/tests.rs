@@ -1,6 +1,6 @@
 //! CLI validates explicit input selection before acquisition and execution.
 
-use super::{Cli, Command};
+use super::{Cli, Command, error::CliError};
 use alloy_primitives::U256;
 use clap::{Parser, error::ErrorKind};
 use std::net::TcpListener;
@@ -143,11 +143,7 @@ fn rpc_failure_reaches_cli_as_input_error_before_an_analysis_exists() {
         panic!("expected analyze")
     };
     let error = args.analyze().unwrap_err();
-    assert!(
-        error
-            .downcast_ref::<evm_abstract::world::rpc::RpcError>()
-            .is_some()
-    );
+    assert!(matches!(error, CliError::Rpc(_)));
 }
 
 #[test]

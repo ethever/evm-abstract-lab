@@ -1,0 +1,11 @@
+error[E0453]: allow(no_dyn) incompatible with previous forbid
+  --> $DIR/allow.rs:3:10
+   |
+LL | #![allow(no_dyn)]
+   |          ^^^^^^ overruled by previous forbid
+   |
+   = note: `forbid` lint level is the default for no_dyn
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0453`.

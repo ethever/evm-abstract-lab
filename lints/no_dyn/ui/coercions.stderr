@@ -1,0 +1,102 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:13:19
+   |
+LL |     let actions = [first, second];
+   |                   ^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:13:20
+   |
+LL |     let actions = [first, second];
+   |                    ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:13:27
+   |
+LL |     let actions = [first, second];
+   |                           ^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:13:9
+   |
+LL |     let actions = [first, second];
+   |         ^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:14:13
+   |
+LL |     let _ = actions[0](1);
+   |             ^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:14:13
+   |
+LL |     let _ = actions[0](1);
+   |             ^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:17:18
+   |
+LL |       let action = if true {
+   |  __________________^
+LL | |         |value: u8| value
+LL | |     } else {
+LL | |         |value: u8| value + 1
+LL | |     };
+   | |_____^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:17:26
+   |
+LL |       let action = if true {
+   |  __________________________^
+LL | |         |value: u8| value
+LL | |     } else {
+   | |_____^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:19:12
+   |
+LL |       } else {
+   |  ____________^
+LL | |         |value: u8| value + 1
+LL | |     };
+   | |_____^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:17:9
+   |
+LL |     let action = if true {
+   |         ^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/coercions.rs:22:13
+   |
+LL |     let _ = action(1);
+   |             ^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 11 previous errors
+

@@ -1,5 +1,6 @@
 //! CLI 只负责参数、文件和输出；分析与渲染逻辑在库中，便于逐层学习和复用。
 
+mod error;
 mod number;
 mod world;
 
@@ -8,6 +9,7 @@ mod tests;
 
 use alloy_primitives::U256;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use error::CliError;
 use evm_abstract::{
     Fork,
     analysis::{self, Config, ExecutionConfig, Status},
@@ -19,7 +21,6 @@ use evm_abstract::{
     },
 };
 use std::{
-    error::Error,
     fs,
     io::{self, Write},
     path::PathBuf,
@@ -201,7 +202,7 @@ enum CfgFormat {
 }
 
 impl Input {
-    fn load(self) -> Result<Program, Box<dyn Error>> {
+    fn load(self) -> Result<Program, CliError> {
         let text = match (self.hex, self.file) {
             (Some(hex), None) => hex,
             (None, Some(file)) => fs::read_to_string(file)?,
@@ -212,7 +213,7 @@ impl Input {
 }
 
 impl AnalysisArgs {
-    fn analyze(self) -> Result<analysis::Analysis, Box<dyn Error>> {
+    fn analyze(self) -> Result<analysis::Analysis, CliError> {
         let config = Config {
             max_constants: self.max_constants,
             context_depth: self.context_depth,
@@ -224,7 +225,7 @@ impl AnalysisArgs {
 }
 
 impl WorldArgs {
-    fn analyze(self) -> Result<analysis::WorldAnalysis, Box<dyn Error>> {
+    fn analyze(self) -> Result<analysis::WorldAnalysis, CliError> {
         let entry_address = world::address(&self.entry, "entry")?;
         let world = match (self.world, self.rpc) {
             (Some(path), None) => world::load(&path)?,
@@ -282,7 +283,7 @@ impl WorldArgs {
     }
 }
 
-fn run() -> Result<ExitCode, Box<dyn Error>> {
+fn run() -> Result<ExitCode, CliError> {
     let (output, complete) = match Cli::parse().command {
         Command::Analyze { args, format, ssa } => {
             let analysis = args.analyze()?;

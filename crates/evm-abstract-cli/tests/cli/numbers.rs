@@ -7,7 +7,7 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     sync::mpsc,
-    thread::{self, JoinHandle},
+    thread,
     time::Duration,
 };
 
@@ -98,98 +98,101 @@ fn invalid_rpc_quantities_exit_before_acquiring_a_world() {
 
 #[test]
 fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
-    for (decimal_chain, hex_chain) in [
-        ("56", "0x38"),
-        ("18446744073709551616", "0x10000000000000000"),
-    ] {
-        let server = RpcServer::new(hex_chain);
-        let decimal_slot = format!("{ENTRY}:16");
-        let hex_slot = format!("{ENTRY}:0x10");
-        let uppercase_slot = format!("{ENTRY}:0X10");
-        let mut results = Vec::new();
-        for (chain, value) in [(decimal_chain, "1000"), (hex_chain, "0x3e8")] {
-            let output = run(&[
-                "analyze",
-                "--rpc",
-                &server.endpoint,
-                "--chain-id",
-                chain,
-                "--value",
-                value,
-                "--slot",
-                &decimal_slot,
-                "--slot",
-                &hex_slot,
-                "--slot",
-                &uppercase_slot,
-                "--block-hash",
-                BLOCK,
-                "--entry",
-                ENTRY,
-                "--format",
-                "json",
-            ]);
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let result: Json = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(result["status"], "Converged");
-            assert_eq!(result["world"]["identity"]["chain_id"], hex_chain);
-            // CALLVALUE; PUSH1 16; SLOAD; STOP exercises both CLI quantities.
-            assert_eq!(
-                result["states"][0]["exit_stack"],
-                json!([{"Constants":["0x3e8"]}, {"Constants":["0x2a"]}])
-            );
-            results.push(result);
+    thread::scope(|scope| {
+        for (decimal_chain, hex_chain) in [
+            ("56", "0x38"),
+            ("18446744073709551616", "0x10000000000000000"),
+        ] {
+            let server = RpcServer::new(scope, hex_chain);
+            let decimal_slot = format!("{ENTRY}:16");
+            let hex_slot = format!("{ENTRY}:0x10");
+            let uppercase_slot = format!("{ENTRY}:0X10");
+            let mut results = Vec::new();
+            for (chain, value) in [(decimal_chain, "1000"), (hex_chain, "0x3e8")] {
+                let output = run(&[
+                    "analyze",
+                    "--rpc",
+                    &server.endpoint,
+                    "--chain-id",
+                    chain,
+                    "--value",
+                    value,
+                    "--slot",
+                    &decimal_slot,
+                    "--slot",
+                    &hex_slot,
+                    "--slot",
+                    &uppercase_slot,
+                    "--block-hash",
+                    BLOCK,
+                    "--entry",
+                    ENTRY,
+                    "--format",
+                    "json",
+                ]);
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let result: Json = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(result["status"], "Converged");
+                assert_eq!(result["world"]["identity"]["chain_id"], hex_chain);
+                // CALLVALUE; PUSH1 16; SLOAD; STOP exercises both CLI quantities.
+                assert_eq!(
+                    result["states"][0]["exit_stack"],
+                    json!([{"Constants":["0x3e8"]}, {"Constants":["0x2a"]}])
+                );
+                results.push(result);
+            }
+            assert_eq!(results[0], results[1]);
+            let requests = server.finish();
+            let proof_requests: Vec<_> = requests
+                .iter()
+                .filter(|request| request["method"] == "eth_getProof")
+                .collect();
+            assert_eq!(proof_requests.len(), 2);
+            for request in proof_requests {
+                assert_eq!(
+                    request["params"][1],
+                    json!([format!("0x{:064x}", U256::from(16))])
+                );
+            }
+            let storage_requests: Vec<_> = requests
+                .iter()
+                .filter(|request| request["method"] == "eth_getStorageAt")
+                .collect();
+            assert_eq!(storage_requests.len(), 2);
+            for request in storage_requests {
+                assert_eq!(request["params"][1], "0x10");
+            }
+            for request in requests.iter().filter(|request| {
+                request["method"] != "eth_chainId" && request["method"] != "eth_getBlockByHash"
+            }) {
+                assert_eq!(
+                    request["params"].as_array().unwrap().last().unwrap(),
+                    &json!({"blockHash":BLOCK,"requireCanonical":true})
+                );
+            }
         }
-        assert_eq!(results[0], results[1]);
-        let requests = server.finish();
-        let proof_requests: Vec<_> = requests
-            .iter()
-            .filter(|request| request["method"] == "eth_getProof")
-            .collect();
-        assert_eq!(proof_requests.len(), 2);
-        for request in proof_requests {
-            assert_eq!(
-                request["params"][1],
-                json!([format!("0x{:064x}", U256::from(16))])
-            );
-        }
-        let storage_requests: Vec<_> = requests
-            .iter()
-            .filter(|request| request["method"] == "eth_getStorageAt")
-            .collect();
-        assert_eq!(storage_requests.len(), 2);
-        for request in storage_requests {
-            assert_eq!(request["params"][1], "0x10");
-        }
-        for request in requests.iter().filter(|request| {
-            request["method"] != "eth_chainId" && request["method"] != "eth_getBlockByHash"
-        }) {
-            assert_eq!(
-                request["params"].as_array().unwrap().last().unwrap(),
-                &json!({"blockHash":BLOCK,"requireCanonical":true})
-            );
-        }
-    }
+    });
 }
 
 struct RpcServer {
     endpoint: String,
     stop: Option<mpsc::Sender<()>>,
-    thread: Option<JoinHandle<Vec<Json>>>,
+    done: Option<mpsc::Receiver<Vec<Json>>>,
 }
 
 impl RpcServer {
-    fn new(chain_id: &str) -> Self {
+    fn new<'scope, 'env>(scope: &'scope thread::Scope<'scope, 'env>, chain_id: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
         let (stop, stopped) = mpsc::channel();
+        let (completed, done) = mpsc::channel();
         let chain_id = chain_id.to_owned();
-        let thread = thread::spawn(move || {
+        scope.spawn(move || {
             let mut requests = Vec::new();
             while matches!(stopped.try_recv(), Err(mpsc::TryRecvError::Empty)) {
                 let (mut stream, _) = match listener.accept() {
@@ -237,26 +240,26 @@ impl RpcServer {
                 stream.write_all(&response).unwrap();
                 requests.push(request);
             }
-            requests
+            completed.send(requests).unwrap();
         });
         Self {
             endpoint,
             stop: Some(stop),
-            thread: Some(thread),
+            done: Some(done),
         }
     }
 
     fn finish(mut self) -> Vec<Json> {
         drop(self.stop.take());
-        self.thread.take().unwrap().join().unwrap()
+        self.done.take().unwrap().recv().unwrap()
     }
 }
 
 impl Drop for RpcServer {
     fn drop(&mut self) {
         drop(self.stop.take());
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Some(done) = self.done.take() {
+            let _ = done.recv();
         }
     }
 }

@@ -1,0 +1,59 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/auxiliary/included_dispatch.rs:2:20
+   |
+LL | fn included(value: &dyn std::fmt::Debug) {
+   |                    ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/auxiliary/included_dispatch.rs:2:21
+   |
+LL | fn included(value: &dyn std::fmt::Debug) {
+   |                     ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/auxiliary/included_dispatch.rs:2:13
+   |
+LL | fn included(value: &dyn std::fmt::Debug) {
+   |             ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/auxiliary/included_dispatch.rs:3:5
+   |
+LL |     println!("{value:?}");
+   |     ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/auxiliary/included_dispatch.rs:3:16
+   |
+LL |     println!("{value:?}");
+   |                ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/auxiliary/included_dispatch.rs:3:16
+   |
+LL |     println!("{value:?}");
+   |                ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/auxiliary/included_dispatch.rs:3:15
+   |
+LL |     println!("{value:?}");
+   |               ^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 7 previous errors
+
