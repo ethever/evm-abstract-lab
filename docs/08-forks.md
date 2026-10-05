@@ -1,71 +1,125 @@
-# 08：协议版本为什么是分析输入
+# 08：fork——选择执行规则，再分析字节码
 
-本课目标：知道 Cancun 与“最新 Ethereum”不是同一个概念，能亲手观察 opcode 启用如何改变 CFG，并理解代码委托与直接执行的区别。
+**fork** 在本课中指一套协议版本的执行规则。字节码只是字节序列；还要选定规则，才能判断某个字节是不是有效指令、怎样执行，以及使用哪些预编译。
 
-## 执行层、共识层与升级名
+本仓库支持 `cancun`、`prague`、`osaka`，项目默认配置是 `osaka`。这个默认值写在代码中，不会自动追随网络升级。分析真实历史状态时，应选择该链、该区块实际使用的规则；“使用默认值”不等于已核对快照对应的版本。
 
-Ethereum 的一次网络升级可能同时修改执行层与共识层。整体升级名常由两者组合而来。分析 EVM bytecode 主要需要执行层规则。
+## 1. 协议规则与分析精度是两种输入
 
-| 整体升级 | 执行层 | 共识层 | 主网激活日 |
-| --- | --- | --- | --- |
-| Dencun | Cancun | Deneb | 2024-03-13 |
-| Pectra | Prague | Electra | 2025-05-07 |
-| Fusaka | Osaka | Fulu | 2025-12-03 |
+| 改变的参数 | 改变什么 | 例子 |
+| --- | --- | --- |
+| `--fork` | 被分析程序的执行语义 | 同一个 `0x1e` 在 Osaka 是 CLZ，在两个旧 fork 中无效 |
+| `--max-constants` | 分析保留多少个可能数值 | `{1,2}` 能保留，还是扩大为 Top |
+| `--context-depth` | 哪些执行暂时分开分析 | 同一 helper 的两个调用来源是否合并 |
 
-2026-10-02 核验时，最新已激活的具名主网升级是 Fusaka。其后的 BPO1/BPO2 调整 blob 参数，没有增加 EVM opcode。本仓库默认选择 Osaka。Glamsterdam 的执行层名为 Amsterdam，仍在上线准备中，主网激活日未确定。[官方路线图](https://ethereum.org/roadmap/)、[Fusaka 规范](https://eips.ethereum.org/EIPS/eip-7607)、[Glamsterdam 规范](https://eips.ethereum.org/EIPS/eip-7773)
+改变精度参数时，我们仍在近似同一套规则。改变 fork 时，实际合法行为可能就不同了。
 
-revm 含有 Amsterdam 的开发中实现，不能据此自动启用。新 opcode 只有在选定规则允许时才参与抽象执行；这避免把未来规则混进历史或当前主网分析。
+Ethereum 网络升级可能同时修改执行层和共识层。升级总规范中的名称对应如下；本文使用执行层名字标记 EVM 分析规则：
 
-## 同一段代码，两个不同的结果
+| 网络升级总规范 | 执行层 | 共识层 |
+| --- | --- | --- |
+| [Dencun](https://eips.ethereum.org/EIPS/eip-7569) | Cancun | Deneb |
+| [Pectra](https://eips.ethereum.org/EIPS/eip-7600) | Prague | Electra |
+| [Fusaka](https://eips.ethereum.org/EIPS/eip-7607) | Osaka | Fulu |
 
-[`osaka-clz.hex`](../examples/osaka-clz.hex) 是：
+## 2. 手算 CLZ 怎样算出跳转地址
+
+**CLZ** 是 count leading zeros，计算一个 256 bit 值从最高位起有多少个连续零位。[EIP-7939](https://eips.ethereum.org/EIPS/eip-7939) 规定 opcode 为 `0x1e`，弹出一个值、压入一个结果。
+
+| 输入 | 二进制特征 | CLZ 结果 |
+| --- | --- | --- |
+| `1` | 只有最低位置位，前面有 255 个零 | 255 |
+| `2^255` | 最高位已经置位 | 0 |
+| `0` | 全部 256 位都是零 | 256 |
+
+示例 [`osaka-clz.hex`](../examples/osaka-clz.hex) 使用 CLZ 算出一个合法 JUMPDEST：
 
 ```text
 60011e60f79003565b602a00
 ```
 
-在 Osaka 下：
+按栈底 → 栈顶手算：
 
-| pc | 指令 | 栈（底 → 顶） |
-| --- | --- | --- |
-| 0 | PUSH1 1 | `[1]` |
-| 2 | CLZ | `[255]` |
-| 3 | PUSH1 247 | `[255,247]` |
-| 5 | SWAP1 | `[247,255]` |
-| 6 | SUB | `[8]`，栈顶先弹出，255−247=8 |
-| 7 | JUMP | 到真实 JUMPDEST pc=8 |
-| 8 | JUMPDEST | `[]` |
-| 9 | PUSH1 42 | `[42]` |
-| 11 | STOP | 结束 |
+| pc | 指令 | 执行后栈 | 原因 |
+| --- | --- | --- | --- |
+| `0x00` | PUSH1 1 | `[1]` | 压入输入 |
+| `0x02` | CLZ | `[255]` | CLZ(1)=255 |
+| `0x03` | PUSH1 247 | `[255,247]` | 准备减数 |
+| `0x05` | SWAP1 | `[247,255]` | 把 255 放在栈顶 |
+| `0x06` | SUB | `[8]` | 先弹出 255，再弹出 247，计算 255−247 |
+| `0x07` | JUMP | `[]` | 弹出目标 8，跳到 `0x08` |
+| `0x08` | JUMPDEST | `[]` | 合法目标 |
+| `0x09` | PUSH1 42 | `[42]` | 产生结果 |
+| `0x0b` | STOP | `[42]` | 结束 |
+
+在仓库根目录运行：
 
 ```bash
-nix run . -- explain --file examples/osaka-clz.hex
+nix run . -- explain --file examples/osaka-clz.hex --fork osaka
 nix run . -- explain --file examples/osaka-clz.hex --fork cancun
 nix run . -- explain --file examples/osaka-clz.hex --fork prague
 ```
 
-默认 Osaka 能精确恢复一条 JUMP 边并保留结果 42。两个旧 fork 会在 pc=2 将 0x1e 视为无效指令，之后的目标不可达；SSA 将该指令显示为异常终止。这不是同一模式下的“精度变化”，而是协议语义真的不同。
+核对以下差别：
 
-## CLZ 的抽象语义
+| 规则 | `pc=0x02` 的行为 | 图中的结果 |
+| --- | --- | --- |
+| Osaka | 正常执行 CLZ | 一条 Jump 边到 `0x08`，目标块出栈 `{0x2a}` |
+| Cancun / Prague | `InvalidOpcode`，该路径异常终止 | 没有后续边，SSA 标记 `exceptional halt` |
 
-[EIP-7939](https://eips.ethereum.org/EIPS/eip-7939) 引入 0x1e，弹出一个 U256、压入其前导零数。最高位已置位时返回 0，只有最低位置位时返回 255，零返回 256。
+旧 fork 的结果也可以 `Converged`：分析已经把无效指令导致的终止算完。这再次说明“分析完成”不等于“程序成功执行”。
 
-实现复用 alloy/ruint 的 `leading_zeros()`。有限集合逐值计算后合并；Top 的结果范围是 0..=256，如果容量不足仍升到 Top。不能因为“只保留八个数”而漏掉其他合法结果。
+## 3. 输入未知时，CLZ 仍要保守表示
 
-解析与切块见 [`bytecode.rs`](../crates/evm-abstract/src/bytecode.rs)，启用规则见 [`fork.rs`](../crates/evm-abstract/src/fork.rs)，数值语义见 [`domain.rs`](../crates/evm-abstract/src/domain.rs)。SSA 不需要重新实现 CLZ：普通单输入/单输出的定义与使用从 revm 元数据获得。
+输入是有限集合时，分析逐个计算，再合并。例如 `{0,1}` 的结果是 `{256,255}`。
 
-## EIP-7702：账户代码不总是指令流
+输入是 Top 时，CLZ 的数学结果范围是 `0..=256`，共 257 个值。当前 CLI 的集合容量最多 64，所以这个范围无法完整放入有限集合，结果仍表示为 Top。不能只保留前 64 个结果，把其他合法结果删掉。
 
-Prague 开始，一个 EOA 的账户代码可以是 23 字节的 `ef0100 || address`。这是委托标记；执行客户端从目标取得代码，使用委托账户的上下文执行。[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)
+实现复用 U256 的 `leading_zeros()`。启用规则见 [`fork.rs`](../crates/evm-abstract/src/fork.rs)，解码见 [`bytecode.rs`](../crates/evm-abstract/src/bytecode.rs)，抽象数值计算见 [`domain.rs`](../crates/evm-abstract/src/domain.rs)。SSA 使用指令的输入/输出元数据连接定义，不需要另写一份 CLZ 数值语义。
 
-如果直接把这个标记当作普通 opcode 流，会在 0xef 停止并生成误导性的终止 CFG。单段字节码入口复用 revm 的格式解析器，返回带目标地址的 `DelegatedCode` 错误；畸形长度/版本保留其具体解析错误。世界入口则把它保存为 `Code::Delegation`，从同一固定世界取得目标代码，同时保持委托账户的 storage、余额和 ADDRESS 身份。两个入口都不自动访问 RPC。
+## 4. EIP-7702：账户的 code 可能是委托标记
 
-EIP-7702 限制委托解析为一层；世界执行不会递归跟随目标的另一个委托标记。目标代码未提供时保存 MissingCode 前沿，不能仅凭委托账户存在就声明分析完成。授权交易列表本身仍属于模型边界。
+EOA 是由外部密钥控制的账户。Prague 的 [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 允许其账户代码保存一个 23 字节的**委托标记**：
 
-## 规则怎样保持一致
+```text
+ef 01 00 || 20 字节目标地址
+```
 
-世界文件固定 fork，账户插入时拒绝与世界规则不一致的 runtime；单段 CLI 的 `--fork` 传给 `Program::from_hex_with_fork`。Program 与每条 Instruction 保存同一个不可修改的 Fork，解码、切块、抽象 transfer、SSA 都使用它。JSON 的 `world.fork` / `program.fork`、文本和 DOT 的 `fork=` 保留选择结果。
+这里 `||` 表示字节拼接。这段数据表示“从目标账户取得代码，在委托账户的执行上下文中运行”，不是把 `ef`、`01`、`00` 当作三条普通指令执行。
 
-只有图形看起来相同并不足以证明选择生效。本仓库既检查输出 metadata，也用三个 fork 的 revm 配置对照真实执行；CLZ 另用零与全部 256 个单置位值核对，旧 fork 明确验证其未启用。
+```mermaid
+flowchart LR
+    A["账户 A：委托标记指向 B"] --> B["取得 B 的代码"]
+    B --> C["执行 B 的代码；ADDRESS、storage 等仍属于 A 的上下文"]
+```
 
-“支持 Osaka”在这里指世界执行和单账户视图使用 Osaka 的字节码规则，并从同一 fork 的注册表选择原生预编译。内存、storage、调用帧、有限创建与 EIP-6780 已进入语义；gas 精确计量、无法表示的原生输入、完整授权交易处理仍属于[已列出的模型边界](06-boundaries.md)。世界中的 EIP-7702 标记可以按快照解析目标代码，同时保留委托账户的状态身份；这不等于处理交易里的 authorization list。协议版本选择不能代替这些能力。
+本仓库的两个入口据此采取不同处理：
+
+| 输入方式 | 行为 |
+| --- | --- |
+| 单段字节码命令，如 `cfg --hex ...` | 识别标记，返回带目标地址的 `DelegatedCode` 错误；单段字节无法提供目标世界事实 |
+| 多账户世界 `analyze --world ...` | 保存为 `Code::Delegation`，从同一固定世界取目标代码，分别保留代码身份和状态身份 |
+
+可以观察单段入口的拒绝：
+
+```bash
+nix run . -- cfg --hex ef01001111111111111111111111111111111111111111 --fork osaka
+```
+
+这会报告目标地址 `0x1111...1111`，不是生成一个误导性的普通 CFG。畸形长度或版本会保留具体解析错误；Cancun 尚未启用这种委托格式，会把开头的 `0xef` 作为无效指令处理。
+
+委托解析只跟随一层。如果 B 的代码又是委托标记，不会继续递归解析链或循环；若目标是预编译地址，委托执行视为取得空代码。目标代码缺失时留下 `MissingCode` 前沿。工具不会自动请求 RPC 来补事实。
+
+这一能力从已有快照解析代码，并不执行设置委托的授权交易列表、签名检查或授权 nonce 规则；这些交易级操作仍属于模型边界。
+
+## 5. 怎样确认选择贯穿了整个分析
+
+单段 CLI 把 `--fork` 传给 Program 的解析，Program 与 Instruction 保存同一不可修改的选择。解码、切块、抽象执行和 SSA 共用它。世界 JSON 则在 `fork` 字段固定规则，并拒绝与之冲突的账户 runtime。
+
+结果也保留选择：单段 JSON 是 `program.fork`，世界 JSON 是 `world.fork`；文本和 DOT 显示 `fork=`。先核对这些字段，再看版本差异导致的实际指令与边，不能只凭图形相似判断配置是否生效。
+
+[`osaka.rs`](../crates/evm-abstract/tests/osaka.rs) 检查 CLZ 的启用/禁用、CFG 与 SSA、委托格式以及尚未支持规则的拒绝；[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 使用相同 fork 的 revm 对照，另核对 CLZ 的零和全部 256 个单置位输入。
+
+“支持 Osaka”表示已实现模型按 Osaka 选择字节码与预编译规则，并不表示实现了完整协议的每个细节。内存、storage、调用、有限创建和 EIP-6780 已进入模型；精确 gas、无法表示的原生输入、完整授权交易处理等限制仍见[第 06 课](06-boundaries.md)。规则选择与模型能力必须同时阅读。
+
+进阶继续：[第 09 课：跨合约调用](09-cross-contract.md)，再读[第 10 课：快照、摘要和创建](10-snapshots-summaries-creation.md)。

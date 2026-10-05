@@ -1,29 +1,63 @@
-# 参考资料与阅读顺序
+# 参考资料：带着一个问题查原文
 
-不要求一次读完原论文。先把一个运行结果解释通，再选择相应资料。
+先运行一个例子、解释输出，再查它对应的资料。教程负责给出操作步骤；这一页用于确认协议规则、理解算法依据或追踪依赖实现，不要求从头读完所有链接。
 
-| 想确认的事实 | 第一手资料 | 如何对照本仓库 |
+| 你目前卡在哪里 | 先在本仓库看 | 再查什么 |
 | --- | --- | --- |
-| EVM JUMP/JUMPI、PC、STOP 语义 | [Ethereum execution-specs：Cancun 控制流](https://github.com/ethereum/execution-specs/blob/master/src/ethereum/forks/cancun/vm/instructions/control_flow.py) | `bytecode.rs`、`analysis/transfer.rs` |
-| 算术、补码、位运算规则 | [Cancun VM 指令实现](https://github.com/ethereum/execution-specs/tree/master/src/ethereum/forks/cancun/vm/instructions) | `domain.rs` 的栈顶先弹出参数顺序 |
-| 抽象解释为什么能系统地近似执行 | [Patrick 与 Radhia Cousot，POPL 1977](https://www.di.ens.fr/~cousot/COUSOTpapers/POPL77.shtml) | 先掌握集合 join，再阅读抽象域与固定点 |
-| SSA 与 φ、dominance frontier | [Cornell CS 6120：Static Single Assignment](https://www.cs.cornell.edu/courses/cs6120/2025sp/lesson/6/) | `ssa/build.rs` 的块参数式教学构建与经典算法比较 |
-| 支配算法与定义 | [petgraph 0.8.3 dominators](https://docs.rs/petgraph/0.8.3/petgraph/algo/dominators/index.html) | 验证器复用 `simple_fast` |
-| opcode 元数据 | [revm-bytecode 43.0.0](https://docs.rs/revm-bytecode/43.0.0/revm_bytecode/) | 不另维护名称与栈 I/O 表；按程序选择的 fork 检查启用 |
-| 当前主网与未来升级 | [Ethereum 官方路线图](https://ethereum.org/roadmap/)、[Fusaka Meta EIP-7607](https://eips.ethereum.org/EIPS/eip-7607) | 2026-10-02 核验：默认 Osaka；BPO 调整不增加 opcode |
-| CLZ 数值语义 | [EIP-7939](https://eips.ethereum.org/EIPS/eip-7939) | 0x1e、单输入/单输出、零返回 256；用 revm 核对 |
-| EOA 代码委托 | [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) | 区分账户代码标记与执行代码，解析器复用 revm |
-| 调用后的返回数据缓冲区与越界 | [EIP-211](https://eips.ethereum.org/EIPS/eip-211) | 每帧 returndata、调用时清空、REVERT 数据与 RETURNDATACOPY |
-| 静态调用的继承与禁止效果 | [EIP-214](https://eips.ethereum.org/EIPS/eip-214) | STATICCALL、SSTORE/LOG/value CALL 故障与 CALLCODE 例外 |
-| transient storage 的帧归属与回滚 | [EIP-1153](https://eips.ethereum.org/EIPS/eip-1153) | 同一交易的跨帧状态、DELEGATECALL owner 和 REVERT checkpoint |
-| 固定 hash 的 state RPC | [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898)、[EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) | exact hash/canonical selector、账户 code hash 和一致性检查；当前 loader 信任提供者，不验证 Merkle proof |
-| CREATE2 地址与 initcode | [EIP-1014](https://eips.ethereum.org/EIPS/eip-1014)、[EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) | salt/initcode hash、创建地址、initcode 大小边界与新帧 |
-| SELFDESTRUCT 的当前生命周期 | [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) | 同交易新账户延迟删除，预先存在账户保留代码/storage，祖先 REVERT 回滚 |
-| 原生预编译实现 | [revm-precompile 43.0.3](https://docs.rs/revm-precompile/43.0.3/revm_precompile/) | 按 fork 注册表执行可表示输入，执行前预留累计工作，保留真实返回/失败 |
-| Osaka 的 P256VERIFY 预编译地址 | [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) | 地址 0x100 保留给预编译，离线例子入口选择 0x101；oracle 要实际访问字节码 |
-| U256 运算 | [alloy-primitives 1.7.3](https://docs.rs/alloy-primitives/1.7.3/alloy_primitives/) | 大整数与快速幂来自库；边界用 revm 对照 |
-| Rust 稳定发行版本 | [Rust 官方发行记录](https://github.com/rust-lang/rust/releases/tag/1.99.0) | `rust-toolchain.toml` 固定创建时最新稳定版 1.99.0 |
-| Nix 与同一 Rust 文件 | [rust-overlay 的 fromRustupToolchainFile](https://github.com/oxalica/rust-overlay#cheat-sheet-common-usage-of-rust-bin) | `flake.nix` 与 rustup 共用配置 |
-| Rust 的 Nix 构建/依赖缓存 | [crane 官方文档](https://crane.dev/) | 构建、Clippy、Rustdoc 使用同一工具链与依赖锁 |
+| 字节、栈、pc 不知道怎么读 | [00](00-start.md)、[01](01-bytecode.md) 的逐指令表 | EVM 指令实现 |
+| 不明白为什么合并用并集 | [02](02-domain.md) 的集合实验 | 抽象解释原论文 |
+| 不明白循环怎样停止 | [03](03-cfg.md) 的工作表过程 | 抽象域与固定点 |
+| 不明白 φ 或值的来源 | [04](04-ssa.md) 的真实输出 | SSA 教学与支配算法 |
+| 调用、回滚、代理结果不符合预期 | [09](09-cross-contract.md) 的帧与状态表 | 对应 CALL、返回数据或静态限制规范 |
+| 快照、创建或销毁事实有疑问 | [10](10-snapshots-summaries-creation.md) 的实验 | 固定 hash RPC、CREATE2、SELFDESTRUCT 规范 |
 
-链接指向上游规范或作者资料；项目依赖的确切版本由 Cargo.lock/flake.lock 决定。execution-specs 的默认分支可能更新，因此本仓库测试显式选择 revm 的 Cancun/Prague/Osaka 配置，并没有把上游整套测试向量复制成当前门禁。
+## EVM 指令与协议版本
+
+先找到正在执行的 opcode，再查看它弹栈、压栈和停止执行的规则。注意选择与输入相符的 fork；一个新指令的规范不能直接用于旧版本的分析。
+
+| 要确认什么 | 第一手资料 | 对照本仓库 |
+| --- | --- | --- |
+| JUMP/JUMPI、PC、STOP 的控制流 | [Ethereum execution-specs：Cancun 控制流](https://github.com/ethereum/execution-specs/blob/master/src/ethereum/forks/cancun/vm/instructions/control_flow.py) | [`bytecode.rs`](../crates/evm-abstract/src/bytecode.rs)、[`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) |
+| 算术、补码、位运算和参数顺序 | [Cancun VM 指令实现](https://github.com/ethereum/execution-specs/tree/master/src/ethereum/forks/cancun/vm/instructions) | [`domain.rs`](../crates/evm-abstract/src/domain.rs)；参数按栈顶先弹出排列 |
+| 升级包含哪些规则 | [Ethereum 官方路线图](https://ethereum.org/roadmap/)、[Fusaka Meta EIP-7607](https://eips.ethereum.org/EIPS/eip-7607) | [第 08 课](08-forks.md)、[`fork.rs`](../crates/evm-abstract/src/fork.rs)；项目默认 fork 与某个区块实际采用的 fork 要分别确认 |
+| CLZ 怎样计算前导零 | [EIP-7939](https://eips.ethereum.org/EIPS/eip-7939) | `osaka-clz.hex`；`0x1e`，零输入得到 256 |
+| EOA 的代码委托标记是什么 | [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) | 区分账户的委托标记与目标代码；单段解码和世界执行的处理不同 |
+
+execution-specs 的默认分支会更新。以上 Cancun 链接用于相应规则的对照，项目测试显式选择 revm 的 Cancun/Prague/Osaka 配置，没有把上游整套测试向量作为本仓库门禁。
+
+## 集合分析与 SSA 的理论
+
+| 要理解什么 | 作者或课程资料 | 建议怎么读 |
+| --- | --- | --- |
+| 为什么可以用摘要近似许多具体执行 | [Patrick 与 Radhia Cousot，POPL 1977](https://www.di.ens.fr/~cousot/COUSOTpapers/POPL77.shtml) | 先掌握第 02 课的集合 join，再看抽象域、序关系与固定点 |
+| 为什么 SSA 给每个定义起唯一名字，怎样处理分支 | [Cornell CS 6120：Static Single Assignment](https://www.cs.cornell.edu/courses/cs6120/2025sp/lesson/6/) | 对照第 04 课的 φ；经典构建算法与本仓库块参数式构建不完全相同 |
+| 如何检查一个值的定义是否在使用之前必经 | [petgraph 0.8.3 dominators](https://docs.rs/petgraph/0.8.3/petgraph/algo/dominators/index.html) | 验证器使用 `simple_fast` 计算支配关系；先看第 04 课的定义与使用例子 |
+
+## 跨合约调用、状态与快照
+
+先分清“谁的代码在执行”和“谁的状态在更新”，然后查对应规则。EIP（Ethereum Improvement Proposal，以太坊改进提案）给出特定机制的规范；这里的编号是查找入口，无需背诵。
+
+| 要确认什么 | 第一手资料 | 本仓库中的观察点 |
+| --- | --- | --- |
+| 返回数据缓冲区、REVERT 数据及复制越界 | [EIP-211](https://eips.ethereum.org/EIPS/eip-211) | 每帧 returndata，RETURNDATACOPY 与 CALL 输出区 |
+| STATICCALL 限制怎样向子帧传播 | [EIP-214](https://eips.ethereum.org/EIPS/eip-214) | SSTORE/LOG/value CALL 的故障与 CALLCODE 规则 |
+| transient storage 属于哪个账户，怎样回滚 | [EIP-1153](https://eips.ethereum.org/EIPS/eip-1153) | 同交易共享状态、DELEGATECALL 的状态账户、REVERT checkpoint |
+| 怎样把 RPC 请求固定在同一个区块 | [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898)、[EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) | exact block hash 与 canonical selector、账户 code hash；loader 检查一致性但不验证 Merkle proof |
+| CREATE2 怎样确定地址，initcode 有哪些限制 | [EIP-1014](https://eips.ethereum.org/EIPS/eip-1014)、[EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) | salt 与 initcode hash、创建帧和长度检查 |
+| SELFDESTRUCT 何时删除代码与存储 | [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) | 区分预先存在和同交易创建的账户；后者延迟删除，并接受祖先回滚 |
+| Osaka 的 P256VERIFY 位于哪个地址 | [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) | `0x100` 是预编译地址，因此离线字节码例子入口选用 `0x101` |
+
+## 依赖实现与工具链
+
+这组资料适合准备读 Rust 源码时使用。确切版本由 `Cargo.lock` / `flake.lock` 决定；下表说明各库负责的部分，不意味着依赖文档能替代分析器的语义验证。
+
+| 实现问题 | 官方资料 | 本仓库使用方式 |
+| --- | --- | --- |
+| opcode 名称与栈 I/O 元数据 | [revm-bytecode 43.0.0](https://docs.rs/revm-bytecode/43.0.0/revm_bytecode/) | 复用元数据，再按所选 fork 检查启用；PUSH 宽度与立即数由 `bytecode.rs` 解码 |
+| 原生预编译计算 | [revm-precompile 43.0.3](https://docs.rs/revm-precompile/43.0.3/revm_precompile/) | 选 fork 注册表；分析器另负责输入资格、返回流及累计工作预算 |
+| 256 bit 数与模运算 | [alloy-primitives 1.7.3](https://docs.rs/alloy-primitives/1.7.3/alloy_primitives/) | 使用 U256 与库算法；测试和 revm 对照 |
+| 固定的 Rust 工具链 | [Rust 1.99.0 发行记录](https://github.com/rust-lang/rust/releases/tag/1.99.0) | [`rust-toolchain.toml`](../rust-toolchain.toml) 指定版本；不表示永远是最新稳定版 |
+| Nix 怎样读取同一份 Rust 版本文件 | [rust-overlay 的 fromRustupToolchainFile](https://github.com/oxalica/rust-overlay#cheat-sheet-common-usage-of-rust-bin) | Nix 与 rustup 共用工具链配置 |
+| Rust 的 Nix 构建与依赖缓存 | [crane 官方文档](https://crane.dev/) | 构建、Clippy 和 Rustdoc 使用同一套锁定工具链 |
+
+回到[课程导航](../README.md#推荐阅读顺序)，或按[第 07 课](07-exercises.md)的验收方法动手验证一个问题。
