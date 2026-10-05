@@ -5,8 +5,8 @@ use super::budget::{byte_work, maximum};
 use super::{Execution, Successor, TransferContext, boundary, touch_memory, zero};
 use crate::{
     analysis::{
-        Continuation, Frame, FrameCode, FrameKey, FrontierReason, MachineEdgeKind, MachinePayload,
-        OutcomeKind,
+        ChildFrame, Continuation, FrameCode, FrameKey, FrameState, FrontierReason, MachineEdgeKind,
+        MachinePayload, OutcomeKind,
     },
     bytecode::Program,
     domain::Value,
@@ -115,11 +115,11 @@ pub(super) fn create(
     }
     // revm/Yellow-Paper depth starts at zero for the transaction entry. Child
     // depth equals the current frame count and must not exceed 1024.
-    if result.payload.frames.len() > 1024 {
+    if result.payload.call_stack.depth() > 1024 {
         immediate_failure(result, result.payload.clone(), next);
         return;
     }
-    if result.payload.frames.len() >= config.max_call_depth {
+    if result.payload.call_stack.depth() >= config.max_call_depth {
         boundary(result, pc, FrontierReason::CallDepth);
         return;
     }
@@ -323,32 +323,34 @@ pub(super) fn create(
                                     );
                                 }
                                 branch.store.begin_creation(destination);
-                                branch.frames.push(Frame {
-                                    key: FrameKey {
-                                        mode: FrameCode::InitCode,
-                                        code_address: destination,
-                                        code_hash: keccak256(&initcode),
-                                        address: destination,
-                                        caller: caller_address,
-                                        is_static: false,
-                                        block: 0,
-                                        stack_height: 0,
-                                        jump_history: Vec::new(),
+                                branch.call_stack.push_child(ChildFrame {
+                                    state: FrameState {
+                                        key: FrameKey {
+                                            mode: FrameCode::InitCode,
+                                            code_address: destination,
+                                            code_hash: keccak256(&initcode),
+                                            address: destination,
+                                            caller: caller_address,
+                                            is_static: false,
+                                            block: 0,
+                                            stack_height: 0,
+                                            jump_history: Vec::new(),
+                                        },
+                                        code: FrameCode::InitCode,
+                                        program: Some(init_program.clone()),
+                                        stack: Vec::new(),
+                                        memory: ByteArray::memory(),
+                                        calldata: ByteArray::empty(),
+                                        returndata: ByteArray::empty(),
+                                        call_value: Value::constant(*value),
+                                        saved_store: saved_store.clone(),
                                     },
-                                    code: FrameCode::InitCode,
-                                    program: Some(init_program.clone()),
-                                    stack: Vec::new(),
-                                    memory: ByteArray::memory(),
-                                    calldata: ByteArray::empty(),
-                                    returndata: ByteArray::empty(),
-                                    call_value: Value::constant(*value),
-                                    saved_store: Some(saved_store.clone()),
-                                    continuation: Some(Continuation {
+                                    continuation: Continuation {
                                         return_block: Some(next),
                                         output_offset: zero(),
                                         output_size: zero(),
                                         creation: Some(destination),
-                                    }),
+                                    },
                                 });
                                 branch.normalize();
                                 result.successors.push(Successor {
@@ -374,10 +376,9 @@ pub(super) fn finish_creation(
     _pc: usize,
 ) -> Result<(), FrontierReason> {
     let Some(address) = payload
-        .active()
-        .continuation
-        .as_ref()
-        .and_then(|continuation| continuation.creation)
+        .call_stack
+        .active_child()
+        .and_then(|child| child.continuation.creation)
     else {
         return Ok(());
     };

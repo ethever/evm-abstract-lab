@@ -35,7 +35,7 @@ pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaE
         if block.state != id || state.id != id {
             return Err(invariant("machine state identity mismatch"));
         }
-        let mut stacks = vec![Vec::new(); state.entry.frames.len()];
+        let mut stacks = vec![Vec::new(); state.entry.call_stack.depth()];
         let mut local = BTreeSet::new();
         let incoming: Vec<_> = analysis
             .edges()
@@ -44,7 +44,7 @@ pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaE
             .filter_map(|(i, e)| (e.to == id).then_some(i))
             .collect();
         let mut phi_index = 0;
-        for (frame, item) in state.entry.frames.iter().enumerate() {
+        for (frame, item) in state.entry.call_stack.iter().enumerate() {
             for slot in 0..item.stack.len() {
                 let phi = block
                     .phis
@@ -167,11 +167,11 @@ pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaE
             ));
         }
         if let Some(exit) = &state.exit
-            && (block.exit_frames.len() != exit.frames.len()
+            && (block.exit_frames.len() != exit.call_stack.depth()
                 || block
                     .exit_frames
                     .iter()
-                    .zip(&exit.frames)
+                    .zip(exit.call_stack.iter())
                     .any(|(s, f)| s.len() != f.stack.len()))
         {
             return Err(invariant(
@@ -205,9 +205,8 @@ pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaE
                         "call edge is not a suspension and empty callee entry",
                     ));
                 }
-                let child = to.entry.active();
-                if child.saved_store.is_none() || child.continuation.is_none() {
-                    return Err(invariant("call lacks rollback checkpoint or continuation"));
+                if to.entry.call_stack.active_child().is_none() {
+                    return Err(invariant("call destination is not a child frame"));
                 }
                 expected.push(Vec::new());
             }
@@ -223,8 +222,10 @@ pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaE
                         "same-frame return is not an immediate call failure",
                     ));
                 }
-                if target_depth + 1 == source_depth && from.entry.active().saved_store.is_none() {
-                    return Err(invariant("return lacks a rollback checkpoint"));
+                if target_depth + 1 == source_depth
+                    && from.entry.call_stack.active_child().is_none()
+                {
+                    return Err(invariant("return source is not a child frame"));
                 }
                 expected.truncate(target_depth);
                 let result = transition
@@ -247,11 +248,11 @@ pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaE
             }
         }
         if transition.stacks != expected
-            || transition.stacks.len() != to.entry.frames.len()
+            || transition.stacks.len() != to.entry.call_stack.depth()
             || transition
                 .stacks
                 .iter()
-                .zip(&to.entry.frames)
+                .zip(to.entry.call_stack.iter())
                 .any(|(s, f)| s.len() != f.stack.len())
         {
             return Err(invariant("transition stack arguments mismatch"));

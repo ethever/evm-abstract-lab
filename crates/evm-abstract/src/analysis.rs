@@ -23,9 +23,9 @@ use serde::Serialize;
 
 pub use config::{Config, ConfigError, ValidatedConfig};
 pub use machine::{
-    Continuation, ExecutionConfig, Frame, FrameCode, FrameKey, FrontierReason, MachineEdge,
-    MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome, MachinePayload, MachineState,
-    OutcomeKind, WorldAnalysis,
+    CallStack, ChildFrame, Continuation, ExecutionConfig, FrameCode, FrameKey, FrameState,
+    FrontierReason, MachineEdge, MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome,
+    MachinePayload, MachineState, OutcomeKind, RootFrame, WorldAnalysis,
 };
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;

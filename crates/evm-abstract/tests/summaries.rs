@@ -158,7 +158,7 @@ fn full_store_value_caller_and_mode_preconditions_produce_misses() {
         let distinct: BTreeSet<_> = enabled
             .summaries()
             .iter()
-            .filter(|record| record.input.frame.key.code_address == address(0x200))
+            .filter(|record| record.input.frame.state.key.code_address == address(0x200))
             .map(|record| serde_json::to_string(&record.input).unwrap())
             .collect();
         assert!(
@@ -177,7 +177,7 @@ fn full_store_value_caller_and_mode_preconditions_produce_misses() {
     let callers: BTreeSet<_> = enabled
         .summaries()
         .iter()
-        .map(|record| record.input.frame.key.caller)
+        .map(|record| record.input.frame.state.key.caller)
         .collect();
     assert!(callers.contains(&address(0x101)) && callers.contains(&address(0x1000)));
 }
@@ -197,7 +197,7 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
     let (enabled, _) = compare(&[(0x101, &caller), (0x200, &callee), (0x201, "60095f5500")]);
     assert!(enabled.summary_stats().hits > 0);
     assert!(enabled.summaries().iter().any(|record| {
-        record.input.frame.key.code_address == address(0x200)
+        record.input.frame.state.key.code_address == address(0x200)
             && !record.reused_at.is_empty()
             && record
                 .outputs
@@ -352,7 +352,7 @@ fn creation_changes_nonce_and_code_overlay_preconditions_before_later_calls() {
     let inputs: Vec<_> = enabled
         .summaries()
         .iter()
-        .filter(|record| record.input.frame.key.code_address == address(0x200))
+        .filter(|record| record.input.frame.state.key.code_address == address(0x200))
         .map(|record| &record.input)
         .collect();
     assert!(
@@ -393,7 +393,7 @@ fn selfdestruct_balance_effects_invalidate_later_exact_inputs() {
     let inputs: Vec<_> = enabled
         .summaries()
         .iter()
-        .filter(|record| record.input.frame.key.code_address == address(0x200))
+        .filter(|record| record.input.frame.state.key.code_address == address(0x200))
         .map(|record| &record.input)
         .collect();
     assert!(

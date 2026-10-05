@@ -77,6 +77,8 @@ cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 
 A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入，所以本例的输出长度 0/32 不妨碍命中。callee 的其他帧事实和回滚保存点仍需相等。输入经 join 扩大、callee 未完成或预算中断，都不能发表可复用的完整证书。
 
+摘要中的 root 是该子图的执行边界。提取时，原调用栈的 `ChildFrame` 显式转换为摘要的 `RootFrame`，共享执行数据和保存点保留，返回原 caller 的 `Continuation` 单独取出。回放时使用当前调用位置的 continuation 转回 `ChildFrame`，并放回 caller 的 `CallStack`。更深的子帧继续保持原有角色，不能丢失它们的继续信息或回滚保存点。
+
 摘要的查找比较、快照 hashing、认证、复制和图导入都消耗同一份 `--max-work`；导入状态也计入全局状态预算。命中不会重置预算。`SummaryWork` 前沿表示这些操作未完成，状态为 `Incomplete`，SSA 验证器不会接受未闭合图。实现与回归见 [`summary.rs`](../crates/evm-abstract/src/analysis/summary.rs)、[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)。
 
 ## 2. CREATE：先执行构造代码，再安装运行时代码

@@ -145,7 +145,7 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
     for state in analysis.states() {
         let mut phis = Vec::new();
         let mut stacks = Vec::new();
-        for (frame, item) in state.entry.frames.iter().enumerate() {
+        for (frame, item) in state.entry.call_stack.iter().enumerate() {
             let mut stack = Vec::new();
             for slot in 0..item.stack.len() {
                 phis.push(FramePhi {
@@ -239,8 +239,8 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
             MachineEdgeKind::Intraprocedural(_) => {}
             MachineEdgeKind::Call => stacks.push(Vec::new()),
             MachineEdgeKind::Return | MachineEdgeKind::Revert | MachineEdgeKind::Failure => {
-                if stacks.len() > destination.entry.frames.len() {
-                    stacks.truncate(destination.entry.frames.len());
+                if stacks.len() > destination.entry.call_stack.depth() {
+                    stacks.truncate(destination.entry.call_stack.depth());
                 }
                 result = Some(next);
                 stacks
