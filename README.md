@@ -131,7 +131,7 @@ nix develop
 cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.hex
 ```
 
-`nix develop` 提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、Graphviz、jq、cargo-nextest 和 lychee。三份锁定文件负责不同层次：
+`nix develop` 提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、Graphviz、jq、cargo-nextest、Taplo 和 lychee。三份锁定文件负责不同层次：
 
 | 文件 | 固定什么 |
 | --- | --- |
@@ -160,13 +160,21 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --option cores 8
 ```
 
-它检查构建、工作区测试与 doctest、Clippy、Rust 格式、Rustdoc、Nix 格式、离线文档链接，以及打包后二进制的例子与图输出。开发时可按修改范围单独运行：
+它检查构建、工作区测试与 doctest、Clippy、Rust 格式、Rustdoc、Nix 格式、TOML 语法与格式、离线文档链接，以及打包后二进制的例子与图输出。开发时可按修改范围单独运行：
 
 ```bash
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 cargo doc --workspace --no-deps --locked
+```
+
+TOML 检查使用 Nix 中固定版本的 Taplo，规则见 [`taplo.toml`](taplo.toml)。它递归检查仓库的 TOML 文件，包括 `.cargo/config.toml`，排除构建产物和 Git 元数据；语法检查禁用联网 schema 验证。开发时检查或统一格式：
+
+```bash
+nix develop --command taplo lint --no-schema
+nix develop --command taplo fmt --check
+nix develop --command taplo fmt
 ```
 
 文档链接规则由 [`lychee.toml`](lychee.toml) 固定。离线检查覆盖本地文件、引用式链接与锚点，包含隐藏目录文档，排除 `target`、`result*`、`.git`、`.direnv` 的生成文件：
