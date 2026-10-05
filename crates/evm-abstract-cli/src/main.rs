@@ -46,7 +46,7 @@ enum Command {
         #[arg(long)]
         ssa: bool,
     },
-    /// Decode legacy runtime bytecode under the selected fork (default: Osaka).
+    /// Decode ordinary EVM runtime bytecode under the selected fork (default: Osaka).
     Disasm {
         #[command(flatten)]
         input: Input,

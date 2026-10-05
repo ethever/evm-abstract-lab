@@ -65,7 +65,7 @@ fn reserved(world: &World, address: Address) -> bool {
         || (world.fork() == crate::Fork::Osaka && number == U256::from(0x100))
 }
 
-/// Suspend the caller and enter arbitrary concrete legacy initcode. Nonce bump
+/// Suspend the caller and enter arbitrary concrete EVM initcode. Nonce bump
 /// precedes the child's savepoint: failed initcode keeps that bump, while an
 /// enclosing REVERT still restores it through the enclosing frame's savepoint.
 pub(super) fn create(
@@ -287,13 +287,13 @@ pub(super) fn create(
                                 continue;
                             }
                             if initcode.first() == Some(&0xef) {
-                                // EF is invalid legacy initcode under every supported fork;
+                                // EF is invalid EVM initcode under every supported fork;
                                 // it must not be interpreted as an account delegation marker.
                                 immediate_failure(result, payload, next);
                                 continue;
                             }
                             let init_program = Program::decode_with_fork(&initcode, world.fork())
-                                .expect("legacy initcode with a non-EF first byte always decodes");
+                                .expect("EVM initcode with a non-EF first byte always decodes");
                             let recipient = payload.store.read_balance(destination);
                             let recipients = match recipient.constants() {
                                 Some(balances) => {
@@ -422,7 +422,7 @@ pub(super) fn finish_creation(
             .expect("initcode frames capture their program")
             .fork(),
     )
-    .expect("validated legacy runtime with a non-EF first byte always decodes");
+    .expect("validated EVM runtime bytecode with a non-EF first byte always decodes");
     payload.store.deploy_code(address, runtime);
     // Successful CREATE never exposes its runtime as RETURNDATA in the caller.
     *data = ByteArray::empty();

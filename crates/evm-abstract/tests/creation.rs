@@ -838,7 +838,7 @@ fn prefunded_creation_resets_previous_persistent_slots_and_retains_balance() {
         let initcode = init(&[0], &hex::decode("5f54600155").unwrap());
         let bytes = factory(&initcode, false, 7, &return_address());
         let (world, destination) = fixture(fork, &bytes, &initcode, false);
-        let mut reset = World::new(fork, "legacy zero nonce empty code with old storage");
+        let mut reset = World::new(fork, "zero nonce and empty code with pre-existing storage");
         for (owner, account) in world.accounts() {
             if *owner != destination {
                 reset.insert(*owner, account.clone()).unwrap();
