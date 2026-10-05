@@ -271,7 +271,7 @@ nix run . -- analyze \
 
 `provenance` 是作者填写的来源说明；它不能证明事实属于哪条链、哪个区块。固定快照的身份与校验见[第 10 课](10-snapshots-summaries-creation.md)。
 
-入口还可指定 `--caller`、`--calldata 0x...`、`--value 0x...`、`--static`。默认 caller=`0x...1000`、calldata 为空、value=0；子调用参数由实际指令产生。世界余额是**进入入口帧时**的余额，`--value` 只提供 CALLVALUE，不会再处理外层交易转账或手续费。
+入口还可指定 `--caller`、`--calldata 0x...`、`--value 1000`、`--static`。`--value` 的单位是 wei，接受十进制非负整数，也可写为 `0x3e8` 或 `0X3e8`；具体数量格式见 [CLI 参数说明](../README.md#命令与输出格式)。默认 caller=`0x...1000`、calldata 为空、value=0；子调用参数由实际指令产生。世界余额是**进入入口帧时**的余额，`--value` 只提供 CALLVALUE，不会再处理外层交易转账或手续费。world JSON 的余额、nonce、storage 键和值继续用 `0x` 十六进制格式，地址和 calldata 仍是字节数据。
 
 示例入口使用 `0x101`，因为 Osaka 的 [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) 在 `0x100` 定义 P256VERIFY 预编译。在预编译地址填入 fixture 字节码，不会让执行器把它当作普通代码执行。
 
