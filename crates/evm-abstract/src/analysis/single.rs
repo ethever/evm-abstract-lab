@@ -38,13 +38,15 @@ pub(super) fn analyze(program: Program, config: Config) -> Result<Analysis, Conf
     let mut states = Vec::new();
     let mut ids = BTreeMap::new();
     for source in execution.states() {
-        if source.key.frames.len() != 1 || source.active().block >= program.blocks().len() {
+        if source.key.frames.len() != 1
+            || source.active().basic_block_index >= program.blocks().len()
+        {
             continue;
         }
         let id = states.len();
         ids.insert(source.id, id);
         let mut exit_stack = source.exit_stack.clone();
-        if let Some(last) = program.blocks()[source.active().block]
+        if let Some(last) = program.blocks()[source.active().basic_block_index]
             .instructions
             .iter()
             .take(source.executed_pcs.len())
@@ -70,7 +72,7 @@ pub(super) fn analyze(program: Program, config: Config) -> Result<Analysis, Conf
         states.push(State {
             id,
             key: StateKey {
-                block: source.active().block,
+                basic_block_index: source.active().basic_block_index,
                 stack_height: source.active().stack_height,
                 context: source.active().jump_history.clone(),
             },
@@ -107,7 +109,7 @@ pub(super) fn analyze(program: Program, config: Config) -> Result<Analysis, Conf
         })
         .collect();
     let initial_key = StateKey {
-        block: 0,
+        basic_block_index: 0,
         stack_height: 0,
         context: Vec::new(),
     };
@@ -123,7 +125,7 @@ pub(super) fn analyze(program: Program, config: Config) -> Result<Analysis, Conf
                         .map_or_else(|| initial_key.clone(), |id| states[*id].key.clone())
                 },
                 |frame| StateKey {
-                    block: frame.block,
+                    basic_block_index: frame.basic_block_index,
                     stack_height: frame.stack_height,
                     context: frame.jump_history.clone(),
                 },

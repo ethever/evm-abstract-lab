@@ -131,7 +131,7 @@ fn calldata_is_copied_from_callers_memory_and_returned_bytes_feed_parent() {
     let resumed = analysis
         .states()
         .iter()
-        .find(|s| s.key.frames.len() == 1 && s.active().block == 1)
+        .find(|s| s.key.frames.len() == 1 && s.active().basic_block_index == 1)
         .unwrap();
     assert!(resumed.exit_stack[0].contains(U256::from(7)));
     assert!(
@@ -175,7 +175,7 @@ fn output_copy_preserves_uncopied_suffix_and_full_returndata_size() {
     let resumed = analysis
         .states()
         .iter()
-        .find(|s| s.key.frames.len() == 1 && s.active().block == 1)
+        .find(|s| s.key.frames.len() == 1 && s.active().basic_block_index == 1)
         .unwrap();
     assert!(resumed.exit_stack[0].contains(U256::from(1)));
     let mut expected = [0xaa; 32];

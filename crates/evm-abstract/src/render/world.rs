@@ -59,7 +59,7 @@ pub fn text(analysis: &WorldAnalysis) -> String {
             frame.is_static,
             frame.mode,
             frame.code_hash,
-            frame.block,
+            frame.basic_block_index,
             frame.stack_height,
             state.executed_pcs
         )
@@ -173,7 +173,7 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
             "S{} depth={} B{} mode={:?}\ncode={}\ncode_hash={}\naddress={}\ncaller={} static={}",
             state.id,
             state.key.frames.len(),
-            frame.block,
+            frame.basic_block_index,
             frame.mode,
             frame.code_address,
             frame.code_hash,

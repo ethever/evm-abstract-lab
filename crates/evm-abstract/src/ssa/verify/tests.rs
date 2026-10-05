@@ -20,7 +20,7 @@ fn state_at(analysis: &Analysis, pc: usize) -> usize {
     analysis
         .states()
         .iter()
-        .find(|s| analysis.program().blocks()[s.key.block].start_pc == pc)
+        .find(|s| analysis.program().blocks()[s.key.basic_block_index].start_pc == pc)
         .unwrap()
         .id
 }

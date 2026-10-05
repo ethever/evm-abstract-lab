@@ -169,7 +169,7 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
         let mut instructions = Vec::new();
         let original = state
             .program()
-            .and_then(|program| program.blocks().get(state.active().block));
+            .and_then(|program| program.blocks().get(state.active().basic_block_index));
         let stack = stacks
             .last_mut()
             .ok_or_else(|| invariant("state has no active frame"))?;

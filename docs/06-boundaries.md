@@ -32,7 +32,7 @@ nix run . -- cfg --file examples/loop.hex --max-transfers 1
 
 ```text
 status=Incomplete ... transfers=1 ...
-frontier Transfers: from=None target=StateKey { block: 1, stack_height: 1, context: [] }
+frontier Transfers: from=None target=StateKey { basic_block_index: 1, stack_height: 1, context: [] }
 ```
 
 **frontier（前沿）**记录分析停在什么位置、为什么不能继续。这里入口块执行了一次，循环头仍有待处理输入。其暂时显示的 `stack out []` 不是“循环头必然清空栈”的结论；它尚未执行完传播。

@@ -73,7 +73,7 @@ fn admitted_domain_capacity_controls_the_actual_join() {
         let merge = result
             .states()
             .iter()
-            .find(|state| result.program().blocks()[state.key.block].start_pc == 14)
+            .find(|state| result.program().blocks()[state.key.basic_block_index].start_pc == 14)
             .unwrap();
         assert_eq!(result.config().max_constants, capacity);
         if capacity == 1 {

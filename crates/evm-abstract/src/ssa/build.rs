@@ -35,7 +35,7 @@ pub(super) fn build(analysis: &Analysis) -> Result<Ssa, SsaError> {
     for state in analysis.states() {
         let block = &mut blocks[state.id];
         let mut stack: Vec<ValueId> = block.phis.iter().map(|phi| phi.result).collect();
-        let source = &analysis.program().blocks()[state.key.block];
+        let source = &analysis.program().blocks()[state.key.basic_block_index];
         for instruction in source.instructions.iter().take(state.executed_pcs.len()) {
             let op = instruction.opcode;
             let (inputs, outputs) = instruction.stack_io();

@@ -17,7 +17,10 @@ fn default_mainnet_recovers_a_clz_computed_jump() {
     let analysis = analysis::analyze(program, Config::default()).unwrap();
     assert_eq!(analysis.edges().len(), 1);
     let target = &analysis.states()[analysis.edges()[0].to];
-    assert_eq!(analysis.program().blocks()[target.key.block].start_pc, 8);
+    assert_eq!(
+        analysis.program().blocks()[target.key.basic_block_index].start_pc,
+        8
+    );
     assert!(!analysis.diagnostics().iter().any(|d| matches!(
         d.kind,
         DiagnosticKind::UnknownJump | DiagnosticKind::InvalidOpcode

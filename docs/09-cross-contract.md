@@ -141,6 +141,8 @@ jq '[.states[] | .entry.call_stack
 
 JSON 的执行数据在 `entry.call_stack.root.state` 和 `entry.call_stack.children[].state` 中；child 的 `continuation` 与 `state` 并列。`key.frames` 仍按外层到内层保存帧的结构身份，用于工作表索引，并不是可增删的执行调用栈。帧类型见 [`frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)，调用栈见 [`stack.rs`](../crates/evm-abstract/src/analysis/machine/stack.rs)。
 
+结构身份中的 `basic_block_index` 是该帧捕获程序的基本块索引，原名 `block`；单程序 `cfg` / `ssa` 的状态键也使用新名称。真实基本块的入口 PC 在 `Program.blocks()[basic_block_index].start_pc` 中；索引等于基本块数量时表示程序末尾的合成续接位置。这个字段与链上区块号、`block_hash` 无关。
+
 这里必须分别读两个地址：
 
 | 字段 | 代表什么 | 执行 I 的代码时 |

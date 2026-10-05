@@ -203,7 +203,9 @@ nix run . -- cfg --file examples/diamond.hex --max-states 1 --format json
 
 - `status` 是 `"Incomplete"`。
 - `states` 只有入口状态，`edges` 是空数组。
-- `frontiers` 有两个目标，分别为 `block: 2` 和 `block: 1`，`limit` 是 `"States"`。
+- `frontiers` 有两个目标，分别为 `basic_block_index: 2` 和 `basic_block_index: 1`，`limit` 是 `"States"`。
+
+`basic_block_index` 是 `Program.blocks()` 中的基本块索引；该块的入口字节偏移保存在 `start_pc`，二者不是同一个编号。它也不是链上区块号。
 
 两条分支的目标块存在，也可能执行；这里只是没有预算创建它们的状态。空边集不能证明入口没有后继。
 

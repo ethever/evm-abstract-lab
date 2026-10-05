@@ -54,7 +54,7 @@ pub(super) fn verify(ssa: &Ssa, analysis: &Analysis) -> Result<(), SsaError> {
         if actual_pcs != analysis.states()[index].executed_pcs {
             return Err(invariant("executed pc mismatch"));
         }
-        let original = &analysis.program().blocks()[analysis.states()[index].key.block];
+        let original = &analysis.program().blocks()[analysis.states()[index].key.basic_block_index];
         for (item, source) in block.instructions.iter().zip(&original.instructions) {
             if item.opcode != source.opcode || item.immediate != source.immediate {
                 return Err(invariant("opcode or immediate differs from the bytecode"));

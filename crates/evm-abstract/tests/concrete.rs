@@ -157,8 +157,10 @@ fn covers_trace(analysis: &Analysis, ir: &ssa::Ssa, trace: &Trace) {
             if let (Some(from), Some(last)) = (current, previous)
                 && matches!(last.opcode, 0x56 | 0x57)
             {
-                context
-                    .push(analysis.program().blocks()[analysis.states()[from].key.block].start_pc);
+                context.push(
+                    analysis.program().blocks()[analysis.states()[from].key.basic_block_index]
+                        .start_pc,
+                );
                 let discard = context
                     .len()
                     .saturating_sub(analysis.config().context_depth);
@@ -175,7 +177,7 @@ fn covers_trace(analysis: &Analysis, ir: &ssa::Ssa, trace: &Trace) {
                 .states()
                 .iter()
                 .find(|s| {
-                    s.key.block == block.id
+                    s.key.basic_block_index == block.id
                         && s.key.stack_height == step.before.len()
                         && s.key.context == context
                 })
