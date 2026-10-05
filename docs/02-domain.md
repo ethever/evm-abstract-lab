@@ -34,7 +34,7 @@ nix run . -- cfg --file examples/diamond.hex
 找到 pc=`0x000e` 的汇合状态，当前输出为：
 
 ```text
-S3 B3 @ 0x000e height=1 context=[]
+S3 | B3 @ 0x000e | stack height=1 | context=[]
   stack in  [{0x1, 0x2}]
   stack out [{0xb, 0xc}]
 ```

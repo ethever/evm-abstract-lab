@@ -12,7 +12,7 @@
 | 2．[diamond.hex](diamond.hex) | 两条分支汇合，值变为集合 | `pc=0x0e` 的入栈是 `[{0x1,0x2}]` | [02：集合值](../docs/02-domain.md)、[04：φ](../docs/04-ssa.md) |
 | 3．[loop.hex](loop.hex) | 回边反复传播信息，直到不再变化 | 循环头 `pc=0x02`，观察入栈及循环 φ | [03：固定点](../docs/03-cfg.md) |
 | 4．[dynamic-jump.hex](dynamic-jump.hex) | 目标未知时覆盖合法跳转及失败可能 | JUMP 在 `0x03`，JUMPDEST 在 `0x04`，SSTORE 在 `0x09` | [03：未知跳转](../docs/03-cfg.md) |
-| 5．[stack-heights.hex](stack-heights.hex) | 同一块按不同入栈高分别分析 | `pc=0x0c` 对应 height=0 和 height=1 的状态 | [05：状态划分](../docs/05-sensitivity.md) |
+| 5．[stack-heights.hex](stack-heights.hex) | 同一块按不同入栈高分别分析 | `pc=0x0c` 对应 stack height=0 和 stack height=1 的状态 | [05：状态划分](../docs/05-sensitivity.md) |
 | 6．[internal-calls.hex](internal-calls.hex) | 同一 helper 的两次内部跳转，比较历史长度 | helper 在 `pc=0x0e`，比较 `context_depth=0/1` | [05：跳转历史](../docs/05-sensitivity.md) |
 | 7．[osaka-clz.hex](osaka-clz.hex) | 协议版本影响指令有效性和计算跳转 | Osaka 下 CLZ(1)=255，跳到 `pc=0x08` | [08：fork](../docs/08-forks.md) |
 

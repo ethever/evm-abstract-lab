@@ -96,15 +96,15 @@ B0 @ 0x0000:
 
 ```text
 status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=0
-S0 B0 @ 0x0000 height=0 context=[]
+S0 | B0 @ 0x0000 | stack height=0 | context=[]
   stack in  []
   stack out []
 ```
 
 | 字段 | 本例中怎样读 |
 | --- | --- |
-| `S0 B0` | 分析状态 S0 位于原始基本块 B0；S 与 B 的编号属于两套体系 |
-| `height=0` / `stack in []` | 进入这个块时栈为空 |
+| `S0 \| B0` | 分析状态 S0 位于原始基本块 B0；S 与 B 的编号属于两套体系 |
+| `stack height=0` / `stack in []` | 进入这个块时栈为空 |
 | `stack out []` | 块执行结束时栈为空；中间的 5 已被 MSTORE 消耗 |
 | `states=1 edges=0` | 一个可达状态，没有块间边；不表示没有执行指令 |
 | `transfers=1` | 分析器处理这个块一次 |
@@ -149,7 +149,7 @@ flowchart TD
 找到起点为 `0x000e` 的状态：
 
 ```text
-S3 B3 @ 0x000e height=1 context=[]
+S3 | B3 @ 0x000e | stack height=1 | context=[]
   stack in  [{0x1, 0x2}]
   stack out [{0xb, 0xc}]
 ```

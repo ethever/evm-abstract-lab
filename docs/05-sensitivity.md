@@ -65,7 +65,7 @@ nix run . -- cfg --file examples/internal-calls.hex --context-depth 0
 关注 helper 的状态：
 
 ```text
-S1 B3 @ 0x000e height=1 context=[]
+S1 | B3 @ 0x000e | stack height=1 | context=[]
   stack in  [{0x5, 0xc}]
   stack out [{0x2a}]
   -> S2 Jump
@@ -91,12 +91,12 @@ nix run . -- ssa --file examples/internal-calls.hex --context-depth 1
 helper 现在有两个状态：
 
 ```text
-S1 B3 @ 0x000e height=1 context=[0]
+S1 | B3 @ 0x000e | stack height=1 | context=[0]
   stack in  [{0x5}]
   stack out [{0x2a}]
   -> S2 Jump
 
-S3 B3 @ 0x000e height=1 context=[5]
+S3 | B3 @ 0x000e | stack height=1 | context=[5]
   stack in  [{0xc}]
   stack out [{0x2a}]
   -> S4 Jump
@@ -144,7 +144,7 @@ k=2：只留 [14, 21]
 nix run . -- cfg --file examples/stack-heights.hex
 ```
 
-在 `pc=0x0c`，一个状态 `stack in [{0x7}]`、`height=1`；另一个状态 `stack in []`、`height=0`。两个都属于 B3，却不能强行合为一个栈。这种区分不仅影响精度，也保证栈槽位和 SSA 入口的含义成立。
+在 `pc=0x0c`，一个状态 `stack in [{0x7}]`、`stack height=1`；另一个状态 `stack in []`、`stack height=0`。两个都属于 B3，却不能强行合为一个栈。这种区分不仅影响精度，也保证栈槽位和 SSA 入口的含义成立。
 
 有限集合把不同数值放在一个槽位摘要里，并不保存完整路径，更不保存多个槽位之间的配对关系。假设分支比较 `x==5`，当前分析可以依据比较结果决定是否保留边，但不会自动沿 true 边把原变量 x 收窄为 5。为此还需要保存“比较结果对应哪个原值”的关系，以及沿边应用假设的能力。
 

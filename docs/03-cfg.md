@@ -40,7 +40,7 @@ flowchart TD
 `B3` 是字节码里的一个固定基本块。`S3` 是分析中创建的一个状态节点，保存“以什么摘要进入这个块”。两种编号服务于不同目的：
 
 ```text
-S3 B3 @ 0x000e height=1 context=[]
+S3 | B3 @ 0x000e | stack height=1 | context=[]
   stack in  [{0x1, 0x2}]
   stack out [{0xb, 0xc}]
 ```
@@ -49,7 +49,7 @@ S3 B3 @ 0x000e height=1 context=[]
 | --- | --- |
 | `S3` | 状态编号，按分析发现节点的顺序创建 |
 | `B3 @ 0x000e` | 对应基本块及其起始字节偏移 |
-| `height=1` | 进入该块时有 1 个栈槽位 |
+| `stack height=1` | 进入该块时有 1 个栈槽位 |
 | `context=[]` | 默认不区分跳转历史 |
 | `stack in` | 已汇合的入口栈摘要 |
 | `stack out` | 最近一次块执行留下的栈摘要；异常或预算中断时可能只执行了块内前缀 |
@@ -70,7 +70,7 @@ S3 B3 @ 0x000e height=1 context=[]
 nix run . -- cfg --file examples/stack-heights.hex
 ```
 
-在 pc=`0x000c`，你会看到两个状态：`S3 B3 height=1` 的输入是 `[{0x7}]`，`S4 B3 height=0` 的输入是 `[]`。空栈与一槽栈不能逐槽合并，否则会丢掉一种栈形状。这个例子直观说明：一个代码块可以有多个分析节点。
+在 pc=`0x000c`，你会看到两个状态：`S3 | B3 | stack height=1` 的输入是 `[{0x7}]`，`S4 | B3 | stack height=0` 的输入是 `[]`。空栈与一槽栈不能逐槽合并，否则会丢掉一种栈形状。这个例子直观说明：一个代码块可以有多个分析节点。
 
 世界分析的实际状态还包含活动/暂停的调用帧、每帧内存和账户 Store，键也保留相应结构身份。本课的三项键是局部输出投影；不要把它当作完整机器的全部状态，详见[第九课](09-cross-contract.md)。
 
@@ -136,7 +136,7 @@ nix run . -- cfg --file examples/loop.hex
 
 ```text
 status=Converged fork=osaka states=3 edges=3 transfers=11 context_depth=0
-S1 B1 @ 0x0002 height=1 context=[]
+S1 | B1 @ 0x0002 | stack height=1 | context=[]
   stack in  [⊤]
   stack out [⊤]
   -> S1 BranchTrue
