@@ -150,6 +150,26 @@
                   nixfmt --check ${./flake.nix}
                   touch $out
                 '';
+            toml-lint =
+              pkgs.runCommand "evm-abstract-toml-lint"
+                {
+                  nativeBuildInputs = [ pkgs.taplo ];
+                }
+                ''
+                  cd ${self}
+                  taplo lint --no-schema
+                  touch $out
+                '';
+            toml-format =
+              pkgs.runCommand "evm-abstract-toml-format"
+                {
+                  nativeBuildInputs = [ pkgs.taplo ];
+                }
+                ''
+                  cd ${self}
+                  taplo fmt --check
+                  touch $out
+                '';
             doc-links =
               pkgs.runCommand "evm-abstract-doc-links"
                 {
@@ -246,6 +266,7 @@
               graphviz
               cargo-nextest
               nixfmt
+              taplo
               lychee
               git
               python3
