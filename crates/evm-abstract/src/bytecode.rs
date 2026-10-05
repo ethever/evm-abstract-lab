@@ -88,7 +88,7 @@ pub struct Program {
     jumpdest_blocks: BTreeMap<usize, usize>,
 }
 
-/// 文本输入或不支持的格式错误；无效 legacy opcode 则是程序中的异常终止。
+/// 文本输入或不支持的格式错误；普通 EVM 字节码中的无效操作码则是程序中的异常终止。
 #[derive(Debug, Error)]
 pub enum DecodeError {
     /// EVM bytecode 的十六进制文本必须成对。
@@ -102,8 +102,8 @@ pub enum DecodeError {
         /// 出错字符。
         character: char,
     },
-    /// EOF 有独立的容器和指令语义，不能按 legacy 切块。
-    #[error("EOF containers are unsupported; provide legacy runtime bytecode")]
+    /// EOF 有独立的容器和指令语义，不能按普通 EVM 指令流切块。
+    #[error("EOF containers are unsupported; provide ordinary EVM runtime bytecode")]
     UnsupportedEof,
     /// EIP-7702 标记是账户代码指针，不是被执行的指令流。不能输出一个虚假空 CFG。
     #[error("EIP-7702 delegates execution to {address}; analyze that account's runtime bytecode")]

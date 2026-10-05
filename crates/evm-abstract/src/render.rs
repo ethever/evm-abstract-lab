@@ -41,7 +41,7 @@ pub fn disassembly(program: &Program) -> String {
                 write!(output, " 0x{value:x}").unwrap();
             }
             if !instruction.is_valid() {
-                write!(output, " [invalid in {} legacy]", program.fork()).unwrap();
+                write!(output, " [invalid under {}]", program.fork()).unwrap();
             }
             output.push('\n');
         }

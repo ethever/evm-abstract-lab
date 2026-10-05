@@ -115,7 +115,9 @@ nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 
 当前能力覆盖多账户调用、代理执行、返回数据、persistent/transient storage、嵌套回滚与重入；还包括有明确输入的 CREATE/CREATE2、EIP-6780 生命周期和原生预编译。调用摘要缓存可以复用已完成的调用分析，同时保留可检查的图与状态效果。[第 09 课](docs/09-cross-contract.md)和[第 10 课](docs/10-snapshots-summaries-creation.md)解释各项条件。
 
-模型处理 legacy 字节码，gas 不精确计量，一般 hash 和未知环境采用保守近似，也没有完整路径约束或跨交易不变量证明。RPC 仅在显式选择时采集固定区块 hash 的事实；执行器不会补查缺失代码。采集过程信任选定的提供者、检查身份与观察一致性，不验证 Merkle proof。读结果前请确认[详细边界](docs/06-boundaries.md)。
+模型处理普通 EVM 字节码，即按操作码及其立即数解码的指令流；不支持 EOF 容器格式。字节码格式与硬分叉版本是两个不同概念，普通 EVM 字节码也能使用所选版本启用的较新指令，见[第一课](docs/01-bytecode.md)。
+
+gas 不精确计量，一般 hash 和未知环境采用保守近似，也没有完整路径约束或跨交易不变量证明。RPC 仅在显式选择时采集固定区块 hash 的事实；执行器不会补查缺失代码。采集过程信任选定的提供者、检查身份与观察一致性，不验证 Merkle proof。读结果前请确认[详细边界](docs/06-boundaries.md)。
 
 ## 开发环境与实现入口
 

@@ -23,7 +23,7 @@ use thiserror::Error;
 /// Observed code at an account, independently of the account's storage owner.
 #[derive(Clone, Debug, Serialize)]
 pub enum Code {
-    /// Legacy runtime bytecode decoded under the world's fork.
+    /// Ordinary EVM runtime bytecode decoded under the world's fork.
     Runtime(Program),
     /// EIP-7702's account code pointer; execution retains the delegating account.
     Delegation(Address),

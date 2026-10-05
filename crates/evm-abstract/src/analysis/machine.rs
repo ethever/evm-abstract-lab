@@ -125,7 +125,7 @@ pub struct Frame {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 /// Executable interpretation after one account-code resolution.
 pub enum FrameCode {
-    /// Ordinary legacy runtime bytecode from the resolved code account.
+    /// Ordinary EVM runtime bytecode from the resolved code account.
     Runtime,
     /// Initcode executing in a newly created account's frame.
     InitCode,
