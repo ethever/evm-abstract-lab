@@ -1,15 +1,15 @@
 [package]
-name = "evm-abstract"
-description = "A learning library for native cross-contract EVM abstract execution and frame-aware SSA"
-version.workspace = true
-edition.workspace = true
+name                   = "evm-abstract"
+description            = "A learning library for native cross-contract EVM abstract execution and frame-aware SSA"
+version.workspace      = true
+edition.workspace      = true
 rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
+license.workspace      = true
+repository.workspace   = true
 
 [features]
 default = []
-imbl = ["snapshot-state/imbl"]
+imbl    = ["snapshot-state/imbl"]
 
 [dependencies]
 snapshot-state = { path = "../snapshot-state" }
@@ -21,13 +21,13 @@ thiserror.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
 revm-precompile = { version = "=43.0.3", default-features = false, features = [
-  "std",
-  "c-kzg",
+    "std",
+    "c-kzg",
 ] }
 
 [dev-dependencies]
 proptest.workspace = true
-revm = { version = "=43.0.3", default-features = false, features = ["std"] }
+revm               = { version = "=43.0.3", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

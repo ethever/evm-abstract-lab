@@ -175,6 +175,10 @@ nix develop --command taplo fmt --check
 nix develop --command taplo fmt
 ```
 
+VS Code 请以仓库根目录打开工作区，并安装 [Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml) 扩展；仓库的 [扩展推荐](.vscode/extensions.json) 和 [工作区设置](.vscode/settings.json) 指定该格式器并启用保存时格式化。编辑器与命令行共同读取 `taplo.toml` 的 `[formatting]`：4 空格缩进、对齐键值、最多一个连续空行。已格式化的文件再次按 Ctrl-S 应保持不变；刚更新工作区设置时，可执行 `Developer: Reload Window` 重新加载窗口。
+
+修改格式规则时以 `taplo.toml` 为准。完整门禁还会通过语言服务器模拟编辑器格式化请求，验证编辑器选项不会让结果偏离命令行格式。
+
 文档链接规则由 [`lychee.toml`](lychee.toml) 固定。离线检查覆盖本地文件、引用式链接与锚点，包含隐藏目录文档，排除 `target`、`result*`、`.git`、`.direnv` 的生成文件：
 
 ```bash

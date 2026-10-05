@@ -1,11 +1,11 @@
 [package]
-name = "evm-abstract-cli"
-description = "Analyze multi-account EVM worlds and inspect their cross-contract execution graphs"
-version.workspace = true
-edition.workspace = true
+name                   = "evm-abstract-cli"
+description            = "Analyze multi-account EVM worlds and inspect their cross-contract execution graphs"
+version.workspace      = true
+edition.workspace      = true
 rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
+license.workspace      = true
+repository.workspace   = true
 
 [[bin]]
 name = "evm-abstract"
@@ -15,15 +15,15 @@ doc = false
 
 [features]
 default = []
-imbl = ["evm-abstract/imbl"]
+imbl    = ["evm-abstract/imbl"]
 
 [dependencies]
-evm-abstract = { path = "../evm-abstract" }
-clap.workspace = true
+evm-abstract               = { path = "../evm-abstract" }
+clap.workspace             = true
 alloy-primitives.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
+serde.workspace            = true
+serde_json.workspace       = true
+thiserror.workspace        = true
 
 [lints]
 workspace = true
