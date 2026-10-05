@@ -2,6 +2,9 @@
 
 use std::process::Command;
 
+#[path = "cli/numbers.rs"]
+mod numbers;
+
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
         .args(args)
@@ -273,7 +276,7 @@ fn world_entry_and_data_errors_are_reported_before_execution() {
         (vec!["--entry", "0x01"], "entry address"),
         (vec!["--calldata", "0xzz"], "calldata hex"),
         (vec!["--value", "-1"], "unexpected argument"),
-        (vec!["--value", "0xzz"], "value hex"),
+        (vec!["--value", "0xzz"], "ASCII decimal digits"),
     ] {
         let output = analyze("call-return-branch", &args);
         assert!(!output.status.success());

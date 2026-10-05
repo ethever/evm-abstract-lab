@@ -1,10 +1,12 @@
 //! CLI 只负责参数、文件和输出；分析与渲染逻辑在库中，便于逐层学习和复用。
 
+mod number;
 mod world;
 
 #[cfg(test)]
 mod tests;
 
+use alloy_primitives::U256;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use evm_abstract::{
     Fork,
@@ -82,16 +84,16 @@ struct WorldArgs {
     /// Explicit HTTP(S) RPC input; all state is pinned to --block-hash.
     #[arg(long, requires_all = ["chain_id", "block_hash"], conflicts_with = "world")]
     rpc: Option<String>,
-    /// Expected EIP-155 chain identifier, as a 0x-prefixed word.
-    #[arg(long, requires = "rpc")]
-    chain_id: Option<String>,
+    /// Expected EIP-155 chain identifier: decimal or 0x/0X-prefixed hexadecimal.
+    #[arg(long, requires = "rpc", value_parser = number::parse)]
+    chain_id: Option<U256>,
     /// Exact 32-byte block hash; moving tags are never accepted.
     #[arg(long, requires = "rpc")]
     block_hash: Option<String>,
     /// Additional account to fetch before analysis (repeatable); entry is automatic.
     #[arg(long, requires = "rpc")]
     account: Vec<String>,
-    /// Explicit storage observation ADDRESS:SLOT (repeatable, 0x-prefixed words).
+    /// Storage observation ADDRESS:SLOT (repeatable); SLOT is decimal or 0x/0X hex.
     #[arg(long, requires = "rpc", value_parser = parse_slot)]
     slot: Vec<StorageSlot>,
     /// RPC execution rules, selected explicitly or defaulting to Osaka.
@@ -109,9 +111,9 @@ struct WorldArgs {
     /// Concrete input bytes, with an optional 0x prefix.
     #[arg(long, default_value = "0x")]
     calldata: String,
-    /// Entry CALLVALUE as a 0x-prefixed 256-bit word.
-    #[arg(long, default_value = "0x0")]
-    value: String,
+    /// Entry CALLVALUE in wei: decimal or 0x/0X-prefixed hexadecimal (256 bits).
+    #[arg(long, default_value = "0", value_parser = number::parse)]
+    value: U256,
     /// Start with a static frame; descendants inherit the restriction.
     #[arg(long = "static")]
     is_static: bool,
@@ -150,7 +152,7 @@ fn parse_slot(input: &str) -> Result<StorageSlot, String> {
         .ok_or_else(|| "expected ADDRESS:SLOT".to_owned())?;
     Ok(StorageSlot {
         address: world::address(account, "storage account").map_err(|error| error.to_string())?,
-        slot: world::word(slot, "storage slot").map_err(|error| error.to_string())?,
+        slot: number::parse(slot).map_err(|error| format!("invalid storage slot: {error}"))?,
     })
 }
 
@@ -230,10 +232,7 @@ impl WorldArgs {
                 let mut input = RpcInput::new(
                     endpoint,
                     self.fork.unwrap_or_default(),
-                    world::word(
-                        self.chain_id.as_deref().expect("clap requires chain id"),
-                        "chain id",
-                    )?,
+                    self.chain_id.expect("clap requires chain id"),
                     world::hash(
                         self.block_hash
                             .as_deref()
@@ -262,7 +261,7 @@ impl WorldArgs {
         let entry = Entry {
             address: entry_address,
             caller: world::address(&self.caller, "caller")?,
-            value: evm_abstract::domain::Value::constant(world::word(&self.value, "value")?),
+            value: evm_abstract::domain::Value::constant(self.value),
             calldata: ByteArray::exact(&world::calldata(&self.calldata)?),
             is_static: self.is_static,
         };

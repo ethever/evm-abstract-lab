@@ -279,7 +279,7 @@ jq '.world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
 | 每账户 `code_hash` | 原始代码字节 | 不绑定 storage、余额、nonce |
 | `fingerprint` | fork、identity、完整初始账户事实 | 一致性标识不是链状态的密码学证明 |
 
-链上身份的 `chain_id` 是 `0x` 十六进制数，`block_hash` 是完整 32 字节 hash，不能用区块号或 `latest` 代替。fork 仍单独选择，身份不会替你选择执行规则。
+world JSON 中链上身份的 `chain_id` 仍使用 `0x` 十六进制格式；CLI 的 `--chain-id` 则接受十进制非负整数或 `0x` / `0X` 十六进制，例如 `1` 与 `0x1` 等价。`block_hash` 始终是完整 32 字节 hash，不能用区块号或 `latest` 代替。fork 仍单独选择，身份不会替你选择执行规则。
 
 链上 JSON 提供代码时必须同时提供匹配的 `code_hash`。runtime 按原始代码字节计算 Keccak；EIP-7702 委托标记按原始 23 字节计算；已确认 absent 的账户 hash 为零。输入可附带预期 fingerprint；解析器拒绝指纹失配、重复地址/slot、冲突代码 hash 和不合法的 absence 事实。
 
@@ -292,14 +292,16 @@ jq '.world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
 ```bash
 nix run . -- analyze \
   --rpc "$LAB_RPC_URL" \
-  --chain-id 0x1 \
+  --chain-id 1 \
   --block-hash "$LAB_BLOCK_HASH" \
   --fork osaka \
   --entry 0x0000000000000000000000000000000000000101 \
   --account 0x0000000000000000000000000000000000000200 \
-  --slot 0x0000000000000000000000000000000000000200:0x0 \
+  --slot 0x0000000000000000000000000000000000000200:0 \
   --format json
 ```
+
+这里的 slot 索引 `0` 是十进制，也可写为 `0x0`；冒号前的账户地址仍是 20 字节十六进制。数量的十进制写法只改变 CLI 输入方式，world JSON 格式和发给 RPC 的编码不变。
 
 采集到分析的顺序是：
 
