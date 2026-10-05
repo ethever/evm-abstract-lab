@@ -1,0 +1,20 @@
+[package]
+name        = "no_dyn"
+version     = "0.1.0"
+description = "Forbid trait objects and function pointers in repository Rust code"
+edition     = "2024"
+publish     = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "=6.1.0"
+
+[dev-dependencies]
+# Support Nix-vendored UI dependencies without relying on a sibling Git checkout.
+dylint         = { version = "=6.1.0", features = ["__driver_from_crates_io"] }
+dylint_testing = "=6.1.0"
+
+[package.metadata.rust-analyzer]
+rustc_private = true

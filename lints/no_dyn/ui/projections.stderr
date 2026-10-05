@@ -1,0 +1,108 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:11:13
+   |
+LL |     action: <CallbackOwner as Associated>::Value,
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:12:13
+   |
+LL |     object: <ErasedOwner as Associated>::Value,
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:16:18
+   |
+LL | fn callback() -> <CallbackOwner as Associated>::Value {
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:16:55
+   |
+LL |   fn callback() -> <CallbackOwner as Associated>::Value {
+   |  _______________________________________________________^
+LL | |     panic!("signature only")
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:17:5
+   |
+LL |     panic!("signature only")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:20:22
+   |
+LL | fn borrowed<'a>() -> dispatch_types::Borrowed<'a> {
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:20:51
+   |
+LL |   fn borrowed<'a>() -> dispatch_types::Borrowed<'a> {
+   |  ___________________________________________________^
+LL | |     panic!("late-bound lifetime in erased return type")
+LL | | }
+   | |_^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:21:5
+   |
+LL |     panic!("late-bound lifetime in erased return type")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:25:22
+   |
+LL |     fn callback() -> <CallbackOwner as Associated>::Value;
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:27:20
+   |
+LL |     fn object() -> <ErasedOwner as Associated>::Value {
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:27:55
+   |
+LL |       fn object() -> <ErasedOwner as Associated>::Value {
+   |  _______________________________________________________^
+LL | |         panic!("trait default signature")
+LL | |     }
+   | |_____^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/projections.rs:28:9
+   |
+LL |         panic!("trait default signature")
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 12 previous errors
+

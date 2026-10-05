@@ -1,0 +1,142 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:8:31
+   |
+LL |         fn local_debug(value: &dyn std::fmt::Debug) {
+   |                               ^^^^^^^^^^^^^^^^^^^^
+...
+LL | Debug!();
+   | -------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+   = note: this error originates in the macro `Debug` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:8:32
+   |
+LL |         fn local_debug(value: &dyn std::fmt::Debug) {
+   |                                ^^^^^^^^^^^^^^^^^^^
+...
+LL | Debug!();
+   | -------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `Debug` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:8:24
+   |
+LL |         fn local_debug(value: &dyn std::fmt::Debug) {
+   |                        ^^^^^
+...
+LL | Debug!();
+   | -------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `Debug` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:9:13
+   |
+LL |             println!("{value:?}");
+   |             ^^^^^^^^^^^^^^^^^^^^^
+...
+LL | Debug!();
+   | -------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `println` which comes from the expansion of the macro `Debug` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:9:24
+   |
+LL |             println!("{value:?}");
+   |                        ^^^^^
+...
+LL | Debug!();
+   | -------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `$crate::format_args_nl` which comes from the expansion of the macro `Debug` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:9:24
+   |
+LL |             println!("{value:?}");
+   |                        ^^^^^
+...
+LL | Debug!();
+   | -------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `Debug` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:9:23
+   |
+LL |             println!("{value:?}");
+   |                       ^^^^^^^^^
+...
+LL | Debug!();
+   | -------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `$crate::format_args_nl` which comes from the expansion of the macro `Debug` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:16:28
+   |
+LL |         fn local_test() -> fn(u8) -> u8 {
+   |                            ^^^^^^^^^^^^
+...
+LL | test!();
+   | ------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `test` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:16:41
+   |
+LL |           fn local_test() -> fn(u8) -> u8 {
+   |  _________________________________________^
+LL | |             panic!("user macro, not the compiler test harness")
+LL | |         }
+   | |_________^
+...
+LL |   test!();
+   |   ------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `test` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:17:13
+   |
+LL |             panic!("user macro, not the compiler test harness")
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+LL | test!();
+   | ------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `test` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:28:12
+   |
+LL |     value: Box<dyn std::fmt::Debug>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/compiler_macro_names.rs:28:16
+   |
+LL |     value: Box<dyn std::fmt::Debug>,
+   |                ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 12 previous errors
+

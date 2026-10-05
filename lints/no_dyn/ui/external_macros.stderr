@@ -1,0 +1,122 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:11:13
+   |
+LL |     let _ = dispatch_types::erase!(1u8);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+   = note: this error originates in the macro `dispatch_types::erase` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:11:13
+   |
+LL |     let _ = dispatch_types::erase!(1u8);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `dispatch_types::erase` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:11:13
+   |
+LL |     let _ = dispatch_types::erase!(1u8);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `dispatch_types::erase` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:11:9
+   |
+LL |     let _ = dispatch_types::erase!(1u8);
+   |         ^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:12:13
+   |
+LL |     let _ = dispatch_types::callback!(identity);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `dispatch_types::callback` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:12:39
+   |
+LL |     let _ = dispatch_types::callback!(identity);
+   |                                       ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:12:13
+   |
+LL |     let _ = dispatch_types::callback!(identity);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `dispatch_types::callback` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:12:13
+   |
+LL |     let _ = dispatch_types::callback!(identity);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `dispatch_types::callback` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:12:13
+   |
+LL |     let _ = dispatch_types::callback!(identity);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `dispatch_types::callback` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:12:9
+   |
+LL |     let _ = dispatch_types::callback!(identity);
+   |         ^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:13:38
+   |
+LL |     let _ = dispatch_types::forward!(identity as fn(u8) -> u8);
+   |                                      ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:13:38
+   |
+LL |     let _ = dispatch_types::forward!(identity as fn(u8) -> u8);
+   |                                      ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:13:50
+   |
+LL |     let _ = dispatch_types::forward!(identity as fn(u8) -> u8);
+   |                                                  ^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/external_macros.rs:13:9
+   |
+LL |     let _ = dispatch_types::forward!(identity as fn(u8) -> u8);
+   |         ^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 14 previous errors
+

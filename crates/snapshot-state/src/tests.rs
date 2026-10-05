@@ -2,7 +2,6 @@ use crate::{Checkpoint, OrderedMap};
 use proptest::prelude::{any, proptest};
 use std::collections::BTreeMap;
 use std::ops::Bound;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 
 type VersionPair = (Checkpoint<OrderedMap<u8, i64>>, BTreeMap<u8, i64>);
 
@@ -175,26 +174,104 @@ fn mutating_callbacks_visit_entries_in_ascending_order() {
     assert_eq!(visited_values, vec![11, 51]);
 }
 
-#[test]
-fn invalid_ranges_panic_consistently_before_any_mutation() {
-    for initial in [Vec::new(), vec![(1_u8, 10_i64), (3, 30)]] {
-        let mut map = OrderedMap::from_iter(initial);
-        let before = map.clone();
-        for invalid in [
-            (Bound::Included(3), Bound::Included(1)),
-            (Bound::Excluded(1), Bound::Excluded(1)),
-        ] {
-            assert!(catch_unwind(|| map.range(invalid).count()).is_err());
-            assert!(
-                catch_unwind(AssertUnwindSafe(|| {
-                    map.update_range(invalid, |_, value| *value += 1);
-                }))
-                .is_err()
-            );
-            assert_eq!(map, before);
-        }
+// The guard checks the state during unwinding without erasing a panic payload.
+struct UnchangedMap {
+    map: OrderedMap<u8, i64>,
+    before: OrderedMap<u8, i64>,
+}
+
+impl Drop for UnchangedMap {
+    fn drop(&mut self) {
+        assert_eq!(self.map, self.before, "invalid range mutated the map");
     }
 }
+
+fn invalid_range_panics(initial: &[(u8, i64)], range: (Bound<u8>, Bound<u8>), update: bool) {
+    let map = OrderedMap::from_iter(initial.iter().copied());
+    let mut guard = UnchangedMap {
+        before: map.clone(),
+        map,
+    };
+    if update {
+        guard.map.update_range(range, |_, value| *value += 1);
+    } else {
+        let _ = guard.map.range(range).count();
+    }
+}
+
+macro_rules! invalid_range_test {
+    ($name:ident, $initial:expr, $range:expr, $update:expr, $message:literal) => {
+        #[test]
+        #[should_panic(expected = $message)]
+        fn $name() {
+            invalid_range_panics($initial, $range, $update);
+        }
+    };
+}
+
+invalid_range_test!(
+    empty_read_reversed,
+    &[],
+    (Bound::Included(3), Bound::Included(1)),
+    false,
+    "range start is greater than range end"
+);
+
+invalid_range_test!(
+    empty_read_equal_excluded,
+    &[],
+    (Bound::Excluded(1), Bound::Excluded(1)),
+    false,
+    "range start and end are equal and excluded"
+);
+
+invalid_range_test!(
+    empty_update_reversed,
+    &[],
+    (Bound::Included(3), Bound::Included(1)),
+    true,
+    "range start is greater than range end"
+);
+
+invalid_range_test!(
+    empty_update_equal_excluded,
+    &[],
+    (Bound::Excluded(1), Bound::Excluded(1)),
+    true,
+    "range start and end are equal and excluded"
+);
+
+invalid_range_test!(
+    populated_read_reversed,
+    &[(1, 10), (3, 30)],
+    (Bound::Included(3), Bound::Included(1)),
+    false,
+    "range start is greater than range end"
+);
+
+invalid_range_test!(
+    populated_read_equal_excluded,
+    &[(1, 10), (3, 30)],
+    (Bound::Excluded(1), Bound::Excluded(1)),
+    false,
+    "range start and end are equal and excluded"
+);
+
+invalid_range_test!(
+    populated_update_reversed,
+    &[(1, 10), (3, 30)],
+    (Bound::Included(3), Bound::Included(1)),
+    true,
+    "range start is greater than range end"
+);
+
+invalid_range_test!(
+    populated_update_equal_excluded,
+    &[(1, 10), (3, 30)],
+    (Bound::Excluded(1), Bound::Excluded(1)),
+    true,
+    "range start and end are equal and excluded"
+);
 
 #[test]
 fn empty_valid_ranges_exclude_equal_endpoints() {

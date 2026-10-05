@@ -1,0 +1,11 @@
+error[E0453]: expect(no_dyn) incompatible with previous forbid
+  --> $DIR/expect.rs:3:11
+   |
+LL | #![expect(no_dyn)]
+   |           ^^^^^^ overruled by previous forbid
+   |
+   = note: `forbid` lint level is the default for no_dyn
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0453`.
