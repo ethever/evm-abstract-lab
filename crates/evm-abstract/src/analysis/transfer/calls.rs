@@ -6,8 +6,8 @@ use super::{
 };
 use crate::{
     analysis::{
-        Continuation, Frame, FrameCode, FrameKey, FrontierReason, MachineEdgeKind, MachinePayload,
-        OutcomeKind,
+        CallStack, ChildFrame, Continuation, FrameCode, FrameKey, FrameState, FrontierReason,
+        MachineEdgeKind, MachinePayload, OutcomeKind, RootFrame,
     },
     bytecode::Program,
     domain::Value,
@@ -75,28 +75,29 @@ pub(super) fn initial(world: &World, entry: &Entry) -> Result<MachinePayload, Fr
     let (code_address, code, program) = resolve(world, &store, entry.address)?;
     let code_hash = captured_hash(&program, &store, code_address, code);
     Ok(MachinePayload {
-        frames: vec![Frame {
-            key: FrameKey {
-                code_address,
-                code_hash,
-                mode: code,
-                address: entry.address,
-                caller: entry.caller,
-                is_static: entry.is_static,
-                block: 0,
-                stack_height: 0,
-                jump_history: Vec::new(),
+        call_stack: CallStack::new(RootFrame {
+            state: FrameState {
+                key: FrameKey {
+                    code_address,
+                    code_hash,
+                    mode: code,
+                    address: entry.address,
+                    caller: entry.caller,
+                    is_static: entry.is_static,
+                    block: 0,
+                    stack_height: 0,
+                    jump_history: Vec::new(),
+                },
+                code,
+                program,
+                stack: Vec::new(),
+                memory: ByteArray::memory(),
+                calldata: entry.calldata.clone(),
+                returndata: ByteArray::empty(),
+                call_value: entry.value.clone(),
+                saved_store: store.snapshot(),
             },
-            code,
-            program,
-            stack: Vec::new(),
-            memory: ByteArray::memory(),
-            calldata: entry.calldata.clone(),
-            returndata: ByteArray::empty(),
-            call_value: entry.value.clone(),
-            saved_store: Some(store.snapshot()),
-            continuation: None,
-        }],
+        }),
         store,
     })
 }
@@ -112,9 +113,8 @@ pub(super) fn finish(
     let config = context.config;
     let domain = context.domain;
     let completed = payload
-        .active()
-        .continuation
-        .as_ref()
+        .call_stack
+        .active_child()
         .map(|_| (payload.clone(), kind, data.clone()));
     if let Err(reason) =
         super::create::finish_creation(&mut payload, &mut kind, &mut data, context, pc)
@@ -122,10 +122,9 @@ pub(super) fn finish(
         result.frontiers.push((pc, reason, Some(payload.key())));
         return;
     }
-    if let Some(frame) = payload.frames.last()
-        && let Some(continuation) = &frame.continuation
-    {
-        let parent = &payload.frames[payload.frames.len() - 2];
+    if let Some(child) = payload.call_stack.active_child() {
+        let continuation = &child.continuation;
+        let parent = payload.call_stack.parent().expect("a child has a parent");
         let cost = byte_work(
             &[&continuation.output_offset, &continuation.output_size],
             maximum(&continuation.output_size),
@@ -139,13 +138,12 @@ pub(super) fn finish(
             return;
         }
     }
-    let frame = payload.frames.pop().expect("finish has a frame");
-    if kind != OutcomeKind::Return
-        && let Some(saved) = frame.saved_store
-    {
-        payload.store.restore(saved);
-    }
-    let Some(continuation) = frame.continuation else {
+    let Some(child) = payload.call_stack.pop_child() else {
+        if kind != OutcomeKind::Return {
+            payload
+                .store
+                .restore(payload.call_stack.root().state.saved_store.clone());
+        }
         payload.store.finalize_transaction(domain);
         result.outcomes.push(Outcome {
             kind,
@@ -154,6 +152,10 @@ pub(super) fn finish(
         });
         return;
     };
+    if kind != OutcomeKind::Return {
+        payload.store.restore(child.state.saved_store);
+    }
+    let continuation = child.continuation;
     let output_store = payload.store.clone();
     let output_data = data.clone();
     let output_kind = kind;
@@ -268,7 +270,7 @@ pub(super) fn call(
     immediate_call_failure(result, result.payload.clone(), next);
     // The transaction entry has physical depth zero. No child is entered once
     // the EVM's 1024 depth limit is exceeded, independent of analysis budgets.
-    if result.payload.frames.len() > 1024 {
+    if result.payload.call_stack.depth() > 1024 {
         return;
     }
     let value = if result.payload.active().key.is_static && op == opcode::CALL {
@@ -315,7 +317,7 @@ pub(super) fn call(
                 continue;
             }
         };
-        if result.payload.frames.len() >= config.max_call_depth {
+        if result.payload.call_stack.depth() >= config.max_call_depth {
             boundary(result, pc, FrontierReason::CallDepth);
             continue;
         }
@@ -370,32 +372,34 @@ pub(super) fn call(
                 domain.apply(opcode::ADD, &[recipient, value.clone()]),
             );
         }
-        payload.frames.push(Frame {
-            key: FrameKey {
-                code_address,
-                code_hash,
-                mode: code,
-                address: state_address,
-                caller: frame_caller,
-                is_static: caller.key.is_static || op == opcode::STATICCALL,
-                block: 0,
-                stack_height: 0,
-                jump_history: Vec::new(),
+        payload.call_stack.push_child(ChildFrame {
+            state: FrameState {
+                key: FrameKey {
+                    code_address,
+                    code_hash,
+                    mode: code,
+                    address: state_address,
+                    caller: frame_caller,
+                    is_static: caller.key.is_static || op == opcode::STATICCALL,
+                    block: 0,
+                    stack_height: 0,
+                    jump_history: Vec::new(),
+                },
+                code,
+                program,
+                stack: Vec::new(),
+                memory: ByteArray::memory(),
+                calldata,
+                returndata: ByteArray::empty(),
+                call_value,
+                saved_store,
             },
-            code,
-            program,
-            stack: Vec::new(),
-            memory: ByteArray::memory(),
-            calldata,
-            returndata: ByteArray::empty(),
-            call_value,
-            saved_store: Some(saved_store),
-            continuation: Some(Continuation {
+            continuation: Continuation {
                 return_block: Some(next),
                 output_offset: args[output].clone(),
                 output_size: args[output + 1].clone(),
                 creation: None,
-            }),
+            },
         });
         payload.normalize();
         result.successors.push(Successor {

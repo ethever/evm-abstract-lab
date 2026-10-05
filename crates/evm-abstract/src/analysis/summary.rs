@@ -8,7 +8,7 @@
 //! instruction graph and world SSA retain every call and return boundary.
 
 use super::{
-    Diagnostic, Frame, MachineEdge, MachinePayload, OutcomeKind, WorldAnalysis,
+    CallStack, Diagnostic, MachineEdge, MachinePayload, OutcomeKind, RootFrame, WorldAnalysis,
     transfer::{CompletedCall, WorkBudget},
 };
 use crate::{
@@ -38,8 +38,8 @@ pub struct SummaryInput {
     pub world_fingerprint: B256,
     /// Hash of the current executable account bytes, after code overlay changes.
     pub code_hash: Option<B256>,
-    /// Callee frame with only its caller-owned continuation removed.
-    pub frame: Frame,
+    /// Callee state represented as the root of its relative certificate stack.
+    pub frame: RootFrame,
     /// Complete transaction store on entry, including rollback preconditions.
     pub store: Store,
     /// Transaction ORIGIN, shared by all nested frames.
@@ -60,26 +60,22 @@ pub struct SummaryInput {
 
 impl SummaryInput {
     fn work_size(&self) -> usize {
-        self.frame.stack.iter().fold(
+        let frame = &self.frame.state;
+        frame.stack.iter().fold(
             self.store
                 .work_size()
-                .saturating_add(self.frame.memory.work_size())
-                .saturating_add(self.frame.calldata.work_size())
-                .saturating_add(self.frame.returndata.work_size())
+                .saturating_add(frame.memory.work_size())
+                .saturating_add(frame.calldata.work_size())
+                .saturating_add(frame.returndata.work_size())
+                .saturating_add(frame.saved_store.state().work_size())
                 .saturating_add(
-                    self.frame
-                        .saved_store
-                        .as_ref()
-                        .map_or(0, |saved| saved.state().work_size()),
-                )
-                .saturating_add(
-                    self.frame
+                    frame
                         .program
                         .as_ref()
                         .map_or(0, crate::bytecode::Program::byte_len),
                 )
                 .saturating_add(
-                    self.frame
+                    frame
                         .call_value
                         .constants()
                         .map_or(1, |values| values.len()),
@@ -220,15 +216,19 @@ impl Cache {
             self.fingerprint = Some(fingerprint);
             fingerprint
         };
-        let mut frame = payload.active().clone();
-        frame.continuation = None;
+        let (frame, _) = payload
+            .call_stack
+            .active_child()
+            .expect("summary inputs start at child frames")
+            .clone()
+            .into_root();
         Some(SummaryInput {
             fork: analysis.world.fork(),
             snapshot: analysis.world.identity().clone(),
             world_fingerprint: fingerprint,
             code_hash: payload
                 .store
-                .raw_account_code(frame.key.code_address)
+                .raw_account_code(frame.state.key.code_address)
                 .map(keccak256),
             frame,
             store: payload.store.clone(),
@@ -236,7 +236,7 @@ impl Cache {
             remaining_call_depth: analysis
                 .config
                 .max_call_depth
-                .saturating_sub(payload.frames.len()),
+                .saturating_sub(payload.call_stack.depth()),
             max_call_depth: analysis.config.max_call_depth,
             context_depth: analysis.config.analysis.context_depth,
             max_constants: analysis.config.analysis.max_constants,
@@ -383,10 +383,15 @@ enum Capture {
 }
 
 fn relative(payload: &MachinePayload, prefix: usize) -> MachinePayload {
-    let mut result = payload.clone();
-    result.frames.drain(..prefix);
-    result.frames[0].continuation = None;
-    result
+    if prefix == 0 {
+        return payload.clone();
+    }
+    let children = payload.call_stack.children();
+    let (root, _) = children[prefix - 1].clone().into_root();
+    MachinePayload {
+        call_stack: CallStack::from_parts(root, children[prefix..].to_vec()),
+        store: payload.store.clone(),
+    }
 }
 
 fn capture(
@@ -398,7 +403,7 @@ fn capture(
     candidate: &Candidate,
     budget: &mut WorkBudget,
 ) -> Capture {
-    let depth = analysis.states[candidate.state].entry.frames.len();
+    let depth = analysis.states[candidate.state].entry.call_stack.depth();
     let mut queue = VecDeque::from([candidate.state]);
     let mut reached = BTreeSet::new();
     let mut internal = Vec::new();
@@ -425,7 +430,7 @@ fn capture(
             return Capture::Pending;
         }
         for edge in edges.iter().filter(|edge| edge.from == id) {
-            if analysis.states[edge.to].entry.frames.len() >= depth {
+            if analysis.states[edge.to].entry.call_stack.depth() >= depth {
                 internal.push(edge.clone());
                 queue.push_back(edge.to);
             } else {
@@ -500,7 +505,7 @@ fn capture(
     for state in terminal_states {
         for call in completed_calls[state]
             .iter()
-            .filter(|call| call.payload.frames.len() == depth)
+            .filter(|call| call.payload.call_stack.depth() == depth)
         {
             terminals.push(Terminal {
                 from: ids[&state],

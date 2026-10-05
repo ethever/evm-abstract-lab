@@ -161,7 +161,7 @@ fn another_call_clears_the_suspended_callers_previous_return_buffer() {
     assert!(!children.is_empty());
     for child in children {
         assert_eq!(
-            *child.entry.frames[0].returndata.len(),
+            *child.entry.call_stack.root().state.returndata.len(),
             Value::constant(U256::ZERO)
         );
     }

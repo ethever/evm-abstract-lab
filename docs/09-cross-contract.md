@@ -90,7 +90,9 @@ CALL 失败而 A 能继续时，成功位为 0，没有返回字节写入输出�
 返回后： [A 活动帧]
 ```
 
-帧列表从最外层到最内层排列，最后一个是当前活动帧。文本输出的 `depth` 是帧数量；入口为 1。文本中的 `stack in` / `stack out` 栈仍按栈底 → 栈顶显示。
+调用栈由一个 `RootFrame` 和按调用顺序排列的 `ChildFrame` 组成，封装在 `CallStack` 中。没有子帧时 root 活动；有子帧时最后一个 child 活动，其余帧暂停。文本输出的 `depth` 是帧数量；入口为 1。文本中的 `stack in` / `stack out` 栈仍按栈底 → 栈顶显示。
+
+两种帧共享 `FrameState`，每个执行帧都必须携带回滚保存点。只有 `ChildFrame` 携带返回父帧所需的 `Continuation`。`CallStack` 只允许压入和弹出子帧，root 始终保留，因此执行中的调用栈不会为空。这与 active/suspended 是两个不同维度：root 也能等待子调用返回。
 
 | 帧里的内容 | 为什么要保存 |
 | --- | --- |
@@ -130,11 +132,14 @@ nix run . -- analyze \
   --entry 0x0000000000000000000000000000000000000101 \
   --format json > /tmp/proxy.json
 
-jq '[.states[] | .entry.frames[-1]
+jq '[.states[] | .entry.call_stack
+     | (.children[-1].state // .root.state)
      | select(.key.code_address == "0x0000000000000000000000000000000000000300")
      | {code_address: .key.code_address, address: .key.address,
         caller: .key.caller, call_value}] | unique' /tmp/proxy.json
 ```
+
+JSON 的执行数据在 `entry.call_stack.root.state` 和 `entry.call_stack.children[].state` 中；child 的 `continuation` 与 `state` 并列。`key.frames` 仍按外层到内层保存帧的结构身份，用于工作表索引，并不是可增删的执行调用栈。帧类型见 [`frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)，调用栈见 [`stack.rs`](../crates/evm-abstract/src/analysis/machine/stack.rs)。
 
 这里必须分别读两个地址：
 

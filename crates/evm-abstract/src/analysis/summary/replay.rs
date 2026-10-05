@@ -1,12 +1,12 @@
 //! Materialize a certified callee graph under a different suspended caller.
 
 use super::{Certificate, Node};
-use crate::analysis::{Continuation, Frame, MachinePayload, transfer::WorkBudget};
+use crate::analysis::{CallStack, Continuation, MachinePayload, transfer::WorkBudget};
 
 pub(in crate::analysis) struct Replay<'a> {
     certificate: &'a Certificate,
-    prefix: Vec<Frame>,
-    continuation: Option<Continuation>,
+    prefix: CallStack,
+    continuation: Continuation,
     prefix_cost: usize,
 }
 
@@ -19,20 +19,34 @@ impl<'a> Replay<'a> {
         if !budget.charge(payload.work_size()) {
             return None;
         }
+        let mut prefix = payload.call_stack.clone();
+        let child = prefix
+            .pop_child()
+            .expect("summary replay requires a child frame");
         Some(Self {
             certificate,
-            prefix: payload.frames[..payload.frames.len() - 1].to_vec(),
-            continuation: payload.active().continuation.clone(),
+            prefix,
+            continuation: child.continuation,
             prefix_cost: payload.work_size(),
         })
     }
 
     fn payload(&self, relative: &MachinePayload) -> MachinePayload {
-        let mut result = relative.clone();
-        result.frames[0].continuation = self.continuation.clone();
-        let mut frames = self.prefix.clone();
-        frames.append(&mut result.frames);
-        result.frames = frames;
+        let mut call_stack = self.prefix.clone();
+        call_stack.push_child(
+            relative
+                .call_stack
+                .root()
+                .clone()
+                .into_child(self.continuation.clone()),
+        );
+        for child in relative.call_stack.children() {
+            call_stack.push_child(child.clone());
+        }
+        let mut result = MachinePayload {
+            call_stack,
+            store: relative.store.clone(),
+        };
         result.normalize();
         result
     }

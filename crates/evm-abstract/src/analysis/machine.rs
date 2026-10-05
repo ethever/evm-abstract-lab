@@ -5,10 +5,16 @@ use super::{Config, ConfigError, Diagnostic, EdgeKind, Limit, Status};
 use crate::{
     bytecode::Program,
     domain::{Domain, Value},
-    world::{ByteArray, Entry, Snapshot, Store, World},
+    world::{ByteArray, Entry, Store, World},
 };
 use alloy_primitives::{Address, B256};
 use serde::Serialize;
+
+mod frame;
+mod stack;
+
+pub use frame::{ChildFrame, FrameState, RootFrame};
+pub use stack::CallStack;
 
 /// One shared budget covers the root and every callee.
 #[derive(Clone, Debug, Serialize)]
@@ -95,33 +101,6 @@ pub struct Continuation {
     pub creation: Option<Address>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-/// One active or suspended execution frame, including its rollback checkpoint.
-pub struct Frame {
-    /// Structural identity used by the worklist.
-    pub key: FrameKey,
-    /// Resolved execution mode, without following another delegation pointer.
-    pub code: FrameCode,
-    /// Captured instruction stream. Active frames keep their original code
-    /// while future calls resolve the current transaction code overlay.
-    pub program: Option<Program>,
-    /// Abstract stack in bottom-to-top order.
-    pub stack: Vec<Value>,
-    /// This frame's private memory.
-    pub memory: ByteArray,
-    /// Bytes copied from caller memory at call entry, or supplied for the root.
-    pub calldata: ByteArray,
-    /// Full data from the most recently completed child call.
-    pub returndata: ByteArray,
-    /// CALLVALUE for this context; DELEGATECALL preserves its parent value.
-    pub call_value: Value,
-    /// Snapshot immediately before this call. Revert restores the whole store,
-    /// including writes performed by deeper calls and transient storage.
-    pub saved_store: Option<Snapshot>,
-    /// How this child returns to its suspended parent; absent on the root.
-    pub continuation: Option<Continuation>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 /// Executable interpretation after one account-code resolution.
 pub enum FrameCode {
@@ -140,15 +119,15 @@ pub enum FrameCode {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 /// Abstract values for all frames and the shared transaction effects.
 pub struct MachinePayload {
-    /// Oldest caller first, active execution frame last.
-    pub frames: Vec<Frame>,
+    /// Nonempty execution stack with one root and typed nested children.
+    pub call_stack: CallStack,
     /// Shared transaction effects; reverted frames restore their saved snapshot.
     pub store: Store,
 }
 
 impl MachinePayload {
     pub(crate) fn normalize(&mut self) {
-        for frame in &mut self.frames {
+        for frame in self.call_stack.iter_mut() {
             frame.key.stack_height = frame.stack.len();
         }
     }
@@ -157,7 +136,7 @@ impl MachinePayload {
         MachineKey {
             code_identity: self.store.code_identity(),
             frames: self
-                .frames
+                .call_stack
                 .iter()
                 .map(|f| {
                     let mut key = f.key.clone();
@@ -167,20 +146,16 @@ impl MachinePayload {
                 .collect(),
         }
     }
-    /// Return the active frame identity or payload.
-    pub fn active(&self) -> &Frame {
-        self.frames
-            .last()
-            .expect("a machine state always has an active frame")
+    /// Common execution data of the active root or child.
+    pub fn active(&self) -> &FrameState {
+        self.call_stack.active()
     }
-    pub(crate) fn active_mut(&mut self) -> &mut Frame {
-        self.frames
-            .last_mut()
-            .expect("a machine state always has an active frame")
+    pub(crate) fn active_mut(&mut self) -> &mut FrameState {
+        self.call_stack.active_mut()
     }
 
     pub(crate) fn work_size(&self) -> usize {
-        self.frames
+        self.call_stack
             .iter()
             .fold(self.store.work_size(), |cost, frame| {
                 let slots = frame.stack.iter().fold(0usize, |cost, value| {
@@ -198,12 +173,7 @@ impl MachinePayload {
                     .saturating_add(frame.memory.work_size())
                     .saturating_add(frame.calldata.work_size())
                     .saturating_add(frame.returndata.work_size())
-                    .saturating_add(
-                        frame
-                            .saved_store
-                            .as_ref()
-                            .map_or(0, |saved| saved.state().work_size()),
-                    )
+                    .saturating_add(frame.saved_store.state().work_size())
                     .saturating_add(
                         frame
                             .call_value
@@ -218,23 +188,7 @@ impl MachinePayload {
         debug_assert_eq!(self.key(), other.key());
         let mut result = self.clone();
         result.store = self.store.join(&other.store, domain);
-        for (old, incoming) in result.frames.iter_mut().zip(&other.frames) {
-            for (slot, value) in old.stack.iter_mut().zip(&incoming.stack) {
-                *slot = domain.join(slot, value);
-            }
-            old.memory = old.memory.join(&incoming.memory, domain);
-            old.calldata = old.calldata.join(&incoming.calldata, domain);
-            old.returndata = old.returndata.join(&incoming.returndata, domain);
-            old.call_value = domain.join(&old.call_value, &incoming.call_value);
-            if let (Some(a), Some(b)) = (&old.saved_store, &incoming.saved_store) {
-                old.saved_store = Some(Snapshot::from_state(a.state().join(b.state(), domain)));
-            }
-            if let (Some(a), Some(b)) = (&mut old.continuation, &incoming.continuation) {
-                debug_assert_eq!(a.return_block, b.return_block);
-                a.output_offset = domain.join(&a.output_offset, &b.output_offset);
-                a.output_size = domain.join(&a.output_size, &b.output_size);
-            }
-        }
+        result.call_stack.join(&other.call_stack, domain);
         result
     }
 }

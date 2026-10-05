@@ -216,10 +216,9 @@ impl Engine {
         if !cache.call_entries.contains(&id)
             || !self.result.states[id]
                 .entry
-                .active()
-                .continuation
-                .as_ref()
-                .is_some_and(|continuation| continuation.creation.is_none())
+                .call_stack
+                .active_child()
+                .is_some_and(|frame| frame.continuation.creation.is_none())
         {
             return SummaryAttempt::Miss;
         }
