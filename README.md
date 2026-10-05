@@ -17,7 +17,7 @@ nix run . -- explain --file examples/straight-line.hex
 | 输出 | 回答的问题 | 先找什么 |
 | --- | --- | --- |
 | 反汇编 | 每段字节是什么指令？ | `0004: ADD`：加法指令位于字节偏移 4 |
-| CFG（控制流图） | 执行顺序和分支是什么？ | `S0 B0`、`in []`、`out []`：一个块，入口和出口栈都为空 |
+| CFG（控制流图） | 执行顺序和分支是什么？ | `S0 B0`、`stack in []`、`stack out []`：一个块，入口和出口栈都为空 |
 | SSA（静态单赋值） | 一个值在哪里产生、被谁使用？ | `%2 = ADD %1 %0`：给加法结果起名，并记录两个来源 |
 
 不知道 `S0`、`%2` 或空栈是什么意思，直接读 [00：第一遍运行与输出解读](docs/00-start.md)。它包含完整的逐指令栈表和环境报错处理。
@@ -28,7 +28,7 @@ nix run . -- explain --file examples/straight-line.hex
 nix run . -- cfg --file examples/diamond.hex
 ```
 
-在 `pc=0x000e` 的状态找到 `in [{0x1, 0x2}]`。外层是栈，内层是**一个栈槽的可能值集合**；不是栈上同时有两个值。这一步连接具体执行与抽象分析。
+在 `pc=0x000e` 的状态找到 `stack in [{0x1, 0x2}]`。外层是栈，内层是**一个栈槽的可能值集合**；不是栈上同时有两个值。这一步连接具体执行与抽象分析。
 
 ## 推荐阅读顺序
 
@@ -176,6 +176,10 @@ nix develop --command taplo lint --no-schema
 nix develop --command taplo fmt --check
 nix develop --command taplo fmt
 ```
+
+VS Code 请以仓库根目录打开工作区，并安装 [Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml) 扩展；仓库的 [扩展推荐](.vscode/extensions.json) 和 [工作区设置](.vscode/settings.json) 指定该格式器并启用保存时格式化。编辑器与命令行共同读取 `taplo.toml` 的 `[formatting]`：4 空格缩进、对齐键值、最多一个连续空行。已格式化的文件再次按 Ctrl-S 应保持不变；刚更新工作区设置时，可执行 `Developer: Reload Window` 重新加载窗口。
+
+修改格式规则时以 `taplo.toml` 为准。完整门禁还会通过语言服务器模拟编辑器格式化请求，验证编辑器选项不会让结果偏离命令行格式。
 
 文档链接规则由 [`lychee.toml`](lychee.toml) 固定。离线检查覆盖本地文件、引用式链接与锚点，包含隐藏目录文档，排除 `target`、`result*`、`.git`、`.direnv` 的生成文件：
 

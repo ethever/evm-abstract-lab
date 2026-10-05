@@ -41,8 +41,8 @@ flowchart TD
 
 ```text
 S3 B3 @ 0x000e height=1 context=[]
-  in  [{0x1, 0x2}]
-  out [{0xb, 0xc}]
+  stack in  [{0x1, 0x2}]
+  stack out [{0xb, 0xc}]
 ```
 
 | 字段 | 怎样读 |
@@ -51,8 +51,8 @@ S3 B3 @ 0x000e height=1 context=[]
 | `B3 @ 0x000e` | 对应基本块及其起始字节偏移 |
 | `height=1` | 进入该块时有 1 个栈槽位 |
 | `context=[]` | 默认不区分跳转历史 |
-| `in` | 已汇合的入口栈摘要 |
-| `out` | 最近一次块执行留下的栈摘要；异常或预算中断时可能只执行了块内前缀 |
+| `stack in` | 已汇合的入口栈摘要 |
+| `stack out` | 最近一次块执行留下的栈摘要；异常或预算中断时可能只执行了块内前缀 |
 
 所以 S 编号不一定按 pc 排序，也不要求与 B 编号一致。例如本例中的 `S1` 对应 `B2`，因为非零分支先被加入队列。
 
@@ -137,8 +137,8 @@ nix run . -- cfg --file examples/loop.hex
 ```text
 status=Converged fork=osaka states=3 edges=3 transfers=11 context_depth=0
 S1 B1 @ 0x0002 height=1 context=[]
-  in  [⊤]
-  out [⊤]
+  stack in  [⊤]
+  stack out [⊤]
   -> S1 BranchTrue
   -> S2 BranchFalse
 ```

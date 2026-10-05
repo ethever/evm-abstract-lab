@@ -1,0 +1,11 @@
+{
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": false
+  },
+  "evenBetterToml.taplo.configFile.enabled": true,
+  "evenBetterToml.taplo.configFile.path": null
+}

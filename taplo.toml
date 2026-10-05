@@ -1,2 +1,8 @@
 include = ["**/*.toml"]
 exclude = ["**/target/**", "**/.git/**", "**/.direnv/**", "**/result*/**"]
+
+# Share these rules between the CLI and the editor language server.
+[formatting]
+indent_string       = "    "
+align_entries       = true
+allowed_blank_lines = 1

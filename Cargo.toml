@@ -1,8 +1,8 @@
 [workspace]
 members = [
-  "crates/evm-abstract",
-  "crates/evm-abstract-cli",
-  "crates/snapshot-state",
+    "crates/evm-abstract",
+    "crates/evm-abstract-cli",
+    "crates/snapshot-state",
 ]
 exclude = ["lints/no_dyn"]
 resolver = "3"
@@ -11,11 +11,11 @@ resolver = "3"
 libraries = [{ path = "lints/no_dyn" }]
 
 [workspace.package]
-version = "0.4.0"
-edition = "2024"
+version      = "0.4.0"
+edition      = "2024"
 rust-version = "1.99"
-license = "MIT"
-repository = "https://github.com/ethever/evm-abstract-lab"
+license      = "MIT"
+repository   = "https://github.com/ethever/evm-abstract-lab"
 
 [workspace.dependencies]
 alloy-primitives = { version = "=1.7.3", features = ["serde"] }
@@ -27,14 +27,13 @@ thiserror = "=2.0.21"
 clap = { version = "=4.6.7", features = ["derive"] }
 proptest = "=1.11.0"
 reqwest = { version = "=0.13.4", default-features = false, features = [
-  "blocking",
-  "json",
-  "rustls",
+    "blocking",
+    "json",
+    "rustls",
 ] }
 
-
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code  = "forbid"
 missing_docs = "warn"
 
 [workspace.lints.clippy]

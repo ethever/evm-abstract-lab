@@ -173,11 +173,15 @@
             toml-format =
               pkgs.runCommand "evm-abstract-toml-format"
                 {
-                  nativeBuildInputs = [ pkgs.taplo ];
+                  nativeBuildInputs = [
+                    pkgs.taplo
+                    pkgs.python3
+                  ];
                 }
                 ''
                   cd ${self}
                   taplo fmt --check
+                  python ${./scripts/test-toml-format.py}
                   touch $out
                 '';
             doc-links =
