@@ -67,7 +67,7 @@ pub fn text(analysis: &WorldAnalysis) -> String {
         let payload = state.entry.active();
         writeln!(
             output,
-            "  in {} value={} calldata_len={} memory_len={} returndata_len={}",
+            "  stack in {} value={} calldata_len={} memory_len={} returndata_len={}",
             super::stack(&payload.stack),
             payload.call_value,
             payload.calldata.len(),
@@ -75,7 +75,7 @@ pub fn text(analysis: &WorldAnalysis) -> String {
             payload.returndata.len()
         )
         .unwrap();
-        writeln!(output, "  out {}", super::stack(&state.exit_stack)).unwrap();
+        writeln!(output, "  stack out {}", super::stack(&state.exit_stack)).unwrap();
     }
     for edge in analysis.edges() {
         writeln!(output, "S{} -> S{} {:?}", edge.from, edge.to, edge.kind).unwrap();

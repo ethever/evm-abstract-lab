@@ -97,21 +97,21 @@ B0 @ 0x0000:
 ```text
 status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=0
 S0 B0 @ 0x0000 height=0 context=[]
-  in  []
-  out []
+  stack in  []
+  stack out []
 ```
 
 | 字段 | 本例中怎样读 |
 | --- | --- |
 | `S0 B0` | 分析状态 S0 位于原始基本块 B0；S 与 B 的编号属于两套体系 |
-| `height=0` / `in []` | 进入这个块时栈为空 |
-| `out []` | 块执行结束时栈为空；中间的 5 已被 MSTORE 消耗 |
+| `height=0` / `stack in []` | 进入这个块时栈为空 |
+| `stack out []` | 块执行结束时栈为空；中间的 5 已被 MSTORE 消耗 |
 | `states=1 edges=0` | 一个可达状态，没有块间边；不表示没有执行指令 |
 | `transfers=1` | 分析器处理这个块一次 |
 | `context=[]` | 此配置不保留最近跳转来源的历史；[第 05 课](05-sensitivity.md) 再比较 |
 | `Converged` | 本抽象模型的待处理工作已经完成；不是合约安全结论 |
 
-`in` / `out` 在这里表示**栈状态**，不是调用的输入字节和返回字节。
+`stack in` / `stack out` 在这里表示**栈状态**，不是调用的输入字节和返回字节。
 
 ### SSA：每个值从哪里来
 
@@ -150,8 +150,8 @@ flowchart TD
 
 ```text
 S3 B3 @ 0x000e height=1 context=[]
-  in  [{0x1, 0x2}]
-  out [{0xb, 0xc}]
+  stack in  [{0x1, 0x2}]
+  stack out [{0xb, 0xc}]
 ```
 
 外层 `[]` 是栈，里面只有一个槽；内层 `{0x1, 0x2}` 是这个槽的**可能值集合**。它表示一个值可能是 1，也可能是 2，不表示栈里同时放了两个值。`0xb` 和 `0xc` 分别是十进制 11 和 12。
@@ -176,6 +176,6 @@ nix run . -- analyze \
 
 ## 本课完成标志
 
-不看正文，试着解释三件事：为什么第二条指令的 pc 是 2；为什么 `in [{0x1,0x2}]` 只有一个栈槽；为什么 `%2` 不随栈位置变化而改名。若仍不确定，回到相应输出片段核对。
+不看正文，试着解释三件事：为什么第二条指令的 pc 是 2；为什么 `stack in [{0x1,0x2}]` 只有一个栈槽；为什么 `%2` 不随栈位置变化而改名。若仍不确定，回到相应输出片段核对。
 
 下一课：[01：字节码与基本块](01-bytecode.md)。命令与示例索引见 [README](../README.md) 和[例子目录](../examples/README.md)。

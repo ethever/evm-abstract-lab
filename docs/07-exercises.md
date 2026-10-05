@@ -66,7 +66,7 @@ nix run . -- cfg --file examples/diamond.hex --max-constants 1
 nix run . -- cfg --file examples/diamond.hex --max-constants 2
 ```
 
-记录两次的 `status`、汇合点 `in`、`out`。增加容量改变了程序还是分析表示？
+记录两次的 `status`、汇合点 `stack in`、`stack out`。增加容量改变了程序还是分析表示？
 
 <details><summary>提示与验收</summary>
 
@@ -155,7 +155,7 @@ nix run . -- cfg --file examples/loop.hex --max-transfers 1
 nix run . -- cfg --file examples/loop.hex
 ```
 
-比较状态、诊断和 frontier。预算只有 1 时，能否把未执行状态的 `out []` 当作程序结果？
+比较状态、诊断和 frontier。预算只有 1 时，能否把未执行状态的 `stack out []` 当作程序结果？
 
 <details><summary>提示与验收</summary>
 
