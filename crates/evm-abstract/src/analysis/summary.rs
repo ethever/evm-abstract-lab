@@ -66,7 +66,12 @@ impl SummaryInput {
                 .saturating_add(self.frame.memory.work_size())
                 .saturating_add(self.frame.calldata.work_size())
                 .saturating_add(self.frame.returndata.work_size())
-                .saturating_add(self.frame.saved_store.as_ref().map_or(0, Store::work_size))
+                .saturating_add(
+                    self.frame
+                        .saved_store
+                        .as_ref()
+                        .map_or(0, |saved| saved.state().work_size()),
+                )
                 .saturating_add(
                     self.frame
                         .program

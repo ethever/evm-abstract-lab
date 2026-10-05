@@ -45,6 +45,7 @@ nix run . -- cfg --file examples/diamond.hex
 | [06：模型边界与证据](docs/06-boundaries.md) | 收敛能说明什么？对照测试与链上事实分别能证明什么？ | 预算、诊断、revm 对照 |
 | [09：跨合约执行](docs/09-cross-contract.md) | 返回值、代理、回滚和重入怎样影响账户状态？ | `examples/worlds/` |
 | [10：快照、调用摘要与代码生命周期](docs/10-snapshots-summaries-creation.md) | 何时能复用分析？部署和销毁如何改变代码？ | 摘要、CREATE/CREATE2、预编译 |
+| [11：状态容器与后端对比](docs/11-state-backends.md) | 如何用同一接口比较 std 与 imbl 的检查点、写入和回滚？ | `scripts/compare-state-backends.sh` |
 
 两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。编号保留原有文件名，阅读路径由上表给出。[例子索引](examples/README.md) 按难度列出所有实验；[参考资料](docs/references.md) 按问题指向规范、论文和教学材料。
 

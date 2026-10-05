@@ -5,7 +5,7 @@ use super::{Config, ConfigError, Diagnostic, EdgeKind, Limit, Status};
 use crate::{
     bytecode::Program,
     domain::{Domain, Value},
-    world::{ByteArray, Entry, Store, World},
+    world::{ByteArray, Entry, Snapshot, Store, World},
 };
 use alloy_primitives::{Address, B256};
 use serde::Serialize;
@@ -117,7 +117,7 @@ pub struct Frame {
     pub call_value: Value,
     /// Snapshot immediately before this call. Revert restores the whole store,
     /// including writes performed by deeper calls and transient storage.
-    pub saved_store: Option<Store>,
+    pub saved_store: Option<Snapshot>,
     /// How this child returns to its suspended parent; absent on the root.
     pub continuation: Option<Continuation>,
 }
@@ -198,7 +198,12 @@ impl MachinePayload {
                     .saturating_add(frame.memory.work_size())
                     .saturating_add(frame.calldata.work_size())
                     .saturating_add(frame.returndata.work_size())
-                    .saturating_add(frame.saved_store.as_ref().map_or(0, Store::work_size))
+                    .saturating_add(
+                        frame
+                            .saved_store
+                            .as_ref()
+                            .map_or(0, |saved| saved.state().work_size()),
+                    )
                     .saturating_add(
                         frame
                             .call_value
@@ -222,7 +227,7 @@ impl MachinePayload {
             old.returndata = old.returndata.join(&incoming.returndata, domain);
             old.call_value = domain.join(&old.call_value, &incoming.call_value);
             if let (Some(a), Some(b)) = (&old.saved_store, &incoming.saved_store) {
-                old.saved_store = Some(a.join(b, domain));
+                old.saved_store = Some(Snapshot::from_state(a.state().join(b.state(), domain)));
             }
             if let (Some(a), Some(b)) = (&mut old.continuation, &incoming.continuation) {
                 debug_assert_eq!(a.return_block, b.return_block);

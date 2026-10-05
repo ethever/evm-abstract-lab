@@ -241,7 +241,7 @@ pub(super) fn create(
                             // fails after the caller nonce has been incremented.
                             immediate_failure(result, payload.clone(), next);
                             // The savepoint deliberately includes the caller nonce bump.
-                            let saved_store = payload.store.clone();
+                            let saved_store = payload.store.snapshot();
                             if reserved(world, destination) {
                                 incomplete(
                                     result,

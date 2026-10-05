@@ -62,6 +62,11 @@
           };
           cargoArtifacts = craneLib.buildDepsOnly common;
           package = craneLib.buildPackage (common // { inherit cargoArtifacts; });
+          imblCommon = common // {
+            cargoExtraArgs = "--workspace --locked --features imbl";
+          };
+          imblArtifacts = craneLib.buildDepsOnly imblCommon;
+          imblPackage = craneLib.buildPackage (imblCommon // { cargoArtifacts = imblArtifacts; });
         in
         {
           packages.default = package;
@@ -72,10 +77,18 @@
           };
           checks = {
             build-and-test = package;
+            imbl-build-and-test = imblPackage;
             clippy = craneLib.cargoClippy (
               common
               // {
                 inherit cargoArtifacts;
+                cargoClippyExtraArgs = "--all-targets -- -D warnings";
+              }
+            );
+            imbl-clippy = craneLib.cargoClippy (
+              imblCommon
+              // {
+                cargoArtifacts = imblArtifacts;
                 cargoClippyExtraArgs = "--all-targets -- -D warnings";
               }
             );
@@ -88,6 +101,46 @@
                 RUSTDOCFLAGS = "-D warnings";
               }
             );
+            imbl-docs = craneLib.cargoDoc (
+              imblCommon
+              // {
+                cargoArtifacts = imblArtifacts;
+                RUSTDOCFLAGS = "-D warnings";
+              }
+            );
+            state-backend-parity =
+              pkgs.runCommand "evm-abstract-state-backend-parity" { nativeBuildInputs = [ pkgs.jq ]; }
+                ''
+                  set -euo pipefail
+                  mkdir std imbl
+                  for world in ${./examples/worlds}/*.json; do
+                    name="$(basename "$world" .json)"
+                    std_status=0
+                    imbl_status=0
+                    ${package}/bin/evm-abstract analyze --world "$world" \
+                      --entry 0x0000000000000000000000000000000000000101 \
+                      --format json > "std/$name.json" || std_status=$?
+                    ${imblPackage}/bin/evm-abstract analyze --world "$world" \
+                      --entry 0x0000000000000000000000000000000000000101 \
+                      --format json > "imbl/$name.json" || imbl_status=$?
+                    test "$std_status" -eq "$imbl_status"
+                    case "$std_status" in 0|2) ;; *) exit 1 ;; esac
+                    cmp "std/$name.json" "imbl/$name.json"
+                    if test "$std_status" -eq 0; then
+                      ${package}/bin/evm-abstract analyze --world "$world" \
+                        --entry 0x0000000000000000000000000000000000000101 \
+                        --format json --ssa > "std/$name-ssa.json"
+                      ${imblPackage}/bin/evm-abstract analyze --world "$world" \
+                        --entry 0x0000000000000000000000000000000000000101 \
+                        --format json --ssa > "imbl/$name-ssa.json"
+                      cmp "std/$name-ssa.json" "imbl/$name-ssa.json"
+                    else
+                      jq -e '.status == "Incomplete"' "std/$name.json" > /dev/null
+                    fi
+                  done
+                  mkdir $out
+                  cp -r std imbl $out/
+                '';
             nix-format =
               pkgs.runCommand "evm-abstract-nix-format"
                 {
@@ -195,6 +248,9 @@
               nixfmt
               lychee
               git
+              python3
+              coreutils
+              bash
               nixVersions.stable
             ];
             RUST_BACKTRACE = "1";
