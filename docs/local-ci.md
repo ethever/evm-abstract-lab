@@ -21,7 +21,7 @@ nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --o
 
 需要启用 `nix-command` 和 `flakes` 的 Nix。按机器余量调整 `max-jobs` 和 `cores`；这两个选项限制构建并发，不减少检查内容。`--no-update-lock-file` 防止检查时修改依赖锁。
 
-等待命令结束，确认 **Nix 自身的退出码为 0**。检查范围以 [`flake.nix` 的 `checks`](../flake.nix) 为准，包含测试、格式、文档和打包后示例；局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
+等待命令结束，确认 **Nix 自身的退出码为 0**。检查范围以 [`flake.nix` 的 `checks`](../flake.nix) 为准，包含测试、格式、文档和打包后示例。`toml-lint` 用 Taplo 检查仓库 TOML 的语法与重复键，`toml-format` 检查格式，均覆盖隐藏目录中的 TOML；规则见 [`taplo.toml`](../taplo.toml)。局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
 
 失败或中断时，修正问题，再检查最终提交。若把输出通过管道交给 `tee` 保存，必须启用 `pipefail` 或另外保存 Nix 的退出码，避免把日志工具的成功当成检查成功。
 
