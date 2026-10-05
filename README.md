@@ -147,10 +147,10 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 
 ## 验证与源码导航
 
-完整门禁：
+每次 PR 合并前，必须在本地对最终提交执行完整门禁。准备提交、运行检查与记录结果的步骤见[本地检查流程](docs/local-ci.md)。
 
 ```bash
-nix flake check --print-build-logs --option max-jobs 1 --option cores 8
+nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --option cores 8
 ```
 
 它检查构建、工作区测试与 doctest、Clippy、Rust 格式、Rustdoc、Nix 格式、离线文档链接，以及打包后二进制的例子与图输出。开发时可按修改范围单独运行：
