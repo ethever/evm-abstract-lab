@@ -1,0 +1,23 @@
+[package]
+name = "snapshot-state"
+description = "Ordered state maps and independent in-memory rollback checkpoints"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+imbl = ["dep:imbl"]
+
+[dependencies]
+serde.workspace = true
+imbl = { version = "=7.0.0", optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

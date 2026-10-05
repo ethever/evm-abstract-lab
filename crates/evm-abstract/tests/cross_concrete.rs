@@ -253,7 +253,9 @@ fn outcome_slots(analysis: &WorldAnalysis) -> BTreeMap<(Address, U256), Value> {
     stores
         .fold(first, |joined, store| joined.join(store, Domain::default()))
         .slots()
-        .clone()
+        .iter()
+        .map(|(key, value)| (*key, value.clone()))
+        .collect()
 }
 
 fn finite_contains(value: &Value, expected: u64) {

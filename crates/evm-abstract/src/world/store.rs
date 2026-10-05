@@ -5,8 +5,12 @@ use crate::bytecode::Program;
 use crate::domain::{Domain, Value};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use serde::{Serialize, Serializer};
-use std::collections::{BTreeMap, BTreeSet};
+use snapshot_state::Checkpoint;
+use std::collections::BTreeSet;
 use thiserror::Error;
+
+/// Ordered state observations with the selected snapshot storage backend.
+pub use snapshot_state::OrderedMap;
 
 /// One possible event source. Code and storage owners differ in delegated calls.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -70,7 +74,7 @@ impl AbstractLog {
 }
 
 fn serialize_logs<S: Serializer>(
-    logs: &BTreeMap<LogKey, AbstractLog>,
+    logs: &OrderedMap<LogKey, AbstractLog>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     #[derive(Serialize)]
@@ -89,13 +93,13 @@ fn serialize_logs<S: Serializer>(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Plane {
     #[serde(serialize_with = "serialize_slots")]
-    slots: BTreeMap<(Address, U256), Value>,
-    defaults: BTreeMap<Address, Value>,
+    slots: OrderedMap<(Address, U256), Value>,
+    defaults: OrderedMap<Address, Value>,
     global_default: Value,
 }
 
 fn serialize_slots<S: Serializer>(
-    slots: &BTreeMap<(Address, U256), Value>,
+    slots: &OrderedMap<(Address, U256), Value>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     #[derive(Serialize)]
@@ -118,8 +122,8 @@ fn serialize_slots<S: Serializer>(
 impl Plane {
     fn new(global_default: Value) -> Self {
         Self {
-            slots: BTreeMap::new(),
-            defaults: BTreeMap::new(),
+            slots: OrderedMap::new(),
+            defaults: OrderedMap::new(),
             global_default,
         }
     }
@@ -154,12 +158,10 @@ impl Plane {
         let Some(slots) = slot.constants() else {
             // A symbolic alias may replace any slot, including unlisted ones.
             let default = domain.join(self.default_at(address), value);
-            for (_, stored) in self
-                .slots
-                .range_mut((address, U256::ZERO)..=(address, U256::MAX))
-            {
-                *stored = domain.join(stored, value);
-            }
+            self.slots
+                .update_range((address, U256::ZERO)..=(address, U256::MAX), |_, stored| {
+                    *stored = domain.join(stored, value)
+                });
             self.defaults.insert(address, default);
             return;
         };
@@ -229,30 +231,29 @@ impl Plane {
 pub struct Store {
     persistent: Plane,
     transient: Plane,
-    balances: BTreeMap<Address, Value>,
+    balances: OrderedMap<Address, Value>,
     balance_default: Value,
-    codes: BTreeMap<Address, Code>,
-    nonces: BTreeMap<Address, Value>,
-    existence: BTreeMap<Address, Existence>,
-    created: BTreeMap<Address, Option<bool>>,
-    pending_destruction: BTreeMap<Address, Option<bool>>,
+    codes: OrderedMap<Address, Code>,
+    nonces: OrderedMap<Address, Value>,
+    existence: OrderedMap<Address, Existence>,
+    created: OrderedMap<Address, Option<bool>>,
+    pending_destruction: OrderedMap<Address, Option<bool>>,
     #[serde(serialize_with = "serialize_logs")]
-    possible_logs: BTreeMap<LogKey, AbstractLog>,
+    possible_logs: OrderedMap<LogKey, AbstractLog>,
     logs_unknown: bool,
 }
 
 /// An opaque savepoint covering every transaction-local observation and effect.
-#[derive(Clone, Debug)]
-pub struct Snapshot(Store);
+pub type Snapshot = Checkpoint<Store>;
 
 impl Store {
     /// Build transaction state without modifying the fixed input snapshot.
     pub fn new(world: &World) -> Self {
         let mut persistent = Plane::new(Value::top());
-        let mut balances = BTreeMap::new();
-        let mut codes = BTreeMap::new();
-        let mut nonces = BTreeMap::new();
-        let mut existence = BTreeMap::new();
+        let mut balances = OrderedMap::new();
+        let mut codes = OrderedMap::new();
+        let mut nonces = OrderedMap::new();
+        let mut existence = OrderedMap::new();
         for (address, account) in world.accounts() {
             persistent.defaults.insert(
                 *address,
@@ -281,9 +282,9 @@ impl Store {
             codes,
             nonces,
             existence,
-            created: BTreeMap::new(),
-            pending_destruction: BTreeMap::new(),
-            possible_logs: BTreeMap::new(),
+            created: OrderedMap::new(),
+            pending_destruction: OrderedMap::new(),
+            possible_logs: OrderedMap::new(),
             logs_unknown: false,
         }
     }
@@ -548,15 +549,10 @@ impl Store {
         self.transient.havoc_all();
         self.balances.clear();
         self.balance_default = Value::top();
-        for code in self.codes.values_mut() {
-            *code = Code::Unknown;
-        }
-        for nonce in self.nonces.values_mut() {
-            *nonce = Value::top();
-        }
-        for existence in self.existence.values_mut() {
-            *existence = Existence::Unknown;
-        }
+        self.codes.update_values(|code| *code = Code::Unknown);
+        self.nonces.update_values(|nonce| *nonce = Value::top());
+        self.existence
+            .update_values(|existence| *existence = Existence::Unknown);
         for address in self.codes.keys() {
             self.created.insert(*address, None);
             self.pending_destruction.insert(*address, None);
@@ -598,10 +594,11 @@ impl Store {
                 logs_unknown = true;
                 continue;
             }
-            possible_logs
-                .entry(key.clone())
-                .and_modify(|existing| *existing = existing.join(log, domain))
-                .or_insert_with(|| log.clone());
+            if let Some(existing) = possible_logs.get_mut(key) {
+                *existing = existing.join(log, domain);
+            } else {
+                possible_logs.insert(key.clone(), log.clone());
+            }
         }
         Self {
             persistent: self.persistent.join(&other.persistent, domain),
@@ -704,15 +701,16 @@ impl Store {
                 incoming: log.topics.len(),
             });
         }
-        self.possible_logs
-            .entry(key)
-            .and_modify(|existing| *existing = existing.join(&log, domain))
-            .or_insert(log);
+        if let Some(existing) = self.possible_logs.get_mut(&key) {
+            *existing = existing.join(&log, domain);
+        } else {
+            self.possible_logs.insert(key, log);
+        }
         Ok(())
     }
 
     /// Possible event payloads grouped by source site.
-    pub fn possible_logs(&self) -> &BTreeMap<LogKey, AbstractLog> {
+    pub fn possible_logs(&self) -> &OrderedMap<LogKey, AbstractLog> {
         &self.possible_logs
     }
 
@@ -723,16 +721,16 @@ impl Store {
 
     /// Save all mutable state before entering a child frame.
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot(self.clone())
+        Checkpoint::capture(self)
     }
 
     /// Roll back a reverted or exceptional child frame.
     pub fn restore(&mut self, snapshot: Snapshot) {
-        *self = snapshot.0;
+        snapshot.restore(self);
     }
 
     /// Explicit current persistent slots, keyed by storage owner and slot.
-    pub fn slots(&self) -> &BTreeMap<(Address, U256), Value> {
+    pub fn slots(&self) -> &OrderedMap<(Address, U256), Value> {
         &self.persistent.slots
     }
 

@@ -13,6 +13,10 @@ path = "src/main.rs"
 # Keep the binary's Rustdoc name from overwriting the library API documentation.
 doc = false
 
+[features]
+default = []
+imbl = ["evm-abstract/imbl"]
+
 [dependencies]
 evm-abstract = { path = "../evm-abstract" }
 clap.workspace = true

@@ -94,7 +94,7 @@ pub(super) fn initial(world: &World, entry: &Entry) -> Result<MachinePayload, Fr
             calldata: entry.calldata.clone(),
             returndata: ByteArray::empty(),
             call_value: entry.value.clone(),
-            saved_store: Some(store.clone()),
+            saved_store: Some(store.snapshot()),
             continuation: None,
         }],
         store,
@@ -143,7 +143,7 @@ pub(super) fn finish(
     if kind != OutcomeKind::Return
         && let Some(saved) = frame.saved_store
     {
-        payload.store = saved;
+        payload.store.restore(saved);
     }
     let Some(continuation) = frame.continuation else {
         payload.store.finalize_transaction(domain);
@@ -349,7 +349,7 @@ pub(super) fn call(
             opcode::DELEGATECALL => (caller_address, caller.key.caller, caller.call_value.clone()),
             _ => unreachable!(),
         };
-        let saved_store = result.payload.store.clone();
+        let saved_store = result.payload.store.snapshot();
         let code_hash = captured_hash(&program, &result.payload.store, code_address, code);
         let mut payload = result.payload.clone();
         if op == opcode::CALL && target != caller_address {

@@ -12,7 +12,7 @@ mod store;
 
 pub use bytes::{ByteArray, RangeError};
 pub use snapshot::SnapshotIdentity;
-pub use store::{AbstractLog, LogError, LogKey, Snapshot, Store};
+pub use store::{AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store};
 
 use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::Value};
 use alloy_primitives::{Address, B256, U256, keccak256};

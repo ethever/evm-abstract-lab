@@ -7,7 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+imbl = ["snapshot-state/imbl"]
+
 [dependencies]
+snapshot-state = { path = "../snapshot-state" }
 alloy-primitives.workspace = true
 revm-bytecode.workspace = true
 petgraph.workspace = true
