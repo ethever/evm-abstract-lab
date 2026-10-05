@@ -1,47 +1,81 @@
-# 可手算的离线世界与 runtime bytecode
+# 例子索引：从几条指令到跨合约执行
 
-主要入口使用 `worlds/` 的多账户 JSON。所有例子入口为 `0x...0101`，默认 caller=`0x...1000`，calldata 为空、value=0。`storage_unknown:false` 声明完整合成初始 storage；没有 RPC 依赖。
+建议先按下面的单账户顺序学习，再运行多账户世界。所有命令在**仓库根目录**执行，不要先 `cd examples`。文件都是合成的离线输入；分析不需要 RPC 或资金。
 
-| 世界 | 要观察的现象 | 具体成功轨迹中的结果 |
-| --- | --- | --- |
-| `worlds/call-return-branch.json` | B 的 RETURN 字节决定 A 的分支 | A slot 0=1 |
-| `worlds/proxy-storage.json` | 两代理 DELEGATECALL 同一实现，storage 分离 | P1/P2 slot 0=6/10；实现仍为 99 |
-| `worlds/callcode-context.json` | CALLCODE 的 state address、caller、value | caller 为代理，value=3 |
-| `worlds/returndata-copy.json` | CALL 输出区为空，随后 RETURNDATACOPY | 返回 32 字节数值 1 |
-| `worlds/revert-rollback.json` | 回滚子帧写入，同时传回 REVERT 数据 | B slot 0 保留 4，A slot 1=42 |
-| `worlds/static-write.json` | 静态子帧在 SSTORE 处故障 | CALL 成功位 0，B slot 0 保留 4 |
-| `worlds/reentry.json` | 重入读取当前交易写入 | A slot 0=2，slot 1=1 |
-| `worlds/log-rollback.json` | 子帧日志随 REVERT 回滚 | 只保留 A 的事件，B 的事件消失 |
-| `worlds/summary-reuse.json` | 相同只读 callee，输出复制范围不同 | `hits > 0`；开启/关闭后的最终关系一致 |
-| `worlds/create-runtime.json` | nonce=0 的 CREATE 后 CALL 新 runtime | InitCode/Runtime 两个代码 hash；成功路径返回 42，新账户 nonce=1 |
-| `worlds/created-selfdestruct.json` | CREATE2 salt=5 后销毁并再次调用 | caller slot 1=8、slot 2=runtime hash；完整销毁路径最终目标 absent、受益人余额=7 |
-| `worlds/identity-precompile.json` | CALL identity，把返回写到另一内存区 | 成功路径输出 42，图中有原生帧及 Call/Return |
-| `worlds/missing-code.json` | 缺少被调用账户事实 | `Incomplete`、`MissingCode`、退出 2 |
+## 单账户：先把栈和图读懂
+
+`.hex` 文件把字节写成十六进制文本，允许空白。它们是部署后执行的 runtime bytecode，用 `--file examples/文件名.hex` 读取。
+
+| 建议顺序与文件 | 要观察什么 | 检查位置 | 对应教程 |
+| --- | --- | --- | --- |
+| 1．[straight-line.hex](straight-line.hex) | `2+3` 写入内存并返回；给值起名 | ADD 在 `pc=0x04`；一个块的入口、出口栈均为空 | [00：第一遍运行](../docs/00-start.md) |
+| 2．[diamond.hex](diamond.hex) | 两条分支汇合，值变为集合 | `pc=0x0e` 的入栈是 `[{0x1,0x2}]` | [02：集合值](../docs/02-domain.md)、[04：φ](../docs/04-ssa.md) |
+| 3．[loop.hex](loop.hex) | 回边反复传播信息，直到不再变化 | 循环头 `pc=0x02`，观察入栈及循环 φ | [03：固定点](../docs/03-cfg.md) |
+| 4．[dynamic-jump.hex](dynamic-jump.hex) | 目标未知时覆盖合法跳转及失败可能 | JUMP 在 `0x03`，JUMPDEST 在 `0x04`，SSTORE 在 `0x09` | [03：未知跳转](../docs/03-cfg.md) |
+| 5．[stack-heights.hex](stack-heights.hex) | 同一块按不同入栈高分别分析 | `pc=0x0c` 对应 height=0 和 height=1 的状态 | [05：状态划分](../docs/05-sensitivity.md) |
+| 6．[internal-calls.hex](internal-calls.hex) | 同一 helper 的两次内部跳转，比较历史长度 | helper 在 `pc=0x0e`，比较 `context_depth=0/1` | [05：跳转历史](../docs/05-sensitivity.md) |
+| 7．[osaka-clz.hex](osaka-clz.hex) | 协议版本影响指令有效性和计算跳转 | Osaka 下 CLZ(1)=255，跳到 `pc=0x08` | [08：fork](../docs/08-forks.md) |
+
+先用 `explain` 同时查看反汇编、CFG、SSA；只想看图时改用 `cfg`：
 
 ```bash
-nix run . -- analyze --world examples/worlds/proxy-storage.json --entry 0x0000000000000000000000000000000000000101 --format json --ssa
-nix run . -- analyze --world examples/worlds/reentry.json --entry 0x0000000000000000000000000000000000000101
+nix run . -- explain --file examples/straight-line.hex
+nix run . -- explain --file examples/diamond.hex
+nix run . -- cfg --file examples/loop.hex
 ```
 
-抽象图还保留不精确 gas 模型允许的失败分支，因此其最终值集合可能大于表里的具体成功结果。[`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 在三个 fork 对照完整具体轨迹与账户效果；[跨合约一课](../docs/09-cross-contract.md) 解释事实、帧和回滚。[第 10 课](../docs/10-snapshots-summaries-creation.md) 给出摘要开启/关闭、initcode/runtime、延迟删除与原生帧的可检查输出；其新增 fixture 显式声明 nonce、presence 和已确认的 absent 目标。所有账户都是合成离线假设。
-
-以下 `.hex` 示例用于单账户局部指令学习。
-
-`.hex` 文件只含十六进制字节与空白，可以直接作为 CLI 的 `--file` 输入。
-
-| 文件 | 要观察的现象 | 关键位置 |
-| --- | --- | --- |
-| `straight-line.hex` | 2+3、MSTORE、RETURN；单块 SSA | ADD pc=0x04 |
-| `diamond.hex` | 两条 calldata 分支汇合；φ 与集合 join | 汇合 pc=0x0e，值为 {1,2} |
-| `loop.hex` | 回边、有限域收敛、循环 φ | 循环头 pc=0x02 |
-| `dynamic-jump.hex` | calldata 目标为 Top 也要保留后续 SSTORE | JUMP pc=0x03，JUMPDEST pc=0x04，SSTORE pc=0x09 |
-| `internal-calls.hex` | 同一 helper 的两次内部调用 | helper pc=0x0e；比较 k=0/1 |
-| `stack-heights.hex` | 相同块不同入栈高，不能强行合并 | 汇合 pc=0x0c，height=0/1 |
-| `osaka-clz.hex` | 新 opcode 的版本启用与常量跳转恢复 | CLZ(1)=255；计算目标 pc=0x08 |
+调整一个参数，比较同一个输入的结果：
 
 ```bash
-nix run . -- explain --file examples/diamond.hex
+nix run . -- explain --file examples/internal-calls.hex --context-depth 0
 nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 ```
 
-具体对照测试使用 32 字节 calldata。diamond/stack-heights 分别测试末字节为 0 与 1；dynamic-jump 测试末字节为 4，确保具体执行经过合法目标并写 storage；其余例子不依赖 calldata。原有六个例子在 Cancun/Prague/Osaka、k=0/1/2 下核对具体入口、边、出栈及 SSA 值；CLZ 例子在 Osaka 下核对，并在两个旧 fork 下验证拒绝启用。见 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 与 [`osaka.rs`](../crates/evm-abstract/tests/osaka.rs)。
+第二条命令保留一个最近跳转来源块的历史。检查 helper 的状态数、`context` 和返回边怎样变化；不是越大的参数就越容易收敛。
+
+## 多账户：观察调用怎样影响返回值与状态
+
+世界 JSON 提供多个账户的代码和初始事实，`--entry` 指定首先执行的账户。以下文件的入口统一为 `0x0000000000000000000000000000000000000101`；默认 caller 的地址末尾是 `1000`，calldata 为空，value=0。
+
+先跑第一项：
+
+```bash
+nix run . -- analyze \
+  --world examples/worlds/call-return-branch.json \
+  --entry 0x0000000000000000000000000000000000000101
+```
+
+A 调用 B，B 的返回数据让 A 选择分支。找输出中的 `Call` / `Return`，再看 `outcome` 下的 `storage[...]`。表中写的是**具体成功轨迹**；抽象模型还保留 gas 等失败可能，因此实际输出可能包含更大的值集合或其他 outcome。
+
+| 阶段与世界文件 | 观察问题 | 具体成功轨迹或检查条件 |
+| --- | --- | --- |
+| 返回：[call-return-branch.json](worlds/call-return-branch.json) | B 的返回字节如何控制 A 的分支？ | A slot 0=1 |
+| 返回：[returndata-copy.json](worlds/returndata-copy.json) | CALL 没有复制输出时，怎样随后取回数据？ | RETURNDATACOPY 后返回 32 字节数值 1 |
+| 代理：[proxy-storage.json](worlds/proxy-storage.json) | 共享实现是否意味着共享 storage？ | P1/P2 slot 0=6/10；实现自身仍为 99 |
+| 代理：[callcode-context.json](worlds/callcode-context.json) | CALLCODE 的状态账户、caller 和 value 是什么？ | caller 为代理，value=3 |
+| 回滚：[revert-rollback.json](worlds/revert-rollback.json) | 子调用失败后，写入和返回字节分别怎样处理？ | B slot 0 保留 4，A slot 1=42 |
+| 静态限制：[static-write.json](worlds/static-write.json) | 静态子帧执行 SSTORE 会怎样？ | 调用成功位 0，B slot 0 保留 4 |
+| 重入：[reentry.json](worlds/reentry.json) | 再次进入 A 时能否看到刚才的写入？ | A slot 0=2，slot 1=1 |
+| 日志：[log-rollback.json](worlds/log-rollback.json) | REVERT 是否撤销子帧的日志？ | 保留 A 的事件，撤销 B 的事件 |
+| 缺失事实：[missing-code.json](worlds/missing-code.json) | 缺少 B 的代码能否当作空代码？ | `Incomplete`、`MissingCode`、退出 2 |
+
+这些实验的帧、状态和 JSON 字段解读见[第 09 课](../docs/09-cross-contract.md)。`storage_unknown:false` 表示合成输入明确假设所有未列出的初始 slot 都为零；省略它时，未列出的 slot 是未知。空代码与缺失代码也不同。
+
+## 进阶：复用分析与改变代码
+
+先读[第 10 课](../docs/10-snapshots-summaries-creation.md)的前提和步骤，再查看这些输出：
+
+| 世界文件 | 观察问题 | 检查条件 |
+| --- | --- | --- |
+| [summary-reuse.json](worlds/summary-reuse.json) | 相同 callee 输入怎样复用已完成的调用分析？ | `summary_stats.hits > 0`；开关摘要后的最终关系一致 |
+| [create-runtime.json](worlds/create-runtime.json) | 创建时运行的代码与部署后的代码怎样区分？ | 帧有 InitCode/Runtime 两种模式；成功路径返回 42，新账户 nonce=1 |
+| [created-selfdestruct.json](worlds/created-selfdestruct.json) | 同交易创建的账户何时删除？ | 销毁后仍可读到 8 字节代码；完整销毁路径结束后目标 absent、受益人余额=7 |
+| [identity-precompile.json](worlds/identity-precompile.json) | 无普通 runtime 的原生调用怎样进入图？ | 成功路径输出 42；图中有 Precompile 帧及 Call/Return 边 |
+
+创建例子显式声明 nonce、账户存在性及确认不存在的目标账户。JSON 没有列出一个地址，仅表示缺少事实，不能据此判定它不存在。
+
+## 这些例子怎样被核对
+
+[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 核对前六个单账户例子的具体入口、边、出栈和值，覆盖 Cancun/Prague/Osaka 和 k=0/1/2。具体调用输入是 32 字节，前 31 字节均为 `00`：diamond/stack-heights 的末字节分别取 0 与 1；dynamic-jump 的末字节取 4，确保走到合法目标并写 storage。[`osaka.rs`](../crates/evm-abstract/tests/osaka.rs) 核对 CLZ，并验证旧 fork 下的指令故障。
+
+[`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 对照多账户具体轨迹和账户效果；[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs) 比较缓存开关后的最终关系；[`creation.rs`](../crates/evm-abstract/tests/creation.rs) 核对创建、延迟删除和原生调用。这些是指定样例的核对证据，范围见[第 06 课](../docs/06-boundaries.md)。

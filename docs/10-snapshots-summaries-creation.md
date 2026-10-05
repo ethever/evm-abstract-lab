@@ -1,98 +1,315 @@
-# 10：固定事实、复用关系与改变代码
+# 10：复用调用结果、部署代码与固定快照
 
-本课先运行四个小世界，再解释为什么缓存命中、代码部署和销毁都需要明确的事实边界。四个例子都以 `0x...0101` 为入口，使用合成离线状态，默认预算即可完成。
+读完[第 9 课](09-cross-contract.md)，你已经知道调用会产生返回字节和共享状态变化。本课逐个回答四个问题：相同调用能不能复用分析结果？新合约的代码从哪里来？SELFDESTRUCT 何时删除账户？没有普通字节码的预编译怎样执行？最后把这些实验连接到固定链上快照。
 
-## 同一个 callee 怎样被执行两次
+前四个实验均使用离线合成事实，入口为 A=`0x...0101`，默认预算可完成。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
-```bash
-nix run . -- analyze --world examples/worlds/summary-reuse.json --entry 0x0000000000000000000000000000000000000101 --format json > /tmp/summary-on.json
-nix run . -- analyze --world examples/worlds/summary-reuse.json --entry 0x0000000000000000000000000000000000000101 --format json --no-summaries > /tmp/summary-off.json
-jq '.summary_stats, [.summaries[] | {source_state, state_count, edge_count, reused_at}]' /tmp/summary-on.json
+## 1. 调用摘要：复用完整结果关系
+
+[`summary-reuse.json`](../examples/worlds/summary-reuse.json) 中，A 两次 CALL B。B 只读自己的 slot 0=7，将它编码为 32 字节返回。两次调用输入相同，但 A 第一次请求复制 0 字节输出，第二次请求复制 32 字节。
+
+```text
+第一次：A CALL B → 分析 B 的指令、返回和状态效果 → 保存完整关系
+第二次：A CALL B → 核对前提相同 → 将已认证的 B 子图接到新 caller 上
 ```
 
-A 两次 CALL B；B 只读取自己的 slot 0=7 并返回 32 字节。第一次 CALL 不复制输出，第二次复制 32 字节。你应看到 `hits > 0`，并在某个证书的 `reused_at` 找到第二次 callee 入口。关闭摘要后 `hits=0`，仍然完成图和 SSA。比较联合最终关系时去掉图中的状态编号：
+这种缓存称为**调用摘要（call summary）**。它不是只记住“B 返回 7”，而是记住特定抽象输入下，B 的 RETURN、REVERT、失败、返回字节和 Store 效果之间的完整关系。
+
+### 第一步：分别开启和关闭摘要
 
 ```bash
-jq -S '[.outcomes[] | {kind,data,store}] | unique' /tmp/summary-on.json > /tmp/summary-on-relations.json
-jq -S '[.outcomes[] | {kind,data,store}] | unique' /tmp/summary-off.json > /tmp/summary-off-relations.json
+nix run . -- analyze \
+  --world examples/worlds/summary-reuse.json \
+  --entry 0x0000000000000000000000000000000000000101 \
+  --format json > /tmp/summary-on.json
+
+nix run . -- analyze \
+  --world examples/worlds/summary-reuse.json \
+  --entry 0x0000000000000000000000000000000000000101 \
+  --format json --no-summaries > /tmp/summary-off.json
+
+jq '.status, .summary_stats,
+    [.summaries[] | {source_state, state_count, edge_count, reused_at}]' \
+  /tmp/summary-on.json
+jq '.status, .summary_stats.hits, .summaries' /tmp/summary-off.json
+```
+
+两次都应为 `Converged`。开启摘要时 `hits > 0`、`imported_states > 0`；关闭时 `hits=0`，证书列表为空。
+
+| 字段 | 怎样读 |
+| --- | --- |
+| `hits` / `misses` | 找到 / 没找到前提完全相等的完整摘要的次数 |
+| `published` | 已发表的完整摘要数量 |
+| `rejected_incomplete` | 输入变化或子图未闭合而拒绝发表的候选数量 |
+| `imported_states` | 复用时加入新调用位置的子图状态数 |
+| `source_state` | 最初认证此摘要的 callee 入口状态 |
+| `state_count` / `edge_count` | 证书覆盖的状态数 / 边数 |
+| `reused_at` | 后来复用此证书的 callee 入口状态编号 |
+
+**证书**是摘要携带的完整指令子图及输入、输出证据。它来自正常工作表已经完成的分析，包含更深调用。命中时仍导入实际 callee 指令和调用/返回边，所以完整图仍可构建并核对 SSA。
+
+### 第二步：确认复用没有改变最终关系
+
+图编号可能不同，比较时只取入口结果的种类、返回字节和 Store：
+
+```bash
+jq -S '[.outcomes[] | {kind, data, store}] | unique' \
+  /tmp/summary-on.json > /tmp/summary-on-relations.json
+jq -S '[.outcomes[] | {kind, data, store}] | unique' \
+  /tmp/summary-off.json > /tmp/summary-off-relations.json
 cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 ```
 
-缓存保存的是“抽象输入 → RETURN/REVERT/失败、返回字节与 Store 效果”的完整关系。证书来自普通工作表已经闭合的 callee 图，包括更深调用；复用时把这些指令状态、内部边和返回边接到新的暂停 caller 上。因此命中之后图里仍有实际 callee 指令，`--ssa` 仍能核对每条调用与返回。
+`-S` 排序对象字段，`unique` 去掉重复关系；`cmp` 无输出且退出 0，表示这个实验的最终关系一致。它是针对该样例的核对，不是任意输入的等价性证明。
 
-命中要求精确输入相等，不能只比较地址或函数 selector。键包含固定 fork、typed snapshot identity、初始事实 fingerprint、当前可执行代码 hash、callee 帧、ORIGIN、完整 Store、剩余调用深度和精度策略。完整 Store 覆盖 storage/transient、余额、日志、代码 overlay、nonce 和生命周期；任一相关事实变化都导致 miss。callee 的 caller/static/value/calldata 等环境也要相等。
+### 什么条件下允许命中
 
-暂停 caller 和 caller 所拥有的输出复制 continuation 不属于 callee 的输入，因此两个调用位置或输出长度可以不同。其余帧事实与 rollback checkpoint 仍是前置条件。当前缓存属于一次固定世界分析，没有跨分析的持久缓存。改变输入、join 导致输入扩大、未完成 callee 或预算中断，都不能发表一个可复用的完整证书。
+摘要只在**一次固定 world 分析内**缓存，不跨分析持久保存。复用要求输入事实相等，不能只看合约地址或函数 selector（calldata 起始 4 字节，常用来选择函数）：
 
-查找比较、快照 hashing、认证、复制和图导入消耗同一个 `max_work` 账本；复用图的状态也计入全局状态预算。命中不会获得第二份预算。`SummaryWork` 表示关系查找/认证/导入未完成，此时状态为 `Incomplete`，SSA 不接受未闭合图。实现与回归见 [`summary.rs`](../crates/evm-abstract/src/analysis/summary.rs)、[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)。
+本课的**代码 hash**是代码字节的 Keccak 摘要；**初始事实指纹（fingerprint）**绑定整组初始事实。快照身份绑定其声明的来源，具体格式见第 5 节。**ORIGIN（最外层交易发起者）**在本模型中取入口 `caller`，在嵌套调用中保持不变；帧的 CALLER 则随调用方式变化。
 
-## CREATE 的结果是新代码和新状态
+| 必须相等的前提 | 防止什么错误 |
+| --- | --- |
+| fork、快照身份、初始事实指纹、当前代码 hash | 把不同规则、不同区块或改变后的代码混用 |
+| callee 帧，包括 caller/static/value/calldata 和回滚保存点 | 同一代码在不同调用环境下复用错误结果 |
+| ORIGIN 与完整 Store | 忽略 storage、transient、余额、日志、nonce、代码或生命周期变化 |
+| 剩余调用深度和精度策略 | 复用时得到额外深度或改变值域、内存、跳转历史策略 |
+
+A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入，所以本例的输出长度 0/32 不妨碍命中。callee 的其他帧事实和回滚保存点仍需相等。输入经 join 扩大、callee 未完成或预算中断，都不能发表可复用的完整证书。
+
+摘要的查找比较、快照 hashing、认证、复制和图导入都消耗同一份 `--max-work`；导入状态也计入全局状态预算。命中不会重置预算。`SummaryWork` 前沿表示这些操作未完成，状态为 `Incomplete`，SSA 验证器不会接受未闭合图。实现与回归见 [`summary.rs`](../crates/evm-abstract/src/analysis/summary.rs)、[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)。
+
+## 2. CREATE：先执行构造代码，再安装运行时代码
+
+部署涉及两段不同的代码：
+
+| 名称 | 何时执行 | 返回值的用途 |
+| --- | --- | --- |
+| **initcode（构造代码）** | CREATE / CREATE2 创建新账户时 | RETURN 的字节被安装为新合约代码 |
+| **runtime（运行时代码）** | 创建成功后的普通 CALL | RETURN 的字节交给 caller |
+
+它们通常不同。成功 CREATE 给 caller 压栈的是**新地址**，不会把已安装的 runtime 当作 caller 的 returndata。
+
+[`create-runtime.json`](../examples/worlds/create-runtime.json) 中，A 初始 nonce=0。**nonce**是账户的序号；CREATE 用创建者地址和创建前的 nonce 推导目标地址。本例目标为 `0xea53a153a9a04fd632b2486d84732feb3b71afb7`。
+
+### 第一步：确认创建需要的事实
+
+打开 fixture，可以看到目标账户明确声明 `existence:"absent"`、代码为空、nonce/余额为零、完整零 storage。这个声明提供“目标可创建”的事实。JSON 没列出目标只表示未知，会留下 `Creation(UnknownCollision)`，不能猜目标不存在。
+
+**碰撞**指目标已有非零 nonce 或非空代码等阻止创建的条件。例子还声明零地址 absent，供模型允许的创建失败路径使用：CREATE 返回零，A 随后可能 CALL 零地址。
+
+### 第二步：运行并区分两种帧
 
 ```bash
-nix run . -- analyze --world examples/worlds/create-runtime.json --entry 0x0000000000000000000000000000000000000101 --format json --ssa > /tmp/create.json
-jq '[.analysis.states[] | .key.frames[-1] | {address,mode,code_hash}], [.analysis.outcomes[].store.account_observations[] | select(.address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7")]' /tmp/create.json
+nix run . -- analyze \
+  --world examples/worlds/create-runtime.json \
+  --entry 0x0000000000000000000000000000000000000101 \
+  --format json --ssa > /tmp/create.json
+
+jq '[.analysis.states[] | .key.frames[-1]
+     | select(.address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7")
+     | {address, mode, code_hash}] | unique' /tmp/create.json
+
+jq '[.analysis.outcomes[].store.account_observations[]
+     | select(.address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7")
+     | {existence, nonce, balance, code_size, code_hash}] | unique' \
+  /tmp/create.json
 ```
 
-A 的 nonce 初始为 0。CREATE 地址为 `0xea53a153a9a04fd632b2486d84732feb3b71afb7`；输入显式声明它 `existence:"absent"`、空代码、nonce/余额为零、完整零 storage。缺少这个目标账户会留下 `Creation(UnknownCollision)`，不能凭“JSON 没有列出来”猜它不存在。例子也声明零地址为空且不存在，覆盖模型允许的创建失败后 CALL 零地址的分支。
+这里用了 `--ssa`，JSON 根对象是 `{"analysis":...,"ssa":...}`，查询因此从 `.analysis` 开始。不加 `--ssa` 时，`states` / `outcomes` 就在根对象中。
+
+第一个查询应找到同一地址的 `InitCode` 与 `Runtime` 两种 `mode`，并带不同代码 hash。第二个查询看最终账户事实：某些失败可能仍为 absent；成功部署的账户为 present、nonce=`0x1`、code_size=8。
+
+`account_observations` 是方便阅读的账户汇总，不包含 storage slot；slot 仍在 `store.persistent.slots`。代码 hash 为零表示已确认 absent；代码为空但账户存在时，hash 是空字节的 Keccak，两者不同。
+
+### 第三步：跟着成功生命周期读结果
 
 ```mermaid
-flowchart LR
-    A[creator nonce +1] --> B[InitCode 帧与新账户]
-    B --> C[RETURN 得到 runtime]
-    C --> D[Store 安装代码 hash]
-    D --> E[随后 CALL 执行新 runtime]
+flowchart TD
+    A["A 的 nonce：0 → 1"] --> B["新账户帧执行 InitCode；nonce=1"]
+    B --> C["initcode RETURN：给出 runtime 字节"]
+    C --> D["检查代码限制，在 Store 中安装 runtime"]
+    D --> E["CREATE 给 A 返回新地址"]
+    E --> F["A CALL 新地址，执行 Runtime"]
+    F --> G["runtime 返回 32 字节数值 42"]
 ```
 
-图中的 `mode=InitCode` 与 `mode=Runtime` 分别标识构造阶段和部署后的执行。新 runtime 为 `602a5f5260205ff3`，8 字节，返回数值 42；hash 为 `0x30962a84ef989ca0f724a5b2ec94f9cbf6a731752ce2c0be5333bf96e460c9fd`。成功路径中，creator nonce 和新账户 nonce 都为 1。原始 world 中的目标仍是 absent；最终 Store 则能出现 present 的 runtime。这是代码 overlay 的意义。
+本例安装的 runtime 是 `602a5f5260205ff3`，共 8 字节，hash 为 `0x30962a84ef989ca0f724a5b2ec94f9cbf6a731752ce2c0be5333bf96e460c9fd`。原始 world 中目标仍是 absent；Store 保存执行时安装的新代码，称为**代码覆盖层（code overlay）**。后续 CALL 从当前 Store 解析代码，而不是回到原始快照。
 
-CREATE 需要有限且能表示的 creator nonce/endowment、具体 initcode 和明确的碰撞事实；CREATE2 还需要有限 salt，用 initcode hash 决定地址。未知 nonce、salt、initcode、runtime 或碰撞事实都有 typed `Creation` 前沿。initcode 在新帧中执行，起始 storage/transient 归属新账户；通过代码长度、前缀和解码检查后才安装 runtime。失败 initcode 保留本次创建前已经增加的 creator nonce；祖先 REVERT 则通过更早 checkpoint 恢复它。静态限制、深度、EIP-3860 和代码限制同样影响结果。
-
-gas 仍是保守模型，所以抽象结果同时覆盖创建/调用失败；不能把“存在返回 42 的 outcome”读成“所有路径都返回 42”。这些关系由 [`creation.rs`](../crates/evm-abstract/tests/creation.rs) 的独立 revm 轨迹核对。
-
-## SELFDESTRUCT 先转账，最后删除
+可进一步看 A 最终返回的字节：
 
 ```bash
-nix run . -- analyze --world examples/worlds/created-selfdestruct.json --entry 0x0000000000000000000000000000000000000101 --format json > /tmp/destroy.json
-jq '[.states[] | select(.entry.store.pending_destruction["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"] == true) | .id], [.outcomes[].store.account_observations[] | select(.address == "0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb")]' /tmp/destroy.json
+jq '[.analysis.outcomes[] | select(.kind == "Return")
+     | {length: .data.length,
+        last_byte: (.data.bytes["31"] // .data.default)}] | unique' \
+  /tmp/create.json
 ```
 
-A 用 CREATE2、salt=5、endowment=7 部署 8 字节 runtime `60015f55610200ff`，地址为 `0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb`。它写入自己的 slot 0，再把余额转给 `0x...0200` 并 SELFDESTRUCT。caller 恢复后，EXTCODESIZE 仍能读到 8，EXTCODEHASH 仍是 runtime hash；之后还可以再次 CALL 这些代码。caller 把这两个观察保存到自己的 slot 1/2。
+`data` 是抽象字节数组：`length` 表示长度的抽象值，`bytes` 只列出不同于 `default` 的位置。32 字节用 `0x20` 表示；数值 42 的最后一字节是 `0x2a`。这里可能看到 `{0,42}` 的字节集合，包含 runtime 成功返回与 CALL 失败留下零输出的可能，不能读成所有路径都返回 42。
 
-所有支持的 fork 都采用 [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780)：同交易创建的账户延迟到最外层成功完成才删除。在完整销毁路径的最终 Store 中，新账户为 absent，代码/nonce/余额/storage 为零，受益人得到 7。执行中的 `created`、`pending_destruction` 与最终 account observations 是不同时间点；事务结束会清除这些临时标志。祖先 REVERT 恢复余额、代码、slot 和待删除状态。
+### CREATE2 和失败路径的前提
 
-预先存在的账户 SELFDESTRUCT 时不删除代码或 storage；向不同受益人转移余额，向自身转移则保留预先存在账户的余额。把它与同交易新账户的删除合并成“立刻把代码设为空”，会漏掉恢复 caller 后的真实调用。
+CREATE2 用创建者地址、**salt（显式给定的 256 位值）**、initcode hash 推导地址；CREATE2 也需要已知且可表示的创建者 nonce 来处理序号变化。**endowment** 是创建时转给新账户的金额。
 
-## 原生预编译也有调用与返回边
+| 缺少或无法表示的事实 | 对应 `Creation` 前沿 |
+| --- | --- |
+| 创建者 nonce | `UnknownNonce` / `NonceOverflow` |
+| CREATE2 salt | `UnknownSalt` |
+| initcode 或其返回的 runtime 字节 | `UnknownInitCode` / `UnknownRuntimeCode` |
+| 目标 nonce / 代码不足以判断碰撞 | `UnknownCollision` |
+| 金额或非零转账所需余额 | `UnknownEndowment` |
+
+有限数值会枚举候选，initcode/runtime 必须能提取为具体字节。构造帧的初始 storage/transient 属于新账户，代码通过长度、前缀与解码检查后才安装。静态限制、调用深度、EIP-3860 的 initcode 限制和 runtime 代码限制也影响结果。
+
+执行到增加 nonce、进入 initcode 后，initcode 失败会回滚新账户效果，**保留此次增加的创建者 nonce**；更外层帧 REVERT 时则恢复其更早保存点，连 nonce 一起撤销。因余额不足等在增加 nonce 之前发生的失败不会增加它。创建/调用失败可能与成功路径同时出现在图中。[`creation.rs`](../crates/evm-abstract/tests/creation.rs) 使用独立 revm 轨迹核对这些关系。
+
+## 3. SELFDESTRUCT：转账和删除发生在不同时间
+
+[`created-selfdestruct.json`](../examples/worlds/created-selfdestruct.json) 在同一次执行中：A 用 CREATE2、salt=5、endowment=7 部署新合约 C，再 CALL C。C 写 slot 0 后，将余额给受益人 `0x...0200`，执行 SELFDESTRUCT。
+
+这里的 C 地址是 `0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb`，runtime 为 `60015f55610200ff`，8 字节。成功执行按时间分为：
+
+| 时间点 | C 的代码与状态 | 可观察结果 |
+| --- | --- | --- |
+| CREATE2 成功 | 代码已安装，余额 7 | `created=true` |
+| C 执行 SELFDESTRUCT | 余额转给受益人，标记待删除 | `pending_destruction=true`；代码和 storage 暂时保留 |
+| 返回 A | C 仍可被查询和 CALL | EXTCODESIZE 得到 8，EXTCODEHASH 得到 runtime hash |
+| 最外层成功结束 | 完成删除，清除临时标志 | C absent，代码/nonce/余额/storage 归零；受益人余额 7 |
+
+### 第一步：查看中途的待删除标记
 
 ```bash
-nix run . -- analyze --world examples/worlds/identity-precompile.json --entry 0x0000000000000000000000000000000000000101 --format json --ssa > /tmp/native.json
-jq '[.analysis.states[] | .key.frames[-1].mode], [.analysis.outcomes[] | {kind,data}]' /tmp/native.json
+nix run . -- analyze \
+  --world examples/worlds/created-selfdestruct.json \
+  --entry 0x0000000000000000000000000000000000000101 \
+  --format json > /tmp/destroy.json
+
+jq '[.states[]
+     | select(.entry.store.pending_destruction["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"] == true)
+     | .id]' /tmp/destroy.json
 ```
 
-A 在 memory[0..32] 放置数值 42，CALL identity 地址 `0x4`，把输出写到另一个 memory[32..64] 区域再返回。成功路径返回 42；保守 gas 失败分支仍能保留未填充输出区的零。图中有 `Precompile(0x4)` 模式和真实 Call/Return 边，完整图可构建 SSA。预编译由所选 fork 的注册表决定，不需要伪造普通账户 runtime；未提供的账户 presence/balance 事实仍保持未知。
+应得到非空状态编号列表。它证明图保留了“已经 SELFDESTRUCT，但最外层尚未结束”的状态。
 
-原生密码学复用固定 [`revm-precompile`](https://docs.rs/revm-precompile/43.0.3/revm_precompile/)，分析器负责具体输入资格、返回流与执行前的保守工作预留。未知字节/长度或无法表示的 modexp 长度留下 `PrecompileInput`；累计工作不足留下 `Work`。原生失败与无法调用后端的模型边界分别处理。它没有补齐精确 gas 或全部环境关系。
+### 第二步：查看返回 caller 后的代码观察和最终账户
 
-## 固定快照的名字不能代替身份
+```bash
+jq '[.outcomes[] | select(.kind == "Return")
+     | .store.persistent.slots]
+    | unique' /tmp/destroy.json
 
-旧 JSON 的 `provenance` 仍保存描述，但被标为 offline；新增离线输入可以明确写：
+jq '[.outcomes[] | {kind,
+      accounts: [.store.account_observations[]
+       | select(.address == "0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"
+             or .address == "0x0000000000000000000000000000000000000200")
+       | {address, existence, balance, nonce, code_size, pending_destruction}]}]
+    | unique' /tmp/destroy.json
+```
+
+A slot 1 保存读到的代码大小 `0x8`；slot 2 保存 runtime hash `0xacc79ff75f811227da02d9de7061e749e8403447b54eaf6e47fceb2ddfefb04e`。fixture 随后还会再次 CALL C 的代码。第二个查询把同一 outcome 的两个账户放在一起：完整销毁路径中 C absent、受益人得到 `0x7`；未执行成功销毁的路径可能保留 C。不要把中途 `pending_destruction` 或某个最终 outcome 当成全部路径。
+
+本实验室支持的 fork 都采用 [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780)：只有**同交易创建的账户**才在这种情况下删除。预先存在的账户执行 SELFDESTRUCT 时，代码和 storage 保留；向不同受益人转移余额，受益人为自身时保留原账户余额。祖先 REVERT 会恢复转账、slot、代码和待删除状态。把 SELFDESTRUCT 实现成“立即清空代码”会漏掉 A 恢复后仍可执行的代码。
+
+## 4. 预编译：没有普通字节码，也有调用帧
+
+**预编译（precompile）**是在特定地址提供的原生功能，执行由客户端内建实现完成。使用哪些地址与规则由 fork 决定；不需要在 world 中伪造普通合约 runtime。
+
+先看最容易理解的 identity 预编译 `0x4`：它原样返回输入字节。[`identity-precompile.json`](../examples/worlds/identity-precompile.json) 让 A 把数值 42 写在 memory[0..32)，CALL `0x4`，把输出复制到 memory[32..64)，再 RETURN 后一段：
+
+```text
+A memory[0..32)：32 字节数值 42
+      ↓ CALL 输入
+identity 原样返回 32 字节
+      ↓ CALL 输出复制
+A memory[32..64)：32 字节数值 42 → A RETURN
+```
+
+```bash
+nix run . -- analyze \
+  --world examples/worlds/identity-precompile.json \
+  --entry 0x0000000000000000000000000000000000000101 \
+  --format json --ssa > /tmp/native.json
+
+jq '[.analysis.states[].key.frames[-1].mode] | unique' /tmp/native.json
+jq '.analysis.edges,
+    ([.analysis.outcomes[] | select(.kind == "Return")
+      | {kind, length: .data.length,
+         last_byte: (.data.bytes["31"] // .data.default)}] | unique)' \
+  /tmp/native.json
+```
+
+模式列表含 `{"Precompile":"0x0000000000000000000000000000000000000004"}`，图中有 `Call` / `Return` 边。成功返回包含 `length={0x20}`、最后一字节 `0x2a`；抽象值可能同时含零，原因是 CALL 的保守失败可能没有填充输出区。完整图仍能构建 SSA；没有提供的预编译账户存在性/余额事实仍保持未知。
+
+密码学执行复用锁定的 [`revm-precompile 43.0.3`](https://docs.rs/revm-precompile/43.0.3/revm_precompile/)。分析器先检查输入资格并预留保守工作量，再进入后端：
+
+| 情况 | 处理方式 |
+| --- | --- |
+| 输入字节、长度具体且可表示 | 调用原生实现，传播真实返回或执行失败 |
+| 输入未知，或 modexp 声明的长度不可表示 | 留下 `PrecompileInput` 前沿 |
+| 累计工作不足 | 留下 `Work` 前沿，先停止再避免执行昂贵原生操作 |
+| 后端无法完成调用 | 留下 `Precompile` 模型前沿，区别于预编译本身的普通执行失败 |
+
+这支持具体原生返回流，没有补齐精确 gas 或全部执行环境关系。实现见 [`transfer/precompile.rs`](../crates/evm-abstract/src/analysis/transfer/precompile.rs)。
+
+## 5. 固定快照：同一个名字不代表同一组事实
+
+**快照（snapshot）**是分析开始前固定的代码、storage、余额、nonce 和存在性事实。分析过程中修改的是 Store，不会重新查询快照。
+
+先查看第 1 节使用的离线快照：
+
+```bash
+jq '.world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
+```
+
+它的 `identity.kind` 为 `offline`，标签是 `summary-reuse:v1`。fixture 在 world 顶层明确写：
 
 ```json
-{"kind":"offline","label":"synthetic-demo:v1"}
+{"identity": {"kind": "offline", "label": "summary-reuse:v1"}}
 ```
 
-链上导出把它替换为 `identity:{"kind":"chain","chain_id":"0x1","block_hash":"0x…32字节…"}`，仍单独选择 `fork`。每项已观察代码必须带 matching `code_hash`；运行时代码按真实原始字节计算 Keccak，委托标记按原始 23 字节计算，确认 absent 的账户 hash 为零。单个 hash 不绑定全部 storage/balance/nonce，因此 `fingerprint` 另外绑定 fork、identity 和完整初始事实。输入可附带预期 fingerprint，解析器拒绝失配、重复地址/slot、冲突代码 hash 或不合法 absence 事实。
+上面是一个字段片段，放在 `fork`、`accounts` 等字段旁边。旧 JSON 只有 `provenance` 时也归为 offline；来源说明会原样保存。
 
-`existence` 为 `unknown`、`present` 或 `absent`；空代码与不存在是两个事实。省略 nonce/presence/balance 时未知，省略 slot 时默认未知。`storage_unknown:false` 是完整初始 storage 的声明，只适用于明确知道所有未列 slot 为零的输入；RPC 采集只取得请求的 slot，其余保持未知。
+### 身份、代码 hash、指纹各负责什么
 
-要使用网络输入，先明确选择提供者、chain id、exact block hash 和所需账户/slot。以下变量必须由你设置为已经选定的快照；命令不会替换成 latest：
+| 字段 | 绑定的范围 | 不足以单独证明什么 |
+| --- | --- | --- |
+| `provenance` | 作者填写的来源描述 | 不能建立链或区块身份 |
+| `identity.kind="offline"` + `label` | 一组明确未锚定链上的合成事实 | 不宣称这些事实来自链上 |
+| `identity.kind="chain"` + `chain_id` + `block_hash` | 声明事实属于某条链的一个确切区块 | 不验证提供者返回的状态真实性 |
+| 每账户 `code_hash` | 原始代码字节 | 不绑定 storage、余额、nonce |
+| `fingerprint` | fork、identity、完整初始账户事实 | 一致性标识不是链状态的密码学证明 |
+
+链上身份的 `chain_id` 是 `0x` 十六进制数，`block_hash` 是完整 32 字节 hash，不能用区块号或 `latest` 代替。fork 仍单独选择，身份不会替你选择执行规则。
+
+链上 JSON 提供代码时必须同时提供匹配的 `code_hash`。runtime 按原始代码字节计算 Keccak；EIP-7702 委托标记按原始 23 字节计算；已确认 absent 的账户 hash 为零。输入可附带预期 fingerprint；解析器拒绝指纹失配、重复地址/slot、冲突代码 hash 和不合法的 absence 事实。
+
+`existence` 分为 `unknown`、`present`、`absent`。**空代码与账户不存在不是同一事实**。省略 nonce/balance/existence 表示未知；未列 slot 默认未知。只有确实知道所有未列 slot 为零，才能声明 `storage_unknown:false`；RPC 只采集请求的 slot，其余保持未知。
+
+### 可选实验：从固定区块采集
+
+这一段需要你自己的 RPC 和已选定的区块，不是离线例子的必要步骤。先准备三个事实：提供者 URL、预期 chain id、确切 block hash；再列出分析会用到的账户与 slot，并选好该区块的 fork。下面的 `LAB_RPC_URL`、`LAB_BLOCK_HASH` 必须已设为实际值，命令中的 chain id 和账户也要与目标分析一致：
 
 ```bash
-nix run . -- analyze --rpc "$LAB_RPC_URL" --chain-id 0x1 --block-hash "$LAB_BLOCK_HASH" --fork osaka --entry 0x0000000000000000000000000000000000000101 --account 0x0000000000000000000000000000000000000200 --slot 0x0000000000000000000000000000000000000200:0x0 --format json
+nix run . -- analyze \
+  --rpc "$LAB_RPC_URL" \
+  --chain-id 0x1 \
+  --block-hash "$LAB_BLOCK_HASH" \
+  --fork osaka \
+  --entry 0x0000000000000000000000000000000000000101 \
+  --account 0x0000000000000000000000000000000000000200 \
+  --slot 0x0000000000000000000000000000000000000200:0x0 \
+  --format json
 ```
 
-入口自动加入采集账户；`--account` 和 `--slot ADDRESS:SLOT` 可重复，slot 会加入其所属账户。loader 在分析前校验返回 chain id 和 exact block hash，所有 code/balance/nonce/proof/storage 请求都使用 [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) 的 `{blockHash,requireCanonical:true}`。不支持这个 selector、缺少区块/结果、identity/代码 hash/state 冲突、JSON-RPC/HTTP/网络/超时错误都会带着 chain/block/method/account/slot 来源退出 1；不会改查 block number 或 moving tag，也不会把缺失响应补成空代码或零余额。没有被预先选择的后续 CALL 目标保留 `MissingCode`。
+采集到分析的顺序是：
 
-默认每个 RPC 请求超时 15 秒，响应最多 4 MiB；库 API 可显式选择有界限制。当前边界信任选定的 RPC 提供者，交叉校验 `eth_getProof` 与其余观察，但不验证 [EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) Merkle proof。typed identity 和代码 hash 消除混合/冲突输入，不能把受信任的 RPC 数据提升为密码学状态证明，更不能把 `Converged` 提升为任意合约安全证明。
+1. loader 核对返回的 chain id 和 exact block hash。
+2. 入口自动加入账户列表；`--account` 和 `--slot ADDRESS:SLOT` 可以重复，slot 自动加入所属账户。
+3. code/balance/nonce/proof/storage 请求均使用 [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) 的区块选择器 `{blockHash,requireCanonical:true}`，避免请求之间换区块。
+4. 完成一致性校验，冻结 world，然后开始分析。执行时不会补查节点；没有预先选择的后续 CALL 目标可能留下 `MissingCode`。
 
-text/JSON/DOT 都显示 snapshot identity/fingerprint、frame 模式/hash 与摘要信息。JSON 保留完整 initial world、证书输入/输出、transaction Store overlay 和便于查看的 `account_observations`；DOT 的蓝色证书节点标记认证来源与复用位置。源码分别位于 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc.rs`](../crates/evm-abstract/src/world/rpc.rs)、[`transfer/create.rs`](../crates/evm-abstract/src/analysis/transfer/create.rs) 和 [`transfer/precompile.rs`](../crates/evm-abstract/src/analysis/transfer/precompile.rs)。
+不支持这一区块选择器、缺少区块/结果、身份或状态冲突、代码 hash 失配，以及 JSON-RPC、HTTP、网络、超时错误都会退出 `1`，并报告 chain/block/method/account/slot 来源。loader 不会改查区块号或移动标签，也不会把缺失响应填成空代码、零余额。默认每请求超时 15 秒，响应最多 4 MiB；库 API 可选择其他有界限制。
+
+**当前信任范围是选定的 RPC 提供者。** loader 会将 `eth_getProof` 返回字段与其他查询交叉校验，但没有验证 [EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) 的 Merkle proof（将账户/槽位数据与区块状态根连接起来的密码学证明）。身份、hash 和 fingerprint 能发现混合/冲突输入，不能把受信任提供者的数据变成密码学状态证明，也不能让 `Converged` 成为任意合约安全证明。
+
+text / JSON / DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。JSON 还保留初始 world、摘要输入/输出与执行中的 Store；DOT 的蓝色证书节点标出认证来源和复用位置。源码入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc.rs`](../crates/evm-abstract/src/world/rpc.rs)、[`transfer/create.rs`](../crates/evm-abstract/src/analysis/transfer/create.rs)。

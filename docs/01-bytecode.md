@@ -1,66 +1,140 @@
-# 01：从字节找到基本块
+# 01：从字节找到指令和基本块
 
-本课目标：亲手解码一个例子，理解为什么正确的指令边界是 CFG 的前提。
+这一课解决两个问题：哪些字节是指令，哪些指令应该放在同一个基本块。做完后，你应能解释“字节码里看见 `5b`”为什么还不足以认定它是合法跳转目标。
 
-## 一个字节不总是一条指令
+先完成[快速开始](00-start.md)。本课所有命令都在仓库根目录运行；`0x` 表示十六进制，栈列表按**栈底 → 栈顶**排列。
 
-把 `60 5b 00` 当作三个 opcode，就会误以为 pc=1 是 `JUMPDEST`。真实含义是：
+## 1. 先手算三字节程序
+
+输入是 `60 5b 00`。每两位十六进制数字表示一个字节，但一个字节不总是一条指令：
+
+| 字节偏移 pc | 原始字节 | 角色 |
+| --- | --- | --- |
+| `0x00` | `60` | `PUSH1` 的操作码：把后面 1 字节作为数值压栈 |
+| `0x01` | `5b` | 上一条 `PUSH1` 的立即数，即 `0x5b` |
+| `0x02` | `00` | `STOP` 的操作码：结束执行 |
+
+**pc 是字节偏移，不是指令序号。** `PUSH1` 占 2 字节，所以它后面的指令在 pc=`0x02`。本例只有两条指令：
 
 ```text
-pc=0: PUSH1 0x5b   ; opcode=60，立即数=5b
-pc=2: STOP
+pc=0x00: PUSH1 0x5b   [] → [0x5b]
+pc=0x02: STOP         [0x5b] → 执行结束
 ```
 
-`PUSHn` 消耗后面 n 个立即数字节。解码器必须先跳过它们，再看下一条 opcode。本仓库借用 `revm-bytecode` 的名称和栈元数据；解码循环只负责字节边界与立即数。
-
-源码入口：[`Program::decode`](../crates/evm-abstract/src/bytecode.rs)。关注 `width`、`available` 和 pc 的更新，先手算再对照。
-
-## 缺失的 PUSH 字节如何处理
-
-`61 ab` 是不完整的 `PUSH2`。EVM 读取越过代码尾部的位置时取零，因此立即数是 `ab 00`，即 `0xab00`，不是 `0x00ab`。随后 pc 已经越过代码末尾，执行相当于 STOP。
-
-在一个 32 字节数组中，立即数占最右边的 n 个位置；可用字节复制到这段的开头，其余保持零。这同时表达了大端序与右侧补零。
+运行反汇编来核对：
 
 ```bash
-cargo run --locked -p evm-abstract-cli -- explain --hex 61ab
+nix run . -- disasm --hex 605b00
 ```
 
-观察出栈里的 `{0xab00}`。[回归测试](../crates/evm-abstract/tests/pipeline.rs) 用这个非对称例子检查补零方向。
+关键输出是：
 
-## 什么是基本块
+```text
+B0 @ 0x0000:
+  0000: PUSH1          0x5b
+  0002: STOP
+```
 
-基本块是一段正常执行时从头到尾线性经过的指令。它的入口可能是控制流汇合点；出口可能是跳转、分支、停止或者代码末尾。
+没有 `0001: JUMPDEST`。虽然 `5b` 单独作为操作码时表示 `JUMPDEST`，这里它属于 PUSH 数据，不能被执行，也不能作为合法跳转目的地。
 
-本实现的块起点是：pc=0、真实 `JUMPDEST`、上一条块终结指令后的指令。块结束在 JUMP/JUMPI、STOP/RETURN/REVERT/SELFDESTRUCT 或无效 opcode；遇到下一个 JUMPDEST 时，也会分开相邻线性区域。
+解码时的步骤因此是：读一个操作码 → 判断它是否是 `PUSHn` → 读取 n 个立即数字节 → pc 前进 `1+n` → 解码下一条。`PUSH0` 直接压入零，没有立即数字节。
 
-为什么停止指令后还要解码？那里的代码可能被别处的 JUMPDEST 跳入；也可能完全不可达。**解码发现“代码存在”，抽象执行发现“代码是否可达”。** 两者不能混为一谈。
+## 2. PUSH 的立即数缺一半时怎么办
+
+`61 ab` 中，`61` 是 `PUSH2`，声明要读取两个字节，却只剩一个。EVM 把越过代码尾部的字节当作零，因此读取的是：
+
+```text
+声明的 2 字节立即数：ab [缺失]
+补齐后：            ab 00
+压入的数值：        0xab00
+```
+
+按大端序解释时，左边的字节更高位。因此结果是 `0xab00`，不是 `0x00ab`。pc 仍前进完整的 3 字节；后面没有代码，执行隐式停止。
 
 ```bash
-cargo run --locked -p evm-abstract-cli -- explain --hex 005b600100
+nix run . -- explain --hex 61ab
 ```
 
-反汇编有两个块，CFG 只有 pc=0 的状态。第二块没有从空栈入口开始的可达路径。
+看反汇编中的 `PUSH2 0xab00`，再看 CFG 部分的 `out [{0xab00}]`。花括号表示一个槽位可能取到的值；此处只有一种可能，下一课再解释集合。
 
-## EVM 的动态跳转
+## 3. 把指令切成基本块
 
-JUMP 弹出一个数，把它当作新的 pc，但只有真正指令边界上的 JUMPDEST 才合法。目的地藏在 PUSH 数据里、超出代码长度或指向普通指令，都会异常终止。
+**基本块**是一段正常执行时顺序经过的指令。控制流要跳入、跳出或暂停时，需要一个块边界。先切块，下一课以后再计算块间哪些边可能存在。
 
-`600456605b00` 在 pc=2 跳向 pc=4；pc=4 是另一个 PUSH 的数据 `5b`，因此没有合法边。先正确解码，后查询 `jumpdest_blocks()`，才能避免错误边。
+本实现按以下规则切块：
 
-JUMPI 弹出 target，再弹出 condition。当 condition=0 时顺序执行，**不检查 target 的合法性**。可以运行 `600060ff5700`：即使 target=255 非法，零条件路径仍会继续到 STOP。
+| 位置或指令 | 块边界的原因 |
+| --- | --- |
+| 第一条指令 | 程序入口，是第一个块的起点 |
+| 真正的 `JUMPDEST` | 是潜在跳转入口，开启一个块 |
+| `JUMP`、`JUMPI` | 下一步由跳转目标或条件决定，结束当前块 |
+| `STOP`、`RETURN`、`REVERT`、`SELFDESTRUCT`、无效操作码 | 当前路径在这里结束，后面的指令另成块 |
+| `CALL`、`CALLCODE`、`DELEGATECALL`、`STATICCALL`、`CREATE`、`CREATE2` | 当前帧暂停；后面的指令是恢复执行的起点，另成块 |
 
-## fork 是语义的一部分
+最后一类涉及跨合约执行，先记住边界规则即可，[第九课](09-cross-contract.md)再解释调用帧。
 
-上游 opcode 表包含较新 fork 的定义，这不代表它们已在主网启用。本实现支持 Cancun、Prague 和 Osaka，默认使用最新已激活主网执行层 Osaka。CLZ 只在 Osaka 启用；SLOTNUM/DUPN/SWAPN/EXCHANGE 属于尚未上线的 Amsterdam，仍按无效指令处理。EOF 容器直接返回不支持的格式错误。
+块编号 `B0`、`B1` 按代码位置递增，是当前程序的索引。`B1` 不等于 pc=1；它的字节地址另由 `@ 0x...` 显示。
 
-选择规则发生在 `Program::from_hex_with_fork` / `decode_with_fork`；每条指令保存相同的不可修改版本。切块、transfer、SSA 与输出共享这一选择，避免“解码按 Cancun、执行按 Osaka”的混用。EIP-7702 委托标记通过 revm 识别并明确报告目标，因为它是代码指针，不是直接可执行的指令流。详见[协议版本一课](08-forks.md)。
+看一个“代码存在，但入口执行不会到达”的例子：
 
-相关规则可与 [Ethereum execution-specs 控制流实现](https://github.com/ethereum/execution-specs/blob/master/src/ethereum/forks/cancun/vm/instructions/control_flow.py) 对照。
+```bash
+nix run . -- explain --hex 005b600100
+```
 
-## 现在你可以检查的三个事实
+反汇编有两个块：
 
-1. `Program::blocks()` 按地址递增，块的第一条指令地址等于 `start_pc`。
-2. `jumpdest_blocks()` 只含真实 JUMPDEST 指令，没有 PUSH 数据。
-3. 截断 PUSH 仍按完整宽度推进 pc，缺失立即数右侧补零。
+```text
+B0 @ 0x0000: STOP
+B1 @ 0x0001: JUMPDEST; PUSH1 0x1; STOP
+```
 
-下一课不再用一个具体数字代表栈槽位，而用一组可能值。
+CFG 部分却只有 `S0 B0`，没有 `B1` 对应的状态。从 pc=0 的空栈入口开始，第一条 STOP 已经结束执行，也没有跳往 B1 的路径。
+
+为什么还要解码停止指令后面的字节？在一般程序中，前面的其他分支可能跳进那里的 JUMPDEST，从而绕过停止指令；是否能到达，要由控制流分析判断。**反汇编回答“有哪些指令”，CFG 分析回答“从给定入口有哪些可能的执行转移”。**
+
+## 4. 检查 JUMP 与 JUMPI 的真实含义
+
+`JUMP` 从栈顶弹出一个数，把它当作目标 pc。合法目标必须同时满足：在代码范围内、位于指令边界、该指令是 `JUMPDEST`。
+
+```bash
+nix run . -- explain --hex 600456605b00
+```
+
+逐步看：
+
+```text
+pc=0x00: PUSH1 0x4   [] → [0x4]
+pc=0x02: JUMP        弹出 target=0x4
+pc=0x03: PUSH1 0x5b  这条指令的立即数在 pc=0x04
+pc=0x05: STOP
+```
+
+pc=`0x04` 虽然有字节 `5b`，却是 PUSH 数据。预期输出有 `InvalidJump`，没有通往后一个块的正常边。
+
+`JUMPI` 按**栈顶先弹出**的顺序取两个参数：先 target，再 condition。condition 非零时跳转；为零时继续执行下一条指令。这意味着压栈时应先放 condition，再放 target。
+
+```bash
+nix run . -- explain --hex 600060ff5700
+```
+
+```text
+PUSH1 0x0   [] → [0x0]            先放 condition
+PUSH1 0xff  [0x0] → [0x0,0xff]   再放 target，右边是栈顶
+JUMPI       弹出 0xff，再弹出 0；条件为零，继续到 STOP
+```
+
+看 CFG 中的 `BranchFalse` 边，并确认没有 `InvalidJump`。零条件路径**不检查目标是否合法**；只有实际选择跳转的路径才检查目标。
+
+## 5. 指令是否有效，还取决于 fork
+
+fork 指执行层协议版本。本仓库支持 `cancun`、`prague`、`osaka`，默认 `osaka`。例如 `CLZ` 在 Osaka 下有效，在 Cancun、Prague 下无效；`SLOTNUM`、`DUPN`、`SWAPN`、`EXCHANGE` 在这三个版本下都按无效指令处理。上游库知道一个操作码的名称，并不代表它在你选择的版本里有效。
+
+程序在解码时固定 fork，后续切块、抽象执行、SSA 与输出使用同一版本。EOF 容器会被明确拒绝；EIP-7702 委托标记是代码指针，在支持委托的 fork 下单独输入时会报告目标地址，不能当作普通指令流。版本选择、较新指令以及委托解析见[第八课](08-forks.md)。
+
+## 读源码时对应到哪里
+
+先带着上面的例子读 [`Program::decode_with_fork`](../crates/evm-abstract/src/bytecode.rs)：`width` 决定 PUSH 的声明宽度，`available` 决定实际能读多少字节，`pc += width + 1` 决定下一条指令的位置。立即数放在 32 字节数组的最右侧 n 字节区域；实际数据复制到该区域的开头，未读到的部分保留零。随后检查 `Instruction::ends_block` 与 `jumpdest_blocks()` 如何建立块和合法目标索引。指令名称和栈输入/输出数量来自 `revm-bytecode`。
+
+[`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 中的 `push_data_is_not_a_jumpdest`、`truncated_push_pads_on_the_right`、`zero_condition_does_not_validate_invalid_target` 分别核对本课三个容易出错的边界。
+
+下一课：[用一份状态概括许多执行](02-domain.md)。你将看到同一个栈槽位为什么可以同时保存 `{1,2}`。
