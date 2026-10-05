@@ -16,7 +16,8 @@ fn single_program_control_flow_uses_native_memory_and_storage_feedback() {
         assert_eq!(view.edges().len(), 1);
         assert_eq!(view.edges()[0].kind, EdgeKind::Jump);
         assert_eq!(
-            view.program().blocks()[view.states()[view.edges()[0].to].key.block].start_pc,
+            view.program().blocks()[view.states()[view.edges()[0].to].key.basic_block_index]
+                .start_pc,
             7
         );
         assert_eq!(view.execution().states().len(), view.states().len());

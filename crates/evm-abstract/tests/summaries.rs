@@ -116,10 +116,12 @@ fn complete_read_only_relation_reuses_across_call_sites_and_output_ranges() {
                 && output.data.len().contains(U256::from(32)))
     );
     assert!(
-        record
-            .reused_at
-            .iter()
-            .all(|id| enabled.states()[*id].entry.active().key.block == 0)
+        record.reused_at.iter().all(|id| enabled.states()[*id]
+            .entry
+            .active()
+            .key
+            .basic_block_index
+            == 0)
     );
     assert!(
         enabled

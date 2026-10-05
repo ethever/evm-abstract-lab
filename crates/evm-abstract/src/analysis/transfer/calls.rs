@@ -84,7 +84,7 @@ pub(super) fn initial(world: &World, entry: &Entry) -> Result<MachinePayload, Fr
                     address: entry.address,
                     caller: entry.caller,
                     is_static: entry.is_static,
-                    block: 0,
+                    basic_block_index: 0,
                     stack_height: 0,
                     jump_history: Vec::new(),
                 },
@@ -186,7 +186,7 @@ pub(super) fn finish(
             .push((pc, FrontierReason::Memory, Some(payload.key())));
         return;
     }
-    parent.key.block = continuation
+    parent.key.basic_block_index = continuation
         .return_block
         .expect("call continuations include synthetic end blocks");
     payload.normalize();
@@ -225,7 +225,7 @@ fn immediate_call_failure(result: &mut Execution, mut payload: MachinePayload, n
     let caller = payload.active_mut();
     caller.stack.push(zero());
     caller.returndata = ByteArray::empty();
-    caller.key.block = next;
+    caller.key.basic_block_index = next;
     payload.normalize();
     result.successors.push(Successor {
         payload,
@@ -255,7 +255,7 @@ pub(super) fn call(
     {
         return;
     }
-    let next = result.payload.active().key.block + 1;
+    let next = result.payload.active().key.basic_block_index + 1;
     // The decoder splits after every CALL. An end-of-code continuation is a
     // synthetic empty block, making each return pop exactly one frame.
     debug_assert!(next <= program.blocks().len());
@@ -381,7 +381,7 @@ pub(super) fn call(
                     address: state_address,
                     caller: frame_caller,
                     is_static: caller.key.is_static || op == opcode::STATICCALL,
-                    block: 0,
+                    basic_block_index: 0,
                     stack_height: 0,
                     jump_history: Vec::new(),
                 },

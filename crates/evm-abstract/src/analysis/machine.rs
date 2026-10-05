@@ -71,8 +71,9 @@ pub struct FrameKey {
     pub caller: Address,
     /// Whether state-changing instructions exceptionally fail in this frame.
     pub is_static: bool,
-    /// Basic-block index; the runtime block count denotes a synthetic end-of-code continuation.
-    pub block: usize,
+    /// Index into the captured program's basic blocks, not a bytecode PC or chain block.
+    /// The block count denotes a synthetic end-of-code continuation.
+    pub basic_block_index: usize,
     /// Entry stack height, used to keep differently typed stacks apart.
     pub stack_height: usize,
     /// Bounded intraprocedural jump history, independently retained per call frame.

@@ -90,7 +90,7 @@ pub(super) fn resume_summary(
         .active()
         .program
         .as_ref()
-        .and_then(|p| p.blocks().get(payload.active().key.block))
+        .and_then(|p| p.blocks().get(payload.active().key.basic_block_index))
         .and_then(|b| b.instructions.last())
         .map_or(0, |i| i.pc);
     finish(&mut result, payload, kind, data, &mut context, pc);
@@ -115,8 +115,13 @@ fn boundary(result: &mut Execution, pc: usize, reason: FrontierReason) {
         .push((pc, reason, Some(result.payload.key())));
 }
 
-fn successor(result: &mut Execution, mut payload: MachinePayload, block: usize, kind: EdgeKind) {
-    payload.active_mut().key.block = block;
+fn successor(
+    result: &mut Execution,
+    mut payload: MachinePayload,
+    basic_block_index: usize,
+    kind: EdgeKind,
+) {
+    payload.active_mut().key.basic_block_index = basic_block_index;
     payload.normalize();
     result.successors.push(Successor {
         payload,
@@ -226,8 +231,8 @@ pub(super) fn execute(
         .clone()
         .expect("runtime and initcode frames capture their executable program");
     let program = &program;
-    let block_id = result.payload.active().key.block;
-    let Some(block) = program.blocks().get(block_id) else {
+    let basic_block_index = result.payload.active().key.basic_block_index;
+    let Some(block) = program.blocks().get(basic_block_index) else {
         let payload = result.payload.clone();
         finish(
             &mut result,
@@ -354,9 +359,14 @@ pub(super) fn execute(
                     }
                 }
                 if condition.is_some_and(Value::may_be_zero) {
-                    if block_id + 1 < program.blocks().len() {
+                    if basic_block_index + 1 < program.blocks().len() {
                         let payload = result.payload.clone();
-                        successor(&mut result, payload, block_id + 1, EdgeKind::BranchFalse);
+                        successor(
+                            &mut result,
+                            payload,
+                            basic_block_index + 1,
+                            EdgeKind::BranchFalse,
+                        );
                     } else {
                         let payload = result.payload.clone();
                         finish(
@@ -704,9 +714,14 @@ pub(super) fn execute(
             _ => {}
         }
     }
-    if block_id + 1 < program.blocks().len() {
+    if basic_block_index + 1 < program.blocks().len() {
         let payload = result.payload.clone();
-        successor(&mut result, payload, block_id + 1, EdgeKind::Fallthrough);
+        successor(
+            &mut result,
+            payload,
+            basic_block_index + 1,
+            EdgeKind::Fallthrough,
+        );
     } else {
         let payload = result.payload.clone();
         finish(

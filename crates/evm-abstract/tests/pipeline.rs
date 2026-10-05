@@ -21,7 +21,7 @@ fn states_at(analysis: &Analysis, pc: usize) -> Vec<&analysis::State> {
     analysis
         .states()
         .iter()
-        .filter(|s| analysis.program().blocks()[s.key.block].start_pc == pc)
+        .filter(|s| analysis.program().blocks()[s.key.basic_block_index].start_pc == pc)
         .collect()
 }
 
@@ -160,7 +160,7 @@ fn unknown_jump_covers_every_actual_destination() {
         .edges()
         .iter()
         .filter(|e| e.from == 0)
-        .map(|e| a.program().blocks()[a.states()[e.to].key.block].start_pc)
+        .map(|e| a.program().blocks()[a.states()[e.to].key.basic_block_index].start_pc)
         .collect();
     assert_eq!(targets, std::collections::BTreeSet::from([4, 6, 8]));
 }

@@ -33,8 +33,8 @@ pub use transfer::create::CreationBoundary;
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct StateKey {
-    /// Program 中的基本块编号。
-    pub block: usize,
+    /// Program.blocks() 中的基本块索引，不是指令 PC 或链上区块号。
+    pub basic_block_index: usize,
     /// 入栈高；不同高度不做逐槽 join。
     pub stack_height: usize,
     /// 按先后顺序保存的跳转来源 pc，不是函数名或外部 CALL 栈。

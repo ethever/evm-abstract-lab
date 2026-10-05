@@ -41,6 +41,17 @@ fn cfg_json_includes_status_contexts_and_unknown_jump_diagnostic() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["status"], "Converged");
     assert_eq!(json["config"]["context_depth"], 1);
+    let states = json["states"].as_array().unwrap();
+    for state in states {
+        assert!(state["key"]["basic_block_index"].is_u64());
+        assert!(state["key"].get("block").is_none());
+    }
+    assert!(
+        states
+            .iter()
+            .any(|state| state["key"]["basic_block_index"] == 1)
+    );
+    assert_eq!(json["program"]["blocks"][1]["start_pc"], 4);
     assert!(
         json["diagnostics"]
             .as_array()
@@ -195,6 +206,17 @@ fn primary_analyze_json_has_world_call_frames_returns_and_outcomes() {
             .iter()
             .any(|state| state["key"]["frames"].as_array().unwrap().len() == 2)
     );
+    for state in json["states"].as_array().unwrap() {
+        for key in state["key"]["frames"].as_array().unwrap() {
+            assert!(key["basic_block_index"].is_u64());
+            assert!(key.get("block").is_none());
+        }
+        let stack = &state["entry"]["call_stack"];
+        for frame in std::iter::once(&stack["root"]).chain(stack["children"].as_array().unwrap()) {
+            assert!(frame["state"]["key"]["basic_block_index"].is_u64());
+            assert!(frame["state"]["key"].get("block").is_none());
+        }
+    }
     assert!(!json["outcomes"].as_array().unwrap().is_empty());
 }
 

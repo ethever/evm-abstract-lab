@@ -45,7 +45,7 @@ fn immediate_failure(result: &mut Execution, mut payload: MachinePayload, next: 
     let caller = payload.active_mut();
     caller.stack.push(zero());
     caller.returndata = ByteArray::empty();
-    caller.key.block = next;
+    caller.key.basic_block_index = next;
     payload.normalize();
     result.successors.push(Successor {
         payload,
@@ -79,7 +79,7 @@ pub(super) fn create(
 ) {
     let config = context.config;
     let domain = context.domain;
-    let next = result.payload.active().key.block + 1;
+    let next = result.payload.active().key.basic_block_index + 1;
     debug_assert!(next <= program.blocks().len());
     let Some(sizes) = args[2].constants() else {
         incomplete(result, pc, CreationBoundary::UnknownInitCode);
@@ -332,7 +332,7 @@ pub(super) fn create(
                                             address: destination,
                                             caller: caller_address,
                                             is_static: false,
-                                            block: 0,
+                                            basic_block_index: 0,
                                             stack_height: 0,
                                             jump_history: Vec::new(),
                                         },

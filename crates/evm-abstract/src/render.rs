@@ -64,7 +64,7 @@ pub fn cfg(analysis: &Analysis) -> String {
         analysis.config().context_depth,
     );
     for state in analysis.states() {
-        let block = &analysis.program().blocks()[state.key.block];
+        let block = &analysis.program().blocks()[state.key.basic_block_index];
         writeln!(
             output,
             "S{} B{} @ 0x{:04x} height={} context={:?}",
@@ -108,7 +108,7 @@ pub fn dot(analysis: &Analysis) -> String {
         .states()
         .iter()
         .map(|state| {
-            let pc = analysis.program().blocks()[state.key.block].start_pc;
+            let pc = analysis.program().blocks()[state.key.basic_block_index].start_pc;
             graph.add_node(format!(
                 "S{} pc=0x{:x}\nheight={} ctx={:?}\nstack in {}",
                 state.id,
@@ -153,7 +153,7 @@ pub fn ssa(analysis: &Analysis, ssa: &Ssa) -> String {
     );
     for block in ssa.blocks() {
         let state = &analysis.states()[block.state];
-        let pc = analysis.program().blocks()[state.key.block].start_pc;
+        let pc = analysis.program().blocks()[state.key.basic_block_index].start_pc;
         writeln!(
             output,
             "S{} @ 0x{:04x} context={:?}:",

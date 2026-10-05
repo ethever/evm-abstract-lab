@@ -90,7 +90,7 @@ pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaE
             return Err(invariant("effect phi does not cover incoming edges"));
         }
         let program = state.program();
-        let original = program.and_then(|p| p.blocks().get(state.active().block));
+        let original = program.and_then(|p| p.blocks().get(state.active().basic_block_index));
         if block.instructions.len() != state.executed_pcs.len()
             || block.effects.len() != block.instructions.len()
         {
