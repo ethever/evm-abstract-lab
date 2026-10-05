@@ -73,7 +73,7 @@ pub fn cfg(analysis: &Analysis) -> String {
         .unwrap();
         writeln!(
             output,
-            "  in  {}\n  out {}",
+            "  stack in  {}\n  stack out {}",
             stack(&state.entry_stack),
             stack(&state.exit_stack)
         )
@@ -110,7 +110,7 @@ pub fn dot(analysis: &Analysis) -> String {
         .map(|state| {
             let pc = analysis.program().blocks()[state.key.block].start_pc;
             graph.add_node(format!(
-                "S{} pc=0x{:x}\nheight={} ctx={:?}\nin {}",
+                "S{} pc=0x{:x}\nheight={} ctx={:?}\nstack in {}",
                 state.id,
                 pc,
                 state.key.stack_height,
@@ -203,7 +203,7 @@ pub fn ssa(analysis: &Analysis, ssa: &Ssa) -> String {
             .map(|v| format!("%{v}"))
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(output, "  out [{values}]").unwrap();
+        writeln!(output, "  stack out [{values}]").unwrap();
     }
     output
 }

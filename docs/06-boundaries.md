@@ -20,7 +20,7 @@
 nix run . -- cfg --file examples/diamond.hex --max-constants 1
 ```
 
-输出是 `status=Converged`。汇合点 `pc=0x0e` 的 `in [⊤]`、`out [⊤]`，原因是容量 1 放不下 `{1,2}`。分析扩大了可能值范围，并把扩大后的信息继续传播到结束。
+输出是 `status=Converged`。汇合点 `pc=0x0e` 的 `stack in [⊤]`、`stack out [⊤]`，原因是容量 1 放不下 `{1,2}`。分析扩大了可能值范围，并把扩大后的信息继续传播到结束。
 
 ### 实验 B：预算用尽，传播尚未完成
 
@@ -35,7 +35,7 @@ status=Incomplete ... transfers=1 ...
 frontier Transfers: from=None target=StateKey { block: 1, stack_height: 1, context: [] }
 ```
 
-**frontier（前沿）**记录分析停在什么位置、为什么不能继续。这里入口块执行了一次，循环头仍有待处理输入。其暂时显示的 `out []` 不是“循环头必然清空栈”的结论；它尚未执行完传播。
+**frontier（前沿）**记录分析停在什么位置、为什么不能继续。这里入口块执行了一次，循环头仍有待处理输入。其暂时显示的 `stack out []` 不是“循环头必然清空栈”的结论；它尚未执行完传播。
 
 CLI 对 `Incomplete` 返回退出码 2，构建 SSA 会拒绝未完成图。这个退出码表示分析未完成，与 EVM 中 REVERT 或异常终止的含义不同。
 
