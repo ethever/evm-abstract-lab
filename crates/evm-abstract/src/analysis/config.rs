@@ -18,7 +18,7 @@ pub struct Config {
     pub reduction_rounds: usize,
     /// 一次交换的语义事实原子上限；不按上限预分配。
     pub max_facts: usize,
-    /// 每个槽位最多保留的常量数，范围 1..=64。
+    /// 每个槽位最多保留的常量数；任意正 usize，默认 8，不按上限预分配。
     pub max_constants: usize,
     /// 保留最近 k 个跳转来源块；0 代表上下文不敏感，默认 8。
     /// 接受任意 usize，不按 k 预分配；实际历史增长受执行资源预算约束。
@@ -46,8 +46,8 @@ impl Default for Config {
 /// 配置不成立，分析尚未开始。
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    /// 域容量超出教学实现允许的范围。
-    #[error("max_constants must be in 1..=64")]
+    /// 有限常量集合的容量必须非零。
+    #[error("max_constants must be positive")]
     Constants,
     /// 资源预算不能是零。
     #[error("max_states and max_transfers must be positive")]
@@ -75,7 +75,7 @@ pub struct ValidatedConfig {
 impl Config {
     /// 消耗原始配置，检查所有条件后才允许构建引擎输入。
     ///
-    /// 非零转换与范围校验在同一处完成，执行阶段无需重复解析 usize。
+    /// 非零转换在准入处完成；实际集合增长受执行工作预算约束。
     /// ```
     /// use evm_abstract::analysis::Config;
     /// let validated = Config::default().validate()?;
@@ -83,9 +83,7 @@ impl Config {
     /// # Ok::<(), evm_abstract::analysis::ConfigError>(())
     /// ```
     pub fn validate(self) -> Result<ValidatedConfig, ConfigError> {
-        let capacity = NonZeroUsize::new(self.max_constants)
-            .filter(|capacity| capacity.get() <= 64)
-            .ok_or(ConfigError::Constants)?;
+        let capacity = NonZeroUsize::new(self.max_constants).ok_or(ConfigError::Constants)?;
         if self.max_states == 0 || self.max_transfers == 0 {
             return Err(ConfigError::Budget);
         }

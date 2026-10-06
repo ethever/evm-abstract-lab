@@ -323,10 +323,6 @@ fn invalid_configs_are_rejected_before_execution() {
             ..Config::default()
         },
         Config {
-            max_constants: 65,
-            ..Config::default()
-        },
-        Config {
             max_states: 0,
             ..Config::default()
         },

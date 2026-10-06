@@ -186,6 +186,8 @@ jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
 
 `domain_spec` 保存本次冻结的完整策略，包括 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
 
+`--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 constants-only 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；默认容量 8 则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
+
 `cfg` 和 `ssa` 同样接受 `--domain`、`--reduction-rounds` 与 `--max-facts`。把 product 换成 constants-only 可对照有限集合精度；两项交换上限必须为正。提高上限可能增加精度与工作量，不能自动消除模型前沿。不同策略的 work 数字应结合费用策略解读。
 
 最后检查 JSON 的一个实际值。JUMPI 会弹出条件，分支入口不再保留它；下面只运行第 1 节的算术部分，在 STOP 前留下结果：

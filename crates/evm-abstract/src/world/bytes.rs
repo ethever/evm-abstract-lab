@@ -94,6 +94,20 @@ impl ByteArray {
         }
         out
     }
+    /// 覆盖投影时由开放字节生成的候选，不先执行投影来估算。
+    pub(crate) fn projection_work(&self, domain: Domain) -> usize {
+        self.bytes.values().chain([&self.default]).fold(
+            domain.projection_work(&self.length),
+            |work, value| {
+                let projected = if value == &Value::top() {
+                    domain.projection_work(&Value::unknown_byte())
+                } else {
+                    domain.projection_work(value)
+                };
+                work.saturating_add(projected)
+            },
+        )
+    }
     /// A known empty calldata/returndata sequence.
     pub fn empty() -> Self {
         Self::exact(&[])

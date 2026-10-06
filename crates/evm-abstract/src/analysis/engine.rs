@@ -104,8 +104,12 @@ pub(super) fn run_metered(
         .work_size()
         .saturating_add(result.entry.calldata.work_size())
         .saturating_add(result.entry.value.work_size())
+        .saturating_add(result.world.projection_work(domain))
+        .saturating_add(result.entry.calldata.projection_work(domain))
+        .saturating_add(domain.projection_work(&result.entry.value))
         .saturating_mul(4);
-    if !budget.charge(initial_work) {
+    // 饱和后已不能证明预留的是可信上界，即使用户给了 usize::MAX 预算。
+    if initial_work == usize::MAX || !budget.charge(initial_work) {
         result.frontiers.push(MachineFrontier {
             from: None,
             target: None,

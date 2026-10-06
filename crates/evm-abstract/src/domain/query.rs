@@ -76,35 +76,21 @@ pub(super) fn mask_bounds(lo: U256, hi: U256, bits: KnownBits) -> Option<(U256, 
     Some((extreme(lo, hi, bits, false)?, extreme(lo, hi, bits, true)?))
 }
 
-/// 只返回完整候选覆盖。容量不足返回 None，绝不取前 N 项冒充全体。
-pub(super) fn candidates(value: &Value, capacity: usize) -> Option<BTreeSet<U256>> {
-    if let Some(set) = value.constants() {
-        if set.len() > capacity {
-            return None;
-        }
-        return Some(set.iter().copied().filter(|v| value.contains(*v)).collect());
+fn bit_pattern_count(value: &Value, capacity: usize) -> Option<usize> {
+    let count = (!(value.bits.zero() | value.bits.one())).count_ones();
+    if count >= usize::BITS as usize {
+        return None;
     }
-    if let Some(single) = value.singleton() {
-        return Some(BTreeSet::from([single]));
-    }
-    let unknown = !(value.bits.zero() | value.bits.one());
-    let count = unknown.count_ones();
-    if count < usize::BITS as usize && (1usize << count) <= capacity {
-        let positions = (0..256).filter(|bit| unknown.bit(*bit)).collect::<Vec<_>>();
-        let mut out = BTreeSet::new();
-        for pattern in 0..(1usize << count) {
-            let mut candidate = value.bits.one();
-            for (i, bit) in positions.iter().enumerate() {
-                if pattern & (1usize << i) != 0 {
-                    candidate |= U256::from(1) << *bit;
-                }
-            }
-            if value.contains(candidate) {
-                out.insert(candidate);
-            }
-        }
-        return Some(out);
-    }
+    let patterns = 1usize << count;
+    (patterns <= capacity).then_some(patterns)
+}
+
+struct IntervalCandidates {
+    count: usize,
+    pieces: Vec<(U256, U256, U256)>,
+}
+
+fn interval_candidates(value: &Value, capacity: usize) -> Option<IntervalCandidates> {
     let (mut count, mut pieces) = (0usize, Vec::new());
     for (lo, hi) in value.interval.segments() {
         let Some((first, last)) = value.congruence.first_last(lo, hi) else {
@@ -124,8 +110,53 @@ pub(super) fn candidates(value: &Value, capacity: usize) -> Option<BTreeSet<U256
         }
         pieces.push((first, last, step));
     }
+    Some(IntervalCandidates { count, pieces })
+}
+
+/// 候选查询真正可能扫描的数量；只计算上界，不枚举或按容量分配。
+/// 与完整候选查询共用准入条件，不能用容量截断冒充完整覆盖。
+pub(super) fn candidate_visits(value: &Value, capacity: usize) -> usize {
+    if let Some(set) = value.constants() {
+        return if set.len() <= capacity { set.len() } else { 0 };
+    }
+    if value.singleton().is_some() {
+        return 1;
+    }
+    bit_pattern_count(value, capacity)
+        .unwrap_or_else(|| interval_candidates(value, capacity).map_or(0, |plan| plan.count))
+}
+
+/// 只返回完整候选覆盖。容量不足返回 None，绝不取前 N 项冒充全体。
+pub(super) fn candidates(value: &Value, capacity: usize) -> Option<BTreeSet<U256>> {
+    if let Some(set) = value.constants() {
+        if set.len() > capacity {
+            return None;
+        }
+        return Some(set.iter().copied().filter(|v| value.contains(*v)).collect());
+    }
+    if let Some(single) = value.singleton() {
+        return Some(BTreeSet::from([single]));
+    }
+    let unknown = !(value.bits.zero() | value.bits.one());
+    if let Some(patterns) = bit_pattern_count(value, capacity) {
+        let positions = (0..256).filter(|bit| unknown.bit(*bit)).collect::<Vec<_>>();
+        let mut out = BTreeSet::new();
+        for pattern in 0..patterns {
+            let mut candidate = value.bits.one();
+            for (i, bit) in positions.iter().enumerate() {
+                if pattern & (1usize << i) != 0 {
+                    candidate |= U256::from(1) << *bit;
+                }
+            }
+            if value.contains(candidate) {
+                out.insert(candidate);
+            }
+        }
+        return Some(out);
+    }
+    let plan = interval_candidates(value, capacity)?;
     let mut out = BTreeSet::new();
-    for (mut current, last, step) in pieces {
+    for (mut current, last, step) in plan.pieces {
         loop {
             if value.contains(current) {
                 out.insert(current);

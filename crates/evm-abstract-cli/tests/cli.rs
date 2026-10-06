@@ -8,6 +8,8 @@ mod explain;
 #[path = "cli/teaching.rs"]
 mod teaching;
 
+#[path = "cli/capacity.rs"]
+mod capacity;
 #[path = "cli/domains.rs"]
 mod domains;
 #[path = "cli/numbers.rs"]
