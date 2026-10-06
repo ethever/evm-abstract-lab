@@ -6,6 +6,7 @@
 use crate::{
     analysis::{FrameCode, FrameKey, MachineEdgeKind, MachineState, WorldAnalysis},
     bytecode::Program,
+    render::instruction::InstructionLayout,
     ssa::{Instruction, Transition, ValueId, WorldBlock, WorldSsa},
 };
 use revm_bytecode::opcode::{self, OpCode};
@@ -50,7 +51,7 @@ fn write_block(output: &mut String, state: &MachineState, block: &WorldBlock) {
     let depth = state.key.frames.len();
     writeln!(
         output,
-        "  S{} | active=F{} | call depth={} | machine code identity={}",
+        "S{} | active=F{} | call depth={} | machine code identity={}",
         block.state,
         depth - 1,
         depth,
@@ -113,20 +114,39 @@ fn write_block(output: &mut String, state: &MachineState, block: &WorldBlock) {
         .unwrap();
     }
     output.push_str("    bytecode instructions:\n");
+    let layout = state
+        .program()
+        .and_then(|program| program.blocks().get(state.active().basic_block_index))
+        .map(|source| InstructionLayout::block(output, source.id, source.start_pc));
     if block.instructions.is_empty() {
         writeln!(output, "      (none; {})", empty_instruction_reason(state)).unwrap();
     }
     for instruction in &block.instructions {
-        write_instruction(output, instruction);
+        write_instruction(
+            output,
+            instruction,
+            layout
+                .as_ref()
+                .expect("bytecode instruction has a real block"),
+        );
     }
-    output.push_str("    stack out (before dispatch):\n");
-    write_stacks(output, &block.exit_frames);
+    if let Some(layout) = &layout {
+        layout.indent(output);
+    } else {
+        output.push_str("    ");
+    }
+    output.push_str("stack out (before dispatch):\n");
+    write_stacks(output, &block.exit_frames, layout.as_ref());
     output.push_str("    instruction effects:\n");
     if block.effects.is_empty() {
         output.push_str("      (none)\n");
     }
     for (pc, input, result) in &block.effects {
-        writeln!(output, "      pc=0x{pc:04x}: !{input} -> !{result}").unwrap();
+        layout
+            .as_ref()
+            .expect("instruction effect has a real bytecode block")
+            .write_pc(output, *pc);
+        writeln!(output, "!{input} -> !{result}").unwrap();
     }
     writeln!(output, "    exit effect: !{}", block.exit_effect).unwrap();
 }
@@ -174,14 +194,14 @@ fn write_frame(
     .unwrap();
 }
 
-fn write_instruction(output: &mut String, instruction: &Instruction) {
+fn write_instruction(output: &mut String, instruction: &Instruction, layout: &InstructionLayout) {
     let immediate = instruction
         .immediate
         .map_or_else(|| "none".to_owned(), |value| format!("0x{value:x}"));
+    layout.write_pc(output, instruction.pc);
     writeln!(
         output,
-        "      pc=0x{:04x}: {} | opcode=0x{:02x} | immediate={} | operands={} | results={} | fault={}",
-        instruction.pc,
+        "{} | opcode=0x{:02x} | immediate={} | operands={} | results={} | fault={}",
         OpCode::name_by_op(instruction.opcode),
         instruction.opcode,
         immediate,
@@ -192,9 +212,15 @@ fn write_instruction(output: &mut String, instruction: &Instruction) {
     .unwrap();
 }
 
-fn write_stacks(output: &mut String, stacks: &[Vec<ValueId>]) {
+fn write_stacks(output: &mut String, stacks: &[Vec<ValueId>], layout: Option<&InstructionLayout>) {
     for (frame, stack) in stacks.iter().enumerate() {
-        writeln!(output, "      F{frame}: {}", values(stack)).unwrap();
+        if let Some(layout) = layout {
+            layout.indent(output);
+            output.push_str("  ");
+        } else {
+            output.push_str("      ");
+        }
+        writeln!(output, "F{frame}: {}", values(stack)).unwrap();
     }
 }
 
@@ -224,7 +250,7 @@ fn write_transition(
     .unwrap();
     writeln!(output, "    operands={}", values(&transition.operands)).unwrap();
     output.push_str("    destination stack in:\n");
-    write_stacks(output, &transition.stacks);
+    write_stacks(output, &transition.stacks, None);
     writeln!(
         output,
         "    effect: !{} -> !{}",

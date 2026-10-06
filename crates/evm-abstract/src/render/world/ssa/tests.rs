@@ -103,6 +103,74 @@ fn section<'a>(text: &'a str, start: &str, next: &str) -> &'a str {
 }
 
 #[test]
+fn shared_layout_keeps_real_block_titles_and_bare_instruction_effect_pcs() {
+    let graph = fixture("60015f5500", None, ByteArray::empty());
+    let (ir, text) = rendered(&graph);
+    let block = &ir.blocks()[0];
+    contains(&text, "\nB0 @ 0x0000:\n");
+    let instructions = text.split_once("B0 @ 0x0000:\n").unwrap().1;
+    let instructions = instructions
+        .lines()
+        .take_while(|line| !line.contains("stack out"))
+        .collect::<Vec<_>>();
+    assert_eq!(instructions.len(), block.instructions.len());
+    for instruction in &block.instructions {
+        assert!(instructions.iter().any(|line| {
+            line.trim_start()
+                .starts_with(&format!("{:04x}: ", instruction.pc))
+        }));
+    }
+    let effects = section(&text, "    instruction effects:\n", "    exit effect:");
+    for (pc, input, result) in &block.effects {
+        let effect = effects
+            .lines()
+            .find(|line| line.contains(&format!("!{input} -> !{result}")))
+            .unwrap();
+        assert_eq!(
+            effect.trim_start(),
+            format!("{pc:04x}: !{input} -> !{result}")
+        );
+        let instruction = instructions
+            .iter()
+            .find(|line| line.trim_start().starts_with(&format!("{pc:04x}: ")))
+            .unwrap();
+        assert_eq!(instruction.find(':').unwrap(), effect.find(':').unwrap());
+    }
+}
+
+#[test]
+fn shared_layout_grows_for_multi_digit_block_ids_and_wide_pcs() {
+    let mut code = "5b5f50".repeat(12);
+    code.push_str("00");
+    let graph = fixture(&code, None, ByteArray::empty());
+    let (ir, text) = rendered(&graph);
+    for block in ir.blocks() {
+        let state = &graph.states()[block.state];
+        let source = &state.program().unwrap().blocks()[state.active().basic_block_index];
+        let title = format!("B{} @ 0x{:04x}:\n", source.id, source.start_pc);
+        let rows = text.split_once(&title).unwrap().1;
+        let column = title.find("0x").unwrap() + 2;
+        for row in rows.lines().take_while(|line| !line.contains("stack out")) {
+            assert_eq!(row.find(':').unwrap(), column + 4);
+            assert!(row[..column].chars().all(|c| c == ' '));
+        }
+        let body = section(&text, &format!("S{} | active=", block.state), "\nS");
+        let effects = section(body, "    instruction effects:\n", "    exit effect:");
+        for row in effects.lines() {
+            assert_eq!(row.find(':').unwrap(), column + 4);
+            assert!(row[..column].chars().all(|c| c == ' '));
+        }
+    }
+    let mut code = String::from("6201000056");
+    code.push_str(&"58".repeat(0x10000 - 5));
+    code.push_str("5b5f5000");
+    let graph = fixture(&code, None, ByteArray::empty());
+    let (_, text) = rendered(&graph);
+    contains(&text, "\nB2 @ 0x10000:\n       10000: JUMPDEST");
+    contains(&text, "       10003: STOP");
+}
+
+#[test]
 fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
     let graph = fixture(
         "602a5f5f5f5f5f61020061fffff100",
@@ -139,7 +207,7 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
             ],
         );
         let id = number(&block["state"]);
-        let body = section(&text, &format!("  S{id} | active="), "\n  S");
+        let body = section(&text, &format!("S{id} | active="), "\nS");
         let body = body
             .split_once("\nTransitions")
             .map_or(body, |(body, _)| body);
@@ -226,7 +294,7 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
             contains(
                 body,
                 &format!(
-                    "pc=0x{:04x}: {} | opcode=0x{:02x} | immediate={} | operands={} | results={} | fault={}",
+                    "{:04x}: {} | opcode=0x{:02x} | immediate={} | operands={} | results={} | fault={}",
                     number(&instruction["pc"]),
                     revm_bytecode::opcode::OpCode::name_by_op(
                         u8::try_from(number(&instruction["opcode"])).unwrap()
@@ -241,7 +309,7 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
         }
         let stacks = section(
             body,
-            "    stack out (before dispatch):\n",
+            "stack out (before dispatch):\n",
             "    instruction effects:",
         );
         assert_eq!(
@@ -255,7 +323,7 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
             contains(
                 body,
                 &format!(
-                    "pc=0x{:04x}: !{} -> !{}",
+                    "{:04x}: !{} -> !{}",
                     number(&effect[0]),
                     number(&effect[1]),
                     number(&effect[2])
@@ -409,6 +477,11 @@ fn empty_native_and_faulted_blocks_do_not_invent_bytecode_steps() {
     contains(&text, "bytecode instructions:\n      (none;");
     contains(&text, "effect phi(root world/entry; inputs=[])");
     contains(&text, "Transitions\n  (none)");
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.starts_with('B') && line.contains(" @ 0x"))
+    );
     let native = run(
         World::new(Fork::Osaka, "native renderer fixture"),
         address(4),
@@ -419,6 +492,11 @@ fn empty_native_and_faulted_blocks_do_not_invent_bytecode_steps() {
     contains(&text, "mode=Precompile(");
     contains(&text, "instruction effects:\n      (none)");
     assert!(!text.contains("opcode="));
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.starts_with('B') && line.contains(" @ 0x"))
+    );
     let fault = fixture("01", None, ByteArray::empty());
     let (_, text) = rendered(&fault);
     contains(
@@ -494,6 +572,11 @@ fn invalid_delegation_is_an_exceptional_halt_without_an_instruction_list() {
     contains(&text, "mode=InvalidDelegation");
     contains(&text, "invalid nested delegation; exceptional halt");
     assert!(!text.contains("implicit completion"));
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.starts_with('B') && line.contains(" @ 0x"))
+    );
 }
 
 #[test]

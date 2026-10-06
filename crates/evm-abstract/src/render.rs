@@ -2,14 +2,16 @@
 
 pub mod world;
 
+mod instruction;
+
 use crate::{
     analysis::{Analysis, DiagnosticKind},
     bytecode::Program,
     domain::Value,
     ssa::Ssa,
 };
+use instruction::{InstructionLayout, write_ssa_body};
 use petgraph::{dot::Dot, graph::DiGraph};
-use revm_bytecode::opcode::OpCode;
 use std::fmt::Write;
 
 fn stack(values: &[Value]) -> String {
@@ -28,19 +30,10 @@ pub fn disassembly(program: &Program) -> String {
     let mut output = String::new();
     writeln!(output, "fork={}", program.fork()).unwrap();
     for block in program.blocks() {
-        let prefix = format!("B{} @ 0x", block.id);
-        writeln!(output, "{prefix}{:04x}:", block.start_pc).unwrap();
-        // 对齐到标题的十六进制数字起点，块编号增长时缩进也随之增长。
-        let indent = prefix.len();
+        let layout = InstructionLayout::block(&mut output, block.id, block.start_pc);
         for instruction in &block.instructions {
-            write!(
-                output,
-                "{:indent$}{:04x}: {:<14}",
-                "",
-                instruction.pc,
-                instruction.name()
-            )
-            .unwrap();
+            layout.write_pc(&mut output, instruction.pc);
+            write!(output, "{:<14}", instruction.name()).unwrap();
             if let Some(value) = instruction.immediate {
                 write!(output, " 0x{value:x}").unwrap();
             }
@@ -165,11 +158,11 @@ pub fn ssa(analysis: &Analysis, ssa: &Ssa) -> String {
     );
     for block in ssa.blocks() {
         let state = &analysis.states()[block.state];
-        let pc = analysis.program().blocks()[state.key.basic_block_index].start_pc;
+        let source = &analysis.program().blocks()[state.key.basic_block_index];
         writeln!(
             output,
-            "S{} @ 0x{:04x} context={:?}:",
-            block.state, pc, state.key.context
+            "S{} | context={:?}:",
+            block.state, state.key.context
         )
         .unwrap();
         for phi in &block.phis {
@@ -186,24 +179,10 @@ pub fn ssa(analysis: &Analysis, ssa: &Ssa) -> String {
             )
             .unwrap();
         }
+        let layout = InstructionLayout::block(&mut output, source.id, source.start_pc);
         for instruction in &block.instructions {
-            write!(output, "  {:04x}: ", instruction.pc).unwrap();
-            if !instruction.results.is_empty() {
-                let names = instruction
-                    .results
-                    .iter()
-                    .map(|v| format!("%{v}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                write!(output, "{names} = ").unwrap();
-            }
-            write!(output, "{}", OpCode::name_by_op(instruction.opcode)).unwrap();
-            if let Some(value) = instruction.immediate {
-                write!(output, " 0x{value:x}").unwrap();
-            }
-            for value in &instruction.operands {
-                write!(output, " %{value}").unwrap();
-            }
+            layout.write_pc(&mut output, instruction.pc);
+            write_ssa_body(&mut output, instruction);
             if instruction.fault {
                 output.push_str(" ; exceptional halt");
             }
@@ -215,7 +194,8 @@ pub fn ssa(analysis: &Analysis, ssa: &Ssa) -> String {
             .map(|v| format!("%{v}"))
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(output, "  stack out [{values}]").unwrap();
+        layout.indent(&mut output);
+        writeln!(output, "stack out [{values}]").unwrap();
     }
     output
 }

@@ -101,15 +101,22 @@ nix run . -- explain \
 
 `Execution code` 中的反汇编展示捕获到的整段程序，包含未必可达的基本块。CFG 将代码身份连接到活动状态；`stack in` / `stack out` 是分析状态的入口、出口栈，pc 是字节偏移。这里没有逐条指令前后的完整机器状态，也不是一笔链上交易的具体轨迹。
 
-TAC（三地址代码）把栈操作改写为有名字的定义和使用。例如：
+反汇编与 SSA 的基本块列表都从顶格的 `B# @ 0xPC:` 开始，下面的指令 pc 不带 `0x`，数字列与标题中 `0x` 后的数字对齐。B0–B9 的指令行缩进 7 格，B10–B99 为 8 格，B100–B999 为 9 格。B 属于当前代码身份 C 内的程序；不同 C 的 B0 可以是不同字节码，同一 C 的一个 B 也可以对应多个 S。
+
+教学 SSA 的状态元数据另起一行，例如 `S0 | C0 | F0 active | state owner=A0 | context=[]:`。其中 `context` 是活动帧的跳转历史。入口 φ 先显示在该状态之下，随后才是 B 标题和指令列表；`stack out (before dispatch)` 与 pc 数字列对齐，并保留各个 F 的栈。元数据不会占用 B 标题或混入指令行。
+
+TAC（三地址代码）把栈操作改写为有名字的定义和使用。单程序 SSA 与世界教学 SSA 共用这部分指令正文，例如：
 
 ```text
-%0 = PUSH1 0x9
-%1 = PUSH1 0x2
-%2 = SUB %1 %0
+B0 @ 0x0000:
+       0000: %0 = PUSH1 0x9
+       0002: %1 = PUSH1 0x2
+       0004: %2 = SUB %1 %0
 ```
 
-`%2` 使用 `%1`、`%0` 计算；指令参数按 EVM 从栈顶开始的弹出顺序列出，不能按数值出现顺序调换。`DUP` / `SWAP` 复用已有名字，改变的是栈中的引用。`%x = phi(T0: %y, T1: %z)` 按进入状态的转移选择输入，保留值流的来源；phi 的 `T` 与同一 SSA 的转移编号对应。
+`%2` 使用 `%1`、`%0` 计算；指令参数按 EVM 从栈顶开始的弹出顺序列出，不能按数值出现顺序调换。`DUP` / `SWAP` 复用已有名字，改变的是栈中的引用。结果赋值、操作码、立即数、操作数和故障注释由两种教学入口共同显示。
+
+世界状态的 φ 写作 `%x = phi(T0: %y, T1: %z) ; F1 slot 0`，按进入状态的转移选择输入，并保留值属于哪个帧、哪个栈槽；phi 的 T 与同一 SSA 的转移编号对应。单程序 φ 使用前驱 S，见[第 04 课](04-ssa.md)。共用指令正文与布局不会改变这两种来源身份，也不会省略暂停帧的栈。
 
 调用指令的结果在返回转移上出现：成功 CALL 产生成功位 1，Failure / Revert 产生 0；CREATE / CREATE2 成功产生创建地址，失败或回滚产生零地址。进入子调用时保存回滚检查点；Return 提交子帧效果，Revert 恢复检查点并保留回退数据，Failure 恢复或拒绝调用并留下空 returndata。默认 SSA 用这些语义说明连接状态效果，省去每条指令的原始效果编号。
 
@@ -122,9 +129,13 @@ nix run . -- explain \
   --verbose
 ```
 
-完整报告仍包含 `Analysis`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。`analyze` 的默认文本不变，`analyze --ssa` 仍显示完整 SSA，`analyze --format json` 保留原有字段。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 的默认反汇编、CFG 与栈 SSA 保持原行为。
+完整报告仍包含 `Analysis`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。`analyze` 的默认报告分区不变，`analyze --ssa` 仍显示完整 SSA，`analyze --format json` 保留原有字段。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
-完整 SSA 中的 `!` 连接状态效果。一个效果包含 memory、calldata、returndata、持久/瞬态 storage、余额、nonce、代码与账户生命周期、日志、环境和回滚保存点组成的整机 bundle，当前不按内存地址或 storage slot 分割成精确 MemorySSA。原始 `opcode`、`immediate`、`operands`、`results`、`fault` 和逐指令效果编号都由完整视图保留；`fault` 仅标记无效 opcode 或栈异常，static 写入等其他失败仍在转移、诊断和 outcome 中阅读。SSA 验证完成表示定义、使用和图连接通过了结构检查，不证明每条抽象边都可具体执行，也不补齐已丢失的数值相关性。
+完整 SSA 继续逐帧列出 active/suspended、代码地址、storage owner、代码 hash、mode、caller、static、跳转历史和栈高，不会因为活动帧采用共用指令布局而省略暂停帧。`bytecode instructions` 与 `instruction effects` 共享当前 B 标题和不带 `0x` 的 pc 列，效果行不重复打印 B 标题；原始 `opcode`、`immediate`、`operands`、`results`、`fault` 正文和逐指令效果编号仍完整显示。教学视图便于读赋值式值流，完整视图便于核对字段和效果链，各自保留原有证据。
+
+空代码、原生预编译、无效嵌套委托与代码末尾的合成继续位置没有对应的字节码块或指令 pc。输出保留这些原因，不为它们构造 `B# @ 0xPC:` 或虚假的指令行；有帧和转移不等于执行了普通字节码。
+
+完整 SSA 中的 `!` 连接状态效果。一个效果包含 memory、calldata、returndata、持久/瞬态 storage、余额、nonce、代码与账户生命周期、日志、环境和回滚保存点组成的整机 bundle，当前不按内存地址或 storage slot 分割成精确 MemorySSA。`fault` 仅标记无效 opcode 或栈异常，static 写入等其他失败仍在转移、诊断和 outcome 中阅读。SSA 验证完成表示定义、使用和图连接通过了结构检查，不证明每条抽象边都可具体执行，也不补齐已丢失的数值相关性。
 
 如果缺少代码或预算耗尽，默认 `explain` 保留代码观察、部分 CFG、各 outcome、全部诊断和前沿，显示 `Incomplete` / `Frontiers` 和 `SSA unavailable`，退出码为 `2`；不会输出 `Verified cross-contract SSA:`。`--verbose` 可查看同一部分分析的完整报告。初始工作预算太小、尚未捕获执行代码时，`Input code observations (not execution evidence)` 展示输入快照中的代码并明确其观察来源。输入或初始 RPC 获取失败退出 `1`，没有分析结果；开始分析后的 callee 补查失败或预算限制保留 `RpcAcquisition` 部分图，退出 `2` 并省略 SSA。参数语法错误也退出 `2`，但没有分析结果。
 
