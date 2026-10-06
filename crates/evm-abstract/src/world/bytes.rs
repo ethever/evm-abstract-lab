@@ -91,6 +91,22 @@ impl ByteArray {
         &self.length
     }
 
+    /// Explicit sparse byte facts, in offset order, without padding or joining.
+    /// Rendering these facts must not change them through [`Self::byte_at`].
+    pub(crate) fn stored_bytes(&self) -> impl Iterator<Item = (usize, &Value)> {
+        self.bytes.iter().map(|(offset, value)| (*offset, value))
+    }
+
+    /// Value used at offsets without an explicit sparse fact.
+    pub(crate) fn default_byte(&self) -> &Value {
+        &self.default
+    }
+
+    /// Whether expansion follows EVM memory's 32-byte allocation rule.
+    pub(crate) fn is_memory(&self) -> bool {
+        self.memory
+    }
+
     /// Cost estimate covering explicit byte values, length, and default joins.
     /// Saturation makes very large inputs exceed a finite work budget safely.
     pub fn work_size(&self) -> usize {

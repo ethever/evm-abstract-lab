@@ -351,13 +351,100 @@ fn world_text_and_dot_expose_code_storage_and_call_identity() {
     let text = analyze("proxy-storage", &[]);
     assert!(text.status.success());
     let text = String::from_utf8(text.stdout).unwrap();
-    assert!(text.contains("code=") && text.contains("address=") && text.contains("caller="));
+    let state_header = text
+        .lines()
+        .find(|line| line.contains("Stack height") && line.contains("Code hash"))
+        .unwrap();
+    let columns: Vec<_> = state_header.split('|').map(str::trim).collect();
+    assert!(
+        columns.contains(&"Code") && columns.contains(&"Address") && columns.contains(&"Caller")
+    );
+    for address in [
+        "0x0000000000000000000000000000000000000101",
+        "0x0000000000000000000000000000000000000201",
+        "0x0000000000000000000000000000000000000202",
+        "0x0000000000000000000000000000000000000300",
+    ] {
+        assert!(
+            text.contains(address),
+            "missing full account identity {address}"
+        );
+    }
     assert!(text.contains("Call") && text.contains("Return"));
     let dot = analyze("proxy-storage", &["--format", "dot"]);
     assert!(dot.status.success());
     let dot = String::from_utf8(dot.stdout).unwrap();
     assert!(dot.contains("digraph world") && dot.contains("code=") && dot.contains("address="));
     assert!(dot.contains("Call") && dot.contains("Return"));
+}
+
+#[test]
+fn requested_world_text_is_readable_and_format_switches_keep_complete_evidence() {
+    let text = analyze("returndata-copy", &[]);
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    for section in [
+        "Analysis",
+        "Snapshot",
+        "States",
+        "State details",
+        "Transitions",
+        "Outcomes",
+        "Call summaries",
+        "Diagnostics",
+        "Frontiers",
+    ] {
+        assert!(
+            text.lines().any(|line| line.trim() == section),
+            "missing section {section}:\n{text}"
+        );
+    }
+    assert!(text.contains("stack in") && text.contains("stack out"));
+    let json = analyze("returndata-copy", &["--format", "json"]);
+    assert!(json.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["status"], "Converged");
+    let outcomes = json["outcomes"].as_array().unwrap();
+    assert!(outcomes.iter().any(|outcome| outcome["kind"] == "Failure"));
+    assert!(outcomes.iter().any(|outcome| outcome["kind"] == "Return"));
+    let outcome_headers: Vec<_> = text
+        .lines()
+        .filter(|line| {
+            let first = line.split('|').next().unwrap().trim();
+            first.strip_prefix('O').is_some_and(|index| {
+                !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
+        .collect();
+    assert_eq!(
+        outcome_headers.len(),
+        outcomes.len(),
+        "text must preserve every JSON outcome"
+    );
+    for outcome in outcomes {
+        assert!(outcome["data"]["length"].is_object());
+        assert!(outcome["data"]["bytes"].is_object());
+        assert!(outcome["data"]["default"].is_object());
+        assert!(outcome["store"]["account_observations"].is_array());
+    }
+    let dot = analyze("returndata-copy", &["--format", "dot"]);
+    assert!(dot.status.success());
+    let dot = String::from_utf8(dot.stdout).unwrap();
+    for (index, outcome) in outcomes.iter().enumerate() {
+        assert!(dot.contains(&format!("O{index} [label=")));
+        assert!(dot.contains(&format!(
+            "S{} -> O{index}",
+            outcome["state"].as_u64().unwrap()
+        )));
+    }
+    let incomplete = analyze("missing-code", &[]);
+    assert_eq!(incomplete.status.code(), Some(2));
+    let incomplete = String::from_utf8(incomplete.stdout).unwrap();
+    assert!(
+        incomplete.contains("Incomplete")
+            && incomplete.contains("Frontiers")
+            && incomplete.contains("MissingCode")
+    );
 }
 
 #[test]
