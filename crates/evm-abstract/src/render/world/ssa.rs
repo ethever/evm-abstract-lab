@@ -11,6 +11,8 @@ use crate::{
 use revm_bytecode::opcode::{self, OpCode};
 use std::fmt::Write;
 
+pub(super) mod teaching;
+
 #[cfg(test)]
 mod tests;
 

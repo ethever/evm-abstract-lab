@@ -24,12 +24,15 @@ pub(crate) struct ExplainArgs {
     /// File containing one ordinary EVM runtime program as hex.
     #[arg(long)]
     file: Option<PathBuf>,
-    /// Offline world JSON; explain preserves every state effect and frontier.
+    /// Offline world JSON; teaching view, with complete effects available via --verbose.
     #[arg(long, requires = "entry")]
     world: Option<PathBuf>,
     /// Explicit HTTP(S) RPC; all observations use one fixed block hash.
     #[arg(long,requires_all=["entry","chain_id","block_hash"])]
     rpc: Option<String>,
+    /// Expand all captured frames, machine effects and reports for world/RPC input.
+    #[arg(long, requires = "world-input")]
+    verbose: bool,
     /// Disable on-demand acquisition of concrete missing RPC callees.
     #[arg(long, requires = "rpc")]
     no_rpc_discovery: bool,
@@ -143,7 +146,12 @@ impl ExplainArgs {
             };
             let analysis = args.analyze()?;
             let complete = analysis.status() == Status::Converged;
-            return Ok((render::world::explain(&analysis)?, complete));
+            let output = if self.verbose {
+                render::world::explain_verbose(&analysis)?
+            } else {
+                render::world::explain(&analysis)?
+            };
+            return Ok((output, complete));
         }
         let args = AnalysisArgs {
             input: Input {

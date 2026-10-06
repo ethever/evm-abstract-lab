@@ -32,6 +32,9 @@ fn fixture(name: &str) -> String {
 fn world_command(command: &str, name: &str, extra: &[&str]) -> Output {
     let path = fixture(name);
     let mut args = vec![command, "--world", &path, "--entry", ENTRY];
+    if command == "explain" {
+        args.push("--verbose");
+    }
     args.extend_from_slice(extra);
     run(&args)
 }
@@ -406,6 +409,9 @@ impl TemporaryWorld {
             "--entry",
             ENTRY,
         ];
+        if command == "explain" {
+            args.push("--verbose");
+        }
         args.extend_from_slice(extra);
         run(&args)
     }
@@ -648,6 +654,9 @@ fn rpc_command_named(command: &str, server: &RpcServer, extra: &[&str]) -> Outpu
         "--entry",
         ENTRY,
     ];
+    if command == "explain" {
+        args.push("--verbose");
+    }
     args.extend_from_slice(extra);
     run(&args)
 }
