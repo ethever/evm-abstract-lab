@@ -27,10 +27,14 @@ fn assert_numeric_eq(actual: &Value, expected: &Value) {
 fn entry() -> Entry {
     Entry {
         address: addr(0x101),
-        caller: addr(0x900),
-        value: Value::constant(U256::from(42)),
-        calldata: ByteArray::empty(),
-        is_static: false,
+        environment: evm_abstract::world::EvmEnvironment {
+            to: (addr(0x101)).into(),
+            caller: (addr(0x900)).into(),
+            value: Value::constant(U256::from(42)),
+            calldata: ByteArray::empty(),
+            is_static: false,
+            ..evm_abstract::world::EvmEnvironment::default()
+        },
     }
 }
 fn world(accounts: &[(u64, &str)]) -> World {
@@ -77,7 +81,11 @@ fn call_context_is_intrinsic_and_retained_across_each_call_kind() {
         );
         assert_eq!(
             frame.key.caller,
-            if op == 0xf4 { addr(0x900) } else { addr(0x101) }
+            if op == 0xf4 {
+                addr(0x900).into()
+            } else {
+                addr(0x101).into()
+            }
         );
         assert_eq!(frame.key.is_static, op == 0xfa);
         assert_numeric_eq(
@@ -96,7 +104,9 @@ fn call_context_is_intrinsic_and_retained_across_each_call_kind() {
         );
         assert_numeric_eq(
             &child.exit_stack[1],
-            &Value::constant(U256::from_be_slice(frame.key.caller.as_slice())),
+            &Value::constant(U256::from_be_slice(
+                frame.key.caller.as_concrete().unwrap().as_slice(),
+            )),
         );
         assert_numeric_eq(&child.exit_stack[2], &frame.call_value);
         for (value, origin) in [
@@ -284,7 +294,7 @@ fn static_child_write_fails_and_callcode_value_does_not_violate_static_mode() {
     );
     let code = format!("{}00", call(0xf2, 0x200, 9, 0, 0));
     let mut entry = entry();
-    entry.is_static = true;
+    entry.environment.is_static = true;
     let analysis = analyze_world(
         world(&[(0x101, &code), (0x200, "3400")]),
         entry,
@@ -337,7 +347,7 @@ fn callbacks_observe_parent_writes_before_call_entry() {
 fn unknown_target_keeps_known_candidates_and_explicit_frontier() {
     let caller = "5f5f5f5f5f345af100";
     let mut entry = entry();
-    entry.value = Value::top();
+    entry.environment.value = Value::top();
     let analysis = analyze_world(
         world(&[(0x101, caller), (0x200, "00")]),
         entry,
@@ -396,6 +406,7 @@ fn delegation_retains_authority_storage_and_resolves_only_once() {
         .unwrap();
     let mut entry = entry();
     entry.address = addr(0x200);
+    entry.environment.to = addr(0x200).into();
     let analysis = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
     assert_eq!(analysis.states()[0].active().code_address, addr(0x101));
     assert_eq!(analysis.states()[0].active().address, addr(0x200));

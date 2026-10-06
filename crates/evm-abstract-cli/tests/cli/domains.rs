@@ -1,12 +1,12 @@
 //! 用真实二进制核对默认组合域、对照参数、冻结 JSON 策略与入口资源停止。
 
-use super::{analyze, run};
+use super::{analyze, run_concrete};
 use serde_json::Value;
 
 fn cfg(code: &str, extra: &[&str]) -> Value {
     let mut args = vec!["cfg", "--hex", code, "--format", "json"];
     args.extend_from_slice(extra);
-    let output = run(&args);
+    let output = run_concrete(&args);
     assert!(
         output.status.success(),
         "{}",
@@ -17,12 +17,12 @@ fn cfg(code: &str, extra: &[&str]) -> Value {
 
 #[test]
 fn default_product_and_constants_only_have_observable_precision_differences() {
-    let product = cfg("5f35801800", &["--max-constants", "1"]);
+    let product = cfg("5f3560011660021600", &["--max-constants", "1"]);
     let baseline = cfg(
-        "5f35801800",
+        "5f3560011660021600",
         &["--max-constants", "1", "--domain", "constants-only"],
     );
-    assert_eq!(product["schema_version"], 1);
+    assert_eq!(product["schema_version"], 2);
     assert_eq!(product["domain_spec"]["profile"], "product");
     assert_eq!(product["config"]["domain_profile"], "product");
     assert_eq!(baseline["domain_spec"]["profile"], "constants-only");
@@ -38,7 +38,7 @@ fn default_product_and_constants_only_have_observable_precision_differences() {
         assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
         assert_eq!(
             json["domain_spec"]["provenance_policy"],
-            "block-local-copy-identity-v1"
+            "environment-symbols-and-block-local-copy-v2"
         );
     }
 }
@@ -74,13 +74,13 @@ fn explicit_fact_policy_is_reported_and_preserves_component_constraints() {
 #[test]
 fn zero_fact_policy_is_rejected_before_execution() {
     for flag in ["--reduction-rounds", "--max-facts"] {
-        let output = run(&["cfg", "--hex", "00", flag, "0", "--format", "json"]);
+        let output = run_concrete(&["cfg", "--hex", "00", flag, "0", "--format", "json"]);
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).contains("must be positive"));
     }
     assert_eq!(
-        run(&["cfg", "--hex", "00", "--domain", "unknown"])
+        run_concrete(&["cfg", "--hex", "00", "--domain", "unknown"])
             .status
             .code(),
         Some(2)
@@ -104,6 +104,6 @@ fn initial_world_budget_is_incomplete_with_an_explicit_source_free_frontier() {
     assert!(frontiers[0]["target"].is_null());
     assert!(frontiers[0]["pc"].is_null());
     assert_eq!(frontiers[0]["reason"], "Work");
-    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["schema_version"], 2);
     assert_eq!(json["domain_spec"]["profile"], "product");
 }

@@ -57,16 +57,13 @@ pub(in crate::render::world) fn render(analysis: &WorldAnalysis) -> Result<Strin
         analysis.world().provenance(),
     )
     .unwrap();
-    writeln!(
-        output,
-        "  entry={} | caller={} | static={} | value={} | calldata length={}",
-        address(&refs, analysis.entry().address),
-        address(&refs, analysis.entry().caller),
-        analysis.entry().is_static,
-        analysis.entry().value,
-        length(analysis.entry().calldata.len()),
-    )
-    .unwrap();
+    super::super::environment::write(
+        &mut output,
+        &analysis.entry().environment,
+        Some(analysis.world().identity()),
+        false,
+        |input| refs.address_input(input),
+    );
     output
         .push_str("  Context-sensitive abstract state graph; not a concrete instruction trace.\n");
     output.push_str("  S# = state; B# = frame-local block; F# = frame within a state; C# = captured code; U# = unresolved frontier; stacks are bottom-to-top.\n");
@@ -290,14 +287,14 @@ fn write_cfg(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
             write!(
                 output,
                 " | state owner={}",
-                address(refs, frame.key.address)
+                refs.address_input(frame.key.address_value)
             )
             .unwrap();
         }
         writeln!(
             output,
             " | caller={} | static={} | context={:?}",
-            address(refs, frame.key.caller),
+            refs.address_input(frame.key.caller),
             frame.key.is_static,
             frame.key.jump_history,
         )
@@ -512,8 +509,8 @@ fn write_frontier_frame(output: &mut String, refs: &References, frame: usize, ke
     writeln!(
         output,
         " | state owner={} | caller={} | static={} | stack height={} | context={:?}",
-        address(refs, key.address),
-        address(refs, key.caller),
+        refs.address_input(key.address_value),
+        refs.address_input(key.caller),
         key.is_static,
         key.stack_height,
         key.jump_history,

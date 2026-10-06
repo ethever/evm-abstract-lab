@@ -8,7 +8,12 @@ use std::fmt::Write;
 /// Keep abstract length, default, kind, and every explicitly stored byte visible.
 /// Hex rows combine only consecutive exact bytes, so gaps and abstract facts
 /// cannot silently become a concrete sequence. Work scales with stored facts.
-pub(super) fn write_bytes(output: &mut String, indent: &str, label: &str, array: &ByteArray) {
+pub(in crate::render::world) fn write_bytes(
+    output: &mut String,
+    indent: &str,
+    label: &str,
+    array: &ByteArray,
+) {
     writeln!(
         output,
         "{indent}{label}: length={} ({})",

@@ -8,7 +8,7 @@ use crate::{
 };
 use std::fmt::{Display, Write};
 
-mod bytes;
+pub(super) mod bytes;
 mod references;
 mod table;
 
@@ -41,15 +41,13 @@ pub fn render(analysis: &WorldAnalysis) -> String {
         analysis.work()
     )
     .unwrap();
-    writeln!(
-        output,
-        "  entry={} | caller={} | static={} | value={}",
-        refs.address(analysis.entry().address),
-        refs.address(analysis.entry().caller),
-        analysis.entry().is_static,
-        analysis.entry().value
-    )
-    .unwrap();
+    super::environment::write(
+        &mut output,
+        &analysis.entry().environment,
+        Some(analysis.world().identity()),
+        true,
+        |input| refs.address_input(input),
+    );
 
     let spec = analysis
         .config()
@@ -364,8 +362,8 @@ fn frame_cells(frame: &FrameKey, refs: &References) -> Vec<String> {
         format!("B{}", frame.basic_block_index),
         frame.stack_height.to_string(),
         refs.address(frame.code_address).to_owned(),
-        refs.address(frame.address).to_owned(),
-        refs.address(frame.caller).to_owned(),
+        refs.address_input(frame.address_value),
+        refs.address_input(frame.caller),
         frame.is_static.to_string(),
         match frame.mode {
             FrameCode::Precompile(address) => format!("Precompile({})", refs.address(address)),

@@ -53,6 +53,13 @@ impl Value {
         value.interval = Interval::new_unsigned(U256::ZERO, U256::from(255)).unwrap();
         value
     }
+    /// An unsigned interval without assumptions about the source.
+    pub fn unsigned_range(lower: U256, upper: U256) -> Option<Self> {
+        let mut value = Self::top();
+        value.interval = Interval::new_unsigned(lower, upper)?;
+        Some(value)
+    }
+
     /// 地址字段高 96 位为零；不证明账户存在或有代码。
     pub fn unknown_address() -> Self {
         let mut value = Self::top();
@@ -124,7 +131,19 @@ impl Value {
         self
     }
     pub(crate) fn set_origin(&mut self, origin: super::provenance::Origin) {
-        self.provenance = Provenance::source(origin);
+        self.provenance.set_origin(origin);
+    }
+    pub(crate) fn with_symbol(
+        mut self,
+        symbol: super::provenance::Symbol,
+        scope: Option<u64>,
+    ) -> Self {
+        if self.singleton().is_none()
+            && let Some(scope) = scope
+        {
+            self.provenance = self.provenance.with_symbol(symbol, scope);
+        }
+        self
     }
     pub(crate) fn with_identity(mut self, scope: u64, definition: u32) -> Self {
         self.provenance = self

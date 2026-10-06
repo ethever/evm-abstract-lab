@@ -13,9 +13,21 @@ const ENTRY: &str = "0x0000000000000000000000000000000000000101";
 const CREATED: &str = "0xea53a153a9a04fd632b2486d84732feb3b71afb7";
 const BLOCK: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
 
-fn run(args: &[&str]) -> Output {
+fn run_concrete(args: &[&str]) -> Output {
+    let mut scoped = args.to_vec();
+    if args.iter().any(|arg| matches!(*arg, "--world" | "--rpc")) {
+        for (flag, value) in [
+            ("--evm.value", "0"),
+            ("--evm.calldata", "0x"),
+            ("--evm.caller", "0x0000000000000000000000000000000000001000"),
+        ] {
+            if !args.iter().any(|arg| arg.split('=').next() == Some(flag)) {
+                scoped.extend([flag, value]);
+            }
+        }
+    }
     Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
-        .args(args)
+        .args(scoped)
         .output()
         .unwrap()
 }
@@ -29,13 +41,13 @@ fn fixture(name: &str, extra: &[&str]) -> Json {
         "analyze",
         "--world",
         path.as_str(),
-        "--entry",
+        "--evm.to",
         ENTRY,
         "--format",
         "json",
     ];
     args.extend_from_slice(extra);
-    let output = run(&args);
+    let output = run_concrete(&args);
     assert!(
         output.status.success(),
         "{name}: {}",
@@ -235,13 +247,13 @@ fn explicit_rpc_connection_error_keeps_selected_hash_without_inventing_chain_ide
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
-    let output = run(&[
+    let output = run_concrete(&[
         "analyze",
         "--rpc",
         &endpoint,
         "--block-hash",
         BLOCK,
-        "--entry",
+        "--evm.to",
         ENTRY,
         "--ssa",
         "--format",
@@ -258,7 +270,7 @@ fn explicit_rpc_connection_error_keeps_selected_hash_without_inventing_chain_ide
         "{error}"
     );
     assert!(!error.contains("Converged"));
-    let output = run(&["analyze", "--rpc", &endpoint]);
+    let output = run_concrete(&["analyze", "--rpc", &endpoint]);
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
 }

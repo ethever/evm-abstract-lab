@@ -35,7 +35,12 @@ pub(super) fn render(analysis: &WorldAnalysis, ssa: &WorldSsa) -> String {
     output.push_str("  DUP/SWAP results reuse existing value names. fault marks invalid-opcode or stack faults only; other execution failures are recorded in transitions and outcomes.\n");
     output.push_str("\nBlocks\n");
     for block in ssa.blocks() {
-        write_block(&mut output, &analysis.states()[block.state], block);
+        write_block(
+            &mut output,
+            analysis,
+            &analysis.states()[block.state],
+            block,
+        );
     }
     output.push_str("\nTransitions\n");
     if ssa.transitions().is_empty() {
@@ -47,7 +52,12 @@ pub(super) fn render(analysis: &WorldAnalysis, ssa: &WorldSsa) -> String {
     output
 }
 
-fn write_block(output: &mut String, state: &MachineState, block: &WorldBlock) {
+fn write_block(
+    output: &mut String,
+    analysis: &WorldAnalysis,
+    state: &MachineState,
+    block: &WorldBlock,
+) {
     let depth = state.key.frames.len();
     writeln!(
         output,
@@ -71,6 +81,7 @@ fn write_block(output: &mut String, state: &MachineState, block: &WorldBlock) {
             index + 1 == depth,
             key,
             frame.program.as_ref(),
+            analysis,
         );
     }
     output.push_str("    frame phis (stack in):\n");
@@ -157,6 +168,7 @@ fn write_frame(
     active: bool,
     frame: &FrameKey,
     program: Option<&Program>,
+    analysis: &WorldAnalysis,
 ) {
     let role = if active { "active" } else { "suspended" };
     let location = program
@@ -183,7 +195,9 @@ fn write_frame(
     writeln!(
         output,
         "      code address={} | storage owner={} | code hash={}",
-        frame.code_address, frame.address, frame.code_hash
+        super::environment::owner(analysis, frame.code_address),
+        frame.address_value,
+        frame.code_hash
     )
     .unwrap();
     writeln!(

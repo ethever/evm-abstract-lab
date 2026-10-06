@@ -1,6 +1,6 @@
 //! Human-readable bit constraints preserve every EVM word position.
 
-use super::run;
+use super::run_concrete;
 use alloy_primitives::U256;
 use serde_json::{Value as Json, json};
 use std::{
@@ -70,7 +70,7 @@ impl WorldCode {
         Self(path)
     }
 
-    fn run(&self, command: &str, extra: &[&str]) -> Output {
+    fn run_concrete(&self, command: &str, extra: &[&str]) -> Output {
         let mut args = vec!["--max-constants", "1"];
         args.extend_from_slice(extra);
         self.run_default(command, &args)
@@ -81,11 +81,11 @@ impl WorldCode {
             command,
             "--world",
             self.0.to_str().unwrap(),
-            "--entry",
+            "--evm.to",
             ENTRY,
         ];
         args.extend_from_slice(extra);
-        run(&args)
+        run_concrete(&args)
     }
 }
 
@@ -97,7 +97,7 @@ impl Drop for WorldCode {
 
 #[test]
 fn clz_cfg_shows_partial_nibbles_without_omitting_unknown_positions() {
-    let output = run(&["cfg", "--hex", "5f351e00"]);
+    let output = run_concrete(&["cfg", "--hex", "5f351e00"]);
     assert!(
         output.status.success(),
         "{}",
@@ -136,7 +136,7 @@ fn cfg_dot_ssa_and_hex_explain_preserve_full_hex_patterns() {
         ] {
             let mut args = vec![command, "--hex", code, "--max-constants", "1"];
             args.extend_from_slice(&extra);
-            assert_pattern(&text(run(&args)), &pattern);
+            assert_pattern(&text(run_concrete(&args)), &pattern);
         }
     }
 }
@@ -160,7 +160,7 @@ fn world_reports_teaching_verbose_explain_and_ssa_use_the_same_patterns() {
             ("explain", vec![]),
             ("explain", vec!["--verbose"]),
         ] {
-            let rendered = text(world.run(command, &extra));
+            let rendered = text(world.run_concrete(command, &extra));
             assert_pattern(&rendered, &pattern);
             if command == "explain" || extra == ["--ssa"] {
                 assert!(rendered.contains("Verified cross-contract SSA:"));
@@ -171,7 +171,7 @@ fn world_reports_teaching_verbose_explain_and_ssa_use_the_same_patterns() {
 
 #[test]
 fn numeric_top_stays_compact_in_all_human_views() {
-    assert_numeric_top(&text(run(&[
+    assert_numeric_top(&text(run_concrete(&[
         "explain",
         "--hex",
         "5f351e00",
@@ -193,7 +193,7 @@ fn numeric_top_stays_compact_in_all_human_views() {
             "constants-only",
         ];
         args.extend_from_slice(&view);
-        assert_numeric_top(&text(run(&args)));
+        assert_numeric_top(&text(run_concrete(&args)));
     }
     let world = WorldCode::new("5f541e00");
     for (command, view) in [
@@ -232,7 +232,7 @@ fn constrained_values_keep_all_unknown_bit_positions() {
             "0",
         ];
         args.extend_from_slice(&view);
-        assert_pattern(&text(run(&args)), &pattern);
+        assert_pattern(&text(run_concrete(&args)), &pattern);
     }
     let world = WorldCode::new(&world_code);
     for (command, view) in [
@@ -243,7 +243,7 @@ fn constrained_values_keep_all_unknown_bit_positions() {
     ] {
         let mut args = vec!["--context-depth", "0"];
         args.extend_from_slice(&view);
-        assert_pattern(&text(world.run(command, &args)), &pattern);
+        assert_pattern(&text(world.run_concrete(command, &args)), &pattern);
     }
 }
 
@@ -262,7 +262,9 @@ fn assert_clz_json(value: &Json) {
 #[test]
 fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
     for command in ["cfg", "ssa"] {
-        let rendered = text(run(&[command, "--hex", "5f351e00", "--format", "json"]));
+        let rendered = text(run_concrete(&[
+            command, "--hex", "5f351e00", "--format", "json",
+        ]));
         let json: Json = serde_json::from_str(&rendered).unwrap();
         let report = if command == "ssa" {
             &json["analysis"]
@@ -275,7 +277,7 @@ fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
     }
     let world = WorldCode::new("5f541e00");
     for extra in [vec!["--format", "json"], vec!["--format", "json", "--ssa"]] {
-        let rendered = text(world.run("analyze", &extra));
+        let rendered = text(world.run_concrete("analyze", &extra));
         let json: Json = serde_json::from_str(&rendered).unwrap();
         let report = if extra.contains(&"--ssa") {
             &json["analysis"]
@@ -286,7 +288,7 @@ fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
         assert!(!rendered.contains("bits="));
         assert!(!rendered.contains('*'));
     }
-    let top = text(run(&[
+    let top = text(run_concrete(&[
         "cfg",
         "--hex",
         "5f3500",
@@ -296,5 +298,23 @@ fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
         "json",
     ]));
     let top: Json = serde_json::from_str(&top).unwrap();
-    assert_eq!(top["states"][0]["exit_stack"][0], "Top");
+    let value = &top["states"][0]["exit_stack"][0];
+    assert!(value["Constants"].is_null());
+    assert_eq!(value["known_bits"]["zero"], "0x0");
+    assert_eq!(value["known_bits"]["one"], "0x0");
+    assert_eq!(
+        value["provenance"]["symbol"]["name"],
+        serde_json::json!({"CalldataWord":"0x0"})
+    );
+    let uncorrelated = text(run_concrete(&[
+        "cfg",
+        "--hex",
+        "5f5400",
+        "--domain",
+        "constants-only",
+        "--format",
+        "json",
+    ]));
+    let uncorrelated: Json = serde_json::from_str(&uncorrelated).unwrap();
+    assert_eq!(uncorrelated["states"][0]["exit_stack"][0], "Top");
 }

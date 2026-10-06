@@ -68,12 +68,22 @@ pub(super) fn run_metered(
     budget: &mut WorkBudget,
     counters: &mut Counters,
 ) -> Result<WorldAnalysis, ConfigError> {
+    entry.environment.validate()?;
+    if let Some(observed) = entry.environment.to.as_concrete()
+        && observed != entry.address
+    {
+        return Err(crate::world::environment::EnvironmentError::Destination {
+            expected: entry.address,
+            observed,
+        }
+        .into());
+    }
     let domain = config.domain()?;
     let mut result = WorldAnalysis {
         world,
         entry,
         config,
-        schema_version: 1,
+        schema_version: 2,
         domain_spec: domain.spec(),
         states: Vec::new(),
         edges: Vec::new(),
@@ -102,11 +112,9 @@ pub(super) fn run_metered(
     let initial_work = result
         .world
         .work_size()
-        .saturating_add(result.entry.calldata.work_size())
-        .saturating_add(result.entry.value.work_size())
+        .saturating_add(result.entry.environment.work_size())
         .saturating_add(result.world.projection_work(domain))
-        .saturating_add(result.entry.calldata.projection_work(domain))
-        .saturating_add(domain.projection_work(&result.entry.value))
+        .saturating_add(result.entry.environment.projection_work(domain))
         .saturating_mul(4);
     // 饱和后已不能证明预留的是可信上界，即使用户给了 usize::MAX 预算。
     if initial_work == usize::MAX || !budget.charge(initial_work) {

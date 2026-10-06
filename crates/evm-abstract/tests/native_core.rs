@@ -40,7 +40,13 @@ fn bytecode_only_inputs_do_not_assume_a_concrete_entry_environment() {
             .iter()
             .all(|value| value.constants().is_none())
     );
-    assert!(view.execution().entry().value.contains(U256::MAX));
+    assert!(
+        view.execution()
+            .entry()
+            .environment
+            .value
+            .contains(U256::MAX)
+    );
 }
 
 #[test]

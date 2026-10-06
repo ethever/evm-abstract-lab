@@ -1,6 +1,6 @@
 //! Unified explain is exercised through the real binary, including pinned RPC.
 
-use super::run;
+use super::run_concrete;
 use alloy_primitives::{U256, hex, keccak256};
 use serde_json::{Value as Json, json};
 use std::{
@@ -31,12 +31,12 @@ fn fixture(name: &str) -> String {
 
 fn world_command(command: &str, name: &str, extra: &[&str]) -> Output {
     let path = fixture(name);
-    let mut args = vec![command, "--world", &path, "--entry", ENTRY];
+    let mut args = vec![command, "--world", &path, "--evm.to", ENTRY];
     if command == "explain" {
         args.push("--verbose");
     }
     args.extend_from_slice(extra);
-    run(&args)
+    run_concrete(&args)
 }
 
 fn text(output: &Output) -> String {
@@ -193,12 +193,12 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
         env!("CARGO_MANIFEST_DIR")
     );
     let code = fs::read_to_string(&path).unwrap();
-    let file = run(&["explain", "--file", &path]);
+    let file = run_concrete(&["explain", "--file", &path]);
     success(&file);
-    let hex = run(&["explain", "--hex", &code]);
+    let hex = run_concrete(&["explain", "--hex", &code]);
     success(&hex);
     assert_eq!(file.stdout, hex.stdout);
-    let explicit = run(&[
+    let explicit = run_concrete(&[
         "explain",
         "--hex",
         &code,
@@ -225,7 +225,7 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
     assert!(explanation.contains("context_depth=8") && explanation.contains("domain=Product"));
     assert!(explanation.contains("stack SSA:") && !explanation.contains(VERIFIED));
     for fork in ["cancun", "prague", "osaka"] {
-        let output = run(&["explain", "--hex", "00", "--fork", fork]);
+        let output = run_concrete(&["explain", "--hex", "00", "--fork", fork]);
         success(&output);
         assert!(text(&output).contains(&format!("fork={fork}")));
     }
@@ -233,7 +233,7 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
 
 #[test]
 fn legacy_explain_still_reports_resource_frontiers_without_ssa() {
-    let output = run(&["explain", "--hex", "600035565b00", "--max-transfers", "1"]);
+    let output = run_concrete(&["explain", "--hex", "600035565b00", "--max-transfers", "1"]);
     assert_eq!(output.status.code(), Some(2));
     let explanation = text(&output);
     assert!(explanation.contains("PUSH1") && explanation.contains("status=Incomplete"));
@@ -249,16 +249,16 @@ fn explain_requires_one_source_and_rejects_every_pair_of_sources() {
         ["--world", path.as_str()],
         ["--rpc", "http://127.0.0.1:1"],
     ];
-    assert_eq!(run(&["explain"]).status.code(), Some(2));
+    assert_eq!(run_concrete(&["explain"]).status.code(), Some(2));
     for (left_index, left) in sources.iter().enumerate() {
         for right in &sources[left_index + 1..] {
-            let mut args = vec!["explain", "--entry", ENTRY];
+            let mut args = vec!["explain", "--evm.to", ENTRY];
             args.extend_from_slice(left);
             args.extend_from_slice(right);
             if left[0] == "--rpc" || right[0] == "--rpc" {
                 args.extend(["--block-hash", BLOCK]);
             }
-            let output = run(&args);
+            let output = run_concrete(&args);
             assert_eq!(output.status.code(), Some(2), "{args:?}");
             assert!(output.stdout.is_empty());
             let error = String::from_utf8_lossy(&output.stderr);
@@ -280,7 +280,7 @@ fn world_and_rpc_explain_require_entry_and_block_selectors_are_exclusive() {
             "explain",
             "--rpc",
             "http://127.0.0.1:1",
-            "--entry",
+            "--evm.to",
             ENTRY,
             "--block-hash",
             BLOCK,
@@ -288,7 +288,7 @@ fn world_and_rpc_explain_require_entry_and_block_selectors_are_exclusive() {
             "16",
         ],
     ] {
-        let output = run(&args);
+        let output = run_concrete(&args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
         assert!(output.stdout.is_empty());
         assert!(!String::from_utf8_lossy(&output.stderr).contains("transport"));
@@ -315,11 +315,11 @@ fn rpc_observation_flags_remain_exclusive_to_rpc_and_world_selects_its_own_fork(
         ] {
             let mut args = vec!["explain"];
             if source[0] == "--world" {
-                args.extend(["--entry", ENTRY]);
+                args.extend(["--evm.to", ENTRY]);
             }
             args.extend(source);
             args.extend_from_slice(&flag);
-            let output = run(&args);
+            let output = run_concrete(&args);
             assert_eq!(output.status.code(), Some(2), "{args:?}");
             assert!(output.stdout.is_empty());
             let error = String::from_utf8_lossy(&output.stderr);
@@ -338,11 +338,11 @@ fn rpc_observation_flags_remain_exclusive_to_rpc_and_world_selects_its_own_fork(
 fn invalid_rpc_block_number_and_hash_are_rejected_before_network_access() {
     for number in ["-1", "1.5", "ff", "0xzz", "18446744073709551616"] {
         let block_arg = format!("--block-number={number}");
-        let output = run(&[
+        let output = run_concrete(&[
             "explain",
             "--rpc",
             "http://127.0.0.1:1",
-            "--entry",
+            "--evm.to",
             ENTRY,
             &block_arg,
         ]);
@@ -351,11 +351,11 @@ fn invalid_rpc_block_number_and_hash_are_rejected_before_network_access() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("--block-number"));
     }
     for hash in ["latest", "0x1", "0xffff", "zz"] {
-        let output = run(&[
+        let output = run_concrete(&[
             "explain",
             "--rpc",
             "http://127.0.0.1:1",
-            "--entry",
+            "--evm.to",
             ENTRY,
             "--block-hash",
             hash,
@@ -381,19 +381,19 @@ impl TemporaryWorld {
         Self(path)
     }
 
-    fn run(&self, command: &str, extra: &[&str]) -> Output {
+    fn run_concrete(&self, command: &str, extra: &[&str]) -> Output {
         let mut args = vec![
             command,
             "--world",
             self.0.to_str().unwrap(),
-            "--entry",
+            "--evm.to",
             ENTRY,
         ];
         if command == "explain" {
             args.push("--verbose");
         }
         args.extend_from_slice(extra);
-        run(&args)
+        run_concrete(&args)
     }
 }
 
@@ -406,23 +406,23 @@ impl Drop for TemporaryWorld {
 #[test]
 fn invalid_world_json_and_entry_environment_fail_without_partial_output() {
     let malformed = TemporaryWorld::new("{\"fork\":");
-    let output = malformed.run("explain", &[]);
+    let output = malformed.run_concrete("explain", &[]);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid world JSON"));
     for (extra, diagnostic) in [
-        (vec!["--entry", "0x01"], "entry address"),
-        (vec!["--caller", "0x01"], "caller address"),
-        (vec!["--calldata", "0xzz"], "calldata hex"),
+        (vec!["--evm.to", "0x01"], "EVM environment address"),
+        (vec!["--evm.caller", "0x01"], "EVM environment address"),
+        (vec!["--evm.calldata", "0xzz"], "calldata hex"),
     ] {
         let path = fixture("call-return-branch");
         let mut args = vec!["explain", "--world", &path];
-        if extra[0] != "--entry" {
-            args.extend(["--entry", ENTRY]);
+        if extra[0] != "--evm.to" {
+            args.extend(["--evm.to", ENTRY]);
         }
         args.extend_from_slice(&extra);
-        let output = run(&args);
-        assert_eq!(output.status.code(), Some(1));
+        let output = run_concrete(&args);
+        assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
     }
@@ -439,13 +439,13 @@ fn world_explain_uses_entry_environment_domain_and_every_execution_budget_flag()
         .to_string(),
     );
     let extra = [
-        "--caller",
+        "--evm.caller",
         CALLEE,
-        "--calldata",
+        "--evm.calldata",
         "0x2a",
-        "--value",
+        "--evm.value",
         "7",
-        "--static",
+        "--evm.static",
         "--no-summaries",
         "--max-call-depth",
         "5",
@@ -468,23 +468,29 @@ fn world_explain_uses_entry_environment_domain_and_every_execution_budget_flag()
         "--max-transfers",
         "100000",
     ];
-    let output = world.run("explain", &extra);
+    let output = world.run_concrete("explain", &extra);
     success(&output);
     let explanation = text(&output);
-    assert_full_report(&explanation, &world.run("analyze", &extra));
+    assert_full_report(&explanation, &world.run_concrete("analyze", &extra));
     assert!(explanation.contains("ConstantsOnly") && explanation.contains(CALLEE));
     assert!(explanation.contains("CALLDATASIZE") && explanation.contains("CALLVALUE"));
     assert_human_ssa(&explanation);
     let mut json_extra = extra.to_vec();
     json_extra.extend(["--format", "json"]);
-    let analyzed = world.run("analyze", &json_extra);
+    let analyzed = world.run_concrete("analyze", &json_extra);
     success(&analyzed);
     let analyzed: Json = serde_json::from_slice(&analyzed.stdout).unwrap();
-    assert_eq!(analyzed["entry"]["is_static"], true);
-    assert_eq!(analyzed["entry"]["caller"], CALLEE);
-    assert_eq!(analyzed["entry"]["value"]["Constants"], json!(["0x7"]));
+    assert_eq!(analyzed["entry"]["environment"]["is_static"], true);
     assert_eq!(
-        analyzed["entry"]["calldata"]["length"]["Constants"],
+        analyzed["entry"]["environment"]["caller"]["Concrete"],
+        CALLEE
+    );
+    assert_eq!(
+        analyzed["entry"]["environment"]["value"]["Constants"],
+        json!(["0x7"])
+    );
+    assert_eq!(
+        analyzed["entry"]["environment"]["calldata"]["length"]["Constants"],
         json!(["0x1"])
     );
     assert_eq!(analyzed["config"]["use_summaries"], false);
@@ -507,16 +513,19 @@ fn world_explain_static_entry_restriction_is_visible_in_the_result() {
         })
         .to_string(),
     );
-    let output = world.run("explain", &["--static"]);
+    let output = world.run_concrete("explain", &["--evm.static"]);
     success(&output);
     let explanation = text(&output);
-    assert_full_report(&explanation, &world.run("analyze", &["--static"]));
+    assert_full_report(
+        &explanation,
+        &world.run_concrete("analyze", &["--evm.static"]),
+    );
     assert!(explanation.contains("Failure"));
     assert_human_ssa(&explanation);
-    let analyzed = world.run("analyze", &["--static", "--format", "json"]);
+    let analyzed = world.run_concrete("analyze", &["--evm.static", "--format", "json"]);
     success(&analyzed);
     let analyzed: Json = serde_json::from_slice(&analyzed.stdout).unwrap();
-    assert_eq!(analyzed["entry"]["is_static"], true);
+    assert_eq!(analyzed["entry"]["environment"]["is_static"], true);
     assert!(
         analyzed["outcomes"]
             .as_array()
@@ -533,11 +542,11 @@ fn invalid_domain_policy_is_rejected_in_program_and_world_explain() {
         for flag in ["--max-facts", "--reduction-rounds"] {
             let mut args = vec!["explain"];
             if source[0] == "--world" {
-                args.extend(["--entry", ENTRY]);
+                args.extend(["--evm.to", ENTRY]);
             }
             args.extend(source);
             args.extend([flag, "0"]);
-            let output = run(&args);
+            let output = run_concrete(&args);
             assert_eq!(output.status.code(), Some(1));
             assert!(output.stdout.is_empty());
             assert!(String::from_utf8_lossy(&output.stderr).contains("must be positive"));
@@ -550,13 +559,13 @@ fn rpc_explain_acquires_one_fixed_world_and_uses_the_requested_observations() {
     thread::scope(|scope| {
         let server = RpcServer::new(scope);
         let slot = format!("{ENTRY}:16");
-        let output = run(&[
+        let output = run_concrete(&[
             "explain",
             "--rpc",
             &server.endpoint,
             "--block-hash",
             BLOCK,
-            "--entry",
+            "--evm.to",
             ENTRY,
             "--account",
             CALLEE,
@@ -564,9 +573,9 @@ fn rpc_explain_acquires_one_fixed_world_and_uses_the_requested_observations() {
             &slot,
             "--fork",
             "cancun",
-            "--value",
+            "--evm.value",
             "7",
-            "--static",
+            "--evm.static",
         ]);
         success(&output);
         let explanation = text(&output);
@@ -627,14 +636,14 @@ fn rpc_command_named(command: &str, server: &RpcServer, extra: &[&str]) -> Outpu
         &server.endpoint,
         "--block-hash",
         BLOCK,
-        "--entry",
+        "--evm.to",
         ENTRY,
     ];
     if command == "explain" {
         args.push("--verbose");
     }
     args.extend_from_slice(extra);
-    run(&args)
+    run_concrete(&args)
 }
 
 fn assert_rpc_report<'scope, 'env>(

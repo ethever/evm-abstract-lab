@@ -1,6 +1,6 @@
 //! 通过真实 CLI，把指令列表的列位置逐项对应到解码后的输入程序。
 
-use super::run;
+use super::run_concrete;
 use evm_abstract::{Fork, bytecode::Program};
 use serde_json::Value as Json;
 use std::{
@@ -120,12 +120,12 @@ fn world_programs() -> Vec<Program> {
 
 fn world_explain(verbose: bool, extra: &[&str]) -> Output {
     let path = example("worlds/call-return-branch.json");
-    let mut args = vec!["explain", "--world", &path, "--entry", ENTRY];
+    let mut args = vec!["explain", "--world", &path, "--evm.to", ENTRY];
     if verbose {
         args.push("--verbose");
     }
     args.extend_from_slice(extra);
-    run(&args)
+    run_concrete(&args)
 }
 
 struct TemporaryHex(PathBuf);
@@ -152,7 +152,7 @@ impl Drop for TemporaryHex {
 #[test]
 fn disasm_aligns_every_instruction_with_its_block_pc() {
     let code = "60016002015b00";
-    let output = text(&run(&["disasm", "--hex", code]), 0);
+    let output = text(&run_concrete(&["disasm", "--hex", code]), 0);
     assert_instruction_lists(&output, &[Program::from_hex(code).unwrap()]);
 }
 
@@ -164,7 +164,7 @@ fn disasm_alignment_follows_b9_b10_and_b100_header_widths() {
     for id in [9, 10, 100] {
         assert_eq!(program.blocks()[id].id, id);
     }
-    let output = text(&run(&["disasm", "--hex", &code]), 0);
+    let output = text(&run_concrete(&["disasm", "--hex", &code]), 0);
     assert_instruction_lists(&output, &[program]);
 }
 
@@ -176,7 +176,10 @@ fn disasm_keeps_five_digit_pcs_aligned_with_a_short_block_header() {
     let program = Program::from_hex(&code).unwrap();
     assert_eq!(program.blocks().len(), 1);
     assert!(program.blocks()[0].instructions.last().unwrap().pc > 0xffff);
-    let output = text(&run(&["disasm", "--file", file.0.to_str().unwrap()]), 0);
+    let output = text(
+        &run_concrete(&["disasm", "--file", file.0.to_str().unwrap()]),
+        0,
+    );
     assert_instruction_lists(&output, &[program]);
 }
 
@@ -185,7 +188,7 @@ fn explain_file_aligns_known_bits_branch_at_context_depth_zero() {
     let path = example("known-bits-branch.hex");
     let code = fs::read_to_string(&path).unwrap();
     let output = text(
-        &run(&["explain", "--file", &path, "--context-depth", "0"]),
+        &run_concrete(&["explain", "--file", &path, "--context-depth", "0"]),
         0,
     );
     assert!(output.contains("context_depth=0"));
@@ -198,7 +201,7 @@ fn explain_file_aligns_known_bits_branch_at_context_depth_zero() {
 #[test]
 fn explain_hex_aligns_its_disassembly_directory() {
     let code = "60016002015b00";
-    let output = text(&run(&["explain", "--hex", code]), 0);
+    let output = text(&run_concrete(&["explain", "--hex", code]), 0);
     assert_instruction_lists(
         program_directory(&output),
         &[Program::from_hex(code).unwrap()],
@@ -208,7 +211,10 @@ fn explain_hex_aligns_its_disassembly_directory() {
 #[test]
 fn incomplete_explain_keeps_aligned_instruction_lists_and_exit_two() {
     let code = "6003565b00";
-    let output = text(&run(&["explain", "--hex", code, "--max-states", "1"]), 2);
+    let output = text(
+        &run_concrete(&["explain", "--hex", code, "--max-states", "1"]),
+        2,
+    );
     assert!(output.contains("status=Incomplete") && output.contains("SSA unavailable"));
     assert_instruction_lists(
         program_directory(&output),
@@ -230,11 +236,11 @@ fn world_default_and_verbose_keep_block_headers_at_global_column_zero() {
 fn world_initial_budget_fallback_aligns_observed_code_in_both_views() {
     let programs = world_programs();
     let report = text(
-        &run(&[
+        &run_concrete(&[
             "analyze",
             "--world",
             &example("worlds/call-return-branch.json"),
-            "--entry",
+            "--evm.to",
             ENTRY,
             "--max-work",
             "1",
@@ -259,7 +265,10 @@ fn world_initial_budget_fallback_aligns_observed_code_in_both_views() {
 fn fork_invalid_opcode_annotation_survives_instruction_alignment() {
     let code = "60011e00";
     for command in ["disasm", "explain"] {
-        let output = text(&run(&[command, "--hex", code, "--fork", "cancun"]), 0);
+        let output = text(
+            &run_concrete(&[command, "--hex", code, "--fork", "cancun"]),
+            0,
+        );
         let directory = if command == "explain" {
             assert!(
                 output

@@ -1,6 +1,6 @@
 //! The actual CLI discovers callees through bounded, exact-hash HTTP requests.
 
-use super::run;
+use super::run_concrete;
 use alloy_primitives::{Address, U256, hex, keccak256};
 use serde_json::{Value as Json, json};
 use std::{
@@ -181,13 +181,13 @@ fn execute(server: &RpcServer, extra: &[&str]) -> Output {
         &server.endpoint,
         "--block-hash",
         BLOCK,
-        "--entry",
+        "--evm.to",
         ENTRY,
         "--format",
         "json",
     ];
     args.extend_from_slice(extra);
-    run(&args)
+    run_concrete(&args)
 }
 
 fn result(output: Output, exit: i32) -> Json {
@@ -315,7 +315,7 @@ fn discovered_code_preserves_each_call_kind_execution_context() {
             let a = format!("{}00", call(op, 0x200, 9));
             let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, "30333400")]);
             let server = RpcServer::new(scope, move |request| fixture.reply(request));
-            let analysis = result(execute(&server, &["--value", "42"]), 0);
+            let analysis = result(execute(&server, &["--evm.value", "42"]), 0);
             assert_eq!(analysis["status"], "Converged");
             let child = analysis["states"]
                 .as_array()
@@ -339,7 +339,7 @@ fn discovered_code_preserves_each_call_kind_execution_context() {
             };
             assert_eq!(frame["code_address"], CALLEE);
             assert_eq!(frame["address"], address);
-            assert_eq!(frame["caller"], caller);
+            assert_eq!(frame["caller"]["Concrete"], caller);
             assert_eq!(frame["is_static"], op == 0xfa);
             assert!(contains(&child["exit_stack"][0], address_word(address)));
             assert!(contains(&child["exit_stack"][1], address_word(caller)));

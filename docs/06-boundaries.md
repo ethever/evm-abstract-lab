@@ -60,7 +60,7 @@ nix run . -- cfg --hex 5f355f0200 --reduction-rounds 1
 再限制世界分析的根工作预算：
 
 ```bash
-nix run . -- analyze --world examples/worlds/call-return-branch.json --entry 0x0000000000000000000000000000000000000101 --max-work 1
+nix run . -- analyze --world examples/worlds/call-return-branch.json --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --max-work 1
 ```
 
 这次为 `Incomplete`，退出码 2，留下 `Work` 前沿。工作计费包含域运算、事实交换、状态复制以及子调用和摘要处理，所有帧共享同一账本。提高 `--max-facts` 不能补回已耗尽的工作预算。这个离线输入缺少的事实仍由 world 提供；显式 RPC 输入可按需补查具体 callee，但也受采集与累计执行预算限制。
@@ -78,7 +78,7 @@ nix run . -- analyze --world examples/worlds/call-return-branch.json --entry 0x0
 再运行缺少 callee 代码的世界：
 
 ```bash
-nix run . -- analyze --world examples/worlds/missing-code.json --entry 0x0000000000000000000000000000000000000101
+nix run . -- analyze --world examples/worlds/missing-code.json --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 结果为 `Incomplete`，前沿说明 `pc=13` 的调用缺少账户 `0x...0200` 的代码事实。输出可能同时保留已知的调用失败分支和部分完成的 outcome（最外层可能结果）；它们不能替代缺失的调用分支。
@@ -137,7 +137,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 世界 JSON 的 `storage_unknown` 默认是 true：未列出的初始 slot 保持未知。只有显式设为 false，才把未列出的 slot 视为零。完整的合成示例与只采集少量 slot 的真实快照有不同假设，不能混用。
 
-入口 `value` 指定这一帧的 CALLVALUE。输入余额和 nonce 已是帧开始时的状态；模型不会另外执行外层交易转账、手续费、发送方交易 nonce 增加或授权列表。CREATE 引起的合约 nonce 变化则属于本次执行的 Store。
+入口环境默认采用符号 caller、value 和 calldata，origin 默认与 caller 共享同一身份。`--evm.to` 固定 root frame 的 ADDRESS 与状态账户；具体环境值由 `--evm.*` 提供，完整规则见[第 13 课](13-evm-environment.md)。入口 `value` 指定这一帧的 CALLVALUE。输入余额和 nonce 已是帧开始时的状态；模型不会另外执行外层交易转账、手续费、发送方交易 nonce 增加或授权列表。CREATE 引起的合约 nonce 变化则属于本次执行的 Store。
 
 ## 5. 当前模型的能力与边界
 
@@ -149,7 +149,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | --- | --- | --- |
 | 输入事实 | 多账户 JSON，或自动读取 chain ID 并固定区块 hash 的 RPC 采集；默认按需增加具体 callee 事实并从入口重跑，保存身份、来源与指纹 | 离线输入不联网；未知目标、未选 slot 和无法判定的账户存在性保持未知；完全信任 RPC 提供者，不请求证明；固定后不回退到移动标签；不支持 EOF 代码格式 |
 | 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；默认组合有限常量、KnownBits、Interval、Congruence 和 Provenance；按 fork 启用 CLZ | 常量集合仍有容量；事实交换有局部上限；没有完整变量关系和路径约束 |
-| 局部关系 | 同一基本块内受信任的复制身份支持 `x XOR x=0` 等规则；数值约束参与零/非零判断 | 来源标签或摘要相同不证明相等；身份不会跨块、汇合、调用或摘要边界保存；不会自动沿 `x==5` 的 true 边收窄 x |
+| 局部关系 | 同一基本块内受信任的复制身份支持 `x XOR x=0` 等规则；数值约束参与零/非零判断 | 来源标签或数值摘要相同不证明相等；临时复制身份在边界失效，稳定的不可变 EVM 输入符号可跨块保留，并纳入摘要前提；不会自动沿 `x==5` 的 true 边收窄 x |
 | 内存与数据 | 每帧独立抽象字节数组，load/store/copy、calldata、returndata、返回区传播 | 未知偏移或字节会降低精度；无法追踪的范围留下内存前沿 |
 | JUMP/JUMPI | 有限目标逐个验证；Top 覆盖真实 JUMPDEST；依据条件可能零/非零保留边 | 可能有伪边；有界跳转历史不等于内部函数恢复 |
 | 环境、hash、gas | 传播已知帧环境和代码信息；其余保守抽象 | gas、EIP-150、out-of-gas 与成本不精确；`Converged` 仍受此限制 |

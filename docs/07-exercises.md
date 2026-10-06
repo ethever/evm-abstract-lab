@@ -184,7 +184,7 @@ diamond 的 Top 是精度扩大，分析为 `Converged`。限制 transfer 的 lo
 ```bash
 nix run . -- cfg --hex 5f355f0200 --max-facts 1
 nix run . -- cfg --hex 5f355f0200 --reduction-rounds 1
-nix run . -- analyze --world examples/worlds/call-return-branch.json --entry 0x0000000000000000000000000000000000000101 --max-work 1
+nix run . -- analyze --world examples/worlds/call-return-branch.json --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --max-work 1
 ```
 
 <details><summary>局部上限与工作前沿的验收</summary>
@@ -242,7 +242,7 @@ nix run . -- cfg --file examples/independent-inputs.hex --context-depth 0
 ```
 
 ```bash
-nix run . -- analyze --world /tmp/storage-experiment.json --entry 0x0000000000000000000000000000000000000101
+nix run . -- analyze --world /tmp/storage-experiment.json --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 接着修改这份临时文件：把 `code` 改为 `0x60005460076001545560005400`，把 `storage_unknown` 改为 true，并更新来源说明。新程序从未知的 slot 1 读取一个值，用它作为 SSTORE 的目标 slot。预测第二次读取 slot 0 的结果。
@@ -253,7 +253,7 @@ nix run . -- analyze --world /tmp/storage-experiment.json --entry 0x000000000000
 
 同时会保留模型允许的 Failure outcome，回滚后 slot 0=4。把它与成功结果分开读，不能拿一个失败结果否定成功路径的写入。
 
-CLI 的 `--calldata` 提供具体字节，默认为空，不能用它表达未知 calldata。若要让未知 calldata 决定写入目标，可在 Rust API 的 Entry 中使用 `ByteArray::unknown()`，再增加相应对照。
+省略 CLI 的 `--evm.calldata` 时，长度和内容均为符号输入。显式 `--evm.calldata 0x` 提供已知空字节，其他 hex 提供具体字节。未知输入可能扩大写入目标范围；用具体 calldata 与默认符号输入对照，观察强更新、弱更新和未完成前沿的变化。Rust API 中，`Entry::new(to)` 使用符号默认值，环境中的 calldata 也可设置为 `ByteArray::unknown()`。
 
 进一步运行 `proxy-storage.json` 和 `revert-rollback.json`，分别核对 DELEGATECALL 的状态账户、子帧回滚后的 slot。验收应包括来源假设、`storage_unknown`、写入前后值与正确回滚，而不只是最终一个数。
 

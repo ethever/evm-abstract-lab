@@ -63,18 +63,18 @@ CLZ 的完整结果为 `0..=256`，共 257 个候选。第一条命令为 `Conve
 
 ## 多账户：观察调用怎样影响返回值与状态
 
-世界 JSON 提供多个账户的代码和初始事实，`--entry` 指定首先执行的账户。以下文件的入口统一为 `0x0000000000000000000000000000000000000101`；默认 caller 的地址末尾是 `1000`，calldata 为空，value=0。
+世界 JSON 提供多个账户的代码和初始事实，`--evm.to` 指定首先执行的账户。以下文件的入口统一为 `0x0000000000000000000000000000000000000101`；下面为重放固定教学输入，显式设置 caller 的地址末尾为 `1000`、空 calldata 和 value=0；省略这些参数时采用符号输入，origin 默认与 caller 相同。
 
 先跑第一项：
 
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 
 nix run . -- explain \
   --world examples/worlds/returndata-copy.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获代码的反汇编、简明 CFG 与栈、每个 `O` 的结果概要，最后显示 `Verified cross-contract SSA:`。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中分别保留的结果；地址短引用的完整值在 `Addresses` 中。SSA 用 `%结果 = 指令 %操作数` 展示值流，`T` 标识转移。需要完整世界报告、捕获帧与效果链时加 `--verbose`；需要查询 JSON 字段时改用 `analyze --format json`，再加 `--ssa` 可导出完成图的 SSA。

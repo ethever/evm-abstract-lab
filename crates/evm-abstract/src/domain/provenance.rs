@@ -2,7 +2,8 @@
 //!
 //! 来源只是解释信息：两个值都来自 `Storage` 不意味着它们相等。只有执行器为
 //! 同一次定义分配的身份，经过 DUP 等逐值复制后，才能证明当前两个操作数相等。
-//! 身份不参与持久状态的相等性、序列化或 join；否则循环会不断产生新状态。
+//! 临时复制身份不参与持久状态比较或序列化；固定环境符号则参与比较，并且
+//! 只有全部输入保持同一个符号时才跨 join 保留。
 
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -117,6 +118,55 @@ impl OriginSet {
     }
 }
 
+/// Stable identity of an immutable input shared by every frame and block.
+///
+/// Equal identities assert equal concrete values within one environment. The
+/// environment is part of summary qualification; arithmetic creates fresh values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum Symbol {
+    /// Logical root ADDRESS when analyzing bytecode without a destination.
+    To,
+    /// Unspecified root caller, also the default transaction origin.
+    Caller,
+    /// Independently specified symbolic transaction origin.
+    Origin,
+    /// Symbolic block beneficiary.
+    Coinbase,
+    /// Root frame's immutable call value.
+    CallValue,
+    /// Effective transaction gas price.
+    GasPrice,
+    /// Block timestamp.
+    Timestamp,
+    /// Block number.
+    Number,
+    /// Block randomness.
+    Prevrandao,
+    /// Block gas limit.
+    GasLimit,
+    /// Execution chain identifier when no anchored identity is available.
+    ChainId,
+    /// Block base fee.
+    BaseFee,
+    /// Blob base fee.
+    BlobBaseFee,
+    /// Root calldata length.
+    CalldataLength,
+    /// One root calldata word at an exact byte offset.
+    CalldataWord(alloy_primitives::U256),
+    /// A valid historical block hash at an exact height.
+    BlockHash(alloy_primitives::U256),
+    /// A blob versioned hash at an exact index.
+    BlobHash(alloy_primitives::U256),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+struct InputIdentity {
+    #[serde(skip)]
+    scope: u64,
+    name: Symbol,
+}
+
 /// 执行器内部的复制身份；用户不能从 PC、SSA 编号或来源标签伪造它。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RuntimeIdentity {
@@ -131,18 +181,22 @@ impl RuntimeIdentity {
     }
 }
 
-/// 可能来源与临时复制身份。身份故意不参与抽象状态比较。
+/// 来源、临时复制身份和可跨控制流保留的固定环境符号。
 #[derive(Clone, Debug, Serialize)]
 pub struct Provenance {
     origins: OriginSet,
     code_address_role: bool,
     #[serde(skip)]
     identity: Option<RuntimeIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symbol: Option<InputIdentity>,
 }
 
 impl PartialEq for Provenance {
     fn eq(&self, other: &Self) -> bool {
-        self.origins == other.origins && self.code_address_role == other.code_address_role
+        self.origins == other.origins
+            && self.code_address_role == other.code_address_role
+            && self.symbol == other.symbol
     }
 }
 
@@ -155,6 +209,7 @@ impl Provenance {
             origins: OriginSet::top(),
             code_address_role: false,
             identity: None,
+            symbol: None,
         }
     }
 
@@ -169,6 +224,7 @@ impl Provenance {
             origins: OriginSet::source(origin),
             code_address_role: false,
             identity: None,
+            symbol: None,
         }
     }
 
@@ -178,6 +234,7 @@ impl Provenance {
             origins,
             code_address_role: false,
             identity: None,
+            symbol: None,
         }
     }
 
@@ -188,7 +245,7 @@ impl Provenance {
 
     /// 是否来源完全未知；身份不改变该数值无关的查询。
     pub fn is_top(&self) -> bool {
-        self.origins.is_top() && !self.code_address_role
+        self.origins.is_top() && !self.code_address_role && self.symbol.is_none()
     }
 
     /// 是否在全部被覆盖的执行中作为代码地址使用。
@@ -207,6 +264,7 @@ impl Provenance {
     pub fn join(&self, other: &Self) -> Self {
         let mut joined = Self::from_origins(self.origins.join(&other.origins));
         joined.code_address_role = self.code_address_role && other.code_address_role;
+        joined.symbol = self.symbol.filter(|symbol| Some(*symbol) == other.symbol);
         joined
     }
 
@@ -219,15 +277,37 @@ impl Provenance {
         Self::from_origins(origins)
     }
 
-    /// 两个操作数是否是同一次受信任定义的复制。
+    /// 两个操作数是否持有同一个固定环境符号或临时复制身份。
     /// 数值摘要相等或来源相同均不会使此查询返回 true。
     pub fn same_identity(&self, other: &Self) -> bool {
-        self.identity.is_some() && self.identity == other.identity
+        (self.symbol.is_some() && self.symbol == other.symbol)
+            || (self.identity.is_some() && self.identity == other.identity)
+    }
+
+    pub(crate) fn same_symbol(&self, other: &Self) -> bool {
+        self.symbol.is_some() && self.symbol == other.symbol
+    }
+
+    pub(crate) fn preserve_symbol_from(&mut self, other: &Self) {
+        self.symbol = other.symbol;
     }
 
     /// 基本块、调用、汇合或摘要边界上的保守失效入口。
     pub fn forget_identity(&mut self) {
         self.identity = None;
+    }
+
+    /// Preserve an immutable environment identity across control-flow boundaries.
+    pub(crate) fn with_symbol(mut self, symbol: Symbol, scope: u64) -> Self {
+        self.symbol = Some(InputIdentity {
+            scope,
+            name: symbol,
+        });
+        self
+    }
+
+    pub(crate) fn set_origin(&mut self, origin: Origin) {
+        self.origins = OriginSet::source(origin);
     }
 
     /// 执行器只在创建新的定义或复制一个确定值时调用此入口。

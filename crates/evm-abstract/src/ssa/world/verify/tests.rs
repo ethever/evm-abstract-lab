@@ -24,10 +24,14 @@ fn example() -> analysis::WorldAnalysis {
         world,
         Entry {
             address: root,
-            caller: Address::repeat_byte(0x33),
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            environment: crate::world::EvmEnvironment {
+                to: (root).into(),
+                caller: (Address::repeat_byte(0x33)).into(),
+                value: Value::constant(U256::ZERO),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..crate::world::EvmEnvironment::default()
+            },
         },
         ExecutionConfig::default(),
     )
@@ -89,10 +93,14 @@ fn native_ssa_refuses_an_unresolved_world() {
         world,
         Entry {
             address: Address::ZERO,
-            caller: Address::ZERO,
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            environment: crate::world::EvmEnvironment {
+                to: (Address::ZERO).into(),
+                caller: (Address::ZERO).into(),
+                value: Value::constant(U256::ZERO),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..crate::world::EvmEnvironment::default()
+            },
         },
         ExecutionConfig::default(),
     )

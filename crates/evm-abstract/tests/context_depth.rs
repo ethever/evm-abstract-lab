@@ -24,10 +24,14 @@ fn native(code: &str, config: ExecutionConfig) -> WorldAnalysis {
         world,
         Entry {
             address,
-            caller: Address::ZERO,
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address).into(),
+                caller: (Address::ZERO).into(),
+                value: Value::constant(U256::ZERO),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         config,
     )

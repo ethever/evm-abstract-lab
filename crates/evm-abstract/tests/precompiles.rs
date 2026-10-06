@@ -25,10 +25,14 @@ fn abstract_call(
         World::new(fork, "native oracle"),
         Entry {
             address: address(target),
-            caller: address(0x900),
-            value: Value::constant(U256::ZERO),
-            calldata: input,
-            is_static: false,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address(target)).into(),
+                caller: (address(0x900)).into(),
+                value: Value::constant(U256::ZERO),
+                calldata: input,
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         config,
     )
@@ -132,10 +136,14 @@ fn identity_output_is_copied_back_to_the_callers_requested_range() {
         world,
         Entry {
             address: address(0x101),
-            caller: address(0x900),
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address(0x101)).into(),
+                caller: (address(0x900)).into(),
+                value: Value::constant(U256::ZERO),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         ExecutionConfig::default(),
     )

@@ -157,13 +157,12 @@ fn a_store_with_unobserved_logs_keeps_the_unknown_flag_visible() {
     world.insert(address, Account::empty()).unwrap();
     let mut analysis = analyze_world(
         world,
-        Entry {
+        Entry::concrete(
             address,
-            caller: Address::ZERO,
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: false,
-        },
+            Address::ZERO,
+            Value::constant(U256::ZERO),
+            ByteArray::empty(),
+        ),
         ExecutionConfig::default(),
     )
     .unwrap();

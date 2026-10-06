@@ -1,6 +1,6 @@
 //! Real CLI regressions cover quantity normalization and fixed-hash RPC requests.
 
-use super::{analyze, run};
+use super::{analyze, run_concrete};
 use alloy_primitives::U256;
 use serde_json::{Value as Json, json};
 use std::{
@@ -28,12 +28,12 @@ fn decimal_entry_value_matches_hex_and_reaches_execution() {
     ] {
         let hexadecimal_output = analyze(
             "call-return-branch",
-            &["--format", "json", "--value", hexadecimal],
+            &["--format", "json", "--evm.value", hexadecimal],
         );
         assert!(hexadecimal_output.status.success());
         let decimal_output = analyze(
             "call-return-branch",
-            &["--format", "json", "--value", decimal],
+            &["--format", "json", "--evm.value", decimal],
         );
         assert!(
             decimal_output.status.success(),
@@ -45,7 +45,7 @@ fn decimal_entry_value_matches_hex_and_reaches_execution() {
         let decimal_json: serde_json::Value =
             serde_json::from_slice(&decimal_output.stdout).unwrap();
         assert_eq!(
-            decimal_json["entry"]["value"]["Constants"],
+            decimal_json["entry"]["environment"]["value"]["Constants"],
             serde_json::json!([hexadecimal])
         );
         assert_eq!(decimal_json, hexadecimal_json);
@@ -68,21 +68,21 @@ fn invalid_rpc_quantities_exit_before_acquiring_a_world() {
             "--block-number=18446744073709551616",
             "64-bit",
         ),
-        ("--value", "--value=1.5", "ASCII decimal digits"),
+        ("--evm.value", "--evm.value=1.5", "ASCII decimal digits"),
         (
             "--slot",
             "--slot=0x0000000000000000000000000000000000000101:ff",
             "ASCII decimal digits",
         ),
         (
-            "--value",
-            "--value=115792089237316195423570985008687907853269984665640564039457584007913129639936",
+            "--evm.value",
+            "--evm.value=115792089237316195423570985008687907853269984665640564039457584007913129639936",
             "256-bit",
         ),
     ] {
-        let mut args = vec!["analyze", "--rpc", &endpoint, "--entry", ENTRY];
+        let mut args = vec!["analyze", "--rpc", &endpoint, "--evm.to", ENTRY];
         args.push(argument);
-        let output = run(&args);
+        let output = run_concrete(&args);
         assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
         let error = String::from_utf8_lossy(&output.stderr);
@@ -104,11 +104,11 @@ fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
             let uppercase_slot = format!("{ENTRY}:0X10");
             let mut results = Vec::new();
             for value in ["1000", "0x3e8"] {
-                let output = run(&[
+                let output = run_concrete(&[
                     "analyze",
                     "--rpc",
                     &server.endpoint,
-                    "--value",
+                    "--evm.value",
                     value,
                     "--slot",
                     &decimal_slot,
@@ -118,7 +118,7 @@ fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
                     &uppercase_slot,
                     "--block-hash",
                     BLOCK,
-                    "--entry",
+                    "--evm.to",
                     ENTRY,
                     "--format",
                     "json",

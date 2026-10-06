@@ -39,10 +39,14 @@ fn repeated_reverting_call_joins_checkpoints_and_output_ranges_before_resuming_r
         world,
         Entry {
             address: address(0x101),
-            caller: address(0x900),
-            value: word(0),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address(0x101)).into(),
+                caller: (address(0x900)).into(),
+                value: word(0),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         ExecutionConfig {
             // Exercise the ordinary worklist's frame joins directly.

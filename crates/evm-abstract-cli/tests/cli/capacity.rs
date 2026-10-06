@@ -1,6 +1,6 @@
 //! 大容量必须传入真实引擎；完整候选、默认策略和资源中断分别核对。
 
-use super::{analyze, run};
+use super::{analyze, run_concrete};
 use serde_json::Value;
 
 #[test]
@@ -9,7 +9,7 @@ fn program_entrypoints_accept_every_positive_usize_capacity() {
         let capacity = capacity.to_string();
         for profile in ["product", "constants-only"] {
             for command in ["cfg", "ssa", "explain"] {
-                let output = run(&[
+                let output = run_concrete(&[
                     command,
                     "--hex",
                     "00",
@@ -32,7 +32,7 @@ fn program_entrypoints_accept_every_positive_usize_capacity() {
 fn constants_only_clz_keeps_the_complete_set_at_capacity_257() {
     for capacity in [256, 257] {
         let capacity = capacity.to_string();
-        let output = run(&[
+        let output = run_concrete(&[
             "cfg",
             "--hex",
             "5f351e00",
@@ -66,7 +66,7 @@ fn constants_only_clz_keeps_the_complete_set_at_capacity_257() {
 
 #[test]
 fn requested_explain_capacity_is_admitted_and_retains_work_frontiers() {
-    let output = run(&[
+    let output = run_concrete(&[
         "explain",
         "--hex",
         "5f351e00",
@@ -117,7 +117,7 @@ fn world_entrypoint_preserves_large_capacity_and_frozen_policy() {
 #[test]
 fn default_capacity_stays_eight_for_program_and_world() {
     for output in [
-        run(&["cfg", "--hex", "00", "--format", "json"]),
+        run_concrete(&["cfg", "--hex", "00", "--format", "json"]),
         analyze("call-return-branch", &["--format", "json"]),
     ] {
         assert!(output.status.success());
@@ -129,7 +129,7 @@ fn default_capacity_stays_eight_for_program_and_world() {
 #[test]
 fn zero_capacity_is_still_rejected_before_execution() {
     let mut outputs = ["cfg", "ssa", "explain"]
-        .map(|command| run(&[command, "--hex", "00", "--max-constants", "0"]))
+        .map(|command| run_concrete(&[command, "--hex", "00", "--max-constants", "0"]))
         .to_vec();
     outputs.push(analyze("call-return-branch", &["--max-constants", "0"]));
     for output in outputs {

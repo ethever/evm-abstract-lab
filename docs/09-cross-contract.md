@@ -2,7 +2,7 @@
 
 前几课分析一段字节码。本课把问题扩大一点：A 调用 B，B 返回的数值会不会改变 A 的分支？这要求分析器同时保存两个合约的执行位置、返回字节和 storage。
 
-先手算一条成功路径，再读包含其他可能性的抽象结果。所有命令都在仓库根目录执行；示例是离线合成状态，不需要节点或资金。阅读前应了解 [栈](01-bytecode.md)、[值集合](02-domain.md) 和 [CFG](03-cfg.md)。
+先手算一条成功路径，再读包含其他可能性的抽象结果。本课命令显式固定 caller、value 和 calldata；省略这些参数会使用符号输入。所有命令都在仓库根目录执行；示例是离线合成状态，不需要节点或资金。阅读前应了解 [栈](01-bytecode.md)、[值集合](02-domain.md) 和 [CFG](03-cfg.md)。
 
 ## 1. 第一个实验：B 返回 1，A 写入 1
 
@@ -13,12 +13,12 @@
 | A | `0101` | 调用 B；读输出；相等时写 slot 0=1，否则写 2 |
 | B | `0200` | 把数值 1 编码为 32 字节并返回 |
 
-**第一步，生成结果。** `explain --world` 接收一组账户事实，`--entry` 选择从哪个账户开始。默认教学视图依次显示捕获代码的反汇编、简明 CFG 与栈、分开的入口结果，以及完成图的 TAC/SSA：
+**第一步，生成结果。** `explain --world` 接收一组账户事实，`--evm.to` 选择从哪个账户开始。默认教学视图依次显示捕获代码的反汇编、简明 CFG 与栈、分开的入口结果，以及完成图的 TAC/SSA：
 
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 需要用 `jq` 查询字段时，另用 `analyze --format json` 导出同一分析：
@@ -26,7 +26,7 @@ nix run . -- explain \
 ```bash
 nix run . -- analyze \
   --world examples/worlds/call-return-branch.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/call-return.json
 ```
 
@@ -81,7 +81,7 @@ jq '.status, .edges,
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 先认识完整报告中的**调用摘要（call summary）**：分析器把一次已完成的子调用保存下来，记录特定输入下的可能返回方式、返回字节、账户状态效果和对应执行子图。后来遇到前提完全相同的调用时，才允许复用。这份缓存记录的是分析器的工作过程。
@@ -125,7 +125,7 @@ B0 @ 0x0000:
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --verbose
 ```
 
@@ -195,7 +195,7 @@ CALL 自动复制的长度至多是请求输出长度与实际返回长度的较
 ```bash
 nix run . -- explain \
   --world examples/worlds/returndata-copy.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 所有帧共享一份执行中的 **Store**：它记录各账户的 persistent storage、transient storage、余额，以及本次执行改变的 nonce（账户序号）、代码、创建/待删除标志和可能日志。persistent storage 可以跨交易保留；transient storage 是交易内的临时槽位。Store 不属于某一个帧，帧的 memory 则彼此独立。
@@ -214,7 +214,7 @@ A --CALL，value=11-> P2 --DELEGATECALL--> I 的代码，P2 的 storage
 ```bash
 nix run . -- analyze \
   --world examples/worlds/proxy-storage.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/proxy.json
 
 jq '[.states[] | .entry.call_stack
@@ -262,7 +262,7 @@ DELEGATECALL 继承代理帧的 caller 和 call value，所以实现代码读到
 ```bash
 nix run . -- analyze \
   --world examples/worlds/revert-rollback.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/rollback.json
 
 jq '[.outcomes[] | select(.kind == "Return")
@@ -297,7 +297,7 @@ jq '[.outcomes[] | select(.kind == "Return")
 ```bash
 nix run . -- analyze \
   --world examples/worlds/reentry.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/reentry.json
 
 jq '[.outcomes[] | select(.kind == "Return")
@@ -313,14 +313,14 @@ jq '[.outcomes[] | select(.kind == "Return")
 ```bash
 nix run . -- analyze \
   --world examples/worlds/missing-code.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/missing-code.json
 
 jq '.status, [.frontiers[] | {from, pc, reason}]' /tmp/missing-code.json
 
 nix run . -- analyze \
   --world examples/worlds/reentry.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --max-call-depth 2
 ```
 
@@ -355,7 +355,7 @@ world JSON 是分析的**初始事实**。下面这个最小账户会执行 `SST
 ```bash
 nix run . -- analyze \
   --world /tmp/lesson-world.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 | 输入写法 | 声明的事实 |
@@ -369,7 +369,7 @@ nix run . -- analyze \
 
 `provenance` 是作者填写的来源说明；它不能证明事实属于哪条链、哪个区块。固定快照的身份与 RPC 信任范围见[第 10 课](10-snapshots-summaries-creation.md)。
 
-入口还可指定 `--caller`、`--calldata 0x...`、`--value 1000`、`--static`。`--value` 的单位是 wei，接受十进制非负整数，也可写为 `0x3e8` 或 `0X3e8`；具体数量格式见 [CLI 参数说明](../README.md#命令与输出格式)。默认 caller=`0x...1000`、calldata 为空、value=0；子调用参数由实际指令产生。世界余额是**进入入口帧时**的余额，`--value` 只提供 CALLVALUE，不会再处理外层交易转账或手续费。world JSON 的余额、nonce、storage 键和值继续用 `0x` 十六进制格式，地址和 calldata 仍是字节数据。
+入口还可指定 `--evm.caller`、`--evm.calldata 0x...`、`--evm.value 1000`、`--evm.static`。`--evm.value` 的单位是 wei，接受十进制非负整数，也可写为 `0x3e8` 或 `0X3e8`；具体数量格式见 [CLI 参数说明](../README.md#命令与输出格式)。未指定时，caller 为未知 160 位地址，origin 默认与其共享身份，calldata 长度和字节未知，value 为未知 U256；本课为固定手算场景显式传入 caller、空 calldata 和零 value。子调用参数由实际指令产生。世界余额是**进入入口帧时**的余额，`--evm.value` 只提供 CALLVALUE，不会再处理外层交易转账或手续费。world JSON 的余额、nonce、storage 键和值继续用 `0x` 十六进制格式，地址和 calldata 仍是字节数据。
 
 示例入口使用 `0x101`，因为 Osaka 的 [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) 在 `0x100` 定义 P256VERIFY 预编译。在预编译地址填入 fixture 字节码，不会让执行器把它当作普通代码执行。
 

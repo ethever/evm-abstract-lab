@@ -68,6 +68,9 @@ pub fn cfg(analysis: &Analysis) -> String {
         analysis.config().max_facts
     )
     .unwrap();
+    world::environment::write(&mut output, analysis.environment(), None, false, |input| {
+        input.to_string()
+    });
     for state in analysis.states() {
         let block = &analysis.program().blocks()[state.key.basic_block_index];
         writeln!(
@@ -129,7 +132,7 @@ pub fn dot(analysis: &Analysis) -> String {
     }
     // 把状态和前沿放在图注里；图片本身也不能隐藏预算截断。
     let label = format!(
-        "fork={}; status={:?}; frontiers={}; unknown jumps={}",
+        "fork={}; status={:?}; frontiers={}; unknown jumps={}\n{}",
         analysis.program().fork(),
         analysis.status(),
         analysis.frontiers().len(),
@@ -137,13 +140,14 @@ pub fn dot(analysis: &Analysis) -> String {
             .diagnostics()
             .iter()
             .filter(|d| d.kind == DiagnosticKind::UnknownJump)
-            .count()
+            .count(),
+        world::environment::summary(analysis.environment(), None),
     );
     let dot = Dot::new(&graph).to_string();
-    // label 只由固定文字和数字组成，节点/边的内容转义仍由 petgraph 负责。
+    // 输入与抽象值也进入图注；按字符串转义，节点/边仍由 petgraph 负责。
     dot.replacen(
         "digraph {\n",
-        &format!("digraph {{\n    label=\"{label}\";\n    labelloc=\"t\";\n"),
+        &format!("digraph {{\n    label={label:?};\n    labelloc=\"t\";\n"),
         1,
     )
 }
@@ -156,6 +160,9 @@ pub fn ssa(analysis: &Analysis, ssa: &Ssa) -> String {
         ssa.value_count(),
         analysis.status()
     );
+    world::environment::write(&mut output, analysis.environment(), None, false, |input| {
+        input.to_string()
+    });
     for block in ssa.blocks() {
         let state = &analysis.states()[block.state];
         let source = &analysis.program().blocks()[state.key.basic_block_index];

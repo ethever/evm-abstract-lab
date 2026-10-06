@@ -17,7 +17,7 @@ nix run . -- explain --file examples/straight-line.hex
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 世界入口默认显示实际捕获代码、简明状态与结果概要，以及完成图的赋值式 SSA；加 `--verbose` 可展开完整捕获记录与效果链。先完成本课的单程序阅读，再按[第 09 课](09-cross-contract.md)理解调用、返回和回滚。
@@ -182,12 +182,12 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 
 前面的 `.hex` 是单个账户的 **runtime bytecode**，即部署后供调用执行的代码。部署时执行的 **initcode** 负责构造并返回 runtime，两者用途不同。
 
-跨合约分析还需要知道被调用账户的代码和初始状态。这些信息写在**世界文件**（world JSON）里；`--entry` 指定从哪个账户开始。
+跨合约分析还需要知道被调用账户的代码和初始状态。这些信息写在**世界文件**（world JSON）里；`--evm.to` 指定从哪个账户开始。
 
 ```bash
 nix run . -- analyze \
   --world examples/worlds/call-return-branch.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 本例中 A（地址末尾 `0101`）调用 B（末尾 `0200`），B 返回数值 1 的 32 字节表示，A 据此写入自己的 storage。**storage** 是按账户保存的持久存储；**slot** 是其中一个存储位置，用 256 bit 索引标识。成功轨迹里，A 的 slot 0 变为 1。

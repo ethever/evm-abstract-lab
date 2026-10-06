@@ -37,10 +37,14 @@ fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
     }
     let entry = Entry {
         address: address(0x101),
-        caller: address(0x1000),
-        value: Value::constant(U256::ZERO),
-        calldata: ByteArray::empty(),
-        is_static: false,
+        environment: evm_abstract::world::EvmEnvironment {
+            to: (address(0x101)).into(),
+            caller: (address(0x1000)).into(),
+            value: Value::constant(U256::ZERO),
+            calldata: ByteArray::empty(),
+            is_static: false,
+            ..evm_abstract::world::EvmEnvironment::default()
+        },
     };
     (world, entry)
 }
@@ -181,7 +185,7 @@ fn full_store_value_caller_and_mode_preconditions_produce_misses() {
         .iter()
         .map(|record| record.input.frame.state.key.caller)
         .collect();
-    assert!(callers.contains(&address(0x101)) && callers.contains(&address(0x1000)));
+    assert!(callers.contains(&address(0x101).into()) && callers.contains(&address(0x1000).into()));
 }
 
 #[test]

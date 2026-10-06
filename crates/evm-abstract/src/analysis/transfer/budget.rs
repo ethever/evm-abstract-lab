@@ -51,8 +51,10 @@ pub(super) fn operation_work(
     program: &Program,
     domain: Domain,
     config: &ExecutionConfig,
+    entry: &crate::world::Entry,
 ) -> usize {
     let frame = result.payload.active();
+    let environment = &entry.environment;
     let array_size = frame
         .memory
         .work_size()
@@ -67,6 +69,32 @@ pub(super) fn operation_work(
         }
     };
     match op {
+        opcode::BLOCKHASH | opcode::BLOBHASH => environment
+            .work_size()
+            .saturating_add(args[0].work_size())
+            .saturating_add(
+                domain.operation_work(&[]).saturating_mul(
+                    args[0]
+                        .constants()
+                        .map_or(1, std::collections::BTreeSet::len),
+                ),
+            ),
+        opcode::ADDRESS
+        | opcode::CALLER
+        | opcode::ORIGIN
+        | opcode::CALLVALUE
+        | opcode::GASPRICE
+        | opcode::COINBASE
+        | opcode::TIMESTAMP
+        | opcode::NUMBER
+        | opcode::DIFFICULTY
+        | opcode::GASLIMIT
+        | opcode::CHAINID
+        | opcode::BASEFEE
+        | opcode::BLOBBASEFEE
+        | opcode::GAS => environment
+            .work_size()
+            .saturating_add(environment.projection_work(domain)),
         opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain)
             .saturating_add(frame.memory.word_numeric_work(&args[0], domain)),
         opcode::MSTORE => byte_work(&args.iter().collect::<Vec<_>>(), 32, array_size, domain)
@@ -101,8 +129,11 @@ pub(super) fn operation_work(
             &args[0],
             domain,
             true,
+            entry,
         )),
-        opcode::EXTCODEHASH => external_code_work(&result.payload.store, &args[0], domain, false),
+        opcode::EXTCODEHASH => {
+            external_code_work(&result.payload.store, &args[0], domain, false, entry)
+        }
         opcode::EXTCODESIZE | opcode::BALANCE => args[0]
             .constants()
             .map_or(1, |values| values.len())
@@ -129,7 +160,26 @@ pub(super) fn operation_work(
     }
 }
 
-fn external_code_work(store: &Store, targets: &Value, domain: Domain, copied: bool) -> usize {
+fn external_code_work(
+    store: &Store,
+    targets: &Value,
+    domain: Domain,
+    copied: bool,
+    entry: &crate::world::Entry,
+) -> usize {
+    let actual;
+    let targets = if entry.environment.to.as_concrete().is_none()
+        && targets.provenance().same_identity(
+            entry
+                .environment
+                .address_value(entry.environment.to)
+                .provenance(),
+        ) {
+        actual = Value::constant(crate::U256::from_be_slice(entry.address.as_slice()));
+        &actual
+    } else {
+        targets
+    };
     let Some(targets) = targets.constants() else {
         return 1;
     };

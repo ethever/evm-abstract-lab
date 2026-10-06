@@ -29,10 +29,10 @@ A 在调用 B 前保存自己的事务状态版本，B 在调用 C 前再保存�
 nix develop
 cargo run --release --locked -p evm-abstract-cli -- \
   analyze --world examples/worlds/revert-rollback.json \
-  --entry 0x0000000000000000000000000000000000000101 --format json
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --format json
 cargo run --release --locked -p evm-abstract-cli --features imbl -- \
   analyze --world examples/worlds/revert-rollback.json \
-  --entry 0x0000000000000000000000000000000000000101 --format json
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --format json
 ```
 
 feature 在一次构建中统一选择后端；同一个进程里的 Store 使用同一实现。并行比较使用独立 target 目录，避免后一次构建覆盖前一次的二进制。

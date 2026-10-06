@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     domain::{Domain, Profile, Value, provenance::Origin},
-    world::{AbstractLog, ByteArray, Code, Entry, LogKey, Store, World},
+    world::{AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, Store, Symbol, World},
 };
 use alloy_primitives::{Address, U256, keccak256};
 use revm_bytecode::opcode;
@@ -37,6 +37,8 @@ struct TransferContext<'a> {
     config: &'a ExecutionConfig,
     domain: Domain,
     budget: &'a mut WorkBudget,
+    root_address: Option<(Address, AddressInput)>,
+    input_scope: Option<u64>,
 }
 
 pub(super) fn initial(
@@ -98,6 +100,8 @@ pub(super) fn resume_summary(
         config,
         domain,
         budget,
+        root_address: None,
+        input_scope: None,
     };
     let pc = payload
         .active()
@@ -112,9 +116,6 @@ pub(super) fn resume_summary(
 
 fn address(value: U256) -> Address {
     Address::from_slice(&value.to_be_bytes::<32>()[12..])
-}
-fn address_value(value: Address) -> Value {
-    Value::constant(U256::from_be_slice(value.as_slice()))
 }
 fn constant(value: usize) -> Value {
     Value::constant(U256::from(value))
@@ -180,14 +181,33 @@ fn code_bytes(store: &Store, target: Address) -> Option<Vec<u8>> {
 fn environment_targets(
     value: &Value,
     domain: Domain,
+    entry: &Entry,
     mut read: impl FnMut(Address) -> Value,
 ) -> Value {
+    let symbolic_owner = entry.environment.to.as_concrete().is_none();
+    if symbolic_owner
+        && value.provenance().same_identity(
+            entry
+                .environment
+                .address_value(entry.environment.to)
+                .provenance(),
+        )
+    {
+        return read(entry.address);
+    }
     let Some(values) = value.constants() else {
         return Value::top();
     };
     values
         .iter()
-        .map(|v| read(address(*v)))
+        .map(|v| {
+            let target = address(*v);
+            if symbolic_owner && target == entry.address {
+                Value::top()
+            } else {
+                read(target)
+            }
+        })
         .reduce(|a, b| domain.join(&a, &b))
         .expect("Value constant sets are nonempty")
 }
@@ -204,6 +224,8 @@ pub(super) fn execute(
         config,
         domain,
         budget,
+        root_address: Some((entry.address, entry.environment.to)),
+        input_scope: entry.environment.input_scope.id(),
     };
     let context = &mut transfer_context;
     let mut result = Execution {
@@ -322,10 +344,9 @@ pub(super) fn execute(
                 return result;
             }
         }
-        if !context
-            .budget
-            .charge(operation_work(&result, op, &args, program, domain, config))
-        {
+        if !context.budget.charge(operation_work(
+            &result, op, &args, program, domain, config, entry,
+        )) {
             boundary(&mut result, pc, FrontierReason::Work);
             return result;
         }
@@ -473,6 +494,19 @@ pub(super) fn execute(
                 return result;
             }
             opcode::SELFDESTRUCT => {
+                if result
+                    .payload
+                    .active()
+                    .key
+                    .address_value
+                    .as_concrete()
+                    .is_none()
+                {
+                    // A literal beneficiary can alias an unknown logical owner;
+                    // the internal store namespace is not an address observation.
+                    boundary(&mut result, pc, FrontierReason::UnknownTarget);
+                    return result;
+                }
                 let Some(beneficiaries) = args[0].constants() else {
                     boundary(&mut result, pc, FrontierReason::UnknownTarget);
                     return result;
@@ -567,17 +601,36 @@ pub(super) fn execute(
                 }
             }
             opcode::EXTCODECOPY => {
-                let source = match args[0].constants() {
-                    Some(targets) => targets
-                        .iter()
-                        .map(|target| {
-                            code_bytes(&result.payload.store, address(*target))
-                                .map(|bytes| ByteArray::exact(&bytes))
-                                .unwrap_or_else(ByteArray::unknown)
-                        })
-                        .reduce(|a, b| a.join(&b, domain))
-                        .expect("nonempty value"),
-                    None => ByteArray::unknown(),
+                let symbolic_owner = entry.environment.to.as_concrete().is_none();
+                let exact_self = symbolic_owner
+                    && args[0].provenance().same_identity(
+                        entry
+                            .environment
+                            .address_value(entry.environment.to)
+                            .provenance(),
+                    );
+                let source = if exact_self {
+                    code_bytes(&result.payload.store, entry.address)
+                        .map(|bytes| ByteArray::exact(&bytes))
+                        .unwrap_or_else(ByteArray::unknown)
+                } else {
+                    match args[0].constants() {
+                        Some(targets) => targets
+                            .iter()
+                            .map(|target| {
+                                let target = address(*target);
+                                if symbolic_owner && target == entry.address {
+                                    ByteArray::unknown()
+                                } else {
+                                    code_bytes(&result.payload.store, target)
+                                        .map(|bytes| ByteArray::exact(&bytes))
+                                        .unwrap_or_else(ByteArray::unknown)
+                                }
+                            })
+                            .reduce(|a, b| a.join(&b, domain))
+                            .expect("nonempty value"),
+                        None => ByteArray::unknown(),
+                    }
                 };
                 if result
                     .payload
@@ -639,28 +692,84 @@ pub(super) fn execute(
             _ if outputs > 0 => {
                 let frame = result.payload.active();
                 let mut value = match op {
-                    opcode::ADDRESS if !config.symbolic_entry_environment => {
-                        address_value(frame.key.address)
-                    }
-                    opcode::CALLER if !config.symbolic_entry_environment => {
-                        address_value(frame.key.caller)
-                    }
-                    opcode::ORIGIN if !config.symbolic_entry_environment => {
-                        address_value(entry.caller)
-                    }
+                    opcode::ADDRESS => entry.environment.address_value(frame.key.address_value),
+                    opcode::CALLER => entry.environment.address_value(frame.key.caller),
+                    opcode::ORIGIN => entry
+                        .environment
+                        .address_value(entry.environment.resolved_origin()),
                     opcode::CALLVALUE => frame.call_value.clone(),
-                    opcode::CHAINID => match world.identity() {
-                        crate::world::SnapshotIdentity::Chain { chain_id, .. } => {
-                            Value::constant(*chain_id)
-                        }
-                        _ => Value::top(),
-                    },
+                    opcode::GASPRICE => entry
+                        .environment
+                        .gas_price
+                        .clone()
+                        .with_symbol(Symbol::GasPrice, entry.environment.input_scope.id()),
+                    opcode::COINBASE => entry.environment.address_value(entry.environment.coinbase),
+                    opcode::TIMESTAMP => entry
+                        .environment
+                        .timestamp
+                        .clone()
+                        .with_symbol(Symbol::Timestamp, entry.environment.input_scope.id()),
+                    opcode::NUMBER => entry
+                        .environment
+                        .number
+                        .clone()
+                        .with_symbol(Symbol::Number, entry.environment.input_scope.id()),
+                    opcode::DIFFICULTY => entry
+                        .environment
+                        .prevrandao
+                        .clone()
+                        .with_symbol(Symbol::Prevrandao, entry.environment.input_scope.id()),
+                    opcode::GASLIMIT => entry
+                        .environment
+                        .gas_limit
+                        .clone()
+                        .with_symbol(Symbol::GasLimit, entry.environment.input_scope.id()),
+                    opcode::CHAINID => entry.environment.chain_id(world.identity()),
+                    opcode::BASEFEE => entry
+                        .environment
+                        .base_fee
+                        .clone()
+                        .with_symbol(Symbol::BaseFee, entry.environment.input_scope.id()),
+                    opcode::BLOBBASEFEE => entry
+                        .environment
+                        .blob_base_fee
+                        .clone()
+                        .with_symbol(Symbol::BlobBaseFee, entry.environment.input_scope.id()),
+                    opcode::BLOCKHASH => entry.environment.block_hash(&args[0], domain),
+                    opcode::BLOBHASH => entry.environment.blob_hashes.get(
+                        &args[0],
+                        domain,
+                        entry.environment.input_scope.id(),
+                    ),
+                    opcode::GAS => entry.environment.gas.value(),
                     opcode::PC => constant(pc),
                     opcode::CODESIZE => constant(program.byte_len()),
-                    opcode::CALLDATASIZE => frame.calldata.len().clone(),
+                    opcode::CALLDATASIZE => {
+                        let value = frame.calldata.len().clone();
+                        if frame.environment_calldata {
+                            value.with_symbol(
+                                Symbol::CalldataLength,
+                                entry.environment.input_scope.id(),
+                            )
+                        } else {
+                            value
+                        }
+                    }
                     opcode::RETURNDATASIZE => frame.returndata.len().clone(),
                     opcode::MSIZE => frame.memory.len().clone(),
-                    opcode::CALLDATALOAD => frame.calldata.read_word(&args[0], domain),
+                    opcode::CALLDATALOAD => {
+                        let value = frame.calldata.read_word(&args[0], domain);
+                        if frame.environment_calldata {
+                            args[0].singleton().map_or(value.clone(), |offset| {
+                                value.with_symbol(
+                                    Symbol::CalldataWord(offset),
+                                    entry.environment.input_scope.id(),
+                                )
+                            })
+                        } else {
+                            value
+                        }
+                    }
                     opcode::SLOAD => result
                         .payload
                         .store
@@ -672,10 +781,10 @@ pub(super) fn execute(
                             .read_transient(frame.key.address, &args[0], domain)
                     }
                     opcode::SELFBALANCE => result.payload.store.read_balance(frame.key.address),
-                    opcode::BALANCE => environment_targets(&args[0], domain, |address| {
+                    opcode::BALANCE => environment_targets(&args[0], domain, entry, |address| {
                         result.payload.store.read_balance(address)
                     }),
-                    opcode::EXTCODESIZE => environment_targets(&args[0], domain, |target| {
+                    opcode::EXTCODESIZE => environment_targets(&args[0], domain, entry, |target| {
                         match result.payload.store.code(target) {
                             Some(Code::Runtime(program)) => constant(program.byte_len()),
                             Some(Code::Delegation(_)) => constant(23),
@@ -683,7 +792,7 @@ pub(super) fn execute(
                             _ => Value::top(),
                         }
                     }),
-                    opcode::EXTCODEHASH => environment_targets(&args[0], domain, |target| {
+                    opcode::EXTCODEHASH => environment_targets(&args[0], domain, entry, |target| {
                         code_bytes(&result.payload.store, target)
                             .map(|bytes| {
                                 let hash = Value::constant(U256::from_be_slice(
@@ -753,6 +862,7 @@ pub(super) fn execute(
                         reduction.value
                     }
                 };
+                value = domain.project(&value);
                 if domain.spec().profile() == Profile::Product {
                     let origin = match op {
                         opcode::ADDRESS | opcode::CALLER | opcode::ORIGIN => Some(Origin::Address),
@@ -768,11 +878,6 @@ pub(super) fn execute(
                     };
                     if let Some(origin) = origin {
                         value.set_origin(origin);
-                    }
-                    if matches!(op, opcode::ADDRESS | opcode::CALLER | opcode::ORIGIN)
-                        && config.symbolic_entry_environment
-                    {
-                        value = Value::unknown_address();
                     }
                     if let Some(scope) = scope {
                         value = value.with_identity(scope, definition);

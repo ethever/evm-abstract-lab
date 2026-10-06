@@ -19,10 +19,14 @@ fn root_frame() -> RootFrame {
         world,
         Entry {
             address,
-            caller: Address::repeat_byte(0x22),
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address).into(),
+                caller: (Address::repeat_byte(0x22)).into(),
+                value: Value::constant(U256::ZERO),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         ExecutionConfig::default(),
     )
@@ -133,10 +137,14 @@ fn nested_analysis(root_reverts: bool) -> WorldAnalysis {
         world,
         Entry {
             address: address(0x101),
-            caller: address(0x900),
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address(0x101)).into(),
+                caller: (address(0x900)).into(),
+                value: Value::constant(U256::ZERO),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         ExecutionConfig::default(),
     )

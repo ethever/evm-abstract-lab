@@ -4,15 +4,22 @@ use super::{
     Analysis, Config, ConfigError, Diagnostic, DiagnosticKind, Edge, EdgeKind, ExecutionConfig,
     Frontier, FrontierReason, Limit, MachineEdgeKind, State, StateKey, analyze_world,
 };
-use crate::{bytecode::Program, domain::Value};
+use crate::{bytecode::Program, domain::Value, world::EvmEnvironment};
 
-pub(super) fn analyze(program: Program, config: Config) -> Result<Analysis, ConfigError> {
-    use crate::world::{Account, ByteArray, Code, Entry, World};
+pub(super) fn analyze(
+    program: Program,
+    config: Config,
+    environment: EvmEnvironment,
+) -> Result<Analysis, ConfigError> {
+    use crate::world::{Account, Code, Entry, World};
     use alloy_primitives::Address;
     use revm_bytecode::opcode;
     use std::collections::BTreeMap;
 
-    let address = Address::repeat_byte(0x11);
+    let address = environment
+        .to
+        .as_concrete()
+        .unwrap_or(Address::repeat_byte(0x11));
     let mut world = World::new(program.fork(), "single-bytecode symbolic environment");
     let mut account = Account::unknown();
     account.code = Code::Runtime(program.clone());
@@ -24,14 +31,10 @@ pub(super) fn analyze(program: Program, config: Config) -> Result<Analysis, Conf
         world,
         Entry {
             address,
-            caller: Address::ZERO,
-            value: Value::top(),
-            calldata: ByteArray::unknown(),
-            is_static: false,
+            environment,
         },
         ExecutionConfig {
             analysis: config.clone(),
-            symbolic_entry_environment: true,
             ..ExecutionConfig::default()
         },
     )?;
@@ -147,7 +150,7 @@ pub(super) fn analyze(program: Program, config: Config) -> Result<Analysis, Conf
     Ok(Analysis {
         program,
         config,
-        schema_version: 1,
+        schema_version: 2,
         domain_spec: execution.domain_spec(),
         states,
         edges,

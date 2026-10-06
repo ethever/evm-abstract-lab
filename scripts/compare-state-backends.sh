@@ -117,12 +117,12 @@ for fixture in sorted((root / "examples").glob("*.hex")):
                       [command, "--file", str(fixture), "--format", "json"], 0))
 for fixture in sorted((root / "examples/worlds").glob("*.json")):
     expected = 2 if fixture.stem == "missing-code" else 0
-    arguments = ["analyze", "--world", str(fixture), "--entry", entry, "--format", "json"]
+    arguments = ["analyze", "--world", str(fixture), "--evm.to", entry, "--evm.caller", "0x0000000000000000000000000000000000001000", "--evm.value", "0", "--evm.calldata", "0x", "--format", "json"]
     cases.append((f"{fixture.stem}-analyze", arguments, expected))
     cases.append((f"{fixture.stem}-ssa", arguments + ["--ssa"], expected))
 summary_world = root / "examples/worlds/summary-reuse.json"
 cases.append(("summary-reuse-no-summaries",
-              ["analyze", "--world", str(summary_world), "--entry", entry,
+              ["analyze", "--world", str(summary_world), "--evm.to", entry, "--evm.caller", "0x0000000000000000000000000000000000001000", "--evm.value", "0", "--evm.calldata", "0x",
                "--format", "json", "--no-summaries"], 0))
 
 parity = []

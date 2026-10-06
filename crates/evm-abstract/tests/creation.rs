@@ -108,10 +108,14 @@ fn run(world: World) -> WorldAnalysis {
         world,
         Entry {
             address: address(0x101),
-            caller: address(0x1000),
-            value: word(0),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address(0x101)).into(),
+                caller: (address(0x1000)).into(),
+                value: word(0),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         config,
     )
@@ -481,10 +485,14 @@ fn unobserved_nonce_endowment_and_runtime_are_explicit_creation_boundaries() {
         world,
         Entry {
             address: address(0x101),
-            caller: address(0x1000),
-            value: word(0),
-            calldata: ByteArray::unknown(),
-            is_static: false,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address(0x101)).into(),
+                caller: (address(0x1000)).into(),
+                value: word(0),
+                calldata: ByteArray::unknown(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         ExecutionConfig::default(),
     )
@@ -548,10 +556,14 @@ fn unrepresentable_nonce_and_shared_creation_limits_are_explicit() {
             world.clone(),
             Entry {
                 address: address(0x101),
-                caller: address(0x1000),
-                value: word(0),
-                calldata: ByteArray::empty(),
-                is_static: false,
+                environment: evm_abstract::world::EvmEnvironment {
+                    to: (address(0x101)).into(),
+                    caller: (address(0x1000)).into(),
+                    value: word(0),
+                    calldata: ByteArray::empty(),
+                    is_static: false,
+                    ..evm_abstract::world::EvmEnvironment::default()
+                },
             },
             config,
         )
@@ -923,10 +935,14 @@ fn unknown_creation_inputs_report_explicit_frontiers() {
             world,
             Entry {
                 address: address(0x101),
-                caller: address(0x1000),
-                value: word(0),
-                calldata: ByteArray::unknown(),
-                is_static: false,
+                environment: evm_abstract::world::EvmEnvironment {
+                    to: (address(0x101)).into(),
+                    caller: (address(0x1000)).into(),
+                    value: word(0),
+                    calldata: ByteArray::unknown(),
+                    is_static: false,
+                    ..evm_abstract::world::EvmEnvironment::default()
+                },
             },
             ExecutionConfig::default(),
         )

@@ -100,7 +100,7 @@ fn covers_steps(analysis: &WorldAnalysis, trace: Trace) {
                 let frame = state.active();
                 frame.code_address == step.code
                     && frame.address == step.address
-                    && frame.caller == step.caller
+                    && frame.caller.as_concrete() == Some(step.caller)
                     && frame.is_static == step.is_static
                     && state.executed_pcs.contains(&step.pc)
             })
@@ -132,10 +132,14 @@ fn compare(name: &str, fork: Fork) -> WorldAnalysis {
     let (world, db) = fixture(name, fork);
     let entry = Entry {
         address: address(0x101),
-        caller: address(0x1000),
-        value: Value::constant(U256::ZERO),
-        calldata: ByteArray::empty(),
-        is_static: false,
+        environment: evm_abstract::world::EvmEnvironment {
+            to: (address(0x101)).into(),
+            caller: (address(0x1000)).into(),
+            value: Value::constant(U256::ZERO),
+            calldata: ByteArray::empty(),
+            is_static: false,
+            ..evm_abstract::world::EvmEnvironment::default()
+        },
     };
     let analysis = analysis::analyze_world(world, entry, ExecutionConfig::default()).unwrap();
     assert_eq!(analysis.status(), Status::Converged, "{name} {fork}");
