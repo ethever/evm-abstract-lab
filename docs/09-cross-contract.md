@@ -2,7 +2,7 @@
 
 前几课分析一段字节码。本课把问题扩大一点：A 调用 B，B 返回的数值会不会改变 A 的分支？这要求分析器同时保存两个合约的执行位置、返回字节和 storage。
 
-先手算一条成功路径，再读包含其他可能性的抽象结果。本课命令显式固定 caller、value 和 calldata；省略这些参数会使用符号输入。所有命令都在仓库根目录执行；示例是离线合成状态，不需要节点或资金。阅读前应了解 [栈](01-bytecode.md)、[值集合](02-domain.md) 和 [CFG](03-cfg.md)。
+先手算一条成功路径，再读包含其他可能性的抽象结果。本课命令将入口 caller 固定为 `0x...1000`、value 固定为零、calldata 固定为空；origin 省略，因此与入口 caller 相同。未指定的交易和区块字段仍为符号输入。省略 caller、value、calldata 时，分析覆盖更广的输入范围，规则见[第 13 课](13-evm-environment.md)。所有命令都在仓库根目录执行；示例是离线合成状态，不需要节点或资金。阅读前应了解 [栈](01-bytecode.md)、[值集合](02-domain.md) 和 [CFG](03-cfg.md)。
 
 ## 1. 第一个实验：B 返回 1，A 写入 1
 
@@ -18,7 +18,9 @@
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x
 ```
 
 需要用 `jq` 查询字段时，另用 `analyze --format json` 导出同一分析：
@@ -26,7 +28,9 @@ nix run . -- explain \
 ```bash
 nix run . -- analyze \
   --world examples/worlds/call-return-branch.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/call-return.json
 ```
 
@@ -81,7 +85,9 @@ jq '.status, .edges,
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x
 ```
 
 先认识完整报告中的**调用摘要（call summary）**：分析器把一次已完成的子调用保存下来，记录特定输入下的可能返回方式、返回字节、账户状态效果和对应执行子图。后来遇到前提完全相同的调用时，才允许复用。这份缓存记录的是分析器的工作过程。
@@ -91,6 +97,7 @@ nix run . -- explain \
 | 输出位置 | 回答什么问题 | 怎样接着读 |
 | --- | --- | --- |
 | 开头 | 本次分析是否完成，使用什么 fork、数值策略和输入身份？ | 默认是 `Product`；`Incomplete` 时继续看 `Frontiers` |
+| `EVM inputs` | 这次分析覆盖怎样的调用环境？ | 本课应为 `value={0x0}`、`calldata: length={0x0} \| content=0x`，origin 标明 `same as caller` |
 | `Addresses` | `A0` 等引用代表哪个完整账户地址？ | 先查地址图例，再读代码与状态身份 |
 | `Execution code` | 分析时捕获了哪些代码字节，各自属于什么代码版本？ | 结合 `C`、代码地址引用 `A`、`code_hash`、`mode` 读反汇编 |
 | `CFG` | 哪些状态处在什么基本块，如何进入子调用、返回或继续分支？ | 根据 `S`、`B`、活动帧 `F` 和出边读 `stack in` / `stack out` |
@@ -125,11 +132,13 @@ B0 @ 0x0000:
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x \
   --verbose
 ```
 
-完整报告仍包含 `Analysis`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。`analyze` 的默认报告分区不变，`analyze --ssa` 仍显示完整 SSA，`analyze --format json` 保留原有字段。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=2`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见下文代理实验。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 完整 SSA 继续逐帧列出 active/suspended、代码地址、storage owner、代码 hash、mode、caller、static、跳转历史和栈高，不会因为活动帧采用共用指令布局而省略暂停帧。`bytecode instructions` 与 `instruction effects` 共享当前 B 标题和不带 `0x` 的 pc 列，效果行不重复打印 B 标题；原始 `opcode`、`immediate`、`operands`、`results`、`fault` 正文和逐指令效果编号仍完整显示。教学视图便于读赋值式值流，完整视图便于核对字段和效果链，各自保留原有证据。
 
@@ -139,7 +148,7 @@ nix run . -- explain \
 
 如果缺少代码或预算耗尽，默认 `explain` 保留代码观察、部分 CFG、各 outcome、全部诊断和前沿，显示 `Incomplete` / `Frontiers` 和 `SSA unavailable`，退出码为 `2`；不会输出 `Verified cross-contract SSA:`。`--verbose` 可查看同一部分分析的完整报告。初始工作预算太小、尚未捕获执行代码时，`Input code observations (not execution evidence)` 展示输入快照中的代码并明确其观察来源。输入或初始 RPC 获取失败退出 `1`，没有分析结果；开始分析后的 callee 补查失败或预算限制保留 `RpcAcquisition` 部分图，退出 `2` 并省略 SSA。参数语法错误也退出 `2`，但没有分析结果。
 
-`A` 是地址引用，完整地址在 `Addresses` 中列出；`C` 是代码目录编号，`B` 是某段代码内的基本块编号，`F` 是帧编号，`S` 是分析状态，`O` 是入口结果，`U` 是尚未展开的前沿。默认代码目录每个代码身份保留一次完整 hash；完整报告另用 `H0` 等引用 hash，并在图例中保留其完整值，原报告的前沿仍使用 `F` 编号。编号均用于连接当前输出，不是链上身份，也不会改变 JSON 字段或 DOT 身份；教程中的 A、B 是合约名字。
+`A` 是具体地址引用，完整地址在 `Addresses` 中列出；未知地址直接显示为 `symbolic(Caller)` 等名字，不用具体地址占位。`C` 是代码目录编号，`B` 是某段代码内的基本块编号，`F` 是帧编号，`S` 是分析状态，`O` 是入口结果，`U` 是尚未展开的前沿。默认代码目录每个代码身份保留一次完整 hash；完整报告另用 `H0` 等引用 hash，并在图例中保留其完整值，原报告的前沿仍使用 `F` 编号。这些引用与符号名字用于连接同一份报告；跨报告出现同名符号不证明数值相等。编号不是链上身份；教程中的 A、B 是合约名字。
 
 状态里的 `code` 表示指令来源，`state owner`（完整报告中的 `address`）表示当前执行和 storage 所属账户，`caller` 表示调用者；默认 CFG 仅在代码地址与状态账户不同时额外标出 owner。代理执行时这些身份可能不同。同一种 `Failure` 可以出现在多个结果中；各结果的账户状态必须与自己的返回方式和字节一起读，不能把不同 `O` 的 storage 拼成一次执行。默认 outcome 显示返回长度、可读字节或字值概要及有限条 storage / 余额变化，额外事实有完整视图提示；完整账户状态、日志和字节事实继续在 `--verbose` / JSON 中保留。
 
@@ -182,9 +191,10 @@ CALL 失败而 A 能继续时，成功位为 0，没有返回字节写入输出�
 | 帧里的内容 | 为什么要保存 |
 | --- | --- |
 | `stack`、`memory` | A 暂停时不能被 B 的计算覆盖 |
-| `calldata` | 从 caller 的输入 memory 复制来的调用参数 |
+| `calldata` | 入口取自 EVM 输入；子帧取自 caller memory 的指定切片 |
 | `returndata` | 最近一次子调用完成后提供的完整返回字节 |
 | `caller`、`call_value`、`is_static` | 分别决定 CALLER、CALLVALUE 和静态写入限制 |
+| `key.address_value`、`key.address` | 前者决定逻辑 ADDRESS，后者定位共享 Store 中的账户状态 |
 | 继续位置和输出区 | 决定回到 A 哪条指令、向 A memory 哪里复制数据 |
 | 调用前的状态保存点 | 子调用回滚时恢复共享状态 |
 
@@ -195,7 +205,9 @@ CALL 自动复制的长度至多是请求输出长度与实际返回长度的较
 ```bash
 nix run . -- explain \
   --world examples/worlds/returndata-copy.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x
 ```
 
 所有帧共享一份执行中的 **Store**：它记录各账户的 persistent storage、transient storage、余额，以及本次执行改变的 nonce（账户序号）、代码、创建/待删除标志和可能日志。persistent storage 可以跨交易保留；transient storage 是交易内的临时槽位。Store 不属于某一个帧，帧的 memory 则彼此独立。
@@ -214,28 +226,32 @@ A --CALL，value=11-> P2 --DELEGATECALL--> I 的代码，P2 的 storage
 ```bash
 nix run . -- analyze \
   --world examples/worlds/proxy-storage.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/proxy.json
 
 jq '[.states[] | .entry.call_stack
      | (.children[-1].state // .root.state)
      | select(.key.code_address == "0x0000000000000000000000000000000000000300")
      | {code_address: .key.code_address, address: .key.address,
+        address_value: .key.address_value,
         caller: .key.caller, call_value}] | unique' /tmp/proxy.json
 ```
 
-JSON 的执行数据在 `entry.call_stack.root.state` 和 `entry.call_stack.children[].state` 中；child 的 `continuation` 与 `state` 并列。`key.frames` 仍按外层到内层保存帧的结构身份，用于工作表索引，并不是可增删的执行调用栈。帧类型见 [`frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)，调用栈见 [`stack.rs`](../crates/evm-abstract/src/analysis/machine/stack.rs)。
+每个分析状态的执行帧在 `.states[].entry.call_stack.root.state` 和 `.states[].entry.call_stack.children[].state` 中；child 的 `continuation` 与 `state` 并列。上面的查询会显示同一个 I 代码地址、P1/P2 两个状态账户，以及 caller `{"Concrete":"0x...0101"}`。`address_value` 同样是 `{"Concrete":"0x...0201"}` 或 `{"Concrete":"0x...0202"}`。省略入口 caller 时，根帧 caller 使用 `{"Symbolic":"Caller"}`；本例的代理由 A 发起 CALL，因此实现帧继承的 caller 仍是具体 A。这些有类型的字段不再是裸地址字符串。`.key.frames` 按外层到内层保存帧的结构身份，用于工作表索引，并不是可增删的执行调用栈。帧类型见 [`frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)，调用栈见 [`stack.rs`](../crates/evm-abstract/src/analysis/machine/stack.rs)。
 
 结构身份中的 `basic_block_index` 是当前程序的基本块索引；单程序 `cfg` / `ssa` 的状态键也使用这个名称。它不是字节偏移 PC，更不是链上区块号或 `block_hash`。真实基本块的入口 PC 可从程序的块表查到；程序末尾另有合成续接位置。
 
 `explain` 的代码目录按捕获到的代码地址、代码 hash 和帧模式区分程序版本，并列出使用它的状态账户。代理 P1、P2 可以共用 I 的同一份代码字节，但两个状态账户仍分别保留；不能仅凭 `C` 或相同 hash 把它们合并。
 
-这里必须分别读两个地址：
+这里分别读代码地址、状态账户和逻辑 ADDRESS：
 
 | 字段 | 代表什么 | 执行 I 的代码时 |
 | --- | --- | --- |
 | `code_address`，文本简写为 `code` | 指令来自哪个账户 | I=`0x...0300` |
-| `address` | ADDRESS 的值，SLOAD/SSTORE 的状态账户 | P1=`0x...0201` 或 P2=`0x...0202` |
+| `address` | SLOAD/SSTORE 在 Store 中定位的状态账户 | P1=`0x...0201` 或 P2=`0x...0202` |
+| `address_value` | 有类型的逻辑 ADDRESS | 本例为具体 P1/P2；原始 bytecode 未指定 `--evm.to` 时为符号地址 |
 
 I 的代码把 slot 0 加 1，再把 ADDRESS、CALLER、CALLVALUE 写到 slot 1、2、3。各次调用成功时：
 
@@ -247,7 +263,7 @@ I 的代码把 slot 0 加 1，再把 ADDRESS、CALLER、CALLVALUE 写到 slot 1�
 
 查询 `outcomes[].store.persistent.slots` 可查看抽象最终值；由于第 2 节的失败可能，值集合还可能含初始值。表格描述的是具体成功轨迹。
 
-DELEGATECALL 继承代理帧的 caller 和 call value，所以实现代码读到的是 A 与 7/11。[`callcode-context.json`](../examples/worlds/callcode-context.json) 把它换成 `CALLCODE`：仍读 I 的代码、写代理的 storage，但 CALLER 变为代理自身，CALLVALUE 来自 CALLCODE 显式参数 3。**代码地址、状态地址、caller、value** 是四项独立事实。
+DELEGATECALL 继承代理帧的 caller 和 call value，所以实现代码读到的是 A 与 7/11。[`callcode-context.json`](../examples/worlds/callcode-context.json) 把它换成 `CALLCODE`：仍读 I 的代码、写代理的 storage，但 CALLER 变为代理自身，CALLVALUE 来自 CALLCODE 显式参数 3。CALL/STATICCALL 的子帧 caller 来自父帧 ADDRESS；ORIGIN 始终取事务环境，本课为入口 caller `0x...1000`，不会随代理或重入变为 A、P1 或 P2。**代码地址、状态地址、caller、value** 要分别判断。
 
 ## 5. 回滚：撤销子调用，保留之前的修改
 
@@ -262,7 +278,9 @@ DELEGATECALL 继承代理帧的 caller 和 call value，所以实现代码读到
 ```bash
 nix run . -- analyze \
   --world examples/worlds/revert-rollback.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/rollback.json
 
 jq '[.outcomes[] | select(.kind == "Return")
@@ -297,7 +315,9 @@ jq '[.outcomes[] | select(.kind == "Return")
 ```bash
 nix run . -- analyze \
   --world examples/worlds/reentry.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/reentry.json
 
 jq '[.outcomes[] | select(.kind == "Return")
@@ -313,20 +333,24 @@ jq '[.outcomes[] | select(.kind == "Return")
 ```bash
 nix run . -- analyze \
   --world examples/worlds/missing-code.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/missing-code.json
 
 jq '.status, [.frontiers[] | {from, pc, reason}]' /tmp/missing-code.json
 
 nix run . -- analyze \
   --world examples/worlds/reentry.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x \
   --max-call-depth 2
 ```
 
 两条分析命令都退出 `2`，表示 `Incomplete`。第一条的 `MissingCode` 指向 B；第二条在需要 `[A, B, A]` 三帧时留下 `CallDepth`。**前沿（frontier）**就是尚未完成的区域，保存停止位置和原因。它不是一次正常返回，也不是“没有副作用”。
 
-第一条使用离线 `--world`，所以补齐 B 的代码需要修改输入。切换到显式 `--rpc` 后，默认只指定入口即可：分析器遇到具体 B 地址但缺少代码时，会在同一固定区块补查 B，再从 A 的入口重新分析；B 调用 C 时也可继续发现 C。`--no-rpc-discovery` 可保留只用预选账户的对照实验。未知地址仍留下 `UnknownTarget`，未选择的 storage slot 仍未知。固定 hash、采集错误和实际命令见[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
+第一条使用离线 `--world`，所以补齐 B 的代码需要修改输入。切换到显式 `--rpc` 后，提供 `--evm.to` 即可开始分析，未指定的调用字段仍为符号输入：分析器遇到具体 B 地址但缺少代码时，会在同一固定区块补查 B，再从 A 的入口重新分析；B 调用 C 时也可继续发现 C。`--no-rpc-discovery` 可保留只用预选账户的对照实验。未知地址仍留下 `UnknownTarget`，未选择的 storage slot 仍未知。固定 hash、采集错误和实际命令见[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
 
 `--max-work` 限制全执行累计工作，`--max-states` 与 `--max-transfers` 覆盖所有账户，`--max-memory-bytes` 限制每帧追踪的内存。未知目标、缺少创建事实、未知预编译输入也可能留下相应前沿；第 10 课会继续解释创建、预编译和摘要预算。
 
@@ -355,7 +379,9 @@ world JSON 是分析的**初始事实**。下面这个最小账户会执行 `SST
 ```bash
 nix run . -- analyze \
   --world /tmp/lesson-world.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x
 ```
 
 | 输入写法 | 声明的事实 |
@@ -375,7 +401,7 @@ nix run . -- analyze \
 
 ## 9. 从这些观察回到实现
 
-分析器的工作表保存整台机器。状态键区分全部帧的代码地址/hash/模式、状态地址、caller、static、基本块、栈高和帧内跳转历史，还区分 Store 中的代码与生命周期身份。只有键相同的状态值才能 join。这样同一实现的两个代理、同一合约的内外重入帧都能保持各自身份。
+分析器的工作表保存整台机器。状态键区分全部帧的代码地址/hash/模式、状态账户、逻辑 ADDRESS、caller、static、基本块、栈高和帧内跳转历史，还区分 Store 中的代码与生命周期身份。只有键相同的状态值才能 join。这样同一实现的两个代理、同一合约的内外重入帧都能保持各自身份。
 
 这也是引擎保持结构约束的原因：活跃帧始终存在，每个子帧有返回契约，不同栈高不能逐槽合并，正在执行的代码与基本块必须属于该帧。数值 join 只扩大这些相同结构位置上的可能值。未知 slot 的写入使用弱更新，不能把可能被覆盖的旧常量继续当成确定值；组合域也没有消除这种别名边界。
 

@@ -25,6 +25,30 @@ nix run . -- explain --world examples/worlds/call-return-branch.json \
 
 输出记录本次 EVM 环境。符号输入可能使更多分支可达，或者遇到未知调用目标、内存范围或预算前沿；这些情况保留 `Incomplete`。`Converged` 仍表示在所声明输入和模型范围内完成传播，不表示所有值都精确或合约安全。
 
+上面的 RPC 命令可能退出 2 并留下部分结果；不要把它当作运行失败后改用空输入，也不要把 exit 2 改称收敛。若要比较符号输入和具体输入，先保存本次报告里的快照 hash，再让第二次启动使用 `--block-hash`，避免两次 `latest` 解析得到不同区块。[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)给出保留退出码和复用 hash 的命令。
+
+### 先用离线命令检查默认关联
+
+下面不需要节点。CALLER 跨过一个 JUMP 后与 ORIGIN 比较；默认 origin 与 caller 是同一个输入，因此结果为 1：
+
+```bash
+nix run . -- cfg --hex 336004565b321400 --format json > /tmp/evm-default.json
+jq '.environment | {to, caller, origin, value, calldata}' /tmp/evm-default.json
+jq '.states[-1].exit_stack[0].Constants' /tmp/evm-default.json
+```
+
+第一条查询包含 `to={"Symbolic":"To"}`、`caller={"Symbolic":"Caller"}`、`origin=null`、`value="Top"`，calldata 的 length 和 default 都为 `"Top"`。第二条输出 `["0x1"]`。原始字节码没有给定 to，所以逻辑 ADDRESS 未知；其内部状态键不会被当作用户提供的地址。
+
+不同 origin 可以显式提供。例如，caller 与 origin 分别为下面两个具体地址时，EQ 结果为零：
+
+```bash
+nix run . -- cfg --hex 33321400 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.origin 0x0000000000000000000000000000000000001001 \
+  --format json > /tmp/evm-distinct-origin.json
+jq '.states[0].exit_stack[0].Constants' /tmp/evm-distinct-origin.json
+```
+
 ## 2. 参数与指令
 
 所有执行环境参数使用 `--evm.*` 前缀。cfg、ssa、explain 的单段输入与 analyze/explain 的世界输入共用这些规则；disasm 只解码指令。
@@ -55,6 +79,19 @@ nix run . -- explain --world examples/worlds/call-return-branch.json \
 
 PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中的代码、memory 和最近子调用返回值计算；BALANCE、SELFBALANCE、EXTCODE 系列以及 storage 读取来自 World/Store。这样，固定代码和账户事实与调用输入保持各自的含义。
 
+### 在 JSON 中查输入范围
+
+分析结果格式的 `schema_version` 是 2，数值域策略中的 `domain_spec.schema_version` 仍是 1。输入环境所在位置随输出入口变化：
+
+| 命令 | 环境路径 |
+| --- | --- |
+| `cfg --format json` | `.environment` |
+| `ssa --format json` | `.analysis.environment` |
+| `analyze --format json` | `.entry.environment` |
+| `analyze --format json --ssa` | `.analysis.entry.environment` |
+
+世界结果中，`.states[].key.frames[].address` 是状态账户，同一 frame 的 `.address_value` 是逻辑 ADDRESS，`.caller` 是有类型的调用者；具体地址表示为 `{"Concrete":"0x..."}`，符号地址表示为 `{"Symbolic":"Caller"}` 等。text/DOT/SSA 将这些身份以可读名字展示。符号作用域的内部编号不进入 JSON，跨报告比较符号名字不能建立相等关系。
+
 ## 3. 固定快照与执行环境
 
 RPC 启动时读取 chain ID，并把所选区块解析为一个固定 hash。省略 `--block-hash` 和 `--block-number` 时，`latest` 只解析一次；后续采集、callee 发现和分析重跑沿用同一个 hash。
@@ -67,7 +104,32 @@ BLOCKHASH 对当前区块、未来区块和超过 256 块历史窗口的输入�
 
 BLOBHASH 的索引超出已知数量时返回零；数量内未观察的 hash 保持未知。`--evm.blob-count 0` 表示已知空 blob 列表。一个显式 hash 观察建立该索引存在；数量未知不会自动补成零。显式数量与 hash 索引矛盾时，输入被拒绝。
 
+下面用离线环境验证历史窗口和 blob 数量边界：
+
+```bash
+LAB_HISTORY_HASH=0x1111111111111111111111111111111111111111111111111111111111111111
+nix run . -- cfg --hex 60634060644000 --evm.number 100 \
+  --evm.block-hash "99:$LAB_HISTORY_HASH" \
+  --format json > /tmp/evm-block-hashes.json
+jq '[.states[0].exit_stack[].Constants]' /tmp/evm-block-hashes.json
+
+LAB_BLOB_HASH=0x0111111111111111111111111111111111111111111111111111111111111111
+nix run . -- cfg --hex 5f4960014900 --evm.blob-count 1 \
+  --evm.blob-hash "0:$LAB_BLOB_HASH" \
+  --format json > /tmp/evm-blob-hashes.json
+jq '[.states[0].exit_stack[].Constants]' /tmp/evm-blob-hashes.json
+```
+
+两份结果的第一个栈槽都是所提供 hash 的 U256 值，第二个槽都是零：区块 100 不属于当前 NUMBER=100 的历史窗口，blob 索引 1 则超出 count=1。JSON 的 U256 会去掉前导零，因此 blob hash 的字串外观可能短于原始 32 字节输入。
+
 `--evm.gas` 是初始剩余 gas 的上界。当前模型没有精确计量每条指令的 gas，因此后续 GAS 保守地落在零到该上界之间，不把每次读取错误地当作同一常量。模型仍保留可能失败结果；gas 上界没有提供具体成功执行的证明。
+
+```bash
+nix run . -- cfg --hex 5a00 --evm.gas 21000 --format json > /tmp/evm-gas.json
+jq '.states[0].exit_stack[0].interval | {unsigned_lo, unsigned_hi}' /tmp/evm-gas.json
+```
+
+这里的无符号区间为 `0x0` 到 `0x5208`（21000），没有断言执行 GAS 时还剩恰好 21000。
 
 ## 5. 子调用与符号身份
 

@@ -163,16 +163,23 @@ nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0 --domai
 
 默认 product 使用位等约束，只有 `BranchTrue`。constants-only 在未知 x 上丢失 AND/OR 的位信息，所以保留 `BranchTrue` 与 `BranchFalse`。精度影响的是哪些候选能被排除；没有证明条件为零或非零时，两边都要保留。
 
-再看基本块内的复制身份：
+再区分固定输入身份与基本块内的复制身份：
 
 ```bash
 nix run . -- cfg --file examples/copy-identity.hex --context-depth 0
 nix run . -- cfg --file examples/copy-identity.hex --context-depth 0 --domain constants-only
 ```
 
-这段代码读取一次 x，执行 `DUP1; XOR`，然后以结果作条件。默认 product 识别两个副本来自同一次定义，使用 `x XOR x = 0`，只保留 `BranchFalse`；constants-only 不保存复制身份，必须保留两边。两个独立读取都有 Calldata 来源，仍不足以证明相等。
+这段代码读取一次根 calldata word，再执行 `DUP1; XOR`。读取保留同一固定输入的符号身份，因此 product 和 constants-only 现在都证明 `x XOR x = 0`，只保留 `BranchFalse`。要单独观察 product 的块内复制能力，可先计算派生值 `x+1`，再复制并 XOR：
 
-这两种精度都发生在分支**之前**：先计算条件，再查询“零是否仍可能、非零是否仍可能”。当前 JUMPI 不把比较结果反向写成前驱值的路径约束，例如走 true 边并不会将原来的 x 收窄为 `x<10`。局部复制关系也会在块边界失效。更多组件的含义见[第 12 课](12-product-domains-facts.md)，跨路径如何少合并见[第 05 课](05-sensitivity.md)。
+```bash
+nix run . -- cfg --hex 5f356001018018600b57005b00 --context-depth 0
+nix run . -- cfg --hex 5f356001018018600b57005b00 --context-depth 0 --domain constants-only
+```
+
+派生运算不保留原 calldata 输入符号；product 的块内复制身份仍能证明结果为零，只留 false 边，constants-only 则保留两边。
+
+这两种精度都发生在分支**之前**：先计算条件，再查询“零是否仍可能、非零是否仍可能”。当前 JUMPI 不把比较结果反向写成前驱值的路径约束，例如走 true 边并不会将原来的 x 收窄为 `x<10`。临时复制关系会在块边界失效；同一环境中身份一致的固定输入符号可跨块保留。更多组件的含义见[第 12 课](12-product-domains-facts.md)，跨路径如何少合并见[第 05 课](05-sensitivity.md)。
 
 ## 6. 跳转目标未知时，仍须保留后续行为
 
@@ -197,7 +204,7 @@ pc=0x0a: STOP
 
 例如，输入的前 32 字节是 31 个 `00` 后接 `04`，读取的目标就是 4，具体执行能到达 pc=`0x04` 并执行写入。只说“最后一个字节是 4”还不够：前面的字节也必须为零，才能保证整个 256 位目标等于 4。
 
-单字节码视图不知道输入，目标是 Top。为了覆盖每一种合法跳转，分析器会连接到程序中**全部真正的 JUMPDEST**。本例只有一个，于是输出同时包含：
+本命令省略 `--evm.calldata`，读取的目标没有数值限制，为 Top。为了覆盖每一种合法跳转，分析器会连接到程序中**全部真正的 JUMPDEST**。本例只有一个，于是输出同时包含：
 
 ```text
 S0 → S1 Jump

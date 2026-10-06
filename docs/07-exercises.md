@@ -195,7 +195,7 @@ nix run . -- analyze --world examples/worlds/call-return-branch.json --evm.to 0x
 
 </details>
 
-## 8. 组合域：位信息与复制身份各自改善什么
+## 8. 组合域：位信息与相等关系各自改善什么
 
 第一段读取未知 x，计算 `(x AND 254) OR 1`，然后以结果作为 JUMPI 条件。先手算它可能有多少个值、是否可能为零，再运行：
 
@@ -217,9 +217,9 @@ nix run . -- cfg --file examples/independent-inputs.hex --context-depth 0
 
 第一段条件是 1 到 255 的奇数，共 128 个值，容量 1 无法列完。默认 product 仍证明最低位为 1，所以仅有 BranchTrue；constants-only 保留两边。两次都是 `Converged`。这说明不能列完常量不等于不能证明非零。
 
-第二组第一段只读取一次未知 word，然后在同一基本块内 DUP1。受信任的复制身份支持 `x XOR x=0`，因此仅有 BranchFalse。第二段读取不同偏移的两个 word；它们都来自 Calldata，但不能证明相等，所以两边都保留。
+第二组第一段读取根 calldata word，固定输入符号支持 `x XOR x=0`；product 与 constants-only 都仅保留 BranchFalse。第二段读取不同偏移的两个 word，输入身份不同，不能证明相等，所以两边都保留。要比较临时复制身份，用第 03 课的 `x+1; DUP1; XOR` 变体。
 
-验收要分别说明数值性质与复制关系。复制身份在基本块、汇合、调用和摘要边界失效；这个实验没有证明跨块相等、数组别名或完整路径相关性。提高 `--context-depth` 只改变分组，不能生成这些缺失的规则。事实交换细节见[第 12 课](12-product-domains-facts.md)。
+验收要分别说明数值性质、固定输入符号和临时复制关系。临时复制身份在基本块、汇合、调用和摘要边界失效；固定输入身份一致时可跨块保留，但不能据此推出任意数组别名或完整路径相关性。提高 `--context-depth` 只改变分组，不能生成这些缺失的规则。事实交换细节见[第 12 课](12-product-domains-facts.md)。
 
 </details>
 
@@ -253,7 +253,7 @@ nix run . -- analyze --world /tmp/storage-experiment.json --evm.to 0x00000000000
 
 同时会保留模型允许的 Failure outcome，回滚后 slot 0=4。把它与成功结果分开读，不能拿一个失败结果否定成功路径的写入。
 
-省略 CLI 的 `--evm.calldata` 时，长度和内容均为符号输入。显式 `--evm.calldata 0x` 提供已知空字节，其他 hex 提供具体字节。未知输入可能扩大写入目标范围；用具体 calldata 与默认符号输入对照，观察强更新、弱更新和未完成前沿的变化。Rust API 中，`Entry::new(to)` 使用符号默认值，环境中的 calldata 也可设置为 `ByteArray::unknown()`。
+省略 CLI 的 `--evm.calldata` 时，长度和内容均为符号输入。显式 `--evm.calldata 0x` 提供已知空字节，其他 hex 提供具体字节。前一个程序使用常量 slot 0，后一个从 storage slot 1 取写入目标；两者都不读取 calldata，因此只改变 calldata 不会改变这个实验。若将代码改为 `0x60005460075f355560005400`，写入目标才来自 `CALLDATALOAD(0)`：保留 `--evm.calldata 0x` 时目标为零，最终 slot 0=7；省略这项时目标未知，slot 0 保留 `{4,7}`。Rust API 中，`Entry::new(to)` 使用符号默认值，环境中的 calldata 也可设置为 `ByteArray::unknown()`。
 
 进一步运行 `proxy-storage.json` 和 `revert-rollback.json`，分别核对 DELEGATECALL 的状态账户、子帧回滚后的 slot。验收应包括来源假设、`storage_unknown`、写入前后值与正确回滚，而不只是最终一个数。
 

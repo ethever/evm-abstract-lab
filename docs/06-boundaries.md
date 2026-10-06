@@ -12,6 +12,8 @@
 | 数值 Top / `⊤` | 某个值在数值上用“所有 U256 值都有可能”表示 | 该值不够精确；分析仍可能完成；来源说明可以另有信息 |
 | `Incomplete` | 有区域因资源、缺少事实或模型边界而未展开 | 已有图只是部分结果，不能从缺少节点推出不可达 |
 
+完成状态还限定于本次输入：省略调用环境参数时，入口 caller、value、calldata 的长度与内容为符号输入；显式提供 `--evm.value 0` 或 `--evm.calldata 0x` 则分别限定为零金额和空输入。后一份结果即使 `Converged`，也不因此覆盖其他 value 或 calldata。未提供的 storage 可以继续用未知值表示，未知值本身不必产生前沿。
+
 这三个信号不互相替代。默认 `product` 还需区分**常量集合组件为 Top**与**整个数值为 Top**：候选太多不能列完时，位、范围或同余组件可能仍有约束。下面先用 `constants-only` 重现有限集合实验，再观察组合域的局部精度上限。
 
 ### 实验 A：精度下降，但分析完成
@@ -44,7 +46,7 @@ frontier Transfers: from=None target=StateKey { basic_block_index: 1, stack_heig
 
 **frontier（前沿）**记录分析停在什么位置、为什么不能继续。这里入口块执行了一次，循环头仍有待处理输入。其暂时显示的 `stack out []` 不是“循环头必然清空栈”的结论；它尚未执行完传播。
 
-CLI 对 `Incomplete` 返回退出码 2，构建 SSA 会拒绝未完成图。这个退出码表示分析未完成，与 EVM 中 REVERT 或异常终止的含义不同。
+CLI 对 `Incomplete` 返回退出码 2，构建 SSA 会拒绝未完成图。需要继续检查输出时，应先保存退出码，再读取报告；退出 1 表示输入或初始采集错误，不能把空输出当作有效分析。退出 2 表示分析未完成，与 EVM 中 REVERT 或异常终止的含义不同。
 
 ### 实验 C：局部交换停下，整体传播仍然完成
 
@@ -64,6 +66,21 @@ nix run . -- analyze --world examples/worlds/call-return-branch.json --evm.to 0x
 ```
 
 这次为 `Incomplete`，退出码 2，留下 `Work` 前沿。工作计费包含域运算、事实交换、状态复制以及子调用和摘要处理，所有帧共享同一账本。提高 `--max-facts` 不能补回已耗尽的工作预算。这个离线输入缺少的事实仍由 world 提供；显式 RPC 输入可按需补查具体 callee，但也受采集与累计执行预算限制。
+
+### 实验 D：同样收敛，覆盖的调用输入不同
+
+这段代码根据 calldata 是否为空选择分支：
+
+```bash
+nix run . -- cfg --hex 3615600657005b00 --format json > /tmp/boundary-symbolic.json
+nix run . -- cfg --hex 3615600657005b00 --evm.calldata 0x --format json > /tmp/boundary-empty.json
+jq '{status, schema_version, calldata: .environment.calldata.length,
+     branches: [.edges[].kind]}' /tmp/boundary-symbolic.json /tmp/boundary-empty.json
+```
+
+两次都退出 0、得到 `Converged`。符号长度保留 `BranchTrue` 和 `BranchFalse`；明确空 calldata 只保留 `BranchTrue`。提高 `--context-depth` 或 `--max-facts` 不会撤销用户给出的空输入约束，也不会自动把一次具体调用扩大成任意调用。
+
+JSON 的分析 `schema_version` 为 2；文本里的 `domain ... schema=1` 对应数值策略 `domain_spec.schema_version`，两者不是同一个版本字段。单程序 `cfg --format json` 在 `.environment` 记录输入，`ssa --format json` 在 `.analysis.environment` 记录输入。world/RPC 的 `analyze --format json` 在 `.entry.environment` 记录输入，追加 `--ssa` 后则在 `.analysis.entry.environment`。读取环境和帧的具体路径见[第 10 课](10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
 
 ## 2. 诊断、程序失败和分析前沿分别看
 
@@ -85,6 +102,8 @@ nix run . -- analyze --world examples/worlds/missing-code.json --evm.to 0x000000
 
 `--world` 始终按离线事实分析。显式 `--rpc` 则默认补查这种已确定地址的 callee，再从入口重新分析。目标本身无法确定时仍保留 `UnknownTarget`；代码查询失败时保留带错误来源的 `RpcAcquisition`。这三种前沿分别表示离线事实缺失、目标无法穷举、已知账户的采集未完成，不能统称为调用失败。RPC 的初始采集错误退出 `1`；分析已开始后的补查错误保留 `Incomplete` 结果并退出 `2`。
 
+根状态初始化成功后，分析器还加入入口立即失败、Store 不变的 `Failure` 可能，因为模型没有精确跟踪剩余 gas。这不是已证实发生的链上失败，也不是分析前沿；`Failure` 与 `Return` 同时出现仍可 `Converged`。实现见 [`analysis/engine.rs`](../crates/evm-abstract/src/analysis/engine.rs)。
+
 **已知空代码**可以作为无代码执行完成；**没有提供代码事实**则需要留下前沿。把缺少事实猜成空代码，会错误删掉可能的副作用。
 
 ## 3. 三种结论需要三种证据
@@ -99,7 +118,7 @@ nix run . -- analyze --world examples/worlds/missing-code.json --evm.to 0x000000
 
 这能发现“真实执行被漏掉”的反例，但通过有限样本不能证明所有 calldata、所有 256 bit 参数或全部合约都正确。反过来，抽象图中的一条路径也可能来自信息合并，没有任何实际输入能完整走通它。
 
-尤其要保留 **gas 边界**：本模型不精确计算 gas、EIP-150 转发额度、out-of-gas 或经济成本。一个抽象成功调用不证明某笔实际交易有足够 gas；图中也可能保留具体成功样本没有走过的调用失败分支。累计工作使用逻辑 credit 计费，它既不是 EVM gas，也不是 CPU 耗时测量。
+尤其要保留 **gas 边界**：`--evm.gas N` 给出初始剩余 gas 的上界，GAS 保守落在 `0..N`，不会在每条指令都返回常量 N。模型仍不精确计算指令扣费、EIP-150 转发额度、out-of-gas 或经济成本。一个抽象成功调用不证明某笔实际交易有足够 gas；图中也可能保留具体成功样本没有走过的调用失败分支。累计工作使用逻辑 credit 计费，它既不是 EVM gas，也不是 CPU 耗时测量。
 
 ## 4. 固定世界是起点，执行状态还会变化
 
@@ -137,7 +156,9 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 世界 JSON 的 `storage_unknown` 默认是 true：未列出的初始 slot 保持未知。只有显式设为 false，才把未列出的 slot 视为零。完整的合成示例与只采集少量 slot 的真实快照有不同假设，不能混用。
 
-入口环境默认采用符号 caller、value 和 calldata，origin 默认与 caller 共享同一身份。`--evm.to` 固定 root frame 的 ADDRESS 与状态账户；具体环境值由 `--evm.*` 提供，完整规则见[第 13 课](13-evm-environment.md)。入口 `value` 指定这一帧的 CALLVALUE。输入余额和 nonce 已是帧开始时的状态；模型不会另外执行外层交易转账、手续费、发送方交易 nonce 增加或授权列表。CREATE 引起的合约 nonce 变化则属于本次执行的 Store。
+入口环境默认采用符号 caller、value 和 calldata，origin 默认与 caller 共享同一身份；`--evm.origin` 可以单独覆盖它。world/RPC 必须用 `--evm.to` 选择 root frame，它固定根帧的逻辑 ADDRESS 与状态账户。单字节码输入可省略 to，此时 ADDRESS 也为符号地址，内部状态地址不能当作已知链上地址。具体环境值由 `--evm.*` 提供，完整规则见[第 13 课](13-evm-environment.md)。
+
+入口 `value` 指定这一帧的 CALLVALUE；省略值保持未知，明确传入 0 才是零。未提供的 calldata 保留未知长度和内容，明确传入 `0x` 才为空输入。输入余额和 nonce 已是帧开始时的状态；模型不会另外执行外层交易转账、手续费、发送方交易 nonce 增加或授权列表。CREATE 引起的合约 nonce 变化则属于本次执行的 Store。
 
 ## 5. 当前模型的能力与边界
 
@@ -149,10 +170,10 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | --- | --- | --- |
 | 输入事实 | 多账户 JSON，或自动读取 chain ID 并固定区块 hash 的 RPC 采集；默认按需增加具体 callee 事实并从入口重跑，保存身份、来源与指纹 | 离线输入不联网；未知目标、未选 slot 和无法判定的账户存在性保持未知；完全信任 RPC 提供者，不请求证明；固定后不回退到移动标签；不支持 EOF 代码格式 |
 | 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；默认组合有限常量、KnownBits、Interval、Congruence 和 Provenance；按 fork 启用 CLZ | 常量集合仍有容量；事实交换有局部上限；没有完整变量关系和路径约束 |
-| 局部关系 | 同一基本块内受信任的复制身份支持 `x XOR x=0` 等规则；数值约束参与零/非零判断 | 来源标签或数值摘要相同不证明相等；临时复制身份在边界失效，稳定的不可变 EVM 输入符号可跨块保留，并纳入摘要前提；不会自动沿 `x==5` 的 true 边收窄 x |
+| 复制与输入身份 | 基本块内的复制身份支持 `x XOR x=0` 等规则；固定输入符号在同一环境内可跨块保持相等，默认 caller/origin 是同一变量 | 临时复制身份在控制流、调用和摘要边界失效；独立环境的同名符号不能据此认作相等；来源标签或数值摘要相同也不证明相等；没有完整表达式关系或分支路径约束 |
 | 内存与数据 | 每帧独立抽象字节数组，load/store/copy、calldata、returndata、返回区传播 | 未知偏移或字节会降低精度；无法追踪的范围留下内存前沿 |
 | JUMP/JUMPI | 有限目标逐个验证；Top 覆盖真实 JUMPDEST；依据条件可能零/非零保留边 | 可能有伪边；有界跳转历史不等于内部函数恢复 |
-| 环境、hash、gas | 传播已知帧环境和代码信息；其余保守抽象 | gas、EIP-150、out-of-gas 与成本不精确；`Converged` 仍受此限制 |
+| 环境、hash、gas | `--evm.*` 描述根调用、交易与区块输入；CALLER、ADDRESS、value 按子调用规则推导；BLOCKHASH/BLOBHASH 检查有效范围，未观察的有效项仍未知；GAS 传播上界 | RPC 固定的是账户状态快照；`--evm.number`、`--evm.chain-id` 等执行环境覆盖不会改变快照身份；环境符号不等于完整符号执行；gas、EIP-150、out-of-gas 与成本不精确 |
 
 ### 跨账户执行与状态效果
 
@@ -171,10 +192,10 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 | 部分 | 已建模的内容 | 阅读结果时保留的限制 |
 | --- | --- | --- |
-| CREATE/CREATE2 | 有限 nonce、endowment、salt，可表示 initcode 与明确碰撞事实；执行 initcode 后验证、安装 runtime | 不知道 nonce、碰撞状态、代码或 salt 时保留有类型的 `Creation` 前沿；失败及祖先 REVERT 恢复检查点 |
-| SELFDESTRUCT | 支持的 fork 均使用 EIP-6780：转移余额，同事务创建账户在最外层成功完成时删除 | 事务执行期间代码仍可读/调用；原有账户保留代码/storage；未知受益人保留边界 |
+| CREATE/CREATE2 | 有限 nonce、endowment、salt，可表示 initcode 与明确碰撞事实；执行 initcode 后验证、安装 runtime | 不知道创建者逻辑地址、nonce、碰撞状态、代码或 salt 时保留有类型的 `Creation` 前沿；失败及祖先 REVERT 恢复检查点 |
+| SELFDESTRUCT | 支持的 fork 均使用 EIP-6780：转移余额，同事务创建账户在最外层成功完成时删除 | 事务执行期间代码仍可读/调用；原有账户保留代码/storage；未知受益人或无法判断逻辑地址别名时保留边界 |
 | 预编译 | 按 fork 选择固定的 `revm-precompile` 原生实现；传播有限具体输入的返回/失败；预留工作量 | 输入或长度不能表示时为 `PrecompileInput`，资源不足为 `Work`；不声称精确 gas |
-| 完整调用摘要 | 只复用前置条件完全匹配、已完成的 callee 图与全部输出关系 | 固定世界、代码 hash、完整帧/Store、ORIGIN、完整域策略（DomainSpec）和深度策略等都需一致；状态、代码、生命周期或 profile、交换上限变化都会影响匹配；未完成关系不发布 |
+| 完整调用摘要 | 只复用前置条件完全匹配、已完成的 callee 图与全部输出关系 | 固定世界、代码 hash、完整帧/Store、完整不可变 EVM 环境（含 origin 与符号作用域）、完整域策略（DomainSpec）和深度策略等都需一致；状态、代码、生命周期或 profile、交换上限变化都会影响匹配；未完成关系不发布 |
 | 工作与资源预算 | 所有账户及 RPC 重跑轮次共用状态分配数、transfer 次数与累计工作量；另有限采集账户/请求数、帧深度和内存预算 | 重跑保留已耗费用，最终图状态数可小于累计分配数；超限留下有类型前沿，`Incomplete`、退出 2；跨合约 SSA 拒绝未完成图；与局部交换精度上限分别判断 |
 
 组合域改善了某些值的表示，不会单独解决内存或 storage 的未知别名。强/弱更新仍要根据是否能确定写入目标来选择；“两个值来源于 Storage”也不能作为它们读写同一 slot 的证明。循环中的区间还会使用 widening（扩大不断移动的界限）来控制传播成本，所以完成固定点也不表示区间达到最精确结果。
@@ -189,6 +210,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | 单账户图和栈 SSA | 解码、跳转、栈故障、φ、支配和使用；实际轨迹的块入口、边、出栈与 SSA 值 | [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs)、[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) |
 | 跨合约轨迹与效果 | 三个 fork 的调用返回、共享实现、CALLCODE、copy、回滚、static、日志、重入；实际访问入口与子帧 | [`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) |
 | 摘要与创建 | 摘要开/关的联合结果、图与 SSA；initcode/runtime、nonce、碰撞、回滚、代码限制、EIP-6780 | [`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)、[`creation.rs`](../crates/evm-abstract/tests/creation.rs) |
+| 环境输入与身份 | 默认未知与显式零/空、caller/origin 跨块与 join 的别名、独立环境作用域、子调用规则、gas 上界、hash 表范围、完整 JSON 输入记录 | [`environment.rs`](../crates/evm-abstract/tests/environment.rs)、[`cli/environment.rs`](../crates/evm-abstract-cli/tests/cli/environment.rs) |
 | 原生调用与事实采集 | 各 fork 预编译返回/失败、输入/工作前沿；localhost HTTP 的首次区块解析、固定 selector、缺失结果、超时与无 moving-tag 回退 | [`precompiles.rs`](../crates/evm-abstract/tests/precompiles.rs)、[`rpc/tests.rs`](../crates/evm-abstract/src/world/rpc/tests.rs) |
 | IR 和实际 CLI | 跨合约 SSA 与完整机器图一致，损坏的转移/效果流被拒绝；JSON/文本/DOT、错误/退出码、安装二进制样例 | [`world/verify.rs`](../crates/evm-abstract/src/ssa/world/verify.rs)、[`cli.rs`](../crates/evm-abstract-cli/tests/cli.rs)、[`flake.nix`](../flake.nix) |
 

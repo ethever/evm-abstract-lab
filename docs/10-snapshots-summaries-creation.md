@@ -2,9 +2,9 @@
 
 读完[第 9 课](09-cross-contract.md)，你已经知道调用会产生返回字节和共享状态变化。本课逐个回答四个问题：相同调用能不能复用分析结果？新合约的代码从哪里来？SELFDESTRUCT 何时删除账户？没有普通字节码的预编译怎样执行？最后把这些实验连接到固定链上快照。
 
-前四个实验均使用离线合成事实，入口为 A=`0x...0101`，默认预算可完成。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
+前四个实验均使用离线合成事实，根帧地址为 A=`0x...0101`，命令明确给出 caller、零 value 和空 calldata，默认预算可完成。省略这些参数会得到符号输入，不等同于这组具体约束。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
-直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询原有字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 2 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 所有反汇编与 SSA 基本块指令列表共用顶格的 `B# @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 B 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 B 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用赋值式指令正文；世界视图保留 C、F、state owner、context，以及按 T 标记并带 F/slot 的 φ。完整视图另保留所有帧元数据、原始指令字段和效果链，字节码行与效果行也使用这套布局。编号与证据的读法见[第 04 课](04-ssa.md)和[第 09 课](09-cross-contract.md#默认文本怎样读)。
 
@@ -84,20 +84,39 @@ cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 
 例如，B 第一次读取 slot 0=7、第二次读取 slot 0=9，虽然地址、代码和空 calldata 都相同，旧结果也不能直接拿来用。caller、value、静态模式或交易/区块环境改变时也一样；这些事实可能影响执行。当前实现比较完整抽象输入，而不是推测“B 大概只读了 slot 0”后忽略其他状态。
 
-本课的**代码 hash**是代码字节的 Keccak 摘要；**初始事实指纹（fingerprint）**绑定整组初始事实。快照身份绑定其声明的来源，具体格式见第 5 节。**ORIGIN（最外层交易发起者）**在本模型中取入口 `caller`，在嵌套调用中保持不变；帧的 CALLER 则随调用方式变化。
+本课的**代码 hash**是代码字节的 Keccak 摘要；**初始事实指纹（fingerprint）**绑定整组初始事实。快照身份绑定其声明的来源，具体格式见第 5 节。**ORIGIN（最外层交易发起者）**在省略 `--evm.origin` 时与根帧 caller 共享同一输入，可由该参数单独覆盖；选定后在嵌套调用中保持不变。帧的 CALLER 则按 CALL 系列规则推导，不会因为根 caller 为符号输入就把所有子帧 caller 都设成新的未知值。
 
 | 必须相等的前提 | 防止什么错误 |
 | --- | --- |
 | fork、快照身份、初始事实指纹、当前代码 hash | 把不同规则、不同区块或改变后的代码混用 |
-| 完整 EVM 环境、callee 帧，包括逻辑 ADDRESS、caller/static/value/calldata 和回滚保存点 | 同一代码在不同交易、区块或调用环境下复用错误结果 |
-| ORIGIN 与完整 Store | 忽略 storage、transient、余额、日志、nonce、代码或生命周期变化 |
+| 完整不可变 EVM 环境，包括根调用输入、origin、交易/区块标量、gas 上界、hash 表和符号作用域 | 省略会影响执行的输入，或把独立环境的同名符号当成同一个变量 |
+| callee 帧的逻辑 ADDRESS、caller/static/value/calldata、保存点与完整 Store | 忽略 storage、transient、余额、日志、nonce、代码或生命周期变化 |
 | 剩余调用深度和冻结的分析策略 | 复用时得到额外深度，或改变数值域、facts 交换、内存、跳转历史及费用策略 |
 
 A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入，所以本例的输出长度 0/32 不妨碍命中。callee 的其他帧事实和回滚保存点仍需相等。登记候选后，输入若经 join 扩大，就不能按旧前提发表证书；需要以更新后的输入重新登记、完成分析并认证。callee 未完成或预算中断时也不能发表完整证书。[第 12 课](12-product-domains-facts.md)会解释为什么同一字节码用组合域和 constants-only 得到的精度可能不同；摘要输入也绑定这份完整策略，不能仅按常量容量判定兼容。
 
-摘要中的入口帧是相对于子图而言的：B 在 A→B 的全图里是子帧，在单独保存的 B 子图里成为入口。保存时保留 B 的执行数据与回滚点，外层返回契约不属于摘要输入与子图；复用时使用当前 caller 的继续信息，再把 B 接回调用栈。更深的子帧仍需保留各自的继续信息。这样既能复用 B 的行为，又能把这次结果复制到 A 新指定的输出区。状态归一化会清除局部复制身份；冻结来源策略不意味着把运行时身份保存进摘要。
+摘要中的入口帧是相对于子图而言的：B 在 A→B 的全图里是子帧，在单独保存的 B 子图里成为入口。保存时保留 B 的执行数据与回滚点，外层返回契约不属于摘要输入与子图；复用时使用当前 caller 的继续信息，再把 B 接回调用栈。更深的子帧仍需保留各自的继续信息。这样既能复用 B 的行为，又能把这次结果复制到 A 新指定的输出区。状态归一化会清除临时复制身份；不可变环境输入的稳定身份则保留，并随完整环境参与摘要限定。独立环境各有自己的符号作用域；同一环境的克隆与 RPC 重跑保留原作用域。JSON 中同名的 `Caller` 只是报告内的标签，不能跨独立报告据此证明相等。callee 保存成相对入口时，也不会把其 memory 派生的 calldata 当成原根调用的 calldata。
 
 摘要的查找比较、快照 hashing、认证、复制和图导入都消耗同一份 `--max-work`；导入状态也计入全局状态预算。命中不会重置预算。`SummaryWork` 前沿表示这些操作未完成，状态为 `Incomplete`，SSA 验证器不会接受未闭合图。实现与回归见 [`summary.rs`](../crates/evm-abstract/src/analysis/summary.rs)、[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)。
+
+### 当前 JSON 怎样记录输入与帧
+
+```bash
+jq '{schema_version,
+     root: {state_owner: .entry.address, to: .entry.environment.to,
+            caller: .entry.environment.caller, origin: .entry.environment.origin},
+     root_frame: (.states[0].key.frames[0] | {address, address_value, caller}),
+     summary: (.summaries[0].input
+               | {environment, frame: .frame.state.key})}' /tmp/summary-on.json
+```
+
+分析 `schema_version` 为 2。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
+
+本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
+
+单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。数值策略版本仍在 `domain_spec.schema_version`，当前为 1；它与分析 JSON 的 schema 2 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
+
+环境类型与输入作用域见 [`world/environment.rs`](../crates/evm-abstract/src/world/environment.rs)，JSON 边界见 [`analysis.rs`](../crates/evm-abstract/src/analysis.rs)，帧结构见 [`machine/frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)。
 
 ## 2. CREATE：先执行构造代码，再安装运行时代码
 
@@ -132,7 +151,7 @@ nix run . -- analyze \
 
 jq '[.analysis.states[] | .key.frames[-1]
      | select(.address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7")
-     | {address, mode, code_hash}] | unique' /tmp/create.json
+     | {address, address_value, caller, mode, code_hash}] | unique' /tmp/create.json
 
 jq '[.analysis.outcomes[].store.account_observations[]
      | select(.address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7")
@@ -179,6 +198,7 @@ CREATE2 用创建者地址、**salt（显式给定的 256 位值）**、initcode
 
 | 缺少或无法表示的事实 | 对应 `Creation` 前沿 |
 | --- | --- |
+| 创建者逻辑地址未知（单字节码未提供 to） | `UnknownCreator` |
 | 创建者 nonce | `UnknownNonce` / `NonceOverflow` |
 | CREATE2 salt | `UnknownSalt` |
 | initcode 或其返回的 runtime 字节 | `UnknownInitCode` / `UnknownRuntimeCode` |
@@ -307,7 +327,7 @@ jq '.world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
 | 每账户 `code_hash` | 原始代码字节 | 不绑定 storage、余额、nonce |
 | `fingerprint` | fork、identity、完整初始账户事实 | 一致性标识不是链状态的密码学证明 |
 
-world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block_hash` 始终是完整 32 字节 hash。RPC CLI 自动读取 chain ID；可用 `--block-hash` 指定完整 hash，或用互斥的 `--block-number` 指定区块号。两者都省略时，启动时读取一次 `latest`。区块号与 `latest` 都先解析为 hash，后续状态查询固定使用这个 hash。`--block-number` 接受十进制或 `0x` / `0X` 十六进制，范围为 `0` 到 `2^64−1`；world JSON 的身份格式不变。fork 仍单独选择，身份不会替你选择执行规则。
+world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block_hash` 始终是完整 32 字节 hash。RPC CLI 自动读取 chain ID；可用 `--block-hash` 指定完整 hash，或用互斥的 `--block-number` 指定区块号。两者都省略时，启动时读取一次 `latest`。区块号与 `latest` 都先解析为 hash，后续状态查询固定使用这个 hash；发现 callee、链头前进或多轮重跑都不会重新选择区块。`--block-number` 接受十进制或 `0x` / `0X` 十六进制，范围为 `0` 到 `2^64−1`；world JSON 的身份格式不变。fork 仍单独选择，身份不会替你选择执行规则。`--block-number` / `--block-hash` 选择账户状态快照；`--evm.number` 只覆盖 NUMBER，`--evm.chain-id` 只覆盖 CHAINID，不改变 `.world.identity` 中实际采集的链和区块。省略 `--evm.chain-id` 时，链上 world/RPC 的 CHAINID 取快照身份中的 chain ID；没有链身份的离线输入则保持未知。省略其他区块环境字段时，它们保持符号输入；不会仅因固定了账户状态就自动补齐全部区块头和交易事实。
 
 链上 JSON 提供代码时必须同时提供匹配的 `code_hash`。runtime 按原始代码字节计算 Keccak；EIP-7702 委托标记按原始 23 字节计算；已确认 absent 的账户 hash 为零。输入可附带预期 fingerprint；解析器拒绝指纹失配、重复地址/slot、冲突代码 hash 和不合法的 absence 事实。
 
@@ -320,23 +340,33 @@ world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block
 **第一步，只指定入口，观察发现的账户。** 本次启动读取一次 `latest` 并固定其 hash，默认 RPC 模式会在该区块补查分析中发现的具体 callee：
 
 ```bash
+LAB_RPC_STATUS=0
 nix run . -- analyze \
   --rpc "$LAB_RPC_URL" \
   --fork "$LAB_FORK" \
   --evm.to "$LAB_ENTRY" \
-  --format json > /tmp/rpc-discovery.json
+  --format json > /tmp/rpc-discovery.json || LAB_RPC_STATUS=$?
+printf 'analysis exit=%s\n' "$LAB_RPC_STATUS"
 
-jq '.status, .world.identity, .rpc_acquisition,
-    [.frontiers[] | {from, pc, reason}]' /tmp/rpc-discovery.json
-
-LAB_BLOCK_HASH=$(jq -r '.world.identity.block_hash' /tmp/rpc-discovery.json)
+case "$LAB_RPC_STATUS" in
+  0|2)
+    jq '.status, .world.identity, .rpc_acquisition,
+        [.frontiers[] | {from, pc, reason}]' /tmp/rpc-discovery.json
+    LAB_BLOCK_HASH=$(jq -er '.world.identity
+      | select(.kind == "chain") | .block_hash' /tmp/rpc-discovery.json)
+    ;;
+  *)
+    unset LAB_BLOCK_HASH
+    printf '初始分析失败；检查 stderr，先不要运行后续对照。\n' >&2
+    ;;
+esac
 ```
 
-结果中的 `world.identity` 保存自动读取的 chain ID 与本次固定的 hash。后面的对照实验使用刚保存的 `LAB_BLOCK_HASH`，使两次分析读取同一个区块。若已选定区块，可在第一条命令里直接加 `--block-hash "$LAB_BLOCK_HASH"` 或 `--block-number 26000000`；这两个参数不能一起传入。
+先核对退出码：0 表示 `Converged`，2 表示已有 `Incomplete` 报告，两者都可以读取 JSON；其他退出码不能按有效报告继续。只有成功读出链上 hash 后，才执行后面的对照。结果中的 `world.identity` 保存自动读取的 chain ID 与本次固定的 hash。后面的对照实验使用刚保存的 `LAB_BLOCK_HASH`，使两次分析读取同一个区块。若已选定区块，可在第一条命令里直接加 `--block-hash "$LAB_BLOCK_HASH"` 或 `--block-number 26000000`；这两个参数不能一起传入。
 
 入口自动加载。CALL、STATICCALL、DELEGATECALL、CALLCODE 能确定具体目标时，缺少该账户的代码事实就会触发补查；入口或 callee 的 EIP-7702 委托代码也可发现对应实现账户。解析仍只跟随一层委托。预编译由 fork 规则处理，已知代码、已知空代码和确认 absent 的账户都可以复用已有事实。
 
-只加载入口不保证 `Converged`。例如代理从未观察的 slot 读取实现地址，目标可能仍为 Top，就会留下 `UnknownTarget`。RPC 发现以已确定的地址为起点，不能枚举整个地址空间。动态获取一个账户会观察其 code、balance 和 nonce；该账户未选择的初始 slot 保持未知。
+只加载入口不保证 `Converged`；符号 calldata/value 可能使更多路径可达，未知范围、调用目标或累计资源都可能留下前沿。例如代理从未观察的 slot 读取实现地址，目标可能仍为 Top，就会留下 `UnknownTarget`。RPC 发现以已确定的地址为起点，不能枚举整个地址空间。动态获取一个账户会观察其 code、balance 和 nonce；该账户未选择的初始 slot 保持未知。
 
 **第二步，跟着 A→B→C 理解补查后的重跑。** 假设 A、B 代码中的调用地址具体，预算足够，并且 RPC 能返回全部所需账户：
 
@@ -365,16 +395,22 @@ LAB_BLOCK_HASH=$(jq -r '.world.identity.block_hash' /tmp/rpc-discovery.json)
 
 最终 `world` 保存来自受信任提供者的初始观察，`states` / `edges` / `outcomes` 属于最后一轮分析；累计工作和请求数则覆盖全部轮次。新账户事实增加后 fingerprint 随之改变，旧一轮的摘要不会沿用到新一轮。
 
-**第三步，关闭发现，做初始事实的对照。** 在同一个入口、区块与 calldata 下加 `--no-rpc-discovery`：
+**第三步，关闭发现，做初始事实的对照。** 保留同一个目标地址、固定区块与 `--evm.*` 输入约束，再加 `--no-rpc-discovery`；若第一步省略 calldata，两次都分析未知输入集合，而不是某次已指定的 calldata：
 
 ```bash
+: "${LAB_BLOCK_HASH:?先完成第一步并保存固定的链上 hash}"
+LAB_SELECTED_STATUS=0
 nix run . -- analyze \
   --rpc "$LAB_RPC_URL" \
   --block-hash "$LAB_BLOCK_HASH" --fork "$LAB_FORK" \
   --evm.to "$LAB_ENTRY" --no-rpc-discovery \
-  --format json > /tmp/rpc-selected.json
+  --format json > /tmp/rpc-selected.json || LAB_SELECTED_STATUS=$?
+printf 'analysis exit=%s\n' "$LAB_SELECTED_STATUS"
 
-jq '.status, [.frontiers[] | {from, pc, reason}]' /tmp/rpc-selected.json
+case "$LAB_SELECTED_STATUS" in
+  0|2) jq '.status, [.frontiers[] | {from, pc, reason}]' /tmp/rpc-selected.json ;;
+  *) printf '初始分析失败；检查 stderr，不能按有效 JSON 继续。\n' >&2 ;;
+esac
 ```
 
 如果入口调用了尚未选择的普通代码账户，这次会留下 `MissingCode`、退出 `2`，与[第 9 课的离线缺代码实验](09-cross-contract.md#7-输入缺失和预算停止也要读出来)有相同边界。若入口没有这类调用，也可能直接完成；不能预设任意入口都缺代码。
@@ -401,16 +437,15 @@ loader 在启动解析后始终请求固定 hash，失败后不改查区块号�
 
 完整 `analyze` 文本、`explain --verbose`、JSON 和 DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。完整文本中，`Snapshot` 查输入身份，`Outcomes` 查每个最终结果的账户和字节，`Call summaries` 查保存与复用；默认 `explain` 按[第 9 课的分区](09-cross-contract.md#默认文本怎样读)阅读代码、CFG、值流和结果概要。JSON 还保留初始 world、完整域策略、摘要输入/输出、执行中的 Store 和 RPC 累计采集记录；DOT 的蓝色证书节点标出认证来源和复用位置。实现入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc/session.rs`](../crates/evm-abstract/src/world/rpc/session.rs)、[`analysis/rpc.rs`](../crates/evm-abstract/src/analysis/rpc.rs)；本地 HTTP 的实际 CLI 对照在 [`tests/cli/rpc.rs`](../crates/evm-abstract-cli/tests/cli/rpc.rs)。
 
-
 直接阅读同一固定 RPC 分析，可以把上面的 `analyze` 换成 `explain`，并去掉 `--format json` / `--ssa`：
 
 ```bash
 nix run . -- explain \
   --rpc http://127.0.0.1:8545 \
-  --evm.to 0x填入完整入口地址
+  --evm.to "$LAB_ENTRY"
 ```
 
-这条最小命令在启动时固定一次 `latest`。重现已有分析时，加 `--block-hash "$LAB_BLOCK_HASH"`；按区块高度选择时，用 `--block-number`。两种选择互斥。
+这条最小命令在启动时固定一次 `latest`，并使用符号调用输入；不预设其结果为 `Converged`。明确空 calldata、零 CALLVALUE 等约束时，分别添加 `--evm.calldata 0x`、`--evm.value 0`，不能靠省略参数表达这些值。重现已有分析时，加 `--block-hash "$LAB_BLOCK_HASH"`；按区块高度选择时，用 `--block-number`。两种选择互斥。
 
 默认 RPC `explain` 同样使用教学视图；在上面的命令末尾追加 `--verbose` 可查看完整 RPC 采集记录、快照与机器报告及原始 SSA。`explain` 复用 `analyze` 的 RPC 获取与按需发现策略，包括 `--no-rpc-discovery`、`--max-rpc-accounts` 和 `--max-rpc-requests`。这些开关及 `--account` / `--slot` / `--block-hash` / `--block-number` 仅用于 RPC；离线世界已经携带 fork，不能另传 `--fork`。世界和 RPC 入口要求 `--evm.to`，四种来源 `--world`、`--rpc`、`--hex`、`--file` 互斥。
 
