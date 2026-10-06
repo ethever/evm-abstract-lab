@@ -141,7 +141,7 @@ k=2：只留 [14, 21]
 最后一项可以直接观察：
 
 ```bash
-nix run . -- cfg --file examples/stack-heights.hex
+nix run . -- cfg --file examples/stack-heights.hex --context-depth 0
 ```
 
 在 `pc=0x0c`，一个状态 `stack in [{0x7}]`、`stack height=1`；另一个状态 `stack in []`、`stack height=0`。两个都属于 B3，却不能强行合为一个栈。这种区分不仅影响精度，也保证栈槽位和 SSA 入口的含义成立。
@@ -153,11 +153,18 @@ nix run . -- cfg --file examples/stack-heights.hex
 | 参数 | 当前默认值和可用范围 | 改变什么 |
 | --- | --- | --- |
 | `--max-constants` | 默认 8，范围 1..=64 | 每个值能保留多少个常量；超过容量升为 Top |
-| `--context-depth` | 默认 0，范围 0..=3 | 保留多少个最近跳转来源，用于状态分组 |
+| `--context-depth` | 默认 8，非负整数，无额外上限（须能表示为 `usize`） | 保留多少个最近跳转来源，用于状态分组 |
 | `--max-states` | 默认 4096，正整数 | 最多建立多少个分析状态 |
 | `--max-transfers` | 默认 100000，正整数 | 最多执行多少次基本块传播，重新执行也计数 |
 
-前两项控制精度表示；后两项限制工作。预算用尽会得到 `Incomplete`，不是 Top，也不是程序无法继续执行的证明。世界入口还有累计工作、外部调用深度和内存预算，见下一课。
+`--context-depth 0` 关闭跳转历史分组。默认保留 8 项，也可以显式指定更大深度，例如：
+
+```bash
+nix run . -- cfg --file examples/internal-calls.hex
+nix run . -- cfg --file examples/internal-calls.hex --context-depth 10
+```
+
+增大 k 可能区分更多状态，也可能增加内存与分析工作；它不是“分析必然更精确或更快”的保证。历史按实际经过的跳转增长，不按 k 预先分配；实际保留的历史项也参与累计工作计费，包括机器状态的复制、比较和摘要输入认证。前两项控制精度表示；后两项限制工作。预算用尽会得到 `Incomplete`，不是 Top，也不是程序无法继续执行的证明。世界入口还有累计工作、外部调用深度和内存预算，见下一课。
 
 外部 CALL 的处理也不能用 k 代替。世界入口保存整条真实调用帧栈，包括每帧的代码账户、状态账户、caller、value、static 标志和继续位置。k 只控制各帧**内部**的跳转历史；`--max-call-depth` 控制外部帧深度，达到分析边界时留下 `Incomplete`。两者的详细关系见[第 09 课](09-cross-contract.md)。
 

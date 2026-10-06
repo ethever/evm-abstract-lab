@@ -6,8 +6,8 @@ use alloy_primitives::U256;
 use evm_abstract::{
     Fork,
     analysis::{
-        ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
-        analyze_world,
+        Config, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status,
+        WorldAnalysis, analyze_world,
     },
     domain::Value,
     ssa,
@@ -416,7 +416,19 @@ fn selfdestruct_balance_effects_invalidate_later_exact_inputs() {
 fn source_joins_do_not_widen_an_already_published_exact_relation() {
     let caller = format!("5b{}5060095f555f56", call(0xf4, 0x200, 0, 0));
     let (world, entry) = fixture(&[(0x101, &caller), (0x200, "5f545f5260205ff3")]);
-    let analysis = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    let analysis = analyze_world(
+        world,
+        entry,
+        ExecutionConfig {
+            // 本测试需要循环后的调用汇合到同一源节点，再核对已发表证书保持不变。
+            analysis: Config {
+                context_depth: 0,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
+        },
+    )
+    .unwrap();
     assert_eq!(
         analysis.status(),
         Status::Converged,

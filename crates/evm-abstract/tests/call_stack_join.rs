@@ -2,7 +2,7 @@
 
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{ExecutionConfig, MachineEdgeKind, Status, analyze_world},
+    analysis::{Config, ExecutionConfig, MachineEdgeKind, Status, analyze_world},
     domain::{Domain, Value},
     ssa,
     world::{Account, ByteArray, Entry, World},
@@ -46,6 +46,10 @@ fn repeated_reverting_call_joins_checkpoints_and_output_ranges_before_resuming_r
         },
         ExecutionConfig {
             // Exercise the ordinary worklist's frame joins directly.
+            analysis: Config {
+                context_depth: 0,
+                ..Config::default()
+            },
             use_summaries: false,
             ..ExecutionConfig::default()
         },

@@ -163,6 +163,8 @@ impl MachinePayload {
                     cost.saturating_add(value.constants().map_or(1, |values| values.len()))
                 });
                 cost.saturating_add(slots)
+                    // 估算载荷复制/比较的工作量时，也计入实际保留的跳转历史。
+                    .saturating_add(frame.key.jump_history.len())
                     .saturating_add(frame.program.as_ref().map_or(0, |p| {
                         p.byte_len().saturating_add(
                             p.blocks()

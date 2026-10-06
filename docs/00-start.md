@@ -95,7 +95,7 @@ B0 @ 0x0000:
 **CFG**（Control Flow Graph，控制流图）用节点表示执行位置，用边表示下一步可以到哪里。输出片段：
 
 ```text
-status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=0
+status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=8
 S0 | B0 @ 0x0000 | stack height=0 | context=[]
   stack in  []
   stack out []
@@ -108,7 +108,7 @@ S0 | B0 @ 0x0000 | stack height=0 | context=[]
 | `stack out []` | 块执行结束时栈为空；中间的 5 已被 MSTORE 消耗 |
 | `states=1 edges=0` | 一个可达状态，没有块间边；不表示没有执行指令 |
 | `transfers=1` | 分析器处理这个块一次 |
-| `context=[]` | 此配置不保留最近跳转来源的历史；[第 05 课](05-sensitivity.md) 再比较 |
+| `context=[]` | 尚未经过 JUMP/JUMPI，所以历史为空；默认最多保留 8 个最近来源，[第 05 课](05-sensitivity.md) 再比较 |
 | `Converged` | 本抽象模型的待处理工作已经完成；不是合约安全结论 |
 
 `stack in` / `stack out` 在这里表示**栈状态**，不是调用的输入字节和返回字节。
@@ -132,10 +132,10 @@ S0 | B0 @ 0x0000 | stack height=0 | context=[]
 ## 第四步：换一个有分支的例子
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex
+nix run . -- cfg --file examples/diamond.hex --context-depth 0
 ```
 
-这个程序根据调用输入选择“压入 1”或“压入 2”，然后汇合并加 10。单段字节码分析没有指定调用输入，所以同时考虑两条路径。
+这里显式设置 `--context-depth 0`，不按跳转历史分组，让两条路径进入同一个汇合状态。这个程序根据调用输入选择“压入 1”或“压入 2”，然后汇合并加 10。单段字节码分析没有指定调用输入，所以同时考虑两条路径。
 
 ```mermaid
 flowchart TD

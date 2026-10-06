@@ -8,7 +8,15 @@ use evm_abstract::{
 };
 
 fn analyze(hex: &str) -> Analysis {
-    analysis::analyze(Program::from_hex(hex).unwrap(), Config::default()).unwrap()
+    // 基础 CFG/join 回归沿用上下文不敏感的对照，避免精度默认值掩盖汇合。
+    analysis::analyze(
+        Program::from_hex(hex).unwrap(),
+        Config {
+            context_depth: 0,
+            ..Config::default()
+        },
+    )
+    .unwrap()
 }
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(format!(
@@ -201,7 +209,7 @@ fn loop_reaches_a_finite_fixed_point_and_has_a_backedge_phi() {
 #[test]
 fn contexts_keep_two_internal_invocations_separate() {
     let program = Program::from_hex(&fixture("internal-calls")).unwrap();
-    let insensitive = analysis::analyze(program.clone(), Config::default()).unwrap();
+    let insensitive = analyze(&fixture("internal-calls"));
     let sensitive = analysis::analyze(
         program,
         Config {
@@ -308,10 +316,6 @@ fn invalid_configs_are_rejected_before_execution() {
         },
         Config {
             max_constants: 65,
-            ..Config::default()
-        },
-        Config {
-            context_depth: 4,
             ..Config::default()
         },
         Config {

@@ -305,7 +305,7 @@ fn example_cfgs_cover_revm_block_entries_edges_and_outputs() {
             if name == "osaka-clz" && fork != Fork::Osaka {
                 continue;
             }
-            for depth in 0..=2 {
+            for depth in [0, 1, 2, 8, 10] {
                 let analysis = analysis::analyze(
                     Program::decode_with_fork(&code, fork).unwrap(),
                     Config {

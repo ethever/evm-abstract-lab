@@ -52,11 +52,11 @@ S0 @ 0x0000 context=[]:
 运行 diamond 示例：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex
-nix run . -- ssa --file examples/diamond.hex
+nix run . -- cfg --file examples/diamond.hex --context-depth 0
+nix run . -- ssa --file examples/diamond.hex --context-depth 0
 ```
 
-关注汇合处 `pc=0x0e`。两条前驱分别把 1 和 2 留在栈上：
+本例显式设置 `--context-depth 0`，让两条路径进入同一个分析状态；后面的循环例子也使用这个设置。默认深度 8 会保留更多跳转历史，见[第 05 课](05-sensitivity.md)。关注汇合处 `pc=0x0e`。两条前驱分别把 1 和 2 留在栈上：
 
 ```mermaid
 flowchart TD
@@ -108,7 +108,7 @@ SSA 名字本身也不是路径约束。看到 `%0` 被比较为 5，并不意�
 运行：
 
 ```bash
-nix run . -- ssa --file examples/loop.hex
+nix run . -- ssa --file examples/loop.hex --context-depth 0
 ```
 
 循环的核心关系可以简写为：
