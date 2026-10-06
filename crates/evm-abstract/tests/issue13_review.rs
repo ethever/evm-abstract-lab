@@ -106,8 +106,8 @@ fn value_call_to_confirmed_empty_account_creates_present_state() {
                 .outcomes()
                 .iter()
                 .any(|outcome| outcome.kind == OutcomeKind::Return
-                    && outcome.store.read_balance(address(0x200))
-                        == Value::constant(U256::from(5))
+                    && outcome.store.read_balance(address(0x200)).singleton()
+                        == Value::constant(U256::from(5)).singleton()
                     && outcome.store.existence(address(0x200))
                         == evm_abstract::world::Existence::Present
                     && outcome

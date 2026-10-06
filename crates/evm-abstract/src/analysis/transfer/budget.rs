@@ -9,35 +9,6 @@ use crate::{
 };
 use revm_bytecode::opcode;
 
-pub(in crate::analysis) struct WorkBudget {
-    maximum: usize,
-    consumed: usize,
-    exhausted: bool,
-}
-impl WorkBudget {
-    pub(in crate::analysis) fn new(maximum: usize) -> Self {
-        Self {
-            maximum,
-            consumed: 0,
-            exhausted: false,
-        }
-    }
-    pub(in crate::analysis) fn charge(&mut self, amount: usize) -> bool {
-        if amount > self.maximum.saturating_sub(self.consumed) {
-            self.exhausted = true;
-            return false;
-        }
-        self.consumed += amount;
-        true
-    }
-    pub(in crate::analysis) fn exhausted(&self) -> bool {
-        self.exhausted
-    }
-    pub(in crate::analysis) fn used(&self) -> usize {
-        self.consumed
-    }
-}
-
 pub(super) fn arithmetic_work(args: &[Value]) -> usize {
     args.iter()
         .try_fold(1usize, |size, value| {
@@ -60,14 +31,17 @@ pub(super) fn byte_work(args: &[&Value], bytes: usize, existing: usize, domain: 
     let branches = args.iter().fold(1usize, |cost, value| {
         cost.saturating_mul(value.constants().map_or(1, |set| set.len()))
     });
-    branches
-        .saturating_mul(bytes.saturating_add(existing).saturating_add(1))
-        .saturating_mul(
-            domain
-                .capacity()
-                .saturating_mul(domain.capacity())
-                .saturating_add(1),
-        )
+    branches.saturating_mul(
+        bytes
+            .saturating_mul(
+                domain
+                    .capacity()
+                    .saturating_mul(domain.capacity())
+                    .saturating_add(1),
+            )
+            .saturating_add(existing.saturating_mul(2))
+            .saturating_add(1024),
+    )
 }
 
 pub(super) fn operation_work(
@@ -93,10 +67,16 @@ pub(super) fn operation_work(
         }
     };
     match op {
-        opcode::MLOAD | opcode::MSTORE => {
-            byte_work(&args.iter().collect::<Vec<_>>(), 32, array_size, domain)
-        }
-        opcode::MSTORE8 => byte_work(&args.iter().collect::<Vec<_>>(), 1, array_size, domain),
+        opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain)
+            .saturating_add(frame.memory.word_numeric_work(&args[0], domain)),
+        opcode::MSTORE => byte_work(&args.iter().collect::<Vec<_>>(), 32, array_size, domain)
+            .saturating_add(32usize.saturating_mul(
+                domain.operation_work(&[Value::constant(crate::U256::ZERO), args[1].clone()]),
+            )),
+        opcode::MSTORE8 => byte_work(&args.iter().collect::<Vec<_>>(), 1, array_size, domain)
+            .saturating_add(
+                domain.operation_work(&[args[1].clone(), Value::constant(crate::U256::from(255))]),
+            ),
         opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY => {
             byte_work(
                 &args.iter().collect::<Vec<_>>(),
@@ -128,7 +108,8 @@ pub(super) fn operation_work(
             .map_or(1, |values| values.len())
             .saturating_mul(domain.capacity())
             .saturating_add(1),
-        opcode::CALLDATALOAD => byte_work(&[&args[0]], 32, array_size, domain),
+        opcode::CALLDATALOAD => byte_work(&[&args[0]], 32, array_size, domain)
+            .saturating_add(frame.calldata.word_numeric_work(&args[0], domain)),
         opcode::KECCAK256 | opcode::RETURN | opcode::REVERT | opcode::LOG0..=opcode::LOG4 => {
             byte_work(&[&args[0], &args[1]], range_size(1), array_size, domain)
         }
@@ -138,7 +119,12 @@ pub(super) fn operation_work(
             .work_size()
             .saturating_mul(domain.capacity())
             .saturating_add(arithmetic_work(args)),
-        0x01..=0x0b | 0x10..=0x1e => arithmetic_work(args),
+        opcode::SELFDESTRUCT => result
+            .payload
+            .store
+            .work_size()
+            .saturating_add(domain.operation_work(&[]).saturating_mul(2)),
+        0x01..=0x0b | 0x10..=0x1e => domain.operation_work(args),
         _ => 1,
     }
 }

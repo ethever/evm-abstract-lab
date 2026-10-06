@@ -338,15 +338,24 @@ fn creation_and_subsequent_runtime_call_match_revm_for_all_supported_forks() {
             let analysis = oracle(world, destination, true, true, false);
             assert!(returned(&analysis).any(|store| {
                 store.raw_account_code(destination) == Some(runtime.clone())
-                    && store.nonce(address(0x101)) == word(1)
-                    && store.nonce(destination) == word(1)
-                    && store.read_balance(destination) == word(7)
+                    && store.nonce(address(0x101)).singleton() == word(1).singleton()
+                    && store.nonce(destination).singleton() == word(1).singleton()
+                    && store.read_balance(destination).singleton() == word(7).singleton()
                     && store
                         .read(destination, &word(0), Domain::default())
                         .contains(U256::from_be_slice(destination.as_slice()))
-                    && store.read(destination, &word(1), Domain::default()) == word(0x101)
-                    && store.read(destination, &word(2), Domain::default()) == word(7)
-                    && store.read(destination, &word(3), Domain::default()) == word(0)
+                    && store
+                        .read(destination, &word(1), Domain::default())
+                        .singleton()
+                        == word(0x101).singleton()
+                    && store
+                        .read(destination, &word(2), Domain::default())
+                        .singleton()
+                        == word(7).singleton()
+                    && store
+                        .read(destination, &word(3), Domain::default())
+                        .singleton()
+                        == word(0).singleton()
             }));
         }
     }
@@ -379,9 +388,10 @@ fn collision_balance_prefunding_and_nonce_rejection_match_revm() {
             world = replaced;
             let analysis = oracle(world, destination, collision == 0, false, false);
             assert!(
-                returned(&analysis).any(|store| store.nonce(address(0x101)) == word(1)
-                    && store.read_balance(destination)
-                        == word(if collision == 0 { 10 } else { 3 }))
+                returned(&analysis).any(|store| store.nonce(address(0x101)).singleton()
+                    == word(1).singleton()
+                    && store.read_balance(destination).singleton()
+                        == word(if collision == 0 { 10 } else { 3 }).singleton())
             );
         }
     }
@@ -586,7 +596,10 @@ fn a_known_collision_fact_does_not_require_the_other_account_observation() {
             returned(&analysis)
                 .all(|store| store.created_in_transaction(destination) == Some(false))
         );
-        assert!(returned(&analysis).any(|store| store.nonce(address(0x101)) == word(1)));
+        assert!(
+            returned(&analysis)
+                .any(|store| store.nonce(address(0x101)).singleton() == word(1).singleton())
+        );
     }
 }
 
@@ -597,12 +610,15 @@ fn failed_init_and_outer_revert_restore_creation_effects_at_the_correct_savepoin
         let bytes = factory(&initcode, false, 7, &return_address());
         let (world, destination) = fixture(fork, &bytes, &initcode, false);
         let analysis = oracle(world, destination, true, false, false);
-        assert!(
-            returned(&analysis).any(|store| store.nonce(address(0x101)) == word(1)
+        assert!(returned(&analysis).any(|store| {
+            store.nonce(address(0x101)).singleton() == word(1).singleton()
                 && store.existence(destination) == Existence::Absent
-                && store.read_balance(address(0x101)) == word(100)
-                && store.read(destination, &word(0), Domain::default()) == word(0))
-        );
+                && store.read_balance(address(0x101)).singleton() == word(100).singleton()
+                && store
+                    .read(destination, &word(0), Domain::default())
+                    .singleton()
+                    == word(0).singleton()
+        }));
         let initcode = init(&[0], &hex::decode("602a5f55").unwrap());
         let bytes = factory(&initcode, false, 7, &hex::decode("505f5ffd").unwrap());
         let (world, destination) = fixture(fork, &bytes, &initcode, false);
@@ -612,7 +628,8 @@ fn failed_init_and_outer_revert_restore_creation_effects_at_the_correct_savepoin
                 .outcomes()
                 .iter()
                 .filter(|outcome| outcome.kind == OutcomeKind::Revert)
-                .all(|outcome| outcome.store.nonce(address(0x101)) == word(0)
+                .all(|outcome| outcome.store.nonce(address(0x101)).singleton()
+                    == word(0).singleton()
                     && outcome.store.existence(destination) == Existence::Absent
                     && outcome.store.raw_account_code(destination) == Some(Vec::new()))
         );
@@ -648,11 +665,12 @@ fn create_revert_exposes_revert_data_while_success_exposes_no_runtime_data() {
         );
         let (world, destination) = fixture(fork, &bytes, &initcode, false);
         let analysis = oracle(world, destination, true, false, false);
-        assert!(returned(&analysis).all(|store| store.read(
-            address(0x101),
-            &word(1),
-            Domain::default()
-        ) == word(0)));
+        assert!(returned(&analysis).all(|store| {
+            store
+                .read(address(0x101), &word(1), Domain::default())
+                .singleton()
+                == word(0).singleton()
+        }));
     }
 }
 
@@ -671,7 +689,8 @@ fn empty_invalid_and_oversize_runtime_have_real_creation_semantics() {
             let (world, destination) = fixture(fork, &bytes, &initcode, false);
             let analysis = oracle(world, destination, true, false, false);
             assert!(
-                returned(&analysis).any(|store| store.nonce(address(0x101)) == word(1)
+                returned(&analysis).any(|store| store.nonce(address(0x101)).singleton()
+                    == word(1).singleton()
                     && store.existence(destination)
                         == if runtime.first() != Some(&0xef) && runtime.len() <= 24_576 {
                             Existence::Present
@@ -704,7 +723,8 @@ fn eip3860_initcode_size_boundary_matches_the_selected_forks() {
                         .outcomes()
                         .iter()
                         .all(|outcome| outcome.kind == OutcomeKind::Failure
-                            && outcome.store.nonce(address(0x101)) == word(0))
+                            && outcome.store.nonce(address(0x101)).singleton()
+                                == word(0).singleton())
                 );
             }
         }
@@ -728,7 +748,10 @@ fn same_transaction_selfdestruct_keeps_code_visible_until_final_deletion() {
             assert!(returned(&analysis).any(|store| {
                 store.existence(destination) == Existence::Absent
                     && store.raw_account_code(destination) == Some(Vec::new())
-                    && store.read(destination, &word(0), Domain::default()) == word(0)
+                    && store
+                        .read(destination, &word(0), Domain::default())
+                        .singleton()
+                        == word(0).singleton()
                     && store
                         .read(address(0x101), &word(1), Domain::default())
                         .contains(U256::from(runtime.len()))
@@ -754,7 +777,7 @@ fn initcode_selfdestruct_commits_endowment_then_deletes_the_created_account() {
         let analysis = oracle(world, destination, true, false, true);
         assert!(returned(&analysis).any(|store| {
             store.existence(destination) == Existence::Absent
-                && store.read_balance(address(0x200)) == word(7)
+                && store.read_balance(address(0x200)).singleton() == word(7).singleton()
                 && store
                     .read(address(0x101), &word(1), Domain::default())
                     .contains(U256::from_be_slice(keccak256([]).as_slice()))
@@ -777,14 +800,16 @@ fn preexisting_selfdestruct_preserves_code_storage_and_self_beneficiary_balance(
             world.insert(address(0x200), Account::empty()).unwrap();
             let analysis = oracle_expect_creation(world, address(0x101), false, true, true, false);
             assert_eq!(analysis.status(), Status::Converged);
-            assert!(
-                returned(&analysis).all(|store| store.raw_account_code(address(0x101))
-                    == Some(runtime.clone())
+            assert!(returned(&analysis).all(|store| {
+                store.raw_account_code(address(0x101)) == Some(runtime.clone())
                     && store.existence(address(0x101)) == Existence::Present
-                    && store.read(address(0x101), &word(0), Domain::default()) == word(42)
-                    && store.read_balance(address(0x101))
-                        == word(if runtime == [0x30, 0xff] { 7 } else { 0 }))
-            );
+                    && store
+                        .read(address(0x101), &word(0), Domain::default())
+                        .singleton()
+                        == word(42).singleton()
+                    && store.read_balance(address(0x101)).singleton()
+                        == word(if runtime == [0x30, 0xff] { 7 } else { 0 }).singleton()
+            }));
         }
     }
 }
@@ -802,14 +827,16 @@ fn reverted_child_selfdestruct_restores_deletion_balance_and_all_deeper_effects(
         wrapper.extend(hex::decode("62fffffff1505f5ffd").unwrap());
         world.insert(address(0x300), code(&wrapper, fork)).unwrap();
         let analysis = oracle(world, destination, true, true, true);
-        assert!(
-            returned(&analysis).any(|store| store.raw_account_code(destination)
-                == Some(runtime.clone())
+        assert!(returned(&analysis).any(|store| {
+            store.raw_account_code(destination) == Some(runtime.clone())
                 && store.existence(destination) == Existence::Present
-                && store.read_balance(destination) == word(7)
-                && store.read_balance(address(0x200)) == word(0)
-                && store.read(destination, &word(0), Domain::default()) == word(0))
-        );
+                && store.read_balance(destination).singleton() == word(7).singleton()
+                && store.read_balance(address(0x200)).singleton() == word(0).singleton()
+                && store
+                    .read(destination, &word(0), Domain::default())
+                    .singleton()
+                    == word(0).singleton()
+        }));
     }
 }
 
@@ -824,11 +851,14 @@ fn repeat_create2_collides_even_after_same_transaction_selfdestruct() {
         let bytes = factory(&initcode, true, 7, &post);
         let (world, destination) = fixture(fork, &bytes, &initcode, true);
         let analysis = oracle(world, destination, true, true, true);
-        assert!(
-            returned(&analysis).any(|store| store.nonce(address(0x101)) == word(2)
-                && store.read(address(0x101), &word(1), Domain::default()) == word(0)
-                && store.existence(destination) == Existence::Absent)
-        );
+        assert!(returned(&analysis).any(|store| {
+            store.nonce(address(0x101)).singleton() == word(2).singleton()
+                && store
+                    .read(address(0x101), &word(1), Domain::default())
+                    .singleton()
+                    == word(0).singleton()
+                && store.existence(destination) == Existence::Absent
+        }));
     }
 }
 
@@ -849,11 +879,17 @@ fn prefunded_creation_resets_previous_persistent_slots_and_retains_balance() {
         prefunded.storage.insert(U256::ZERO, word(99));
         reset.insert(destination, prefunded).unwrap();
         let analysis = oracle(reset, destination, true, false, false);
-        assert!(
-            returned(&analysis).any(|store| store.read_balance(destination) == word(10)
-                && store.read(destination, &word(0), Domain::default()) == word(0)
-                && store.read(destination, &word(1), Domain::default()) == word(0))
-        );
+        assert!(returned(&analysis).any(|store| {
+            store.read_balance(destination).singleton() == word(10).singleton()
+                && store
+                    .read(destination, &word(0), Domain::default())
+                    .singleton()
+                    == word(0).singleton()
+                && store
+                    .read(destination, &word(1), Domain::default())
+                    .singleton()
+                    == word(0).singleton()
+        }));
     }
 }
 

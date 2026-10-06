@@ -2,7 +2,7 @@
 
 use evm_abstract::{
     Address, Fork, U256,
-    domain::{Domain, Value},
+    domain::{Domain, Value, provenance::Origin},
     world::{
         AbstractLog, Account, ByteArray, Code, LogError, LogKey, RangeError, Store, World,
         WorldError,
@@ -15,6 +15,16 @@ fn v(value: u64) -> Value {
 
 fn address(value: u8) -> Address {
     Address::from([value; 20])
+}
+
+// 字节搬运保留数值精度，同时增加运算来源；不能用常量来源替代完整 Value。
+fn assert_numeric_eq(actual: &Value, expected: &Value) {
+    assert_eq!(actual.constants(), expected.constants());
+    assert_eq!(actual.known_bits(), expected.known_bits());
+    assert_eq!(actual.interval(), expected.interval());
+    assert_eq!(actual.congruence(), expected.congruence());
+    assert_eq!(actual.may_be_zero(), expected.may_be_zero());
+    assert_eq!(actual.may_be_nonzero(), expected.may_be_nonzero());
 }
 
 #[test]
@@ -157,15 +167,21 @@ fn store_json_serializes_account_slot_observations() {
 fn words_are_big_endian_and_calldata_is_zero_padded() {
     let domain = Domain::default();
     let bytes = ByteArray::exact(&[0x12, 0x34]);
-    assert_eq!(
-        bytes.read_word(&v(0), domain),
-        Value::constant(U256::from(0x1234) << 240)
+    let loaded = bytes.read_word(&v(0), domain);
+    assert_numeric_eq(&loaded, &Value::constant(U256::from(0x1234) << 240));
+    assert!(
+        loaded
+            .provenance()
+            .origins()
+            .sources()
+            .unwrap()
+            .contains(&Origin::Arithmetic)
     );
-    assert_eq!(bytes.read_word(&v(2), domain), v(0));
-    assert_eq!(bytes.read_word(&Value::constant(U256::MAX), domain), v(0));
-    assert_eq!(
-        bytes.read_word(&Value::constant(U256::from(usize::MAX)), domain),
-        v(0)
+    assert_numeric_eq(&bytes.read_word(&v(2), domain), &v(0));
+    assert_numeric_eq(&bytes.read_word(&Value::constant(U256::MAX), domain), &v(0));
+    assert_numeric_eq(
+        &bytes.read_word(&Value::constant(U256::from(usize::MAX)), domain),
+        &v(0),
     );
     assert_eq!(
         bytes
@@ -185,12 +201,21 @@ fn words_are_big_endian_and_calldata_is_zero_padded() {
 fn fresh_memory_zeroes_word_writes_and_mstore8_truncates() {
     let domain = Domain::default();
     let mut memory = ByteArray::memory();
-    assert_eq!(memory.read_word(&v(100), domain), v(0));
+    assert_numeric_eq(&memory.read_word(&v(100), domain), &v(0));
     memory.write_word(&v(1), &v(0x1234), 64, domain).unwrap();
     assert_eq!(memory.len(), &v(64));
-    assert_eq!(memory.read_word(&v(1), domain), v(0x1234));
+    assert_numeric_eq(&memory.read_word(&v(1), domain), &v(0x1234));
     memory.write_byte(&v(0), &v(0x12ff), 64, domain).unwrap();
-    assert_eq!(memory.byte_at(0, domain), v(255));
+    assert_numeric_eq(&memory.byte_at(0, domain), &v(255));
+    assert!(
+        memory
+            .byte_at(0, domain)
+            .provenance()
+            .origins()
+            .sources()
+            .unwrap()
+            .contains(&Origin::Arithmetic)
+    );
 }
 
 #[test]
@@ -213,9 +238,9 @@ fn finite_write_aliases_preserve_untouched_possibilities() {
     let mut memory = ByteArray::memory();
     let offset = domain.join(&v(0), &v(1));
     memory.write_byte(&offset, &v(42), 32, domain).unwrap();
-    assert_eq!(memory.byte_at(0, domain), domain.join(&v(0), &v(42)));
-    assert_eq!(memory.byte_at(1, domain), domain.join(&v(0), &v(42)));
-    assert_eq!(memory.byte_at(2, domain), v(0));
+    assert_numeric_eq(&memory.byte_at(0, domain), &domain.join(&v(0), &v(42)));
+    assert_numeric_eq(&memory.byte_at(1, domain), &domain.join(&v(0), &v(42)));
+    assert_numeric_eq(&memory.byte_at(2, domain), &v(0));
 }
 
 #[test]

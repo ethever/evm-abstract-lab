@@ -51,6 +51,19 @@ pub fn render(analysis: &WorldAnalysis) -> String {
     )
     .unwrap();
 
+    let spec = analysis
+        .config()
+        .domain()
+        .expect("analysis carries validated configuration")
+        .spec();
+    writeln!(
+        output,
+        "  domain={:?} | schema=1 | reduction rounds={} | fact atoms={}",
+        spec.profile(),
+        spec.reduction_rounds(),
+        spec.fact_limit()
+    )
+    .unwrap();
     output.push_str("\nSnapshot\n");
     writeln!(output, "  provenance={:?}", analysis.world().provenance()).unwrap();
     writeln!(

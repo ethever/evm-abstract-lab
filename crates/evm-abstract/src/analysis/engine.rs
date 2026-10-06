@@ -53,6 +53,8 @@ pub(super) fn run_world(
         world,
         entry,
         config,
+        schema_version: 1,
+        domain_spec: domain.spec(),
         states: Vec::new(),
         edges: Vec::new(),
         diagnostics: Vec::new(),
@@ -64,7 +66,26 @@ pub(super) fn run_world(
         summary_stats: SummaryStats::default(),
         summaries: Vec::new(),
     };
-    let initial = match transfer::initial(&result.world, &result.entry) {
+    // 输入 lift、Store 与回滚点复制也使用根账本，不让初始化获得免费工作。
+    let mut budget = WorkBudget::new(result.config.max_work);
+    let initial_work = result
+        .world
+        .work_size()
+        .saturating_add(result.entry.calldata.work_size())
+        .saturating_add(result.entry.value.work_size())
+        .saturating_mul(4);
+    if !budget.charge(initial_work) {
+        result.frontiers.push(MachineFrontier {
+            from: None,
+            target: None,
+            pc: None,
+            reason: FrontierReason::Work,
+        });
+        result.status = Status::Incomplete;
+        result.work = budget.used();
+        return Ok(result);
+    }
+    let initial = match transfer::initial(&result.world, &result.entry, domain) {
         Ok(payload) => payload,
         Err(reason) => {
             result.frontiers.push(MachineFrontier {
@@ -74,6 +95,7 @@ pub(super) fn run_world(
                 reason,
             });
             result.status = Status::Incomplete;
+            result.work = budget.used();
             return Ok(result);
         }
     };
@@ -96,7 +118,6 @@ pub(super) fn run_world(
         executed_pcs: Vec::new(),
     });
     let cache = result.config.use_summaries.then(Cache::new);
-    let budget = WorkBudget::new(result.config.max_work);
     let mut engine = Engine {
         result,
         domain,
@@ -108,6 +129,7 @@ pub(super) fn run_world(
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new()],
         cache,
+        updates: vec![0],
     };
     engine.run();
     Ok(engine.result)
@@ -124,6 +146,8 @@ struct Engine {
     domain: Domain,
     /// 入口复制、执行、join、摘要比较/认证/导入共用的累计工作账本。
     budget: WorkBudget,
+    /// 每个结构状态的严格入口更新次数；动态发现的环也采用同一 widening 策略。
+    updates: Vec<usize>,
     /// 结构键 -> `result.states` 的索引；键相同才允许汇合抽象输入。
     ids: BTreeMap<super::MachineKey, usize>,
     /// FIFO 调度记录；摘要回放可能满足已排队节点，因此这里允许残留失效项。
@@ -351,6 +375,9 @@ impl Engine {
         mut cache: Option<&mut Cache>,
     ) {
         execution.payload.normalize();
+        for completed in &mut execution.completed_calls {
+            completed.payload.normalize();
+        }
         self.result.states[id].exit_stack = execution.payload.active().stack.clone();
         self.result.states[id].executed_pcs = execution.executed_pcs;
         self.result.states[id].exit = Some(execution.payload);
@@ -411,9 +438,15 @@ impl Engine {
                 self.frontier(Some(from), Some(key), work_reason);
                 return None;
             }
-            let joined = self.result.states[existing]
+            let mut joined = self.result.states[existing]
                 .entry
                 .join(&successor.payload, self.domain);
+            if joined != self.result.states[existing].entry {
+                self.updates[existing] = self.updates[existing].saturating_add(1);
+                if self.updates[existing] >= self.domain.spec().widening_after_updates() {
+                    joined.widen(&self.result.states[existing].entry, self.domain);
+                }
+            }
             // 有节点不等于有固定点；只有比较 join 前后的入口，才知道要不要重访。
             if joined != self.result.states[existing].entry {
                 self.result.states[existing].entry = joined;
@@ -439,6 +472,7 @@ impl Engine {
                 executed_pcs: Vec::new(),
             });
             self.completed_calls.push(Vec::new());
+            self.updates.push(0);
             self.queue.push_back(id);
             self.queued.insert(id);
             id
@@ -526,6 +560,7 @@ impl Engine {
                     executed_pcs: node.executed_pcs,
                 });
                 self.completed_calls.push(node.completed_calls);
+                self.updates.push(0);
                 id
             };
             for mut diagnostic in node.diagnostics {

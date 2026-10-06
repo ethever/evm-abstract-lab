@@ -140,8 +140,13 @@ fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
                 assert_eq!(result["world"]["identity"]["chain_id"], hex_chain);
                 // CALLVALUE; PUSH1 16; SLOAD; STOP exercises both CLI quantities.
                 assert_eq!(
-                    result["states"][0]["exit_stack"],
-                    json!([{"Constants":["0x3e8"]}, {"Constants":["0x2a"]}])
+                    result["states"][0]["exit_stack"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v["Constants"].clone())
+                        .collect::<Vec<_>>(),
+                    vec![json!(["0x3e8"]), json!(["0x2a"])]
                 );
                 results.push(result);
             }

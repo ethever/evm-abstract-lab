@@ -59,7 +59,7 @@ impl World {
     /// slots, and explicit unknown markers. A source description does not
     /// alter an anchored snapshot's fingerprint.
     pub fn fingerprint(&self) -> B256 {
-        let mut bytes = b"evm-abstract-world-v1".to_vec();
+        let mut bytes = b"evm-abstract-world-v2".to_vec();
         bytes.push(match self.fork {
             Fork::Cancun => 0,
             Fork::Prague => 1,
@@ -114,14 +114,7 @@ fn append_len(bytes: &mut Vec<u8>, length: usize) {
 }
 
 fn append_value(bytes: &mut Vec<u8>, value: &Value) {
-    match value.constants() {
-        Some(constants) => {
-            bytes.push(1);
-            append_len(bytes, constants.len());
-            for value in constants {
-                bytes.extend_from_slice(&value.to_be_bytes::<32>());
-            }
-        }
-        None => bytes.push(0),
-    }
+    let encoded = serde_json::to_vec(value).expect("validated scalar facts serialize infallibly");
+    append_len(bytes, encoded.len());
+    bytes.extend_from_slice(&encoded);
 }

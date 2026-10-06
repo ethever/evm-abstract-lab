@@ -37,7 +37,7 @@ impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
             analysis: Config::default(),
-            max_work: 2_000_000,
+            max_work: 20_000_000,
             max_call_depth: 32,
             max_memory_bytes: 65_536,
             symbolic_entry_environment: false,
@@ -128,6 +128,7 @@ pub struct MachinePayload {
 
 impl MachinePayload {
     pub(crate) fn normalize(&mut self) {
+        self.call_stack.forget_identities();
         for frame in self.call_stack.iter_mut() {
             frame.key.stack_height = frame.stack.len();
         }
@@ -159,9 +160,10 @@ impl MachinePayload {
         self.call_stack
             .iter()
             .fold(self.store.work_size(), |cost, frame| {
-                let slots = frame.stack.iter().fold(0usize, |cost, value| {
-                    cost.saturating_add(value.constants().map_or(1, |values| values.len()))
-                });
+                let slots = frame
+                    .stack
+                    .iter()
+                    .fold(0usize, |cost, value| cost.saturating_add(value.work_size()));
                 cost.saturating_add(slots)
                     // 估算载荷复制/比较的工作量时，也计入实际保留的跳转历史。
                     .saturating_add(frame.key.jump_history.len())
@@ -177,18 +179,21 @@ impl MachinePayload {
                     .saturating_add(frame.calldata.work_size())
                     .saturating_add(frame.returndata.work_size())
                     .saturating_add(frame.saved_store.state().work_size())
-                    .saturating_add(
-                        frame
-                            .call_value
-                            .constants()
-                            .map_or(1, |values| values.len()),
-                    )
+                    .saturating_add(frame.call_value.work_size())
                     .saturating_add(3)
             })
     }
 
+    pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
+        self.store.widen(&old.store, domain);
+        self.call_stack.widen(&old.call_stack, domain);
+    }
     pub(crate) fn join(&self, other: &Self, domain: Domain) -> Self {
-        debug_assert_eq!(self.key(), other.key());
+        assert_eq!(
+            self.key(),
+            other.key(),
+            "payload join requires equal structural keys"
+        );
         let mut result = self.clone();
         result.store = self.store.join(&other.store, domain);
         result.call_stack.join(&other.call_stack, domain);
@@ -324,6 +329,8 @@ pub struct WorldAnalysis {
     pub(crate) world: World,
     pub(crate) entry: Entry,
     pub(crate) config: ExecutionConfig,
+    pub(crate) schema_version: u16,
+    pub(crate) domain_spec: crate::domain::DomainSpec,
     pub(crate) states: Vec<MachineState>,
     pub(crate) edges: Vec<MachineEdge>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -337,6 +344,11 @@ pub struct WorldAnalysis {
 }
 
 impl WorldAnalysis {
+    /// 冻结的域、交换、widening 和成本策略。
+    pub fn domain_spec(&self) -> crate::domain::DomainSpec {
+        self.domain_spec
+    }
+
     /// Qualified summary hits, misses, publications and import work.
     pub fn summary_stats(&self) -> &super::summary::SummaryStats {
         &self.summary_stats

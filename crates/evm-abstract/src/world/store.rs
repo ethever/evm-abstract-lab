@@ -68,7 +68,7 @@ impl AbstractLog {
         self.topics
             .iter()
             .fold(self.data.work_size(), |work, topic| {
-                work.saturating_add(topic.constants().map_or(1, |values| values.len()))
+                work.saturating_add(topic.work_size())
             })
     }
 }
@@ -155,6 +155,10 @@ impl Plane {
     }
 
     fn write(&mut self, address: Address, slot: &Value, value: &Value, domain: Domain) {
+        // 复制身份只在当前基本块栈上成立，不进入可回滚/复用的持久载荷。
+        let mut clean = value.clone();
+        clean.forget_identity();
+        let value = &clean;
         let Some(slots) = slot.constants() else {
             // A symbolic alias may replace any slot, including unlisted ones.
             let default = domain.join(self.default_at(address), value);
@@ -247,6 +251,55 @@ pub struct Store {
 pub type Snapshot = Checkpoint<Store>;
 
 impl Store {
+    pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
+        for (plane, old) in [
+            (&mut self.persistent, &old.persistent),
+            (&mut self.transient, &old.transient),
+        ] {
+            plane.slots.retain(|key, value| {
+                *value = domain.widen(old.slots.get(key).unwrap_or(&old.global_default), value);
+                true
+            });
+            plane.defaults.retain(|key, value| {
+                *value = domain.widen(old.defaults.get(key).unwrap_or(&old.global_default), value);
+                true
+            });
+            plane.global_default = domain.widen(&old.global_default, &plane.global_default);
+        }
+        self.balances.retain(|key, value| {
+            *value = domain.widen(old.balances.get(key).unwrap_or(&old.balance_default), value);
+            true
+        });
+        self.nonces.retain(|key, value| {
+            if let Some(old) = old.nonces.get(key) {
+                *value = domain.widen(old, value);
+            }
+            true
+        });
+        self.balance_default = domain.widen(&old.balance_default, &self.balance_default);
+        self.possible_logs.retain(|key, log| {
+            if let Some(old) = old.possible_logs.get(key) {
+                for (value, old) in log.topics.iter_mut().zip(&old.topics) {
+                    *value = domain.widen(old, value);
+                }
+                log.data.widen(&old.data, domain);
+            }
+            true
+        });
+    }
+    pub(crate) fn project(&mut self, domain: Domain) {
+        let project = |value: &mut Value| {
+            *value = domain.project(value);
+        };
+        for plane in [&mut self.persistent, &mut self.transient] {
+            plane.slots.update_values(project);
+            plane.defaults.update_values(project);
+            project(&mut plane.global_default);
+        }
+        self.balances.update_values(project);
+        self.nonces.update_values(project);
+        project(&mut self.balance_default);
+    }
     /// Build transaction state without modifying the fixed input snapshot.
     pub fn new(world: &World) -> Self {
         let mut persistent = Plane::new(Value::top());
@@ -324,7 +377,8 @@ impl Store {
     }
 
     /// Replace an account balance after a modeled transfer.
-    pub fn write_balance(&mut self, address: Address, value: Value) {
+    pub fn write_balance(&mut self, address: Address, mut value: Value) {
+        value.forget_identity();
         // A positive transfer establishes account presence. A joined balance
         // containing zero cannot discard the possibility of an absent account.
         if value.may_be_nonzero() {
@@ -413,7 +467,8 @@ impl Store {
     }
 
     /// Replace the nonce after a creation attempt or transaction-local update.
-    pub fn write_nonce(&mut self, address: Address, nonce: Value) {
+    pub fn write_nonce(&mut self, address: Address, mut nonce: Value) {
+        nonce.forget_identity();
         self.nonces.insert(address, nonce);
     }
 
@@ -687,9 +742,12 @@ impl Store {
     pub fn emit_log(
         &mut self,
         key: LogKey,
-        log: AbstractLog,
+        mut log: AbstractLog,
         domain: Domain,
     ) -> Result<(), LogError> {
+        for topic in &mut log.topics {
+            topic.forget_identity();
+        }
         if log.topics.len() > 4 {
             return Err(LogError::TooManyTopics(log.topics.len()));
         }
@@ -774,7 +832,7 @@ impl Store {
                 &self.balance_default,
             ])
             .fold(0_usize, |work, value| {
-                work.saturating_add(value.constants().map_or(1, |values| values.len()))
+                work.saturating_add(value.work_size())
             });
         let lifecycle_work = self
             .codes

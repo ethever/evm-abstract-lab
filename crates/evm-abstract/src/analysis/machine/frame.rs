@@ -33,6 +33,18 @@ pub struct FrameState {
 }
 
 impl FrameState {
+    pub(super) fn widen(&mut self, old: &Self, domain: Domain) {
+        for (value, old) in self.stack.iter_mut().zip(&old.stack) {
+            *value = domain.widen(old, value);
+        }
+        self.memory.widen(&old.memory, domain);
+        self.calldata.widen(&old.calldata, domain);
+        self.returndata.widen(&old.returndata, domain);
+        self.call_value = domain.widen(&old.call_value, &self.call_value);
+        let mut saved = self.saved_store.state().clone();
+        saved.widen(old.saved_store.state(), domain);
+        self.saved_store = Snapshot::from_state(saved);
+    }
     pub(super) fn join(&mut self, incoming: &Self, domain: Domain) {
         for (slot, value) in self.stack.iter_mut().zip(&incoming.stack) {
             *slot = domain.join(slot, value);

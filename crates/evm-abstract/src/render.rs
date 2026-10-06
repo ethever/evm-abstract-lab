@@ -63,6 +63,14 @@ pub fn cfg(analysis: &Analysis) -> String {
         analysis.transfers(),
         analysis.config().context_depth,
     );
+    writeln!(
+        output,
+        "domain={:?} | schema=1 | reduction rounds={} | fact atoms={}",
+        analysis.config().domain_profile,
+        analysis.config().reduction_rounds,
+        analysis.config().max_facts
+    )
+    .unwrap();
     for state in analysis.states() {
         let block = &analysis.program().blocks()[state.key.basic_block_index];
         writeln!(

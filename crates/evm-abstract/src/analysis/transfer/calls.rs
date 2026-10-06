@@ -1,5 +1,5 @@
 //! Account-code resolution, frame entry and rollback-aware caller resumption.
-use super::budget::{arithmetic_work, byte_work, maximum};
+use super::budget::{byte_work, maximum};
 use super::{
     CompletedCall, Execution, Outcome, Successor, TransferContext, address, boundary, touch_memory,
     zero,
@@ -10,7 +10,7 @@ use crate::{
         MachineEdgeKind, MachinePayload, OutcomeKind, RootFrame,
     },
     bytecode::Program,
-    domain::Value,
+    domain::{Domain, Value},
     world::{ByteArray, Code, Entry, Store, World},
 };
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -70,8 +70,13 @@ fn captured_hash(
     )
 }
 
-pub(super) fn initial(world: &World, entry: &Entry) -> Result<MachinePayload, FrontierReason> {
-    let store = Store::new(world);
+pub(super) fn initial(
+    world: &World,
+    entry: &Entry,
+    domain: Domain,
+) -> Result<MachinePayload, FrontierReason> {
+    let mut store = Store::new(world);
+    store.project(domain);
     let (code_address, code, program) = resolve(world, &store, entry.address)?;
     let code_hash = captured_hash(&program, &store, code_address, code);
     Ok(MachinePayload {
@@ -92,9 +97,9 @@ pub(super) fn initial(world: &World, entry: &Entry) -> Result<MachinePayload, Fr
                 program,
                 stack: Vec::new(),
                 memory: ByteArray::memory(),
-                calldata: entry.calldata.clone(),
+                calldata: entry.calldata.project(domain),
                 returndata: ByteArray::empty(),
-                call_value: entry.value.clone(),
+                call_value: domain.project(&entry.value),
                 saved_store: store.snapshot(),
             },
         }),
@@ -287,7 +292,16 @@ pub(super) fn call(
         boundary(result, pc, FrontierReason::Work);
         return;
     }
-    let mut targets = if let Some(values) = args[1].constants() {
+    let projection_args = [args[1].clone(), Value::constant(U256::MAX >> 96usize)];
+    if !context
+        .budget
+        .charge(domain.operation_work(&projection_args))
+    {
+        boundary(result, pc, FrontierReason::Work);
+        return;
+    }
+    let projected = domain.address_projection(&args[1]);
+    let mut targets = if let Some(values) = projected.constants() {
         values.iter().map(|v| address(*v)).collect::<Vec<_>>()
     } else {
         boundary(result, pc, FrontierReason::UnknownTarget);
@@ -295,7 +309,13 @@ pub(super) fn call(
             boundary(result, pc, FrontierReason::Work);
             return;
         }
-        world.accounts().keys().copied().collect::<Vec<_>>()
+        // 开放 world 仍有外部候选，保留 UnknownTarget；只排除明确不符合投影的账户。
+        world
+            .accounts()
+            .keys()
+            .copied()
+            .filter(|target| projected.contains(U256::from_be_slice(target.as_slice())))
+            .collect::<Vec<_>>()
     };
     targets.sort();
     targets.dedup();
@@ -357,8 +377,9 @@ pub(super) fn call(
         if op == opcode::CALL && target != caller_address {
             let recipient = payload.store.read_balance(target);
             if !context.budget.charge(
-                arithmetic_work(&[balance.clone(), value.clone()])
-                    .saturating_add(arithmetic_work(&[recipient.clone(), value.clone()])),
+                domain
+                    .operation_work(&[balance.clone(), value.clone()])
+                    .saturating_add(domain.operation_work(&[recipient.clone(), value.clone()])),
             ) {
                 boundary(result, pc, FrontierReason::Work);
                 continue;

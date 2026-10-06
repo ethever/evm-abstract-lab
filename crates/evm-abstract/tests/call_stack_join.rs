@@ -81,35 +81,35 @@ fn repeated_reverting_call_joins_checkpoints_and_output_ranges_before_resuming_r
     let domain = Domain::default();
     let offsets = domain.join(&word(0), &word(32));
     let sizes = domain.join(&word(32), &word(64));
-    assert_eq!(child.continuation.output_offset, offsets);
-    assert_eq!(child.continuation.output_size, sizes);
-    assert_eq!(
+    assert_numeric_eq(child.continuation.output_offset.clone(), offsets.clone());
+    assert_numeric_eq(child.continuation.output_size.clone(), sizes.clone());
+    assert_numeric_eq(
         child
             .state
             .saved_store
             .state()
             .read(address(0x101), &word(0), domain),
-        offsets
+        offsets.clone(),
     );
-    assert_eq!(
+    assert_numeric_eq(
         child
             .state
             .saved_store
             .state()
             .read(address(0x101), &word(1), domain),
-        sizes
+        sizes.clone(),
     );
     // The checkpoint stays independent of the callee's writes before REVERT.
     let executing_child = child_state.exit.as_ref().unwrap();
-    assert_eq!(
+    assert_numeric_eq(
         executing_child.store.read(address(0x101), &word(0), domain),
-        word(99)
+        word(99),
     );
-    assert_eq!(
+    assert_numeric_eq(
         executing_child
             .store
             .read_transient(address(0x101), &word(2), domain),
-        word(99)
+        word(99),
     );
 
     let reverts: Vec<_> = analysis
@@ -123,18 +123,29 @@ fn repeated_reverting_call_joins_checkpoints_and_output_ranges_before_resuming_r
     let resumed = &analysis.states()[edge.to].entry;
     assert_eq!(resumed.call_stack.depth(), 1);
     assert!(resumed.call_stack.active_child().is_none());
-    assert_eq!(
+    assert_numeric_eq(
         resumed.store.read(address(0x101), &word(0), domain),
-        offsets
+        offsets.clone(),
     );
-    assert_eq!(resumed.store.read(address(0x101), &word(1), domain), sizes);
-    assert_eq!(
+    assert_numeric_eq(
+        resumed.store.read(address(0x101), &word(1), domain),
+        sizes.clone(),
+    );
+    assert_numeric_eq(
         resumed
             .store
             .read_transient(address(0x101), &word(2), domain),
-        word(0)
+        word(0),
     );
-    assert_eq!(resumed.active().stack, vec![word(0)]);
+    assert_eq!(
+        resumed
+            .active()
+            .stack
+            .iter()
+            .map(Value::singleton)
+            .collect::<Vec<_>>(),
+        vec![word(0).singleton()]
+    );
     // Immediate gas rejection also reaches this parent state with empty data.
     assert!(
         resumed
@@ -171,4 +182,13 @@ fn repeated_reverting_call_joins_checkpoints_and_output_ranges_before_resuming_r
             .byte_at(95, domain)
             .contains(U256::from(0xcd))
     );
+}
+
+fn assert_numeric_eq(actual: Value, expected: Value) {
+    assert_eq!(actual.constants(), expected.constants());
+    assert_eq!(actual.known_bits(), expected.known_bits());
+    for value in expected.constants().unwrap() {
+        assert!(actual.contains(*value));
+    }
+    assert_eq!(actual.congruence(), expected.congruence());
 }

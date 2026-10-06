@@ -95,11 +95,38 @@ impl CallStack {
         std::iter::once(&self.root.state).chain(self.children.iter().map(|child| &child.state))
     }
 
+    pub(super) fn forget_identities(&mut self) {
+        for frame in self.iter_mut() {
+            for value in &mut frame.stack {
+                value.forget_identity();
+            }
+            frame.call_value.forget_identity();
+        }
+        for child in &mut self.children {
+            child.continuation.output_offset.forget_identity();
+            child.continuation.output_size.forget_identity();
+        }
+    }
+
     pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = &mut FrameState> {
         std::iter::once(&mut self.root.state)
             .chain(self.children.iter_mut().map(|child| &mut child.state))
     }
 
+    pub(super) fn widen(&mut self, old: &Self, domain: Domain) {
+        self.root.state.widen(&old.root.state, domain);
+        for (child, old) in self.children.iter_mut().zip(&old.children) {
+            child.state.widen(&old.state, domain);
+            child.continuation.output_offset = domain.widen(
+                &old.continuation.output_offset,
+                &child.continuation.output_offset,
+            );
+            child.continuation.output_size = domain.widen(
+                &old.continuation.output_size,
+                &child.continuation.output_size,
+            );
+        }
+    }
     pub(super) fn join(&mut self, incoming: &Self, domain: Domain) {
         debug_assert_eq!(self.depth(), incoming.depth());
         self.root.state.join(&incoming.root.state, domain);
