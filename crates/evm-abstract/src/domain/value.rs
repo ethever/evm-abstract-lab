@@ -1,6 +1,7 @@
 //! 同一个字的约束取交集。有限集合组件未知，不能被误读成整个值未知。
 use super::{
-    congruence::Congruence, interval::Interval, known_bits::KnownBits, provenance::Provenance,
+    FiniteConstantSet, congruence::Congruence, interval::Interval, known_bits::KnownBits,
+    provenance::Provenance,
 };
 use alloy_primitives::U256;
 use serde::{Serialize, Serializer, ser::SerializeMap};
@@ -15,7 +16,7 @@ use std::{collections::BTreeSet, fmt};
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Value {
-    pub(super) finite: Option<BTreeSet<U256>>,
+    pub(super) finite: FiniteConstantSet,
     pub(super) bits: KnownBits,
     pub(super) interval: Interval,
     pub(super) congruence: Congruence,
@@ -26,7 +27,7 @@ impl Value {
     /// 精确的单点；其他数值组件均为此单点的等价表示。
     pub fn constant(value: U256) -> Self {
         Self {
-            finite: Some(BTreeSet::from([value])),
+            finite: FiniteConstantSet::constant(value),
             bits: KnownBits::exact(value),
             interval: Interval::exact(value),
             congruence: Congruence::exact(value),
@@ -37,7 +38,7 @@ impl Value {
     /// 对数值和来源都没有约束。
     pub fn top() -> Self {
         Self {
-            finite: None,
+            finite: FiniteConstantSet::top(),
             bits: KnownBits::top(),
             interval: Interval::top(),
             congruence: Congruence::top(),
@@ -62,7 +63,11 @@ impl Value {
     }
     /// 完整有限候选集合；None 仅表示此组件不可枚举，不表示 whole-product Top。
     pub fn constants(&self) -> Option<&BTreeSet<U256>> {
-        self.finite.as_ref()
+        self.finite.as_values()
+    }
+    /// 有限常量集合组件；它的 Top 不会抹去其他数值约束。
+    pub fn finite_constants(&self) -> &FiniteConstantSet {
+        &self.finite
     }
     /// 已知位约束。
     pub fn known_bits(&self) -> &KnownBits {
@@ -83,7 +88,7 @@ impl Value {
     /// 排除必须由至少一个组件证明；true 是“尚不能排除”，不是可达见证。
     pub fn contains(&self, value: U256) -> bool {
         (!self.nonzero || value != U256::ZERO)
-            && self.finite.as_ref().is_none_or(|s| s.contains(&value))
+            && self.finite.contains(value)
             && self.bits.contains(value)
             && self.interval.contains(value)
             && self.congruence.contains(value)
@@ -92,9 +97,7 @@ impl Value {
     pub fn singleton(&self) -> Option<U256> {
         let value = self
             .finite
-            .as_ref()
-            .filter(|s| s.len() == 1)
-            .and_then(|s| s.first().copied())
+            .singleton()
             .or_else(|| self.bits.singleton())
             .or_else(|| self.interval.singleton())
             .or_else(|| self.congruence.singleton())?;
@@ -111,8 +114,7 @@ impl Value {
     /// 复制和比较时的逻辑成本，包含内联数值组件及来源。
     pub fn work_size(&self) -> usize {
         self.finite
-            .as_ref()
-            .map_or(1, BTreeSet::len)
+            .work_size()
             .saturating_add(12)
             .saturating_add(self.provenance.origins().work_size())
     }
@@ -134,7 +136,7 @@ impl Value {
         self.provenance.forget_identity();
     }
     pub(super) fn numeric_top(&self) -> bool {
-        self.finite.is_none()
+        self.finite.is_top()
             && self.bits == KnownBits::top()
             && self.interval == Interval::top()
             && self.congruence == Congruence::top()
@@ -149,7 +151,7 @@ impl Serialize for Value {
             return serializer.serialize_str("Top");
         }
         let mut map = serializer.serialize_map(None)?;
-        if let Some(constants) = &self.finite {
+        if let Some(constants) = self.finite.as_values() {
             map.serialize_entry("Constants", constants)?;
         }
         map.serialize_entry("known_bits", &self.bits)?;
@@ -163,15 +165,8 @@ impl Serialize for Value {
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(values) = &self.finite {
-            f.write_str("{")?;
-            for (i, value) in values.iter().enumerate() {
-                if i > 0 {
-                    f.write_str(", ")?;
-                }
-                write!(f, "0x{value:x}")?;
-            }
-            return f.write_str("}");
+        if !self.finite.is_top() {
+            return self.finite.fmt(f);
         }
         if self.numeric_top() {
             return f.write_str("⊤");

@@ -170,7 +170,8 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 读什么实现 | 源码入口 |
 | --- | --- |
 | 指令解码与基本块 | [`bytecode.rs`](crates/evm-abstract/src/bytecode.rs) |
-| 集合值、合并与算术 | [`domain.rs`](crates/evm-abstract/src/domain.rs) |
+| 常量集合的 Top、非空集合与有界运算 | [`finite_constant_set.rs`](crates/evm-abstract/src/domain/finite_constant_set.rs) |
+| 组合值、合并与算术 | [`domain.rs`](crates/evm-abstract/src/domain.rs) |
 | 固定位、区间、同余、来源与事实交换 | [`domain/`](crates/evm-abstract/src/domain) |
 | 调用帧、局部与跨合约工作表 | [`analysis/`](crates/evm-abstract/src/analysis) |
 | 账户事实与账户状态 | [`world/`](crates/evm-abstract/src/world) |

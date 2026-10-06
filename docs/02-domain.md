@@ -189,7 +189,9 @@ nix run . -- cfg --hex 5f351e00
 
 ## 读源码时对应到哪里
 
-建议先读 [`Value`](../crates/evm-abstract/src/domain/value.rs) 的受控表示与 `contains`、`singleton` 查询，再读 [`domain.rs`](../crates/evm-abstract/src/domain.rs) 的 `Domain::join`、`collect` 和 `finite_apply`，核对本课手算。默认 profile 的转换转到 [`domain/transfer.rs`](../crates/evm-abstract/src/domain/transfer.rs)，其中可信复制身份建立相等事实，各数值组件传播结果，再进行有界交换。具体 EVM 规则在 [`domain/concrete.rs`](../crates/evm-abstract/src/domain/concrete.rs) 的 `evaluate`；大整数计算由 alloy/ruint 提供。
+建议先读 [`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)：它把常量组件封装为 Top 或非空有限集合，集合求交或筛选为空时返回错误。容量由 [`DomainSpec`](../crates/evm-abstract/src/domain/spec.rs) 决定，不保存在每个集合里；有界收集与 join 超过容量时放弃整个常量列表。
+
+再读 [`Value`](../crates/evm-abstract/src/domain/value.rs) 的 `finite_constants()`、`contains`、`singleton`：第一个接口查看这个组件，后两个查询同时检查数值约束。旧 `constants()` 仍可借用 `BTreeSet<U256>`；返回 None 只说明常量组件为 Top。然后读 [`domain.rs`](../crates/evm-abstract/src/domain.rs) 的 `Domain::join`、`collect` 和 `finite_apply`，核对本课手算。默认 profile 的转换转到 [`domain/transfer.rs`](../crates/evm-abstract/src/domain/transfer.rs)，其中可信复制身份建立相等事实，各数值组件传播结果，再进行有界交换。具体 EVM 规则在 [`domain/concrete.rs`](../crates/evm-abstract/src/domain/concrete.rs) 的 `evaluate`；大整数计算由 alloy/ruint 提供。
 
 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 对照已支持纯操作的边界值和随机 256 位输入；这是核对 EVM 语义的证据，不等于所有环境、内存、跨合约行为都已精确建模。
 

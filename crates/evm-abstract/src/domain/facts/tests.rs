@@ -55,6 +55,117 @@ fn finite_membership_is_a_disjunction_and_intersects_other_constraints() {
 }
 
 #[test]
+fn fact_candidates_use_atom_capacity_instead_of_stored_domain_capacity() {
+    let mut open = FactLattice::new(1);
+    open.insert(unary(UnaryPredicate::NonZero))
+        .expect("one atom without finite candidates");
+    assert_eq!(open.scalar(Symbol::THIS).expect("scalar").finite(), None);
+    assert_eq!(open.atoms(), 1, "finite Top costs no fact atoms");
+
+    let candidates: BTreeSet<_> = (0u64..9).map(U256::from).collect();
+    assert!(candidates.len() > crate::domain::Domain::default().capacity());
+    let mut lattice = FactLattice::new(9);
+    assert_eq!(lattice.atoms(), 0, "unconstrained components cost no atoms");
+    lattice
+        .insert(unary(UnaryPredicate::MemberOf(
+            FiniteSet::new(candidates.clone()).expect("nonempty"),
+        )))
+        .expect("nine candidates fit the fact capacity");
+    assert_eq!(lattice.atoms(), candidates.len());
+    assert_eq!(
+        lattice.scalar(Symbol::THIS).expect("scalar").finite(),
+        Some(&candidates)
+    );
+    let before = lattice.clone();
+    assert_eq!(
+        lattice.insert(Fact::Unary(UnaryFact::new(
+            Symbol::new(1),
+            UnaryPredicate::Exact(U256::from(10)),
+        ))),
+        Err(FactError::Capacity {
+            max_atoms: 9,
+            required: 10,
+        })
+    );
+    assert_eq!(lattice, before);
+}
+
+#[test]
+fn finite_membership_keeps_its_serialized_array_shape() {
+    let candidates = BTreeSet::from([U256::from(1), U256::from(2)]);
+    let predicate = UnaryPredicate::MemberOf(FiniteSet::new(candidates.clone()).expect("nonempty"));
+    let expected = serde_json::json!({
+        "MemberOf": serde_json::to_value(&candidates).expect("candidate array"),
+    });
+    assert_eq!(
+        serde_json::to_value(&predicate).expect("serialized membership"),
+        expected
+    );
+    let mut lattice = FactLattice::new(2);
+    lattice.insert(unary(predicate)).expect("membership");
+    let facts = lattice.facts();
+    let [Fact::Unary(fact)] = facts.as_slice() else {
+        panic!("one complete membership fact must be exported");
+    };
+    assert_eq!(
+        serde_json::to_value(&fact.predicate).expect("exported membership"),
+        expected
+    );
+}
+
+#[test]
+fn empty_finite_meet_and_filter_return_contradiction_and_preserve_the_table() {
+    let mut lattice = FactLattice::new(16);
+    lattice
+        .insert(unary(UnaryPredicate::MemberOf(
+            FiniteSet::new(BTreeSet::from([U256::from(1), U256::from(3)])).expect("nonempty"),
+        )))
+        .expect("initial membership");
+    let before = lattice.clone();
+    assert_eq!(
+        lattice.insert(unary(UnaryPredicate::MemberOf(
+            FiniteSet::new(BTreeSet::from([U256::from(2), U256::from(4)])).expect("nonempty"),
+        ))),
+        Err(FactError::Contradiction {
+            subject: Symbol::THIS,
+        })
+    );
+    assert_eq!(lattice, before);
+    assert_eq!(
+        lattice.insert(unary(UnaryPredicate::BitClear(
+            BitIndex::new(0).expect("valid bit"),
+        ))),
+        Err(FactError::Contradiction {
+            subject: Symbol::THIS,
+        })
+    );
+    assert_eq!(lattice, before);
+}
+
+#[test]
+fn excluding_the_last_candidate_preserves_typed_contradiction_in_both_orders() {
+    let excluded = U256::from(7);
+    let exact = unary(UnaryPredicate::Exact(excluded));
+    let different = Fact::Binary(BinaryFact::new(
+        Term::Symbol(Symbol::THIS),
+        BinaryPredicate::Ne,
+        Term::Constant(excluded),
+    ));
+    for (first, second) in [(exact.clone(), different.clone()), (different, exact)] {
+        let mut lattice = FactLattice::new(16);
+        lattice.insert(first).expect("first fact is consistent");
+        let before = lattice.clone();
+        assert_eq!(
+            lattice.insert(second),
+            Err(FactError::Contradiction {
+                subject: Symbol::THIS,
+            })
+        );
+        assert_eq!(lattice, before);
+    }
+}
+
+#[test]
 fn contradictory_numerical_and_origin_facts_have_distinct_errors_and_roll_back() {
     let mut lattice = FactLattice::new(16);
     lattice.insert(unary(UnaryPredicate::IsZero)).expect("zero");
@@ -82,6 +193,39 @@ fn contradictory_numerical_and_origin_facts_have_distinct_errors_and_roll_back()
         })
     );
     assert_eq!(lattice, before);
+}
+
+#[test]
+fn scalar_meet_checks_origin_conflict_before_empty_finite_validation() {
+    let scalar = |value, origin| {
+        let mut lattice = FactLattice::new(16);
+        lattice
+            .insert(unary(UnaryPredicate::Exact(U256::from(value))))
+            .expect("exact value");
+        lattice
+            .insert(unary(UnaryPredicate::PossibleOrigins(OriginSet::source(
+                origin,
+            ))))
+            .expect("known source");
+        lattice.scalar(Symbol::THIS).expect("scalar").clone()
+    };
+    let mut left = scalar(1u64, Origin::Calldata);
+    let right = scalar(2u64, Origin::Storage);
+    assert_eq!(
+        left.meet(&right, Symbol::THIS),
+        Err(FactError::OriginContradiction {
+            subject: Symbol::THIS,
+        })
+    );
+
+    let mut left = scalar(1u64, Origin::Calldata);
+    let right = scalar(2u64, Origin::Calldata);
+    assert_eq!(
+        left.meet(&right, Symbol::THIS),
+        Err(FactError::Contradiction {
+            subject: Symbol::THIS,
+        })
+    );
 }
 
 #[test]

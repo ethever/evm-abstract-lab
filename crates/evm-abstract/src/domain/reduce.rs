@@ -262,41 +262,43 @@ pub(super) fn import(value: &Value, lattice: &FactLattice) -> Result<Value, Fact
     if facts.is_code_address() {
         out.provenance = out.provenance.with_code_address_role();
     }
-    if let Some(finite) = facts.finite() {
-        out.finite = Some(match &out.finite {
-            None => finite.clone(),
-            Some(old) => old.intersection(finite).copied().collect(),
-        });
+    if !facts.finite_constants().is_top() {
+        out.finite =
+            out.finite
+                .meet(facts.finite_constants())
+                .map_err(|_| FactError::Contradiction {
+                    subject: Symbol::THIS,
+                })?;
     }
-    if let Some(finite) = &out.finite {
-        let filtered = finite
-            .iter()
-            .copied()
-            .filter(|v| out.contains(*v))
-            .collect::<std::collections::BTreeSet<_>>();
-        if filtered.is_empty() {
-            return Err(FactError::Contradiction {
-                subject: Symbol::THIS,
-            });
-        }
+    if !out.finite.is_top() {
+        let filtered =
+            out.finite
+                .filter(|v| out.contains(v))
+                .map_err(|_| FactError::Contradiction {
+                    subject: Symbol::THIS,
+                })?;
+        let values = filtered
+            .as_values()
+            .expect("a filtered finite set remains finite");
         out.bits =
             out.bits
-                .meet(&KnownBits::from_values(&filtered))
+                .meet(&KnownBits::from_values(values))
                 .ok_or(FactError::Contradiction {
                     subject: Symbol::THIS,
                 })?;
-        out.interval = out.interval.meet(&Interval::from_values(&filtered)).ok_or(
-            FactError::Contradiction {
-                subject: Symbol::THIS,
-            },
-        )?;
+        out.interval =
+            out.interval
+                .meet(&Interval::from_values(values))
+                .ok_or(FactError::Contradiction {
+                    subject: Symbol::THIS,
+                })?;
         out.congruence = out
             .congruence
-            .meet(&Congruence::from_values(&filtered))
+            .meet(&Congruence::from_values(values))
             .ok_or(FactError::Contradiction {
                 subject: Symbol::THIS,
             })?;
-        out.finite = Some(filtered);
+        out.finite = filtered;
     }
     Ok(out)
 }

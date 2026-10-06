@@ -5,7 +5,7 @@
 //! 表内的重复事实被合并到固定槽位；只有语义变强时才报告 Strengthened。
 //! 容量不足返回独立错误，既不产生 Bottom，也不宣称规约已经达到固定点。
 
-use super::{congruence::Congruence, provenance::OriginSet};
+use super::{FiniteConstantSet, congruence::Congruence, provenance::OriginSet};
 use alloy_primitives::U256;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -132,21 +132,23 @@ impl WordBounds {
 }
 
 /// 非空的完整候选集合；表的容量还会按集合基数收费。
+/// 事实交换使用自己的原子容量，不应用存储域的常量上限。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct FiniteSet(BTreeSet<U256>);
+pub struct FiniteSet(FiniteConstantSet);
 
 impl FiniteSet {
     /// 取得调用方已有集合的所有权，避免构造时额外复制。
     pub fn new(values: BTreeSet<U256>) -> Result<Self, FactError> {
-        if values.is_empty() {
-            return Err(FactError::EmptyFiniteSet);
-        }
-        Ok(Self(values))
+        FiniteConstantSet::try_from_values(values)
+            .map(Self)
+            .map_err(|_| FactError::EmptyFiniteSet)
     }
 
     /// 借用完整候选，不需要复制。
     pub fn values(&self) -> &BTreeSet<U256> {
-        &self.0
+        self.0
+            .as_values()
+            .expect("FiniteSet only wraps a nonempty finite component")
     }
 }
 
@@ -381,10 +383,10 @@ pub enum FactError {
     },
 }
 
-/// 一个局部值的规范数值约束；没有字段表示未知，绝不表示空集合。
+/// 一个局部值的规范数值约束；未约束的组件表示未知，绝不表示空集合。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScalarFacts {
-    finite: Option<BTreeSet<U256>>,
+    finite: FiniteConstantSet,
     bits: Option<BitConstraints>,
     unsigned: Option<WordBounds>,
     signed: Option<WordBounds>,
@@ -398,7 +400,11 @@ pub struct ScalarFacts {
 impl ScalarFacts {
     /// 完整有限候选集合。
     pub fn finite(&self) -> Option<&BTreeSet<U256>> {
-        self.finite.as_ref()
+        self.finite.as_values()
+    }
+    /// 借用有限常量组件，供规约共享表示而不复制临时集合。
+    pub fn finite_constants(&self) -> &FiniteConstantSet {
+        &self.finite
     }
     /// 固定位掩码。
     pub fn known_bits(&self) -> Option<BitConstraints> {
@@ -435,9 +441,12 @@ impl ScalarFacts {
 
     /// 具体值是否符合全部数值事实；来源与角色不会改变该判定。
     pub fn contains(&self, value: U256) -> bool {
+        self.finite.contains(value) && self.contains_other_constraints(value)
+    }
+
+    fn contains_other_constraints(&self, value: U256) -> bool {
         let bias = U256::from(1) << 255;
-        self.finite.as_ref().is_none_or(|set| set.contains(&value))
-            && self.bits.is_none_or(|bits| bits.contains(value))
+        self.bits.is_none_or(|bits| bits.contains(value))
             && self.unsigned.is_none_or(|bounds| bounds.contains(value))
             && self
                 .signed
@@ -450,9 +459,7 @@ impl ScalarFacts {
     pub fn singleton(&self) -> Option<U256> {
         let candidate = self
             .finite
-            .as_ref()
-            .filter(|set| set.len() == 1)
-            .and_then(|set| set.first().copied())
+            .singleton()
             .or_else(|| {
                 self.bits
                     .filter(|bits| bits.zero | bits.one == U256::MAX)
@@ -473,7 +480,7 @@ impl ScalarFacts {
     }
 
     fn atoms(&self) -> usize {
-        self.finite.as_ref().map_or(0, BTreeSet::len)
+        self.finite.cardinality().unwrap_or(0)
             + usize::from(self.bits.is_some())
             + usize::from(self.unsigned.is_some())
             + usize::from(self.signed.is_some())
@@ -484,22 +491,23 @@ impl ScalarFacts {
             + self.origins.as_ref().map_or(0, OriginSet::work_size)
     }
 
-    fn constrain_finite(&mut self, set: &BTreeSet<U256>) {
-        self.finite = Some(match &self.finite {
-            Some(current) => current.intersection(set).copied().collect(),
-            None => set.clone(),
-        });
+    fn constrain_finite(
+        &mut self,
+        set: &FiniteConstantSet,
+        subject: Symbol,
+    ) -> Result<(), FactError> {
+        self.finite = self
+            .finite
+            .meet(set)
+            .map_err(|_| FactError::Contradiction { subject })?;
+        Ok(())
     }
 
     fn validate(&mut self, subject: Symbol) -> Result<(), FactError> {
-        let candidates = self.finite.take();
-        if let Some(mut candidates) = candidates {
-            candidates.retain(|value| self.contains(*value));
-            if candidates.is_empty() {
-                return Err(FactError::Contradiction { subject });
-            }
-            self.finite = Some(candidates);
-        }
+        self.finite = self
+            .finite
+            .filter(|value| self.contains_other_constraints(value))
+            .map_err(|_| FactError::Contradiction { subject })?;
         if self
             .bits
             .is_some_and(|bits| bits.zero | bits.one == U256::MAX)
@@ -534,9 +542,8 @@ impl ScalarFacts {
 
     fn meet(&mut self, other: &Self, subject: Symbol) -> Result<(), FactError> {
         let contradiction = || FactError::Contradiction { subject };
-        if let Some(finite) = &other.finite {
-            self.constrain_finite(finite);
-        }
+        // 来源错误先于候选最终校验；暂存交集结果以保留原来的错误优先级。
+        let finite = (!other.finite.is_top()).then(|| self.finite.meet(&other.finite));
         if let Some(bits) = other.bits {
             self.bits = Some(match self.bits {
                 Some(current) => current.meet(bits).map_err(|_| contradiction())?,
@@ -571,6 +578,9 @@ impl ScalarFacts {
                     .ok_or(FactError::OriginContradiction { subject })?,
                 None => origins.clone(),
             });
+        }
+        if let Some(finite) = finite {
+            self.finite = finite.map_err(|_| contradiction())?;
         }
         self.validate(subject)
     }
@@ -681,9 +691,13 @@ impl FactLattice {
             BinaryPredicate::Ne => {
                 let representative = self.representative(subject);
                 if let Some(scalar) = self.scalars.get_mut(&representative) {
-                    if let Some(finite) = &mut scalar.finite {
-                        finite.remove(&constant);
-                    }
+                    scalar.finite =
+                        scalar
+                            .finite
+                            .filter(|value| value != constant)
+                            .map_err(|_| FactError::Contradiction {
+                                subject: representative,
+                            })?;
                     scalar.validate(representative)?;
                 }
                 return Ok(());
@@ -842,9 +856,9 @@ impl FactLattice {
         let bit_set = matches!(&fact.predicate, UnaryPredicate::BitSet(_));
         match fact.predicate {
             UnaryPredicate::Exact(value) => {
-                scalar.constrain_finite(&BTreeSet::from([value]));
+                scalar.constrain_finite(&FiniteConstantSet::constant(value), subject)?;
             }
-            UnaryPredicate::MemberOf(set) => scalar.constrain_finite(set.values()),
+            UnaryPredicate::MemberOf(set) => scalar.constrain_finite(&set.0, subject)?,
             UnaryPredicate::KnownBits(bits) => {
                 scalar.bits = Some(match scalar.bits {
                     Some(current) => current.meet(bits).map_err(|_| contradiction())?,
@@ -887,7 +901,9 @@ impl FactLattice {
                     None => congruence,
                 });
             }
-            UnaryPredicate::IsZero => scalar.constrain_finite(&BTreeSet::from([U256::ZERO])),
+            UnaryPredicate::IsZero => {
+                scalar.constrain_finite(&FiniteConstantSet::constant(U256::ZERO), subject)?;
+            }
             UnaryPredicate::NonZero => scalar.nonzero = true,
             UnaryPredicate::IsAddress => {
                 scalar.address = true;
@@ -965,8 +981,8 @@ impl FactLattice {
         let mut facts = Vec::new();
         for (&subject, scalar) in &self.scalars {
             let mut push = |predicate| facts.push(Fact::Unary(UnaryFact::new(subject, predicate)));
-            if let Some(finite) = &scalar.finite {
-                push(UnaryPredicate::MemberOf(FiniteSet(finite.clone())));
+            if !scalar.finite.is_top() {
+                push(UnaryPredicate::MemberOf(FiniteSet(scalar.finite.clone())));
             }
             if let Some(bits) = scalar.bits {
                 push(UnaryPredicate::KnownBits(bits));
