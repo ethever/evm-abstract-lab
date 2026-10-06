@@ -216,11 +216,24 @@ nix run . -- cfg --file examples/diamond.hex --max-states 1 --format json
 建议沿着一次传播读，而不是先读完整模块：
 
 1. [`config.rs`](../crates/evm-abstract/src/analysis/config.rs)：原始 `Config` 中的数字先经过验证，成功后得到字段私有的 `ValidatedConfig`，并把容量转为 `NonZeroUsize`。配置与域在这里一起构造。
-2. [`engine.rs`](../crates/evm-abstract/src/analysis/engine.rs) 的 `run`：取队列项，检查预算，执行一次块转换。
-3. [`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 的 JUMP/JUMPI 分支：弹出目标与条件，枚举合法后继。
-4. 回到 `Engine::successor`：按键查找节点，join 输入，决定是否入队并保存边。
+2. [`engine.rs`](../crates/evm-abstract/src/analysis/engine.rs) 的 `run_world` 初始化入口节点，再看 `Engine::run` 怎样取队列项、检查预算和调用 `transfer::execute`。
+3. [`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 的 `execute` 及 JUMP/JUMPI 分支：弹出目标与条件，枚举合法后继。
+4. 回到 `Engine::execution` 收集块转换的证据，再读 `Engine::successor`：按键查找节点，join 输入，决定是否入队并保存边。随后回到 `run` 看下一次调度。
 5. [`single.rs`](../crates/evm-abstract/src/analysis/single.rs)：把同一世界分析核心投影为本课看到的局部 S/B 视图。
 
 阅读时核对五条规则：不同栈高不合并；同一键的输入只通过 join 扩大；扩大后需要重访；旧边不删除；任何未完成展开都保留前沿。相关样例由 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 与 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 核对。
+
+`Engine` 的私有字段分担不同职责，不能把“状态表”与“待处理队列”混为一谈：
+
+| 字段 | 保存什么，为什么需要它 |
+|---|---|
+| `result.states` / `ids` | 前者保存入口、最近一次转换证据和节点编号；后者把结构键映射到编号，决定新输入进入哪个节点 |
+| `queue` / `queued` | 前者保存 FIFO 调度记录；后者表示哪些节点仍需处理。摘要回放可满足已排队的节点，留下的旧队列项会被跳过 |
+| `domain` / `budget` | 前者规定抽象运算与 join 的精度；后者累计普通执行和摘要操作的工作量，缓存命中也要付出工作量 |
+| `cache` / `completed_calls` | 前者保存摘要候选与完整证书；后者按节点编号保存 caller join 前的子调用终结证据，避免从汇合结果反推调用效果 |
+
+先掌握普通传播，再沿 `try_summary` 阅读摘要分支：未命中时仍正常执行，`Cache::publish_closed` 用 `capture` 检查子图是否闭合；命中时 `Engine::replay` 导入证书，并用 `transfer::resume_summary` 在当前 caller 下重新生成返回转移。具体前提见[第 10 课](10-snapshots-summaries-creation.md)。
+
+私有可见性限制外部调用，不说明实现意图。读方法时仍需核对：它更新哪份数据、凭什么跳过执行，以及预算中断后保留什么未完成证据；源码注释对应这些职责和不变量。
 
 下一课：[用 SSA 给栈值命名](04-ssa.md)。有了完整的前驱关系，才能准确解释一个值在汇合处来自哪里。
