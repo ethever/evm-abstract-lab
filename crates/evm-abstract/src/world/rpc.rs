@@ -1,4 +1,4 @@
-//! Explicit, bounded RPC acquisition before analysis starts.
+//! Explicit, bounded RPC acquisition for a fixed analysis snapshot.
 //!
 //! Every state request uses EIP-1898's exact block hash with
 //! `requireCanonical=true`. Unsupported hash selectors and missing state are
@@ -6,13 +6,17 @@
 //! The chosen endpoint is a trusted observation source: code hashes and
 //! duplicate state fields are checked, but Merkle proofs are not verified.
 
+mod session;
 #[cfg(test)]
 mod tests;
+
+pub use session::Session;
 
 use super::{Account, Existence, World, WorldError};
 use crate::{Fork, bytecode::DecodeError, domain::Value};
 use alloy_primitives::{Address, B256, U256, hex};
 use reqwest::blocking::Client;
+use serde::Serialize;
 use serde_json::{Value as Json, json};
 use std::{collections::BTreeSet, fmt, io::Read, time::Duration};
 
@@ -42,6 +46,10 @@ pub struct RpcInput {
     pub timeout: Duration,
     /// Maximum JSON response bytes accepted per request.
     pub max_response_bytes: usize,
+    /// Maximum total accounts, including initial and on-demand observations.
+    pub max_accounts: usize,
+    /// Maximum HTTP requests, including identity checks and failed requests.
+    pub max_requests: usize,
 }
 
 impl RpcInput {
@@ -55,12 +63,14 @@ impl RpcInput {
             accounts: Vec::new(),
             timeout: Duration::from_secs(15),
             max_response_bytes: 4 * 1024 * 1024,
+            max_accounts: 256,
+            max_requests: 16_384,
         }
     }
 }
 
 /// Provenance retained on every acquisition failure.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RpcContext {
     /// Chain identifier requested by the caller.
     pub chain_id: U256,
@@ -91,7 +101,68 @@ impl fmt::Display for RpcContext {
     }
 }
 
-/// RPC failure before a world exists; callers must not report convergence.
+/// Cumulative resource whose acquisition bound was reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcquisitionLimit {
+    /// Number of accounts retained in the fixed snapshot.
+    Accounts,
+    /// Number of attempted HTTP requests across the session.
+    Requests,
+}
+
+/// Stable classification retained when a late acquisition failure is reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RpcFailureKind {
+    /// Invalid local limits or duplicate initial acquisition entries.
+    Configuration,
+    /// A cumulative account or request bound was reached.
+    AcquisitionLimit,
+    /// HTTP transport, connection or timeout failure.
+    Transport,
+    /// Non-success HTTP status.
+    Http,
+    /// Per-response allocation bound was reached.
+    ResponseLimit,
+    /// Reading the response body failed.
+    Read,
+    /// Response JSON could not be decoded.
+    Json,
+    /// JSON-RPC returned an explicit error.
+    Remote,
+    /// JSON-RPC result was missing or null.
+    MissingResult,
+    /// Response envelope or observed facts were inconsistent.
+    Response,
+    /// Observed chain identity differed from the requested chain.
+    ChainMismatch,
+    /// Observed block identity differed from the requested block.
+    BlockMismatch,
+    /// Code could not be decoded under the selected fork.
+    Code,
+    /// Account observations violated fixed-snapshot consistency.
+    World,
+}
+
+/// Serializable evidence for acquisition that failed after analysis began.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Failure {
+    /// Requested snapshot, failing method and account/slot provenance.
+    pub context: RpcContext,
+    /// Typed failure category, independent of the explanatory message.
+    pub kind: RpcFailureKind,
+    /// Cumulative resource whose bound was reached, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<AcquisitionLimit>,
+    /// Reached cumulative bound, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// Public explanation without transport URLs or untrusted remote messages.
+    pub message: String,
+}
+
+/// RPC failure; callers must not manufacture an observation or convergence.
 ///
 /// Nested failures remain concrete fields on their variants. Inspect those fields
 /// directly; the standard error trait does not expose an erased source chain.
@@ -103,6 +174,15 @@ pub enum RpcError {
         context: Box<RpcContext>,
         /// Which local configuration invariant failed.
         reason: &'static str,
+    },
+    /// A cumulative session acquisition bound was reached before a request.
+    AcquisitionLimit {
+        /// Fixed snapshot and method provenance.
+        context: Box<RpcContext>,
+        /// Cumulative resource whose configured limit was reached.
+        resource: AcquisitionLimit,
+        /// Configured maximum for the exhausted resource.
+        limit: usize,
     },
     /// Transport failures, including timeout and connection errors.
     Transport {
@@ -145,7 +225,8 @@ pub enum RpcError {
         context: Box<RpcContext>,
         /// Remote JSON-RPC error code.
         code: i64,
-        /// Remote explanatory message.
+        /// Untrusted remote explanation, retained for explicit library inspection.
+        /// Public display and serialized failure evidence do not copy this text.
         message: String,
     },
     /// No observation was returned; absence is never manufactured from null.
@@ -196,6 +277,14 @@ impl fmt::Display for RpcError {
             Self::Configuration { context, reason } => {
                 write!(formatter, "invalid RPC configuration ({context}): {reason}")
             }
+            Self::AcquisitionLimit {
+                context,
+                resource,
+                limit,
+            } => write!(
+                formatter,
+                "RPC acquisition {resource:?} limit {limit} reached ({context})"
+            ),
             Self::Transport { context, source } => {
                 write!(formatter, "RPC transport failure ({context}): {source}")
             }
@@ -211,12 +300,8 @@ impl fmt::Display for RpcError {
             Self::Json { context, source } => {
                 write!(formatter, "RPC JSON failure ({context}): {source}")
             }
-            Self::Remote {
-                context,
-                code,
-                message,
-            } => {
-                write!(formatter, "RPC error {code} ({context}): {message}")
+            Self::Remote { context, code, .. } => {
+                write!(formatter, "RPC error {code} ({context})")
             }
             Self::MissingResult { context } => {
                 write!(formatter, "RPC result is missing or null ({context})")
@@ -253,6 +338,7 @@ impl RpcError {
     pub fn context(&self) -> &RpcContext {
         match self {
             Self::Configuration { context, .. }
+            | Self::AcquisitionLimit { context, .. }
             | Self::Transport { context, .. }
             | Self::Http { context, .. }
             | Self::ResponseLimit { context, .. }
@@ -267,6 +353,43 @@ impl RpcError {
             | Self::World { context, .. } => context,
         }
     }
+
+    /// Classification available without parsing the displayed explanation.
+    pub fn kind(&self) -> RpcFailureKind {
+        match self {
+            Self::Configuration { .. } => RpcFailureKind::Configuration,
+            Self::AcquisitionLimit { .. } => RpcFailureKind::AcquisitionLimit,
+            Self::Transport { .. } => RpcFailureKind::Transport,
+            Self::Http { .. } => RpcFailureKind::Http,
+            Self::ResponseLimit { .. } => RpcFailureKind::ResponseLimit,
+            Self::Read { .. } => RpcFailureKind::Read,
+            Self::Json { .. } => RpcFailureKind::Json,
+            Self::Remote { .. } => RpcFailureKind::Remote,
+            Self::MissingResult { .. } => RpcFailureKind::MissingResult,
+            Self::Response { .. } => RpcFailureKind::Response,
+            Self::ChainMismatch { .. } => RpcFailureKind::ChainMismatch,
+            Self::BlockMismatch { .. } => RpcFailureKind::BlockMismatch,
+            Self::Code { .. } => RpcFailureKind::Code,
+            Self::World { .. } => RpcFailureKind::World,
+        }
+    }
+
+    /// Preserve typed provenance when an analysis retains a late failure.
+    pub fn failure(&self) -> Failure {
+        let (resource, limit) = match self {
+            Self::AcquisitionLimit {
+                resource, limit, ..
+            } => (Some(*resource), Some(*limit)),
+            _ => (None, None),
+        };
+        Failure {
+            context: self.context().clone(),
+            kind: self.kind(),
+            resource,
+            limit,
+            message: self.to_string(),
+        }
+    }
 }
 
 /// Acquire a complete selected input set, or return an error before analysis.
@@ -275,18 +398,25 @@ impl RpcError {
 /// omitted storage slot remains unknown. This function never follows CALL
 /// targets discovered by execution and never performs implicit networking.
 pub fn load(input: &RpcInput) -> Result<World, RpcError> {
+    Session::load(input).map(Session::into_world)
+}
+
+fn configured_loader(input: &RpcInput) -> Result<Loader, RpcError> {
     let client_context = context(input, "client", None, None);
     if input.timeout.is_zero()
         || input.max_response_bytes == 0
         || input.max_response_bytes > 64 * 1024 * 1024
+        || input.max_accounts == 0
+        || input.max_accounts > 4096
+        || input.max_requests == 0
     {
         return Err(RpcError::Configuration {
             context: Box::new(client_context),
-            reason: "timeout must be positive and response limit must be 1..=64 MiB",
+            reason: "timeout and request limit must be positive, response limit 1..=64 MiB, and account limit 1..=4096",
         });
     }
     let mut addresses = BTreeSet::new();
-    if input.accounts.len() > 4096
+    if input.accounts.len() > input.max_accounts
         || input
             .accounts
             .iter()
@@ -294,7 +424,7 @@ pub fn load(input: &RpcInput) -> Result<World, RpcError> {
     {
         return Err(RpcError::Configuration {
             context: Box::new(client_context),
-            reason: "accounts must be unique, at most 4096, with at most 1024 slots each",
+            reason: "initial accounts must be unique, fit the account limit, and have at most 1024 slots each",
         });
     }
     let client = Client::builder()
@@ -306,21 +436,11 @@ pub fn load(input: &RpcInput) -> Result<World, RpcError> {
             context: Box::new(client_context),
             source: source.without_url(),
         })?;
-    let mut loader = Loader {
-        input,
+    Ok(Loader {
+        input: input.clone(),
         client,
         next_id: 0,
-    };
-    loader.check_chain()?;
-    loader.check_block()?;
-    let mut world = World::anchored(input.fork, input.chain_id, input.block_hash, "explicit-rpc");
-    for request in &input.accounts {
-        loader.account(&mut world, request)?;
-    }
-    // Reject an endpoint that switches chain while acquisition is in flight.
-    loader.check_chain()?;
-    loader.check_block()?;
-    Ok(world)
+    })
 }
 
 fn context(
@@ -345,23 +465,34 @@ fn invalid(context: &RpcContext, reason: &'static str) -> RpcError {
     }
 }
 
-struct Loader<'a> {
-    input: &'a RpcInput,
+#[derive(Debug)]
+struct Loader {
+    input: RpcInput,
     client: Client,
-    next_id: u64,
+    next_id: usize,
 }
 
-impl Loader<'_> {
+impl Loader {
     fn selector(&self) -> Json {
         json!({"blockHash": self.input.block_hash, "requireCanonical": true})
     }
 
     fn call(&mut self, context: &RpcContext, params: Json) -> Result<Json, RpcError> {
+        if self.next_id >= self.input.max_requests {
+            return Err(RpcError::AcquisitionLimit {
+                context: Box::new(context.clone()),
+                resource: AcquisitionLimit::Requests,
+                limit: self.input.max_requests,
+            });
+        }
         self.next_id += 1;
-        let id = self.next_id;
+        let id = self.next_id as u64;
         let response = self
             .client
             .post(&self.input.endpoint)
+            // A request timeout also reaches reqwest's async body deadline;
+            // the blocking client's timeout alone only bounds each read wait.
+            .timeout(self.input.timeout)
             .json(&json!({"jsonrpc":"2.0", "id":id, "method":context.method, "params":params}))
             .send()
             .map_err(|source| RpcError::Transport {
@@ -438,7 +569,7 @@ impl Loader<'_> {
     }
 
     fn check_chain(&mut self) -> Result<(), RpcError> {
-        let context = context(self.input, "eth_chainId", None, None);
+        let context = context(&self.input, "eth_chainId", None, None);
         let value = self.call(&context, json!([]))?;
         let observed = quantity(&value, &context)?;
         if observed != self.input.chain_id {
@@ -451,7 +582,7 @@ impl Loader<'_> {
     }
 
     fn check_block(&mut self) -> Result<(), RpcError> {
-        let context = context(self.input, "eth_getBlockByHash", None, None);
+        let context = context(&self.input, "eth_getBlockByHash", None, None);
         let value = self.call(&context, json!([self.input.block_hash, false]))?;
         let observed = hash(&value["hash"], &context)?;
         if observed != self.input.block_hash {
@@ -465,7 +596,7 @@ impl Loader<'_> {
 
     fn account(&mut self, world: &mut World, request: &AccountRequest) -> Result<(), RpcError> {
         let address = request.address;
-        let code_context = context(self.input, "eth_getCode", Some(address), None);
+        let code_context = context(&self.input, "eth_getCode", Some(address), None);
         let code = self.call(&code_context, json!([address, self.selector()]))?;
         let bytes = data(&code, &code_context)?;
         let mut account =
@@ -476,19 +607,19 @@ impl Loader<'_> {
                 }
             })?;
         account.storage_unknown = true;
-        let balance_context = context(self.input, "eth_getBalance", Some(address), None);
+        let balance_context = context(&self.input, "eth_getBalance", Some(address), None);
         let balance = quantity(
             &self.call(&balance_context, json!([address, self.selector()]))?,
             &balance_context,
         )?;
         account.balance = Value::constant(balance);
-        let nonce_context = context(self.input, "eth_getTransactionCount", Some(address), None);
+        let nonce_context = context(&self.input, "eth_getTransactionCount", Some(address), None);
         let nonce = quantity(
             &self.call(&nonce_context, json!([address, self.selector()]))?,
             &nonce_context,
         )?;
         account.nonce = Value::constant(nonce);
-        let proof_context = context(self.input, "eth_getProof", Some(address), None);
+        let proof_context = context(&self.input, "eth_getProof", Some(address), None);
         let keys: Vec<_> = request
             .slots
             .iter()
@@ -543,7 +674,7 @@ impl Loader<'_> {
                 .as_array()
                 .ok_or_else(|| invalid(&proof_context, "missing storage proof nodes"))?;
             let proof_value = quantity(&observation["value"], &proof_context)?;
-            let slot_context = context(self.input, "eth_getStorageAt", Some(address), Some(key));
+            let slot_context = context(&self.input, "eth_getStorageAt", Some(address), Some(key));
             let value = self.call(
                 &slot_context,
                 json!([address, format!("{key:#x}"), self.selector()]),

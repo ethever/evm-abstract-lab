@@ -276,6 +276,13 @@ pub enum FrontierReason {
     UnknownTarget,
     /// The fixed world does not establish this account's executable code.
     MissingCode(Address),
+    /// A discovered account could not be acquired at the fixed RPC snapshot.
+    RpcAcquisition {
+        /// Address requested by the incomplete call or entry.
+        address: Address,
+        /// Typed acquisition category and fixed-snapshot request context.
+        failure: Box<crate::world::rpc::Failure>,
+    },
     /// Direct native precompile execution is outside the bytecode model.
     Precompile(Address),
     /// Native precompile input cannot be represented or its work bound is unavailable.
@@ -339,11 +346,17 @@ pub struct WorldAnalysis {
     pub(crate) status: Status,
     pub(crate) transfers: usize,
     pub(crate) work: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) rpc_acquisition: Option<super::RpcAcquisition>,
     pub(crate) summary_stats: super::summary::SummaryStats,
     pub(crate) summaries: Vec<super::summary::SummaryRecord>,
 }
 
 impl WorldAnalysis {
+    /// Cumulative discovery evidence when this result was acquired through RPC.
+    pub fn rpc_acquisition(&self) -> Option<&super::RpcAcquisition> {
+        self.rpc_acquisition.as_ref()
+    }
     /// 冻结的域、交换、widening 和成本策略。
     pub fn domain_spec(&self) -> crate::domain::DomainSpec {
         self.domain_spec

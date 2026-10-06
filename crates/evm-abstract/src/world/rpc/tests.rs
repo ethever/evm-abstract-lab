@@ -1,6 +1,6 @@
 //! Local JSON-RPC regressions exercise the real HTTP and input boundaries.
 
-use super::{AccountRequest, RpcError, RpcInput, load};
+use super::{AccountRequest, RpcError, RpcFailureKind, RpcInput, Session, load};
 use crate::{
     Address, Fork, U256,
     domain::Value,
@@ -23,6 +23,7 @@ use std::{
 enum Reply {
     Json(Json),
     Bytes(Vec<u8>),
+    Trickle(Json),
     Http(u16),
     Delay,
 }
@@ -77,10 +78,11 @@ impl Server {
                 stream.read_exact(&mut body).unwrap();
                 let request: Json = serde_json::from_slice(&body).unwrap();
                 observed_requests.lock().unwrap().push(request.clone());
-                let (status, bytes) = match handler(&request) {
-                    Reply::Json(value) => (200, serde_json::to_vec(&value).unwrap()),
-                    Reply::Bytes(bytes) => (200, bytes),
-                    Reply::Http(status) => (status, Vec::new()),
+                let (status, bytes, trickle) = match handler(&request) {
+                    Reply::Json(value) => (200, serde_json::to_vec(&value).unwrap(), false),
+                    Reply::Bytes(bytes) => (200, bytes, false),
+                    Reply::Trickle(value) => (200, serde_json::to_vec(&value).unwrap(), true),
+                    Reply::Http(status) => (status, Vec::new(), false),
                     Reply::Delay => {
                         thread::sleep(Duration::from_millis(150));
                         continue;
@@ -92,7 +94,16 @@ impl Server {
                 );
                 // Timeout tests intentionally close the client connection first.
                 let _ = stream.write_all(header.as_bytes());
-                let _ = stream.write_all(&bytes);
+                if trickle {
+                    for byte in bytes {
+                        if stream.write_all(&[byte]).is_err() {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                } else {
+                    let _ = stream.write_all(&bytes);
+                }
             }
         });
         Self {
@@ -416,4 +427,239 @@ fn connection_failures_are_typed_and_carry_the_expected_snapshot() {
     assert!(matches!(error, RpcError::Transport { .. }));
     assert_eq!(error.context().method, "eth_chainId");
     assert_eq!(error.context().block_hash, input.block_hash);
+}
+
+fn incremental_healthy(request: &Json) -> Json {
+    let mut response = healthy(request);
+    if request["method"] == "eth_getProof" {
+        response["result"]["address"] = request["params"][0].clone();
+        if request["params"][1].as_array().unwrap().is_empty() {
+            response["result"]["storageProof"] = json!([]);
+        }
+    }
+    response
+}
+
+#[test]
+fn incremental_accounts_are_cached_and_keep_unrequested_storage_unknown() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| Reply::Json(incremental_healthy(request)));
+        let input = server.input();
+        let mut session = Session::load(&input).unwrap();
+        assert_eq!(session.requests(), 9);
+        assert!(!session.fetch_account(Address::repeat_byte(0x22)).unwrap());
+        assert_eq!(session.requests(), 9);
+        assert!(session.fetch_account(Address::repeat_byte(0x44)).unwrap());
+        assert_eq!(session.requests(), 17);
+        let account = session.world().account(Address::repeat_byte(0x44)).unwrap();
+        assert_eq!(account.balance.singleton(), Some(U256::from(9)));
+        assert_eq!(account.nonce.singleton(), Some(U256::from(1)));
+        assert!(account.storage_unknown);
+        assert!(account.storage.is_empty());
+        assert!(!session.fetch_account(Address::repeat_byte(0x44)).unwrap());
+        assert_eq!(session.requests(), 17);
+        assert_eq!(server.requests().len(), 17);
+        for request in server.requests() {
+            if !matches!(
+                request["method"].as_str(),
+                Some("eth_chainId" | "eth_getBlockByHash")
+            ) {
+                assert_eq!(
+                    request["params"].as_array().unwrap().last().unwrap(),
+                    &json!({"blockHash": input.block_hash, "requireCanonical": true})
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn incremental_final_identity_failure_does_not_install_an_account() {
+    thread::scope(|scope| {
+        for failing_method in ["eth_chainId", "eth_getBlockByHash"] {
+            let checks = Arc::new(Mutex::new(0));
+            let server = Server::new(scope, move |request| {
+                let mut response = incremental_healthy(request);
+                if request["method"] == failing_method {
+                    let mut checks = checks.lock().unwrap();
+                    *checks += 1;
+                    if *checks == 4 {
+                        if failing_method == "eth_chainId" {
+                            response["result"] = json!("0x2");
+                        } else {
+                            response["result"]["hash"] = json!(B256::repeat_byte(0x55));
+                        }
+                    }
+                }
+                Reply::Json(response)
+            });
+            let mut session = Session::load(&server.input()).unwrap();
+            let error = session
+                .fetch_account(Address::repeat_byte(0x44))
+                .unwrap_err();
+            assert_eq!(error.context().method, failing_method);
+            assert!(
+                session
+                    .world()
+                    .account(Address::repeat_byte(0x44))
+                    .is_none()
+            );
+            assert!(
+                session
+                    .world()
+                    .account(Address::repeat_byte(0x22))
+                    .is_some()
+            );
+            assert_eq!(session.requests(), server.requests().len());
+            assert_eq!(
+                error.kind(),
+                if failing_method == "eth_chainId" {
+                    RpcFailureKind::ChainMismatch
+                } else {
+                    RpcFailureKind::BlockMismatch
+                }
+            );
+        }
+    });
+}
+
+#[test]
+fn remote_message_credentials_are_not_copied_to_public_failure_evidence() {
+    thread::scope(|scope| {
+        let message =
+            "rejected https://rpc-user:rpc-password@example.invalid/rpc?api-key=private-token";
+        let server = Server::new(scope, move |request| {
+            if request["method"] == "eth_getCode"
+                && request["params"][0] == json!(Address::repeat_byte(0x44))
+            {
+                return Reply::Json(json!({
+                    "jsonrpc":"2.0", "id":request["id"],
+                    "error":{"code":-32000, "message":message}
+                }));
+            }
+            Reply::Json(incremental_healthy(request))
+        });
+        let mut session = Session::load(&server.input()).unwrap();
+        let error = session
+            .fetch_account(Address::repeat_byte(0x44))
+            .unwrap_err();
+        assert!(
+            matches!(&error, RpcError::Remote { message: observed, .. } if observed == message)
+        );
+        let displayed = error.to_string();
+        let failure = error.failure();
+        assert_eq!(failure.kind, RpcFailureKind::Remote);
+        assert_eq!(failure.context.account, Some(Address::repeat_byte(0x44)));
+        assert_eq!(failure.context.block_hash, B256::repeat_byte(0x11));
+        let serialized = serde_json::to_string(&failure).unwrap();
+        for secret in [
+            "https://",
+            "rpc-user",
+            "rpc-password",
+            "private-token",
+            message,
+        ] {
+            assert!(!displayed.contains(secret));
+            assert!(!serialized.contains(secret));
+        }
+        assert!(displayed.contains("-32000"));
+        assert!(
+            session
+                .world()
+                .account(Address::repeat_byte(0x44))
+                .is_none()
+        );
+    });
+}
+
+#[test]
+fn incremental_timeout_and_response_limit_remain_typed_without_partial_cache() {
+    thread::scope(|scope| {
+        for delayed in [false, true] {
+            let server = Server::new(scope, move |request| {
+                if request["method"] == "eth_getCode"
+                    && request["params"][0] == json!(Address::repeat_byte(0x44))
+                {
+                    return if delayed {
+                        Reply::Delay
+                    } else {
+                        Reply::Bytes(vec![b' '; 1025])
+                    };
+                }
+                Reply::Json(incremental_healthy(request))
+            });
+            let mut input = server.input();
+            input.max_response_bytes = 1024;
+            if delayed {
+                input.timeout = Duration::from_millis(50);
+            }
+            let mut session = Session::load(&input).unwrap();
+            let error = session
+                .fetch_account(Address::repeat_byte(0x44))
+                .unwrap_err();
+            if delayed {
+                assert!(matches!(
+                    error,
+                    RpcError::Transport { .. } | RpcError::Read { .. }
+                ));
+            } else {
+                assert!(matches!(error, RpcError::ResponseLimit { limit: 1024, .. }));
+            }
+            assert_eq!(error.context().method, "eth_getCode");
+            assert_eq!(error.context().account, Some(Address::repeat_byte(0x44)));
+            assert!(
+                session
+                    .world()
+                    .account(Address::repeat_byte(0x44))
+                    .is_none()
+            );
+            assert_eq!(session.requests(), 12);
+        }
+    });
+}
+
+#[test]
+fn incremental_body_timeout_is_a_total_deadline_despite_continuing_chunks() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| {
+            let reply = incremental_healthy(request);
+            if request["method"] == "eth_getCode"
+                && request["params"][0] == json!(Address::repeat_byte(0x44))
+            {
+                // Valid JSON arrives one byte per 10 ms. Every individual read
+                // can succeed within 50 ms, while the full body takes >100 ms.
+                assert!(serde_json::to_vec(&reply).unwrap().len() > 10);
+                return Reply::Trickle(reply);
+            }
+            Reply::Json(reply)
+        });
+        let mut input = server.input();
+        input.timeout = Duration::from_millis(50);
+        let mut session = Session::load(&input).unwrap();
+        let error = session
+            .fetch_account(Address::repeat_byte(0x44))
+            .unwrap_err();
+        match &error {
+            // reqwest maps body deadline failures into a concrete I/O error;
+            // its Display need not expose the nested timeout text.
+            RpcError::Read { .. } => {}
+            RpcError::Transport { source, .. } => assert!(source.is_timeout()),
+            other => panic!("expected total response timeout, got {other}"),
+        }
+        assert_eq!(error.context().method, "eth_getCode");
+        assert_eq!(error.context().account, Some(Address::repeat_byte(0x44)));
+        assert!(
+            session
+                .world()
+                .account(Address::repeat_byte(0x44))
+                .is_none()
+        );
+        assert!(
+            session
+                .world()
+                .account(Address::repeat_byte(0x22))
+                .is_some()
+        );
+        assert_eq!(session.requests(), 12);
+    });
 }

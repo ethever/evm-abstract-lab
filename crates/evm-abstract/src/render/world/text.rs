@@ -74,6 +74,31 @@ pub fn render(analysis: &WorldAnalysis) -> String {
     .unwrap();
     writeln!(output, "  fingerprint={}", analysis.world().fingerprint()).unwrap();
 
+    if let Some(acquisition) = analysis.rpc_acquisition() {
+        output.push_str("\nRPC acquisition\n");
+        writeln!(
+            output,
+            "  rounds={} | requests={} | states created={}",
+            acquisition.rounds, acquisition.requests, acquisition.states_created
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "  fetched accounts={:?}",
+            acquisition.fetched_accounts
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "  failed accounts={:?}",
+            acquisition.failed_accounts
+        )
+        .unwrap();
+        for failed in &acquisition.failures {
+            writeln!(output, "  {}: {}", failed.address, failed.failure.message).unwrap();
+        }
+    }
+
     output.push_str("\nReferences\n\nAddresses\n");
     write_table(
         &mut output,

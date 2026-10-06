@@ -1,7 +1,10 @@
 //! Concrete errors at the CLI's acquisition, analysis and output boundary.
 
 use evm_abstract::{
-    analysis::ConfigError, bytecode::DecodeError, ssa::SsaError, world::rpc::RpcError,
+    analysis::{ConfigError, RpcAnalysisError},
+    bytecode::DecodeError,
+    ssa::SsaError,
+    world::rpc::RpcError,
 };
 use thiserror::Error;
 
@@ -52,6 +55,15 @@ impl From<InputError> for CliError {
 impl From<RpcError> for CliError {
     fn from(error: RpcError) -> Self {
         Self::Rpc(error)
+    }
+}
+
+impl From<RpcAnalysisError> for CliError {
+    fn from(error: RpcAnalysisError) -> Self {
+        match error {
+            RpcAnalysisError::Config(error) => Self::Config(error),
+            RpcAnalysisError::Rpc(error) => Self::Rpc(error),
+        }
     }
 }
 

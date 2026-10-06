@@ -330,13 +330,7 @@ pub(super) fn call(
             boundary(result, pc, FrontierReason::Work);
             break;
         }
-        let (code_address, code, program) = match resolve(world, &result.payload.store, target) {
-            Ok(resolution) => resolution,
-            Err(reason) => {
-                boundary(result, pc, reason);
-                continue;
-            }
-        };
+        // Do not request callee facts for a child that cannot be entered.
         if result.payload.call_stack.depth() >= config.max_call_depth {
             boundary(result, pc, FrontierReason::CallDepth);
             continue;
@@ -352,6 +346,13 @@ pub(super) fn call(
         {
             continue;
         }
+        let (code_address, code, program) = match resolve(world, &result.payload.store, target) {
+            Ok(resolution) => resolution,
+            Err(reason) => {
+                boundary(result, pc, reason);
+                continue;
+            }
+        };
         let calldata = match caller.memory.slice(
             &args[input],
             &args[input + 1],

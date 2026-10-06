@@ -56,7 +56,7 @@ nix run . -- cfg --hex 5f355f0200 --reduction-rounds 1
 nix run . -- analyze --world examples/worlds/call-return-branch.json --entry 0x0000000000000000000000000000000000000101 --max-work 1
 ```
 
-这次为 `Incomplete`，退出码 2，留下 `Work` 前沿。工作计费包含域运算、事实交换、状态复制以及子调用和摘要处理，所有帧共享同一账本。提高 `--max-facts` 不能补回已耗尽的工作预算；提高 `--max-work` 也不会自动补出缺失的代码事实。
+这次为 `Incomplete`，退出码 2，留下 `Work` 前沿。工作计费包含域运算、事实交换、状态复制以及子调用和摘要处理，所有帧共享同一账本。提高 `--max-facts` 不能补回已耗尽的工作预算。这个离线输入缺少的事实仍由 world 提供；显式 RPC 输入可按需补查具体 callee，但也受采集与累计执行预算限制。
 
 ## 2. 诊断、程序失败和分析前沿分别看
 
@@ -64,7 +64,7 @@ nix run . -- analyze --world examples/worlds/call-return-branch.json --entry 0x0
 | --- | --- | --- |
 | 精度诊断 | `UnknownJump`、`OpaqueResult`、`FactExchangeLimited` | 跳转、数据或局部事实交换精度受限；不一定导致未完成 |
 | 程序异常诊断 | `InvalidJump`、`InvalidOpcode`、栈下溢/溢出 | 某条模型内执行路径异常终止；不是分析器没算完 |
-| 分析前沿 | `MissingCode`、`UnknownTarget`、`Work`、`CallDepth`、`Memory`、`Creation` 等 | 尚有区域无法展开；整体结果为 `Incomplete` |
+| 分析前沿 | `MissingCode`、`RpcAcquisition`、`UnknownTarget`、`Work`、`CallDepth`、`Memory`、`Creation` 等 | 尚有区域无法展开；整体结果为 `Incomplete` |
 
 例如，Top 跳转可以枚举所有真正的 JUMPDEST，同时保留可能异常终止的情况，因此有 `UnknownJump` 的图仍可 `Converged`。但是不知道外部 CALL 要去哪些账户，无法枚举整个世界，就会留下 `UnknownTarget` 前沿。
 
@@ -75,6 +75,8 @@ nix run . -- analyze --world examples/worlds/missing-code.json --entry 0x0000000
 ```
 
 结果为 `Incomplete`，前沿说明 `pc=13` 的调用缺少账户 `0x...0200` 的代码事实。输出可能同时保留已知的调用失败分支和部分完成的 outcome（最外层可能结果）；它们不能替代缺失的调用分支。
+
+`--world` 始终按离线事实分析。显式 `--rpc` 则默认补查这种已确定地址的 callee，再从入口重新分析。目标本身无法确定时仍保留 `UnknownTarget`；代码查询失败时保留带错误来源的 `RpcAcquisition`。这三种前沿分别表示离线事实缺失、目标无法穷举、已知账户的采集未完成，不能统称为调用失败。RPC 的初始采集错误退出 `1`；分析已开始后的补查错误保留 `Incomplete` 结果并退出 `2`。
 
 **已知空代码**可以作为无代码执行完成；**没有提供代码事实**则需要留下前沿。把缺少事实猜成空代码，会错误删掉可能的副作用。
 
@@ -94,7 +96,7 @@ nix run . -- analyze --world examples/worlds/missing-code.json --entry 0x0000000
 
 ## 4. 固定世界是起点，执行状态还会变化
 
-**世界快照**是本次分析的固定输入事实，例如某账户的代码、初始 storage、余额和 nonce。**Store** 是执行期间会变化的事务状态，保存后续的 storage、transient storage、余额、nonce、代码与账户生命周期。
+**世界快照**是本次分析的初始事实，例如某账户的代码、初始 storage、余额和 nonce。RPC 模式把这些事实绑定到固定 chain ID 与 block hash，并可在该身份下增加已验证的账户观察。每轮分析使用一组固定事实。**Store** 是执行期间会变化的事务状态，保存后续的 storage、transient storage、余额、nonce、代码与账户生命周期。
 
 ```mermaid
 flowchart TD
@@ -109,6 +111,8 @@ flowchart TD
 ```
 
 固定世界本身不会被执行改写。结果保留它的 fork、身份、事实 fingerprint（指纹）与 provenance（来源说明），并另外保存执行后的 Store。检查点恢复的是整份事务状态，所以子调用的更深调用效果也一起回滚；caller 在这个调用之前的效果仍保留。
+
+RPC 补查成功后，分析器用扩充后的初始事实从入口重建 Store、调用检查点、图和摘要。这样 A 在 CALL 前写入的值会由指令重新产生，子调用和重入仍读取当轮 Store。已获取的区块事实保存在采集缓存中，祖先 REVERT 只撤销事务效果；后续调用同一账户可以继续使用这些事实。CREATE 已安装的 runtime 则属于当前代码覆盖层，后续 CALL 直接执行它。
 
 用 slot 0 的读取理解这一区分：
 
@@ -136,7 +140,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 | 部分 | 已建模的内容 | 阅读结果时保留的限制 |
 | --- | --- | --- |
-| 输入事实 | 多账户 JSON，或显式 chain ID/区块 hash 的固定 RPC 采集；保存输入身份、来源与指纹 | 无隐式 RPC，不验证 Merkle proof；信任 RPC 提供者；不支持 EOF 代码格式 |
+| 输入事实 | 多账户 JSON，或显式 chain ID/区块 hash 的 RPC 采集；默认按需增加具体 callee 事实并从入口重跑，保存身份、来源与指纹 | 离线输入不联网；未知目标与未选 slot 保持未知；信任 RPC 提供者，不验证 Merkle proof；不支持 EOF 代码格式 |
 | 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；默认组合有限常量、KnownBits、Interval、Congruence 和 Provenance；按 fork 启用 CLZ | 常量集合仍有容量；事实交换有局部上限；没有完整变量关系和路径约束 |
 | 局部关系 | 同一基本块内受信任的复制身份支持 `x XOR x=0` 等规则；数值约束参与零/非零判断 | 来源标签或摘要相同不证明相等；身份不会跨块、汇合、调用或摘要边界保存；不会自动沿 `x==5` 的 true 边收窄 x |
 | 内存与数据 | 每帧独立抽象字节数组，load/store/copy、calldata、returndata、返回区传播 | 未知偏移或字节会降低精度；无法追踪的范围留下内存前沿 |
@@ -148,13 +152,13 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | 部分 | 已建模的内容 | 阅读结果时保留的限制 |
 | --- | --- | --- |
 | 调用身份 | 每帧分别保存代码账户、状态账户、caller、value、static 和继续位置 | 共享代码不意味着共享 storage；CALLCODE/DELEGATECALL 各有环境规则 |
-| CALL 系列 | 读取当前代码状态，暂停 caller，传递 calldata，再返回成功位和数据 | 非有限目标或未知代码留下前沿；不猜测 callee 没有副作用 |
+| CALL 系列 | 读取当前代码状态，暂停 caller，传递 calldata，再返回成功位和数据；RPC 可补查具体目标的初始代码事实 | 非有限目标、离线未知代码或补查失败留下各自前沿；不猜测 callee 没有副作用 |
 | storage/transient | 按状态账户保存，写入使用强/弱更新；后续读取考虑写入和重入 | transient storage 只属于本次事务分析；未知余额不能当作零 |
 | 余额 | 初始抽象余额、CALL 值转移及不足余额时的失败分支 | 不扣除交易 gas 费用 |
 | REVERT/故障 | 恢复调用前 Store；REVERT 保留返回数据，故障返回空数据 | 失败分支不能当成成功但无副作用的调用 |
 | static | 子调用继承限制；禁止状态写入、日志及有值 CALL 等行为 | 违规路径异常终止，返回流程须按失败处理 |
 | LOG | 保存可能日志的账户、topics 和数据，并随 Store 回滚 | 不精确恢复顺序与次数；未知效果由 `logs_unknown` 标记 |
-| EIP-7702 | 固定世界提供委托标记和目标代码时，解析目标，同时保持委托账户的状态身份 | 不执行授权交易列表、授权签名或其 nonce 规则；解析只跟随一层 |
+| EIP-7702 | 解析已观察的委托标记，RPC 可补查对应代码账户，同时保持委托账户的状态身份 | 不执行授权交易列表、授权签名或其 nonce 规则；解析只跟随一层；预编译目标按协议规则处理 |
 
 ### 创建、原生执行与资源
 
@@ -164,7 +168,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | SELFDESTRUCT | 支持的 fork 均使用 EIP-6780：转移余额，同事务创建账户在最外层成功完成时删除 | 事务执行期间代码仍可读/调用；原有账户保留代码/storage；未知受益人保留边界 |
 | 预编译 | 按 fork 选择固定的 `revm-precompile` 原生实现；传播有限具体输入的返回/失败；预留工作量 | 输入或长度不能表示时为 `PrecompileInput`，资源不足为 `Work`；不声称精确 gas |
 | 完整调用摘要 | 只复用前置条件完全匹配、已完成的 callee 图与全部输出关系 | 固定世界、代码 hash、完整帧/Store、ORIGIN、完整域策略（DomainSpec）和深度策略等都需一致；状态、代码、生命周期或 profile、交换上限变化都会影响匹配；未完成关系不发布 |
-| 工作与资源预算 | 所有账户共用状态数、transfer 次数与累计工作量；另有限帧深度和内存预算 | 超限留下有类型前沿，`Incomplete`、退出 2；跨合约 SSA 拒绝未完成图；与局部交换精度上限分别判断 |
+| 工作与资源预算 | 所有账户及 RPC 重跑轮次共用状态分配数、transfer 次数与累计工作量；另有限采集账户/请求数、帧深度和内存预算 | 重跑保留已耗费用，最终图状态数可小于累计分配数；超限留下有类型前沿，`Incomplete`、退出 2；跨合约 SSA 拒绝未完成图；与局部交换精度上限分别判断 |
 
 组合域改善了某些值的表示，不会单独解决内存或 storage 的未知别名。强/弱更新仍要根据是否能确定写入目标来选择；“两个值来源于 Storage”也不能作为它们读写同一 slot 的证明。循环中的区间还会使用 widening（扩大不断移动的界限）来控制传播成本，所以完成固定点也不表示区间达到最精确结果。
 
