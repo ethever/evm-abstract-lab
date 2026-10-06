@@ -32,7 +32,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 在 `pc=0x000e` 的状态找到 `stack in [{0x1, 0x2}]`。外层是栈，内层是**一个栈槽的可能值集合**；不是栈上同时有两个值。这一步连接具体执行与抽象分析。
 
-默认使用组合域，同时保存常量集合、KnownBits、Interval、Congruence 和 Provenance。可用 `--domain constants-only` 做有限集合对照；`--reduction-rounds` 与 `--max-facts` 控制临时交换精度，共享工作预算默认 2000 万。详见[组合域与语义 facts](docs/11-product-domains-facts.md)。
+小集合只是描述可能值的一种方式。候选太多时，默认分析还会保留固定的位、数值范围和同余性质；例如，即使不能逐个列出所有偶数，也能知道最低位为零。[第 02 课](docs/02-domain.md)从集合手算过渡到这些性质，并用 `--domain constants-only` 比较仅保存有限集合的结果。
 
 ## 推荐阅读顺序
 
@@ -49,10 +49,10 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 | [06：模型边界与证据](docs/06-boundaries.md) | 收敛能说明什么？对照测试与链上事实分别能证明什么？ | 预算、诊断、revm 对照 |
 | [09：跨合约执行](docs/09-cross-contract.md) | 返回值、代理、回滚和重入怎样影响账户状态？ | `examples/worlds/` |
 | [10：快照、调用摘要与代码生命周期](docs/10-snapshots-summaries-creation.md) | 何时能复用分析？部署和销毁如何改变代码？ | 摘要、CREATE/CREATE2、预编译 |
-| [组合域与语义 facts](docs/11-product-domains-facts.md) | 位、范围、同余和来源如何交换信息并限制回馈？ | `--domain product / constants-only` |
 | [11：状态容器与后端对比](docs/11-state-backends.md) | 如何用同一接口比较 std 与 imbl 的检查点、写入和回滚？ | `scripts/compare-state-backends.sh` |
+| [12：组合域与事实交换](docs/12-product-domains-facts.md) | 位、范围、同余和来源如何交换信息？局部复制关系能排除哪些分支？ | `known-bits-branch.hex`、`copy-identity.hex` |
 
-两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。编号保留原有文件名，阅读路径由上表给出。[例子索引](examples/README.md) 按难度列出所有实验；[参考资料](docs/references.md) 按问题指向规范、论文和教学材料。
+两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成第 05 课后，也可以直接进入第 12 课，继续研究数值精度，再回到跨合约实验。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
 
 ## 从单段代码到多个合约
 
@@ -93,6 +93,8 @@ flowchart TD
 | `analyze` | `--world` 或显式 `--rpc`，以及 `--entry` | 跨合约图、返回结果、账户状态；text / JSON / DOT；`--ssa` 增加并验证 SSA |
 
 用 `nix run . -- analyze --help` 查看全部参数。`--caller`、`--calldata`、`--value`、`--static` 设置入口环境；精度与预算参数见[第 05 课](docs/05-sensitivity.md)和[第 06 课](docs/06-boundaries.md)。
+
+数值分析默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和 Provenance（来源及局部复制身份）。常量容量默认 8，`--reduction-rounds` 默认 4，`--max-facts` 默认 256；后两者限制临时事实交换的精度。`analyze` 的 `--max-work` 默认 2000 万，耗尽共享工作预算会留下 `Incomplete`。参数与输出一起记录分析策略，方便对照实验；[第 12 课](docs/12-product-domains-facts.md)解释交换过程及边界。
 
 CLI 的数量参数 `--chain-id`、`--value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--chain-id 1`、`--value 1000`（单位 wei）、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
 
@@ -154,6 +156,7 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | --- | --- |
 | 指令解码与基本块 | [`bytecode.rs`](crates/evm-abstract/src/bytecode.rs) |
 | 集合值、合并与算术 | [`domain.rs`](crates/evm-abstract/src/domain.rs) |
+| 固定位、区间、同余、来源与事实交换 | [`domain/`](crates/evm-abstract/src/domain) |
 | 调用帧、局部与跨合约工作表 | [`analysis/`](crates/evm-abstract/src/analysis) |
 | 账户事实与账户状态 | [`world/`](crates/evm-abstract/src/world) |
 | 值的命名与结构验证 | [`ssa/`](crates/evm-abstract/src/ssa) |

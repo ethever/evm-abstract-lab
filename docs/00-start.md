@@ -96,6 +96,7 @@ B0 @ 0x0000:
 
 ```text
 status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=8
+domain=Product | schema=1 | reduction rounds=4 | fact atoms=256
 S0 | B0 @ 0x0000 | stack height=0 | context=[]
   stack in  []
   stack out []
@@ -110,8 +111,11 @@ S0 | B0 @ 0x0000 | stack height=0 | context=[]
 | `transfers=1` | 分析器处理这个块一次 |
 | `context=[]` | 尚未经过 JUMP/JUMPI，所以历史为空；默认最多保留 8 个最近来源，[第 05 课](05-sensitivity.md) 再比较 |
 | `Converged` | 本抽象模型的待处理工作已经完成；不是合约安全结论 |
+| `domain=Product` | 默认用多种性质共同描述一个值；本例的常量仍显示为 `{0x...}` |
 
 `stack in` / `stack out` 在这里表示**栈状态**，不是调用的输入字节和返回字节。
+
+`reduction rounds` 和 `fact atoms` 限制这些性质之间的一次信息交换，先保持默认值即可。[第 05 课](05-sensitivity.md)再区分精度参数与执行预算。
 
 ### SSA：每个值从哪里来
 
@@ -156,7 +160,7 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 
 外层 `[]` 是栈，里面只有一个槽；内层 `{0x1, 0x2}` 是这个槽的**可能值集合**。它表示一个值可能是 1，也可能是 2，不表示栈里同时放了两个值。`0xb` 和 `0xc` 分别是十进制 11 和 12。
 
-这就是本项目的**抽象分析**：用可能值的集合代表多种具体执行，再沿图传播这些集合。[第 02 课](02-domain.md) 解释怎样合并和计算集合。
+这就是本项目的**抽象分析**：用一份状态概括多种具体执行，再沿图传播。小集合最容易手算；候选太多时，默认分析还可以记录“某些位固定”“数值处于一个范围”等性质。[第 02 课](02-domain.md)从集合开始解释怎样合并与计算，再观察这些性质怎样保留精度。
 
 ## 第五步：知道后续怎样进入跨合约分析
 

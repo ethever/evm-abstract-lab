@@ -2,14 +2,14 @@
 
 上一课解释了一个块内的值如何汇合。这一课跟踪这些摘要怎样流到其他块、怎样重访循环，以及分析没有完成时留下什么证据。
 
-这里使用单字节码的 `cfg` 视图，先学习局部控制流。它与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
+这里使用单字节码的 `cfg` 视图，先学习局部控制流。diamond 和 loop 用 `constants-only` 延续上一课的手算，再用默认组合域观察数值精度怎样改变分支。它们与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
 
 ## 1. 先看一张能手算的图
 
 运行上一课的菱形分支：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --context-depth 0
+nix run . -- cfg --domain constants-only --file examples/diamond.hex --context-depth 0
 ```
 
 按基本块画出的流程是：
@@ -37,7 +37,7 @@ flowchart TD
 
 ## 2. 分清代码块 B 与分析状态 S
 
-`B3` 是字节码里的一个固定基本块。`S3` 是分析中创建的一个状态节点，保存“以什么摘要进入这个块”。两种编号服务于不同目的：
+`B3` 是 `Program.blocks()` 中索引为 3 的固定基本块。`S3` 是分析中创建的一个状态节点，保存“以什么摘要进入这个块”。两种编号服务于不同目的：
 
 ```text
 S3 | B3 @ 0x000e | stack height=1 | context=[]
@@ -53,6 +53,8 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 | `context=[]` | 本例显式设置 k=0，不区分跳转历史 |
 | `stack in` | 已汇合的入口栈摘要 |
 | `stack out` | 最近一次块执行留下的栈摘要；异常或预算中断时可能只执行了块内前缀 |
+
+`B3` 的 3 是基本块索引，`0x000e` 是入口字节偏移：它们分别回答“块数组中的哪一项”和“字节码中的哪个位置”。JSON 状态键将前者明确命名为 `basic_block_index`；不要把它读成 pc 或链上区块号。
 
 所以 S 编号不一定按 pc 排序，也不要求与 B 编号一致。例如本例中的 `S1` 对应 `B2`，因为非零分支先被加入队列。
 
@@ -78,7 +80,7 @@ nix run . -- cfg --file examples/stack-heights.hex --context-depth 0
 
 **工作表算法（worklist）**使用一个待处理队列。队列项是“入口摘要有新信息，需要执行”的状态编号；保存状态摘要的是状态表，二者不是同一张表。
 
-先看预算足够、没有模型边界时的传播流程；遇到未完成边界时如何停止，见第 6 节：
+先看预算足够、没有模型边界时的传播流程；遇到未完成边界时如何停止，见第 7 节：
 
 ```mermaid
 flowchart TD
@@ -86,7 +88,7 @@ flowchart TD
     B --> C[得到每个正常后继的状态键与输入]
     C --> D{该键已有节点吗？}
     D -->|没有| E[创建节点、保存输入、加入队列]
-    D -->|已有| F[把新输入 join 到旧入口摘要]
+    D -->|已有| F[把新输入 join 到旧入口摘要；按策略扩大区间]
     F --> G{摘要扩大了吗？}
     G -->|是| H[更新输入；尚未排队则加入队列]
     G -->|否| I[无须再次执行]
@@ -110,14 +112,14 @@ flowchart TD
 
 S3 收到第二条路径时已经排队，所以不重复加入；等它真正被取出时，会使用最新的 `{1,2}`。若一个汇合状态先执行、后来才收到新值，则必须再次入队并传播。这是为什么“一个节点在队列中最多一份”不等于“一个块只能执行一次”。
 
-join 只扩大入口摘要，已有边只增加。已经处理过某状态，并不能成为忽略新输入的理由。
+join 只扩大入口摘要，已有边只增加。默认组合域还会在同一已知状态多次更新后应用区间 widening，保持覆盖已有输入和新输入；本课 constants-only 没有区间需要扩大。已经处理过某状态，并不能成为忽略新输入的理由。
 
 ## 4. 循环的固定点长什么样
 
 **固定点（fixed point）**是再次执行和传播也不会新增摘要或边的状态。分析器需要稳定摘要，而不是把循环展开固定次数后假定结束。
 
 ```bash
-nix run . -- cfg --file examples/loop.hex --context-depth 0
+nix run . -- cfg --domain constants-only --file examples/loop.hex --context-depth 0
 ```
 
 这个程序先设 `i=0`，然后重复 `i=i+1`，在 `i<10` 时跳回 pc=`0x02`。具体执行的 i 依次为 0、1、2……，最后到 10 时退出。
@@ -132,10 +134,11 @@ nix run . -- cfg --file examples/loop.hex --context-depth 0
 入口 ⊤          后续摘要仍被 ⊤ 覆盖   不再新增信息
 ```
 
-关键输出为：
+关键输出片段为（`domain` 行确认本次使用 ConstantsOnly）：
 
 ```text
 status=Converged fork=osaka states=3 edges=3 transfers=11 context_depth=0
+domain=ConstantsOnly | schema=1 | reduction rounds=4 | fact atoms=256
 S1 | B1 @ 0x0002 | stack height=1 | context=[]
   stack in  [⊤]
   stack out [⊤]
@@ -147,7 +150,31 @@ S1 | B1 @ 0x0002 | stack height=1 | context=[]
 
 这里没有在非零分支上给 i 附加 `i<10` 的约束，因此摘要会包含实际循环中不会出现的值。`Converged` 表示已完成当前抽象模型的传播，不表示每个数值都已精确，也不表示合约安全。增大 `--max-constants` 只改变保存常量的容量，不会自动加入分支约束。
 
-## 5. 跳转目标未知时，仍须保留后续行为
+去掉 `--domain constants-only` 可观察默认 product。它仍得到 3 个状态、3 条边，最终循环槽位仍没有数值限制；组件交换和区间 widening 改变了中间摘要与工作量，不能期待仍是 11 次 transfer。增加数值组件会改善某些程序，不能保证每个循环的最终答案更精确。
+
+## 5. 数值精度怎样改变候选边
+
+把未知 calldata word 记为 x，考虑条件 `(x AND 15) OR 1`。即使列不完 x 的值，也能手算出条件最低位一定为 1，因此必定非零。运行：
+
+```bash
+nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0
+nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0 --domain constants-only
+```
+
+默认 product 使用位等约束，只有 `BranchTrue`。constants-only 在未知 x 上丢失 AND/OR 的位信息，所以保留 `BranchTrue` 与 `BranchFalse`。精度影响的是哪些候选能被排除；没有证明条件为零或非零时，两边都要保留。
+
+再看基本块内的复制身份：
+
+```bash
+nix run . -- cfg --file examples/copy-identity.hex --context-depth 0
+nix run . -- cfg --file examples/copy-identity.hex --context-depth 0 --domain constants-only
+```
+
+这段代码读取一次 x，执行 `DUP1; XOR`，然后以结果作条件。默认 product 识别两个副本来自同一次定义，使用 `x XOR x = 0`，只保留 `BranchFalse`；constants-only 不保存复制身份，必须保留两边。两个独立读取都有 Calldata 来源，仍不足以证明相等。
+
+这两种精度都发生在分支**之前**：先计算条件，再查询“零是否仍可能、非零是否仍可能”。当前 JUMPI 不把比较结果反向写成前驱值的路径约束，例如走 true 边并不会将原来的 x 收窄为 `x<10`。局部复制关系也会在块边界失效。更多组件的含义见[第 12 课](12-product-domains-facts.md)，跨路径如何少合并见[第 05 课](05-sensitivity.md)。
+
+## 6. 跳转目标未知时，仍须保留后续行为
 
 运行：
 
@@ -181,7 +208,9 @@ diagnostic S0 @ 0x0003: UnknownJump
 
 Top 也包括非法目标。`UnknownJump` 因此还表示存在异常终止的可能；正常 CFG 中无需把异常结束画成可继续执行的块间边。**未知目标会增加候选边和诊断，不能成为删除合法后继的理由。** 候选展开若被预算中断，则需额外记录未完成前沿，不能只留这个诊断。
 
-## 6. 看清诊断与未完成前沿
+默认组合域也可能列不出完整目标集合，却仍保存位、区间或同余约束。此时遍历合法 JUMPDEST，并用目标值的 `contains(pc)` 查询排除违背约束的候选；无需一律连接全部目标。查询保留某个候选，只说明尚不能排除它，仍不是具体路径的可达见证。没有完整候选集合时，当前实现也保留 `UnknownJump` 与异常可能性。
+
+## 7. 看清诊断与未完成前沿
 
 诊断说明某处发生了程序异常，或数值只能粗略表示。**前沿（frontier）**则记录分析未能继续完成的边界，例如“从 S0 出发，本应创建这个后继键，但状态预算已用尽”。两者回答不同问题。
 
@@ -190,13 +219,14 @@ Top 也包括非法目标。`UnknownJump` 因此还表示存在异常终止的�
 | 有限集合中的某个跳转目标非法 | 该候选异常结束，合法候选继续 | 可以 |
 | 栈下溢、超过 1024 槽、无效操作码 | 故障路径异常结束 | 可以 |
 | 未知输入得到 Top，未知跳转覆盖全部合法目标 | 用保守摘要继续传播 | 可以，但可能较粗 |
+| 纯栈指令的有界 facts 交换达到轮数或容量上限 | 保留已完成的安全精化，记录 `FactExchangeLimited` | 可以，但可能较粗 |
 | 状态、块转换或其他工作预算耗尽 | 保存未完成前沿 | 不可以，结果为 `Incomplete` |
 | 模型缺少继续执行所需的账户事实等 | 保存未完成前沿 | 不可以，结果为 `Incomplete` |
 
 故意缩小预算：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-states 1 --format json
+nix run . -- cfg --domain constants-only --file examples/diamond.hex --context-depth 0 --max-states 1 --format json
 ```
 
 此命令预期**退出码为 2**，JSON 仍会输出。看三个字段：
@@ -221,7 +251,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-states 1 --
 4. 回到 `Engine::execution` 收集块转换的证据，再读 `Engine::successor`：按键查找节点，join 输入，决定是否入队并保存边。随后回到 `run` 看下一次调度。
 5. [`single.rs`](../crates/evm-abstract/src/analysis/single.rs)：把同一世界分析核心投影为本课看到的局部 S/B 视图。
 
-阅读时核对五条规则：不同栈高不合并；同一键的输入只通过 join 扩大；扩大后需要重访；旧边不删除；任何未完成展开都保留前沿。相关样例由 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 与 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 核对。
+阅读时核对五条规则：不同栈高不合并；同一键的输入通过 join 与固定的区间 widening 策略扩大；扩大后需要重访；旧边不删除；任何未完成展开都保留前沿。相关样例由 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 与 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 核对。
 
 `Engine` 的私有字段分担不同职责，不能把“状态表”与“待处理队列”混为一谈：
 

@@ -2,6 +2,8 @@
 
 `A → B → C` 的状态回滚需要两层约定：容器能保留旧版本，执行器知道哪一层调用失败。仓库把前一层放入本地 crate [`snapshot-state`](../crates/snapshot-state)，后一层仍由 [`Store`](../crates/evm-abstract/src/world/store.rs) 和[调用处理](../crates/evm-abstract/src/analysis/transfer/calls.rs)负责。
 
+本课的 std / imbl 选择改变状态怎样保存和复制；[第 12 课](12-product-domains-facts.md)的 product / constants-only 选择改变一个值保存哪些性质。比较容器时固定同一份输入和域策略，才能把结果差异或时间差异归到正确的原因。
+
 ## 从同一份 Store 切换底层实现
 
 `OrderedMap<K, V>` 是仓库拥有的有序映射包装。默认使用标准库 `BTreeMap`；启用 Cargo feature `imbl` 后使用 `imbl::OrdMap`。两种实现暴露同一组读取、插入、范围更新、遍历与序列化操作。键保持排序，因此更换底层不会改变分析输出的顺序。

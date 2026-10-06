@@ -77,6 +77,15 @@ nix run . -- explain --hex 61ab
 
 块编号 `B0`、`B1` 按代码位置递增，是当前程序的索引。`B1` 不等于 pc=1；它的字节地址另由 `@ 0x...` 显示。
 
+JSON 用 `key.basic_block_index` 记录这个索引：要找到实际 pc，先用索引读取 `program.blocks`，再看该块的 `start_pc`。状态编号 `S` 则表示一次分析中的执行位置；一个基本块可能对应多个状态。下面用分支例子核对两套编号：
+
+```bash
+nix run . -- cfg --file examples/diamond.hex --context-depth 0 --format json > /tmp/blocks.json
+jq '. as $a | [.states[] | {state: .id, block: .key.basic_block_index, pc: $a.program.blocks[.key.basic_block_index].start_pc}]' /tmp/blocks.json
+```
+
+你会看到状态 1 位于块 2，而非块 1；分析按执行发现顺序建立状态，解码按代码位置建立块。跨合约时块索引还属于各自的代码，需同时看代码身份。
+
 看一个“代码存在，但入口执行不会到达”的例子：
 
 ```bash
