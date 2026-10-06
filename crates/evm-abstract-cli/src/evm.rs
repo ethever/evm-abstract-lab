@@ -87,11 +87,17 @@ pub(crate) struct IndexedHash {
 #[derive(Debug, Error)]
 pub(crate) enum EnvironmentInputError {
     #[error("{0}")]
-    Invalid(#[from] EnvironmentError),
+    Invalid(EnvironmentError),
     #[error("conflicting --{flag} observations at index {index:#x}")]
     ConflictingHash { flag: &'static str, index: U256 },
     #[error("--evm.blob-hash index {index:#x} is outside --evm.blob-count {count:#x}")]
     BlobIndex { index: U256, count: U256 },
+}
+
+impl From<EnvironmentError> for EnvironmentInputError {
+    fn from(error: EnvironmentError) -> Self {
+        Self::Invalid(error)
+    }
 }
 
 fn address(input: &str) -> Result<Address, String> {
