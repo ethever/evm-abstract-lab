@@ -30,6 +30,15 @@ pub(crate) struct ExplainArgs {
     /// Explicit HTTP(S) RPC; all observations use one fixed block hash.
     #[arg(long,requires_all=["entry","chain_id","block_hash"])]
     rpc: Option<String>,
+    /// Disable on-demand acquisition of concrete missing RPC callees.
+    #[arg(long, requires = "rpc")]
+    no_rpc_discovery: bool,
+    /// Maximum initial and discovered RPC accounts; default 256.
+    #[arg(long, requires = "rpc")]
+    max_rpc_accounts: Option<usize>,
+    /// Maximum cumulative RPC requests; default 16384.
+    #[arg(long, requires = "rpc")]
+    max_rpc_requests: Option<usize>,
     /// Expected EIP-155 chain identifier, decimal or 0x hexadecimal.
     #[arg(long,requires="rpc",value_parser=number::parse)]
     chain_id: Option<U256>,
@@ -103,6 +112,9 @@ impl ExplainArgs {
             let args = WorldArgs {
                 world: self.world,
                 rpc: self.rpc,
+                no_rpc_discovery: self.no_rpc_discovery,
+                max_rpc_accounts: self.max_rpc_accounts.unwrap_or(256),
+                max_rpc_requests: self.max_rpc_requests.unwrap_or(16_384),
                 chain_id: self.chain_id,
                 block_hash: self.block_hash,
                 account: self.account,

@@ -108,7 +108,7 @@ nix run . -- explain \
 
 SSA 的 `%` 名字标识定义和使用，phi 按进入块的转移接收值；`!` 名字连接状态效果。一个效果包含 memory、calldata、returndata、持久/瞬态 storage、余额、nonce、代码与账户生命周期、日志、环境和回滚保存点组成的整机 bundle，当前不按内存地址或 storage slot 分割成精确 MemorySSA。`T0` 等编号表示图中的转移，其种类仍区分 Call、Return、Revert、Failure 与合约内部边。`DUP` / `SWAP` 的 results 复用既有名字；`fault` 仅标记无效 opcode 或栈异常，static 写入等其他执行失败仍在转移、诊断和 outcome 中阅读。SSA 验证完成表示这些定义、使用和图连接通过了结构检查，不证明每条抽象边都可具体执行，也不补齐已丢失的数值相关性。
 
-如果缺少代码或预算耗尽，`explain` 保留反汇编与完整部分分析报告，显示 `Incomplete` / `Frontiers` 和 `SSA unavailable`，退出码为 `2`；不会输出 `Verified cross-contract SSA:`。初始工作预算太小、尚未捕获执行代码时，`Input code observations (not execution evidence)` 展示输入快照中的代码并明确其观察来源。输入或 RPC 失败退出 `1`；参数语法错误退出 `2`，这些情况没有分析结果。
+如果缺少代码或预算耗尽，`explain` 保留反汇编与完整部分分析报告，显示 `Incomplete` / `Frontiers` 和 `SSA unavailable`，退出码为 `2`；不会输出 `Verified cross-contract SSA:`。初始工作预算太小、尚未捕获执行代码时，`Input code observations (not execution evidence)` 展示输入快照中的代码并明确其观察来源。输入或初始 RPC 获取失败退出 `1`，没有分析结果；开始分析后的 callee 补查失败或预算限制保留 `RpcAcquisition` 部分图，退出 `2` 并省略 SSA。参数语法错误也退出 `2`，但没有分析结果。
 
 `A0` / `H0` 是当前文本的引用编号；完整地址和 hash 在图例中保留。它们不会改变 JSON 的字段或 DOT 的身份。教程中的 A、B 是给合约起的名字，不保证 A 就对应引用 `A0`。`B0` 仍是某段代码内的基本块编号；结合 `code` 和 `H` 引用，才能确认正在看哪份代码。
 

@@ -1,7 +1,7 @@
 //! Unified explain is exercised through the real binary, including pinned RPC.
 
 use super::run;
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::{B256, U256, hex, keccak256};
 use serde_json::{Value as Json, json};
 use std::{
     fs,
@@ -318,17 +318,28 @@ fn rpc_observation_flags_remain_exclusive_to_rpc_and_world_selects_its_own_fork(
         ["--world", &path],
     ] {
         for flag in [
-            ["--chain-id", "1"],
-            ["--block-hash", BLOCK],
-            ["--account", CALLEE],
-            ["--slot", &slot],
+            vec!["--chain-id", "1"],
+            vec!["--block-hash", BLOCK],
+            vec!["--account", CALLEE],
+            vec!["--slot", &slot],
+            vec!["--no-rpc-discovery"],
+            vec!["--max-rpc-accounts", "256"],
+            vec!["--max-rpc-requests", "16384"],
         ] {
-            let mut args = vec!["explain", "--entry", ENTRY];
+            let mut args = vec!["explain"];
+            if source[0] == "--world" {
+                args.extend(["--entry", ENTRY]);
+            }
             args.extend(source);
-            args.extend(flag);
+            args.extend_from_slice(&flag);
             let output = run(&args);
             assert_eq!(output.status.code(), Some(2), "{args:?}");
             assert!(output.stdout.is_empty());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains(flag[0]) && error.contains("--rpc"),
+                "{error}"
+            );
         }
     }
     let output = world_command("explain", "call-return-branch", &["--fork", "osaka"]);
@@ -617,15 +628,221 @@ fn rpc_explain_acquires_one_fixed_world_and_uses_the_requested_observations() {
                 .iter()
                 .any(|r| r["method"] == "eth_getStorageAt" && r["params"][1] == "0x10")
         );
-        for request in requests.iter().filter(|request| {
-            request["method"] != "eth_chainId" && request["method"] != "eth_getBlockByHash"
-        }) {
-            assert_eq!(
+        assert_pinned(&requests);
+    });
+}
+
+fn rpc_command(server: &RpcServer, extra: &[&str]) -> Output {
+    rpc_command_named("explain", server, extra)
+}
+
+fn rpc_command_named(command: &str, server: &RpcServer, extra: &[&str]) -> Output {
+    let mut args = vec![
+        command,
+        "--rpc",
+        &server.endpoint,
+        "--chain-id",
+        "1",
+        "--block-hash",
+        BLOCK,
+        "--entry",
+        ENTRY,
+    ];
+    args.extend_from_slice(extra);
+    run(&args)
+}
+
+fn assert_rpc_report<'scope, 'env>(
+    scope: &'scope thread::Scope<'scope, 'env>,
+    explanation: &str,
+    extra: &[&str],
+    expected_exit: i32,
+) {
+    let oracle = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
+    let report = rpc_command_named("analyze", &oracle, extra);
+    assert_eq!(report.status.code(), Some(expected_exit));
+    assert_full_report(explanation, &report);
+    assert_pinned(&oracle.finish());
+}
+
+fn requests_for(requests: &[Json], method: &str, address: &str) -> usize {
+    requests
+        .iter()
+        .filter(|request| request["method"] == method && request["params"][0] == address)
+        .count()
+}
+
+fn assert_pinned(requests: &[Json]) {
+    for request in requests {
+        match request["method"].as_str().unwrap() {
+            "eth_chainId" => assert_eq!(request["params"], json!([])),
+            "eth_getBlockByHash" => assert_eq!(request["params"], json!([BLOCK, false])),
+            _ => assert_eq!(
                 request["params"].as_array().unwrap().last().unwrap(),
                 &json!({"blockHash":BLOCK,"requireCanonical":true})
+            ),
+        }
+        assert!(!request.to_string().contains("latest"));
+    }
+}
+
+#[test]
+fn rpc_explain_discovers_missing_callee_snapshot_code_with_default_and_explicit_limits() {
+    thread::scope(|scope| {
+        let mut explanations = Vec::new();
+        for extra in [
+            vec![],
+            vec!["--max-rpc-accounts", "256", "--max-rpc-requests", "16384"],
+        ] {
+            let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
+            let output = rpc_command(&server, &extra);
+            success(&output);
+            let explanation = text(&output);
+            let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
+            assert!(disassembly.contains(ENTRY) && disassembly.contains(CALLEE));
+            assert!(disassembly.contains("CALL") && disassembly.contains("MSTORE"));
+            assert!(
+                disassembly.contains(&keccak256(hex::decode(RPC_CALLEE_CODE).unwrap()).to_string())
             );
+            assert!(
+                explanation.contains("RPC acquisition")
+                    && explanation.contains("fetched accounts=")
+            );
+            assert!(explanation.contains("0x2a") && explanation.contains("Converged"));
+            assert_human_ssa(&explanation);
+            let requests = server.finish();
+            for address in [ENTRY, CALLEE] {
+                for method in [
+                    "eth_getCode",
+                    "eth_getBalance",
+                    "eth_getTransactionCount",
+                    "eth_getProof",
+                ] {
+                    assert_eq!(requests_for(&requests, method, address), 1);
+                }
+            }
+            assert_pinned(&requests);
+            assert_rpc_report(scope, &explanation, &extra, 0);
+            explanations.push(explanation);
+        }
+        assert_eq!(explanations[0], explanations[1]);
+    });
+}
+
+#[test]
+fn rpc_explain_discovery_off_keeps_missing_code_partial_graph_without_verified_ssa() {
+    thread::scope(|scope| {
+        let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
+        let output = rpc_command(&server, &["--no-rpc-discovery"]);
+        assert_eq!(output.status.code(), Some(2));
+        let explanation = text(&output);
+        assert!(explanation.contains("Incomplete") && explanation.contains("MissingCode"));
+        assert!(explanation.contains("Frontiers") && explanation.contains("SSA unavailable"));
+        assert!(!explanation.contains(VERIFIED));
+        let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
+        assert!(disassembly.contains("CALL") && !disassembly.contains("MSTORE"));
+        let requests = server.finish();
+        assert_eq!(requests_for(&requests, "eth_getCode", ENTRY), 1);
+        assert_eq!(requests_for(&requests, "eth_getCode", CALLEE), 0);
+        assert_pinned(&requests);
+        assert_rpc_report(scope, &explanation, &["--no-rpc-discovery"], 2);
+    });
+}
+
+#[test]
+fn rpc_explain_explicit_account_closes_the_graph_with_discovery_disabled() {
+    thread::scope(|scope| {
+        let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
+        let output = rpc_command(&server, &["--no-rpc-discovery", "--account", CALLEE]);
+        success(&output);
+        let explanation = text(&output);
+        let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
+        assert!(disassembly.contains("MSTORE") && disassembly.contains(CALLEE));
+        assert_human_ssa(&explanation);
+        let requests = server.finish();
+        assert_eq!(requests_for(&requests, "eth_getCode", CALLEE), 1);
+        assert_pinned(&requests);
+        assert_rpc_report(
+            scope,
+            &explanation,
+            &["--no-rpc-discovery", "--account", CALLEE],
+            0,
+        );
+    });
+}
+
+#[test]
+fn rpc_explain_discovery_caps_keep_typed_acquisition_frontiers_and_partial_output() {
+    thread::scope(|scope| {
+        for (flag, limit, resource, callee_requests, requests_limit) in [
+            ("--max-rpc-accounts", "1", "Accounts", 0, 8),
+            ("--max-rpc-requests", "8", "Requests", 0, 8),
+            // Observations arrive, but final identity checks cannot complete.
+            ("--max-rpc-requests", "14", "Requests", 1, 14),
+        ] {
+            let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
+            let output = rpc_command(&server, &[flag, limit]);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{flag}={limit}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let explanation = text(&output);
+            assert!(explanation.contains("Incomplete") && explanation.contains("RpcAcquisition"));
+            assert!(explanation.contains("AcquisitionLimit") && explanation.contains(resource));
+            assert!(explanation.contains("RPC acquisition") && explanation.contains("Frontiers"));
+            assert!(explanation.contains("SSA unavailable") && !explanation.contains(VERIFIED));
+            let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
+            assert!(disassembly.contains("CALL") && !disassembly.contains("MSTORE"));
+            let requests = server.finish();
+            assert_eq!(
+                requests_for(&requests, "eth_getCode", CALLEE),
+                callee_requests
+            );
+            assert!(requests.len() <= requests_limit);
+            assert_pinned(&requests);
+            assert_rpc_report(scope, &explanation, &[flag, limit], 2);
         }
     });
+}
+
+#[test]
+fn rpc_explain_invalid_acquisition_limits_fail_before_networking() {
+    thread::scope(|scope| {
+        let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
+        for (extra, diagnostic) in [
+            (
+                vec!["--max-rpc-requests", "0"],
+                "request limit must be positive",
+            ),
+            (vec!["--max-rpc-accounts", "0"], "account limit 1..=4096"),
+            (vec!["--max-rpc-accounts", "4097"], "account limit 1..=4096"),
+            (
+                vec!["--max-rpc-accounts", "1", "--account", CALLEE],
+                "fit the account limit",
+            ),
+        ] {
+            let output = rpc_command(&server, &extra);
+            assert_eq!(output.status.code(), Some(1), "{extra:?}");
+            assert!(output.stdout.is_empty());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains(diagnostic) && !error.contains("transport"),
+                "{error}"
+            );
+        }
+        assert!(server.finish().is_empty());
+    });
+}
+
+const RPC_ROOT_CODE: &str = "60205f5f5f5f6102006207a120f15060205ff3";
+const RPC_CALLEE_CODE: &str = "602a5f5260205ff3";
+
+#[derive(Clone, Copy)]
+enum RpcFixture {
+    Observations,
+    CallReturn,
 }
 
 struct RpcServer {
@@ -636,6 +853,13 @@ struct RpcServer {
 
 impl RpcServer {
     fn new<'scope, 'env>(scope: &'scope thread::Scope<'scope, 'env>) -> Self {
+        Self::with_fixture(scope, RpcFixture::Observations)
+    }
+
+    fn with_fixture<'scope, 'env>(
+        scope: &'scope thread::Scope<'scope, 'env>,
+        fixture: RpcFixture,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
@@ -671,7 +895,7 @@ impl RpcServer {
                 stream.read_exact(&mut body).unwrap();
                 let request: Json = serde_json::from_slice(&body).unwrap();
                 let response = serde_json::to_vec(&json!({
-                    "jsonrpc":"2.0","id":request["id"],"result":rpc_result(&request)
+                    "jsonrpc":"2.0","id":request["id"],"result":rpc_result(&request, fixture)
                 })).unwrap();
                 write!(stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -704,19 +928,24 @@ impl Drop for RpcServer {
     }
 }
 
-fn rpc_result(request: &Json) -> Json {
+fn rpc_result(request: &Json, fixture: RpcFixture) -> Json {
+    let code = match fixture {
+        RpcFixture::Observations => "3460105400",
+        RpcFixture::CallReturn if request["params"][0] == ENTRY => RPC_ROOT_CODE,
+        RpcFixture::CallReturn => RPC_CALLEE_CODE,
+    };
     match request["method"].as_str().unwrap() {
         "eth_chainId" => json!("0x1"),
         "eth_getBlockByHash" => {
             assert_eq!(request["params"], json!([BLOCK, false]));
             json!({"hash":BLOCK})
         }
-        "eth_getCode" => json!("0x3460105400"),
+        "eth_getCode" => json!(format!("0x{code}")),
         "eth_getBalance" => json!("0x1000000"),
         "eth_getTransactionCount" => json!("0x0"),
         "eth_getProof" => json!({
             "address":request["params"][0],"balance":"0x1000000","nonce":"0x0",
-            "codeHash":keccak256([0x34,0x60,0x10,0x54,0x00]),
+            "codeHash":keccak256(hex::decode(code).unwrap()),
             "storageHash":B256::repeat_byte(0x33),"accountProof":[],
             "storageProof":request["params"][1].as_array().unwrap().iter()
                 .map(|key| json!({"key":key,"value":"0x2a","proof":[]}))
