@@ -3,6 +3,8 @@
 //! [`analyze_world`] 是完整入口：工作表保存执行与暂停的调用帧，并且让所有
 //! 子调用共享事务状态和预算。代码地址与状态地址各自参与帧身份。
 //! [`analyze`] 是单账户学习视图，复用同一执行核心后投影为局部 CFG。
+//! [`analyze_rpc`] 显式采集固定区块的初始事实，并按缺失 callee 扩充快照后
+//! 从入口重建分析；各轮共用执行预算，纯离线入口不会隐式访问网络。
 //! 栈高区分是必要的类型边界；有限内部跳转历史是可选的精度选择。
 //! 每次新输入都逐槽 join，只有输入变大才重新入队。边也只增加，不随某次
 //! 更精确的执行删除。读 `analysis/engine.rs` 中的循环时，始终检查这两个不变量。
@@ -14,6 +16,7 @@
 mod config;
 mod engine;
 mod machine;
+mod rpc;
 mod single;
 mod summary;
 mod transfer;
@@ -27,6 +30,7 @@ pub use machine::{
     FrontierReason, MachineEdge, MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome,
     MachinePayload, MachineState, OutcomeKind, RootFrame, WorldAnalysis,
 };
+pub use rpc::{RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, analyze_rpc};
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;
 

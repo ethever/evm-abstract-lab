@@ -9,6 +9,8 @@ mod explain;
 mod domains;
 #[path = "cli/numbers.rs"]
 mod numbers;
+#[path = "cli/rpc.rs"]
+mod rpc;
 
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_evm-abstract"))

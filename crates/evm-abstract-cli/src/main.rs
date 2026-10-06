@@ -41,7 +41,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Analyze an offline multi-account world, including calls, returns and state effects.
+    /// Analyze an offline or fixed RPC world, including calls, returns and state effects.
     Analyze {
         #[command(flatten)]
         args: Box<WorldArgs>,
@@ -87,6 +87,15 @@ struct WorldArgs {
     /// Explicit HTTP(S) RPC input; all state is pinned to --block-hash.
     #[arg(long, requires_all = ["chain_id", "block_hash"], conflicts_with = "world")]
     rpc: Option<String>,
+    /// Disable on-demand RPC acquisition of concrete missing callees.
+    #[arg(long, requires = "rpc")]
+    no_rpc_discovery: bool,
+    /// Maximum initial and discovered RPC accounts in one fixed snapshot.
+    #[arg(long, requires = "rpc", default_value_t = 256)]
+    max_rpc_accounts: usize,
+    /// Maximum cumulative RPC requests, including identity checks and failures.
+    #[arg(long, requires = "rpc", default_value_t = 16_384)]
+    max_rpc_requests: usize,
     /// Expected EIP-155 chain identifier: decimal or 0x/0X-prefixed hexadecimal.
     #[arg(long, requires = "rpc", value_parser = number::parse)]
     chain_id: Option<U256>,
@@ -264,8 +273,8 @@ impl AnalysisArgs {
 impl WorldArgs {
     fn analyze(self) -> Result<analysis::WorldAnalysis, CliError> {
         let entry_address = world::address(&self.entry, "entry")?;
-        let world = match (self.world, self.rpc) {
-            (Some(path), None) => world::load(&path)?,
+        let (world, rpc_input) = match (self.world, self.rpc) {
+            (Some(path), None) => (Some(world::load(&path)?), None),
             (None, Some(endpoint)) => {
                 let mut input = RpcInput::new(
                     endpoint,
@@ -292,7 +301,9 @@ impl WorldArgs {
                     .into_iter()
                     .map(|(address, slots)| AccountRequest { address, slots })
                     .collect();
-                rpc::load(&input)?
+                input.max_accounts = self.max_rpc_accounts;
+                input.max_requests = self.max_rpc_requests;
+                (None, Some(input))
             }
             _ => unreachable!("clap requires exactly one world input"),
         };
@@ -319,7 +330,20 @@ impl WorldArgs {
             symbolic_entry_environment: false,
             use_summaries: !self.no_summaries,
         };
-        Ok(analysis::analyze_world(world, entry, config)?)
+        match (world, rpc_input) {
+            (Some(world), None) => Ok(analysis::analyze_world(world, entry, config)?),
+            (None, Some(input)) if self.no_rpc_discovery => {
+                Ok(analysis::analyze_world(rpc::load(&input)?, entry, config)?)
+            }
+            (None, Some(input)) => {
+                let result = analysis::analyze_rpc(&input, entry, config)?;
+                for failure in result.failures() {
+                    eprintln!("RPC discovery: {failure}");
+                }
+                Ok(result.into_analysis())
+            }
+            _ => unreachable!("clap requires exactly one world input"),
+        }
     }
 }
 

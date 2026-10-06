@@ -277,7 +277,7 @@ jq '.analysis.edges,
 
 ## 5. 固定快照：同一个名字不代表同一组事实
 
-**快照（snapshot）**是分析开始前固定的代码、storage、余额、nonce 和存在性事实。分析过程中修改的是 Store，不会重新查询快照。
+**快照（snapshot）**提供代码、初始 storage、余额、nonce 和存在性事实。固定链上快照中的“固定”首先指 chain ID 与 block hash：分析前与按需补查得到的事实都属于同一个区块。已观察的事实保持不变，尚未观察的账户可以继续加入。每轮分析使用一组固定初始事实；执行指令改变的是 Store。
 
 先查看第 1 节使用的离线快照：
 
@@ -311,32 +311,99 @@ world JSON 中链上身份的 `chain_id` 仍使用 `0x` 十六进制格式；CLI
 
 ### 可选实验：从固定区块采集
 
-这一段需要你自己的 RPC 和已选定的区块，不是离线例子的必要步骤。先准备三个事实：提供者 URL、预期 chain id、确切 block hash；再列出分析会用到的账户与 slot，并选好该区块的 fork。`explain` 与 `analyze` 共用固定快照采集边界；下面的 `LAB_RPC_URL`、`LAB_BLOCK_HASH` 必须已设为实际值，命令中的 chain id 和账户也要与目标分析一致：
+这一段需要你自己的 RPC 和已选定的区块，不是离线例子的必要步骤。将 `LAB_RPC_URL`、`LAB_CHAIN_ID`、`LAB_BLOCK_HASH`、`LAB_FORK`、`LAB_ENTRY` 分别设为实际提供者 URL、预期链 ID、确切区块 hash、该区块的执行规则和入口地址。这里的入口应是该区块上的实际账户；前面合成例子的 `0x...0101` 不代表链上部署。
+
+**第一步，只指定入口，观察发现的账户。** 默认 RPC 模式会补查分析中发现的具体 callee：
 
 ```bash
 nix run . -- explain \
   --rpc "$LAB_RPC_URL" \
-  --chain-id 1 \
+  --chain-id "$LAB_CHAIN_ID" \
   --block-hash "$LAB_BLOCK_HASH" \
-  --fork osaka \
-  --entry 0x0000000000000000000000000000000000000101 \
-  --account 0x0000000000000000000000000000000000000200 \
-  --slot 0x0000000000000000000000000000000000000200:0
+  --fork "$LAB_FORK" \
+  --entry "$LAB_ENTRY" \
+  --format json > /tmp/rpc-discovery.json
+
+jq '.status, .world.identity, .rpc_acquisition,
+    [.frontiers[] | {from, pc, reason}]' /tmp/rpc-discovery.json
 ```
 
-改用 `analyze` 并加 `--format json` 可导出采集后的 world 和分析字段；`--ssa` 在完成时保留原有 `{"analysis":...,"ssa":...}` JSON 格式。这里的 slot 索引 `0` 是十进制，也可写为 `0x0`；冒号前的账户地址仍是 20 字节十六进制。数量的十进制写法只改变 CLI 输入方式，world JSON 格式和发给 RPC 的编码不变。
+入口自动加载。CALL、STATICCALL、DELEGATECALL、CALLCODE 能确定具体目标时，缺少该账户的代码事实就会触发补查；入口或 callee 的 EIP-7702 委托代码也可发现对应实现账户。解析仍只跟随一层委托。预编译由 fork 规则处理，已知代码、已知空代码和确认 absent 的账户都可以复用已有事实。
 
-`explain` 必须恰好选择 `--hex`、`--file`、`--world`、`--rpc` 中的一种输入；world/RPC 必须提供 `--entry`。`--chain-id`、`--block-hash`、`--account` 和 `--slot` 只用于 RPC；RPC 必须同时提供 chain id 和确切 block hash。`--fork` 可用于单程序或 RPC；离线 world 使用 JSON 中声明的 fork，命令行不能覆盖。
+只加载入口不保证 `Converged`。例如代理从未观察的 slot 读取实现地址，目标可能仍为 Top，就会留下 `UnknownTarget`。RPC 发现以已确定的地址为起点，不能枚举整个地址空间。动态获取一个账户会观察其 code、balance、nonce 和 proof；该账户未选择的初始 slot 保持未知。
 
-采集到分析的顺序是：
+**第二步，跟着 A→B→C 理解补查后的重跑。** 假设 A、B 代码中的调用地址具体，预算足够，并且 RPC 能返回全部所需账户：
 
-1. loader 核对返回的 chain id 和 exact block hash。
-2. 入口自动加入账户列表；`--account` 和 `--slot ADDRESS:SLOT` 可以重复，slot 自动加入所属账户。
-3. code/balance/nonce/proof/storage 请求均使用 [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) 的区块选择器 `{blockHash,requireCanonical:true}`，避免请求之间换区块。
-4. 完成一致性校验，冻结 world，然后开始分析。执行时不会补查节点；没有预先选择的后续 CALL 目标可能留下 `MissingCode`。
+```text
+第 1 轮：只有 A 的初始事实 → 遇到缺少 B 代码的调用
+补查 B：在同一 block hash 核对完整账户事实，加入采集缓存
+第 2 轮：用 A、B 的初始事实，从 A 入口重新分析 → 发现 C
+补查 C：仍使用同一 block hash
+第 3 轮：用 A、B、C 的初始事实，从 A 入口重新分析
+```
 
-不支持这一区块选择器、缺少区块/结果、身份或状态冲突、代码 hash 失配，以及 JSON-RPC、HTTP、网络、超时错误都会退出 `1`，并报告 chain/block/method/account/slot 来源。loader 不会改查区块号或移动标签，也不会把缺失响应填成空代码、零余额。默认每请求超时 15 秒，响应最多 4 MiB；库 API 可选择其他有界限制。
+一轮可能同时发现多个目标，所以上面是理解顺序的例子，不是固定轮数公式。每次成功补充事实后，图、Store、调用检查点和摘要都由入口重新建立。A 在 CALL 前做过的写入会重新执行，后来的重入仍读当前 Store。这样能把 B 的区块初始余额与 A 给 B 转账后的余额放在各自正确的位置。
 
-**当前信任范围是选定的 RPC 提供者。** loader 会将 `eth_getProof` 返回字段与其他查询交叉校验，但没有验证 [EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) 的 Merkle proof（将账户/槽位数据与区块状态根连接起来的密码学证明）。身份、hash 和 fingerprint 能发现混合/冲突输入，不能把受信任提供者的数据变成密码学状态证明，也不能让 `Converged` 成为任意合约安全证明。
+采集缓存保存的是区块事实。B 在获知 C 的代码后 REVERT，撤销的是 B 与更深调用的事务效果，C 的初始事实仍可供 A 后续调用使用。同一账户不重复采集。第 2 节 CREATE 已安装的 runtime 属于当前 Store 的代码覆盖层，后续 CALL 使用该 runtime；创建碰撞所需的初始存在性等事实仍需预先提供。
 
-text / JSON / DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。默认文本按[第 9 课的分区](09-cross-contract.md#默认文本怎样读)阅读：`Snapshot` 查输入身份，`Outcomes` 查每个最终结果的账户和字节，`Call summaries` 查保存与复用。`explain` 在报告前添加捕获代码的反汇编，完成时再添加可读 SSA；不完整时保留部分图和所有前沿，显示 `SSA unavailable` 并退出 `2`。JSON 还保留初始 world、完整域策略、摘要输入/输出与执行中的 Store；DOT 的蓝色证书节点标出认证来源和复用位置。源码入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc.rs`](../crates/evm-abstract/src/world/rpc.rs)、[`transfer/create.rs`](../crates/evm-abstract/src/analysis/transfer/create.rs)。
+此时再读 `rpc_acquisition`：
+
+| 字段 | 怎样读 |
+| --- | --- |
+| `rounds` | 启动的分析轮数，包含被预算中断的最终轮 |
+| `fetched_accounts` | 按需新增成功的地址数组；入口与预选账户不计入 |
+| `failed_accounts` | 按需采集失败的地址数组；本次分析不自动重试这些账户 |
+| `failures` | 按地址配对的错误类型与固定快照上下文；后续预算中断也保留这些证据 |
+| `requests` | 初始与后续采集尝试的 HTTP 请求总数，包含身份校验和失败请求 |
+| `states_created` | 各轮累计分配的机器状态数，包含已被后续轮次替换的图 |
+
+最终 `world` 保存已验证的初始观察，`states` / `edges` / `outcomes` 属于最后一轮分析；累计工作和请求数则覆盖全部轮次。新账户事实增加后 fingerprint 随之改变，旧一轮的摘要不会沿用到新一轮。
+
+**第三步，关闭发现，做初始事实的对照。** 在同一个入口、区块与 calldata 下加 `--no-rpc-discovery`：
+
+```bash
+nix run . -- analyze \
+  --rpc "$LAB_RPC_URL" --chain-id "$LAB_CHAIN_ID" \
+  --block-hash "$LAB_BLOCK_HASH" --fork "$LAB_FORK" \
+  --entry "$LAB_ENTRY" --no-rpc-discovery \
+  --format json > /tmp/rpc-selected.json
+
+jq '.status, [.frontiers[] | {from, pc, reason}]' /tmp/rpc-selected.json
+```
+
+如果入口调用了尚未选择的普通代码账户，这次会留下 `MissingCode`、退出 `2`，与[第 9 课的离线缺代码实验](09-cross-contract.md#7-输入缺失和预算停止也要读出来)有相同边界。若入口没有这类调用，也可能直接完成；不能预设任意入口都缺代码。
+
+你仍可用 `--account` 选择分析前获取的账户，用 `--slot` 选择初始存储槽。假设已确定一个被调用账户，将其地址设为 `LAB_CALLEE`，可以在上面的命令中增加：
+
+```text
+--account "$LAB_CALLEE" --slot "$LAB_CALLEE:0"
+```
+
+这两个参数都可重复，`--slot` 自动加入所属账户。slot 索引 `0` 是十进制，也可写为 `0x0`；地址仍是 20 字节十六进制。未选 slot 保持未知；已确认 absent 账户具有完整零状态。数值的十进制写法只改变 CLI 输入方式，world JSON 格式与发给 RPC 的编码不变。
+
+### 为什么补查也必须固定区块
+
+初始采集与每次新增账户都核对 chain ID 与 exact block hash。code/balance/nonce/proof/storage 请求均使用 [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) 的选择器 `{blockHash,requireCanonical:true}`，并在采集后再次核对身份。RPC 必须支持该选择器与 `eth_getProof`；提供者不支持、区块失效或观察互相矛盾时，采集停止。代码、余额、nonce、proof 和身份校验全部通过后，新账户才进入 world。
+
+初始采集失败时还没有有效分析结果，CLI 退出 `1`。分析已开始后，仍被需要的补查失败在最后一轮图的对应调用留下 `RpcAcquisition` 前沿，退出 `2`。其 `failure` 保存 `context`、错误 `kind` 和 `message`，可定位 chain/block/method/account/slot；额度错误还给出 `resource` 与 `limit`。如果后续轮次在到达该调用前耗尽执行预算，图显示资源前沿，累计 `failures` 仍保存此前的采集错误。JSON-RPC、HTTP、网络、超时、缺少结果或代码 hash 失配都需要按这个边界判断，不能把剩余成功 outcome 当成完整结果。
+
+默认 `--max-rpc-accounts 256` 限制初始与动态账户总数，`--max-rpc-requests 16384` 限制全部 HTTP 尝试，包括身份检查与失败请求。迟发采集耗尽这些额度也留下 `RpcAcquisition`。所有重跑轮次另共用同一 `--max-work`、`--max-transfers` 和 `--max-states`；以前的图虽然被替换，已耗工作和状态分配仍计费，因此最终图的 `states` 长度可能小于 `states_created`。达到执行预算后保留对应工作或资源前沿。默认每请求超时 15 秒，响应最多 4 MiB；库 API 可选择其他有界限制。
+
+loader 始终请求选定区块，失败后不改查区块号或移动标签，也不会把缺失响应填成空代码、零余额。**当前信任范围是选定的 RPC 提供者。** `eth_getProof` 返回字段会与其他查询交叉校验，但没有验证 [EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) 的 Merkle proof（将账户/槽位数据与区块状态根连接起来的密码学证明）。身份、hash 和 fingerprint 能发现混合/冲突输入，不能把受信任提供者的数据变成密码学状态证明，也不能让 `Converged` 成为任意合约安全证明。
+
+text / JSON / DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。默认文本按[第 9 课的分区](09-cross-contract.md#默认文本怎样读)阅读：`Snapshot` 查输入身份，`Outcomes` 查每个最终结果的账户和字节，`Call summaries` 查保存与复用。JSON 还保留初始 world、完整域策略、摘要输入/输出、执行中的 Store 和 RPC 累计采集记录；DOT 的蓝色证书节点标出认证来源和复用位置。实现入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc/session.rs`](../crates/evm-abstract/src/world/rpc/session.rs)、[`analysis/rpc.rs`](../crates/evm-abstract/src/analysis/rpc.rs)；本地 HTTP 的实际 CLI 对照在 [`tests/cli/rpc.rs`](../crates/evm-abstract-cli/tests/cli/rpc.rs)。
+
+
+直接阅读同一固定 RPC 分析，可以把上面的 `analyze` 换成 `explain`，并去掉 `--format json` / `--ssa`：
+
+```bash
+nix run . -- explain \
+  --rpc http://127.0.0.1:8545 \
+  --chain-id 1 \
+  --block-hash 0x填入完整区块hash \
+  --entry 0x填入完整入口地址
+```
+
+`explain` 复用 `analyze` 的 RPC 获取与按需发现策略，包括 `--no-rpc-discovery`、`--max-rpc-accounts` 和 `--max-rpc-requests`。这些开关及 `--account` / `--slot` / 链与区块标识仅用于 RPC；离线世界已经携带 fork，不能另传 `--fork`。世界和 RPC 入口要求 `--entry`，四种来源 `--world`、`--rpc`、`--hex`、`--file` 互斥。
+
+解释中只有实际帧捕获的代码被列入执行目录：委托代码按 code address 区分，CREATE initcode 与安装后的 runtime 还按代码 hash 和模式区分。只观察到的初始代码有独立标注，不等同于执行证据。RPC 补查或执行预算未完成时，继续打印部分报告与 frontier，并省略完整 SSA，退出码为 2。

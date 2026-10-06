@@ -93,6 +93,7 @@ nix run . -- explain \
 | `Execution code` | 分析时捕获了哪些代码字节，各自属于什么代码版本？ | 结合 `C`、代码地址、`code_hash`、`mode` 读反汇编，再用活动状态 `S` 找图中的位置 |
 | `Analysis` | 本次分析是否完成，使用什么数值策略，处理了多少工作？ | 默认是 `Product`；`Incomplete` 时继续看 `Frontiers` |
 | `Snapshot` | 初始事实来自哪里，绑定了哪些快照事实？ | 看来源、快照身份和完整 fingerprint；fork 在 `Analysis` 中 |
+| `RPC acquisition`（RPC 发现模式） | 补查了哪些账户，累计查询与重跑多少次？ | 对照累计状态分配和最后一轮图；失败记录在预算中断后仍保留 |
 | `References` | `A0`、`H0` 分别代表什么完整地址和 hash？ | 查 `Addresses` / `Hashes` 后再核对代码与状态身份 |
 | `States` | 哪些状态属于哪个基本块、调用深度和执行账户？ | 用 `S` 编号定位 `State details` |
 | `State details` | 某个状态的栈、调用环境和实际经过的 pc 是什么？ | 分别读入口和出口栈；pc 是字节偏移 |
@@ -296,7 +297,11 @@ nix run . -- analyze \
 
 两条分析命令都退出 `2`，表示 `Incomplete`。第一条的 `MissingCode` 指向 B；第二条在需要 `[A, B, A]` 三帧时留下 `CallDepth`。**前沿（frontier）**就是尚未完成的区域，保存停止位置和原因。它不是一次正常返回，也不是“没有副作用”。
 
+第一条使用离线 `--world`，所以补齐 B 的代码需要修改输入。切换到显式 `--rpc` 后，默认只指定入口即可：分析器遇到具体 B 地址但缺少代码时，会在同一固定区块补查 B，再从 A 的入口重新分析；B 调用 C 时也可继续发现 C。`--no-rpc-discovery` 可保留只用预选账户的对照实验。未知地址仍留下 `UnknownTarget`，未选择的 storage slot 仍未知。固定 hash、采集错误和实际命令见[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
+
 `--max-work` 限制全执行累计工作，`--max-states` 与 `--max-transfers` 覆盖所有账户，`--max-memory-bytes` 限制每帧追踪的内存。未知目标、缺少创建事实、未知预编译输入也可能留下相应前沿；第 10 课会继续解释创建、预编译和摘要预算。
+
+RPC 补查后的各轮也共用这些执行预算，已经分析过的工作仍计费。迟发查询失败或采集额度耗尽会留下 `RpcAcquisition`，结果为 `Incomplete`、退出 `2`；单个已知分支的成功 outcome 不能替代这个前沿。
 
 ## 8. 怎样准备自己的 world
 
