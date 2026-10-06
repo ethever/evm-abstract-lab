@@ -18,7 +18,7 @@ fn root_frame() -> RootFrame {
     analyze_world(
         world,
         Entry {
-            address: address,
+            address,
             environment: evm_abstract::world::EvmEnvironment {
                 to: (address).into(),
                 caller: (Address::repeat_byte(0x22)).into(),

@@ -327,7 +327,10 @@ fn assert_frame_metadata(output: &str, lines: &[&str], state: &Json, detailed: b
             .split(" | ")
             .map(|field| field.split_once('=').unwrap())
             .collect();
-        assert_eq!(fields["caller"], key["caller"]["Concrete"].as_str().unwrap());
+        assert_eq!(
+            fields["caller"],
+            key["caller"]["Concrete"].as_str().unwrap()
+        );
         assert_eq!(fields["static"].parse::<bool>().unwrap(), key["is_static"]);
         assert_eq!(
             serde_json::from_str::<Json>(fields["jump history"]).unwrap(),

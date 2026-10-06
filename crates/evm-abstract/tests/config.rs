@@ -104,7 +104,7 @@ fn analyze_unknown_calldata_clz(capacity: usize, max_work: usize) -> WorldAnalys
     analysis::analyze_world(
         world,
         Entry {
-            address: address,
+            address,
             environment: evm_abstract::world::EvmEnvironment {
                 to: (address).into(),
                 caller: (Address::ZERO).into(),

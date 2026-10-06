@@ -481,7 +481,10 @@ fn world_explain_uses_entry_environment_domain_and_every_execution_budget_flag()
     success(&analyzed);
     let analyzed: Json = serde_json::from_slice(&analyzed.stdout).unwrap();
     assert_eq!(analyzed["entry"]["environment"]["is_static"], true);
-    assert_eq!(analyzed["entry"]["environment"]["caller"]["Concrete"], CALLEE);
+    assert_eq!(
+        analyzed["entry"]["environment"]["caller"]["Concrete"],
+        CALLEE
+    );
     assert_eq!(
         analyzed["entry"]["environment"]["value"]["Constants"],
         json!(["0x7"])

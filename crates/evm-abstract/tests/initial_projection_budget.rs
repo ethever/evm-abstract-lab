@@ -39,7 +39,7 @@ fn fixture() -> (World, Entry) {
         .insert(address, Account::from_hex("00", world.fork()).unwrap())
         .unwrap();
     let entry = Entry {
-        address: address,
+        address,
         environment: evm_abstract::world::EvmEnvironment {
             to: (address).into(),
             caller: (Address::ZERO).into(),

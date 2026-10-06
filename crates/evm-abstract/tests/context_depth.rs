@@ -23,7 +23,7 @@ fn native(code: &str, config: ExecutionConfig) -> WorldAnalysis {
     analyze_world(
         world,
         Entry {
-            address: address,
+            address,
             environment: evm_abstract::world::EvmEnvironment {
                 to: (address).into(),
                 caller: (Address::ZERO).into(),

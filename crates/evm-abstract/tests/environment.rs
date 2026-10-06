@@ -406,7 +406,7 @@ fn child_independent_callvalue_never_aliases_unknown_root_callvalue() {
             .active()
             .call_value
             .provenance()
-            .same_identity(&result.states()[0].entry.active().call_value.provenance())
+            .same_identity(result.states()[0].entry.active().call_value.provenance())
     );
 }
 
