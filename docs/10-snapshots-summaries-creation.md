@@ -4,6 +4,8 @@
 
 前四个实验均使用离线合成事实，入口为 A=`0x...0101`，默认预算可完成。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
+直接阅读时使用 `explain --world ... --entry ...`，得到捕获代码的反汇编、完整分析报告和已验证图的可读 SSA；以下 `analyze --format json` 命令用于查询字段。两者接受相同的入口环境、摘要开关、数值域和执行预算参数。`explain --hex` / `--file` 继续提供单程序反汇编、CFG 与栈 SSA，默认参数和原行为保持一致。
+
 ## 1. 调用摘要：复用完整结果关系
 
 先设想 A 连续两次调用 B，B 的代码和输入没变，B 读到的账户状态也没变。第一次已完成给定抽象输入下 B 的可达执行与可能出口分析。**调用摘要（call summary）**把这份完成的分析保存下来，第二次先核对输入前提，再复用结果，减少重复计算。它保存在分析器中，是执行过程和结果的结构化记录。
@@ -117,6 +119,10 @@ A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入�
 ### 第二步：运行并区分两种帧
 
 ```bash
+nix run . -- explain \
+  --world examples/worlds/create-runtime.json \
+  --entry 0x0000000000000000000000000000000000000101
+
 nix run . -- analyze \
   --world examples/worlds/create-runtime.json \
   --entry 0x0000000000000000000000000000000000000101 \
@@ -135,6 +141,8 @@ jq '[.analysis.outcomes[].store.account_observations[]
 这里用了 `--ssa`，JSON 根对象是 `{"analysis":...,"ssa":...}`，查询因此从 `.analysis` 开始。不加 `--ssa` 时，`states` / `outcomes` 就在根对象中。
 
 第一个查询应找到同一地址的 `InitCode` 与 `Runtime` 两种 `mode`，并带不同代码 hash。第二个查询看最终账户事实：某些失败可能仍为 absent；成功部署的账户为 present、nonce=`0x1`、code_size=8。
+
+`explain` 的 `Execution code` 也分别列出实际捕获的 InitCode 与后续 Runtime 指令，使用各自的 hash 和模式；它从分析时保存的代码字节反汇编，不会用初始 world 中的空代码替代新安装的 runtime。同一账户地址可以对应多个代码版本，代码地址也可能与使用代码的状态账户不同。目录后的活动状态引用连接到抽象图，不是具体部署交易的逐指令轨迹。
 
 `account_observations` 是方便阅读的账户汇总，不包含 storage slot；slot 仍在 `store.persistent.slots`。nonce 和余额是抽象值，JSON 中确定的数值仍写成含 `Constants` 的对象；已知的 `code_size` 则是整数，本例为 8。代码 hash 为零表示已确认 absent；代码为空但账户存在时，hash 是空字节的 Keccak，两者不同。
 
@@ -303,21 +311,22 @@ world JSON 中链上身份的 `chain_id` 仍使用 `0x` 十六进制格式；CLI
 
 ### 可选实验：从固定区块采集
 
-这一段需要你自己的 RPC 和已选定的区块，不是离线例子的必要步骤。先准备三个事实：提供者 URL、预期 chain id、确切 block hash；再列出分析会用到的账户与 slot，并选好该区块的 fork。下面的 `LAB_RPC_URL`、`LAB_BLOCK_HASH` 必须已设为实际值，命令中的 chain id 和账户也要与目标分析一致：
+这一段需要你自己的 RPC 和已选定的区块，不是离线例子的必要步骤。先准备三个事实：提供者 URL、预期 chain id、确切 block hash；再列出分析会用到的账户与 slot，并选好该区块的 fork。`explain` 与 `analyze` 共用固定快照采集边界；下面的 `LAB_RPC_URL`、`LAB_BLOCK_HASH` 必须已设为实际值，命令中的 chain id 和账户也要与目标分析一致：
 
 ```bash
-nix run . -- analyze \
+nix run . -- explain \
   --rpc "$LAB_RPC_URL" \
   --chain-id 1 \
   --block-hash "$LAB_BLOCK_HASH" \
   --fork osaka \
   --entry 0x0000000000000000000000000000000000000101 \
   --account 0x0000000000000000000000000000000000000200 \
-  --slot 0x0000000000000000000000000000000000000200:0 \
-  --format json
+  --slot 0x0000000000000000000000000000000000000200:0
 ```
 
-这里的 slot 索引 `0` 是十进制，也可写为 `0x0`；冒号前的账户地址仍是 20 字节十六进制。数量的十进制写法只改变 CLI 输入方式，world JSON 格式和发给 RPC 的编码不变。
+改用 `analyze` 并加 `--format json` 可导出采集后的 world 和分析字段；`--ssa` 在完成时保留原有 `{"analysis":...,"ssa":...}` JSON 格式。这里的 slot 索引 `0` 是十进制，也可写为 `0x0`；冒号前的账户地址仍是 20 字节十六进制。数量的十进制写法只改变 CLI 输入方式，world JSON 格式和发给 RPC 的编码不变。
+
+`explain` 必须恰好选择 `--hex`、`--file`、`--world`、`--rpc` 中的一种输入；world/RPC 必须提供 `--entry`。`--chain-id`、`--block-hash`、`--account` 和 `--slot` 只用于 RPC；RPC 必须同时提供 chain id 和确切 block hash。`--fork` 可用于单程序或 RPC；离线 world 使用 JSON 中声明的 fork，命令行不能覆盖。
 
 采集到分析的顺序是：
 
@@ -330,4 +339,4 @@ nix run . -- analyze \
 
 **当前信任范围是选定的 RPC 提供者。** loader 会将 `eth_getProof` 返回字段与其他查询交叉校验，但没有验证 [EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) 的 Merkle proof（将账户/槽位数据与区块状态根连接起来的密码学证明）。身份、hash 和 fingerprint 能发现混合/冲突输入，不能把受信任提供者的数据变成密码学状态证明，也不能让 `Converged` 成为任意合约安全证明。
 
-text / JSON / DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。默认文本按[第 9 课的分区](09-cross-contract.md#默认文本怎样读)阅读：`Snapshot` 查输入身份，`Outcomes` 查每个最终结果的账户和字节，`Call summaries` 查保存与复用。JSON 还保留初始 world、完整域策略、摘要输入/输出与执行中的 Store；DOT 的蓝色证书节点标出认证来源和复用位置。源码入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc.rs`](../crates/evm-abstract/src/world/rpc.rs)、[`transfer/create.rs`](../crates/evm-abstract/src/analysis/transfer/create.rs)。
+text / JSON / DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。默认文本按[第 9 课的分区](09-cross-contract.md#默认文本怎样读)阅读：`Snapshot` 查输入身份，`Outcomes` 查每个最终结果的账户和字节，`Call summaries` 查保存与复用。`explain` 在报告前添加捕获代码的反汇编，完成时再添加可读 SSA；不完整时保留部分图和所有前沿，显示 `SSA unavailable` 并退出 `2`。JSON 还保留初始 world、完整域策略、摘要输入/输出与执行中的 Store；DOT 的蓝色证书节点标出认证来源和复用位置。源码入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc.rs`](../crates/evm-abstract/src/world/rpc.rs)、[`transfer/create.rs`](../crates/evm-abstract/src/analysis/transfer/create.rs)。

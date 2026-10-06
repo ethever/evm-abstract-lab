@@ -12,6 +12,16 @@ nix run . -- explain --file examples/straight-line.hex
 
 `nix run .` 构建并运行本项目的命令行程序；`--` 后面是程序的参数。`explain` 会依次显示反汇编、控制流图和 SSA。后文拆开解释这三部分。
 
+多合约示例也使用同一教学命令，例如：
+
+```bash
+nix run . -- explain \
+  --world examples/worlds/call-return-branch.json \
+  --entry 0x0000000000000000000000000000000000000101
+```
+
+世界入口会显示实际捕获代码、调用帧与状态效果，以及完成图的可读 SSA。先完成本课的单程序阅读，再按[第 09 课](09-cross-contract.md)理解调用、返回和回滚。
+
 遇到环境问题时，按报错处理：
 
 | 现象 | 处理方法 |
