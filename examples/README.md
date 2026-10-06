@@ -40,17 +40,18 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 | 文件 | 手算条件 | 默认组合域的分支 | 仅有限集合的分支 |
 | --- | --- | --- | --- |
 | [known-bits-branch.hex](known-bits-branch.hex) | `(x AND 15) OR 1`，最低位为 1 | 只有 `BranchTrue` | `BranchTrue` 和 `BranchFalse` |
-| [copy-identity.hex](copy-identity.hex) | 同一次读取经 DUP1 复制，`x XOR x = 0` | 只有 `BranchFalse` | `BranchTrue` 和 `BranchFalse` |
+| [copy-identity.hex](copy-identity.hex) | 入口 calldata word 的同一个符号经 DUP1 复制，`x XOR x = 0` | 只有 `BranchFalse` | 只有 `BranchFalse` |
 | [independent-inputs.hex](independent-inputs.hex) | 从偏移 0、32 分别读取 `x`、`y`，再 XOR | 两种分支 | 两种分支 |
 
 ```bash
 nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0
 nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0 --domain constants-only
 nix run . -- explain --file examples/copy-identity.hex --context-depth 0
+nix run . -- cfg --file examples/copy-identity.hex --context-depth 0 --domain constants-only
 nix run . -- cfg --file examples/independent-inputs.hex --context-depth 0
 ```
 
-三份输入都应 `Converged`。第三份里的值虽然都来自 calldata，却不保证相等。复制身份只在本次基本块执行内有效；完整实验与事实交换过程见[第 12 课](../docs/12-product-domains-facts.md)。
+三份输入都应 `Converged`。原始 calldata 的固定偏移读取具有稳定输入身份，因此第二份在两个 profile 中都能确认 XOR 的两个操作数相同；偏移 0、32 的符号不同，所以第三份仍保留两条分支。固定输入身份与本次基本块内的临时复制身份是两种机制，前者可跨控制流保留，并在 constants-only 中继续使用。这些符号名字只在同一组输入中表示关联，跨报告的同名符号不证明相等。完整实验与事实交换过程见[第 12 课](../docs/12-product-domains-facts.md)，默认输入和独立命名空间见[第 13 课](../docs/13-evm-environment.md)。
 
 有限结果的完整枚举可以单独调整容量。下面读取未知 calldata word，再计算 Osaka 的 CLZ：
 
@@ -63,21 +64,25 @@ CLZ 的完整结果为 `0..=256`，共 257 个候选。第一条命令为 `Conve
 
 ## 多账户：观察调用怎样影响返回值与状态
 
-世界 JSON 提供多个账户的代码和初始事实，`--evm.to` 指定首先执行的账户。以下文件的入口统一为 `0x0000000000000000000000000000000000000101`；下面为重放固定教学输入，显式设置 caller 的地址末尾为 `1000`、空 calldata 和 value=0；省略这些参数时采用符号输入，origin 默认与 caller 相同。
+世界 JSON 提供多个账户的代码和初始事实，`--evm.to` 指定首先执行的账户。以下文件的入口统一为 `0x0000000000000000000000000000000000000101`。下面显式固定入口 caller=`0x...1000`、空 calldata 和 value=0，origin 默认与入口 caller 相同；子帧 caller 和 value 由调用指令决定。未指定的交易和区块字段仍为符号输入，省略入口的这三个参数也会扩大输入范围。运行后先查 `EVM inputs`，再用下面的具体成功路径理解输出。
 
 先跑第一项：
 
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x
 
 nix run . -- explain \
   --world examples/worlds/returndata-copy.json \
-  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x
 ```
 
-A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获代码的反汇编、简明 CFG 与栈、每个 `O` 的结果概要，最后显示 `Verified cross-contract SSA:`。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中分别保留的结果；地址短引用的完整值在 `Addresses` 中。SSA 用 `%结果 = 指令 %操作数` 展示值流，`T` 标识转移。需要完整世界报告、捕获帧与效果链时加 `--verbose`；需要查询 JSON 字段时改用 `analyze --format json`，再加 `--ssa` 可导出完成图的 SSA。
+A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获代码的反汇编、简明 CFG 与栈、每个 `O` 的结果概要，最后显示 `Verified cross-contract SSA:`。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中分别保留的结果；具体地址短引用的完整值在 `Addresses` 中，未知地址直接使用符号名字。SSA 用 `%结果 = 指令 %操作数` 展示值流，`T` 标识转移。需要完整环境字段、捕获帧与效果链时加 `--verbose`；需要查询 JSON 字段时改用 `analyze --format json`，再加 `--ssa` 可导出完成图的 SSA。JSON 为 `schema_version=2`，caller 和逻辑 `address_value` 的有类型格式见[第 09 课的代理实验](../docs/09-cross-contract.md#4-代理实验读谁的代码写谁的-storage)。
 
 反汇编中的代码身份由代码地址、hash 和模式区分；状态账户另行保留。代理可以共享实现代码，创建例子可以在同一地址执行 InitCode 与新安装的 Runtime。指令列表与状态入口、出口栈共同描述抽象分析，不能当作逐指令具体步骤记录。表中写的是**具体成功轨迹**；抽象模型还保留 gas 等失败可能，因此实际输出可能包含更大的值集合或其他 outcome。`Incomplete` 时 `explain` 保留反汇编、部分图、每个已知结果及全部诊断与前沿，显示 `SSA unavailable` 并退出 `2`；`--verbose` 保留完整报告分区。
 

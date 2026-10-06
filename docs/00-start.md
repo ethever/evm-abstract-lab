@@ -20,6 +20,8 @@ nix run . -- explain \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
+这条命令明确限定 caller 为末尾 `1000` 的地址、value 为零、calldata 为已知空字节。省略后三项时，分析的是符号输入；`origin` 未单独指定时与 caller 是同一个输入。世界/RPC 必须设置 `--evm.to`，单段字节码省略它时 ADDRESS 也保持未知。完整环境参数见[第 13 课](13-evm-environment.md)。
+
 世界入口默认显示实际捕获代码、简明状态与结果概要，以及完成图的赋值式 SSA；加 `--verbose` 可展开完整捕获记录与效果链。先完成本课的单程序阅读，再按[第 09 课](09-cross-contract.md)理解调用、返回和回滚。
 
 遇到环境问题时，按报错处理：
@@ -109,6 +111,12 @@ B0 @ 0x0000:
 ```text
 status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=8
 domain=Product | schema=1 | reduction rounds=4 | fact atoms=256
+
+EVM inputs
+  to=symbolic(To) | caller=symbolic(Caller) | origin=symbolic(Caller) (same as caller)
+  value=⊤ | static=false
+  calldata: length=⊤ | content=abstract bytes (default=⊤)
+  Other EVM environment inputs remain symbolic unless shown above; full inputs are available in the verbose report.
 S0 | B0 @ 0x0000 | stack height=0 | context=[]
   stack in  []
   stack out []
@@ -126,6 +134,8 @@ S0 | B0 @ 0x0000 | stack height=0 | context=[]
 | `domain=Product` | 默认用多种性质共同描述一个值；本例的常量仍显示为 `{0x...}` |
 
 `stack in` / `stack out` 在这里表示**栈状态**，不是调用的输入字节和返回字节。
+
+`EVM inputs` 记录本次允许的输入；`⊤` 表示未知，未写 calldata 也不等于空 calldata。本程序不读取这些输入，所以未知环境仍不影响 `2+3=5`。文本 `schema=1` 是域策略的格式版本；结果 JSON 的 `schema_version` 为 2，`cfg` 的输入记录在 `.environment`，`ssa --format json` 的记录在 `.analysis.environment`。
 
 `reduction rounds` 和 `fact atoms` 限制这些性质之间的一次信息交换，先保持默认值即可。[第 05 课](05-sensitivity.md)再区分精度参数与执行预算。
 

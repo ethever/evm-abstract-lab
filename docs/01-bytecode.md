@@ -4,6 +4,8 @@
 
 先完成[快速开始](00-start.md)。本课所有命令都在仓库根目录运行；`0x` 表示十六进制，栈列表按**栈底 → 栈顶**排列。
 
+`disasm` 只解码字节，不执行抽象分析，因此没有 `--evm.*` 输入。`cfg`、`ssa`、`explain` 才读取这些环境参数；省略时使用[符号默认值](13-evm-environment.md)。
+
 本课输入是**普通 EVM 字节码**：操作码及其立即数组成的指令流，解码器从字节偏移 `pc=0` 开始逐条读取。这个名称描述代码格式；指令是否有效仍由所选硬分叉版本决定。EOF 是另一种带格式头和分区的容器格式，本项目不支持。
 
 ## 1. 先手算三字节程序
@@ -79,7 +81,7 @@ nix run . -- explain --hex 61ab
 
 块编号 `B0`、`B1` 按代码位置递增，是当前程序的索引。`B1` 不等于 pc=1；它的字节地址另由 `@ 0x...` 显示。
 
-JSON 用 `key.basic_block_index` 记录这个索引：要找到实际 pc，先用索引读取 `program.blocks`，再看该块的 `start_pc`。状态编号 `S` 则表示一次分析中的执行位置；一个基本块可能对应多个状态。下面用分支例子核对两套编号：
+`cfg --format json` 的结果格式版本是 `.schema_version=2`，环境记录是 `.environment`。其状态 JSON 用 `key.basic_block_index` 记录这个索引：要找到实际 pc，先用索引读取 `program.blocks`，再看该块的 `start_pc`。状态编号 `S` 则表示一次分析中的执行位置；一个基本块可能对应多个状态。下面用分支例子核对两套编号：
 
 ```bash
 nix run . -- cfg --file examples/diamond.hex --context-depth 0 --format json > /tmp/blocks.json

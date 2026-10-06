@@ -63,11 +63,28 @@ nix run . -- cfg \
   --file examples/independent-inputs.hex --context-depth 0
 ```
 
-第一段只有 BranchFalse，第二段保留两种分支。这些命令的 calldata 是单合约 CFG 入口的未知输入；`analyze --evm.calldata ...` 可以另外提供具体数据。
+第一段只有 BranchFalse，第二段保留两种分支。这些命令的 calldata 是 root frame 的未知输入；显式 `--evm.calldata HEX` 可提供具体数据。
 
-**来源相同**与**同一个值**是两项事实。两个读取都可以带 Calldata 来源，却没有相等证明。本实验的未知读取得到执行器签发的复制身份；DUP 副本保留它，SWAP 改变位置，保留值的身份。精确常量则可以直接凭数值判定相等。
+**来源相同**与**同一个值**是两项事实。不同偏移的读取都可以带 Calldata 来源，却没有相等保证。root calldata 是不可变输入，已确定偏移的 word 有稳定符号；DUP 保留这个值，SWAP 只改变位置。因此 `copy-identity.hex` 在 product 和 constants-only 下都只有 BranchFalse：这里利用的是同一个输入，不能用它区分两种数值域。
 
-这个身份只在一次基本块执行内使用。进入下一块时刷新，路径 join、回滚数据和调用摘要不保留可复用的身份证明。分析结束后建立的 SSA 编号也不会自动反馈成运行时相等事实。因此，本实验不能推出“任意两次读取同一 storage slot 都相等”或“跨分支始终记得 x=y”。
+下面分别展示稳定输入身份与临时复制身份：
+
+```bash
+# 两次读取同一个 root calldata word，再 XOR；两种 profile 都得到零。
+nix run . -- cfg --hex 5f355f351800 --format json > /tmp/input-identity.json
+jq '.states[0].exit_stack[0].Constants' /tmp/input-identity.json
+
+# 先做加法，再复制这个运算结果。product 在当前块内知道两份值相同。
+nix run . -- cfg --hex 5f35600101801800 --format json > /tmp/copy-product.json
+nix run . -- cfg --hex 5f35600101801800 --domain constants-only \
+  --format json > /tmp/copy-constants.json
+jq '.states[0].exit_stack[0]' /tmp/copy-product.json
+jq '.states[0].exit_stack[0]' /tmp/copy-constants.json
+```
+
+第一条查询输出 `["0x0"]`。最后两条分别显示单点零与数值 Top：加法产生的新值没有继承原 calldata word 的稳定输入身份，product 通过本块的临时复制身份判断两份运算结果相同；constants-only 不保留这项临时精度。
+
+临时复制身份在进入下一块、汇合、调用或摘要边界失效。稳定的不可变输入符号则可跨块保留，默认 caller/origin、重复 CALLVALUE、相同偏移的 root calldata word 都属于这一类；摘要还必须匹配完整环境。不同环境里的同名符号不证明相等，子帧 memory 派生的 calldata 也不会冒充 root 输入。两种身份都不意味着“任意两次读取同一 storage slot 都相等”；SSA 编号不会反馈成执行器的关系证明。
 
 ## 3. 几个组件约束同一个 word
 
@@ -79,15 +96,15 @@ EVM 的一个 word 是 256 位，取值空间为 `0 .. 2^256-1`。组合域中�
 | KnownBits | 必须为零和必须为一的位 | x 的最低位是否为一？ |
 | Interval | 无符号与有符号闭区间 | x 是否落在无符号 1 到 20？ |
 | Congruence | 同余，即除以某个正整数后的固定余数 | x 是否为 8 的倍数？ |
-| Provenance | 可能来源、代码地址使用角色及临时复制身份 | x 来自哪类读取，是否是当前定义的副本？ |
+| Provenance | 可能来源、代码地址使用角色、稳定输入符号及临时复制身份 | x 来自哪类读取，是否是同一个输入或当前定义的副本？ |
 
-来源和使用角色不改变数值候选；可信复制身份则可在运算时建立两个操作数相等的事实。组件还可保留非零保证，供零值和分支查询使用。
+来源和使用角色不改变数值候选；同一作用域的稳定输入符号或可信复制身份可建立两个操作数相等的事实。组件还可保留非零保证，供零值和分支查询使用。
 
 来源记录的是当前观察和纯运算输入的类别摘要。MLOAD、SLOAD 等读取会重新标记为 Memory、Storage；纯算术合并输入类别并加入 Arithmetic。它不保存完整读取位置、祖先链或污点历史。
 
 [`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)只管理常量组件：Top 不限制候选，非空集合限制候选必须属于其中，空交返回错误。这个组件单独格式化时，Top 显示为 `⊤`。`Value::finite_constants()` 查看这个组件；`Value::contains()` 则检查它与位、区间、同余和非零保证的交集。常量组件为 Top 不等于整个值没有数值限制。
 
-有限集合无法枚举时，其他组件仍可以排除候选。JSON 没有 `Constants` 键，只说明这个组件不能给出完整列表。只有所有数值约束、来源和使用角色都未知时，整个值才序列化为 `"Top"`。反过来，一个候选没有被约束排除，也不代表存在某条执行能取到它。
+有限集合无法枚举时，其他组件仍可以排除候选。JSON 没有 `Constants` 键，只说明这个组件不能给出完整列表。只有数值约束、来源、使用角色和稳定符号都未知时，整个值才序列化为 `"Top"`。数值上为 Top 的输入仍可带 `provenance.symbol`；因此不能仅根据 JSON 是字符串还是对象判断数值精度。反过来，一个候选没有被约束排除，也不代表存在某条执行能取到它。
 
 ### 怎样读十六进制位模式
 
@@ -222,7 +239,7 @@ nix run . -- analyze \
 jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
-`domain_spec` 保存本次冻结的完整策略，包括 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
+结果的 `schema_version` 为 2；其中 `domain_spec.schema_version` 仍为 1，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `provenance_policy` 是 `environment-symbols-and-block-local-copy-v2`。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
 
 `--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 constants-only 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；默认容量 8 则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
 
@@ -244,4 +261,4 @@ jq '.states[0].exit_stack[0]' /tmp/facts-value.json
 
 当前没有对 JSON/RPC 全部输入设置统一字节配额，也没有全过程峰值内存配额。更完整的关系环境、路径分组与输入准入仍是[后续设计边界](https://github.com/ethever/evm-abstract-lab/issues/21)。源码入口是 [`domain.rs`](../crates/evm-abstract/src/domain.rs)，真实 CFG、字节和状态精度的回归样例在 [`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)。
 
-不可变 EVM 环境输入有单独的稳定符号身份：默认 caller 与 origin 共享一个符号，多次读取相同 calldata word 也可保留输入关系。这些身份跨基本块保留，并随完整环境纳入调用摘要前提；一般运算、未知 storage 和内存别名仍不因此获得完整关系精度。具体语义与命令见[第 13 课](13-evm-environment.md)。
+默认输入、跨帧规则和全部环境参数见[第 13 课](13-evm-environment.md)。
