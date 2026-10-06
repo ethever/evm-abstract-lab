@@ -48,6 +48,26 @@ pub(super) fn run_world(
     entry: Entry,
     config: ExecutionConfig,
 ) -> Result<WorldAnalysis, ConfigError> {
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut counters = Counters::default();
+    run_metered(world, entry, config, &mut budget, &mut counters)
+}
+
+/// Allocations and transfers remain charged when RPC refinement discards a graph.
+#[derive(Default)]
+pub(super) struct Counters {
+    pub states: usize,
+    pub transfers: usize,
+}
+
+/// Execute one fixed snapshot under the caller's cumulative resource ledger.
+pub(super) fn run_metered(
+    world: World,
+    entry: Entry,
+    config: ExecutionConfig,
+    budget: &mut WorkBudget,
+    counters: &mut Counters,
+) -> Result<WorldAnalysis, ConfigError> {
     let domain = config.domain()?;
     let mut result = WorldAnalysis {
         world,
@@ -61,13 +81,24 @@ pub(super) fn run_world(
         frontiers: Vec::new(),
         outcomes: Vec::new(),
         status: Status::Converged,
-        transfers: 0,
+        transfers: counters.transfers,
         work: 0,
+        rpc_acquisition: None,
         summary_stats: SummaryStats::default(),
         summaries: Vec::new(),
     };
     // 输入 lift、Store 与回滚点复制也使用根账本，不让初始化获得免费工作。
-    let mut budget = WorkBudget::new(result.config.max_work);
+    if counters.states >= result.config.analysis.max_states {
+        result.frontiers.push(MachineFrontier {
+            from: None,
+            target: None,
+            pc: None,
+            reason: FrontierReason::Budget(Limit::States),
+        });
+        result.status = Status::Incomplete;
+        result.work = budget.used();
+        return Ok(result);
+    }
     let initial_work = result
         .world
         .work_size()
@@ -117,11 +148,13 @@ pub(super) fn run_world(
         exit_stack: Vec::new(),
         executed_pcs: Vec::new(),
     });
+    counters.states += 1;
     let cache = result.config.use_summaries.then(Cache::new);
     let mut engine = Engine {
         result,
         domain,
         budget,
+        counters,
         ids: BTreeMap::from([(key, 0)]),
         queue: VecDeque::from([0]),
         queued: BTreeSet::from([0]),
@@ -139,13 +172,15 @@ pub(super) fn run_world(
 ///
 /// `result.states` 保存节点内容，`ids` 提供按结构键查找节点的索引；待处理队列
 /// 只保存节点编号。分支、循环、嵌套调用和摘要导入都汇入这同一张固定点图。
-struct Engine {
+struct Engine<'a> {
     /// 对外返回的分析结果；状态入口可继续 join，出口保存最近一次转换的证据。
     result: WorldAnalysis,
     /// 所有普通转换、join 和摘要回放共用的有限值域及其容量规则。
     domain: Domain,
     /// 入口复制、执行、join、摘要比较/认证/导入共用的累计工作账本。
-    budget: WorkBudget,
+    budget: &'a mut WorkBudget,
+    /// Prior RPC refinement rounds also consume state and transfer capacity.
+    counters: &'a mut Counters,
     /// 每个结构状态的严格入口更新次数；动态发现的环也采用同一 widening 策略。
     updates: Vec<usize>,
     /// 结构键 -> `result.states` 的索引；键相同才允许汇合抽象输入。
@@ -175,7 +210,7 @@ enum SummaryAttempt {
     Interrupted,
 }
 
-impl Engine {
+impl Engine<'_> {
     /// 记录调度层无法继续完成的目标；此处没有具体指令 PC。
     ///
     /// 指令层边界由 `execution` 或 `replay` 携带 PC 记录。frontier 表示分析
@@ -258,13 +293,14 @@ impl Engine {
             let reused = matches!(attempt, SummaryAttempt::Hit);
             if !reused {
                 self.result.transfers += 1;
+                self.counters.transfers += 1;
                 let execution = transfer::execute(
                     &self.result.world,
                     &self.result.entry,
                     self.result.states[id].entry.clone(),
                     &self.result.config,
                     self.domain,
-                    &mut self.budget,
+                    self.budget,
                 );
                 self.execution(id, execution, cache.as_mut());
             }
@@ -278,7 +314,7 @@ impl Engine {
                     &self.queued,
                     &self.diagnostics,
                     &self.completed_calls,
-                    &mut self.budget,
+                    self.budget,
                 )
             });
             self.cache = cache;
@@ -320,7 +356,7 @@ impl Engine {
         {
             return SummaryAttempt::Miss;
         }
-        let Some(input) = cache.input(&self.result, id, &mut self.budget) else {
+        let Some(input) = cache.input(&self.result, id, self.budget) else {
             self.frontier(
                 Some(id),
                 Some(self.result.states[id].key.clone()),
@@ -328,7 +364,7 @@ impl Engine {
             );
             return SummaryAttempt::Interrupted;
         };
-        match cache.lookup(&input, &self.result, &mut self.budget) {
+        match cache.lookup(&input, &self.result, self.budget) {
             Ok(Some(index)) => {
                 let certificate = cache.certificate(index);
                 self.result.summary_stats.hits += 1;
@@ -341,7 +377,7 @@ impl Engine {
             }
             Ok(None) => {
                 self.result.summary_stats.misses += 1;
-                if cache.begin(id, input, &mut self.budget) {
+                if cache.begin(id, input, self.budget) {
                     SummaryAttempt::Miss
                 } else {
                     self.frontier(
@@ -456,7 +492,7 @@ impl Engine {
             }
             existing
         } else {
-            if self.result.states.len() >= self.result.config.analysis.max_states {
+            if self.counters.states >= self.result.config.analysis.max_states {
                 self.frontier(Some(from), Some(key), FrontierReason::Budget(Limit::States));
                 return None;
             }
@@ -471,6 +507,7 @@ impl Engine {
                 exit_stack: Vec::new(),
                 executed_pcs: Vec::new(),
             });
+            self.counters.states += 1;
             self.completed_calls.push(Vec::new());
             self.updates.push(0);
             self.queue.push_back(id);
@@ -493,11 +530,8 @@ impl Engine {
     /// 返回 `false` 表示导入未完成：已加入的节点/边不会整体撤销，而是通过前沿
     /// 标明结果不完整，禁止把这个部分图当作完整分析或用于构建 SSA。
     fn replay(&mut self, root: usize, certificate: &Certificate) -> bool {
-        let Some(replay) = Replay::new(
-            certificate,
-            &self.result.states[root].entry,
-            &mut self.budget,
-        ) else {
+        let Some(replay) = Replay::new(certificate, &self.result.states[root].entry, self.budget)
+        else {
             self.frontier(
                 Some(root),
                 Some(self.result.states[root].key.clone()),
@@ -508,7 +542,7 @@ impl Engine {
         // 证书局部节点编号 -> 当前世界节点编号。它与 self.ids 的“结构键索引”不同。
         let mut ids = Vec::new();
         for index in 0..certificate.nodes.len() {
-            let Some(node) = replay.node(index, &mut self.budget) else {
+            let Some(node) = replay.node(index, self.budget) else {
                 self.frontier(
                     Some(root),
                     Some(self.result.states[root].key.clone()),
@@ -544,7 +578,7 @@ impl Engine {
                 }
                 existing
             } else {
-                if self.result.states.len() >= self.result.config.analysis.max_states {
+                if self.counters.states >= self.result.config.analysis.max_states {
                     self.frontier(Some(root), Some(key), FrontierReason::Budget(Limit::States));
                     return false;
                 }
@@ -559,6 +593,7 @@ impl Engine {
                     exit_stack: node.exit_stack,
                     executed_pcs: node.executed_pcs,
                 });
+                self.counters.states += 1;
                 self.completed_calls.push(node.completed_calls);
                 self.updates.push(0);
                 id
@@ -585,7 +620,7 @@ impl Engine {
         // 证书终结保留的是 callee 原始结果。返回成功位、returndata、输出复制、
         // 回滚与返回位置必须通过当前 caller 的 continuation 重新应用。
         for (index, terminal) in certificate.terminals.iter().enumerate() {
-            let Some(payload) = replay.terminal_payload(index, &mut self.budget) else {
+            let Some(payload) = replay.terminal_payload(index, self.budget) else {
                 self.frontier(Some(root), None, FrontierReason::SummaryWork);
                 return false;
             };
@@ -595,7 +630,7 @@ impl Engine {
                 terminal.raw_data.clone(),
                 &self.result.config,
                 self.domain,
-                &mut self.budget,
+                self.budget,
             );
             let from = ids[terminal.from];
             // 返回处理也消耗同一预算；其中的 Work 属于本次摘要导入，改记 SummaryWork。
