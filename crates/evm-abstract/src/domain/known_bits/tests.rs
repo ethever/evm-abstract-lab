@@ -59,6 +59,119 @@ fn low_patterns() -> Vec<(KnownBits, Vec<U256>)> {
         .collect()
 }
 
+// 从读者看到的语法独立枚举每个位置的候选数字，不读取 KnownBits 掩码。
+fn displayed_nibbles(rendered: &str) -> Vec<BTreeSet<u8>> {
+    let mut characters = rendered.strip_prefix("0x").unwrap().chars();
+    let mut nibbles = Vec::new();
+    while let Some(character) = characters.next() {
+        let values = match character {
+            '*' => (0..16).collect(),
+            '[' => {
+                let pattern: Vec<_> = characters.by_ref().take(4).collect();
+                assert_eq!(pattern.len(), 4);
+                assert!(pattern.iter().all(|bit| matches!(bit, '0' | '1' | '*')));
+                assert!(pattern.contains(&'*'));
+                assert!(pattern.iter().any(|bit| *bit != '*'));
+                assert_eq!(characters.next(), Some(']'));
+                (0_u8..16)
+                    .filter(|value| {
+                        format!("{value:04b}")
+                            .chars()
+                            .zip(&pattern)
+                            .all(|(actual, known)| *known == '*' || *known == actual)
+                    })
+                    .collect()
+            }
+            digit => {
+                assert!(matches!(digit, '0'..='9' | 'a'..='f'));
+                BTreeSet::from([digit.to_digit(16).unwrap() as u8])
+            }
+        };
+        nibbles.push(values);
+    }
+    assert_eq!(nibbles.len(), 64);
+    nibbles
+}
+
+#[test]
+fn display_preserves_all_nibble_constraints_at_every_word_position() {
+    for (pattern, values) in low_patterns() {
+        let expected = values
+            .into_iter()
+            .map(|value| value.to::<u8>())
+            .collect::<BTreeSet<_>>();
+        for index in 0..64 {
+            let shift = index * 4;
+            let zero = (pattern.zero() & U256::from(15)) << shift;
+            let one = pattern.one() << shift;
+            let bits = KnownBits::new(zero, one).unwrap();
+            let rendered = bits.to_string();
+            let decoded = displayed_nibbles(&rendered);
+            for (display_index, actual) in decoded.iter().enumerate() {
+                if display_index == 63 - index {
+                    assert_eq!(actual, &expected, "{rendered}");
+                    for candidate in 0_u8..16 {
+                        assert_eq!(
+                            actual.contains(&candidate),
+                            bits.contains(U256::from(candidate) << shift),
+                            "{rendered}, candidate={candidate:x}"
+                        );
+                    }
+                } else {
+                    assert_eq!(actual, &(0..16).collect::<BTreeSet<_>>(), "{rendered}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn display_keeps_all_unknown_positions_and_exact_hex_digits() {
+    assert_eq!(
+        KnownBits::top().to_string(),
+        format!("0x{}", "*".repeat(64))
+    );
+    assert_eq!(
+        KnownBits::exact(U256::ZERO).to_string(),
+        format!("0x{}", "0".repeat(64))
+    );
+    assert_eq!(
+        KnownBits::exact(U256::MAX).to_string(),
+        format!("0x{}", "f".repeat(64))
+    );
+    let word = U256::from_str_radix(
+        "fedcba98765432100123456789abcdefdeadbeef23456789abcdef0123456789",
+        16,
+    )
+    .unwrap();
+    assert_eq!(KnownBits::exact(word).to_string(), format!("{word:#066x}"));
+}
+
+#[test]
+fn display_orders_mixed_nibbles_and_partial_binary_bits_high_to_low() {
+    let zero = (U256::from(5) << 252) | (U256::from(8) << 248) | U256::from(0x40);
+    let one = (U256::from(10) << 252) | (U256::from(4) << 248) | U256::from(0x8f);
+    let bits = KnownBits::new(zero, one).unwrap();
+    assert_eq!(
+        bits.to_string(),
+        format!("0xa[01**]{}[10**]f", "*".repeat(60))
+    );
+    let clz = KnownBits::from_unsigned_bounds(U256::ZERO, U256::from(256));
+    assert_eq!(clz.to_string(), format!("0x{}[000*]**", "0".repeat(61)));
+}
+
+#[test]
+fn display_preserves_serialized_zero_and_one_masks() {
+    let zero = U256::from(8);
+    let one = U256::from(4);
+    let bits = KnownBits::new(zero, one).unwrap();
+    assert_eq!(bits.to_string(), format!("0x{}[01**]", "*".repeat(63)));
+    assert_eq!(
+        serde_json::to_value(bits).unwrap(),
+        serde_json::json!({ "zero": zero, "one": one })
+    );
+}
+
 #[test]
 fn invariant_join_and_meet_are_distinct() {
     let bit: U256 = U256::from(1) << 255;

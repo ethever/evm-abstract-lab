@@ -12,6 +12,8 @@ mod teaching;
 mod capacity;
 #[path = "cli/domains.rs"]
 mod domains;
+#[path = "cli/known_bits.rs"]
+mod known_bits;
 #[path = "cli/numbers.rs"]
 mod numbers;
 #[path = "cli/rpc.rs"]

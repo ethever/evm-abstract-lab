@@ -7,12 +7,45 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::fmt;
 
 /// 一组 256 bit 整数的已知位；`zero & one == 0` 是构造不变量。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct KnownBits {
     zero: U256,
     one: U256,
+}
+
+/// 按高位到低位完整显示 64 个十六进制位置，不省略前导零或未知位。
+/// 一个位置全部已知时显示十六进制数字，全部未知时显示 `*`，
+/// 部分已知时显示四个二进制位，例如 `[01**]`。
+impl fmt::Display for KnownBits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("0x")?;
+        for index in (0..64_usize).rev() {
+            let shift = index * 4;
+            let zero = ((self.zero >> shift) & U256::from(15)).to::<u8>();
+            let one = ((self.one >> shift) & U256::from(15)).to::<u8>();
+            match zero | one {
+                0 => f.write_str("*")?,
+                15 => write!(f, "{one:x}")?,
+                _ => {
+                    f.write_str("[")?;
+                    for bit in (0..4).rev() {
+                        f.write_str(if zero & (1 << bit) != 0 {
+                            "0"
+                        } else if one & (1 << bit) != 0 {
+                            "1"
+                        } else {
+                            "*"
+                        })?;
+                    }
+                    f.write_str("]")?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl KnownBits {

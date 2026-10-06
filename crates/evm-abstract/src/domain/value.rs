@@ -169,15 +169,10 @@ impl fmt::Display for Value {
             return self.finite.fmt(f);
         }
         if self.numeric_top() {
-            return f.write_str("⊤");
+            return self.bits.fmt(f);
         }
         let (lo, hi) = self.interval.unsigned_bounds();
-        write!(
-            f,
-            "u[0x{lo:x},0x{hi:x}] bits(0=0x{:x},1=0x{:x})",
-            self.bits.zero(),
-            self.bits.one()
-        )?;
+        write!(f, "u[0x{lo:x},0x{hi:x}] bits={}", self.bits)?;
         if let Some((m, r)) = self.congruence.modulus_residue() {
             write!(f, " mod(0x{m:x})=0x{r:x}")?;
         }
