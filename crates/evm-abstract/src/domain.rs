@@ -12,6 +12,7 @@ use std::{collections::BTreeSet, num::NonZeroUsize};
 mod concrete;
 pub mod congruence;
 pub mod facts;
+pub mod finite_constant_set;
 pub mod interval;
 pub mod known_bits;
 pub mod provenance;
@@ -22,6 +23,7 @@ mod transfer;
 mod value;
 
 use concrete::evaluate;
+pub use finite_constant_set::{EmptyFiniteConstantSet, FiniteConstantSet};
 pub use reduce::{Reduction, ReductionStatus};
 pub use spec::{DomainSpec, Profile};
 pub use value::Value;
@@ -73,18 +75,17 @@ impl Domain {
         if self.spec.profile() == Profile::Product {
             let mut value = value.clone();
             value.forget_identity();
-            if value
-                .finite
-                .as_ref()
-                .is_some_and(|s| s.len() > self.capacity())
-            {
-                value.finite = None;
-            }
+            value.finite = value.finite.into_limited(self.spec.constant_capacity());
             return value;
         }
         query::candidates(value, self.capacity())
             .filter(|s| !s.is_empty() && s.len() <= self.capacity())
-            .map_or_else(Value::top, Self::finite)
+            .map_or_else(Value::top, |values| {
+                Self::finite(
+                    FiniteConstantSet::try_from_values(values)
+                        .expect("candidate filter established a nonempty set"),
+                )
+            })
     }
     /// 从受控的一元语义事实建立初始值。矛盾与容量不足不会变成 Top/空成功。
     pub fn from_facts(self, facts: &[facts::UnaryPredicate]) -> Result<Value, facts::FactError> {
@@ -108,13 +109,7 @@ impl Domain {
             });
         }
         let mut result = reduced.value;
-        if result
-            .finite
-            .as_ref()
-            .is_some_and(|s| s.len() > self.capacity())
-        {
-            result.finite = None;
-        }
+        result.finite = result.finite.into_limited(self.spec.constant_capacity());
         if query::candidates(&result, self.capacity()).is_some_and(|s| s.is_empty()) {
             return Err(facts::FactError::Contradiction {
                 subject: facts::Symbol::THIS,
@@ -137,12 +132,11 @@ impl Domain {
     }
     /// 逐组件最小上界；不运行 fact 交换。路径特有断言只能保留共同保证。
     pub fn join(&self, left: &Value, right: &Value) -> Value {
-        let finite = match (left.constants(), right.constants()) {
-            (Some(a), Some(b)) => self.collect(a.union(b).copied()).finite,
-            _ => None,
-        };
+        let finite = left
+            .finite
+            .join(&right.finite, self.spec.constant_capacity());
         if self.spec.profile() == Profile::ConstantsOnly {
-            return finite.map_or_else(Value::top, Self::finite);
+            return Self::finite(finite);
         }
         Value {
             finite,
@@ -153,29 +147,28 @@ impl Domain {
             nonzero: left.nonzero && right.nonzero,
         }
     }
-    fn finite(values: BTreeSet<U256>) -> Value {
+    fn finite(finite: FiniteConstantSet) -> Value {
+        let Some(values) = finite.as_values() else {
+            return Value::top();
+        };
+        let bits = known_bits::KnownBits::from_values(values);
+        let interval = interval::Interval::from_values(values);
+        let congruence = congruence::Congruence::from_values(values);
+        let nonzero = !values.contains(&U256::ZERO);
         Value {
-            bits: known_bits::KnownBits::from_values(&values),
-            interval: interval::Interval::from_values(&values),
-            congruence: congruence::Congruence::from_values(&values),
-            nonzero: !values.contains(&U256::ZERO),
-            finite: Some(values),
+            bits,
+            interval,
+            congruence,
+            nonzero,
+            finite,
             provenance: provenance::Provenance::constant(),
         }
     }
     fn collect(&self, values: impl IntoIterator<Item = U256>) -> Value {
-        let mut constants = BTreeSet::new();
-        for value in values {
-            constants.insert(value);
-            if constants.len() > self.capacity() {
-                return Value::top();
-            }
-        }
-        assert!(
-            !constants.is_empty(),
-            "reachable finite values are nonempty"
-        );
-        Self::finite(constants)
+        Self::finite(
+            FiniteConstantSet::collect_bounded(values, self.spec.constant_capacity())
+                .expect("reachable finite values are nonempty"),
+        )
     }
     fn finite_apply(&self, op: u8, args: &[Value]) -> Value {
         let Some(sets) = args
@@ -192,18 +185,14 @@ impl Domain {
             };
         };
         let singleton = BTreeSet::from([U256::ZERO]);
-        let mut results = BTreeSet::new();
-        for a in sets[0] {
-            for b in sets.get(1).copied().unwrap_or(&singleton) {
-                for c in sets.get(2).copied().unwrap_or(&singleton) {
-                    results.insert(evaluate(op, *a, *b, *c));
-                    if results.len() > self.capacity() {
-                        return Value::top();
-                    }
-                }
-            }
-        }
-        Self::finite(results)
+        let second = sets.get(1).copied().unwrap_or(&singleton);
+        let third = sets.get(2).copied().unwrap_or(&singleton);
+        let results = sets[0].iter().flat_map(|a| {
+            second
+                .iter()
+                .flat_map(move |b| third.iter().map(move |c| evaluate(op, *a, *b, *c)))
+        });
+        self.collect(results)
     }
     /// 纯栈运算，栈顶先弹出；未知/不支持的纯数值运算保守产生 Top。
     /// 引擎在执行前从根账本预留包含交换的工作上界。

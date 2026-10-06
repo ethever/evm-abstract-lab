@@ -75,7 +75,7 @@ EVM 的一个 word 是 256 位，取值空间为 `0 .. 2^256-1`。组合域中�
 
 | 组件 | 保存什么 | 可以回答什么 |
 | --- | --- | --- |
-| 常量集合 | 完整的有限候选集合 | x 是否只能是 8 或 16？ |
+| FiniteConstantSet | Top 或完整的非空有限候选集合 | x 是否只能是 8 或 16？ |
 | KnownBits | 必须为零和必须为一的位 | x 的最低位是否为一？ |
 | Interval | 无符号与有符号闭区间 | x 是否落在无符号 1 到 20？ |
 | Congruence | 同余，即除以某个正整数后的固定余数 | x 是否为 8 的倍数？ |
@@ -84,6 +84,8 @@ EVM 的一个 word 是 256 位，取值空间为 `0 .. 2^256-1`。组合域中�
 来源和使用角色不改变数值候选；可信复制身份则可在运算时建立两个操作数相等的事实。组件还可保留非零保证，供零值和分支查询使用。
 
 来源记录的是当前观察和纯运算输入的类别摘要。MLOAD、SLOAD 等读取会重新标记为 Memory、Storage；纯算术合并输入类别并加入 Arithmetic。它不保存完整读取位置、祖先链或污点历史。
+
+[`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)只管理常量组件：Top 不限制候选，非空集合限制候选必须属于其中，空交返回错误。`Value::finite_constants()` 查看这个组件；`Value::contains()` 则检查它与位、区间、同余和非零保证的交集。
 
 有限集合无法枚举时，其他组件仍可以排除候选。JSON 没有 `Constants` 键，只说明这个组件不能给出完整列表。只有所有数值约束、来源和使用角色都未知时，整个值才序列化为 `"Top"`。反过来，一个候选没有被约束排除，也不代表存在某条执行能取到它。
 
@@ -128,7 +130,7 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 
 来源、地址范围和代码用途也必须区分。`IsAddress` 保证高 96 位为零；`IsCodeAddress` 只记录作为代码地址使用的角色。它们都不能证明该账户存在，更不能提供未知账户的代码。
 
-若想继续看库接口，可从 [`Domain::from_facts`](../crates/evm-abstract/src/domain.rs) 和 [`facts.rs`](../crates/evm-abstract/src/domain/facts.rs)进入。上述范围加 8 的倍数就是该接口可以建立的初始前提。非法范围、空候选或零模数会被拒绝；矛盾不能改写成成功的 Top。
+若想继续看库接口，可从 [`Domain::from_facts`](../crates/evm-abstract/src/domain.rs) 和 [`facts.rs`](../crates/evm-abstract/src/domain/facts.rs)进入。上述范围加 8 的倍数就是该接口可以建立的初始前提。`MemberOf` 的 `FiniteSet` 与常量组件共用非空集合表示，但声明成员关系必须给出具体集合，不能使用 Top。事实表按候选元素计入事实容量；导入组合值后，常量容量决定能否继续保留这份完整列表。这是两项独立的限制。非法范围、空候选或零模数会被拒绝；矛盾不能改写成成功的 Top。
 
 ## 5. 同一值的约束取交，不同路径的可能取并
 

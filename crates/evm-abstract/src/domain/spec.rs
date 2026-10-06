@@ -59,6 +59,10 @@ impl DomainSpec {
     pub fn capacity(self) -> usize {
         self.capacity.get()
     }
+    /// 向组件传递已验证的容量，每个值无需重复保存容量策略。
+    pub(crate) fn constant_capacity(self) -> NonZeroUsize {
+        self.capacity
+    }
     /// 一次临时交换最多执行的完整轮数；不声称理论最精确闭包。
     pub fn reduction_rounds(self) -> usize {
         self.reduction_rounds.get()

@@ -76,7 +76,7 @@ pub(super) fn apply(domain: Domain, op: u8, args: &[Value]) -> Reduction {
         return Reduction::unchanged(value);
     }
     let mut finite_value = domain.finite_apply(relation.opcode(), args);
-    if finite_value.finite.is_some() && args.iter().all(|v| v.constants().is_some()) {
+    if !finite_value.finite.is_top() && args.iter().all(|v| v.constants().is_some()) {
         // 完整枚举已给精确 scalar 集合；重新传播其等价摘要不会增加信息。
         finite_value.provenance = provenance;
         return Reduction::unchanged(finite_value);
