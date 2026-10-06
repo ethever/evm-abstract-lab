@@ -801,19 +801,20 @@ fn incremental_timeout_and_response_limit_remain_typed_without_partial_cache() {
 fn incremental_body_timeout_is_a_total_deadline_despite_continuing_chunks() {
     thread::scope(|scope| {
         let server = Server::new(scope, |request| {
-            let reply = incremental_healthy(request);
+            let mut reply = incremental_healthy(request);
             if request["method"] == "eth_getCode"
                 && request["params"][0] == json!(Address::repeat_byte(0x44))
             {
-                // Valid JSON arrives one byte per 10 ms. Every individual read
-                // can succeed within 50 ms, while the full body takes >100 ms.
-                assert!(serde_json::to_vec(&reply).unwrap().len() > 10);
+                // 每字节间隔10ms，总响应超过500ms；健康初始化留足并发调度余量。
+                // 单次读取仍能持续成功，测试必须验证整条响应的总期限。
+                reply["padding"] = json!("x".repeat(128));
+                assert!(serde_json::to_vec(&reply).unwrap().len() > 50);
                 return Reply::Trickle(reply);
             }
             Reply::Json(reply)
         });
         let mut input = server.input();
-        input.timeout = Duration::from_millis(50);
+        input.timeout = Duration::from_millis(500);
         let mut session = Session::load(&input).unwrap();
         let error = session
             .fetch_account(Address::repeat_byte(0x44))
