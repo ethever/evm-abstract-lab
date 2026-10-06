@@ -7,7 +7,7 @@ use crate::{
     domain::{Domain, Value},
     world::{AddressInput, ByteArray, Entry, Store, World},
 };
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use serde::Serialize;
 
 mod frame;
@@ -275,6 +275,13 @@ pub enum FrontierReason {
     UnknownTarget,
     /// The fixed world does not establish this account's executable code.
     MissingCode(Address),
+    /// RPC discovery needs this owner's initial slot at the fixed snapshot.
+    MissingStorage {
+        /// The execution/storage owner, independently of delegated code.
+        address: Address,
+        /// A concrete member of the complete finite slot-key set.
+        slot: U256,
+    },
     /// A discovered account could not be acquired at the fixed RPC snapshot.
     RpcAcquisition {
         /// Address requested by the incomplete call or entry.

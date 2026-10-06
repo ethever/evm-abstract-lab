@@ -41,6 +41,13 @@ struct TransferContext<'a> {
     input_scope: Option<u64>,
 }
 
+/// RPC 发现先补初始事实；普通离线分析继续对缺失事实做保守传播。
+#[derive(Clone, Copy)]
+pub(super) enum StorageReadPolicy {
+    Abstract,
+    Discover,
+}
+
 pub(super) fn initial(
     world: &World,
     entry: &Entry,
@@ -219,6 +226,7 @@ pub(super) fn execute(
     config: &ExecutionConfig,
     domain: Domain,
     budget: &mut WorkBudget,
+    storage_reads: StorageReadPolicy,
 ) -> Execution {
     let mut transfer_context = TransferContext {
         config,
@@ -333,6 +341,36 @@ pub(super) fn execute(
         }
         let mut args: Vec<Value> = stack.drain(stack.len() - inputs..).collect();
         args.reverse();
+        if op == opcode::SLOAD && matches!(storage_reads, StorageReadPolicy::Discover) {
+            let owner = result.payload.active().key.address;
+            // 不用抽象环境的内部占位地址向链上查询。
+            if result.payload.active().key.address_value.as_concrete() == Some(owner) {
+                let scan = args[0]
+                    .work_size()
+                    .saturating_add(result.payload.store.work_size());
+                if !context.budget.charge(scan) {
+                    boundary(&mut result, pc, FrontierReason::Work);
+                    return result;
+                }
+                let missing = result
+                    .payload
+                    .store
+                    .missing_initial_slots(world, owner, &args[0]);
+                if !missing.is_empty() {
+                    for slot in missing {
+                        boundary(
+                            &mut result,
+                            pc,
+                            FrontierReason::MissingStorage {
+                                address: owner,
+                                slot,
+                            },
+                        );
+                    }
+                    return result;
+                }
+            }
+        }
         if matches!(op, opcode::MLOAD | opcode::CALLDATALOAD) {
             let scan = args[0]
                 .constants()

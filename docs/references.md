@@ -46,6 +46,7 @@ execution-specs 的默认分支会更新。以上 Cancun 链接用于相应规�
 | transient storage 属于哪个账户，怎样回滚 | [EIP-1153](https://eips.ethereum.org/EIPS/eip-1153) | 同交易共享状态、DELEGATECALL 的状态账户、REVERT checkpoint |
 | 本仓库怎样声明未知环境字段和 caller/origin 关联 | [`environment.rs`](../crates/evm-abstract/src/world/environment.rs)、[`provenance.rs`](../crates/evm-abstract/src/domain/provenance.rs) | [第 13 课](13-evm-environment.md)；每组输入的独立符号命名空间、默认 origin 与 caller 共享身份；不等同于完整关系式符号执行 |
 | 怎样把 RPC 请求固定在同一个区块 | [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) | 启动时解析区块，再以 exact block hash 与 canonical selector 采集状态；loader 完全信任提供者，不请求账户或槽位证明 |
+| SLOAD 的有限槽怎样按需补查，代理应读谁的状态 | [`analysis/rpc.rs`](../crates/evm-abstract/src/analysis/rpc.rs)、[`world/rpc/session.rs`](../crates/evm-abstract/src/world/rpc/session.rs) | [第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)；真实 HTTP CLI 回归在 [`rpc/storage.rs`](../crates/evm-abstract-cli/tests/cli/rpc/storage.rs)，覆盖状态 owner、零值缓存、回滚与迟发失败 |
 | CREATE2 怎样确定地址，initcode 有哪些限制 | [EIP-1014](https://eips.ethereum.org/EIPS/eip-1014)、[EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) | salt 与 initcode hash、创建帧和长度检查 |
 | SELFDESTRUCT 何时删除代码与存储 | [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) | 区分预先存在和同交易创建的账户；后者延迟删除，并接受祖先回滚 |
 | Osaka 的 P256VERIFY 位于哪个地址 | [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) | `0x100` 是预编译地址，因此离线字节码例子入口选用 `0x101` |

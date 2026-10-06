@@ -1,13 +1,14 @@
 //! Incremental acquisition owns one client and a monotone fixed-snapshot cache.
 //!
-//! A fetched account becomes visible only after all account observations and
-//! both final identity checks succeed. Execution owns its transaction state;
-//! this cache contains only initial observations at the once-resolved block hash.
+//! Fetched accounts and storage batches become visible only after all requested
+//! observations and both final identity checks succeed. Execution owns its
+//! transaction state; this cache contains only initial observations at the
+//! once-resolved block hash.
 
 use super::{AccountRequest, AcquisitionLimit, Loader, RpcError, RpcInput, configured_loader};
-use crate::world::World;
-use alloy_primitives::Address;
-use std::collections::BTreeSet;
+use crate::{domain::Value, world::World};
+use alloy_primitives::{Address, U256};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Bounded RPC acquisition whose observed accounts never change or disappear.
 #[derive(Debug)]
@@ -77,6 +78,66 @@ impl Session {
         Ok(true)
     }
 
+    /// Acquire missing initial slots of an already observed account.
+    ///
+    /// Returns the keys installed by this batch, in ascending order. Cached
+    /// slots, including observed zeros, and complete storage need no requests.
+    /// Every new fact uses the session's exact canonical block hash. The fixed
+    /// height is checked against that hash before and after the batch, including
+    /// when the endpoint can still return a reorganized block by its old hash.
+    /// A missing or malformed pinned height is an error before acquisition. The
+    /// cumulative request budget also bounds retained slot observations;
+    /// pending storage grows only after a successful bounded request.
+    ///
+    /// Failed acquisition retains its attempted request count and installs none
+    /// of this batch. Account code, balance, nonce and established slot facts
+    /// are never acquired again or overwritten.
+    pub fn fetch_storage(
+        &mut self,
+        address: Address,
+        slots: &BTreeSet<U256>,
+    ) -> Result<Vec<U256>, RpcError> {
+        let account = self
+            .world
+            .account(address)
+            .ok_or_else(|| RpcError::Configuration {
+                context: Box::new(self.loader.context(
+                    "eth_getStorageAt",
+                    Some(address),
+                    slots.first().copied(),
+                )),
+                reason: "storage acquisition requires an already observed account",
+            })?;
+        if !account.storage_unknown {
+            return Ok(Vec::new());
+        }
+        let mut missing = slots
+            .iter()
+            .copied()
+            .filter(|key| !account.storage.contains_key(key))
+            .peekable();
+        if missing.peek().is_none() {
+            return Ok(Vec::new());
+        }
+        let block_number = self.loader.storage_block_number()?;
+        self.loader.check_chain()?;
+        self.loader.check_storage_block(block_number)?;
+        let mut pending = BTreeMap::new();
+        for key in missing {
+            pending.insert(key, Value::constant(self.loader.storage(address, key)?));
+        }
+        self.loader.check_chain()?;
+        self.loader.check_storage_block(block_number)?;
+        let installed = pending.keys().copied().collect();
+        self.world
+            .install_storage(address, pending)
+            .map_err(|source| RpcError::World {
+                context: Box::new(self.loader.context("eth_getStorageAt", Some(address), None)),
+                source,
+            })?;
+        Ok(installed)
+    }
+
     /// Number of HTTP requests attempted, including checks and failures.
     pub fn requests(&self) -> usize {
         self.loader.next_id
@@ -85,5 +146,38 @@ impl Session {
     /// Finish acquisition, retaining the observations without the RPC client.
     pub fn into_world(self) -> World {
         self.world
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Session, configured_loader};
+    use crate::{
+        Address, Fork, U256,
+        world::{Account, rpc::RpcInput},
+    };
+    use alloy_primitives::B256;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn complete_and_absent_storage_need_no_requests_or_extra_observations() {
+        for account in [Account::empty(), Account::absent()] {
+            let mut loader =
+                configured_loader(&RpcInput::new("http://127.0.0.1:1", Fork::Osaka)).unwrap();
+            loader.chain_id = Some(U256::from(1));
+            loader.block_hash = Some(B256::repeat_byte(0x11));
+            let mut world = loader.world();
+            let address = Address::repeat_byte(0x22);
+            world.insert(address, account.clone()).unwrap();
+            let mut session = Session { loader, world };
+            assert!(
+                session
+                    .fetch_storage(address, &BTreeSet::from([U256::ZERO, U256::from(2)]))
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(session.requests(), 0);
+            assert_eq!(session.world().account(address), Some(&account));
+        }
     }
 }

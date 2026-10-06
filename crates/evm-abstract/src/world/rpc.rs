@@ -453,6 +453,7 @@ fn configured_loader(input: &RpcInput) -> Result<Loader, RpcError> {
         next_id: 0,
         chain_id: None,
         block_hash: None,
+        block_number: None,
     })
 }
 
@@ -488,6 +489,7 @@ struct Loader {
     next_id: usize,
     chain_id: Option<U256>,
     block_hash: Option<B256>,
+    block_number: Option<U256>,
 }
 
 impl Loader {
@@ -547,6 +549,11 @@ impl Loader {
             ));
         }
         self.block_hash = Some(observed);
+        // Minimal headers remain accepted for code-only acquisition. Storage
+        // refinement requires a valid fixed height before its first request.
+        self.block_number = value
+            .get("number")
+            .and_then(|number| quantity(number, &context).ok());
         Ok(())
     }
 
@@ -672,6 +679,39 @@ impl Loader {
         Ok(())
     }
 
+    fn storage_block_number(&self) -> Result<U256, RpcError> {
+        self.block_number.ok_or_else(|| {
+            let method = match self.input.block {
+                RpcBlock::Hash(_) => "eth_getBlockByHash",
+                RpcBlock::Latest | RpcBlock::Number(_) => "eth_getBlockByNumber",
+            };
+            invalid(
+                &self.context(method, None, None),
+                "resolved block header has no valid number for canonical storage checks",
+            )
+        })
+    }
+
+    fn check_storage_block(&mut self, number: U256) -> Result<(), RpcError> {
+        let block_hash = self.block_hash.expect("block checks follow pinning");
+        let context = self.context("eth_getBlockByNumber", None, None);
+        let value = self.call(&context, json!([format!("{number:#x}"), false]))?;
+        let observed = hash(&value["hash"], &context)?;
+        if observed != block_hash {
+            return Err(RpcError::BlockMismatch {
+                context: Box::new(context),
+                observed,
+            });
+        }
+        if quantity(&value["number"], &context)? != number {
+            return Err(invalid(
+                &context,
+                "returned canonical block number differs from pinned height",
+            ));
+        }
+        Ok(())
+    }
+
     fn account(&mut self, world: &mut World, request: &AccountRequest) -> Result<(), RpcError> {
         let address = request.address;
         let code_context = self.context("eth_getCode", Some(address), None);
@@ -706,19 +746,7 @@ impl Loader {
                 Existence::Unknown
             };
         for &key in &request.slots {
-            let slot_context = self.context("eth_getStorageAt", Some(address), Some(key));
-            let value = self.call(
-                &slot_context,
-                json!([address, format!("{key:#x}"), self.selector()]),
-            )?;
-            let bytes = data(&value, &slot_context)?;
-            if bytes.len() != 32 {
-                return Err(invalid(
-                    &slot_context,
-                    "storage result must be exactly 32 bytes",
-                ));
-            }
-            let observed = U256::from_be_slice(&bytes);
+            let observed = self.storage(address, key)?;
             if observed != U256::ZERO {
                 account.existence = Existence::Present;
             }
@@ -731,6 +759,22 @@ impl Loader {
                 source,
             })?;
         Ok(())
+    }
+
+    fn storage(&mut self, address: Address, key: U256) -> Result<U256, RpcError> {
+        let slot_context = self.context("eth_getStorageAt", Some(address), Some(key));
+        let value = self.call(
+            &slot_context,
+            json!([address, format!("{key:#x}"), self.selector()]),
+        )?;
+        let bytes = data(&value, &slot_context)?;
+        if bytes.len() != 32 {
+            return Err(invalid(
+                &slot_context,
+                "storage result must be exactly 32 bytes",
+            ));
+        }
+        Ok(U256::from_be_slice(&bytes))
     }
 }
 

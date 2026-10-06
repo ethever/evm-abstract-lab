@@ -1,5 +1,7 @@
 //! Local JSON-RPC regressions exercise the real HTTP and input boundaries.
 
+mod storage;
+
 use super::{AccountRequest, RpcBlock, RpcError, RpcFailureKind, RpcInput, Session, load};
 use crate::{
     Address, Fork, U256,
@@ -604,10 +606,8 @@ fn pinned_snapshot_acquisition_rejects_endpoint_chain_switch() {
 
 #[test]
 fn bootstrap_connection_failure_does_not_fabricate_snapshot_identity() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
-    let input = RpcInput::new(endpoint, Fork::Osaka);
+    // 目的端口 0 不会有监听者，避免释放临时端口后被并行 mock 重新占用。
+    let input = RpcInput::new("http://127.0.0.1:0", Fork::Osaka);
     let error = load(&input).unwrap_err();
     assert!(matches!(error, RpcError::Transport { .. }));
     assert_eq!(error.context().method, "eth_chainId");

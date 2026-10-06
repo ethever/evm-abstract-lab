@@ -171,7 +171,7 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 | 所有约束共同筛选 | 完整候选为 `{8,16}`，容量足够时恢复有限集合 |
 | 有限集合反馈组件 | 最低 3 位为零；同时更新范围和同余 |
 
-这个过程叫**规约（reduction）**：每个组件把自己已经知道的性质交给其他组件，缩小表示中的多余可能。它不会凭空取得缺失的代码、storage 或输入事实。
+这个过程叫**规约（reduction）**：每个组件把自己已经知道的性质交给其他组件，缩小表示中的多余可能。它不会凭空取得缺失的代码、storage 或输入事实。显式 RPC 模式可在完整枚举出 SLOAD 槽键后另外采集初始值；这是快照补充，再从入口重跑，不是数值组件从已有事实推导出 storage 内容。
 
 组件交换的是有明确含义的 **facts（语义事实）**，不要求直接读取彼此的内部表示。当前接口有三类：
 
@@ -213,7 +213,7 @@ widening 有意放弃部分范围精度，使循环不再逐步挪动同一端�
 
 Stable 只针对当前规则；它不说明已经表达全部 EVM 关系。RoundLimit / FactLimit 会降低精度，不能当成数值空集或 EVM 执行失败。纯栈运算在这些边界记录 `FactExchangeLimited` 诊断；嵌套字节运算的完整局部报告由库 detailed API 查询，不逐项汇总为指令诊断。
 
-另一条边界是整次分析的累计工作额度。初始化、运算、交换、字节与状态复制、子调用、摘要认证和导入共享根账本。若账本耗尽，留下工作前沿，整个结果为 `Incomplete`。摘要命中不会重新得到预算。显式 RPC 补查 callee 后会从入口重跑，各轮仍共用 work、transfer 和状态分配额度；被后续轮次替换的图也已经消耗工作。这个工作量是逻辑分析费用，不是 EVM gas，也不是 CPU 时间。
+另一条边界是整次分析的累计工作额度。初始化、运算、交换、字节与状态复制、子调用、摘要认证和导入共享根账本。若账本耗尽，留下工作前沿，整个结果为 `Incomplete`。摘要命中不会重新得到预算。显式 RPC 补查 callee 或 SLOAD 的有限槽后会从入口重跑，各轮仍共用 work、transfer 和状态分配额度；被后续轮次替换的图也已经消耗工作。这个工作量是逻辑分析费用，不是 EVM gas，也不是 CPU 时间。
 
 组合域仍有以下精度边界：
 
@@ -257,7 +257,7 @@ jq '.states[0].exit_stack[0]' /tmp/facts-value.json
 
 有限值保留 `Constants` 键，并同时输出 `known_bits`、`interval`、`congruence`、`provenance` 与 `nonzero`。这里的候选是 1、3……15。文本与 DOT 只展示数值概要；需要确认某项保证时读完整 JSON，避免把没有常量列表的组合值误读成完全未知。
 
-输入 JSON 与 RPC 初始账户的读取发生在执行账本建立之前。RPC 的后续账户采集发生在分析轮次之间，账户数和 HTTP 请求数另有累计上限；成功后扩充初始事实，从入口重建分析，沿用根执行账本。JSON 的 `rpc_acquisition.states_created` 记录全部轮次的状态分配数，因此可能大于最终 `states` 长度。数值域的 `--max-facts` 只限制局部事实交换，不限制这些 RPC 账户观察；读[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)可对照两组额度。
+输入 JSON 与 RPC 初始账户的读取发生在执行账本建立之前。RPC 的后续账户与有限槽采集发生在分析轮次之间，账户数和 HTTP 请求数另有累计上限；成功后扩充初始事实，从入口重建分析，沿用根执行账本。JSON 的 `rpc_acquisition.states_created` 记录全部轮次的状态分配数，因此可能大于最终 `states` 长度。`fetched_storage` 与 `failed_storage` 记录动态槽采集的地址和槽键，显式 `--slot` 的初始采集不计入前者。数值域的 `--max-facts` 只限制局部事实交换，不限制这些 RPC 观察；读[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)可对照两组额度。
 
 当前没有对 JSON/RPC 全部输入设置统一字节配额，也没有全过程峰值内存配额。更完整的关系环境、路径分组与输入准入仍是[后续设计边界](https://github.com/ethever/evm-abstract-lab/issues/21)。源码入口是 [`domain.rs`](../crates/evm-abstract/src/domain.rs)，真实 CFG、字节和状态精度的回归样例在 [`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)。
 

@@ -30,7 +30,9 @@ pub use machine::{
     FrontierReason, MachineEdge, MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome,
     MachinePayload, MachineState, OutcomeKind, RootFrame, WorldAnalysis,
 };
-pub use rpc::{RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, analyze_rpc};
+pub use rpc::{
+    RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
+};
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;
 

@@ -337,7 +337,7 @@ world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block
 
 这一段需要你自己的 RPC，不是离线例子的必要步骤。将 `LAB_RPC_URL`、`LAB_FORK`、`LAB_ENTRY` 分别设为实际提供者 URL、所选区块的执行规则和目标地址。省略 caller、origin、value 和 calldata 时使用符号调用输入，origin 默认与 caller 共享同一身份；需要固定某次调用时使用 `--evm.*`，参数见[第 13 课](13-evm-environment.md)。这里的入口应是该区块上的实际账户；前面合成例子的 `0x...0101` 不代表链上部署。
 
-**第一步，只指定入口，观察发现的账户。** 本次启动读取一次 `latest` 并固定其 hash，默认 RPC 模式会在该区块补查分析中发现的具体 callee：
+**第一步，只指定入口，观察发现的账户和槽。** 本次启动读取一次 `latest` 并固定其 hash，默认 RPC 模式会在该区块补查分析中发现的具体 callee 和 SLOAD 所需的有限槽键：
 
 ```bash
 LAB_RPC_STATUS=0
@@ -366,7 +366,9 @@ esac
 
 入口自动加载。CALL、STATICCALL、DELEGATECALL、CALLCODE 能确定具体目标时，缺少该账户的代码事实就会触发补查；入口或 callee 的 EIP-7702 委托代码也可发现对应实现账户。解析仍只跟随一层委托。预编译由 fork 规则处理，已知代码、已知空代码和确认 absent 的账户都可以复用已有事实。
 
-只加载入口不保证 `Converged`；符号 calldata/value 可能使更多路径可达，未知范围、调用目标或累计资源都可能留下前沿。例如代理从未观察的 slot 读取实现地址，目标可能仍为 Top，就会留下 `UnknownTarget`。RPC 发现以已确定的地址为起点，不能枚举整个地址空间。动态获取一个账户会观察其 code、balance 和 nonce；该账户未选择的初始 slot 保持未知。
+SLOAD 的槽键有完整有限候选集合时，缺少初始值会触发 `MissingStorage {address,slot}`。分析器在轮次之间用 `eth_getStorageAt` 补查这些槽，然后从入口重跑；例如代理从具体 slot 0 读取实现地址，获得槽值后可继续发现实现代码。读取按当前帧的状态账户定位；DELEGATECALL 或 CALLCODE 的实现代码仍读取代理的槽，EIP-7702 委托执行也保留委托账户的状态身份。
+
+只加载入口不保证 `Converged`；符号 calldata/value 可能使更多路径可达，未知范围、调用目标或累计资源都可能留下前沿。无限或无法完整枚举的槽键保持保守未知，不会尝试穷举 256 位槽空间；由这样的值形成的调用目标仍可能留下 `UnknownTarget`。动态获取账户会观察其 code、balance 和 nonce；其余未观察且尚未被有限 SLOAD 请求的初始槽仍未知。
 
 **第二步，跟着 A→B→C 理解补查后的重跑。** 假设 A、B 代码中的调用地址具体，预算足够，并且 RPC 能返回全部所需账户：
 
@@ -378,9 +380,9 @@ esac
 第 3 轮：用 A、B、C 的初始事实，从 A 入口重新分析
 ```
 
-一轮可能同时发现多个目标，所以上面是理解顺序的例子，不是固定轮数公式。每次成功补充事实后，图、Store、调用检查点和摘要都由入口重新建立。A 在 CALL 前做过的写入会重新执行，后来的重入仍读当前 Store。这样能把 B 的区块初始余额与 A 给 B 转账后的余额放在各自正确的位置。
+一轮可能同时发现多个账户或槽，所以上面是理解顺序的例子，不是固定轮数公式。同一轮缺少的有限槽集合按地址和槽键去重后采集。每次成功补充事实后，图、Store、调用检查点和摘要都由入口重新建立。A 在 CALL 前做过的写入会重新执行，后来的重入仍读当前 Store。这样能把 B 的区块初始余额与 A 给 B 转账后的余额放在各自正确的位置。
 
-采集缓存保存的是区块事实。B 在获知 C 的代码后 REVERT，撤销的是 B 与更深调用的事务效果，C 的初始事实仍可供 A 后续调用使用。同一账户不重复采集。第 2 节 CREATE 已安装的 runtime 属于当前 Store 的代码覆盖层，后续 CALL 使用该 runtime；创建碰撞所需的初始存在性等事实仍需预先提供。
+采集缓存保存的是区块事实。B 在获知 C 的代码或初始槽值后 REVERT，撤销的是 B 与更深调用的事务效果，获取的初始事实仍可供 A 后续调用使用。同一账户和同一 `(address,slot)` 不重复采集，返回零也是已观察值。SLOAD 先考虑当前 Store：已经强写的槽直接读事务值；弱写可能与初始值合并，补查不能用链上原值覆盖这些写入。第 2 节 CREATE 已安装的 runtime 属于当前 Store 的代码覆盖层，后续 CALL 使用该 runtime；创建碰撞所需的初始存在性等事实仍需预先提供。
 
 此时再读 `rpc_acquisition`：
 
@@ -389,11 +391,13 @@ esac
 | `rounds` | 启动的分析轮数，包含被预算中断的最终轮 |
 | `fetched_accounts` | 按需新增成功的地址数组；入口与预选账户不计入 |
 | `failed_accounts` | 按需采集失败的地址数组；本次分析不自动重试这些账户 |
-| `failures` | 按地址配对的错误类型与固定快照上下文；后续预算中断也保留这些证据 |
+| `fetched_storage` | 按需成功获取的 `{address,slot}` 数组；显式 `--slot` 的初始采集不计入 |
+| `failed_storage` | 按需采集失败的 `{address,slot}` 数组；本次分析不自动重试这些槽 |
+| `failures` | 按地址配对的错误类型与固定快照上下文；槽错误另带 `slot`，后续预算中断也保留这些证据 |
 | `requests` | 初始与后续采集尝试的 HTTP 请求总数，包含身份校验和失败请求 |
 | `states_created` | 各轮累计分配的机器状态数，包含已被后续轮次替换的图 |
 
-最终 `world` 保存来自受信任提供者的初始观察，`states` / `edges` / `outcomes` 属于最后一轮分析；累计工作和请求数则覆盖全部轮次。新账户事实增加后 fingerprint 随之改变，旧一轮的摘要不会沿用到新一轮。
+最终 `world` 保存来自受信任提供者的初始观察，`states` / `edges` / `outcomes` 属于最后一轮分析；累计工作和请求数则覆盖全部轮次。新账户或槽事实增加后 fingerprint 随之改变，旧一轮的摘要不会沿用到新一轮。
 
 **第三步，关闭发现，做初始事实的对照。** 保留同一个目标地址、固定区块与 `--evm.*` 输入约束，再加 `--no-rpc-discovery`；若第一步省略 calldata，两次都分析未知输入集合，而不是某次已指定的 calldata：
 
@@ -413,7 +417,7 @@ case "$LAB_SELECTED_STATUS" in
 esac
 ```
 
-如果入口调用了尚未选择的普通代码账户，这次会留下 `MissingCode`、退出 `2`，与[第 9 课的离线缺代码实验](09-cross-contract.md#7-输入缺失和预算停止也要读出来)有相同边界。若入口没有这类调用，也可能直接完成；不能预设任意入口都缺代码。
+`--no-rpc-discovery` 同时关闭动态账户和槽采集。未预选的槽按未知值分析，不产生按需补查请求；这可能使后续调用目标未知。如果入口调用了尚未选择的普通代码账户，这次会留下 `MissingCode`、退出 `2`，与[第 9 课的离线缺代码实验](09-cross-contract.md#7-输入缺失和预算停止也要读出来)有相同边界。若入口没有这类调用，也可能直接完成；不能预设任意入口都缺代码。
 
 你仍可用 `--account` 选择分析前获取的账户，用 `--slot` 选择初始存储槽。假设已确定一个被调用账户，将其地址设为 `LAB_CALLEE`，可以在上面的命令中增加：
 
@@ -421,21 +425,23 @@ esac
 --account "$LAB_CALLEE" --slot "$LAB_CALLEE:0"
 ```
 
-这两个参数都可重复，`--slot` 自动加入所属账户。slot 索引 `0` 是十进制，也可写为 `0x0`；地址仍是 20 字节十六进制。未选 slot 保持未知。code 为空、balance 与 nonce 为零，并且已查询的 slot 也全为零时，RPC 观察不足以区分空账户与不存在账户，`existence` 保持 `unknown`，不会将其余 slot 视为零。非空代码或任一非零 balance、nonce、slot 表明账户存在。离线 world 仍可明确声明已知的 absent 事实。数值的十进制写法只改变 CLI 输入方式，world JSON 格式与发给 RPC 的编码不变。
+这两个参数都可重复，`--slot` 自动加入所属账户，并在分析前获取该初始值；之后 SLOAD 复用它，不再重复请求。slot 索引 `0` 是十进制，也可写为 `0x0`；地址仍是 20 字节十六进制。默认发现可继续补查其他有限 SLOAD 槽；关闭发现后，未预选槽保持未知。code 为空、balance 与 nonce 为零，并且已查询的 slot 也全为零时，RPC 观察不足以区分空账户与不存在账户，`existence` 保持 `unknown`，不会将其余 slot 视为零。非空代码或任一非零 balance、nonce、slot 表明账户存在。离线 world 仍可明确声明已知的 absent 事实。数值的十进制写法只改变 CLI 输入方式，world JSON 格式与发给 RPC 的编码不变。
 
 ### 为什么补查也必须固定区块
 
-启动时从 RPC 读取 chain ID，并将所选区块解析为 hash。code/balance/nonce/storage 请求均使用 [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) 的选择器 `{blockHash,requireCanonical:true}`；初始账户与后来发现的账户使用同一个 hash。RPC 必须支持该选择器。提供者不支持、固定区块因重组失去 canonical 身份或请求失败时，采集停止；不会重新读取 `latest`，也不会改用新的 hash。新账户所需的查询完成后，观察才加入 world。
+启动时从 RPC 读取 chain ID，并将所选区块解析为 hash。code/balance/nonce/storage 请求均使用 [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) 的选择器 `{blockHash,requireCanonical:true}`；初始账户、后来发现的账户和槽使用同一个 hash。RPC 必须支持该选择器。提供者不支持、固定区块因重组失去 canonical 身份或请求失败时，采集停止；不会重新读取 `latest`，也不会改用新的 hash。`eth_getStorageAt` 的响应必须是完整 32 字节数据，短数量、超长数据或缺少结果都不能当成有效值。补查批次全部请求和最终身份检查成功后，观察才加入 world。
 
-初始采集失败时还没有有效分析结果，CLI 退出 `1`。分析已开始后，仍被需要的补查失败在最后一轮图的对应调用留下 `RpcAcquisition` 前沿，退出 `2`。其 `failure` 保存 `context`、错误 `kind` 和 `message`，可定位 chain/block/method/account/slot；额度错误还给出 `resource` 与 `limit`。如果后续轮次在到达该调用前耗尽执行预算，图显示资源前沿，累计 `failures` 仍保存此前的采集错误。JSON-RPC、HTTP、网络、超时、缺少结果或区块身份失配都需要按这个边界判断，不能把剩余成功 outcome 当成完整结果。
+初始采集失败时还没有有效分析结果，CLI 退出 `1`。分析已开始后，仍被需要的补查失败在最后一轮图的对应调用或 SLOAD 留下 `RpcAcquisition` 前沿，退出 `2`。其 `failure` 保存 `context`、错误 `kind` 和 `message`，可定位 chain/block/method/account/slot；槽采集的错误即使发生在身份检查，也保留 `context.slot`。额度错误还给出 `resource` 与 `limit`。如果后续轮次在到达该指令前耗尽执行预算，图显示资源前沿，累计 `failures` 仍保存此前的采集错误。JSON-RPC、HTTP、网络、超时、缺少结果或区块身份失配都需要按这个边界判断，不能把剩余成功 outcome 当成完整结果。
+
+槽批次有多个键时，任一请求失败都会丢弃整个批次。`failures[].slot` 与 `failed_storage` 标明无法安装的观测键；`failure.context.slot` 标明实际失败的 storage 请求。例如读取 slot 0 成功、slot 1 失败，两项受影响观测的错误上下文都可指向 slot 1。错误发生在链或区块校验时没有单独的 storage 请求槽，控制流程则将受影响槽补入上下文。
 
 默认 `--max-rpc-accounts 256` 限制初始与动态账户总数，`--max-rpc-requests 16384` 限制全部 HTTP 尝试，包括身份检查与失败请求。迟发采集耗尽这些额度也留下 `RpcAcquisition`。所有重跑轮次另共用同一 `--max-work`、`--max-transfers` 和 `--max-states`；以前的图虽然被替换，已耗工作和状态分配仍计费，因此最终图的 `states` 长度可能小于 `states_created`。达到执行预算后保留对应工作或资源前沿。默认每请求超时 15 秒，响应最多 4 MiB；库 API 可选择其他有界限制。
 
-loader 在启动解析后始终请求固定 hash，失败后不改查区块号或移动标签，也不会把缺失响应填成空代码、零余额。**当前完全信任选定的 RPC 提供者。** 账户与槽位观察直接来自普通状态查询，不请求 `eth_getProof`，也不依赖节点的历史 proof window。代码 hash 根据获取的原始代码字节计算；区块身份与 fingerprint 用于记录和固定输入，不证明提供者返回的状态真实，也不能让 `Converged` 成为任意合约安全证明。
+所有状态查询在启动解析后始终使用固定 hash。槽批次采集前后还用 `eth_getBlockByNumber` 查询该 hash 对应的固定高度，要求当前 canonical hash 与启动身份一致；因此即使节点仍能用旧 hash 返回区块，也能在安装前识别该高度发生的重组。这个高度检查不会重新选择分析区块；失败后不回退到 `latest` 或改用新 hash，也不会把缺失响应填成空代码、零余额。**当前完全信任选定的 RPC 提供者。** 账户与槽位观察直接来自普通状态查询，不请求 `eth_getProof`，也不依赖节点的历史 proof window。代码 hash 根据获取的原始代码字节计算；区块身份与 fingerprint 用于记录和固定输入，不证明提供者返回的状态真实，也不能让 `Converged` 成为任意合约安全证明。
 
 库入口同样显式选择 RPC：`RpcInput::new(endpoint, fork)` 默认使用 `RpcBlock::Latest`；将 `input.block` 设为 `RpcBlock::Number(number)` 或 `RpcBlock::Hash(hash)` 可选择确切区块。session 启动时解析身份，后续采集与分析重跑始终沿用已固定的 hash。
 
-完整 `analyze` 文本、`explain --verbose`、JSON 和 DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。完整文本中，`Snapshot` 查输入身份，`Outcomes` 查每个最终结果的账户和字节，`Call summaries` 查保存与复用；默认 `explain` 按[第 9 课的分区](09-cross-contract.md#默认文本怎样读)阅读代码、CFG、值流和结果概要。JSON 还保留初始 world、完整域策略、摘要输入/输出、执行中的 Store 和 RPC 累计采集记录；DOT 的蓝色证书节点标出认证来源和复用位置。实现入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc/session.rs`](../crates/evm-abstract/src/world/rpc/session.rs)、[`analysis/rpc.rs`](../crates/evm-abstract/src/analysis/rpc.rs)；本地 HTTP 的实际 CLI 对照在 [`tests/cli/rpc.rs`](../crates/evm-abstract-cli/tests/cli/rpc.rs)。
+完整 `analyze` 文本、`explain --verbose`、JSON 和 DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。完整文本中，`Snapshot` 查输入身份，`Outcomes` 查每个最终结果的账户和字节，`Call summaries` 查保存与复用；默认 `explain` 按[第 9 课的分区](09-cross-contract.md#默认文本怎样读)阅读代码、CFG、值流和结果概要。JSON 还保留初始 world、完整域策略、摘要输入/输出、执行中的 Store 和 RPC 累计采集记录；DOT 的蓝色证书节点标出认证来源和复用位置。实现入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc/session.rs`](../crates/evm-abstract/src/world/rpc/session.rs)、[`analysis/rpc.rs`](../crates/evm-abstract/src/analysis/rpc.rs)；本地 HTTP 的实际 CLI 对照在 [`tests/cli/rpc.rs`](../crates/evm-abstract-cli/tests/cli/rpc.rs)，有限槽、缓存与迟发错误回归在 [`tests/cli/rpc/storage.rs`](../crates/evm-abstract-cli/tests/cli/rpc/storage.rs)。
 
 直接阅读同一固定 RPC 分析，可以把上面的 `analyze` 换成 `explain`，并去掉 `--format json` / `--ssa`：
 

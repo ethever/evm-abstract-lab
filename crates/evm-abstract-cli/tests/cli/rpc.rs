@@ -19,6 +19,9 @@ use std::{
 #[path = "rpc/pinning.rs"]
 mod pinning;
 
+#[path = "rpc/storage.rs"]
+mod storage;
+
 const ENTRY: &str = "0x0000000000000000000000000000000000000101";
 const CALLEE: &str = "0x0000000000000000000000000000000000000200";
 const LEAF: &str = "0x0000000000000000000000000000000000000300";
@@ -437,8 +440,8 @@ fn native_and_delegated_precompile_execution_never_fetches_precompile_code() {
 #[test]
 fn unknown_rpc_call_target_keeps_a_frontier_without_guessing_remote_addresses() {
     thread::scope(|scope| {
-        // Unrequested storage is unknown; the concrete low-160 target is unproven.
-        let fixture = Fixture::new(&[(ENTRY, "5f5f5f5f5f5f545af100")]);
+        // 开放的 GAS 槽键不能完整枚举，读出的调用目标仍未知，不能猜地址。
+        let fixture = Fixture::new(&[(ENTRY, "5f5f5f5f5f5a545af100")]);
         let server = RpcServer::new(scope, move |request| fixture.reply(request));
         let analysis = result(execute(&server, &["--max-call-depth", "2"]), 2);
         assert_eq!(analysis["status"], "Incomplete");

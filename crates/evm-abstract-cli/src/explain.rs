@@ -33,7 +33,7 @@ pub(crate) struct ExplainArgs {
     /// Expand all captured frames, machine effects and reports for world/RPC input.
     #[arg(long, requires = "world-input")]
     verbose: bool,
-    /// Disable on-demand acquisition of concrete missing RPC callees.
+    /// Disable on-demand acquisition of missing RPC code and storage slots.
     #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     no_rpc_discovery: bool,
     /// Maximum initial and discovered RPC accounts; default 256.

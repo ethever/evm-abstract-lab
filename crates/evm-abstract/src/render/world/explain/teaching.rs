@@ -104,21 +104,24 @@ fn write_rpc(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
     };
     writeln!(
         output,
-        "  RPC acquisition: rounds={} | requests={} | fetched={} | failed={} | states created={}",
+        "  RPC acquisition: rounds={} | requests={} | fetched={} | failed={} | fetched slots={} | failed slots={} | states created={}",
         acquisition.rounds,
         acquisition.requests,
         acquisition.fetched_accounts.len(),
         acquisition.failed_accounts.len(),
+        acquisition.fetched_storage.len(),
+        acquisition.failed_storage.len(),
         acquisition.states_created,
     )
     .unwrap();
-    output.push_str("  RPC policy: trusted source, fixed canonical block hash; unrequested storage remains unknown.\n");
+    output.push_str("  RPC policy: trusted source, fixed canonical block hash; concrete/finite missing storage reads are acquired on demand; open keys remain abstract.\n");
     // 后续预算可能阻止再次到达失败调用，累计获取失败仍要显示。
     for failed in &acquisition.failures {
         writeln!(
             output,
-            "  RPC failure {}: {:?} resource={:?} limit={:?} | {} | {}",
+            "  RPC failure {} slot={:?}: {:?} resource={:?} limit={:?} | {} | {}",
             address(refs, failed.address),
+            failed.slot,
             failed.failure.kind,
             failed.failure.resource,
             failed.failure.limit,
