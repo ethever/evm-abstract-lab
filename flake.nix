@@ -263,6 +263,14 @@
                   if grep -q 'Verified cross-contract SSA:' explain-partial.txt; then exit 1; fi
                   evm-abstract explain --file ${./examples/straight-line.hex} > explain-program.txt
                   grep -q 'stack SSA:' explain-program.txt
+                  evm-abstract explain --hex 5f351e00 --domain constants-only --max-constants 257 > explain-capacity.txt
+                  grep -q 'status=Converged' explain-capacity.txt
+                  evm-abstract cfg --hex 5f351e00 --domain constants-only --max-constants 257 --format json |
+                    jq -e '.config.max_constants == 257 and (.states[0].exit_stack[0].Constants | length == 257)' > /dev/null
+                  evm-abstract explain --hex 5f351e00 --domain constants-only --max-constants 1000 > explain-capacity-work.txt && exit 1 || test "$?" = 2
+                  grep -q 'status=Incomplete' explain-capacity-work.txt
+                  grep -q 'Work' explain-capacity-work.txt
+                  grep -q 'SSA unavailable' explain-capacity-work.txt
                   evm-abstract analyze --world ${./examples/worlds/summary-reuse.json} --entry 0x0000000000000000000000000000000000000101 > summary.txt
                   grep -Eq 'hits=[1-9][0-9]*' summary.txt
                   grep -q 'reused_at=' summary.txt
@@ -293,7 +301,7 @@
                   dot -Tsvg diamond.dot -o diamond.svg
                   test -s diamond.svg
                   mkdir $out
-                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt explain-program.txt $out/
+                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt explain-program.txt explain-capacity.txt explain-capacity-work.txt $out/
                 '';
           };
           devShells.default = craneLib.devShell {

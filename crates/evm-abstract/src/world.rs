@@ -181,6 +181,22 @@ pub enum WorldError {
 }
 
 impl World {
+    /// Store 初始化投影可能生成的完整候选；复制费用由输入 work_size 另计。
+    pub(crate) fn projection_work(&self, domain: crate::domain::Domain) -> usize {
+        self.accounts.values().fold(0usize, |work, account| {
+            let default = if account.storage_unknown {
+                0
+            } else {
+                domain.projection_work(&Value::constant(U256::ZERO))
+            };
+            account.storage.values().fold(
+                work.saturating_add(domain.projection_work(&account.balance))
+                    .saturating_add(domain.projection_work(&account.nonce))
+                    .saturating_add(default),
+                |n, value| n.saturating_add(domain.projection_work(value)),
+            )
+        })
+    }
     pub(crate) fn work_size(&self) -> usize {
         self.accounts.values().fold(16usize, |work, account| {
             let code = match &account.code {

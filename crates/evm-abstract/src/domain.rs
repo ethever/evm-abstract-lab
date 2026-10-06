@@ -70,6 +70,14 @@ impl Domain {
     pub fn capacity(self) -> usize {
         self.spec.capacity()
     }
+    /// 初始化投影新增的候选扫描与数值摘要工作；已有输入复制另计。
+    /// 开放约束按实际查询的完整覆盖上界计费，配置容量本身不产生工作。
+    pub(crate) fn projection_work(self, value: &Value) -> usize {
+        if self.spec.profile() == Profile::Product {
+            return 0;
+        }
+        query::candidate_visits(value, self.capacity()).saturating_mul(256)
+    }
     /// 在相同语义输入上切换表示。有限候选完整保留；开放约束在常量对照中变粗。
     pub fn project(self, value: &Value) -> Value {
         if self.spec.profile() == Profile::Product {

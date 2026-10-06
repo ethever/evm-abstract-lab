@@ -84,7 +84,7 @@ pub(crate) struct ExplainArgs {
     /// World memory/range byte budget; default 65536.
     #[arg(long, requires = "world-input")]
     max_memory_bytes: Option<usize>,
-    /// Constants retained per value (1..=64).
+    /// Constants retained per value; positive usize, default 8, without an additional cap.
     #[arg(long, default_value_t = 8)]
     max_constants: usize,
     /// Numerical domain profile, shared across every call.

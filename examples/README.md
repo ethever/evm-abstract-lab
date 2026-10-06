@@ -52,6 +52,15 @@ nix run . -- cfg --file examples/independent-inputs.hex --context-depth 0
 
 三份输入都应 `Converged`。第三份里的值虽然都来自 calldata，却不保证相等。复制身份只在本次基本块执行内有效；完整实验与事实交换过程见[第 12 课](../docs/12-product-domains-facts.md)。
 
+有限结果的完整枚举可以单独调整容量。下面读取未知 calldata word，再计算 Osaka 的 CLZ：
+
+```bash
+nix run . -- explain --hex 5f351e00 --domain constants-only --max-constants 257
+nix run . -- explain --hex 5f351e00 --domain constants-only --max-constants 1000
+```
+
+CLZ 的完整结果为 `0..=256`，共 257 个候选。第一条命令为 `Converged`，完整保留它们；默认容量 8 则返回 Top，默认 product 仍可用其他组件保留范围和固定位约束。第二条的容量 1000 不再因配置上限被拒绝，但会在 CLZ 前耗尽单账户教学入口固定的 2000 万共享工作预算：输出 `status=Incomplete` 与 `Work` 前沿，显示 `SSA unavailable`，退出码为 2。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；参数不直接预分配容量，容量足够还须检查执行是否完成。
+
 ## 多账户：观察调用怎样影响返回值与状态
 
 世界 JSON 提供多个账户的代码和初始事实，`--entry` 指定首先执行的账户。以下文件的入口统一为 `0x0000000000000000000000000000000000000101`；默认 caller 的地址末尾是 `1000`，calldata 为空，value=0。

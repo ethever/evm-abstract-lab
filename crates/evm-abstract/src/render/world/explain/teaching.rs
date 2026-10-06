@@ -360,10 +360,14 @@ fn write_outcomes(output: &mut String, analysis: &WorldAnalysis, refs: &Referenc
         output.push_str("  (none)\n");
     }
     let domain = Domain::from_spec(analysis.domain_spec());
-    let mut initial = Store::new(analysis.world());
-    // 与执行入口使用同一域表示，避免把初始事实的投影误当成程序写入。
-    initial.project(domain);
+    let initial = (!analysis.outcomes().is_empty()).then(|| {
+        let mut initial = Store::new(analysis.world());
+        // 无结果时不重做预算已阻止的投影；有结果时与执行入口使用同一域表示。
+        initial.project(domain);
+        initial
+    });
     for (index, outcome) in analysis.outcomes().iter().enumerate() {
+        let initial = initial.as_ref().expect("outcomes have an initial store");
         writeln!(
             output,
             "  O{index} | S{} | {:?} | returndata length={} | {}",

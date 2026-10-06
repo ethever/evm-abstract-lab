@@ -138,7 +138,7 @@ struct WorldArgs {
     /// Maximum tracked memory bytes per frame.
     #[arg(long, default_value_t = 65_536)]
     max_memory_bytes: usize,
-    /// Constants retained per value before promoting to Top.
+    /// Constants retained per value; positive usize, default 8, without an additional cap.
     #[arg(long, default_value_t = 8)]
     max_constants: usize,
     /// Numerical domain: combined facts or the constants-only comparison.
@@ -198,7 +198,7 @@ struct AnalysisArgs {
     /// Recent jump-source blocks retained in the context; 0 disables context sensitivity.
     #[arg(long, default_value_t = 8)]
     context_depth: usize,
-    /// Constants retained per stack slot before promoting to Top (1..=64).
+    /// Constants retained per stack slot; positive usize, default 8, without an additional cap.
     #[arg(long, default_value_t = 8)]
     max_constants: usize,
     /// Numerical domain: combined facts or the constants-only comparison.
