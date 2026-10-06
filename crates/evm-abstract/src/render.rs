@@ -67,7 +67,7 @@ pub fn cfg(analysis: &Analysis) -> String {
         let block = &analysis.program().blocks()[state.key.basic_block_index];
         writeln!(
             output,
-            "S{} B{} @ 0x{:04x} height={} context={:?}",
+            "S{} | B{} @ 0x{:04x} | stack height={} | context={:?}",
             state.id, block.id, block.start_pc, state.key.stack_height, state.key.context
         )
         .unwrap();
@@ -110,7 +110,7 @@ pub fn dot(analysis: &Analysis) -> String {
         .map(|state| {
             let pc = analysis.program().blocks()[state.key.basic_block_index].start_pc;
             graph.add_node(format!(
-                "S{} pc=0x{:x}\nheight={} ctx={:?}\nstack in {}",
+                "S{} pc=0x{:x}\nstack height={} ctx={:?}\nstack in {}",
                 state.id,
                 pc,
                 state.key.stack_height,

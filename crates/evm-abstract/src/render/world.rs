@@ -50,7 +50,7 @@ pub fn text(analysis: &WorldAnalysis) -> String {
         let frame = state.active();
         writeln!(
             output,
-            "S{} depth={} code={} address={} caller={} static={} mode={:?} code_hash={} B{} height={} pcs={:?}",
+            "S{} | depth={} | code={} | address={} | caller={} | static={} | mode={:?} | code_hash={} | B{} | stack height={} | pcs={:?}",
             state.id,
             state.key.frames.len(),
             frame.code_address,
