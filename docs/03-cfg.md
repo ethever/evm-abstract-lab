@@ -140,13 +140,13 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --context-dept
 status=Converged fork=osaka states=3 edges=3 transfers=11 context_depth=0
 domain=ConstantsOnly | schema=1 | reduction rounds=4 | fact atoms=256
 S1 | B1 @ 0x0002 | stack height=1 | context=[]
-  stack in  [0x****************************************************************]
-  stack out [0x****************************************************************]
+  stack in  [⊤]
+  stack out [⊤]
   -> S1 BranchTrue
   -> S2 BranchFalse
 ```
 
-只有 3 个状态，却执行了 11 次块转换：循环节点确实被重访。`S1 → S1` 是回边；`S1 → S2` 是可能退出的边。出口的 64 个 `*` 表示整值为 Top，即本次数值摘要没有保留任何固定位或其他数值约束。
+只有 3 个状态，却执行了 11 次块转换：循环节点确实被重访。`S1 → S1` 是回边；`S1 → S2` 是可能退出的边。出口的 `⊤` 表示整值为 Top，即本次数值摘要没有保留任何固定位或其他数值约束。
 
 这里没有在非零分支上给 i 附加 `i<10` 的约束，因此摘要会包含实际循环中不会出现的值。`Converged` 表示已完成当前抽象模型的传播，不表示每个数值都已精确，也不表示合约安全。增大 `--max-constants` 只改变保存常量的容量，不会自动加入分支约束。
 

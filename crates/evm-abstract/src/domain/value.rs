@@ -169,7 +169,7 @@ impl fmt::Display for Value {
             return self.finite.fmt(f);
         }
         if self.numeric_top() {
-            return self.bits.fmt(f);
+            return f.write_str("⊤");
         }
         let (lo, hi) = self.interval.unsigned_bounds();
         write!(f, "u[0x{lo:x},0x{hi:x}] bits={}", self.bits)?;

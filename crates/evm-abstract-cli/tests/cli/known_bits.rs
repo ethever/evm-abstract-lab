@@ -27,7 +27,17 @@ fn assert_pattern(rendered: &str, pattern: &str) {
         "missing full pattern {pattern}:\n{rendered}"
     );
     assert!(!rendered.contains("bits(0="));
-    assert!(!rendered.contains('⊤'));
+    if pattern == "⊤" {
+        assert_numeric_top(rendered);
+    }
+}
+
+fn assert_numeric_top(rendered: &str) {
+    assert!(
+        rendered.contains("[⊤]") || rendered.contains("abstract ⊤"),
+        "missing numeric Top:\n{rendered}"
+    );
+    assert!(!rendered.contains(&format!("0x{}", "*".repeat(64))));
 }
 
 struct WorldCode(PathBuf);
@@ -61,14 +71,18 @@ impl WorldCode {
     }
 
     fn run(&self, command: &str, extra: &[&str]) -> Output {
+        let mut args = vec!["--max-constants", "1"];
+        args.extend_from_slice(extra);
+        self.run_default(command, &args)
+    }
+
+    fn run_default(&self, command: &str, extra: &[&str]) -> Output {
         let mut args = vec![
             command,
             "--world",
             self.0.to_str().unwrap(),
             "--entry",
             ENTRY,
-            "--max-constants",
-            "1",
         ];
         args.extend_from_slice(extra);
         run(&args)
@@ -111,7 +125,8 @@ fn cfg_dot_ssa_and_hex_explain_preserve_full_hex_patterns() {
             "5f356004176008565b00",
             format!("bits=0x{}[*1**]", "*".repeat(63)),
         ),
-        ("5f356005565b00", format!("0x{}", "*".repeat(64))),
+        ("5f356005565b00", "⊤".to_owned()),
+        ("600a6005565b00", "{0xa}".to_owned()),
     ] {
         for (command, extra) in [
             ("cfg", vec![]),
@@ -135,7 +150,8 @@ fn world_reports_teaching_verbose_explain_and_ssa_use_the_same_patterns() {
             "5f5460071660041700",
             format!("bits=0x{}[01**]", "0".repeat(63)),
         ),
-        ("5f5400", format!("0x{}", "*".repeat(64))),
+        ("5f5400", "⊤".to_owned()),
+        ("600a00", "{0xa}".to_owned()),
     ] {
         let world = WorldCode::new(code);
         for (command, extra) in [
@@ -150,6 +166,84 @@ fn world_reports_teaching_verbose_explain_and_ssa_use_the_same_patterns() {
                 assert!(rendered.contains("Verified cross-contract SSA:"));
             }
         }
+    }
+}
+
+#[test]
+fn numeric_top_stays_compact_in_all_human_views() {
+    assert_numeric_top(&text(run(&[
+        "explain",
+        "--hex",
+        "5f351e00",
+        "--domain",
+        "constants-only",
+    ])));
+    // The 257 CLZ candidates exceed the default capacity of eight.
+    for (command, view) in [
+        ("cfg", vec![]),
+        ("cfg", vec!["--format", "dot"]),
+        ("ssa", vec![]),
+        ("explain", vec![]),
+    ] {
+        let mut args = vec![
+            command,
+            "--hex",
+            "5f351e6006565b00",
+            "--domain",
+            "constants-only",
+        ];
+        args.extend_from_slice(&view);
+        assert_numeric_top(&text(run(&args)));
+    }
+    let world = WorldCode::new("5f541e00");
+    for (command, view) in [
+        ("analyze", vec![]),
+        ("analyze", vec!["--ssa"]),
+        ("explain", vec![]),
+        ("explain", vec!["--verbose"]),
+    ] {
+        let mut args = vec!["--domain", "constants-only"];
+        args.extend_from_slice(&view);
+        assert_numeric_top(&text(world.run_default(command, &args)));
+    }
+}
+
+#[test]
+fn constrained_values_keep_all_unknown_bit_positions() {
+    // Merge two complementary nonzero constants after dropping jump history.
+    // Their bit component is Top, but the product retains interval/congruence
+    // and nonzero constraints. Its bits= pattern must still show all 64 stars.
+    let raw = format!("5f35600a576001602f565b7f{}fe602f565b00", "ff".repeat(31));
+    let world_code = raw.replacen("5f35", "5f54", 1);
+    let pattern = format!("bits=0x{}", "*".repeat(64));
+    for (command, view) in [
+        ("cfg", vec![]),
+        ("cfg", vec!["--format", "dot"]),
+        ("ssa", vec![]),
+        ("explain", vec![]),
+    ] {
+        let mut args = vec![
+            command,
+            "--hex",
+            &raw,
+            "--max-constants",
+            "1",
+            "--context-depth",
+            "0",
+        ];
+        args.extend_from_slice(&view);
+        assert_pattern(&text(run(&args)), &pattern);
+    }
+    let world = WorldCode::new(&world_code);
+    for (command, view) in [
+        ("analyze", vec![]),
+        ("analyze", vec!["--ssa"]),
+        ("explain", vec![]),
+        ("explain", vec!["--verbose"]),
+    ] {
+        let mut args = vec!["--context-depth", "0"];
+        args.extend_from_slice(&view);
+        assert_pattern(&text(world.run(command, &args)), &pattern);
     }
 }
 
