@@ -54,8 +54,9 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 | [11：状态容器与后端对比](docs/11-state-backends.md) | 如何用同一接口比较 std 与 imbl 的检查点、写入和回滚？ | `scripts/compare-state-backends.sh` |
 | [12：组合域与事实交换](docs/12-product-domains-facts.md) | 位、范围、同余和来源如何交换信息？局部复制关系能排除哪些分支？ | `known-bits-branch.hex`、`copy-identity.hex` |
 | [13：EVM 环境与符号输入](docs/13-evm-environment.md) | 默认覆盖哪些调用？怎样指定交易、区块和 gas 环境？ | `--evm.*`、caller/origin、BLOCKHASH/BLOBHASH |
+| [14：EVM内存与抽象字节数组](docs/14-memory-model.md) | MSTORE 怎样拆成字节？未知偏移、合并与复制怎样影响结果？ | MSTORE/MLOAD、MSTORE8、MSIZE、CALL 返回区 |
 
-两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成第 05 课后，也可以直接进入第 12 课，继续研究数值精度，再回到跨合约实验。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
+两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成第 02 课后，可以进入[第 14 课](docs/14-memory-model.md)，先手算内存读写，再理解抽象字节数组。完成第 05 课后，也可以直接进入第 12 课，继续研究数值精度，再回到跨合约实验。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
 
 ## 从单段代码到多个合约
 
@@ -185,6 +186,7 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 固定位、区间、同余、来源与事实交换 | [`domain/`](crates/evm-abstract/src/domain) |
 | 调用帧、局部与跨合约工作表 | [`analysis/`](crates/evm-abstract/src/analysis) |
 | 账户事实与账户状态 | [`world/`](crates/evm-abstract/src/world) |
+| 内存、calldata 与 returndata 的抽象字节数组 | [`world/bytes.rs`](crates/evm-abstract/src/world/bytes.rs) |
 | 值的命名与结构验证 | [`ssa/`](crates/evm-abstract/src/ssa) |
 | 命令参数、世界文件解析 | [`evm-abstract-cli`](crates/evm-abstract-cli) |
 
