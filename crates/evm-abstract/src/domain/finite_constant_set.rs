@@ -4,6 +4,7 @@
 //! 的域配置传入；候选超过容量时退化为 Top，空交集则返回矛盾错误。
 //! 本组件不保存 Bottom，不可达状态由组合域的规约结果负责表示。
 
+use super::known_bits::KnownBits;
 use alloy_primitives::U256;
 use serde::{Serialize, Serializer};
 use std::{collections::BTreeSet, fmt, num::NonZeroUsize};
@@ -181,7 +182,7 @@ impl Serialize for FiniteConstantSet {
 impl fmt::Display for FiniteConstantSet {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Some(values) = self.as_values() else {
-            return write!(formatter, "⊤");
+            return fmt::Display::fmt(&KnownBits::top(), formatter);
         };
         write!(formatter, "{{")?;
         for (index, value) in values.iter().enumerate() {

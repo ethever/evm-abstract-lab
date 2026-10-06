@@ -23,8 +23,15 @@ fn unknown_length_and_default_do_not_erase_known_stored_bytes() {
         .unwrap();
 
     let output = render(&array);
-    assert!(output.contains("length=⊤ (unknown byte count)"), "{output}");
-    assert!(output.contains("kind=data | default=⊤"), "{output}");
+    let unknown = format!("0x{}", "*".repeat(64));
+    assert!(
+        output.contains(&format!("length={unknown} (unknown byte count)")),
+        "{output}"
+    );
+    assert!(
+        output.contains(&format!("kind=data | default={unknown}")),
+        "{output}"
+    );
     assert!(output.contains("0x0007"), "{output}");
     assert!(output.contains("0xa5"), "{output}");
     assert!(!output.contains("exact hex:"), "{output}");
