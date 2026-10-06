@@ -1,7 +1,7 @@
 //! Real CLI regressions cover quantity normalization and fixed-hash RPC requests.
 
 use super::{analyze, run};
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::U256;
 use serde_json::{Value as Json, json};
 use std::{
     io::{Read, Write},
@@ -58,7 +58,16 @@ fn invalid_rpc_quantities_exit_before_acquiring_a_world() {
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
     for (flag, argument, diagnostic) in [
-        ("--chain-id", "--chain-id=-1", "ASCII decimal digits"),
+        (
+            "--block-number",
+            "--block-number=-1",
+            "ASCII decimal digits",
+        ),
+        (
+            "--block-number",
+            "--block-number=18446744073709551616",
+            "64-bit",
+        ),
         ("--value", "--value=1.5", "ASCII decimal digits"),
         (
             "--slot",
@@ -71,18 +80,7 @@ fn invalid_rpc_quantities_exit_before_acquiring_a_world() {
             "256-bit",
         ),
     ] {
-        let mut args = vec![
-            "analyze",
-            "--rpc",
-            &endpoint,
-            "--entry",
-            ENTRY,
-            "--block-hash",
-            BLOCK,
-        ];
-        if flag != "--chain-id" {
-            args.extend(["--chain-id", "1"]);
-        }
+        let mut args = vec!["analyze", "--rpc", &endpoint, "--entry", ENTRY];
         args.push(argument);
         let output = run(&args);
         assert_eq!(output.status.code(), Some(2));
@@ -99,22 +97,17 @@ fn invalid_rpc_quantities_exit_before_acquiring_a_world() {
 #[test]
 fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
     thread::scope(|scope| {
-        for (decimal_chain, hex_chain) in [
-            ("56", "0x38"),
-            ("18446744073709551616", "0x10000000000000000"),
-        ] {
+        for hex_chain in ["0x38", "0x10000000000000000"] {
             let server = RpcServer::new(scope, hex_chain);
             let decimal_slot = format!("{ENTRY}:16");
             let hex_slot = format!("{ENTRY}:0x10");
             let uppercase_slot = format!("{ENTRY}:0X10");
             let mut results = Vec::new();
-            for (chain, value) in [(decimal_chain, "1000"), (hex_chain, "0x3e8")] {
+            for value in ["1000", "0x3e8"] {
                 let output = run(&[
                     "analyze",
                     "--rpc",
                     &server.endpoint,
-                    "--chain-id",
-                    chain,
                     "--value",
                     value,
                     "--slot",
@@ -152,17 +145,11 @@ fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
             }
             assert_eq!(results[0], results[1]);
             let requests = server.finish();
-            let proof_requests: Vec<_> = requests
-                .iter()
-                .filter(|request| request["method"] == "eth_getProof")
-                .collect();
-            assert_eq!(proof_requests.len(), 2);
-            for request in proof_requests {
-                assert_eq!(
-                    request["params"][1],
-                    json!([format!("0x{:064x}", U256::from(16))])
-                );
-            }
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request["method"] != "eth_getProof")
+            );
             let storage_requests: Vec<_> = requests
                 .iter()
                 .filter(|request| request["method"] == "eth_getStorageAt")
@@ -172,7 +159,10 @@ fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
                 assert_eq!(request["params"][1], "0x10");
             }
             for request in requests.iter().filter(|request| {
-                request["method"] != "eth_chainId" && request["method"] != "eth_getBlockByHash"
+                !matches!(
+                    request["method"].as_str(),
+                    Some("eth_chainId" | "eth_getBlockByHash" | "eth_getBlockByNumber")
+                )
             }) {
                 assert_eq!(
                     request["params"].as_array().unwrap().last().unwrap(),
@@ -272,16 +262,10 @@ impl Drop for RpcServer {
 fn rpc_result(request: &Json, chain_id: &str) -> Json {
     match request["method"].as_str().unwrap() {
         "eth_chainId" => json!(chain_id),
-        "eth_getBlockByHash" => json!({"hash":BLOCK}),
+        "eth_getBlockByHash" | "eth_getBlockByNumber" => json!({"hash":BLOCK,"number":"0x10"}),
         "eth_getCode" => json!("0x3460105400"),
         "eth_getBalance" => json!("0x1000000"),
         "eth_getTransactionCount" => json!("0x0"),
-        "eth_getProof" => json!({
-            "address":ENTRY,"balance":"0x1000000","nonce":"0x0",
-            "codeHash":keccak256([0x34,0x60,0x10,0x54,0x00]),
-            "storageHash":B256::repeat_byte(0x33),"accountProof":[],
-            "storageProof":[{"key":"0x10","value":"0x2a","proof":[]}]
-        }),
         "eth_getStorageAt" => json!(format!("0x{:064x}", U256::from(42))),
         method => panic!("unexpected mock RPC method: {method}"),
     }

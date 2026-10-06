@@ -52,3 +52,28 @@ pub(crate) fn parse(input: &str) -> Result<U256, NumberError> {
     // Leading zeros do not reduce the representable range or imply octal input.
     U256::from_str_radix(digits, radix).map_err(|source| NumberError::Overflow { source })
 }
+
+#[derive(Debug)]
+pub(crate) enum BlockNumberError {
+    Quantity(NumberError),
+    Overflow,
+}
+
+impl fmt::Display for BlockNumberError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Quantity(source) => source.fmt(formatter),
+            Self::Overflow => formatter
+                .write_str("block number exceeds the maximum unsigned 64-bit value (2^64 - 1)"),
+        }
+    }
+}
+
+impl std::error::Error for BlockNumberError {}
+
+pub(crate) fn block(input: &str) -> Result<u64, BlockNumberError> {
+    parse(input)
+        .map_err(BlockNumberError::Quantity)?
+        .try_into()
+        .map_err(|_| BlockNumberError::Overflow)
+}
