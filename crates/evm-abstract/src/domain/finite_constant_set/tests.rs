@@ -183,8 +183,5 @@ fn serialized_and_displayed_candidates_keep_the_existing_contract() {
         "\"Top\""
     );
     assert_eq!(set.to_string(), "{0x2, 0x7}");
-    assert_eq!(
-        FiniteConstantSet::top().to_string(),
-        format!("0x{}", "*".repeat(64))
-    );
+    assert_eq!(FiniteConstantSet::top().to_string(), "⊤");
 }

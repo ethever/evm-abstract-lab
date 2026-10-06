@@ -69,6 +69,13 @@ fn finite_capacity_loss_preserves_independent_numeric_components() {
     let domain = product(1);
     let value = set(domain, &[2, 5, 8]);
     assert!(value.constants().is_none());
+    assert_eq!(value.finite_constants().to_string(), "⊤");
+    assert!(
+        value
+            .to_string()
+            .contains(&format!("bits=0x{}*", "0".repeat(63))),
+        "a Top constant component must preserve the other numeric constraints"
+    );
     assert_eq!(
         value.interval().unsigned_bounds(),
         (U256::from(2), U256::from(8))
@@ -86,6 +93,7 @@ fn finite_capacity_loss_preserves_independent_numeric_components() {
     }
     let baseline = set(Domain::new(NonZeroUsize::new(1).unwrap()), &[2, 5, 8]);
     assert_eq!(baseline, Value::top());
+    assert_eq!(baseline.to_string(), "⊤");
     assert!(baseline.contains(U256::MAX));
 }
 
