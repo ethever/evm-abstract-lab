@@ -2,6 +2,9 @@
 
 use std::process::Command;
 
+#[path = "cli/alignment.rs"]
+mod alignment;
+
 #[path = "cli/explain.rs"]
 mod explain;
 
