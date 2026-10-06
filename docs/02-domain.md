@@ -2,6 +2,8 @@
 
 上一课按字节切出了指令和块。这一课先手算两条路径的汇合，再解释分析器用什么值来概括它们。目标是读懂 `{...}`、`⊤`、join，以及“结果保守”具体意味着什么。
 
+本课以 `--domain constants-only` 对照方式介绍有限集合。默认分析已启用常量、KnownBits、Interval、Congruence 和 Provenance 的组合；完整交换机制见[组合域与语义 facts](11-product-domains-facts.md)。
+
 本课命令在仓库根目录运行。手算中的无前缀数字是十进制；CLI 用 `0x` 显示十六进制。栈仍按**栈底 → 栈顶**排列。
 
 ## 1. 从“可能是 1，也可能是 2”开始
@@ -28,7 +30,7 @@
 运行：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --context-depth 0
+nix run . -- cfg --domain constants-only --file examples/diamond.hex --context-depth 0
 ```
 
 本课显式使用 `--context-depth 0`，不按跳转历史分组，以便观察同一状态内的值集合汇合。默认值 8 的分组方式留到[第 05 课](05-sensitivity.md)比较。找到 pc=`0x000e` 的汇合状态，当前输出为：
@@ -47,9 +49,9 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 
 一次具体执行的槽位里只有一个数。**抽象值**用一个摘要覆盖多次具体执行中的可能值；指令直接在这些摘要上运算，这就是本实验中的抽象解释。
 
-本仓库的 [`Value`](../crates/evm-abstract/src/domain.rs) 只有两种形式：非空有限常量集合，以及 `Top`。
+在 constants-only 对照中，数值有两种形式：非空有限常量集合，以及 `Top`。默认组合域的 [`Value`](../crates/evm-abstract/src/domain/value.rs) 还保存位、范围、同余和来源；有限集合组件变成 Top 时，其他约束仍可保留。
 
-允许使用哪些摘要，以及如何比较、汇合和转换这些摘要，共同定义了**抽象域（abstract domain）**。本实验使用有限常量集合域。
+允许使用哪些摘要，以及如何比较、汇合和转换这些摘要，共同定义了**抽象域（abstract domain）**。本课使用有限常量集合域解释这些概念。
 
 | 抽象值 | 它覆盖哪些具体值 | 你知道多少 |
 | --- | --- | --- |
@@ -59,7 +61,7 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 
 Top **不是**“没有值”，也不是分析停止。比如未知 calldata 的读取结果是 Top，后续指令仍然继续分析。
 
-另一个符号 `⊥` 读作 Bottom，通常表示“没有执行状态”。本实现没有把它做成 `Value`：一个可传播的栈槽位不允许是空集合，私有字段和受控构造函数保证这一点；未到达的位置由没有对应状态来表示。
+另一个符号 `⊥` 读作 Bottom，通常表示“没有执行状态”。本实现没有把它做成 `Value`：一个可传播的栈槽位不允许是空集合，私有字段和受控构造函数保证有限集合非空；组合约束可能尚未求解联合存在性，不能把每个组件非空当作整体可达证明；未到达的位置由没有对应状态来表示。
 
 这里有个重要前提：如果分析是 `Incomplete`，没有状态也可能只是尚未展开。必须先检查分析状态与未完成前沿，再讨论不可达，不能把“尚未分析”读成“不会执行”。
 
@@ -78,7 +80,7 @@ Top **不是**“没有值”，也不是分析停止。比如未知 calldata �
 默认每个集合最多保存 8 个不同常量。超过容量时升到 Top，而不是删掉部分元素。用同一个程序缩小容量：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 1
+nix run . -- cfg --domain constants-only --file examples/diamond.hex --context-depth 0 --max-constants 1
 ```
 
 pc=`0x000e` 现在显示 `stack in [⊤]`、`stack out [⊤]`。容量 1 无法保存 `{1,2}`；Top 虽然允许更多值，却仍包含真实的 1 和 2。若随意删掉 2，才会遗漏真实行为。
@@ -120,7 +122,7 @@ pc=`0x000e` 现在显示 `stack in [⊤]`、`stack out [⊤]`。容量 1 无法�
 非交换运算尤其要手算顺序：
 
 ```bash
-nix run . -- cfg --hex 600260030300
+nix run . -- cfg --domain constants-only --hex 600260030300
 ```
 
 ```text

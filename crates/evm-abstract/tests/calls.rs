@@ -7,12 +7,22 @@ use evm_abstract::{
         ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
         analyze_world,
     },
-    domain::{Domain, Value},
+    domain::{Domain, Value, provenance::Origin},
     world::{Account, ByteArray, Code, Entry, World},
 };
 
 fn addr(value: u64) -> Address {
     Address::from_word(U256::from(value).into())
+}
+
+// 上下文数值来自地址/CALLVALUE，不能要求它带有直接字面常量的来源。
+fn assert_numeric_eq(actual: &Value, expected: &Value) {
+    assert_eq!(actual.constants(), expected.constants());
+    assert_eq!(actual.known_bits(), expected.known_bits());
+    assert_eq!(actual.interval(), expected.interval());
+    assert_eq!(actual.congruence(), expected.congruence());
+    assert_eq!(actual.may_be_zero(), expected.may_be_zero());
+    assert_eq!(actual.may_be_nonzero(), expected.may_be_nonzero());
 }
 fn entry() -> Entry {
     Entry {
@@ -70,25 +80,39 @@ fn call_context_is_intrinsic_and_retained_across_each_call_kind() {
             if op == 0xf4 { addr(0x900) } else { addr(0x101) }
         );
         assert_eq!(frame.key.is_static, op == 0xfa);
-        assert_eq!(
-            frame.call_value,
-            Value::constant(U256::from(if op == 0xf4 {
+        assert_numeric_eq(
+            &frame.call_value,
+            &Value::constant(U256::from(if op == 0xf4 {
                 42
             } else if op == 0xfa {
                 0
             } else {
                 9
-            }))
+            })),
         );
-        assert_eq!(
-            child.exit_stack[0],
-            Value::constant(U256::from_be_slice(frame.key.address.as_slice()))
+        assert_numeric_eq(
+            &child.exit_stack[0],
+            &Value::constant(U256::from_be_slice(frame.key.address.as_slice())),
         );
-        assert_eq!(
-            child.exit_stack[1],
-            Value::constant(U256::from_be_slice(frame.key.caller.as_slice()))
+        assert_numeric_eq(
+            &child.exit_stack[1],
+            &Value::constant(U256::from_be_slice(frame.key.caller.as_slice())),
         );
-        assert_eq!(child.exit_stack[2], frame.call_value);
+        assert_numeric_eq(&child.exit_stack[2], &frame.call_value);
+        for (value, origin) in [
+            (&child.exit_stack[0], Origin::Address),
+            (&child.exit_stack[1], Origin::Address),
+            (&child.exit_stack[2], Origin::CallValue),
+        ] {
+            assert!(
+                value
+                    .provenance()
+                    .origins()
+                    .sources()
+                    .unwrap()
+                    .contains(&origin)
+            );
+        }
         assert!(
             analysis
                 .edges()
@@ -120,13 +144,19 @@ fn calldata_is_copied_from_callers_memory_and_returned_bytes_feed_parent() {
         .iter()
         .find(|s| s.key.frames.len() == 2)
         .unwrap();
-    assert_eq!(
-        child
-            .entry
-            .active()
-            .calldata
-            .read_word(&Value::constant(U256::ZERO), Domain::default()),
-        Value::constant(U256::from(7))
+    let loaded = child
+        .entry
+        .active()
+        .calldata
+        .read_word(&Value::constant(U256::ZERO), Domain::default());
+    assert_numeric_eq(&loaded, &Value::constant(U256::from(7)));
+    assert!(
+        loaded
+            .provenance()
+            .origins()
+            .sources()
+            .unwrap()
+            .contains(&Origin::Arithmetic)
     );
     let resumed = analysis
         .states()

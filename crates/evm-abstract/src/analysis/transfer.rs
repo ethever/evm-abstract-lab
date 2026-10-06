@@ -9,18 +9,27 @@ use super::{
     },
 };
 use crate::{
-    domain::{Domain, Value},
+    domain::{Domain, Profile, Value, provenance::Origin},
     world::{AbstractLog, ByteArray, Code, Entry, LogKey, Store, World},
 };
 use alloy_primitives::{Address, U256, keccak256};
 use revm_bytecode::opcode;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// 仅用于本进程的临时复制身份。计数耗尽时丢弃这项可选精度，不复用编号。
+static NEXT_IDENTITY_SCOPE: AtomicU64 = AtomicU64::new(1);
+fn identity_scope() -> Option<u64> {
+    NEXT_IDENTITY_SCOPE
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
+        .ok()
+}
 
 mod budget;
 mod calls;
 pub(super) mod create;
 mod precompile;
 
-pub(super) use budget::WorkBudget;
+pub(super) use crate::resource::WorkBudget;
 use budget::{byte_work, operation_work};
 use calls::{call, failure, finish};
 
@@ -30,8 +39,12 @@ struct TransferContext<'a> {
     budget: &'a mut WorkBudget,
 }
 
-pub(super) fn initial(world: &World, entry: &Entry) -> Result<MachinePayload, FrontierReason> {
-    calls::initial(world, entry)
+pub(super) fn initial(
+    world: &World,
+    entry: &Entry,
+    domain: Domain,
+) -> Result<MachinePayload, FrontierReason> {
+    calls::initial(world, entry, domain)
 }
 
 pub(super) struct Successor {
@@ -202,6 +215,17 @@ pub(super) fn execute(
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
     };
+    let scope = identity_scope();
+    let mut definition = 0_u32;
+    for value in &mut result.payload.active_mut().stack {
+        value.forget_identity();
+        if domain.spec().profile() == Profile::Product {
+            if let Some(scope) = scope {
+                *value = value.clone().with_identity(scope, definition);
+            }
+            definition = definition.saturating_add(1);
+        }
+    }
     let code = result.payload.active().code;
     if let FrameCode::Precompile(address) = code {
         precompile::execute(&mut result, world.fork(), address, context);
@@ -287,6 +311,17 @@ pub(super) fn execute(
         }
         let mut args: Vec<Value> = stack.drain(stack.len() - inputs..).collect();
         args.reverse();
+        if matches!(op, opcode::MLOAD | opcode::CALLDATALOAD) {
+            let scan = args[0]
+                .constants()
+                .map_or(1, |s| s.len())
+                .saturating_mul(32)
+                .saturating_mul(domain.capacity().saturating_add(32));
+            if !context.budget.charge(scan) {
+                boundary(&mut result, pc, FrontierReason::Work);
+                return result;
+            }
+        }
         if !context
             .budget
             .charge(operation_work(&result, op, &args, program, domain, config))
@@ -347,7 +382,10 @@ pub(super) fn execute(
                         None => {
                             result.diagnostics.push((pc, DiagnosticKind::UnknownJump));
                             failure(&mut result, context, pc);
-                            for target in program.jumpdest_blocks().values() {
+                            for (target_pc, target) in program.jumpdest_blocks() {
+                                if !args[0].contains(U256::from(*target_pc)) {
+                                    continue;
+                                }
                                 if !context.budget.charge(1) {
                                     boundary(&mut result, pc, FrontierReason::Work);
                                     break;
@@ -600,7 +638,7 @@ pub(super) fn execute(
             }
             _ if outputs > 0 => {
                 let frame = result.payload.active();
-                let value = match op {
+                let mut value = match op {
                     opcode::ADDRESS if !config.symbolic_entry_environment => {
                         address_value(frame.key.address)
                     }
@@ -702,9 +740,49 @@ pub(super) fn execute(
                         if !matches!(op, 0x01..=0x0b | 0x10..=0x1e) {
                             result.diagnostics.push((pc, DiagnosticKind::OpaqueResult));
                         }
-                        domain.apply(op, &args)
+                        let reduction = domain.apply_detailed(op, &args);
+                        if matches!(
+                            reduction.status,
+                            crate::domain::ReductionStatus::RoundLimit
+                                | crate::domain::ReductionStatus::FactLimit
+                        ) {
+                            result
+                                .diagnostics
+                                .push((pc, DiagnosticKind::FactExchangeLimited(reduction.status)));
+                        }
+                        reduction.value
                     }
                 };
+                if domain.spec().profile() == Profile::Product {
+                    let origin = match op {
+                        opcode::ADDRESS | opcode::CALLER | opcode::ORIGIN => Some(Origin::Address),
+                        opcode::CALLDATALOAD | opcode::CALLDATASIZE => Some(Origin::Calldata),
+                        opcode::MLOAD | opcode::MSIZE => Some(Origin::Memory),
+                        opcode::SLOAD => Some(Origin::Storage),
+                        opcode::TLOAD => Some(Origin::TransientStorage),
+                        opcode::CALLVALUE => Some(Origin::CallValue),
+                        opcode::BALANCE | opcode::SELFBALANCE => Some(Origin::Balance),
+                        opcode::RETURNDATASIZE => Some(Origin::Returndata),
+                        0x01..=0x0b | 0x10..=0x1e => None,
+                        _ => Some(Origin::Environment),
+                    };
+                    if let Some(origin) = origin {
+                        value.set_origin(origin);
+                    }
+                    if matches!(op, opcode::ADDRESS | opcode::CALLER | opcode::ORIGIN)
+                        && config.symbolic_entry_environment
+                    {
+                        value = Value::unknown_address();
+                    }
+                    if let Some(scope) = scope {
+                        value = value.with_identity(scope, definition);
+                    }
+                    if let Some(next) = definition.checked_add(1) {
+                        definition = next;
+                    } else {
+                        value.forget_identity();
+                    }
+                }
                 result
                     .payload
                     .active_mut()

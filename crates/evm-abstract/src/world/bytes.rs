@@ -48,6 +48,52 @@ pub enum RangeError {
 }
 
 impl ByteArray {
+    // 完整小集合组装 word 时走有限枚举快路径；开放字节才预留通用交换。
+    pub(crate) fn word_numeric_work(&self, offset: &Value, domain: Domain) -> usize {
+        let Some(offsets) = offset.constants() else {
+            return 1;
+        };
+        offsets.iter().fold(0usize, |work, offset| {
+            let Some(start) = usize::try_from(*offset).ok() else {
+                return work.saturating_add(1);
+            };
+            let combinations = (0..32).try_fold(1usize, |n, i| {
+                let index = start.checked_add(i)?;
+                let byte = self.byte_at(index, domain);
+                let size = byte.constants()?.len();
+                let next = n.saturating_mul(size);
+                (next <= domain.capacity()).then_some(next)
+            });
+            let operation = combinations.map_or_else(
+                || domain.operation_work(&[]),
+                |n| n.saturating_mul(256).saturating_add(32),
+            );
+            work.saturating_add(operation.saturating_mul(64))
+        })
+    }
+    pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
+        self.length = domain.widen(&old.length, &self.length);
+        self.default = domain.widen(&old.default, &self.default);
+        for (offset, value) in &mut self.bytes {
+            *value = domain.widen(old.bytes.get(offset).unwrap_or(&old.default), value);
+        }
+    }
+    pub(crate) fn project(&self, domain: Domain) -> Self {
+        let mut out = self.clone();
+        out.length = domain.project(&out.length);
+        let byte = |value: &Value| {
+            if value == &Value::top() {
+                domain.project(&Value::unknown_byte())
+            } else {
+                domain.project(value)
+            }
+        };
+        out.default = byte(&out.default);
+        for value in out.bytes.values_mut() {
+            *value = byte(value);
+        }
+        out
+    }
     /// A known empty calldata/returndata sequence.
     pub fn empty() -> Self {
         Self::exact(&[])
@@ -114,7 +160,7 @@ impl ByteArray {
             .values()
             .chain([&self.length, &self.default])
             .fold(0_usize, |work, value| {
-                work.saturating_add(value.constants().map_or(1, |values| values.len()))
+                work.saturating_add(value.work_size())
             })
     }
 

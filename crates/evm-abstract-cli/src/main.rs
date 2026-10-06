@@ -14,6 +14,7 @@ use evm_abstract::{
     Fork,
     analysis::{self, Config, ExecutionConfig, Status},
     bytecode::Program,
+    domain::Profile,
     render, ssa,
     world::{
         ByteArray, Entry,
@@ -122,7 +123,7 @@ struct WorldArgs {
     #[arg(long, default_value_t = 32)]
     max_call_depth: usize,
     /// Maximum cumulative execution and domain work.
-    #[arg(long, default_value_t = 2_000_000)]
+    #[arg(long, default_value_t = 20_000_000)]
     max_work: usize,
     /// Maximum tracked memory bytes per frame.
     #[arg(long, default_value_t = 65_536)]
@@ -130,6 +131,15 @@ struct WorldArgs {
     /// Constants retained per value before promoting to Top.
     #[arg(long, default_value_t = 8)]
     max_constants: usize,
+    /// Numerical domain: combined facts or the constants-only comparison.
+    #[arg(long, value_enum, default_value_t = DomainProfile::Product)]
+    domain: DomainProfile,
+    /// Maximum complete rounds per temporary fact exchange.
+    #[arg(long, default_value_t = 4)]
+    reduction_rounds: usize,
+    /// Maximum semantic atoms per temporary fact lattice.
+    #[arg(long, default_value_t = 256)]
+    max_facts: usize,
     /// Recent jump-source blocks retained within each frame; 0 disables context sensitivity.
     #[arg(long, default_value_t = 8)]
     context_depth: usize,
@@ -181,12 +191,35 @@ struct AnalysisArgs {
     /// Constants retained per stack slot before promoting to Top (1..=64).
     #[arg(long, default_value_t = 8)]
     max_constants: usize,
+    /// Numerical domain: combined facts or the constants-only comparison.
+    #[arg(long, value_enum, default_value_t = DomainProfile::Product)]
+    domain: DomainProfile,
+    /// Maximum complete rounds per temporary fact exchange.
+    #[arg(long, default_value_t = 4)]
+    reduction_rounds: usize,
+    /// Maximum semantic atoms per temporary fact lattice.
+    #[arg(long, default_value_t = 256)]
+    max_facts: usize,
     /// Maximum abstract states; exhaustion returns exit code 2.
     #[arg(long, default_value_t = 4096)]
     max_states: usize,
     /// Maximum block transfers, including revisits; exhaustion returns exit code 2.
     #[arg(long, default_value_t = 100_000)]
     max_transfers: usize,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum DomainProfile {
+    Product,
+    ConstantsOnly,
+}
+impl From<DomainProfile> for Profile {
+    fn from(value: DomainProfile) -> Self {
+        match value {
+            DomainProfile::Product => Self::Product,
+            DomainProfile::ConstantsOnly => Self::ConstantsOnly,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -215,6 +248,9 @@ impl Input {
 impl AnalysisArgs {
     fn analyze(self) -> Result<analysis::Analysis, CliError> {
         let config = Config {
+            domain_profile: self.domain.into(),
+            reduction_rounds: self.reduction_rounds,
+            max_facts: self.max_facts,
             max_constants: self.max_constants,
             context_depth: self.context_depth,
             max_states: self.max_states,
@@ -268,6 +304,9 @@ impl WorldArgs {
         };
         let config = ExecutionConfig {
             analysis: Config {
+                domain_profile: self.domain.into(),
+                reduction_rounds: self.reduction_rounds,
+                max_facts: self.max_facts,
                 max_constants: self.max_constants,
                 context_depth: self.context_depth,
                 max_states: self.max_states,

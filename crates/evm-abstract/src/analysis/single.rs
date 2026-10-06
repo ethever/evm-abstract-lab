@@ -147,6 +147,8 @@ pub(super) fn analyze(program: Program, config: Config) -> Result<Analysis, Conf
     Ok(Analysis {
         program,
         config,
+        schema_version: 1,
+        domain_spec: execution.domain_spec(),
         states,
         edges,
         diagnostics,

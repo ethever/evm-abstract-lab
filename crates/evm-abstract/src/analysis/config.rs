@@ -4,7 +4,7 @@
 //! `validate` 在这里检查所有条件，并把域容量转换成 NonZeroUsize。
 //! 执行引擎只接收私有字段的 `ValidatedConfig`，不再依靠运行中的 expect。
 
-use crate::domain::Domain;
+use crate::domain::{Domain, DomainSpec, Profile};
 use serde::Serialize;
 use std::num::NonZeroUsize;
 use thiserror::Error;
@@ -12,6 +12,12 @@ use thiserror::Error;
 /// 有限分析的原始参数；进入引擎前通过 [`Config::validate`] 统一验证。
 #[derive(Clone, Debug, Serialize)]
 pub struct Config {
+    /// 默认组合域；constants-only 保留有限集合对照。
+    pub domain_profile: Profile,
+    /// 一次临时 fact 交换最多执行的完整轮数。
+    pub reduction_rounds: usize,
+    /// 一次交换的语义事实原子上限；不按上限预分配。
+    pub max_facts: usize,
     /// 每个槽位最多保留的常量数，范围 1..=64。
     pub max_constants: usize,
     /// 保留最近 k 个跳转来源块；0 代表上下文不敏感，默认 8。
@@ -26,6 +32,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            domain_profile: Profile::Product,
+            reduction_rounds: 4,
+            max_facts: 256,
             max_constants: 8,
             context_depth: 8,
             max_states: 4096,
@@ -43,6 +52,9 @@ pub enum ConfigError {
     /// 资源预算不能是零。
     #[error("max_states and max_transfers must be positive")]
     Budget,
+    /// 交换精度策略必须允许至少一个原子和一轮传播。
+    #[error("reduction_rounds and max_facts must be positive")]
+    Facts,
 }
 
 /// 已完成准入验证的配置，携带由同一份参数构建的非零容量域。
@@ -77,8 +89,15 @@ impl Config {
         if self.max_states == 0 || self.max_transfers == 0 {
             return Err(ConfigError::Budget);
         }
+        let rounds = NonZeroUsize::new(self.reduction_rounds).ok_or(ConfigError::Facts)?;
+        let facts = NonZeroUsize::new(self.max_facts).ok_or(ConfigError::Facts)?;
         Ok(ValidatedConfig {
-            domain: Domain::new(capacity),
+            domain: Domain::from_spec(DomainSpec::new(
+                self.domain_profile,
+                capacity,
+                rounds,
+                facts,
+            )),
             config: self,
         })
     }

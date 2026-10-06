@@ -192,7 +192,15 @@ fn diamond_joins_values_and_ssa_tracks_each_predecessor() {
 
 #[test]
 fn loop_reaches_a_finite_fixed_point_and_has_a_backedge_phi() {
-    let a = analyze(&fixture("loop"));
+    let a = analysis::analyze(
+        Program::from_hex(&fixture("loop")).unwrap(),
+        Config {
+            context_depth: 0,
+            domain_profile: evm_abstract::domain::Profile::ConstantsOnly,
+            ..Config::default()
+        },
+    )
+    .unwrap();
     assert_eq!(a.status(), Status::Converged);
     assert!(a.transfers() < 30);
     let head = states_at(&a, 2)[0];

@@ -52,6 +52,8 @@ pub struct SummaryInput {
     pub context_depth: usize,
     /// Finite-domain capacity used to compute the relation.
     pub max_constants: usize,
+    /// Frozen component, exchange, provenance and cost policy.
+    pub domain_spec: crate::domain::DomainSpec,
     /// Memory/range modeling policy.
     pub max_memory_bytes: usize,
     /// Whether the root transaction environment is intentionally symbolic.
@@ -76,14 +78,9 @@ impl SummaryInput {
                         .as_ref()
                         .map_or(0, crate::bytecode::Program::byte_len),
                 )
-                .saturating_add(
-                    frame
-                        .call_value
-                        .constants()
-                        .map_or(1, |values| values.len()),
-                )
+                .saturating_add(frame.call_value.work_size())
                 .saturating_add(1),
-            |cost, value| cost.saturating_add(value.constants().map_or(1, |values| values.len())),
+            |cost, value| cost.saturating_add(value.work_size()),
         )
     }
 }
@@ -242,6 +239,7 @@ impl Cache {
             max_call_depth: analysis.config.max_call_depth,
             context_depth: analysis.config.analysis.context_depth,
             max_constants: analysis.config.analysis.max_constants,
+            domain_spec: analysis.config.domain().ok()?.spec(),
             max_memory_bytes: analysis.config.max_memory_bytes,
             symbolic_entry_environment: analysis.config.symbolic_entry_environment,
         })

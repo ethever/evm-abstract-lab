@@ -32,6 +32,8 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 在 `pc=0x000e` 的状态找到 `stack in [{0x1, 0x2}]`。外层是栈，内层是**一个栈槽的可能值集合**；不是栈上同时有两个值。这一步连接具体执行与抽象分析。
 
+默认使用组合域，同时保存常量集合、KnownBits、Interval、Congruence 和 Provenance。可用 `--domain constants-only` 做有限集合对照；`--reduction-rounds` 与 `--max-facts` 控制临时交换精度，共享工作预算默认 2000 万。详见[组合域与语义 facts](docs/11-product-domains-facts.md)。
+
 ## 推荐阅读顺序
 
 先完成 00–06 的基础阅读，再按需要进入跨合约实验。每课给出运行步骤、要检查的输出和对应源码；不要求先读论文。
@@ -47,6 +49,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 | [06：模型边界与证据](docs/06-boundaries.md) | 收敛能说明什么？对照测试与链上事实分别能证明什么？ | 预算、诊断、revm 对照 |
 | [09：跨合约执行](docs/09-cross-contract.md) | 返回值、代理、回滚和重入怎样影响账户状态？ | `examples/worlds/` |
 | [10：快照、调用摘要与代码生命周期](docs/10-snapshots-summaries-creation.md) | 何时能复用分析？部署和销毁如何改变代码？ | 摘要、CREATE/CREATE2、预编译 |
+| [组合域与语义 facts](docs/11-product-domains-facts.md) | 位、范围、同余和来源如何交换信息并限制回馈？ | `--domain product / constants-only` |
 | [11：状态容器与后端对比](docs/11-state-backends.md) | 如何用同一接口比较 std 与 imbl 的检查点、写入和回滚？ | `scripts/compare-state-backends.sh` |
 
 两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。编号保留原有文件名，阅读路径由上表给出。[例子索引](examples/README.md) 按难度列出所有实验；[参考资料](docs/references.md) 按问题指向规范、论文和教学材料。

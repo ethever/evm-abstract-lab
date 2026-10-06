@@ -95,6 +95,8 @@ pub enum DiagnosticKind {
     InvalidOpcode,
     /// 内存、状态或环境值仅用保守摘要表示。
     OpaqueResult,
+    /// 可选语义交换达到固定精度上限；结果仍覆盖全部具体可能性。
+    FactExchangeLimited(crate::domain::ReductionStatus),
 }
 
 /// 稳定、可导出的诊断位置。
@@ -150,6 +152,8 @@ pub enum Status {
 pub struct Analysis {
     pub(crate) program: Program,
     pub(crate) config: Config,
+    pub(crate) schema_version: u16,
+    pub(crate) domain_spec: crate::domain::DomainSpec,
     pub(crate) states: Vec<State>,
     pub(crate) edges: Vec<Edge>,
     pub(crate) diagnostics: Vec<Diagnostic>,

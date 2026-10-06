@@ -41,6 +41,7 @@ fn validated_boundary_values_keep_their_original_options() {
                 context_depth: depth,
                 max_states: 1,
                 max_transfers: 1,
+                ..Config::default()
             }
             .validate()
             .unwrap();

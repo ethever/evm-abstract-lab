@@ -44,6 +44,7 @@ pub mod bytecode;
 pub mod domain;
 pub mod fork;
 pub mod render;
+pub mod resource;
 pub mod ssa;
 pub mod world;
 

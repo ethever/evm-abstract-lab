@@ -269,7 +269,11 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
     let mut interrupted = None;
     // Find an actual interruption inside graph import, without depending on
     // incidental work-unit constants from unrelated opcode implementation.
-    for budget in (1..limit).step_by((limit / 150).max(1)) {
+    // Work reservations grew with product domains. Locate the first completed
+    // imported node; a coarse numeric stride can skip the entire partial-import window.
+    let (mut lo, mut hi) = (1, limit);
+    while lo < hi {
+        let budget = lo + (hi - lo) / 2;
         let analysis = analyze_world(
             world.clone(),
             entry.clone(),
@@ -279,17 +283,30 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
             },
         )
         .unwrap();
-        if analysis.summary_stats().hits > 0
-            && analysis.summary_stats().imported_states > 0
-            && analysis.summary_stats().imported_states < certified_states
-            && analysis
-                .frontiers()
-                .iter()
-                .any(|frontier| frontier.reason == FrontierReason::SummaryWork)
-        {
-            interrupted = Some((budget, analysis));
-            break;
+        if analysis.summary_stats().hits > 0 && analysis.summary_stats().imported_states > 0 {
+            hi = budget;
+        } else {
+            lo = budget + 1;
         }
+    }
+    let analysis = analyze_world(
+        world,
+        entry,
+        ExecutionConfig {
+            max_work: lo,
+            ..ExecutionConfig::default()
+        },
+    )
+    .unwrap();
+    if analysis.summary_stats().hits > 0
+        && analysis.summary_stats().imported_states > 0
+        && analysis.summary_stats().imported_states < certified_states
+        && analysis
+            .frontiers()
+            .iter()
+            .any(|f| f.reason == FrontierReason::SummaryWork)
+    {
+        interrupted = Some((lo, analysis));
     }
     let (budget, analysis) =
         interrupted.expect("no budget interruption during selected summary reuse");

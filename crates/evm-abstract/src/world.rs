@@ -181,6 +181,21 @@ pub enum WorldError {
 }
 
 impl World {
+    pub(crate) fn work_size(&self) -> usize {
+        self.accounts.values().fold(16usize, |work, account| {
+            let code = match &account.code {
+                Code::Runtime(program) => program.byte_len().saturating_mul(3),
+                Code::Delegation(_) => 23,
+                _ => 1,
+            };
+            account.storage.values().fold(
+                work.saturating_add(code)
+                    .saturating_add(account.balance.work_size())
+                    .saturating_add(account.nonce.work_size()),
+                |n, value| n.saturating_add(value.work_size()),
+            )
+        })
+    }
     /// Start an unanchored synthetic fixture using provenance as its label.
     /// A free-form string never establishes a live chain or block identity.
     pub fn new(fork: Fork, provenance: impl Into<String>) -> Self {
@@ -215,13 +230,13 @@ impl World {
         }
         if account.existence == Existence::Absent
             && (account.code != Code::Empty
-                || account.balance != Value::constant(U256::ZERO)
-                || account.nonce != Value::constant(U256::ZERO)
+                || account.balance.singleton() != Some(U256::ZERO)
+                || account.nonce.singleton() != Some(U256::ZERO)
                 || account.storage_unknown
                 || account
                     .storage
                     .values()
-                    .any(|value| *value != Value::constant(U256::ZERO)))
+                    .any(|value| value.singleton() != Some(U256::ZERO)))
         {
             return Err(WorldError::InvalidAbsence(address));
         }
