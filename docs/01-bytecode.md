@@ -33,9 +33,11 @@ nix run . -- disasm --hex 605b00
 
 ```text
 B0 @ 0x0000:
-  0000: PUSH1          0x5b
-  0002: STOP
+       0000: PUSH1          0x5b
+       0002: STOP
 ```
+
+指令行的 pc 省略 `0x`，仍是十六进制；数字列随块编号宽度与标题中 `0x` 后的数字对齐。
 
 没有 `0001: JUMPDEST`。虽然 `5b` 单独作为操作码时表示 `JUMPDEST`，这里它属于 PUSH 数据，不能被执行，也不能作为合法跳转目的地。
 
@@ -95,8 +97,12 @@ nix run . -- explain --hex 005b600100
 反汇编有两个块：
 
 ```text
-B0 @ 0x0000: STOP
-B1 @ 0x0001: JUMPDEST; PUSH1 0x1; STOP
+B0 @ 0x0000:
+       0000: STOP
+B1 @ 0x0001:
+       0001: JUMPDEST
+       0002: PUSH1          0x1
+       0004: STOP
 ```
 
 CFG 部分却只有 `S0 | B0`，没有 `B1` 对应的状态。从 pc=0 的空栈入口开始，第一条 STOP 已经结束执行，也没有跳往 B1 的路径。

@@ -160,9 +160,7 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis) {
                     program.byte_len()
                 )
                 .unwrap();
-                for line in crate::render::disassembly(program).lines() {
-                    writeln!(output, "      {line}").unwrap();
-                }
+                output.push_str(&crate::render::disassembly(program));
             }
             (FrameCode::Precompile(address), _) => {
                 writeln!(
@@ -236,9 +234,7 @@ fn write_input_code(output: &mut String, analysis: &WorldAnalysis) {
         match &account.code {
             Code::Runtime(program) => {
                 output.push_str("    Observed instruction list (execution not established):\n");
-                for line in crate::render::disassembly(program).lines() {
-                    writeln!(output, "      {line}").unwrap();
-                }
+                output.push_str(&crate::render::disassembly(program));
             }
             Code::Delegation(target) => {
                 writeln!(

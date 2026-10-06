@@ -263,6 +263,13 @@
                   if grep -q 'Verified cross-contract SSA:' explain-partial.txt; then exit 1; fi
                   evm-abstract explain --file ${./examples/straight-line.hex} > explain-program.txt
                   grep -q 'stack SSA:' explain-program.txt
+                  evm-abstract explain --file ${./examples/known-bits-branch.hex} --context-depth 0 > explain-aligned.txt
+                  grep -q '^B0 @ 0x0000:$' explain-aligned.txt
+                  grep -q '^       0000: PUSH0' explain-aligned.txt
+                  for report in explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt; do
+                    grep -Eq '^B[0-9]+ @ 0x[0-9a-f]+:$' "$report"
+                    if grep -Eq '^ +B[0-9]+ @ 0x[0-9a-f]+:$' "$report"; then exit 1; fi
+                  done
                   evm-abstract explain --hex 5f351e00 --domain constants-only --max-constants 257 > explain-capacity.txt
                   grep -q 'status=Converged' explain-capacity.txt
                   evm-abstract cfg --hex 5f351e00 --domain constants-only --max-constants 257 --format json |
@@ -301,7 +308,7 @@
                   dot -Tsvg diamond.dot -o diamond.svg
                   test -s diamond.svg
                   mkdir $out
-                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt explain-program.txt explain-capacity.txt explain-capacity-work.txt $out/
+                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt explain-program.txt explain-aligned.txt explain-capacity.txt explain-capacity-work.txt $out/
                 '';
           };
           devShells.default = craneLib.devShell {

@@ -28,11 +28,15 @@ pub fn disassembly(program: &Program) -> String {
     let mut output = String::new();
     writeln!(output, "fork={}", program.fork()).unwrap();
     for block in program.blocks() {
-        writeln!(output, "B{} @ 0x{:04x}:", block.id, block.start_pc).unwrap();
+        let prefix = format!("B{} @ 0x", block.id);
+        writeln!(output, "{prefix}{:04x}:", block.start_pc).unwrap();
+        // 对齐到标题的十六进制数字起点，块编号增长时缩进也随之增长。
+        let indent = prefix.len();
         for instruction in &block.instructions {
             write!(
                 output,
-                "  {:04x}: {:<14}",
+                "{:indent$}{:04x}: {:<14}",
+                "",
                 instruction.pc,
                 instruction.name()
             )
