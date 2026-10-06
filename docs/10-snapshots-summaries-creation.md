@@ -17,11 +17,13 @@
 
 一次具体成功执行中，B 返回前 31 字节为零、最后一字节为 `07` 的数据。分析器还保留模型允许的失败可能。因此缓存保存的是“在这组抽象输入下，B 的每种结束方式，分别对应什么返回字节和 Store 效果”，而不只是一个数值 7。若有 REVERT，也要把回滚后的状态与 REVERT 数据一起保存。各输出之间的关系不能拆开重组。
 
+这里的“完整”指子图已经闭合，所有保留的抽象出口都已记录。一条抽象输出内部仍可能含 join 后的值集合，不能从中还原每条具体路径的数值相关性。例如返回值候选与某个 slot 的候选各有两个值，不证明四种配对都能具体执行，当前表示也未必知道它们怎样逐项对应。摘要复用保留已有精度；它不会把抽象结果变成具体执行证明。
+
 摘要还携带对应的执行子图：哪些指令状态和边导出了这些结果。这样第二次命中时，图中仍能看见 B 的调用过程，SSA 也能检查值和状态效果的来源。后文把这份完整子图及输入、输出证据称为**证书**；这里不表示链上状态证明。
 
 ### 先分清“保存”和“复用”
 
-默认文本的 `Call summaries` 分区显示摘要统计和每份记录。`published=1` 表示保存了一个可复用的完整结果；`hits=1` 才表示后来的调用复用了一个结果。`source` / JSON 的 `source_state` 指向最初分析的 callee 入口；`reused_at` 指向后来的复用入口。
+默认文本的 `Call summaries` 分区显示摘要统计和每份记录。`published=1` 表示保存了一个可复用的完整结果；`hits=1` 才表示后来的调用复用了一个结果。`source` / JSON 的 `source_state` 指向最初分析的 callee 入口；`reused_at` 指向后来的复用入口。文本中各摘要还列出出口种类、返回长度和代码身份；完整的返回字节与 Store 关系在 JSON 的 `summaries[].outputs` 中。
 
 在[第 9 课的 `returndata-copy.json`](09-cross-contract.md#3-一次调用需要保存哪些东西) 中，A 只调用 B 一次。若统计显示 `published=1`、`hits=0`，含义是第一次分析已经完成并保存，但没有第二次相同调用来使用它。这是正常情况，不能据此判断调用失败或摘要没有工作。下面的两次调用实验才用于观察复用。
 
@@ -85,11 +87,11 @@ cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 | fork、快照身份、初始事实指纹、当前代码 hash | 把不同规则、不同区块或改变后的代码混用 |
 | callee 帧，包括 caller/static/value/calldata 和回滚保存点 | 同一代码在不同调用环境下复用错误结果 |
 | ORIGIN 与完整 Store | 忽略 storage、transient、余额、日志、nonce、代码或生命周期变化 |
-| 剩余调用深度和精度策略 | 复用时得到额外深度或改变值域、内存、跳转历史策略 |
+| 剩余调用深度和冻结的分析策略 | 复用时得到额外深度，或改变数值域、facts 交换、内存、跳转历史及费用策略 |
 
-A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入，所以本例的输出长度 0/32 不妨碍命中。callee 的其他帧事实和回滚保存点仍需相等。输入经 join 扩大、callee 未完成或预算中断，都不能发表可复用的完整证书。
+A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入，所以本例的输出长度 0/32 不妨碍命中。callee 的其他帧事实和回滚保存点仍需相等。登记候选后，输入若经 join 扩大，就不能按旧前提发表证书；需要以更新后的输入重新登记、完成分析并认证。callee 未完成或预算中断时也不能发表完整证书。[第 12 课](12-product-domains-facts.md)会解释为什么同一字节码用组合域和 constants-only 得到的精度可能不同；摘要输入也绑定这份完整策略，不能仅按常量容量判定兼容。
 
-摘要中的 root 是该子图的执行边界。提取时，原调用栈的 `ChildFrame` 显式转换为摘要的 `RootFrame`，共享执行数据和保存点保留，返回原 caller 的 `Continuation` 单独取出。回放时使用当前调用位置的 continuation 转回 `ChildFrame`，并放回 caller 的 `CallStack`。更深的子帧继续保持原有角色，不能丢失它们的继续信息或回滚保存点。
+摘要中的入口帧是相对于子图而言的：B 在 A→B 的全图里是子帧，在单独保存的 B 子图里成为入口。保存时保留 B 的执行数据与回滚点，外层返回契约不属于摘要输入与子图；复用时使用当前 caller 的继续信息，再把 B 接回调用栈。更深的子帧仍需保留各自的继续信息。这样既能复用 B 的行为，又能把这次结果复制到 A 新指定的输出区。状态归一化会清除局部复制身份；冻结来源策略不意味着把运行时身份保存进摘要。
 
 摘要的查找比较、快照 hashing、认证、复制和图导入都消耗同一份 `--max-work`；导入状态也计入全局状态预算。命中不会重置预算。`SummaryWork` 前沿表示这些操作未完成，状态为 `Incomplete`，SSA 验证器不会接受未闭合图。实现与回归见 [`summary.rs`](../crates/evm-abstract/src/analysis/summary.rs)、[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)。
 
@@ -134,7 +136,7 @@ jq '[.analysis.outcomes[].store.account_observations[]
 
 第一个查询应找到同一地址的 `InitCode` 与 `Runtime` 两种 `mode`，并带不同代码 hash。第二个查询看最终账户事实：某些失败可能仍为 absent；成功部署的账户为 present、nonce=`0x1`、code_size=8。
 
-`account_observations` 是方便阅读的账户汇总，不包含 storage slot；slot 仍在 `store.persistent.slots`。代码 hash 为零表示已确认 absent；代码为空但账户存在时，hash 是空字节的 Keccak，两者不同。
+`account_observations` 是方便阅读的账户汇总，不包含 storage slot；slot 仍在 `store.persistent.slots`。nonce 和余额是抽象值，JSON 中确定的数值仍写成含 `Constants` 的对象；已知的 `code_size` 则是整数，本例为 8。代码 hash 为零表示已确认 absent；代码为空但账户存在时，hash 是空字节的 Keccak，两者不同。
 
 ### 第三步：跟着成功生命周期读结果
 
@@ -328,4 +330,4 @@ nix run . -- analyze \
 
 **当前信任范围是选定的 RPC 提供者。** loader 会将 `eth_getProof` 返回字段与其他查询交叉校验，但没有验证 [EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) 的 Merkle proof（将账户/槽位数据与区块状态根连接起来的密码学证明）。身份、hash 和 fingerprint 能发现混合/冲突输入，不能把受信任提供者的数据变成密码学状态证明，也不能让 `Converged` 成为任意合约安全证明。
 
-text / JSON / DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。JSON 还保留初始 world、摘要输入/输出与执行中的 Store；DOT 的蓝色证书节点标出认证来源和复用位置。源码入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc.rs`](../crates/evm-abstract/src/world/rpc.rs)、[`transfer/create.rs`](../crates/evm-abstract/src/analysis/transfer/create.rs)。
+text / JSON / DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。默认文本按[第 9 课的分区](09-cross-contract.md#默认文本怎样读)阅读：`Snapshot` 查输入身份，`Outcomes` 查每个最终结果的账户和字节，`Call summaries` 查保存与复用。JSON 还保留初始 world、完整域策略、摘要输入/输出与执行中的 Store；DOT 的蓝色证书节点标出认证来源和复用位置。源码入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc.rs`](../crates/evm-abstract/src/world/rpc.rs)、[`transfer/create.rs`](../crates/evm-abstract/src/analysis/transfer/create.rs)。

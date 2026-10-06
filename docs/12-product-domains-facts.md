@@ -1,0 +1,201 @@
+# 12：组合域，把几种不完整的认识放在一起
+
+[第 2 课](02-domain.md)用有限常量集合表示一个栈槽的可能值。如果候选太多，集合容量装不下，就只能放弃枚举。组合域继续保存这些候选共有的位、范围和同余性质。例如，不能列完所有偶数，并不妨碍证明最低位一定为零。
+
+本课接着[第 3 课的 CFG](03-cfg.md)做实验：先手算分支，再观察分析器，最后解释组件怎样交换信息。它同样适用于[第 9 课](09-cross-contract.md)的帧、字节和共享状态；先读单合约实验也可以。所有命令在仓库根目录执行。
+
+## 1. 先手算：这个条件可能为零吗
+
+[`known-bits-branch.hex`](../examples/known-bits-branch.hex)读取未知 calldata，保留最低 4 位，再把最低位设为 1，最后把结果作为 JUMPI 的条件：
+
+```text
+x = CALLDATALOAD(0)
+condition = (x AND 15) OR 1
+JUMPI(condition, 0x000c)
+```
+
+先不用分析器，分两步想：
+
+| 步骤 | 可能值 | 一定成立的性质 |
+| --- | --- | --- |
+| `x AND 15` | 0 到 15，共 16 个值 | 高 252 位为零 |
+| 再 `OR 1` | 1、3、5、7、9、11、13、15 | 最低位为一，所以非零 |
+
+最终候选只有 8 个，但中间步骤已有 16 个。默认常量容量为 8：如果中途丢掉所有信息，就无法靠下一条 OR 重新知道最低位为一。KnownBits 组件用两个位掩码保存必须为零和必须为一的位，避免这次信息丢失。
+
+分别运行默认组合域和常量集合对照：
+
+```bash
+nix run . -- cfg \
+  --file examples/known-bits-branch.hex \
+  --context-depth 0 --format json > /tmp/facts-product.json
+
+nix run . -- cfg \
+  --file examples/known-bits-branch.hex \
+  --domain constants-only \
+  --context-depth 0 --format json > /tmp/facts-constants.json
+
+jq '.status, [.edges[] | .kind]' /tmp/facts-product.json
+jq '.status, [.edges[] | .kind]' /tmp/facts-constants.json
+```
+
+两次分析都可完成。组合域只有 BranchTrue；constants-only 保留 BranchTrue 和 BranchFalse，因为未知 x 的 AND/OR 无法从有限集合获得上述位信息。`--context-depth 0` 让实验集中展示数值域的区别。
+
+这已经说明两件事：`Converged` 可以对应不同精度；提高常量容量也不等于增加未知输入的位语义。要排除假分支，需要某个组件证明条件非零。
+
+## 2. 再手算：两个未知值一定相同吗
+
+[`copy-identity.hex`](../examples/copy-identity.hex)只读取一次未知 word，然后 DUP1：
+
+```text
+x = CALLDATALOAD(0)
+y = DUP1(x)
+condition = x XOR y
+```
+
+虽然不知道 x 的数值，但 y 是 x 的副本，`x XOR x = 0`。对照 [`independent-inputs.hex`](../examples/independent-inputs.hex)：分别从 calldata 的偏移 0 和 32 读取 word，再 XOR；这两个数可以不同。
+
+```bash
+nix run . -- cfg \
+  --file examples/copy-identity.hex --context-depth 0
+
+nix run . -- cfg \
+  --file examples/independent-inputs.hex --context-depth 0
+```
+
+第一段只有 BranchFalse，第二段保留两种分支。这些命令的 calldata 是单合约 CFG 入口的未知输入；`analyze --calldata ...` 可以另外提供具体数据。
+
+**来源相同**与**同一个值**是两项事实。两个读取都可以带 Calldata 来源，却没有相等证明。本实验的未知读取得到执行器签发的复制身份；DUP 副本保留它，SWAP 改变位置，保留值的身份。精确常量则可以直接凭数值判定相等。
+
+这个身份只在一次基本块执行内使用。进入下一块时刷新，路径 join、回滚数据和调用摘要不保留可复用的身份证明。分析结束后建立的 SSA 编号也不会自动反馈成运行时相等事实。因此，本实验不能推出“任意两次读取同一 storage slot 都相等”或“跨分支始终记得 x=y”。
+
+## 3. 几个组件约束同一个 word
+
+EVM 的一个 word 是 256 位，取值空间为 `0 .. 2^256-1`。组合域中的数值组件同时描述这一个值，其含义是约束的**交集**：候选必须满足所有组件。
+
+| 组件 | 保存什么 | 可以回答什么 |
+| --- | --- | --- |
+| 常量集合 | 完整的有限候选集合 | x 是否只能是 8 或 16？ |
+| KnownBits | 必须为零和必须为一的位 | x 的最低位是否为一？ |
+| Interval | 无符号与有符号闭区间 | x 是否落在无符号 1 到 20？ |
+| Congruence | 同余，即除以某个正整数后的固定余数 | x 是否为 8 的倍数？ |
+| Provenance | 可能来源、代码地址使用角色及临时复制身份 | x 来自哪类读取，是否是当前定义的副本？ |
+
+来源和使用角色不改变数值候选；可信复制身份则可在运算时建立两个操作数相等的事实。组件还可保留非零保证，供零值和分支查询使用。
+
+来源记录的是当前观察和纯运算输入的类别摘要。MLOAD、SLOAD 等读取会重新标记为 Memory、Storage；纯算术合并输入类别并加入 Arithmetic。它不保存完整读取位置、祖先链或污点历史。
+
+有限集合无法枚举时，其他组件仍可以排除候选。JSON 没有 `Constants` 键，只说明这个组件不能给出完整列表。只有所有数值约束、来源和使用角色都未知时，整个值才序列化为 `"Top"`。反过来，一个候选没有被约束排除，也不代表存在某条执行能取到它。
+
+### 位、范围和同余各自会丢什么
+
+KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部固定时，可以得到 `x ≡ r (mod 2^k)`；任意不连续位掩码不能直接变成一个同余。
+
+区间保存最小值与最大值，无法保留内部所有空洞。有符号与无符号区间同时约束同一个 word，但排序不同：全为一的 word 在无符号下是最大值，在有符号下是 -1。当前实现使用两种线性界，不是能精确表达任意环形集合的区间域。
+
+同余保留重复间隔，支持 3、5 等一般正模数。例如 `x ≡ 1 (mod 3)` 表示 1、4、7……在 word 空间内的候选。两个同余求交可以结合成更强性质：`x ≡ 1 (mod 3)` 且 `x ≡ 2 (mod 5)` 等价于 `x ≡ 7 (mod 15)`。
+
+以上规则必须服从 EVM 运算：ADD、SUB、MUL 按模 `2^256` 回绕。例如 `(2^256-1)+1=0`；数学整数上的递增区间或奇数模数同余不能直接照搬。无法证明不回绕时，分析器保留覆盖结果的较粗约束。DIV/MOD 的零除数、过大移位和有符号边界也使用 EVM 规则。
+
+## 4. 信息交换：从范围和整除性找回候选
+
+设同一个 x 有两条已知事实：
+
+```text
+范围：1 <= x <= 20
+同余：x ≡ 0 (mod 8)
+```
+
+单独看范围，有 20 个候选；单独看同余，有大量候选。放在一起，只有 8 和 16：
+
+| 交换步骤 | 新得到的性质 |
+| --- | --- |
+| 范围限定同余的候选 | 最小候选为 8，最大候选为 16 |
+| 所有约束共同筛选 | 完整候选为 `{8,16}`，容量足够时恢复有限集合 |
+| 有限集合反馈组件 | 最低 3 位为零；同时更新范围和同余 |
+
+这个过程叫**规约（reduction）**：每个组件把自己已经知道的性质交给其他组件，缩小表示中的多余可能。它不会凭空取得缺失的代码、storage 或输入事实。
+
+组件交换的是有明确含义的 **facts（语义事实）**，不要求直接读取彼此的内部表示。当前接口有三类：
+
+| 类型 | 例子 | 需要分清什么 |
+| --- | --- | --- |
+| 一元事实 | x 在某范围、某位为零、x 是 8 的倍数 | `MemberOf({8,16})` 是“8 或 16”，不是同时等于两数 |
+| 二元事实 | x=y、x≠y、x<y | 来源相同不能建立 x=y |
+| 运算关系 | result 是两个操作数 XOR 的结果 | 必须遵守 EVM word 语义和弹栈顺序 |
+
+运算关系让第 2 节的复制身份证明派上用场：可信 x=y 加上 XOR 关系，才得到 result=0。局部事实中的值编号只标记本次交换的值，不是 SSA 编号或永久变量。
+
+来源、地址范围和代码用途也必须区分。`IsAddress` 保证高 96 位为零；`IsCodeAddress` 只记录作为代码地址使用的角色。它们都不能证明该账户存在，更不能提供未知账户的代码。
+
+若想继续看库接口，可从 [`Domain::from_facts`](../crates/evm-abstract/src/domain.rs) 和 [`facts.rs`](../crates/evm-abstract/src/domain/facts.rs)进入。上述范围加 8 的倍数就是该接口可以建立的初始前提。非法范围、空候选或零模数会被拒绝；矛盾不能改写成成功的 Top。
+
+## 5. 同一值的约束取交，不同路径的可能取并
+
+前一节的范围和同余都同时成立，所以取交。如果两条路径分别给出 x=8 与 x=16，汇合后则必须保留两者，得到 `{8,16}`。
+
+工作表逐组件做 join：常量取并集，位只留共有保证，区间取包络，同余保留共有性质，可能来源取并集。路径特有的保证会丢失。暂时无法枚举所有候选时，也不能截取前几个数来冒充完整集合。
+
+当前实现把**工作表 join**与**临时 facts 规约**分开。join 不额外运行有界交换；后续运算可以规约已有约束。原因是几轮传播未必得到同一个闭包，把中途结果直接作为存储 join 的定义，会让路径合并次序影响表示。这里不声称实现了理论上最精确的 reduced product。
+
+循环还需要控制不断扩大的范围。例如每次回到同一个状态时，无符号上界继续增加，逐个值迭代可能耗费大量工作。引擎在同一状态第二次严格入口更新起应用 **widening（扩大）**：继续上升的上界扩大到最大值，继续下降的下界扩大到最小值。判断依据是实际工作表更新，也覆盖执行中才发现的回边。
+
+widening 有意放弃部分范围精度，使循环不再逐步挪动同一端点。临时交换得到的较窄范围不会取代存储组件作为 widening 的锚点。整个分析仍受状态、transfer 和工作额度约束；`Converged` 表示完成当前模型中的固定点，不表示所有路径关系都精确。
+
+## 6. 交换停止与执行未完成是两种边界
+
+交换不能无限回馈。事实表合并重复的位、范围与同余声明；相同事实重复出现不算新的增强。每次交换还受完整轮数与事实容量限制。
+
+| 局部交换状态 | 含义 |
+| --- | --- |
+| Stable | 当前支持的交换规则没有进一步变化 |
+| RoundLimit | 轮数用完，保留已经证明的安全约束 |
+| FactLimit | 事实容量不足，保留此前完整轮的安全结果 |
+| Empty | 数值约束已证明矛盾 |
+| OriginConflict | 来源声明不相容，数值是否不可达仍未知 |
+
+Stable 只针对当前规则；它不说明已经表达全部 EVM 关系。RoundLimit / FactLimit 会降低精度，不能当成数值空集或 EVM 执行失败。纯栈运算在这些边界记录 `FactExchangeLimited` 诊断；嵌套字节运算的完整局部报告由库 detailed API 查询，不逐项汇总为指令诊断。
+
+另一条边界是整次分析的累计工作额度。初始化、运算、交换、字节与状态复制、子调用、摘要认证和导入共享根账本。若账本耗尽，留下工作前沿，整个结果为 `Incomplete`。摘要命中不会重新得到预算。这个工作量是逻辑分析费用，不是 EVM gas，也不是 CPU 时间。
+
+组合域仍有以下精度边界：
+
+| 已能表达 | 仍不能据此推出 |
+| --- | --- |
+| 数值偏移的范围、固定位和同余 | 已完整解决 memory/storage 的未知别名 |
+| 当前基本块内的 DUP 身份 | 跨块或跨调用保存任意变量之间的相等关系 |
+| 可能来源类别 | 已保留完整污点祖先或两次读取必定相同 |
+| 每条抽象摘要出口的字节和 Store | 已保留每条具体路径的全部数值相关性 |
+| 固定点完成 | 未知调用、缺失代码或不支持语义已被补齐 |
+
+## 7. 选择策略并读懂 JSON
+
+默认策略为 product，常量容量 8、交换轮数 4、事实容量 256。以下命令把设置显式写出，便于复现实验：
+
+```bash
+nix run . -- analyze \
+  --world examples/worlds/returndata-copy.json \
+  --entry 0x0000000000000000000000000000000000000101 \
+  --domain product --reduction-rounds 4 --max-facts 256 \
+  --max-work 20000000 --format json > /tmp/facts-world.json
+
+jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
+```
+
+`domain_spec` 保存本次冻结的完整策略，包括 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
+
+`cfg` 和 `ssa` 同样接受 `--domain`、`--reduction-rounds` 与 `--max-facts`。把 product 换成 constants-only 可对照有限集合精度；两项交换上限必须为正。提高上限可能增加精度与工作量，不能自动消除模型前沿。不同策略的 work 数字应结合费用策略解读。
+
+最后检查 JSON 的一个实际值。JUMPI 会弹出条件，分支入口不再保留它；下面只运行第 1 节的算术部分，在 STOP 前留下结果：
+
+```bash
+nix run . -- cfg \
+  --hex 5f35600f1660011700 --context-depth 0 \
+  --format json > /tmp/facts-value.json
+
+jq '.states[0].exit_stack[0]' /tmp/facts-value.json
+```
+
+有限值保留 `Constants` 键，并同时输出 `known_bits`、`interval`、`congruence`、`provenance` 与 `nonzero`。这里的候选是 1、3……15。文本与 DOT 只展示数值概要；需要确认某项保证时读完整 JSON，避免把没有常量列表的组合值误读成完全未知。
+
+输入 JSON/RPC 的读取发生在执行账本建立之前；当前没有独立输入字节配额或全过程峰值内存配额。更完整的关系环境、路径分组与输入准入仍是[后续设计边界](https://github.com/ethever/evm-abstract-lab/issues/21)。源码入口是 [`domain.rs`](../crates/evm-abstract/src/domain.rs)，真实 CFG、字节和状态精度的回归样例在 [`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)。

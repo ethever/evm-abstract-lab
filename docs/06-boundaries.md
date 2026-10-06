@@ -9,15 +9,15 @@
 | 信号 | 它说了什么 | 读结果时该怎样处理 |
 | --- | --- | --- |
 | `Converged` | 当前抽象模型中的传播已经完成，没有未展开前沿 | 可以检查这份模型的完整结果；仍须阅读假设和精度诊断 |
-| `Top` / `⊤` | 某个值用“所有 U256 值都有可能”表示 | 该值不够精确；分析仍可能完成 |
+| 数值 Top / `⊤` | 某个值在数值上用“所有 U256 值都有可能”表示 | 该值不够精确；分析仍可能完成；来源说明可以另有信息 |
 | `Incomplete` | 有区域因资源、缺少事实或模型边界而未展开 | 已有图只是部分结果，不能从缺少节点推出不可达 |
 
-这三个信号不互相替代。下面两个实验可以直接看出差别。
+这三个信号不互相替代。默认 `product` 还需区分**常量集合组件为 Top**与**整个数值为 Top**：候选太多不能列完时，位、范围或同余组件可能仍有约束。下面先用 `constants-only` 重现有限集合实验，再观察组合域的局部精度上限。
 
 ### 实验 A：精度下降，但分析完成
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 1
+nix run . -- cfg --file examples/diamond.hex --domain constants-only --context-depth 0 --max-constants 1
 ```
 
 输出是 `status=Converged`。汇合点 `pc=0x0e` 的 `stack in [⊤]`、`stack out [⊤]`，原因是容量 1 放不下 `{1,2}`。分析扩大了可能值范围，并把扩大后的信息继续传播到结束。
@@ -39,11 +39,30 @@ frontier Transfers: from=None target=StateKey { basic_block_index: 1, stack_heig
 
 CLI 对 `Incomplete` 返回退出码 2，构建 SSA 会拒绝未完成图。这个退出码表示分析未完成，与 EVM 中 REVERT 或异常终止的含义不同。
 
+### 实验 C：局部交换停下，整体传播仍然完成
+
+下面的代码计算未知 calldata word 与零的乘积。分别缩小事实容量和交换轮数：
+
+```bash
+nix run . -- cfg --hex 5f355f0200 --max-facts 1
+nix run . -- cfg --hex 5f355f0200 --reduction-rounds 1
+```
+
+两次都为 `Converged`，乘积为零；纯栈运算的诊断分别包含 `FactExchangeLimited(FactLimit)` 和 `FactExchangeLimited(RoundLimit)`。这是单次事实交换没有声称完成全部规约，已有安全结果仍被继续传播。它没有留下未分析区域，也不是 EVM 执行失败。
+
+再限制世界分析的根工作预算：
+
+```bash
+nix run . -- analyze --world examples/worlds/call-return-branch.json --entry 0x0000000000000000000000000000000000000101 --max-work 1
+```
+
+这次为 `Incomplete`，退出码 2，留下 `Work` 前沿。工作计费包含域运算、事实交换、状态复制以及子调用和摘要处理，所有帧共享同一账本。提高 `--max-facts` 不能补回已耗尽的工作预算；提高 `--max-work` 也不会自动补出缺失的代码事实。
+
 ## 2. 诊断、程序失败和分析前沿分别看
 
 | 输出内容 | 例子 | 意义 |
 | --- | --- | --- |
-| 精度诊断 | `UnknownJump`、`OpaqueResult` | 跳转或数据只能保守表示；不一定导致未完成 |
+| 精度诊断 | `UnknownJump`、`OpaqueResult`、`FactExchangeLimited` | 跳转、数据或局部事实交换精度受限；不一定导致未完成 |
 | 程序异常诊断 | `InvalidJump`、`InvalidOpcode`、栈下溢/溢出 | 某条模型内执行路径异常终止；不是分析器没算完 |
 | 分析前沿 | `MissingCode`、`UnknownTarget`、`Work`、`CallDepth`、`Memory`、`Creation` 等 | 尚有区域无法展开；整体结果为 `Incomplete` |
 
@@ -71,7 +90,7 @@ nix run . -- analyze --world examples/worlds/missing-code.json --entry 0x0000000
 
 这能发现“真实执行被漏掉”的反例，但通过有限样本不能证明所有 calldata、所有 256 bit 参数或全部合约都正确。反过来，抽象图中的一条路径也可能来自信息合并，没有任何实际输入能完整走通它。
 
-尤其要保留 **gas 边界**：本模型不精确计算 gas、EIP-150 转发额度、out-of-gas 或经济成本。一个抽象成功调用不证明某笔实际交易有足够 gas；图中也可能保留具体成功样本没有走过的调用失败分支。
+尤其要保留 **gas 边界**：本模型不精确计算 gas、EIP-150 转发额度、out-of-gas 或经济成本。一个抽象成功调用不证明某笔实际交易有足够 gas；图中也可能保留具体成功样本没有走过的调用失败分支。累计工作使用逻辑 credit 计费，它既不是 EVM gas，也不是 CPU 耗时测量。
 
 ## 4. 固定世界是起点，执行状态还会变化
 
@@ -111,14 +130,15 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 ## 5. 当前模型的能力与边界
 
-这一节是查阅表。初学时先记住上面的完成状态、前沿和可变 Store；涉及具体功能时再定位对应行。跨合约操作过程见[第 09 课](09-cross-contract.md)，快照、摘要和创建过程见[第 10 课](10-snapshots-summaries-creation.md)。
+这一节是查阅表。初学时先记住上面的完成状态、前沿和可变 Store；涉及具体功能时再定位对应行。跨合约操作过程见[第 09 课](09-cross-contract.md)，快照、摘要和创建过程见[第 10 课](10-snapshots-summaries-creation.md)，数值组件与事实交换见[第 12 课](12-product-domains-facts.md)。
 
 ### 输入与单帧数据
 
 | 部分 | 已建模的内容 | 阅读结果时保留的限制 |
 | --- | --- | --- |
 | 输入事实 | 多账户 JSON，或显式 chain ID/区块 hash 的固定 RPC 采集；保存输入身份、来源与指纹 | 无隐式 RPC，不验证 Merkle proof；信任 RPC 提供者；不支持 EOF 代码格式 |
-| 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；按 fork 启用 CLZ | 有限常量集合或 Top；逐槽独立，缺少完整变量关系与路径约束 |
+| 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；默认组合有限常量、KnownBits、Interval、Congruence 和 Provenance；按 fork 启用 CLZ | 常量集合仍有容量；事实交换有局部上限；没有完整变量关系和路径约束 |
+| 局部关系 | 同一基本块内受信任的复制身份支持 `x XOR x=0` 等规则；数值约束参与零/非零判断 | 来源标签或摘要相同不证明相等；身份不会跨块、汇合、调用或摘要边界保存；不会自动沿 `x==5` 的 true 边收窄 x |
 | 内存与数据 | 每帧独立抽象字节数组，load/store/copy、calldata、returndata、返回区传播 | 未知偏移或字节会降低精度；无法追踪的范围留下内存前沿 |
 | JUMP/JUMPI | 有限目标逐个验证；Top 覆盖真实 JUMPDEST；依据条件可能零/非零保留边 | 可能有伪边；有界跳转历史不等于内部函数恢复 |
 | 环境、hash、gas | 传播已知帧环境和代码信息；其余保守抽象 | gas、EIP-150、out-of-gas 与成本不精确；`Converged` 仍受此限制 |
@@ -143,8 +163,10 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | CREATE/CREATE2 | 有限 nonce、endowment、salt，可表示 initcode 与明确碰撞事实；执行 initcode 后验证、安装 runtime | 不知道 nonce、碰撞状态、代码或 salt 时保留有类型的 `Creation` 前沿；失败及祖先 REVERT 恢复检查点 |
 | SELFDESTRUCT | 支持的 fork 均使用 EIP-6780：转移余额，同事务创建账户在最外层成功完成时删除 | 事务执行期间代码仍可读/调用；原有账户保留代码/storage；未知受益人保留边界 |
 | 预编译 | 按 fork 选择固定的 `revm-precompile` 原生实现；传播有限具体输入的返回/失败；预留工作量 | 输入或长度不能表示时为 `PrecompileInput`，资源不足为 `Work`；不声称精确 gas |
-| 完整调用摘要 | 只复用前置条件完全匹配、已完成的 callee 图与全部输出关系 | 固定世界、代码 hash、完整帧/Store、ORIGIN、精度和深度策略等都需一致；状态、代码或生命周期变化会导致不匹配；未完成关系不发布 |
-| 预算 | 所有账户共用状态数、transfer 次数与累计工作量；另有限帧深度和内存预算 | 超限留下有类型前沿，`Incomplete`、退出 2；跨合约 SSA 拒绝未完成图 |
+| 完整调用摘要 | 只复用前置条件完全匹配、已完成的 callee 图与全部输出关系 | 固定世界、代码 hash、完整帧/Store、ORIGIN、完整域策略（DomainSpec）和深度策略等都需一致；状态、代码、生命周期或 profile、交换上限变化都会影响匹配；未完成关系不发布 |
+| 工作与资源预算 | 所有账户共用状态数、transfer 次数与累计工作量；另有限帧深度和内存预算 | 超限留下有类型前沿，`Incomplete`、退出 2；跨合约 SSA 拒绝未完成图；与局部交换精度上限分别判断 |
+
+组合域改善了某些值的表示，不会单独解决内存或 storage 的未知别名。强/弱更新仍要根据是否能确定写入目标来选择；“两个值来源于 Storage”也不能作为它们读写同一 slot 的证明。循环中的区间还会使用 widening（扩大不断移动的界限）来控制传播成本，所以完成固定点也不表示区间达到最精确结果。
 
 ## 6. 测试分别核对了什么
 
@@ -152,7 +174,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 | 层次 | 检查内容 | 可查源码 |
 | --- | --- | --- |
-| 数值域 | join 的交换、结合、幂等和覆盖；纯运算的边界与随机 U256 输入对照 | [`domain.rs`](../crates/evm-abstract/tests/domain.rs)、[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) |
+| 数值域与事实策略 | join 的交换、结合、幂等和覆盖；纯运算的边界与随机 U256 输入对照；组合规则、交换上限、复制身份与策略序列化 | [`domain.rs`](../crates/evm-abstract/tests/domain.rs)、[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs)、[`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)、[`domain_policy.rs`](../crates/evm-abstract/tests/domain_policy.rs) |
 | 单账户图和栈 SSA | 解码、跳转、栈故障、φ、支配和使用；实际轨迹的块入口、边、出栈与 SSA 值 | [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs)、[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) |
 | 跨合约轨迹与效果 | 三个 fork 的调用返回、共享实现、CALLCODE、copy、回滚、static、日志、重入；实际访问入口与子帧 | [`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) |
 | 摘要与创建 | 摘要开/关的联合结果、图与 SSA；initcode/runtime、nonce、碰撞、回滚、代码限制、EIP-6780 | [`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)、[`creation.rs`](../crates/evm-abstract/tests/creation.rs) |
@@ -161,6 +183,6 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 跨合约对照不只是“某个 slot 的结果集合含有答案”：它要求**同一个抽象 outcome**同时覆盖该具体执行的返回数据、storage、合约余额与日志。这能防止把来自互不相容路径的独立片段拼成一个假结果。
 
-后续加入关系域、路径约束、内部函数恢复、精确 gas、经过密码学验证的状态或跨交易性质时，也应明确新增假设、具体改善的例子，以及独立轨迹是否仍被覆盖。
+后续扩大关系环境、路径约束、内部函数恢复、精确 gas、经过密码学验证的状态或跨交易性质时，也应明确新增假设、具体改善的例子，以及独立轨迹是否仍被覆盖。
 
-基础阅读到这里结束。接着可以做[第 07 课的实验](07-exercises.md)，用[第 08 课](08-forks.md)检查协议选择，再进入第 09、10 课的世界分析。
+基础阅读到这里结束。接着可以做[第 07 课的实验](07-exercises.md)，用[第 08 课](08-forks.md)检查协议选择。继续研究数值精度可进入[第 12 课](12-product-domains-facts.md)；世界执行则从第 09、10 课开始。

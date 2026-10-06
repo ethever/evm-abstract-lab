@@ -50,29 +50,39 @@ CALL 从栈顶开始取参数。这里输入为空，转账金额为零。
 
 ```bash
 jq '.status, .edges,
+    [.states[] | {state: .id, depth: (.key.frames | length),
+                  code_address: .key.frames[-1].code_address}],
     [.outcomes[] | {kind, slots: .store.persistent.slots}]' \
   /tmp/call-return.json
 ```
 
-当前例子的成功路径是 `S0 → S2 → S4 → S5`：
+先在 `states` 中找到 code=A、深度 1 的入口，以及 code=B、深度 2 的子调用。成功路径按下面三个转移阅读：
 
 | 边 | 输出中的 `kind` | 含义 |
 | --- | --- | --- |
-| `S0 → S2` | `"Call"` | 暂停 A，进入 B |
-| `S2 → S4` | `"Return"` | B 成功返回，恢复 A |
-| `S4 → S5` | `{"Intraprocedural":"BranchTrue"}` | A 在自己的代码中走真分支 |
+| A 入口 → B 入口 | `"Call"` | 暂停 A，进入 B |
+| B → A 的继续位置 | `"Return"` | B 成功返回，恢复 A |
+| A 的条件块 → 真分支 | `{"Intraprocedural":"BranchTrue"}` | A 在自己的代码中走真分支 |
 
 `S` 是整台机器的状态编号，不是合约编号。编号可能随实现变化；阅读时根据边的含义和帧身份定位。
 
 ### 默认文本怎样读
 
-去掉命令中的 `--format json`，可以按分区阅读同一份分析。先认识输出中会出现的**调用摘要（call summary）**：分析器把一次已完成的子调用保存下来，记录特定输入下的可能返回方式、返回字节、账户状态效果和对应执行子图。后来遇到前提完全相同的调用时，才允许复用。这份缓存记录的是分析器的工作过程。
+先运行同一例子的默认文本输出：
+
+```bash
+nix run . -- analyze \
+  --world examples/worlds/call-return-branch.json \
+  --entry 0x0000000000000000000000000000000000000101
+```
+
+先认识输出中会出现的**调用摘要（call summary）**：分析器把一次已完成的子调用保存下来，记录特定输入下的可能返回方式、返回字节、账户状态效果和对应执行子图。后来遇到前提完全相同的调用时，才允许复用。这份缓存记录的是分析器的工作过程。
 
 按下面的路线读，先确认结果是否完整，再追踪关心的调用：
 
 | 分区 | 回答什么问题 | 怎样接着读 |
 | --- | --- | --- |
-| `Analysis` | 本次分析是否完成，处理了多少状态和工作？ | `Incomplete` 时必须继续看 `Frontiers` |
+| `Analysis` | 本次分析是否完成，使用什么数值策略，处理了多少工作？ | 默认是 `Product`；`Incomplete` 时继续看 `Frontiers` |
 | `Snapshot` | 初始事实来自哪里，绑定了哪些快照事实？ | 看来源、快照身份和完整 fingerprint；fork 在 `Analysis` 中 |
 | `References` | `A0`、`H0` 分别代表什么完整地址和 hash？ | 查 `Addresses` / `Hashes` 后再核对代码与状态身份 |
 | `States` | 哪些状态属于哪个基本块、调用深度和执行账户？ | 用 `S` 编号定位 `State details` |
@@ -87,7 +97,9 @@ jq '.status, .edges,
 
 状态里的 `code` 表示指令来源，`address` 表示当前执行和 storage 所属账户，`caller` 表示调用者。即使三个字段引用同一个地址，也应分别读；代理执行时它们可能不同。`S` 表示分析状态，`O` 表示入口结果，同一种 `Failure` 可以出现在多个结果中。各结果的账户状态必须与自己的返回方式和字节一起读，不能把不同 `O` 的 storage 拼成一次执行。
 
-返回字节使用稀疏表示：`length` 给出可能长度，`default` 给出未单独列出位置的抽象字节，偏移行列出显式字节事实。精确字节可以写成 hex；仍有多种可能的字节保留值集合或 `⊤`。`kind` 区分普通字节序列与按 32 字节扩展的 memory。没有偏移行不表示空数组：还要看长度和默认字节；未知也不能读成零。
+返回字节使用稀疏表示：`length` 给出可能长度，`default` 给出未单独列出位置的抽象字节，偏移行列出显式字节事实。例如 `length={0x20} (32 bytes)` 表示长度确定为 32；`0x001f` 是第 31 字节的偏移，和长度不是同一个字段。连续且精确的字节可以写成 hex；仍有多种可能的字节保留值集合或位、范围等约束。`kind` 区分普通字节序列与按 32 字节扩展的 memory。没有偏移行不表示空数组：还要看长度和默认字节；未知也不能读成零。
+
+数值默认用[第 12 课的组合域](12-product-domains-facts.md)表示。文本里的 `{0x1}` 是候选集合的简写；JSON 还携带位、区间、同余和来源。查询确定候选时可取 `.Constants`，但没有这个键不等于数值完全未知。文本保留数值概要，JSON 用于检查各组件。
 
 摘要统计中 `published=1`、`hits=0` 可以同时成立：分析器保存了一份完整子调用结果，但没有后来的相同调用可复用。在下面的 `returndata-copy.json` 中，A 只 CALL B 一次，因此没有第二次命中的机会。摘要记录中的 `source` 指向首次分析的状态，`reused_at` 指向后来的复用位置；这些都是分析图编号，不是账户或链上交易编号。
 
@@ -95,7 +107,7 @@ jq '.status, .edges,
 
 上面的查询还会显示 A slot 0=2 的 `Return`，以及入口的 `Failure`。gas 是 EVM 衡量执行工作量的计费单位；本实验室没有精确跟踪剩余 gas，因此保留 gas 不足等失败可能。它没有断言“给出 500000 就一定成功”。
 
-CALL 失败而 A 能继续时，成功位为 0，没有返回字节写入输出区。A 的初始 memory 为零，因此 `MLOAD(0)` 得到 0，走假分支，写 slot 0=2。对应图中的 `S0 → S1` 是 `Failure`，`S1 → S3` 是 `BranchFalse`。入口帧自身也可能失败，产生回滚后的最终 outcome。
+CALL 失败而 A 能继续时，成功位为 0，没有返回字节写入输出区。A 的初始 memory 为零，因此 `MLOAD(0)` 得到 0，走假分支，写 slot 0=2。图中先出现返回 A 的 `Failure` 边，再出现 A 内部的 `BranchFalse` 边。入口帧自身也可能失败，产生回滚后的最终 outcome。
 
 这里需要分清三个层次：
 
@@ -117,9 +129,9 @@ CALL 失败而 A 能继续时，成功位为 0，没有返回字节写入输出�
 返回后： [A 活动帧]
 ```
 
-调用栈由一个 `RootFrame` 和按调用顺序排列的 `ChildFrame` 组成，封装在 `CallStack` 中。没有子帧时 root 活动；有子帧时最后一个 child 活动，其余帧暂停。文本输出的 `depth` 是帧数量；入口为 1。文本中的 `stack in` / `stack out` 栈仍按栈底 → 栈顶显示。
+调用栈总有一个入口帧，以及零个或多个子帧。没有子帧时入口活动；有子帧时最后一个子帧活动，其余暂停。文本输出的 `Depth` 是帧数量；入口为 1。每个帧里的 `stack in` / `stack out` 是 EVM 操作数栈，按栈底 → 栈顶显示；它与这组执行帧组成的调用栈不同。
 
-两种帧共享 `FrameState`，每个执行帧都必须携带回滚保存点。只有 `ChildFrame` 携带返回父帧所需的 `Continuation`。`CallStack` 只允许压入和弹出子帧，root 始终保留，因此执行中的调用栈不会为空。这与 active/suspended 是两个不同维度：root 也能等待子调用返回。
+所有帧都保存回滚点，入口自身失败时也需要它。子帧还必须保存怎样返回父帧：继续位置和输出复制区。源码用 `RootFrame` / `ChildFrame` 区分这两种角色，调用栈只能移除子帧，始终保留入口。角色和活动状态是两项事实：入口帧也能暂停等待 B。
 
 | 帧里的内容 | 为什么要保存 |
 | --- | --- |
@@ -168,7 +180,7 @@ jq '[.states[] | .entry.call_stack
 
 JSON 的执行数据在 `entry.call_stack.root.state` 和 `entry.call_stack.children[].state` 中；child 的 `continuation` 与 `state` 并列。`key.frames` 仍按外层到内层保存帧的结构身份，用于工作表索引，并不是可增删的执行调用栈。帧类型见 [`frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)，调用栈见 [`stack.rs`](../crates/evm-abstract/src/analysis/machine/stack.rs)。
 
-结构身份中的 `basic_block_index` 是该帧捕获程序的基本块索引，原名 `block`；单程序 `cfg` / `ssa` 的状态键也使用新名称。真实基本块的入口 PC 在 `Program.blocks()[basic_block_index].start_pc` 中；索引等于基本块数量时表示程序末尾的合成续接位置。这个字段与链上区块号、`block_hash` 无关。
+结构身份中的 `basic_block_index` 是当前程序的基本块索引；单程序 `cfg` / `ssa` 的状态键也使用这个名称。它不是字节偏移 PC，更不是链上区块号或 `block_hash`。真实基本块的入口 PC 可从程序的块表查到；程序末尾另有合成续接位置。
 
 这里必须分别读两个地址：
 
@@ -209,7 +221,7 @@ jq '[.outcomes[] | select(.kind == "Return")
      | .store.persistent.slots] | unique' /tmp/rollback.json
 ```
 
-你会看到 B slot 0 保留 `0x4`，A slot 0 为 `0x3`。A slot 1 的某个抽象值是 `{"Constants":["0x0","0x2a"]}`，其中 `0x2a` 是 42，零来自没有得到 REVERT 数据的失败可能。只要 42 没被漏掉且 B 的 7 没泄漏，就能解释这条回滚轨迹。
+你会看到 B slot 0 保留 `0x4`，A slot 0 为 `0x3`。A slot 1 的某个抽象值中，`Constants` 为 `["0x0","0x2a"]`，还带有其他数值组件与来源；其中 `0x2a` 是 42，零来自没有得到 REVERT 数据的失败可能。这个结果保留了 REVERT 数据，同时撤销了 B 的写入。它描述该样例的抽象可能性，不是任意调用都正确回滚的证明。
 
 两个相关实验：
 
@@ -311,7 +323,9 @@ nix run . -- analyze \
 
 ## 9. 从这些观察回到实现
 
-分析器的工作表保存整台机器，而不是分别跑 A、B，再随意拼接结果。状态键区分全部帧的代码地址/hash/模式、状态地址、caller、static、基本块、栈高和帧内跳转历史，还区分 Store 中的代码与生命周期身份。只有键相同的状态值才能 join。这样同一实现的两个代理、同一合约的内外重入帧都能保持各自身份。未知 slot 的写入使用弱更新，不能把可能被覆盖的旧常量继续当成确定值。
+分析器的工作表保存整台机器。状态键区分全部帧的代码地址/hash/模式、状态地址、caller、static、基本块、栈高和帧内跳转历史，还区分 Store 中的代码与生命周期身份。只有键相同的状态值才能 join。这样同一实现的两个代理、同一合约的内外重入帧都能保持各自身份。
+
+这也是引擎保持结构约束的原因：活跃帧始终存在，每个子帧有返回契约，不同栈高不能逐槽合并，正在执行的代码与基本块必须属于该帧。数值 join 只扩大这些相同结构位置上的可能值。未知 slot 的写入使用弱更新，不能把可能被覆盖的旧常量继续当成确定值；组合域也没有消除这种别名边界。
 
 对应源码是 [`world.rs`](../crates/evm-abstract/src/world.rs) 的初始事实、[`store.rs`](../crates/evm-abstract/src/world/store.rs) 的共享状态、[`machine.rs`](../crates/evm-abstract/src/analysis/machine.rs) 的帧和图。加 `--ssa` 可构建跨合约 SSA：调用和返回显式传递帧与状态效果；验证器先要求分析完整，再核对状态、指令和边。JSON 此时变成 `{"analysis":...,"ssa":...}`，以上查询需要加 `.analysis` 前缀。
 

@@ -33,6 +33,25 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 
 第二条命令保留一个最近跳转来源块的历史。检查 helper 的状态数、`context` 和返回边怎样变化；不是越大的参数就越容易收敛。
 
+## 数值精度：集合以外还能知道什么
+
+完成[第 02 课](../docs/02-domain.md)的集合手算后，比较默认组合域与 `--domain constants-only`。这三份输入都从未知 calldata 开始：
+
+| 文件 | 手算条件 | 默认组合域的分支 | 仅有限集合的分支 |
+| --- | --- | --- | --- |
+| [known-bits-branch.hex](known-bits-branch.hex) | `(x AND 15) OR 1`，最低位为 1 | 只有 `BranchTrue` | `BranchTrue` 和 `BranchFalse` |
+| [copy-identity.hex](copy-identity.hex) | 同一次读取经 DUP1 复制，`x XOR x = 0` | 只有 `BranchFalse` | `BranchTrue` 和 `BranchFalse` |
+| [independent-inputs.hex](independent-inputs.hex) | 从偏移 0、32 分别读取 `x`、`y`，再 XOR | 两种分支 | 两种分支 |
+
+```bash
+nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0
+nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0 --domain constants-only
+nix run . -- explain --file examples/copy-identity.hex --context-depth 0
+nix run . -- cfg --file examples/independent-inputs.hex --context-depth 0
+```
+
+三份输入都应 `Converged`。第三份里的值虽然都来自 calldata，却不保证相等。复制身份只在本次基本块执行内有效；完整实验与事实交换过程见[第 12 课](../docs/12-product-domains-facts.md)。
+
 ## 多账户：观察调用怎样影响返回值与状态
 
 世界 JSON 提供多个账户的代码和初始事实，`--entry` 指定首先执行的账户。以下文件的入口统一为 `0x0000000000000000000000000000000000000101`；默认 caller 的地址末尾是 `1000`，calldata 为空，value=0。
@@ -45,7 +64,7 @@ nix run . -- analyze \
   --entry 0x0000000000000000000000000000000000000101
 ```
 
-A 调用 B，B 的返回数据让 A 选择分支。找输出中的 `Call` / `Return`，再看 `outcome` 下的 `storage[...]`。表中写的是**具体成功轨迹**；抽象模型还保留 gas 等失败可能，因此实际输出可能包含更大的值集合或其他 outcome。
+A 调用 B，B 的返回数据让 A 选择分支。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中各个 `O` 的 `Storage` 表；地址短引用的完整值在 `References` 中。表中写的是**具体成功轨迹**；抽象模型还保留 gas 等失败可能，因此实际输出可能包含更大的值集合或其他 outcome。
 
 | 阶段与世界文件 | 观察问题 | 具体成功轨迹或检查条件 |
 | --- | --- | --- |
@@ -76,6 +95,6 @@ A 调用 B，B 的返回数据让 A 选择分支。找输出中的 `Call` / `Ret
 
 ## 这些例子怎样被核对
 
-[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 核对前六个单账户例子的具体入口、边、出栈和值，覆盖 Cancun/Prague/Osaka 和 k=0/1/2/8/10。具体调用输入是 32 字节，前 31 字节均为 `00`：diamond/stack-heights 的末字节分别取 0 与 1；dynamic-jump 的末字节取 4，确保走到合法目标并写 storage。[`osaka.rs`](../crates/evm-abstract/tests/osaka.rs) 核对 CLZ，并验证旧 fork 下的指令故障。
+[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 核对前六个单账户例子的具体入口、边、出栈和值，覆盖 Cancun/Prague/Osaka 和 k=0/1/2/8/10。具体调用输入是 32 字节，前 31 字节均为 `00`：diamond/stack-heights 的末字节分别取 0 与 1；dynamic-jump 的末字节取 4，确保走到合法目标并写 storage。[`osaka.rs`](../crates/evm-abstract/tests/osaka.rs) 核对 CLZ，并验证旧 fork 下的指令故障。新增的三份数值精度输入由完整门禁使用打包后的 CLI 执行 CFG、SSA；域、复制身份和反馈限制另有[组合域测试](../crates/evm-abstract/tests/product_domains.rs)。
 
 [`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 对照多账户具体轨迹和账户效果；[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs) 比较缓存开关后的最终关系；[`creation.rs`](../crates/evm-abstract/tests/creation.rs) 核对创建、延迟删除和原生调用。这些是指定样例的核对证据，范围见[第 06 课](../docs/06-boundaries.md)。

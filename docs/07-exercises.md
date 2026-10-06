@@ -1,6 +1,6 @@
 # 07：按步骤把知识变成实验
 
-前七个练习只需运行命令、手算和比较结果；后四个涉及世界输入或实现设计。先完成 [00 → 06 的基础阅读](00-start.md)，世界练习等读过[第 09 课](09-cross-contract.md)后再做。
+先完成 [00 → 06 的基础阅读](00-start.md)，再按顺序做解码、有限集合、SSA、历史分组和完成状态实验。组合域练习配合[第 12 课](12-product-domains-facts.md)；世界练习等读过[第 09 课](09-cross-contract.md)后再做。后面的实现设计用来区分当前能力和需要新增的规则。
 
 每个练习都用同一种方法：
 
@@ -62,8 +62,8 @@ U256::MAX 显示为 64 个十六进制 `f`。源码里的 `args[0]` 是先弹出
 预测 diamond 在 `pc=0x0e` 的入口值，以及加 10 后的值：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 1
-nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 2
+nix run . -- cfg --file examples/diamond.hex --domain constants-only --context-depth 0 --max-constants 1
+nix run . -- cfg --file examples/diamond.hex --domain constants-only --context-depth 0 --max-constants 2
 ```
 
 记录两次的 `status`、汇合点 `stack in`、`stack out`。增加容量改变了程序还是分析表示？
@@ -73,6 +73,8 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 2
 容量 1：`{1} ⊔ {2}=Top`，加 10 后仍为 Top。容量 2：入口 `{0x1,0x2}`，出口 `{0xb,0xc}`，即 `{11,12}`。两次都为 `Converged`，字节码和合法行为没有改变。
 
 集合容量增大能保留更多常量，但逐槽集合仍不保存槽位间的配对关系。若两条路径的两个槽位分别是 `[1,10]` 和 `[2,20]`，逐槽合并会允许 `[1,20]` 这种额外组合；容量足够也无法自动消除它。
+
+这里显式使用 `constants-only`，以便直接检查有限集合的基石规则。默认 `product` 在常量组件不能枚举时仍可能保留范围、位和同余约束；其区别在练习 8 中观察。
 
 </details>
 
@@ -137,6 +139,16 @@ nix run . -- cfg --hex 6005600e565b50600c600e565b005b6000356015575b602a9056 --co
 
 记录 `pc=0x0e` 和 `pc=0x15` 各有哪些 context，以及入口返回地址集合。
 
+最后检查默认值、更大的合法深度，以及资源边界：
+
+```bash
+nix run . -- cfg --file examples/internal-calls.hex --format json | jq '.config.context_depth, .status'
+nix run . -- cfg --file examples/internal-calls.hex --context-depth 10
+nix run . -- cfg --file examples/internal-calls.hex --context-depth 10 --max-states 2
+```
+
+深度 10 会被配置拒绝吗？实际历史长度会立即变成 10 吗？最后一次实验缺少的边能否证明不可达？
+
 <details><summary>提示与验收</summary>
 
 原示例 k=0 合并返回地址 `{0x5,0xc}`，k=1 已能分开；k=2 在这个小例子中保留更长历史，但不进一步改善返回地址精度。
@@ -145,12 +157,14 @@ nix run . -- cfg --hex 6005600e565b50600c600e565b005b6000356015575b602a9056 --co
 
 context 的数字是十进制来源块起始 pc；14 即 `0x0e`。验收需解释对应状态与返回边，而不只是“k=2 的状态更多”。已有具体对照见 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs)；给变体增加覆盖测试时也应让 revm 真正执行两次调用。
 
+JSON 的默认深度为 8、状态为 `Converged`。深度 10 合法，分析不会预先建立长度 10 的历史；历史随实际跳转增长。`--max-states 2` 使结果为 `Incomplete`、退出码 2，留下 `States` 前沿。配置接受任何可表示为 `usize` 的非负深度，但实际执行仍受状态、transfer 和工作预算限制。
+
 </details>
 
 ## 7. 分辨“值未知”和“分析没做完”
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 1
+nix run . -- cfg --file examples/diamond.hex --domain constants-only --context-depth 0 --max-constants 1
 nix run . -- cfg --file examples/loop.hex --context-depth 0 --max-transfers 1
 nix run . -- cfg --file examples/loop.hex --context-depth 0
 ```
@@ -165,7 +179,51 @@ diamond 的 Top 是精度扩大，分析为 `Converged`。限制 transfer 的 lo
 
 </details>
 
-## 8. 进阶实验：快照值、强更新和未知别名
+再比较局部交换精度和累计工作：
+
+```bash
+nix run . -- cfg --hex 5f355f0200 --max-facts 1
+nix run . -- cfg --hex 5f355f0200 --reduction-rounds 1
+nix run . -- analyze --world examples/worlds/call-return-branch.json --entry 0x0000000000000000000000000000000000000101 --max-work 1
+```
+
+<details><summary>局部上限与工作前沿的验收</summary>
+
+前两段都是 `x*0`，仍能证明出口值为零，整体为 `Converged`。事实容量 1 留下 `FactExchangeLimited(FactLimit)`，文本以区间 `u[0x0,0x0]` 和固定位表示零；一轮上限留下 `FactExchangeLimited(RoundLimit)`，出口为 `{0x0}`。表示不同不意味着具体结果不同，也不能把局部报告当作数值矛盾。
+
+世界实验为 `Incomplete`、退出码 2，留下 `Work` 前沿。根工作预算默认 2000 万，域运算、事实交换、状态处理和所有调用帧共同使用；它衡量分析工作，不是 EVM gas。完整结果中要同时检查 `status`、diagnostics 和 frontiers，不能只看其中一个数字。
+
+</details>
+
+## 8. 组合域：位信息与复制身份各自改善什么
+
+第一段读取未知 x，计算 `(x AND 254) OR 1`，然后以结果作为 JUMPI 条件。先手算它可能有多少个值、是否可能为零，再运行：
+
+```bash
+nix run . -- cfg --hex 5f3560fe16600117600c57005b600200 --context-depth 0 --max-constants 1
+nix run . -- cfg --hex 5f3560fe16600117600c57005b600200 --domain constants-only --context-depth 0 --max-constants 1
+```
+
+第二组比较“复制同一个值”与“分别读出两个值”。先预测 XOR 的结果和分支，再运行：
+
+```bash
+nix run . -- cfg --file examples/copy-identity.hex --context-depth 0
+nix run . -- cfg --file examples/independent-inputs.hex --context-depth 0
+```
+
+记录各图的 `status`、BranchTrue/BranchFalse 边和条件来自哪个定义。增大历史深度，能否代替位信息或复制身份？
+
+<details><summary>提示与验收</summary>
+
+第一段条件是 1 到 255 的奇数，共 128 个值，容量 1 无法列完。默认 product 仍证明最低位为 1，所以仅有 BranchTrue；constants-only 保留两边。两次都是 `Converged`。这说明不能列完常量不等于不能证明非零。
+
+第二组第一段只读取一次未知 word，然后在同一基本块内 DUP1。受信任的复制身份支持 `x XOR x=0`，因此仅有 BranchFalse。第二段读取不同偏移的两个 word；它们都来自 Calldata，但不能证明相等，所以两边都保留。
+
+验收要分别说明数值性质与复制关系。复制身份在基本块、汇合、调用和摘要边界失效；这个实验没有证明跨块相等、数组别名或完整路径相关性。提高 `--context-depth` 只改变分组，不能生成这些缺失的规则。事实交换细节见[第 12 课](12-product-domains-facts.md)。
+
+</details>
+
+## 9. 进阶实验：快照值、强更新和未知别名
 
 读过第 09 课后，在 `/tmp/storage-experiment.json` 保存以下离线世界。它声明 slot 0 初始为 4，代码依次读取、写入 7、再次读取：
 
@@ -201,7 +259,7 @@ CLI 的 `--calldata` 提供具体字节，默认为空，不能用它表达未�
 
 </details>
 
-## 9. 进阶设计：消除多余 φ
+## 10. 进阶设计：消除多余 φ
 
 设计一个生成新 SSA 的优化，先处理无环、单前驱案例：只有一个有效来源的 φ 可以替换为来源值。画出替换前后的入口、uses（使用位置）与 exit_stack，再考虑 φ 自引用和循环。
 
@@ -213,19 +271,19 @@ CLI 的 `--calldata` 提供具体字节，默认为空，不能用它表达未�
 
 </details>
 
-## 10. 进阶设计：让 true 分支记住 x=5
+## 11. 进阶设计：让 true 分支记住 x=5
 
 从 `x → EQ(x,5) → JUMPI` 画一张数据流图。设计沿 true 边怎样把 x 收窄为 5：状态需要保存什么？怎样找到原值？如果条件只保存 `{0,1}`，还能恢复比较关系吗？
 
 <details><summary>提示与验收</summary>
 
-需要保留原值身份与谓词关系，例如基于 SSA 的假设或额外约束域。条件结果 `{0,1}` 只说明可能真假，不能告诉分析器哪个变量应收窄。
+需要保留原值身份与谓词关系，例如基于 SSA 的假设或额外约束域。条件结果 `{0,1}` 只说明可能真假，不能告诉分析器哪个变量应收窄。当前组合域已有同块复制和局部运算事实，但不会把这个比较的含义作为路径假设传到后继。
 
 验收既要显示新规则改善了哪个分支，也要证明已检查的具体轨迹仍被覆盖：不能把未知条件猜成某一边；分支汇合时还需正确合并不同假设。提高 context_depth 和分配 SSA 名字都不会自动完成这项能力。
 
 </details>
 
-## 11. 进阶设计：解释一条边为什么存在
+## 12. 进阶设计：解释一条边为什么存在
 
 设计一个查询：某个 SSTORE 是经过哪些抽象边到达的？对每条边注明常量目标、有限目标集合、Top 目标或零/非零条件，并保留 pc、context 和未完成前沿。
 
@@ -237,4 +295,4 @@ CLI 的 `--calldata` 提供具体字节，默认为空，不能用它表达未�
 
 </details>
 
-基础实验做完后，读[第 08 课](08-forks.md)，检查同一字节码在不同协议规则下的区别。世界实验和扩展设计继续配合第 09、10 课阅读。
+基础实验做完后，读[第 08 课](08-forks.md)，检查同一字节码在不同协议规则下的区别。世界实验和扩展设计继续配合第 09、10 课阅读；组合域实验配合[第 12 课](12-product-domains-facts.md)核对事实、局部上限与共享工作预算。
