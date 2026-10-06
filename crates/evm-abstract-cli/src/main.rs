@@ -19,7 +19,7 @@ use evm_abstract::{
     render, ssa,
     world::{
         ByteArray, Entry,
-        rpc::{self, AccountRequest, RpcInput},
+        rpc::{self, AccountRequest, RpcBlock, RpcInput},
     },
 };
 use std::{
@@ -84,32 +84,42 @@ struct WorldArgs {
     /// Offline JSON world snapshot; analysis never fetches missing facts from a node.
     #[arg(long, required_unless_present = "rpc", conflicts_with = "rpc")]
     world: Option<PathBuf>,
-    /// Explicit HTTP(S) RPC input; all state is pinned to --block-hash.
-    #[arg(long, requires_all = ["chain_id", "block_hash"], conflicts_with = "world")]
+    /// Trusted HTTP(S) RPC; discover chain ID and pin the selected block once.
+    #[arg(long, conflicts_with = "world")]
     rpc: Option<String>,
     /// Disable on-demand RPC acquisition of concrete missing callees.
-    #[arg(long, requires = "rpc")]
+    #[arg(long, requires = "rpc", conflicts_with = "world")]
     no_rpc_discovery: bool,
     /// Maximum initial and discovered RPC accounts in one fixed snapshot.
-    #[arg(long, requires = "rpc", default_value_t = 256)]
+    #[arg(
+        long,
+        requires = "rpc",
+        conflicts_with = "world",
+        default_value_t = 256
+    )]
     max_rpc_accounts: usize,
     /// Maximum cumulative RPC requests, including identity checks and failures.
-    #[arg(long, requires = "rpc", default_value_t = 16_384)]
+    #[arg(
+        long,
+        requires = "rpc",
+        conflicts_with = "world",
+        default_value_t = 16_384
+    )]
     max_rpc_requests: usize,
-    /// Expected EIP-155 chain identifier: decimal or 0x/0X-prefixed hexadecimal.
-    #[arg(long, requires = "rpc", value_parser = number::parse)]
-    chain_id: Option<U256>,
-    /// Exact 32-byte block hash; moving tags are never accepted.
-    #[arg(long, requires = "rpc")]
+    /// Exact 32-byte block hash; defaults to pinning the RPC's latest block.
+    #[arg(long, requires = "rpc", conflicts_with_all = ["block_number", "world"])]
     block_hash: Option<String>,
+    /// Block height, decimal or 0x/0X hexadecimal; resolve once to a fixed hash.
+    #[arg(long, requires = "rpc", conflicts_with_all = ["block_hash", "world"], value_parser = number::block)]
+    block_number: Option<u64>,
     /// Additional account to fetch before analysis (repeatable); entry is automatic.
-    #[arg(long, requires = "rpc")]
+    #[arg(long, requires = "rpc", conflicts_with = "world")]
     account: Vec<String>,
     /// Storage observation ADDRESS:SLOT (repeatable); SLOT is decimal or 0x/0X hex.
-    #[arg(long, requires = "rpc", value_parser = parse_slot)]
+    #[arg(long, requires = "rpc", conflicts_with = "world", value_parser = parse_slot)]
     slot: Vec<StorageSlot>,
     /// RPC execution rules, selected explicitly or defaulting to Osaka.
-    #[arg(long, requires = "rpc")]
+    #[arg(long, requires = "rpc", conflicts_with = "world")]
     fork: Option<Fork>,
     /// Disable completed call-summary reuse for oracle comparisons.
     #[arg(long)]
@@ -276,17 +286,13 @@ impl WorldArgs {
         let (world, rpc_input) = match (self.world, self.rpc) {
             (Some(path), None) => (Some(world::load(&path)?), None),
             (None, Some(endpoint)) => {
-                let mut input = RpcInput::new(
-                    endpoint,
-                    self.fork.unwrap_or_default(),
-                    self.chain_id.expect("clap requires chain id"),
-                    world::hash(
-                        self.block_hash
-                            .as_deref()
-                            .expect("clap requires block hash"),
-                        "block",
-                    )?,
-                );
+                let mut input = RpcInput::new(endpoint, self.fork.unwrap_or_default());
+                input.block = match (self.block_hash, self.block_number) {
+                    (Some(hash), None) => RpcBlock::Hash(world::hash(&hash, "block")?),
+                    (None, Some(number)) => RpcBlock::Number(number),
+                    (None, None) => RpcBlock::Latest,
+                    (Some(_), Some(_)) => unreachable!("clap makes block selectors exclusive"),
+                };
                 let mut accounts = std::collections::BTreeMap::new();
                 accounts.insert(entry_address, std::collections::BTreeSet::new());
                 for account in self.account {

@@ -9,7 +9,7 @@ const ENTRY: &str = "0x0000000000000000000000000000000000000101";
 const BLOCK: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
 
 #[test]
-fn world_and_rpc_are_exclusive_and_rpc_requires_fixed_identity() {
+fn world_and_rpc_are_exclusive_and_rpc_can_pin_latest() {
     assert!(
         Cli::try_parse_from([
             "evm-abstract",
@@ -30,7 +30,7 @@ fn world_and_rpc_are_exclusive_and_rpc_requires_fixed_identity() {
             "--entry",
             ENTRY
         ])
-        .is_err()
+        .is_ok()
     );
     assert!(
         Cli::try_parse_from([
@@ -40,8 +40,6 @@ fn world_and_rpc_are_exclusive_and_rpc_requires_fixed_identity() {
             "fixture.json",
             "--rpc",
             "http://127.0.0.1:1",
-            "--chain-id",
-            "0x1",
             "--block-hash",
             BLOCK,
             "--entry",
@@ -49,19 +47,28 @@ fn world_and_rpc_are_exclusive_and_rpc_requires_fixed_identity() {
         ])
         .is_err()
     );
-    assert!(
-        Cli::try_parse_from([
+    let slot = format!("{ENTRY}:0");
+    for flags in [
+        vec!["--fork", "cancun"],
+        vec!["--block-hash", BLOCK],
+        vec!["--block-number", "16"],
+        vec!["--account", ENTRY],
+        vec!["--slot", &slot],
+        vec!["--no-rpc-discovery"],
+        vec!["--max-rpc-accounts", "256"],
+        vec!["--max-rpc-requests", "16384"],
+    ] {
+        let mut args = vec![
             "evm-abstract",
             "analyze",
             "--world",
             "fixture.json",
-            "--fork",
-            "cancun",
             "--entry",
-            ENTRY
-        ])
-        .is_err()
-    );
+            ENTRY,
+        ];
+        args.extend_from_slice(&flags);
+        assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
+    }
 }
 
 #[test]
@@ -72,8 +79,6 @@ fn rpc_storage_flags_are_typed_and_only_accepted_for_rpc_input() {
         "analyze",
         "--rpc",
         "http://127.0.0.1:1",
-        "--chain-id",
-        "1",
         "--block-hash",
         BLOCK,
         "--entry",
@@ -95,8 +100,6 @@ fn rpc_storage_flags_are_typed_and_only_accepted_for_rpc_input() {
             "analyze",
             "--rpc",
             "http://127.0.0.1:1",
-            "--chain-id",
-            "0x1",
             "--block-hash",
             BLOCK,
             "--entry",
@@ -131,8 +134,6 @@ fn rpc_failure_reaches_cli_as_input_error_before_an_analysis_exists() {
         "analyze",
         "--rpc",
         &endpoint,
-        "--chain-id",
-        "1",
         "--block-hash",
         BLOCK,
         "--entry",
@@ -147,7 +148,7 @@ fn rpc_failure_reaches_cli_as_input_error_before_an_analysis_exists() {
 }
 
 #[test]
-fn all_cli_quantities_keep_their_u256_value() {
+fn value_and_storage_quantities_keep_their_u256_value() {
     for (input, expected) in [
         ("0", U256::ZERO),
         ("000", U256::ZERO),
@@ -172,8 +173,6 @@ fn all_cli_quantities_keep_their_u256_value() {
             "analyze",
             "--rpc",
             "http://127.0.0.1:1",
-            "--chain-id",
-            input,
             "--value",
             input,
             "--slot",
@@ -187,7 +186,6 @@ fn all_cli_quantities_keep_their_u256_value() {
         let Command::Analyze { args, .. } = parsed.command else {
             panic!("expected analyze")
         };
-        assert_eq!(args.chain_id, Some(expected), "chain id: {input}");
         assert_eq!(args.value, expected, "value: {input}");
         assert_eq!(args.slot[0].slot, expected, "slot: {input}");
     }
@@ -215,11 +213,9 @@ fn invalid_cli_quantities_are_rejected_during_argument_validation() {
         "115792089237316195423570985008687907853269984665640564039457584007913129639936",
         "0x10000000000000000000000000000000000000000000000000000000000000000",
     ] {
-        for flag in ["--chain-id", "--value", "--slot"] {
-            let chain_id = if flag == "--chain-id" { invalid } else { "1" };
+        for flag in ["--value", "--slot"] {
             let value = if flag == "--value" { invalid } else { "0" };
             let slot = if flag == "--slot" { invalid } else { "0" };
-            let chain_arg = format!("--chain-id={chain_id}");
             let value_arg = format!("--value={value}");
             let slot_arg = format!("--slot={ENTRY}:{slot}");
             let error = Cli::try_parse_from([
@@ -231,7 +227,6 @@ fn invalid_cli_quantities_are_rejected_during_argument_validation() {
                 ENTRY,
                 "--block-hash",
                 BLOCK,
-                &chain_arg,
                 &value_arg,
                 &slot_arg,
             ])
@@ -261,4 +256,86 @@ fn explain_accepts_every_world_analysis_option_except_output_selection() {
             );
         }
     }
+}
+
+#[test]
+fn rpc_block_numbers_accept_decimal_and_hex_with_a_u64_bound() {
+    for (input, expected) in [
+        ("0", 0),
+        ("0016", 16),
+        ("0x10", 16),
+        ("0X10", 16),
+        ("18446744073709551615", u64::MAX),
+        ("0xffffffffffffffff", u64::MAX),
+    ] {
+        let parsed = Cli::try_parse_from([
+            "evm-abstract",
+            "analyze",
+            "--rpc",
+            "http://127.0.0.1:1",
+            "--entry",
+            ENTRY,
+            "--block-number",
+            input,
+        ])
+        .unwrap();
+        let Command::Analyze { args, .. } = parsed.command else {
+            panic!("expected analyze")
+        };
+        assert_eq!(args.block_number, Some(expected), "{input}");
+    }
+    for input in [
+        "",
+        "0x",
+        "-1",
+        "+1",
+        "1.0",
+        "ff",
+        "1_000",
+        "latest",
+        "18446744073709551616",
+        "0x10000000000000000",
+    ] {
+        let argument = format!("--block-number={input}");
+        let error = Cli::try_parse_from([
+            "evm-abstract",
+            "analyze",
+            "--rpc",
+            "http://127.0.0.1:1",
+            "--entry",
+            ENTRY,
+            &argument,
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{input}");
+    }
+    assert!(
+        Cli::try_parse_from([
+            "evm-abstract",
+            "analyze",
+            "--rpc",
+            "http://127.0.0.1:1",
+            "--entry",
+            ENTRY,
+            "--block-number",
+            "16",
+            "--block-hash",
+            BLOCK,
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "evm-abstract",
+            "analyze",
+            "--rpc",
+            "http://127.0.0.1:1",
+            "--entry",
+            ENTRY,
+            "--chain-id",
+            "1",
+        ])
+        .is_err()
+    );
 }

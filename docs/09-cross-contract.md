@@ -356,7 +356,7 @@ nix run . -- analyze \
 | 省略 `balance` / `nonce` / `existence` | 对应事实未知 |
 | 整个账户未列出 | 账户事实未知，不能推断不存在 |
 
-`provenance` 是作者填写的来源说明；它不能证明事实属于哪条链、哪个区块。固定快照的身份与校验见[第 10 课](10-snapshots-summaries-creation.md)。
+`provenance` 是作者填写的来源说明；它不能证明事实属于哪条链、哪个区块。固定快照的身份与 RPC 信任范围见[第 10 课](10-snapshots-summaries-creation.md)。
 
 入口还可指定 `--caller`、`--calldata 0x...`、`--value 1000`、`--static`。`--value` 的单位是 wei，接受十进制非负整数，也可写为 `0x3e8` 或 `0X3e8`；具体数量格式见 [CLI 参数说明](../README.md#命令与输出格式)。默认 caller=`0x...1000`、calldata 为空、value=0；子调用参数由实际指令产生。世界余额是**进入入口帧时**的余额，`--value` 只提供 CALLVALUE，不会再处理外层交易转账或手续费。world JSON 的余额、nonce、storage 键和值继续用 `0x` 十六进制格式，地址和 calldata 仍是字节数据。
 

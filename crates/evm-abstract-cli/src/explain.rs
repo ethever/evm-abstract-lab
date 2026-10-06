@@ -1,5 +1,5 @@
 //! `explain` 的输入适配：程序入口保留旧语义，世界入口复用 analyze 的全部准入。
-//! 四个输入来源互斥，RPC 必须固定链与区块；不另建一套分析器或读取规则。
+//! 四个输入来源互斥，RPC 在采集前解析并固定链与区块；不另建分析器或读取规则。
 
 use crate::{
     AnalysisArgs, DomainProfile, Input, StorageSlot, WorldArgs, error::CliError, number, parse_slot,
@@ -27,32 +27,32 @@ pub(crate) struct ExplainArgs {
     /// Offline world JSON; teaching view, with complete effects available via --verbose.
     #[arg(long, requires = "entry")]
     world: Option<PathBuf>,
-    /// Explicit HTTP(S) RPC; all observations use one fixed block hash.
-    #[arg(long,requires_all=["entry","chain_id","block_hash"])]
+    /// Trusted HTTP(S) RPC; discover chain ID and pin the selected block once.
+    #[arg(long, requires = "entry")]
     rpc: Option<String>,
     /// Expand all captured frames, machine effects and reports for world/RPC input.
     #[arg(long, requires = "world-input")]
     verbose: bool,
     /// Disable on-demand acquisition of concrete missing RPC callees.
-    #[arg(long, requires = "rpc")]
+    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     no_rpc_discovery: bool,
     /// Maximum initial and discovered RPC accounts; default 256.
-    #[arg(long, requires = "rpc")]
+    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     max_rpc_accounts: Option<usize>,
     /// Maximum cumulative RPC requests; default 16384.
-    #[arg(long, requires = "rpc")]
+    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     max_rpc_requests: Option<usize>,
-    /// Expected EIP-155 chain identifier, decimal or 0x hexadecimal.
-    #[arg(long,requires="rpc",value_parser=number::parse)]
-    chain_id: Option<U256>,
-    /// Exact 32-byte block hash; moving block tags are rejected.
-    #[arg(long, requires = "rpc")]
+    /// Exact 32-byte block hash; defaults to pinning the RPC's latest block.
+    #[arg(long, requires = "rpc", conflicts_with_all = ["block_number", "hex", "file", "world"])]
     block_hash: Option<String>,
+    /// Block height, decimal or 0x/0X hexadecimal; resolve once to a fixed hash.
+    #[arg(long, requires = "rpc", conflicts_with_all = ["block_hash", "hex", "file", "world"], value_parser = number::block)]
+    block_number: Option<u64>,
     /// Additional RPC account observation (repeatable).
-    #[arg(long, requires = "rpc")]
+    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     account: Vec<String>,
     /// RPC storage observation ADDRESS:SLOT (repeatable).
-    #[arg(long,requires="rpc",value_parser=parse_slot)]
+    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"], value_parser = parse_slot)]
     slot: Vec<StorageSlot>,
     /// Program/RPC rules; offline worlds carry their own fork.
     #[arg(long, conflicts_with = "world")]
@@ -118,8 +118,8 @@ impl ExplainArgs {
                 no_rpc_discovery: self.no_rpc_discovery,
                 max_rpc_accounts: self.max_rpc_accounts.unwrap_or(256),
                 max_rpc_requests: self.max_rpc_requests.unwrap_or(16_384),
-                chain_id: self.chain_id,
                 block_hash: self.block_hash,
+                block_number: self.block_number,
                 account: self.account,
                 slot: self.slot,
                 fork: self.fork,

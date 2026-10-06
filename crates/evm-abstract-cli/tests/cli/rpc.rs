@@ -1,7 +1,7 @@
 //! The actual CLI discovers callees through bounded, exact-hash HTTP requests.
 
 use super::run;
-use alloy_primitives::{Address, B256, U256, hex, keccak256};
+use alloy_primitives::{Address, U256, hex, keccak256};
 use serde_json::{Value as Json, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,6 +16,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "rpc/pinning.rs"]
+mod pinning;
+
 const ENTRY: &str = "0x0000000000000000000000000000000000000101";
 const CALLEE: &str = "0x0000000000000000000000000000000000000200";
 const LEAF: &str = "0x0000000000000000000000000000000000000300";
@@ -25,7 +28,7 @@ const BLOCK: &str = "0x111111111111111111111111111111111111111111111111111111111
 #[derive(Clone)]
 struct AccountFixture {
     code: Vec<u8>,
-    absent: bool,
+    zero_facts: bool,
 }
 
 #[derive(Clone)]
@@ -41,7 +44,7 @@ impl Fixture {
                         (*address).to_owned(),
                         AccountFixture {
                             code: hex::decode(code).unwrap(),
-                            absent: false,
+                            zero_facts: false,
                         },
                     )
                 })
@@ -53,23 +56,22 @@ impl Fixture {
         let method = request["method"].as_str().unwrap();
         let result = match method {
             "eth_chainId" => json!("0x1"),
-            "eth_getBlockByHash" => json!({"hash":BLOCK}),
+            "eth_getBlockByHash" | "eth_getBlockByNumber" => json!({"hash":BLOCK,"number":"0x10"}),
             _ => {
                 let address = request["params"][0].as_str().unwrap();
                 let account = self
                     .0
                     .get(address)
                     .unwrap_or_else(|| panic!("unconfigured RPC account {address}: {method}"));
-                let balance = if account.absent { "0x0" } else { "0x1000000" };
+                let balance = if account.zero_facts {
+                    "0x0"
+                } else {
+                    "0x1000000"
+                };
                 match method {
                     "eth_getCode" => json!(format!("0x{}", hex::encode(&account.code))),
                     "eth_getBalance" => json!(balance),
                     "eth_getTransactionCount" => json!("0x0"),
-                    "eth_getProof" => json!({
-                        "address": address, "balance":balance, "nonce":"0x0",
-                        "codeHash":if account.absent { B256::ZERO } else { keccak256(&account.code) },
-                        "storageHash":B256::repeat_byte(0x33), "accountProof":[], "storageProof":[],
-                    }),
                     _ => panic!("unexpected RPC method {method}"),
                 }
             }
@@ -177,8 +179,6 @@ fn execute(server: &RpcServer, extra: &[&str]) -> Output {
         "analyze",
         "--rpc",
         &server.endpoint,
-        "--chain-id",
-        "1",
         "--block-hash",
         BLOCK,
         "--entry",
@@ -227,9 +227,7 @@ fn assert_pinned(requests: &[Json]) {
                 &json!({"blockHash":BLOCK,"requireCanonical":true})
             ),
         }
-        if request["method"] == "eth_getProof" {
-            assert_eq!(request["params"][1], json!([]));
-        }
+        assert_ne!(request["method"], "eth_getProof");
         assert!(!request.to_string().contains("latest"));
     }
 }
@@ -268,12 +266,7 @@ fn recursive_rpc_callees_are_discovered_without_account_flags_and_cached() {
                 >= analysis["states"].as_array().unwrap().len() as u64
         );
         for address in [ENTRY, CALLEE, LEAF] {
-            for method in [
-                "eth_getCode",
-                "eth_getBalance",
-                "eth_getTransactionCount",
-                "eth_getProof",
-            ] {
+            for method in ["eth_getCode", "eth_getBalance", "eth_getTransactionCount"] {
                 assert_eq!(requests_for(&requests, method, address).len(), 1);
             }
         }
@@ -511,9 +504,8 @@ fn discovered_rpc_failures_are_typed_atomic_and_never_become_empty_success() {
             "wrong-id",
             "http",
             "json",
-            "code-hash",
-            "proof-balance",
-            "proof-address",
+            "invalid-balance",
+            "invalid-nonce",
         ] {
             let a = format!("{}50{}5000", call(0xf1, 0x200, 0), call(0xf1, 0x200, 0));
             let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, "602a00")]);
@@ -534,11 +526,8 @@ fn discovered_rpc_failures_are_typed_atomic_and_never_become_empty_success() {
                     ("wrong-id", "eth_getCode") => reply["id"] = json!(999_999),
                     ("http", "eth_getCode") => return Reply::Http(503),
                     ("json", "eth_getCode") => return Reply::Bytes(b"not JSON".to_vec()),
-                    ("code-hash", "eth_getProof") => {
-                        reply["result"]["codeHash"] = json!(B256::repeat_byte(0x99))
-                    }
-                    ("proof-balance", "eth_getProof") => reply["result"]["balance"] = json!("0x0"),
-                    ("proof-address", "eth_getProof") => reply["result"]["address"] = json!(LEAF),
+                    ("invalid-balance", "eth_getBalance") => reply["result"] = json!("0x00"),
+                    ("invalid-nonce", "eth_getTransactionCount") => reply["result"] = json!("0xzz"),
                     _ => {}
                 }
                 Reply::Json(reply)
@@ -549,10 +538,10 @@ fn discovered_rpc_failures_are_typed_atomic_and_never_become_empty_success() {
             assert_eq!(failure["context"]["account"], CALLEE);
             assert_eq!(
                 failure["context"]["method"],
-                if case.starts_with("proof") || case == "code-hash" {
-                    "eth_getProof"
-                } else {
-                    "eth_getCode"
+                match case {
+                    "invalid-balance" => "eth_getBalance",
+                    "invalid-nonce" => "eth_getTransactionCount",
+                    _ => "eth_getCode",
                 }
             );
             assert!(
@@ -596,7 +585,10 @@ fn discovered_account_is_not_committed_when_final_chain_verification_fails() {
         let failure = acquisition_failure(&analysis, CALLEE);
         assert_eq!(failure["context"]["method"], "eth_chainId");
         let requests = server.finish();
-        assert_eq!(requests_for(&requests, "eth_getProof", CALLEE).len(), 1);
+        assert_eq!(
+            requests_for(&requests, "eth_getTransactionCount", CALLEE).len(),
+            1
+        );
         assert_pinned(&requests);
     });
 }
@@ -605,10 +597,10 @@ fn discovered_account_is_not_committed_when_final_chain_verification_fails() {
 fn rpc_account_and_request_caps_stop_discovery_with_explicit_partial_results() {
     thread::scope(|scope| {
         for (flag, limit, fetched, callee_requests, max_requests) in [
-            ("--max-rpc-accounts", "1", false, 0, 8),
-            ("--max-rpc-requests", "8", false, 0, 8),
-            // All four account observations arrive, but no final check fits.
-            ("--max-rpc-requests", "14", false, 1, 14),
+            ("--max-rpc-accounts", "1", false, 0, 7),
+            ("--max-rpc-requests", "7", false, 0, 7),
+            // All three account observations arrive, but no final check fits.
+            ("--max-rpc-requests", "12", false, 1, 12),
         ] {
             let a = format!("{}00", call(0xf1, 0x200, 0));
             let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, "00")]);
@@ -827,12 +819,13 @@ fn account<'a>(store: &'a Json, address: &str) -> Option<&'a Json> {
 }
 
 #[test]
-fn discovered_and_preloaded_empty_or_absent_accounts_are_cached_facts() {
+fn discovered_and_preloaded_empty_accounts_preserve_unknown_existence() {
     thread::scope(|scope| {
-        for (preloaded, absent) in [(false, false), (false, true), (true, false), (true, true)] {
+        for (preloaded, zero_facts) in [(false, false), (false, true), (true, false), (true, true)]
+        {
             let a = format!("{}50{}5000", call(0xf1, 0x200, 0), call(0xf1, 0x200, 0));
             let mut fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, "")]);
-            fixture.0.get_mut(CALLEE).unwrap().absent = absent;
+            fixture.0.get_mut(CALLEE).unwrap().zero_facts = zero_facts;
             let server = RpcServer::new(scope, move |request| fixture.reply(request));
             let extra = if preloaded {
                 vec!["--account", CALLEE]
@@ -842,11 +835,15 @@ fn discovered_and_preloaded_empty_or_absent_accounts_are_cached_facts() {
             let analysis = result(execute(&server, &extra), 0);
             assert_eq!(
                 analysis["world"]["accounts"][CALLEE]["existence"],
-                if absent { "absent" } else { "present" }
+                if zero_facts { "unknown" } else { "present" }
             );
             assert_eq!(
                 analysis["world"]["code_hashes"][CALLEE],
-                json!(if absent { B256::ZERO } else { keccak256([]) })
+                json!(keccak256([]))
+            );
+            assert_eq!(
+                analysis["world"]["accounts"][CALLEE]["storage_unknown"],
+                true
             );
             assert_eq!(
                 analysis["rpc_acquisition"]["fetched_accounts"],
@@ -871,8 +868,8 @@ fn deployed_runtime_overlay_is_used_without_refetching_snapshot_empty_code() {
         // Existing creation lesson: deploy a runtime returning 42, then call it.
         let factory = "6100156100275f396100155f6000f0805f555060205f5f5f5f5f5462fffffff160015560205ff361000861000d5f396100085ff3602a5f5260205ff3";
         let mut fixture = Fixture::new(&[(ENTRY, factory), (CREATED, ""), (ZERO, "")]);
-        fixture.0.get_mut(CREATED).unwrap().absent = true;
-        fixture.0.get_mut(ZERO).unwrap().absent = true;
+        fixture.0.get_mut(CREATED).unwrap().zero_facts = true;
+        fixture.0.get_mut(ZERO).unwrap().zero_facts = true;
         let server = RpcServer::new(scope, move |request| fixture.reply(request));
         let export = result(
             execute(&server, &["--ssa", "--account", CREATED, "--account", ZERO]),

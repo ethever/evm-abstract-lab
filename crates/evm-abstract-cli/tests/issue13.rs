@@ -231,7 +231,7 @@ fn native_identity_call_exports_its_frame_return_data_and_effect_ssa() {
 }
 
 #[test]
-fn explicit_rpc_connection_error_has_fixed_provenance_and_no_analysis_output() {
+fn explicit_rpc_connection_error_keeps_selected_hash_without_inventing_chain_identity() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
@@ -239,8 +239,6 @@ fn explicit_rpc_connection_error_has_fixed_provenance_and_no_analysis_output() {
         "analyze",
         "--rpc",
         &endpoint,
-        "--chain-id",
-        "0x1",
         "--block-hash",
         BLOCK,
         "--entry",
@@ -255,25 +253,12 @@ fn explicit_rpc_connection_error_has_fixed_provenance_and_no_analysis_output() {
     assert!(
         error.contains("RPC transport failure")
             && error.contains("eth_chainId")
-            && error.contains("chain 0x1")
+            && !error.contains("chain 0x1")
             && error.contains(BLOCK),
         "{error}"
     );
     assert!(!error.contains("Converged"));
-    for missing in [
-        vec!["analyze", "--rpc", endpoint.as_str(), "--entry", ENTRY],
-        vec![
-            "analyze",
-            "--rpc",
-            endpoint.as_str(),
-            "--chain-id",
-            "0x1",
-            "--entry",
-            ENTRY,
-        ],
-    ] {
-        let output = run(&missing);
-        assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
-    }
+    let output = run(&["analyze", "--rpc", &endpoint]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
 }

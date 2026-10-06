@@ -100,18 +100,19 @@ flowchart TD
 
 数值分析默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和 Provenance（来源及局部复制身份）。`--max-constants` 默认 8，接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；配置容量不会直接预分配集合。`--reduction-rounds` 默认 4，`--max-facts` 默认 256，两者限制临时事实交换的精度。`analyze` 的 `--max-work` 默认 2000 万，耗尽共享工作预算会留下 `Incomplete`；提高常量容量仍受执行预算限制。参数与输出一起记录分析策略，方便对照实验；[第 12 课](docs/12-product-domains-facts.md)解释交换过程及边界。
 
-CLI 的数量参数 `--chain-id`、`--value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--chain-id 1`、`--value 1000`（单位 wei）、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
+CLI 的数量参数 `--value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`；`--block-number` 接受相同进制写法，范围为 `0` 到 `2^64−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--value 1000`（单位 wei）、`--block-number 26000000`、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
 
-显式选择 `--rpc` 后，只指定入口也能开始跨合约分析。分析器发现具体调用目标缺少代码时，会在同一 chain ID、block hash 下补查该账户；更深的调用也按需发现。下面的环境变量须已设置为实际提供者、链、区块、fork 和入口：
+显式选择 `--rpc` 后，只指定入口也能开始跨合约分析。chain ID 从 RPC 自动读取；省略区块参数时，只在启动时读取一次 `latest`，随后固定返回的区块 hash。也可指定互斥的 `--block-hash` 或 `--block-number`；区块号同样先解析为 hash，再采集状态。分析器发现具体调用目标缺少代码时，会在同一 chain ID、block hash 下补查该账户；更深的调用也按需发现。下面的环境变量须已设置为实际提供者、fork 和入口：
 
 ```bash
 nix run . -- analyze \
-  --rpc "$LAB_RPC_URL" --chain-id "$LAB_CHAIN_ID" \
-  --block-hash "$LAB_BLOCK_HASH" --fork "$LAB_FORK" \
+  --rpc "$LAB_RPC_URL" --fork "$LAB_FORK" \
   --entry "$LAB_ENTRY" --format json
 ```
 
-`--account` 仍可预先选择账户，`--slot ADDRESS:SLOT` 选择初始存储槽；未选择的槽保持未知。加 `--no-rpc-discovery` 可只使用预先选择的账户，观察缺代码时的 `MissingCode`。默认最多采集 256 个账户、尝试 16384 次请求，分别由 `--max-rpc-accounts`、`--max-rpc-requests` 设置。补查成功后会从入口重新分析，各轮共用 work、transfer 和状态分配预算；JSON 的 `rpc_acquisition` 记录累计过程。完整实验与错误解读见[第 10 课](docs/10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
+`--account` 仍可预先选择账户，`--slot ADDRESS:SLOT` 选择初始存储槽；未选择的槽保持未知。RPC 使用 `{blockHash,requireCanonical:true}` 采集 code、balance、nonce 和选定 slot，完全信任选定提供者，不请求 `eth_getProof`。代码为空且其余已查询字段全零时，存在性仍为未知；非空代码或任一非零数值则表明账户存在。重组或查询错误不会使分析改用新的区块。
+
+加 `--no-rpc-discovery` 可只使用预先选择的账户，观察缺代码时的 `MissingCode`。默认最多采集 256 个账户、尝试 16384 次请求，分别由 `--max-rpc-accounts`、`--max-rpc-requests` 设置。补查成功后会从入口重新分析，各轮共用 work、transfer 和状态分配预算；JSON 的 `rpc_acquisition` 记录累计过程。完整实验与错误解读见[第 10 课](docs/10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
 
 需要可视化实际分析结果时，先导出 DOT（Graphviz 的图描述格式），再转成 SVG：
 
@@ -148,7 +149,7 @@ RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留�
 
 模型处理普通 EVM 字节码，即按操作码及其立即数解码的指令流；不支持 EOF 容器格式。字节码格式与硬分叉版本是两个不同概念，普通 EVM 字节码也能使用所选版本启用的较新指令，见[第一课](docs/01-bytecode.md)。
 
-gas 不精确计量，一般 hash 和未知环境采用保守近似，也没有完整路径约束或跨交易不变量证明。RPC 仅在显式选择时采集固定区块 hash 的事实，默认按需补查具体被调用账户；未知目标与未选择的存储槽仍保持边界。采集过程信任选定的提供者、检查身份与观察一致性，不验证 Merkle proof。读结果前请确认[详细边界](docs/06-boundaries.md)。
+gas 不精确计量，一般 hash 和未知环境采用保守近似，也没有完整路径约束或跨交易不变量证明。RPC 仅在显式选择时采集固定区块 hash 的事实，默认按需补查具体被调用账户；未知目标与未选择的存储槽仍保持边界。采集过程完全信任选定的提供者；区块身份与初始事实指纹用于固定输入，不构成状态真实性的密码学证明。读结果前请确认[详细边界](docs/06-boundaries.md)。
 
 ## 开发环境与实现入口
 

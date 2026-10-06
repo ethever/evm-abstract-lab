@@ -1,14 +1,14 @@
 //! Real HTTP discovery must preserve the complete fixed-snapshot transaction relation.
 
-use alloy_primitives::{Address, B256, U256, hex, keccak256};
+use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     Fork,
     analysis::{self, ExecutionConfig, FrontierReason, Limit, OutcomeKind, Status, WorldAnalysis},
     domain::{Domain, Value},
     ssa,
     world::{
-        Account, ByteArray, Entry, Existence,
-        rpc::{self, AccountRequest, RpcError, RpcFailureKind, RpcInput},
+        Account, ByteArray, Entry,
+        rpc::{self, AccountRequest, RpcBlock, RpcError, RpcFailureKind, RpcInput},
     },
 };
 use serde_json::{Value as Json, json};
@@ -158,12 +158,8 @@ impl Server {
     }
 
     fn input(&self) -> RpcInput {
-        let mut input = RpcInput::new(
-            &self.endpoint,
-            Fork::Osaka,
-            U256::from(1),
-            B256::repeat_byte(0x11),
-        );
+        let mut input = RpcInput::new(&self.endpoint, Fork::Osaka);
+        input.block = RpcBlock::Hash(B256::repeat_byte(0x11));
         input.accounts.push(AccountRequest {
             address: address(0x101),
             slots: BTreeSet::from([U256::ZERO]),
@@ -219,31 +215,6 @@ fn response(accounts: &BTreeMap<Address, Account>, request: &Json) -> Json {
                 "eth_getCode" => json!(format!("0x{}", hex::encode(&code))),
                 "eth_getBalance" => json!(format!("{balance:#x}")),
                 "eth_getTransactionCount" => json!(format!("{nonce:#x}")),
-                "eth_getProof" => {
-                    let storage: Vec<_> = request["params"][1]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|key| {
-                            let key = U256::from_str_radix(
-                                key.as_str().unwrap().trim_start_matches("0x"),
-                                16,
-                            )
-                            .unwrap();
-                            let value = account
-                                .storage
-                                .get(&key)
-                                .and_then(Value::singleton)
-                                .unwrap_or(U256::ZERO);
-                            json!({"key":format!("{key:#x}"),"value":format!("{value:#x}"),"proof":[]})
-                        })
-                        .collect();
-                    json!({
-                        "address":owner,"balance":format!("{balance:#x}"),"nonce":format!("{nonce:#x}"),
-                        "codeHash":if account.existence == Existence::Absent {B256::ZERO} else {keccak256(&code)},
-                        "storageHash":B256::repeat_byte(0x33),"accountProof":[],"storageProof":storage,
-                    })
-                }
                 "eth_getStorageAt" => {
                     let slot = U256::from_str_radix(
                         request["params"][1]
@@ -760,11 +731,11 @@ fn failed_and_acquired_accounts_remain_paired_when_the_next_round_stops_early() 
             );
             assert_eq!(
                 acquisition.failures[0].failure.context.chain_id,
-                input.chain_id
+                Some(U256::from(1))
             );
             assert_eq!(
                 acquisition.failures[0].failure.context.block_hash,
-                input.block_hash
+                Some(B256::repeat_byte(0x11))
             );
             assert_eq!(server.code_requests(address(0x200)), 1);
             assert_eq!(server.code_requests(address(0x300)), 1);

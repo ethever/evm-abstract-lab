@@ -3,8 +3,8 @@
 //! Every state request uses EIP-1898's exact block hash with
 //! `requireCanonical=true`. Unsupported hash selectors and missing state are
 //! errors; there is no retry using a block number, moving tag, or empty fact.
-//! The chosen endpoint is a trusted observation source: code hashes and
-//! duplicate state fields are checked, but Merkle proofs are not verified.
+//! Chain identity and the selected block are resolved once before acquisition.
+//! The caller fully trusts the endpoint; account facts use ordinary state RPC.
 
 mod session;
 #[cfg(test)]
@@ -23,23 +23,33 @@ use std::{collections::BTreeSet, fmt, io::Read, time::Duration};
 /// One explicitly requested account and its observed storage slots.
 #[derive(Clone, Debug)]
 pub struct AccountRequest {
-    /// Account whose code, balance, nonce and account hash will be acquired.
+    /// Account whose code, balance and nonce will be acquired.
     pub address: Address,
     /// Only these slots are fetched; omitted slots remain unknown.
     pub slots: BTreeSet<U256>,
 }
 
-/// A caller-selected endpoint and fixed snapshot; never constructed by execution.
+/// Block to resolve once before any state acquisition.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RpcBlock {
+    /// Pin the endpoint's latest block once, then retain its exact hash.
+    #[default]
+    Latest,
+    /// Resolve this height to one exact block hash.
+    Number(u64),
+    /// Acquire facts at exactly this block hash.
+    Hash(B256),
+}
+
+/// A caller-selected endpoint and snapshot selector; never constructed by execution.
 #[derive(Clone, Debug)]
 pub struct RpcInput {
     /// HTTP(S) JSON-RPC endpoint explicitly authorized by the caller.
     pub endpoint: String,
     /// Execution rules selected by the caller, retained in the loaded world.
     pub fork: Fork,
-    /// Expected EIP-155 chain identifier.
-    pub chain_id: U256,
-    /// Expected block hash; all facts are queried at exactly this hash.
-    pub block_hash: B256,
+    /// Block resolved once; all state facts then use its exact hash.
+    pub block: RpcBlock,
     /// Accounts explicitly chosen before loading.
     pub accounts: Vec<AccountRequest>,
     /// Timeout for each request, including reading its response body.
@@ -54,12 +64,11 @@ pub struct RpcInput {
 
 impl RpcInput {
     /// Create bounded acquisition settings; accounts are added explicitly.
-    pub fn new(endpoint: impl Into<String>, fork: Fork, chain_id: U256, block_hash: B256) -> Self {
+    pub fn new(endpoint: impl Into<String>, fork: Fork) -> Self {
         Self {
             endpoint: endpoint.into(),
             fork,
-            chain_id,
-            block_hash,
+            block: RpcBlock::Latest,
             accounts: Vec::new(),
             timeout: Duration::from_secs(15),
             max_response_bytes: 4 * 1024 * 1024,
@@ -72,10 +81,10 @@ impl RpcInput {
 /// Provenance retained on every acquisition failure.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RpcContext {
-    /// Chain identifier requested by the caller.
-    pub chain_id: U256,
-    /// Exact snapshot hash requested by the caller.
-    pub block_hash: B256,
+    /// Chain identifier discovered from the endpoint, if available.
+    pub chain_id: Option<U256>,
+    /// Exact snapshot hash, if already selected or resolved.
+    pub block_hash: Option<B256>,
     /// Failing method (or `client` for local configuration failures).
     pub method: &'static str,
     /// Account being observed, if this is a state method.
@@ -86,11 +95,13 @@ pub struct RpcContext {
 
 impl fmt::Display for RpcContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{} at chain {:#x} block {}",
-            self.method, self.chain_id, self.block_hash
-        )?;
+        write!(formatter, "{}", self.method)?;
+        if let Some(chain_id) = self.chain_id {
+            write!(formatter, " at chain {chain_id:#x}")?;
+        }
+        if let Some(block_hash) = self.block_hash {
+            write!(formatter, " block {block_hash}")?;
+        }
         if let Some(account) = self.account {
             write!(formatter, " account {account}")?;
         }
@@ -135,7 +146,7 @@ pub enum RpcFailureKind {
     MissingResult,
     /// Response envelope or observed facts were inconsistent.
     Response,
-    /// Observed chain identity differed from the requested chain.
+    /// Observed chain identity differed from the initially discovered chain.
     ChainMismatch,
     /// Observed block identity differed from the requested block.
     BlockMismatch,
@@ -148,7 +159,7 @@ pub enum RpcFailureKind {
 /// Serializable evidence for acquisition that failed after analysis began.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Failure {
-    /// Requested snapshot, failing method and account/slot provenance.
+    /// Resolved snapshot, failing method and account/slot provenance.
     pub context: RpcContext,
     /// Typed failure category, independent of the explanatory message.
     pub kind: RpcFailureKind,
@@ -440,6 +451,8 @@ fn configured_loader(input: &RpcInput) -> Result<Loader, RpcError> {
         input: input.clone(),
         client,
         next_id: 0,
+        chain_id: None,
+        block_hash: None,
     })
 }
 
@@ -450,8 +463,11 @@ fn context(
     slot: Option<U256>,
 ) -> RpcContext {
     RpcContext {
-        chain_id: input.chain_id,
-        block_hash: input.block_hash,
+        chain_id: None,
+        block_hash: match input.block {
+            RpcBlock::Hash(hash) => Some(hash),
+            RpcBlock::Latest | RpcBlock::Number(_) => None,
+        },
         method,
         account,
         slot,
@@ -470,11 +486,68 @@ struct Loader {
     input: RpcInput,
     client: Client,
     next_id: usize,
+    chain_id: Option<U256>,
+    block_hash: Option<B256>,
 }
 
 impl Loader {
+    fn context(
+        &self,
+        method: &'static str,
+        account: Option<Address>,
+        slot: Option<U256>,
+    ) -> RpcContext {
+        let mut context = context(&self.input, method, account, slot);
+        context.chain_id = self.chain_id;
+        context.block_hash = self.block_hash.or(context.block_hash);
+        context
+    }
+
     fn selector(&self) -> Json {
-        json!({"blockHash": self.input.block_hash, "requireCanonical": true})
+        let block_hash = self.block_hash.expect("state acquisition follows pinning");
+        json!({"blockHash": block_hash, "requireCanonical": true})
+    }
+
+    fn world(&self) -> World {
+        World::anchored(
+            self.input.fork,
+            self.chain_id.expect("world construction follows pinning"),
+            self.block_hash.expect("world construction follows pinning"),
+            "explicit-rpc",
+        )
+    }
+
+    fn pin(&mut self) -> Result<(), RpcError> {
+        self.check_chain()?;
+        let (method, params) = match self.input.block {
+            RpcBlock::Latest => ("eth_getBlockByNumber", json!(["latest", false])),
+            RpcBlock::Number(number) => (
+                "eth_getBlockByNumber",
+                json!([format!("{number:#x}"), false]),
+            ),
+            RpcBlock::Hash(hash) => ("eth_getBlockByHash", json!([hash, false])),
+        };
+        let context = self.context(method, None, None);
+        let value = self.call(&context, params)?;
+        let observed = hash(&value["hash"], &context)?;
+        if let RpcBlock::Hash(expected) = self.input.block
+            && observed != expected
+        {
+            return Err(RpcError::BlockMismatch {
+                context: Box::new(context),
+                observed,
+            });
+        }
+        if let RpcBlock::Number(expected) = self.input.block
+            && quantity(&value["number"], &context)? != U256::from(expected)
+        {
+            return Err(invalid(
+                &context,
+                "returned block number differs from requested height",
+            ));
+        }
+        self.block_hash = Some(observed);
+        Ok(())
     }
 
     fn call(&mut self, context: &RpcContext, params: Json) -> Result<Json, RpcError> {
@@ -569,23 +642,28 @@ impl Loader {
     }
 
     fn check_chain(&mut self) -> Result<(), RpcError> {
-        let context = context(&self.input, "eth_chainId", None, None);
+        let context = self.context("eth_chainId", None, None);
         let value = self.call(&context, json!([]))?;
         let observed = quantity(&value, &context)?;
-        if observed != self.input.chain_id {
-            return Err(RpcError::ChainMismatch {
-                context: Box::new(context),
-                observed,
-            });
+        if let Some(expected) = self.chain_id {
+            if observed != expected {
+                return Err(RpcError::ChainMismatch {
+                    context: Box::new(context),
+                    observed,
+                });
+            }
+        } else {
+            self.chain_id = Some(observed);
         }
         Ok(())
     }
 
     fn check_block(&mut self) -> Result<(), RpcError> {
-        let context = context(&self.input, "eth_getBlockByHash", None, None);
-        let value = self.call(&context, json!([self.input.block_hash, false]))?;
+        let block_hash = self.block_hash.expect("block checks follow pinning");
+        let context = self.context("eth_getBlockByHash", None, None);
+        let value = self.call(&context, json!([block_hash, false]))?;
         let observed = hash(&value["hash"], &context)?;
-        if observed != self.input.block_hash {
+        if observed != block_hash {
             return Err(RpcError::BlockMismatch {
                 context: Box::new(context),
                 observed,
@@ -596,85 +674,39 @@ impl Loader {
 
     fn account(&mut self, world: &mut World, request: &AccountRequest) -> Result<(), RpcError> {
         let address = request.address;
-        let code_context = context(&self.input, "eth_getCode", Some(address), None);
+        let code_context = self.context("eth_getCode", Some(address), None);
         let code = self.call(&code_context, json!([address, self.selector()]))?;
         let bytes = data(&code, &code_context)?;
         let mut account =
             Account::from_hex(&hex::encode(bytes), self.input.fork).map_err(|source| {
                 RpcError::Code {
-                    context: Box::new(code_context),
+                    context: Box::new(code_context.clone()),
                     source,
                 }
             })?;
         account.storage_unknown = true;
-        let balance_context = context(&self.input, "eth_getBalance", Some(address), None);
+        let balance_context = self.context("eth_getBalance", Some(address), None);
         let balance = quantity(
             &self.call(&balance_context, json!([address, self.selector()]))?,
             &balance_context,
         )?;
         account.balance = Value::constant(balance);
-        let nonce_context = context(&self.input, "eth_getTransactionCount", Some(address), None);
+        let nonce_context = self.context("eth_getTransactionCount", Some(address), None);
         let nonce = quantity(
             &self.call(&nonce_context, json!([address, self.selector()]))?,
             &nonce_context,
         )?;
         account.nonce = Value::constant(nonce);
-        let proof_context = context(&self.input, "eth_getProof", Some(address), None);
-        let keys: Vec<_> = request
-            .slots
-            .iter()
-            .map(|slot| format!("0x{}", hex::encode(slot.to_be_bytes::<32>())))
-            .collect();
-        let proof = self.call(&proof_context, json!([address, keys, self.selector()]))?;
-        let proof_address = proof["address"]
-            .as_str()
-            .and_then(|text| text.parse::<Address>().ok());
-        if proof_address != Some(address)
-            || quantity(&proof["balance"], &proof_context)? != balance
-            || quantity(&proof["nonce"], &proof_context)? != nonce
-        {
-            return Err(invalid(
-                &proof_context,
-                "account address, balance or nonce disagrees with pinned observations",
-            ));
-        }
-        let code_hash = hash(&proof["codeHash"], &proof_context)?;
-        hash(&proof["storageHash"], &proof_context)?;
-        proof["accountProof"]
-            .as_array()
-            .ok_or_else(|| invalid(&proof_context, "missing account proof array"))?;
-        account.existence = if code_hash == B256::ZERO {
-            Existence::Absent
-        } else {
-            Existence::Present
-        };
-        if account.existence == Existence::Absent {
-            account.storage_unknown = false;
-        }
-        let storage_proof = proof["storageProof"]
-            .as_array()
-            .ok_or_else(|| invalid(&proof_context, "missing storage proof array"))?;
-        if storage_proof.len() != request.slots.len() {
-            return Err(invalid(
-                &proof_context,
-                "storage proof set differs from requested slots",
-            ));
-        }
-        let mut proof_slots = BTreeSet::new();
-        for observation in storage_proof {
-            // Some clients preserve 32-byte DATA keys instead of QUANTITY keys.
-            let key = word(&observation["key"], &proof_context)?;
-            if !request.slots.contains(&key) || !proof_slots.insert(key) {
-                return Err(invalid(
-                    &proof_context,
-                    "unknown or duplicate storage proof key",
-                ));
-            }
-            observation["proof"]
-                .as_array()
-                .ok_or_else(|| invalid(&proof_context, "missing storage proof nodes"))?;
-            let proof_value = quantity(&observation["value"], &proof_context)?;
-            let slot_context = context(&self.input, "eth_getStorageAt", Some(address), Some(key));
+        // Ordinary state RPC cannot distinguish an absent account from an
+        // existing account with empty code, zero balance and zero nonce.
+        account.existence =
+            if account.code != super::Code::Empty || balance != U256::ZERO || nonce != U256::ZERO {
+                Existence::Present
+            } else {
+                Existence::Unknown
+            };
+        for &key in &request.slots {
+            let slot_context = self.context("eth_getStorageAt", Some(address), Some(key));
             let value = self.call(
                 &slot_context,
                 json!([address, format!("{key:#x}"), self.selector()]),
@@ -687,18 +719,15 @@ impl Loader {
                 ));
             }
             let observed = U256::from_be_slice(&bytes);
-            if observed != proof_value {
-                return Err(invalid(
-                    &slot_context,
-                    "storage value disagrees with pinned account proof",
-                ));
+            if observed != U256::ZERO {
+                account.existence = Existence::Present;
             }
             account.storage.insert(key, Value::constant(observed));
         }
         world
-            .insert_with_code_hash(address, account, code_hash)
+            .insert(address, account)
             .map_err(|source| RpcError::World {
-                context: Box::new(proof_context),
+                context: Box::new(code_context),
                 source,
             })?;
         Ok(())

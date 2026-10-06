@@ -1,12 +1,10 @@
 //! Incremental acquisition owns one client and a monotone fixed-snapshot cache.
 //!
-//! A fetched account becomes visible only after all account validations and
+//! A fetched account becomes visible only after all account observations and
 //! both final identity checks succeed. Execution owns its transaction state;
-//! this cache contains only initial observations at the caller's block hash.
+//! this cache contains only initial observations at the once-resolved block hash.
 
-use super::{
-    AccountRequest, AcquisitionLimit, Loader, RpcError, RpcInput, configured_loader, context,
-};
+use super::{AccountRequest, AcquisitionLimit, Loader, RpcError, RpcInput, configured_loader};
 use crate::world::World;
 use alloy_primitives::Address;
 use std::collections::BTreeSet;
@@ -22,10 +20,8 @@ impl Session {
     /// Load the explicitly selected accounts as one checked initial batch.
     pub fn load(input: &RpcInput) -> Result<Self, RpcError> {
         let mut loader = configured_loader(input)?;
-        loader.check_chain()?;
-        loader.check_block()?;
-        let mut world =
-            World::anchored(input.fork, input.chain_id, input.block_hash, "explicit-rpc");
+        loader.pin()?;
+        let mut world = loader.world();
         for request in &input.accounts {
             loader.account(&mut world, request)?;
         }
@@ -52,13 +48,12 @@ impl Session {
         let input = &self.loader.input;
         if self.world.accounts().len() >= input.max_accounts {
             return Err(RpcError::AcquisitionLimit {
-                context: Box::new(context(input, "eth_getCode", Some(address), None)),
+                context: Box::new(self.loader.context("eth_getCode", Some(address), None)),
                 resource: AcquisitionLimit::Accounts,
                 limit: input.max_accounts,
             });
         }
-        let mut pending =
-            World::anchored(input.fork, input.chain_id, input.block_hash, "explicit-rpc");
+        let mut pending = self.loader.world();
         self.loader.check_chain()?;
         self.loader.check_block()?;
         self.loader.account(
@@ -73,18 +68,10 @@ impl Session {
         let account = pending
             .account(address)
             .expect("validated account was inserted");
-        let code_hash = pending
-            .code_hash(address)
-            .expect("validated code hash is observed");
         self.world
-            .insert_with_code_hash(address, account.clone(), code_hash)
+            .insert(address, account.clone())
             .map_err(|source| RpcError::World {
-                context: Box::new(context(
-                    &self.loader.input,
-                    "eth_getProof",
-                    Some(address),
-                    None,
-                )),
+                context: Box::new(self.loader.context("eth_getCode", Some(address), None)),
                 source,
             })?;
         Ok(true)
