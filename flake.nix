@@ -246,11 +246,17 @@
                   grep -q 'Execution code' explain-call.txt
                   grep -q 'Captured instruction list' explain-call.txt
                   grep -q 'Verified cross-contract SSA:' explain-call.txt
-                  grep -q 'deferred result:' explain-call.txt
+                  grep -q 'CALL result %' explain-call.txt
+                  grep -Eq '%[0-9]+ = (PUSH|MLOAD|EQ)' explain-call.txt
+                  if grep -q 'opcode=' explain-call.txt; then exit 1; fi
+                  evm-abstract explain --world ${./examples/worlds/call-return-branch.json} --entry 0x0000000000000000000000000000000000000101 --verbose > explain-verbose.txt
+                  grep -q 'captured frames:' explain-verbose.txt
+                  grep -q 'instruction effects:' explain-verbose.txt
+                  grep -q 'opcode=' explain-verbose.txt
                   evm-abstract explain --world ${./examples/worlds/create-runtime.json} --entry 0x0000000000000000000000000000000000000101 > explain-create.txt
                   grep -q 'mode=InitCode' explain-create.txt
                   grep -q 'mode=Runtime' explain-create.txt
-                  grep -q 'CREATE/CREATE2 address' explain-create.txt
+                  grep -q 'CREATE address %' explain-create.txt
                   evm-abstract explain --world ${./examples/worlds/call-return-branch.json} --entry 0x0000000000000000000000000000000000000101 --max-work 1 > explain-partial.txt && exit 1 || test "$?" = 2
                   grep -q 'Input code observations (not execution evidence)' explain-partial.txt
                   grep -q 'SSA unavailable' explain-partial.txt
@@ -287,7 +293,7 @@
                   dot -Tsvg diamond.dot -o diamond.svg
                   test -s diamond.svg
                   mkdir $out
-                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt explain-call.txt explain-create.txt explain-partial.txt explain-program.txt $out/
+                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt explain-program.txt $out/
                 '';
           };
           devShells.default = craneLib.devShell {

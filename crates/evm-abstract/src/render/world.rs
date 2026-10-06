@@ -14,12 +14,19 @@ use std::fmt::Write;
 
 mod explain;
 mod ssa;
+mod teaching;
 mod text;
 pub use text::render as text;
 
-/// 从捕获的代码、完整机器报告和已验证 SSA 生成跨合约教学解释。
-/// 未完成分析保留报告及前沿，不产生完整 SSA。
+/// 从捕获代码、状态栈和可读 SSA 生成默认教学解释。
+/// 每个结果和未完成前沿单独保留；完整效果与捕获记录见 [`explain_verbose`]。
 pub fn explain(analysis: &WorldAnalysis) -> Result<String, crate::ssa::SsaError> {
+    explain::teaching::render(analysis)
+}
+
+/// 展开完整机器报告、捕获记录与逐条指令效果 SSA。
+/// 未完成分析保留报告及前沿，不产生完整 SSA。
+pub fn explain_verbose(analysis: &WorldAnalysis) -> Result<String, crate::ssa::SsaError> {
     explain::render(analysis)
 }
 

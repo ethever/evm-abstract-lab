@@ -15,6 +15,8 @@ use std::{
     fmt::Write,
 };
 
+pub(super) mod teaching;
+
 type CodeIdentity = (Address, B256, FrameCode);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

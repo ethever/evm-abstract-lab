@@ -64,11 +64,11 @@ nix run . -- explain \
   --entry 0x0000000000000000000000000000000000000101
 ```
 
-`explain` 会串联实际捕获代码的反汇编、完整状态与效果报告、可读且已验证的跨合约 SSA。需要结构化数据时，使用 `analyze --format json`；单字节码的 `explain --file` / `--hex` 仍可使用。
+`explain` 默认串联实际捕获代码的反汇编、简明 CFG 与独立结果概要、赋值式跨合约 SSA。需要完整帧记录和效果链时加 `--verbose`；完整报告仍由 `analyze` 提供，结构化数据使用 `analyze --format json`。单字节码的 `explain --file` / `--hex` 保持原有输出。
 
 这个离线实验里，A 调用 B，B 返回 32 字节的数值 1，A 据此选择分支并写自己的存储。输出的 `Call` / `Return` 是调用和返回边，`outcome` 是入口执行结束时的可能结果。模型也保留 gas 不足等失败可能，成功轨迹不等于全部抽象结果。逐步解读见[第 09 课](docs/09-cross-contract.md)。
 
-默认文本按完成状态、快照、身份引用、执行状态、转移、入口结果、调用摘要、诊断和未完成前沿分区。先看 `Analysis`，再沿 `Transitions` 的 `S` 编号追踪调用；`Outcomes` 的每个 `O` 分别携带自己的返回字节和最终账户状态。`References` 列出地址 `A0`、hash `H0` 等短引用对应的完整值，JSON 和 DOT 仍保留完整身份。[文本阅读路线](docs/09-cross-contract.md#默认文本怎样读) 解释各分区及字节表示。
+`analyze` 默认文本及 `explain --verbose` 的完整报告按完成状态、快照、身份引用、执行状态、转移、入口结果、调用摘要、诊断和未完成前沿分区。先看 `Analysis`，再沿 `Transitions` 的 `S` 编号追踪调用；`Outcomes` 的每个 `O` 分别携带自己的返回字节和最终账户状态。`References` 列出地址 `A0`、hash `H0` 等短引用对应的完整值，JSON 和 DOT 仍保留完整身份。[文本阅读路线](docs/09-cross-contract.md#默认文本怎样读) 解释各分区及字节表示。
 
 **调用摘要**保存已完成子调用在特定输入下的结果和执行子图，供之后前提相同的调用复用。`Call summaries` 中的保存数量 `published` 与复用次数 `hits` 是两件事；只调用一次时可以保存结果而没有命中。[第 10 课](docs/10-snapshots-summaries-creation.md) 从两次调用的例子开始解释。
 
@@ -91,7 +91,7 @@ flowchart TD
 | `disasm` | `--hex` 或 `--file` | 只解码指令；text / JSON |
 | `cfg` | `--hex` 或 `--file` | 局部抽象栈与控制流；text / JSON / DOT |
 | `ssa` | `--hex` 或 `--file` | 完整局部图上的栈 SSA；text / JSON |
-| `explain` | `--hex` 或 `--file` | 合并展示反汇编、CFG、SSA；text |
+| `explain` | `--hex` / `--file`，或 `--world` / 显式 `--rpc` + `--entry` | 反汇编、教学 CFG、赋值式 SSA；world/RPC 可加 `--verbose` 展开完整证据 |
 | `analyze` | `--world` 或显式 `--rpc`，以及 `--entry` | 跨合约图、返回结果、账户状态；text / JSON / DOT；`--ssa` 增加并验证 SSA |
 
 用 `nix run . -- analyze --help` 查看全部参数。`--caller`、`--calldata`、`--value`、`--static` 设置入口环境；精度与预算参数见[第 05 课](docs/05-sensitivity.md)和[第 06 课](docs/06-boundaries.md)。

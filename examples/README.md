@@ -68,9 +68,9 @@ nix run . -- explain \
   --entry 0x0000000000000000000000000000000000000101
 ```
 
-A 调用 B，B 的返回数据让 A 选择分支。`explain` 先显示捕获代码的反汇编，再保留完整世界报告，最后显示 `Verified cross-contract SSA:`。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中各个 `O` 的 `Storage` 表；地址短引用的完整值在 `References` 中。SSA 用 `%` 命名值、`!` 命名效果、`T` 标识转移，方便连接指令与跨合约数据流。需要查询 JSON 字段时改用 `analyze --format json`；需要导出完成图的 SSA 时再加 `--ssa`。
+A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获代码的反汇编、简明 CFG 与栈、每个 `O` 的结果概要，最后显示 `Verified cross-contract SSA:`。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中分别保留的结果；地址短引用的完整值在 `Addresses` 中。SSA 用 `%结果 = 指令 %操作数` 展示值流，`T` 标识转移。需要完整世界报告、捕获帧与效果链时加 `--verbose`；需要查询 JSON 字段时改用 `analyze --format json`，再加 `--ssa` 可导出完成图的 SSA。
 
-反汇编中的代码身份由代码地址、hash 和模式区分；状态账户另行保留。代理可以共享实现代码，创建例子可以在同一地址执行 InitCode 与新安装的 Runtime。指令列表与状态入口、出口栈共同描述抽象分析，不能当作逐指令具体步骤记录。表中写的是**具体成功轨迹**；抽象模型还保留 gas 等失败可能，因此实际输出可能包含更大的值集合或其他 outcome。`Incomplete` 时 `explain` 保留反汇编、部分图与所有报告分区，显示 `SSA unavailable` 并退出 `2`。
+反汇编中的代码身份由代码地址、hash 和模式区分；状态账户另行保留。代理可以共享实现代码，创建例子可以在同一地址执行 InitCode 与新安装的 Runtime。指令列表与状态入口、出口栈共同描述抽象分析，不能当作逐指令具体步骤记录。表中写的是**具体成功轨迹**；抽象模型还保留 gas 等失败可能，因此实际输出可能包含更大的值集合或其他 outcome。`Incomplete` 时 `explain` 保留反汇编、部分图、每个已知结果及全部诊断与前沿，显示 `SSA unavailable` 并退出 `2`；`--verbose` 保留完整报告分区。
 
 | 阶段与世界文件 | 观察问题 | 具体成功轨迹或检查条件 |
 | --- | --- | --- |
