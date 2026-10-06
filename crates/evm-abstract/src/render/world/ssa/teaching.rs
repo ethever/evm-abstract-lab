@@ -3,12 +3,15 @@
 //! DUP/SWAP 只调整已有名称；调用结果在恢复调用者的转换处定义。
 //! 检查点和粗粒度效果只在跨帧转换处展示，完整证据由详细视图提供。
 
-use crate::render::world::teaching::References;
+use crate::render::{
+    instruction::{InstructionLayout, write_ssa_body},
+    world::teaching::References,
+};
 use crate::{
     analysis::{MachineEdgeKind, MachineState, WorldAnalysis},
     ssa::{Instruction, Transition, ValueId, WorldBlock, WorldSsa},
 };
-use revm_bytecode::opcode::{self, OpCode};
+use revm_bytecode::opcode;
 use std::fmt::Write;
 
 #[cfg(test)]
@@ -58,22 +61,15 @@ fn write_block(
     let code = references
         .code(frame)
         .expect("captured active frame has a code reference");
-    write!(output, "  S{} | {code} ", block.state).unwrap();
-    if let Some(source) = state
-        .program()
-        .and_then(|program| program.blocks().get(frame.basic_block_index))
-    {
-        write!(output, "B{} @ 0x{:04x}", source.id, source.start_pc).unwrap();
-    } else {
-        output.push_str(super::empty_instruction_reason(state));
-    }
     let owner = references
         .address(frame.address)
         .map_or_else(|| frame.address.to_string(), str::to_owned);
     writeln!(
         output,
-        " | F{} active | state owner={owner}:",
+        "S{} | {code} | F{} active | state owner={owner} | context={:?}:",
+        block.state,
         state.key.frames.len() - 1,
+        frame.jump_history,
     )
     .unwrap();
     for phi in &block.phis {
@@ -90,35 +86,40 @@ fn write_block(
         )
         .unwrap();
     }
+    let layout = state
+        .program()
+        .and_then(|program| program.blocks().get(frame.basic_block_index))
+        .map(|source| InstructionLayout::block(output, source.id, source.start_pc));
     if block.instructions.is_empty() {
-        writeln!(output, "    (no bytecode instructions)").unwrap();
+        writeln!(
+            output,
+            "    (no bytecode instructions; {})",
+            super::empty_instruction_reason(state)
+        )
+        .unwrap();
     }
     for instruction in &block.instructions {
-        write_instruction(output, instruction);
+        write_instruction(
+            output,
+            instruction,
+            layout
+                .as_ref()
+                .expect("bytecode instruction has a real block"),
+        );
     }
-    write!(output, "    stack out (before dispatch) ").unwrap();
+    if let Some(layout) = &layout {
+        layout.indent(output);
+    } else {
+        output.push_str("    ");
+    }
+    output.push_str("stack out (before dispatch) ");
     write_stacks(output, &block.exit_frames);
     output.push('\n');
 }
 
-fn write_instruction(output: &mut String, instruction: &Instruction) {
-    write!(output, "    {:04x}: ", instruction.pc).unwrap();
-    if !instruction.results.is_empty() {
-        let results = instruction
-            .results
-            .iter()
-            .map(|value| format!("%{value}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        write!(output, "{results} = ").unwrap();
-    }
-    write!(output, "{}", OpCode::name_by_op(instruction.opcode)).unwrap();
-    if let Some(immediate) = instruction.immediate {
-        write!(output, " 0x{immediate:x}").unwrap();
-    }
-    for value in &instruction.operands {
-        write!(output, " %{value}").unwrap();
-    }
+fn write_instruction(output: &mut String, instruction: &Instruction, layout: &InstructionLayout) {
+    layout.write_pc(output, instruction.pc);
+    write_ssa_body(output, instruction);
     if instruction.fault {
         output.push_str(" ; exceptional halt (opcode/stack)");
     } else if (opcode::DUP1..=opcode::DUP16).contains(&instruction.opcode) {

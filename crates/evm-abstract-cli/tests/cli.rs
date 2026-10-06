@@ -5,6 +5,9 @@ use std::process::Command;
 #[path = "cli/alignment.rs"]
 mod alignment;
 
+#[path = "cli/shared_listing.rs"]
+mod shared_listing;
+
 #[path = "cli/explain.rs"]
 mod explain;
 

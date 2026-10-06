@@ -74,6 +74,57 @@ fn transition_section(text: &str, index: usize) -> &str {
 }
 
 #[test]
+fn shared_layout_separates_world_metadata_from_real_bytecode_block_titles() {
+    let graph = fixture("600360078190030100", None, ByteArray::empty());
+    let (ir, text) = rendered(&graph);
+    contains(
+        &text,
+        "\nS0 | C0 | F0 active | state owner=A0 | context=[]:\nB0 @ 0x0000:\n",
+    );
+    let body = text.split_once("B0 @ 0x0000:\n").unwrap().1;
+    let instructions = body
+        .lines()
+        .take_while(|line| !line.contains("stack out (before dispatch)"))
+        .collect::<Vec<_>>();
+    assert_eq!(instructions.len(), ir.blocks()[0].instructions.len());
+    let title_pc_column = "B0 @ 0x".len();
+    for line in instructions {
+        assert_eq!(line.find(':').unwrap(), title_pc_column + 4);
+        assert!(line[..title_pc_column].chars().all(|c| c == ' '));
+        assert!(line[title_pc_column..].starts_with("000"));
+    }
+}
+
+#[test]
+fn shared_layout_grows_for_multi_digit_world_block_ids() {
+    let mut code = "5b5f50".repeat(12);
+    code.push_str("00");
+    let graph = fixture(&code, None, ByteArray::empty());
+    let (ir, text) = rendered(&graph);
+    for block in ir.blocks() {
+        let state = &graph.states()[block.state];
+        let source = &state.program().unwrap().blocks()[state.active().basic_block_index];
+        let title = format!("B{} @ 0x{:04x}:\n", source.id, source.start_pc);
+        let body = text.split_once(&title).unwrap().1;
+        let column = title.find("0x").unwrap() + 2;
+        let instructions = body
+            .lines()
+            .take_while(|line| !line.contains("stack out (before dispatch)"))
+            .collect::<Vec<_>>();
+        assert_eq!(instructions.len(), block.instructions.len());
+        for line in instructions {
+            assert_eq!(line.find(':').unwrap(), column + 4);
+            assert!(line[..column].chars().all(|c| c == ' '));
+        }
+        let stack = body
+            .lines()
+            .find(|line| line.contains("stack out"))
+            .unwrap();
+        assert_eq!(stack.find("stack out").unwrap(), column);
+    }
+}
+
+#[test]
 fn tac_keeps_pop_order_and_dup_swap_alias_identity() {
     let graph = fixture("600360078190030100", None, ByteArray::empty());
     let (ir, text) = rendered(&graph);
@@ -273,9 +324,15 @@ fn parallel_transition_phi_inputs_and_loop_states_are_preserved() {
         .unwrap();
     let phi = joined.phis.iter().find(|phi| phi.inputs.len() > 1).unwrap();
     assert!(
-        text.lines().any(
-            |line| line.starts_with(&format!("  S{} | C", joined.state)) && line.contains(" B")
-        )
+        text.lines()
+            .any(|line| line.starts_with(&format!("S{} | C", joined.state))
+                && line.contains(" | context="))
+    );
+    let state = &loop_graph.states()[joined.state];
+    let source = &state.program().unwrap().blocks()[state.active().basic_block_index];
+    contains(
+        &text,
+        &format!("\nB{} @ 0x{:04x}:\n", source.id, source.start_pc),
     );
     for (transition, value) in &phi.inputs {
         contains(&text, &format!("T{transition}: %{value}"));
@@ -311,6 +368,24 @@ fn native_empty_delegation_and_synthetic_locations_do_not_invent_pcs() {
     let synthetic = fixture("5f5f5f5f5f61020061fffff1", Some("00"), ByteArray::empty());
     let (_, text) = rendered(&synthetic);
     contains(&text, "synthetic end-of-code continuation");
+    for state in synthetic.states().iter().filter(|state| {
+        state
+            .program()
+            .and_then(|program| program.blocks().get(state.active().basic_block_index))
+            .is_none()
+    }) {
+        let body = text.split_once(&format!("S{} | ", state.id)).unwrap().1;
+        let body = body.split_once("\nS").map_or(body, |(body, _)| body);
+        let body = body
+            .split_once("\nTransitions")
+            .map_or(body, |(body, _)| body);
+        assert!(!body.lines().any(|line| line.starts_with('B')));
+        assert!(!body.lines().any(|line| {
+            line.trim_start()
+                .split_once(':')
+                .is_some_and(|(pc, _)| !pc.is_empty() && pc.chars().all(|c| c.is_ascii_hexdigit()))
+        }));
+    }
 }
 
 #[test]
@@ -390,8 +465,9 @@ fn delegatecall_header_separates_code_identity_from_state_owner() {
     contains(
         &text,
         &format!(
-            "S{} | C1 B0 @ 0x0000 | F1 active | state owner=A0",
+            "S{} | C1 | F1 active | state owner=A0 | context=[]:",
             child.id
         ),
     );
+    contains(&text, "\nB0 @ 0x0000:\n");
 }

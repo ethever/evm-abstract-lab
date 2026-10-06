@@ -266,6 +266,14 @@
                   evm-abstract explain --file ${./examples/known-bits-branch.hex} --context-depth 0 > explain-aligned.txt
                   grep -q '^B0 @ 0x0000:$' explain-aligned.txt
                   grep -q '^       0000: PUSH0' explain-aligned.txt
+                  evm-abstract ssa --file ${./examples/dynamic-jump.hex} > ssa-aligned.txt
+                  grep -q '^S0 | context=\[\]:$' ssa-aligned.txt
+                  grep -q '^B0 @ 0x0000:$' ssa-aligned.txt
+                  grep -q '^       0000: %0 = PUSH1 0x0$' ssa-aligned.txt
+                  grep -q '^       0002: %1 = CALLDATALOAD %0$' ssa-aligned.txt
+                  evm-abstract analyze --world ${./examples/worlds/call-return-branch.json} --entry 0x0000000000000000000000000000000000000101 --ssa > ssa-world-aligned.txt
+                  grep -q '^       0000: PUSH1 | opcode=0x60' ssa-world-aligned.txt
+                  if grep -Eq '^ +pc=0x[0-9a-f]+:' ssa-world-aligned.txt; then exit 1; fi
                   for report in explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt; do
                     grep -Eq '^B[0-9]+ @ 0x[0-9a-f]+:$' "$report"
                     if grep -Eq '^ +B[0-9]+ @ 0x[0-9a-f]+:$' "$report"; then exit 1; fi
@@ -308,7 +316,7 @@
                   dot -Tsvg diamond.dot -o diamond.svg
                   test -s diamond.svg
                   mkdir $out
-                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt explain-program.txt explain-aligned.txt explain-capacity.txt explain-capacity-work.txt $out/
+                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt explain-program.txt explain-aligned.txt ssa-aligned.txt ssa-world-aligned.txt explain-capacity.txt explain-capacity-work.txt $out/
                 '';
           };
           devShells.default = craneLib.devShell {
