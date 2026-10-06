@@ -43,7 +43,7 @@ execution-specs 的默认分支会更新。以上 Cancun 链接用于相应规�
 | 返回数据缓冲区、REVERT 数据及复制越界 | [EIP-211](https://eips.ethereum.org/EIPS/eip-211) | 每帧 returndata，RETURNDATACOPY 与 CALL 输出区 |
 | STATICCALL 限制怎样向子帧传播 | [EIP-214](https://eips.ethereum.org/EIPS/eip-214) | SSTORE/LOG/value CALL 的故障与 CALLCODE 规则 |
 | transient storage 属于哪个账户，怎样回滚 | [EIP-1153](https://eips.ethereum.org/EIPS/eip-1153) | 同交易共享状态、DELEGATECALL 的状态账户、REVERT checkpoint |
-| 怎样把 RPC 请求固定在同一个区块 | [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898)、[EIP-1186](https://eips.ethereum.org/EIPS/eip-1186) | exact block hash 与 canonical selector、账户 code hash；loader 检查一致性但不验证 Merkle proof |
+| 怎样把 RPC 请求固定在同一个区块 | [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) | 启动时解析区块，再以 exact block hash 与 canonical selector 采集状态；loader 完全信任提供者，不请求账户或槽位证明 |
 | CREATE2 怎样确定地址，initcode 有哪些限制 | [EIP-1014](https://eips.ethereum.org/EIPS/eip-1014)、[EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) | salt 与 initcode hash、创建帧和长度检查 |
 | SELFDESTRUCT 何时删除代码与存储 | [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) | 区分预先存在和同交易创建的账户；后者延迟删除，并接受祖先回滚 |
 | Osaka 的 P256VERIFY 位于哪个地址 | [EIP-7951](https://eips.ethereum.org/EIPS/eip-7951) | `0x100` 是预编译地址，因此离线字节码例子入口选用 `0x101` |

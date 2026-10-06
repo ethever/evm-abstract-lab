@@ -1,7 +1,7 @@
 //! Unified explain is exercised through the real binary, including pinned RPC.
 
 use super::run;
-use alloy_primitives::{B256, U256, hex, keccak256};
+use alloy_primitives::{U256, hex, keccak256};
 use serde_json::{Value as Json, json};
 use std::{
     fs,
@@ -256,7 +256,7 @@ fn explain_requires_one_source_and_rejects_every_pair_of_sources() {
             args.extend_from_slice(left);
             args.extend_from_slice(right);
             if left[0] == "--rpc" || right[0] == "--rpc" {
-                args.extend(["--chain-id", "1", "--block-hash", BLOCK]);
+                args.extend(["--block-hash", BLOCK]);
             }
             let output = run(&args);
             assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -271,29 +271,11 @@ fn explain_requires_one_source_and_rejects_every_pair_of_sources() {
 }
 
 #[test]
-fn world_and_rpc_explain_require_entry_and_rpc_requires_both_pins() {
+fn world_and_rpc_explain_require_entry_and_block_selectors_are_exclusive() {
     let path = fixture("call-return-branch");
     for args in [
         vec!["explain", "--world", &path],
-        vec![
-            "explain",
-            "--rpc",
-            "http://127.0.0.1:1",
-            "--chain-id",
-            "1",
-            "--block-hash",
-            BLOCK,
-        ],
-        vec!["explain", "--rpc", "http://127.0.0.1:1", "--entry", ENTRY],
-        vec![
-            "explain",
-            "--rpc",
-            "http://127.0.0.1:1",
-            "--entry",
-            ENTRY,
-            "--chain-id",
-            "1",
-        ],
+        vec!["explain", "--rpc", "http://127.0.0.1:1"],
         vec![
             "explain",
             "--rpc",
@@ -302,6 +284,8 @@ fn world_and_rpc_explain_require_entry_and_rpc_requires_both_pins() {
             ENTRY,
             "--block-hash",
             BLOCK,
+            "--block-number",
+            "16",
         ],
     ] {
         let output = run(&args);
@@ -321,7 +305,7 @@ fn rpc_observation_flags_remain_exclusive_to_rpc_and_world_selects_its_own_fork(
         ["--world", &path],
     ] {
         for flag in [
-            vec!["--chain-id", "1"],
+            vec!["--block-number", "16"],
             vec!["--block-hash", BLOCK],
             vec!["--account", CALLEE],
             vec!["--slot", &slot],
@@ -340,7 +324,7 @@ fn rpc_observation_flags_remain_exclusive_to_rpc_and_world_selects_its_own_fork(
             assert!(output.stdout.is_empty());
             let error = String::from_utf8_lossy(&output.stderr);
             assert!(
-                error.contains(flag[0]) && error.contains("--rpc"),
+                error.contains(flag[0]) && (error.contains("--rpc") || error.contains(source[0])),
                 "{error}"
             );
         }
@@ -351,22 +335,20 @@ fn rpc_observation_flags_remain_exclusive_to_rpc_and_world_selects_its_own_fork(
 }
 
 #[test]
-fn invalid_rpc_chain_and_hash_are_rejected_before_network_access() {
-    for chain in ["-1", "1.5", "ff", "0xzz"] {
-        let chain_arg = format!("--chain-id={chain}");
+fn invalid_rpc_block_number_and_hash_are_rejected_before_network_access() {
+    for number in ["-1", "1.5", "ff", "0xzz", "18446744073709551616"] {
+        let block_arg = format!("--block-number={number}");
         let output = run(&[
             "explain",
             "--rpc",
             "http://127.0.0.1:1",
             "--entry",
             ENTRY,
-            &chain_arg,
-            "--block-hash",
-            BLOCK,
+            &block_arg,
         ]);
         assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("--chain-id"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("--block-number"));
     }
     for hash in ["latest", "0x1", "0xffff", "zz"] {
         let output = run(&[
@@ -375,8 +357,6 @@ fn invalid_rpc_chain_and_hash_are_rejected_before_network_access() {
             "http://127.0.0.1:1",
             "--entry",
             ENTRY,
-            "--chain-id",
-            "1",
             "--block-hash",
             hash,
         ]);
@@ -574,8 +554,6 @@ fn rpc_explain_acquires_one_fixed_world_and_uses_the_requested_observations() {
             "explain",
             "--rpc",
             &server.endpoint,
-            "--chain-id",
-            "1",
             "--block-hash",
             BLOCK,
             "--entry",
@@ -647,8 +625,6 @@ fn rpc_command_named(command: &str, server: &RpcServer, extra: &[&str]) -> Outpu
         command,
         "--rpc",
         &server.endpoint,
-        "--chain-id",
-        "1",
         "--block-hash",
         BLOCK,
         "--entry",
@@ -691,6 +667,7 @@ fn assert_pinned(requests: &[Json]) {
                 &json!({"blockHash":BLOCK,"requireCanonical":true})
             ),
         }
+        assert_ne!(request["method"], "eth_getProof");
         assert!(!request.to_string().contains("latest"));
     }
 }
@@ -721,12 +698,7 @@ fn rpc_explain_discovers_missing_callee_snapshot_code_with_default_and_explicit_
             assert_human_ssa(&explanation);
             let requests = server.finish();
             for address in [ENTRY, CALLEE] {
-                for method in [
-                    "eth_getCode",
-                    "eth_getBalance",
-                    "eth_getTransactionCount",
-                    "eth_getProof",
-                ] {
+                for method in ["eth_getCode", "eth_getBalance", "eth_getTransactionCount"] {
                     assert_eq!(requests_for(&requests, method, address), 1);
                 }
             }
@@ -784,10 +756,10 @@ fn rpc_explain_explicit_account_closes_the_graph_with_discovery_disabled() {
 fn rpc_explain_discovery_caps_keep_typed_acquisition_frontiers_and_partial_output() {
     thread::scope(|scope| {
         for (flag, limit, resource, callee_requests, requests_limit) in [
-            ("--max-rpc-accounts", "1", "Accounts", 0, 8),
-            ("--max-rpc-requests", "8", "Requests", 0, 8),
+            ("--max-rpc-accounts", "1", "Accounts", 0, 7),
+            ("--max-rpc-requests", "7", "Requests", 0, 7),
             // Observations arrive, but final identity checks cannot complete.
-            ("--max-rpc-requests", "14", "Requests", 1, 14),
+            ("--max-rpc-requests", "12", "Requests", 1, 12),
         ] {
             let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
             let output = rpc_command(&server, &[flag, limit]);
@@ -947,19 +919,11 @@ fn rpc_result(request: &Json, fixture: RpcFixture) -> Json {
         "eth_chainId" => json!("0x1"),
         "eth_getBlockByHash" => {
             assert_eq!(request["params"], json!([BLOCK, false]));
-            json!({"hash":BLOCK})
+            json!({"hash":BLOCK,"number":"0x10"})
         }
         "eth_getCode" => json!(format!("0x{code}")),
         "eth_getBalance" => json!("0x1000000"),
         "eth_getTransactionCount" => json!("0x0"),
-        "eth_getProof" => json!({
-            "address":request["params"][0],"balance":"0x1000000","nonce":"0x0",
-            "codeHash":keccak256(hex::decode(code).unwrap()),
-            "storageHash":B256::repeat_byte(0x33),"accountProof":[],
-            "storageProof":request["params"][1].as_array().unwrap().iter()
-                .map(|key| json!({"key":key,"value":"0x2a","proof":[]}))
-                .collect::<Vec<_>>()
-        }),
         "eth_getStorageAt" => json!(format!("0x{:064x}", U256::from(42))),
         method => panic!("unexpected mock RPC method: {method}"),
     }

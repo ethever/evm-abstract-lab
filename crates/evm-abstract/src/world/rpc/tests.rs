@@ -1,10 +1,10 @@
 //! Local JSON-RPC regressions exercise the real HTTP and input boundaries.
 
-use super::{AccountRequest, RpcError, RpcFailureKind, RpcInput, Session, load};
+use super::{AccountRequest, RpcBlock, RpcError, RpcFailureKind, RpcInput, Session, load};
 use crate::{
     Address, Fork, U256,
-    domain::Value,
-    world::{Existence, SnapshotIdentity},
+    domain::{Domain, Value},
+    world::{Existence, SnapshotIdentity, Store},
 };
 use alloy_primitives::{B256, keccak256};
 use serde_json::{Value as Json, json};
@@ -114,12 +114,8 @@ impl Server {
     }
 
     fn input(&self) -> RpcInput {
-        let mut input = RpcInput::new(
-            &self.endpoint,
-            Fork::Osaka,
-            U256::from(1),
-            B256::repeat_byte(0x11),
-        );
+        let mut input = RpcInput::new(&self.endpoint, Fork::Osaka);
+        input.block = RpcBlock::Hash(B256::repeat_byte(0x11));
         input.accounts.push(AccountRequest {
             address: Address::repeat_byte(0x22),
             slots: BTreeSet::from([U256::ZERO]),
@@ -141,15 +137,12 @@ impl Drop for Server {
 fn healthy(request: &Json) -> Json {
     let result = match request["method"].as_str().unwrap() {
         "eth_chainId" => json!("0x1"),
-        "eth_getBlockByHash" => json!({"hash": B256::repeat_byte(0x11)}),
+        "eth_getBlockByHash" | "eth_getBlockByNumber" => {
+            json!({"hash": B256::repeat_byte(0x11), "number":"0x2a"})
+        }
         "eth_getCode" => json!("0x00"),
         "eth_getBalance" => json!("0x9"),
         "eth_getTransactionCount" => json!("0x1"),
-        "eth_getProof" => json!({
-            "address": Address::repeat_byte(0x22), "balance":"0x9", "nonce":"0x1",
-            "codeHash":keccak256([0]), "storageHash":B256::repeat_byte(0x33),
-            "accountProof":[], "storageProof":[{"key":"0x0", "value":"0x7", "proof":[]}],
-        }),
         "eth_getStorageAt" => json!(format!("0x{:064x}", U256::from(7))),
         method => panic!("unexpected RPC method {method}"),
     };
@@ -165,8 +158,8 @@ fn rpc_world_pins_every_fact_and_keeps_unrequested_facts_unknown() {
         assert_eq!(
             world.identity(),
             &SnapshotIdentity::Chain {
-                chain_id: input.chain_id,
-                block_hash: input.block_hash
+                chain_id: U256::from(1),
+                block_hash: B256::repeat_byte(0x11)
             }
         );
         let account = world.account(Address::repeat_byte(0x22)).unwrap();
@@ -181,16 +174,16 @@ fn rpc_world_pins_every_fact_and_keeps_unrequested_facts_unknown() {
             Some(keccak256([0]))
         );
         let requests = server.requests();
-        assert_eq!(requests.len(), 9);
+        assert_eq!(requests.len(), 8);
         for request in requests {
             match request["method"].as_str().unwrap() {
                 "eth_chainId" => assert_eq!(request["params"], json!([])),
                 "eth_getBlockByHash" => {
-                    assert_eq!(request["params"], json!([input.block_hash, false]))
+                    assert_eq!(request["params"], json!([B256::repeat_byte(0x11), false]))
                 }
                 _ => assert_eq!(
                     request["params"].as_array().unwrap().last().unwrap(),
-                    &json!({"blockHash": input.block_hash, "requireCanonical": true})
+                    &json!({"blockHash": B256::repeat_byte(0x11), "requireCanonical": true})
                 ),
             }
             assert!(!request.to_string().contains("latest"));
@@ -199,44 +192,259 @@ fn rpc_world_pins_every_fact_and_keeps_unrequested_facts_unknown() {
 }
 
 #[test]
-fn absence_is_explicit_and_distinct_from_present_empty_code() {
+fn latest_number_and_hash_pin_once_across_incremental_acquisition() {
     thread::scope(|scope| {
-        for present in [true, false] {
+        for block in [
+            RpcBlock::Latest,
+            RpcBlock::Number(42),
+            RpcBlock::Hash(B256::repeat_byte(0x11)),
+        ] {
+            let resolutions = Arc::new(Mutex::new(0));
+            let observed_resolutions = Arc::clone(&resolutions);
+            let server = Server::new(scope, move |request| {
+                let mut response = healthy(request);
+                if request["method"] == "eth_chainId" {
+                    response["result"] = json!("0x38");
+                }
+                if request["method"] == "eth_getBlockByNumber" {
+                    let mut resolutions = observed_resolutions.lock().unwrap();
+                    *resolutions += 1;
+                    // Resolving the selector again would observe a different
+                    // head and mix account facts from two snapshots.
+                    if *resolutions > 1 {
+                        response["result"]["hash"] = json!(B256::repeat_byte(0x55));
+                        response["result"]["number"] = json!("0x2b");
+                    }
+                }
+                Reply::Json(response)
+            });
+            let mut input = server.input();
+            input.block = block;
+            let mut session = Session::load(&input).unwrap();
+            assert!(session.fetch_account(Address::repeat_byte(0x44)).unwrap());
+            assert_eq!(
+                session.world().identity(),
+                &SnapshotIdentity::Chain {
+                    chain_id: U256::from(56),
+                    block_hash: B256::repeat_byte(0x11)
+                }
+            );
+            let requests = server.requests();
+            assert_eq!(requests.len(), 15);
+            assert_eq!(
+                *resolutions.lock().unwrap(),
+                usize::from(!matches!(block, RpcBlock::Hash(_)))
+            );
+            for request in requests {
+                match request["method"].as_str().unwrap() {
+                    "eth_chainId" => assert_eq!(request["params"], json!([])),
+                    "eth_getBlockByNumber" => assert_eq!(
+                        request["params"],
+                        match block {
+                            RpcBlock::Latest => json!(["latest", false]),
+                            RpcBlock::Number(number) => json!([format!("{number:#x}"), false]),
+                            RpcBlock::Hash(_) => unreachable!(),
+                        }
+                    ),
+                    "eth_getBlockByHash" => {
+                        assert_eq!(request["params"], json!([B256::repeat_byte(0x11), false]))
+                    }
+                    method => {
+                        assert!(matches!(
+                            method,
+                            "eth_getCode"
+                                | "eth_getBalance"
+                                | "eth_getTransactionCount"
+                                | "eth_getStorageAt"
+                        ));
+                        assert_eq!(
+                            request["params"].as_array().unwrap().last().unwrap(),
+                            &json!({"blockHash": B256::repeat_byte(0x11), "requireCanonical": true})
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn latest_is_the_default_and_bootstrap_failures_retain_only_known_identity() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| Reply::Json(healthy(request)));
+        let mut input = RpcInput::new(&server.endpoint, Fork::Osaka);
+        assert_eq!(input.block, RpcBlock::Latest);
+        input.max_requests = 1;
+        let error = load(&input).unwrap_err();
+        assert!(matches!(error, RpcError::AcquisitionLimit { limit: 1, .. }));
+        assert_eq!(error.context().method, "eth_getBlockByNumber");
+        assert_eq!(error.context().chain_id, Some(U256::from(1)));
+        assert_eq!(error.context().block_hash, None);
+        assert_eq!(server.requests().len(), 1);
+    });
+}
+
+#[test]
+fn explicit_number_rejects_a_different_returned_height_before_state_requests() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| Reply::Json(healthy(request)));
+        let mut input = server.input();
+        input.block = RpcBlock::Number(43);
+        let error = load(&input).unwrap_err();
+        assert!(matches!(error, RpcError::Response { .. }));
+        assert_eq!(error.context().method, "eth_getBlockByNumber");
+        assert_eq!(server.requests().len(), 2);
+    });
+}
+
+#[test]
+fn request_bound_includes_bootstrap_and_never_publishes_a_partial_account() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| Reply::Json(healthy(request)));
+        let mut input = server.input();
+        input.block = RpcBlock::Latest;
+        input.max_requests = 14;
+        let mut session = Session::load(&input).unwrap();
+        assert_eq!(session.requests(), 8);
+        let error = session
+            .fetch_account(Address::repeat_byte(0x44))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RpcError::AcquisitionLimit { limit: 14, .. }
+        ));
+        assert_eq!(error.context().method, "eth_getBlockByHash");
+        assert_eq!(error.context().block_hash, Some(B256::repeat_byte(0x11)));
+        assert!(
+            session
+                .world()
+                .account(Address::repeat_byte(0x44))
+                .is_none()
+        );
+        assert_eq!(session.requests(), 14);
+        assert_eq!(
+            server
+                .requests()
+                .iter()
+                .filter(|request| request["method"] == "eth_getBlockByNumber")
+                .count(),
+            1
+        );
+    });
+}
+
+#[test]
+fn canonical_state_rejection_never_repins_latest_or_publishes_an_account() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| {
+            if request["method"] == "eth_getCode"
+                && request["params"][0] == json!(Address::repeat_byte(0x44))
+            {
+                return Reply::Json(
+                    json!({"jsonrpc":"2.0", "id":request["id"], "error":{"code":-32000,"message":"block is no longer canonical"}}),
+                );
+            }
+            Reply::Json(healthy(request))
+        });
+        let mut input = server.input();
+        input.block = RpcBlock::Latest;
+        let mut session = Session::load(&input).unwrap();
+        let error = session
+            .fetch_account(Address::repeat_byte(0x44))
+            .unwrap_err();
+        assert!(matches!(error, RpcError::Remote { .. }));
+        assert_eq!(error.context().block_hash, Some(B256::repeat_byte(0x11)));
+        assert!(
+            session
+                .world()
+                .account(Address::repeat_byte(0x44))
+                .is_none()
+        );
+        let requests = server.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request["method"] == "eth_getBlockByNumber")
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests.last().unwrap()["params"][1],
+            json!({"blockHash": B256::repeat_byte(0x11), "requireCanonical": true})
+        );
+    });
+}
+
+#[test]
+fn zero_account_keeps_presence_and_unrequested_storage_unknown() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| {
+            let mut response = healthy(request);
+            match request["method"].as_str().unwrap() {
+                "eth_getCode" => response["result"] = json!("0x"),
+                "eth_getBalance" | "eth_getTransactionCount" => response["result"] = json!("0x0"),
+                "eth_getStorageAt" => response["result"] = json!(format!("0x{:064x}", U256::ZERO)),
+                _ => {}
+            }
+            Reply::Json(response)
+        });
+        let world = load(&server.input()).unwrap();
+        let account = world.account(Address::repeat_byte(0x22)).unwrap();
+        assert_eq!(account.existence, Existence::Unknown);
+        assert!(account.storage_unknown);
+        assert_eq!(account.storage[&U256::ZERO], Value::constant(U256::ZERO));
+        assert!(!account.storage.contains_key(&U256::from(1)));
+        assert_eq!(
+            Store::new(&world).read(
+                Address::repeat_byte(0x22),
+                &Value::constant(U256::from(1)),
+                Domain::default(),
+            ),
+            Value::top()
+        );
+    });
+}
+
+#[test]
+fn any_nonzero_ordinary_account_observation_establishes_presence() {
+    thread::scope(|scope| {
+        for nonzero in [
+            "eth_getCode",
+            "eth_getBalance",
+            "eth_getTransactionCount",
+            "eth_getStorageAt",
+        ] {
             let server = Server::new(scope, move |request| {
                 let mut response = healthy(request);
                 match request["method"].as_str().unwrap() {
-                    "eth_getCode" => response["result"] = json!("0x"),
+                    "eth_getCode" => {
+                        response["result"] = json!(if nonzero == "eth_getCode" {
+                            "0x00"
+                        } else {
+                            "0x"
+                        })
+                    }
                     "eth_getBalance" | "eth_getTransactionCount" => {
-                        response["result"] = json!("0x0")
+                        response["result"] = json!(if request["method"] == nonzero {
+                            "0x1"
+                        } else {
+                            "0x0"
+                        })
                     }
                     "eth_getStorageAt" => {
-                        response["result"] = json!(format!("0x{:064x}", U256::ZERO))
-                    }
-                    "eth_getProof" => {
-                        response["result"]["balance"] = json!("0x0");
-                        response["result"]["nonce"] = json!("0x0");
-                        response["result"]["codeHash"] =
-                            json!(if present { keccak256([]) } else { B256::ZERO });
-                        response["result"]["storageProof"][0]["value"] = json!("0x0");
+                        response["result"] = json!(format!(
+                            "0x{:064x}",
+                            U256::from(u8::from(nonzero == "eth_getStorageAt"))
+                        ))
                     }
                     _ => {}
                 }
                 Reply::Json(response)
             });
             let world = load(&server.input()).unwrap();
-            let account = world.account(Address::repeat_byte(0x22)).unwrap();
             assert_eq!(
-                account.existence,
-                if present {
-                    Existence::Present
-                } else {
-                    Existence::Absent
-                }
-            );
-            assert_eq!(account.storage_unknown, present);
-            assert_eq!(
-                world.code_hash(Address::repeat_byte(0x22)),
-                Some(if present { keccak256([]) } else { B256::ZERO })
+                world.account(Address::repeat_byte(0x22)).unwrap().existence,
+                Existence::Present
             );
         }
     });
@@ -245,11 +453,11 @@ fn absence_is_explicit_and_distinct_from_present_empty_code() {
 #[test]
 fn missing_or_mismatched_chain_and_block_fail_before_state_requests() {
     thread::scope(|scope| {
-        for case in ["chain", "missing-block", "wrong-block"] {
+        for case in ["malformed-chain", "missing-block", "wrong-block"] {
             let server = Server::new(scope, move |request| {
                 let mut response = healthy(request);
                 match (case, request["method"].as_str().unwrap()) {
-                    ("chain", "eth_chainId") => response["result"] = json!("0x2"),
+                    ("malformed-chain", "eth_chainId") => response["result"] = json!("0x01"),
                     ("missing-block", "eth_getBlockByHash") => response["result"] = Json::Null,
                     ("wrong-block", "eth_getBlockByHash") => {
                         response["result"]["hash"] = json!(B256::repeat_byte(0x12))
@@ -260,7 +468,7 @@ fn missing_or_mismatched_chain_and_block_fail_before_state_requests() {
             });
             let error = load(&server.input()).unwrap_err();
             match case {
-                "chain" => assert!(matches!(error, RpcError::ChainMismatch { .. })),
+                "malformed-chain" => assert!(matches!(error, RpcError::Response { .. })),
                 "missing-block" => assert!(matches!(error, RpcError::MissingResult { .. })),
                 _ => assert!(matches!(error, RpcError::BlockMismatch { .. })),
             }
@@ -320,8 +528,8 @@ fn state_failures_never_retry_at_latest_or_manufacture_empty_code() {
             let context = error.context();
             assert_eq!(context.method, "eth_getCode");
             assert_eq!(context.account, Some(Address::repeat_byte(0x22)));
-            assert_eq!(context.chain_id, input.chain_id);
-            assert_eq!(context.block_hash, input.block_hash);
+            assert_eq!(context.chain_id, Some(U256::from(1)));
+            assert_eq!(context.block_hash, Some(B256::repeat_byte(0x11)));
             match case {
                 "unsupported-selector" => {
                     assert!(matches!(error, RpcError::Remote { code: -32602, .. }))
@@ -350,42 +558,24 @@ fn state_failures_never_retry_at_latest_or_manufacture_empty_code() {
 }
 
 #[test]
-fn conflicting_account_hash_nonce_balance_address_and_slots_are_rejected() {
+fn malformed_ordinary_state_is_rejected_without_partial_account() {
     thread::scope(|scope| {
-        for field in [
-            "codeHash",
-            "nonce",
-            "balance",
-            "address",
-            "storage",
-            "missing-slot",
-            "duplicate-slot",
+        for method in [
+            "eth_getBalance",
+            "eth_getTransactionCount",
+            "eth_getStorageAt",
         ] {
             let server = Server::new(scope, move |request| {
                 let mut response = healthy(request);
-                if request["method"] == "eth_getProof" {
-                    match field {
-                        "codeHash" => response["result"][field] = json!(B256::repeat_byte(0x99)),
-                        "nonce" | "balance" => response["result"][field] = json!("0x8"),
-                        "address" => response["result"][field] = json!(Address::repeat_byte(0x99)),
-                        "storage" => response["result"]["storageProof"][0]["value"] = json!("0x8"),
-                        "missing-slot" => response["result"]["storageProof"] = json!([]),
-                        "duplicate-slot" => {
-                            response["result"]["storageProof"] =
-                                json!([{"key":"0x1","value":"0x7","proof":[]}])
-                        }
-                        _ => unreachable!(),
-                    }
+                if request["method"] == method {
+                    response["result"] = json!("0x01");
                 }
                 Reply::Json(response)
             });
             let error = load(&server.input()).unwrap_err();
+            assert_eq!(error.context().method, method);
             assert_eq!(error.context().account, Some(Address::repeat_byte(0x22)));
-            if field == "codeHash" {
-                assert!(matches!(error, RpcError::World { .. }));
-            } else {
-                assert!(matches!(error, RpcError::Response { .. }));
-            }
+            assert!(matches!(error, RpcError::Response { .. }));
         }
     });
 }
@@ -413,31 +603,20 @@ fn pinned_snapshot_acquisition_rejects_endpoint_chain_switch() {
 }
 
 #[test]
-fn connection_failures_are_typed_and_carry_the_expected_snapshot() {
+fn bootstrap_connection_failure_does_not_fabricate_snapshot_identity() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
-    let input = RpcInput::new(
-        endpoint,
-        Fork::Osaka,
-        U256::from(1),
-        B256::repeat_byte(0x11),
-    );
+    let input = RpcInput::new(endpoint, Fork::Osaka);
     let error = load(&input).unwrap_err();
     assert!(matches!(error, RpcError::Transport { .. }));
     assert_eq!(error.context().method, "eth_chainId");
-    assert_eq!(error.context().block_hash, input.block_hash);
+    assert_eq!(error.context().chain_id, None);
+    assert_eq!(error.context().block_hash, None);
 }
 
 fn incremental_healthy(request: &Json) -> Json {
-    let mut response = healthy(request);
-    if request["method"] == "eth_getProof" {
-        response["result"]["address"] = request["params"][0].clone();
-        if request["params"][1].as_array().unwrap().is_empty() {
-            response["result"]["storageProof"] = json!([]);
-        }
-    }
-    response
+    healthy(request)
 }
 
 #[test]
@@ -446,19 +625,19 @@ fn incremental_accounts_are_cached_and_keep_unrequested_storage_unknown() {
         let server = Server::new(scope, |request| Reply::Json(incremental_healthy(request)));
         let input = server.input();
         let mut session = Session::load(&input).unwrap();
-        assert_eq!(session.requests(), 9);
+        assert_eq!(session.requests(), 8);
         assert!(!session.fetch_account(Address::repeat_byte(0x22)).unwrap());
-        assert_eq!(session.requests(), 9);
+        assert_eq!(session.requests(), 8);
         assert!(session.fetch_account(Address::repeat_byte(0x44)).unwrap());
-        assert_eq!(session.requests(), 17);
+        assert_eq!(session.requests(), 15);
         let account = session.world().account(Address::repeat_byte(0x44)).unwrap();
         assert_eq!(account.balance.singleton(), Some(U256::from(9)));
         assert_eq!(account.nonce.singleton(), Some(U256::from(1)));
         assert!(account.storage_unknown);
         assert!(account.storage.is_empty());
         assert!(!session.fetch_account(Address::repeat_byte(0x44)).unwrap());
-        assert_eq!(session.requests(), 17);
-        assert_eq!(server.requests().len(), 17);
+        assert_eq!(session.requests(), 15);
+        assert_eq!(server.requests().len(), 15);
         for request in server.requests() {
             if !matches!(
                 request["method"].as_str(),
@@ -466,7 +645,7 @@ fn incremental_accounts_are_cached_and_keep_unrequested_storage_unknown() {
             ) {
                 assert_eq!(
                     request["params"].as_array().unwrap().last().unwrap(),
-                    &json!({"blockHash": input.block_hash, "requireCanonical": true})
+                    &json!({"blockHash": B256::repeat_byte(0x11), "requireCanonical": true})
                 );
             }
         }
@@ -550,7 +729,7 @@ fn remote_message_credentials_are_not_copied_to_public_failure_evidence() {
         let failure = error.failure();
         assert_eq!(failure.kind, RpcFailureKind::Remote);
         assert_eq!(failure.context.account, Some(Address::repeat_byte(0x44)));
-        assert_eq!(failure.context.block_hash, B256::repeat_byte(0x11));
+        assert_eq!(failure.context.block_hash, Some(B256::repeat_byte(0x11)));
         let serialized = serde_json::to_string(&failure).unwrap();
         for secret in [
             "https://",
@@ -613,7 +792,7 @@ fn incremental_timeout_and_response_limit_remain_typed_without_partial_cache() {
                     .account(Address::repeat_byte(0x44))
                     .is_none()
             );
-            assert_eq!(session.requests(), 12);
+            assert_eq!(session.requests(), 11);
         }
     });
 }
@@ -660,6 +839,6 @@ fn incremental_body_timeout_is_a_total_deadline_despite_continuing_chunks() {
                 .account(Address::repeat_byte(0x22))
                 .is_some()
         );
-        assert_eq!(session.requests(), 12);
+        assert_eq!(session.requests(), 11);
     });
 }

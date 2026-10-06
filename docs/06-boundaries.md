@@ -103,7 +103,7 @@ nix run . -- analyze --world examples/worlds/missing-code.json --entry 0x0000000
 
 ## 4. 固定世界是起点，执行状态还会变化
 
-**世界快照**是本次分析的初始事实，例如某账户的代码、初始 storage、余额和 nonce。RPC 模式把这些事实绑定到固定 chain ID 与 block hash，并可在该身份下增加已验证的账户观察。每轮分析使用一组固定事实。**Store** 是执行期间会变化的事务状态，保存后续的 storage、transient storage、余额、nonce、代码与账户生命周期。
+**世界快照**是本次分析的初始事实，例如某账户的代码、初始 storage、余额和 nonce。RPC 模式从提供者读取 chain ID，把所选区块号或启动时的一次 `latest` 解析为固定 block hash，也可直接指定 hash；后续账户观察均使用这个身份。观察完全信任提供者，未请求的 slot 保持未知；空代码、零余额和零 nonce 不证明账户不存在。每轮分析使用一组固定事实。**Store** 是执行期间会变化的事务状态，保存后续的 storage、transient storage、余额、nonce、代码与账户生命周期。
 
 ```mermaid
 flowchart TD
@@ -147,7 +147,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 | 部分 | 已建模的内容 | 阅读结果时保留的限制 |
 | --- | --- | --- |
-| 输入事实 | 多账户 JSON，或显式 chain ID/区块 hash 的 RPC 采集；默认按需增加具体 callee 事实并从入口重跑，保存身份、来源与指纹 | 离线输入不联网；未知目标与未选 slot 保持未知；信任 RPC 提供者，不验证 Merkle proof；不支持 EOF 代码格式 |
+| 输入事实 | 多账户 JSON，或自动读取 chain ID 并固定区块 hash 的 RPC 采集；默认按需增加具体 callee 事实并从入口重跑，保存身份、来源与指纹 | 离线输入不联网；未知目标、未选 slot 和无法判定的账户存在性保持未知；完全信任 RPC 提供者，不请求证明；固定后不回退到移动标签；不支持 EOF 代码格式 |
 | 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；默认组合有限常量、KnownBits、Interval、Congruence 和 Provenance；按 fork 启用 CLZ | 常量集合仍有容量；事实交换有局部上限；没有完整变量关系和路径约束 |
 | 局部关系 | 同一基本块内受信任的复制身份支持 `x XOR x=0` 等规则；数值约束参与零/非零判断 | 来源标签或摘要相同不证明相等；身份不会跨块、汇合、调用或摘要边界保存；不会自动沿 `x==5` 的 true 边收窄 x |
 | 内存与数据 | 每帧独立抽象字节数组，load/store/copy、calldata、returndata、返回区传播 | 未知偏移或字节会降低精度；无法追踪的范围留下内存前沿 |
@@ -189,7 +189,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | 单账户图和栈 SSA | 解码、跳转、栈故障、φ、支配和使用；实际轨迹的块入口、边、出栈与 SSA 值 | [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs)、[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) |
 | 跨合约轨迹与效果 | 三个 fork 的调用返回、共享实现、CALLCODE、copy、回滚、static、日志、重入；实际访问入口与子帧 | [`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) |
 | 摘要与创建 | 摘要开/关的联合结果、图与 SSA；initcode/runtime、nonce、碰撞、回滚、代码限制、EIP-6780 | [`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)、[`creation.rs`](../crates/evm-abstract/tests/creation.rs) |
-| 原生调用与事实采集 | 各 fork 预编译返回/失败、输入/工作前沿；localhost HTTP 的固定 selector、缺失/冲突事实、超时与无 moving-tag 回退 | [`precompiles.rs`](../crates/evm-abstract/tests/precompiles.rs)、[`rpc/tests.rs`](../crates/evm-abstract/src/world/rpc/tests.rs) |
+| 原生调用与事实采集 | 各 fork 预编译返回/失败、输入/工作前沿；localhost HTTP 的首次区块解析、固定 selector、缺失结果、超时与无 moving-tag 回退 | [`precompiles.rs`](../crates/evm-abstract/tests/precompiles.rs)、[`rpc/tests.rs`](../crates/evm-abstract/src/world/rpc/tests.rs) |
 | IR 和实际 CLI | 跨合约 SSA 与完整机器图一致，损坏的转移/效果流被拒绝；JSON/文本/DOT、错误/退出码、安装二进制样例 | [`world/verify.rs`](../crates/evm-abstract/src/ssa/world/verify.rs)、[`cli.rs`](../crates/evm-abstract-cli/tests/cli.rs)、[`flake.nix`](../flake.nix) |
 
 跨合约对照不只是“某个 slot 的结果集合含有答案”：它要求**同一个抽象 outcome**同时覆盖该具体执行的返回数据、storage、合约余额与日志。这能防止把来自互不相容路径的独立片段拼成一个假结果。
