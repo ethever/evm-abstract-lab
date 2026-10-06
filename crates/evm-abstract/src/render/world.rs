@@ -12,8 +12,21 @@ use alloy_primitives::{Address, B256, keccak256};
 use serde::Serialize;
 use std::fmt::Write;
 
+mod explain;
+mod ssa;
 mod text;
 pub use text::render as text;
+
+/// 从捕获的代码、完整机器报告和已验证 SSA 生成跨合约教学解释。
+/// 未完成分析保留报告及前沿，不产生完整 SSA。
+pub fn explain(analysis: &WorldAnalysis) -> Result<String, crate::ssa::SsaError> {
+    explain::render(analysis)
+}
+
+/// 显示与该分析相匹配、已经验证的帧栈和整机效果 SSA。
+pub fn ssa(analysis: &WorldAnalysis, ir: &crate::ssa::WorldSsa) -> String {
+    ssa::render(analysis, ir)
+}
 
 /// DOT graph preserving call/return/revert/failure edge labels and frontiers.
 pub fn dot(analysis: &WorldAnalysis) -> String {

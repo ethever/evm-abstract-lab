@@ -242,3 +242,23 @@ fn invalid_cli_quantities_are_rejected_during_argument_validation() {
         }
     }
 }
+
+#[test]
+fn explain_accepts_every_world_analysis_option_except_output_selection() {
+    use clap::CommandFactory;
+    let cli = Cli::command();
+    let analyze = cli.find_subcommand("analyze").unwrap();
+    let explain = cli.find_subcommand("explain").unwrap();
+    let explain_flags = explain
+        .get_arguments()
+        .filter_map(|arg| arg.get_long())
+        .collect::<std::collections::BTreeSet<_>>();
+    for flag in analyze.get_arguments().filter_map(|arg| arg.get_long()) {
+        if !matches!(flag, "format" | "ssa") {
+            assert!(
+                explain_flags.contains(flag),
+                "world explain is missing --{flag}"
+            );
+        }
+    }
+}

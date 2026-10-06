@@ -13,7 +13,15 @@
 | A | `0101` | 调用 B；读输出；相等时写 slot 0=1，否则写 2 |
 | B | `0200` | 把数值 1 编码为 32 字节并返回 |
 
-**第一步，生成结果。** `analyze --world` 接收一组账户事实，`--entry` 选择从哪个账户开始：
+**第一步，生成结果。** `explain --world` 接收一组账户事实，`--entry` 选择从哪个账户开始。它依次显示实际捕获代码的反汇编、完整跨合约分析报告，以及完成图的可读 SSA：
+
+```bash
+nix run . -- explain \
+  --world examples/worlds/call-return-branch.json \
+  --entry 0x0000000000000000000000000000000000000101
+```
+
+需要用 `jq` 查询字段时，另用 `analyze --format json` 导出同一分析：
 
 ```bash
 nix run . -- analyze \
@@ -68,10 +76,10 @@ jq '.status, .edges,
 
 ### 默认文本怎样读
 
-先运行同一例子的默认文本输出：
+先运行同一例子的 `explain` 文本输出：
 
 ```bash
-nix run . -- analyze \
+nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
   --entry 0x0000000000000000000000000000000000000101
 ```
@@ -82,6 +90,7 @@ nix run . -- analyze \
 
 | 分区 | 回答什么问题 | 怎样接着读 |
 | --- | --- | --- |
+| `Execution code` | 分析时捕获了哪些代码字节，各自属于什么代码版本？ | 结合 `C`、代码地址、`code_hash`、`mode` 读反汇编，再用活动状态 `S` 找图中的位置 |
 | `Analysis` | 本次分析是否完成，使用什么数值策略，处理了多少工作？ | 默认是 `Product`；`Incomplete` 时继续看 `Frontiers` |
 | `Snapshot` | 初始事实来自哪里，绑定了哪些快照事实？ | 看来源、快照身份和完整 fingerprint；fork 在 `Analysis` 中 |
 | `RPC acquisition`（RPC 发现模式） | 补查了哪些账户，累计查询与重跑多少次？ | 对照累计状态分配和最后一轮图；失败记录在预算中断后仍保留 |
@@ -93,6 +102,13 @@ nix run . -- analyze \
 | `Call summaries` | 哪些子调用结果被保存或复用？ | `published` 是保存数量，`hits` 是复用次数，见[第 10 课](10-snapshots-summaries-creation.md) |
 | `Diagnostics` | 哪个状态、哪条指令出现异常或精度下降？ | 回到对应 `S` 和 pc |
 | `Frontiers` | 哪些路径尚未完成，原因是什么？ | 同时读来源、停止位置和未展开的目标身份 |
+| `Verified cross-contract SSA:` | 完成的图怎样给值和状态效果命名？ | `%` 是值，`!` 是效果，`T` 是跨状态转移；结合原报告的 `S` 和边种类阅读 |
+
+`Execution code` 中的反汇编展示捕获到的整段程序，包含未必可达的基本块；`Active abstract transfers` 把它连接到相应状态，并列出该状态块转移中执行过的 pc。它没有逐条列出每条指令执行前后的栈、memory 或 storage，也不是一笔链上交易的具体步骤轨迹。原报告中的 `stack in` / `stack out` 是分析状态的入口、出口栈；中间指令的抽象值流在 SSA 中阅读。
+
+SSA 的 `%` 名字标识定义和使用，phi 按进入块的转移接收值；`!` 名字连接状态效果。一个效果包含 memory、calldata、returndata、持久/瞬态 storage、余额、nonce、代码与账户生命周期、日志、环境和回滚保存点组成的整机 bundle，当前不按内存地址或 storage slot 分割成精确 MemorySSA。`T0` 等编号表示图中的转移，其种类仍区分 Call、Return、Revert、Failure 与合约内部边。`DUP` / `SWAP` 的 results 复用既有名字；`fault` 仅标记无效 opcode 或栈异常，static 写入等其他执行失败仍在转移、诊断和 outcome 中阅读。SSA 验证完成表示这些定义、使用和图连接通过了结构检查，不证明每条抽象边都可具体执行，也不补齐已丢失的数值相关性。
+
+如果缺少代码或预算耗尽，`explain` 保留反汇编与完整部分分析报告，显示 `Incomplete` / `Frontiers` 和 `SSA unavailable`，退出码为 `2`；不会输出 `Verified cross-contract SSA:`。初始工作预算太小、尚未捕获执行代码时，`Input code observations (not execution evidence)` 展示输入快照中的代码并明确其观察来源。输入或初始 RPC 获取失败退出 `1`，没有分析结果；开始分析后的 callee 补查失败或预算限制保留 `RpcAcquisition` 部分图，退出 `2` 并省略 SSA。参数语法错误也退出 `2`，但没有分析结果。
 
 `A0` / `H0` 是当前文本的引用编号；完整地址和 hash 在图例中保留。它们不会改变 JSON 的字段或 DOT 的身份。教程中的 A、B 是给合约起的名字，不保证 A 就对应引用 `A0`。`B0` 仍是某段代码内的基本块编号；结合 `code` 和 `H` 引用，才能确认正在看哪份代码。
 
@@ -148,7 +164,7 @@ CALL 自动复制的长度至多是请求输出长度与实际返回长度的较
 可运行 [`returndata-copy.json`](../examples/worlds/returndata-copy.json) 观察这一点：CALL 的输出长度为零，A 随后手动复制，成功轨迹仍返回 32 字节数值 1。
 
 ```bash
-nix run . -- analyze \
+nix run . -- explain \
   --world examples/worlds/returndata-copy.json \
   --entry 0x0000000000000000000000000000000000000101
 ```
@@ -182,6 +198,8 @@ jq '[.states[] | .entry.call_stack
 JSON 的执行数据在 `entry.call_stack.root.state` 和 `entry.call_stack.children[].state` 中；child 的 `continuation` 与 `state` 并列。`key.frames` 仍按外层到内层保存帧的结构身份，用于工作表索引，并不是可增删的执行调用栈。帧类型见 [`frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)，调用栈见 [`stack.rs`](../crates/evm-abstract/src/analysis/machine/stack.rs)。
 
 结构身份中的 `basic_block_index` 是当前程序的基本块索引；单程序 `cfg` / `ssa` 的状态键也使用这个名称。它不是字节偏移 PC，更不是链上区块号或 `block_hash`。真实基本块的入口 PC 可从程序的块表查到；程序末尾另有合成续接位置。
+
+`explain` 的代码目录按捕获到的代码地址、代码 hash 和帧模式区分程序版本，并列出使用它的状态账户。代理 P1、P2 可以共用 I 的同一份代码字节，但两个状态账户仍分别保留；不能仅凭 `C` 或相同 hash 把它们合并。
 
 这里必须分别读两个地址：
 

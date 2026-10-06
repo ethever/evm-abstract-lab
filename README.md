@@ -56,13 +56,15 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 ## 从单段代码到多个合约
 
-单段 `.hex` 适合学习局部计算。完整的 `analyze` 入口使用**世界文件**（world JSON）：把多个账户的代码、初始存储和其他已知事实放在一起，指定入口账户后分析整段嵌套调用。
+单段 `.hex` 适合学习局部计算。跨合约的 `explain` 和 `analyze` 入口使用**世界文件**（world JSON）：把多个账户的代码、初始存储和其他已知事实放在一起，指定入口账户后分析整段嵌套调用。
 
 ```bash
-nix run . -- analyze \
+nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
   --entry 0x0000000000000000000000000000000000000101
 ```
+
+`explain` 会串联实际捕获代码的反汇编、完整状态与效果报告、可读且已验证的跨合约 SSA。需要结构化数据时，使用 `analyze --format json`；单字节码的 `explain --file` / `--hex` 仍可使用。
 
 这个离线实验里，A 调用 B，B 返回 32 字节的数值 1，A 据此选择分支并写自己的存储。输出的 `Call` / `Return` 是调用和返回边，`outcome` 是入口执行结束时的可能结果。模型也保留 gas 不足等失败可能，成功轨迹不等于全部抽象结果。逐步解读见[第 09 课](docs/09-cross-contract.md)。
 

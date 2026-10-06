@@ -1,6 +1,7 @@
 //! CLI 只负责参数、文件和输出；分析与渲染逻辑在库中，便于逐层学习和复用。
 
 mod error;
+mod explain;
 mod number;
 mod world;
 
@@ -71,10 +72,10 @@ enum Command {
         #[arg(long, value_enum, default_value = "text")]
         format: TextFormat,
     },
-    /// Show disassembly, abstract states and SSA together for a learning example.
+    /// Explain bytecode or a multi-account world with disassembly, states and verified SSA.
     Explain {
         #[command(flatten)]
-        args: AnalysisArgs,
+        args: Box<explain::ExplainArgs>,
     },
 }
 
@@ -364,8 +365,8 @@ fn run() -> Result<ExitCode, CliError> {
                     CfgFormat::Text => {
                         let mut output = render::world::text(&analysis);
                         if let Some(ir) = ir {
-                            output.push_str("\nVerified cross-contract SSA:\n");
-                            output.push_str(&serde_json::to_string_pretty(&ir)?);
+                            output.push('\n');
+                            output.push_str(&render::world::ssa(&analysis, &ir));
                         }
                         output
                     }
@@ -421,19 +422,7 @@ fn run() -> Result<ExitCode, CliError> {
                 true,
             )
         }
-        Command::Explain { args } => {
-            let analysis = args.analyze()?;
-            let mut text = render::disassembly(analysis.program());
-            text.push('\n');
-            text.push_str(&render::cfg(&analysis));
-            text.push('\n');
-            if analysis.status() == Status::Converged {
-                text.push_str(&render::ssa(&analysis, &ssa::build(&analysis)?));
-            } else {
-                text.push_str("SSA unavailable: analysis frontiers remain\n");
-            }
-            (text, analysis.status() == Status::Converged)
-        }
+        Command::Explain { args } => args.run()?,
     };
     let mut stdout = io::stdout().lock();
     match writeln!(stdout, "{output}") {

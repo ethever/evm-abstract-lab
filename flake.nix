@@ -241,6 +241,22 @@
                   jq -e 'any(.states[]; .entry.store.pending_destruction["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"] == true and .entry.store.codes["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"].Runtime.byte_len == 8) and any(.outcomes[]; .kind == "Return" and .store.balances["0x0000000000000000000000000000000000000200"].Constants == ["0x7"] and any(.store.account_observations[]; .address == "0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb" and .existence == "absent" and .code_size == 0 and .nonce.Constants == ["0x0"]))' destruction.json > /dev/null
                   evm-abstract analyze --world ${./examples/worlds/identity-precompile.json} --entry 0x0000000000000000000000000000000000000101 --format json > native.json
                   jq -e 'any(.states[]; .key.frames[-1].mode == {"Precompile":"0x0000000000000000000000000000000000000004"}) and any(.outcomes[]; .kind == "Return" and ((.data.bytes["31"].Constants // []) | index("0x2a")) != null)' native.json > /dev/null
+                  # Installed explain must cover actual call/creation code and preserve partial evidence.
+                  evm-abstract explain --world ${./examples/worlds/call-return-branch.json} --entry 0x0000000000000000000000000000000000000101 > explain-call.txt
+                  grep -q 'Execution code' explain-call.txt
+                  grep -q 'Captured instruction list' explain-call.txt
+                  grep -q 'Verified cross-contract SSA:' explain-call.txt
+                  grep -q 'deferred result:' explain-call.txt
+                  evm-abstract explain --world ${./examples/worlds/create-runtime.json} --entry 0x0000000000000000000000000000000000000101 > explain-create.txt
+                  grep -q 'mode=InitCode' explain-create.txt
+                  grep -q 'mode=Runtime' explain-create.txt
+                  grep -q 'CREATE/CREATE2 address' explain-create.txt
+                  evm-abstract explain --world ${./examples/worlds/call-return-branch.json} --entry 0x0000000000000000000000000000000000000101 --max-work 1 > explain-partial.txt && exit 1 || test "$?" = 2
+                  grep -q 'Input code observations (not execution evidence)' explain-partial.txt
+                  grep -q 'SSA unavailable' explain-partial.txt
+                  if grep -q 'Verified cross-contract SSA:' explain-partial.txt; then exit 1; fi
+                  evm-abstract explain --file ${./examples/straight-line.hex} > explain-program.txt
+                  grep -q 'stack SSA:' explain-program.txt
                   evm-abstract analyze --world ${./examples/worlds/summary-reuse.json} --entry 0x0000000000000000000000000000000000000101 > summary.txt
                   grep -Eq 'hits=[1-9][0-9]*' summary.txt
                   grep -q 'reused_at=' summary.txt
@@ -271,7 +287,7 @@
                   dot -Tsvg diamond.dot -o diamond.svg
                   test -s diamond.svg
                   mkdir $out
-                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt $out/
+                  cp diamond.dot diamond.svg proxies.dot proxies.svg summaries.dot summaries.svg creation.dot creation.svg summary-on.json summary-off.json creation.json destruction.json native.json summary.txt explain-call.txt explain-create.txt explain-partial.txt explain-program.txt $out/
                 '';
           };
           devShells.default = craneLib.devShell {

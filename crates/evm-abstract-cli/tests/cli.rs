@@ -2,6 +2,9 @@
 
 use std::process::Command;
 
+#[path = "cli/explain.rs"]
+mod explain;
+
 #[path = "cli/domains.rs"]
 mod domains;
 #[path = "cli/numbers.rs"]
