@@ -68,6 +68,8 @@ impl SummaryInput {
                 .saturating_add(frame.calldata.work_size())
                 .saturating_add(frame.returndata.work_size())
                 .saturating_add(frame.saved_store.state().work_size())
+                // 精确输入比较和认证也必须计入实际跳转历史，使用同一工作账本。
+                .saturating_add(frame.key.jump_history.len())
                 .saturating_add(
                     frame
                         .program

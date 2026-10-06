@@ -18,14 +18,6 @@ fn validation_reports_typed_errors_without_entering_the_engine() {
             Err(ConfigError::Constants)
         ));
     }
-    assert!(matches!(
-        Config {
-            context_depth: 4,
-            ..Config::default()
-        }
-        .validate(),
-        Err(ConfigError::Context)
-    ));
     for config in [
         Config {
             max_states: 0,
@@ -43,19 +35,26 @@ fn validation_reports_typed_errors_without_entering_the_engine() {
 #[test]
 fn validated_boundary_values_keep_their_original_options() {
     for capacity in [1, 64] {
-        let validated = Config {
-            max_constants: capacity,
-            context_depth: 3,
-            max_states: 1,
-            max_transfers: 1,
+        for depth in [0, 3, 8, 10, usize::MAX] {
+            let validated = Config {
+                max_constants: capacity,
+                context_depth: depth,
+                max_states: 1,
+                max_transfers: 1,
+            }
+            .validate()
+            .unwrap();
+            assert_eq!(validated.config().max_constants, capacity);
+            assert_eq!(validated.config().context_depth, depth);
+            assert_eq!(validated.config().max_states, 1);
+            assert_eq!(validated.config().max_transfers, 1);
         }
-        .validate()
-        .unwrap();
-        assert_eq!(validated.config().max_constants, capacity);
-        assert_eq!(validated.config().context_depth, 3);
-        assert_eq!(validated.config().max_states, 1);
-        assert_eq!(validated.config().max_transfers, 1);
     }
+}
+
+#[test]
+fn default_context_depth_is_eight() {
+    assert_eq!(Config::default().context_depth, 8);
 }
 
 #[test]
@@ -66,6 +65,8 @@ fn admitted_domain_capacity_controls_the_actual_join() {
             Program::from_hex(diamond).unwrap(),
             Config {
                 max_constants: capacity,
+                // 本测试检查域容量对汇合的影响，主动关闭上下文区分。
+                context_depth: 0,
                 ..Config::default()
             },
         )

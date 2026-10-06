@@ -62,8 +62,8 @@ U256::MAX 显示为 64 个十六进制 `f`。源码里的 `args[0]` 是先弹出
 预测 diamond 在 `pc=0x0e` 的入口值，以及加 10 后的值：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --max-constants 1
-nix run . -- cfg --file examples/diamond.hex --max-constants 2
+nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 1
+nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 2
 ```
 
 记录两次的 `status`、汇合点 `stack in`、`stack out`。增加容量改变了程序还是分析表示？
@@ -82,7 +82,7 @@ nix run . -- cfg --file examples/diamond.hex --max-constants 2
 
 ```bash
 nix run . -- ssa --hex 60018060029000
-nix run . -- ssa --file examples/diamond.hex
+nix run . -- ssa --file examples/diamond.hex --context-depth 0
 ```
 
 回答：最终有三个栈槽位，为什么只有两个值定义？diamond 的 `%0` 为什么不是第一条 PUSH？从 S1 进入汇合点时，φ 接收哪个名字？
@@ -150,9 +150,9 @@ context 的数字是十进制来源块起始 pc；14 即 `0x0e`。验收需解�
 ## 7. 分辨“值未知”和“分析没做完”
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --max-constants 1
-nix run . -- cfg --file examples/loop.hex --max-transfers 1
-nix run . -- cfg --file examples/loop.hex
+nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 1
+nix run . -- cfg --file examples/loop.hex --context-depth 0 --max-transfers 1
+nix run . -- cfg --file examples/loop.hex --context-depth 0
 ```
 
 比较状态、诊断和 frontier。预算只有 1 时，能否把未执行状态的 `stack out []` 当作程序结果？
@@ -161,7 +161,7 @@ nix run . -- cfg --file examples/loop.hex
 
 diamond 的 Top 是精度扩大，分析为 `Converged`。限制 transfer 的 loop 为 `Incomplete`、退出码 2，留下 `Transfers` 前沿；默认预算则完成传播。未执行状态的临时出口不代表真实效果，缺少后续边也不能用于证明不可达。
 
-额外运行 `ssa --file examples/loop.hex --max-transfers 1`，应拒绝构建 SSA。解释拒绝是因为图未完成，而不是循环本身不允许 SSA。
+额外运行 `ssa --file examples/loop.hex --context-depth 0 --max-transfers 1`，应拒绝构建 SSA。解释拒绝是因为图未完成，而不是循环本身不允许 SSA。
 
 </details>
 

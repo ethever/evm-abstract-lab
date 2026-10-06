@@ -28,10 +28,10 @@
 运行：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex
+nix run . -- cfg --file examples/diamond.hex --context-depth 0
 ```
 
-找到 pc=`0x000e` 的汇合状态，当前输出为：
+本课显式使用 `--context-depth 0`，不按跳转历史分组，以便观察同一状态内的值集合汇合。默认值 8 的分组方式留到[第 05 课](05-sensitivity.md)比较。找到 pc=`0x000e` 的汇合状态，当前输出为：
 
 ```text
 S3 | B3 @ 0x000e | stack height=1 | context=[]
@@ -78,7 +78,7 @@ Top **不是**“没有值”，也不是分析停止。比如未知 calldata �
 默认每个集合最多保存 8 个不同常量。超过容量时升到 Top，而不是删掉部分元素。用同一个程序缩小容量：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --max-constants 1
+nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 1
 ```
 
 pc=`0x000e` 现在显示 `stack in [⊤]`、`stack out [⊤]`。容量 1 无法保存 `{1,2}`；Top 虽然允许更多值，却仍包含真实的 1 和 2。若随意删掉 2，才会遗漏真实行为。

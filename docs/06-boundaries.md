@@ -17,7 +17,7 @@
 ### 实验 A：精度下降，但分析完成
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --max-constants 1
+nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-constants 1
 ```
 
 输出是 `status=Converged`。汇合点 `pc=0x0e` 的 `stack in [⊤]`、`stack out [⊤]`，原因是容量 1 放不下 `{1,2}`。分析扩大了可能值范围，并把扩大后的信息继续传播到结束。
@@ -25,7 +25,7 @@ nix run . -- cfg --file examples/diamond.hex --max-constants 1
 ### 实验 B：预算用尽，传播尚未完成
 
 ```bash
-nix run . -- cfg --file examples/loop.hex --max-transfers 1
+nix run . -- cfg --file examples/loop.hex --context-depth 0 --max-transfers 1
 ```
 
 输出包含：

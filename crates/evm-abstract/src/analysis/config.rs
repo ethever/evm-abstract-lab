@@ -14,7 +14,8 @@ use thiserror::Error;
 pub struct Config {
     /// 每个槽位最多保留的常量数，范围 1..=64。
     pub max_constants: usize,
-    /// 保留最近 k 个跳转来源块，范围 0..=3；0 代表上下文不敏感。
+    /// 保留最近 k 个跳转来源块；0 代表上下文不敏感，默认 8。
+    /// 接受任意 usize，不按 k 预分配；实际历史增长受执行资源预算约束。
     pub context_depth: usize,
     /// 可创建的状态数上限；限制触发后结果是 Incomplete。
     pub max_states: usize,
@@ -26,7 +27,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             max_constants: 8,
-            context_depth: 0,
+            context_depth: 8,
             max_states: 4096,
             max_transfers: 100_000,
         }
@@ -39,9 +40,6 @@ pub enum ConfigError {
     /// 域容量超出教学实现允许的范围。
     #[error("max_constants must be in 1..=64")]
     Constants,
-    /// 上下文增长过快，教学实现限制到三层。
-    #[error("context_depth must be in 0..=3")]
-    Context,
     /// 资源预算不能是零。
     #[error("max_states and max_transfers must be positive")]
     Budget,
@@ -76,9 +74,6 @@ impl Config {
         let capacity = NonZeroUsize::new(self.max_constants)
             .filter(|capacity| capacity.get() <= 64)
             .ok_or(ConfigError::Constants)?;
-        if self.context_depth > 3 {
-            return Err(ConfigError::Context);
-        }
         if self.max_states == 0 || self.max_transfers == 0 {
             return Err(ConfigError::Budget);
         }

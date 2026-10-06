@@ -9,7 +9,7 @@
 运行上一课的菱形分支：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex
+nix run . -- cfg --file examples/diamond.hex --context-depth 0
 ```
 
 按基本块画出的流程是：
@@ -50,7 +50,7 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 | `S3` | 状态编号，按分析发现节点的顺序创建 |
 | `B3 @ 0x000e` | 对应基本块及其起始字节偏移 |
 | `stack height=1` | 进入该块时有 1 个栈槽位 |
-| `context=[]` | 默认不区分跳转历史 |
+| `context=[]` | 本例显式设置 k=0，不区分跳转历史 |
 | `stack in` | 已汇合的入口栈摘要 |
 | `stack out` | 最近一次块执行留下的栈摘要；异常或预算中断时可能只执行了块内前缀 |
 
@@ -62,12 +62,12 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 (基本块编号, 入口栈高, 最近 k 个跳转来源块的起始 pc)
 ```
 
-同一个键的输入允许 join；不同键保存为不同节点。节点创建后键保持不变，更新的是它的入口摘要。默认 `k=0`，历史为空。历史由 JUMP/JUMPI 所在块的起始 pc 构成，不是跳转指令自身的 pc，也不是外部 CALL 的调用栈。
+同一个键的输入允许 join；不同键保存为不同节点。节点创建后键保持不变，更新的是它的入口摘要。本课 diamond 与 loop 显式设置 `k=0`，历史为空；未指定参数时默认为 `k=8`。历史由 JUMP/JUMPI 所在块的起始 pc 构成，不是跳转指令自身的 pc，也不是外部 CALL 的调用栈。
 
 为什么栈高也要进键？运行：
 
 ```bash
-nix run . -- cfg --file examples/stack-heights.hex
+nix run . -- cfg --file examples/stack-heights.hex --context-depth 0
 ```
 
 在 pc=`0x000c`，你会看到两个状态：`S3 | B3 | stack height=1` 的输入是 `[{0x7}]`，`S4 | B3 | stack height=0` 的输入是 `[]`。空栈与一槽栈不能逐槽合并，否则会丢掉一种栈形状。这个例子直观说明：一个代码块可以有多个分析节点。
@@ -117,7 +117,7 @@ join 只扩大入口摘要，已有边只增加。已经处理过某状态，并
 **固定点（fixed point）**是再次执行和传播也不会新增摘要或边的状态。分析器需要稳定摘要，而不是把循环展开固定次数后假定结束。
 
 ```bash
-nix run . -- cfg --file examples/loop.hex
+nix run . -- cfg --file examples/loop.hex --context-depth 0
 ```
 
 这个程序先设 `i=0`，然后重复 `i=i+1`，在 `i<10` 时跳回 pc=`0x02`。具体执行的 i 依次为 0、1、2……，最后到 10 时退出。
@@ -196,7 +196,7 @@ Top 也包括非法目标。`UnknownJump` 因此还表示存在异常终止的�
 故意缩小预算：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --max-states 1 --format json
+nix run . -- cfg --file examples/diamond.hex --context-depth 0 --max-states 1 --format json
 ```
 
 此命令预期**退出码为 2**，JSON 仍会输出。看三个字段：

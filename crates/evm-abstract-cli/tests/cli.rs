@@ -62,6 +62,51 @@ fn cfg_json_includes_status_contexts_and_unknown_jump_diagnostic() {
 }
 
 #[test]
+fn cfg_file_accepts_depth_ten_and_preserves_default_and_explicit_depths() {
+    let path = format!(
+        "{}/../../examples/internal-calls.hex",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = run(&["cfg", "--file", &path, "--context-depth", "10"]);
+    assert!(
+        text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    assert!(String::from_utf8_lossy(&text.stdout).contains("context_depth=10"));
+    for explicit in [None, Some(0), Some(10), Some(usize::MAX)] {
+        let mut args = vec!["cfg", "--file", &path, "--format", "json"];
+        let depth = explicit.map(|value| value.to_string());
+        if let Some(depth) = &depth {
+            args.extend(["--context-depth", depth.as_str()]);
+        }
+        let output = run(&args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["status"], "Converged");
+        assert_eq!(json["config"]["context_depth"], explicit.unwrap_or(8));
+        let states = json["states"].as_array().unwrap();
+        if explicit == Some(0) {
+            assert!(
+                states
+                    .iter()
+                    .all(|state| { state["key"]["context"].as_array().unwrap().is_empty() })
+            );
+        } else {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| { state["key"]["context"].as_array().unwrap().len() > 3 })
+            );
+        }
+    }
+}
+
+#[test]
 fn ssa_json_carries_cfg_and_value_definitions() {
     let output = run(&["ssa", "--hex", "600160020100", "--format", "json"]);
     assert!(output.status.success());
@@ -182,6 +227,29 @@ fn analyze(name: &str, extra: &[&str]) -> std::process::Output {
     }
     args.extend(extra);
     run(&args)
+}
+
+#[test]
+fn world_analyze_uses_the_same_default_and_accepts_larger_context_depths() {
+    for explicit in [None, Some(0), Some(10), Some(usize::MAX)] {
+        let mut extra = vec!["--format", "json"];
+        let depth = explicit.map(|value| value.to_string());
+        if let Some(depth) = &depth {
+            extra.extend(["--context-depth", depth.as_str()]);
+        }
+        let output = analyze("call-return-branch", &extra);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["status"], "Converged");
+        assert_eq!(
+            json["config"]["analysis"]["context_depth"],
+            explicit.unwrap_or(8)
+        );
+    }
 }
 
 #[test]

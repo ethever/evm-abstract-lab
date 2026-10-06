@@ -9,7 +9,11 @@ use crate::{
 fn diamond() -> (Analysis, Ssa) {
     let analysis = analysis::analyze(
         Program::from_hex("600035600b576002600e565b60015b600a0100").unwrap(),
-        Config::default(),
+        // 这些损坏 IR 的测试需要两条路径汇合到同一个节点，显式关闭上下文区分。
+        Config {
+            context_depth: 0,
+            ..Config::default()
+        },
     )
     .unwrap();
     let ssa = ssa::build(&analysis).unwrap();

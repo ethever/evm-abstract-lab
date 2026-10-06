@@ -130,8 +130,8 @@ struct WorldArgs {
     /// Constants retained per value before promoting to Top.
     #[arg(long, default_value_t = 8)]
     max_constants: usize,
-    /// Recent jump-source blocks retained within each frame.
-    #[arg(long, default_value_t = 0)]
+    /// Recent jump-source blocks retained within each frame; 0 disables context sensitivity.
+    #[arg(long, default_value_t = 8)]
     context_depth: usize,
     /// Maximum abstract machine states.
     #[arg(long, default_value_t = 4096)]
@@ -175,8 +175,8 @@ struct Input {
 struct AnalysisArgs {
     #[command(flatten)]
     input: Input,
-    /// Recent jump-source blocks retained in the context (0..=3).
-    #[arg(long, default_value_t = 0)]
+    /// Recent jump-source blocks retained in the context; 0 disables context sensitivity.
+    #[arg(long, default_value_t = 8)]
     context_depth: usize,
     /// Constants retained per stack slot before promoting to Top (1..=64).
     #[arg(long, default_value_t = 8)]

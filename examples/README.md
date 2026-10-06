@@ -16,12 +16,12 @@
 | 6．[internal-calls.hex](internal-calls.hex) | 同一 helper 的两次内部跳转，比较历史长度 | helper 在 `pc=0x0e`，比较 `context_depth=0/1` | [05：跳转历史](../docs/05-sensitivity.md) |
 | 7．[osaka-clz.hex](osaka-clz.hex) | 协议版本影响指令有效性和计算跳转 | Osaka 下 CLZ(1)=255，跳到 `pc=0x08` | [08：fork](../docs/08-forks.md) |
 
-先用 `explain` 同时查看反汇编、CFG、SSA；只想看图时改用 `cfg`：
+先用 `explain` 同时查看反汇编、CFG、SSA；只想看图时改用 `cfg`。下面的 diamond 和 loop 显式使用 `--context-depth 0`，以便观察汇合与循环固定点；未指定时默认为 8：
 
 ```bash
 nix run . -- explain --file examples/straight-line.hex
-nix run . -- explain --file examples/diamond.hex
-nix run . -- cfg --file examples/loop.hex
+nix run . -- explain --file examples/diamond.hex --context-depth 0
+nix run . -- cfg --file examples/loop.hex --context-depth 0
 ```
 
 调整一个参数，比较同一个输入的结果：
@@ -76,6 +76,6 @@ A 调用 B，B 的返回数据让 A 选择分支。找输出中的 `Call` / `Ret
 
 ## 这些例子怎样被核对
 
-[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 核对前六个单账户例子的具体入口、边、出栈和值，覆盖 Cancun/Prague/Osaka 和 k=0/1/2。具体调用输入是 32 字节，前 31 字节均为 `00`：diamond/stack-heights 的末字节分别取 0 与 1；dynamic-jump 的末字节取 4，确保走到合法目标并写 storage。[`osaka.rs`](../crates/evm-abstract/tests/osaka.rs) 核对 CLZ，并验证旧 fork 下的指令故障。
+[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 核对前六个单账户例子的具体入口、边、出栈和值，覆盖 Cancun/Prague/Osaka 和 k=0/1/2/8/10。具体调用输入是 32 字节，前 31 字节均为 `00`：diamond/stack-heights 的末字节分别取 0 与 1；dynamic-jump 的末字节取 4，确保走到合法目标并写 storage。[`osaka.rs`](../crates/evm-abstract/tests/osaka.rs) 核对 CLZ，并验证旧 fork 下的指令故障。
 
 [`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 对照多账户具体轨迹和账户效果；[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs) 比较缓存开关后的最终关系；[`creation.rs`](../crates/evm-abstract/tests/creation.rs) 核对创建、延迟删除和原生调用。这些是指定样例的核对证据，范围见[第 06 课](../docs/06-boundaries.md)。

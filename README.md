@@ -25,8 +25,10 @@ nix run . -- explain --file examples/straight-line.hex
 再看有分支的程序：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex
+nix run . -- cfg --file examples/diamond.hex --context-depth 0
 ```
+
+这里显式设置 `--context-depth 0`，让两条路径在相同栈高的汇合块合并。默认值是 8，会按最近跳转来源区分状态；参数的含义见[第 05 课](docs/05-sensitivity.md)。
 
 在 `pc=0x000e` 的状态找到 `stack in [{0x1, 0x2}]`。外层是栈，内层是**一个栈槽的可能值集合**；不是栈上同时有两个值。这一步连接具体执行与抽象分析。
 
@@ -90,7 +92,7 @@ CLI 的数量参数 `--chain-id`、`--value` 和 `--slot ADDRESS:SLOT` 中的 SL
 需要可视化实际分析结果时，先导出 DOT（Graphviz 的图描述格式），再转成 SVG：
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --format dot > /tmp/diamond.dot
+nix run . -- cfg --file examples/diamond.hex --context-depth 0 --format dot > /tmp/diamond.dot
 nix develop -c dot -Tsvg /tmp/diamond.dot -o /tmp/diamond.svg
 ```
 
