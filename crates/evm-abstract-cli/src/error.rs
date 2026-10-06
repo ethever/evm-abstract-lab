@@ -21,7 +21,7 @@ pub(crate) enum CliError {
     #[error("{0}")]
     Input(InputError),
     #[error("{0}")]
-    Environment(#[source] EnvironmentInputError),
+    Environment(EnvironmentInputError),
     #[error("{0}")]
     Rpc(RpcError),
     #[error("{0}")]

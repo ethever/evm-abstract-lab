@@ -48,7 +48,7 @@ impl Default for Config {
 pub enum ConfigError {
     /// Transaction or block observations contradict a typed input invariant.
     #[error("{0}")]
-    Environment(#[from] crate::world::environment::EnvironmentError),
+    Environment(crate::world::environment::EnvironmentError),
     /// 有限常量集合的容量必须非零。
     #[error("max_constants must be positive")]
     Constants,
@@ -58,6 +58,13 @@ pub enum ConfigError {
     /// 交换精度策略必须允许至少一个原子和一轮传播。
     #[error("reduction_rounds and max_facts must be positive")]
     Facts,
+}
+
+// Keep nested errors concrete, matching the crate's no-dynamic-dispatch policy.
+impl From<crate::world::environment::EnvironmentError> for ConfigError {
+    fn from(error: crate::world::environment::EnvironmentError) -> Self {
+        Self::Environment(error)
+    }
 }
 
 /// 已完成准入验证的配置，携带由同一份参数构建的非零容量域。
