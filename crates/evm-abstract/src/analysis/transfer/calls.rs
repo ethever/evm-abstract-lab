@@ -11,7 +11,7 @@ use crate::{
     },
     bytecode::Program,
     domain::{Domain, Value},
-    world::{ByteArray, Code, Entry, Store, World},
+    world::{AddressInput, ByteArray, Code, Entry, Store, World},
 };
 use alloy_primitives::{Address, B256, U256, keccak256};
 use revm_bytecode::opcode;
@@ -87,8 +87,9 @@ pub(super) fn initial(
                     code_hash,
                     mode: code,
                     address: entry.address,
-                    caller: entry.caller,
-                    is_static: entry.is_static,
+                    address_value: entry.environment.to,
+                    caller: entry.environment.caller,
+                    is_static: entry.environment.is_static,
                     basic_block_index: 0,
                     stack_height: 0,
                     jump_history: Vec::new(),
@@ -97,9 +98,13 @@ pub(super) fn initial(
                 program,
                 stack: Vec::new(),
                 memory: ByteArray::memory(),
-                calldata: entry.calldata.project(domain),
+                calldata: entry.environment.calldata.project(domain),
+                environment_calldata: true,
                 returndata: ByteArray::empty(),
-                call_value: domain.project(&entry.value),
+                call_value: domain.project(&entry.environment.value.clone().with_symbol(
+                    crate::world::Symbol::CallValue,
+                    entry.environment.input_scope.id(),
+                )),
                 saved_store: store.snapshot(),
             },
         }),
@@ -300,8 +305,17 @@ pub(super) fn call(
         boundary(result, pc, FrontierReason::Work);
         return;
     }
+    let logical_address = result.payload.active().key.address_value;
+    let exact_symbolic_self = logical_address.as_concrete().is_none()
+        && args[1].provenance().same_identity(
+            logical_address
+                .scoped_value(context.input_scope)
+                .provenance(),
+        );
     let projected = domain.address_projection(&args[1]);
-    let mut targets = if let Some(values) = projected.constants() {
+    let mut targets = if exact_symbolic_self {
+        vec![result.payload.active().key.address]
+    } else if let Some(values) = projected.constants() {
         values.iter().map(|v| address(*v)).collect::<Vec<_>>()
     } else {
         boundary(result, pc, FrontierReason::UnknownTarget);
@@ -335,6 +349,12 @@ pub(super) fn call(
             boundary(result, pc, FrontierReason::CallDepth);
             continue;
         }
+        if context.root_address.is_some_and(|(owner, logical)| {
+            logical.as_concrete().is_none() && owner == target && !exact_symbolic_self
+        }) {
+            boundary(result, pc, FrontierReason::MissingCode(target));
+            continue;
+        }
         let caller = result.payload.active();
         let caller_address = caller.key.address;
         let balance = result.payload.store.read_balance(caller_address);
@@ -365,11 +385,39 @@ pub(super) fn call(
                 continue;
             }
         };
-        let (state_address, frame_caller, call_value) = match op {
-            opcode::CALL => (target, caller_address, value.clone()),
-            opcode::STATICCALL => (target, caller_address, zero()),
-            opcode::CALLCODE => (caller_address, caller_address, value.clone()),
-            opcode::DELEGATECALL => (caller_address, caller.key.caller, caller.call_value.clone()),
+        let (state_address, address_value, frame_caller, call_value) = match op {
+            opcode::CALL => (
+                target,
+                if exact_symbolic_self {
+                    logical_address
+                } else {
+                    AddressInput::Concrete(target)
+                },
+                caller.key.address_value,
+                value.clone(),
+            ),
+            opcode::STATICCALL => (
+                target,
+                if exact_symbolic_self {
+                    logical_address
+                } else {
+                    AddressInput::Concrete(target)
+                },
+                caller.key.address_value,
+                zero(),
+            ),
+            opcode::CALLCODE => (
+                caller_address,
+                caller.key.address_value,
+                caller.key.address_value,
+                value.clone(),
+            ),
+            opcode::DELEGATECALL => (
+                caller_address,
+                caller.key.address_value,
+                caller.key.caller,
+                caller.call_value.clone(),
+            ),
             _ => unreachable!(),
         };
         let saved_store = result.payload.store.snapshot();
@@ -401,6 +449,7 @@ pub(super) fn call(
                     code_hash,
                     mode: code,
                     address: state_address,
+                    address_value,
                     caller: frame_caller,
                     is_static: caller.key.is_static || op == opcode::STATICCALL,
                     basic_block_index: 0,
@@ -412,6 +461,7 @@ pub(super) fn call(
                 stack: Vec::new(),
                 memory: ByteArray::memory(),
                 calldata,
+                environment_calldata: false,
                 returndata: ByteArray::empty(),
                 call_value,
                 saved_store,

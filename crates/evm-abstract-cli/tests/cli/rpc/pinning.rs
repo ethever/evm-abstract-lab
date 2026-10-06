@@ -1,7 +1,7 @@
 //! Pin a moving RPC head once across execution and discovered-call restarts.
 
 use super::{BLOCK, CALLEE, ENTRY, Fixture, LEAF, Reply, RpcServer, call, requests_for};
-use crate::run;
+use crate::run_concrete;
 use serde_json::{Value as Json, json};
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -52,14 +52,14 @@ fn latest_number_and_hash_pin_once_for_analyze_and_explain_with_recursive_discov
                     }
                     Reply::Json(reply)
                 });
-                let mut args = vec![command, "--rpc", &server.endpoint, "--entry", ENTRY];
+                let mut args = vec![command, "--rpc", &server.endpoint, "--evm.to", ENTRY];
                 args.extend_from_slice(&selector);
                 if command == "analyze" {
                     args.extend(["--format", "json"]);
                 } else {
                     args.push("--verbose");
                 }
-                let output = run(&args);
+                let output = run_concrete(&args);
                 assert!(
                     output.status.success(),
                     "{args:?}: {}",
@@ -135,6 +135,81 @@ fn latest_number_and_hash_pin_once_for_analyze_and_explain_with_recursive_discov
                         &json!({"blockHash":BLOCK,"requireCanonical":true})
                     );
                 }
+            }
+        }
+    });
+}
+
+#[test]
+fn rpc_identity_and_execution_chain_id_are_independent_with_symbolic_call_defaults() {
+    thread::scope(|scope| {
+        for no_discovery in [false, true] {
+            for execution_chain in [None, Some("1")] {
+                let fixture = Fixture::new(&[(ENTRY, "4633321400")]);
+                let server = RpcServer::new(scope, move |request| {
+                    let Reply::Json(mut reply) = fixture.reply(request) else {
+                        unreachable!()
+                    };
+                    if request["method"] == "eth_chainId" {
+                        reply["result"] = json!("0x38");
+                    }
+                    Reply::Json(reply)
+                });
+                let mut args = vec![
+                    "analyze",
+                    "--rpc",
+                    &server.endpoint,
+                    "--evm.to",
+                    ENTRY,
+                    "--format",
+                    "json",
+                ];
+                if let Some(chain) = execution_chain {
+                    args.extend(["--evm.chain-id", chain]);
+                }
+                if no_discovery {
+                    args.push("--no-rpc-discovery");
+                }
+                let output = std::process::Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
+                    .args(&args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let analysis: Json = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(analysis["world"]["identity"]["chain_id"], "0x38");
+                assert_eq!(
+                    analysis["states"][0]["exit_stack"][0]["Constants"],
+                    json!([if execution_chain.is_some() {
+                        "0x1"
+                    } else {
+                        "0x38"
+                    }])
+                );
+                assert_eq!(
+                    analysis["states"][0]["exit_stack"][1]["Constants"],
+                    json!(["0x1"])
+                );
+                assert_eq!(
+                    analysis["entry"]["environment"]["caller"],
+                    json!({"Symbolic":"Caller"})
+                );
+                assert!(analysis["entry"]["environment"]["value"]["Constants"].is_null());
+                assert!(
+                    analysis["entry"]["environment"]["calldata"]["length"]["Constants"].is_null()
+                );
+                let requests = server.finish();
+                assert_eq!(
+                    requests
+                        .iter()
+                        .filter(|r| r["method"] == "eth_getBlockByNumber")
+                        .count(),
+                    1
+                );
+                assert!(requests.iter().all(|r| r["method"] != "eth_getProof"));
             }
         }
     });

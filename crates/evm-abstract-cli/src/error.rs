@@ -8,7 +8,7 @@ use evm_abstract::{
 };
 use thiserror::Error;
 
-use crate::world::InputError;
+use crate::{evm::EnvironmentInputError, world::InputError};
 
 #[derive(Debug, Error)]
 pub(crate) enum CliError {
@@ -20,6 +20,8 @@ pub(crate) enum CliError {
     Config(ConfigError),
     #[error("{0}")]
     Input(InputError),
+    #[error("{0}")]
+    Environment(#[source] EnvironmentInputError),
     #[error("{0}")]
     Rpc(RpcError),
     #[error("{0}")]
@@ -76,5 +78,11 @@ impl From<SsaError> for CliError {
 impl From<serde_json::Error> for CliError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error)
+    }
+}
+
+impl From<EnvironmentInputError> for CliError {
+    fn from(error: EnvironmentInputError) -> Self {
+        Self::Environment(error)
     }
 }

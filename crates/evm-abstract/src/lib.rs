@@ -14,15 +14,12 @@
 //! 见仓库 `docs/06-boundaries.md`。
 //!
 //! ```
-//! use evm_abstract::{Address, Fork, U256, analysis, domain::Value,
-//!     world::{Account, ByteArray, Entry, World}, ssa};
+//! use evm_abstract::{Address, Fork, analysis, world::{Account, Entry, World}, ssa};
 //! let address = Address::repeat_byte(0x11);
 //! let mut world = World::new(Fork::Osaka, "offline example");
 //! world.insert(address, Account::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap()).unwrap();
-//! let graph = analysis::analyze_world(world, Entry {
-//!     address, caller: Address::repeat_byte(0x22), value: Value::constant(U256::ZERO),
-//!     calldata: ByteArray::empty(), is_static: false,
-//! }, analysis::ExecutionConfig::default()).unwrap();
+//! let graph = analysis::analyze_world(world, Entry::new(address),
+//!     analysis::ExecutionConfig::default()).unwrap();
 //! assert_eq!(graph.status(), analysis::Status::Converged);
 //! ssa::build_world(&graph).unwrap().verify(&graph).unwrap();
 //! ```

@@ -44,7 +44,7 @@ impl DomainSpec {
             fact_limit,
             cost_version: 1,
             widening_after_updates: 2,
-            provenance_policy: "block-local-copy-identity-v1",
+            provenance_policy: "environment-symbols-and-block-local-copy-v2",
         }
     }
     /// 已有节点发生多少次严格增强后扩大不断移动的区间端点。

@@ -2,6 +2,9 @@
 
 use std::process::Command;
 
+#[path = "cli/environment.rs"]
+mod environment;
+
 #[path = "cli/alignment.rs"]
 mod alignment;
 
@@ -25,18 +28,30 @@ mod numbers;
 #[path = "cli/rpc.rs"]
 mod rpc;
 
-fn run(args: &[&str]) -> std::process::Output {
+fn run_concrete(args: &[&str]) -> std::process::Output {
+    let mut scoped = args.to_vec();
+    if args.iter().any(|arg| matches!(*arg, "--world" | "--rpc")) {
+        for (flag, value) in [
+            ("--evm.value", "0"),
+            ("--evm.calldata", "0x"),
+            ("--evm.caller", "0x0000000000000000000000000000000000001000"),
+        ] {
+            if !args.iter().any(|arg| arg.split('=').next() == Some(flag)) {
+                scoped.extend([flag, value]);
+            }
+        }
+    }
     Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
-        .args(args)
+        .args(scoped)
         .output()
         .unwrap()
 }
 
 #[test]
 fn help_and_version_are_available() {
-    assert!(run(&["--help"]).status.success());
+    assert!(run_concrete(&["--help"]).status.success());
     assert!(
-        String::from_utf8(run(&["--version"]).stdout)
+        String::from_utf8(run_concrete(&["--version"]).stdout)
             .unwrap()
             .contains(env!("CARGO_PKG_VERSION"))
     );
@@ -44,7 +59,7 @@ fn help_and_version_are_available() {
 
 #[test]
 fn cfg_json_includes_status_contexts_and_unknown_jump_diagnostic() {
-    let output = run(&[
+    let output = run_concrete(&[
         "cfg",
         "--hex",
         "600035565b00",
@@ -87,7 +102,7 @@ fn cfg_file_accepts_depth_ten_and_preserves_default_and_explicit_depths() {
         "{}/../../examples/internal-calls.hex",
         env!("CARGO_MANIFEST_DIR")
     );
-    let text = run(&["cfg", "--file", &path, "--context-depth", "10"]);
+    let text = run_concrete(&["cfg", "--file", &path, "--context-depth", "10"]);
     assert!(
         text.status.success(),
         "{}",
@@ -100,7 +115,7 @@ fn cfg_file_accepts_depth_ten_and_preserves_default_and_explicit_depths() {
         if let Some(depth) = &depth {
             args.extend(["--context-depth", depth.as_str()]);
         }
-        let output = run(&args);
+        let output = run_concrete(&args);
         assert!(
             output.status.success(),
             "{}",
@@ -128,7 +143,7 @@ fn cfg_file_accepts_depth_ten_and_preserves_default_and_explicit_depths() {
 
 #[test]
 fn ssa_json_carries_cfg_and_value_definitions() {
-    let output = run(&["ssa", "--hex", "600160020100", "--format", "json"]);
+    let output = run_concrete(&["ssa", "--hex", "600160020100", "--format", "json"]);
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["ssa"]["value_count"], 3);
@@ -137,7 +152,7 @@ fn ssa_json_carries_cfg_and_value_definitions() {
 
 #[test]
 fn budgets_exit_two_and_never_return_partial_ssa() {
-    let cfg = run(&[
+    let cfg = run_concrete(&[
         "cfg",
         "--hex",
         "6003565b00",
@@ -150,14 +165,14 @@ fn budgets_exit_two_and_never_return_partial_ssa() {
     let json: serde_json::Value = serde_json::from_slice(&cfg.stdout).unwrap();
     assert_eq!(json["status"], "Incomplete");
     assert!(!json["frontiers"].as_array().unwrap().is_empty());
-    let ssa = run(&["ssa", "--hex", "6003565b00", "--max-states", "1"]);
+    let ssa = run_concrete(&["ssa", "--hex", "6003565b00", "--max-states", "1"]);
     assert_eq!(ssa.status.code(), Some(2));
     assert!(ssa.stdout.is_empty());
 }
 
 #[test]
 fn invalid_hex_has_a_useful_error() {
-    let output = run(&["disasm", "--hex", "zz"]);
+    let output = run_concrete(&["disasm", "--hex", "zz"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8(output.stderr)
@@ -168,10 +183,13 @@ fn invalid_hex_has_a_useful_error() {
 
 #[test]
 fn input_choices_are_exclusive_and_required() {
-    assert_eq!(run(&["cfg"]).status.code(), Some(2));
-    assert_eq!(run(&["cfg", "--fork", "osaka"]).status.code(), Some(2));
+    assert_eq!(run_concrete(&["cfg"]).status.code(), Some(2));
     assert_eq!(
-        run(&["cfg", "--hex", "00", "--file", "example.hex"])
+        run_concrete(&["cfg", "--fork", "osaka"]).status.code(),
+        Some(2)
+    );
+    assert_eq!(
+        run_concrete(&["cfg", "--hex", "00", "--file", "example.hex"])
             .status
             .code(),
         Some(2)
@@ -181,13 +199,13 @@ fn input_choices_are_exclusive_and_required() {
 #[test]
 fn fork_changes_clz_cfg_and_all_exports_report_the_selected_rules() {
     let code = "60011e60f79003565b602a00";
-    let default = run(&["cfg", "--hex", code, "--format", "json"]);
+    let default = run_concrete(&["cfg", "--hex", code, "--format", "json"]);
     assert!(default.status.success());
     let json: serde_json::Value = serde_json::from_slice(&default.stdout).unwrap();
     assert_eq!(json["program"]["fork"], "osaka");
     assert_eq!(json["edges"].as_array().unwrap().len(), 1);
     for fork in ["cancun", "prague", "osaka"] {
-        let output = run(&["cfg", "--hex", code, "--format", "json", "--fork", fork]);
+        let output = run_concrete(&["cfg", "--hex", code, "--format", "json", "--fork", fork]);
         assert!(
             output.status.success(),
             "{}",
@@ -199,25 +217,25 @@ fn fork_changes_clz_cfg_and_all_exports_report_the_selected_rules() {
             json["edges"].as_array().unwrap().len(),
             usize::from(fork == "osaka")
         );
-        let disasm = run(&["disasm", "--hex", code, "--fork", fork]);
+        let disasm = run_concrete(&["disasm", "--hex", code, "--fork", fork]);
         assert!(
             String::from_utf8(disasm.stdout)
                 .unwrap()
                 .contains(&format!("fork={fork}"))
         );
-        let dot = run(&["cfg", "--hex", code, "--fork", fork, "--format", "dot"]);
+        let dot = run_concrete(&["cfg", "--hex", code, "--fork", fork, "--format", "dot"]);
         assert!(
             String::from_utf8(dot.stdout)
                 .unwrap()
                 .contains(&format!("fork={fork}"))
         );
-        let ssa = run(&["ssa", "--hex", code, "--fork", fork, "--format", "json"]);
+        let ssa = run_concrete(&["ssa", "--hex", code, "--fork", fork, "--format", "json"]);
         assert!(ssa.status.success());
         let json: serde_json::Value = serde_json::from_slice(&ssa.stdout).unwrap();
         assert_eq!(json["analysis"]["program"]["fork"], fork);
     }
     assert_eq!(
-        run(&["cfg", "--hex", code, "--fork", "amsterdam"])
+        run_concrete(&["cfg", "--hex", code, "--fork", "amsterdam"])
             .status
             .code(),
         Some(2)
@@ -227,7 +245,7 @@ fn fork_changes_clz_cfg_and_all_exports_report_the_selected_rules() {
 #[test]
 fn delegation_code_reports_its_target_instead_of_a_false_completed_cfg() {
     let code = "ef01001111111111111111111111111111111111111111";
-    let output = run(&["cfg", "--hex", code, "--format", "json"]);
+    let output = run_concrete(&["cfg", "--hex", code, "--format", "json"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let error = String::from_utf8(output.stderr).unwrap();
@@ -242,11 +260,11 @@ fn analyze(name: &str, extra: &[&str]) -> std::process::Output {
         env!("CARGO_MANIFEST_DIR")
     );
     let mut args = vec!["analyze", "--world", &path];
-    if !extra.contains(&"--entry") {
-        args.extend(["--entry", "0x0000000000000000000000000000000000000101"]);
+    if !extra.contains(&"--evm.to") {
+        args.extend(["--evm.to", "0x0000000000000000000000000000000000000101"]);
     }
     args.extend(extra);
-    run(&args)
+    run_concrete(&args)
 }
 
 #[test]
@@ -470,10 +488,10 @@ fn requested_world_text_is_readable_and_format_switches_keep_complete_evidence()
 #[test]
 fn world_entry_and_data_errors_are_reported_before_execution() {
     for (args, expected) in [
-        (vec!["--entry", "0x01"], "entry address"),
-        (vec!["--calldata", "0xzz"], "calldata hex"),
-        (vec!["--value", "-1"], "unexpected argument"),
-        (vec!["--value", "0xzz"], "ASCII decimal digits"),
+        (vec!["--evm.to", "0x01"], "EVM environment address"),
+        (vec!["--evm.calldata", "0xzz"], "calldata hex"),
+        (vec!["--evm.value", "-1"], "unexpected argument"),
+        (vec!["--evm.value", "0xzz"], "ASCII decimal digits"),
     ] {
         let output = analyze("call-return-branch", &args);
         assert!(!output.status.success());
@@ -487,14 +505,14 @@ fn world_entry_and_data_errors_are_reported_before_execution() {
 
 #[test]
 fn entry_static_mode_faults_at_write_and_returns_a_completed_failure() {
-    let output = analyze("call-return-branch", &["--format", "json", "--static"]);
+    let output = analyze("call-return-branch", &["--format", "json", "--evm.static"]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["entry"]["is_static"], true);
+    assert_eq!(json["entry"]["environment"]["is_static"], true);
     assert_eq!(json["status"], "Converged");
     assert!(
         json["outcomes"]

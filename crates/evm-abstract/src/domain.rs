@@ -86,14 +86,18 @@ impl Domain {
             value.finite = value.finite.into_limited(self.spec.constant_capacity());
             return value;
         }
-        query::candidates(value, self.capacity())
+        let mut projected = query::candidates(value, self.capacity())
             .filter(|s| !s.is_empty() && s.len() <= self.capacity())
             .map_or_else(Value::top, |values| {
                 Self::finite(
                     FiniteConstantSet::try_from_values(values)
                         .expect("candidate filter established a nonempty set"),
                 )
-            })
+            });
+        // Immutable environment aliases are semantic input facts, independent
+        // of the numeric component profile. Temporary copy IDs still disappear.
+        projected.provenance.preserve_symbol_from(&value.provenance);
+        projected
     }
     /// 从受控的一元语义事实建立初始值。矛盾与容量不足不会变成 Top/空成功。
     pub fn from_facts(self, facts: &[facts::UnaryPredicate]) -> Result<Value, facts::FactError> {
@@ -144,7 +148,11 @@ impl Domain {
             .finite
             .join(&right.finite, self.spec.constant_capacity());
         if self.spec.profile() == Profile::ConstantsOnly {
-            return Self::finite(finite);
+            let mut joined = Self::finite(finite);
+            joined
+                .provenance
+                .preserve_symbol_from(&left.provenance.join(&right.provenance));
+            return joined;
         }
         Value {
             finite,
@@ -239,6 +247,21 @@ impl Domain {
             return Reduction::unchanged(Value::top());
         }
         if self.spec.profile() == Profile::ConstantsOnly {
+            if args.len() > 1 && args[0].provenance.same_symbol(&args[1].provenance) {
+                let exact = match op {
+                    opcode::EQ => Some(U256::from(1)),
+                    opcode::XOR
+                    | opcode::SUB
+                    | opcode::LT
+                    | opcode::GT
+                    | opcode::SLT
+                    | opcode::SGT => Some(U256::ZERO),
+                    _ => None,
+                };
+                if let Some(value) = exact {
+                    return Reduction::unchanged(Value::constant(value));
+                }
+            }
             return Reduction::unchanged(self.finite_apply(op, args));
         }
         transfer::apply(*self, op, args)

@@ -13,9 +13,9 @@ use super::{
 };
 use crate::{
     Fork,
-    world::{ByteArray, SnapshotIdentity, Store},
+    world::{ByteArray, EvmEnvironment, SnapshotIdentity, Store},
 };
-use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{B256, keccak256};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -42,8 +42,8 @@ pub struct SummaryInput {
     pub frame: RootFrame,
     /// Complete transaction store on entry, including rollback preconditions.
     pub store: Store,
-    /// Transaction ORIGIN, shared by all nested frames.
-    pub origin: Address,
+    /// Complete immutable transaction and block environment.
+    pub environment: EvmEnvironment,
     /// Available additional call depth; recursion cannot gain a fresh budget.
     pub remaining_call_depth: usize,
     /// Transaction-wide external-call depth policy used during certification.
@@ -56,8 +56,6 @@ pub struct SummaryInput {
     pub domain_spec: crate::domain::DomainSpec,
     /// Memory/range modeling policy.
     pub max_memory_bytes: usize,
-    /// Whether the root transaction environment is intentionally symbolic.
-    pub symbolic_entry_environment: bool,
 }
 
 impl SummaryInput {
@@ -79,6 +77,7 @@ impl SummaryInput {
                         .map_or(0, crate::bytecode::Program::byte_len),
                 )
                 .saturating_add(frame.call_value.work_size())
+                .saturating_add(self.environment.work_size())
                 .saturating_add(1),
             |cost, value| cost.saturating_add(value.work_size()),
         )
@@ -192,7 +191,13 @@ impl Cache {
                 crate::world::Code::Delegation(_) => 23,
                 _ => 0,
             });
-        if !budget.charge(payload.work_size().saturating_add(bytes).saturating_add(1)) {
+        if !budget.charge(
+            payload
+                .work_size()
+                .saturating_add(bytes)
+                .saturating_add(analysis.entry.environment.work_size())
+                .saturating_add(1),
+        ) {
             return None;
         }
         let fingerprint = if let Some(fingerprint) = self.fingerprint {
@@ -231,7 +236,7 @@ impl Cache {
                 .map(keccak256),
             frame,
             store: payload.store.clone(),
-            origin: analysis.entry.caller,
+            environment: analysis.entry.environment.clone(),
             remaining_call_depth: analysis
                 .config
                 .max_call_depth
@@ -241,7 +246,6 @@ impl Cache {
             max_constants: analysis.config.analysis.max_constants,
             domain_spec: analysis.config.domain().ok()?.spec(),
             max_memory_bytes: analysis.config.max_memory_bytes,
-            symbolic_entry_environment: analysis.config.symbolic_entry_environment,
         })
     }
 

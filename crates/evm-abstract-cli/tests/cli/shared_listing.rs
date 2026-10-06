@@ -1,6 +1,6 @@
 //! 真实 CLI 的四类指令列表共享布局，正文与输入程序及 JSON IR 逐条对应。
 
-use super::run;
+use super::run_concrete;
 use alloy_primitives::U256;
 use evm_abstract::bytecode::Program;
 use serde_json::{Value as Json, json};
@@ -20,7 +20,7 @@ fn example(path: &str) -> String {
 }
 
 fn stdout(args: &[&str], exit_code: i32) -> String {
-    let output = run(args);
+    let output = run_concrete(args);
     assert_eq!(
         output.status.code(),
         Some(exit_code),
@@ -263,7 +263,7 @@ fn assert_single_listing(text: &str, report: &Json) {
 }
 
 fn world(command: &str, path: &str, entry: &str, extra: &[&str], exit_code: i32) -> String {
-    let mut args = vec![command, "--world", path, "--entry", entry];
+    let mut args = vec![command, "--world", path, "--evm.to", entry];
     args.extend_from_slice(extra);
     stdout(&args, exit_code)
 }
@@ -327,7 +327,7 @@ fn assert_frame_metadata(output: &str, lines: &[&str], state: &Json, detailed: b
             .split(" | ")
             .map(|field| field.split_once('=').unwrap())
             .collect();
-        assert_eq!(fields["caller"], key["caller"].as_str().unwrap());
+        assert_eq!(fields["caller"], key["caller"]["Concrete"].as_str().unwrap());
         assert_eq!(fields["static"].parse::<bool>().unwrap(), key["is_static"]);
         assert_eq!(
             serde_json::from_str::<Json>(fields["jump history"]).unwrap(),

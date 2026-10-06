@@ -39,11 +39,15 @@ fn fixture() -> (World, Entry) {
         .insert(address, Account::from_hex("00", world.fork()).unwrap())
         .unwrap();
     let entry = Entry {
-        address,
-        caller: Address::ZERO,
-        value: Value::constant(U256::ZERO),
-        calldata: ByteArray::empty(),
-        is_static: false,
+        address: address,
+        environment: evm_abstract::world::EvmEnvironment {
+            to: (address).into(),
+            caller: (Address::ZERO).into(),
+            value: Value::constant(U256::ZERO),
+            calldata: ByteArray::empty(),
+            is_static: false,
+            ..evm_abstract::world::EvmEnvironment::default()
+        },
     };
     (world, entry)
 }
@@ -100,7 +104,7 @@ fn initial_projection_precharge_covers_open_entry_and_storage_values() {
             world = World::new(Fork::Osaka, "open storage projection budget");
             world.insert(entry.address, account).unwrap();
         } else {
-            entry.value = value;
+            entry.environment.value = value;
         }
         let graph = analyze_world(world, entry, constants_config(512, 100_000)).unwrap();
         assert_initial_work_frontier(&graph);
@@ -118,7 +122,7 @@ fn initial_projection_precharge_covers_unknown_calldata_bytes() {
         "{:?}",
         baseline.frontiers()
     );
-    entry.calldata = ByteArray::unknown();
+    entry.environment.calldata = ByteArray::unknown();
     let graph = analyze_world(world, entry, constants_config(256, 100_000)).unwrap();
     assert_initial_work_frontier(&graph);
 }
@@ -136,8 +140,8 @@ fn initial_projection_precharge_covers_interval_enumeration() {
     );
     let lower = (U256::from(1) << 200usize) - U256::from(1);
     let upper = lower + U256::from(511);
-    entry.value = open_interval(lower, upper);
-    let bits = entry.value.known_bits();
+    entry.environment.value = open_interval(lower, upper);
+    let bits = entry.environment.value.known_bits();
     assert!((!(bits.zero() | bits.one())).count_ones() >= usize::BITS as usize);
     let graph =
         analyze_world(world.clone(), entry.clone(), constants_config(512, 100_000)).unwrap();
@@ -167,7 +171,7 @@ fn maximum_capacity_open_projection_stops_even_with_maximum_work() {
                 world = World::new(Fork::Osaka, "maximum storage projection budget");
                 world.insert(entry.address, account).unwrap();
             } else {
-                entry.value = value;
+                entry.environment.value = value;
             }
             let graph =
                 analyze_world(world, entry, constants_config(usize::MAX, max_work)).unwrap();
@@ -189,7 +193,7 @@ fn maximum_capacity_top_and_small_finite_projection_remain_complete() {
     );
     for value in [Value::top(), finite] {
         let (world, mut entry) = fixture();
-        entry.value = value;
+        entry.environment.value = value;
         let graph = analyze_world(world, entry, constants_config(usize::MAX, 100_000)).unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         assert!(!graph.states().is_empty());
@@ -200,7 +204,7 @@ fn maximum_capacity_top_and_small_finite_projection_remain_complete() {
 fn open_projection_keeps_every_candidate_when_work_fits() {
     for capacity in [512, usize::MAX] {
         let (world, mut entry) = fixture();
-        entry.value = open_range(9);
+        entry.environment.value = open_range(9);
         let graph = analyze_world(world, entry, constants_config(capacity, 1_000_000)).unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         let candidates = graph.states()[0]

@@ -10,7 +10,7 @@ use crate::{
     },
     bytecode::Program,
     domain::Value,
-    world::{ByteArray, World},
+    world::{AddressInput, ByteArray, World},
 };
 use alloy_primitives::{Address, U256, keccak256};
 use revm_bytecode::opcode;
@@ -19,6 +19,8 @@ use serde::Serialize;
 /// Creation facts that cannot be represented exactly by the finite fixture model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum CreationBoundary {
+    /// The creator logical address is symbolic; hashing a placeholder is unsound.
+    UnknownCreator,
     /// The creator nonce is not finitely observed.
     UnknownNonce(Address),
     /// Destination nonce or code does not establish the collision decision.
@@ -123,7 +125,10 @@ pub(super) fn create(
         boundary(result, pc, FrontierReason::CallDepth);
         return;
     }
-    let caller_address = result.payload.active().key.address;
+    let Some(caller_address) = result.payload.active().key.address_value.as_concrete() else {
+        incomplete(result, pc, CreationBoundary::UnknownCreator);
+        return;
+    };
     let nonce = result.payload.store.nonce(caller_address);
     let Some(nonces) = nonce.constants() else {
         incomplete(result, pc, CreationBoundary::UnknownNonce(caller_address));
@@ -330,7 +335,8 @@ pub(super) fn create(
                                             code_address: destination,
                                             code_hash: keccak256(&initcode),
                                             address: destination,
-                                            caller: caller_address,
+                                            address_value: AddressInput::Concrete(destination),
+                                            caller: AddressInput::Concrete(caller_address),
                                             is_static: false,
                                             basic_block_index: 0,
                                             stack_height: 0,
@@ -341,6 +347,7 @@ pub(super) fn create(
                                         stack: Vec::new(),
                                         memory: ByteArray::memory(),
                                         calldata: ByteArray::empty(),
+                                        environment_calldata: false,
                                         returndata: ByteArray::empty(),
                                         call_value: Value::constant(*value),
                                         saved_store: saved_store.clone(),

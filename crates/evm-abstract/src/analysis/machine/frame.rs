@@ -23,6 +23,9 @@ pub struct FrameState {
     pub memory: ByteArray,
     /// Bytes copied from caller memory at entry, or supplied for the root.
     pub calldata: ByteArray,
+    /// This immutable array is the original environment calldata, independent of
+    /// whether a callee is later detached as a relative summary root.
+    pub environment_calldata: bool,
     /// Full data from the most recently completed child call.
     pub returndata: ByteArray,
     /// CALLVALUE for this context; DELEGATECALL preserves its parent value.

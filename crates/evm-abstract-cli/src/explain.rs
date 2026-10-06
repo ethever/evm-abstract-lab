@@ -1,10 +1,10 @@
-//! `explain` 的输入适配：程序入口保留旧语义，世界入口复用 analyze 的全部准入。
-//! 四个输入来源互斥，RPC 在采集前解析并固定链与区块；不另建分析器或读取规则。
+//! `explain` 的输入适配：程序与世界入口共享同一组显式 EVM 环境参数。
+//! 四个输入来源互斥；世界/RPC 复用 analyze 的准入、采集与执行规则。
 
 use crate::{
-    AnalysisArgs, DomainProfile, Input, StorageSlot, WorldArgs, error::CliError, number, parse_slot,
+    AnalysisArgs, DomainProfile, Input, StorageSlot, WorldArgs, error::CliError, evm::EvmArgs,
+    number, parse_slot,
 };
-use alloy_primitives::U256;
 use clap::{ArgGroup, Args};
 use evm_abstract::{
     Fork,
@@ -25,10 +25,10 @@ pub(crate) struct ExplainArgs {
     #[arg(long)]
     file: Option<PathBuf>,
     /// Offline world JSON; teaching view, with complete effects available via --verbose.
-    #[arg(long, requires = "entry")]
+    #[arg(long, requires = "evm.to")]
     world: Option<PathBuf>,
     /// Trusted HTTP(S) RPC; discover chain ID and pin the selected block once.
-    #[arg(long, requires = "entry")]
+    #[arg(long, requires = "evm.to")]
     rpc: Option<String>,
     /// Expand all captured frames, machine effects and reports for world/RPC input.
     #[arg(long, requires = "world-input")]
@@ -57,21 +57,8 @@ pub(crate) struct ExplainArgs {
     /// Program/RPC rules; offline worlds carry their own fork.
     #[arg(long, conflicts_with = "world")]
     fork: Option<Fork>,
-    /// Entry account for a world or RPC input.
-    #[arg(long, requires = "world-input")]
-    entry: Option<String>,
-    /// World CALLER; defaults to 0x0000000000000000000000000000000000001000.
-    #[arg(long, requires = "world-input")]
-    caller: Option<String>,
-    /// World calldata bytes; defaults to 0x.
-    #[arg(long, requires = "world-input")]
-    calldata: Option<String>,
-    /// World CALLVALUE in wei, decimal or 0x hexadecimal; defaults to zero.
-    #[arg(long,requires="world-input",value_parser=number::parse)]
-    value: Option<U256>,
-    /// World entry is static; descendants retain its write restrictions.
-    #[arg(long = "static", requires = "world-input")]
-    is_static: bool,
+    #[command(flatten)]
+    evm: EvmArgs,
     /// Disable complete callee summary reuse for the world.
     #[arg(long, requires = "world-input")]
     no_summaries: bool,
@@ -124,15 +111,7 @@ impl ExplainArgs {
                 slot: self.slot,
                 fork: self.fork,
                 no_summaries: self.no_summaries,
-                entry: self
-                    .entry
-                    .expect("clap requires entry for world/RPC explain"),
-                caller: self
-                    .caller
-                    .unwrap_or_else(|| "0x0000000000000000000000000000000000001000".to_owned()),
-                calldata: self.calldata.unwrap_or_else(|| "0x".to_owned()),
-                value: self.value.unwrap_or(U256::ZERO),
-                is_static: self.is_static,
+                evm: self.evm,
                 max_call_depth: self.max_call_depth.unwrap_or(defaults.max_call_depth),
                 max_work: self.max_work.unwrap_or(defaults.max_work),
                 max_memory_bytes: self.max_memory_bytes.unwrap_or(defaults.max_memory_bytes),
@@ -154,6 +133,7 @@ impl ExplainArgs {
             return Ok((output, complete));
         }
         let args = AnalysisArgs {
+            evm: self.evm,
             input: Input {
                 hex: self.hex,
                 file: self.file,

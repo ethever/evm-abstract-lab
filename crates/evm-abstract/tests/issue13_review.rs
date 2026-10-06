@@ -14,10 +14,14 @@ use oracle::address;
 fn entry() -> Entry {
     Entry {
         address: address(0x101),
-        caller: address(0x1000),
-        value: Value::constant(U256::ZERO),
-        calldata: ByteArray::empty(),
-        is_static: false,
+        environment: evm_abstract::world::EvmEnvironment {
+            to: (address(0x101)).into(),
+            caller: (address(0x1000)).into(),
+            value: Value::constant(U256::ZERO),
+            calldata: ByteArray::empty(),
+            is_static: false,
+            ..evm_abstract::world::EvmEnvironment::default()
+        },
     }
 }
 
@@ -170,7 +174,8 @@ fn prague_and_osaka_bls_native_operations_cover_valid_and_invalid_inputs() {
             let world = World::new(fork, "review:bls-native");
             let mut input = entry();
             input.address = address(number);
-            input.calldata = ByteArray::exact(&vec![0; input_size]);
+            input.environment.to = address(number).into();
+            input.environment.calldata = ByteArray::exact(&vec![0; input_size]);
             let graph = analyze_world(
                 world.clone(),
                 input.clone(),
@@ -195,7 +200,7 @@ fn prague_and_osaka_bls_native_operations_cover_valid_and_invalid_inputs() {
             );
             assert_eq!(oracle::compare(&world, &input, &graph), OutcomeKind::Return);
             ssa::build_world(&graph).unwrap().verify(&graph).unwrap();
-            input.calldata = ByteArray::empty();
+            input.environment.calldata = ByteArray::empty();
             let invalid =
                 analyze_world(world.clone(), input.clone(), ExecutionConfig::default()).unwrap();
             assert_eq!(invalid.status(), Status::Converged);

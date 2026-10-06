@@ -47,7 +47,7 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
         }
     }
     db.insert_account_info(
-        entry.caller,
+        entry.environment.caller.as_concrete().unwrap(),
         AccountInfo {
             balance: U256::from(100_000_000),
             ..AccountInfo::default()
@@ -60,11 +60,12 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
     let result = evm
         .transact(
             TxEnv::builder()
-                .caller(entry.caller)
+                .caller(entry.environment.caller.as_concrete().unwrap())
                 .kind(TxKind::Call(entry.address))
                 .gas_limit(10_000_000)
                 .data(
                     entry
+                        .environment
                         .calldata
                         .exact_bytes()
                         .expect("oracle requires exact calldata")
@@ -72,6 +73,7 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
                 )
                 .value(
                     *entry
+                        .environment
                         .value
                         .constants()
                         .expect("oracle requires exact value")

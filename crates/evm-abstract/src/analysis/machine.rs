@@ -5,7 +5,7 @@ use super::{Config, ConfigError, Diagnostic, EdgeKind, Limit, Status};
 use crate::{
     bytecode::Program,
     domain::{Domain, Value},
-    world::{ByteArray, Entry, Store, World},
+    world::{AddressInput, ByteArray, Entry, Store, World},
 };
 use alloy_primitives::{Address, B256};
 use serde::Serialize;
@@ -27,8 +27,6 @@ pub struct ExecutionConfig {
     pub max_call_depth: usize,
     /// Maximum modeled memory footprint and extracted byte-array length.
     pub max_memory_bytes: usize,
-    /// Bytecode-only compatibility analysis has no known transaction addresses.
-    pub symbolic_entry_environment: bool,
     /// Reuse only complete input-qualified callee graph certificates.
     pub use_summaries: bool,
 }
@@ -40,7 +38,6 @@ impl Default for ExecutionConfig {
             max_work: 20_000_000,
             max_call_depth: 32,
             max_memory_bytes: 65_536,
-            symbolic_entry_environment: false,
             use_summaries: true,
         }
     }
@@ -67,8 +64,10 @@ pub struct FrameKey {
     pub mode: FrameCode,
     /// ADDRESS value and persistent/transient storage owner.
     pub address: Address,
-    /// CALLER value for this frame.
-    pub caller: Address,
+    /// Logical ADDRESS, independently of an internal state-owner namespace.
+    pub address_value: AddressInput,
+    /// CALLER value for this frame, with concrete or symbolic identity.
+    pub caller: AddressInput,
     /// Whether state-changing instructions exceptionally fail in this frame.
     pub is_static: bool,
     /// Index into the captured program's basic blocks, not a bytecode PC or chain block.

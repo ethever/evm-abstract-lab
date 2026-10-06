@@ -61,9 +61,7 @@ fn write_block(
     let code = references
         .code(frame)
         .expect("captured active frame has a code reference");
-    let owner = references
-        .address(frame.address)
-        .map_or_else(|| frame.address.to_string(), str::to_owned);
+    let owner = references.address_input(frame.address_value);
     writeln!(
         output,
         "S{} | {code} | F{} active | state owner={owner} | context={:?}:",

@@ -1,6 +1,7 @@
 //! CLI 只负责参数、文件和输出；分析与渲染逻辑在库中，便于逐层学习和复用。
 
 mod error;
+mod evm;
 mod explain;
 mod number;
 mod world;
@@ -8,9 +9,9 @@ mod world;
 #[cfg(test)]
 mod tests;
 
-use alloy_primitives::U256;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use error::CliError;
+use evm::EvmArgs;
 use evm_abstract::{
     Fork,
     analysis::{self, Config, ExecutionConfig, Status},
@@ -18,7 +19,7 @@ use evm_abstract::{
     domain::Profile,
     render, ssa,
     world::{
-        ByteArray, Entry,
+        Entry,
         rpc::{self, AccountRequest, RpcBlock, RpcInput},
     },
 };
@@ -82,10 +83,15 @@ enum Command {
 #[derive(Args)]
 struct WorldArgs {
     /// Offline JSON world snapshot; analysis never fetches missing facts from a node.
-    #[arg(long, required_unless_present = "rpc", conflicts_with = "rpc")]
+    #[arg(
+        long,
+        required_unless_present = "rpc",
+        conflicts_with = "rpc",
+        requires = "evm.to"
+    )]
     world: Option<PathBuf>,
     /// Trusted HTTP(S) RPC; discover chain ID and pin the selected block once.
-    #[arg(long, conflicts_with = "world")]
+    #[arg(long, conflicts_with = "world", requires = "evm.to")]
     rpc: Option<String>,
     /// Disable on-demand RPC acquisition of concrete missing callees.
     #[arg(long, requires = "rpc", conflicts_with = "world")]
@@ -124,21 +130,8 @@ struct WorldArgs {
     /// Disable completed call-summary reuse for oracle comparisons.
     #[arg(long)]
     no_summaries: bool,
-    /// Entry account address (20 bytes of hex).
-    #[arg(long)]
-    entry: String,
-    /// Caller address (20 bytes of hex).
-    #[arg(long, default_value = "0x0000000000000000000000000000000000001000")]
-    caller: String,
-    /// Concrete input bytes, with an optional 0x prefix.
-    #[arg(long, default_value = "0x")]
-    calldata: String,
-    /// Entry CALLVALUE in wei: decimal or 0x/0X-prefixed hexadecimal (256 bits).
-    #[arg(long, default_value = "0", value_parser = number::parse)]
-    value: U256,
-    /// Start with a static frame; descendants inherit the restriction.
-    #[arg(long = "static")]
-    is_static: bool,
+    #[command(flatten)]
+    evm: EvmArgs,
     /// Maximum live frames, including entry; reaching the cap retains a frontier.
     #[arg(long, default_value_t = 32)]
     max_call_depth: usize,
@@ -205,6 +198,8 @@ struct Input {
 struct AnalysisArgs {
     #[command(flatten)]
     input: Input,
+    #[command(flatten)]
+    evm: EvmArgs,
     /// Recent jump-source blocks retained in the context; 0 disables context sensitivity.
     #[arg(long, default_value_t = 8)]
     context_depth: usize,
@@ -276,13 +271,22 @@ impl AnalysisArgs {
             max_states: self.max_states,
             max_transfers: self.max_transfers,
         };
-        Ok(analysis::analyze(self.input.load()?, config)?)
+        let environment = self.evm.environment()?;
+        Ok(analysis::analyze_with_environment(
+            self.input.load()?,
+            config,
+            environment,
+        )?)
     }
 }
 
 impl WorldArgs {
     fn analyze(self) -> Result<analysis::WorldAnalysis, CliError> {
-        let entry_address = world::address(&self.entry, "entry")?;
+        let entry_address = self
+            .evm
+            .to
+            .expect("clap requires --evm.to for world/RPC input");
+        let environment = self.evm.environment()?;
         let (world, rpc_input) = match (self.world, self.rpc) {
             (Some(path), None) => (Some(world::load(&path)?), None),
             (None, Some(endpoint)) => {
@@ -315,10 +319,7 @@ impl WorldArgs {
         };
         let entry = Entry {
             address: entry_address,
-            caller: world::address(&self.caller, "caller")?,
-            value: evm_abstract::domain::Value::constant(self.value),
-            calldata: ByteArray::exact(&world::calldata(&self.calldata)?),
-            is_static: self.is_static,
+            environment,
         };
         let config = ExecutionConfig {
             analysis: Config {
@@ -333,7 +334,6 @@ impl WorldArgs {
             max_work: self.max_work,
             max_call_depth: self.max_call_depth,
             max_memory_bytes: self.max_memory_bytes,
-            symbolic_entry_environment: false,
             use_summaries: !self.no_summaries,
         };
         match (world, rpc_input) {

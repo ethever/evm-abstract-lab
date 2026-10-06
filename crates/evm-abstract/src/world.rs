@@ -6,8 +6,10 @@
 //! is separate from execution, which changes a [`Store`] for nested rollback.
 
 mod bytes;
+pub mod environment;
 pub mod rpc;
 mod snapshot;
+pub use environment::{AddressInput, BlobHashes, EvmEnvironment, GasInput, InputScope, Symbol};
 mod store;
 
 pub use bytes::{ByteArray, RangeError};
@@ -346,17 +348,33 @@ fn account_code_hash(account: &Account) -> Option<B256> {
     }
 }
 
-/// External entry frame. Transaction origin is the supplied `caller`.
+/// One root frame and its immutable transaction and block inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Entry {
-    /// Account entered by the transaction.
+    /// Concrete owner used to address the supplied world's account state.
     pub address: Address,
-    /// External sender, also used as ORIGIN in all nested frames.
-    pub caller: Address,
-    /// Supplied CALLVALUE abstract value.
-    pub value: Value,
-    /// Supplied calldata; out-of-range reads are zero.
-    pub calldata: ByteArray,
-    /// Whether this entry is executed under STATICCALL restrictions.
-    pub is_static: bool,
+    /// Root call inputs and transaction/block observations shared by all frames.
+    pub environment: EvmEnvironment,
+}
+
+impl Entry {
+    /// Analyze all unspecified call inputs at a known destination address.
+    pub fn new(address: Address) -> Self {
+        Self {
+            address,
+            environment: EvmEnvironment {
+                to: AddressInput::Concrete(address),
+                ..EvmEnvironment::default()
+            },
+        }
+    }
+
+    /// Create a concrete root call while leaving other environment facts unknown.
+    pub fn concrete(address: Address, caller: Address, value: Value, calldata: ByteArray) -> Self {
+        let mut entry = Self::new(address);
+        entry.environment.caller = AddressInput::Concrete(caller);
+        entry.environment.value = value;
+        entry.environment.calldata = calldata;
+        entry
+    }
 }

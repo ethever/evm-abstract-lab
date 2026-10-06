@@ -1,6 +1,6 @@
 //! 教学视图通过真实 CLI 验证，完整机器证据仍可由 verbose/analyze 取得。
 
-use super::run;
+use super::run_concrete;
 use serde_json::Value as Json;
 use std::{
     fs,
@@ -24,9 +24,9 @@ fn world(command: &str, name: &str, extra: &[&str]) -> Output {
 }
 
 fn world_path(command: &str, path: &str, extra: &[&str]) -> Output {
-    let mut args = vec![command, "--world", path, "--entry", ENTRY];
+    let mut args = vec![command, "--world", path, "--evm.to", ENTRY];
     args.extend_from_slice(extra);
-    run(&args)
+    run_concrete(&args)
 }
 
 fn text(output: &Output) -> String {
@@ -105,7 +105,7 @@ impl EntryCode {
         Self(path)
     }
 
-    fn run(&self, command: &str, extra: &[&str]) -> Output {
+    fn run_concrete(&self, command: &str, extra: &[&str]) -> Output {
         world_path(command, self.0.to_str().unwrap(), extra)
     }
 }
@@ -184,7 +184,7 @@ fn default_world_explain_connects_disassembly_cfg_values_and_separate_outcomes()
 fn teaching_tac_names_definitions_and_keeps_evm_pop_order() {
     // SUB is deliberately noncommutative; MSTORE and RETURN also expose operand roles.
     let input = EntryCode::new("0x60096002035f5260205ff3");
-    let output = input.run("explain", &[]);
+    let output = input.run_concrete("explain", &[]);
     success(&output);
     let explanation = text(&output);
     for operation in [
@@ -266,7 +266,7 @@ fn teaching_code_catalogue_preserves_proxy_init_runtime_and_native_identity() {
 
 #[test]
 fn empty_code_and_unstarted_analysis_never_fabricate_captured_instructions() {
-    let empty = EntryCode::new("0x").run("explain", &[]);
+    let empty = EntryCode::new("0x").run_concrete("explain", &[]);
     success(&empty);
     let empty = text(&empty);
     assert!(empty.contains("Empty executable code") && empty.contains("implicit"));
@@ -334,9 +334,9 @@ fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
 #[test]
 fn converged_teaching_retains_precision_diagnostics() {
     let input = EntryCode::new("0x5a565b00");
-    let output = input.run("explain", &[]);
+    let output = input.run_concrete("explain", &[]);
     success(&output);
-    let report = json(&input.run("analyze", &["--format", "json"]));
+    let report = json(&input.run_concrete("analyze", &["--format", "json"]));
     assert!(!report["diagnostics"].as_array().unwrap().is_empty());
     assert_diagnostics(&text(&output), &report);
     assert!(text(&output).contains("UnknownJump"));
@@ -449,7 +449,7 @@ fn verbose_requires_world_or_rpc_input() {
         env!("CARGO_MANIFEST_DIR")
     );
     for source in [["--hex", "00"], ["--file", path.as_str()]] {
-        let output = run(&["explain", source[0], source[1], "--verbose"]);
+        let output = run_concrete(&["explain", source[0], source[1], "--verbose"]);
         assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
     }

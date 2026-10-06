@@ -12,6 +12,7 @@ use alloy_primitives::{Address, B256, keccak256};
 use serde::Serialize;
 use std::fmt::Write;
 
+pub(crate) mod environment;
 mod explain;
 mod ssa;
 mod teaching;
@@ -42,11 +43,12 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
         output,
         "  label={:?};",
         format!(
-            "fork={} status={:?} identity={}\nfingerprint={}\nsummaries hits={} misses={} published={} imported={}",
+            "fork={} status={:?} identity={}\nfingerprint={}\n{}\nsummaries hits={} misses={} published={} imported={}",
             analysis.world().fork(),
             analysis.status(),
             identity(analysis.world().identity()),
             analysis.world().fingerprint(),
+            environment::summary(&analysis.entry().environment, Some(analysis.world().identity())),
             analysis.summary_stats().hits,
             analysis.summary_stats().misses,
             analysis.summary_stats().published,
@@ -62,9 +64,9 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
             state.key.frames.len(),
             frame.basic_block_index,
             frame.mode,
-            frame.code_address,
+            environment::owner(analysis, frame.code_address),
             frame.code_hash,
-            frame.address,
+            frame.address_value,
             frame.caller,
             frame.is_static
         );
@@ -97,7 +99,10 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
             .map(|account| {
                 format!(
                     "{} {:?} nonce={} code_size={:?}",
-                    account.address, account.existence, account.nonce, account.code_size
+                    environment::owner(analysis, account.address),
+                    account.existence,
+                    account.nonce,
+                    account.code_size
                 )
             })
             .collect::<Vec<_>>()

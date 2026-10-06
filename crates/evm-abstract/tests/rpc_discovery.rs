@@ -50,10 +50,14 @@ fn accounts(entries: &[(u64, &str)]) -> BTreeMap<Address, Account> {
 fn entry() -> Entry {
     Entry {
         address: address(0x101),
-        caller: address(0x1000),
-        value: word(0),
-        calldata: ByteArray::empty(),
-        is_static: false,
+        environment: evm_abstract::world::EvmEnvironment {
+            to: (address(0x101)).into(),
+            caller: (address(0x1000)).into(),
+            value: word(0),
+            calldata: ByteArray::empty(),
+            is_static: false,
+            ..evm_abstract::world::EvmEnvironment::default()
+        },
     }
 }
 
@@ -315,7 +319,7 @@ fn discovery_replays_unknown_slot_alias_writes_before_delegatecall() {
             accounts(&[(0x101, &caller), (0x200, "5f5460015500")]),
         );
         let mut entry = entry();
-        entry.calldata = ByteArray::unknown();
+        entry.environment.calldata = ByteArray::unknown();
         let result = compare(&server.input(), entry, config(), &[address(0x200)]);
         assert_eq!(result.rpc_acquisition().unwrap().rounds, 2);
         for outcome in result
@@ -560,7 +564,8 @@ fn finite_targets_are_projected_to_low160_and_acquired_once() {
         let mut entry = entry();
         let low = U256::from(0x200);
         let high = low | (U256::from(1) << 200);
-        entry.value = Domain::default().join(&Value::constant(low), &Value::constant(high));
+        entry.environment.value =
+            Domain::default().join(&Value::constant(low), &Value::constant(high));
         let result = analysis::analyze_rpc(&server.input(), entry.clone(), config())
             .unwrap()
             .into_analysis();

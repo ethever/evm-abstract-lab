@@ -39,10 +39,14 @@ fn fixture(code: &str) -> (World, Entry) {
     world.insert(address(0x101), account).unwrap();
     let entry = Entry {
         address: address(0x101),
-        caller: address(0x900),
-        value: word(0),
-        calldata: ByteArray::empty(),
-        is_static: false,
+        environment: evm_abstract::world::EvmEnvironment {
+            to: (address(0x101)).into(),
+            caller: (address(0x900)).into(),
+            value: word(0),
+            calldata: ByteArray::empty(),
+            is_static: false,
+            ..evm_abstract::world::EvmEnvironment::default()
+        },
     };
     (world, entry)
 }
@@ -135,7 +139,7 @@ fn json_distinguishes_a_top_component_from_the_whole_product() {
     let (world, entry) = fixture("00");
     let graph = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
     let json = serde_json::to_value(&graph).unwrap();
-    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["schema_version"], 2);
     assert_eq!(
         json["domain_spec"],
         serde_json::to_value(graph.domain_spec()).unwrap()
@@ -261,7 +265,7 @@ fn summaries_guard_the_entire_frozen_domain_policy() {
         assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
         assert_eq!(
             json["domain_spec"]["provenance_policy"],
-            "block-local-copy-identity-v1"
+            "environment-symbols-and-block-local-copy-v2"
         );
     }
     for changed in [
@@ -465,8 +469,10 @@ fn a_budgeted_domain_operation_uses_the_supplied_root_ledger_transactionally() {
 
 #[test]
 fn block_local_copy_identities_do_not_escape_into_saved_graph_values() {
-    let (world, mut entry) = fixture("5f358000");
-    entry.calldata = ByteArray::unknown();
+    let (world, mut entry) = fixture("5f356001018000");
+    // Arithmetic produces a temporary definition; root calldata itself now has
+    // a stable environment symbol that intentionally survives block boundaries.
+    entry.environment.calldata = ByteArray::unknown();
     let graph = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
     let stack = &graph.states()[0].exit_stack;
     assert_eq!(stack.len(), 2);

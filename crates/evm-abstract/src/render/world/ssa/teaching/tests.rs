@@ -15,13 +15,7 @@ fn address(number: u64) -> Address {
 fn run(world: World, entry: Address, calldata: ByteArray) -> WorldAnalysis {
     let graph = analysis::analyze_world(
         world,
-        Entry {
-            address: entry,
-            caller: address(0x900),
-            value: Value::constant(U256::ZERO),
-            calldata,
-            is_static: false,
-        },
+        Entry::concrete(entry, address(0x900), Value::constant(U256::ZERO), calldata),
         ExecutionConfig {
             analysis: analysis::Config {
                 context_depth: 0,
@@ -402,12 +396,15 @@ fn opcode_or_stack_fault_is_marked_only_on_faulting_instructions() {
         .unwrap();
     let graph = analysis::analyze_world(
         world,
-        Entry {
-            address: root,
-            caller: address(0x900),
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: true,
+        {
+            let mut entry = Entry::concrete(
+                root,
+                address(0x900),
+                Value::constant(U256::ZERO),
+                ByteArray::empty(),
+            );
+            entry.environment.is_static = true;
+            entry
         },
         ExecutionConfig::default(),
     )

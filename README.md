@@ -53,6 +53,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 | [10：快照、调用摘要与代码生命周期](docs/10-snapshots-summaries-creation.md) | 何时能复用分析？部署和销毁如何改变代码？ | 摘要、CREATE/CREATE2、预编译 |
 | [11：状态容器与后端对比](docs/11-state-backends.md) | 如何用同一接口比较 std 与 imbl 的检查点、写入和回滚？ | `scripts/compare-state-backends.sh` |
 | [12：组合域与事实交换](docs/12-product-domains-facts.md) | 位、范围、同余和来源如何交换信息？局部复制关系能排除哪些分支？ | `known-bits-branch.hex`、`copy-identity.hex` |
+| [13：EVM 环境与符号输入](docs/13-evm-environment.md) | 默认覆盖哪些调用？怎样指定交易、区块和 gas 环境？ | `--evm.*`、caller/origin、BLOCKHASH/BLOBHASH |
 
 两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成第 05 课后，也可以直接进入第 12 课，继续研究数值精度，再回到跨合约实验。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
 
@@ -63,7 +64,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 ```bash
 nix run . -- explain \
   --world examples/worlds/call-return-branch.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
 `explain` 默认串联实际捕获代码的反汇编、简明 CFG 与独立结果概要、赋值式跨合约 SSA。需要完整帧记录和效果链时加 `--verbose`；完整报告仍由 `analyze` 提供，结构化数据使用 `analyze --format json`。
@@ -95,21 +96,21 @@ flowchart TD
 | `disasm` | `--hex` 或 `--file` | 只解码指令；text / JSON |
 | `cfg` | `--hex` 或 `--file` | 局部抽象栈与控制流；text / JSON / DOT |
 | `ssa` | `--hex` 或 `--file` | 完整局部图上的栈 SSA；text / JSON |
-| `explain` | `--hex` / `--file`，或 `--world` / 显式 `--rpc` + `--entry` | 反汇编、教学 CFG、赋值式 SSA；world/RPC 可加 `--verbose` 展开完整证据 |
-| `analyze` | `--world` 或显式 `--rpc`，以及 `--entry` | 跨合约图、返回结果、账户状态；text / JSON / DOT；`--ssa` 增加并验证 SSA |
+| `explain` | `--hex` / `--file`，或 `--world` / 显式 `--rpc` + `--evm.to` | 反汇编、教学 CFG、赋值式 SSA；world/RPC 可加 `--verbose` 展开完整证据 |
+| `analyze` | `--world` 或显式 `--rpc`，以及 `--evm.to` | 跨合约图、返回结果、账户状态；text / JSON / DOT；`--ssa` 增加并验证 SSA |
 
-用 `nix run . -- analyze --help` 查看全部参数。`--caller`、`--calldata`、`--value`、`--static` 设置入口环境；精度与预算参数见[第 05 课](docs/05-sensitivity.md)和[第 06 课](docs/06-boundaries.md)。
+用 `nix run . -- analyze --help` 查看全部参数。调用环境统一使用 `--evm.*`：`--evm.to` 确定执行 root frame 的合约，省略 caller、value、calldata 时分别覆盖未知调用者、任意 U256 金额、未知长度与内容的输入；origin 默认与 caller 是同一个输入。显式 `--evm.calldata 0x --evm.value 0` 才表示空数据、零金额。交易与区块环境、索引 hash 和 gas 上界的全部参数见[第 13 课](docs/13-evm-environment.md)；精度与预算参数见[第 05 课](docs/05-sensitivity.md)和[第 06 课](docs/06-boundaries.md)。
 
 数值分析默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和 Provenance（来源及局部复制身份）。`--max-constants` 默认 8，接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；配置容量不会直接预分配集合。`--reduction-rounds` 默认 4，`--max-facts` 默认 256，两者限制临时事实交换的精度。`analyze` 的 `--max-work` 默认 2000 万，耗尽共享工作预算会留下 `Incomplete`；提高常量容量仍受执行预算限制。参数与输出一起记录分析策略，方便对照实验；[第 12 课](docs/12-product-domains-facts.md)解释交换过程及边界。
 
-CLI 的数量参数 `--value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`；`--block-number` 接受相同进制写法，范围为 `0` 到 `2^64−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--value 1000`（单位 wei）、`--block-number 26000000`、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
+CLI 的数量参数 `--evm.value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`；`--block-number` 接受相同进制写法，范围为 `0` 到 `2^64−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--evm.value 1000`（单位 wei）、`--block-number 26000000`、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
 
-显式选择 `--rpc` 后，只指定入口也能开始跨合约分析。chain ID 从 RPC 自动读取；省略区块参数时，只在启动时读取一次 `latest`，随后固定返回的区块 hash。也可指定互斥的 `--block-hash` 或 `--block-number`；区块号同样先解析为 hash，再采集状态。分析器发现具体调用目标缺少代码时，会在同一 chain ID、block hash 下补查该账户；更深的调用也按需发现。下面的环境变量须已设置为实际提供者、fork 和入口：
+显式选择 `--rpc` 后，只指定 `--evm.to` 即可分析符号调用输入。chain ID 从 RPC 自动读取；省略区块参数时，只在启动时读取一次 `latest`，随后固定返回的区块 hash。也可指定互斥的 `--block-hash` 或 `--block-number`；区块号同样先解析为 hash，再采集状态。分析器发现具体调用目标缺少代码时，会在同一 chain ID、block hash 下补查该账户；更深的调用也按需发现。下面的环境变量须已设置为实际提供者、fork 和目标地址。结果可为 `Incomplete`，例如未知输入使调用目标无法确定；这时阅读前沿而不是假定所有调用已覆盖：
 
 ```bash
 nix run . -- analyze \
   --rpc "$LAB_RPC_URL" --fork "$LAB_FORK" \
-  --entry "$LAB_ENTRY" --format json
+  --evm.to "$LAB_ENTRY" --format json
 ```
 
 `--account` 仍可预先选择账户，`--slot ADDRESS:SLOT` 选择初始存储槽；未选择的槽保持未知。RPC 使用 `{blockHash,requireCanonical:true}` 采集 code、balance、nonce 和选定 slot，完全信任选定提供者，不请求 `eth_getProof`。代码为空且其余已查询字段全零时，存在性仍为未知；非空代码或任一非零数值则表明账户存在。重组或查询错误不会使分析改用新的区块。
@@ -128,7 +129,7 @@ nix develop -c dot -Tsvg /tmp/diamond.dot -o /tmp/diamond.svg
 ```bash
 nix run . -- analyze \
   --world examples/worlds/proxy-storage.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json --ssa > /tmp/proxy.json
 nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 ```

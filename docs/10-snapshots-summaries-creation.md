@@ -4,7 +4,7 @@
 
 前四个实验均使用离线合成事实，入口为 A=`0x...0101`，默认预算可完成。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
-直接阅读时使用 `explain --world ... --entry ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询原有字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询原有字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 所有反汇编与 SSA 基本块指令列表共用顶格的 `B# @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 B 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 B 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用赋值式指令正文；世界视图保留 C、F、state owner、context，以及按 T 标记并带 F/slot 的 φ。完整视图另保留所有帧元数据、原始指令字段和效果链，字节码行与效果行也使用这套布局。编号与证据的读法见[第 04 课](04-ssa.md)和[第 09 课](09-cross-contract.md#默认文本怎样读)。
 
@@ -36,12 +36,12 @@
 ```bash
 nix run . -- analyze \
   --world examples/worlds/summary-reuse.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/summary-on.json
 
 nix run . -- analyze \
   --world examples/worlds/summary-reuse.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json --no-summaries > /tmp/summary-off.json
 
 jq '.status, .summary_stats,
@@ -82,14 +82,14 @@ cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 
 摘要只在**一次固定 world 分析内**缓存，不跨分析持久保存。复用要求输入事实相等，不能只看合约地址或函数 selector（calldata 起始 4 字节，常用来选择函数）：
 
-例如，B 第一次读取 slot 0=7、第二次读取 slot 0=9，虽然地址、代码和空 calldata 都相同，旧结果也不能直接拿来用。caller、value 或静态模式改变时也一样；这些事实可能影响执行。当前实现比较完整抽象输入，而不是推测“B 大概只读了 slot 0”后忽略其他状态。
+例如，B 第一次读取 slot 0=7、第二次读取 slot 0=9，虽然地址、代码和空 calldata 都相同，旧结果也不能直接拿来用。caller、value、静态模式或交易/区块环境改变时也一样；这些事实可能影响执行。当前实现比较完整抽象输入，而不是推测“B 大概只读了 slot 0”后忽略其他状态。
 
 本课的**代码 hash**是代码字节的 Keccak 摘要；**初始事实指纹（fingerprint）**绑定整组初始事实。快照身份绑定其声明的来源，具体格式见第 5 节。**ORIGIN（最外层交易发起者）**在本模型中取入口 `caller`，在嵌套调用中保持不变；帧的 CALLER 则随调用方式变化。
 
 | 必须相等的前提 | 防止什么错误 |
 | --- | --- |
 | fork、快照身份、初始事实指纹、当前代码 hash | 把不同规则、不同区块或改变后的代码混用 |
-| callee 帧，包括 caller/static/value/calldata 和回滚保存点 | 同一代码在不同调用环境下复用错误结果 |
+| 完整 EVM 环境、callee 帧，包括逻辑 ADDRESS、caller/static/value/calldata 和回滚保存点 | 同一代码在不同交易、区块或调用环境下复用错误结果 |
 | ORIGIN 与完整 Store | 忽略 storage、transient、余额、日志、nonce、代码或生命周期变化 |
 | 剩余调用深度和冻结的分析策略 | 复用时得到额外深度，或改变数值域、facts 交换、内存、跳转历史及费用策略 |
 
@@ -123,11 +123,11 @@ A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入�
 ```bash
 nix run . -- explain \
   --world examples/worlds/create-runtime.json \
-  --entry 0x0000000000000000000000000000000000000101
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 
 nix run . -- analyze \
   --world examples/worlds/create-runtime.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json --ssa > /tmp/create.json
 
 jq '[.analysis.states[] | .key.frames[-1]
@@ -207,7 +207,7 @@ CREATE2 用创建者地址、**salt（显式给定的 256 位值）**、initcode
 ```bash
 nix run . -- analyze \
   --world examples/worlds/created-selfdestruct.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/destroy.json
 
 jq '[.states[]
@@ -253,7 +253,7 @@ A memory[32..64)：32 字节数值 42 → A RETURN
 ```bash
 nix run . -- analyze \
   --world examples/worlds/identity-precompile.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json --ssa > /tmp/native.json
 
 jq '[.analysis.states[].key.frames[-1].mode] | unique' /tmp/native.json
@@ -315,7 +315,7 @@ world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block
 
 ### 可选实验：从固定区块采集
 
-这一段需要你自己的 RPC，不是离线例子的必要步骤。将 `LAB_RPC_URL`、`LAB_FORK`、`LAB_ENTRY` 分别设为实际提供者 URL、所选区块的执行规则和入口地址。这里的入口应是该区块上的实际账户；前面合成例子的 `0x...0101` 不代表链上部署。
+这一段需要你自己的 RPC，不是离线例子的必要步骤。将 `LAB_RPC_URL`、`LAB_FORK`、`LAB_ENTRY` 分别设为实际提供者 URL、所选区块的执行规则和目标地址。省略 caller、origin、value 和 calldata 时使用符号调用输入，origin 默认与 caller 共享同一身份；需要固定某次调用时使用 `--evm.*`，参数见[第 13 课](13-evm-environment.md)。这里的入口应是该区块上的实际账户；前面合成例子的 `0x...0101` 不代表链上部署。
 
 **第一步，只指定入口，观察发现的账户。** 本次启动读取一次 `latest` 并固定其 hash，默认 RPC 模式会在该区块补查分析中发现的具体 callee：
 
@@ -323,7 +323,7 @@ world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block
 nix run . -- analyze \
   --rpc "$LAB_RPC_URL" \
   --fork "$LAB_FORK" \
-  --entry "$LAB_ENTRY" \
+  --evm.to "$LAB_ENTRY" \
   --format json > /tmp/rpc-discovery.json
 
 jq '.status, .world.identity, .rpc_acquisition,
@@ -371,7 +371,7 @@ LAB_BLOCK_HASH=$(jq -r '.world.identity.block_hash' /tmp/rpc-discovery.json)
 nix run . -- analyze \
   --rpc "$LAB_RPC_URL" \
   --block-hash "$LAB_BLOCK_HASH" --fork "$LAB_FORK" \
-  --entry "$LAB_ENTRY" --no-rpc-discovery \
+  --evm.to "$LAB_ENTRY" --no-rpc-discovery \
   --format json > /tmp/rpc-selected.json
 
 jq '.status, [.frontiers[] | {from, pc, reason}]' /tmp/rpc-selected.json
@@ -407,11 +407,11 @@ loader 在启动解析后始终请求固定 hash，失败后不改查区块号�
 ```bash
 nix run . -- explain \
   --rpc http://127.0.0.1:8545 \
-  --entry 0x填入完整入口地址
+  --evm.to 0x填入完整入口地址
 ```
 
 这条最小命令在启动时固定一次 `latest`。重现已有分析时，加 `--block-hash "$LAB_BLOCK_HASH"`；按区块高度选择时，用 `--block-number`。两种选择互斥。
 
-默认 RPC `explain` 同样使用教学视图；在上面的命令末尾追加 `--verbose` 可查看完整 RPC 采集记录、快照与机器报告及原始 SSA。`explain` 复用 `analyze` 的 RPC 获取与按需发现策略，包括 `--no-rpc-discovery`、`--max-rpc-accounts` 和 `--max-rpc-requests`。这些开关及 `--account` / `--slot` / `--block-hash` / `--block-number` 仅用于 RPC；离线世界已经携带 fork，不能另传 `--fork`。世界和 RPC 入口要求 `--entry`，四种来源 `--world`、`--rpc`、`--hex`、`--file` 互斥。
+默认 RPC `explain` 同样使用教学视图；在上面的命令末尾追加 `--verbose` 可查看完整 RPC 采集记录、快照与机器报告及原始 SSA。`explain` 复用 `analyze` 的 RPC 获取与按需发现策略，包括 `--no-rpc-discovery`、`--max-rpc-accounts` 和 `--max-rpc-requests`。这些开关及 `--account` / `--slot` / `--block-hash` / `--block-number` 仅用于 RPC；离线世界已经携带 fork，不能另传 `--fork`。世界和 RPC 入口要求 `--evm.to`，四种来源 `--world`、`--rpc`、`--hex`、`--file` 互斥。
 
 解释中只有实际帧捕获的代码被列入执行目录：委托代码按 code address 区分，CREATE initcode 与安装后的 runtime 还按代码 hash 和模式区分。只观察到的初始代码有独立标注，不等同于执行证据。RPC 补查或执行预算未完成时，默认视图继续打印部分 CFG、每个已知 outcome、所有诊断与 frontier，并省略完整 SSA，退出码为 2；`--verbose` 保留同一部分分析的完整报告。简化显示不会把 `Incomplete` 改成成功，也不会重新选择 fork、区块或重置预算。

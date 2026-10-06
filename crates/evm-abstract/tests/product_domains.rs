@@ -282,7 +282,9 @@ fn precision_limits_keep_sound_partial_results_and_report_the_boundary() {
 
 #[test]
 fn default_engine_provenance_proves_duplicate_identity() {
-    for code in ["5f35801800", "5f3580901800"] {
+    // The arithmetic result has a temporary definition; immutable calldata
+    // symbols themselves now retain equality in both numeric profiles.
+    for code in ["5f35600101801800", "5f3560010180901800"] {
         let graph = analyze(code, Profile::Product, 1);
         assert_eq!(graph.status(), Status::Converged);
         assert_eq!(
@@ -298,7 +300,7 @@ fn default_engine_provenance_proves_duplicate_identity() {
         assert!(origins.contains(&Origin::Arithmetic));
         ssa::build(&graph).unwrap().verify(&graph).unwrap();
     }
-    let baseline = analyze("5f35801800", Profile::ConstantsOnly, 1);
+    let baseline = analyze("5f35600101801800", Profile::ConstantsOnly, 1);
     assert!(baseline.states()[0].exit_stack[0].contains(U256::from(1)));
 }
 
@@ -409,11 +411,15 @@ fn root_revert_restores_nonfinite_initial_storage_facts() {
     let graph = analysis::analyze_world(
         world,
         Entry {
-            address,
-            caller: Address::repeat_byte(0x55),
-            value: word(0),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            address: address,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address).into(),
+                caller: (Address::repeat_byte(0x55)).into(),
+                value: word(0),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         ExecutionConfig {
             analysis: Config {

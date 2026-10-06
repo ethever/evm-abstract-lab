@@ -46,6 +46,9 @@ impl Default for Config {
 /// 配置不成立，分析尚未开始。
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    /// Transaction or block observations contradict a typed input invariant.
+    #[error("{0}")]
+    Environment(#[from] crate::world::environment::EnvironmentError),
     /// 有限常量集合的容量必须非零。
     #[error("max_constants must be positive")]
     Constants,

@@ -104,11 +104,15 @@ fn analyze_unknown_calldata_clz(capacity: usize, max_work: usize) -> WorldAnalys
     analysis::analyze_world(
         world,
         Entry {
-            address,
-            caller: Address::ZERO,
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::unknown(),
-            is_static: false,
+            address: address,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address).into(),
+                caller: (Address::ZERO).into(),
+                value: Value::constant(U256::ZERO),
+                calldata: ByteArray::unknown(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         ExecutionConfig {
             analysis: Config {

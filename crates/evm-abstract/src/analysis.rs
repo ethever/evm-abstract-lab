@@ -22,7 +22,7 @@ mod summary;
 mod transfer;
 
 use crate::{bytecode::Program, domain::Value};
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeMap};
 
 pub use config::{Config, ConfigError, ValidatedConfig};
 pub use machine::{
@@ -152,7 +152,7 @@ pub enum Status {
 }
 
 /// 分析结果不可由外部手工构造；SSA 可以信任状态栈高与边的内部不变量。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Analysis {
     pub(crate) program: Program,
     pub(crate) config: Config,
@@ -164,8 +164,28 @@ pub struct Analysis {
     pub(crate) frontiers: Vec<Frontier>,
     pub(crate) status: Status,
     pub(crate) transfers: usize,
-    #[serde(skip)]
     execution: WorldAnalysis,
+}
+
+// Serialize the native environment by reference. The single-program report must
+// retain its input assumptions without duplicating the owned execution graph or
+// cloning input tables outside the shared work budget.
+impl Serialize for Analysis {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut report = serializer.serialize_map(Some(11))?;
+        report.serialize_entry("program", &self.program)?;
+        report.serialize_entry("config", &self.config)?;
+        report.serialize_entry("schema_version", &self.schema_version)?;
+        report.serialize_entry("domain_spec", &self.domain_spec)?;
+        report.serialize_entry("environment", self.environment())?;
+        report.serialize_entry("states", &self.states)?;
+        report.serialize_entry("edges", &self.edges)?;
+        report.serialize_entry("diagnostics", &self.diagnostics)?;
+        report.serialize_entry("frontiers", &self.frontiers)?;
+        report.serialize_entry("status", &self.status)?;
+        report.serialize_entry("transfers", &self.transfers)?;
+        report.end()
+    }
 }
 
 impl Analysis {
@@ -201,6 +221,10 @@ impl Analysis {
     pub fn transfers(&self) -> usize {
         self.transfers
     }
+    /// Immutable root, transaction and block inputs used by the native machine.
+    pub fn environment(&self) -> &crate::world::EvmEnvironment {
+        &self.execution.entry().environment
+    }
     /// Native multi-account result underlying this single-program view.
     pub fn execution(&self) -> &WorldAnalysis {
         &self.execution
@@ -221,5 +245,18 @@ pub fn analyze_world(
 /// persistent state remain unknown; missing external code is an explicit
 /// incomplete frontier in the same native machine used by [`analyze_world`].
 pub fn analyze(program: Program, config: Config) -> Result<Analysis, ConfigError> {
-    single::analyze(program, config)
+    single::analyze(program, config, crate::world::EvmEnvironment::default())
+}
+
+/// Analyze bytecode under explicit or symbolic root, transaction and block inputs.
+///
+/// A missing logical destination stays symbolic even though the internal store
+/// uses an isolated concrete namespace. CALL-family rules preserve logical
+/// addresses and caller identity; unknown targets remain incomplete frontiers.
+pub fn analyze_with_environment(
+    program: Program,
+    config: Config,
+    environment: crate::world::EvmEnvironment,
+) -> Result<Analysis, ConfigError> {
+    single::analyze(program, config, environment)
 }

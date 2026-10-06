@@ -24,10 +24,14 @@ fn address(number: u64) -> Address {
 fn entry(number: u64) -> Entry {
     Entry {
         address: address(number),
-        caller: address(0x900),
-        value: Value::constant(U256::ZERO),
-        calldata: ByteArray::empty(),
-        is_static: false,
+        environment: evm_abstract::world::EvmEnvironment {
+            to: (address(number)).into(),
+            caller: (address(0x900)).into(),
+            value: Value::constant(U256::ZERO),
+            calldata: ByteArray::empty(),
+            is_static: false,
+            ..evm_abstract::world::EvmEnvironment::default()
+        },
     }
 }
 

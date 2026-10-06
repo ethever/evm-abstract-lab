@@ -23,11 +23,15 @@ fn native(code: &str, config: ExecutionConfig) -> WorldAnalysis {
     analyze_world(
         world,
         Entry {
-            address,
-            caller: Address::ZERO,
-            value: Value::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: false,
+            address: address,
+            environment: evm_abstract::world::EvmEnvironment {
+                to: (address).into(),
+                caller: (Address::ZERO).into(),
+                value: Value::constant(U256::ZERO),
+                calldata: ByteArray::empty(),
+                is_static: false,
+                ..evm_abstract::world::EvmEnvironment::default()
+            },
         },
         config,
     )

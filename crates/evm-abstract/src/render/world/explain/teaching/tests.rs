@@ -15,13 +15,7 @@ fn address(value: u64) -> Address {
 }
 
 fn entry(owner: Address, calldata: ByteArray) -> Entry {
-    Entry {
-        address: owner,
-        caller: address(0x900),
-        value: Value::constant(U256::ZERO),
-        calldata,
-        is_static: false,
-    }
+    Entry::concrete(owner, address(0x900), Value::constant(U256::ZERO), calldata)
 }
 
 fn run(world: World, owner: Address, calldata: ByteArray) -> WorldAnalysis {

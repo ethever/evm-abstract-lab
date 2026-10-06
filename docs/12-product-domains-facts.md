@@ -63,7 +63,7 @@ nix run . -- cfg \
   --file examples/independent-inputs.hex --context-depth 0
 ```
 
-第一段只有 BranchFalse，第二段保留两种分支。这些命令的 calldata 是单合约 CFG 入口的未知输入；`analyze --calldata ...` 可以另外提供具体数据。
+第一段只有 BranchFalse，第二段保留两种分支。这些命令的 calldata 是单合约 CFG 入口的未知输入；`analyze --evm.calldata ...` 可以另外提供具体数据。
 
 **来源相同**与**同一个值**是两项事实。两个读取都可以带 Calldata 来源，却没有相等证明。本实验的未知读取得到执行器签发的复制身份；DUP 副本保留它，SWAP 改变位置，保留值的身份。精确常量则可以直接凭数值判定相等。
 
@@ -215,7 +215,7 @@ Stable 只针对当前规则；它不说明已经表达全部 EVM 关系。Round
 ```bash
 nix run . -- analyze \
   --world examples/worlds/returndata-copy.json \
-  --entry 0x0000000000000000000000000000000000000101 \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --domain product --reduction-rounds 4 --max-facts 256 \
   --max-work 20000000 --format json > /tmp/facts-world.json
 
@@ -243,3 +243,5 @@ jq '.states[0].exit_stack[0]' /tmp/facts-value.json
 输入 JSON 与 RPC 初始账户的读取发生在执行账本建立之前。RPC 的后续账户采集发生在分析轮次之间，账户数和 HTTP 请求数另有累计上限；成功后扩充初始事实，从入口重建分析，沿用根执行账本。JSON 的 `rpc_acquisition.states_created` 记录全部轮次的状态分配数，因此可能大于最终 `states` 长度。数值域的 `--max-facts` 只限制局部事实交换，不限制这些 RPC 账户观察；读[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)可对照两组额度。
 
 当前没有对 JSON/RPC 全部输入设置统一字节配额，也没有全过程峰值内存配额。更完整的关系环境、路径分组与输入准入仍是[后续设计边界](https://github.com/ethever/evm-abstract-lab/issues/21)。源码入口是 [`domain.rs`](../crates/evm-abstract/src/domain.rs)，真实 CFG、字节和状态精度的回归样例在 [`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)。
+
+不可变 EVM 环境输入有单独的稳定符号身份：默认 caller 与 origin 共享一个符号，多次读取相同 calldata word 也可保留输入关系。这些身份跨基本块保留，并随完整环境纳入调用摘要前提；一般运算、未知 storage 和内存别名仍不因此获得完整关系精度。具体语义与命令见[第 13 课](13-evm-environment.md)。

@@ -16,7 +16,7 @@ fn world_and_rpc_are_exclusive_and_rpc_can_pin_latest() {
             "analyze",
             "--world",
             "fixture.json",
-            "--entry",
+            "--evm.to",
             ENTRY
         ])
         .is_ok()
@@ -27,7 +27,7 @@ fn world_and_rpc_are_exclusive_and_rpc_can_pin_latest() {
             "analyze",
             "--rpc",
             "http://127.0.0.1:1",
-            "--entry",
+            "--evm.to",
             ENTRY
         ])
         .is_ok()
@@ -42,7 +42,7 @@ fn world_and_rpc_are_exclusive_and_rpc_can_pin_latest() {
             "http://127.0.0.1:1",
             "--block-hash",
             BLOCK,
-            "--entry",
+            "--evm.to",
             ENTRY
         ])
         .is_err()
@@ -63,7 +63,7 @@ fn world_and_rpc_are_exclusive_and_rpc_can_pin_latest() {
             "analyze",
             "--world",
             "fixture.json",
-            "--entry",
+            "--evm.to",
             ENTRY,
         ];
         args.extend_from_slice(&flags);
@@ -81,7 +81,7 @@ fn rpc_storage_flags_are_typed_and_only_accepted_for_rpc_input() {
         "http://127.0.0.1:1",
         "--block-hash",
         BLOCK,
-        "--entry",
+        "--evm.to",
         ENTRY,
         "--slot",
         &slot,
@@ -102,7 +102,7 @@ fn rpc_storage_flags_are_typed_and_only_accepted_for_rpc_input() {
             "http://127.0.0.1:1",
             "--block-hash",
             BLOCK,
-            "--entry",
+            "--evm.to",
             ENTRY,
             "--slot",
             "invalid:latest"
@@ -115,7 +115,7 @@ fn rpc_storage_flags_are_typed_and_only_accepted_for_rpc_input() {
             "analyze",
             "--world",
             "fixture.json",
-            "--entry",
+            "--evm.to",
             ENTRY,
             "--slot",
             &slot
@@ -136,7 +136,7 @@ fn rpc_failure_reaches_cli_as_input_error_before_an_analysis_exists() {
         &endpoint,
         "--block-hash",
         BLOCK,
-        "--entry",
+        "--evm.to",
         ENTRY,
     ])
     .unwrap();
@@ -173,20 +173,20 @@ fn value_and_storage_quantities_keep_their_u256_value() {
             "analyze",
             "--rpc",
             "http://127.0.0.1:1",
-            "--value",
+            "--evm.value",
             input,
             "--slot",
             &slot,
             "--block-hash",
             BLOCK,
-            "--entry",
+            "--evm.to",
             ENTRY,
         ])
         .unwrap();
         let Command::Analyze { args, .. } = parsed.command else {
             panic!("expected analyze")
         };
-        assert_eq!(args.value, expected, "value: {input}");
+        assert_eq!(args.evm.value, Some(expected), "value: {input}");
         assert_eq!(args.slot[0].slot, expected, "slot: {input}");
     }
 }
@@ -213,17 +213,17 @@ fn invalid_cli_quantities_are_rejected_during_argument_validation() {
         "115792089237316195423570985008687907853269984665640564039457584007913129639936",
         "0x10000000000000000000000000000000000000000000000000000000000000000",
     ] {
-        for flag in ["--value", "--slot"] {
-            let value = if flag == "--value" { invalid } else { "0" };
+        for flag in ["--evm.value", "--slot"] {
+            let value = if flag == "--evm.value" { invalid } else { "0" };
             let slot = if flag == "--slot" { invalid } else { "0" };
-            let value_arg = format!("--value={value}");
+            let value_arg = format!("--evm.value={value}");
             let slot_arg = format!("--slot={ENTRY}:{slot}");
             let error = Cli::try_parse_from([
                 "evm-abstract",
                 "analyze",
                 "--rpc",
                 "http://127.0.0.1:1",
-                "--entry",
+                "--evm.to",
                 ENTRY,
                 "--block-hash",
                 BLOCK,
@@ -259,6 +259,27 @@ fn explain_accepts_every_world_analysis_option_except_output_selection() {
 }
 
 #[test]
+fn calldata_is_one_typed_input_and_empty_bytes_differ_from_omission() {
+    use evm_abstract::world::ByteArray;
+    for input in [None, Some("0x"), Some("0x2a")] {
+        let mut arguments = vec!["evm-abstract", "cfg", "--hex", "00"];
+        if let Some(input) = input {
+            arguments.extend(["--evm.calldata", input]);
+        }
+        let parsed = Cli::try_parse_from(arguments).unwrap();
+        let Command::Cfg { args, .. } = parsed.command else {
+            panic!("expected cfg")
+        };
+        let environment = args.evm.environment().unwrap();
+        match input {
+            None => assert_eq!(environment.calldata, ByteArray::unknown()),
+            Some("0x") => assert_eq!(environment.calldata, ByteArray::empty()),
+            Some(_) => assert_eq!(environment.calldata, ByteArray::exact(&[42])),
+        }
+    }
+}
+
+#[test]
 fn rpc_block_numbers_accept_decimal_and_hex_with_a_u64_bound() {
     for (input, expected) in [
         ("0", 0),
@@ -273,7 +294,7 @@ fn rpc_block_numbers_accept_decimal_and_hex_with_a_u64_bound() {
             "analyze",
             "--rpc",
             "http://127.0.0.1:1",
-            "--entry",
+            "--evm.to",
             ENTRY,
             "--block-number",
             input,
@@ -302,7 +323,7 @@ fn rpc_block_numbers_accept_decimal_and_hex_with_a_u64_bound() {
             "analyze",
             "--rpc",
             "http://127.0.0.1:1",
-            "--entry",
+            "--evm.to",
             ENTRY,
             &argument,
         ])
@@ -316,7 +337,7 @@ fn rpc_block_numbers_accept_decimal_and_hex_with_a_u64_bound() {
             "analyze",
             "--rpc",
             "http://127.0.0.1:1",
-            "--entry",
+            "--evm.to",
             ENTRY,
             "--block-number",
             "16",
@@ -331,7 +352,7 @@ fn rpc_block_numbers_accept_decimal_and_hex_with_a_u64_bound() {
             "analyze",
             "--rpc",
             "http://127.0.0.1:1",
-            "--entry",
+            "--evm.to",
             ENTRY,
             "--chain-id",
             "1",

@@ -124,13 +124,14 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis) {
     for (index, ((address, hash, mode), code)) in codes.iter_mut().enumerate() {
         writeln!(
             output,
-            "\n  C{index} | code={address} | code_hash={hash} | mode={mode:?}"
+            "\n  C{index} | code={} | code_hash={hash} | mode={mode:?}",
+            super::environment::owner(analysis, *address),
         )
         .unwrap();
         let owners = code
             .owners
             .iter()
-            .map(ToString::to_string)
+            .map(|address| super::environment::owner(analysis, *address))
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(output, "    state owners: {owners}").unwrap();
@@ -227,7 +228,8 @@ fn write_input_code(output: &mut String, analysis: &WorldAnalysis) {
     for (address, account) in analysis.world().accounts() {
         writeln!(
             output,
-            "  account={address} | observed_code_hash={}",
+            "  account={} | observed_code_hash={}",
+            super::environment::owner(analysis, *address),
             super::hash_label(analysis.world().code_hash(*address))
         )
         .unwrap();

@@ -109,6 +109,18 @@ pub fn analyze_rpc(
     config: ExecutionConfig,
 ) -> Result<RpcAnalysis, RpcAnalysisError> {
     config.domain()?;
+    entry.environment.validate().map_err(ConfigError::from)?;
+    if let Some(observed) = entry.environment.to.as_concrete()
+        && observed != entry.address
+    {
+        return Err(
+            ConfigError::from(crate::world::environment::EnvironmentError::Destination {
+                expected: entry.address,
+                observed,
+            })
+            .into(),
+        );
+    }
     let mut input = input.clone();
     if !input
         .accounts
@@ -133,8 +145,7 @@ pub fn analyze_rpc(
         let copy_work = session
             .world()
             .work_size()
-            .saturating_add(entry.calldata.work_size())
-            .saturating_add(entry.value.work_size());
+            .saturating_add(entry.environment.work_size());
         if !budget.charge(copy_work) {
             let acquisition = RpcAcquisition {
                 rounds,
