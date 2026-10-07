@@ -1,4 +1,4 @@
-# Development does not depend on the complete check graph or GUI editor closure.
+# Development dependencies are explicit and independent of the check graph.
 {
   craneLib,
   dependencies,

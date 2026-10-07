@@ -1,6 +1,6 @@
 # Nix 开发环境与 VS Code
 
-仓库的构建工具、原生库、语言服务器和检查工具都由 Nix 提供。第一次使用需要主机安装 Nix，并启用 `nix-command`、`flakes`。Nix 根据锁定的源码和校验和下载或构建依赖，不需要另外用 `apt`、`brew`、`cargo install` 安装项目工具。
+VS Code 和插件由用户自行安装。仓库在 `.vscode` 中提供插件推荐、工作区设置和任务；Nix 提供项目的构建工具、原生库、语言服务器和检查工具。第一次使用需要主机安装 Nix，并启用 `nix-command`、`flakes`。Nix 根据锁定的源码和校验和下载或构建项目依赖。
 
 从仓库根目录进入环境：
 
@@ -11,49 +11,27 @@ cargo check --workspace --all-targets --locked
 
 开发环境显式提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、C/C++ 编译与构建工具、libclang、pkg-config、Z3、Bitwuzla、cvc5、OpenSSL、Graphviz、字体、jq、Taplo、nixfmt、lychee、cargo-nextest 和 Dylint。Python 只用于真实的语言服务器协议回归和可选的性能采样报告。
 
-原生库通过 Nix 的构建环境暴露给 Cargo，包括 `PKG_CONFIG_PATH`、cvc5 头文件/库路径和 libclang。编辑器和命令行使用同一个开发环境；不要把某次构建产生的 `/nix/store/...` 路径手工写入工作区设置。
+原生库通过 Nix 的构建环境暴露给 Cargo，包括 `PKG_CONFIG_PATH`、cvc5 头文件/库路径和 libclang。Rust 语言服务器与命令行构建使用同一个开发环境；不要把某次构建产生的 `/nix/store/...` 路径手工写入工作区设置。
 
-## 使用现有 VS Code，包括 Remote SSH
+## 接入现有 VS Code，包括 Remote SSH
 
-用 VS Code 打开仓库根目录，在**该窗口的集成终端**运行：
+用已有的 VS Code 打开仓库根目录，按[工作区推荐](../.vscode/extensions.json)自行安装 `rust-lang.rust-analyzer` 和 `tamasfe.even-better-toml`。使用 Remote SSH 时，在远端工作区安装对应插件，并确保远端主机可使用 Nix。
 
-```bash
-nix run --no-update-lock-file .#install-vscode-extensions
-```
+[工作区设置](../.vscode/settings.json)为 Rust 语言服务器选择项目环境，并配置 TOML 格式规则。`rust-analyzer.server.path` 使用一个很短的[入口](../scripts/rust-analyzer-nix.sh)，进入当前仓库的 Nix 环境后再启动服务器。库路径、编译器和工具选择在 Nix 中定义，因此 Cargo metadata、构建脚本、保存检查和过程宏都能继承原生依赖环境。
 
-安装器使用当前窗口的 `code` 命令，将 Nix 锁定的 rust-analyzer 和 Even Better TOML 安装到对应的本地或远端扩展环境。它安装本地 VSIX 文件，不从 Marketplace 选择“最新版”，也不会在每次打开项目时自动安装。VSIX 带有固定版本的服务器配置：Rust 使用仓库工具链，TOML 使用与 CLI 相同的 Nix Taplo。
+Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的插件变化。Nix 提供固定版本的 Taplo CLI 和用于协议回归的 Taplo LSP。两端共同读取 [`taplo.toml`](../taplo.toml)，但不保证使用同一 Taplo 版本；门禁也不验证用户安装的任意插件版本。
 
-安装器会保留扩展需要的 Nix 运行库，避免清理 Nix 缓存后服务器路径失效；安装中途失败也会保留此前版本的运行库。完成后执行命令面板里的 `Developer: Reload Window`。
+命令面板中的 `Tasks: Run Task` 提供[工作区任务](../.vscode/tasks.json)：`Nix: build`、`Nix: test` 和 `Nix: clippy`。默认构建任务也使用 Nix。手动终端命令应先执行 `nix develop`；插件自身的 Run/Test 按钮行为由插件配置决定，需要固定项目环境时使用这些 Nix 任务。
 
-工作区的 `rust-analyzer.server.path` 指向一个很短的[入口](../scripts/rust-analyzer-nix.sh)。它只负责进入当前仓库的 Nix 环境并启动语言服务器，库路径、编译器和工具选择全部在 Nix 中定义。这样 Cargo metadata、构建脚本、保存检查和过程宏都能继承原生依赖环境。
+安装插件或更新工作区设置后，执行 `Developer: Reload Window`。若出现 `Package bitwuzla was not found` 或原生库构建脚本失败，核对工作区设置已生效，再执行 `rust-analyzer: Restart server`。仅在终端里进入 `nix develop` 不会改变已运行语言服务器的环境。
 
-命令面板中的 `Tasks: Run Task` 提供 Nix 下的 Cargo build、test 和 Clippy；默认构建任务也使用 Nix。手动终端命令应先执行 `nix develop`。这些任务的环境是显式的，不需要猜测现有 VS Code 主进程是否从某个 Nix 终端启动。
-
-若仍出现 `Package bitwuzla was not found` 或原生库构建脚本失败，先执行 `rust-analyzer: Restart server`。仅在终端里进入 `nix develop` 不会改变已运行语言服务器的环境。Remote SSH 的 Nix 和依赖位于远端主机。
-
-## 同时固定 VS Code 本身
-
-如果需要连编辑器版本也一起固定，在仓库根目录运行：
-
-```bash
-nix run --no-update-lock-file .#vscode -- .
-```
-
-这个入口使用 Nix 锁定的 VS Code 和两个扩展，并使用独立的用户数据目录，避免复用已经启动的非 Nix 编辑器进程。现有 VS Code 的个人设置和扩展目录不因此被替换。仓库仅对显式请求的 VS Code 包允许其非自由许可证，没有启用全局 `allowUnfree`。
-
-只构建扩展归档而不安装：
-
-```bash
-nix build --no-update-lock-file .#vscode-extensions
-```
-
-修改锁文件后，重新进入开发环境；现有 VS Code 重新运行扩展安装器并重载窗口。Nix 生成的扩展会指向新版本的服务器。
+修改锁文件后，重新进入开发环境并重启 rust-analyzer。编辑器和插件版本由用户管理；项目锁文件管理下表中的工具和依赖。
 
 ## 版本由哪里固定
 
 | 来源 | 覆盖范围 |
 | --- | --- |
-| [`flake.lock`](../flake.lock) | nixpkgs、rust-overlay、Crane 的确切提交与源码校验和；因此固定系统工具、原生库、VS Code 和扩展来源 |
+| [`flake.lock`](../flake.lock) | nixpkgs、rust-overlay、Crane 的确切提交与源码校验和；固定构建工具、原生库、格式器和检查工具 |
 | [`rust-toolchain.toml`](../rust-toolchain.toml) | 应用的 Rust 版本及 rust-analyzer、Clippy、rustfmt、rust-src 组件 |
 | [`Cargo.lock`](../Cargo.lock) | 应用 Rust 依赖；Nix 根据锁文件下载并提供 vendored 源码 |
 | [`lints/no_dyn/rust-toolchain.toml`](../lints/no_dyn/rust-toolchain.toml)、[lint 的 Cargo.lock](../lints/no_dyn/Cargo.lock) | 编译器插件的独立 nightly 和 Rust 依赖 |
@@ -71,8 +49,7 @@ nix build --no-update-lock-file .#vscode-extensions
 | [`nix/system.nix`](../nix/system.nix) | 连接模块，选择公共工具链 |
 | [`nix/dependencies.nix`](../nix/dependencies.nix) | 构建和开发共用的依赖清单、原生环境变量 |
 | [`nix/build.nix`](../nix/build.nix) | Rust 源码过滤、Cargo 缓存、默认/imbl 构建 |
-| [`nix/shell.nix`](../nix/shell.nix) | 开发环境；不依赖完整检查集合，也不隐式安装 GUI |
-| [`nix/editor.nix`](../nix/editor.nix)、[`nix/editor/extensions.nix`](../nix/editor/extensions.nix) | 锁定 VS Code、扩展、VSIX 安装入口和编辑器验证 |
+| [`nix/shell.nix`](../nix/shell.nix) | 开发环境及其显式依赖 |
 | [`nix/smt.nix`](../nix/smt.nix)、[`nix/smt/`](../nix/smt/) | 三个求解器所需原生包、编译/链接设置和共存检查 |
 | [`nix/dylint.nix`](../nix/dylint.nix)、[`nix/dylint/`](../nix/dylint/) | lint 工具链、可复用插件构建、命令和检查 |
 | [`nix/checks.nix`](../nix/checks.nix)、[`nix/checks/`](../nix/checks/) | Rust、格式、文档、安装后示例和后端对照检查 |
@@ -84,7 +61,7 @@ Bitwuzla 和 cvc5 从锁定源码构建，使各自嵌入的 CaDiCaL 符号保�
 
 ## 验证
 
-完整门禁及冻结提交要求见[本地检查流程](local-ci.md)。常用入口：
+完整门禁当前包含 20 项检查，冻结提交要求见[本地检查流程](local-ci.md)。常用入口：
 
 ```bash
 nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --option cores 8
@@ -93,4 +70,4 @@ nix run --no-update-lock-file .#no-dyn-ui
 nix fmt
 ```
 
-编辑器检查会实际启动锁定的 Code CLI，在临时用户目录安装 VSIX，核对扩展版本、服务器路径和固定状态。TOML 回归另行通过真实 LSP 请求比较保存结果与 CLI；原生求解器共存和安装后分析示例也保留在完整门禁中。
+TOML 回归使用 Nix 提供的 Taplo，向真实 LSP 发送格式化请求并与同版本 CLI 比较结果，验证项目的格式配置。原生求解器共存和安装后分析示例也保留在完整门禁中。编辑器和插件的安装由用户负责。

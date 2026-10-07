@@ -5,8 +5,6 @@ let
   pkgs = import inputs.nixpkgs {
     inherit system;
     overlays = [ inputs.rust-overlay.overlays.default ];
-    # VS Code is an explicitly requested editor, not a blanket unfree allowance.
-    config.allowUnfreePredicate = package: inputs.nixpkgs.lib.getName package == "vscode";
   };
   toolchain = pkgs.rust-bin.fromRustupToolchainFile (sourceRoot + "/rust-toolchain.toml");
   craneLib = (inputs.crane.mkLib pkgs).overrideToolchain toolchain;
@@ -25,7 +23,6 @@ let
     crane = inputs.crane;
     common = build.common;
   };
-  editor = import ./editor.nix { inherit pkgs toolchain; };
   checks = import ./checks.nix {
     inherit
       pkgs
@@ -37,10 +34,9 @@ let
   };
 in
 {
-  packages = dylint.packages // editor.packages // { default = build.package; };
+  packages = dylint.packages // { default = build.package; };
   apps =
     dylint.apps
-    // editor.apps
     // (import ./commands.nix { inherit pkgs; })
     // {
       default = {
@@ -49,7 +45,7 @@ in
         meta = build.package.meta;
       };
     };
-  checks = checks // dylint.checks // nativeSmt.checks // editor.checks;
+  checks = checks // dylint.checks // nativeSmt.checks;
   devShells.default = import ./shell.nix { inherit craneLib dependencies dylint; };
   formatter = pkgs.nixfmt;
 }
