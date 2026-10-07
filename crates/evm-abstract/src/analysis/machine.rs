@@ -113,7 +113,7 @@ pub enum FrameCode {
     Precompile(Address),
     /// Explicit empty code, including a delegated precompile target.
     Empty,
-    /// A second EIP-7702 marker executes its invalid EF opcode.
+    /// A second [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) marker executes its invalid EF opcode.
     InvalidDelegation,
 }
 

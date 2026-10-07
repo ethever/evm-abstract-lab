@@ -43,9 +43,9 @@ feature 在一次构建中统一选择后端；同一个进程里的 Store 使�
 
 [`scripts/compare-state-backends.sh`](../scripts/compare-state-backends.sh) 构建两份 release 二进制并完成以下比较：
 
-1. 对所有单账户 `.hex` 例子比较 disasm、CFG 和 SSA 的完整 JSON。
-2. 对所有 world 例子比较分析与 SSA 的完整 JSON，以及关闭摘要后的复用例子。
-3. 要求 `missing-code.json` 保持退出码 2、`Incomplete` 和 `MissingCode` 前沿；其他例子要求退出码 0。
+1. 对所有[单账户 `.hex` 例子](../examples/README.md#单账户先把栈和图读懂)比较 disasm、CFG 和 SSA 的完整 JSON。
+2. 对所有 [world 例子](../examples/README.md#多账户观察调用怎样影响返回值与状态)比较分析与 SSA 的完整 JSON，以及关闭摘要后的[复用例子](../examples/worlds/summary-reuse.json)。
+3. 要求 [`missing-code.json`](../examples/worlds/missing-code.json) 保持退出码 2、`Incomplete` 和 `MissingCode` 前沿；其他例子要求退出码 0。
 4. 运行实际 Store 操作的多次测量，核对观察值与最终状态的 checksum，全部一致后输出中位数与比值。
 
 JSON 比较只忽略空白，保留对象字段顺序和数组顺序。输入错误、退出码差异、完整输出差异或测量 checksum 差异都会停止脚本，不产生性能结论。这些固定例子是回归证据；完整测试与本地门禁仍见[检查流程](local-ci.md)。

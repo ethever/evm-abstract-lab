@@ -5,13 +5,13 @@
 //! 放在同一工作表中；单账户 CFG 是这台机器的学习视图。
 //! 固定离线输入使用**普通 EVM 运行时字节码**，即操作码及其立即数组成的
 //! 指令流，不支持 EOF 容器格式。执行规则默认 Osaka，可选 Cancun/Prague；
-//! 格式与规则版本是不同概念。EIP-7702 单层代码解析保留 authority 的状态上下文。
+//! 格式与规则版本是不同概念。[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 单层代码解析保留 authority 的状态上下文。
 //! 完整调用关系可在相同快照、代码、上下文及状态前置条件下复用；证书保留
 //! 真实指令图。CREATE/CREATE2 执行 initcode 并安装事务代码 overlay，
 //! SELFDESTRUCT 遵循所选 fork 的延迟删除规则。固定 hash RPC 是显式输入。
 //! gas 与部分环境值保守抽象；缺失或不能表示的事实与资源截断保留未完成
 //! 前沿。结果是可能执行的图，不能直接当作安全证明。
-//! 见仓库 `docs/06-boundaries.md`。
+//! 见仓库的[模型边界文档](https://github.com/ethever/evm-abstract-lab/blob/main/docs/06-boundaries.md)。
 //!
 //! ```
 //! use evm_abstract::{Address, Fork, analysis, world::{Account, Entry, World}, ssa};

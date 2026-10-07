@@ -118,7 +118,7 @@ nix run . -- analyze --world examples/worlds/missing-code.json --evm.to 0x000000
 
 这能发现“真实执行被漏掉”的反例，但通过有限样本不能证明所有 calldata、所有 256 bit 参数或全部合约都正确。反过来，抽象图中的一条路径也可能来自信息合并，没有任何实际输入能完整走通它。
 
-尤其要保留 **gas 边界**：`--evm.gas N` 给出初始剩余 gas 的上界，GAS 保守落在 `0..N`，不会在每条指令都返回常量 N。模型仍不精确计算指令扣费、EIP-150 转发额度、out-of-gas 或经济成本。一个抽象成功调用不证明某笔实际交易有足够 gas；图中也可能保留具体成功样本没有走过的调用失败分支。累计工作使用逻辑 credit 计费，它既不是 EVM gas，也不是 CPU 耗时测量。
+尤其要保留 **gas 边界**：`--evm.gas N` 给出初始剩余 gas 的上界，GAS 保守落在 `0..N`，不会在每条指令都返回常量 N。模型仍不精确计算指令扣费、[EIP-150](https://eips.ethereum.org/EIPS/eip-150) 转发额度、out-of-gas 或经济成本。一个抽象成功调用不证明某笔实际交易有足够 gas；图中也可能保留具体成功样本没有走过的调用失败分支。累计工作使用逻辑 credit 计费，它既不是 EVM gas，也不是 CPU 耗时测量。
 
 ## 4. 固定世界是起点，执行状态还会变化
 
@@ -164,7 +164,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 ## 5. 当前模型的能力与边界
 
-这一节是查阅表。初学时先记住上面的完成状态、前沿和可变 Store；涉及具体功能时再定位对应行。跨合约操作过程见[第 09 课](09-cross-contract.md)，快照、摘要和创建过程见[第 10 课](10-snapshots-summaries-creation.md)，数值组件与事实交换见[第 12 课](12-product-domains-facts.md)，内存读写与抽象字节数组见[第 14 课](14-memory-model.md)。
+这一节是查阅表。初学时先记住上面的[完成状态](#1-先读完成状态再读图)、[前沿](#2-诊断程序失败和分析前沿分别看)、[可变 Store](#4-固定世界是起点执行状态还会变化)；涉及具体功能时再定位对应行。跨合约操作过程见[第 09 课](09-cross-contract.md)，快照、摘要和创建过程见[第 10 课](10-snapshots-summaries-creation.md)，数值组件与事实交换见[第 12 课](12-product-domains-facts.md)，内存读写与抽象字节数组见[第 14 课](14-memory-model.md)。
 
 ### 输入与单帧数据
 
@@ -175,7 +175,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | 复制与输入身份 | 基本块内的复制身份支持 `x XOR x=0` 等规则；固定输入符号在同一环境内可跨块保持相等，默认 caller/origin 是同一变量 | 临时复制身份在控制流、调用和摘要边界失效；独立环境的同名符号不能据此认作相等；来源标签或数值摘要相同也不证明相等；有界表达式和路径假设可以跨块保留，但合并只保留共同保证，未知读取不会仅凭相同位置获得永久身份 |
 | 内存与数据 | 每帧独立抽象字节数组，load/store/copy、calldata、returndata、返回区传播 | 未知偏移或字节会降低精度；无法追踪的范围留下内存前沿 |
 | JUMP/JUMPI | 有限目标逐个验证；Top 覆盖真实 JUMPDEST；依据数值条件和关系域的分支可行性查询保留边 | 可能有伪边；有界跳转历史不等于内部函数恢复 |
-| 环境、hash、gas | `--evm.*` 描述根调用、交易与区块输入；CALLER、ADDRESS、value 按子调用规则推导；BLOCKHASH/BLOBHASH 检查有效范围，未观察的有效项仍未知；GAS 传播上界 | RPC 固定的是账户状态快照；`--evm.number`、`--evm.chain-id` 等执行环境覆盖不会改变快照身份；环境符号不等于完整符号执行；gas、EIP-150、out-of-gas 与成本不精确 |
+| 环境、hash、gas | `--evm.*` 描述根调用、交易与区块输入；CALLER、ADDRESS、value 按子调用规则推导；BLOCKHASH/BLOBHASH 检查有效范围，未观察的有效项仍未知；GAS 传播上界 | RPC 固定的是账户状态快照；`--evm.number`、`--evm.chain-id` 等执行环境覆盖不会改变快照身份；环境符号不等于完整符号执行；gas、[EIP-150](https://eips.ethereum.org/EIPS/eip-150)、out-of-gas 与成本不精确 |
 
 SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.provider` 选择后端，`--smt.rlimit` 默认 100000，不设置墙钟 timeout。各后端的资源单位不同，不能把相同额度理解成相同耗时或相同求解能力。`ResourceLimit`、表达式或约束上限以及其它无法完成的查询产生 `Relations` 前沿并保留可能路径。SAT 仅说明保留的模型约束可满足；一般 hash、未知地址别名和跨交易不变量仍不在完整可行性证明的范围内。参见[第 15 课](15-symbolic-relations.md)。
 
@@ -190,14 +190,14 @@ SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.prov
 | REVERT/故障 | 恢复调用前 Store；REVERT 保留返回数据，故障返回空数据 | 失败分支不能当成成功但无副作用的调用 |
 | static | 子调用继承限制；禁止状态写入、日志及有值 CALL 等行为 | 违规路径异常终止，返回流程须按失败处理 |
 | LOG | 保存可能日志的账户、topics 和数据，并随 Store 回滚 | 不精确恢复顺序与次数；未知效果由 `logs_unknown` 标记 |
-| EIP-7702 | 解析已观察的委托标记，RPC 可补查对应代码账户，同时保持委托账户的状态身份 | 不执行授权交易列表、授权签名或其 nonce 规则；解析只跟随一层；预编译目标按协议规则处理 |
+| [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) | 解析已观察的委托标记，RPC 可补查对应代码账户，同时保持委托账户的状态身份 | 不执行授权交易列表、授权签名或其 nonce 规则；解析只跟随一层；预编译目标按协议规则处理 |
 
 ### 创建、原生执行与资源
 
 | 部分 | 已建模的内容 | 阅读结果时保留的限制 |
 | --- | --- | --- |
 | CREATE/CREATE2 | 有限 nonce、endowment、salt，可表示 initcode 与明确碰撞事实；执行 initcode 后验证、安装 runtime | 不知道创建者逻辑地址、nonce、碰撞状态、代码或 salt 时保留有类型的 `Creation` 前沿；失败及祖先 REVERT 恢复检查点 |
-| SELFDESTRUCT | 支持的 fork 均使用 EIP-6780：转移余额，同事务创建账户在最外层成功完成时删除 | 事务执行期间代码仍可读/调用；原有账户保留代码/storage；未知受益人或无法判断逻辑地址别名时保留边界 |
+| SELFDESTRUCT | 支持的 fork 均使用 [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780)：转移余额，同事务创建账户在最外层成功完成时删除 | 事务执行期间代码仍可读/调用；原有账户保留代码/storage；未知受益人或无法判断逻辑地址别名时保留边界 |
 | 预编译 | 按 fork 选择固定的 `revm-precompile` 原生实现；传播有限具体输入的返回/失败；预留工作量 | 输入或长度不能表示时为 `PrecompileInput`，资源不足为 `Work`；不声称精确 gas |
 | 完整调用摘要 | 只复用前置条件完全匹配、已完成的 callee 图与全部输出关系 | 固定世界、代码 hash、完整帧/Store、完整不可变 EVM 环境（含 origin 与符号作用域）、输入关系约束、完整域策略（DomainSpec）和深度策略等都需一致；状态、代码、生命周期或 profile、交换上限变化都会影响匹配；复用时重命名 callee 内部新符号，保留输入绑定；未完成关系不发布 |
 | 工作与资源预算 | 所有账户及 RPC 重跑轮次共用状态分配数、transfer 次数与累计工作量；另有限采集账户/请求数、帧深度和内存预算 | 重跑保留已耗费用，最终图状态数可小于累计分配数；超限留下有类型前沿，`Incomplete`、退出 2；跨合约 SSA 拒绝未完成图；与局部交换精度上限分别判断 |
@@ -213,7 +213,7 @@ SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.prov
 | 数值域与事实策略 | join 的交换、结合、幂等和覆盖；纯运算的边界与随机 U256 输入对照；组合规则、交换上限、复制身份与策略序列化 | [`domain.rs`](../crates/evm-abstract/tests/domain.rs)、[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs)、[`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)、[`domain_policy.rs`](../crates/evm-abstract/tests/domain_policy.rs) |
 | 单账户图和栈 SSA | 解码、跳转、栈故障、φ、支配和使用；实际轨迹的块入口、边、出栈与 SSA 值 | [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs)、[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) |
 | 跨合约轨迹与效果 | 三个 fork 的调用返回、共享实现、CALLCODE、copy、回滚、static、日志、重入；实际访问入口与子帧 | [`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) |
-| 摘要与创建 | 摘要开/关的联合结果、图与 SSA；initcode/runtime、nonce、碰撞、回滚、代码限制、EIP-6780 | [`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)、[`creation.rs`](../crates/evm-abstract/tests/creation.rs) |
+| 摘要与创建 | 摘要开/关的联合结果、图与 SSA；initcode/runtime、nonce、碰撞、回滚、代码限制、[EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) | [`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)、[`creation.rs`](../crates/evm-abstract/tests/creation.rs) |
 | 环境输入与身份 | 默认未知与显式零/空、caller/origin 跨块与 join 的别名、独立环境作用域、子调用规则、gas 上界、hash 表范围、完整 JSON 输入记录 | [`environment.rs`](../crates/evm-abstract/tests/environment.rs)、[`cli/environment.rs`](../crates/evm-abstract-cli/tests/cli/environment.rs) |
 | 原生调用与事实采集 | 各 fork 预编译返回/失败、输入/工作前沿；localhost HTTP 的首次区块解析、固定 selector、缺失结果、超时与无 moving-tag 回退 | [`precompiles.rs`](../crates/evm-abstract/tests/precompiles.rs)、[`rpc/tests.rs`](../crates/evm-abstract/src/world/rpc/tests.rs) |
 | IR 和实际 CLI | 跨合约 SSA 与完整机器图一致，损坏的转移/效果流被拒绝；JSON/文本/DOT、错误/退出码、安装二进制样例 | [`world/verify.rs`](../crates/evm-abstract/src/ssa/world/verify.rs)、[`cli.rs`](../crates/evm-abstract-cli/tests/cli.rs)、[`flake.nix`](../flake.nix) |
@@ -222,4 +222,4 @@ SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.prov
 
 后续扩大关系环境、路径约束、内部函数恢复、精确 gas、经过密码学验证的状态或跨交易性质时，也应明确新增假设、具体改善的例子，以及独立轨迹是否仍被覆盖。
 
-基础阅读到这里结束。接着可以做[第 07 课的实验](07-exercises.md)，用[第 08 课](08-forks.md)检查协议选择。继续研究数值精度可进入[第 12 课](12-product-domains-facts.md)；世界执行则从第 09、10 课开始。
+基础阅读到这里结束。接着可以做[第 07 课的实验](07-exercises.md)，用[第 08 课](08-forks.md)检查协议选择。继续研究数值精度可进入[第 12 课](12-product-domains-facts.md)；世界执行则从[第 09 课](09-cross-contract.md)、[第 10 课](10-snapshots-summaries-creation.md)开始。

@@ -1,6 +1,6 @@
 # 例子索引：从几条指令到跨合约执行
 
-建议先按下面的单账户顺序学习，再运行多账户世界。所有命令在**仓库根目录**执行，不要先 `cd examples`。文件都是合成的离线输入；分析不需要 RPC 或资金。
+建议先按[下面的单账户顺序](#单账户先把栈和图读懂)学习，再运行[多账户世界](#多账户观察调用怎样影响返回值与状态)。所有命令在**仓库根目录**执行，不要先 `cd examples`。文件都是合成的离线输入；分析不需要 RPC 或资金。
 
 ## 单账户：先把栈和图读懂
 
@@ -16,7 +16,7 @@
 | 6．[internal-calls.hex](internal-calls.hex) | 同一 helper 的两次内部跳转，比较历史长度 | helper 在 `pc=0x0e`，比较 `context_depth=0/1` | [05：跳转历史](../docs/05-sensitivity.md) |
 | 7．[osaka-clz.hex](osaka-clz.hex) | 协议版本影响指令有效性和计算跳转 | Osaka 下 CLZ(1)=255，跳到 `pc=0x08` | [08：fork](../docs/08-forks.md) |
 
-先用 `explain` 同时查看反汇编、CFG、SSA；只想看图时改用 `cfg`。下面的 diamond 和 loop 显式使用 `--context-depth 0`，loop 另外关闭关系层以观察纯数值固定点；以便观察汇合与循环固定点；未指定时默认为 8：
+先用 `explain` 同时查看反汇编、CFG、SSA；只想看图时改用 `cfg`。下面的 [diamond](diamond.hex) 和 [loop](loop.hex) 显式使用 `--context-depth 0`，[loop](loop.hex) 另外关闭关系层以观察纯数值固定点；以便观察汇合与循环固定点；未指定时默认为 8：
 
 ```bash
 nix run . -- explain --file examples/straight-line.hex
@@ -35,7 +35,7 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 
 ## 内存：从字节读写到抽象数组
 
-`straight-line.hex` 已展示把计算结果写入内存再返回。继续读[14：EVM内存与抽象字节数组](../docs/14-memory-model.md)，先用 MSTORE/MLOAD、MSTORE8 和 MSIZE 手算字节、偏移与长度，再观察多个可能偏移、逐字节汇合和预算前沿。该课包含运行命令与预期输出；CALL 传递输入、复制返回字节的完整流程见[第 09 课](../docs/09-cross-contract.md)。
+[`straight-line.hex`](straight-line.hex) 已展示把计算结果写入内存再返回。继续读[14：EVM内存与抽象字节数组](../docs/14-memory-model.md)，先用 MSTORE/MLOAD、MSTORE8 和 MSIZE 手算字节、偏移与长度，再观察多个可能偏移、逐字节汇合和预算前沿。该课包含运行命令与预期输出；CALL 传递输入、复制返回字节的完整流程见[第 09 课](../docs/09-cross-contract.md)。
 
 | 文件 | 读写过程 | 要观察什么 |
 | --- | --- | --- |
@@ -47,7 +47,7 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 | [memory-overlap-copy.hex](memory-overlap-copy.hex) | MCOPY 将偏移 28～30 复制到 29～31 | 重叠复制使用原始源字节，MLOAD(0) 得 `0x01010203` |
 | [memory-word-bound.json](memory-word-bound.json) | 向偏移 1 写入 `0x1234`，再读取 word 和 MSIZE | 需要 64 字节；将 `--max-memory-bytes` 降到 32 时留下 `Memory` 前沿 |
 
-最后一项是单账户世界文件，按第 14 课命令显式提供 `--evm.to`、`--evm.value 0` 与 `--evm.calldata 0x`。先读正常结果，再运行上限实验；不要把 `Incomplete` 的部分输出当作完整内存状态。
+最后一项是单账户世界文件，按[第 14 课的完整 memory 查询](../docs/14-memory-model.md#12-怎样看完整-memory而不只看-stack-out)命令显式提供 `--evm.to`、`--evm.value 0` 与 `--evm.calldata 0x`。先读正常结果，再运行[上限实验](../docs/14-memory-model.md#13-范围上限错误与分析完成状态)；不要把 `Incomplete` 的部分输出当作完整内存状态。
 
 ## 数值精度：集合以外还能知道什么
 
@@ -80,13 +80,13 @@ CLZ 的完整结果为 `0..=256`，共 257 个候选。第一条命令为 `Conve
 
 ## Storage：先读懂一个账户的单元，再增加调用层级
 
-这些 `storage-*.json` 与上面的 memory 字节码分开，用 [第 16 课](../docs/16-storage-model.md)逐步观察。它们是 world 输入，入口都是 `0x0000000000000000000000000000000000000101`；单账户实验也需要 `--world`，文件夹名字不会改变输入格式。
+这些 [`storage-*.json`](#storage先读懂一个账户的单元再增加调用层级) 与[上面的 memory 字节码](#内存从字节读写到抽象数组)分开，用 [第 16 课](../docs/16-storage-model.md)逐步观察。它们是 world 输入，入口都是 `0x0000000000000000000000000000000000000101`；单账户实验也需要 `--world`，文件夹名字不会改变输入格式。
 
 | 文件 | 先手算什么 | 要核对的结果 |
 | --- | --- | --- |
 | [storage-basic.json](storage-basic.json) | A[0]=5、A[1]=7；覆盖 slot 0 为 42，再读两格 | 成功块出口为 `[42,7]`，初始 World 仍保留 5 |
 | [storage-zero-default.json](storage-zero-default.json) | 未列出的 slot 在完整输入中为零 | 读 slot 0、1、2 得到 `[5,0,0]` |
-| [storage-unknown-default.json](storage-unknown-default.json) | 相同代码、相同已知 slot，却不声明其他 slot 为零 | `[5,⊤,⊤]`；与前一文件分别看 default |
+| [storage-unknown-default.json](storage-unknown-default.json) | 相同代码、相同已知 slot，却不声明其他 slot 为零 | `[5,⊤,⊤]`；与[前一文件](storage-zero-default.json)分别看 default |
 | [storage-write-unknown-initial.json](storage-write-unknown-initial.json) | 先读未知 slot 0，强写 7，再读一次 | `[⊤,7]`；写入不重绑定旧读值 |
 | [storage-finite-alias.json](storage-finite-alias.json) | 未知 calldata 选择 slot 0 或 1；只写其中一个 | `--context-depth 0` 得到 `{4,9}×{7,9}`，额外组合不是具体执行见证 |
 | [storage-symbolic-key.json](storage-symbolic-key.json) | 同一个未知 k 写入 7，再从 k 读取 | 未设置 calldata 时仍为 `{0,7}`；空 calldata 把 k 固定为 0 后为 7 |
@@ -103,7 +103,7 @@ nix run . -- explain --world examples/storage-basic.json \
   --evm.value 0 --evm.calldata 0x
 ```
 
-之后按第 16 课的输入条件运行后续项：有限别名和符号键实验需要保留未知 calldata，不能把这条命令的 `--evm.calldata 0x` 直接复制到所有对照中。原始 word 如何拆成 memory 字节先读第 14 课；新符号表达式、分支假设与 relation join 见[第 15 课](../docs/15-symbolic-relations.md)。
+之后按[第 16 课](../docs/16-storage-model.md)的输入条件运行后续项：有限别名和符号键实验需要保留未知 calldata，不能把这条命令的 `--evm.calldata 0x` 直接复制到所有对照中。原始 word 如何拆成 memory 字节先读[第 14 课](../docs/14-memory-model.md)；新符号表达式、分支假设与 relation join 见[第 15 课](../docs/15-symbolic-relations.md)。
 
 ## 多账户：观察调用怎样影响返回值与状态
 
@@ -158,8 +158,8 @@ A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获�
 
 ## 这些例子怎样被核对
 
-[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 核对前六个单账户例子的具体入口、边、出栈和值，覆盖 Cancun/Prague/Osaka 和 k=0/1/2/8/10。具体调用输入是 32 字节，前 31 字节均为 `00`：diamond/stack-heights 的末字节分别取 0 与 1；dynamic-jump 的末字节取 4，确保走到合法目标并写 storage。[`osaka.rs`](../crates/evm-abstract/tests/osaka.rs) 核对 CLZ，并验证旧 fork 下的指令故障。新增的三份数值精度输入由完整门禁使用打包后的 CLI 执行 CFG、SSA；域、复制身份和反馈限制另有[组合域测试](../crates/evm-abstract/tests/product_domains.rs)。
+[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 核对[前六个单账户例子](#单账户先把栈和图读懂)的具体入口、边、出栈和值，覆盖 Cancun/Prague/Osaka 和 k=0/1/2/8/10。具体调用输入是 32 字节，前 31 字节均为 `00`：[diamond](diamond.hex)/[stack-heights](stack-heights.hex) 的末字节分别取 0 与 1；[dynamic-jump](dynamic-jump.hex) 的末字节取 4，确保走到合法目标并写 storage。[`osaka.rs`](../crates/evm-abstract/tests/osaka.rs) 核对 CLZ，并验证旧 fork 下的指令故障。新增的[三份数值精度输入](#数值精度集合以外还能知道什么)由完整门禁使用打包后的 CLI 执行 CFG、SSA；域、复制身份和反馈限制另有[组合域测试](../crates/evm-abstract/tests/product_domains.rs)。
 
 [`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 对照多账户具体轨迹和账户效果；[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs) 比较缓存开关后的最终关系；[`creation.rs`](../crates/evm-abstract/tests/creation.rs) 核对创建、延迟删除和原生调用。这些是指定样例的核对证据，范围见[第 06 课](../docs/06-boundaries.md)。
 
-`symbolic-conflicting-guards.hex` 对同一 CALLVALUE 依次检查等于 1、等于 2；默认关系域排除两条真分支连成的矛盾路径。用 `--no-relations` 对照保守数值图，见[符号与关系域](../docs/15-symbolic-relations.md)。
+[`symbolic-conflicting-guards.hex`](symbolic-conflicting-guards.hex) 对同一 CALLVALUE 依次检查等于 1、等于 2；默认关系域排除两条真分支连成的矛盾路径。用 `--no-relations` 对照保守数值图，见[符号与关系域](../docs/15-symbolic-relations.md)。

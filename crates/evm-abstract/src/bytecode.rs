@@ -107,7 +107,7 @@ pub enum DecodeError {
     /// EOF 有独立的容器和指令语义，不能按普通 EVM 指令流切块。
     #[error("EOF containers are unsupported; provide ordinary EVM runtime bytecode")]
     UnsupportedEof,
-    /// EIP-7702 标记是账户代码指针，不是被执行的指令流。不能输出一个虚假空 CFG。
+    /// [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 标记是账户代码指针，不是被执行的指令流。不能输出一个虚假空 CFG。
     #[error("EIP-7702 delegates execution to {address}; analyze that account's runtime bytecode")]
     DelegatedCode {
         /// 原始 marker 中的目标地址，不自动访问 RPC。

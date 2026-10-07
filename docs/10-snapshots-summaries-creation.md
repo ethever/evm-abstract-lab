@@ -2,7 +2,7 @@
 
 读完[第 9 课](09-cross-contract.md)，你已经知道调用会产生返回字节和共享状态变化。本课逐个回答四个问题：相同调用能不能复用分析结果？新合约的代码从哪里来？SELFDESTRUCT 何时删除账户？没有普通字节码的预编译怎样执行？最后把这些实验连接到固定链上快照。
 
-前四个实验均使用离线合成事实，根帧地址为 A=`0x...0101`，命令明确给出 caller、零 value 和空 calldata，默认预算可完成。省略这些参数会得到符号输入，不等同于这组具体约束。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
+[摘要](#1-调用摘要复用完整结果关系)、[创建](#2-create先执行构造代码再安装运行时代码)、[销毁](#3-selfdestruct转账和删除发生在不同时间)、[预编译](#4-预编译没有普通字节码也有调用帧)四个实验均使用离线合成事实，根帧地址为 A=`0x...0101`，命令明确给出 caller、零 value 和空 calldata，默认预算可完成。省略这些参数会得到符号输入，不等同于这组具体约束。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
 直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 3 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
@@ -29,7 +29,7 @@
 
 `analyze` 文本或 `explain --verbose` 的 `Call summaries` 分区显示摘要统计和每份记录。`published=1` 表示保存了一个可复用的完整结果；`hits=1` 才表示后来的调用复用了一个结果。`source` / JSON 的 `source_state` 指向最初分析的 callee 入口；`reused_at` 指向后来的复用入口。完整文本中各摘要还列出出口种类、返回长度和代码身份；完整的返回字节与 Store 关系在 JSON 的 `summaries[].outputs` 中。
 
-在[第 9 课的 `returndata-copy.json`](09-cross-contract.md#3-一次调用需要保存哪些东西) 中，A 只调用 B 一次。若统计显示 `published=1`、`hits=0`，含义是第一次分析已经完成并保存，但没有第二次相同调用来使用它。这是正常情况，不能据此判断调用失败或摘要没有工作。下面的两次调用实验才用于观察复用。
+在[第 9 课的 `returndata-copy.json`](09-cross-contract.md#3-一次调用需要保存哪些东西) 中，A 只调用 B 一次。若统计显示 `published=1`、`hits=0`，含义是第一次分析已经完成并保存，但没有第二次相同调用来使用它。这是正常情况，不能据此判断调用失败或摘要没有工作。[下面的两次调用实验](#第一步分别开启和关闭摘要)才用于观察复用。
 
 ### 第一步：分别开启和关闭摘要
 
@@ -84,7 +84,7 @@ cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 
 例如，B 第一次读取 slot 0=7、第二次读取 slot 0=9，虽然地址、代码和空 calldata 都相同，旧结果也不能直接拿来用。caller、value、静态模式或交易/区块环境改变时也一样；这些事实可能影响执行。当前实现比较完整抽象输入，而不是推测“B 大概只读了 slot 0”后忽略其他状态。
 
-本课的**代码 hash**是代码字节的 Keccak 摘要；**初始事实指纹（fingerprint）**绑定整组初始事实。快照身份绑定其声明的来源，具体格式见第 5 节。**ORIGIN（最外层交易发起者）**在省略 `--evm.origin` 时与根帧 caller 共享同一输入，可由该参数单独覆盖；选定后在嵌套调用中保持不变。帧的 CALLER 则按 CALL 系列规则推导，不会因为根 caller 为符号输入就把所有子帧 caller 都设成新的未知值。
+本课的**代码 hash**是代码字节的 Keccak 摘要；**初始事实指纹（fingerprint）**绑定整组初始事实。快照身份绑定其声明的来源，具体格式见[第 5 节](#5-固定快照同一个名字不代表同一组事实)。**ORIGIN（最外层交易发起者）**在省略 `--evm.origin` 时与根帧 caller 共享同一输入，可由该参数单独覆盖；选定后在嵌套调用中保持不变。帧的 CALLER 则按 CALL 系列规则推导，不会因为根 caller 为符号输入就把所有子帧 caller 都设成新的未知值。
 
 | 必须相等的前提 | 防止什么错误 |
 | --- | --- |
@@ -206,7 +206,7 @@ CREATE2 用创建者地址、**salt（显式给定的 256 位值）**、initcode
 | 目标 nonce / 代码不足以判断碰撞 | `UnknownCollision` |
 | 金额或非零转账所需余额 | `UnknownEndowment` |
 
-有限数值会枚举候选，initcode/runtime 必须能提取为具体字节。构造帧的初始 storage/transient 属于新账户，代码通过长度、前缀与解码检查后才安装。静态限制、调用深度、EIP-3860 的 initcode 限制和 runtime 代码限制也影响结果。
+有限数值会枚举候选，initcode/runtime 必须能提取为具体字节。构造帧的初始 storage/transient 属于新账户，代码通过长度、前缀与解码检查后才安装。静态限制、调用深度、[EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) 的 initcode 限制和 runtime 代码限制也影响结果。
 
 执行到增加 nonce、进入 initcode 后，initcode 失败会回滚新账户效果，**保留此次增加的创建者 nonce**；更外层帧 REVERT 时则恢复其更早保存点，连 nonce 一起撤销。因余额不足等在增加 nonce 之前发生的失败不会增加它。创建/调用失败可能与成功路径同时出现在图中。[`creation.rs`](../crates/evm-abstract/tests/creation.rs) 使用独立 revm 轨迹核对这些关系。
 
@@ -304,7 +304,7 @@ jq '.analysis.edges,
 
 **快照（snapshot）**提供代码、初始 storage、余额、nonce 和存在性事实。固定链上快照中的“固定”首先指 chain ID 与 block hash：分析前与按需补查得到的事实都属于同一个区块。已观察的事实保持不变，尚未观察的账户可以继续加入。每轮分析使用一组固定初始事实；执行指令改变的是 Store。
 
-先查看第 1 节使用的离线快照：
+先查看[第 1 节](#1-调用摘要复用完整结果关系)使用的离线快照：
 
 ```bash
 jq '.world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
@@ -330,7 +330,7 @@ jq '.world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
 
 world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block_hash` 始终是完整 32 字节 hash。RPC CLI 自动读取 chain ID；可用 `--block-hash` 指定完整 hash，或用互斥的 `--block-number` 指定区块号。两者都省略时，启动时读取一次 `latest`。区块号与 `latest` 都先解析为 hash，后续状态查询固定使用这个 hash；发现 callee、链头前进或多轮重跑都不会重新选择区块。`--block-number` 接受十进制或 `0x` / `0X` 十六进制，范围为 `0` 到 `2^64−1`；world JSON 的身份格式不变。fork 仍单独选择，身份不会替你选择执行规则。`--block-number` / `--block-hash` 选择账户状态快照；`--evm.number` 只覆盖 NUMBER，`--evm.chain-id` 只覆盖 CHAINID，不改变 `.world.identity` 中实际采集的链和区块。省略 `--evm.chain-id` 时，链上 world/RPC 的 CHAINID 取快照身份中的 chain ID；没有链身份的离线输入则保持未知。省略其他区块环境字段时，它们保持符号输入；不会仅因固定了账户状态就自动补齐全部区块头和交易事实。
 
-链上 JSON 提供代码时必须同时提供匹配的 `code_hash`。runtime 按原始代码字节计算 Keccak；EIP-7702 委托标记按原始 23 字节计算；已确认 absent 的账户 hash 为零。输入可附带预期 fingerprint；解析器拒绝指纹失配、重复地址/slot、冲突代码 hash 和不合法的 absence 事实。
+链上 JSON 提供代码时必须同时提供匹配的 `code_hash`。runtime 按原始代码字节计算 Keccak；[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 委托标记按原始 23 字节计算；已确认 absent 的账户 hash 为零。输入可附带预期 fingerprint；解析器拒绝指纹失配、重复地址/slot、冲突代码 hash 和不合法的 absence 事实。
 
 `existence` 分为 `unknown`、`present`、`absent`。**空代码与账户不存在不是同一事实**。省略 nonce/balance/existence 表示未知；未列 slot 默认未知。只有确实知道所有未列 slot 为零，才能声明 `storage_unknown:false`；RPC 只采集请求的 slot，其余保持未知。
 
@@ -363,11 +363,11 @@ case "$LAB_RPC_STATUS" in
 esac
 ```
 
-先核对退出码：0 表示 `Converged`，2 表示已有 `Incomplete` 报告，两者都可以读取 JSON；其他退出码不能按有效报告继续。只有成功读出链上 hash 后，才执行后面的对照。结果中的 `world.identity` 保存自动读取的 chain ID 与本次固定的 hash。后面的对照实验使用刚保存的 `LAB_BLOCK_HASH`，使两次分析读取同一个区块。若已选定区块，可在第一条命令里直接加 `--block-hash "$LAB_BLOCK_HASH"` 或 `--block-number 26000000`；这两个参数不能一起传入。
+先核对退出码：0 表示 `Converged`，2 表示已有 `Incomplete` 报告，两者都可以读取 JSON；其他退出码不能按有效报告继续。只有成功读出链上 hash 后，才执行[后面的对照](#rpc-without-discovery)。结果中的 `world.identity` 保存自动读取的 chain ID 与本次固定的 hash。[后面的对照实验](#rpc-without-discovery)使用刚保存的 `LAB_BLOCK_HASH`，使两次分析读取同一个区块。若已选定区块，可在第一条命令里直接加 `--block-hash "$LAB_BLOCK_HASH"` 或 `--block-number 26000000`；这两个参数不能一起传入。
 
-入口自动加载。CALL、STATICCALL、DELEGATECALL、CALLCODE 能确定具体目标时，缺少该账户的代码事实就会触发补查；入口或 callee 的 EIP-7702 委托代码也可发现对应实现账户。解析仍只跟随一层委托。预编译由 fork 规则处理，已知代码、已知空代码和确认 absent 的账户都可以复用已有事实。
+入口自动加载。CALL、STATICCALL、DELEGATECALL、CALLCODE 能确定具体目标时，缺少该账户的代码事实就会触发补查；入口或 callee 的 [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 委托代码也可发现对应实现账户。解析仍只跟随一层委托。预编译由 fork 规则处理，已知代码、已知空代码和确认 absent 的账户都可以复用已有事实。
 
-SLOAD 的槽键有完整有限候选集合时，缺少初始值会触发 `MissingStorage {address,slot}`。分析器在轮次之间用 `eth_getStorageAt` 补查这些槽，然后从入口重跑；例如代理从具体 slot 0 读取实现地址，获得槽值后可继续发现实现代码。读取按当前帧的状态账户定位；DELEGATECALL 或 CALLCODE 的实现代码仍读取代理的槽，EIP-7702 委托执行也保留委托账户的状态身份。
+SLOAD 的槽键有完整有限候选集合时，缺少初始值会触发 `MissingStorage {address,slot}`。分析器在轮次之间用 `eth_getStorageAt` 补查这些槽，然后从入口重跑；例如代理从具体 slot 0 读取实现地址，获得槽值后可继续发现实现代码。读取按当前帧的状态账户定位；DELEGATECALL 或 CALLCODE 的实现代码仍读取代理的槽，[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 委托执行也保留委托账户的状态身份。
 
 只加载入口不保证 `Converged`；符号 calldata/value 可能使更多路径可达，未知范围、调用目标或累计资源都可能留下前沿。无限或无法完整枚举的槽键保持保守未知，不会尝试穷举 256 位槽空间；由这样的值形成的调用目标仍可能留下 `UnknownTarget`。动态获取账户会观察其 code、balance 和 nonce；其余未观察且尚未被有限 SLOAD 请求的初始槽仍未知。
 
@@ -383,7 +383,7 @@ SLOAD 的槽键有完整有限候选集合时，缺少初始值会触发 `Missin
 
 一轮可能同时发现多个账户或槽，所以上面是理解顺序的例子，不是固定轮数公式。同一轮缺少的有限槽集合按地址和槽键去重后采集。每次成功补充事实后，图、Store、调用检查点和摘要都由入口重新建立。A 在 CALL 前做过的写入会重新执行，后来的重入仍读当前 Store。这样能把 B 的区块初始余额与 A 给 B 转账后的余额放在各自正确的位置。
 
-采集缓存保存的是区块事实。B 在获知 C 的代码或初始槽值后 REVERT，撤销的是 B 与更深调用的事务效果，获取的初始事实仍可供 A 后续调用使用。同一账户和同一 `(address,slot)` 不重复采集，返回零也是已观察值。SLOAD 先考虑当前 Store：已经强写的槽直接读事务值；弱写可能与初始值合并，补查不能用链上原值覆盖这些写入。第 2 节 CREATE 已安装的 runtime 属于当前 Store 的代码覆盖层，后续 CALL 使用该 runtime；创建碰撞所需的初始存在性等事实仍需预先提供。
+采集缓存保存的是区块事实。B 在获知 C 的代码或初始槽值后 REVERT，撤销的是 B 与更深调用的事务效果，获取的初始事实仍可供 A 后续调用使用。同一账户和同一 `(address,slot)` 不重复采集，返回零也是已观察值。SLOAD 先考虑当前 Store：已经强写的槽直接读事务值；弱写可能与初始值合并，补查不能用链上原值覆盖这些写入。[第 2 节](#2-create先执行构造代码再安装运行时代码) CREATE 已安装的 runtime 属于当前 Store 的代码覆盖层，后续 CALL 使用该 runtime；创建碰撞所需的初始存在性等事实仍需预先提供。
 
 此时再读 `rpc_acquisition`：
 
@@ -400,7 +400,9 @@ SLOAD 的槽键有完整有限候选集合时，缺少初始值会触发 `Missin
 
 最终 `world` 保存来自受信任提供者的初始观察，`states` / `edges` / `outcomes` 属于最后一轮分析；累计工作和请求数则覆盖全部轮次。新账户或槽事实增加后 fingerprint 随之改变，旧一轮的摘要不会沿用到新一轮。
 
-**第三步，关闭发现，做初始事实的对照。** 保留同一个目标地址、固定区块与 `--evm.*` 输入约束，再加 `--no-rpc-discovery`；若第一步省略 calldata，两次都分析未知输入集合，而不是某次已指定的 calldata：
+<a id="rpc-without-discovery"></a>
+
+**第三步，关闭发现，做初始事实的对照。** 保留同一个目标地址、固定区块与 `--evm.*` 输入约束，再加 `--no-rpc-discovery`；若[第一步](#可选实验从固定区块采集)省略 calldata，两次都分析未知输入集合，而不是某次已指定的 calldata：
 
 ```bash
 : "${LAB_BLOCK_HASH:?先完成第一步并保存固定的链上 hash}"

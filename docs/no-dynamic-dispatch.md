@@ -24,9 +24,9 @@ cargo install cargo-dylint dylint-link --version 6.1.0 --locked
 cargo dylint --all
 ```
 
-不用 Nix 时，通过 `bash scripts/check-no-dyn.sh` 检查全部 targets、features 和 doctest。
+不用 Nix 时，通过 [`bash scripts/check-no-dyn.sh`](../scripts/check-no-dyn.sh) 检查全部 targets、features 和 doctest。
 
-lint 库有独立的 [`rust-toolchain.toml`](../lints/no_dyn/rust-toolchain.toml) 和 [`Cargo.lock`](../lints/no_dyn/Cargo.lock)。它使用官方脚手架支持的 `nightly-2026-08-20`；应用的构建工具链仍由根目录的 `rust-toolchain.toml` 固定。首次使用 rustup 时会下载 lint 所需组件。
+lint 库有独立的 [`rust-toolchain.toml`](../lints/no_dyn/rust-toolchain.toml) 和 [`Cargo.lock`](../lints/no_dyn/Cargo.lock)。它使用官方脚手架支持的 `nightly-2026-08-20`；应用的构建工具链仍由根目录的 [`rust-toolchain.toml`](../rust-toolchain.toml) 固定。首次使用 rustup 时会下载 lint 所需组件。
 
 ## 检查内容
 
@@ -40,7 +40,7 @@ JSON 输入改用[具体 visitor](../crates/evm-abstract-cli/src/world/input.rs)
 
 ## 范围
 
-这是仓库源码约束，不检查第三方依赖内部实现，也不保证最终机器码没有间接调用。编译器生成的格式化、测试框架以及依赖内部可能仍使用间接调用。`lints/no_dyn` 是独立的开发工具，Dylint 的插件注册接口本身要求动态 lint pass；它不属于应用 workspace。`ui` 中的反例用于证明违规代码会编译失败。
+这是仓库源码约束，不检查第三方依赖内部实现，也不保证最终机器码没有间接调用。编译器生成的格式化、测试框架以及依赖内部可能仍使用间接调用。[`lints/no_dyn`](../lints/no_dyn) 是独立的开发工具，Dylint 的插件注册接口本身要求动态 lint pass；它不属于应用 workspace。[`ui`](../lints/no_dyn/ui) 中的反例用于证明违规代码会编译失败。
 
 `LateLintPass` 只检查当前条件编译配置；完整门禁覆盖当前 workspace 的默认和全部 features。新增互斥 feature、目标平台专属实现时，应补充相应检查配置。
 

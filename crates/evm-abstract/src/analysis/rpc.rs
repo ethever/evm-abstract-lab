@@ -112,7 +112,7 @@ impl From<RpcError> for RpcAnalysisError {
 
 /// Analyze a fixed RPC snapshot, acquiring missing callees and finite storage reads.
 ///
-/// The entry is acquired automatically. CALL-family and EIP-7702 resolution
+/// The entry is acquired automatically. CALL-family and [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) resolution
 /// identify missing account code; SLOAD requests missing initial values for
 /// concrete storage owners and finite keys. Unknown targets/keys are not guessed,
 /// and current transaction effects are never overwritten by RPC observations.
