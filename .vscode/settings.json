@@ -1,4 +1,5 @@
 {
+  "rust-analyzer.server.path": "${workspaceFolder}/scripts/rust-analyzer-nix.sh",
   "[toml]": {
     "editor.defaultFormatter": "tamasfe.even-better-toml",
     "editor.formatOnSave": true,

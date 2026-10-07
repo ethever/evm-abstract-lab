@@ -21,7 +21,7 @@ nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --o
 
 需要启用 `nix-command` 和 `flakes` 的 Nix。按机器余量调整 `max-jobs` 和 `cores`；这两个选项限制构建并发，不减少检查内容。`--no-update-lock-file` 防止检查时修改依赖锁。
 
-等待命令结束，确认 **Nix 自身的退出码为 0**。检查范围以 [`flake.nix` 的 `checks`](../flake.nix) 为准，包含测试、格式、文档、打包后示例，以及默认 / imbl / 全 features 的 Dylint 动态派发检查和 lint 的 UI 回归测试（见[检查说明](no-dynamic-dispatch.md)）。`toml-lint` 用 Taplo 检查仓库 TOML 的语法与重复键，`toml-format` 检查格式，并通过 LSP 请求验证编辑器保存与命令行格式一致，均覆盖隐藏目录中的 TOML；规则见 [`taplo.toml`](../taplo.toml)。局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
+等待命令结束，确认 **Nix 自身的退出码为 0**。检查范围以 [`nix/system.nix` 汇总的 `checks`](../nix/system.nix) 为准；[检查模块](../nix/checks.nix)包含测试、格式、文档、打包后示例，另有默认 / imbl / 全 features 的 Dylint 动态派发检查和 lint 的 UI 回归测试（见[检查说明](no-dynamic-dispatch.md)）。`toml-lint` 用 Taplo 检查仓库 TOML 的语法与重复键，`toml-format` 检查格式，并通过 LSP 请求验证编辑器保存与命令行格式一致，均覆盖隐藏目录中的 TOML；规则见 [`taplo.toml`](../taplo.toml)。编辑器检查实际启动锁定的 Code CLI、安装归档到临时环境并核对扩展和服务器；原生库共存检查也属于门禁。局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
 
 失败或中断时，修正问题，再检查最终提交。若把输出通过管道交给 `tee` 保存，必须启用 `pipefail` 或另外保存 Nix 的退出码，避免把日志工具的成功当成检查成功。
 

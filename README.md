@@ -174,7 +174,7 @@ nix develop
 cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.hex
 ```
 
-`nix develop` 提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、Graphviz、jq、cargo-nextest、Taplo 和 lychee。三份锁定文件负责不同层次：
+`nix develop` 显式提供编译工具、原生 SMT 库、语言服务器、格式器和检查工具。VS Code 的完整配置、依赖版本来源和 Nix 模块职责见[开发环境说明](docs/development.md)。核心锁定文件负责不同层次：
 
 | 文件 | 固定什么 |
 | --- | --- |
@@ -225,7 +225,9 @@ nix develop --command taplo fmt --check
 nix develop --command taplo fmt
 ```
 
-VS Code 请以仓库根目录打开工作区，并安装 [Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml) 扩展；仓库的 [扩展推荐](.vscode/extensions.json) 和 [工作区设置](.vscode/settings.json) 指定该格式器并启用保存时格式化。编辑器与命令行共同读取 `taplo.toml` 的 `[formatting]`：4 空格缩进、对齐键值、最多一个连续空行。已格式化的文件再次按 Ctrl-S 应保持不变；刚更新工作区设置时，可执行 `Developer: Reload Window` 重新加载窗口。
+VS Code 请以仓库根目录打开工作区，在其集成终端运行 `nix run --no-update-lock-file .#install-vscode-extensions` 安装 Nix 锁定的 Rust/TOML 扩展，再执行 `Developer: Reload Window`。Remote SSH 使用同一流程。也可以通过 `nix run --no-update-lock-file .#vscode -- .` 启动连编辑器版本一起锁定的独立环境。语言服务器和原生构建依赖进入同一个 Nix 开发环境，详细步骤见[开发环境说明](docs/development.md)。
+
+编辑器与命令行使用同一个 Nix Taplo，并共同读取 `taplo.toml` 的 `[formatting]`：4 空格缩进、对齐键值、最多一个连续空行。[工作区设置](.vscode/settings.json) 指定该格式器并启用保存时格式化；已格式化的文件再次按 Ctrl-S 应保持不变。
 
 修改格式规则时以 `taplo.toml` 为准。完整门禁还会通过语言服务器模拟编辑器格式化请求，验证编辑器选项不会让结果偏离命令行格式。
 

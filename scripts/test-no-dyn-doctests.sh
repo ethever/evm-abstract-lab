@@ -4,7 +4,7 @@ set -euo pipefail
 
 task_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$task_root"
-task_toolchain=${DYLINT_TOOLCHAIN:-nightly-2026-08-20}
+task_toolchain=${DYLINT_TOOLCHAIN:?Run no-dyn in the Nix development shell.}
 if [[ -z ${DYLINT_DRIVER:-} || -z ${DYLINT_LIBRARY:-} ]]; then
   echo 'DYLINT_DRIVER and DYLINT_LIBRARY are required; run scripts/check-no-dyn.sh locally.' >&2
   exit 1
@@ -18,14 +18,7 @@ DYLINT_DRIVER=$(realpath -- "$DYLINT_DRIVER")
 
 # Encode paths as JSON and rustdoc arguments separately, preserving spaces.
 export DYLINT_LIBS
-DYLINT_LIBS=$(python3 - "$DYLINT_LIBRARY" <<'PY'
-import json
-from pathlib import Path
-import sys
-
-print(json.dumps([str(Path(sys.argv[1]).resolve(strict=True))]))
-PY
-)
+DYLINT_LIBS=$(jq -cn --arg library "$(realpath -- "$DYLINT_LIBRARY")" '[$library]')
 task_rustdoc_flags=()
 if [[ -n ${CARGO_ENCODED_RUSTDOCFLAGS:-} ]]; then
   IFS=$'\x1f' read -r -a task_rustdoc_flags <<< "$CARGO_ENCODED_RUSTDOCFLAGS"
@@ -71,15 +64,11 @@ if "${task_rustdoc[@]}" --test --edition=2024 "${task_rustdoc_flags[@]}" \
   echo 'The doctest compiler accepted dynamic dispatch; no_dyn was not enforced.' >&2
   exit 1
 fi
-python3 - "$task_fixture/rejected.log" <<'PY'
-from pathlib import Path
-import sys
-
-output = Path(sys.argv[1]).read_text()
-if "dynamic dispatch is forbidden" not in output:
-    sys.stderr.write(output)
-    sys.exit("The rejected doctest failed without a no_dyn diagnostic.")
-PY
+if ! grep -Fq 'dynamic dispatch is forbidden' "$task_fixture/rejected.log"; then
+  cat "$task_fixture/rejected.log" >&2
+  echo 'The rejected doctest failed without a no_dyn diagnostic.' >&2
+  exit 1
+fi
 echo 'Doctest controls passed: static dispatch compiles, dyn dispatch is rejected by no_dyn.'
 
 cargo "+$task_toolchain" test --workspace --doc --locked "$@"

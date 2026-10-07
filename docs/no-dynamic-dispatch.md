@@ -1,6 +1,6 @@
 # 禁止 Rust 动态派发
 
-应用 workspace 的三个 crate 禁止 trait object（`dyn Trait`）和函数指针（`fn(...)`），包括库、CLI、示例和测试。使用具体类型、泛型、`impl Trait` 或枚举表达分支；闭包和函数项保持具体类型时允许。
+应用 workspace 的全部 crate 禁止 trait object（`dyn Trait`）和函数指针（`fn(...)`），包括库、CLI、示例和测试。使用具体类型、泛型、`impl Trait` 或枚举表达分支；闭包和函数项保持具体类型时允许。
 
 ## 运行
 
@@ -17,16 +17,16 @@ no-dyn
 
 `--all` 表示加载全部 lint 库；`--workspace`、`--all-targets` 和 `--all-features` 扩大被检查的 Cargo 包、目标和条件编译范围。`no-dyn` 还检查 Rustdoc 提取的 doctest，并用能成功的静态例子和必须被 lint 拒绝的动态例子验证驱动实际生效。默认和 `imbl` 后端分别进入完整 Nix 门禁，避免只检查某个后端。
 
-也可以使用 rustup，在仓库根目录安装固定版本的工具：
+也可以在仓库根目录直接运行 Nix 入口：
 
 ```bash
-cargo install cargo-dylint dylint-link --version 6.1.0 --locked
-cargo dylint --all
+nix run --no-update-lock-file .#no-dyn
+nix run --no-update-lock-file .#no-dyn-ui
 ```
 
-不用 Nix 时，通过 `bash scripts/check-no-dyn.sh` 检查全部 targets、features 和 doctest。
+兼容命令 `bash scripts/check-no-dyn.sh` 也会先进入 Nix，再检查全部 targets、features 和 doctest。无需单独 `cargo install` 或下载另一份编译器。
 
-lint 库有独立的 [`rust-toolchain.toml`](../lints/no_dyn/rust-toolchain.toml) 和 [`Cargo.lock`](../lints/no_dyn/Cargo.lock)。它使用官方脚手架支持的 `nightly-2026-08-20`；应用的构建工具链仍由根目录的 `rust-toolchain.toml` 固定。首次使用 rustup 时会下载 lint 所需组件。
+lint 库有独立的 [`rust-toolchain.toml`](../lints/no_dyn/rust-toolchain.toml) 和 [`Cargo.lock`](../lints/no_dyn/Cargo.lock)。它使用官方脚手架支持的 `nightly-2026-08-20`；应用的构建工具链仍由根目录的 `rust-toolchain.toml` 固定，两者都由 Nix 提供。完整检查复用预先构建的同一份 lint 库。修改 `lints/no_dyn` 后，重新运行 `nix run .#no-dyn` 或重新进入开发环境，使命令使用新源码生成的库；`no-dyn-ui` 和直接 `cargo dylint --all` 可用于开发 lint 本身。
 
 ## 检查内容
 
