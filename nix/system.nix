@@ -34,7 +34,9 @@ let
   };
 in
 {
-  packages = dylint.packages // { default = build.package; };
+  packages = dylint.packages // {
+    default = build.package;
+  };
   apps =
     dylint.apps
     // (import ./commands.nix { inherit pkgs; })
