@@ -264,6 +264,15 @@
                       evm-abstract analyze --world "$world" --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --format json --ssa |
                         jq -e '.analysis.status == "Converged" and (.ssa | type == "object")' > /dev/null
                     done
+                    # Storage lessons use single-account worlds without requiring a Call edge.
+                    for world in ${./examples}/storage-*.json; do
+                      evm-abstract analyze --world "$world" --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --format json --ssa |
+                        jq -e '.analysis.status == "Converged" and (.ssa | type == "object")' > /dev/null
+                    done
+                    evm-abstract analyze --world ${./examples/storage-symbolic-key.json} --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --format json |
+                      jq -e '.status == "Converged" and .states[0].exit.call_stack.root.state.stack[0].Constants == ["0x0", "0x7"]' > /dev/null
+                    evm-abstract analyze --world ${./examples/storage-symbolic-value.json} --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --format json |
+                      jq -e '.status == "Converged" and .states[0].exit.call_stack.root.state.stack[0].Constants == ["0x1"]' > /dev/null
                     if evm-abstract analyze --world ${./examples/worlds/missing-code.json} --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --format json > missing.json; then
                       exit 1
                     else

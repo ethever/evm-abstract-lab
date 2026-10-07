@@ -40,6 +40,8 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 先完成 00–06 的基础阅读，再按需要进入跨合约实验。每课给出运行步骤、要检查的输出和对应源码；不要求先读论文。
 
+如果现在最关心 memory 与 storage，可以在读完 00–02 后走一条更小的路线：**14 的字节读写 → 16 的单账户 slot 读写 → 15 的表达式与路径条件 → 09 的跨合约归属和回滚**。章节号用于查找，不要求先在完整 CALL 报告里同时理解这些概念。每一步都先画具体状态，再看抽象值、JSON 与额外候选。
+
 | 顺序 | 学完能回答什么 | 主要例子 |
 | --- | --- | --- |
 | [00：运行与输出](docs/00-start.md) | pc、栈、反汇编、CFG、SSA 分别表示什么？ | `straight-line.hex` |
@@ -56,6 +58,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 | [13：EVM 环境与符号输入](docs/13-evm-environment.md) | 默认覆盖哪些调用？怎样指定交易、区块和 gas 环境？ | `--evm.*`、caller/origin、BLOCKHASH/BLOBHASH |
 | [14：EVM内存与抽象字节数组](docs/14-memory-model.md) | MSTORE 怎样拆成字节？未知偏移、合并与复制怎样影响结果？ | MSTORE/MLOAD、MSTORE8、MSIZE、CALL 返回区 |
 | [15：符号表达式与关系约束](docs/15-symbolic-relations.md) | 分支条件怎样约束后续值？状态合并和 SMT 资源边界如何处理？ | 矛盾守卫、输入身份、进程内 SMT 求解器 |
+| [16：Storage 的读写、别名与回滚](docs/16-storage-model.md) | 一个 slot 怎样读写？默认值、弱更新、同符号键和调用保存点分别保留什么？ | 单 slot、两候选 slot、未知 slot、transient、回调回滚 |
 
 两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成第 02 课后，可以进入[第 14 课](docs/14-memory-model.md)，先手算内存读写，再理解抽象字节数组。完成第 05 课后，也可以直接进入第 12 课，继续研究数值精度，再回到跨合约实验。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
 
