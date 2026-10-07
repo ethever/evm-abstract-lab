@@ -96,6 +96,105 @@ struct Plane {
     slots: OrderedMap<(Address, U256), Value>,
     defaults: OrderedMap<Address, Value>,
     global_default: Value,
+    // These must facts participate in execution reuse and rollback, while the
+    // public Store JSON continues to describe transaction values only.
+    #[serde(skip)]
+    initial_independence: InitialIndependence,
+}
+
+/// Whether a current slot is independent of its initial snapshot value on every
+/// represented path. Weak writes retain the baseline dependency; a strong write,
+/// creation reset or havoc replaces it. Initial RPC facts refine the World and
+/// require reexecution, never direct replacement of a transaction-local value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InitialIndependence {
+    slots: OrderedMap<(Address, U256), bool>,
+    defaults: OrderedMap<Address, bool>,
+    global_default: bool,
+}
+
+impl InitialIndependence {
+    fn new(global_default: bool) -> Self {
+        Self {
+            slots: OrderedMap::new(),
+            defaults: OrderedMap::new(),
+            global_default,
+        }
+    }
+
+    fn default_at(&self, address: Address) -> bool {
+        self.defaults
+            .get(&address)
+            .copied()
+            .unwrap_or(self.global_default)
+    }
+
+    fn at(&self, address: Address, slot: U256) -> bool {
+        self.slots
+            .get(&(address, slot))
+            .copied()
+            .unwrap_or_else(|| self.default_at(address))
+    }
+
+    fn set_slot(&mut self, address: Address, slot: U256, independent: bool) {
+        if independent == self.default_at(address) {
+            self.slots.remove(&(address, slot));
+        } else {
+            self.slots.insert((address, slot), independent);
+        }
+    }
+
+    fn replace_account(&mut self, address: Address) {
+        self.slots.retain(|(owner, _), _| *owner != address);
+        if self.global_default {
+            self.defaults.remove(&address);
+        } else {
+            self.defaults.insert(address, true);
+        }
+    }
+
+    fn replace_all(&mut self) {
+        *self = Self::new(true);
+    }
+
+    fn join(&self, other: &Self) -> Self {
+        let mut joined = Self::new(self.global_default && other.global_default);
+        let addresses: BTreeSet<_> = self
+            .defaults
+            .keys()
+            .chain(other.defaults.keys())
+            .copied()
+            .collect();
+        for address in addresses {
+            let independent = self.default_at(address) && other.default_at(address);
+            if independent != joined.global_default {
+                joined.defaults.insert(address, independent);
+            }
+        }
+        let keys: BTreeSet<_> = self
+            .slots
+            .keys()
+            .chain(other.slots.keys())
+            .copied()
+            .collect();
+        for (address, slot) in keys {
+            joined.set_slot(
+                address,
+                slot,
+                self.at(address, slot) && other.at(address, slot),
+            );
+        }
+        joined
+    }
+
+    fn work_size(&self) -> usize {
+        // Account for each explicit owner/key/flag and the global must fact.
+        self.slots
+            .len()
+            .saturating_mul(3)
+            .saturating_add(self.defaults.len().saturating_mul(2))
+            .saturating_add(1)
+    }
 }
 
 fn serialize_slots<S: Serializer>(
@@ -120,11 +219,12 @@ fn serialize_slots<S: Serializer>(
 }
 
 impl Plane {
-    fn new(global_default: Value) -> Self {
+    fn new(global_default: Value, initial_independent: bool) -> Self {
         Self {
             slots: OrderedMap::new(),
             defaults: OrderedMap::new(),
             global_default,
+            initial_independence: InitialIndependence::new(initial_independent),
         }
     }
 
@@ -139,6 +239,9 @@ impl Plane {
     }
 
     fn read(&self, address: Address, slot: &Value, domain: Domain) -> Value {
+        if let Some(slot) = slot.singleton() {
+            return self.at(address, slot).clone();
+        }
         let Some(slots) = slot.constants() else {
             // Even a complete account can contain arbitrarily many zero slots
             // plus the explicitly stored ones. Join all those possibilities.
@@ -159,6 +262,11 @@ impl Plane {
         let mut clean = value.clone();
         clean.forget_identity();
         let value = &clean;
+        if let Some(slot) = slot.singleton() {
+            self.slots.insert((address, slot), value.clone());
+            self.initial_independence.set_slot(address, slot, true);
+            return;
+        }
         let Some(slots) = slot.constants() else {
             // A symbolic alias may replace any slot, including unlisted ones.
             let default = domain.join(self.default_at(address), value);
@@ -169,13 +277,8 @@ impl Plane {
             self.defaults.insert(address, default);
             return;
         };
-        let strong = slots.len() == 1;
         for slot in slots {
-            let updated = if strong {
-                value.clone()
-            } else {
-                domain.join(self.at(address, *slot), value)
-            };
+            let updated = domain.join(self.at(address, *slot), value);
             self.slots.insert((address, *slot), updated);
         }
     }
@@ -183,21 +286,28 @@ impl Plane {
     fn havoc_account(&mut self, address: Address) {
         self.slots.retain(|(owner, _), _| *owner != address);
         self.defaults.insert(address, Value::top());
+        self.initial_independence.replace_account(address);
     }
 
     fn reset_account(&mut self, address: Address) {
         self.slots.retain(|(owner, _), _| *owner != address);
         self.defaults.insert(address, Value::constant(U256::ZERO));
+        self.initial_independence.replace_account(address);
     }
 
     fn havoc_all(&mut self) {
         self.slots.clear();
         self.defaults.clear();
         self.global_default = Value::top();
+        self.initial_independence.replace_all();
     }
 
     fn join(&self, other: &Self, domain: Domain) -> Self {
-        let mut joined = Self::new(domain.join(&self.global_default, &other.global_default));
+        let mut joined = Self::new(
+            domain.join(&self.global_default, &other.global_default),
+            false,
+        );
+        joined.initial_independence = self.initial_independence.join(&other.initial_independence);
         let addresses: BTreeSet<_> = self
             .defaults
             .keys()
@@ -252,6 +362,8 @@ pub type Snapshot = Checkpoint<Store>;
 
 impl Store {
     pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
+        // The caller has already joined its paths. Numeric widening cannot
+        // reintroduce dependencies discarded by a definite transaction write.
         for (plane, old) in [
             (&mut self.persistent, &old.persistent),
             (&mut self.transient, &old.transient),
@@ -302,7 +414,7 @@ impl Store {
     }
     /// Build transaction state without modifying the fixed input snapshot.
     pub fn new(world: &World) -> Self {
-        let mut persistent = Plane::new(Value::top());
+        let mut persistent = Plane::new(Value::top(), false);
         let mut balances = OrderedMap::new();
         let mut codes = OrderedMap::new();
         let mut nonces = OrderedMap::new();
@@ -329,7 +441,7 @@ impl Store {
         }
         Self {
             persistent,
-            transient: Plane::new(Value::constant(U256::ZERO)),
+            transient: Plane::new(Value::constant(U256::ZERO), true),
             balances,
             balance_default: Value::top(),
             codes,
@@ -345,6 +457,34 @@ impl Store {
     /// Read persistent storage, joining finite possible slot aliases.
     pub fn read(&self, address: Address, slot: &Value, domain: Domain) -> Value {
         self.persistent.read(address, slot, domain)
+    }
+
+    /// Missing finite initial keys still needed by the current storage value.
+    /// The address must be the actual storage owner, including delegated calls.
+    /// Unknown aliases are not truncated into a partial list of RPC requests.
+    pub(crate) fn missing_initial_slots(
+        &self,
+        world: &World,
+        address: Address,
+        slots: &Value,
+    ) -> Vec<U256> {
+        let account = world.account(address);
+        let missing = |slot: U256| {
+            !self.persistent.initial_independence.at(address, slot)
+                && account.is_none_or(|account| {
+                    account.storage_unknown && !account.storage.contains_key(&slot)
+                })
+        };
+        if let Some(slot) = slots.singleton() {
+            return missing(slot).then_some(slot).into_iter().collect();
+        }
+        slots.constants().map_or_else(Vec::new, |slots| {
+            slots
+                .iter()
+                .copied()
+                .filter(|slot| missing(*slot))
+                .collect()
+        })
     }
 
     /// Strongly update one slot; weakly update finite or unknown aliases.
@@ -846,10 +986,14 @@ impl Store {
             .saturating_add(self.existence.len())
             .saturating_add(self.created.len())
             .saturating_add(self.pending_destruction.len());
-        self.possible_logs
-            .values()
-            .fold(lifecycle_work, |work, log| {
-                work.saturating_add(log.work_size())
-            })
+        self.possible_logs.values().fold(
+            lifecycle_work
+                .saturating_add(self.persistent.initial_independence.work_size())
+                .saturating_add(self.transient.initial_independence.work_size()),
+            |work, log| work.saturating_add(log.work_size()),
+        )
     }
 }
+
+#[cfg(test)]
+mod storage_dependencies;

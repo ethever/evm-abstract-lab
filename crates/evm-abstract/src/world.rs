@@ -183,6 +183,36 @@ pub enum WorldError {
 }
 
 impl World {
+    /// 原子补入固定快照的初始 slot 观测，不改事务 Store 或其他账户事实。
+    pub(crate) fn install_storage(
+        &mut self,
+        address: Address,
+        storage: BTreeMap<U256, Value>,
+    ) -> Result<(), WorldError> {
+        let account = self
+            .accounts
+            .get(&address)
+            .ok_or(WorldError::Conflict { address })?;
+        for (slot, value) in &storage {
+            if account.storage.get(slot).is_some_and(|old| old != value)
+                || ((!account.storage_unknown && !account.storage.contains_key(slot))
+                    || account.existence == Existence::Absent)
+                    && value.singleton() != Some(U256::ZERO)
+            {
+                return Err(WorldError::Conflict { address });
+            }
+        }
+        let nonzero = storage
+            .values()
+            .any(|value| value.singleton().is_some_and(|word| word != U256::ZERO));
+        let account = self.accounts.get_mut(&address).unwrap();
+        account.storage.extend(storage);
+        if nonzero && account.existence == Existence::Unknown {
+            account.existence = Existence::Present;
+        }
+        Ok(())
+    }
+
     /// Store 初始化投影可能生成的完整候选；复制费用由输入 work_size 另计。
     pub(crate) fn projection_work(&self, domain: crate::domain::Domain) -> usize {
         self.accounts.values().fold(0usize, |work, account| {

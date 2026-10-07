@@ -93,7 +93,7 @@ struct WorldArgs {
     /// Trusted HTTP(S) RPC; discover chain ID and pin the selected block once.
     #[arg(long, conflicts_with = "world", requires = "evm.to")]
     rpc: Option<String>,
-    /// Disable on-demand RPC acquisition of concrete missing callees.
+    /// Disable on-demand RPC acquisition of missing code and storage slots.
     #[arg(long, requires = "rpc", conflicts_with = "world")]
     no_rpc_discovery: bool,
     /// Maximum initial and discovered RPC accounts in one fixed snapshot.

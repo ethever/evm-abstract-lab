@@ -92,8 +92,20 @@ pub fn render(analysis: &WorldAnalysis) -> String {
             acquisition.failed_accounts
         )
         .unwrap();
+        writeln!(
+            output,
+            "  fetched storage={:?}",
+            acquisition.fetched_storage
+        )
+        .unwrap();
+        writeln!(output, "  failed storage={:?}", acquisition.failed_storage).unwrap();
         for failed in &acquisition.failures {
-            writeln!(output, "  {}: {}", failed.address, failed.failure.message).unwrap();
+            writeln!(
+                output,
+                "  {} slot={:?}: {}",
+                failed.address, failed.slot, failed.failure.message
+            )
+            .unwrap();
         }
     }
 

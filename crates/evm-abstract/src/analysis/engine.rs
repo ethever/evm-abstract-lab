@@ -50,7 +50,14 @@ pub(super) fn run_world(
 ) -> Result<WorldAnalysis, ConfigError> {
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
-    run_metered(world, entry, config, &mut budget, &mut counters)
+    run_metered(
+        world,
+        entry,
+        config,
+        &mut budget,
+        &mut counters,
+        transfer::StorageReadPolicy::Abstract,
+    )
 }
 
 /// Allocations and transfers remain charged when RPC refinement discards a graph.
@@ -67,6 +74,7 @@ pub(super) fn run_metered(
     config: ExecutionConfig,
     budget: &mut WorkBudget,
     counters: &mut Counters,
+    storage_reads: transfer::StorageReadPolicy,
 ) -> Result<WorldAnalysis, ConfigError> {
     entry.environment.validate()?;
     if let Some(observed) = entry.environment.to.as_concrete()
@@ -167,6 +175,7 @@ pub(super) fn run_metered(
         domain,
         budget,
         counters,
+        storage_reads,
         ids: BTreeMap::from([(key, 0)]),
         queue: VecDeque::from([0]),
         queued: BTreeSet::from([0]),
@@ -193,6 +202,8 @@ struct Engine<'a> {
     budget: &'a mut WorkBudget,
     /// Prior RPC refinement rounds also consume state and transfer capacity.
     counters: &'a mut Counters,
+    /// 是否在 RPC refinement 中把缺失的初始槽观测记录为请求边界。
+    storage_reads: transfer::StorageReadPolicy,
     /// 每个结构状态的严格入口更新次数；动态发现的环也采用同一 widening 策略。
     updates: Vec<usize>,
     /// 结构键 -> `result.states` 的索引；键相同才允许汇合抽象输入。
@@ -313,6 +324,7 @@ impl Engine<'_> {
                     &self.result.config,
                     self.domain,
                     self.budget,
+                    self.storage_reads,
                 );
                 self.execution(id, execution, cache.as_mut());
             }
