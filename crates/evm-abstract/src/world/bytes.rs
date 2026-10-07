@@ -48,6 +48,29 @@ pub enum RangeError {
 }
 
 impl ByteArray {
+    /// Some retained byte/length lost an expression to the symbolic budget.
+    pub(crate) fn symbolic_limit_reached(&self) -> bool {
+        self.bytes
+            .values()
+            .chain([&self.length, &self.default])
+            .any(Value::symbolic_limit_reached)
+    }
+    /// Visit explicit values without interpreting unknown/default bytes as one identity.
+    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&Value)) {
+        visit(&self.length);
+        visit(&self.default);
+        for value in self.bytes.values() {
+            visit(value);
+        }
+    }
+    /// Capture-avoiding transformations preserve sparse byte positions and lengths.
+    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut Value)) {
+        update(&mut self.length);
+        update(&mut self.default);
+        for value in self.bytes.values_mut() {
+            update(value);
+        }
+    }
     // 完整小集合组装 word 时走有限枚举快路径；开放字节才预留通用交换。
     pub(crate) fn word_numeric_work(&self, offset: &Value, domain: Domain) -> usize {
         let Some(offsets) = offset.constants() else {
@@ -68,7 +91,43 @@ impl ByteArray {
                 || domain.operation_work(&[]),
                 |n| n.saturating_mul(256).saturating_add(32),
             );
+            let symbolic = if domain.spec().relations().enabled {
+                // Mirror the balanced assembly's shape using cached sizes;
+                // reserve traversal work before creating any expression nodes.
+                let mut parts = (0..32)
+                    .map(|i| {
+                        start
+                            .checked_add(i)
+                            .map_or(1, |index| {
+                                let value = self.byte_at(index, domain);
+                                if value.singleton().is_some() {
+                                    1
+                                } else {
+                                    value
+                                        .expression()
+                                        .map_or(1, |expression| expression.nodes())
+                                }
+                            })
+                            .saturating_add(2)
+                    })
+                    .collect::<Vec<_>>();
+                let mut nodes = parts.iter().copied().fold(0usize, usize::saturating_add);
+                while parts.len() > 1 {
+                    parts = parts
+                        .chunks(2)
+                        .map(|pair| {
+                            let size = pair.iter().copied().fold(1usize, usize::saturating_add);
+                            nodes = nodes.saturating_add(size);
+                            size
+                        })
+                        .collect();
+                }
+                nodes.saturating_mul(256)
+            } else {
+                0
+            };
             work.saturating_add(operation.saturating_mul(64))
+                .saturating_add(symbolic)
         })
     }
     pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
@@ -232,15 +291,58 @@ impl ByteArray {
                 result = Some(join_optional(result, word, domain));
                 continue;
             };
-            let mut word = zero();
-            for index in 0..32 {
-                let byte = offset
-                    .checked_add(index)
-                    .map_or_else(Value::top, |index| self.byte_at(index, domain));
-                word = domain.apply(
-                    opcode::OR,
-                    &[domain.apply(opcode::SHL, &[constant(8), word]), byte],
-                );
+            // A balanced concatenation keeps symbolic depth logarithmic in
+            // word width. Left-folding SHL/OR adds two levels for every byte
+            // and loses the word's expression at an ordinary branch afterward.
+            let bytes = (0..32)
+                .map(|index| {
+                    offset
+                        .checked_add(index)
+                        .map_or_else(Value::top, |index| self.byte_at(index, domain))
+                })
+                .collect::<Vec<_>>();
+            let reconstructed = if domain.spec().relations().enabled
+                && bytes.iter().all(|value| !value.symbolic_limit_reached())
+            {
+                bytes
+                    .iter()
+                    .map(Value::symbolic_expression)
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|bytes| crate::domain::symbolic::ExprId::reassemble_word(&bytes))
+            } else {
+                None
+            };
+            // Reconstruct the numeric summary as before, but do not expand a
+            // large symbolic tree when exact byte extraction proves the word.
+            let assembly_domain = if reconstructed.is_some() {
+                Domain::from_spec(domain.spec().with_relations(
+                    crate::domain::relational::RelationLimits {
+                        enabled: false,
+                        ..domain.spec().relations()
+                    },
+                ))
+            } else {
+                domain
+            };
+            let mut parts = Vec::with_capacity(32);
+            for (index, byte) in bytes.into_iter().enumerate() {
+                parts.push(assembly_domain.apply(opcode::SHL, &[constant((31 - index) * 8), byte]));
+            }
+            while parts.len() > 1 {
+                parts = parts
+                    .chunks(2)
+                    .map(|pair| {
+                        if pair.len() == 2 {
+                            assembly_domain.apply(opcode::OR, pair)
+                        } else {
+                            pair[0].clone()
+                        }
+                    })
+                    .collect();
+            }
+            let mut word = parts.pop().expect("a word contains 32 bytes");
+            if let Some(expression) = reconstructed {
+                word = word.with_expression(expression);
             }
             result = Some(join_optional(result, word, domain));
         }

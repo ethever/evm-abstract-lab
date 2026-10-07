@@ -158,7 +158,7 @@ let
         pkgs.pkg-config
         pkgs.python3
       ];
-      buildInputs = [ pkgs.openssl ];
+      buildInputs = common.buildInputs ++ [ pkgs.openssl ];
       OPENSSL_NO_VENDOR = "1";
       preConfigure = enterToolchain;
     };

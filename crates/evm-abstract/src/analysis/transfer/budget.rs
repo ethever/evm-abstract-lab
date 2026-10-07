@@ -169,11 +169,11 @@ fn external_code_work(
 ) -> usize {
     let actual;
     let targets = if entry.environment.to.as_concrete().is_none()
-        && targets.provenance().same_identity(
+        && targets.identity().same_identity(
             entry
                 .environment
                 .address_value(entry.environment.to)
-                .provenance(),
+                .identity(),
         ) {
         actual = Value::constant(crate::U256::from_be_slice(entry.address.as_slice()));
         &actual

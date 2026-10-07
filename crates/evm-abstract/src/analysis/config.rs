@@ -18,6 +18,8 @@ pub struct Config {
     pub reduction_rounds: usize,
     /// 一次交换的语义事实原子上限；不按上限预分配。
     pub max_facts: usize,
+    /// Symbolic expressions and state relations, including in-process solver limits.
+    pub relations: crate::domain::relational::RelationLimits,
     /// 每个槽位最多保留的常量数；任意正 usize，默认 8，不按上限预分配。
     pub max_constants: usize,
     /// 保留最近 k 个跳转来源块；0 代表上下文不敏感，默认 8。
@@ -35,6 +37,7 @@ impl Default for Config {
             domain_profile: Profile::Product,
             reduction_rounds: 4,
             max_facts: 256,
+            relations: crate::domain::relational::RelationLimits::default(),
             max_constants: 8,
             context_depth: 8,
             max_states: 4096,
@@ -58,6 +61,9 @@ pub enum ConfigError {
     /// 交换精度策略必须允许至少一个原子和一轮传播。
     #[error("reduction_rounds and max_facts must be positive")]
     Facts,
+    /// Symbolic and solver resource bounds must be positive.
+    #[error("symbolic node/depth, relation and SMT resource limits must be positive")]
+    Relations,
 }
 
 // Keep nested errors concrete, matching the crate's no-dynamic-dispatch policy.
@@ -99,13 +105,18 @@ impl Config {
         }
         let rounds = NonZeroUsize::new(self.reduction_rounds).ok_or(ConfigError::Facts)?;
         let facts = NonZeroUsize::new(self.max_facts).ok_or(ConfigError::Facts)?;
+        if self.relations.max_nodes == 0
+            || self.relations.max_depth == 0
+            || self.relations.max_constraints == 0
+            || self.relations.rlimit == 0
+        {
+            return Err(ConfigError::Relations);
+        }
         Ok(ValidatedConfig {
-            domain: Domain::from_spec(DomainSpec::new(
-                self.domain_profile,
-                capacity,
-                rounds,
-                facts,
-            )),
+            domain: Domain::from_spec(
+                DomainSpec::new(self.domain_profile, capacity, rounds, facts)
+                    .with_relations(self.relations),
+            ),
             config: self,
         })
     }

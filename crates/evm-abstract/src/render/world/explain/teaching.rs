@@ -68,6 +68,9 @@ pub(in crate::render::world) fn render(analysis: &WorldAnalysis) -> Result<Strin
         .push_str("  Context-sensitive abstract state graph; not a concrete instruction trace.\n");
     output.push_str("  S# = state; B# = frame-local block; F# = frame within a state; C# = captured code; U# = unresolved frontier; stacks are bottom-to-top.\n");
     write_rpc(&mut output, analysis, &refs);
+    let relations = analysis.config().analysis.relations;
+    writeln!(output, "  relations={} | SMT=in-process Z3 | rlimit={} | expression nodes={} | depth={} | constraints={}",
+        relations.enabled, relations.rlimit, relations.max_nodes, relations.max_depth, relations.max_constraints).unwrap();
     write_addresses(&mut output, &refs);
     write_code(&mut output, analysis, &refs);
     write_cfg(&mut output, analysis, &refs);

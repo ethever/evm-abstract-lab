@@ -44,6 +44,8 @@ pub struct SummaryInput {
     pub store: Store,
     /// Complete immutable transaction and block environment.
     pub environment: EvmEnvironment,
+    /// Complete caller-qualified constraints on input expressions.
+    pub relations: crate::domain::relational::RelationState,
     /// Available additional call depth; recursion cannot gain a fresh budget.
     pub remaining_call_depth: usize,
     /// Transaction-wide external-call depth policy used during certification.
@@ -78,6 +80,7 @@ impl SummaryInput {
                 )
                 .saturating_add(frame.call_value.work_size())
                 .saturating_add(self.environment.work_size())
+                .saturating_add(self.relations.work_size())
                 .saturating_add(1),
             |cost, value| cost.saturating_add(value.work_size()),
         )
@@ -237,6 +240,7 @@ impl Cache {
             frame,
             store: payload.store.clone(),
             environment: analysis.entry.environment.clone(),
+            relations: payload.relations.clone(),
             remaining_call_depth: analysis
                 .config
                 .max_call_depth
@@ -393,6 +397,7 @@ fn relative(payload: &MachinePayload, prefix: usize) -> MachinePayload {
     let children = payload.call_stack.children();
     let (root, _) = children[prefix - 1].clone().into_root();
     MachinePayload {
+        relations: payload.relations.clone(),
         call_stack: CallStack::from_parts(root, children[prefix..].to_vec()),
         store: payload.store.clone(),
     }

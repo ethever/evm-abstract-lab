@@ -31,7 +31,7 @@ fn analyze(code: &str, environment: EvmEnvironment, profile: Profile) -> analysi
 fn single_analysis_json_retains_symbolic_defaults_and_explicit_environment_assumptions() {
     let default = analyze("00", EvmEnvironment::default(), Profile::Product);
     let json = serde_json::to_value(&default).unwrap();
-    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["schema_version"], 3);
     assert_eq!(
         json["environment"],
         serde_json::to_value(default.environment()).unwrap()
@@ -107,9 +107,9 @@ fn independent_environments_have_distinct_input_namespaces_and_clones_preserve_i
         let left = &first.states()[0].exit_stack;
         let same = &cloned.states()[0].exit_stack;
         let other = &independent.states()[0].exit_stack;
-        assert!(left[0].provenance().same_identity(left[1].provenance()));
-        assert!(left[0].provenance().same_identity(same[0].provenance()));
-        assert!(!left[0].provenance().same_identity(other[0].provenance()));
+        assert!(left[0].identity().same_identity(left[1].identity()));
+        assert!(left[0].identity().same_identity(same[0].identity()));
+        assert!(!left[0].identity().same_identity(other[0].identity()));
         let domain = if profile == Profile::Product {
             evm_abstract::domain::Domain::default()
         } else {
@@ -405,8 +405,8 @@ fn child_independent_callvalue_never_aliases_unknown_root_callvalue() {
             .entry
             .active()
             .call_value
-            .provenance()
-            .same_identity(result.states()[0].entry.active().call_value.provenance())
+            .identity()
+            .same_identity(result.states()[0].entry.active().call_value.identity())
     );
 }
 
@@ -434,7 +434,12 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
             },
         )
         .unwrap();
-        assert_eq!(result.status(), Status::Converged);
+        assert_eq!(
+            result.status(),
+            Status::Converged,
+            "{:?}",
+            result.frontiers()
+        );
         let comparison_pc = code.len() / 2 - 2;
         let compared = result
             .states()

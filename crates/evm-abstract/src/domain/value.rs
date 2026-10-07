@@ -1,203 +1,225 @@
-//! 同一个字的约束取交集。有限集合组件未知，不能被误读成整个值未知。
+//! An abstract value separates numeric constraints, source metadata and identity.
+
 use super::{
-    FiniteConstantSet, congruence::Congruence, interval::Interval, known_bits::KnownBits,
-    provenance::Provenance,
+    NumericValue,
+    identity::{InputIdentity, RuntimeIdentity, Symbol, ValueIdentity},
+    provenance::{Origin, Provenance},
+    symbolic::ExprId,
 };
 use alloy_primitives::U256;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use std::{collections::BTreeSet, fmt};
 
-/// EVM Word256 的笛卡尔组合。私有构造保证单个组件合法；未求解的联合
-/// 约束不承诺存在具体见证。不可达路径由工作表缺少状态表示。
-///
-/// ```compile_fail
-/// use evm_abstract::domain::Value;
-/// let malformed = Value(()); // 字段私有，不能绕过受控构造。
-/// ```
+/// Machine value whose independent layers have explicit accessors.
+/// Neither equal sources nor equal numeric summaries create an identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Value {
-    pub(super) finite: FiniteConstantSet,
-    pub(super) bits: KnownBits,
-    pub(super) interval: Interval,
-    pub(super) congruence: Congruence,
+pub struct AbstractValue {
+    pub(super) numeric: NumericValue,
     pub(super) provenance: Provenance,
-    pub(super) nonzero: bool,
+    pub(super) identity: ValueIdentity,
+    pub(super) expression: Option<ExprId>,
+    pub(super) symbolic_limit: bool,
 }
-impl Value {
-    /// 精确的单点；其他数值组件均为此单点的等价表示。
-    pub fn constant(value: U256) -> Self {
-        Self {
-            finite: FiniteConstantSet::constant(value),
-            bits: KnownBits::exact(value),
-            interval: Interval::exact(value),
-            congruence: Congruence::exact(value),
-            provenance: Provenance::constant(),
-            nonzero: value != U256::ZERO,
-        }
-    }
-    /// 对数值和来源都没有约束。
-    pub fn top() -> Self {
-        Self {
-            finite: FiniteConstantSet::top(),
-            bits: KnownBits::top(),
-            interval: Interval::top(),
-            congruence: Congruence::top(),
-            provenance: Provenance::top(),
-            nonzero: false,
-        }
-    }
-    /// 未知字节仍只可能为 0..=255；高 248 位是格式保证。
-    pub fn unknown_byte() -> Self {
-        let mut value = Self::top();
-        value.bits = KnownBits::new(U256::MAX << 8usize, U256::ZERO).unwrap();
-        value.interval = Interval::new_unsigned(U256::ZERO, U256::from(255)).unwrap();
-        value
-    }
-    /// An unsigned interval without assumptions about the source.
-    pub fn unsigned_range(lower: U256, upper: U256) -> Option<Self> {
-        let mut value = Self::top();
-        value.interval = Interval::new_unsigned(lower, upper)?;
-        Some(value)
-    }
 
-    /// 地址字段高 96 位为零；不证明账户存在或有代码。
+/// Compatibility name for the real layered machine value.
+pub type Value = AbstractValue;
+
+impl AbstractValue {
+    /// Numeric value with unknown source and no identity or expression.
+    pub fn from_numeric(numeric: NumericValue) -> Self {
+        Self {
+            numeric,
+            provenance: Provenance::top(),
+            identity: ValueIdentity::none(),
+            expression: None,
+            symbolic_limit: false,
+        }
+    }
+    /// Exact word; its source is a supplied constant.
+    pub fn constant(value: U256) -> Self {
+        let mut out = Self::from_numeric(NumericValue::constant(value));
+        out.provenance = Provenance::constant();
+        out
+    }
+    /// No numeric constraints, source facts, identity or expression.
+    pub fn top() -> Self {
+        Self::from_numeric(NumericValue::top())
+    }
+    /// Unknown byte with the format's numeric width guarantee.
+    pub fn unknown_byte() -> Self {
+        Self::from_numeric(NumericValue::unknown_byte())
+    }
+    /// Unsigned interval with no source or identity assertion.
+    pub fn unsigned_range(lower: U256, upper: U256) -> Option<Self> {
+        NumericValue::unsigned_range(lower, upper).map(Self::from_numeric)
+    }
+    /// Unknown address with a numeric width guarantee and Address source label.
     pub fn unknown_address() -> Self {
-        let mut value = Self::top();
-        value.bits = KnownBits::new(U256::MAX << 160usize, U256::ZERO).unwrap();
-        value.interval = Interval::new_unsigned(U256::ZERO, U256::MAX >> 96usize).unwrap();
-        value.provenance = Provenance::source(super::provenance::Origin::Address);
+        let mut value = Self::from_numeric(NumericValue::unknown_address());
+        value.provenance = Provenance::source(Origin::Address);
         value
     }
-    /// 完整有限候选集合；None 仅表示此组件不可枚举，不表示 whole-product Top。
-    pub fn constants(&self) -> Option<&BTreeSet<U256>> {
-        self.finite.as_values()
+    /// Numeric constraints; callers must explicitly select this layer.
+    pub fn numeric(&self) -> &NumericValue {
+        &self.numeric
     }
-    /// 有限常量集合组件；它的 Top 不会抹去其他数值约束。
-    pub fn finite_constants(&self) -> &FiniteConstantSet {
-        &self.finite
+    /// Replace numeric facts after a caller has proved a sound refinement; all
+    /// source, identity and expression layers retain the same semantic value.
+    pub(crate) fn with_numeric(mut self, numeric: NumericValue) -> Self {
+        self.numeric = numeric;
+        if self.singleton().is_some() {
+            self.symbolic_limit = false;
+        }
+        self
     }
-    /// 已知位约束。
-    pub fn known_bits(&self) -> &KnownBits {
-        &self.bits
-    }
-    /// 无符号和有符号界的交。
-    pub fn interval(&self) -> &Interval {
-        &self.interval
-    }
-    /// 一般模数同余约束。
-    pub fn congruence(&self) -> &Congruence {
-        &self.congruence
-    }
-    /// 可能来源及局部可信复制身份；来源标签本身不证明相等。
+    /// Possible sources and a code-address role, without equality identities.
     pub fn provenance(&self) -> &Provenance {
         &self.provenance
     }
-    /// 排除必须由至少一个组件证明；true 是“尚不能排除”，不是可达见证。
+    /// Scoped immutable input and temporary definition identities.
+    pub fn identity(&self) -> &ValueIdentity {
+        &self.identity
+    }
+    /// Persistent symbolic expression, if available.
+    pub fn expression(&self) -> Option<&ExprId> {
+        self.expression.as_ref()
+    }
+    /// Attach an already budgeted, valid symbolic expression.
+    pub fn with_expression(mut self, expression: ExprId) -> Self {
+        self.expression = Some(expression);
+        self
+    }
+    /// Forget optional symbolic precision without discarding numeric facts.
+    pub fn forget_expression(&mut self) {
+        self.expression = None;
+    }
+    /// Obtain the value's exact expression. Numeric singletons need no stored
+    /// expression handle; unknown values can only use an existing trusted term.
+    pub fn symbolic_expression(&self) -> Option<ExprId> {
+        self.singleton()
+            .map(ExprId::constant)
+            .or_else(|| self.expression.clone())
+    }
+    /// Symbolic construction exceeded a resource bound in this value or a
+    /// numeric operation it depends on; numeric facts remain sound.
+    pub fn symbolic_limit_reached(&self) -> bool {
+        self.symbolic_limit
+    }
+
+    /// Trusted alias test; source categories do not participate.
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.identity.same_identity(&other.identity)
+    }
+    /// Complete finite numeric candidates, when available.
+    pub fn constants(&self) -> Option<&BTreeSet<U256>> {
+        self.numeric.constants()
+    }
+    /// Finite candidate component.
+    pub fn finite_constants(&self) -> &super::FiniteConstantSet {
+        self.numeric.finite_constants()
+    }
+    /// Numeric mask component.
+    pub fn known_bits(&self) -> &super::known_bits::KnownBits {
+        self.numeric.known_bits()
+    }
+    /// Numeric interval component.
+    pub fn interval(&self) -> &super::interval::Interval {
+        self.numeric.interval()
+    }
+    /// Numeric congruence component.
+    pub fn congruence(&self) -> &super::congruence::Congruence {
+        self.numeric.congruence()
+    }
+    /// A concrete word is not ruled out by any numeric component.
     pub fn contains(&self, value: U256) -> bool {
-        (!self.nonzero || value != U256::ZERO)
-            && self.finite.contains(value)
-            && self.bits.contains(value)
-            && self.interval.contains(value)
-            && self.congruence.contains(value)
+        self.numeric.contains(value)
     }
-    /// 单点查询使用全部组件，而不依赖有限集合是否可用。
+    /// Exact numeric singleton, regardless of the finite component.
     pub fn singleton(&self) -> Option<U256> {
-        let value = self
-            .finite
-            .singleton()
-            .or_else(|| self.bits.singleton())
-            .or_else(|| self.interval.singleton())
-            .or_else(|| self.congruence.singleton())?;
-        self.contains(value).then_some(value)
+        self.numeric.singleton()
     }
-    /// 零未被任何组件排除。
+    /// Zero is not excluded by numeric facts.
     pub fn may_be_zero(&self) -> bool {
-        self.contains(U256::ZERO)
+        self.numeric.may_be_zero()
     }
-    /// 未证明这个值只能是零。
+    /// Numeric facts do not establish that the value must be zero.
     pub fn may_be_nonzero(&self) -> bool {
-        self.singleton() != Some(U256::ZERO)
+        self.numeric.may_be_nonzero()
     }
-    /// 复制和比较时的逻辑成本，包含内联数值组件及来源。
+    /// Numeric copy cost plus source metadata and a cached expression-traversal bound.
     pub fn work_size(&self) -> usize {
-        self.finite
+        self.numeric
             .work_size()
-            .saturating_add(12)
             .saturating_add(self.provenance.origins().work_size())
+            .saturating_add(usize::from(self.identity.input().is_some()))
+            .saturating_add(self.expression.as_ref().map_or(0, ExprId::nodes))
     }
-    /// 为来源域增加一个明确的输入来源；不制造数值相等事实。
-    pub fn with_origin(mut self, origin: super::provenance::Origin) -> Self {
+    /// Add a possible source without changing identity or expression.
+    pub fn with_origin(mut self, origin: Origin) -> Self {
         self.provenance = self.provenance.join(&Provenance::source(origin));
         self
     }
-    pub(crate) fn set_origin(&mut self, origin: super::provenance::Origin) {
+    pub(crate) fn set_origin(&mut self, origin: Origin) {
         self.provenance.set_origin(origin);
     }
-    pub(crate) fn with_symbol(
-        mut self,
-        symbol: super::provenance::Symbol,
-        scope: Option<u64>,
-    ) -> Self {
+    pub(crate) fn with_symbol(mut self, symbol: Symbol, scope: Option<u64>) -> Self {
         if self.singleton().is_none()
             && let Some(scope) = scope
         {
-            self.provenance = self.provenance.with_symbol(symbol, scope);
+            self.identity = self.identity.with_input(InputIdentity::new(scope, symbol));
+            self.expression = Some(ExprId::input(scope, symbol));
         }
         self
     }
     pub(crate) fn with_identity(mut self, scope: u64, definition: u32) -> Self {
-        self.provenance = self
-            .provenance
-            .with_identity(super::provenance::RuntimeIdentity::new(scope, definition));
+        self.identity = self
+            .identity
+            .with_runtime(RuntimeIdentity::new(scope, definition));
         self
     }
     pub(crate) fn forget_identity(&mut self) {
-        self.provenance.forget_identity();
+        self.identity.forget_runtime();
     }
     pub(super) fn numeric_top(&self) -> bool {
-        self.finite.is_top()
-            && self.bits == KnownBits::top()
-            && self.interval == Interval::top()
-            && self.congruence == Congruence::top()
-            && !self.nonzero
+        self.numeric.is_top()
     }
 }
-
-impl Serialize for Value {
+impl Serialize for AbstractValue {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // 保留旧 JSON 的 Constants 键；非有限的组合值显式包含全部约束。
-        if self.numeric_top() && self.provenance == Provenance::top() {
+        if self.numeric_top()
+            && self.provenance == Provenance::top()
+            && self.identity.persistent_empty()
+            && self.expression.is_none()
+            && !self.symbolic_limit
+        {
             return serializer.serialize_str("Top");
         }
         let mut map = serializer.serialize_map(None)?;
-        if let Some(constants) = self.finite.as_values() {
+        if let Some(constants) = self.numeric.finite.as_values() {
             map.serialize_entry("Constants", constants)?;
         }
-        map.serialize_entry("known_bits", &self.bits)?;
-        map.serialize_entry("interval", &self.interval)?;
-        map.serialize_entry("congruence", &self.congruence)?;
+        map.serialize_entry("known_bits", &self.numeric.bits)?;
+        map.serialize_entry("interval", &self.numeric.interval)?;
+        map.serialize_entry("congruence", &self.numeric.congruence)?;
         map.serialize_entry("provenance", &self.provenance)?;
-        map.serialize_entry("nonzero", &self.nonzero)?;
+        map.serialize_entry("nonzero", &self.numeric.nonzero)?;
+        if !self.identity.persistent_empty() {
+            map.serialize_entry("identity", &self.identity)?;
+        }
+        if let Some(expression) = &self.expression {
+            map.serialize_entry("expression", expression)?;
+        }
+        if self.symbolic_limit {
+            map.serialize_entry("symbolic_limit", &true)?;
+        }
         map.end()
     }
 }
-
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if !self.finite.is_top() {
-            return self.finite.fmt(f);
-        }
-        if self.numeric_top() {
-            return f.write_str("⊤");
-        }
-        let (lo, hi) = self.interval.unsigned_bounds();
-        write!(f, "u[0x{lo:x},0x{hi:x}] bits={}", self.bits)?;
-        if let Some((m, r)) = self.congruence.modulus_residue() {
-            write!(f, " mod(0x{m:x})=0x{r:x}")?;
-        }
-        if self.nonzero {
-            f.write_str(" ≠0")?;
-        }
-        Ok(())
+impl fmt::Display for AbstractValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.numeric.fmt(formatter)
     }
 }
+
+#[cfg(test)]
+mod tests;

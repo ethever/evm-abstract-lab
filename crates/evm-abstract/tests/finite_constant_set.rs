@@ -67,10 +67,9 @@ fn projecting_over_capacity_forgets_only_the_constant_component() {
     for excluded in [0_u64, 1, 3, 4, 6, 7, 9, 16] {
         assert!(!projected.contains(U256::from(excluded)));
     }
-    assert_eq!(
-        domain(Profile::ConstantsOnly, 1, 256).project(&input),
-        Value::top()
-    );
+    let constants_only = domain(Profile::ConstantsOnly, 1, 256).project(&input);
+    assert_eq!(constants_only.numeric(), Value::top().numeric());
+    assert_eq!(constants_only.provenance(), input.provenance());
 }
 
 #[test]

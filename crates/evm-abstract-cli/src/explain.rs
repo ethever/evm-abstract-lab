@@ -18,6 +18,8 @@ use std::path::PathBuf;
 #[command(group(ArgGroup::new("explain-source").args(["hex","file","world","rpc"]).required(true).multiple(false)))]
 #[command(group(ArgGroup::new("world-input").args(["world","rpc"]).multiple(false)))]
 pub(crate) struct ExplainArgs {
+    #[command(flatten)]
+    symbolic: crate::symbolic::SymbolicArgs,
     /// Ordinary EVM runtime bytecode as hex.
     #[arg(long)]
     hex: Option<String>,
@@ -100,6 +102,7 @@ impl ExplainArgs {
         if self.world.is_some() || self.rpc.is_some() {
             let defaults = ExecutionConfig::default();
             let args = WorldArgs {
+                symbolic: self.symbolic,
                 world: self.world,
                 rpc: self.rpc,
                 no_rpc_discovery: self.no_rpc_discovery,
@@ -133,6 +136,7 @@ impl ExplainArgs {
             return Ok((output, complete));
         }
         let args = AnalysisArgs {
+            symbolic: self.symbolic,
             evm: self.evm,
             input: Input {
                 hex: self.hex,

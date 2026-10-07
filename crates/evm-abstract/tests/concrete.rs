@@ -338,7 +338,12 @@ fn example_cfgs_cover_revm_block_entries_edges_and_outputs() {
                     },
                 )
                 .unwrap();
-                assert_eq!(analysis.status(), Status::Converged);
+                assert_eq!(
+                    analysis.status(),
+                    Status::Converged,
+                    "example={name} fork={fork:?} depth={depth} frontiers={:?}",
+                    analysis.frontiers()
+                );
                 let ir = ssa::build(&analysis).unwrap();
                 let inputs = if name == "dynamic-jump" {
                     vec![4]

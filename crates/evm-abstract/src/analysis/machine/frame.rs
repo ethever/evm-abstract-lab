@@ -36,6 +36,28 @@ pub struct FrameState {
 }
 
 impl FrameState {
+    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&Value)) {
+        for value in &self.stack {
+            visit(value);
+        }
+        self.memory.visit_values(visit);
+        self.calldata.visit_values(visit);
+        self.returndata.visit_values(visit);
+        visit(&self.call_value);
+        self.saved_store.state().visit_values(visit);
+    }
+    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut Value)) {
+        for value in &mut self.stack {
+            update(value);
+        }
+        self.memory.update_values(update);
+        self.calldata.update_values(update);
+        self.returndata.update_values(update);
+        update(&mut self.call_value);
+        let mut saved = self.saved_store.state().clone();
+        saved.update_values(update);
+        self.saved_store = Snapshot::from_state(saved);
+    }
     pub(super) fn widen(&mut self, old: &Self, domain: Domain) {
         for (value, old) in self.stack.iter_mut().zip(&old.stack) {
             *value = domain.widen(old, value);

@@ -53,7 +53,22 @@ fn constants_only_clz_keeps_the_complete_set_at_capacity_257() {
         assert_eq!(json["config"]["max_constants"].to_string(), capacity);
         let result = &json["states"][0]["exit_stack"][0];
         if capacity == "256" {
-            assert_eq!(result, "Top");
+            assert!(result.get("Constants").is_none());
+            assert_eq!(result["known_bits"]["zero"], "0x0");
+            assert_eq!(result["known_bits"]["one"], "0x0");
+            assert_eq!(result["interval"]["unsigned_lo"], "0x0");
+            assert_eq!(result["interval"]["signed_lo"], "0x0");
+            assert_eq!(
+                result["interval"]["signed_hi"],
+                format!("0x{}", "f".repeat(64))
+            );
+            assert_eq!(
+                result["interval"]["unsigned_hi"],
+                format!("0x{}", "f".repeat(64))
+            );
+            assert_eq!(result["congruence"], "Top");
+            assert_eq!(result["nonzero"], false);
+            assert_eq!(result["expression"]["kind"]["Operation"]["opcode"], 0x1e);
         } else {
             let candidates = result["Constants"].as_array().unwrap();
             assert_eq!(candidates.len(), 257);

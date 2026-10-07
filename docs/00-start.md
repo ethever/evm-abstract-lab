@@ -110,7 +110,8 @@ B0 @ 0x0000:
 
 ```text
 status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=8
-domain=Product | schema=1 | reduction rounds=4 | fact atoms=256
+domain=Product | domain schema=2 | reduction rounds=4 | fact atoms=256
+relations=true | SMT=in-process Z3 | rlimit=10000 | expression nodes=1024 | depth=64 | constraints=128
 
 EVM inputs
   to=symbolic(To) | caller=symbolic(Caller) | origin=symbolic(Caller) (same as caller)
@@ -118,6 +119,7 @@ EVM inputs
   calldata: length=⊤ | content=abstract bytes (default=⊤)
   Other EVM environment inputs remain symbolic unless shown above; full inputs are available in the verbose report.
 S0 | B0 @ 0x0000 | stack height=0 | context=[]
+  relations in=0 out=0
   stack in  []
   stack out []
 ```
@@ -131,11 +133,13 @@ S0 | B0 @ 0x0000 | stack height=0 | context=[]
 | `transfers=1` | 分析器处理这个块一次 |
 | `context=[]` | 尚未经过 JUMP/JUMPI，所以历史为空；默认最多保留 8 个最近来源，[第 05 课](05-sensitivity.md) 再比较 |
 | `Converged` | 本抽象模型的待处理工作已经完成；不是合约安全结论 |
-| `domain=Product` | 默认用多种性质共同描述一个值；本例的常量仍显示为 `{0x...}` |
+| `domain=Product` | 默认数值层保存位、范围等性质；本例常量仍显示为 `{0x...}` |
+| `relations=true` / `rlimit=10000` | 两种数值 profile 都默认开启独立关系层；SMT 只使用确定性资源上限 |
+| `relations in=0 out=0` | 本状态入口/出口没有额外路径约束；本例不需要关系推理 |
 
 `stack in` / `stack out` 在这里表示**栈状态**，不是调用的输入字节和返回字节。
 
-`EVM inputs` 记录本次允许的输入；`⊤` 表示未知，未写 calldata 也不等于空 calldata。本程序不读取这些输入，所以未知环境仍不影响 `2+3=5`。文本 `schema=1` 是域策略的格式版本；结果 JSON 的 `schema_version` 为 2，`cfg` 的输入记录在 `.environment`，`ssa --format json` 的记录在 `.analysis.environment`。
+`EVM inputs` 记录本次允许的输入；`⊤` 表示未知，未写 calldata 也不等于空 calldata。本程序不读取这些输入，所以未知环境仍不影响 `2+3=5`。文本 `domain schema=2` 是域策略的格式版本；结果 JSON 的 `schema_version` 为 3，`cfg` 的输入记录在 `.environment`，`ssa --format json` 的记录在 `.analysis.environment`。
 
 `reduction rounds` 和 `fact atoms` 限制这些性质之间的一次信息交换，先保持默认值即可。[第 05 课](05-sensitivity.md)再区分精度参数与执行预算。
 
@@ -180,6 +184,7 @@ flowchart TD
 
 ```text
 S3 | B3 @ 0x000e | stack height=1 | context=[]
+  relations in=0 out=0
   stack in  [{0x1, 0x2}]
   stack out [{0xb, 0xc}]
 ```

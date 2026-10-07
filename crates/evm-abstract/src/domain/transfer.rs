@@ -1,12 +1,13 @@
 //! 运算关系和可信复制事实通过同一语义语言进入 transfer；
 //! 同名来源和相同抽象摘要从不产生 Eq。
 use super::{
-    Domain, Reduction, Value,
+    AbstractValue, Domain, NumericValue, Reduction,
     congruence::Congruence,
     facts::{
         BinaryFact, BinaryPredicate, Fact, FactLattice, OperationRelation, RelationalFact, Symbol,
         Term,
     },
+    identity::ValueIdentity,
     interval::Interval,
     known_bits::KnownBits,
     provenance::Provenance,
@@ -15,7 +16,7 @@ use super::{
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
-pub(super) fn apply(domain: Domain, op: u8, args: &[Value]) -> Reduction {
+pub(super) fn apply(domain: Domain, op: u8, args: &[AbstractValue]) -> Reduction {
     let operands = (0..args.len())
         .map(|i| Term::Symbol(Symbol::new(i as u32 + 1)))
         .collect::<Vec<_>>();
@@ -25,7 +26,7 @@ pub(super) fn apply(domain: Domain, op: u8, args: &[Value]) -> Reduction {
     let mut relation_available = facts
         .insert(Fact::Relation(RelationalFact::Operation(relation.clone())))
         .is_ok();
-    if args.len() > 1 && args[0].provenance.same_identity(&args[1].provenance) {
+    if args.len() > 1 && args[0].identity.same_identity(&args[1].identity) {
         relation_available &= facts
             .insert(Fact::Binary(BinaryFact::new(
                 Term::Symbol(Symbol::new(1)),
@@ -50,23 +51,23 @@ pub(super) fn apply(domain: Domain, op: u8, args: &[Value]) -> Reduction {
             _ => None,
         };
         if let Some(exact) = exact {
-            let mut value = Value::constant(exact);
+            let mut value = AbstractValue::constant(exact);
             value.provenance = provenance;
             return Reduction::unchanged(value);
         }
     }
     if relation.opcode() == opcode::ISZERO && (!args[0].may_be_zero() || !args[0].may_be_nonzero())
     {
-        let mut value = Value::constant(U256::from(u8::from(!args[0].may_be_nonzero())));
+        let mut value = AbstractValue::constant(U256::from(u8::from(!args[0].may_be_nonzero())));
         value.provenance = provenance;
         return Reduction::unchanged(value);
     }
     if let Some(exact) = args
         .iter()
-        .map(Value::singleton)
+        .map(AbstractValue::singleton)
         .collect::<Option<Vec<_>>>()
     {
-        let mut value = Value::constant(super::evaluate(
+        let mut value = AbstractValue::constant(super::evaluate(
             relation.opcode(),
             exact[0],
             exact.get(1).copied().unwrap_or(U256::ZERO),
@@ -76,31 +77,36 @@ pub(super) fn apply(domain: Domain, op: u8, args: &[Value]) -> Reduction {
         return Reduction::unchanged(value);
     }
     let mut finite_value = domain.finite_apply(relation.opcode(), args);
-    if !finite_value.finite.is_top() && args.iter().all(|v| v.constants().is_some()) {
+    if !finite_value.numeric.finite.is_top() && args.iter().all(|v| v.constants().is_some()) {
         // 完整枚举已给精确 scalar 集合；重新传播其等价摘要不会增加信息。
         finite_value.provenance = provenance;
         return Reduction::unchanged(finite_value);
     }
-    let finite = finite_value.finite;
-    let value = Value {
-        finite,
-        bits: KnownBits::transfer(
-            relation.opcode(),
-            &args.iter().map(|v| v.bits).collect::<Vec<_>>(),
-        ),
-        interval: Interval::transfer(
-            relation.opcode(),
-            &args.iter().map(|v| v.interval).collect::<Vec<_>>(),
-        ),
-        congruence: Congruence::transfer(
-            relation.opcode(),
-            &args
-                .iter()
-                .map(|v| v.congruence.clone())
-                .collect::<Vec<_>>(),
-        ),
+    let finite = finite_value.numeric.finite;
+    let value = AbstractValue {
+        numeric: NumericValue {
+            finite,
+            bits: KnownBits::transfer(
+                relation.opcode(),
+                &args.iter().map(|v| v.numeric.bits).collect::<Vec<_>>(),
+            ),
+            interval: Interval::transfer(
+                relation.opcode(),
+                &args.iter().map(|v| v.numeric.interval).collect::<Vec<_>>(),
+            ),
+            congruence: Congruence::transfer(
+                relation.opcode(),
+                &args
+                    .iter()
+                    .map(|v| v.numeric.congruence.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            nonzero: false,
+        },
         provenance,
-        nonzero: false,
+        identity: ValueIdentity::none(),
+        expression: None,
+        symbolic_limit: false,
     };
     let mut reduced = reduce::reduce(domain, value);
     if !relation_available {

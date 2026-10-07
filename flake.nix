@@ -51,7 +51,12 @@
             version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
             cargoExtraArgs = "--workspace --locked";
             # AWS-LC selects its CMake backend for supported fallback/ASM configurations.
-            nativeBuildInputs = [ pkgs.cmake ];
+            nativeBuildInputs = [
+              pkgs.cmake
+              pkgs.pkg-config
+            ];
+            # SMT is linked into the analyzer; execution never launches a solver process.
+            buildInputs = [ pkgs.z3 ];
             # The RPC client initializes platform TLS roots even for HTTP fixtures.
             SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
             meta = {
@@ -331,6 +336,8 @@
               ++ (with pkgs; [
                 graphviz
                 cargo-nextest
+                pkg-config
+                z3
                 nixfmt
                 taplo
                 lychee

@@ -81,7 +81,7 @@ PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中�
 
 ### 在 JSON 中查输入范围
 
-分析结果格式的 `schema_version` 是 2，数值域策略中的 `domain_spec.schema_version` 仍是 1。输入环境所在位置随输出入口变化：
+分析结果格式的 `schema_version` 是 3，数值域策略中的 `domain_spec.schema_version` 是 2。输入环境所在位置随输出入口变化：
 
 | 命令 | 环境路径 |
 | --- | --- |
@@ -135,6 +135,31 @@ jq '.states[0].exit_stack[0].interval | {unsigned_lo, unsigned_hi}' /tmp/evm-gas
 
 CALL/STATICCALL 的子帧 caller 来自父帧 ADDRESS，子帧 calldata 来自父帧 memory。CALL 的 value 来自指令参数；STATICCALL 的 value 为零。CALLCODE 保持父帧状态账户，并使用父帧 ADDRESS 作为 caller；DELEGATECALL 继承父帧 caller 和 value。ORIGIN 是事务环境，跨帧保持不变。
 
-每个新环境有独立的输入身份空间，克隆环境保留同一组输入；报告中的符号名字只在该报告内表示这种关系，跨报告相同的名字不证明数值相等。稳定的环境输入身份可跨基本块保留；不同输入和经过运算得到的新值不会因为数值摘要相同而被当成同一个符号。调用摘要比较完整环境及帧输入，避免在不同环境下复用结果。这种身份仍不等于完整关系式符号执行：未知 storage 别名、动态地址、路径相关关系以及资源预算继续具有各自的边界。
+每个新环境有独立的输入身份空间，克隆环境保留同一组输入；报告中的符号名字只在该报告内表示这种关系，跨报告相同的名字不证明数值相等。稳定的环境输入身份可跨基本块保留；不同输入和经过运算得到的新值不会因为数值摘要相同而被当成同一个符号。调用摘要比较完整环境及帧输入，避免在不同环境下复用结果。身份、来源和表达式现在分别记录：`identity.input.name` 是固定输入名，`provenance` 只含来源与代码角色，`expression` 描述保留的变量或派生运算；不同标签不能直接当作相等证据。机器状态另外持有关系环境，JUMPI 的 true/false 后继各自保留假设，经证明的矛盾才可删除路径。已知数值会反馈到 NumericValue，变量身份与原表达式仍保留。未知 storage 别名、动态地址、表达式规模、析取精度与资源预算继续具有各自的边界。
+
+### 数值策略与关系策略分别选择
+
+默认符号/关系模式对 product 和 constants-only 都生效。下面只比较同一个 CALLVALUE 在两个分支中的一致性：
+
+```bash
+LAB_RELATIONAL_HEX=3480600114600957005b80600214601257005b00
+nix run . -- cfg --hex "$LAB_RELATIONAL_HEX" --context-depth 0 --format json > /tmp/evm-relations-on.json
+nix run . -- cfg --hex "$LAB_RELATIONAL_HEX" --context-depth 0 --no-relations --format json > /tmp/evm-relations-off.json
+jq '.program.blocks as $blocks | [.states[].key.basic_block_index | $blocks[.].start_pc]' /tmp/evm-relations-on.json /tmp/evm-relations-off.json
+```
+
+进入 `pc=0x09` 的 true 路径意味着 CALLVALUE=1，后面的 CALLVALUE=2 true 分支 `pc=0x12` 不可行。开启关系时不出现这个基本块；关闭关系后保留这条抽象可能。两种模式都可以完成传播，覆盖精度不同；`--no-relations` 没有改变输入 value 的未知范围，也不解除默认 caller/origin 的同一输入身份。
+
+关系参数不属于 EVM 环境值，因此使用独立选项：
+
+| 参数 | 默认值 | 控制的范围 |
+| --- | --- | --- |
+| `--no-relations` | 不传则开启 | 禁止表达式传播与持久路径约束；保留输入身份和数值语义 |
+| `--max-symbolic-nodes` | 1024 | 表达式与一次查询可处理的节点上限 |
+| `--max-symbolic-depth` | 64 | 表达式嵌套深度 |
+| `--max-relations` | 128 | 一个状态可保留的约束数 |
+| `--smt-rlimit` | 10000 | 进程内 Z3 每次查询的确定性资源限制 |
+
+求解器只使用 `rlimit`，没有墙钟 timeout。资源不足、表达式不能编码或 solver 未给出证明时，保留未知结果和对应前沿；只有已证实 UNSAT 才能剪掉分支。关系查询与表达式工作还使用整次分析共享的 `--max-work`。库模型、求解流程、摘要重命名和完整回归见[第 15 课](15-symbolic-relations.md)。
 
 下一课：[EVM内存与抽象字节数组](14-memory-model.md)。从 MSTORE/MLOAD 的字节读写开始，再看未知输入与偏移如何影响内存结果。

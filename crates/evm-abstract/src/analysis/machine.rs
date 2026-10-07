@@ -12,6 +12,7 @@ use serde::Serialize;
 
 mod frame;
 mod stack;
+mod symbolic;
 
 pub use frame::{ChildFrame, FrameState, RootFrame};
 pub use stack::CallStack;
@@ -123,6 +124,8 @@ pub struct MachinePayload {
     pub call_stack: CallStack,
     /// Shared transaction effects; reverted frames restore their saved snapshot.
     pub store: Store,
+    /// Joint constraints for the scoped values in this transaction state.
+    pub relations: crate::domain::relational::RelationState,
 }
 
 impl MachinePayload {
@@ -156,9 +159,11 @@ impl MachinePayload {
     }
 
     pub(crate) fn work_size(&self) -> usize {
-        self.call_stack
-            .iter()
-            .fold(self.store.work_size(), |cost, frame| {
+        self.call_stack.iter().fold(
+            self.store
+                .work_size()
+                .saturating_add(self.relations.work_size()),
+            |cost, frame| {
                 let slots = frame
                     .stack
                     .iter()
@@ -180,12 +185,14 @@ impl MachinePayload {
                     .saturating_add(frame.saved_store.state().work_size())
                     .saturating_add(frame.call_value.work_size())
                     .saturating_add(3)
-            })
+            },
+        )
     }
 
     pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
         self.store.widen(&old.store, domain);
         self.call_stack.widen(&old.call_stack, domain);
+        self.relations = self.relations.join(&old.relations);
     }
     pub(crate) fn join(&self, other: &Self, domain: Domain) -> Self {
         assert_eq!(
@@ -196,6 +203,7 @@ impl MachinePayload {
         let mut result = self.clone();
         result.store = self.store.join(&other.store, domain);
         result.call_stack.join(&other.call_stack, domain);
+        result.relations = self.relations.join(&other.relations);
         result
     }
 }
@@ -271,6 +279,8 @@ pub enum FrontierReason {
     CallDepth,
     /// A modeled byte range exceeds the cap or has unbounded size.
     Memory,
+    /// A relational query could not finish within the declared symbolic/SMT policy.
+    Relations(crate::domain::relational::QueryReason),
     /// Top call target includes addresses beyond the supplied world.
     UnknownTarget,
     /// The fixed world does not establish this account's executable code.

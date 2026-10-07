@@ -81,7 +81,7 @@ nix run . -- explain --hex 61ab
 
 块编号 `B0`、`B1` 按代码位置递增，是当前程序的索引。`B1` 不等于 pc=1；它的字节地址另由 `@ 0x...` 显示。
 
-`cfg --format json` 的结果格式版本是 `.schema_version=2`，环境记录是 `.environment`。其状态 JSON 用 `key.basic_block_index` 记录这个索引：要找到实际 pc，先用索引读取 `program.blocks`，再看该块的 `start_pc`。状态编号 `S` 则表示一次分析中的执行位置；一个基本块可能对应多个状态。下面用分支例子核对两套编号：
+`cfg --format json` 的结果格式版本是 `.schema_version=3`，环境记录是 `.environment`。其状态 JSON 用 `key.basic_block_index` 记录这个索引：要找到实际 pc，先用索引读取 `program.blocks`，再看该块的 `start_pc`。状态编号 `S` 则表示一次分析中的执行位置；一个基本块可能对应多个状态。下面用分支例子核对两套编号：
 
 ```bash
 nix run . -- cfg --file examples/diamond.hex --context-depth 0 --format json > /tmp/blocks.json

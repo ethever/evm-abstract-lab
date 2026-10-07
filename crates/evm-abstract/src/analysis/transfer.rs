@@ -9,7 +9,7 @@ use super::{
     },
 };
 use crate::{
-    domain::{Domain, Profile, Value, provenance::Origin},
+    domain::{Domain, Value, provenance::Origin},
     world::{AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, Store, Symbol, World},
 };
 use alloy_primitives::{Address, U256, keccak256};
@@ -28,6 +28,7 @@ mod budget;
 mod calls;
 pub(super) mod create;
 mod precompile;
+mod relations;
 
 pub(super) use crate::resource::WorkBudget;
 use budget::{byte_work, operation_work};
@@ -193,11 +194,11 @@ fn environment_targets(
 ) -> Value {
     let symbolic_owner = entry.environment.to.as_concrete().is_none();
     if symbolic_owner
-        && value.provenance().same_identity(
+        && value.identity().same_identity(
             entry
                 .environment
                 .address_value(entry.environment.to)
-                .provenance(),
+                .identity(),
         )
     {
         return read(entry.address);
@@ -249,12 +250,11 @@ pub(super) fn execute(
     let mut definition = 0_u32;
     for value in &mut result.payload.active_mut().stack {
         value.forget_identity();
-        if domain.spec().profile() == Profile::Product {
-            if let Some(scope) = scope {
-                *value = value.clone().with_identity(scope, definition);
-            }
-            definition = definition.saturating_add(1);
+        *value = relations::identify(value.clone(), config.analysis.relations.enabled);
+        if let Some(scope) = scope {
+            *value = value.clone().with_identity(scope, definition);
         }
+        definition = definition.saturating_add(1);
     }
     let code = result.payload.active().code;
     if let FrameCode::Precompile(address) = code {
@@ -341,6 +341,26 @@ pub(super) fn execute(
         }
         let mut args: Vec<Value> = stack.drain(stack.len() - inputs..).collect();
         args.reverse();
+        if config.analysis.relations.enabled && args.iter().any(Value::symbolic_limit_reached) {
+            boundary(
+                &mut result,
+                pc,
+                FrontierReason::Relations(crate::domain::relational::QueryReason::ExpressionLimit),
+            );
+        }
+        for value in &mut args {
+            match relations::refine(value, &result.payload.relations, context) {
+                Ok(false) => return result,
+                Ok(true) => {}
+                Err(reason) => {
+                    let stop = reason == FrontierReason::Work;
+                    boundary(&mut result, pc, reason);
+                    if stop {
+                        return result;
+                    }
+                }
+            }
+        }
         if op == opcode::SLOAD && matches!(storage_reads, StorageReadPolicy::Discover) {
             let owner = result.payload.active().key.address;
             // 不用抽象环境的内部占位地址向链上查询。
@@ -413,7 +433,16 @@ pub(super) fn execute(
                     .saturating_sub(config.analysis.context_depth);
                 frame.key.jump_history.drain(..discard);
                 let condition = args.get(1);
-                if condition.is_none_or(Value::may_be_nonzero) {
+                let constrained = if condition.is_none_or(Value::may_be_nonzero) {
+                    if let Some(condition) = condition {
+                        relations::branch(&mut result, condition, true, context, pc)
+                    } else {
+                        Some(result.payload.clone())
+                    }
+                } else {
+                    None
+                };
+                if let Some(constrained) = constrained {
                     let kind = if op == opcode::JUMP {
                         EdgeKind::Jump
                     } else {
@@ -430,8 +459,7 @@ pub(super) fn execute(
                                     program.jumpdest_blocks().get(&target).copied()
                                 });
                                 if let Some(target) = valid {
-                                    let payload = result.payload.clone();
-                                    successor(&mut result, payload, target, kind);
+                                    successor(&mut result, constrained.clone(), target, kind);
                                 } else {
                                     result.diagnostics.push((pc, DiagnosticKind::InvalidJump));
                                     failure(&mut result, context, pc);
@@ -449,15 +477,22 @@ pub(super) fn execute(
                                     boundary(&mut result, pc, FrontierReason::Work);
                                     break;
                                 }
-                                let payload = result.payload.clone();
-                                successor(&mut result, payload, *target, kind);
+                                successor(&mut result, constrained.clone(), *target, kind);
                             }
                         }
                     }
                 }
                 if condition.is_some_and(Value::may_be_zero) {
+                    let Some(payload) = relations::branch(
+                        &mut result,
+                        condition.expect("JUMPI condition"),
+                        false,
+                        context,
+                        pc,
+                    ) else {
+                        return result;
+                    };
                     if basic_block_index + 1 < program.blocks().len() {
-                        let payload = result.payload.clone();
                         successor(
                             &mut result,
                             payload,
@@ -465,7 +500,6 @@ pub(super) fn execute(
                             EdgeKind::BranchFalse,
                         );
                     } else {
-                        let payload = result.payload.clone();
                         finish(
                             &mut result,
                             payload,
@@ -598,6 +632,15 @@ pub(super) fn execute(
                     boundary(&mut result, pc, FrontierReason::Memory);
                     return result;
                 }
+                if memory.symbolic_limit_reached() {
+                    boundary(
+                        &mut result,
+                        pc,
+                        FrontierReason::Relations(
+                            crate::domain::relational::QueryReason::ExpressionLimit,
+                        ),
+                    );
+                }
             }
             opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY => {
                 let source = match op {
@@ -641,11 +684,11 @@ pub(super) fn execute(
             opcode::EXTCODECOPY => {
                 let symbolic_owner = entry.environment.to.as_concrete().is_none();
                 let exact_self = symbolic_owner
-                    && args[0].provenance().same_identity(
+                    && args[0].identity().same_identity(
                         entry
                             .environment
                             .address_value(entry.environment.to)
-                            .provenance(),
+                            .identity(),
                     );
                 let source = if exact_self {
                     code_bytes(&result.payload.store, entry.address)
@@ -889,9 +932,22 @@ pub(super) fn execute(
                         }
                         let reduction = domain.apply_detailed(op, &args);
                         if matches!(
+                            reduction.symbolic_error,
+                            Some(crate::domain::symbolic::ExprError::Limit { .. })
+                        ) {
+                            boundary(
+                                &mut result,
+                                pc,
+                                FrontierReason::Relations(
+                                    crate::domain::relational::QueryReason::ExpressionLimit,
+                                ),
+                            );
+                        }
+                        if matches!(
                             reduction.status,
                             crate::domain::ReductionStatus::RoundLimit
                                 | crate::domain::ReductionStatus::FactLimit
+                                | crate::domain::ReductionStatus::SymbolicLimit
                         ) {
                             result
                                 .diagnostics
@@ -901,7 +957,17 @@ pub(super) fn execute(
                     }
                 };
                 value = domain.project(&value);
-                if domain.spec().profile() == Profile::Product {
+                if value.symbolic_limit_reached() {
+                    boundary(
+                        &mut result,
+                        pc,
+                        FrontierReason::Relations(
+                            crate::domain::relational::QueryReason::ExpressionLimit,
+                        ),
+                    );
+                }
+                value = relations::identify(value, config.analysis.relations.enabled);
+                {
                     let origin = match op {
                         opcode::ADDRESS | opcode::CALLER | opcode::ORIGIN => Some(Origin::Address),
                         opcode::CALLDATALOAD | opcode::CALLDATASIZE => Some(Origin::Calldata),

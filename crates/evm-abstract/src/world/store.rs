@@ -361,6 +361,40 @@ pub struct Store {
 pub type Snapshot = Checkpoint<Store>;
 
 impl Store {
+    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&Value)) {
+        for plane in [&self.persistent, &self.transient] {
+            for value in plane.slots.values().chain(plane.defaults.values()) {
+                visit(value);
+            }
+            visit(&plane.global_default);
+        }
+        for value in self.balances.values().chain(self.nonces.values()) {
+            visit(value);
+        }
+        visit(&self.balance_default);
+        for log in self.possible_logs.values() {
+            for value in &log.topics {
+                visit(value);
+            }
+            log.data.visit_values(visit);
+        }
+    }
+    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut Value)) {
+        for plane in [&mut self.persistent, &mut self.transient] {
+            plane.slots.update_values(&mut *update);
+            plane.defaults.update_values(&mut *update);
+            update(&mut plane.global_default);
+        }
+        self.balances.update_values(&mut *update);
+        self.nonces.update_values(&mut *update);
+        update(&mut self.balance_default);
+        self.possible_logs.update_values(|log| {
+            for value in &mut log.topics {
+                update(value);
+            }
+            log.data.update_values(update);
+        });
+    }
     pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
         // The caller has already joined its paths. Numeric widening cannot
         // reintroduce dependencies discarded by a definite transaction write.
@@ -857,6 +891,9 @@ impl Store {
                         },
                     )
                 })
+                // Missing lifecycle entries already mean definitely false.
+                // Keep a canonical representation for exact summary inputs.
+                .filter(|(_, value)| *value != Some(false))
                 .collect(),
             pending_destruction: addresses
                 .iter()
@@ -871,6 +908,7 @@ impl Store {
                         },
                     )
                 })
+                .filter(|(_, value)| *value != Some(false))
                 .collect(),
             possible_logs,
             logs_unknown,
