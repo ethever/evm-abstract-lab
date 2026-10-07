@@ -33,6 +33,20 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 
 第二条命令保留一个最近跳转来源块的历史。检查 helper 的状态数、`context` 和返回边怎样变化；不是越大的参数就越容易收敛。
 
+## 内存：从字节读写到抽象数组
+
+`straight-line.hex` 已展示把计算结果写入内存再返回。继续读[14：EVM内存与抽象字节数组](../docs/14-memory-model.md)，先用 MSTORE/MLOAD、MSTORE8 和 MSIZE 手算字节、偏移与长度，再观察多个可能偏移、逐字节汇合和预算前沿。该课包含运行命令与预期输出；CALL 传递输入、复制返回字节的完整流程见[第 09 课](../docs/09-cross-contract.md)。
+
+| 文件 | 读写过程 | 要观察什么 |
+| --- | --- | --- |
+| [memory-word.hex](memory-word.hex) | 向偏移 0 写入 42，再读取 word 和 MSIZE | 出口为 `[{0x2a}, {0x20}]`：内容 42 与长度 32 是两个栈槽 |
+| [memory-write-alias.hex](memory-write-alias.hex) | 未知输入选择偏移 0 或 1，随后 MSTORE8 写一个字节 | `--context-depth 0` 汇合后，两个位置各自可能为零或 aa；并不证明一次执行同时写两处 |
+| [memory-byte-correlation.hex](memory-byte-correlation.hex) | 分支得到 `0x0101` 或 `0x0202`，汇合后写入并读出 | `--context-depth 0` 额外允许 `0x0102`、`0x0201`；与深度 8 的分开状态比较 |
+| [memory-overlap-copy.hex](memory-overlap-copy.hex) | MCOPY 将偏移 28～30 复制到 29～31 | 重叠复制使用原始源字节，MLOAD(0) 得 `0x01010203` |
+| [memory-word-bound.json](memory-word-bound.json) | 向偏移 1 写入 `0x1234`，再读取 word 和 MSIZE | 需要 64 字节；将 `--max-memory-bytes` 降到 32 时留下 `Memory` 前沿 |
+
+最后一项是单账户世界文件，按第 14 课命令显式提供 `--evm.to`、`--evm.value 0` 与 `--evm.calldata 0x`。先读正常结果，再运行上限实验；不要把 `Incomplete` 的部分输出当作完整内存状态。
+
 ## 数值精度：集合以外还能知道什么
 
 完成[第 02 课](../docs/02-domain.md)的集合手算后，比较默认组合域与 `--domain constants-only`。这三份输入都从未知 calldata 开始：

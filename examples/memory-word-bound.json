@@ -1,0 +1,13 @@
+{
+  "fork": "osaka",
+  "provenance": "offline:memory-word-bound:v1",
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000101",
+      "code": "0x6112346001526001515900",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0x0"
+    }
+  ]
+}

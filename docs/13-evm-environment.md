@@ -77,7 +77,7 @@ jq '.states[0].exit_stack[0].Constants' /tmp/evm-distinct-origin.json
 
 数量和索引接受 ASCII 十进制或 `0x` / `0X` 十六进制，范围为 U256；地址为 20 字节，hash 为 32 字节，calldata 为字节串。显式零与参数省略不同。同一索引给出不同 hash 会被拒绝。
 
-PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中的代码、memory 和最近子调用返回值计算；BALANCE、SELFBALANCE、EXTCODE 系列以及 storage 读取来自 World/Store。这样，固定代码和账户事实与调用输入保持各自的含义。
+PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中的代码、memory 和最近子调用返回值计算；BALANCE、SELFBALANCE、EXTCODE 系列以及 storage 读取来自 World/Store。这样，固定代码和账户事实与调用输入保持各自的含义。内存扩容、MSIZE 与数据复制的具体计算见[第 14 课](14-memory-model.md)。
 
 ### 在 JSON 中查输入范围
 
@@ -136,3 +136,5 @@ jq '.states[0].exit_stack[0].interval | {unsigned_lo, unsigned_hi}' /tmp/evm-gas
 CALL/STATICCALL 的子帧 caller 来自父帧 ADDRESS，子帧 calldata 来自父帧 memory。CALL 的 value 来自指令参数；STATICCALL 的 value 为零。CALLCODE 保持父帧状态账户，并使用父帧 ADDRESS 作为 caller；DELEGATECALL 继承父帧 caller 和 value。ORIGIN 是事务环境，跨帧保持不变。
 
 每个新环境有独立的输入身份空间，克隆环境保留同一组输入；报告中的符号名字只在该报告内表示这种关系，跨报告相同的名字不证明数值相等。稳定的环境输入身份可跨基本块保留；不同输入和经过运算得到的新值不会因为数值摘要相同而被当成同一个符号。调用摘要比较完整环境及帧输入，避免在不同环境下复用结果。这种身份仍不等于完整关系式符号执行：未知 storage 别名、动态地址、路径相关关系以及资源预算继续具有各自的边界。
+
+下一课：[EVM内存与抽象字节数组](14-memory-model.md)。从 MSTORE/MLOAD 的字节读写开始，再看未知输入与偏移如何影响内存结果。
