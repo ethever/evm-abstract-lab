@@ -40,6 +40,8 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 | 文件 | 读写过程 | 要观察什么 |
 | --- | --- | --- |
 | [memory-word.hex](memory-word.hex) | 向偏移 0 写入 42，再读取 word 和 MSIZE | 出口为 `[{0x2a}, {0x20}]`：内容 42 与长度 32 是两个栈槽 |
+| [memory-word-overwrite.hex](memory-word-overwrite.hex) | 先存 `0x1234`，再分别覆盖偏移 30、31 | 两次读取保留 `0xaa34`、`0xaabb`，旧读值不随后续写入改变 |
+| [memory-symbolic-offset.hex](memory-symbolic-offset.hex) | 同一未知 p 经 DUP 后写入 7，再从 p 读取 | 符号身份仍在，未知位置写后读关系未一般保存；空 calldata 固定 p=0 后读出 7 |
 | [memory-write-alias.hex](memory-write-alias.hex) | 未知输入选择偏移 0 或 1，随后 MSTORE8 写一个字节 | `--context-depth 0` 汇合后，两个位置各自可能为零或 aa；并不证明一次执行同时写两处 |
 | [memory-byte-correlation.hex](memory-byte-correlation.hex) | 分支得到 `0x0101` 或 `0x0202`，汇合后写入并读出 | `--context-depth 0` 额外允许 `0x0102`、`0x0201`；与深度 8 的分开状态比较 |
 | [memory-overlap-copy.hex](memory-overlap-copy.hex) | MCOPY 将偏移 28～30 复制到 29～31 | 重叠复制使用原始源字节，MLOAD(0) 得 `0x01010203` |
@@ -75,6 +77,33 @@ nix run . -- explain --hex 5f351e00 --no-relations --domain constants-only --max
 ```
 
 CLZ 的完整结果为 `0..=256`，共 257 个候选。第一条命令为 `Converged`，完整保留它们；默认容量 8 则返回 Top，默认 product 仍可用其他组件保留范围和固定位约束。第二条的容量 1000 不再因配置上限被拒绝，但会在 CLZ 前耗尽单账户教学入口固定的 2000 万共享工作预算：输出 `status=Incomplete` 与 `Work` 前沿，显示 `SSA unavailable`，退出码为 2。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；参数不直接预分配容量，容量足够还须检查执行是否完成。
+
+## Storage：先读懂一个账户的单元，再增加调用层级
+
+这些 `storage-*.json` 与上面的 memory 字节码分开，用 [第 16 课](../docs/16-storage-model.md)逐步观察。它们是 world 输入，入口都是 `0x0000000000000000000000000000000000000101`；单账户实验也需要 `--world`，文件夹名字不会改变输入格式。
+
+| 文件 | 先手算什么 | 要核对的结果 |
+| --- | --- | --- |
+| [storage-basic.json](storage-basic.json) | A[0]=5、A[1]=7；覆盖 slot 0 为 42，再读两格 | 成功块出口为 `[42,7]`，初始 World 仍保留 5 |
+| [storage-zero-default.json](storage-zero-default.json) | 未列出的 slot 在完整输入中为零 | 读 slot 0、1、2 得到 `[5,0,0]` |
+| [storage-unknown-default.json](storage-unknown-default.json) | 相同代码、相同已知 slot，却不声明其他 slot 为零 | `[5,⊤,⊤]`；与前一文件分别看 default |
+| [storage-write-unknown-initial.json](storage-write-unknown-initial.json) | 先读未知 slot 0，强写 7，再读一次 | `[⊤,7]`；写入不重绑定旧读值 |
+| [storage-finite-alias.json](storage-finite-alias.json) | 未知 calldata 选择 slot 0 或 1；只写其中一个 | `--context-depth 0` 得到 `{4,9}×{7,9}`，额外组合不是具体执行见证 |
+| [storage-symbolic-key.json](storage-symbolic-key.json) | 同一个未知 k 写入 7，再从 k 读取 | 未设置 calldata 时仍为 `{0,7}`；空 calldata 把 k 固定为 0 后为 7 |
+| [storage-symbolic-value.json](storage-symbolic-value.json) | 键固定为 0，写入未知表达式 x+1，再比较读回值 | EQ 为 1；值未知与位置未知是不同问题 |
+| [storage-callback-revert.json](storage-callback-revert.json) | A 先写 1，B 写 7并回调 A 写9，随后 B REVERT | 深层临时状态 `(A[0],B[0])=(9,7)`；根成功结束恢复为 `(1,4)` |
+| [storage-transient.json](storage-transient.json) | persistent A[0]=5；transient 初始零，TSTORE 后读7 | `[5,0,7]`；两个 plane 的 slot 0 不是同一个单元 |
+
+先运行第一项：
+
+```bash
+nix run . -- explain --world examples/storage-basic.json \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.caller 0x0000000000000000000000000000000000001000 \
+  --evm.value 0 --evm.calldata 0x
+```
+
+之后按第 16 课的输入条件运行后续项：有限别名和符号键实验需要保留未知 calldata，不能把这条命令的 `--evm.calldata 0x` 直接复制到所有对照中。原始 word 如何拆成 memory 字节先读第 14 课；新符号表达式、分支假设与 relation join 见[第 15 课](../docs/15-symbolic-relations.md)。
 
 ## 多账户：观察调用怎样影响返回值与状态
 
