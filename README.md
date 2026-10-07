@@ -38,29 +38,29 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 ## 推荐阅读顺序
 
-先完成 00–06 的基础阅读，再按需要进入跨合约实验。每课给出运行步骤、要检查的输出和对应源码；不要求先读论文。
+先完成 [00](docs/00-start.md)、[01](docs/01-bytecode.md)、[02](docs/02-domain.md)、[03](docs/03-cfg.md)、[04](docs/04-ssa.md)、[05](docs/05-sensitivity.md)、[06](docs/06-boundaries.md) 的基础阅读，再按需要进入跨合约实验。每课给出运行步骤、要检查的输出和对应源码；不要求先读论文。
 
 如果现在最关心 memory 与 storage，可以在读完 [00](docs/00-start.md)、[01](docs/01-bytecode.md)、[02](docs/02-domain.md) 后走一条更小的路线：**[14 的字节读写](docs/14-memory-model.md) → [16 的单账户 slot 读写](docs/16-storage-model.md) → [15 的表达式与路径条件](docs/15-symbolic-relations.md) → [09 的跨合约归属和回滚](docs/09-cross-contract.md)**。章节号用于查找，不要求先在完整 CALL 报告里同时理解这些概念。每一步都先画具体状态，再看抽象值、JSON 与额外候选。
 
 | 顺序 | 学完能回答什么 | 主要例子 |
 | --- | --- | --- |
-| [00：运行与输出](docs/00-start.md) | pc、栈、反汇编、CFG、SSA 分别表示什么？ | `straight-line.hex` |
-| [01：字节码与基本块](docs/01-bytecode.md) | 哪些字节是指令？为什么 PUSH 内部的 `5b` 不能跳转到？ | 短 hex、`diamond.hex` |
-| [02：抽象执行与域](docs/02-domain.md) | 如何用集合计算？合并与 `⊤` 分别保留什么信息？ | `diamond.hex` |
-| [03：CFG 与固定点](docs/03-cfg.md) | 怎样恢复动态跳转？循环里的信息如何反复传播？ | `loop.hex`、`dynamic-jump.hex` |
+| [00：运行与输出](docs/00-start.md) | pc、栈、反汇编、CFG、SSA 分别表示什么？ | [`straight-line.hex`](examples/straight-line.hex) |
+| [01：字节码与基本块](docs/01-bytecode.md) | 哪些字节是指令？为什么 PUSH 内部的 `5b` 不能跳转到？ | 短 hex、[`diamond.hex`](examples/diamond.hex) |
+| [02：抽象执行与域](docs/02-domain.md) | 如何用集合计算？合并与 `⊤` 分别保留什么信息？ | [`diamond.hex`](examples/diamond.hex) |
+| [03：CFG 与固定点](docs/03-cfg.md) | 怎样恢复动态跳转？循环里的信息如何反复传播？ | [`loop.hex`](examples/loop.hex)、[`dynamic-jump.hex`](examples/dynamic-jump.hex) |
 | [04：栈 SSA](docs/04-ssa.md) | 值名与栈位置有什么区别？汇合点的 φ 怎样选择来源？ | 分支、循环、DUP/SWAP |
-| [05：敏感性与精度](docs/05-sensitivity.md) | 哪些执行被合并？改变参数怎样保留更多区别？ | `internal-calls.hex`、`stack-heights.hex` |
+| [05：敏感性与精度](docs/05-sensitivity.md) | 哪些执行被合并？改变参数怎样保留更多区别？ | [`internal-calls.hex`](examples/internal-calls.hex)、[`stack-heights.hex`](examples/stack-heights.hex) |
 | [06：模型边界与证据](docs/06-boundaries.md) | 收敛能说明什么？对照测试与链上事实分别能证明什么？ | 预算、诊断、revm 对照 |
-| [09：跨合约执行](docs/09-cross-contract.md) | 返回值、代理、回滚和重入怎样影响账户状态？ | `examples/worlds/` |
+| [09：跨合约执行](docs/09-cross-contract.md) | 返回值、代理、回滚和重入怎样影响账户状态？ | [`examples/worlds/`](examples/worlds) |
 | [10：快照、调用摘要与代码生命周期](docs/10-snapshots-summaries-creation.md) | 何时能复用分析？部署和销毁如何改变代码？ | 摘要、CREATE/CREATE2、预编译 |
-| [11：状态容器与后端对比](docs/11-state-backends.md) | 如何用同一接口比较 std 与 imbl 的检查点、写入和回滚？ | `scripts/compare-state-backends.sh` |
-| [12：组合域与事实交换](docs/12-product-domains-facts.md) | 位、范围与同余怎样交换信息？来源和身份怎样分层？ | `known-bits-branch.hex`、`copy-identity.hex` |
+| [11：状态容器与后端对比](docs/11-state-backends.md) | 如何用同一接口比较 std 与 imbl 的检查点、写入和回滚？ | [`scripts/compare-state-backends.sh`](scripts/compare-state-backends.sh) |
+| [12：组合域与事实交换](docs/12-product-domains-facts.md) | 位、范围与同余怎样交换信息？来源和身份怎样分层？ | [`known-bits-branch.hex`](examples/known-bits-branch.hex)、[`copy-identity.hex`](examples/copy-identity.hex) |
 | [13：EVM 环境与符号输入](docs/13-evm-environment.md) | 默认覆盖哪些调用？怎样指定交易、区块和 gas 环境？ | `--evm.*`、caller/origin、BLOCKHASH/BLOBHASH |
 | [14：EVM内存与抽象字节数组](docs/14-memory-model.md) | MSTORE 怎样拆成字节？未知偏移、合并与复制怎样影响结果？ | MSTORE/MLOAD、MSTORE8、MSIZE、CALL 返回区 |
 | [15：符号表达式与关系约束](docs/15-symbolic-relations.md) | 分支条件怎样约束后续值？状态合并和 SMT 资源边界如何处理？ | 矛盾守卫、输入身份、进程内 SMT 求解器 |
 | [16：Storage 的读写、别名与回滚](docs/16-storage-model.md) | 一个 slot 怎样读写？默认值、弱更新、同符号键和调用保存点分别保留什么？ | 单 slot、两候选 slot、未知 slot、transient、回调回滚 |
 
-两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成第 02 课后，可以进入[第 14 课](docs/14-memory-model.md)，先手算内存读写，再理解抽象字节数组。完成第 05 课后，也可以直接进入第 12 课，继续研究数值精度，再回到跨合约实验。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
+两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成[第 02 课](docs/02-domain.md)后，可以进入[第 14 课](docs/14-memory-model.md)，先手算内存读写，再理解抽象字节数组。完成[第 05 课](docs/05-sensitivity.md)后，也可以直接进入[第 12 课](docs/12-product-domains-facts.md)，继续研究数值精度，再回到[跨合约实验](docs/09-cross-contract.md)。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
 
 ## 从单段代码到多个合约
 
@@ -145,7 +145,7 @@ nix run . -- analyze \
 nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 ```
 
-这里应得到 `"Converged"` 和 `"object"`。不加 `--ssa` 时，分析对象直接位于 JSON 根节点；加上后根节点包含 `analysis` 和 `ssa`。更详细的字段解读见各实验。
+这里应得到 `"Converged"` 和 `"object"`。不加 `--ssa` 时，分析对象直接位于 JSON 根节点；加上后根节点包含 `analysis` 和 `ssa`。更详细的字段解读见[跨合约报告](docs/09-cross-contract.md#默认文本怎样读)和[输入与帧的 JSON 查询](docs/10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
 
 ## 怎样判断结果是否完整
 
@@ -159,7 +159,7 @@ nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 
 RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留下 `RpcAcquisition` 前沿，结果为 `Incomplete`、退出 `2`。采集失败的类型与来源另外保存在累计记录中，后续预算中断也不会丢失。输出中的已完成分支不能替代尚未展开的调用。
 
-当前能力覆盖多账户调用、代理执行、返回数据、persistent/transient storage、嵌套回滚与重入；还包括有明确输入的 CREATE/CREATE2、EIP-6780 生命周期和原生预编译。调用摘要缓存可以复用已完成的调用分析，同时保留可检查的图与状态效果。[第 09 课](docs/09-cross-contract.md)和[第 10 课](docs/10-snapshots-summaries-creation.md)解释各项条件。
+当前能力覆盖多账户调用、代理执行、返回数据、persistent/transient storage、嵌套回滚与重入；还包括有明确输入的 CREATE/CREATE2、[EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) 生命周期和原生预编译。调用摘要缓存可以复用已完成的调用分析，同时保留可检查的图与状态效果。[第 09 课](docs/09-cross-contract.md)和[第 10 课](docs/10-snapshots-summaries-creation.md)解释各项条件。
 
 模型处理普通 EVM 字节码，即按操作码及其立即数解码的指令流；不支持 EOF 容器格式。字节码格式与硬分叉版本是两个不同概念，普通 EVM 字节码也能使用所选版本启用的较新指令，见[第一课](docs/01-bytecode.md)。
 
@@ -217,7 +217,7 @@ cargo fmt --all -- --check
 cargo doc --workspace --no-deps --locked
 ```
 
-TOML 检查使用 Nix 中固定版本的 Taplo，规则见 [`taplo.toml`](taplo.toml)。它递归检查仓库的 TOML 文件，包括 `.cargo/config.toml`，排除构建产物和 Git 元数据；语法检查禁用联网 schema 验证。开发时检查或统一格式：
+TOML 检查使用 Nix 中固定版本的 Taplo，规则见 [`taplo.toml`](taplo.toml)。它递归检查仓库的 TOML 文件，包括 [`.cargo/config.toml`](.cargo/config.toml)，排除构建产物和 Git 元数据；语法检查禁用联网 schema 验证。开发时检查或统一格式：
 
 ```bash
 nix develop --command taplo lint --no-schema
@@ -227,9 +227,9 @@ nix develop --command taplo fmt
 
 VS Code 请以仓库根目录打开工作区，按[插件推荐](.vscode/extensions.json)自行安装 rust-analyzer 和 Even Better TOML，再执行 `Developer: Reload Window`。Remote SSH 在远端工作区配置插件和 Nix。仓库通过[工作区设置](.vscode/settings.json)连接语言服务器，通过[Nix 任务](.vscode/tasks.json)执行构建、测试和 Clippy；详细步骤见[开发环境说明](docs/development.md)。
 
-TOML 编辑器设置与命令行共同读取 `taplo.toml` 的 `[formatting]`：4 空格缩进、对齐键值、最多一个连续空行。工作区指定 Even Better TOML 为格式器并启用保存时格式化。插件默认使用自带 Taplo，CLI 的 Taplo 由 Nix 固定，两者版本可能不同。
+TOML 编辑器设置与命令行共同读取 [`taplo.toml`](taplo.toml) 的 `[formatting]`：4 空格缩进、对齐键值、最多一个连续空行。工作区指定 [Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml) 为格式器并启用保存时格式化。插件默认使用自带 Taplo，CLI 的 Taplo 由 Nix 固定，两者版本可能不同。
 
-修改格式规则时以 `taplo.toml` 为准。完整门禁通过 Nix Taplo 的真实 LSP 请求比较格式化结果与同版本 CLI，验证项目配置；它不验证用户安装的任意插件版本。
+修改格式规则时以 [`taplo.toml`](taplo.toml) 为准。完整门禁通过 Nix Taplo 的真实 LSP 请求比较格式化结果与同版本 CLI，验证项目配置；它不验证用户安装的任意插件版本。
 
 文档链接规则由 [`lychee.toml`](lychee.toml) 固定。离线检查覆盖本地文件、引用式链接与锚点，包含隐藏目录文档，排除 `target`、`result*`、`.git`、`.direnv` 的生成文件：
 
@@ -245,4 +245,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 联网命令不检查远端锚点；外站超时或限流会导致失败，所以它不属于可复现的离线门禁。
 
-MIT license。
+[MIT license](LICENSE)。

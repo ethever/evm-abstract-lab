@@ -4,13 +4,13 @@
 
 ## 第一步：准备运行环境
 
-需要安装 Nix，并启用 `nix-command` 和 `flakes`。以下命令都在仓库根目录执行，也就是包含 `flake.nix` 和 `Cargo.toml` 的目录。例子是本地文件，运行分析不需要 RPC、钱包或资金；首次 Nix 构建可能需要下载工具链和依赖。
+需要安装 Nix，并启用 `nix-command` 和 `flakes`。以下命令都在仓库根目录执行，也就是包含 [`flake.nix`](../flake.nix) 和 [`Cargo.toml`](../Cargo.toml) 的目录。例子是本地文件，运行分析不需要 RPC、钱包或资金；首次 Nix 构建可能需要下载工具链和依赖。
 
 ```bash
 nix run . -- explain --file examples/straight-line.hex
 ```
 
-`nix run .` 构建并运行本项目的命令行程序；`--` 后面是程序的参数。`explain` 会依次显示反汇编、控制流图和 SSA。后文拆开解释这三部分。
+`nix run .` 构建并运行本项目的命令行程序；`--` 后面是程序的参数。`explain` 会依次显示反汇编、控制流图和 SSA。[第三步](#第三步把输出和手算结果对上)拆开解释这三部分。
 
 多合约示例也使用同一教学命令，例如：
 
@@ -30,7 +30,7 @@ nix run . -- explain \
 | --- | --- |
 | `nix: command not found` | 先安装 Nix，再回到仓库根目录 |
 | 提示 `nix-command` 或 `flakes` 未启用 | 用下面带显式开关的命令运行 |
-| 找不到 `flake.nix` 或示例文件 | 检查当前目录；这里的路径相对于仓库根目录 |
+| 找不到 [`flake.nix`](../flake.nix) 或示例文件 | 检查当前目录；这里的路径相对于仓库根目录 |
 
 ```bash
 nix --extra-experimental-features 'nix-command flakes' run . -- explain --file examples/straight-line.hex
@@ -217,6 +217,6 @@ nix run . -- analyze \
 
 ## 本课完成标志
 
-不看正文，试着解释三件事：为什么第二条指令的 pc 是 2；为什么 `stack in [{0x1,0x2}]` 只有一个栈槽；为什么 `%2` 不随栈位置变化而改名。若仍不确定，回到相应输出片段核对。
+不看正文，试着解释三件事：为什么第二条指令的 pc 是 2；为什么 `stack in [{0x1,0x2}]` 只有一个栈槽；为什么 `%2` 不随栈位置变化而改名。若仍不确定，回到[反汇编](#反汇编每个字节是什么意思)、[分支 CFG](#第四步换一个有分支的例子)和[SSA](#ssa每个值从哪里来)的输出片段核对。
 
 下一课：[01：字节码与基本块](01-bytecode.md)。命令与示例索引见 [README](../README.md) 和[例子目录](../examples/README.md)。

@@ -7,7 +7,8 @@
 //! 从入口重建分析；各轮共用执行预算，纯离线入口不会隐式访问网络。
 //! 栈高区分是必要的类型边界；有限内部跳转历史是可选的精度选择。
 //! 每次新输入都逐槽 join，只有输入变大才重新入队。边也只增加，不随某次
-//! 更精确的执行删除。读 `analysis/engine.rs` 中的循环时，始终检查这两个不变量。
+//! 更精确的执行删除。读 [`analysis/engine.rs`](https://github.com/ethever/evm-abstract-lab/blob/main/crates/evm-abstract/src/analysis/engine.rs)
+//! 中的循环时，始终检查这两个不变量。
 //!
 //! 配置在 [`Config::validate`] 阶段完成准入检查，转换成不能手工伪造的
 //! [`ValidatedConfig`] 后构造引擎使用的域；世界执行的附加预算在同一准入阶段

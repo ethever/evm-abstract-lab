@@ -1,12 +1,12 @@
 # 03：CFG 是抽象执行长出来的图
 
-上一课解释了一个块内的值如何汇合。这一课跟踪这些摘要怎样流到其他块、怎样重访循环，以及分析没有完成时留下什么证据。
+[上一课](02-domain.md)解释了一个块内的值如何汇合。这一课跟踪这些摘要怎样流到其他块、怎样重访循环，以及分析没有完成时留下什么证据。
 
-这里使用单字节码的 `cfg` 视图，先学习局部控制流。diamond 和 loop 用 `constants-only --no-relations` 延续上一课的纯数值手算，再用默认组合域观察数值精度怎样改变分支。它们与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
+这里使用单字节码的 `cfg` 视图，先学习局部控制流。[diamond](../examples/diamond.hex) 和 [loop](../examples/loop.hex) 用 `constants-only --no-relations` 延续[上一课](02-domain.md)的纯数值手算，再用默认组合域观察数值精度怎样改变分支。它们与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
 
 ## 1. 先看一张能手算的图
 
-运行上一课的菱形分支：
+运行[上一课](02-domain.md)的菱形分支：
 
 ```bash
 nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relations --context-depth 0
@@ -66,7 +66,7 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 (基本块编号, 入口栈高, 最近 k 个跳转来源块的起始 pc)
 ```
 
-同一个键的输入允许 join；不同键保存为不同节点。节点创建后键保持不变，更新的是它的入口摘要。本课 diamond 与 loop 显式设置 `k=0`，历史为空；未指定参数时默认为 `k=8`。历史由 JUMP/JUMPI 所在块的起始 pc 构成，不是跳转指令自身的 pc，也不是外部 CALL 的调用栈。
+同一个键的输入允许 join；不同键保存为不同节点。节点创建后键保持不变，更新的是它的入口摘要。本课 [diamond](../examples/diamond.hex) 与 [loop](../examples/loop.hex) 显式设置 `k=0`，历史为空；未指定参数时默认为 `k=8`。历史由 JUMP/JUMPI 所在块的起始 pc 构成，不是跳转指令自身的 pc，也不是外部 CALL 的调用栈。
 
 为什么栈高也要进键？运行：
 
@@ -82,7 +82,7 @@ nix run . -- cfg --file examples/stack-heights.hex --no-relations --context-dept
 
 **工作表算法（worklist）**使用一个待处理队列。队列项是“入口摘要有新信息，需要执行”的状态编号；保存状态摘要的是状态表，二者不是同一张表。
 
-先看预算足够、没有模型边界时的传播流程；遇到未完成边界时如何停止，见第 7 节：
+先看预算足够、没有模型边界时的传播流程；遇到未完成边界时如何停止，见[第 7 节](#7-看清诊断与未完成前沿)：
 
 ```mermaid
 flowchart TD
@@ -102,7 +102,7 @@ flowchart TD
     K -->|无| L[达到固定点：Converged]
 ```
 
-跟着 diamond 的实际发现顺序走一遍。表中值用十进制，队列左侧先处理：
+跟着 [diamond](../examples/diamond.hex) 的实际发现顺序走一遍。表中值用十进制，队列左侧先处理：
 
 | 此轮执行 | 输入 → 输出 | 新传播的信息 | 本轮后的队列 |
 | --- | --- | --- | --- |
@@ -259,7 +259,7 @@ nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relati
 1. [`config.rs`](../crates/evm-abstract/src/analysis/config.rs)：原始 `Config` 中的数字先经过验证，成功后得到字段私有的 `ValidatedConfig`，并把容量转为 `NonZeroUsize`。配置与域在这里一起构造。
 2. [`engine.rs`](../crates/evm-abstract/src/analysis/engine.rs) 的 `run_world` 初始化入口节点，再看 `Engine::run` 怎样取队列项、检查预算和调用 `transfer::execute`。
 3. [`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 的 `execute` 及 JUMP/JUMPI 分支：弹出目标与条件，枚举合法后继；开启关系模式时，[`transfer/relations.rs`](../crates/evm-abstract/src/analysis/transfer/relations.rs) 为后继应用条件、查询矛盾并精化数值。
-4. 回到 `Engine::execution` 收集块转换的证据，再读 `Engine::successor`：按键查找节点，join 输入，决定是否入队并保存边。随后回到 `run` 看下一次调度。
+4. 回到 [`Engine::execution`](../crates/evm-abstract/src/analysis/engine.rs) 收集块转换的证据，再读 [`Engine::successor`](../crates/evm-abstract/src/analysis/engine.rs)：按键查找节点，join 输入，决定是否入队并保存边。随后回到 [`run`](../crates/evm-abstract/src/analysis/engine.rs) 看下一次调度。
 5. [`single.rs`](../crates/evm-abstract/src/analysis/single.rs)：把同一世界分析核心投影为本课看到的局部 S/B 视图。
 
 阅读时核对五条规则：不同栈高不合并；同一键的输入通过 join 与固定的区间 widening 策略扩大；扩大后需要重访；旧边不删除；任何未完成展开都保留前沿。相关样例由 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 与 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 核对。
@@ -273,7 +273,7 @@ nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relati
 | `domain` / `budget` | 前者规定抽象运算与 join 的精度；后者累计普通执行和摘要操作的工作量，缓存命中也要付出工作量 |
 | `cache` / `completed_calls` | 前者保存摘要候选与完整证书；后者按节点编号保存 caller join 前的子调用终结证据，避免从汇合结果反推调用效果 |
 
-先掌握普通传播，再沿 `try_summary` 阅读摘要分支：未命中时仍正常执行，`Cache::publish_closed` 用 `capture` 检查子图是否闭合；命中时 `Engine::replay` 导入证书，并用 `transfer::resume_summary` 在当前 caller 下重新生成返回转移。具体前提见[第 10 课](10-snapshots-summaries-creation.md)。
+先掌握普通传播，再沿 [`try_summary`](../crates/evm-abstract/src/analysis/engine.rs) 阅读摘要分支：未命中时仍正常执行，[`Cache::publish_closed`](../crates/evm-abstract/src/analysis/summary.rs) 用 [`capture`](../crates/evm-abstract/src/analysis/summary.rs) 检查子图是否闭合；命中时 [`Engine::replay`](../crates/evm-abstract/src/analysis/engine.rs) 导入证书，并用 [`transfer::resume_summary`](../crates/evm-abstract/src/analysis/transfer.rs) 在当前 caller 下重新生成返回转移。具体前提见[第 10 课](10-snapshots-summaries-creation.md)。
 
 私有可见性限制外部调用，不说明实现意图。读方法时仍需核对：它更新哪份数据、凭什么跳过执行，以及预算中断后保留什么未完成证据；源码注释对应这些职责和不变量。
 

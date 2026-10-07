@@ -1,6 +1,6 @@
 //! Explicit, bounded RPC acquisition for a fixed analysis snapshot.
 //!
-//! Every state request uses EIP-1898's exact block hash with
+//! Every state request uses [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898)'s exact block hash with
 //! `requireCanonical=true`. Unsupported hash selectors and missing state are
 //! errors; there is no retry using a block number, moving tag, or empty fact.
 //! Chain identity and the selected block are resolved once before acquisition.
