@@ -138,7 +138,7 @@ nix run . -- explain \
   --verbose
 ```
 
-完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=2`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见下文代理实验。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=3`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见下文代理实验。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 完整 SSA 继续逐帧列出 active/suspended、代码地址、storage owner、代码 hash、mode、caller、static、跳转历史和栈高，不会因为活动帧采用共用指令布局而省略暂停帧。`bytecode instructions` 与 `instruction effects` 共享当前 B 标题和不带 `0x` 的 pc 列，效果行不重复打印 B 标题；原始 `opcode`、`immediate`、`operands`、`results`、`fault` 正文和逐指令效果编号仍完整显示。教学视图便于读赋值式值流，完整视图便于核对字段和效果链，各自保留原有证据。
 
@@ -154,7 +154,7 @@ nix run . -- explain \
 
 完整报告中的返回字节使用稀疏表示：`length` 给出可能长度，`default` 给出未单独列出位置的抽象字节，偏移行列出显式字节事实。例如 `length={0x20} (32 bytes)` 表示长度确定为 32；`0x001f` 是第 31 字节的偏移，和长度不是同一个字段。连续且精确的字节可以写成 hex；仍有多种可能的字节保留值集合或位、范围等约束。`kind` 区分普通字节序列与按 32 字节扩展的 memory。没有偏移行不表示空数组：还要看长度和默认字节；未知也不能读成零。[第 14 课](14-memory-model.md)将这些输出对应到 ByteArray 的表示与读取规则。
 
-数值默认用[第 12 课的组合域](12-product-domains-facts.md)表示。文本里的 `{0x1}` 是候选集合的简写；无法列出完整候选但仍有数值约束时，`bits=` 后用 64 个十六进制位置展示固定位：数字表示该位置全部已知，`*` 表示四位全未知，`[01**]` 这样的四位二进制模式表示部分已知。模式按高位到低位排列，不省略任何 `*`。整个数值没有约束时显示 `⊤`；仅位组件没有约束时，`bits=` 后仍显示完整的 64 个 `*`，其他组件可能仍有约束。完整报告的表格保留全部字符；普通长字段会换行，每个完整 256 位模式及其紧邻的 `bits=` 标签保持在同一行。JSON 还携带位、区间、同余和来源；`known_bits.zero` 与 `known_bits.one` 仍是原来的两个掩码，文本格式变化不改变这些字段。查询确定候选时可取 `.Constants`，但没有这个键不等于数值完全未知。文本保留数值概要，JSON 用于检查各组件。
+数值默认用[第 12 课的组合域](12-product-domains-facts.md)表示。文本里的 `{0x1}` 是候选集合的简写；无法列出完整候选但仍有数值约束时，`bits=` 后用 64 个十六进制位置展示固定位：数字表示该位置全部已知，`*` 表示四位全未知，`[01**]` 这样的四位二进制模式表示部分已知。模式按高位到低位排列，不省略任何 `*`。整个数值没有约束时显示 `⊤`；仅位组件没有约束时，`bits=` 后仍显示完整的 64 个 `*`，其他组件可能仍有约束。完整报告的表格保留全部字符；普通长字段会换行，每个完整 256 位模式及其紧邻的 `bits=` 标签保持在同一行。JSON 还携带位、区间、同余和来源；`known_bits.zero` 与 `known_bits.one` 仍是原来的两个掩码，文本格式变化不改变这些字段。查询确定候选时可取 `.Constants`，但没有这个键不等于数值完全未知。文本保留数值概要，JSON 用于检查各组件。固定输入身份在值的 `.identity.input.name`，不是来源字段；纯运算的持久表达式另在 `.expression`。世界状态入口/出口的关系分别在 `.states[].entry.relations` 和 `.states[].exit.relations`，详见[第 15 课](15-symbolic-relations.md)。
 
 完整报告的摘要统计中 `published=1`、`hits=0` 可以同时成立：分析器保存了一份完整子调用结果，但没有后来的相同调用可复用。在下面的 `returndata-copy.json` 中，A 只 CALL B 一次，因此没有第二次命中的机会。摘要记录中的 `source` 指向首次分析的状态，`reused_at` 指向后来的复用位置；这些都是分析图编号，不是账户或链上交易编号。
 

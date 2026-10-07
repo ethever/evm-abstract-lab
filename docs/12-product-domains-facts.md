@@ -23,17 +23,17 @@ JUMPI(condition, 0x000c)
 
 最终候选只有 8 个，但中间步骤已有 16 个。默认常量容量为 8：如果中途丢掉所有信息，就无法靠下一条 OR 重新知道最低位为一。KnownBits 组件逐位保存必须为零、必须为一或尚未确定的性质，避免这次信息丢失；内部与 JSON 用两个位掩码编码，文本直接显示[十六进制位模式](#怎样读十六进制位模式)。
 
-分别运行默认组合域和常量集合对照：
+这次只比较数值组件，先用 `--no-relations` 关闭符号表达式传播和路径约束。`--domain` 选择数值表示，与关系开关是两项独立策略：
 
 ```bash
 nix run . -- cfg \
   --file examples/known-bits-branch.hex \
-  --context-depth 0 --format json > /tmp/facts-product.json
+  --no-relations --context-depth 0 --format json > /tmp/facts-product.json
 
 nix run . -- cfg \
   --file examples/known-bits-branch.hex \
   --domain constants-only \
-  --context-depth 0 --format json > /tmp/facts-constants.json
+  --no-relations --context-depth 0 --format json > /tmp/facts-constants.json
 
 jq '.status, [.edges[] | .kind]' /tmp/facts-product.json
 jq '.status, [.edges[] | .kind]' /tmp/facts-constants.json
@@ -74,17 +74,30 @@ nix run . -- cfg \
 nix run . -- cfg --hex 5f355f351800 --format json > /tmp/input-identity.json
 jq '.states[0].exit_stack[0].Constants' /tmp/input-identity.json
 
-# 先做加法，再复制这个运算结果。product 在当前块内知道两份值相同。
-nix run . -- cfg --hex 5f35600101801800 --format json > /tmp/copy-product.json
-nix run . -- cfg --hex 5f35600101801800 --domain constants-only \
+# 先做加法，再复制这个运算结果。复制身份属于共用AbstractValue，两profile均生效。
+nix run . -- cfg --hex 5f35600101801800 --no-relations --format json > /tmp/copy-product.json
+nix run . -- cfg --hex 5f35600101801800 --domain constants-only --no-relations \
   --format json > /tmp/copy-constants.json
 jq '.states[0].exit_stack[0]' /tmp/copy-product.json
 jq '.states[0].exit_stack[0]' /tmp/copy-constants.json
 ```
 
-第一条查询输出 `["0x0"]`。最后两条分别显示单点零与数值 Top：加法产生的新值没有继承原 calldata word 的稳定输入身份，product 通过本块的临时复制身份判断两份运算结果相同；constants-only 不保留这项临时精度。
+第一条查询输出 `["0x0"]`。关闭关系传播后的最后两条也都显示单点零：加法产生的新值没有继承原 calldata word 的稳定输入身份，但DUP 复制同一个当前定义。临时复制身份属于共用的 AbstractValue，不由数值 profile或关系开关决定。因此复制身份本身不能作为 product 与 constants-only的数值精度对照；第 1 节使用 KnownBits性质作对照。
 
-临时复制身份在进入下一块、汇合、调用或摘要边界失效。稳定的不可变输入符号则可跨块保留，默认 caller/origin、重复 CALLVALUE、相同偏移的 root calldata word 都属于这一类；摘要还必须匹配完整环境。不同环境里的同名符号不证明相等，子帧 memory 派生的 calldata 也不会冒充 root 输入。两种身份都不意味着“任意两次读取同一 storage slot 都相等”；SSA 编号不会反馈成执行器的关系证明。
+临时复制身份在进入下一块、汇合、调用或摘要边界失效。稳定的不可变输入符号则可跨块保留，默认 caller/origin、重复 CALLVALUE、相同偏移的 root calldata word 都属于这一类；摘要还必须匹配完整环境。不同环境里的同名符号不证明相等，子帧 memory 派生的 calldata 也不会冒充 root 输入。两种身份都不意味着“任意两次读取同一 storage slot 都相等”；读取之间的写入会改变状态。SSA 编号也不会反馈成执行器的关系证明。独立符号表达式可以表示派生值并跨块保留；每个机器状态的关系环境另外保存路径约束。
+
+### 默认关系模式怎样补上派生值
+
+在相同 constants-only 数值 profile 下，把关系模式留在默认开启状态：
+
+```bash
+nix run . -- cfg --hex 5f356001016008565b5f356001011800 --domain constants-only --format json > /tmp/copy-relational.json
+jq '.states[-1].exit_stack[0].Constants, .config.relations' /tmp/copy-relational.json
+```
+
+这里再次得到单点零。加法结果不必继承 calldata 的输入身份：两次计算的表达式都是 `CALLDATALOAD(0)+1`，中间的 JUMP 已使临时复制身份失效；持久表达式仍相同，XOR 规范化为零，并把这个常量反馈给数值层。这是符号表达式提供的新证据，与块内复制身份及来源标签各自独立。这个实验没有依赖 DUP，也没有把 profile 当作元数据开关。
+
+关系模式还能保留 JUMPI 的已选分支假设。例如同一个 CALLVALUE 先被约束为 1，之后再测试是否为 2，后一个 true 分支不可行。具体命令和求解边界见[第 15 课](15-symbolic-relations.md)。
 
 ## 3. 几个组件约束同一个 word
 
@@ -96,15 +109,25 @@ EVM 的一个 word 是 256 位，取值空间为 `0 .. 2^256-1`。组合域中�
 | KnownBits | 必须为零和必须为一的位 | x 的最低位是否为一？ |
 | Interval | 无符号与有符号闭区间 | x 是否落在无符号 1 到 20？ |
 | Congruence | 同余，即除以某个正整数后的固定余数 | x 是否为 8 的倍数？ |
-| Provenance | 可能来源、代码地址使用角色、稳定输入符号及临时复制身份 | x 来自哪类读取，是否是同一个输入或当前定义的副本？ |
+| Nonzero 保证 | 已证明不是零 | 条件是否必须非零？ |
 
-来源和使用角色不改变数值候选；同一作用域的稳定输入符号或可信复制身份可建立两个操作数相等的事实。组件还可保留非零保证，供零值和分支查询使用。
+这些是 `NumericValue` 的真实字段，数值查询、候选枚举和格式化只读取这一层。机器中的 `AbstractValue` 则组合独立的数据：
+
+| 层次 | 负责什么 | 不应混入什么 |
+| --- | --- | --- |
+| `numeric`：`NumericValue` | 有限集合、位、范围、同余、非零保证 | 来源、变量身份、表达式和路径约束 |
+| `provenance`：`Provenance` | 可能来源与代码地址使用角色 | 输入身份或任意数值相等证明 |
+| `identity`：`ValueIdentity` | 同作用域输入与块内临时定义的可信身份 | 根据相同来源或相同数值摘要猜测身份 |
+| `expression`：`ExprId` | 不可变输入、运行时新值及其 EVM 纯运算表达式 | 把每次经过同一个 pc 的新值当成同一个变量 |
+| 机器状态的 `relations` | 当前路径保留的跨值假设及数值保证 | 全局共享不同路径的假设 |
+
+`Value` 只是 `AbstractValue` 的过渡名称；内部没有通过 Deref 隐藏这几层。更改来源标签不改写身份，SMT 证明后的数值收窄也保留原变量与表达式。
 
 来源记录的是当前观察和纯运算输入的类别摘要。MLOAD、SLOAD 等读取会重新标记为 Memory、Storage；纯算术合并输入类别并加入 Arithmetic。它不保存完整读取位置、祖先链或污点历史。
 
 [`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)只管理常量组件：Top 不限制候选，非空集合限制候选必须属于其中，空交返回错误。这个组件单独格式化时，Top 显示为 `⊤`。`Value::finite_constants()` 查看这个组件；`Value::contains()` 则检查它与位、区间、同余和非零保证的交集。常量组件为 Top 不等于整个值没有数值限制。
 
-有限集合无法枚举时，其他组件仍可以排除候选。JSON 没有 `Constants` 键，只说明这个组件不能给出完整列表。只有数值约束、来源、使用角色和稳定符号都未知时，整个值才序列化为 `"Top"`。数值上为 Top 的输入仍可带 `provenance.symbol`；因此不能仅根据 JSON 是字符串还是对象判断数值精度。反过来，一个候选没有被约束排除，也不代表存在某条执行能取到它。
+有限集合无法枚举时，其他组件仍可以排除候选。JSON 没有 `Constants` 键，只说明这个组件不能给出完整列表。只有数值约束、来源、使用角色、固定身份和表达式都未知，且没有符号预算缺口时，整个值才序列化为 `"Top"`。数值上为 Top 的输入仍可带 `identity.input.name` 和 `expression`；`provenance` 只记录来源与角色；因此不能仅根据 JSON 是字符串还是对象判断数值精度。反过来，一个候选没有被约束排除，也不代表存在某条执行能取到它。
 
 ### 怎样读十六进制位模式
 
@@ -181,7 +204,7 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 | 二元事实 | x=y、x≠y、x<y | 来源相同不能建立 x=y |
 | 运算关系 | result 是两个操作数 XOR 的结果 | 必须遵守 EVM word 语义和弹栈顺序 |
 
-运算关系让第 2 节的复制身份证明派上用场：可信 x=y 加上 XOR 关系，才得到 result=0。局部事实中的值编号只标记本次交换的值，不是 SSA 编号或永久变量。
+运算关系让第 2 节的复制身份证明派上用场：可信 x=y 加上 XOR 关系，才得到 result=0。局部事实中的值编号只标记本次交换的值，不是 SSA 编号或永久变量。它与跨基本块保留的 `ExprId` / `RelationState` 是两组接口：前者规约一次数值操作，后者记录状态路径中的表达式、等式和取值假设，并按需要查询进程内位向量求解器。
 
 来源、地址范围和代码用途也必须区分。`IsAddress` 保证高 96 位为零；`IsCodeAddress` 只记录作为代码地址使用的角色。它们都不能证明该账户存在，更不能提供未知账户的代码。
 
@@ -193,11 +216,11 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 
 工作表逐组件做 join：常量取并集，位只留共有保证，区间取包络，同余保留共有性质，可能来源取并集。路径特有的保证会丢失。暂时无法枚举所有候选时，也不能截取前几个数来冒充完整集合。
 
-当前实现把**工作表 join**与**临时 facts 规约**分开。join 不额外运行有界交换；后续运算可以规约已有约束。原因是几轮传播未必得到同一个闭包，把中途结果直接作为存储 join 的定义，会让路径合并次序影响表示。这里不声称实现了理论上最精确的 reduced product。
+当前实现把**工作表 join**与**临时 facts 规约**分开。join 不额外运行有界交换；后续运算可以规约已有约束。原因是几轮传播未必得到同一个闭包，把中途结果直接作为存储 join 的定义，会让路径合并次序影响表示。这里不声称实现了理论上最精确的 reduced product。关系环境的 join 只保留两条路径共同具有的保证：`x=1` 与 `x=2` 两条路径不会被错误合成 `x=1 AND x=2`。当前实现会丢失这种析取的部分精度，不是完整的路径分组。
 
 循环还需要控制不断扩大的范围。例如每次回到同一个状态时，无符号上界继续增加，逐个值迭代可能耗费大量工作。引擎在同一状态第二次严格入口更新起应用 **widening（扩大）**：继续上升的上界扩大到最大值，继续下降的下界扩大到最小值。判断依据是实际工作表更新，也覆盖执行中才发现的回边。
 
-widening 有意放弃部分范围精度，使循环不再逐步挪动同一端点。临时交换得到的较窄范围不会取代存储组件作为 widening 的锚点。整个分析仍受状态、transfer 和工作额度约束；`Converged` 表示完成当前模型中的固定点，不表示所有路径关系都精确。
+widening 有意放弃部分范围精度，使循环不再逐步挪动同一端点。不断改变的表达式也可被遗忘，关系环境只保留共同保证，避免循环无限积累新的项或假设。临时交换得到的较窄范围不会取代存储组件作为 widening 的锚点。整个分析仍受状态、transfer 和工作额度约束；`Converged` 表示完成当前模型中的固定点，不表示所有路径关系都精确。
 
 ## 6. 交换停止与执行未完成是两种边界
 
@@ -210,8 +233,9 @@ widening 有意放弃部分范围精度，使循环不再逐步挪动同一端�
 | FactLimit | 事实容量不足，保留此前完整轮的安全结果 |
 | Empty | 数值约束已证明矛盾 |
 | OriginConflict | 来源声明不相容，数值是否不可达仍未知 |
+| SymbolicLimit | 数值结果仍安全，但运算表达式不能在节点/深度预算内保留 |
 
-Stable 只针对当前规则；它不说明已经表达全部 EVM 关系。RoundLimit / FactLimit 会降低精度，不能当成数值空集或 EVM 执行失败。纯栈运算在这些边界记录 `FactExchangeLimited` 诊断；嵌套字节运算的完整局部报告由库 detailed API 查询，不逐项汇总为指令诊断。
+Stable 只针对当前规则；它不说明已经表达全部 EVM 关系。RoundLimit / FactLimit 会降低精度，不能当成数值空集或 EVM 执行失败。RoundLimit / FactLimit 等局部数值交换边界记录 `FactExchangeLimited` 诊断。符号表达式预算缺口另外通过 value/字节数组传播，指令边界保留 `Relations(ExpressionLimit)` 前沿；不能因内部字节运算没有返回 detailed 对象就静默丢失预算证据。
 
 另一条边界是整次分析的累计工作额度。初始化、运算、交换、字节与状态复制、子调用、摘要认证和导入共享根账本。若账本耗尽，留下工作前沿，整个结果为 `Incomplete`。摘要命中不会重新得到预算。显式 RPC 补查 callee 或 SLOAD 的有限槽后会从入口重跑，各轮仍共用 work、transfer 和状态分配额度；被后续轮次替换的图也已经消耗工作。这个工作量是逻辑分析费用，不是 EVM gas，也不是 CPU 时间。
 
@@ -220,7 +244,7 @@ Stable 只针对当前规则；它不说明已经表达全部 EVM 关系。Round
 | 已能表达 | 仍不能据此推出 |
 | --- | --- |
 | 数值偏移的范围、固定位和同余 | 已完整解决 memory/storage 的未知别名 |
-| 当前基本块内的 DUP 身份 | 跨块或跨调用保存任意变量之间的相等关系 |
+| 固定输入、派生表达式和已保留的路径关系 | 无预算上限的所有表达式、完整析取、未知别名或全部路径等价性 |
 | 可能来源类别 | 已保留完整污点祖先或两次读取必定相同 |
 | 每条抽象摘要出口的字节和 Store | 已保留每条具体路径的全部数值相关性 |
 | 固定点完成 | 未知调用、缺失代码或不支持语义已被补齐 |
@@ -229,7 +253,7 @@ Stable 只针对当前规则；它不说明已经表达全部 EVM 关系。Round
 
 ## 7. 选择策略并读懂 JSON
 
-默认策略为 product，常量容量 8、交换轮数 4、事实容量 256。以下命令把设置显式写出，便于复现实验：
+默认数值策略为 product，常量容量 8、交换轮数 4、事实容量 256；符号表达式和持久关系默认开启。以下命令把设置显式写出，便于复现实验：
 
 ```bash
 nix run . -- analyze \
@@ -241,11 +265,11 @@ nix run . -- analyze \
 jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
-结果的 `schema_version` 为 2；其中 `domain_spec.schema_version` 仍为 1，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `provenance_policy` 是 `environment-symbols-and-block-local-copy-v2`。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
+结果的 `schema_version` 为 3；其中 `domain_spec.schema_version` 为 2，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `cost_version` 为 2，`provenance_policy` 是 `scoped-expressions-and-value-identities-v3`。`domain_spec.relations` 冻结关系开关、表达式/约束预算和 SMT 的 `rlimit`，同样参与摘要资格。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
 
 `--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 constants-only 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；默认容量 8 则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
 
-`cfg` 和 `ssa` 同样接受 `--domain`、`--reduction-rounds` 与 `--max-facts`。把 product 换成 constants-only 可对照有限集合精度；两项交换上限必须为正。提高上限可能增加精度与工作量，不能自动消除模型前沿。不同策略的 work 数字应结合费用策略解读。
+`cfg` 和 `ssa` 同样接受 `--domain`、`--reduction-rounds` 与 `--max-facts`。把 product 换成 constants-only 只改变数值组件；用 `--no-relations` 可另外关闭表达式传播和路径约束，保留输入身份。隔离有限集合精度时应同时关闭关系模式；两项交换上限必须为正。提高上限可能增加精度与工作量，不能自动消除模型前沿。不同策略的 work 数字应结合费用策略解读。
 
 最后检查 JSON 的一个实际值。JUMPI 会弹出条件，分支入口不再保留它；下面只运行第 1 节的算术部分，在 STOP 前留下结果：
 
@@ -257,10 +281,10 @@ nix run . -- cfg \
 jq '.states[0].exit_stack[0]' /tmp/facts-value.json
 ```
 
-有限值保留 `Constants` 键，并同时输出 `known_bits`、`interval`、`congruence`、`provenance` 与 `nonzero`。这里的候选是 1、3……15。文本与 DOT 只展示数值概要；需要确认某项保证时读完整 JSON，避免把没有常量列表的组合值误读成完全未知。
+有限值保留 `Constants` 键；数值 JSON 仍平铺 `known_bits`、`interval`、`congruence` 与 `nonzero`，不是新增一层 `numeric` 包装。`provenance` 只存来源与角色；固定身份另在 `identity.input.name`，保留的表达式在 `expression`。这里的候选是 1、3……15。文本与 DOT 只展示数值概要；需要确认某项保证时读完整 JSON，避免把没有常量列表的组合值误读成完全未知。
 
 输入 JSON 与 RPC 初始账户的读取发生在执行账本建立之前。RPC 的后续账户与有限槽采集发生在分析轮次之间，账户数和 HTTP 请求数另有累计上限；成功后扩充初始事实，从入口重建分析，沿用根执行账本。JSON 的 `rpc_acquisition.states_created` 记录全部轮次的状态分配数，因此可能大于最终 `states` 长度。`fetched_storage` 与 `failed_storage` 记录动态槽采集的地址和槽键，显式 `--slot` 的初始采集不计入前者。数值域的 `--max-facts` 只限制局部事实交换，不限制这些 RPC 观察；读[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)可对照两组额度。
 
-当前没有对 JSON/RPC 全部输入设置统一字节配额，也没有全过程峰值内存配额。更完整的关系环境、路径分组与输入准入仍是[后续设计边界](https://github.com/ethever/evm-abstract-lab/issues/21)。源码入口是 [`domain.rs`](../crates/evm-abstract/src/domain.rs)，真实 CFG、字节和状态精度的回归样例在 [`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)。
+当前没有对 JSON/RPC 全部输入设置统一字节配额，也没有全过程峰值内存配额。更完整的析取/路径分组、别名关系与输入准入仍是[后续设计边界](https://github.com/ethever/evm-abstract-lab/issues/21)。源码入口是 [`domain.rs`](../crates/evm-abstract/src/domain.rs)、[`numeric.rs`](../crates/evm-abstract/src/domain/numeric.rs)、[`value.rs`](../crates/evm-abstract/src/domain/value.rs)、[`identity.rs`](../crates/evm-abstract/src/domain/identity.rs)、[`relational.rs`](../crates/evm-abstract/src/domain/relational.rs)，真实 CFG、字节和状态精度的回归样例在 [`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)。
 
 默认输入、跨帧规则和全部环境参数见[第 13 课](13-evm-environment.md)。

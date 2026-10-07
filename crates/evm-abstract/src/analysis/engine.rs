@@ -91,7 +91,7 @@ pub(super) fn run_metered(
         world,
         entry,
         config,
-        schema_version: 2,
+        schema_version: 3,
         domain_spec: domain.spec(),
         states: Vec::new(),
         edges: Vec::new(),
@@ -554,8 +554,12 @@ impl Engine<'_> {
     /// 返回 `false` 表示导入未完成：已加入的节点/边不会整体撤销，而是通过前沿
     /// 标明结果不完整，禁止把这个部分图当作完整分析或用于构建 SSA。
     fn replay(&mut self, root: usize, certificate: &Certificate) -> bool {
-        let Some(replay) = Replay::new(certificate, &self.result.states[root].entry, self.budget)
-        else {
+        let Some(replay) = Replay::new(
+            certificate,
+            &self.result.states[root].entry,
+            self.budget,
+            self.result.config.analysis.relations.expressions(),
+        ) else {
             self.frontier(
                 Some(root),
                 Some(self.result.states[root].key.clone()),
@@ -644,14 +648,14 @@ impl Engine<'_> {
         // 证书终结保留的是 callee 原始结果。返回成功位、returndata、输出复制、
         // 回滚与返回位置必须通过当前 caller 的 continuation 重新应用。
         for (index, terminal) in certificate.terminals.iter().enumerate() {
-            let Some(payload) = replay.terminal_payload(index, self.budget) else {
+            let Some((payload, raw_data)) = replay.terminal_payload(index, self.budget) else {
                 self.frontier(Some(root), None, FrontierReason::SummaryWork);
                 return false;
             };
             let execution = transfer::resume_summary(
                 payload,
                 terminal.raw_kind,
-                terminal.raw_data.clone(),
+                raw_data,
                 &self.result.config,
                 self.domain,
                 self.budget,

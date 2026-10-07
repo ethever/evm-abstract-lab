@@ -51,7 +51,12 @@
             version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
             cargoExtraArgs = "--workspace --locked";
             # AWS-LC selects its CMake backend for supported fallback/ASM configurations.
-            nativeBuildInputs = [ pkgs.cmake ];
+            nativeBuildInputs = [
+              pkgs.cmake
+              pkgs.pkg-config
+            ];
+            # SMT is linked into the analyzer; execution never launches a solver process.
+            buildInputs = [ pkgs.z3 ];
             # The RPC client initializes platform TLS roots even for HTTP fixtures.
             SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
             meta = {
@@ -263,7 +268,7 @@
                   if grep -q 'Verified cross-contract SSA:' explain-partial.txt; then exit 1; fi
                   # Packaged CLIs expose symbolic inputs and preserve the caller/origin alias.
                   evm-abstract cfg --hex 33321400 --format json > symbolic-environment.json
-                  jq -e '.schema_version == 2 and .environment.to == {"Symbolic":"To"} and .environment.caller == {"Symbolic":"Caller"} and .environment.origin == null and .environment.value == "Top" and .environment.calldata.length == "Top" and .states[0].exit_stack[0].Constants == ["0x1"]' symbolic-environment.json > /dev/null
+                  jq -e '.schema_version == 3 and .domain_spec.schema_version == 2 and .config.relations.enabled and (.config.relations | has("timeout_ms") | not) and .environment.to == {"Symbolic":"To"} and .environment.caller == {"Symbolic":"Caller"} and .environment.origin == null and .environment.value == "Top" and .environment.calldata.length == "Top" and .states[0].exit_stack[0].Constants == ["0x1"]' symbolic-environment.json > /dev/null
                   evm-abstract cfg --hex 3033363446484a00 --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --evm.chain-id 56 --evm.basefee 7 --evm.blob-basefee 8 --format json > concrete-environment.json
                   jq -e '[.states[0].exit_stack[].Constants[0]] == ["0x101","0x1000","0x0","0x0","0x38","0x7","0x8"]' concrete-environment.json > /dev/null
                   evm-abstract explain --file ${./examples/straight-line.hex} > explain-program.txt
@@ -331,6 +336,8 @@
               ++ (with pkgs; [
                 graphviz
                 cargo-nextest
+                pkg-config
+                z3
                 nixfmt
                 taplo
                 lychee

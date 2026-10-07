@@ -49,6 +49,11 @@ fn analyze(code: &str, profile: Profile, capacity: usize) -> Analysis {
             domain_profile: profile,
             max_constants: capacity,
             max_facts: 1024,
+            // This comparison isolates numeric components and local copy rules.
+            relations: evm_abstract::domain::relational::RelationLimits {
+                enabled: false,
+                ..Default::default()
+            },
             ..Config::default()
         },
     )
@@ -92,7 +97,10 @@ fn finite_capacity_loss_preserves_independent_numeric_components() {
         assert!(!value.contains(U256::from(outside)));
     }
     let baseline = set(Domain::new(NonZeroUsize::new(1).unwrap()), &[2, 5, 8]);
-    assert_eq!(baseline, Value::top());
+    assert_eq!(
+        baseline.numeric(),
+        &evm_abstract::domain::NumericValue::top()
+    );
     assert_eq!(baseline.to_string(), "⊤");
     assert!(baseline.contains(U256::MAX));
 }
@@ -281,11 +289,14 @@ fn precision_limits_keep_sound_partial_results_and_report_the_boundary() {
 }
 
 #[test]
-fn default_engine_provenance_proves_duplicate_identity() {
+fn shared_value_identity_proves_copies_in_each_numeric_profile() {
     // The arithmetic result has a temporary definition; immutable calldata
     // symbols themselves now retain equality in both numeric profiles.
-    for code in ["5f35600101801800", "5f3560010180901800"] {
-        let graph = analyze(code, Profile::Product, 1);
+    for (code, profile) in ["5f35600101801800", "5f3560010180901800"]
+        .into_iter()
+        .flat_map(|code| [Profile::Product, Profile::ConstantsOnly].map(|profile| (code, profile)))
+    {
+        let graph = analyze(code, profile, 1);
         assert_eq!(graph.status(), Status::Converged);
         assert_eq!(
             graph.states()[0].exit_stack[0].singleton(),
@@ -300,8 +311,6 @@ fn default_engine_provenance_proves_duplicate_identity() {
         assert!(origins.contains(&Origin::Arithmetic));
         ssa::build(&graph).unwrap().verify(&graph).unwrap();
     }
-    let baseline = analyze("5f35600101801800", Profile::ConstantsOnly, 1);
-    assert!(baseline.states()[0].exit_stack[0].contains(U256::from(1)));
 }
 
 #[test]

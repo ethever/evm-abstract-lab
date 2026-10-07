@@ -1,5 +1,5 @@
 //! Mask 与普通区间的精确存在性查询。四个 tight 状态避免指数枚举未知位。
-use super::{Value, known_bits::KnownBits};
+use super::{NumericValue, known_bits::KnownBits};
 use alloy_primitives::U256;
 use std::collections::BTreeSet;
 
@@ -76,7 +76,7 @@ pub(super) fn mask_bounds(lo: U256, hi: U256, bits: KnownBits) -> Option<(U256, 
     Some((extreme(lo, hi, bits, false)?, extreme(lo, hi, bits, true)?))
 }
 
-fn bit_pattern_count(value: &Value, capacity: usize) -> Option<usize> {
+fn bit_pattern_count(value: &NumericValue, capacity: usize) -> Option<usize> {
     let count = (!(value.bits.zero() | value.bits.one())).count_ones();
     if count >= usize::BITS as usize {
         return None;
@@ -90,7 +90,7 @@ struct IntervalCandidates {
     pieces: Vec<(U256, U256, U256)>,
 }
 
-fn interval_candidates(value: &Value, capacity: usize) -> Option<IntervalCandidates> {
+fn interval_candidates(value: &NumericValue, capacity: usize) -> Option<IntervalCandidates> {
     let (mut count, mut pieces) = (0usize, Vec::new());
     for (lo, hi) in value.interval.segments() {
         let Some((first, last)) = value.congruence.first_last(lo, hi) else {
@@ -115,7 +115,7 @@ fn interval_candidates(value: &Value, capacity: usize) -> Option<IntervalCandida
 
 /// 候选查询真正可能扫描的数量；只计算上界，不枚举或按容量分配。
 /// 与完整候选查询共用准入条件，不能用容量截断冒充完整覆盖。
-pub(super) fn candidate_visits(value: &Value, capacity: usize) -> usize {
+pub(super) fn candidate_visits(value: &NumericValue, capacity: usize) -> usize {
     if let Some(set) = value.constants() {
         return if set.len() <= capacity { set.len() } else { 0 };
     }
@@ -127,7 +127,7 @@ pub(super) fn candidate_visits(value: &Value, capacity: usize) -> usize {
 }
 
 /// 只返回完整候选覆盖。容量不足返回 None，绝不取前 N 项冒充全体。
-pub(super) fn candidates(value: &Value, capacity: usize) -> Option<BTreeSet<U256>> {
+pub(super) fn candidates(value: &NumericValue, capacity: usize) -> Option<BTreeSet<U256>> {
     if let Some(set) = value.constants() {
         if set.len() > capacity {
             return None;

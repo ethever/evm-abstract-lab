@@ -50,6 +50,10 @@ pub struct StateKey {
 /// 一个可达的抽象基本块实例。
 #[derive(Clone, Debug, Serialize)]
 pub struct State {
+    /// Joint guarantees associated with this state's entry values.
+    pub entry_relations: crate::domain::relational::RelationState,
+    /// Joint guarantees after the recorded transfer, when it has executed.
+    pub exit_relations: Option<crate::domain::relational::RelationState>,
     /// 稳定编号，等于 `Analysis::states()` 中的索引。
     pub id: usize,
     /// 状态的结构身份。
@@ -136,6 +140,8 @@ pub enum Limit {
 /// 无法继续展开的明确前沿，保留其来源和预期状态键。
 #[derive(Clone, Debug, Serialize)]
 pub struct Frontier {
+    /// Full native reason, including symbolic and SMT resource limits.
+    pub reason: FrontierReason,
     /// 已知来源状态；最初入口没有来源。
     pub from: Option<usize>,
     /// 尚未完全分析的目标状态。

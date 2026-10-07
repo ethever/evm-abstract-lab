@@ -62,12 +62,15 @@ pub fn cfg(analysis: &Analysis) -> String {
     );
     writeln!(
         output,
-        "domain={:?} | schema=1 | reduction rounds={} | fact atoms={}",
+        "domain={:?} | domain schema=2 | reduction rounds={} | fact atoms={}",
         analysis.config().domain_profile,
         analysis.config().reduction_rounds,
         analysis.config().max_facts
     )
     .unwrap();
+    let relations = analysis.config().relations;
+    writeln!(output, "relations={} | SMT=in-process Z3 | rlimit={} | expression nodes={} | depth={} | constraints={}",
+        relations.enabled, relations.rlimit, relations.max_nodes, relations.max_depth, relations.max_constraints).unwrap();
     world::environment::write(&mut output, analysis.environment(), None, false, |input| {
         input.to_string()
     });
@@ -77,6 +80,13 @@ pub fn cfg(analysis: &Analysis) -> String {
             output,
             "S{} | B{} @ 0x{:04x} | stack height={} | context={:?}",
             state.id, block.id, block.start_pc, state.key.stack_height, state.key.context
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "  relations in={} out={}",
+            state.entry_relations.len(),
+            state.exit_relations.as_ref().map_or(0, |state| state.len())
         )
         .unwrap();
         writeln!(
@@ -101,8 +111,8 @@ pub fn cfg(analysis: &Analysis) -> String {
     for frontier in analysis.frontiers() {
         writeln!(
             output,
-            "frontier {:?}: from={:?} target={:?}",
-            frontier.limit, frontier.from, frontier.target
+            "frontier {:?}: from={:?} target={:?} reason={:?}",
+            frontier.limit, frontier.from, frontier.target, frontier.reason
         )
         .unwrap();
     }

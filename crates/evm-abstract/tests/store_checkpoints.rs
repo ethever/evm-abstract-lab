@@ -21,6 +21,31 @@ fn fixture() -> (Store, Address, Address) {
 }
 
 #[test]
+fn unchanged_store_join_preserves_exact_summary_preconditions() {
+    let (store, _, _) = fixture();
+    let joined = store.join(&store, Domain::default());
+    assert_eq!(
+        joined, store,
+        "joining unchanged paths must not invent lifecycle observations"
+    );
+    assert_eq!(joined.code_identity(), store.code_identity());
+}
+
+#[test]
+fn lifecycle_join_retains_uncertainty_between_created_and_unchanged_paths() {
+    let domain = Domain::default();
+    let (original, caller, created) = fixture();
+    let mut changed = original.clone();
+    changed.begin_creation(created);
+    changed.selfdestruct(created, caller, domain);
+    let joined = original.join(&changed, domain);
+    assert_eq!(joined.created_in_transaction(created), None);
+    assert_eq!(joined.pending_destruction(created), None);
+    assert_eq!(joined.created_in_transaction(caller), Some(false));
+    assert_eq!(joined.pending_destruction(caller), Some(false));
+}
+
+#[test]
 fn outer_rollback_restores_successful_deeper_effects_and_all_state_planes() {
     let domain = Domain::default();
     let (mut store, caller, created) = fixture();

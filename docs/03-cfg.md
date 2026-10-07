@@ -2,14 +2,14 @@
 
 上一课解释了一个块内的值如何汇合。这一课跟踪这些摘要怎样流到其他块、怎样重访循环，以及分析没有完成时留下什么证据。
 
-这里使用单字节码的 `cfg` 视图，先学习局部控制流。diamond 和 loop 用 `constants-only` 延续上一课的手算，再用默认组合域观察数值精度怎样改变分支。它们与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
+这里使用单字节码的 `cfg` 视图，先学习局部控制流。diamond 和 loop 用 `constants-only --no-relations` 延续上一课的纯数值手算，再用默认组合域观察数值精度怎样改变分支。它们与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
 
 ## 1. 先看一张能手算的图
 
 运行上一课的菱形分支：
 
 ```bash
-nix run . -- cfg --domain constants-only --file examples/diamond.hex --context-depth 0
+nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relations --context-depth 0
 ```
 
 按基本块画出的流程是：
@@ -41,6 +41,7 @@ flowchart TD
 
 ```text
 S3 | B3 @ 0x000e | stack height=1 | context=[]
+  relations in=0 out=0
   stack in  [{0x1, 0x2}]
   stack out [{0xb, 0xc}]
 ```
@@ -51,6 +52,7 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 | `B3 @ 0x000e` | 对应基本块及其起始字节偏移 |
 | `stack height=1` | 进入该块时有 1 个栈槽位 |
 | `context=[]` | 本例显式设置 k=0，不区分跳转历史 |
+| `relations in/out` | 入口/最近一次出口保存的关系数；本课纯数值实验为零 |
 | `stack in` | 已汇合的入口栈摘要 |
 | `stack out` | 最近一次块执行留下的栈摘要；异常或预算中断时可能只执行了块内前缀 |
 
@@ -69,7 +71,7 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 为什么栈高也要进键？运行：
 
 ```bash
-nix run . -- cfg --file examples/stack-heights.hex --context-depth 0
+nix run . -- cfg --file examples/stack-heights.hex --no-relations --context-depth 0
 ```
 
 在 pc=`0x000c`，你会看到两个状态：`S3 | B3 | stack height=1` 的输入是 `[{0x7}]`，`S4 | B3 | stack height=0` 的输入是 `[]`。空栈与一槽栈不能逐槽合并，否则会丢掉一种栈形状。这个例子直观说明：一个代码块可以有多个分析节点。
@@ -119,7 +121,7 @@ join 只扩大入口摘要，已有边只增加。默认组合域还会在同一
 **固定点（fixed point）**是再次执行和传播也不会新增摘要或边的状态。分析器需要稳定摘要，而不是把循环展开固定次数后假定结束。
 
 ```bash
-nix run . -- cfg --domain constants-only --file examples/loop.hex --context-depth 0
+nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations --context-depth 0
 ```
 
 这个程序先设 `i=0`，然后重复 `i=i+1`，在 `i<10` 时跳回 pc=`0x02`。具体执行的 i 依次为 0、1、2……，最后到 10 时退出。
@@ -138,8 +140,10 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --context-dept
 
 ```text
 status=Converged fork=osaka states=3 edges=3 transfers=11 context_depth=0
-domain=ConstantsOnly | schema=1 | reduction rounds=4 | fact atoms=256
+domain=ConstantsOnly | domain schema=2 | reduction rounds=4 | fact atoms=256
+relations=false | SMT=in-process Z3 | rlimit=10000 | expression nodes=1024 | depth=64 | constraints=128
 S1 | B1 @ 0x0002 | stack height=1 | context=[]
+  relations in=0 out=0
   stack in  [⊤]
   stack out [⊤]
   -> S1 BranchTrue
@@ -148,7 +152,7 @@ S1 | B1 @ 0x0002 | stack height=1 | context=[]
 
 只有 3 个状态，却执行了 11 次块转换：循环节点确实被重访。`S1 → S1` 是回边；`S1 → S2` 是可能退出的边。出口的 `⊤` 表示整值为 Top，即本次数值摘要没有保留任何固定位或其他数值约束。
 
-这里没有在非零分支上给 i 附加 `i<10` 的约束，因此摘要会包含实际循环中不会出现的值。`Converged` 表示已完成当前抽象模型的传播，不表示每个数值都已精确，也不表示合约安全。增大 `--max-constants` 只改变保存常量的容量，不会自动加入分支约束。
+本实验显式关闭关系传播，没有在非零分支上给 i 附加 `i<10` 的约束，因此摘要会包含实际循环中不会出现的值。`Converged` 表示已完成当前抽象模型的传播，不表示每个数值都已精确，也不表示合约安全。增大 `--max-constants` 只改变保存常量的容量，不会自动加入分支约束。
 
 去掉 `--domain constants-only` 可观察默认 product。它仍得到 3 个状态、3 条边，最终循环槽位仍没有数值限制；组件交换和区间 widening 改变了中间摘要与工作量，不能期待仍是 11 次 transfer。增加数值组件会改善某些程序，不能保证每个循环的最终答案更精确。
 
@@ -157,8 +161,8 @@ S1 | B1 @ 0x0002 | stack height=1 | context=[]
 把未知 calldata word 记为 x，考虑条件 `(x AND 15) OR 1`。即使列不完 x 的值，也能手算出条件最低位一定为 1，因此必定非零。运行：
 
 ```bash
-nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0
-nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0 --domain constants-only
+nix run . -- cfg --file examples/known-bits-branch.hex --no-relations --context-depth 0
+nix run . -- cfg --file examples/known-bits-branch.hex --no-relations --context-depth 0 --domain constants-only
 ```
 
 默认 product 使用位等约束，只有 `BranchTrue`。constants-only 在未知 x 上丢失 AND/OR 的位信息，所以保留 `BranchTrue` 与 `BranchFalse`。精度影响的是哪些候选能被排除；没有证明条件为零或非零时，两边都要保留。
@@ -166,20 +170,20 @@ nix run . -- cfg --file examples/known-bits-branch.hex --context-depth 0 --domai
 再区分固定输入身份与基本块内的复制身份：
 
 ```bash
-nix run . -- cfg --file examples/copy-identity.hex --context-depth 0
-nix run . -- cfg --file examples/copy-identity.hex --context-depth 0 --domain constants-only
+nix run . -- cfg --file examples/copy-identity.hex --no-relations --context-depth 0
+nix run . -- cfg --file examples/copy-identity.hex --no-relations --context-depth 0 --domain constants-only
 ```
 
-这段代码读取一次根 calldata word，再执行 `DUP1; XOR`。读取保留同一固定输入的符号身份，因此 product 和 constants-only 现在都证明 `x XOR x = 0`，只保留 `BranchFalse`。要单独观察 product 的块内复制能力，可先计算派生值 `x+1`，再复制并 XOR：
+这段代码读取一次根 calldata word，再执行 `DUP1; XOR`。读取保留同一固定输入的符号身份，因此 product 和 constants-only 现在都证明 `x XOR x = 0`，只保留 `BranchFalse`。要单独观察共用的块内复制身份，可先计算派生值 `x+1`，再复制并 XOR：
 
 ```bash
-nix run . -- cfg --hex 5f356001018018600b57005b00 --context-depth 0
-nix run . -- cfg --hex 5f356001018018600b57005b00 --context-depth 0 --domain constants-only
+nix run . -- cfg --hex 5f356001018018600b57005b00 --no-relations --context-depth 0
+nix run . -- cfg --hex 5f356001018018600b57005b00 --no-relations --context-depth 0 --domain constants-only
 ```
 
-派生运算不保留原 calldata 输入符号；product 的块内复制身份仍能证明结果为零，只留 false 边，constants-only 则保留两边。
+派生运算不保留原 calldata 输入身份，但 DUP 仍复制同一个当前定义。临时复制身份属于共用的 AbstractValue，两种数值 profile 即使在 `--no-relations` 下也只保留 false 边；不能把复制语义当作 product 独有的数值性质。
 
-这两种精度都发生在分支**之前**：先计算条件，再查询“零是否仍可能、非零是否仍可能”。当前 JUMPI 不把比较结果反向写成前驱值的路径约束，例如走 true 边并不会将原来的 x 收窄为 `x<10`。临时复制关系会在块边界失效；同一环境中身份一致的固定输入符号可跨块保留。更多组件的含义见[第 12 课](12-product-domains-facts.md)，跨路径如何少合并见[第 05 课](05-sensitivity.md)。
+这两种精度都发生在分支**之前**：先计算条件，再查询“零是否仍可能、非零是否仍可能”。本节关闭关系层，因此 JUMPI 不保留原值的分支假设。默认开启的关系模式则会在 true/false 后继各自记录条件，按进程内位向量查询的证明收窄后续值或排除矛盾分支；未知结果保留对应前沿，见[第 15 课](15-symbolic-relations.md)。临时复制关系会在块边界失效；同一环境中身份一致的固定输入符号可跨块保留。更多组件的含义见[第 12 课](12-product-domains-facts.md)，跨路径如何少合并见[第 05 课](05-sensitivity.md)。
 
 ## 6. 跳转目标未知时，仍须保留后续行为
 
@@ -233,7 +237,7 @@ Top 也包括非法目标。`UnknownJump` 因此还表示存在异常终止的�
 故意缩小预算：
 
 ```bash
-nix run . -- cfg --domain constants-only --file examples/diamond.hex --context-depth 0 --max-states 1 --format json
+nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relations --context-depth 0 --max-states 1 --format json
 ```
 
 此命令预期**退出码为 2**，JSON 仍会输出。看三个字段：
@@ -254,7 +258,7 @@ nix run . -- cfg --domain constants-only --file examples/diamond.hex --context-d
 
 1. [`config.rs`](../crates/evm-abstract/src/analysis/config.rs)：原始 `Config` 中的数字先经过验证，成功后得到字段私有的 `ValidatedConfig`，并把容量转为 `NonZeroUsize`。配置与域在这里一起构造。
 2. [`engine.rs`](../crates/evm-abstract/src/analysis/engine.rs) 的 `run_world` 初始化入口节点，再看 `Engine::run` 怎样取队列项、检查预算和调用 `transfer::execute`。
-3. [`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 的 `execute` 及 JUMP/JUMPI 分支：弹出目标与条件，枚举合法后继。
+3. [`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 的 `execute` 及 JUMP/JUMPI 分支：弹出目标与条件，枚举合法后继；开启关系模式时，[`transfer/relations.rs`](../crates/evm-abstract/src/analysis/transfer/relations.rs) 为后继应用条件、查询矛盾并精化数值。
 4. 回到 `Engine::execution` 收集块转换的证据，再读 `Engine::successor`：按键查找节点，join 输入，决定是否入队并保存边。随后回到 `run` 看下一次调度。
 5. [`single.rs`](../crates/evm-abstract/src/analysis/single.rs)：把同一世界分析核心投影为本课看到的局部 S/B 视图。
 

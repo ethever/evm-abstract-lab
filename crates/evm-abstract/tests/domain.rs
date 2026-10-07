@@ -42,7 +42,11 @@ fn capacity_promotes_to_top_instead_of_dropping_constants() {
         &Value::constant(U256::from(3)),
         &Value::constant(U256::from(7)),
     );
-    assert_eq!(joined, Value::top());
+    assert_eq!(joined.numeric(), Value::top().numeric());
+    assert_eq!(
+        joined.provenance(),
+        Value::constant(U256::ZERO).provenance()
+    );
     assert!(joined.contains(U256::from(3)) && joined.contains(U256::from(7)));
 }
 

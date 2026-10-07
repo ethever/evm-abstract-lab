@@ -52,9 +52,10 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 | [09：跨合约执行](docs/09-cross-contract.md) | 返回值、代理、回滚和重入怎样影响账户状态？ | `examples/worlds/` |
 | [10：快照、调用摘要与代码生命周期](docs/10-snapshots-summaries-creation.md) | 何时能复用分析？部署和销毁如何改变代码？ | 摘要、CREATE/CREATE2、预编译 |
 | [11：状态容器与后端对比](docs/11-state-backends.md) | 如何用同一接口比较 std 与 imbl 的检查点、写入和回滚？ | `scripts/compare-state-backends.sh` |
-| [12：组合域与事实交换](docs/12-product-domains-facts.md) | 位、范围、同余和来源如何交换信息？局部复制关系能排除哪些分支？ | `known-bits-branch.hex`、`copy-identity.hex` |
+| [12：组合域与事实交换](docs/12-product-domains-facts.md) | 位、范围与同余怎样交换信息？来源和身份怎样分层？ | `known-bits-branch.hex`、`copy-identity.hex` |
 | [13：EVM 环境与符号输入](docs/13-evm-environment.md) | 默认覆盖哪些调用？怎样指定交易、区块和 gas 环境？ | `--evm.*`、caller/origin、BLOCKHASH/BLOBHASH |
 | [14：EVM内存与抽象字节数组](docs/14-memory-model.md) | MSTORE 怎样拆成字节？未知偏移、合并与复制怎样影响结果？ | MSTORE/MLOAD、MSTORE8、MSIZE、CALL 返回区 |
+| [15：符号表达式与关系约束](docs/15-symbolic-relations.md) | 分支条件怎样约束后续值？状态合并和 SMT 资源边界如何处理？ | 矛盾守卫、输入身份、进程内 Z3 |
 
 两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成第 02 课后，可以进入[第 14 课](docs/14-memory-model.md)，先手算内存读写，再理解抽象字节数组。完成第 05 课后，也可以直接进入第 12 课，继续研究数值精度，再回到跨合约实验。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
 
@@ -104,7 +105,9 @@ flowchart TD
 
 用 `nix run . -- analyze --help` 查看全部参数。调用环境统一使用 `--evm.*`：`--evm.to` 确定执行 root frame 的合约，省略 caller、value、calldata 时分别覆盖未知调用者、任意 U256 金额、未知长度与内容的输入；origin 默认与 caller 是同一个输入。显式 `--evm.calldata 0x --evm.value 0` 才表示空数据、零金额。交易与区块环境、索引 hash 和 gas 上界的全部参数见[第 13 课](docs/13-evm-environment.md)；精度与预算参数见[第 05 课](docs/05-sensitivity.md)和[第 06 课](docs/06-boundaries.md)。
 
-数值分析默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和 Provenance（来源、稳定输入符号及局部复制身份）。`--max-constants` 默认 8，接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；配置容量不会直接预分配集合。`--reduction-rounds` 默认 4，`--max-facts` 默认 256，两者限制临时事实交换的精度。`analyze` 的 `--max-work` 默认 2000 万，耗尽共享工作预算会留下 `Incomplete`；提高常量容量仍受执行预算限制。参数与输出一起记录分析策略，方便对照实验；[第 12 课](docs/12-product-domains-facts.md)解释交换过程及边界。
+`NumericValue` 默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`AbstractValue` 在数值摘要之外保存来源、角色、独立值身份和符号表达式；兼容名称 `Value` 指向这一执行值。`--max-constants` 默认 8，接受运行平台能表示的任意正 `usize`，配置容量不会直接预分配集合。`--reduction-rounds` 默认 4，`--max-facts` 默认 256，两者限制临时数值事实交换。
+
+机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过进程内 Z3 排除已证明矛盾的路径，并将已证明的数值结论投影回执行值。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。SMT 只使用 `--smt-rlimit` 限制资源，没有墙钟 timeout；表达式节点、深度和关系数量也有独立上限。查询不能完成时保留路径与类型化前沿。`analyze` 的 `--max-work` 默认 2000 万，覆盖执行、数值、符号及查询预留工作。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
 
 CLI 的数量参数 `--evm.value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`；`--block-number` 接受相同进制写法，范围为 `0` 到 `2^64−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--evm.value 1000`（单位 wei）、`--block-number 26000000`、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
 
@@ -149,7 +152,7 @@ nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 | `Incomplete` | 缺少事实、遇到模型无法处理的输入或耗尽预算；输出保留原因与停止位置 | `2` |
 | 输入错误 | JSON、参数或初始 RPC 采集失败，未得到有效分析结果 | `1`；参数语法错误由 clap 报告并退出 `2` |
 
-`⊤`（Top）表示一个值可能是任意 256 bit 数，实际数值文本也用 `⊤` 表示。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。SSA 构建要求完整图。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 2；`domain_spec.schema_version` 仍是 1。
+`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。SSA 构建要求完整图。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 3，`domain_spec.schema_version` 是 2。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
 
 RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留下 `RpcAcquisition` 前沿，结果为 `Incomplete`、退出 `2`。采集失败的类型与来源另外保存在累计记录中，后续预算中断也不会丢失。输出中的已完成分支不能替代尚未展开的调用。
 
@@ -157,7 +160,7 @@ RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留�
 
 模型处理普通 EVM 字节码，即按操作码及其立即数解码的指令流；不支持 EOF 容器格式。字节码格式与硬分叉版本是两个不同概念，普通 EVM 字节码也能使用所选版本启用的较新指令，见[第一课](docs/01-bytecode.md)。
 
-gas 不精确计量，一般 hash 和未知环境采用保守近似，也没有完整路径约束或跨交易不变量证明。RPC 仅在显式选择时采集固定区块 hash 的事实，默认按需补查具体被调用账户和 SLOAD 的有限槽键；未知调用目标、无法完整枚举的槽键与未观察的其他槽仍保持边界。采集过程完全信任选定的提供者；区块身份与初始事实指纹用于固定输入，不构成状态真实性的密码学证明。读结果前请确认[详细边界](docs/06-boundaries.md)。
+gas 不精确计量，一般 hash 和未知环境采用保守近似，有界关系域也不提供完整路径可行性或跨交易不变量证明。RPC 仅在显式选择时采集固定区块 hash 的事实，默认按需补查具体被调用账户和 SLOAD 的有限槽键；未知调用目标、无法完整枚举的槽键与未观察的其他槽仍保持边界。采集过程完全信任选定的提供者；区块身份与初始事实指纹用于固定输入，不构成状态真实性的密码学证明。读结果前请确认[详细边界](docs/06-boundaries.md)。
 
 ## 开发环境与实现入口
 
@@ -182,7 +185,9 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | --- | --- |
 | 指令解码与基本块 | [`bytecode.rs`](crates/evm-abstract/src/bytecode.rs) |
 | 常量集合的 Top、非空集合与有界运算 | [`finite_constant_set.rs`](crates/evm-abstract/src/domain/finite_constant_set.rs) |
-| 组合值、合并与算术 | [`domain.rs`](crates/evm-abstract/src/domain.rs) |
+| 数值组件、合并与算术 | [`numeric.rs`](crates/evm-abstract/src/domain/numeric.rs)、[`domain.rs`](crates/evm-abstract/src/domain.rs) |
+| 机器值、来源与独立身份 | [`value.rs`](crates/evm-abstract/src/domain/value.rs)、[`provenance.rs`](crates/evm-abstract/src/domain/provenance.rs)、[`identity.rs`](crates/evm-abstract/src/domain/identity.rs) |
+| 持久表达式、关系环境与查询 | [`symbolic.rs`](crates/evm-abstract/src/domain/symbolic.rs)、[`relational.rs`](crates/evm-abstract/src/domain/relational.rs)、[`relational/solver.rs`](crates/evm-abstract/src/domain/relational/solver.rs) |
 | 固定位、区间、同余、来源与事实交换 | [`domain/`](crates/evm-abstract/src/domain) |
 | 调用帧、局部与跨合约工作表 | [`analysis/`](crates/evm-abstract/src/analysis) |
 | 账户事实与账户状态 | [`world/`](crates/evm-abstract/src/world) |
@@ -190,7 +195,7 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 值的命名与结构验证 | [`ssa/`](crates/evm-abstract/src/ssa) |
 | 命令参数、世界文件解析 | [`evm-abstract-cli`](crates/evm-abstract-cli) |
 
-本仓库实现抽象 transfer（指令怎样更新抽象状态）、工作表与栈到 SSA 的转换；通用部分复用 `revm-bytecode` 的指令元数据、`alloy-primitives` 的 U256、`petgraph` 的图算法、`revm-precompile` 的原生计算及 `reqwest` 的 RPC 传输。测试使用 revm 具体执行和 proptest 性质检查；依赖资料见[参考页](docs/references.md)。
+本仓库实现抽象 transfer（指令怎样更新抽象状态）、工作表与栈到 SSA 的转换；通用部分复用 `revm-bytecode` 的指令元数据、`alloy-primitives` 的 U256、`petgraph` 的图算法、`revm-precompile` 的原生计算、`reqwest` 的 RPC 传输及进程内 Z3 的位向量查询。Z3 是原生链接依赖，Nix 开发环境和完整门禁提供其库；运行时不启动 `z3` CLI 或外部求解进程。测试使用 revm 具体执行和 proptest 性质检查；依赖资料见[参考页](docs/references.md)。
 
 ## 验证与源码导航
 

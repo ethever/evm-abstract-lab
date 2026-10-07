@@ -4,6 +4,7 @@ mod error;
 mod evm;
 mod explain;
 mod number;
+mod symbolic;
 mod world;
 
 #[cfg(test)]
@@ -82,6 +83,8 @@ enum Command {
 
 #[derive(Args)]
 struct WorldArgs {
+    #[command(flatten)]
+    symbolic: symbolic::SymbolicArgs,
     /// Offline JSON world snapshot; analysis never fetches missing facts from a node.
     #[arg(
         long,
@@ -197,6 +200,8 @@ struct Input {
 #[derive(Args)]
 struct AnalysisArgs {
     #[command(flatten)]
+    symbolic: symbolic::SymbolicArgs,
+    #[command(flatten)]
     input: Input,
     #[command(flatten)]
     evm: EvmArgs,
@@ -263,6 +268,7 @@ impl Input {
 impl AnalysisArgs {
     fn analyze(self) -> Result<analysis::Analysis, CliError> {
         let config = Config {
+            relations: self.symbolic.limits(),
             domain_profile: self.domain.into(),
             reduction_rounds: self.reduction_rounds,
             max_facts: self.max_facts,
@@ -323,6 +329,7 @@ impl WorldArgs {
         };
         let config = ExecutionConfig {
             analysis: Config {
+                relations: self.symbolic.limits(),
                 domain_profile: self.domain.into(),
                 reduction_rounds: self.reduction_rounds,
                 max_facts: self.max_facts,

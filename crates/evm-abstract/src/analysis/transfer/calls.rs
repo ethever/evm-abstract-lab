@@ -80,6 +80,7 @@ pub(super) fn initial(
     let (code_address, code, program) = resolve(world, &store, entry.address)?;
     let code_hash = captured_hash(&program, &store, code_address, code);
     Ok(MachinePayload {
+        relations: crate::domain::relational::RelationState::default(),
         call_stack: CallStack::new(RootFrame {
             state: FrameState {
                 key: FrameKey {
@@ -307,11 +308,9 @@ pub(super) fn call(
     }
     let logical_address = result.payload.active().key.address_value;
     let exact_symbolic_self = logical_address.as_concrete().is_none()
-        && args[1].provenance().same_identity(
-            logical_address
-                .scoped_value(context.input_scope)
-                .provenance(),
-        );
+        && args[1]
+            .identity()
+            .same_identity(logical_address.scoped_value(context.input_scope).identity());
     let projected = domain.address_projection(&args[1]);
     let mut targets = if exact_symbolic_self {
         vec![result.payload.active().key.address]

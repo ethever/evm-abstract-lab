@@ -2,7 +2,7 @@
 
 `A → B → C` 的状态回滚需要两层约定：容器能保留旧版本，执行器知道哪一层调用失败。仓库把前一层放入本地 crate [`snapshot-state`](../crates/snapshot-state)，后一层仍由 [`Store`](../crates/evm-abstract/src/world/store.rs) 和[调用处理](../crates/evm-abstract/src/analysis/transfer/calls.rs)负责。
 
-本课的 std / imbl 选择改变状态怎样保存和复制；[第 12 课](12-product-domains-facts.md)的 product / constants-only 选择改变一个值保存哪些性质。比较容器时固定同一份输入和域策略，才能把结果差异或时间差异归到正确的原因。
+本课的 std / imbl 选择改变状态怎样保存和复制；[第 12 课](12-product-domains-facts.md)的 product / constants-only 选择改变 NumericValue 保存哪些数值性质，来源、值身份和表达式属于共用的 AbstractValue。比较容器时固定同一份输入、数值策略和关系模式，才能把结果差异或时间差异归到正确的原因。
 
 ## 从同一份 Store 切换底层实现
 
@@ -35,7 +35,7 @@ cargo run --release --locked -p evm-abstract-cli --features imbl -- \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --format json
 ```
 
-以上两个命令把 caller、value 和 calldata 明确限定为同一具体输入。省略这些参数会分析符号输入；比较两种后端时也必须保留相同范围。结果 JSON 的 `schema_version` 为 2，调用环境在 `.entry.environment`，帧键 `.states[].key.frames[].caller` 用 `{"Concrete": "0x..."}` 或 `{"Symbolic": "Caller"}` 表示；`.address_value` 是逻辑 ADDRESS，`.address` 是状态账户键。每次环境的私有编号不进入 JSON；同名符号不构成不同分析之间的相等证明。
+以上两个命令把 caller、value 和 calldata 明确限定为同一具体输入。省略这些参数会分析符号输入；比较两种后端时也必须保留相同范围。结果 JSON 的 `schema_version` 为 3，调用环境在 `.entry.environment`，帧键 `.states[].key.frames[].caller` 用 `{"Concrete": "0x..."}` 或 `{"Symbolic": "Caller"}` 表示；`.address_value` 是逻辑 ADDRESS，`.address` 是状态账户键。每次环境的私有编号不进入 JSON；同名符号不构成不同分析之间的相等证明。
 
 feature 在一次构建中统一选择后端；同一个进程里的 Store 使用同一实现。并行比较使用独立 target 目录，避免后一次构建覆盖前一次的二进制。
 

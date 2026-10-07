@@ -139,14 +139,14 @@ fn json_distinguishes_a_top_component_from_the_whole_product() {
     let (world, entry) = fixture("00");
     let graph = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
     let json = serde_json::to_value(&graph).unwrap();
-    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["schema_version"], 3);
     assert_eq!(
         json["domain_spec"],
         serde_json::to_value(graph.domain_spec()).unwrap()
     );
     assert_eq!(json["domain_spec"]["profile"], "product");
     assert_eq!(json["domain_spec"]["word_bits"], 256);
-    assert_eq!(json["domain_spec"]["cost_version"], 1);
+    assert_eq!(json["domain_spec"]["cost_version"], 2);
     assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
 }
 
@@ -260,12 +260,12 @@ fn summaries_guard_the_entire_frozen_domain_policy() {
         assert_eq!(record.input.domain_spec, spec);
         assert_eq!(record.input.world_fingerprint, graph.world().fingerprint());
         let json = serde_json::to_value(&record.input).unwrap();
-        assert_eq!(json["domain_spec"]["schema_version"], 1);
-        assert_eq!(json["domain_spec"]["cost_version"], 1);
+        assert_eq!(json["domain_spec"]["schema_version"], 2);
+        assert_eq!(json["domain_spec"]["cost_version"], 2);
         assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
         assert_eq!(
             json["domain_spec"]["provenance_policy"],
-            "environment-symbols-and-block-local-copy-v2"
+            "scoped-expressions-and-value-identities-v3"
         );
     }
     for changed in [
@@ -439,7 +439,11 @@ fn projecting_a_larger_finite_input_obeys_the_frozen_constants_capacity() {
     let input = (1_u64..=9).fold(word(0), |a, v| wide.join(&a, &word(v)));
     assert_eq!(input.constants().unwrap().len(), 10);
     let constants = domain(Profile::ConstantsOnly, 8, 4, 256).project(&input);
-    assert_eq!(constants, Value::top());
+    assert_eq!(
+        constants.numeric(),
+        &evm_abstract::domain::NumericValue::top()
+    );
+    assert_eq!(constants.provenance(), input.provenance());
     let product = domain(Profile::Product, 8, 4, 256).project(&input);
     assert!(product.constants().is_none());
     for v in 0_u64..=9 {
@@ -476,11 +480,21 @@ fn block_local_copy_identities_do_not_escape_into_saved_graph_values() {
     let graph = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
     let stack = &graph.states()[0].exit_stack;
     assert_eq!(stack.len(), 2);
-    assert!(!stack[0].provenance().same_identity(stack[1].provenance()));
-    let result = Domain::default().apply(opcode::XOR, &stack.clone());
-    // The saved graph has scalar possibilities, not a reusable proof token
-    // claiming these two slots are equal in every later execution context.
-    assert!(result.contains(U256::ZERO) && result.contains(U256::from(1)));
+    assert!(!stack[0].identity().same_identity(stack[1].identity()));
+    // The runtime definition IDs are gone, while the independent persistent
+    // expression can now prove the derived-value equality.
+    let symbolic = Domain::default().apply(opcode::XOR, &stack.clone());
+    assert_eq!(symbolic.singleton(), Some(U256::ZERO));
+    let numeric = Domain::from_spec(Domain::default().spec().with_relations(
+        evm_abstract::domain::relational::RelationLimits {
+            enabled: false,
+            ..Default::default()
+        },
+    ))
+    .apply(opcode::XOR, &stack.clone());
+    // Without the independent expression layer these saved slots supply no
+    // reusable runtime-copy proof; both scalar outcomes remain possible.
+    assert!(numeric.contains(U256::ZERO) && numeric.contains(U256::from(1)));
 }
 
 #[test]

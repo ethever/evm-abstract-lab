@@ -256,7 +256,10 @@ fn assert_clz_json(value: &Json) {
     assert_eq!(value["interval"]["unsigned_lo"], "0x0");
     assert_eq!(value["interval"]["unsigned_hi"], "0x100");
     assert!(value.get("Constants").is_none());
-    assert_eq!(value.as_object().unwrap().len(), 5);
+    // Numeric keys retain their meaning; the independent expression layer
+    // records the CLZ relation instead of changing the numeric mask shape.
+    assert_eq!(value.as_object().unwrap().len(), 6);
+    assert_eq!(value["expression"]["kind"]["Operation"]["opcode"], 0x1e);
 }
 
 #[test]
@@ -303,7 +306,7 @@ fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
     assert_eq!(value["known_bits"]["zero"], "0x0");
     assert_eq!(value["known_bits"]["one"], "0x0");
     assert_eq!(
-        value["provenance"]["symbol"]["name"],
+        value["identity"]["input"]["name"],
         serde_json::json!({"CalldataWord":"0x0"})
     );
     let uncorrelated = text(run_concrete(&[
@@ -316,5 +319,19 @@ fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
         "json",
     ]));
     let uncorrelated: Json = serde_json::from_str(&uncorrelated).unwrap();
-    assert_eq!(uncorrelated["states"][0]["exit_stack"][0], "Top");
+    let value = &uncorrelated["states"][0]["exit_stack"][0];
+    assert!(value.get("Constants").is_none());
+    assert_eq!(value["known_bits"]["zero"], "0x0");
+    assert_eq!(value["known_bits"]["one"], "0x0");
+    assert_eq!(value["interval"]["unsigned_lo"], "0x0");
+    assert_eq!(
+        value["interval"]["unsigned_hi"],
+        format!("0x{}", "f".repeat(64))
+    );
+    assert_eq!(value["congruence"], "Top");
+    assert_eq!(value["nonzero"], false);
+    assert!(
+        value.get("expression").is_some(),
+        "an opaque runtime read has its own expression"
+    );
 }

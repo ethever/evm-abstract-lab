@@ -143,7 +143,11 @@ fn clz_of_unknown_calldata_retains_all_257_candidates_when_capacity_allows() {
         assert_eq!(state.executed_pcs, [0, 1, 2, 3]);
         assert_eq!(state.exit_stack.len(), 1);
         if capacity == 256 {
-            assert_eq!(state.exit_stack[0], Value::top());
+            assert_eq!(state.exit_stack[0].numeric(), Value::top().numeric());
+            assert!(
+                state.exit_stack[0].expression().is_some(),
+                "capacity loss must retain CLZ's symbolic definition"
+            );
         } else {
             assert_eq!(state.exit_stack[0].constants(), Some(&expected));
         }

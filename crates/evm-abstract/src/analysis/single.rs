@@ -73,6 +73,11 @@ pub(super) fn analyze(
             exit_stack.push(Value::top());
         }
         states.push(State {
+            entry_relations: source.entry.relations.clone(),
+            exit_relations: source
+                .exit
+                .as_ref()
+                .map(|payload| payload.relations.clone()),
             id,
             key: StateKey {
                 basic_block_index: source.active().basic_block_index,
@@ -141,6 +146,7 @@ pub(super) fn analyze(
                 _ => Limit::Model,
             };
             Frontier {
+                reason: f.reason.clone(),
                 from: f.from.and_then(|id| ids.get(&id).copied()),
                 target,
                 limit,
@@ -150,7 +156,7 @@ pub(super) fn analyze(
     Ok(Analysis {
         program,
         config,
-        schema_version: 2,
+        schema_version: 3,
         domain_spec: execution.domain_spec(),
         states,
         edges,

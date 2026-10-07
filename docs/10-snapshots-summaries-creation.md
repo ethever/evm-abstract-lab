@@ -4,7 +4,7 @@
 
 前四个实验均使用离线合成事实，根帧地址为 A=`0x...0101`，命令明确给出 caller、零 value 和空 calldata，默认预算可完成。省略这些参数会得到符号输入，不等同于这组具体约束。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
-直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 2 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 3 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 所有反汇编与 SSA 基本块指令列表共用顶格的 `B# @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 B 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 B 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用赋值式指令正文；世界视图保留 C、F、state owner、context，以及按 T 标记并带 F/slot 的 φ。完整视图另保留所有帧元数据、原始指令字段和效果链，字节码行与效果行也使用这套布局。编号与证据的读法见[第 04 课](04-ssa.md)和[第 09 课](09-cross-contract.md#默认文本怎样读)。
 
@@ -91,11 +91,12 @@ cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 | fork、快照身份、初始事实指纹、当前代码 hash | 把不同规则、不同区块或改变后的代码混用 |
 | 完整不可变 EVM 环境，包括根调用输入、origin、交易/区块标量、gas 上界、hash 表和符号作用域 | 省略会影响执行的输入，或把独立环境的同名符号当成同一个变量 |
 | callee 帧的逻辑 ADDRESS、caller/static/value/calldata、保存点与完整 Store | 忽略 storage、transient、余额、日志、nonce、代码或生命周期变化 |
-| 剩余调用深度和冻结的分析策略 | 复用时得到额外深度，或改变数值域、facts 交换、内存、跳转历史及费用策略 |
+| 入口关系约束及值表达式 | 在较弱或不同的分支假设下复用依赖旧条件的结果 |
+| 剩余调用深度和冻结的分析策略 | 复用时得到额外深度，或改变数值域、facts 交换、关系资源、内存、跳转历史及费用策略 |
 
 A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入，所以本例的输出长度 0/32 不妨碍命中。callee 的其他帧事实和回滚保存点仍需相等。登记候选后，输入若经 join 扩大，就不能按旧前提发表证书；需要以更新后的输入重新登记、完成分析并认证。callee 未完成或预算中断时也不能发表完整证书。[第 12 课](12-product-domains-facts.md)会解释为什么同一字节码用组合域和 constants-only 得到的精度可能不同；摘要输入也绑定这份完整策略，不能仅按常量容量判定兼容。
 
-摘要中的入口帧是相对于子图而言的：B 在 A→B 的全图里是子帧，在单独保存的 B 子图里成为入口。保存时保留 B 的执行数据与回滚点，外层返回契约不属于摘要输入与子图；复用时使用当前 caller 的继续信息，再把 B 接回调用栈。更深的子帧仍需保留各自的继续信息。这样既能复用 B 的行为，又能把这次结果复制到 A 新指定的输出区。状态归一化会清除临时复制身份；不可变环境输入的稳定身份则保留，并随完整环境参与摘要限定。独立环境各有自己的符号作用域；同一环境的克隆与 RPC 重跑保留原作用域。JSON 中同名的 `Caller` 只是报告内的标签，不能跨独立报告据此证明相等。callee 保存成相对入口时，也不会把其 memory 派生的 calldata 当成原根调用的 calldata。
+摘要中的入口帧是相对于子图而言的：B 在 A→B 的全图里是子帧，在单独保存的 B 子图里成为入口。保存时保留 B 的执行数据与回滚点，外层返回契约不属于摘要输入与子图；复用时使用当前 caller 的继续信息，再把 B 接回调用栈。更深的子帧仍需保留各自的继续信息。这样既能复用 B 的行为，又能把这次结果复制到 A 新指定的输出区。状态归一化会清除临时复制身份；不可变环境输入的稳定身份则保留，并随完整环境参与摘要限定。独立环境各有自己的符号作用域；同一环境的克隆与 RPC 重跑保留原作用域。JSON 中同名的 `Caller` 只是报告内的标签，不能跨独立报告据此证明相等。callee 保存成相对入口时，也不会把其 memory 派生的 calldata 当成原根调用的 calldata。关系约束同样保留；重放时，输入绑定的符号继续指向同一输入，摘要内部新产生的 fresh 叶则统一改名，避免不同调用误用同一个未知运行时值。
 
 摘要的查找比较、快照 hashing、认证、复制和图导入都消耗同一份 `--max-work`；导入状态也计入全局状态预算。命中不会重置预算。`SummaryWork` 前沿表示这些操作未完成，状态为 `Incomplete`，SSA 验证器不会接受未闭合图。实现与回归见 [`summary.rs`](../crates/evm-abstract/src/analysis/summary.rs)、[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)。
 
@@ -107,14 +108,14 @@ jq '{schema_version,
             caller: .entry.environment.caller, origin: .entry.environment.origin},
      root_frame: (.states[0].key.frames[0] | {address, address_value, caller}),
      summary: (.summaries[0].input
-               | {environment, frame: .frame.state.key})}' /tmp/summary-on.json
+               | {environment, relations, frame: .frame.state.key})}' /tmp/summary-on.json
 ```
 
-分析 `schema_version` 为 2。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
+分析 `schema_version` 为 3。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
 
-本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
+本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中，入口关系在 `.summaries[].input.relations`。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
 
-单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。数值策略版本仍在 `domain_spec.schema_version`，当前为 1；它与分析 JSON 的 schema 2 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
+单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 3 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
 
 环境类型与输入作用域见 [`world/environment.rs`](../crates/evm-abstract/src/world/environment.rs)，JSON 边界见 [`analysis.rs`](../crates/evm-abstract/src/analysis.rs)，帧结构见 [`machine/frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)。
 
@@ -456,3 +457,5 @@ nix run . -- explain \
 默认 RPC `explain` 同样使用教学视图；在上面的命令末尾追加 `--verbose` 可查看完整 RPC 采集记录、快照与机器报告及原始 SSA。`explain` 复用 `analyze` 的 RPC 获取与按需发现策略，包括 `--no-rpc-discovery`、`--max-rpc-accounts` 和 `--max-rpc-requests`。这些开关及 `--account` / `--slot` / `--block-hash` / `--block-number` 仅用于 RPC；离线世界已经携带 fork，不能另传 `--fork`。世界和 RPC 入口要求 `--evm.to`，四种来源 `--world`、`--rpc`、`--hex`、`--file` 互斥。
 
 解释中只有实际帧捕获的代码被列入执行目录：委托代码按 code address 区分，CREATE initcode 与安装后的 runtime 还按代码 hash 和模式区分。只观察到的初始代码有独立标注，不等同于执行证据。RPC 补查或执行预算未完成时，默认视图继续打印部分 CFG、每个已知 outcome、所有诊断与 frontier，并省略完整 SSA，退出码为 2；`--verbose` 保留同一部分分析的完整报告。简化显示不会把 `Incomplete` 改成成功，也不会重新选择 fork、区块或重置预算。
+
+关系约束也是摘要输入的一部分。复用完整 callee 图时，调用输入中的符号保持绑定，callee 内部新产生的未知值会重新命名；悬挂 caller 中上一次调用的结果不会因此变成这次调用的同一个变量。关系的合并和资源规则见[第 15 课](15-symbolic-relations.md)。

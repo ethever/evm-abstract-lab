@@ -1,40 +1,29 @@
-use super::{Origin, OriginSet, Provenance, RuntimeIdentity};
+use super::{Origin, OriginSet, Provenance};
 
 #[test]
-fn equal_source_labels_never_prove_value_equality() {
-    let first = Provenance::source(Origin::Storage).with_identity(RuntimeIdentity::new(7, 1));
-    let second = Provenance::source(Origin::Storage).with_identity(RuntimeIdentity::new(7, 2));
-    assert_eq!(
-        first, second,
-        "persistent equality ignores fresh identities"
+fn source_and_role_metadata_do_not_contain_value_identity() {
+    let source = Provenance::source(Origin::Storage);
+    assert_eq!(source, Provenance::source(Origin::Storage));
+    let json = serde_json::to_value(&source).unwrap();
+    assert!(
+        json.get("identity").is_none()
+            && json.get("input").is_none()
+            && json.get("symbol").is_none()
     );
-    assert!(!first.same_identity(&second));
-    assert!(first.same_identity(&first.clone()));
-    assert!(!Provenance::top().same_identity(&Provenance::top()));
+    assert_eq!(json["origins"]["Sources"], serde_json::json!(["Storage"]));
 }
 
 #[test]
-fn join_and_transfer_forget_identity() {
-    let source = Provenance::source(Origin::Calldata).with_identity(RuntimeIdentity::new(2, 8));
-    let joined = source.join(&source);
-    assert!(!joined.same_identity(&source));
+fn arithmetic_metadata_joins_sources_without_asserting_address_role() {
+    let source = Provenance::source(Origin::Calldata).with_code_address_role();
     let result = Provenance::transfer(std::slice::from_ref(&source));
-    assert!(!result.same_identity(&source));
+    assert!(!result.is_code_address());
     assert_eq!(
         result.origins().sources(),
         OriginSet::from_sources([Origin::Calldata, Origin::Arithmetic])
-            .expect("nonempty")
+            .unwrap()
             .sources()
     );
-}
-
-#[test]
-fn identity_scope_prevents_different_executions_becoming_equal() {
-    let first = Provenance::top().with_identity(RuntimeIdentity::new(1, 4));
-    let other_execution = Provenance::top().with_identity(RuntimeIdentity::new(2, 4));
-    assert!(!first.same_identity(&other_execution));
-    let serialized = serde_json::to_value(&first).expect("serialize");
-    assert!(serialized.get("identity").is_none());
 }
 
 #[test]
@@ -51,12 +40,11 @@ fn source_join_is_associative_commutative_and_idempotent() {
 }
 
 #[test]
-fn code_address_role_is_a_must_property_and_supplies_no_identity() {
+fn code_address_role_is_a_must_property_separate_from_origin_labels() {
     let role = Provenance::top().with_code_address_role();
     assert!(role.is_code_address());
     assert!(!role.is_top());
     assert!(role.join(&role).is_code_address());
     assert!(!role.join(&Provenance::top()).is_code_address());
     assert!(!Provenance::transfer(std::slice::from_ref(&role)).is_code_address());
-    assert!(!role.same_identity(&role));
 }

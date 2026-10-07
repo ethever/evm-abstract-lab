@@ -108,9 +108,29 @@ impl CallStack {
         }
     }
 
-    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = &mut FrameState> {
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut FrameState> {
         std::iter::once(&mut self.root.state)
             .chain(self.children.iter_mut().map(|child| &mut child.state))
+    }
+
+    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&crate::domain::Value)) {
+        for frame in self.iter() {
+            frame.visit_values(visit);
+        }
+        for child in &self.children {
+            visit(&child.continuation.output_offset);
+            visit(&child.continuation.output_size);
+        }
+    }
+
+    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut crate::domain::Value)) {
+        for frame in self.iter_mut() {
+            frame.update_values(update);
+        }
+        for child in &mut self.children {
+            update(&mut child.continuation.output_offset);
+            update(&mut child.continuation.output_size);
+        }
     }
 
     pub(super) fn widen(&mut self, old: &Self, domain: Domain) {

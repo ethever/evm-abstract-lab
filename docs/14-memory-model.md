@@ -109,7 +109,7 @@ ByteArray 的读取摘要还要结合 `length`，保留序列长度之外补零�
 
 `Value` 描述**一个位置可能出现的数值**。例如 `{0x1,0x2}` 表示这个字节可能是 1 或 2；不是两个字节，也不是同时保存了两个具体值。
 
-默认 `product` 可以在候选太多时继续保存固定位、区间或同余等约束。例如一个字节只可能是 1～255 中的奇数，完整候选需要 128 个常量；默认常量容量 8 列不完，其他组件仍可记录“值不超过 255”“最低位为 1”。MSTORE 拆字节和 MLOAD 拼 word 都调用同一个数值域进行运算。
+默认 `product` 可以在候选太多时继续保存固定位、区间或同余等约束。例如一个字节只可能是 1～255 中的奇数，完整候选需要 128 个常量；默认常量容量 8 列不完，其他组件仍可记录“值不超过 255”“最低位为 1”。MSTORE 拆字节和 MLOAD 拼 word 都调用同一个数值域进行运算。现在 Value 是 AbstractValue 的兼容名称；数值约束属于 NumericValue，表达式属于独立符号层。MLOAD 用平衡拼接限制表达式深度；若 32 个字节恰好是同一表达式按顺序产生的 BYTE(0..31)，还能精确恢复原表达式，避免重复拆装后膨胀。未知偏移或逐字节合并仍可能失去这种联系，详见[第 15 课](15-symbolic-relations.md)。
 
 这是字节表与[第 12 课的组合域](12-product-domains-facts.md)的连接点。整个数值没有限制时显示 `⊤`；单独的 `bits=` 全星号只表示位组件没有确定的位，不能忽略同一个值的其他约束。
 
@@ -269,7 +269,7 @@ printf 'exit=%s\n' "$memory_status"
 
 ## 8. 为什么刚存进去，再读出来会多出候选
 
-“每个字节各存一份 Value”可以保存每个位置的可能内容，却没有保存这些位置必须**一起选择同一条路径**的关系。
+逐字节的数值候选可以保存每个位置的可能内容，却不自动保存这些位置必须**一起选择同一条路径**的关系。共享表达式有时能保留联系；本节先看路径汇合后失去这种联系的例子。
 
 运行：
 
@@ -300,7 +300,19 @@ nix run . -- explain --file examples/memory-byte-correlation.hex --context-depth
 | `02`、`01` | `0x0201` | 否，分析额外允许 |
 | `02`、`02` | `0x0202` | 是 |
 
-所有真实候选仍被包含，额外候选使结果更保守。这次 `Converged` 与信息丢失可以同时发生。MSTORE 的 [`write_word`](../crates/evm-abstract/src/world/bytes.rs) 对每个位置计算 BYTE（取 word 的指定字节）；MLOAD 的 `read_word` 使用 SHL（左移）与 OR（按位或）拼回。原 word 的完整候选集合或复制身份没有作为字节组关系一起存入 memory。
+所有真实候选仍被包含，额外候选使结果更保守。这次 `Converged` 与信息丢失可以同时发生。MSTORE 的 [`write_word`](../crates/evm-abstract/src/world/bytes.rs) 对每个位置计算 BYTE（取 word 的指定字节）；MLOAD 的 `read_word` 使用 SHL（左移）与 OR（按位或）拼回。本样例在路径汇合时已丢失不同常量各自的表达式关系；数值候选按字节保存，不能据此恢复完整 word 配对。默认符号层另能识别带表达式的完整 word 往返，条件见下文；它不把任意逐字节 join都变成有关联的数组。
+
+### 有表达式的完整 word 往返可以恢复身份
+
+```bash
+nix run . -- cfg --hex 5f35805f525f511800 --format json > /tmp/memory-expression-on.json
+nix run . -- cfg --hex 5f35805f525f511800 --no-relations --format json > /tmp/memory-expression-off.json
+jq '.states[0].exit_stack[0]' /tmp/memory-expression-on.json /tmp/memory-expression-off.json
+```
+
+程序保留原 root calldata word，另外存入 memory，再读出来与原值 XOR。默认表达式模式中，MSTORE 的 32 个 `BYTE(i,sameExpr)` 完整覆盖该 word，MLOAD 可恢复原表达式，XOR 结果为零。关闭关系/表达式传播时，字节的数值摘要仍覆盖原值，但不能证明重新组装的未知 word 就是原变量，结果为数值 Top。
+
+这条规则需要连续 32 字节来自同一个表达式及对应的 BYTE 索引。部分覆盖、未知地址、不同路径的逐字节 join、缺失表达式或表达式预算不足，都不能凭字段名字猜测恢复。它修复完整 word 拆分/重组的特定关系，没有提供一般符号数组、全部内存别名或完整析取。可保留的表达式和节点/深度预算见[第 15 课](15-symbolic-relations.md)。
 
 ### 延后合并能帮助这个例子
 
@@ -310,15 +322,15 @@ nix run . -- explain --file examples/memory-byte-correlation.hex --context-depth
 
 跳转历史让到达 B3 的两条路径保持为不同状态。一个状态的输入、输出都只有 `{0x202}`，另一个都只有 `{0x101}`。因为存入 memory 时还没有把两条路径合并，字节各自都确定，没有机会产生交叉组合。
 
-这次改善来自[第 05 课的状态划分](05-sensitivity.md)。它没有给 ByteArray 增加一般的字节关联：更复杂的汇合，或者同一个状态里的 x 已经是一个多值集合时，仍可能出现类似精度损失。
+这次改善来自[第 05 课的状态划分](05-sensitivity.md)。它没有给 ByteArray 增加一般的字节关联：更复杂的汇合、部分写入或已经丢失的表达式关系仍可能出现类似精度损失；完整 word 表达式恢复和状态划分是另外两种机制。
 
 ## 9. 组合域能保留字节性质，但寻址与关联仍是另一层
 
-下面只保留输入的最低字节，再把最低位设为 1，将结果写入偏移 31，随后从偏移 0 读取整个 word：
+本节用 `--no-relations` 比较数值组件。下面只保留输入的最低字节，再把最低位设为 1，将结果写入偏移 31，随后从偏移 0 读取整个 word：
 
 ```bash
 nix run . -- explain --hex 5f3560ff16600117601f535f515900 \
-  --max-constants 1 --domain product
+  --max-constants 1 --domain product --no-relations
 ```
 
 表达式是 `(x AND 255) OR 1`，结果为 1～255 中的奇数。偏移 0～30 仍为零，所以 MLOAD 的结果也是这些奇数。`--max-constants 1` 只能保存一个常量，装不下全部 128 个候选；product 的其他组件应继续保留：
@@ -338,12 +350,12 @@ nix run . -- explain --hex 5f3560ff16600117601f535f515900 \
 
 ```bash
 nix run . -- explain --hex 5f3560ff16600117601f535f515900 \
-  --max-constants 1 --domain constants-only
+  --max-constants 1 --domain constants-only --no-relations
 ```
 
 本例出口为 `[⊤, {0x20}]`。这里损失的是字节内容的数值性质，地址 31 仍确定，所以内存长度仍能保留。
 
-这解释了三个不同问题：Value 决定一个位置上的数值精度；寻址规则决定可能读写哪些位置；字节之间的关联决定哪些组合可同时发生。改善其中一层，不会自动解决另外两层。
+这解释了三个不同问题：NumericValue 决定一个位置上的数值精度；寻址规则决定可能读写哪些位置；字节之间的关联决定哪些组合可同时发生。改善其中一层，不会自动解决另外两层。
 
 ## 10. COPY：复制字节与读取 word 有什么区别
 

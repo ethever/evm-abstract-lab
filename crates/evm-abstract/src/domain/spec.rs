@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Profile {
-    /// 常量集合、位、U/S 区间、一般同余及来源共同表示一个字。
+    /// 常量集合、位、U/S 区间和一般同余共同约束一个字。
     #[default]
     Product,
     /// 保留原有限常量域，供精度和性能对照。
@@ -25,6 +25,7 @@ pub struct DomainSpec {
     cost_version: u16,
     widening_after_updates: usize,
     provenance_policy: &'static str,
+    relations: super::relational::RelationLimits,
 }
 
 impl DomainSpec {
@@ -36,16 +37,26 @@ impl DomainSpec {
         fact_limit: NonZeroUsize,
     ) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             word_bits: 256,
             profile,
             capacity,
             reduction_rounds,
             fact_limit,
-            cost_version: 1,
+            cost_version: 2,
             widening_after_updates: 2,
-            provenance_policy: "environment-symbols-and-block-local-copy-v2",
+            provenance_policy: "scoped-expressions-and-value-identities-v3",
+            relations: super::relational::RelationLimits::default(),
         }
+    }
+    /// Freeze the relation limits alongside the numeric component policy.
+    pub fn with_relations(mut self, relations: super::relational::RelationLimits) -> Self {
+        self.relations = relations;
+        self
+    }
+    /// Relation policy shared by execution, symbolic queries and summaries.
+    pub fn relations(self) -> super::relational::RelationLimits {
+        self.relations
     }
     /// 已有节点发生多少次严格增强后扩大不断移动的区间端点。
     pub fn widening_after_updates(self) -> usize {
