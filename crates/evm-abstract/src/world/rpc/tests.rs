@@ -27,7 +27,7 @@ enum Reply {
     Bytes(Vec<u8>),
     Trickle(Json),
     Http(u16),
-    Delay,
+    Delay(Duration),
 }
 
 struct Server {
@@ -85,8 +85,8 @@ impl Server {
                     Reply::Bytes(bytes) => (200, bytes, false),
                     Reply::Trickle(value) => (200, serde_json::to_vec(&value).unwrap(), true),
                     Reply::Http(status) => (status, Vec::new(), false),
-                    Reply::Delay => {
-                        thread::sleep(Duration::from_millis(150));
+                    Reply::Delay(delay) => {
+                        thread::sleep(delay);
                         continue;
                     }
                 };
@@ -487,6 +487,7 @@ fn missing_or_mismatched_chain_and_block_fail_before_state_requests() {
 #[test]
 fn state_failures_never_retry_at_latest_or_manufacture_empty_code() {
     thread::scope(|scope| {
+        let request_timeout = Duration::from_millis(500);
         for case in [
             "unsupported-selector",
             "null-code",
@@ -517,14 +518,14 @@ fn state_failures_never_retry_at_latest_or_manufacture_empty_code() {
                     "http" => Reply::Http(503),
                     "json" => Reply::Bytes(b"not json".to_vec()),
                     "limit" => Reply::Bytes(vec![b' '; 1025]),
-                    "timeout" => Reply::Delay,
+                    "timeout" => Reply::Delay(request_timeout.saturating_mul(2)),
                     _ => unreachable!(),
                 }
             });
             let mut input = server.input();
             input.max_response_bytes = 1024;
             if case == "timeout" {
-                input.timeout = Duration::from_millis(50);
+                input.timeout = request_timeout;
             }
             let error = load(&input).unwrap_err();
             let context = error.context();
@@ -541,10 +542,10 @@ fn state_failures_never_retry_at_latest_or_manufacture_empty_code() {
                 "http" => assert!(matches!(error, RpcError::Http { status: 503, .. })),
                 "json" => assert!(matches!(error, RpcError::Json { .. })),
                 "limit" => assert!(matches!(error, RpcError::ResponseLimit { .. })),
-                "timeout" => assert!(matches!(
-                    error,
-                    RpcError::Transport { .. } | RpcError::Read { .. }
-                )),
+                "timeout" => match &error {
+                    RpcError::Transport { source, .. } => assert!(source.is_timeout()),
+                    other => panic!("expected account acquisition timeout, got {other}"),
+                },
                 _ => unreachable!(),
             }
             let requests = server.requests();
@@ -754,13 +755,16 @@ fn remote_message_credentials_are_not_copied_to_public_failure_evidence() {
 #[test]
 fn incremental_timeout_and_response_limit_remain_typed_without_partial_cache() {
     thread::scope(|scope| {
+        let request_timeout = Duration::from_millis(500);
         for delayed in [false, true] {
             let server = Server::new(scope, move |request| {
                 if request["method"] == "eth_getCode"
                     && request["params"][0] == json!(Address::repeat_byte(0x44))
                 {
                     return if delayed {
-                        Reply::Delay
+                        // Healthy initialization needs scheduling headroom;
+                        // only this incremental request must exceed its deadline.
+                        Reply::Delay(request_timeout.saturating_mul(2))
                     } else {
                         Reply::Bytes(vec![b' '; 1025])
                     };
@@ -770,17 +774,17 @@ fn incremental_timeout_and_response_limit_remain_typed_without_partial_cache() {
             let mut input = server.input();
             input.max_response_bytes = 1024;
             if delayed {
-                input.timeout = Duration::from_millis(50);
+                input.timeout = request_timeout;
             }
             let mut session = Session::load(&input).unwrap();
             let error = session
                 .fetch_account(Address::repeat_byte(0x44))
                 .unwrap_err();
             if delayed {
-                assert!(matches!(
-                    error,
-                    RpcError::Transport { .. } | RpcError::Read { .. }
-                ));
+                match &error {
+                    RpcError::Transport { source, .. } => assert!(source.is_timeout()),
+                    other => panic!("expected incremental request timeout, got {other}"),
+                }
             } else {
                 assert!(matches!(error, RpcError::ResponseLimit { limit: 1024, .. }));
             }

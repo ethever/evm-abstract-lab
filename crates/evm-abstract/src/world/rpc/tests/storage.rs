@@ -106,6 +106,7 @@ fn incremental_storage_reuses_observations_and_pins_only_missing_slots() {
 #[test]
 fn incremental_storage_failures_retain_slot_provenance_without_partial_installation() {
     thread::scope(|scope| {
+        let request_timeout = Duration::from_millis(500);
         for case in [
             "remote", "null", "short", "long", "id", "http", "json", "limit", "timeout",
         ] {
@@ -136,14 +137,14 @@ fn incremental_storage_failures_retain_slot_provenance_without_partial_installat
                     "http" => Reply::Http(503),
                     "json" => Reply::Bytes(b"not json".to_vec()),
                     "limit" => Reply::Bytes(vec![b' '; 1025]),
-                    "timeout" => Reply::Delay,
+                    "timeout" => Reply::Delay(request_timeout.saturating_mul(2)),
                     _ => unreachable!(),
                 }
             });
             let mut input = server.input();
             input.max_response_bytes = 1024;
             if case == "timeout" {
-                input.timeout = Duration::from_millis(50);
+                input.timeout = request_timeout;
             }
             let mut session = Session::load(&input).unwrap();
             let address = Address::repeat_byte(0x22);
@@ -151,6 +152,12 @@ fn incremental_storage_failures_retain_slot_provenance_without_partial_installat
             let error = session
                 .fetch_storage(address, &BTreeSet::from([U256::from(1), U256::from(2)]))
                 .unwrap_err();
+            if case == "timeout" {
+                match &error {
+                    RpcError::Transport { source, .. } => assert!(source.is_timeout()),
+                    other => panic!("expected incremental storage timeout, got {other}"),
+                }
+            }
             assert_eq!(session.world().account(address), Some(&initial));
             assert_eq!(session.requests(), 12);
             let context = error.context();
