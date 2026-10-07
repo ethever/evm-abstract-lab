@@ -133,31 +133,41 @@ fn all_exact_encodings_match_the_shared_evm_oracle_at_boundaries() {
         opcode::SAR,
         opcode::CLZ,
     ];
-    for (index, opcode) in ops.into_iter().enumerate() {
-        for (offset, a) in values.into_iter().enumerate() {
-            let b = values[(index + offset + 1) % values.len()];
-            let modulus = values[(offset + 2) % values.len()];
-            let count = crate::domain::symbolic::arity(opcode).unwrap();
-            let variables = [
-                ExprId::fresh().unwrap(),
-                ExprId::fresh().unwrap(),
-                ExprId::fresh().unwrap(),
-            ];
-            let actuals = [a, b, modulus];
-            let mut state = RelationState::default();
-            for (variable, value) in variables.iter().zip(actuals).take(count) {
+    for provider in [
+        super::SmtProvider::Z3,
+        super::SmtProvider::Bitwuzla,
+        super::SmtProvider::Cvc5,
+    ] {
+        let policy = RelationLimits {
+            provider,
+            ..limits()
+        };
+        for (index, opcode) in ops.into_iter().enumerate() {
+            for (offset, a) in values.into_iter().enumerate() {
+                let b = values[(index + offset + 1) % values.len()];
+                let modulus = values[(offset + 2) % values.len()];
+                let count = crate::domain::symbolic::arity(opcode).unwrap();
+                let variables = [
+                    ExprId::fresh().unwrap(),
+                    ExprId::fresh().unwrap(),
+                    ExprId::fresh().unwrap(),
+                ];
+                let actuals = [a, b, modulus];
+                let mut state = RelationState::default();
+                for (variable, value) in variables.iter().zip(actuals).take(count) {
+                    assert_eq!(
+                        state.add_unsigned_bounds(variable, value, value, &policy),
+                        CheckResult::Sat
+                    );
+                }
+                let expression = op(opcode, &variables[..count]);
+                let expected = crate::domain::concrete::evaluate(opcode, a, b, modulus);
                 assert_eq!(
-                    state.add_unsigned_bounds(variable, value, value, &limits()),
-                    CheckResult::Sat
+                    state.unique_value(&expression, &policy),
+                    ValueQuery::Unique(expected),
+                    "provider={provider},opcode={opcode:x},a={a},b={b},c={modulus}"
                 );
             }
-            let expression = op(opcode, &variables[..count]);
-            let expected = crate::domain::concrete::evaluate(opcode, a, b, modulus);
-            assert_eq!(
-                state.unique_value(&expression, &limits()),
-                ValueQuery::Unique(expected),
-                "opcode={opcode:x},a={a},b={b},c={modulus}"
-            );
         }
     }
 }
@@ -324,29 +334,39 @@ fn default_fuel_handles_false_address_guard_and_unrelated_value_projection() {
 
 #[test]
 fn exact_exponentiation_handles_symbolic_base_and_literal_exponent_boundaries() {
-    for (base, exponent) in [
-        (U256::from(3), U256::ZERO),
-        (U256::from(3), U256::from(1)),
-        (U256::from(3), U256::from(2)),
-        (U256::from(3), U256::from(255)),
-        (U256::from(1), U256::MAX),
-        (U256::ZERO, U256::from(256)),
+    for provider in [
+        super::SmtProvider::Z3,
+        super::SmtProvider::Bitwuzla,
+        super::SmtProvider::Cvc5,
     ] {
-        let variable = ExprId::input(1, Symbol::CallValue);
-        let mut state = RelationState::default();
-        state
-            .observe(
-                &variable,
-                &crate::domain::NumericValue::constant(base),
-                &RelationLimits::default(),
-            )
-            .unwrap();
-        let expression = op(opcode::EXP, &[variable, ExprId::constant(exponent)]);
-        assert_eq!(
-            state.unique_value(&expression, &RelationLimits::default()),
-            ValueQuery::Unique(base.wrapping_pow(exponent)),
-            "base={base}, exponent={exponent}"
-        );
+        let policy = RelationLimits {
+            provider,
+            ..RelationLimits::default()
+        };
+        for (base, exponent) in [
+            (U256::from(3), U256::ZERO),
+            (U256::from(3), U256::from(1)),
+            (U256::from(3), U256::from(2)),
+            (U256::from(3), U256::from(255)),
+            (U256::from(1), U256::MAX),
+            (U256::ZERO, U256::from(256)),
+        ] {
+            let variable = ExprId::input(1, Symbol::CallValue);
+            let mut state = RelationState::default();
+            state
+                .observe(
+                    &variable,
+                    &crate::domain::NumericValue::constant(base),
+                    &policy,
+                )
+                .unwrap();
+            let expression = op(opcode::EXP, &[variable, ExprId::constant(exponent)]);
+            assert_eq!(
+                state.unique_value(&expression, &policy),
+                ValueQuery::Unique(base.wrapping_pow(exponent)),
+                "provider={provider}, base={base}, exponent={exponent}"
+            );
+        }
     }
 }
 #[test]
@@ -362,15 +382,22 @@ fn full_symbolic_exponentiation_respects_encoding_and_native_resource_limits() {
         RelationState::default().unique_value(&expression, &RelationLimits::default()),
         ValueQuery::Unknown(super::QueryReason::ExpressionLimit)
     );
-    let native = RelationLimits {
-        max_nodes: 4096,
-        rlimit: 1,
-        ..RelationLimits::default()
-    };
-    assert_eq!(
-        RelationState::default().unique_value(&expression, &native),
-        ValueQuery::Unknown(super::QueryReason::ResourceLimit)
-    );
+    for provider in [
+        super::SmtProvider::Z3,
+        super::SmtProvider::Bitwuzla,
+        super::SmtProvider::Cvc5,
+    ] {
+        let native = RelationLimits {
+            provider,
+            max_nodes: 4096,
+            rlimit: 1,
+            ..RelationLimits::default()
+        };
+        assert_eq!(
+            RelationState::default().unique_value(&expression, &native),
+            ValueQuery::Unknown(super::QueryReason::ResourceLimit)
+        );
+    }
 }
 
 #[test]
@@ -523,6 +550,54 @@ fn default_fuel_handles_masked_derived_loop_guard_with_named_arithmetic() {
             state.assume(&op(opcode::LT, &[next, c(10)]), truth, &policy),
             CheckResult::Sat,
             "truth={truth}"
+        );
+    }
+}
+
+#[test]
+fn every_provider_preserves_uniqueness_path_relations_and_evm_wrapping() {
+    for provider in [
+        super::SmtProvider::Z3,
+        super::SmtProvider::Bitwuzla,
+        super::SmtProvider::Cvc5,
+    ] {
+        let policy = RelationLimits {
+            provider,
+            ..limits()
+        };
+        let x = ExprId::input(1, Symbol::CallValue);
+        let next = op(opcode::ADD, &[x.clone(), c(1)]);
+        let mut state = RelationState::default();
+        assert_eq!(
+            state.assume(&op(opcode::EQ, &[next, c(0)]), true, &policy),
+            CheckResult::Sat,
+            "{provider}"
+        );
+        assert_eq!(
+            state.unique_value(&x, &policy),
+            ValueQuery::Unique(U256::MAX),
+            "{provider}"
+        );
+        assert_eq!(
+            state.can_equal(&x, U256::ZERO, &policy),
+            CheckResult::Unsat,
+            "{provider}"
+        );
+        let mut range = RelationState::default();
+        assert_eq!(
+            range.add_unsigned_bounds(&x, U256::from(1), U256::from(2), &policy),
+            CheckResult::Sat
+        );
+        assert_eq!(
+            range.unique_value(&x, &policy),
+            ValueQuery::Multiple,
+            "{provider}"
+        );
+        let same = op(opcode::EQ, &[x.clone(), x]);
+        assert_eq!(
+            RelationState::default().assume(&same, false, &policy),
+            CheckResult::Unsat,
+            "{provider}"
         );
     }
 }

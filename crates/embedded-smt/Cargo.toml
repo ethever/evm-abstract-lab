@@ -1,0 +1,20 @@
+[package]
+name                   = "embedded-smt"
+description            = "Typed Boolean and bit-vector queries over in-process SMT providers"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+bitwuzla-native      = { path = "../bitwuzla-native" }
+cvc5.workspace       = true
+num-bigint.workspace = true
+num-traits.workspace = true
+serde.workspace      = true
+thiserror.workspace  = true
+z3.workspace         = true
+
+[lints]
+workspace = true

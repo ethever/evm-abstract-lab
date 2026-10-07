@@ -55,7 +55,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 | [12：组合域与事实交换](docs/12-product-domains-facts.md) | 位、范围与同余怎样交换信息？来源和身份怎样分层？ | `known-bits-branch.hex`、`copy-identity.hex` |
 | [13：EVM 环境与符号输入](docs/13-evm-environment.md) | 默认覆盖哪些调用？怎样指定交易、区块和 gas 环境？ | `--evm.*`、caller/origin、BLOCKHASH/BLOBHASH |
 | [14：EVM内存与抽象字节数组](docs/14-memory-model.md) | MSTORE 怎样拆成字节？未知偏移、合并与复制怎样影响结果？ | MSTORE/MLOAD、MSTORE8、MSIZE、CALL 返回区 |
-| [15：符号表达式与关系约束](docs/15-symbolic-relations.md) | 分支条件怎样约束后续值？状态合并和 SMT 资源边界如何处理？ | 矛盾守卫、输入身份、进程内 Z3 |
+| [15：符号表达式与关系约束](docs/15-symbolic-relations.md) | 分支条件怎样约束后续值？状态合并和 SMT 资源边界如何处理？ | 矛盾守卫、输入身份、进程内 SMT 求解器 |
 
 两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成第 02 课后，可以进入[第 14 课](docs/14-memory-model.md)，先手算内存读写，再理解抽象字节数组。完成第 05 课后，也可以直接进入第 12 课，继续研究数值精度，再回到跨合约实验。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
 
@@ -107,7 +107,7 @@ flowchart TD
 
 `NumericValue` 默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`AbstractValue` 在数值摘要之外保存来源、角色、独立值身份和符号表达式；兼容名称 `Value` 指向这一执行值。`--max-constants` 默认 8，接受运行平台能表示的任意正 `usize`，配置容量不会直接预分配集合。`--reduction-rounds` 默认 4，`--max-facts` 默认 256，两者限制临时数值事实交换。
 
-机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过进程内 Z3 排除已证明矛盾的路径，并将已证明的数值结论投影回执行值。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。SMT 只使用 `--smt-rlimit` 限制资源，没有墙钟 timeout；表达式节点、深度和关系数量也有独立上限。查询不能完成时保留路径与类型化前沿。`analyze` 的 `--max-work` 默认 2000 万，覆盖执行、数值、符号及查询预留工作。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
+机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过进程内 SMT 求解器排除已证明矛盾的路径，并将已证明的数值结论投影回执行值。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。`--smt.provider` 可选 `z3`（默认）、`bitwuzla` 或 `cvc5`。`--smt.rlimit` 默认 100000，为每次求解检查分配额度，没有墙钟 timeout；不同求解器的资源单位不能直接比较，Bitwuzla 按协作式停止检查的次数计数。表达式节点、深度和关系数量也有独立上限。查询不能完成时保留路径与类型化前沿。`analyze` 的 `--max-work` 默认 2000 万，覆盖执行、数值、符号及查询预留工作。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
 
 CLI 的数量参数 `--evm.value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`；`--block-number` 接受相同进制写法，范围为 `0` 到 `2^64−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--evm.value 1000`（单位 wei）、`--block-number 26000000`、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
 
@@ -195,7 +195,7 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 值的命名与结构验证 | [`ssa/`](crates/evm-abstract/src/ssa) |
 | 命令参数、世界文件解析 | [`evm-abstract-cli`](crates/evm-abstract-cli) |
 
-本仓库实现抽象 transfer（指令怎样更新抽象状态）、工作表与栈到 SSA 的转换；通用部分复用 `revm-bytecode` 的指令元数据、`alloy-primitives` 的 U256、`petgraph` 的图算法、`revm-precompile` 的原生计算、`reqwest` 的 RPC 传输及进程内 Z3 的位向量查询。Z3 是原生链接依赖，Nix 开发环境和完整门禁提供其库；运行时不启动 `z3` CLI 或外部求解进程。测试使用 revm 具体执行和 proptest 性质检查；依赖资料见[参考页](docs/references.md)。
+本仓库实现抽象 transfer（指令怎样更新抽象状态）、工作表与栈到 SSA 的转换；通用部分复用 `revm-bytecode` 的指令元数据、`alloy-primitives` 的 U256、`petgraph` 的图算法、`revm-precompile` 的原生计算、`reqwest` 的 RPC 传输及 Z3、Bitwuzla、cvc5 的位向量查询。这三个求解器都是原生链接依赖，Nix 开发环境和完整门禁提供其库；运行时通过进程内接口调用，不启动外部求解进程。测试使用 revm 具体执行和 proptest 性质检查；依赖资料见[参考页](docs/references.md)。
 
 ## 验证与源码导航
 

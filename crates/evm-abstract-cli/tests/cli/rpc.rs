@@ -22,6 +22,9 @@ mod pinning;
 #[path = "rpc/storage.rs"]
 mod storage;
 
+#[path = "rpc/smt.rs"]
+mod smt;
+
 const ENTRY: &str = "0x0000000000000000000000000000000000000101";
 const CALLEE: &str = "0x0000000000000000000000000000000000000200";
 const LEAF: &str = "0x0000000000000000000000000000000000000300";

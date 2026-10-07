@@ -177,7 +177,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | JUMP/JUMPI | 有限目标逐个验证；Top 覆盖真实 JUMPDEST；依据数值条件和关系域的分支可行性查询保留边 | 可能有伪边；有界跳转历史不等于内部函数恢复 |
 | 环境、hash、gas | `--evm.*` 描述根调用、交易与区块输入；CALLER、ADDRESS、value 按子调用规则推导；BLOCKHASH/BLOBHASH 检查有效范围，未观察的有效项仍未知；GAS 传播上界 | RPC 固定的是账户状态快照；`--evm.number`、`--evm.chain-id` 等执行环境覆盖不会改变快照身份；环境符号不等于完整符号执行；gas、EIP-150、out-of-gas 与成本不精确 |
 
-SMT 通过进程内 Z3 调用，只使用 `rlimit`，不设置墙钟 timeout。`ResourceLimit`、表达式或约束上限以及其它无法完成的查询产生 `Relations` 前沿并保留可能路径。SAT 仅说明保留的模型约束可满足；一般 hash、未知地址别名和跨交易不变量仍不在完整可行性证明的范围内。参见[第 15 课](15-symbolic-relations.md)。
+SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.provider` 选择后端，`--smt.rlimit` 默认 100000，不设置墙钟 timeout。各后端的资源单位不同，不能把相同额度理解成相同耗时或相同求解能力。`ResourceLimit`、表达式或约束上限以及其它无法完成的查询产生 `Relations` 前沿并保留可能路径。SAT 仅说明保留的模型约束可满足；一般 hash、未知地址别名和跨交易不变量仍不在完整可行性证明的范围内。参见[第 15 课](15-symbolic-relations.md)。
 
 ### 跨账户执行与状态效果
 

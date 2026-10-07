@@ -92,7 +92,7 @@ JSON 省略输入作用域和 fresh 的私有编号。它可以显示表达式�
 
 ## 6. Word256 编码与字节往返
 
-后端使用原生 Z3 的 QF_BV bit-vector 编码，不把 EVM word 默认为无界整数。
+三个后端共用 EVM 运算到定宽位向量的编码规则，再分别交给 Z3、Bitwuzla 或 cvc5。位向量显式保留宽度，不把 EVM word 默认为无界整数。
 
 - ADD、SUB、MUL 等运算按模 `2^256` 回绕。
 - DIV、SDIV、MOD、SMOD 显式处理除数零；有符号运算保留 EVM 的符号和溢出规则。
@@ -106,9 +106,30 @@ MSTORE 拆出的 32 个有序 `BYTE(i,word)`，若都引用同一表达式和作
 
 ## 7. 原生后端与确定性资源预算
 
-SMT 直接通过 Rust z3 绑定在进程内运行，不启动外部 solver，也没有失败后改走外部进程的路径。每次查询使用新的私有 native context；唯一值查询的两次检查共用这一查询 context。solver/AST 句柄不存入执行状态或摘要。
+默认求解器是 Z3。下面用同一段字节码分别选择三个后端：
 
-后端只设置 `rlimit`，没有墙钟 timeout 或 deadline。达到 native 资源限制、表达式边界或约束容量时，会留下相应 typed 原因；分析的共享 `max-work` 账本另行计入查询及数据处理工作。这些单位不是 EVM gas，也不是秒数。
+```bash
+for provider in z3 bitwuzla cvc5; do
+  nix run . -- cfg --hex 3480600114600957005b80600214601257005b00 \
+    --context-depth 0 --smt.provider "$provider" --smt.rlimit 100000
+done
+```
+
+三个求解器都通过原生库的接口在当前进程内运行。查询之间不共用可变求解状态，原生表达式和求解器句柄不存入执行状态或摘要。关系分析只依赖统一的查询结果：可满足、不可满足、无法判定，以及被证明的唯一值或候选值集合；选择后端不改变 EVM 指令的编码规则。
+
+cvc5 使用固定的原生策略：关闭会将中间变量代回表达式的非子句简化，并启用位向量算术抽象。后者先处理较小的问题，再检查、补充被暂时省略的算术关系；原生求解器完成一致性检查后才报告 SAT。这样避免连续平方在预算检查前就被展开成巨大的乘法表达式或布尔条件。所有原始等式仍被保留；资源不够时仍返回 Unknown。对应选项是 [`simplification=none`](https://cvc5.github.io/docs/cvc5-1.4.0/options.html#simplification) 和 [`bv-abstraction=true`](https://github.com/cvc5/cvc5/blob/cvc5-1.4.0/src/theory/bv/bv_solver_bitblast.cpp)。
+
+CFG 和 world 分析的文本报告会显示 `SMT=in-process z3`、`bitwuzla` 或 `cvc5`，并用 `resource unit` 标明额度的计数单位。JSON 中，单段字节码记录在 `.config.relations.provider` 和 `.config.relations.rlimit`，world/RPC 分析记录在 `.config.analysis.relations` 下；带 SSA 的 JSON 外层再包一层 `.analysis`。比较两份分析结果时，应同时保留求解器名称和资源额度。
+
+`--smt.rlimit` 为每次检查分配求解额度，没有墙钟 timeout 或 deadline。默认值从 10000 提高到 100000；这给一次查询更多求解机会，也可能增加运行时间。达到资源限制、表达式边界或约束容量时，会留下相应原因；分析的共享 `max-work` 账本另行计入查询及数据处理工作。这些单位不是 EVM gas，也不是秒数。不同求解器的计数方式不同，`z3` 的 100000 与 `cvc5` 的 100000 不能视为同样的计算量，跨后端比较应观察实际结果、耗时及未完成原因。
+
+| 后端 | `--smt.rlimit` 实际控制什么 | 文本报告中的单位 |
+| --- | --- | --- |
+| `z3` | Z3 自己的资源计数，每次检查设置原生 `rlimit` | `z3 resource units` |
+| `cvc5` | cvc5 自己的资源计数，每次检查设置原生 `rlimit-per` | `cvc5 resource units` |
+| `bitwuzla` | 允许求解器询问“是否应该停止”的次数；次数用尽后要求它停止 | `termination checks (cooperative)` |
+
+Bitwuzla 的限制是协作式的：它在预处理的循环边界和单线程 CaDiCaL 求解过程中调用停止检查；CaDiCaL 是它用于判断布尔条件的内部引擎。检查次数用尽不代表已经完成的基本运算恰好等于该次数。一次预处理、把位向量转换为布尔条件的过程，以及提取满足条件的赋值，都不受这个次数逐步约束。因此，`--smt.rlimit 100000` 不能当作整个 Bitwuzla 调用的严格工作量上限。所有后端在构造原生表达式和读取结果时也会做额外工作，表达式节点、深度和分析总工作预算仍需同时保留。
 
 | 参数 | 当前默认值 | 限制什么 |
 | --- | --- | --- |
@@ -116,7 +137,8 @@ SMT 直接通过 Rust z3 绑定在进程内运行，不启动外部 solver，也
 | `--max-symbolic-nodes` | 1024 | 保留表达式及单次编码遍历的节点工作量 |
 | `--max-symbolic-depth` | 64 | 表达式嵌套深度 |
 | `--max-relations` | 128 | 当前关系合取的原子数 |
-| `--smt-rlimit` | 10000 | 单次 native solver 检查的确定性资源额度 |
+| `--smt.provider` | `z3` | 进程内后端，可选 `z3`、`bitwuzla`、`cvc5` |
+| `--smt.rlimit` | 100000 | 单次求解检查的资源额度，单位由所选后端决定 |
 
 节点数按展开树计，是共享 DAG 工作量的保守上界；不能因为子节点共享就把深度或数值溢出当作已经完成。构造超过限制或计数溢出时显式拒绝，不保留被低估的大小。
 
@@ -126,7 +148,8 @@ SMT 直接通过 Rust z3 绑定在进程内运行，不启动外部 solver，也
 
 - [`symbolic.rs`](../crates/evm-abstract/src/domain/symbolic.rs)：作用域、结构表达式、fresh 叶、规范化和节点边界。
 - [`relational.rs`](../crates/evm-abstract/src/domain/relational.rs)：保证导入、assume、join/widening、相关性与查询结果。
-- [`relational/solver.rs`](../crates/evm-abstract/src/domain/relational/solver.rs)：私有 native context、QF_BV 编码和 rlimit。
+- [`relational/solver.rs`](../crates/evm-abstract/src/domain/relational/solver.rs)：共享的 EVM 定宽位向量编码、关系查询和结果解释。
+- [`embedded-smt`](../crates/embedded-smt/src/lib.rs)：与 EVM 无关的求解接口、三个进程内后端及各自的资源计数。
 - [`transfer/relations.rs`](../crates/evm-abstract/src/analysis/transfer/relations.rs)：分支假设与回写数值。
 - [`summary/replay.rs`](../crates/evm-abstract/src/analysis/summary/replay.rs)：资格检查后的 fresh 重命名和 caller 前缀恢复。
 - [`relational/tests.rs`](../crates/evm-abstract/src/domain/relational/tests.rs)、[`symbolic/tests.rs`](../crates/evm-abstract/src/domain/symbolic/tests.rs)、[`tests/relations.rs`](../crates/evm-abstract/tests/relations.rs)：Word256 编码、作用域、预算、矛盾分支、内存和摘要回归。
