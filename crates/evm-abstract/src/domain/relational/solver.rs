@@ -1,17 +1,16 @@
-//! Native Z3 bit-vector encoding. No subprocess, shared solver or integer lift.
+//! Shared EVM bit-vector encoding over the provider-independent SMT layer.
+//! Every check owns a fresh native session; EVM arithmetic semantics live here.
 
 use super::{CheckResult, Constraint, QueryReason, RelationLimits, RelationState, ValueQuery};
 use crate::domain::symbolic::{ExprId, ExprKind};
 use alloy_primitives::U256;
+use embedded_smt::{Bool, Bv as BV, Context, Outcome, Unknown};
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
-use z3::{
-    Params, SatResult, Solver,
-    ast::{BV, Bool},
-};
 
 struct Encoder<'a> {
     limits: &'a RelationLimits,
+    symbols: Context,
     work: usize,
     memo: BTreeMap<ExprId, BV>,
     definitions: Vec<Bool>,
@@ -21,6 +20,7 @@ impl<'a> Encoder<'a> {
     fn new(limits: &'a RelationLimits) -> Self {
         Self {
             limits,
+            symbols: Context::default(),
             work: 0,
             memo: BTreeMap::new(),
             definitions: Vec::new(),
@@ -36,20 +36,20 @@ impl<'a> Encoder<'a> {
         }
     }
     fn bind(&mut self, value: BV) -> BV {
-        let variable = BV::fresh_const("evm_intermediate", 256);
+        let variable = self.symbols.fresh_bv("evm_intermediate", 256);
         self.definitions.push(variable.eq(&value));
         variable
     }
-    fn emit_definitions(&mut self, solver: &Solver) {
+    fn emit_definitions(&mut self, assertions: &mut Vec<Bool>) {
         for definition in &self.definitions[self.emitted_definitions..] {
-            solver.assert(definition);
+            assertions.push(definition.clone());
         }
         self.emitted_definitions = self.definitions.len();
     }
     fn bind_observed_constants(
         &mut self,
         state: &RelationState,
-        solver: &Solver,
+        assertions: &mut Vec<Bool>,
     ) -> Result<(), QueryReason> {
         for constraint in &state.constraints {
             let Constraint::Equal { left, right } = constraint else {
@@ -75,12 +75,12 @@ impl<'a> Encoder<'a> {
                 )
                 && value > U256::MAX >> 96
             {
-                solver.assert(Bool::from_bool(false));
+                assertions.push(Bool::from_bool(false));
             }
             self.charge(1)?;
             let constant = word(value);
             if let Some(previous) = self.memo.get(variable) {
-                solver.assert(previous.eq(&constant));
+                assertions.push(previous.eq(&constant));
             }
             self.memo.insert(variable.clone(), constant);
         }
@@ -108,7 +108,7 @@ impl<'a> Encoder<'a> {
         // ADD/SUB by a constant is a bijection on Word256. Bind the guarded
         // result and express its free input by the exact modular inverse.
         self.charge(3)?;
-        let result = BV::fresh_const("evm_affine_result", 256);
+        let result = self.symbols.fresh_bv("evm_affine_result", 256);
         let inverse = if let Some(constant) = args[1].as_constant() {
             if op == opcode::ADD {
                 result.bvsub(word(constant))
@@ -142,11 +142,11 @@ impl<'a> Encoder<'a> {
                 | crate::domain::identity::Symbol::Caller
                 | crate::domain::identity::Symbol::Origin
                 | crate::domain::identity::Symbol::Coinbase => {
-                    BV::fresh_const("evm_address", 160).zero_ext(96)
+                    self.symbols.fresh_bv("evm_address", 160).zero_ext(96)
                 }
-                _ => BV::fresh_const("evm_input", 256),
+                _ => self.symbols.fresh_bv("evm_input", 256),
             },
-            ExprKind::Fresh(_) => BV::fresh_const("evm_runtime", 256),
+            ExprKind::Fresh(_) => self.symbols.fresh_bv("evm_runtime", 256),
             ExprKind::Operation { opcode: op, args } => {
                 if let Some(result) = self.affine_result(*op, args)? {
                     result
@@ -211,7 +211,7 @@ impl<'a> Encoder<'a> {
             opcode::OR => a.bvor(b.expect("validated arity")),
             opcode::XOR => a.bvxor(b.expect("validated arity")),
             opcode::NOT => a.bvnot(),
-            // Z3 shifts use unsigned shift amounts of the same width, and
+            // SMT shifts use unsigned shift amounts of the same width, and
             // define oversized logical/arithmetic shifts exactly as EVM does.
             opcode::SHL => b.expect("validated arity").bvshl(a),
             opcode::SHR => b.expect("validated arity").bvlshr(a),
@@ -392,17 +392,7 @@ fn word(value: U256) -> BV {
     BV::from_str(256, &value.to_string()).expect("valid unsigned decimal word")
 }
 fn literal(value: &BV) -> Option<U256> {
-    if let Some(value) = value.as_u64() {
-        return Some(U256::from(value));
-    }
-    let printed = value.to_string();
-    if let Some(hex) = printed.strip_prefix("#x") {
-        U256::from_str_radix(hex, 16).ok()
-    } else if let Some(binary) = printed.strip_prefix("#b") {
-        U256::from_str_radix(binary, 2).ok()
-    } else {
-        None
-    }
+    U256::from_str_radix(value.literal_hex()?, 16).ok()
 }
 fn boolean(value: Bool) -> BV {
     value.ite(&word(U256::from(1)), &word(U256::ZERO))
@@ -411,7 +401,7 @@ fn prepared<'a>(
     state: &RelationState,
     extra: Option<Constraint>,
     limits: &'a RelationLimits,
-) -> Result<(Solver, Encoder<'a>), QueryReason> {
+) -> Result<(Vec<Bool>, Encoder<'a>), QueryReason> {
     if !limits.enabled {
         return Err(QueryReason::Disabled);
     }
@@ -421,39 +411,38 @@ fn prepared<'a>(
     if state.constraints.len() > limits.max_constraints {
         return Err(QueryReason::ConstraintLimit);
     }
-    let solver =
-        Solver::new_for_logic("QF_BV").expect("Z3 supports quantifier-free bit-vector logic");
-    let mut parameters = Params::new();
-    parameters.set_u32("rlimit", limits.rlimit);
-    solver.set_params(&parameters);
+    let mut assertions = Vec::new();
     let mut encoder = Encoder::new(limits);
-    encoder.bind_observed_constants(state, &solver)?;
+    encoder.bind_observed_constants(state, &mut assertions)?;
     for constraint in &state.constraints {
-        solver.assert(encoder.constraint(constraint)?);
+        assertions.push(encoder.constraint(constraint)?);
     }
     if let Some(extra) = extra {
-        solver.assert(encoder.constraint(&extra)?);
+        assertions.push(encoder.constraint(&extra)?);
     }
-    encoder.emit_definitions(&solver);
-    Ok((solver, encoder))
+    encoder.emit_definitions(&mut assertions);
+    Ok((assertions, encoder))
 }
-fn checked(solver: &Solver, _encoder: &Encoder<'_>) -> CheckResult {
-    match solver.check() {
-        SatResult::Unsat => CheckResult::Unsat,
-        SatResult::Sat => CheckResult::Sat,
-        SatResult::Unknown => {
-            let reason = solver
-                .get_reason_unknown()
-                .unwrap_or_else(|| "unknown".into());
-            CheckResult::Unknown(if reason.contains("resource") || reason == "canceled" {
-                QueryReason::ResourceLimit
-            } else {
-                QueryReason::SolverUnknown(reason)
-            })
+
+fn unknown(reason: Unknown) -> QueryReason {
+    match reason {
+        Unknown::ResourceLimit => QueryReason::ResourceLimit,
+        Unknown::Solver(reason) => QueryReason::SolverUnknown(reason),
+    }
+}
+
+fn checked(assertions: &[Bool], limits: &RelationLimits) -> CheckResult {
+    match embedded_smt::check(assertions, None, limits.provider, limits.rlimit) {
+        Outcome::Sat(_) => CheckResult::Sat,
+        Outcome::Unsat => CheckResult::Unsat,
+        Outcome::Unknown(reason) => CheckResult::Unknown(unknown(reason)),
+        Outcome::Error(error) => {
+            CheckResult::Unknown(QueryReason::SolverUnknown(error.to_string()))
         }
     }
 }
-fn check_in_context(
+
+pub(super) fn check(
     state: &RelationState,
     extra: Option<Constraint>,
     limits: &RelationLimits,
@@ -461,13 +450,14 @@ fn check_in_context(
     if state.bottom {
         return CheckResult::Unsat;
     }
-    let (solver, encoder) = match prepared(state, extra, limits) {
+    let (assertions, _) = match prepared(state, extra, limits) {
         Ok(query) => query,
         Err(reason) => return CheckResult::Unknown(reason),
     };
-    checked(&solver, &encoder)
+    checked(&assertions, limits)
 }
-fn unique_in_context(
+
+pub(super) fn unique(
     state: &RelationState,
     expression: &ExprId,
     limits: &RelationLimits,
@@ -478,13 +468,13 @@ fn unique_in_context(
     if matches!(expression.kind(), ExprKind::Input(_) | ExprKind::Fresh(_))
         && !state.relevant(expression)
     {
-        return match check_in_context(state, None, limits) {
+        return match check(state, None, limits) {
             CheckResult::Sat => ValueQuery::Multiple,
             CheckResult::Unsat => ValueQuery::Infeasible,
             CheckResult::Unknown(reason) => ValueQuery::Unknown(reason),
         };
     }
-    let (solver, mut encoder) = match prepared(state, None, limits) {
+    let (mut assertions, mut encoder) = match prepared(state, None, limits) {
         Ok(query) => query,
         Err(reason) => return ValueQuery::Unknown(reason),
     };
@@ -492,56 +482,33 @@ fn unique_in_context(
         Ok(value) => value,
         Err(reason) => return ValueQuery::Unknown(reason),
     };
-    encoder.emit_definitions(&solver);
-    match checked(&solver, &encoder) {
-        CheckResult::Unsat => return ValueQuery::Infeasible,
-        CheckResult::Unknown(reason) => return ValueQuery::Unknown(reason),
-        CheckResult::Sat => {}
-    }
-    let Some(model_value) = solver
-        .get_model()
-        .and_then(|model| model.eval(&value, true))
-    else {
-        return ValueQuery::Unknown(QueryReason::ModelUnavailable);
-    };
-    let printed = model_value.to_string();
+    encoder.emit_definitions(&mut assertions);
+    let printed =
+        match embedded_smt::check(&assertions, Some(&value), limits.provider, limits.rlimit) {
+            Outcome::Sat(Some(value)) => value,
+            Outcome::Sat(None) => return ValueQuery::Unknown(QueryReason::ModelUnavailable),
+            Outcome::Unsat => return ValueQuery::Infeasible,
+            Outcome::Unknown(reason) => return ValueQuery::Unknown(unknown(reason)),
+            Outcome::Error(error) => {
+                return ValueQuery::Unknown(QueryReason::SolverUnknown(error.to_string()));
+            }
+        };
     let constant = if let Some(hex) = printed.strip_prefix("#x") {
         U256::from_str_radix(hex, 16).ok()
     } else if let Some(binary) = printed.strip_prefix("#b") {
         U256::from_str_radix(binary, 2).ok()
     } else {
-        model_value.as_u64().map(U256::from)
+        None
     };
     let Some(constant) = constant else {
         return ValueQuery::Unknown(QueryReason::ModelUnavailable);
     };
-    solver.assert(value.eq(word(constant)).not());
-    match checked(&solver, &encoder) {
+    assertions.push(value.eq(word(constant)).not());
+    // A second independent request keeps the same neutral terms and allowance.
+    // It cannot accidentally switch a reused Z3 solver into another strategy.
+    match checked(&assertions, limits) {
         CheckResult::Unsat => ValueQuery::Unique(constant),
         CheckResult::Sat => ValueQuery::Multiple,
         CheckResult::Unknown(reason) => ValueQuery::Unknown(reason),
     }
-}
-
-pub(super) fn check(
-    state: &RelationState,
-    extra: Option<Constraint>,
-    limits: &RelationLimits,
-) -> CheckResult {
-    // Own the entire native context, not only its solver. Caller-configured
-    // thread-local timeouts/interrupts and prior queries cannot leak into this
-    // exclusively resource-bounded query. No native handle escapes the callback.
-    z3::with_z3_config(&z3::Config::new(), || {
-        check_in_context(state, extra, limits)
-    })
-}
-pub(super) fn unique(
-    state: &RelationState,
-    expression: &ExprId,
-    limits: &RelationLimits,
-) -> ValueQuery {
-    // Both satisfiability and uniqueness checks share this fresh query context.
-    z3::with_z3_config(&z3::Config::new(), || {
-        unique_in_context(state, expression, limits)
-    })
 }

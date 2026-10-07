@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod scalar;
 mod solver;
+pub use embedded_smt::Provider as SmtProvider;
 pub use scalar::ScalarQuery;
 #[cfg(test)]
 mod tests;
@@ -29,7 +30,9 @@ pub struct RelationLimits {
     pub max_nodes: usize,
     /// Maximum expression nesting.
     pub max_depth: usize,
-    /// Native solver deterministic resource bound.
+    /// Selected in-process provider; it never falls back to a different provider.
+    pub provider: SmtProvider,
+    /// Per-check resource allowance in provider-specific, non-wall-clock units.
     pub rlimit: u32,
 }
 impl Default for RelationLimits {
@@ -39,7 +42,8 @@ impl Default for RelationLimits {
             max_constraints: 128,
             max_nodes: 1024,
             max_depth: 64,
-            rlimit: 10_000,
+            provider: SmtProvider::default(),
+            rlimit: embedded_smt::DEFAULT_RLIMIT,
         }
     }
 }

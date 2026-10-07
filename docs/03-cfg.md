@@ -141,7 +141,7 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations
 ```text
 status=Converged fork=osaka states=3 edges=3 transfers=11 context_depth=0
 domain=ConstantsOnly | domain schema=2 | reduction rounds=4 | fact atoms=256
-relations=false | SMT=in-process Z3 | rlimit=10000 | expression nodes=1024 | depth=64 | constraints=128
+relations=false | SMT=in-process z3 | rlimit=100000 | resource unit=z3 resource units | expression nodes=1024 | depth=64 | constraints=128
 S1 | B1 @ 0x0002 | stack height=1 | context=[]
   relations in=0 out=0
   stack in  [⊤]

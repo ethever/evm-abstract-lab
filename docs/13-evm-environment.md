@@ -158,7 +158,8 @@ jq '.program.blocks as $blocks | [.states[].key.basic_block_index | $blocks[.].s
 | `--max-symbolic-nodes` | 1024 | 表达式与一次查询可处理的节点上限 |
 | `--max-symbolic-depth` | 64 | 表达式嵌套深度 |
 | `--max-relations` | 128 | 一个状态可保留的约束数 |
-| `--smt-rlimit` | 10000 | 进程内 Z3 每次查询的确定性资源限制 |
+| `--smt.provider` | `z3` | 进程内求解器，可选 `z3`、`bitwuzla`、`cvc5` |
+| `--smt.rlimit` | 100000 | 每次求解检查的工作额度，各求解器的单位不同 |
 
 求解器只使用 `rlimit`，没有墙钟 timeout。资源不足、表达式不能编码或 solver 未给出证明时，保留未知结果和对应前沿；只有已证实 UNSAT 才能剪掉分支。关系查询与表达式工作还使用整次分析共享的 `--max-work`。库模型、求解流程、摘要重命名和完整回归见[第 15 课](15-symbolic-relations.md)。
 

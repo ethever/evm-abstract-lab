@@ -27,6 +27,8 @@ mod known_bits;
 mod numbers;
 #[path = "cli/rpc.rs"]
 mod rpc;
+#[path = "cli/smt.rs"]
+mod smt;
 
 fn run_concrete(args: &[&str]) -> std::process::Output {
     let mut scoped = args.to_vec();

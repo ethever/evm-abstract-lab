@@ -69,8 +69,8 @@ pub fn cfg(analysis: &Analysis) -> String {
     )
     .unwrap();
     let relations = analysis.config().relations;
-    writeln!(output, "relations={} | SMT=in-process Z3 | rlimit={} | expression nodes={} | depth={} | constraints={}",
-        relations.enabled, relations.rlimit, relations.max_nodes, relations.max_depth, relations.max_constraints).unwrap();
+    writeln!(output, "relations={} | SMT=in-process {} | rlimit={} | resource unit={} | expression nodes={} | depth={} | constraints={}",
+        relations.enabled, relations.provider, relations.rlimit, relations.provider.resource_unit(), relations.max_nodes, relations.max_depth, relations.max_constraints).unwrap();
     world::environment::write(&mut output, analysis.environment(), None, false, |input| {
         input.to_string()
     });

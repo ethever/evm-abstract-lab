@@ -167,7 +167,8 @@ nix run . -- cfg --file examples/stack-heights.hex --context-depth 0
 | `--no-relations` | 未指定时启用关系分析 | 关闭表达式传播和持久关系查询，保留数值与复制/输入身份 |
 | `--max-symbolic-nodes` / `--max-symbolic-depth` | 默认 1024 / 64，正整数 | 限制表达式节点工作量与嵌套深度 |
 | `--max-relations` | 默认 128，正整数 | 单状态可保存的关系数量 |
-| `--smt-rlimit` | 默认 10000，正整数 | 进程内求解器的资源单位；不是秒数 |
+| `--smt.provider` | 默认 `z3` | 进程内求解器，可选 `z3`、`bitwuzla`、`cvc5` |
+| `--smt.rlimit` | 默认 100000，正整数 | 单次检查的求解工作额度；不是秒数，各求解器的单位不同 |
 | `--max-states` | 默认 4096，正整数 | 最多建立多少个分析状态 |
 | `--max-transfers` | 默认 100000，正整数 | 最多执行多少次基本块传播，重新执行也计数 |
 
