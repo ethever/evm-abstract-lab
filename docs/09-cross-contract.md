@@ -4,6 +4,8 @@
 
 先手算一条成功路径，再读包含其他可能性的抽象结果。本课命令将入口 caller 固定为 `0x...1000`、value 固定为零、calldata 固定为空；origin 省略，因此与入口 caller 相同。未指定的交易和区块字段仍为符号输入。省略 caller、value、calldata 时，分析覆盖更广的输入范围，规则见[第 13 课](13-evm-environment.md)。所有命令都在仓库根目录执行；示例是离线合成状态，不需要节点或资金。阅读前应了解 [栈](01-bytecode.md)、[值集合](02-domain.md) 和 [CFG](03-cfg.md)。
 
+本章增加的核心变量是“哪个账户、哪个调用帧”：单账户 storage 的 word、slot、默认值和强弱更新可先在[第 16 课](16-storage-model.md)手算；memory 的 byte、偏移、输入/输出复制可先在[第 14 课](14-memory-model.md)观察。进入下面的 CALL 实验时，只需在这些已有模型上再标记 owner 与调用层级。
+
 ## 1. 第一个实验：B 返回 1，A 写入 1
 
 [`call-return-branch.json`](../examples/worlds/call-return-branch.json) 提供两个账户。下文用短名字，命令和 JSON 保留完整地址：
