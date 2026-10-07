@@ -690,7 +690,7 @@ impl Store {
         self.created.get(&address).copied().unwrap_or(Some(false))
     }
 
-    /// Whether EIP-6780 schedules this account for deletion at transaction end.
+    /// Whether [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) schedules this account for deletion at transaction end.
     /// Code remains visible and callable while the transaction is executing.
     pub fn pending_destruction(&self, address: Address) -> Option<bool> {
         self.pending_destruction
@@ -699,7 +699,7 @@ impl Store {
             .unwrap_or(Some(false))
     }
 
-    /// EIP-6780 balance movement and deferred deletion for all supported forks.
+    /// [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) balance movement and deferred deletion for all supported forks.
     /// The caller enumerates finite beneficiaries before invoking this operation.
     pub fn selfdestruct(&mut self, address: Address, beneficiary: Address, domain: Domain) {
         let balance = self.read_balance(address);
@@ -732,7 +732,7 @@ impl Store {
         }
     }
 
-    /// Commit deferred EIP-6780 deletion only at outermost completion. A joined
+    /// Commit deferred [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) deletion only at outermost completion. A joined
     /// optional deletion conservatively joins the retained and deleted accounts.
     pub fn finalize_transaction(&mut self, domain: Domain) {
         let pending = std::mem::take(&mut self.pending_destruction);

@@ -1,10 +1,10 @@
 # 09：跟着一次调用，跨过合约边界
 
-前几课分析一段字节码。本课把问题扩大一点：A 调用 B，B 返回的数值会不会改变 A 的分支？这要求分析器同时保存两个合约的执行位置、返回字节和 storage。
+[前几课](../README.md#推荐阅读顺序)分析一段字节码。本课把问题扩大一点：A 调用 B，B 返回的数值会不会改变 A 的分支？这要求分析器同时保存两个合约的执行位置、返回字节和 storage。
 
 先手算一条成功路径，再读包含其他可能性的抽象结果。本课命令将入口 caller 固定为 `0x...1000`、value 固定为零、calldata 固定为空；origin 省略，因此与入口 caller 相同。未指定的交易和区块字段仍为符号输入。省略 caller、value、calldata 时，分析覆盖更广的输入范围，规则见[第 13 课](13-evm-environment.md)。所有命令都在仓库根目录执行；示例是离线合成状态，不需要节点或资金。阅读前应了解 [栈](01-bytecode.md)、[值集合](02-domain.md) 和 [CFG](03-cfg.md)。
 
-本章增加的核心变量是“哪个账户、哪个调用帧”：单账户 storage 的 word、slot、默认值和强弱更新可先在[第 16 课](16-storage-model.md)手算；memory 的 byte、偏移、输入/输出复制可先在[第 14 课](14-memory-model.md)观察。进入下面的 CALL 实验时，只需在这些已有模型上再标记 owner 与调用层级。
+本章增加的核心变量是“哪个账户、哪个调用帧”：单账户 storage 的 word、slot、默认值和强弱更新可先在[第 16 课](16-storage-model.md)手算；memory 的 byte、偏移、输入/输出复制可先在[第 14 课](14-memory-model.md)观察。进入[下面的 CALL 实验](#1-第一个实验b-返回-1a-写入-1)时，只需在这些已有模型上再标记 owner 与调用层级。
 
 ## 1. 第一个实验：B 返回 1，A 写入 1
 
@@ -140,7 +140,7 @@ nix run . -- explain \
   --verbose
 ```
 
-完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=3`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见下文代理实验。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=3`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 完整 SSA 继续逐帧列出 active/suspended、代码地址、storage owner、代码 hash、mode、caller、static、跳转历史和栈高，不会因为活动帧采用共用指令布局而省略暂停帧。`bytecode instructions` 与 `instruction effects` 共享当前 B 标题和不带 `0x` 的 pc 列，效果行不重复打印 B 标题；原始 `opcode`、`immediate`、`operands`、`results`、`fault` 正文和逐指令效果编号仍完整显示。教学视图便于读赋值式值流，完整视图便于核对字段和效果链，各自保留原有证据。
 
@@ -158,7 +158,7 @@ nix run . -- explain \
 
 数值默认用[第 12 课的组合域](12-product-domains-facts.md)表示。文本里的 `{0x1}` 是候选集合的简写；无法列出完整候选但仍有数值约束时，`bits=` 后用 64 个十六进制位置展示固定位：数字表示该位置全部已知，`*` 表示四位全未知，`[01**]` 这样的四位二进制模式表示部分已知。模式按高位到低位排列，不省略任何 `*`。整个数值没有约束时显示 `⊤`；仅位组件没有约束时，`bits=` 后仍显示完整的 64 个 `*`，其他组件可能仍有约束。完整报告的表格保留全部字符；普通长字段会换行，每个完整 256 位模式及其紧邻的 `bits=` 标签保持在同一行。JSON 还携带位、区间、同余和来源；`known_bits.zero` 与 `known_bits.one` 仍是原来的两个掩码，文本格式变化不改变这些字段。查询确定候选时可取 `.Constants`，但没有这个键不等于数值完全未知。文本保留数值概要，JSON 用于检查各组件。固定输入身份在值的 `.identity.input.name`，不是来源字段；纯运算的持久表达式另在 `.expression`。世界状态入口/出口的关系分别在 `.states[].entry.relations` 和 `.states[].exit.relations`，详见[第 15 课](15-symbolic-relations.md)。
 
-完整报告的摘要统计中 `published=1`、`hits=0` 可以同时成立：分析器保存了一份完整子调用结果，但没有后来的相同调用可复用。在下面的 `returndata-copy.json` 中，A 只 CALL B 一次，因此没有第二次命中的机会。摘要记录中的 `source` 指向首次分析的状态，`reused_at` 指向后来的复用位置；这些都是分析图编号，不是账户或链上交易编号。
+完整报告的摘要统计中 `published=1`、`hits=0` 可以同时成立：分析器保存了一份完整子调用结果，但没有后来的相同调用可复用。在下面的 [`returndata-copy.json`](../examples/worlds/returndata-copy.json) 中，A 只 CALL B 一次，因此没有第二次命中的机会。摘要记录中的 `source` 指向首次分析的状态，`reused_at` 指向后来的复用位置；这些都是分析图编号，不是账户或链上交易编号。
 
 ## 2. 为什么结果里还有 2 和 Failure
 
@@ -263,7 +263,7 @@ I 的代码把 slot 0 加 1，再把 ADDRESS、CALLER、CALLVALUE 写到 slot 1�
 | P2 | 9 | 10 | P2 | A | 11 |
 | I | 99 | 99 | 0 | 0 | 0 |
 
-查询 `outcomes[].store.persistent.slots` 可查看抽象最终值；由于第 2 节的失败可能，值集合还可能含初始值。表格描述的是具体成功轨迹。
+查询 `outcomes[].store.persistent.slots` 可查看抽象最终值；由于[第 2 节](#2-为什么结果里还有-2-和-failure)的失败可能，值集合还可能含初始值。表格描述的是具体成功轨迹。
 
 DELEGATECALL 继承代理帧的 caller 和 call value，所以实现代码读到的是 A 与 7/11。[`callcode-context.json`](../examples/worlds/callcode-context.json) 把它换成 `CALLCODE`：仍读 I 的代码、写代理的 storage，但 CALLER 变为代理自身，CALLVALUE 来自 CALLCODE 显式参数 3。CALL/STATICCALL 的子帧 caller 来自父帧 ADDRESS；ORIGIN 始终取事务环境，本课为入口 caller `0x...1000`，不会随代理或重入变为 A、P1 或 P2。**代码地址、状态地址、caller、value** 要分别判断。
 
@@ -354,7 +354,7 @@ nix run . -- analyze \
 
 第一条使用离线 `--world`，所以补齐 B 的代码需要修改输入。切换到显式 `--rpc` 后，提供 `--evm.to` 即可开始分析，未指定的调用字段仍为符号输入：分析器遇到具体 B 地址但缺少代码时，会在同一固定区块补查 B，再从 A 的入口重新分析；B 调用 C 时也可继续发现 C。SLOAD 的槽键能够完整枚举时，缺少的初始槽值也会按需补查。DELEGATECALL 按代理的状态账户读取，与实现代码地址分别记录。`--no-rpc-discovery` 同时关闭账户和槽的补查，保留只用预选事实的对照实验。未知调用地址仍留下 `UnknownTarget`；无法完整枚举的槽键和其他未观察槽保留未知值。固定 hash、采集错误和实际命令见[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
 
-`--max-work` 限制全执行累计工作，`--max-states` 与 `--max-transfers` 覆盖所有账户，`--max-memory-bytes` 限制每帧追踪的内存。未知目标、缺少创建事实、未知预编译输入也可能留下相应前沿；第 10 课会继续解释创建、预编译和摘要预算。
+`--max-work` 限制全执行累计工作，`--max-states` 与 `--max-transfers` 覆盖所有账户，`--max-memory-bytes` 限制每帧追踪的内存。未知目标、缺少创建事实、未知预编译输入也可能留下相应前沿；[第 10 课](10-snapshots-summaries-creation.md)会继续解释创建、预编译和摘要预算。
 
 RPC 补查后的各轮也共用这些执行预算，已经分析过的工作仍计费。迟发查询失败或采集额度耗尽会留下 `RpcAcquisition`，结果为 `Incomplete`、退出 `2`；单个已知分支的成功 outcome 不能替代这个前沿。
 

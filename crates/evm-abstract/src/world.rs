@@ -27,7 +27,7 @@ use thiserror::Error;
 pub enum Code {
     /// Ordinary EVM runtime bytecode decoded under the world's fork.
     Runtime(Program),
-    /// EIP-7702's account code pointer; execution retains the delegating account.
+    /// [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)'s account code pointer; execution retains the delegating account.
     Delegation(Address),
     /// Code was observed to be empty.
     Empty,
@@ -80,7 +80,7 @@ pub struct Account {
 }
 
 impl Account {
-    /// Decode account code, preserving EIP-7702 as a code pointer.
+    /// Decode account code, preserving [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) as a code pointer.
     ///
     /// This synthetic constructor defaults storage, balance and nonce to zero
     /// and establishes presence. Partial inputs must supply unknown facts
@@ -155,7 +155,7 @@ pub enum WorldError {
         /// Account runtime's fork.
         account: Fork,
     },
-    /// EIP-7702 code delegation is unavailable before Prague.
+    /// [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) code delegation is unavailable before Prague.
     #[error("EIP-7702 delegation is unavailable under {0}")]
     UnsupportedDelegation(Fork),
     /// An address already has a different observation in this snapshot.

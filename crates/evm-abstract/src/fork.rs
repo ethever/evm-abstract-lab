@@ -15,9 +15,9 @@ use thiserror::Error;
 pub enum Fork {
     /// Dencun 的执行层，2024-03-13 激活；CLZ 尚未启用。
     Cancun,
-    /// Pectra 的执行层，2025-05-07 激活；加入 EIP-7702 代码委托。
+    /// Pectra 的执行层，2025-05-07 激活；加入 [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 代码委托。
     Prague,
-    /// Fusaka 的执行层，2025-12-03 激活；加入 EIP-7939 CLZ。
+    /// Fusaka 的执行层，2025-12-03 激活；加入 [EIP-7939](https://eips.ethereum.org/EIPS/eip-7939) CLZ。
     #[default]
     Osaka,
 }

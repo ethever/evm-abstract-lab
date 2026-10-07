@@ -126,6 +126,6 @@ nix run . -- cfg --hex ef01001111111111111111111111111111111111111111 --fork osa
 
 [`osaka.rs`](../crates/evm-abstract/tests/osaka.rs) 检查 CLZ 的启用/禁用、CFG 与 SSA、委托格式以及尚未支持规则的拒绝；[`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 使用相同 fork 的 revm 对照，另核对 CLZ 的零和全部 256 个单置位输入。
 
-“支持 Osaka”表示已实现模型按 Osaka 选择字节码与预编译规则，并不表示实现了完整协议的每个细节。内存、storage、调用、有限创建和 EIP-6780 已进入模型；精确 gas、无法表示的原生输入、完整授权交易处理等限制仍见[第 06 课](06-boundaries.md)。规则选择与模型能力必须同时阅读。
+“支持 Osaka”表示已实现模型按 Osaka 选择字节码与预编译规则，并不表示实现了完整协议的每个细节。内存、storage、调用、有限创建和 [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) 已进入模型；精确 gas、无法表示的原生输入、完整授权交易处理等限制仍见[第 06 课](06-boundaries.md)。规则选择与模型能力必须同时阅读。
 
 进阶继续：[第 09 课：跨合约调用](09-cross-contract.md)，再读[第 10 课：快照、摘要和创建](10-snapshots-summaries-creation.md)。

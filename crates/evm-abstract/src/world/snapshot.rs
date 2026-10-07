@@ -16,7 +16,7 @@ pub enum SnapshotIdentity {
     },
     /// Observations declared to belong to this exact chain and block hash.
     Chain {
-        /// EIP-155 chain identifier, retained at full 256-bit width.
+        /// [EIP-155](https://eips.ethereum.org/EIPS/eip-155) chain identifier, retained at full 256-bit width.
         chain_id: U256,
         /// Exact block hash; block numbers and moving tags are not identities.
         block_hash: B256,
