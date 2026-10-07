@@ -725,3 +725,6 @@ fn join_optional(current: Option<Value>, value: Value, domain: Domain) -> Value 
 fn join_array_optional(current: Option<ByteArray>, value: ByteArray, domain: Domain) -> ByteArray {
     current.map_or_else(|| value.clone(), |current| current.join(&value, domain))
 }
+
+#[cfg(test)]
+mod tests;
