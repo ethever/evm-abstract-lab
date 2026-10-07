@@ -40,7 +40,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 先完成 00–06 的基础阅读，再按需要进入跨合约实验。每课给出运行步骤、要检查的输出和对应源码；不要求先读论文。
 
-如果现在最关心 memory 与 storage，可以在读完 00–02 后走一条更小的路线：**14 的字节读写 → 16 的单账户 slot 读写 → 15 的表达式与路径条件 → 09 的跨合约归属和回滚**。章节号用于查找，不要求先在完整 CALL 报告里同时理解这些概念。每一步都先画具体状态，再看抽象值、JSON 与额外候选。
+如果现在最关心 memory 与 storage，可以在读完 [00](docs/00-start.md)、[01](docs/01-bytecode.md)、[02](docs/02-domain.md) 后走一条更小的路线：**[14 的字节读写](docs/14-memory-model.md) → [16 的单账户 slot 读写](docs/16-storage-model.md) → [15 的表达式与路径条件](docs/15-symbolic-relations.md) → [09 的跨合约归属和回滚](docs/09-cross-contract.md)**。章节号用于查找，不要求先在完整 CALL 报告里同时理解这些概念。每一步都先画具体状态，再看抽象值、JSON 与额外候选。
 
 | 顺序 | 学完能回答什么 | 主要例子 |
 | --- | --- | --- |
