@@ -1,6 +1,6 @@
 # 02：让一份状态代表许多执行
 
-阅读路线：[理论：数值摘要与近似](routes/theory.md#domains) · [实现：值类型与域运算](routes/implementation.md#domains) · [选择路线](learning-routes.md)。
+学习入口：[模块：数值摘要与组合域](modules/domains.md) · [理论：数值摘要与近似](routes/theory.md#domains) · [实现：值类型与域运算](routes/implementation.md#domains) · [选择路线](learning-routes.md)。
 
 [字节码一课](01-bytecode.md)按字节切出了指令和块。这一课先手算两条路径的汇合，再解释分析器用什么值来概括它们。目标是读懂 `{...}`、`⊤`、join，以及“结果保守”具体意味着什么。
 

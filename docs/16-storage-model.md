@@ -1,6 +1,6 @@
 # 16：从一个 slot 到调用回滚，逐步读懂 storage 模型
 
-阅读路线：[理论：槽位、别名与更新](routes/theory.md#memory-storage) · [实现：Store 与读写策略](routes/implementation.md#memory-storage) · [选择路线](learning-routes.md)。
+学习入口：[模块：Memory & Storage](modules/memory-storage.md) · [理论：槽位、别名与更新](routes/theory.md#memory-storage) · [实现：Store 与读写策略](routes/implementation.md#memory-storage) · [选择路线](learning-routes.md)。
 
 本课从两条指令开始：SSTORE 保存一个 word，SLOAD 读取一个 word。每个实验先列真实执行中的栈与状态，再观察当前分析器怎样表示它们。读完后，你应该能解释三个看起来矛盾的结果：不知道初始值却能精确读出 7、刚写入 7 却读出 `{0,7}`、更深回调写过 9 而父调用最后读出 1。
 

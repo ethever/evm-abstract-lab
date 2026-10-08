@@ -1,6 +1,6 @@
 # 09：跟着一次调用，跨过合约边界
 
-阅读路线：[理论：调用与回滚](routes/theory.md#calls-state) · [实现：帧、保存点与返回](routes/implementation.md#calls-state) · [选择路线](learning-routes.md)。
+学习入口：[模块：调用、状态归属与回滚](modules/calls-state.md) · [理论：调用与回滚](routes/theory.md#calls-state) · [实现：帧、保存点与返回](routes/implementation.md#calls-state) · [选择路线](learning-routes.md)。
 
 [前几课](../README.md#推荐阅读顺序)分析一段字节码。本课把问题扩大一点：A 调用 B，B 返回的数值会不会改变 A 的分支？这要求分析器同时保存两个合约的执行位置、返回字节和 storage。
 

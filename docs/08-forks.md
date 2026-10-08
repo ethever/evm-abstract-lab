@@ -1,6 +1,6 @@
 # 08：fork——选择执行规则，再分析字节码
 
-阅读路线：[理论：协议语义](routes/theory.md#execution) · [实现：fork 与解码配置](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
+学习入口：[模块：字节码、协议与输入](modules/execution.md) · [理论：协议语义](routes/theory.md#execution) · [实现：fork 与解码配置](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
 
 **fork** 在本课中指一套协议版本的执行规则。字节码只是字节序列；还要选定规则，才能判断某个字节是不是有效指令、怎样执行，以及使用哪些预编译。
 

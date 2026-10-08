@@ -1,6 +1,6 @@
 # 15：用表达式与关系约束筛掉矛盾分支
 
-阅读路线：[理论：身份、路径与关系](routes/theory.md#relations) · [实现：表达式与求解接口](routes/implementation.md#relations) · [选择路线](learning-routes.md)。
+学习入口：[模块：符号关系与 SMT](modules/relations.md) · [理论：身份、路径与关系](routes/theory.md#relations) · [实现：表达式与求解接口](routes/implementation.md#relations) · [选择路线](learning-routes.md)。
 
 [第 12 课](12-product-domains-facts.md)解释一个值保存哪些数值性质，[第 13 课](13-evm-environment.md)说明这些值对应哪些固定输入。本课再看多个值之间的关系，以及分支条件怎样限制后续执行。先只追踪一个输入和两个比较，再把这些信息放回 memory、storage 和调用中。具体字节位置与 slot 还不熟时，可以先读[第 14 课](14-memory-model.md)和[第 16 课](16-storage-model.md)的单单元实验。
 

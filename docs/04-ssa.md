@@ -1,6 +1,6 @@
 # 04：SSA——给流动的栈值起名字
 
-阅读路线：[理论：SSA 与覆盖证明](routes/theory.md#ssa) · [实现：SSA 构建与渲染](routes/implementation.md#ssa) · [选择路线](learning-routes.md)。
+学习入口：[模块：SSA 与部分执行](modules/ssa.md) · [理论：SSA 与覆盖证明](routes/theory.md#ssa) · [实现：SSA 构建与渲染](routes/implementation.md#ssa) · [选择路线](learning-routes.md)。
 
 [控制流一课](03-cfg.md)的 CFG 告诉我们“执行可能去哪里”。这一课再回答：“这条 ADD 使用的两个值，各自从哪里来？”
 

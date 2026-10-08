@@ -1,6 +1,6 @@
 # 06：结果能说明什么，不能说明什么
 
-阅读路线：[理论：结果的证明范围](routes/theory.md#evidence) · [实现：验证与反例](routes/implementation.md#evidence) · [选择路线](learning-routes.md)。
+学习入口：[模块：边界、证据与验证](modules/evidence.md) · [理论：结果的证明范围](routes/theory.md#evidence) · [实现：验证与反例](routes/implementation.md#evidence) · [选择路线](learning-routes.md)。
 
 学会读 CFG 和 SSA 后，还要确认一件事：这份结果已经分析到哪里、用了哪些假设？图中出现一条边，与实际交易能走通这条路径，是两个不同判断。
 

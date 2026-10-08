@@ -1,6 +1,6 @@
 # 00：运行第一个例子，读懂三种输出
 
-阅读路线：[理论：执行规则与输入](routes/theory.md#execution) · [实现：CLI 与输入入口](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
+学习入口：[模块：字节码、协议与输入](modules/execution.md) · [理论：执行规则与输入](routes/theory.md#execution) · [实现：CLI 与输入入口](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
 
 本课从一个只做 `2 + 3` 的程序开始。完成后，你应能把原始字节、执行顺序和数值的来源对应起来。无需先懂编译器、Datalog 或 SMT。
 

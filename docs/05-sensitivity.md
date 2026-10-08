@@ -1,6 +1,6 @@
 # 05：敏感性——哪些执行暂时不合并
 
-阅读路线：[理论：敏感性与合并](routes/theory.md#control-flow) · [实现：状态划分与调度](routes/implementation.md#control-flow) · [选择路线](learning-routes.md)。
+学习入口：[模块：CFG、固定点与敏感性](modules/control-flow.md) · [理论：敏感性与合并](routes/theory.md#control-flow) · [实现：状态划分与调度](routes/implementation.md#control-flow) · [选择路线](learning-routes.md)。
 
 [前面的传播实验](03-cfg.md#3-手动走完一次工作表传播)已经说明：两条路径进入同一个状态时，分析会合并它们的可能值。合并能限制工作量，但也可能把原本互不相关的情况混到一起。
 

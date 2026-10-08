@@ -1,6 +1,6 @@
 # 03：CFG 是抽象执行长出来的图
 
-阅读路线：[理论：传播与固定点](routes/theory.md#control-flow) · [实现：调度、状态键与合并](routes/implementation.md#control-flow) · [选择路线](learning-routes.md)。
+学习入口：[模块：CFG、固定点与敏感性](modules/control-flow.md) · [理论：传播与固定点](routes/theory.md#control-flow) · [实现：调度、状态键与合并](routes/implementation.md#control-flow) · [选择路线](learning-routes.md)。
 
 [数值摘要一课](02-domain.md)解释了一个块内的值如何汇合。这一课跟踪这些摘要怎样流到其他块、怎样重访循环，以及分析没有完成时留下什么证据。
 
