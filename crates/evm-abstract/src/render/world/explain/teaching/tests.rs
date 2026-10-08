@@ -5,7 +5,7 @@ use crate::{
         Diagnostic, DiagnosticKind, ExecutionConfig, FrameCode, Status, WorldAnalysis,
         analyze_world,
     },
-    domain::{Domain, Profile, ReductionStatus, Value},
+    domain::{AbstractValue, Domain, Profile, ReductionStatus},
     world::{Account, ByteArray, Entry, World},
 };
 use alloy_primitives::{Address, U256, hex, keccak256};
@@ -15,7 +15,12 @@ fn address(value: u64) -> Address {
 }
 
 fn entry(owner: Address, calldata: ByteArray) -> Entry {
-    Entry::concrete(owner, address(0x900), Value::constant(U256::ZERO), calldata)
+    Entry::concrete(
+        owner,
+        address(0x900),
+        AbstractValue::constant(U256::ZERO),
+        calldata,
+    )
 }
 
 fn run(world: World, owner: Address, calldata: ByteArray) -> WorldAnalysis {
@@ -191,8 +196,8 @@ fn domain_projection_does_not_report_unchanged_storage_or_balance_as_effects() {
     let owner = address(0x101);
     let domain = Domain::new(std::num::NonZeroUsize::new(4).unwrap());
     let initial = domain.join(
-        &Value::constant(U256::from(1)),
-        &Value::constant(U256::from(3)),
+        &AbstractValue::constant(U256::from(1)),
+        &AbstractValue::constant(U256::from(3)),
     );
     let mut account = Account::from_hex("00", Fork::Osaka).unwrap();
     account.storage.insert(U256::ZERO, initial.clone());

@@ -2,7 +2,7 @@
 use alloy_primitives::{Address, U256};
 use evm_abstract::{
     analysis::{OutcomeKind, WorldAnalysis},
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{Entry, World},
 };
 use revm::{
@@ -115,7 +115,7 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
                     account.storage.iter().all(|(slot, value)| {
                         outcome
                             .store
-                            .read(*owner, &Value::constant(*slot), Domain::default())
+                            .read(*owner, &AbstractValue::constant(*slot), Domain::default())
                             .contains(value.present_value())
                     }) && outcome
                         .store

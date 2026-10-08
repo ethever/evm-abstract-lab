@@ -3,7 +3,7 @@
 use super::{identity, observations};
 use crate::{
     analysis::{FrameCode, FrameKey, WorldAnalysis},
-    domain::Value,
+    domain::AbstractValue,
     world::Store,
 };
 use std::fmt::{Display, Write};
@@ -464,7 +464,7 @@ fn optional<T: Display>(value: Option<T>) -> String {
     value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
 }
 
-fn length(value: &Value) -> String {
+fn length(value: &AbstractValue) -> String {
     match value.constants() {
         Some(values) if values.len() == 1 => {
             format!("{} bytes", values.first().expect("nonempty constants"))

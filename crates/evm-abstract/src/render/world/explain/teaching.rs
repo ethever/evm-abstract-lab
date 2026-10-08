@@ -6,7 +6,7 @@ use super::super::teaching::References;
 use crate::{
     analysis::{FrameCode, FrameKey, MachinePayload, MachineState, Status, WorldAnalysis},
     bytecode::Program,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     ssa::{self, SsaError},
     world::{ByteArray, Code, Store},
 };
@@ -340,7 +340,7 @@ fn write_cfg(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
     }
 }
 
-fn length(value: &Value) -> String {
+fn length(value: &AbstractValue) -> String {
     match value.constants() {
         Some(values) if values.len() == 1 => format!(
             "{value} ({} bytes)",
@@ -397,7 +397,7 @@ fn write_outcomes(output: &mut String, analysis: &WorldAnalysis, refs: &Referenc
             .iter()
             .filter(|((owner, slot), value)| {
                 !same_numeric_fact(
-                    &initial.read(*owner, &Value::constant(*slot), domain),
+                    &initial.read(*owner, &AbstractValue::constant(*slot), domain),
                     value,
                 )
             })
@@ -455,7 +455,7 @@ fn write_outcomes(output: &mut String, analysis: &WorldAnalysis, refs: &Referenc
     .unwrap();
 }
 
-fn same_numeric_fact(left: &Value, right: &Value) -> bool {
+fn same_numeric_fact(left: &AbstractValue, right: &AbstractValue) -> bool {
     // 来源改变不是余额或存储数值改变；相同单点无需比较其来源标签。
     if let Some(value) = left.singleton()
         && right.singleton() == Some(value)

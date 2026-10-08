@@ -4,7 +4,7 @@ use super::{Certificate, Node};
 use crate::analysis::{CallStack, Continuation, MachinePayload, transfer::WorkBudget};
 use crate::{
     domain::{
-        Value,
+        AbstractValue,
         symbolic::{ExprId, ExprLimits},
     },
     world::ByteArray,
@@ -37,7 +37,7 @@ impl<'a> Replay<'a> {
         // Only callee inputs are bound. An older result in a suspended caller
         // must not prevent this invocation from receiving fresh local symbols.
         let mut external = payload.relations.fresh_leaves();
-        let mut collect = |value: &Value| collect_value(value, &mut external);
+        let mut collect = |value: &AbstractValue| collect_value(value, &mut external);
         payload.active().visit_values(&mut collect);
         payload.store.visit_values(&mut collect);
         let mut internal = BTreeSet::new();
@@ -121,7 +121,7 @@ impl<'a> Replay<'a> {
         Some(result)
     }
 
-    fn value(&self, value: &mut Value) -> bool {
+    fn value(&self, value: &mut AbstractValue) -> bool {
         value.forget_identity();
         if let Some(expression) = value.expression() {
             let Ok(expression) = expression.rename_fresh(&self.renaming, self.limits) else {
@@ -213,7 +213,7 @@ impl<'a> Replay<'a> {
     }
 }
 
-fn collect_value(value: &Value, into: &mut BTreeSet<ExprId>) {
+fn collect_value(value: &AbstractValue, into: &mut BTreeSet<ExprId>) {
     if let Some(expression) = value.expression() {
         into.extend(expression.fresh_leaves());
     }

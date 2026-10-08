@@ -122,7 +122,7 @@ jq '.states[] | select(.key.basic_block_index == 2)
 | 符号表达式 | `ExprId` | 常量、固定输入、fresh 运行时值和纯 EVM 运算的不可变 DAG |
 | 跨值约束 | `RelationState` | 当前执行状态中必须成立的条件合取 |
 
-`AbstractValue` 把数值、来源、身份和可选表达式放在一起；兼容名称 `Value` 指向这层执行值。完整关系约束属于 `MachinePayload`，因为一个条件可以同时涉及栈、内存、账户状态与调用输入中的多个值。
+`AbstractValue` 把数值、来源、身份和可选表达式放在一起。完整关系约束属于 `MachinePayload`，因为一个条件可以同时涉及栈、内存、账户状态与调用输入中的多个值。
 
 先分别回答几个问题，就能理解上表为什么需要多层：
 

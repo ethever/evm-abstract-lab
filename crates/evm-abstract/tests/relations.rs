@@ -8,7 +8,7 @@ use evm_abstract::{
     Fork,
     analysis::{self, Config, ExecutionConfig, FrontierReason, Limit, Status, WorldAnalysis},
     bytecode::Program,
-    domain::{Profile, Value},
+    domain::{AbstractValue, Profile},
     world::{Account, AddressInput, Entry, EvmEnvironment, World},
 };
 use revm_bytecode::opcode;
@@ -143,7 +143,7 @@ fn world(root: &str, callee: &str) -> (World, Entry) {
     let mut world = World::new(Fork::Osaka, "relational integration fixture");
     for (number, code) in [(0x101, root), (0x200, callee)] {
         let mut account = Account::from_hex(code, Fork::Osaka).unwrap();
-        account.balance = Value::constant(U256::from(1_000_000));
+        account.balance = AbstractValue::constant(U256::from(1_000_000));
         world.insert(address(number), account).unwrap();
     }
     (world, Entry::new(address(0x101)))
@@ -616,7 +616,7 @@ fn summary_replay_renames_fresh_gas_words_in_callee_memory() {
         .unwrap()
         .active()
         .memory
-        .read_word(&Value::constant(U256::ZERO), domain);
+        .read_word(&AbstractValue::constant(U256::ZERO), domain);
     let original_leaves = original
         .expression()
         .expect("unknown GAS word remains symbolic")
@@ -631,7 +631,7 @@ fn summary_replay_renames_fresh_gas_words_in_callee_memory() {
             .unwrap()
             .active()
             .memory
-            .read_word(&Value::constant(U256::ZERO), domain);
+            .read_word(&AbstractValue::constant(U256::ZERO), domain);
         assert_eq!(
             original.numeric(),
             imported.numeric(),

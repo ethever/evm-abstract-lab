@@ -2,7 +2,7 @@
 
 use super::{ByteArray, Code, Existence, World};
 use crate::bytecode::Program;
-use crate::domain::{Domain, Value};
+use crate::domain::{AbstractValue, Domain};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use serde::{Serialize, Serializer};
 use snapshot_state::Checkpoint;
@@ -30,7 +30,7 @@ pub struct LogKey {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AbstractLog {
     /// Zero to four ordered topic words.
-    pub topics: Vec<Value>,
+    pub topics: Vec<AbstractValue>,
     /// Memory bytes copied into this event, summarized over site visits.
     pub data: ByteArray,
 }
@@ -93,9 +93,9 @@ fn serialize_logs<S: Serializer>(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Plane {
     #[serde(serialize_with = "serialize_slots")]
-    slots: OrderedMap<(Address, U256), Value>,
-    defaults: OrderedMap<Address, Value>,
-    global_default: Value,
+    slots: OrderedMap<(Address, U256), AbstractValue>,
+    defaults: OrderedMap<Address, AbstractValue>,
+    global_default: AbstractValue,
     // These must facts participate in execution reuse and rollback, while the
     // public Store JSON continues to describe transaction values only.
     #[serde(skip)]
@@ -198,14 +198,14 @@ impl InitialIndependence {
 }
 
 fn serialize_slots<S: Serializer>(
-    slots: &OrderedMap<(Address, U256), Value>,
+    slots: &OrderedMap<(Address, U256), AbstractValue>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     #[derive(Serialize)]
     struct Slot<'a> {
         address: Address,
         slot: U256,
-        value: &'a Value,
+        value: &'a AbstractValue,
     }
     slots
         .iter()
@@ -219,7 +219,7 @@ fn serialize_slots<S: Serializer>(
 }
 
 impl Plane {
-    fn new(global_default: Value, initial_independent: bool) -> Self {
+    fn new(global_default: AbstractValue, initial_independent: bool) -> Self {
         Self {
             slots: OrderedMap::new(),
             defaults: OrderedMap::new(),
@@ -228,17 +228,17 @@ impl Plane {
         }
     }
 
-    fn default_at(&self, address: Address) -> &Value {
+    fn default_at(&self, address: Address) -> &AbstractValue {
         self.defaults.get(&address).unwrap_or(&self.global_default)
     }
 
-    fn at(&self, address: Address, slot: U256) -> &Value {
+    fn at(&self, address: Address, slot: U256) -> &AbstractValue {
         self.slots
             .get(&(address, slot))
             .unwrap_or_else(|| self.default_at(address))
     }
 
-    fn read(&self, address: Address, slot: &Value, domain: Domain) -> Value {
+    fn read(&self, address: Address, slot: &AbstractValue, domain: Domain) -> AbstractValue {
         if let Some(slot) = slot.singleton() {
             return self.at(address, slot).clone();
         }
@@ -253,11 +253,20 @@ impl Plane {
                 });
         };
         let mut values = slots.iter().map(|slot| self.at(address, *slot));
-        let first = values.next().expect("Value constants are nonempty").clone();
+        let first = values
+            .next()
+            .expect("AbstractValue constants are nonempty")
+            .clone();
         values.fold(first, |value, stored| domain.join(&value, stored))
     }
 
-    fn write(&mut self, address: Address, slot: &Value, value: &Value, domain: Domain) {
+    fn write(
+        &mut self,
+        address: Address,
+        slot: &AbstractValue,
+        value: &AbstractValue,
+        domain: Domain,
+    ) {
         // 复制身份只在当前基本块栈上成立，不进入可回滚/复用的持久载荷。
         let mut clean = value.clone();
         clean.forget_identity();
@@ -285,20 +294,21 @@ impl Plane {
 
     fn havoc_account(&mut self, address: Address) {
         self.slots.retain(|(owner, _), _| *owner != address);
-        self.defaults.insert(address, Value::top());
+        self.defaults.insert(address, AbstractValue::top());
         self.initial_independence.replace_account(address);
     }
 
     fn reset_account(&mut self, address: Address) {
         self.slots.retain(|(owner, _), _| *owner != address);
-        self.defaults.insert(address, Value::constant(U256::ZERO));
+        self.defaults
+            .insert(address, AbstractValue::constant(U256::ZERO));
         self.initial_independence.replace_account(address);
     }
 
     fn havoc_all(&mut self) {
         self.slots.clear();
         self.defaults.clear();
-        self.global_default = Value::top();
+        self.global_default = AbstractValue::top();
         self.initial_independence.replace_all();
     }
 
@@ -345,10 +355,10 @@ impl Plane {
 pub struct Store {
     persistent: Plane,
     transient: Plane,
-    balances: OrderedMap<Address, Value>,
-    balance_default: Value,
+    balances: OrderedMap<Address, AbstractValue>,
+    balance_default: AbstractValue,
     codes: OrderedMap<Address, Code>,
-    nonces: OrderedMap<Address, Value>,
+    nonces: OrderedMap<Address, AbstractValue>,
     existence: OrderedMap<Address, Existence>,
     created: OrderedMap<Address, Option<bool>>,
     pending_destruction: OrderedMap<Address, Option<bool>>,
@@ -361,7 +371,7 @@ pub struct Store {
 pub type Snapshot = Checkpoint<Store>;
 
 impl Store {
-    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&Value)) {
+    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&AbstractValue)) {
         for plane in [&self.persistent, &self.transient] {
             for value in plane.slots.values().chain(plane.defaults.values()) {
                 visit(value);
@@ -379,7 +389,7 @@ impl Store {
             log.data.visit_values(visit);
         }
     }
-    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut Value)) {
+    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut AbstractValue)) {
         for plane in [&mut self.persistent, &mut self.transient] {
             plane.slots.update_values(&mut *update);
             plane.defaults.update_values(&mut *update);
@@ -434,7 +444,7 @@ impl Store {
         });
     }
     pub(crate) fn project(&mut self, domain: Domain) {
-        let project = |value: &mut Value| {
+        let project = |value: &mut AbstractValue| {
             *value = domain.project(value);
         };
         for plane in [&mut self.persistent, &mut self.transient] {
@@ -448,7 +458,7 @@ impl Store {
     }
     /// Build transaction state without modifying the fixed input snapshot.
     pub fn new(world: &World) -> Self {
-        let mut persistent = Plane::new(Value::top(), false);
+        let mut persistent = Plane::new(AbstractValue::top(), false);
         let mut balances = OrderedMap::new();
         let mut codes = OrderedMap::new();
         let mut nonces = OrderedMap::new();
@@ -457,9 +467,9 @@ impl Store {
             persistent.defaults.insert(
                 *address,
                 if account.storage_unknown {
-                    Value::top()
+                    AbstractValue::top()
                 } else {
-                    Value::constant(U256::ZERO)
+                    AbstractValue::constant(U256::ZERO)
                 },
             );
             persistent.slots.extend(
@@ -475,9 +485,9 @@ impl Store {
         }
         Self {
             persistent,
-            transient: Plane::new(Value::constant(U256::ZERO), true),
+            transient: Plane::new(AbstractValue::constant(U256::ZERO), true),
             balances,
-            balance_default: Value::top(),
+            balance_default: AbstractValue::top(),
             codes,
             nonces,
             existence,
@@ -489,7 +499,7 @@ impl Store {
     }
 
     /// Read persistent storage, joining finite possible slot aliases.
-    pub fn read(&self, address: Address, slot: &Value, domain: Domain) -> Value {
+    pub fn read(&self, address: Address, slot: &AbstractValue, domain: Domain) -> AbstractValue {
         self.persistent.read(address, slot, domain)
     }
 
@@ -500,7 +510,7 @@ impl Store {
         &self,
         world: &World,
         address: Address,
-        slots: &Value,
+        slots: &AbstractValue,
     ) -> Vec<U256> {
         let account = world.account(address);
         let missing = |slot: U256| {
@@ -522,12 +532,23 @@ impl Store {
     }
 
     /// Strongly update one slot; weakly update finite or unknown aliases.
-    pub fn write(&mut self, address: Address, slot: &Value, value: &Value, domain: Domain) {
+    pub fn write(
+        &mut self,
+        address: Address,
+        slot: &AbstractValue,
+        value: &AbstractValue,
+        domain: Domain,
+    ) {
         self.persistent.write(address, slot, value, domain);
     }
 
     /// Read transaction-scoped transient storage.
-    pub fn read_transient(&self, address: Address, slot: &Value, domain: Domain) -> Value {
+    pub fn read_transient(
+        &self,
+        address: Address,
+        slot: &AbstractValue,
+        domain: Domain,
+    ) -> AbstractValue {
         self.transient.read(address, slot, domain)
     }
 
@@ -535,15 +556,15 @@ impl Store {
     pub fn write_transient(
         &mut self,
         address: Address,
-        slot: &Value,
-        value: &Value,
+        slot: &AbstractValue,
+        value: &AbstractValue,
         domain: Domain,
     ) {
         self.transient.write(address, slot, value, domain);
     }
 
     /// Current balance of an explicit or unknown account.
-    pub fn read_balance(&self, address: Address) -> Value {
+    pub fn read_balance(&self, address: Address) -> AbstractValue {
         self.balances
             .get(&address)
             .unwrap_or(&self.balance_default)
@@ -551,7 +572,7 @@ impl Store {
     }
 
     /// Replace an account balance after a modeled transfer.
-    pub fn write_balance(&mut self, address: Address, mut value: Value) {
+    pub fn write_balance(&mut self, address: Address, mut value: AbstractValue) {
         value.forget_identity();
         // A positive transfer establishes account presence. A joined balance
         // containing zero cannot discard the possibility of an absent account.
@@ -633,15 +654,15 @@ impl Store {
     }
 
     /// Current account nonce; unobserved accounts carry an unknown value.
-    pub fn nonce(&self, address: Address) -> Value {
+    pub fn nonce(&self, address: Address) -> AbstractValue {
         self.nonces
             .get(&address)
             .cloned()
-            .unwrap_or_else(Value::top)
+            .unwrap_or_else(AbstractValue::top)
     }
 
     /// Replace the nonce after a creation attempt or transaction-local update.
-    pub fn write_nonce(&mut self, address: Address, mut nonce: Value) {
+    pub fn write_nonce(&mut self, address: Address, mut nonce: AbstractValue) {
         nonce.forget_identity();
         self.nonces.insert(address, nonce);
     }
@@ -666,7 +687,8 @@ impl Store {
         self.persistent.reset_account(address);
         self.transient.reset_account(address);
         self.codes.insert(address, Code::Empty);
-        self.nonces.insert(address, Value::constant(U256::from(1)));
+        self.nonces
+            .insert(address, AbstractValue::constant(U256::from(1)));
         self.existence.insert(address, Existence::Present);
         self.created.insert(address, Some(true));
         self.pending_destruction.insert(address, Some(false));
@@ -710,7 +732,7 @@ impl Store {
                 beneficiary,
                 domain.apply(revm_bytecode::opcode::ADD, &[recipient, balance.clone()]),
             );
-            self.write_balance(address, Value::constant(U256::ZERO));
+            self.write_balance(address, AbstractValue::constant(U256::ZERO));
             if !balance.may_be_zero() {
                 self.mark_present(beneficiary);
             } else if balance.may_be_nonzero() && self.existence(beneficiary) != Existence::Present
@@ -721,9 +743,9 @@ impl Store {
             self.write_balance(
                 address,
                 if created == Some(true) {
-                    Value::constant(U256::ZERO)
+                    AbstractValue::constant(U256::ZERO)
                 } else {
-                    domain.join(&balance, &Value::constant(U256::ZERO))
+                    domain.join(&balance, &AbstractValue::constant(U256::ZERO))
                 },
             );
         }
@@ -744,10 +766,12 @@ impl Store {
             deleted.persistent.reset_account(address);
             deleted.transient.reset_account(address);
             deleted.codes.insert(address, Code::Empty);
-            deleted.nonces.insert(address, Value::constant(U256::ZERO));
+            deleted
+                .nonces
+                .insert(address, AbstractValue::constant(U256::ZERO));
             deleted
                 .balances
-                .insert(address, Value::constant(U256::ZERO));
+                .insert(address, AbstractValue::constant(U256::ZERO));
             deleted.existence.insert(address, Existence::Absent);
             if pending == Some(true) {
                 *self = deleted;
@@ -763,9 +787,9 @@ impl Store {
     pub fn havoc_account(&mut self, address: Address) {
         self.persistent.havoc_account(address);
         self.transient.havoc_account(address);
-        self.balances.insert(address, Value::top());
+        self.balances.insert(address, AbstractValue::top());
         self.codes.insert(address, Code::Unknown);
-        self.nonces.insert(address, Value::top());
+        self.nonces.insert(address, AbstractValue::top());
         self.existence.insert(address, Existence::Unknown);
         self.created.insert(address, None);
         self.pending_destruction.insert(address, None);
@@ -777,9 +801,10 @@ impl Store {
         self.persistent.havoc_all();
         self.transient.havoc_all();
         self.balances.clear();
-        self.balance_default = Value::top();
+        self.balance_default = AbstractValue::top();
         self.codes.update_values(|code| *code = Code::Unknown);
-        self.nonces.update_values(|nonce| *nonce = Value::top());
+        self.nonces
+            .update_values(|nonce| *nonce = AbstractValue::top());
         self.existence
             .update_values(|existence| *existence = Existence::Unknown);
         for address in self.codes.keys() {
@@ -966,7 +991,7 @@ impl Store {
     }
 
     /// Explicit current persistent slots, keyed by storage owner and slot.
-    pub fn slots(&self) -> &OrderedMap<(Address, U256), Value> {
+    pub fn slots(&self) -> &OrderedMap<(Address, U256), AbstractValue> {
         &self.persistent.slots
     }
 

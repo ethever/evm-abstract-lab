@@ -9,7 +9,7 @@ use crate::{
         MachinePayload, OutcomeKind,
     },
     bytecode::Program,
-    domain::Value,
+    domain::AbstractValue,
     world::{AddressInput, ByteArray, World},
 };
 use alloy_primitives::{Address, U256, keccak256};
@@ -74,7 +74,7 @@ pub(super) fn create(
     result: &mut Execution,
     world: &World,
     op: u8,
-    args: &[Value],
+    args: &[AbstractValue],
     program: &Program,
     context: &mut TransferContext<'_>,
     pc: usize,
@@ -99,7 +99,7 @@ pub(super) fn create(
     let Some(memory_size) = sizes
         .iter()
         .copied()
-        .map(Value::constant)
+        .map(AbstractValue::constant)
         .reduce(|left, right| domain.join(&left, &right))
     else {
         return;
@@ -159,8 +159,11 @@ pub(super) fn create(
     for size in &sizes {
         for offset in &offsets {
             if !context.budget.charge(byte_work(
-                &[&Value::constant(*offset), &Value::constant(*size)],
-                maximum(&Value::constant(*size)),
+                &[
+                    &AbstractValue::constant(*offset),
+                    &AbstractValue::constant(*size),
+                ],
+                maximum(&AbstractValue::constant(*size)),
                 result.payload.active().memory.work_size(),
                 domain,
             )) {
@@ -168,8 +171,8 @@ pub(super) fn create(
                 return;
             }
             let initcode = match result.payload.active().memory.slice(
-                &Value::constant(*offset),
-                &Value::constant(*size),
+                &AbstractValue::constant(*offset),
+                &AbstractValue::constant(*size),
                 config.max_memory_bytes,
                 domain,
             ) {
@@ -194,7 +197,7 @@ pub(super) fn create(
                     let mut payload = result.payload.clone();
                     payload
                         .store
-                        .write_nonce(caller_address, Value::constant(*nonce));
+                        .write_nonce(caller_address, AbstractValue::constant(*nonce));
                     immediate_failure(result, payload, next);
                     continue;
                 }
@@ -204,10 +207,10 @@ pub(super) fn create(
                             let mut payload = result.payload.clone();
                             payload
                                 .store
-                                .write_nonce(caller_address, Value::constant(*nonce));
+                                .write_nonce(caller_address, AbstractValue::constant(*nonce));
                             payload.store.write_balance(
                                 caller_address,
-                                Value::constant(
+                                AbstractValue::constant(
                                     balance
                                         .expect("insufficient funds require an observed balance"),
                                 ),
@@ -234,13 +237,14 @@ pub(super) fn create(
                             };
                             let mut payload = result.payload.clone();
                             if let Some(balance) = balance {
-                                payload
-                                    .store
-                                    .write_balance(caller_address, Value::constant(*balance));
+                                payload.store.write_balance(
+                                    caller_address,
+                                    AbstractValue::constant(*balance),
+                                );
                             }
                             payload.store.write_nonce(
                                 caller_address,
-                                Value::constant(*nonce + U256::from(1)),
+                                AbstractValue::constant(*nonce + U256::from(1)),
                             );
                             // Gas remains abstract, but insufficient initcode gas
                             // fails after the caller nonce has been incremented.
@@ -319,12 +323,12 @@ pub(super) fn create(
                                     };
                                     branch
                                         .store
-                                        .write_balance(destination, Value::constant(total));
+                                        .write_balance(destination, AbstractValue::constant(total));
                                 }
                                 if let Some(balance) = balance {
                                     branch.store.write_balance(
                                         caller_address,
-                                        Value::constant(*balance - *value),
+                                        AbstractValue::constant(*balance - *value),
                                     );
                                 }
                                 branch.store.begin_creation(destination);
@@ -349,7 +353,7 @@ pub(super) fn create(
                                         calldata: ByteArray::empty(),
                                         environment_calldata: false,
                                         returndata: ByteArray::empty(),
-                                        call_value: Value::constant(*value),
+                                        call_value: AbstractValue::constant(*value),
                                         saved_store: saved_store.clone(),
                                     },
                                     continuation: Continuation {

@@ -1,6 +1,6 @@
 //! Sparse abstract byte sequences. Missing bytes and missing length are separate.
 
-use crate::domain::{Domain, Value};
+use crate::domain::{AbstractValue, Domain};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use serde::Serialize;
@@ -14,9 +14,9 @@ use thiserror::Error;
 /// checks its explicit bound before iterating or allocating a range.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ByteArray {
-    length: Value,
-    bytes: BTreeMap<usize, Value>,
-    default: Value,
+    length: AbstractValue,
+    bytes: BTreeMap<usize, AbstractValue>,
+    default: AbstractValue,
     memory: bool,
 }
 
@@ -53,10 +53,10 @@ impl ByteArray {
         self.bytes
             .values()
             .chain([&self.length, &self.default])
-            .any(Value::symbolic_limit_reached)
+            .any(AbstractValue::symbolic_limit_reached)
     }
     /// Visit explicit values without interpreting unknown/default bytes as one identity.
-    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&Value)) {
+    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&AbstractValue)) {
         visit(&self.length);
         visit(&self.default);
         for value in self.bytes.values() {
@@ -64,7 +64,7 @@ impl ByteArray {
         }
     }
     /// Capture-avoiding transformations preserve sparse byte positions and lengths.
-    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut Value)) {
+    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut AbstractValue)) {
         update(&mut self.length);
         update(&mut self.default);
         for value in self.bytes.values_mut() {
@@ -72,7 +72,7 @@ impl ByteArray {
         }
     }
     // 完整小集合组装 word 时走有限枚举快路径；开放字节才预留通用交换。
-    pub(crate) fn word_numeric_work(&self, offset: &Value, domain: Domain) -> usize {
+    pub(crate) fn word_numeric_work(&self, offset: &AbstractValue, domain: Domain) -> usize {
         let Some(offsets) = offset.constants() else {
             return 1;
         };
@@ -140,9 +140,9 @@ impl ByteArray {
     pub(crate) fn project(&self, domain: Domain) -> Self {
         let mut out = self.clone();
         out.length = domain.project(&out.length);
-        let byte = |value: &Value| {
-            if value == &Value::top() {
-                domain.project(&Value::unknown_byte())
+        let byte = |value: &AbstractValue| {
+            if value == &AbstractValue::top() {
+                domain.project(&AbstractValue::unknown_byte())
             } else {
                 domain.project(value)
             }
@@ -158,8 +158,8 @@ impl ByteArray {
         self.bytes.values().chain([&self.default]).fold(
             domain.projection_work(&self.length),
             |work, value| {
-                let projected = if value == &Value::top() {
-                    domain.projection_work(&Value::unknown_byte())
+                let projected = if value == &AbstractValue::top() {
+                    domain.projection_work(&AbstractValue::unknown_byte())
                 } else {
                     domain.projection_work(value)
                 };
@@ -175,12 +175,12 @@ impl ByteArray {
     /// A fully observed byte sequence. Out-of-range reads still produce zero.
     pub fn exact(input: &[u8]) -> Self {
         Self {
-            length: Value::constant(U256::from(input.len())),
+            length: AbstractValue::constant(U256::from(input.len())),
             bytes: input
                 .iter()
                 .enumerate()
                 .filter(|(_, byte)| **byte != 0)
-                .map(|(index, byte)| (index, Value::constant(U256::from(*byte))))
+                .map(|(index, byte)| (index, AbstractValue::constant(U256::from(*byte))))
                 .collect(),
             default: zero(),
             memory: false,
@@ -190,9 +190,9 @@ impl ByteArray {
     /// Unobserved bytes with unobserved length.
     pub fn unknown() -> Self {
         Self {
-            length: Value::top(),
+            length: AbstractValue::top(),
             bytes: BTreeMap::new(),
-            default: Value::top(),
+            default: AbstractValue::top(),
             memory: false,
         }
     }
@@ -206,18 +206,18 @@ impl ByteArray {
     }
 
     /// Possible byte lengths; memory lengths are word-aligned when finite.
-    pub fn len(&self) -> &Value {
+    pub fn len(&self) -> &AbstractValue {
         &self.length
     }
 
     /// Explicit sparse byte facts, in offset order, without padding or joining.
     /// Rendering these facts must not change them through [`Self::byte_at`].
-    pub(crate) fn stored_bytes(&self) -> impl Iterator<Item = (usize, &Value)> {
+    pub(crate) fn stored_bytes(&self) -> impl Iterator<Item = (usize, &AbstractValue)> {
         self.bytes.iter().map(|(offset, value)| (*offset, value))
     }
 
     /// Value used at offsets without an explicit sparse fact.
-    pub(crate) fn default_byte(&self) -> &Value {
+    pub(crate) fn default_byte(&self) -> &AbstractValue {
         &self.default
     }
 
@@ -238,7 +238,7 @@ impl ByteArray {
     }
 
     /// One byte with zero padding beyond every possible sequence length.
-    pub fn byte_at(&self, index: usize, domain: Domain) -> Value {
+    pub fn byte_at(&self, index: usize, domain: Domain) -> AbstractValue {
         let byte = self.bytes.get(&index).unwrap_or(&self.default);
         match self.length.constants() {
             Some(lengths) => {
@@ -258,12 +258,12 @@ impl ByteArray {
     }
 
     /// Read a big-endian 32-byte EVM word at finite possible offsets.
-    pub fn read_word(&self, offset: &Value, domain: Domain) -> Value {
+    pub fn read_word(&self, offset: &AbstractValue, domain: Domain) -> AbstractValue {
         let Some(offsets) = offset.constants() else {
             return if self.bytes.is_empty() && self.default == zero() {
                 zero()
             } else {
-                Value::top()
+                AbstractValue::top()
             };
         };
         let mut result = None;
@@ -286,7 +286,7 @@ impl ByteArray {
                 {
                     zero()
                 } else {
-                    Value::top()
+                    AbstractValue::top()
                 };
                 result = Some(join_optional(result, word, domain));
                 continue;
@@ -298,7 +298,7 @@ impl ByteArray {
                 .map(|index| {
                     offset
                         .checked_add(index)
-                        .map_or_else(Value::top, |index| self.byte_at(index, domain))
+                        .map_or_else(AbstractValue::top, |index| self.byte_at(index, domain))
                 })
                 .collect::<Vec<_>>();
             let reconstructed = if domain.spec().relations().enabled
@@ -306,7 +306,7 @@ impl ByteArray {
             {
                 bytes
                     .iter()
-                    .map(Value::symbolic_expression)
+                    .map(AbstractValue::symbolic_expression)
                     .collect::<Option<Vec<_>>>()
                     .and_then(|bytes| crate::domain::symbolic::ExprId::reassemble_word(&bytes))
             } else {
@@ -346,7 +346,7 @@ impl ByteArray {
             }
             result = Some(join_optional(result, word, domain));
         }
-        result.expect("Value constants are nonempty")
+        result.expect("AbstractValue constants are nonempty")
     }
 
     /// Extract a zero-padded range, bounded by its output size.
@@ -355,8 +355,8 @@ impl ByteArray {
     /// no unbounded allocation is attempted.
     pub fn slice(
         &self,
-        offset: &Value,
-        size: &Value,
+        offset: &AbstractValue,
+        size: &AbstractValue,
         max_bytes: usize,
         domain: Domain,
     ) -> Result<Self, RangeError> {
@@ -377,15 +377,15 @@ impl ByteArray {
             }
             result = Some(join_array_optional(result, sliced, domain));
         }
-        Ok(result.expect("Value constants are nonempty"))
+        Ok(result.expect("AbstractValue constants are nonempty"))
     }
 
     /// Expand memory for an access, or sequence length for a write.
     /// Unknown offsets conservatively make allocation length unknown.
     pub fn expand(
         &mut self,
-        offset: &Value,
-        size: &Value,
+        offset: &AbstractValue,
+        size: &AbstractValue,
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
@@ -394,7 +394,7 @@ impl ByteArray {
             return Ok(());
         }
         let Some(offsets) = offset.constants() else {
-            self.length = Value::top();
+            self.length = AbstractValue::top();
             return Ok(());
         };
         let mut end = None;
@@ -410,28 +410,28 @@ impl ByteArray {
                     Some(lengths) => lengths.iter().fold(None, |candidate, length| {
                         Some(join_optional(
                             candidate,
-                            Value::constant((*length).max(U256::from(required))),
+                            AbstractValue::constant((*length).max(U256::from(required))),
                             domain,
                         ))
                     }),
-                    None => Some(Value::top()),
+                    None => Some(AbstractValue::top()),
                 };
                 end = Some(join_optional(
                     end,
-                    candidate.expect("Value constants are nonempty"),
+                    candidate.expect("AbstractValue constants are nonempty"),
                     domain,
                 ));
             }
         }
-        self.length = end.expect("Value constants are nonempty");
+        self.length = end.expect("AbstractValue constants are nonempty");
         Ok(())
     }
 
     /// Store an EVM word, preserving its byte order and bounding memory growth.
     pub fn write_word(
         &mut self,
-        offset: &Value,
-        value: &Value,
+        offset: &AbstractValue,
+        value: &AbstractValue,
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
@@ -444,8 +444,8 @@ impl ByteArray {
     /// Store the low byte of an EVM word.
     pub fn write_byte(
         &mut self,
-        offset: &Value,
-        value: &Value,
+        offset: &AbstractValue,
+        value: &AbstractValue,
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
@@ -457,10 +457,10 @@ impl ByteArray {
     /// The caller supplies a source snapshot for MCOPY's memmove semantics.
     pub fn copy_from(
         &mut self,
-        target_offset: &Value,
+        target_offset: &AbstractValue,
         source: &Self,
-        source_offset: &Value,
-        size: &Value,
+        source_offset: &AbstractValue,
+        size: &AbstractValue,
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
@@ -475,7 +475,7 @@ impl ByteArray {
             branch.write_values(target_offset, &bytes, max_bytes, domain)?;
             result = Some(join_array_optional(result, branch, domain));
         }
-        *self = result.expect("Value constants are nonempty");
+        *self = result.expect("AbstractValue constants are nonempty");
         Ok(())
     }
 
@@ -483,9 +483,9 @@ impl ByteArray {
     /// Memory expands for the full requested range; the uncopied suffix remains.
     pub fn copy_return_data(
         &mut self,
-        target_offset: &Value,
+        target_offset: &AbstractValue,
         returndata: &Self,
-        requested: &Value,
+        requested: &AbstractValue,
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
@@ -520,7 +520,7 @@ impl ByteArray {
                 ));
             }
         }
-        *self = result.expect("Value constants are nonempty");
+        *self = result.expect("AbstractValue constants are nonempty");
         Ok(())
     }
 
@@ -587,15 +587,15 @@ impl ByteArray {
 
     fn read_offset_byte(
         &self,
-        offset: &Value,
+        offset: &AbstractValue,
         increment: usize,
         domain: Domain,
-    ) -> Result<Value, RangeError> {
+    ) -> Result<AbstractValue, RangeError> {
         let Some(offsets) = offset.constants() else {
             return Ok(if self.bytes.is_empty() && self.default == zero() {
                 zero()
             } else {
-                Value::top()
+                AbstractValue::top()
             });
         };
         let mut result = None;
@@ -616,7 +616,7 @@ impl ByteArray {
                 {
                     zero()
                 } else {
-                    Value::top()
+                    AbstractValue::top()
                 };
                 result = Some(join_optional(result, byte, domain));
                 continue;
@@ -627,13 +627,13 @@ impl ByteArray {
             })?;
             result = Some(join_optional(result, self.byte_at(index, domain), domain));
         }
-        Ok(result.expect("Value constants are nonempty"))
+        Ok(result.expect("AbstractValue constants are nonempty"))
     }
 
     fn write_values(
         &mut self,
-        offset: &Value,
-        bytes: &[Value],
+        offset: &AbstractValue,
+        bytes: &[AbstractValue],
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
@@ -645,7 +645,7 @@ impl ByteArray {
         expanded.expand(offset, &constant(bytes.len()), max_bytes, domain)?;
         let Some(offsets) = offset.constants() else {
             expanded.bytes.clear();
-            expanded.default = Value::top();
+            expanded.default = AbstractValue::top();
             *self = expanded;
             return Ok(());
         };
@@ -659,24 +659,24 @@ impl ByteArray {
             }
             result = Some(join_array_optional(result, branch, domain));
         }
-        *self = result.expect("Value constants are nonempty");
+        *self = result.expect("AbstractValue constants are nonempty");
         Ok(())
     }
 }
 
-fn zero() -> Value {
-    Value::constant(U256::ZERO)
+fn zero() -> AbstractValue {
+    AbstractValue::constant(U256::ZERO)
 }
 
-fn constant(value: usize) -> Value {
-    Value::constant(U256::from(value))
+fn constant(value: usize) -> AbstractValue {
+    AbstractValue::constant(U256::from(value))
 }
 
 fn host_index(value: U256) -> Option<usize> {
     (value <= U256::from(usize::MAX)).then(|| value.to::<usize>())
 }
 
-fn bounded_sizes(size: &Value, max_bytes: usize) -> Result<Vec<usize>, RangeError> {
+fn bounded_sizes(size: &AbstractValue, max_bytes: usize) -> Result<Vec<usize>, RangeError> {
     size.constants()
         .ok_or(RangeError::UnknownSize)?
         .iter()
@@ -718,7 +718,11 @@ fn bounded_end(
     Ok(end)
 }
 
-fn join_optional(current: Option<Value>, value: Value, domain: Domain) -> Value {
+fn join_optional(
+    current: Option<AbstractValue>,
+    value: AbstractValue,
+    domain: Domain,
+) -> AbstractValue {
     current.map_or(value.clone(), |current| domain.join(&current, &value))
 }
 

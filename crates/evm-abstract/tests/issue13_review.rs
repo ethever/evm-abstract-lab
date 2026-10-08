@@ -5,7 +5,7 @@ mod oracle;
 use evm_abstract::{
     Fork, U256,
     analysis::{ExecutionConfig, OutcomeKind, Status, analyze_world},
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
@@ -17,7 +17,7 @@ fn entry() -> Entry {
         environment: evm_abstract::world::EvmEnvironment {
             to: (address(0x101)).into(),
             caller: (address(0x1000)).into(),
-            value: Value::constant(U256::ZERO),
+            value: AbstractValue::constant(U256::ZERO),
             calldata: ByteArray::empty(),
             is_static: false,
             ..evm_abstract::world::EvmEnvironment::default()
@@ -58,7 +58,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             OutcomeKind::Return
         );
         ssa::build_world(&graph).unwrap().verify(&graph).unwrap();
-        let zero = Value::constant(U256::ZERO);
+        let zero = AbstractValue::constant(U256::ZERO);
         assert!(
             graph
                 .outcomes()
@@ -68,7 +68,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                     [(0, 1), (1, 1), (2, 2)].iter().all(|(slot, value)| {
                         let read = outcome.store.read(
                             address(0x101),
-                            &Value::constant(U256::from(*slot)),
+                            &AbstractValue::constant(U256::from(*slot)),
                             Domain::default(),
                         );
                         read.constants().is_some() && read.contains(U256::from(*value))
@@ -95,7 +95,7 @@ fn value_call_to_confirmed_empty_account_creates_present_state() {
         let root = format!("{}506102003f5f5260205ff3", call(0x200, 5));
         let mut world = World::new(fork, "review:empty-value-call");
         let mut root_account = Account::from_hex(&root, fork).unwrap();
-        root_account.balance = Value::constant(U256::from(100));
+        root_account.balance = AbstractValue::constant(U256::from(100));
         world.insert(address(0x101), root_account).unwrap();
         world.insert(address(0x200), Account::absent()).unwrap();
         let graph = analyze_world(world.clone(), entry(), ExecutionConfig::default()).unwrap();
@@ -111,12 +111,12 @@ fn value_call_to_confirmed_empty_account_creates_present_state() {
                 .iter()
                 .any(|outcome| outcome.kind == OutcomeKind::Return
                     && outcome.store.read_balance(address(0x200)).singleton()
-                        == Value::constant(U256::from(5)).singleton()
+                        == AbstractValue::constant(U256::from(5)).singleton()
                     && outcome.store.existence(address(0x200))
                         == evm_abstract::world::Existence::Present
                     && outcome
                         .data
-                        .read_word(&Value::constant(U256::ZERO), Domain::default())
+                        .read_word(&AbstractValue::constant(U256::ZERO), Domain::default())
                         .contains(U256::from_be_slice(
                             alloy_primitives::keccak256([]).as_slice()
                         ))),
@@ -132,7 +132,7 @@ fn balance_updates_preserve_sound_account_presence_for_mixed_values() {
     world.insert(address(0x200), Account::absent()).unwrap();
     world.insert(address(0x201), Account::empty()).unwrap();
     let mut exact = evm_abstract::world::Store::new(&world);
-    exact.write_balance(address(0x200), Value::constant(U256::from(5)));
+    exact.write_balance(address(0x200), AbstractValue::constant(U256::from(5)));
     assert_eq!(
         exact.existence(address(0x200)),
         evm_abstract::world::Existence::Present
@@ -141,15 +141,15 @@ fn balance_updates_preserve_sound_account_presence_for_mixed_values() {
     mixed.write_balance(
         address(0x200),
         Domain::default().join(
-            &Value::constant(U256::ZERO),
-            &Value::constant(U256::from(5)),
+            &AbstractValue::constant(U256::ZERO),
+            &AbstractValue::constant(U256::from(5)),
         ),
     );
     assert_eq!(
         mixed.existence(address(0x200)),
         evm_abstract::world::Existence::Unknown
     );
-    mixed.write_balance(address(0x201), Value::constant(U256::ZERO));
+    mixed.write_balance(address(0x201), AbstractValue::constant(U256::ZERO));
     assert_eq!(
         mixed.existence(address(0x201)),
         evm_abstract::world::Existence::Present
@@ -196,7 +196,7 @@ fn prague_and_osaka_bls_native_operations_cover_valid_and_invalid_inputs() {
                     .outcomes()
                     .iter()
                     .any(|outcome| outcome.kind == OutcomeKind::Return
-                        && outcome.data.len() == &Value::constant(U256::from(output_size)))
+                        && outcome.data.len() == &AbstractValue::constant(U256::from(output_size)))
             );
             assert_eq!(oracle::compare(&world, &input, &graph), OutcomeKind::Return);
             ssa::build_world(&graph).unwrap().verify(&graph).unwrap();

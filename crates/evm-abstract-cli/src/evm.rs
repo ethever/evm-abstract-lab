@@ -7,7 +7,7 @@ use crate::{number, world};
 use alloy_primitives::{Address, B256, U256};
 use clap::Args;
 use evm_abstract::{
-    domain::Value,
+    domain::AbstractValue,
     world::{
         AddressInput, BlobHashes, ByteArray, EvmEnvironment, GasInput,
         environment::EnvironmentError,
@@ -167,7 +167,7 @@ impl EvmArgs {
             number: quantity(self.number),
             prevrandao: quantity(self.prevrandao),
             gas_limit: quantity(self.gas_limit),
-            chain_id: self.chain_id.map(Value::constant),
+            chain_id: self.chain_id.map(AbstractValue::constant),
             base_fee: quantity(self.basefee),
             blob_base_fee: quantity(self.blob_basefee),
             gas: self.gas.map_or(GasInput::Unknown, GasInput::UpperBound),
@@ -182,6 +182,6 @@ impl EvmArgs {
     }
 }
 
-fn quantity(input: Option<U256>) -> Value {
-    input.map_or_else(Value::top, Value::constant)
+fn quantity(input: Option<U256>) -> AbstractValue {
+    input.map_or_else(AbstractValue::top, AbstractValue::constant)
 }

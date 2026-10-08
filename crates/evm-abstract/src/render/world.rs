@@ -215,8 +215,8 @@ fn hash_label(hash: Option<B256>) -> String {
 #[derive(Serialize)]
 struct AccountObservation {
     address: Address,
-    balance: crate::domain::Value,
-    nonce: crate::domain::Value,
+    balance: crate::domain::AbstractValue,
+    nonce: crate::domain::AbstractValue,
     existence: Existence,
     code_hash: Option<B256>,
     code_size: Option<usize>,

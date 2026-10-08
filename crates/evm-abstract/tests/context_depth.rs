@@ -7,7 +7,7 @@ use evm_abstract::{
         self, Config, ExecutionConfig, FrontierReason, Limit, Status, WorldAnalysis, analyze_world,
     },
     bytecode::Program,
-    domain::Value,
+    domain::AbstractValue,
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
@@ -27,7 +27,7 @@ fn native(code: &str, config: ExecutionConfig) -> WorldAnalysis {
             environment: evm_abstract::world::EvmEnvironment {
                 to: (address).into(),
                 caller: (Address::ZERO).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: ByteArray::empty(),
                 is_static: false,
                 ..evm_abstract::world::EvmEnvironment::default()

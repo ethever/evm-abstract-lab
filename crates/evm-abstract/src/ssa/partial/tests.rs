@@ -5,7 +5,7 @@ use crate::{
         self, ExecutionConfig, FrameCode, FrontierReason, InstructionProgress, MachineEdgeKind,
         Status, WorldAnalysis,
     },
-    domain::Value,
+    domain::AbstractValue,
     ssa::{self, SsaError},
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
@@ -38,7 +38,7 @@ fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
             environment: EvmEnvironment {
                 to: address(0x101).into(),
                 caller: address(0x900).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: ByteArray::empty(),
                 ..EvmEnvironment::default()
             },
@@ -67,7 +67,7 @@ fn unknown_call() -> WorldAnalysis {
             environment: EvmEnvironment {
                 to: address(0x101).into(),
                 caller: address(0x900).into(),
-                value: Value::top(),
+                value: AbstractValue::top(),
                 calldata: ByteArray::empty(),
                 ..EvmEnvironment::default()
             },
@@ -275,7 +275,7 @@ fn relational_frontier_does_not_truncate_a_completed_instruction_or_its_successo
             environment: EvmEnvironment {
                 to: address(0x101).into(),
                 caller: address(0x900).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: ByteArray::empty(),
                 ..EvmEnvironment::default()
             },

@@ -4,7 +4,7 @@ use evm_abstract::{
     Address, Fork, U256,
     analysis::{self, Config, ConfigError, ExecutionConfig, FrontierReason, Status, WorldAnalysis},
     bytecode::Program,
-    domain::{Profile, Value},
+    domain::{AbstractValue, Profile},
     world::{Account, ByteArray, Entry, World},
 };
 use std::collections::BTreeSet;
@@ -108,7 +108,7 @@ fn analyze_unknown_calldata_clz(capacity: usize, max_work: usize) -> WorldAnalys
             environment: evm_abstract::world::EvmEnvironment {
                 to: (address).into(),
                 caller: (Address::ZERO).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: ByteArray::unknown(),
                 is_static: false,
                 ..evm_abstract::world::EvmEnvironment::default()
@@ -143,7 +143,10 @@ fn clz_of_unknown_calldata_retains_all_257_candidates_when_capacity_allows() {
         assert_eq!(state.executed_pcs, [0, 1, 2, 3]);
         assert_eq!(state.exit_stack.len(), 1);
         if capacity == 256 {
-            assert_eq!(state.exit_stack[0].numeric(), Value::top().numeric());
+            assert_eq!(
+                state.exit_stack[0].numeric(),
+                AbstractValue::top().numeric()
+            );
             assert!(
                 state.exit_stack[0].expression().is_some(),
                 "capacity loss must retain CLZ's symbolic definition"

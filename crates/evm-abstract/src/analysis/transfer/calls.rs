@@ -10,7 +10,7 @@ use crate::{
         MachineEdgeKind, MachinePayload, OutcomeKind, RootFrame,
     },
     bytecode::Program,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{AddressInput, ByteArray, Code, Entry, Store, World},
 };
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -180,7 +180,7 @@ pub(super) fn finish(
     } else {
         U256::ZERO
     };
-    parent.stack.push(Value::constant(result_value));
+    parent.stack.push(AbstractValue::constant(result_value));
     if parent
         .memory
         .copy_return_data(
@@ -248,7 +248,7 @@ pub(super) fn call(
     result: &mut Execution,
     world: &World,
     op: u8,
-    args: &[Value],
+    args: &[AbstractValue],
     program: &Program,
     context: &mut TransferContext<'_>,
     pc: usize,
@@ -298,7 +298,10 @@ pub(super) fn call(
         boundary(result, pc, FrontierReason::Work);
         return;
     }
-    let projection_args = [args[1].clone(), Value::constant(U256::MAX >> 96usize)];
+    let projection_args = [
+        args[1].clone(),
+        AbstractValue::constant(U256::MAX >> 96usize),
+    ];
     if !context
         .budget
         .charge(domain.operation_work(&projection_args))

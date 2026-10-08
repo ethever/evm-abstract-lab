@@ -4,7 +4,7 @@ use super::{
     Analysis, Config, ConfigError, Diagnostic, DiagnosticKind, Edge, EdgeKind, ExecutionConfig,
     Frontier, FrontierReason, Limit, MachineEdgeKind, State, StateKey, analyze_world,
 };
-use crate::{bytecode::Program, domain::Value, world::EvmEnvironment};
+use crate::{bytecode::Program, domain::AbstractValue, world::EvmEnvironment};
 
 pub(super) fn analyze(
     program: Program,
@@ -72,7 +72,7 @@ pub(super) fn analyze(
         {
             // The local view has no callee facts with which to correlate the
             // deferred boolean. Native transitions retain the actual result.
-            exit_stack.push(Value::top());
+            exit_stack.push(AbstractValue::top());
         }
         states.push(State {
             entry_relations: source.entry.relations.clone(),

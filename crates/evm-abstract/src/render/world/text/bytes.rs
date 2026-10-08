@@ -1,7 +1,7 @@
 //! Lossless human rendering of sparse byte facts without expanding their range.
 
 use super::write_table;
-use crate::{domain::Value, world::ByteArray};
+use crate::{domain::AbstractValue, world::ByteArray};
 use alloy_primitives::U256;
 use std::fmt::Write;
 
@@ -87,12 +87,14 @@ pub(in crate::render::world) fn write_bytes(
 }
 
 /// Add decimal byte counts without replacing the original abstract length.
-fn byte_count(length: &Value) -> String {
+fn byte_count(length: &AbstractValue) -> String {
     let Some(lengths) = length.constants() else {
         return "unknown byte count".to_owned();
     };
     if lengths.len() == 1 {
-        let length = lengths.first().expect("Value constants are nonempty");
+        let length = lengths
+            .first()
+            .expect("AbstractValue constants are nonempty");
         return format!(
             "{length} {}",
             if *length == U256::from(1) {
@@ -112,7 +114,7 @@ fn byte_count(length: &Value) -> String {
     )
 }
 
-fn singleton_byte(value: &Value) -> Option<u8> {
+fn singleton_byte(value: &AbstractValue) -> Option<u8> {
     let constants = value.constants()?;
     if constants.len() != 1 {
         return None;

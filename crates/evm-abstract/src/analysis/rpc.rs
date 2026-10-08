@@ -226,7 +226,7 @@ pub fn analyze_rpc(
         }
         for (address, slots) in storage {
             // 覆盖 key 扫描、快照初始账户复制与 slot 观测安装的工作。
-            let slot_work = crate::domain::Value::constant(U256::ZERO)
+            let slot_work = crate::domain::AbstractValue::constant(U256::ZERO)
                 .work_size()
                 .saturating_add(4);
             let work = slots

@@ -3,7 +3,7 @@
 use super::{InputError, parse};
 use alloy_primitives::{Address, U256};
 use evm_abstract::{
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{Code, Existence, SnapshotIdentity, Store},
 };
 
@@ -32,21 +32,24 @@ fn omitted_facts_stay_unknown_and_explicit_empty_code_is_known() {
     assert_eq!(
         store.read(
             address(0x101),
-            &Value::constant(U256::ZERO),
+            &AbstractValue::constant(U256::ZERO),
             Domain::default()
         ),
-        Value::constant(U256::from(7))
+        AbstractValue::constant(U256::from(7))
     );
     assert_eq!(
         store.read(
             address(0x101),
-            &Value::constant(U256::from(1)),
+            &AbstractValue::constant(U256::from(1)),
             Domain::default()
         ),
-        Value::top()
+        AbstractValue::top()
     );
-    assert_eq!(store.read_balance(address(0x101)), Value::top());
-    assert_eq!(world.account(address(0x101)).unwrap().nonce, Value::top());
+    assert_eq!(store.read_balance(address(0x101)), AbstractValue::top());
+    assert_eq!(
+        world.account(address(0x101)).unwrap().nonce,
+        AbstractValue::top()
+    );
     assert_eq!(
         world.account(address(0x101)).unwrap().existence,
         Existence::Unknown
@@ -65,14 +68,14 @@ fn declared_complete_storage_makes_unlisted_slots_zero() {
     assert_eq!(
         store.read(
             address(0x101),
-            &Value::constant(U256::from(1)),
+            &AbstractValue::constant(U256::from(1)),
             Domain::default()
         ),
-        Value::constant(U256::ZERO)
+        AbstractValue::constant(U256::ZERO)
     );
     assert_eq!(
         store.read_balance(address(0x101)),
-        Value::constant(U256::from(9))
+        AbstractValue::constant(U256::from(9))
     );
 }
 
@@ -97,7 +100,7 @@ fn anchored_snapshot_validates_block_identity_code_hash_and_fingerprint() {
     );
     assert_eq!(
         world.account(address(0x101)).unwrap().nonce,
-        Value::constant(U256::from(1))
+        AbstractValue::constant(U256::from(1))
     );
     let mut json: serde_json::Value = serde_json::from_str(&input).unwrap();
     json["fingerprint"] = serde_json::json!(world.fingerprint());

@@ -135,7 +135,7 @@ pub struct SummaryStats {
 pub(super) struct Node {
     pub entry: MachinePayload,
     pub exit: MachinePayload,
-    pub exit_stack: Vec<crate::domain::Value>,
+    pub exit_stack: Vec<crate::domain::AbstractValue>,
     pub executed_pcs: Vec<usize>,
     pub instruction_progress: Vec<InstructionProgress>,
     pub diagnostics: Vec<Diagnostic>,

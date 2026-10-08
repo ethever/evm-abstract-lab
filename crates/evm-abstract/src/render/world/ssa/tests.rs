@@ -2,7 +2,7 @@ use super::render;
 use crate::{
     Address, Fork, U256,
     analysis::{self, ExecutionConfig, MachineEdgeKind, Status, WorldAnalysis},
-    domain::Value,
+    domain::AbstractValue,
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
@@ -16,7 +16,12 @@ fn address(number: u64) -> Address {
 fn run(world: World, entry: Address, calldata: ByteArray) -> WorldAnalysis {
     let graph = analysis::analyze_world(
         world,
-        Entry::concrete(entry, address(0x900), Value::constant(U256::ZERO), calldata),
+        Entry::concrete(
+            entry,
+            address(0x900),
+            AbstractValue::constant(U256::ZERO),
+            calldata,
+        ),
         ExecutionConfig {
             analysis: analysis::Config {
                 context_depth: 0,
@@ -586,7 +591,7 @@ fn execution_failure_is_distinct_from_an_invalid_opcode_or_stack_fault() {
             let mut entry = Entry::concrete(
                 root,
                 address(0x900),
-                Value::constant(U256::ZERO),
+                AbstractValue::constant(U256::ZERO),
                 ByteArray::empty(),
             );
             entry.environment.is_static = true;

@@ -2,7 +2,7 @@
 
 use crate::{
     analysis::WorldAnalysis,
-    domain::Value,
+    domain::AbstractValue,
     world::{AddressInput, EvmEnvironment, GasInput, SnapshotIdentity},
 };
 use alloy_primitives::Address;
@@ -96,7 +96,7 @@ pub(crate) fn write(
         ("base fee", &environment.base_fee),
         ("blob base fee", &environment.blob_base_fee),
     ] {
-        if full || value != &Value::top() {
+        if full || value != &AbstractValue::top() {
             writeln!(output, "  {name}={value}").unwrap();
         }
     }
@@ -139,7 +139,7 @@ pub(crate) fn write(
         }
     }
     if full
-        || environment.blob_hashes.length != Value::top()
+        || environment.blob_hashes.length != AbstractValue::top()
         || !environment.blob_hashes.hashes.is_empty()
     {
         writeln!(

@@ -21,9 +21,6 @@ pub struct AbstractValue {
     pub(super) symbolic_limit: bool,
 }
 
-/// Compatibility name for the real layered machine value.
-pub type Value = AbstractValue;
-
 impl AbstractValue {
     /// Numeric value with unknown source and no identity or expression.
     pub fn from_numeric(numeric: NumericValue) -> Self {

@@ -6,7 +6,7 @@ use evm_abstract::{
         CallStack, ChildFrame, Continuation, ExecutionConfig, MachineEdgeKind, OutcomeKind,
         RootFrame, Status, WorldAnalysis, analyze_world,
     },
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     ssa,
     world::{Account, ByteArray, Entry, Store, World},
 };
@@ -22,7 +22,7 @@ fn root_frame() -> RootFrame {
             environment: evm_abstract::world::EvmEnvironment {
                 to: (address).into(),
                 caller: (Address::repeat_byte(0x22)).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: ByteArray::empty(),
                 is_static: false,
                 ..evm_abstract::world::EvmEnvironment::default()
@@ -41,8 +41,8 @@ fn root_frame() -> RootFrame {
 fn continuation(block: usize) -> Continuation {
     Continuation {
         return_block: Some(block),
-        output_offset: Value::constant(U256::from(block)),
-        output_size: Value::constant(U256::from(32)),
+        output_offset: AbstractValue::constant(U256::from(block)),
+        output_size: AbstractValue::constant(U256::from(32)),
         creation: None,
     }
 }
@@ -57,7 +57,9 @@ fn nested_stack_keeps_the_root_and_resumes_each_parent() {
     assert!(stack.active_child().is_none());
 
     let mut first_state = root.state.clone();
-    first_state.stack.push(Value::constant(U256::from(1)));
+    first_state
+        .stack
+        .push(AbstractValue::constant(U256::from(1)));
     let first = ChildFrame {
         state: first_state,
         continuation: continuation(1),
@@ -66,7 +68,9 @@ fn nested_stack_keeps_the_root_and_resumes_each_parent() {
     assert_eq!(stack.parent(), Some(&root.state));
 
     let mut second_state = root.state.clone();
-    second_state.stack.push(Value::constant(U256::from(2)));
+    second_state
+        .stack
+        .push(AbstractValue::constant(U256::from(2)));
     let second = ChildFrame {
         state: second_state,
         continuation: continuation(2),
@@ -85,7 +89,7 @@ fn nested_stack_keeps_the_root_and_resumes_each_parent() {
     stack
         .active_mut()
         .stack
-        .push(Value::constant(U256::from(3)));
+        .push(AbstractValue::constant(U256::from(3)));
     assert_eq!(stack.pop_child().unwrap().state.stack.len(), 2);
     assert_eq!(stack.active(), &first.state);
     assert_eq!(stack.pop_child(), Some(first));
@@ -140,7 +144,7 @@ fn nested_analysis(root_reverts: bool) -> WorldAnalysis {
             environment: evm_abstract::world::EvmEnvironment {
                 to: (address(0x101)).into(),
                 caller: (address(0x900)).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: ByteArray::empty(),
                 is_static: false,
                 ..evm_abstract::world::EvmEnvironment::default()
@@ -159,7 +163,7 @@ fn nested_calls_preserve_roles_and_restore_the_childs_checkpoint() {
         .unwrap()
         .verify(&analysis)
         .unwrap();
-    let zero = Value::constant(U256::ZERO);
+    let zero = AbstractValue::constant(U256::ZERO);
     let domain = Domain::default();
     let root_checkpoint = &analysis.states()[0]
         .entry
@@ -188,7 +192,7 @@ fn nested_calls_preserve_roles_and_restore_the_childs_checkpoint() {
             let child_checkpoint = stack.children()[0].state.saved_store.state();
             assert_eq!(
                 child_checkpoint.read(address(0x101), &zero, domain),
-                Value::constant(U256::from(3))
+                AbstractValue::constant(U256::from(3))
             );
             assert_eq!(child_checkpoint.read(address(0x200), &zero, domain), zero);
             let grandchild = stack.active_child().unwrap();
@@ -197,7 +201,7 @@ fn nested_calls_preserve_roles_and_restore_the_childs_checkpoint() {
             let checkpoint = grandchild.state.saved_store.state();
             assert_eq!(
                 checkpoint.read(address(0x200), &zero, domain),
-                Value::constant(U256::from(7))
+                AbstractValue::constant(U256::from(7))
             );
             assert_eq!(checkpoint.read(address(0x300), &zero, domain), zero);
         }
@@ -226,7 +230,7 @@ fn nested_calls_preserve_roles_and_restore_the_childs_checkpoint() {
         assert_equivalent_store(&resumed.store, checkpoint);
         assert_eq!(
             resumed.store.read(address(0x101), &zero, domain),
-            Value::constant(U256::from(3))
+            AbstractValue::constant(U256::from(3))
         );
         assert_eq!(resumed.store.read(address(0x200), &zero, domain), zero);
         assert_eq!(resumed.store.read(address(0x300), &zero, domain), zero);

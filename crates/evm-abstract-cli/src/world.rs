@@ -9,7 +9,7 @@ use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     Fork,
     bytecode::DecodeError,
-    domain::Value,
+    domain::AbstractValue,
     fork::ParseForkError,
     world::{Account, Existence, World, WorldError},
 };
@@ -177,21 +177,21 @@ fn parse(text: &str) -> Result<World, InputError> {
         account.storage_unknown = input.storage_unknown;
         for (slot, value) in input.storage {
             let slot = word(&slot, "storage slot")?;
-            let value = Value::constant(word(&value, "storage value")?);
+            let value = AbstractValue::constant(word(&value, "storage value")?);
             if account.storage.insert(slot, value).is_some() {
                 return Err(InputError::DuplicateSlot { address, slot });
             }
         }
         account.balance = input
             .balance
-            .map(|value| word(&value, "balance").map(Value::constant))
+            .map(|value| word(&value, "balance").map(AbstractValue::constant))
             .transpose()?
-            .unwrap_or_else(Value::top);
+            .unwrap_or_else(AbstractValue::top);
         account.nonce = input
             .nonce
-            .map(|value| word(&value, "nonce").map(Value::constant))
+            .map(|value| word(&value, "nonce").map(AbstractValue::constant))
             .transpose()?
-            .unwrap_or_else(Value::top);
+            .unwrap_or_else(AbstractValue::top);
         account.existence = match input.existence.as_deref() {
             None | Some("unknown") => Existence::Unknown,
             Some("present") => Existence::Present,

@@ -3,7 +3,7 @@
 use super::{Continuation, FrameCode, FrameKey};
 use crate::{
     bytecode::Program,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{ByteArray, Snapshot},
 };
 use serde::Serialize;
@@ -18,7 +18,7 @@ pub struct FrameState {
     /// Captured instruction stream; later calls resolve the current code overlay.
     pub program: Option<Program>,
     /// Abstract stack in bottom-to-top order.
-    pub stack: Vec<Value>,
+    pub stack: Vec<AbstractValue>,
     /// This frame's private memory.
     pub memory: ByteArray,
     /// Bytes copied from caller memory at entry, or supplied for the root.
@@ -29,14 +29,14 @@ pub struct FrameState {
     /// Full data from the most recently completed child call.
     pub returndata: ByteArray,
     /// CALLVALUE for this context; DELEGATECALL preserves its parent value.
-    pub call_value: Value,
+    pub call_value: AbstractValue,
     /// State immediately before entry, including persistent and transient effects.
     /// Root failure also restores this checkpoint.
     pub saved_store: Snapshot,
 }
 
 impl FrameState {
-    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&Value)) {
+    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&AbstractValue)) {
         for value in &self.stack {
             visit(value);
         }
@@ -46,7 +46,7 @@ impl FrameState {
         visit(&self.call_value);
         self.saved_store.state().visit_values(visit);
     }
-    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut Value)) {
+    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut AbstractValue)) {
         for value in &mut self.stack {
             update(value);
         }

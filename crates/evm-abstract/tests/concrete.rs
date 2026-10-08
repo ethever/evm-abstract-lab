@@ -5,7 +5,7 @@ use evm_abstract::{
     Fork, U256,
     analysis::{self, Analysis, Config, EdgeKind, Status},
     bytecode::Program,
-    domain::{Domain, Value, provenance::Origin},
+    domain::{AbstractValue, Domain, provenance::Origin},
     ssa,
 };
 use proptest::{arbitrary::any, prop_assert_eq, proptest};
@@ -88,8 +88,8 @@ fn arithmetic(op: u8, args: &[U256], fork: Fork) -> U256 {
 }
 
 // 具体 oracle 判断数值；运算来源与直接常量来源应当保持可区分。
-fn assert_exact_numeric(actual: &Value, expected: U256) {
-    let literal = Value::constant(expected);
+fn assert_exact_numeric(actual: &AbstractValue, expected: U256) {
+    let literal = AbstractValue::constant(expected);
     assert_eq!(actual.singleton(), Some(expected));
     assert_eq!(actual.constants(), literal.constants());
     assert_eq!(actual.known_bits(), literal.known_bits());
@@ -131,7 +131,8 @@ fn all_pure_operators_match_revm_at_word_boundaries() {
                 let args: Vec<_> = (0..count)
                     .map(|offset| values[(index + offset) % values.len()])
                     .collect();
-                let abstract_args: Vec<_> = args.iter().copied().map(Value::constant).collect();
+                let abstract_args: Vec<_> =
+                    args.iter().copied().map(AbstractValue::constant).collect();
                 let result = Domain::default().apply(op, &abstract_args);
                 let expected = arithmetic(op, &args, fork);
                 assert_eq!(
@@ -153,7 +154,7 @@ proptest! {
         let op = operators[op_index];
         let count = match op { 0x15 | 0x19 | 0x1e => 1, 0x08 | 0x09 => 3, _ => 2 };
         let args = [U256::from_limbs(a), U256::from_limbs(b), U256::from_limbs(c)];
-        let abstract_args: Vec<_> = args[..count].iter().copied().map(Value::constant).collect();
+        let abstract_args: Vec<_> = args[..count].iter().copied().map(AbstractValue::constant).collect();
         for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
             if op != 0x1e || fork == Fork::Osaka {
                 let result = Domain::default().apply(op, &abstract_args);
@@ -364,7 +365,7 @@ fn example_cfgs_cover_revm_block_entries_edges_and_outputs() {
 fn clz_matches_revm_for_zero_and_every_single_set_bit() {
     for value in std::iter::once(U256::ZERO).chain((0..256).map(|bit| U256::from(1) << bit)) {
         assert_exact_numeric(
-            &Domain::default().apply(0x1e, &[Value::constant(value)]),
+            &Domain::default().apply(0x1e, &[AbstractValue::constant(value)]),
             arithmetic(0x1e, &[value], Fork::Osaka),
         );
     }

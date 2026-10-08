@@ -13,7 +13,7 @@ mod tests;
 pub use session::Session;
 
 use super::{Account, Existence, World, WorldError};
-use crate::{Fork, bytecode::DecodeError, domain::Value};
+use crate::{Fork, bytecode::DecodeError, domain::AbstractValue};
 use alloy_primitives::{Address, B256, U256, hex};
 use reqwest::blocking::Client;
 use serde::Serialize;
@@ -730,13 +730,13 @@ impl Loader {
             &self.call(&balance_context, json!([address, self.selector()]))?,
             &balance_context,
         )?;
-        account.balance = Value::constant(balance);
+        account.balance = AbstractValue::constant(balance);
         let nonce_context = self.context("eth_getTransactionCount", Some(address), None);
         let nonce = quantity(
             &self.call(&nonce_context, json!([address, self.selector()]))?,
             &nonce_context,
         )?;
-        account.nonce = Value::constant(nonce);
+        account.nonce = AbstractValue::constant(nonce);
         // Ordinary state RPC cannot distinguish an absent account from an
         // existing account with empty code, zero balance and zero nonce.
         account.existence =
@@ -750,7 +750,9 @@ impl Loader {
             if observed != U256::ZERO {
                 account.existence = Existence::Present;
             }
-            account.storage.insert(key, Value::constant(observed));
+            account
+                .storage
+                .insert(key, AbstractValue::constant(observed));
         }
         world
             .insert(address, account)

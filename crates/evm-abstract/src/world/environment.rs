@@ -6,7 +6,7 @@
 
 use super::{ByteArray, SnapshotIdentity};
 pub use crate::domain::provenance::Symbol;
-use crate::domain::{Domain, Value};
+use crate::domain::{AbstractValue, Domain};
 use alloy_primitives::{Address, B256, U256};
 use serde::Serialize;
 use std::{
@@ -77,13 +77,15 @@ impl AddressInput {
         }
     }
     /// Numeric representation with the high 96 bits guaranteed zero.
-    pub fn value(self) -> Value {
+    pub fn value(self) -> AbstractValue {
         match self {
-            Self::Concrete(address) => Value::constant(U256::from_be_slice(address.as_slice())),
-            Self::Symbolic(_) => Value::unknown_address(),
+            Self::Concrete(address) => {
+                AbstractValue::constant(U256::from_be_slice(address.as_slice()))
+            }
+            Self::Symbolic(_) => AbstractValue::unknown_address(),
         }
     }
-    pub(crate) fn scoped_value(self, scope: Option<u64>) -> Value {
+    pub(crate) fn scoped_value(self, scope: Option<u64>) -> AbstractValue {
         match self {
             Self::Concrete(_) => self.value(),
             Self::Symbolic(symbol) => self.value().with_symbol(symbol, scope),
@@ -117,10 +119,10 @@ pub enum GasInput {
 }
 
 impl GasInput {
-    pub(crate) fn value(self) -> Value {
+    pub(crate) fn value(self) -> AbstractValue {
         match self {
-            Self::Unknown => Value::top(),
-            Self::UpperBound(upper) => Value::unsigned_range(U256::ZERO, upper)
+            Self::Unknown => AbstractValue::top(),
+            Self::UpperBound(upper) => AbstractValue::unsigned_range(U256::ZERO, upper)
                 .expect("zero never exceeds an unsigned bound"),
         }
     }
@@ -130,7 +132,7 @@ impl GasInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct BlobHashes {
     /// Count of versioned hashes; omitted count remains unknown.
-    pub length: Value,
+    pub length: AbstractValue,
     /// Only observed indices; holes below a known count remain unknown.
     pub hashes: BTreeMap<U256, B256>,
 }
@@ -138,7 +140,7 @@ pub struct BlobHashes {
 impl Default for BlobHashes {
     fn default() -> Self {
         Self {
-            length: Value::top(),
+            length: AbstractValue::top(),
             hashes: BTreeMap::new(),
         }
     }
@@ -148,7 +150,7 @@ impl BlobHashes {
     /// A complete observed list; indices beyond its length return zero.
     pub fn exact(hashes: &[B256]) -> Self {
         Self {
-            length: Value::constant(U256::from(hashes.len())),
+            length: AbstractValue::constant(U256::from(hashes.len())),
             hashes: hashes
                 .iter()
                 .enumerate()
@@ -157,12 +159,17 @@ impl BlobHashes {
         }
     }
 
-    pub(crate) fn get(&self, index: &Value, domain: Domain, scope: Option<u64>) -> Value {
+    pub(crate) fn get(
+        &self,
+        index: &AbstractValue,
+        domain: Domain,
+        scope: Option<u64>,
+    ) -> AbstractValue {
         let Some(indices) = index.constants() else {
             return if self.length.singleton() == Some(U256::ZERO) {
-                Value::constant(U256::ZERO)
+                AbstractValue::constant(U256::ZERO)
             } else {
-                Value::top()
+                AbstractValue::top()
             };
         };
         let mut values = indices.iter().map(|index| {
@@ -172,13 +179,13 @@ impl BlobHashes {
                     .singleton()
                     .is_some_and(|length| *index >= length)
             {
-                return Value::constant(U256::ZERO);
+                return AbstractValue::constant(U256::ZERO);
             }
             if let Some(hash) = self.hashes.get(index) {
                 // An observed hash also establishes that this index exists.
-                return Value::constant(U256::from_be_slice(hash.as_slice()));
+                return AbstractValue::constant(U256::from_be_slice(hash.as_slice()));
             }
-            Value::top().with_symbol(Symbol::BlobHash(*index), scope)
+            AbstractValue::top().with_symbol(Symbol::BlobHash(*index), scope)
         });
         let first = values.next().expect("finite value candidates are nonempty");
         values.fold(first, |value, incoming| domain.join(&value, &incoming))
@@ -198,29 +205,29 @@ pub struct EvmEnvironment {
     /// Transaction ORIGIN; omission aliases the exact same input as caller.
     pub origin: Option<AddressInput>,
     /// Root CALLVALUE; omitted value covers every unsigned word.
-    pub value: Value,
+    pub value: AbstractValue,
     /// Root calldata, including its length; omitted data is unknown.
     pub calldata: ByteArray,
     /// Whether the root frame is static; children inherit restrictions.
     pub is_static: bool,
     /// Effective transaction gas price.
-    pub gas_price: Value,
+    pub gas_price: AbstractValue,
     /// Block beneficiary.
     pub coinbase: AddressInput,
     /// Block timestamp.
-    pub timestamp: Value,
+    pub timestamp: AbstractValue,
     /// Execution block number, independent of the fixed account-state snapshot.
-    pub number: Value,
+    pub number: AbstractValue,
     /// PREVRANDAO under all supported post-Merge forks.
-    pub prevrandao: Value,
+    pub prevrandao: AbstractValue,
     /// Block gas limit.
-    pub gas_limit: Value,
+    pub gas_limit: AbstractValue,
     /// Execution CHAINID override; omission uses an anchored world's chain ID.
-    pub chain_id: Option<Value>,
+    pub chain_id: Option<AbstractValue>,
     /// Block base fee per gas.
-    pub base_fee: Value,
+    pub base_fee: AbstractValue,
     /// Block blob base fee.
-    pub blob_base_fee: Value,
+    pub blob_base_fee: AbstractValue,
     /// Initial remaining-gas upper bound; GAS is never treated as a constant.
     pub gas: GasInput,
     /// Partial BLOCKHASH observations, indexed by full-width block number.
@@ -236,18 +243,18 @@ impl Default for EvmEnvironment {
             to: AddressInput::unknown_to(),
             caller: AddressInput::unknown_caller(),
             origin: None,
-            value: Value::top(),
+            value: AbstractValue::top(),
             calldata: ByteArray::unknown(),
             is_static: false,
-            gas_price: Value::top(),
+            gas_price: AbstractValue::top(),
             coinbase: AddressInput::unknown_coinbase(),
-            timestamp: Value::top(),
-            number: Value::top(),
-            prevrandao: Value::top(),
-            gas_limit: Value::top(),
+            timestamp: AbstractValue::top(),
+            number: AbstractValue::top(),
+            prevrandao: AbstractValue::top(),
+            gas_limit: AbstractValue::top(),
             chain_id: None,
-            base_fee: Value::top(),
-            blob_base_fee: Value::top(),
+            base_fee: AbstractValue::top(),
+            blob_base_fee: AbstractValue::top(),
             gas: GasInput::Unknown,
             block_hashes: BTreeMap::new(),
             blob_hashes: BlobHashes::default(),
@@ -280,7 +287,7 @@ pub enum EnvironmentError {
 }
 
 impl EvmEnvironment {
-    pub(crate) fn address_value(&self, address: AddressInput) -> Value {
+    pub(crate) fn address_value(&self, address: AddressInput) -> AbstractValue {
         address.scoped_value(self.input_scope.id())
     }
 
@@ -332,7 +339,7 @@ impl EvmEnvironment {
             self.calldata.work_size().saturating_add(8),
             |cost, value| cost.saturating_add(value.work_size()),
         )
-        .saturating_add(self.chain_id.as_ref().map_or(0, Value::work_size))
+        .saturating_add(self.chain_id.as_ref().map_or(0, AbstractValue::work_size))
         .saturating_add(
             self.block_hashes
                 .len()
@@ -368,45 +375,48 @@ impl EvmEnvironment {
         .saturating_add(domain.projection_work(&self.coinbase.value()))
     }
 
-    pub(crate) fn chain_id(&self, identity: &SnapshotIdentity) -> Value {
+    pub(crate) fn chain_id(&self, identity: &SnapshotIdentity) -> AbstractValue {
         self.chain_id
             .clone()
             .unwrap_or_else(|| match identity {
-                SnapshotIdentity::Chain { chain_id, .. } => Value::constant(*chain_id),
-                SnapshotIdentity::Offline { .. } => Value::top(),
+                SnapshotIdentity::Chain { chain_id, .. } => AbstractValue::constant(*chain_id),
+                SnapshotIdentity::Offline { .. } => AbstractValue::top(),
             })
             .with_symbol(Symbol::ChainId, self.input_scope.id())
     }
 
-    pub(crate) fn block_hash(&self, index: &Value, domain: Domain) -> Value {
+    pub(crate) fn block_hash(&self, index: &AbstractValue, domain: Domain) -> AbstractValue {
         let current = self.number.singleton();
         let Some(indices) = index.constants() else {
             return if current == Some(U256::ZERO) {
-                Value::constant(U256::ZERO)
+                AbstractValue::constant(U256::ZERO)
             } else {
-                Value::top()
+                AbstractValue::top()
             };
         };
         let mut values = indices.iter().map(|index| {
             if *index == U256::MAX {
-                return Value::constant(U256::ZERO);
+                return AbstractValue::constant(U256::ZERO);
             }
             if let Some(current) = current {
                 if *index >= current || current - *index > U256::from(256) {
-                    return Value::constant(U256::ZERO);
+                    return AbstractValue::constant(U256::ZERO);
                 }
                 return self.block_hashes.get(index).map_or_else(
-                    || Value::top().with_symbol(Symbol::BlockHash(*index), self.input_scope.id()),
-                    |hash| Value::constant(U256::from_be_slice(hash.as_slice())),
+                    || {
+                        AbstractValue::top()
+                            .with_symbol(Symbol::BlockHash(*index), self.input_scope.id())
+                    },
+                    |hash| AbstractValue::constant(U256::from_be_slice(hash.as_slice())),
                 );
             }
             // Without NUMBER the index can be either valid or out of range.
             self.block_hashes
                 .get(index)
-                .map_or_else(Value::top, |hash| {
+                .map_or_else(AbstractValue::top, |hash| {
                     domain.join(
-                        &Value::constant(U256::ZERO),
-                        &Value::constant(U256::from_be_slice(hash.as_slice())),
+                        &AbstractValue::constant(U256::ZERO),
+                        &AbstractValue::constant(U256::from_be_slice(hash.as_slice())),
                     )
                 })
         });

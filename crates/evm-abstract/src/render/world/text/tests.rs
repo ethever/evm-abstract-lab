@@ -2,7 +2,7 @@ use super::{render, write_table};
 use crate::{
     Fork,
     analysis::{ExecutionConfig, analyze_world},
-    domain::Value,
+    domain::AbstractValue,
     world::{Account, ByteArray, Entry, World},
 };
 use alloy_primitives::{Address, U256};
@@ -160,7 +160,7 @@ fn a_store_with_unobserved_logs_keeps_the_unknown_flag_visible() {
         Entry::concrete(
             address,
             Address::ZERO,
-            Value::constant(U256::ZERO),
+            AbstractValue::constant(U256::ZERO),
             ByteArray::empty(),
         ),
         ExecutionConfig::default(),

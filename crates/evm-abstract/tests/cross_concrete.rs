@@ -5,7 +5,7 @@
 use evm_abstract::{
     Fork, U256,
     analysis::{self, ExecutionConfig, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis},
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
@@ -65,7 +65,7 @@ fn fixture(name: &str, fork: Fork) -> (World, InMemoryDB) {
         let code = input["code"].as_str().unwrap();
         let balance: U256 = input["balance"].as_str().unwrap().parse().unwrap();
         let mut account = Account::from_hex(code, fork).unwrap();
-        account.balance = Value::constant(balance);
+        account.balance = AbstractValue::constant(balance);
         assert_eq!(input["storage_unknown"], false);
         let raw = hex::decode(code.trim_start_matches("0x")).unwrap();
         let bytecode = Bytecode::new_raw(Bytes::from(raw));
@@ -76,7 +76,7 @@ fn fixture(name: &str, fork: Fork) -> (World, InMemoryDB) {
         for (slot, value) in input["storage"].as_object().unwrap() {
             let slot: U256 = slot.parse().unwrap();
             let value: U256 = value.as_str().unwrap().parse().unwrap();
-            account.storage.insert(slot, Value::constant(value));
+            account.storage.insert(slot, AbstractValue::constant(value));
             db.insert_account_storage(address, slot, value).unwrap();
         }
         world.insert(address, account).unwrap();
@@ -135,7 +135,7 @@ fn compare(name: &str, fork: Fork) -> WorldAnalysis {
         environment: evm_abstract::world::EvmEnvironment {
             to: (address(0x101)).into(),
             caller: (address(0x1000)).into(),
-            value: Value::constant(U256::ZERO),
+            value: AbstractValue::constant(U256::ZERO),
             calldata: ByteArray::empty(),
             is_static: false,
             ..evm_abstract::world::EvmEnvironment::default()
@@ -198,7 +198,7 @@ fn compare(name: &str, fork: Fork) -> WorldAnalysis {
                     account.storage.iter().all(|(slot, value)| {
                         outcome
                             .store
-                            .read(*owner, &Value::constant(*slot), Domain::default())
+                            .read(*owner, &AbstractValue::constant(*slot), Domain::default())
                             .contains(value.present_value())
                     }) && outcome
                         .store
@@ -247,7 +247,7 @@ fn compare(name: &str, fork: Fork) -> WorldAnalysis {
     analysis
 }
 
-fn outcome_slots(analysis: &WorldAnalysis) -> BTreeMap<(Address, U256), Value> {
+fn outcome_slots(analysis: &WorldAnalysis) -> BTreeMap<(Address, U256), AbstractValue> {
     let mut stores = analysis
         .outcomes()
         .iter()
@@ -262,7 +262,7 @@ fn outcome_slots(analysis: &WorldAnalysis) -> BTreeMap<(Address, U256), Value> {
         .collect()
 }
 
-fn finite_contains(value: &Value, expected: u64) {
+fn finite_contains(value: &AbstractValue, expected: u64) {
     assert!(
         value.constants().is_some(),
         "expected a finite effect, got {value}"
@@ -308,7 +308,7 @@ fn shared_implementation_preserves_proxy_storage_caller_and_callvalue() {
     }
     assert_eq!(
         slots[&(address(0x300), U256::ZERO)],
-        Value::constant(U256::from(99))
+        AbstractValue::constant(U256::from(99))
     );
 }
 
@@ -328,16 +328,16 @@ fn revert_and_static_failure_restore_callee_state() {
     let slots = outcome_slots(&analysis);
     assert_eq!(
         slots[&(address(0x101), U256::ZERO)],
-        Value::constant(U256::from(3))
+        AbstractValue::constant(U256::from(3))
     );
     finite_contains(&slots[&(address(0x101), U256::from(1))], 42);
     assert_eq!(
         slots[&(address(0x101), U256::from(2))],
-        Value::constant(U256::ZERO)
+        AbstractValue::constant(U256::ZERO)
     );
     assert_eq!(
         slots[&(address(0x200), U256::ZERO)],
-        Value::constant(U256::from(4))
+        AbstractValue::constant(U256::from(4))
     );
     assert!(
         analysis
@@ -349,11 +349,11 @@ fn revert_and_static_failure_restore_callee_state() {
     let slots = outcome_slots(&analysis);
     assert_eq!(
         slots[&(address(0x101), U256::ZERO)],
-        Value::constant(U256::ZERO)
+        AbstractValue::constant(U256::ZERO)
     );
     assert_eq!(
         slots[&(address(0x200), U256::ZERO)],
-        Value::constant(U256::from(4))
+        AbstractValue::constant(U256::from(4))
     );
     assert!(
         analysis
@@ -369,7 +369,7 @@ fn reentrant_read_observes_the_current_transaction_store() {
     let slots = outcome_slots(&analysis);
     assert_eq!(
         slots[&(address(0x101), U256::ZERO)],
-        Value::constant(U256::from(2))
+        AbstractValue::constant(U256::from(2))
     );
     finite_contains(&slots[&(address(0x101), U256::from(1))], 1);
     assert!(

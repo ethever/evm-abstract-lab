@@ -22,7 +22,7 @@ mod single;
 mod summary;
 mod transfer;
 
-use crate::{bytecode::Program, domain::Value};
+use crate::{bytecode::Program, domain::AbstractValue};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 pub use config::{Config, ConfigError, ValidatedConfig};
@@ -61,9 +61,9 @@ pub struct State {
     /// 状态的结构身份。
     pub key: StateKey,
     /// 底到顶的抽象栈，最后一个元素是栈顶。
-    pub entry_stack: Vec<Value>,
+    pub entry_stack: Vec<AbstractValue>,
     /// 最后一次 transfer 的出栈。
-    pub exit_stack: Vec<Value>,
+    pub exit_stack: Vec<AbstractValue>,
     /// 最后一次 transfer 实际访问的指令 pc；异常之后的指令不出现。
     pub executed_pcs: Vec<usize>,
 }

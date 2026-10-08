@@ -7,14 +7,14 @@ mod instruction;
 use crate::{
     analysis::{Analysis, DiagnosticKind},
     bytecode::Program,
-    domain::Value,
+    domain::AbstractValue,
     ssa::Ssa,
 };
 use instruction::{InstructionLayout, write_ssa_body};
 use petgraph::{dot::Dot, graph::DiGraph};
 use std::fmt::Write;
 
-fn stack(values: &[Value]) -> String {
+fn stack(values: &[AbstractValue]) -> String {
     format!(
         "[{}]",
         values
