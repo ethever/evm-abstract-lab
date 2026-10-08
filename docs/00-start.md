@@ -1,5 +1,7 @@
 # 00：运行第一个例子，读懂三种输出
 
+阅读路线：[理论：执行规则与输入](routes/theory.md#execution) · [实现：CLI 与输入入口](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
+
 本课从一个只做 `2 + 3` 的程序开始。完成后，你应能把原始字节、执行顺序和数值的来源对应起来。无需先懂编译器、Datalog 或 SMT。
 
 ## 第一步：准备运行环境
@@ -219,4 +221,4 @@ nix run . -- analyze \
 
 不看正文，试着解释三件事：为什么第二条指令的 pc 是 2；为什么 `stack in [{0x1,0x2}]` 只有一个栈槽；为什么 `%2` 不随栈位置变化而改名。若仍不确定，回到[反汇编](#反汇编每个字节是什么意思)、[分支 CFG](#第四步换一个有分支的例子)和[SSA](#ssa每个值从哪里来)的输出片段核对。
 
-下一课：[01：字节码与基本块](01-bytecode.md)。命令与示例索引见 [README](../README.md) 和[例子目录](../examples/README.md)。
+相关主题：[01：字节码与基本块](01-bytecode.md)。命令与示例索引见 [README](../README.md) 和[例子目录](../examples/README.md)。

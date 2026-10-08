@@ -1,5 +1,7 @@
 # 13：明确 EVM 环境与符号输入
 
+阅读路线：[理论：输入范围与语义](routes/theory.md#execution) · [实现：入口参数与环境](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
+
 分析的输入范围决定图覆盖哪些调用。世界或 RPC 只提供账户代码和初始状态；调用者、调用金额和 calldata 是另一组输入。
 
 ## 1. 默认输入与目标账户
@@ -165,4 +167,4 @@ jq '.program.blocks as $blocks | [.states[].key.basic_block_index | $blocks[.].s
 
 求解器只使用 `rlimit`，没有墙钟 timeout。资源不足、表达式不能编码或 solver 未给出证明时，保留未知结果和对应前沿；只有已证实 UNSAT 才能剪掉分支。关系查询与表达式工作还使用整次分析共享的 `--max-work`。库模型、求解流程、摘要重命名和完整回归见[第 15 课](15-symbolic-relations.md)。
 
-下一课：[EVM内存与抽象字节数组](14-memory-model.md)。从 MSTORE/MLOAD 的字节读写开始，再看未知输入与偏移如何影响内存结果。
+相关主题：[EVM内存与抽象字节数组](14-memory-model.md)。从 MSTORE/MLOAD 的字节读写开始，再看未知输入与偏移如何影响内存结果。

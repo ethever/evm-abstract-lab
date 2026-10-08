@@ -1,5 +1,7 @@
 # 11：把状态快照与容器实现分开
 
+阅读路线：[理论：状态与保存点](routes/theory.md#calls-state) · [实现：容器后端与回滚](routes/implementation.md#calls-state) · [选择路线](learning-routes.md)。
+
 `A → B → C` 的状态回滚需要两层约定：容器能保留旧版本，执行器知道哪一层调用失败。仓库把前一层放入本地 crate [`snapshot-state`](../crates/snapshot-state)，后一层仍由 [`Store`](../crates/evm-abstract/src/world/store.rs) 和[调用处理](../crates/evm-abstract/src/analysis/transfer/calls.rs)负责。
 
 本课的 std / imbl 选择改变状态怎样保存和复制；[第 12 课](12-product-domains-facts.md)的 product / constants-only 选择改变 NumericValue 保存哪些数值性质，来源、值身份和表达式属于共用的 AbstractValue。比较容器时固定同一份输入、数值策略和关系模式，才能把结果差异或时间差异归到正确的原因。

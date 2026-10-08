@@ -1,0 +1,13 @@
+{
+  "fork": "osaka",
+  "provenance": "offline:partial-ssa-memory:v1",
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000101",
+      "code": "0x60015f510100",
+      "balance": "0x0",
+      "nonce": "0x0",
+      "storage_unknown": false
+    }
+  ]
+}

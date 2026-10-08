@@ -1,5 +1,7 @@
 # 06：结果能说明什么，不能说明什么
 
+阅读路线：[理论：结果的证明范围](routes/theory.md#evidence) · [实现：验证与反例](routes/implementation.md#evidence) · [选择路线](learning-routes.md)。
+
 学会读 CFG 和 SSA 后，还要确认一件事：这份结果已经分析到哪里、用了哪些假设？图中出现一条边，与实际交易能走通这条路径，是两个不同判断。
 
 本课先区分三个常见信号，再解释固定世界、执行状态和测试证据的范围。命令都在仓库根目录执行。
@@ -47,6 +49,8 @@ frontier Transfers: from=None target=StateKey { basic_block_index: 1, stack_heig
 **frontier（前沿）**记录分析停在什么位置、为什么不能继续。这里入口块执行了一次，循环头仍有待处理输入。其暂时显示的 `stack out []` 不是“循环头必然清空栈”的结论；它尚未执行完传播。
 
 CLI 对 `Incomplete` 返回退出码 2，完整 SSA 构建会拒绝未完成图。显式加 `--allow-partial-ssa` 可以查看带覆盖说明的部分 SSA，仍为 `Incomplete`、退出 2，全部前沿继续保留；世界/RPC 的 `analyze` 还需加 `--ssa`。部分证据与完整证明的区别见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。需要继续检查输出时，应先保存退出码，再读取报告；退出 1 表示输入或初始采集错误，不能把空输出当作有效分析。退出 2 表示分析未完成，与 EVM 中 REVERT 或异常终止的含义不同。
+
+还要分清三个层次：整张图可能有前沿；某个块可能已经处理到末尾；另一条指令可能刚取走参数、还没有产生结果。它们可以出现在同一份报告中。[MLOAD 中途停止的逐步实验](04-ssa.md#从块中途停下的实际输出开始)展示了最后一种情况，以及为何剩余栈标为 `recorded prefix stack`。部分 SSA 的这个标签也用于已经走到块末尾的记录，不能只看标签判断是否中途停止；某些关系限制记录前沿后仍能继续保守计算。
 
 ### 实验 C：局部交换停下，整体传播仍然完成
 
@@ -222,4 +226,4 @@ SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.prov
 
 后续扩大关系环境、路径约束、内部函数恢复、精确 gas、经过密码学验证的状态或跨交易性质时，也应明确新增假设、具体改善的例子，以及独立轨迹是否仍被覆盖。
 
-基础阅读到这里结束。接着可以做[第 07 课的实验](07-exercises.md)，用[第 08 课](08-forks.md)检查协议选择。继续研究数值精度可进入[第 12 课](12-product-domains-facts.md)；世界执行则从[第 09 课](09-cross-contract.md)、[第 10 课](10-snapshots-summaries-creation.md)开始。
+读完本主题，可以沿页首的路线继续，或做[第 07 课的实验](07-exercises.md)，用[第 08 课](08-forks.md)检查协议选择。继续研究数值精度可进入[第 12 课](12-product-domains-facts.md)；世界执行则从[第 09 课](09-cross-contract.md)、[第 10 课](10-snapshots-summaries-creation.md)开始。
