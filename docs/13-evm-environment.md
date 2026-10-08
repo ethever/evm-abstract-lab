@@ -14,6 +14,8 @@ nix run . -- explain --rpc http://127.0.0.1:8545 \
 
 这个命令采用符号 caller、任意 U256 value、未知长度和内容的 calldata。未指定 origin 时，它与 caller 是同一个输入，反复读取仍保持这种关系。JSON 中 `origin:null` 表示这个 caller 关联，而非另一个独立未知地址。显式 `--evm.caller` 会同时确定默认 origin；显式 `--evm.origin` 可以覆盖 origin。给定部分字段只收窄这些字段，不会把其他字段自动补成零。
 
+保持这组符号输入而查看已执行的值流时，可加 `--allow-partial-ssa`；前沿与退出码 2 仍保留。命令与覆盖边界见[WETH 部分 SSA 实验](10-snapshots-summaries-creation.md#按原符号输入查看-weth-的部分-ssa)。
+
 要分析空数据、零金额、具体 caller 的调用，显式提供它们：
 
 ```bash

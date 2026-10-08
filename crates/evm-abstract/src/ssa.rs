@@ -7,9 +7,14 @@
 //! dominance 算法使用 petgraph，`verify` 检查唯一赋值、支配和 φ 边一致性。
 
 mod build;
+mod partial;
 mod verify;
 mod world;
 
+pub use partial::{
+    DeferredEdgeReason, DeferredSsaEdge, PartialBlockCoverage, PartialInstruction,
+    PartialWorldBlock, PartialWorldSsa, build_partial_world,
+};
 pub use world::{
     EffectId, EffectInput, EffectPhi, FramePhi, Transition, WorldBlock, WorldSsa, build_world,
 };

@@ -27,8 +27,8 @@
 use super::{
     ConfigError, Diagnostic, Limit, Status, SummaryStats,
     machine::{
-        ExecutionConfig, FrontierReason, MachineEdge, MachineEdgeKind, MachineFrontier,
-        MachineOutcome, MachineState, OutcomeKind, WorldAnalysis,
+        ExecutionConfig, ExecutionEvidence, FrontierReason, MachineEdge, MachineEdgeKind,
+        MachineFrontier, MachineOutcome, MachineState, OutcomeKind, WorldAnalysis,
     },
     summary::{Cache, Certificate, Replay},
     transfer::{self, CompletedCall, Successor, WorkBudget},
@@ -167,6 +167,7 @@ pub(super) fn run_metered(
         exit: None,
         exit_stack: Vec::new(),
         executed_pcs: Vec::new(),
+        execution_evidence: None,
     });
     counters.states += 1;
     let cache = result.config.use_summaries.then(Cache::new);
@@ -440,6 +441,8 @@ impl Engine<'_> {
         }
         self.result.states[id].exit_stack = execution.payload.active().stack.clone();
         self.result.states[id].executed_pcs = execution.executed_pcs;
+        self.result.states[id].execution_evidence =
+            Some(ExecutionEvidence::new(execution.instruction_progress));
         self.result.states[id].exit = Some(execution.payload);
         self.completed_calls[id] = execution.completed_calls;
         for (pc, kind) in execution.diagnostics {
@@ -510,6 +513,7 @@ impl Engine<'_> {
             // 有节点不等于有固定点；只有比较 join 前后的入口，才知道要不要重访。
             if joined != self.result.states[existing].entry {
                 self.result.states[existing].entry = joined;
+                self.result.states[existing].invalidate_execution();
                 if self.queued.insert(existing) {
                     self.queue.push_back(existing);
                 }
@@ -530,6 +534,7 @@ impl Engine<'_> {
                 exit: None,
                 exit_stack: Vec::new(),
                 executed_pcs: Vec::new(),
+                execution_evidence: None,
             });
             self.counters.states += 1;
             self.completed_calls.push(Vec::new());
@@ -544,7 +549,17 @@ impl Engine<'_> {
             to,
             kind: successor.kind,
         });
+        self.record_successor(from, to, successor.kind);
         Some(to)
+    }
+
+    fn record_successor(&mut self, from: usize, to: usize, kind: MachineEdgeKind) {
+        if let Some(evidence) = &mut self.result.states[from].execution_evidence {
+            let successor = (to, kind);
+            if !evidence.successors.contains(&successor) {
+                evidence.successors.push(successor);
+            }
+        }
     }
 
     /// 在当前 caller 下实例化认证 callee 子图，并重新生成其返回 caller 的转移。
@@ -594,12 +609,17 @@ impl Engine<'_> {
                 // join 没有超出证书入口，说明认证出口覆盖现有输入，可以取消调度。
                 // 若旧输入带来证书没有覆盖的新值，不能安装其出口，须重访汇合入口。
                 let compatible = joined == node.entry;
+                if joined != self.result.states[existing].entry {
+                    self.result.states[existing].invalidate_execution();
+                }
                 self.result.states[existing].entry = joined;
                 if compatible {
                     self.queued.remove(&existing);
                     self.result.states[existing].exit = Some(node.exit);
                     self.result.states[existing].exit_stack = node.exit_stack;
                     self.result.states[existing].executed_pcs = node.executed_pcs;
+                    self.result.states[existing].execution_evidence =
+                        Some(ExecutionEvidence::new(node.instruction_progress));
                     self.completed_calls[existing] = node.completed_calls;
                 } else if self.queued.insert(existing) {
                     self.queue.push_back(existing);
@@ -620,6 +640,7 @@ impl Engine<'_> {
                     exit: Some(node.exit),
                     exit_stack: node.exit_stack,
                     executed_pcs: node.executed_pcs,
+                    execution_evidence: Some(ExecutionEvidence::new(node.instruction_progress)),
                 });
                 self.counters.states += 1;
                 self.completed_calls.push(node.completed_calls);
@@ -644,6 +665,7 @@ impl Engine<'_> {
                 to: ids[edge.to],
                 kind: edge.kind,
             });
+            self.record_successor(ids[edge.from], ids[edge.to], edge.kind);
         }
         // 证书终结保留的是 callee 原始结果。返回成功位、returndata、输出复制、
         // 回滚与返回位置必须通过当前 caller 的 continuation 重新应用。

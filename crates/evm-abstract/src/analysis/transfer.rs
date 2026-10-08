@@ -1,6 +1,7 @@
 //! Basic-block execution on a transaction-wide machine. Calls suspend a frame;
 //! returns resume it with the same transaction store and an explicit result.
 
+use super::InstructionProgress;
 use super::{
     DiagnosticKind, EdgeKind,
     machine::{
@@ -69,11 +70,21 @@ pub(super) struct Outcome {
 pub(super) struct Execution {
     pub payload: MachinePayload,
     pub executed_pcs: Vec<usize>,
+    pub instruction_progress: Vec<InstructionProgress>,
     pub successors: Vec<Successor>,
     pub diagnostics: Vec<(usize, DiagnosticKind)>,
     pub frontiers: Vec<(usize, FrontierReason, Option<MachineKey>)>,
     pub outcomes: Vec<Outcome>,
     pub completed_calls: Vec<CompletedCall>,
+}
+
+impl Execution {
+    fn mark_instruction(&mut self, progress: InstructionProgress) {
+        *self
+            .instruction_progress
+            .last_mut()
+            .expect("visited instruction") = progress;
+    }
 }
 
 /// A specific child terminal before caller joins, with qualified world effects.
@@ -98,6 +109,7 @@ pub(super) fn resume_summary(
     let mut result = Execution {
         payload: payload.clone(),
         executed_pcs: Vec::new(),
+        instruction_progress: Vec::new(),
         successors: Vec::new(),
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
@@ -240,6 +252,7 @@ pub(super) fn execute(
     let mut result = Execution {
         payload,
         executed_pcs: Vec::new(),
+        instruction_progress: Vec::new(),
         successors: Vec::new(),
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
@@ -306,7 +319,11 @@ pub(super) fn execute(
             return result;
         }
         result.executed_pcs.push(pc);
+        result
+            .instruction_progress
+            .push(InstructionProgress::Started);
         if !instruction.is_valid() {
+            result.mark_instruction(InstructionProgress::Faulted);
             result.diagnostics.push((pc, DiagnosticKind::InvalidOpcode));
             failure(&mut result, context, pc);
             return result;
@@ -314,6 +331,7 @@ pub(super) fn execute(
         let (inputs, outputs) = instruction.stack_io();
         let stack = &mut result.payload.active_mut().stack;
         if stack.len() < inputs {
+            result.mark_instruction(InstructionProgress::Faulted);
             result
                 .diagnostics
                 .push((pc, DiagnosticKind::StackUnderflow));
@@ -321,25 +339,30 @@ pub(super) fn execute(
             return result;
         }
         if stack.len() - inputs + outputs > 1024 {
+            result.mark_instruction(InstructionProgress::Faulted);
             result.diagnostics.push((pc, DiagnosticKind::StackOverflow));
             failure(&mut result, context, pc);
             return result;
         }
         if let Some(value) = instruction.immediate {
             stack.push(Value::constant(value));
+            result.mark_instruction(InstructionProgress::Completed);
             continue;
         }
         if (opcode::DUP1..=opcode::DUP16).contains(&op) {
             let depth = usize::from(op - opcode::DUP1 + 1);
             stack.push(stack[stack.len() - depth].clone());
+            result.mark_instruction(InstructionProgress::Completed);
             continue;
         }
         if (opcode::SWAP1..=opcode::SWAP16).contains(&op) {
             let top = stack.len() - 1;
             stack.swap(top, top - usize::from(op - opcode::SWAP1 + 1));
+            result.mark_instruction(InstructionProgress::Completed);
             continue;
         }
         let mut args: Vec<Value> = stack.drain(stack.len() - inputs..).collect();
+        result.mark_instruction(InstructionProgress::OperandsConsumed);
         args.reverse();
         if config.analysis.relations.enabled && args.iter().any(Value::symbolic_limit_reached) {
             boundary(
@@ -419,11 +442,13 @@ pub(super) fn execute(
                     | opcode::LOG0..=opcode::LOG4
             )
         {
+            result.mark_instruction(InstructionProgress::Dispatched);
             failure(&mut result, context, pc);
             return result;
         }
         match op {
             opcode::JUMP | opcode::JUMPI => {
+                result.mark_instruction(InstructionProgress::Dispatched);
                 let frame = result.payload.active_mut();
                 frame.key.jump_history.push(block.start_pc);
                 let discard = frame
@@ -513,16 +538,19 @@ pub(super) fn execute(
                 return result;
             }
             opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
+                result.mark_instruction(InstructionProgress::Dispatched);
                 result.payload.active_mut().returndata = ByteArray::empty();
                 call(&mut result, world, op, &args, program, context, pc);
                 return result;
             }
             opcode::CREATE | opcode::CREATE2 => {
+                result.mark_instruction(InstructionProgress::Dispatched);
                 result.payload.active_mut().returndata = ByteArray::empty();
                 create::create(&mut result, world, op, &args, program, context, pc);
                 return result;
             }
             opcode::STOP => {
+                result.mark_instruction(InstructionProgress::Dispatched);
                 let payload = result.payload.clone();
                 finish(
                     &mut result,
@@ -550,6 +578,7 @@ pub(super) fn execute(
                         return result;
                     }
                 };
+                result.mark_instruction(InstructionProgress::Dispatched);
                 let payload = result.payload.clone();
                 finish(
                     &mut result,
@@ -584,6 +613,7 @@ pub(super) fn execute(
                     return result;
                 };
                 let owner = result.payload.active().key.address;
+                result.mark_instruction(InstructionProgress::Dispatched);
                 for beneficiary in beneficiaries {
                     if !context
                         .budget
@@ -655,6 +685,7 @@ pub(super) fn execute(
                         failure(&mut result, context, pc);
                     }
                     if !valid {
+                        result.mark_instruction(InstructionProgress::Dispatched);
                         return result;
                     }
                 }
@@ -1000,6 +1031,7 @@ pub(super) fn execute(
             }
             _ => {}
         }
+        result.mark_instruction(InstructionProgress::Completed);
     }
     if basic_block_index + 1 < program.blocks().len() {
         let payload = result.payload.clone();

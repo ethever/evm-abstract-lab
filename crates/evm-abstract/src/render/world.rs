@@ -14,6 +14,7 @@ use std::fmt::Write;
 
 pub(crate) mod environment;
 mod explain;
+mod partial;
 mod ssa;
 mod teaching;
 mod text;
@@ -25,15 +26,34 @@ pub fn explain(analysis: &WorldAnalysis) -> Result<String, crate::ssa::SsaError>
     explain::teaching::render(analysis)
 }
 
+/// Explain recorded execution progress while retaining every unresolved frontier.
+/// Converged analyses retain the ordinary strict SSA output.
+pub fn explain_with_partial_ssa(analysis: &WorldAnalysis) -> Result<String, crate::ssa::SsaError> {
+    explain::teaching::render_partial(analysis)
+}
+
 /// 展开完整机器报告、捕获记录与逐条指令效果 SSA。
 /// 未完成分析保留报告及前沿，不产生完整 SSA。
 pub fn explain_verbose(analysis: &WorldAnalysis) -> Result<String, crate::ssa::SsaError> {
     explain::render(analysis)
 }
 
+/// Expand machine evidence and optionally include its typed partial SSA artifact.
+pub fn explain_verbose_with_partial_ssa(
+    analysis: &WorldAnalysis,
+) -> Result<String, crate::ssa::SsaError> {
+    explain::render_partial(analysis)
+}
+
 /// 显示与该分析相匹配、已经验证的帧栈和整机效果 SSA。
 pub fn ssa(analysis: &WorldAnalysis, ir: &crate::ssa::WorldSsa) -> String {
     ssa::render(analysis, ir)
+}
+
+/// Render a partial artifact built from this same native machine analysis.
+/// Coverage, open incoming edges and original frontiers remain visible.
+pub fn partial_ssa(analysis: &WorldAnalysis, ir: &crate::ssa::PartialWorldSsa) -> String {
+    partial::render(analysis, ir)
 }
 
 /// DOT graph preserving call/return/revert/failure edge labels and frontiers.

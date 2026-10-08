@@ -26,6 +26,16 @@ struct CapturedCode<'a> {
 
 /// 未完成的图仍保留捕获代码、结果和每个前沿；SSA 仅由收敛图构建。
 pub(in crate::render::world) fn render(analysis: &WorldAnalysis) -> Result<String, SsaError> {
+    render_with_mode(analysis, false)
+}
+
+pub(in crate::render::world) fn render_partial(
+    analysis: &WorldAnalysis,
+) -> Result<String, SsaError> {
+    render_with_mode(analysis, true)
+}
+
+fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result<String, SsaError> {
     let refs = References::new(analysis);
     let mut output = String::from("Cross-contract explanation\n");
     writeln!(
@@ -82,6 +92,11 @@ pub(in crate::render::world) fn render(analysis: &WorldAnalysis) -> Result<Strin
         output.push_str(&super::super::ssa::teaching::render(
             analysis,
             &ssa::build_world(analysis)?,
+        ));
+    } else if allow_partial_ssa {
+        output.push_str(&super::super::partial_ssa(
+            analysis,
+            &ssa::build_partial_world(analysis)?,
         ));
     } else {
         output.push_str("SSA unavailable: cross-contract frontiers remain\n");

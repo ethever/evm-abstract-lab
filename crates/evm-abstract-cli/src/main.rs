@@ -10,7 +10,7 @@ mod world;
 #[cfg(test)]
 mod tests;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use error::CliError;
 use evm::EvmArgs;
 use evm_abstract::{
@@ -52,6 +52,9 @@ enum Command {
         /// Build and verify SSA for the complete cross-contract execution graph.
         #[arg(long)]
         ssa: bool,
+        /// Emit recorded partial SSA when frontiers remain; the exit code stays 2.
+        #[arg(long, requires = "ssa")]
+        allow_partial_ssa: bool,
     },
     /// Decode ordinary EVM runtime bytecode under the selected fork (default: Osaka).
     Disasm {
@@ -73,6 +76,9 @@ enum Command {
         args: AnalysisArgs,
         #[arg(long, value_enum, default_value = "text")]
         format: TextFormat,
+        /// Emit native machine SSA for recorded prefixes when frontiers remain.
+        #[arg(long)]
+        allow_partial_ssa: bool,
     },
     /// Explain bytecode or a multi-account world with disassembly, states and verified SSA.
     Explain {
@@ -362,7 +368,20 @@ impl WorldArgs {
 
 fn run() -> Result<ExitCode, CliError> {
     let (output, complete) = match Cli::parse().command {
-        Command::Analyze { args, format, ssa } => {
+        Command::Analyze {
+            args,
+            format,
+            ssa,
+            allow_partial_ssa,
+        } => {
+            if allow_partial_ssa && matches!(format, CfgFormat::Dot) {
+                Cli::command()
+                    .error(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "--allow-partial-ssa cannot be used with --format dot; use text or json",
+                    )
+                    .exit();
+            }
             let analysis = args.analyze()?;
             let complete = analysis.status() == Status::Converged;
             let ir = if ssa && complete {
@@ -370,7 +389,12 @@ fn run() -> Result<ExitCode, CliError> {
             } else {
                 None
             };
-            if ssa && !complete {
+            let partial_ir = if ssa && allow_partial_ssa && !complete {
+                Some(ssa::build_partial_world(&analysis)?)
+            } else {
+                None
+            };
+            if ssa && !complete && partial_ir.is_none() {
                 eprintln!("SSA unavailable: cross-contract frontiers remain");
             }
             (
@@ -380,6 +404,9 @@ fn run() -> Result<ExitCode, CliError> {
                         if let Some(ir) = ir {
                             output.push('\n');
                             output.push_str(&render::world::ssa(&analysis, &ir));
+                        } else if let Some(ir) = partial_ir {
+                            output.push('\n');
+                            output.push_str(&render::world::partial_ssa(&analysis, &ir));
                         }
                         output
                     }
@@ -387,7 +414,13 @@ fn run() -> Result<ExitCode, CliError> {
                         Some(ir) => serde_json::to_string_pretty(
                             &serde_json::json!({"analysis": render::world::json(&analysis)?, "ssa": ir}),
                         )?,
-                        None => serde_json::to_string_pretty(&render::world::json(&analysis)?)?,
+                        None => match partial_ir {
+                            Some(ir) => serde_json::to_string_pretty(&serde_json::json!({
+                                "analysis": render::world::json(&analysis)?,
+                                "partial_ssa": ir,
+                            }))?,
+                            None => serde_json::to_string_pretty(&render::world::json(&analysis)?)?,
+                        },
                     },
                     CfgFormat::Dot => render::world::dot(&analysis),
                 },
@@ -415,25 +448,42 @@ fn run() -> Result<ExitCode, CliError> {
                 analysis.status() == Status::Converged,
             )
         }
-        Command::Ssa { args, format } => {
+        Command::Ssa {
+            args,
+            format,
+            allow_partial_ssa,
+        } => {
             let analysis = args.analyze()?;
             if analysis.status() == Status::Incomplete {
-                eprintln!(
-                    "{}SSA unavailable: analysis frontiers remain",
-                    render::cfg(&analysis)
-                );
-                return Ok(ExitCode::from(2));
+                if !allow_partial_ssa {
+                    eprintln!(
+                        "{}SSA unavailable: analysis frontiers remain",
+                        render::cfg(&analysis)
+                    );
+                    return Ok(ExitCode::from(2));
+                }
+                let ir = ssa::build_partial_world(analysis.execution())?;
+                (
+                    match format {
+                        TextFormat::Text => render::partial_ssa(&analysis, &ir),
+                        TextFormat::Json => {
+                            serde_json::to_string_pretty(&partial_program_json(&analysis, &ir))?
+                        }
+                    },
+                    false,
+                )
+            } else {
+                let ssa = ssa::build(&analysis)?;
+                (
+                    match format {
+                        TextFormat::Text => render::ssa(&analysis, &ssa),
+                        TextFormat::Json => serde_json::to_string_pretty(
+                            &serde_json::json!({"analysis": analysis, "ssa": ssa}),
+                        )?,
+                    },
+                    true,
+                )
             }
-            let ssa = ssa::build(&analysis)?;
-            (
-                match format {
-                    TextFormat::Text => render::ssa(&analysis, &ssa),
-                    TextFormat::Json => serde_json::to_string_pretty(
-                        &serde_json::json!({"analysis": analysis, "ssa": ssa}),
-                    )?,
-                },
-                true,
-            )
         }
         Command::Explain { args } => args.run()?,
     };
@@ -447,6 +497,29 @@ fn run() -> Result<ExitCode, CliError> {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(2)
+    })
+}
+
+fn partial_program_json(
+    analysis: &analysis::Analysis,
+    ir: &ssa::PartialWorldSsa,
+) -> serde_json::Value {
+    let state_mapping: Vec<_> = analysis
+        .states()
+        .iter()
+        .map(|state| {
+            serde_json::json!({
+                "local_state": state.id,
+                "machine_state": analysis.execution_state_id(state.id)
+                    .expect("each projected state retains its machine identity"),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "analysis": analysis,
+        "machine_analysis": analysis.execution(),
+        "partial_ssa": ir,
+        "state_mapping": state_mapping,
     })
 }
 

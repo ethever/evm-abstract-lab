@@ -150,6 +150,8 @@ nix run . -- explain \
 
 如果缺少代码或预算耗尽，默认 `explain` 保留代码观察、部分 CFG、各 outcome、全部诊断和前沿，显示 `Incomplete` / `Frontiers` 和 `SSA unavailable`，退出码为 `2`；不会输出 `Verified cross-contract SSA:`。`--verbose` 可查看同一部分分析的完整报告。初始工作预算太小、尚未捕获执行代码时，`Input code observations (not execution evidence)` 展示输入快照中的代码并明确其观察来源。输入或初始 RPC 获取失败退出 `1`，没有分析结果；开始分析后的 callee 补查失败或预算限制保留 `RpcAcquisition` 部分图，退出 `2` 并省略 SSA。参数语法错误也退出 `2`，但没有分析结果。
 
+需要阅读已到达指令的值流时，可以加 `--allow-partial-ssa`，或在 `analyze` 中同时加 `--ssa --allow-partial-ssa`。未完成报告增加 `Partial SSA (machine state IDs)`，继续保留原有 `UnknownTarget`、`MissingCode`、预算等全部前沿与退出码 2；JSON 此时为 `{"analysis":...,"partial_ssa":...}`。块的 Current/Stale/Unexecuted、指令阶段、部分 φ 和延后的历史边有各自含义，见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。有已知候选继续边，不代表未知调用也已完成；不能据此给它编造成功位、空返回数据或无副作用的结果。已收敛分析仍输出原来的完整 SSA，`--verbose` 只改变报告详略。
+
 `A` 是具体地址引用，完整地址在 `Addresses` 中列出；未知地址直接显示为 `symbolic(Caller)` 等名字，不用具体地址占位。`C` 是代码目录编号，`B` 是某段代码内的基本块编号，`F` 是帧编号，`S` 是分析状态，`O` 是入口结果，`U` 是尚未展开的前沿。默认代码目录每个代码身份保留一次完整 hash；完整报告另用 `H0` 等引用 hash，并在图例中保留其完整值，原报告的前沿仍使用 `F` 编号。这些引用与符号名字用于连接同一份报告；跨报告出现同名符号不证明数值相等。编号不是链上身份；教程中的 A、B 是合约名字。
 
 状态里的 `code` 表示指令来源，`state owner`（完整报告中的 `address`）表示当前执行和 storage 所属账户，`caller` 表示调用者；默认 CFG 仅在代码地址与状态账户不同时额外标出 owner。代理执行时这些身份可能不同。同一种 `Failure` 可以出现在多个结果中；各结果的账户状态必须与自己的返回方式和字节一起读，不能把不同 `O` 的 storage 拼成一次执行。默认 outcome 显示返回长度、可读字节或字值概要及有限条 storage / 余额变化，额外事实有完整视图提示；完整账户状态、日志和字节事实继续在 `--verbose` / JSON 中保留。

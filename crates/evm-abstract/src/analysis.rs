@@ -27,9 +27,10 @@ use serde::{Serialize, Serializer, ser::SerializeMap};
 
 pub use config::{Config, ConfigError, ValidatedConfig};
 pub use machine::{
-    CallStack, ChildFrame, Continuation, ExecutionConfig, FrameCode, FrameKey, FrameState,
-    FrontierReason, MachineEdge, MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome,
-    MachinePayload, MachineState, OutcomeKind, RootFrame, WorldAnalysis,
+    CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence, FrameCode, FrameKey,
+    FrameState, FrontierReason, InstructionProgress, MachineEdge, MachineEdgeKind, MachineFrontier,
+    MachineKey, MachineOutcome, MachinePayload, MachineState, OutcomeKind, RootFrame,
+    WorldAnalysis,
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
@@ -174,6 +175,7 @@ pub struct Analysis {
     pub(crate) status: Status,
     pub(crate) transfers: usize,
     execution: WorldAnalysis,
+    execution_state_ids: Vec<usize>,
 }
 
 // Serialize the native environment by reference. The single-program report must
@@ -237,6 +239,12 @@ impl Analysis {
     /// Native multi-account result underlying this single-program view.
     pub fn execution(&self) -> &WorldAnalysis {
         &self.execution
+    }
+
+    /// Map a local learning-view state to the underlying native machine state.
+    /// Partial SSA uses native IDs, including any child frames absent locally.
+    pub fn execution_state_id(&self, local_state: usize) -> Option<usize> {
+        self.execution_state_ids.get(local_state).copied()
     }
 }
 

@@ -250,7 +250,7 @@ nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relati
 
 两条分支的目标块存在，也可能执行；这里只是没有预算创建它们的状态。空边集不能证明入口没有后继。
 
-未完成的图还不能用于本仓库的 SSA 构建：遗漏前驱会破坏 φ 输入和支配关系的判断。若运行同样预算下的 `ssa` 命令，它会报告 `SSA unavailable: analysis frontiers remain`，并以退出码 2 结束。
+未完成的图还不能用于本仓库的**完整 SSA** 构建：遗漏前驱会破坏 φ 输入和支配关系的判断。若运行同样预算下的默认 `ssa` 命令，它会报告 `SSA unavailable: analysis frontiers remain`，并以退出码 2 结束。加 `--allow-partial-ssa` 可以另行查看带覆盖说明的部分 SSA，仍保留未完成前沿与退出码 2；其中 φ 只接入有当前执行证据的边，不声称覆盖所有可能前驱。读法见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。
 
 ## 读源码时对应到哪里
 

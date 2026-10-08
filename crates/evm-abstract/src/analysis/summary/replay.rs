@@ -184,6 +184,7 @@ impl<'a> Replay<'a> {
             exit: self.payload(&source.exit)?,
             exit_stack,
             executed_pcs: source.executed_pcs.clone(),
+            instruction_progress: source.instruction_progress.clone(),
             diagnostics: source.diagnostics.clone(),
             completed_calls,
         })
