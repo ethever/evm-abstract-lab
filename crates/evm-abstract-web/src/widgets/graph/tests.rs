@@ -61,6 +61,15 @@ fn report() -> AnalysisReport {
     }
 }
 
+// These fixtures exercise source-card geometry and deliberately carry no SSA.
+// Default SSA behavior is tested with real typed SSA blocks in content/tests.rs.
+fn disassembly_graph() -> Graph {
+    Graph {
+        content: super::NodeView::Disassembly,
+        ..Graph::default()
+    }
+}
+
 fn render(ctx: &Context, graph: &mut Graph, report: &AnalysisReport, size: Vec2) {
     let mut output = ctx.run_ui(
         RawInput {
@@ -160,7 +169,7 @@ fn render_with_chrome(ctx: &Context, graph: &mut Graph, report: &AnalysisReport,
 fn short_wide_diamond_uses_horizontal_ranks_at_native_text_scale() {
     let report = diamond();
     let ctx = Context::default();
-    let mut graph = Graph::default();
+    let mut graph = disassembly_graph();
     render_with_chrome(&ctx, &mut graph, &report, Vec2::new(844.0, 390.0));
     assert!(
         graph.viewport.unwrap().y < 260.0,
@@ -200,7 +209,7 @@ fn short_wide_diamond_uses_horizontal_ranks_at_native_text_scale() {
 fn real_canvas_resize_reflows_and_fits_nodes_edges_and_labels() {
     let report = report();
     let ctx = Context::default();
-    let mut graph = Graph::default();
+    let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::new(1100.0, 450.0));
     assert_scene_fits(&graph);
     let wide = graph.placement.nodes.clone();
@@ -220,7 +229,7 @@ fn real_canvas_resize_reflows_and_fits_nodes_edges_and_labels() {
 fn fit_centers_the_complete_scene_in_a_roomy_canvas() {
     let report = report();
     let ctx = Context::default();
-    let mut graph = Graph::default();
+    let mut graph = disassembly_graph();
     for size in [Vec2::new(1440.0, 1200.0), Vec2::new(1440.0, 1600.0)] {
         render(&ctx, &mut graph, &report, size);
         assert_eq!(graph.zoom, 1.0);
@@ -232,7 +241,7 @@ fn fit_centers_the_complete_scene_in_a_roomy_canvas() {
 fn resize_preserves_manual_world_center_and_fit_restores_automatic_mode() {
     let report = report();
     let ctx = Context::default();
-    let mut graph = Graph::default();
+    let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::new(900.0, 500.0));
     let previous = graph.viewport.unwrap();
     graph.zoom_at(previous * 0.5, 1.4);
@@ -261,7 +270,7 @@ fn resize_preserves_manual_world_center_and_fit_restores_automatic_mode() {
 fn focus_selected_centers_its_measured_rect_and_enters_manual_mode() {
     let report = report();
     let ctx = Context::default();
-    let mut graph = Graph::default();
+    let mut graph = disassembly_graph();
     let screen = Vec2::new(700.0, 380.0);
     render(&ctx, &mut graph, &report, screen);
     graph.focus_pending = true;
@@ -337,7 +346,7 @@ fn cycles_self_edges_and_label_detours_are_inside_fit_bounds() {
         },
     ]);
     let ctx = Context::default();
-    let mut graph = Graph::default();
+    let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::new(390.0, 500.0));
     for id in [42, 44] {
         let route = &graph.placement.edges[&id];

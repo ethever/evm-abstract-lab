@@ -114,6 +114,12 @@ impl Default for Workspace {
 }
 
 impl Workspace {
+    /// Prepare raw input before egui processes the next frame, ending a graph
+    /// wheel gesture cancelled by Fit without discarding new input events.
+    pub fn prepare_input(&mut self, input: &mut egui::RawInput) {
+        self.graph.prepare_input(input);
+    }
+
     /// Paint the workspace and return a newly submitted, fully typed request.
     pub fn show(&mut self, ui: &mut Ui) -> Option<AnalyzeRequest> {
         let mut submit = false;

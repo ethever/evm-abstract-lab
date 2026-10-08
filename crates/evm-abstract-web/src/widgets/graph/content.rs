@@ -17,8 +17,8 @@ const SSA_COLUMNS: usize = 76;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum NodeView {
-    #[default]
     Disassembly,
+    #[default]
     Ssa,
 }
 

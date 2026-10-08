@@ -145,16 +145,15 @@ pub(crate) fn ready() -> Workspace {
 }
 
 fn frame(ctx: &Context, workspace: &mut Workspace, events: Vec<Event>) -> FullOutput {
-    let mut output = ctx.run_ui(
-        RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 1000.0))),
-            events,
-            ..RawInput::default()
-        },
-        |ui| {
-            workspace.show(ui);
-        },
-    );
+    let mut input = RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 1000.0))),
+        events,
+        ..RawInput::default()
+    };
+    workspace.prepare_input(&mut input);
+    let mut output = ctx.run_ui(input, |ui| {
+        workspace.show(ui);
+    });
     // Host tests inspect shapes without a renderer; acknowledge texture deltas.
     output.textures_delta.clear();
     output

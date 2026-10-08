@@ -117,11 +117,11 @@ def node_snapshot(page, canvas, output: Path, name: str, region=(4, 126, 1436, 9
     return metrics
 
 
-def assert_translation(before, after, dx: float, dy: float) -> None:
+def assert_translation(before, after, dx: float, dy: float, tolerance: float = 3.0) -> None:
     initial, final = before["bounds"], after["bounds"]
     expected = [dx, dy, dx, dy]
     for old, new, delta in zip(initial, final, expected, strict=True):
-        assert abs(new - old - delta) <= 3.0, f"wheel must pan without resizing nodes: {initial} -> {final}, expected {expected}"
+        assert abs(new - old - delta) <= tolerance, f"wheel must pan without resizing nodes: {initial} -> {final}, expected {expected}"
 
 
 def assert_anchored_zoom(before, after, pointer) -> float:
@@ -293,6 +293,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         page.goto(url, wait_until="networkidle")
         status = page.locator("#analysis-status")
         expect(status).to_contain_text("Ready:", timeout=60000)
+        expect(status).to_contain_text("CFG nodes: SSA")
         canvas = page.locator("#evm-canvas")
         page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
         display = page.evaluate("""() => new Promise(resolve => {
@@ -375,16 +376,23 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         assert page.evaluate("devicePixelRatio") == dpr, "graph gesture changed browser page zoom"
         assert page.evaluate("visualViewport.scale") == 1, "graph gesture changed visual viewport zoom"
 
-        # Toolbar representation choices are real canvas controls. The live
-        # region describes their user-facing meaning; screenshots retain proof
-        # that the corresponding node contents actually repaint.
+        # Start in the product default SSA, then exercise both directions using
+        # real toolbar controls. Status and measured node widths verify the
+        # representation change independently of screenshot hashes.
+        expect(status).to_contain_text("CFG nodes: SSA")
+        canvas.click(position={"x": 28, "y": 110})
+        settle_gesture(page)
+        expect(status).to_contain_text("CFG nodes: Disasm")
+        disasm = node_snapshot(page, canvas, output, f"{prefix}-nodes-disasm")
+        disasm_width = disasm["bounds"][2] - disasm["bounds"][0]
+        assert disasm["hash"] != safari_zoom["hash"], "Disasm mode retained SSA pixels"
+        assert safari_zoom["bounds"][2] - safari_zoom["bounds"][0] > disasm_width + 10, "Disasm mode did not replace the fixture's SSA definitions/effects"
         canvas.click(position={"x": 78, "y": 110})
         settle_gesture(page)
         expect(status).to_contain_text("CFG nodes: SSA")
         ssa = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa")
-        assert ssa["hash"] != safari_zoom["hash"], "SSA mode retained disassembly pixels"
+        assert ssa["hash"] != disasm["hash"], "SSA mode retained disassembly pixels"
         ssa_width = ssa["bounds"][2] - ssa["bounds"][0]
-        disasm_width = safari_zoom["bounds"][2] - safari_zoom["bounds"][0]
         assert ssa_width > disasm_width + 10, "SSA definitions/effects did not expand the fixture's rendered node"
         canvas.click(position={"x": 143, "y": 110})
         settle_gesture(page)
@@ -421,6 +429,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         canvas.click(position={"x": 143, "y": 110})
         settle_gesture(page)
         fit_keys = {"button": fitted["bounds"]}
+        fresh_wheel_after_fit = None
         for key, name in [("f", "f"), ("Shift+f", "shift-f")]:
             page.mouse.move(30, height - 70)
             page.mouse.wheel(-24, -12)
@@ -430,7 +439,22 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             rendered_frame(page)
             manual = node_snapshot(page, canvas, output, f"{prefix}-{name}-manual", region)
             assert manual["bounds"][2] - manual["bounds"][0] > fitted_width + 8, "shortcut fixture did not enter a zoomed manual camera"
+            if key == "f":
+                # Do not settle here: Fit must override both the current wheel
+                # event and its remaining smooth-scroll animation on later frames.
+                page.mouse.wheel(-240, -180)
             page.keyboard.press(key)
+            if key == "f":
+                # Confirm Fit ran, without waiting for the old 400 ms scroll
+                # animation to settle. A fresh opposite-axis gesture must start
+                # from zero instead of inheriting the previous wheel's tail.
+                rendered_frame(page)
+                page.mouse.wheel(-4, 3)
+                settle_gesture(page)
+                fresh = node_snapshot(page, canvas, output, f"{prefix}-f-fresh-wheel", region)
+                assert_translation(fitted, fresh, 4, -3, tolerance=0.75)
+                fresh_wheel_after_fit = fresh["bounds"]
+                page.keyboard.press("f")
             settle_gesture(page)
             restored = node_snapshot(page, canvas, output, f"{prefix}-{name}-fit", region)
             assert_translation(fitted, restored, 0, 0)
@@ -501,8 +525,10 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             "ctrl_wheel_ratio": ctrl_ratio, "pinch_ratio": pinch_ratio,
             "safari_format_gesture": {"ratio": safari_ratio, "requested_scale": 1.12,
                                       "platform": "synthetic gesturestart/change/end events in Chromium"},
+            "initial_node_view": "SSA", "disasm_mode": disasm,
             "ssa_mode": ssa, "ssa_fit": ssa_fit, "edge_zoom_screenshots": zoom_screenshots,
-            "fit_keys": fit_keys, "focused_fit_keys": focused_fit_keys,
+            "fit_while_wheel_pending": True, "fit_keys": fit_keys,
+            "fresh_wheel_after_fit": fresh_wheel_after_fit, "focused_fit_keys": focused_fit_keys,
             "neighboring_panes": neighboring,
         }
         context.close()
@@ -553,6 +579,7 @@ def main() -> None:
             (args.output / "analysis.json").write_text(json.dumps(result, indent=2) + "\n")
             status = page.locator("#analysis-status")
             expect(status).to_contain_text(re.compile(r"ready", re.IGNORECASE), timeout=60000)
+            expect(status).to_contain_text("CFG nodes: SSA")
             canvas = page.locator("#evm-canvas")
             expect(canvas).to_be_visible()
             assert canvas.evaluate("canvas => canvas.width > 0 && canvas.height > 0")
