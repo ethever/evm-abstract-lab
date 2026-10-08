@@ -21,7 +21,7 @@ nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --o
 
 需要启用 `nix-command` 和 `flakes` 的 Nix。按机器余量调整 `max-jobs` 和 `cores`；这两个选项限制构建并发，不减少检查内容。`--no-update-lock-file` 防止检查时修改依赖锁。
 
-等待命令结束，确认 **Nix 自身的退出码为 0**。检查范围以 [`nix/system.nix` 汇总的 `checks`](../nix/system.nix) 为准，当前共 20 项。[检查模块](../nix/checks.nix)包含测试、格式、文档、打包后示例，另有原生库共存检查、默认 / imbl / 全 features 的 Dylint 动态派发检查和 lint 的 UI 回归测试（见[检查说明](no-dynamic-dispatch.md)）。`toml-lint` 用 Taplo 检查仓库 TOML 的语法与重复键；`toml-format` 检查格式，并通过真实 Taplo LSP 请求验证配置下的格式化结果与同版本 CLI 一致，均使用 Nix Taplo 并覆盖隐藏目录中的 TOML。规则见 [`taplo.toml`](../taplo.toml)。VS Code 和插件由用户自行安装；门禁检查项目工具和配置，不验证用户安装的任意插件版本。局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
+等待命令结束，确认 **Nix 自身的退出码为 0**。检查范围以 [`nix/system.nix` 汇总的 `checks`](../nix/system.nix) 为准，当前 Linux 共 24 项。Web 前端另外覆盖 Wasm 构建、Clippy、Dylint 与真实 Chromium 页面交互，定义见 [`nix/web.nix`](../nix/web.nix) 和 [Dylint 检查](../nix/dylint/checks.nix)。[检查模块](../nix/checks.nix)包含测试、格式、文档、打包后示例，另有原生库共存检查、默认 / imbl / 全 features 的 Dylint 动态派发检查和 lint 的 UI 回归测试（见[检查说明](no-dynamic-dispatch.md)）。`toml-lint` 用 Taplo 检查仓库 TOML 的语法与重复键；`toml-format` 检查格式，并通过真实 Taplo LSP 请求验证配置下的格式化结果与同版本 CLI 一致，均使用 Nix Taplo 并覆盖隐藏目录中的 TOML。规则见 [`taplo.toml`](../taplo.toml)。VS Code 和插件由用户自行安装；门禁检查项目工具和配置，不验证用户安装的任意插件版本。局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
 
 失败或中断时，修正问题，再检查最终提交。若把输出通过管道交给 `tee` 保存，必须启用 `pipefail` 或另外保存 Nix 的退出码，避免把日志工具的成功当成检查成功。
 

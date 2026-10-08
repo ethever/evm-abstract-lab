@@ -9,7 +9,7 @@ nix develop --no-update-lock-file
 cargo check --workspace --all-targets --locked
 ```
 
-开发环境显式提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、C/C++ 编译与构建工具、libclang、pkg-config、Z3、Bitwuzla、cvc5、OpenSSL、Graphviz、字体、jq、Taplo、nixfmt、lychee、cargo-nextest 和 Dylint。Python 只用于真实的语言服务器协议回归和可选的性能采样报告。
+开发环境显式提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、Wasm target、wasm-bindgen、C/C++ 编译与构建工具、libclang、pkg-config、Z3、Bitwuzla、cvc5、OpenSSL、Graphviz、字体、jq、Taplo、nixfmt、lychee、cargo-nextest 和 Dylint。Python 用于真实的语言服务器协议回归和可选的性能采样报告，浏览器检查另使用 Nix 提供的 Playwright 和 Chromium。
 
 原生库通过 Nix 的构建环境暴露给 Cargo，包括 `PKG_CONFIG_PATH`、cvc5 头文件/库路径和 libclang。Rust 语言服务器与命令行构建使用同一个开发环境；不要把某次构建产生的 `/nix/store/...` 路径手工写入工作区设置。
 
@@ -54,6 +54,7 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 | [`nix/dylint.nix`](../nix/dylint.nix)、[`nix/dylint/`](../nix/dylint/) | lint 工具链、可复用插件构建、命令和检查 |
 | [`nix/checks.nix`](../nix/checks.nix)、[`nix/checks/`](../nix/checks/) | Rust、格式、文档、安装后示例和后端对照检查 |
 | [`nix/commands.nix`](../nix/commands.nix) | 可选实验的 Nix 入口 |
+| [`nix/web.nix`](../nix/web.nix) | egui 的 Wasm 资源、匹配的 wasm-bindgen、服务入口和浏览器检查 |
 
 Bitwuzla 和 cvc5 从锁定源码构建，使各自嵌入的 CaDiCaL 符号保持私有。cvc5 使用系统默认链接器，避免该版本 gold 生成的符号版本表与 Rust 的 LLD 不兼容。这里通过编译和链接设置解决问题，不再用 Python 修改已生成的 ELF。首次构建这两个原生包可能较慢，之后可以复用 Nix 产物。
 
@@ -61,7 +62,7 @@ Bitwuzla 和 cvc5 从锁定源码构建，使各自嵌入的 CaDiCaL 符号保�
 
 ## 验证
 
-完整门禁当前包含 20 项检查，冻结提交要求见[本地检查流程](local-ci.md)。常用入口：
+完整门禁覆盖 native workspace 与 Wasm 前端，在 Linux 上还运行实际浏览器检查；冻结提交要求见[本地检查流程](local-ci.md)。常用入口：
 
 ```bash
 nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --option cores 8

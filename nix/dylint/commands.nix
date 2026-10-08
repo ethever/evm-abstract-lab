@@ -53,6 +53,9 @@ in
       export CARGO_BUILD_JOBS=$task_jobs
       cargo dylint --all --workspace --fail-on-no-libraries --no-build --no-metadata \
         --lib-path "$DYLINT_LIBRARY" -- --locked --all-targets --all-features --jobs "$task_jobs" "$@"
+      cargo dylint --all --fail-on-no-libraries --no-build --no-metadata \
+        --lib-path "$DYLINT_LIBRARY" -- --locked -p evm-abstract-web --lib \
+        --target wasm32-unknown-unknown --jobs "$task_jobs" "$@"
       exec bash scripts/test-no-dyn-doctests.sh --all-features --jobs "$task_jobs" "$@"
     '';
   };

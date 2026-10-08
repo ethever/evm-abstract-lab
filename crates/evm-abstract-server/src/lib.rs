@@ -1,0 +1,4 @@
+//! Native analysis adapter and bounded, same-origin HTTP host for the workbench.
+
+pub mod analyze;
+pub mod http;

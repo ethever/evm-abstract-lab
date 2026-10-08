@@ -10,7 +10,7 @@ extern crate rustc_session;
 extern crate rustc_span;
 
 use rustc_errors::DiagDecorator;
-use rustc_hir::def_id::LocalDefId;
+use rustc_hir::def_id::{LOCAL_CRATE, LocalDefId};
 use rustc_hir::{AmbigArg, Body, Expr, FnDecl, Pat, Ty as HirTy, TyKind, intravisit::FnKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::ty::{self, Ty, TypeVisitableExt, Unnormalized};
@@ -129,7 +129,7 @@ fn compiler_support(cx: &LateContext<'_>, span: Span) -> bool {
 }
 
 fn report(cx: &LateContext<'_>, span: Span) {
-    if compiler_support(cx, span) {
+    if compiler_support(cx, span) || web_framework_boundary(cx) {
         return;
     }
     cx.emit_span_lint(
@@ -140,6 +140,20 @@ fn report(cx: &LateContext<'_>, span: Span) {
             diag.help("use a concrete type, a generic parameter / impl Trait, or an enum");
         }),
     );
+}
+
+// egui's TextBuffer, eframe's AppCreator and wasm-bindgen's JS callbacks require
+// dynamic adapters.
+// Keep that exception in one named browser adapter, not in widgets, the protocol,
+// or the analysis backend. `forbid` remains in force everywhere else, including
+// identically named modules in other crates and user-written macros.
+fn web_framework_boundary(cx: &LateContext<'_>) -> bool {
+    if cx.tcx.crate_name(LOCAL_CRATE).as_str() != "evm_abstract_web" {
+        return false;
+    }
+    let owner = cx.tcx.hir_get_parent_item(cx.last_node_with_lint_attrs);
+    let path = cx.tcx.def_path_str(owner.to_def_id());
+    path == "framework" || path.starts_with("framework::")
 }
 
 impl<'tcx> LateLintPass<'tcx> for NoDyn {

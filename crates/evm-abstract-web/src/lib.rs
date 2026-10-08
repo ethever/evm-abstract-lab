@@ -1,0 +1,16 @@
+//! Browser analysis workspace. Rendering and interaction are independent of the
+//! browser transport, and consume only the shared protocol's typed snapshot.
+
+mod app;
+mod palette;
+mod widgets;
+
+mod framework;
+
+pub use app::{TransportError, Workspace};
+
+#[cfg(target_arch = "wasm32")]
+pub use framework::start;
+
+#[cfg(test)]
+mod tests;

@@ -3,6 +3,7 @@
   craneLib,
   dependencies,
   dylint,
+  web,
 }:
 craneLib.devShell (
   dependencies.environment
@@ -10,7 +11,11 @@ craneLib.devShell (
     buildInputs = dependencies.buildInputs ++ dependencies.developmentLibraries;
     # Crane intentionally filters nativeBuildInputs from devShell arguments;
     # mkShell installs packages as native inputs, including setup hooks.
-    packages = dependencies.nativeBuildInputs ++ dependencies.developmentTools ++ dylint.devPackages;
+    packages =
+      dependencies.nativeBuildInputs
+      ++ dependencies.developmentTools
+      ++ dylint.devPackages
+      ++ web.devPackages;
     RUST_BACKTRACE = "1";
     FONTCONFIG_FILE = dependencies.fontConfig;
   }

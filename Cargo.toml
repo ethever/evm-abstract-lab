@@ -4,6 +4,9 @@ members = [
     "crates/embedded-smt",
     "crates/evm-abstract",
     "crates/evm-abstract-cli",
+    "crates/evm-abstract-protocol",
+    "crates/evm-abstract-server",
+    "crates/evm-abstract-web",
     "crates/snapshot-state",
 ]
 exclude = ["lints/no_dyn"]
