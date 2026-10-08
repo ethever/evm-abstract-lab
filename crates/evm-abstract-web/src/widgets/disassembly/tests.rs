@@ -114,7 +114,10 @@ fn stack_signatures_and_explanations_appear_only_on_instruction_hover() {
         ),
     ] {
         let mut report = crate::tests::report();
-        report.cfg[0].executed_pcs.clear();
+        let observed = opcode == 0x01;
+        if !observed {
+            report.cfg[0].executed_pcs.clear();
+        }
         let instruction = &mut report.disassembly[0].instructions[0];
         instruction.opcode = opcode;
         instruction.name = name.into();
@@ -165,7 +168,14 @@ fn stack_signatures_and_explanations_appear_only_on_instruction_hover() {
         assert!(hover.contains(&signature), "{name}: {hover}");
         assert!(hover.contains(explanation), "{name}: {hover}");
         assert!(hover.contains("not the total stack heights"));
-        assert!(hover.contains("Decoded source; no current execution receipt"));
+        if observed {
+            // Root source rows can use a current receipt from an unselected
+            // state. The hover must not attribute it to the selected state.
+            assert!(hover.contains("Observed in current execution evidence"));
+            assert!(!hover.contains("selected state"));
+        } else {
+            assert!(hover.contains("Decoded source; no current execution receipt"));
+        }
     }
 }
 

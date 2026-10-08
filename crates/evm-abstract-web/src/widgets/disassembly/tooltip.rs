@@ -25,7 +25,7 @@ pub(super) fn instruction(instruction: &DisasmInstruction, executed: bool) -> St
             .map_or(String::new(), |value| format!(" {value}")),
         signature,
         if executed {
-            "Observed in the selected state"
+            "Observed in current execution evidence"
         } else {
             "Decoded source; no current execution receipt for this instruction"
         },
