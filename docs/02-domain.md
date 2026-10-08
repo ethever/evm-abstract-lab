@@ -70,7 +70,7 @@ Top **不是**“没有值”，也不是分析停止。比如未知 calldata wo
 
 默认组合域需要再区分两件事：**列不出一个完整有限集合**，以及**没有任何数值限制**。前者只是常量集合组件为 Top；其他组件仍可能知道“高 248 位为零”“在 0…255 内”或“最低位为 1”。这些限制共同约束同一个值，数值含义取它们的交集，而不是并集。整个数值没有限制时，文本只显示 `⊤`；存在其他数值限制且没有完整常量集合时，显示区间、`bits=` 位模式和同余等约束。JSON 仍可能保存 Calldata 等来源标签；来源本身不缩小候选数值。固定输入还可带有受本次环境范围限定的符号身份；它与泛来源标签不同，数值为 Top 时也会在 JSON 中保留。单看 `bits=` 后的 64 个 `*`，不能忽略同一值的区间或同余约束。
 
-另一个符号 `⊥` 读作 Bottom，通常表示“没有执行状态”。本实现没有把它做成 `Value`：一个可传播的栈槽位不允许是空集合，私有字段和受控构造函数保证有限集合非空；组合约束可能尚未求解联合存在性，不能把每个组件非空当作整体可达证明；未到达的位置由没有对应状态来表示。
+另一个符号 `⊥` 读作 Bottom，通常表示“没有执行状态”。本实现没有把它做成 `AbstractValue`：一个可传播的栈槽位不允许是空集合，私有字段和受控构造函数保证有限集合非空；组合约束可能尚未求解联合存在性，不能把每个组件非空当作整体可达证明；未到达的位置由没有对应状态来表示。
 
 这里有个重要前提：如果分析是 `Incomplete`，没有状态也可能只是尚未展开。必须先检查分析状态与未完成前沿，再讨论不可达，不能把“尚未分析”读成“不会执行”。
 
@@ -222,7 +222,7 @@ nix run . -- explain --no-relations --hex 5f351e00 --domain constants-only --max
 
 建议先读 [`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)：它把常量组件封装为 Top 或非空有限集合，集合求交或筛选为空时返回错误。容量由 [`DomainSpec`](../crates/evm-abstract/src/domain/spec.rs) 决定，不保存在每个集合里；有界收集与 join 超过容量时放弃整个常量列表。
 
-再读 [`NumericValue`](../crates/evm-abstract/src/domain/numeric.rs) 的 `finite_constants()`、`contains`、`singleton`：第一个接口查看这个组件，后两个查询同时检查数值约束。执行值 [`AbstractValue`](../crates/evm-abstract/src/domain/value.rs) 显式转交这些数值查询，并另外保存来源、身份和表达式；`Value` 是其兼容名称。旧 `constants()` 仍可借用 `BTreeSet<U256>`；返回 None 只说明常量组件为 Top。然后读 [`domain.rs`](../crates/evm-abstract/src/domain.rs) 的 `Domain::join`、`collect` 和 `finite_apply`，核对本课手算。数值组合 profile 的转换转到 [`domain/transfer.rs`](../crates/evm-abstract/src/domain/transfer.rs)，各数值组件在这里传播结果，再进行有界交换。可信复制身份的通用相等规则则由 Domain 在选择数值 profile 之前处理。具体 EVM 规则在 [`domain/concrete.rs`](../crates/evm-abstract/src/domain/concrete.rs) 的 `evaluate`；大整数计算由 alloy/ruint 提供。
+再读 [`NumericValue`](../crates/evm-abstract/src/domain/numeric.rs) 的 `finite_constants()`、`contains`、`singleton`：第一个接口查看这个组件，后两个查询同时检查数值约束。执行值 [`AbstractValue`](../crates/evm-abstract/src/domain/value.rs) 显式转交这些数值查询，并另外保存来源、身份和表达式。旧 `constants()` 仍可借用 `BTreeSet<U256>`；返回 None 只说明常量组件为 Top。然后读 [`domain.rs`](../crates/evm-abstract/src/domain.rs) 的 `Domain::join`、`collect` 和 `finite_apply`，核对本课手算。数值组合 profile 的转换转到 [`domain/transfer.rs`](../crates/evm-abstract/src/domain/transfer.rs)，各数值组件在这里传播结果，再进行有界交换。可信复制身份的通用相等规则则由 Domain 在选择数值 profile 之前处理。具体 EVM 规则在 [`domain/concrete.rs`](../crates/evm-abstract/src/domain/concrete.rs) 的 `evaluate`；大整数计算由 alloy/ruint 提供。
 
 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 对照已支持纯操作的边界值和随机 256 位输入；这是核对 EVM 语义的证据，不等于所有环境、内存、跨合约行为都已精确建模。
 

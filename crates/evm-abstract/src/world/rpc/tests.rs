@@ -5,7 +5,7 @@ mod storage;
 use super::{AccountRequest, RpcBlock, RpcError, RpcFailureKind, RpcInput, Session, load};
 use crate::{
     Address, Fork, U256,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{Existence, SnapshotIdentity, Store},
 };
 use alloy_primitives::{B256, keccak256};
@@ -165,11 +165,14 @@ fn rpc_world_pins_every_fact_and_keeps_unrequested_facts_unknown() {
             }
         );
         let account = world.account(Address::repeat_byte(0x22)).unwrap();
-        assert_eq!(account.balance, Value::constant(U256::from(9)));
-        assert_eq!(account.nonce, Value::constant(U256::from(1)));
+        assert_eq!(account.balance, AbstractValue::constant(U256::from(9)));
+        assert_eq!(account.nonce, AbstractValue::constant(U256::from(1)));
         assert_eq!(account.existence, Existence::Present);
         assert!(account.storage_unknown);
-        assert_eq!(account.storage[&U256::ZERO], Value::constant(U256::from(7)));
+        assert_eq!(
+            account.storage[&U256::ZERO],
+            AbstractValue::constant(U256::from(7))
+        );
         assert!(world.account(Address::repeat_byte(0x44)).is_none());
         assert_eq!(
             world.code_hash(Address::repeat_byte(0x22)),
@@ -394,15 +397,18 @@ fn zero_account_keeps_presence_and_unrequested_storage_unknown() {
         let account = world.account(Address::repeat_byte(0x22)).unwrap();
         assert_eq!(account.existence, Existence::Unknown);
         assert!(account.storage_unknown);
-        assert_eq!(account.storage[&U256::ZERO], Value::constant(U256::ZERO));
+        assert_eq!(
+            account.storage[&U256::ZERO],
+            AbstractValue::constant(U256::ZERO)
+        );
         assert!(!account.storage.contains_key(&U256::from(1)));
         assert_eq!(
             Store::new(&world).read(
                 Address::repeat_byte(0x22),
-                &Value::constant(U256::from(1)),
+                &AbstractValue::constant(U256::from(1)),
                 Domain::default(),
             ),
-            Value::top()
+            AbstractValue::top()
         );
     });
 }

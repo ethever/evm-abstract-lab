@@ -6,7 +6,7 @@
 //! once-resolved block hash.
 
 use super::{AccountRequest, AcquisitionLimit, Loader, RpcError, RpcInput, configured_loader};
-use crate::{domain::Value, world::World};
+use crate::{domain::AbstractValue, world::World};
 use alloy_primitives::{Address, U256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -124,7 +124,10 @@ impl Session {
         self.loader.check_storage_block(block_number)?;
         let mut pending = BTreeMap::new();
         for key in missing {
-            pending.insert(key, Value::constant(self.loader.storage(address, key)?));
+            pending.insert(
+                key,
+                AbstractValue::constant(self.loader.storage(address, key)?),
+            );
         }
         self.loader.check_chain()?;
         self.loader.check_storage_block(block_number)?;

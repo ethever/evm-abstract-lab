@@ -3,12 +3,12 @@
 use evm_abstract::{
     Address, Fork, U256,
     bytecode::Program,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{AbstractLog, Account, ByteArray, LogKey, Snapshot, Store, World},
 };
 
-fn word(value: u64) -> Value {
-    Value::constant(U256::from(value))
+fn word(value: u64) -> AbstractValue {
+    AbstractValue::constant(U256::from(value))
 }
 
 fn fixture() -> (Store, Address, Address) {
@@ -100,7 +100,7 @@ fn divergent_checkpoints_merge_pre_call_states_without_aliasing_live_versions() 
     let left_checkpoint = left.snapshot();
     let right_checkpoint = right.snapshot();
 
-    left.write(caller, &Value::top(), &word(7), domain);
+    left.write(caller, &AbstractValue::top(), &word(7), domain);
     right.havoc_all();
     assert_eq!(
         left_checkpoint.state().read(caller, &word(0), domain),

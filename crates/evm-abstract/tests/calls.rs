@@ -7,7 +7,7 @@ use evm_abstract::{
         ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
         analyze_world,
     },
-    domain::{Domain, Value, provenance::Origin},
+    domain::{AbstractValue, Domain, provenance::Origin},
     world::{Account, ByteArray, Code, Entry, World},
 };
 
@@ -16,7 +16,7 @@ fn addr(value: u64) -> Address {
 }
 
 // 上下文数值来自地址/CALLVALUE，不能要求它带有直接字面常量的来源。
-fn assert_numeric_eq(actual: &Value, expected: &Value) {
+fn assert_numeric_eq(actual: &AbstractValue, expected: &AbstractValue) {
     assert_eq!(actual.constants(), expected.constants());
     assert_eq!(actual.known_bits(), expected.known_bits());
     assert_eq!(actual.interval(), expected.interval());
@@ -30,7 +30,7 @@ fn entry() -> Entry {
         environment: evm_abstract::world::EvmEnvironment {
             to: (addr(0x101)).into(),
             caller: (addr(0x900)).into(),
-            value: Value::constant(U256::from(42)),
+            value: AbstractValue::constant(U256::from(42)),
             calldata: ByteArray::empty(),
             is_static: false,
             ..evm_abstract::world::EvmEnvironment::default()
@@ -41,7 +41,7 @@ fn world(accounts: &[(u64, &str)]) -> World {
     let mut world = World::new(Fork::Osaka, "test:fixed-world");
     for (address, code) in accounts {
         let mut account = Account::from_hex(code, world.fork()).unwrap();
-        account.balance = Value::constant(U256::from(1_000_000));
+        account.balance = AbstractValue::constant(U256::from(1_000_000));
         world.insert(addr(*address), account).unwrap();
     }
     world
@@ -90,7 +90,7 @@ fn call_context_is_intrinsic_and_retained_across_each_call_kind() {
         assert_eq!(frame.key.is_static, op == 0xfa);
         assert_numeric_eq(
             &frame.call_value,
-            &Value::constant(U256::from(if op == 0xf4 {
+            &AbstractValue::constant(U256::from(if op == 0xf4 {
                 42
             } else if op == 0xfa {
                 0
@@ -100,11 +100,11 @@ fn call_context_is_intrinsic_and_retained_across_each_call_kind() {
         );
         assert_numeric_eq(
             &child.exit_stack[0],
-            &Value::constant(U256::from_be_slice(frame.key.address.as_slice())),
+            &AbstractValue::constant(U256::from_be_slice(frame.key.address.as_slice())),
         );
         assert_numeric_eq(
             &child.exit_stack[1],
-            &Value::constant(U256::from_be_slice(
+            &AbstractValue::constant(U256::from_be_slice(
                 frame.key.caller.as_concrete().unwrap().as_slice(),
             )),
         );
@@ -158,8 +158,8 @@ fn calldata_is_copied_from_callers_memory_and_returned_bytes_feed_parent() {
         .entry
         .active()
         .calldata
-        .read_word(&Value::constant(U256::ZERO), Domain::default());
-    assert_numeric_eq(&loaded, &Value::constant(U256::from(7)));
+        .read_word(&AbstractValue::constant(U256::ZERO), Domain::default());
+    assert_numeric_eq(&loaded, &AbstractValue::constant(U256::from(7)));
     assert!(
         loaded
             .provenance()
@@ -202,7 +202,7 @@ fn another_call_clears_the_suspended_callers_previous_return_buffer() {
     for child in children {
         assert_eq!(
             *child.entry.call_stack.root().state.returndata.len(),
-            Value::constant(U256::ZERO)
+            AbstractValue::constant(U256::ZERO)
         );
     }
 }
@@ -243,32 +243,42 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
         assert!(
             outcome
                 .store
-                .read(addr(0x101), &Value::constant(U256::ZERO), Domain::default())
+                .read(
+                    addr(0x101),
+                    &AbstractValue::constant(U256::ZERO),
+                    Domain::default()
+                )
                 .contains(U256::from(3))
         );
         assert_eq!(
-            outcome
-                .store
-                .read(addr(0x200), &Value::constant(U256::ZERO), Domain::default()),
-            Value::constant(U256::ZERO)
+            outcome.store.read(
+                addr(0x200),
+                &AbstractValue::constant(U256::ZERO),
+                Domain::default()
+            ),
+            AbstractValue::constant(U256::ZERO)
         );
         assert_eq!(
             outcome.store.read_transient(
                 addr(0x200),
-                &Value::constant(U256::ZERO),
+                &AbstractValue::constant(U256::ZERO),
                 Domain::default()
             ),
-            Value::constant(U256::ZERO)
+            AbstractValue::constant(U256::ZERO)
         );
         assert!(
             outcome
                 .store
-                .read_transient(addr(0x101), &Value::constant(U256::ZERO), Domain::default())
+                .read_transient(
+                    addr(0x101),
+                    &AbstractValue::constant(U256::ZERO),
+                    Domain::default()
+                )
                 .contains(U256::from(9))
         );
         assert_eq!(
             outcome.store.read_balance(addr(0x101)),
-            Value::constant(U256::from(1_000_000))
+            AbstractValue::constant(U256::from(1_000_000))
         );
         assert!(outcome.store.possible_logs().is_empty());
     }
@@ -321,11 +331,12 @@ fn callbacks_observe_parent_writes_before_call_entry() {
         .find(|s| s.key.frames.len() == 3 && s.active().address == addr(0x101))
         .unwrap();
     assert_eq!(
-        callback
-            .entry
-            .store
-            .read(addr(0x101), &Value::constant(U256::ZERO), Domain::default()),
-        Value::constant(U256::from(1))
+        callback.entry.store.read(
+            addr(0x101),
+            &AbstractValue::constant(U256::ZERO),
+            Domain::default()
+        ),
+        AbstractValue::constant(U256::from(1))
     );
     assert!(
         analysis
@@ -336,7 +347,7 @@ fn callbacks_observe_parent_writes_before_call_entry() {
                 .store
                 .read(
                     addr(0x101),
-                    &Value::constant(U256::from(1)),
+                    &AbstractValue::constant(U256::from(1)),
                     Domain::default()
                 )
                 .contains(U256::from(1)))
@@ -347,7 +358,7 @@ fn callbacks_observe_parent_writes_before_call_entry() {
 fn unknown_target_keeps_known_candidates_and_explicit_frontier() {
     let caller = "5f5f5f5f5f345af100";
     let mut entry = entry();
-    entry.environment.value = Value::top();
+    entry.environment.value = AbstractValue::top();
     let analysis = analyze_world(
         world(&[(0x101, caller), (0x200, "00")]),
         entry,
@@ -413,7 +424,11 @@ fn delegation_retains_authority_storage_and_resolves_only_once() {
     assert!(analysis.outcomes().iter().any(|o| {
         o.kind == OutcomeKind::Return
             && o.store
-                .read(addr(0x200), &Value::constant(U256::ZERO), Domain::default())
+                .read(
+                    addr(0x200),
+                    &AbstractValue::constant(U256::ZERO),
+                    Domain::default(),
+                )
                 .contains(U256::from(7))
     }));
     let mut nested = World::new(Fork::Osaka, "nested delegation");

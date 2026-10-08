@@ -2,7 +2,7 @@
 
 use super::MachinePayload;
 use crate::domain::{
-    Value,
+    AbstractValue,
     symbolic::{ExprError, ExprId, ExprLimits},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 impl MachinePayload {
     pub(crate) fn fresh_leaves(&self) -> BTreeSet<ExprId> {
         let mut leaves = self.relations.fresh_leaves();
-        let mut visit = |value: &Value| {
+        let mut visit = |value: &AbstractValue| {
             if let Some(expression) = value.expression() {
                 leaves.extend(expression.fresh_leaves());
             }
@@ -26,7 +26,7 @@ impl MachinePayload {
         limits: ExprLimits,
     ) -> Result<(), ExprError> {
         let mut error = None;
-        let mut update = |value: &mut Value| {
+        let mut update = |value: &mut AbstractValue| {
             value.forget_identity();
             if let Some(expression) = value.expression() {
                 match expression.rename_fresh(map, limits) {

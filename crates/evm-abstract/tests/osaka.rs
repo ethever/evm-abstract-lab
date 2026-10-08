@@ -4,7 +4,7 @@ use evm_abstract::{
     Fork, U256,
     analysis::{self, Config, DiagnosticKind},
     bytecode::{DecodeError, Program},
-    domain::{Domain, Value, provenance::Origin},
+    domain::{AbstractValue, Domain, provenance::Origin},
     ssa,
 };
 use revm_bytecode::eip7702::Eip7702DecodeError;
@@ -37,11 +37,11 @@ fn default_mainnet_recovers_a_clz_computed_jump() {
 
 #[test]
 fn clz_zero_folds_to_256() {
-    let result = Domain::default().apply(0x1e, &[Value::constant(U256::ZERO)]);
+    let result = Domain::default().apply(0x1e, &[AbstractValue::constant(U256::ZERO)]);
     assert_eq!(result.singleton(), Some(U256::from(256)));
     assert_eq!(
         result.constants(),
-        Value::constant(U256::from(256)).constants()
+        AbstractValue::constant(U256::from(256)).constants()
     );
     assert!(
         result
@@ -137,13 +137,13 @@ fn fork_selection_is_explicit_and_serialized() {
 fn clz_of_sets_and_product_top_keeps_the_full_output_range() {
     let domain = Domain::default();
     let inputs = domain.join(
-        &Value::constant(U256::ZERO),
-        &Value::constant(U256::from(1)),
+        &AbstractValue::constant(U256::ZERO),
+        &AbstractValue::constant(U256::from(1)),
     );
     let result = domain.apply(0x1e, &[inputs]);
     assert_eq!(result.constants().unwrap().len(), 2);
     assert!(result.contains(U256::from(255)) && result.contains(U256::from(256)));
-    let open = domain.apply(0x1e, &[Value::top()]);
+    let open = domain.apply(0x1e, &[AbstractValue::top()]);
     assert!(open.constants().is_none());
     assert_eq!(
         open.interval().unsigned_bounds(),
@@ -158,8 +158,11 @@ fn clz_of_sets_and_product_top_keeps_the_full_output_range() {
 #[test]
 fn constants_only_clz_requires_capacity_for_the_complete_range() {
     let bounded = Domain::new(NonZeroUsize::new(8).unwrap());
-    assert_eq!(bounded.apply(0x1e, &[Value::top()]), Value::top());
-    let full = Domain::new(NonZeroUsize::new(257).unwrap()).apply(0x1e, &[Value::top()]);
+    assert_eq!(
+        bounded.apply(0x1e, &[AbstractValue::top()]),
+        AbstractValue::top()
+    );
+    let full = Domain::new(NonZeroUsize::new(257).unwrap()).apply(0x1e, &[AbstractValue::top()]);
     assert_eq!(full.constants().unwrap().len(), 257);
     for value in 0_u64..=256 {
         assert!(full.constants().unwrap().contains(&U256::from(value)));

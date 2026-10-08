@@ -9,7 +9,7 @@ use super::{
     },
 };
 use crate::{
-    domain::{Domain, Value, provenance::Origin},
+    domain::{AbstractValue, Domain, provenance::Origin},
     world::{AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, Store, Symbol, World},
 };
 use alloy_primitives::{Address, U256, keccak256};
@@ -125,11 +125,11 @@ pub(super) fn resume_summary(
 fn address(value: U256) -> Address {
     Address::from_slice(&value.to_be_bytes::<32>()[12..])
 }
-fn constant(value: usize) -> Value {
-    Value::constant(U256::from(value))
+fn constant(value: usize) -> AbstractValue {
+    AbstractValue::constant(U256::from(value))
 }
-fn zero() -> Value {
-    Value::constant(U256::ZERO)
+fn zero() -> AbstractValue {
+    AbstractValue::constant(U256::ZERO)
 }
 fn boundary(result: &mut Execution, pc: usize, reason: FrontierReason) {
     result
@@ -153,8 +153,8 @@ fn successor(
 
 fn touch_memory(
     result: &mut Execution,
-    offset: &Value,
-    size: &Value,
+    offset: &AbstractValue,
+    size: &AbstractValue,
     context: &mut TransferContext<'_>,
     pc: usize,
 ) -> bool {
@@ -187,11 +187,11 @@ fn code_bytes(store: &Store, target: Address) -> Option<Vec<u8>> {
 }
 
 fn environment_targets(
-    value: &Value,
+    value: &AbstractValue,
     domain: Domain,
     entry: &Entry,
-    mut read: impl FnMut(Address) -> Value,
-) -> Value {
+    mut read: impl FnMut(Address) -> AbstractValue,
+) -> AbstractValue {
     let symbolic_owner = entry.environment.to.as_concrete().is_none();
     if symbolic_owner
         && value.identity().same_identity(
@@ -204,20 +204,20 @@ fn environment_targets(
         return read(entry.address);
     }
     let Some(values) = value.constants() else {
-        return Value::top();
+        return AbstractValue::top();
     };
     values
         .iter()
         .map(|v| {
             let target = address(*v);
             if symbolic_owner && target == entry.address {
-                Value::top()
+                AbstractValue::top()
             } else {
                 read(target)
             }
         })
         .reduce(|a, b| domain.join(&a, &b))
-        .expect("Value constant sets are nonempty")
+        .expect("AbstractValue constant sets are nonempty")
 }
 
 pub(super) fn execute(
@@ -326,7 +326,7 @@ pub(super) fn execute(
             return result;
         }
         if let Some(value) = instruction.immediate {
-            stack.push(Value::constant(value));
+            stack.push(AbstractValue::constant(value));
             continue;
         }
         if (opcode::DUP1..=opcode::DUP16).contains(&op) {
@@ -339,9 +339,11 @@ pub(super) fn execute(
             stack.swap(top, top - usize::from(op - opcode::SWAP1 + 1));
             continue;
         }
-        let mut args: Vec<Value> = stack.drain(stack.len() - inputs..).collect();
+        let mut args: Vec<AbstractValue> = stack.drain(stack.len() - inputs..).collect();
         args.reverse();
-        if config.analysis.relations.enabled && args.iter().any(Value::symbolic_limit_reached) {
+        if config.analysis.relations.enabled
+            && args.iter().any(AbstractValue::symbolic_limit_reached)
+        {
             boundary(
                 &mut result,
                 pc,
@@ -433,7 +435,7 @@ pub(super) fn execute(
                     .saturating_sub(config.analysis.context_depth);
                 frame.key.jump_history.drain(..discard);
                 let condition = args.get(1);
-                let constrained = if condition.is_none_or(Value::may_be_nonzero) {
+                let constrained = if condition.is_none_or(AbstractValue::may_be_nonzero) {
                     if let Some(condition) = condition {
                         relations::branch(&mut result, condition, true, context, pc)
                     } else {
@@ -482,7 +484,7 @@ pub(super) fn execute(
                         }
                     }
                 }
-                if condition.is_some_and(Value::may_be_zero) {
+                if condition.is_some_and(AbstractValue::may_be_zero) {
                     let Some(payload) = relations::branch(
                         &mut result,
                         condition.expect("JUMPI condition"),
@@ -870,13 +872,13 @@ pub(super) fn execute(
                             Some(Code::Runtime(program)) => constant(program.byte_len()),
                             Some(Code::Delegation(_)) => constant(23),
                             Some(Code::Empty) => zero(),
-                            _ => Value::top(),
+                            _ => AbstractValue::top(),
                         }
                     }),
                     opcode::EXTCODEHASH => environment_targets(&args[0], domain, entry, |target| {
                         code_bytes(&result.payload.store, target)
                             .map(|bytes| {
-                                let hash = Value::constant(U256::from_be_slice(
+                                let hash = AbstractValue::constant(U256::from_be_slice(
                                     keccak256(&bytes).as_slice(),
                                 ));
                                 if !bytes.is_empty() {
@@ -894,7 +896,7 @@ pub(super) fn execute(
                                     hash
                                 }
                             })
-                            .unwrap_or_else(Value::top)
+                            .unwrap_or_else(AbstractValue::top)
                     }),
                     opcode::MLOAD => {
                         if !touch_memory(&mut result, &args[0], &constant(32), context, pc) {
@@ -915,11 +917,11 @@ pub(super) fn execute(
                             Ok(bytes) => bytes
                                 .exact_bytes_bounded(config.max_memory_bytes)
                                 .map(|bytes| {
-                                    Value::constant(U256::from_be_slice(
+                                    AbstractValue::constant(U256::from_be_slice(
                                         keccak256(bytes).as_slice(),
                                     ))
                                 })
-                                .unwrap_or_else(Value::top),
+                                .unwrap_or_else(AbstractValue::top),
                             Err(_) => {
                                 boundary(&mut result, pc, FrontierReason::Memory);
                                 return result;
@@ -1023,7 +1025,11 @@ pub(super) fn execute(
     result
 }
 
-fn return_copy_bounds(offset: &Value, size: &Value, length: &Value) -> (bool, bool) {
+fn return_copy_bounds(
+    offset: &AbstractValue,
+    size: &AbstractValue,
+    length: &AbstractValue,
+) -> (bool, bool) {
     let (Some(offsets), Some(sizes), Some(lengths)) =
         (offset.constants(), size.constants(), length.constants())
     else {

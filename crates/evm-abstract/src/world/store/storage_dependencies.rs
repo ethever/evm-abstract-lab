@@ -3,13 +3,13 @@
 use super::Store;
 use crate::{
     Address, Fork, U256,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{Account, World},
 };
 use std::num::NonZeroUsize;
 
-fn word(value: u64) -> Value {
-    Value::constant(U256::from(value))
+fn word(value: u64) -> AbstractValue {
+    AbstractValue::constant(U256::from(value))
 }
 
 fn partial_world() -> (World, Address) {
@@ -21,7 +21,7 @@ fn partial_world() -> (World, Address) {
     (world, address)
 }
 
-fn keys(left: u64, right: u64) -> Value {
+fn keys(left: u64, right: u64) -> AbstractValue {
     Domain::default().join(&word(left), &word(right))
 }
 
@@ -39,15 +39,15 @@ fn missing_requests_require_finite_keys_and_incomplete_initial_coverage() {
     );
     assert!(
         store
-            .missing_initial_slots(&world, address, &Value::top())
+            .missing_initial_slots(&world, address, &AbstractValue::top())
             .is_empty()
     );
     assert!(
         store
-            .missing_initial_slots(&world, address, &Value::unknown_byte())
+            .missing_initial_slots(&world, address, &AbstractValue::unknown_byte())
             .is_empty()
     );
-    let single = Value::unsigned_range(U256::from(5), U256::from(5)).unwrap();
+    let single = AbstractValue::unsigned_range(U256::from(5), U256::from(5)).unwrap();
     assert_eq!(
         store.missing_initial_slots(&world, address, &single),
         vec![U256::from(5)]
@@ -75,7 +75,7 @@ fn missing_requests_require_finite_keys_and_incomplete_initial_coverage() {
 fn strong_writes_discard_initial_dependency_even_when_the_new_value_is_top() {
     let (world, address) = partial_world();
     let mut store = Store::new(&world);
-    store.write(address, &word(1), &Value::top(), Domain::default());
+    store.write(address, &word(1), &AbstractValue::top(), Domain::default());
     assert!(
         store
             .missing_initial_slots(&world, address, &word(1))
@@ -87,7 +87,7 @@ fn strong_writes_discard_initial_dependency_even_when_the_new_value_is_top() {
     );
     assert_eq!(
         store.read(address, &word(1), Domain::default()),
-        Value::top()
+        AbstractValue::top()
     );
 }
 
@@ -103,7 +103,7 @@ fn finite_weak_writes_preserve_baseline_but_do_not_restore_discarded_dependencie
         vec![U256::from(2)]
     );
     assert_eq!(store.read(address, &word(1), domain), keys(3, 7));
-    assert_eq!(store.read(address, &word(2), domain), Value::top());
+    assert_eq!(store.read(address, &word(2), domain), AbstractValue::top());
 
     // Replay with the newly observed baseline still joins the weak SSTORE.
     let mut observed = Account::unknown();
@@ -126,14 +126,14 @@ fn unknown_alias_write_remains_weak_after_initial_rpc_refinement() {
     let domain = Domain::default();
     let mut store = Store::new(&world);
     store.write(address, &word(1), &word(3), domain);
-    store.write(address, &Value::top(), &word(7), domain);
+    store.write(address, &AbstractValue::top(), &word(7), domain);
     assert_eq!(
         store.missing_initial_slots(&world, address, &keys(1, 2)),
         vec![U256::from(2)]
     );
     assert_eq!(store.read(address, &word(4), domain), keys(7, 11));
     assert_eq!(store.read(address, &word(1), domain), keys(3, 7));
-    assert_eq!(store.read(address, &word(2), domain), Value::top());
+    assert_eq!(store.read(address, &word(2), domain), AbstractValue::top());
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn havoc_replaces_initial_dependencies_for_exactly_its_scope() {
     );
     assert_eq!(
         store.read(address, &word(4), Domain::default()),
-        Value::top()
+        AbstractValue::top()
     );
     store.havoc_all();
     assert!(
@@ -170,7 +170,7 @@ fn joins_keep_any_path_baseline_dependency_across_owner_and_global_defaults() {
     let initial = Store::new(&world);
     let domain = Domain::default();
     let mut strong = initial.clone();
-    strong.write(address, &word(1), &Value::top(), domain);
+    strong.write(address, &word(1), &AbstractValue::top(), domain);
     let mut created = initial.clone();
     created.begin_creation(address);
     let mut havoc_account = initial.clone();
@@ -202,7 +202,7 @@ fn nested_rollback_restores_dependency_metadata_and_work() {
     let mut store = Store::new(&world);
     let initial = store.clone();
     let outer = store.snapshot();
-    store.write(address, &word(1), &Value::top(), domain);
+    store.write(address, &word(1), &AbstractValue::top(), domain);
     let after_strong = store.clone();
     let inner = store.snapshot();
     store.havoc_all();
@@ -252,7 +252,7 @@ fn widening_and_domain_projection_preserve_the_joined_must_facts() {
     let domain = Domain::default();
     let initial = Store::new(&world);
     let mut strong = initial.clone();
-    strong.write(address, &word(1), &Value::top(), domain);
+    strong.write(address, &word(1), &AbstractValue::top(), domain);
     strong.widen(&initial, domain);
     assert!(
         strong

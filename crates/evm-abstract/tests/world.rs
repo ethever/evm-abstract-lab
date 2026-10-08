@@ -2,23 +2,23 @@
 
 use evm_abstract::{
     Address, Fork, U256,
-    domain::{Domain, Value, provenance::Origin},
+    domain::{AbstractValue, Domain, provenance::Origin},
     world::{
         AbstractLog, Account, ByteArray, Code, LogError, LogKey, RangeError, Store, World,
         WorldError,
     },
 };
 
-fn v(value: u64) -> Value {
-    Value::constant(U256::from(value))
+fn v(value: u64) -> AbstractValue {
+    AbstractValue::constant(U256::from(value))
 }
 
 fn address(value: u8) -> Address {
     Address::from([value; 20])
 }
 
-// 字节搬运保留数值精度，同时增加运算来源；不能用常量来源替代完整 Value。
-fn assert_numeric_eq(actual: &Value, expected: &Value) {
+// 字节搬运保留数值精度，同时增加运算来源；不能用常量来源替代完整 AbstractValue。
+fn assert_numeric_eq(actual: &AbstractValue, expected: &AbstractValue) {
     assert_eq!(actual.constants(), expected.constants());
     assert_eq!(actual.known_bits(), expected.known_bits());
     assert_eq!(actual.interval(), expected.interval());
@@ -74,12 +74,12 @@ fn storage_defaults_and_account_ownership_are_explicit() {
     world.insert(address(2), Account::unknown()).unwrap();
     let mut store = Store::new(&world);
     assert_eq!(store.read(address(1), &v(7), domain), v(0));
-    assert_eq!(store.read(address(2), &v(7), domain), Value::top());
-    assert_eq!(store.read(address(3), &v(7), domain), Value::top());
+    assert_eq!(store.read(address(2), &v(7), domain), AbstractValue::top());
+    assert_eq!(store.read(address(3), &v(7), domain), AbstractValue::top());
     assert_eq!(store.read_transient(address(3), &v(7), domain), v(0));
     store.write(address(1), &v(7), &v(42), domain);
     assert_eq!(store.read(address(1), &v(7), domain), v(42));
-    assert_eq!(store.read(address(2), &v(7), domain), Value::top());
+    assert_eq!(store.read(address(2), &v(7), domain), AbstractValue::top());
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn unknown_slot_write_weakly_updates_all_aliases_and_defaults() {
     world.insert(address(1), Account::empty()).unwrap();
     let mut store = Store::new(&world);
     store.write(address(1), &v(7), &v(42), domain);
-    store.write(address(1), &Value::top(), &v(9), domain);
+    store.write(address(1), &AbstractValue::top(), &v(9), domain);
     assert_eq!(
         store.read(address(1), &v(7), domain),
         domain.join(&v(42), &v(9))
@@ -168,7 +168,7 @@ fn words_are_big_endian_and_calldata_is_zero_padded() {
     let domain = Domain::default();
     let bytes = ByteArray::exact(&[0x12, 0x34]);
     let loaded = bytes.read_word(&v(0), domain);
-    assert_numeric_eq(&loaded, &Value::constant(U256::from(0x1234) << 240));
+    assert_numeric_eq(&loaded, &AbstractValue::constant(U256::from(0x1234) << 240));
     assert!(
         loaded
             .provenance()
@@ -178,14 +178,22 @@ fn words_are_big_endian_and_calldata_is_zero_padded() {
             .contains(&Origin::Arithmetic)
     );
     assert_numeric_eq(&bytes.read_word(&v(2), domain), &v(0));
-    assert_numeric_eq(&bytes.read_word(&Value::constant(U256::MAX), domain), &v(0));
     assert_numeric_eq(
-        &bytes.read_word(&Value::constant(U256::from(usize::MAX)), domain),
+        &bytes.read_word(&AbstractValue::constant(U256::MAX), domain),
+        &v(0),
+    );
+    assert_numeric_eq(
+        &bytes.read_word(&AbstractValue::constant(U256::from(usize::MAX)), domain),
         &v(0),
     );
     assert_eq!(
         bytes
-            .slice(&Value::constant(U256::from(usize::MAX)), &v(2), 64, domain)
+            .slice(
+                &AbstractValue::constant(U256::from(usize::MAX)),
+                &v(2),
+                64,
+                domain
+            )
             .unwrap()
             .exact_bytes(),
         Some(vec![0, 0])
@@ -194,7 +202,10 @@ fn words_are_big_endian_and_calldata_is_zero_padded() {
         bytes.slice(&v(1), &v(3), 64, domain).unwrap().exact_bytes(),
         Some(vec![0x34, 0, 0])
     );
-    assert_eq!(ByteArray::unknown().read_word(&v(0), domain), Value::top());
+    assert_eq!(
+        ByteArray::unknown().read_word(&v(0), domain),
+        AbstractValue::top()
+    );
 }
 
 #[test]
@@ -311,20 +322,20 @@ fn range_limits_are_typed_atomic_and_allow_zero_size_at_any_offset() {
     ));
     assert_eq!(memory, original);
     assert!(matches!(
-        memory.slice(&v(0), &Value::top(), 32, domain),
+        memory.slice(&v(0), &AbstractValue::top(), 32, domain),
         Err(RangeError::UnknownSize)
     ));
     assert!(matches!(
-        memory.slice(&v(0), &Value::constant(U256::MAX), 32, domain),
+        memory.slice(&v(0), &AbstractValue::constant(U256::MAX), 32, domain),
         Err(RangeError::TooLarge { .. })
     ));
     memory
-        .expand(&Value::constant(U256::MAX), &v(0), 32, domain)
+        .expand(&AbstractValue::constant(U256::MAX), &v(0), 32, domain)
         .unwrap();
     assert_eq!(memory, original);
     assert_eq!(
         memory
-            .slice(&Value::constant(U256::MAX), &v(0), 32, domain)
+            .slice(&AbstractValue::constant(U256::MAX), &v(0), 32, domain)
             .unwrap(),
         ByteArray::empty()
     );
@@ -335,10 +346,10 @@ fn unknown_memory_offset_is_conservative_without_allocating_a_range() {
     let domain = Domain::default();
     let mut memory = ByteArray::memory();
     memory
-        .write_byte(&Value::top(), &v(42), 32, domain)
+        .write_byte(&AbstractValue::top(), &v(42), 32, domain)
         .unwrap();
-    assert_eq!(memory.len(), &Value::top());
-    assert_eq!(memory.read_word(&v(0), domain), Value::top());
+    assert_eq!(memory.len(), &AbstractValue::top());
+    assert_eq!(memory.read_word(&v(0), domain), AbstractValue::top());
 }
 
 fn log_key() -> LogKey {

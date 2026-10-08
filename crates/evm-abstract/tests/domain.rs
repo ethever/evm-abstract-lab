@@ -2,16 +2,16 @@
 
 use evm_abstract::{
     U256,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
 };
 use proptest::{arbitrary::any, collection::vec, prop_assert, prop_assert_eq, proptest};
 use std::num::NonZeroUsize;
 
-fn set(domain: Domain, values: &[u16]) -> Value {
+fn set(domain: Domain, values: &[u16]) -> AbstractValue {
     values[1..]
         .iter()
-        .fold(Value::constant(U256::from(values[0])), |old, v| {
-            domain.join(&old, &Value::constant(U256::from(*v)))
+        .fold(AbstractValue::constant(U256::from(values[0])), |old, v| {
+            domain.join(&old, &AbstractValue::constant(U256::from(*v)))
         })
 }
 
@@ -23,7 +23,7 @@ proptest! {
         prop_assert_eq!(d.join(&a, &a), a.clone());
         prop_assert_eq!(d.join(&a, &b), d.join(&b, &a));
         prop_assert_eq!(d.join(&d.join(&a, &b), &c), d.join(&a, &d.join(&b, &c)));
-        prop_assert_eq!(d.join(&a, &Value::top()), Value::top());
+        prop_assert_eq!(d.join(&a, &AbstractValue::top()), AbstractValue::top());
     }
 
     #[test]
@@ -39,13 +39,13 @@ proptest! {
 fn capacity_promotes_to_top_instead_of_dropping_constants() {
     let d = Domain::new(NonZeroUsize::new(1).unwrap());
     let joined = d.join(
-        &Value::constant(U256::from(3)),
-        &Value::constant(U256::from(7)),
+        &AbstractValue::constant(U256::from(3)),
+        &AbstractValue::constant(U256::from(7)),
     );
-    assert_eq!(joined.numeric(), Value::top().numeric());
+    assert_eq!(joined.numeric(), AbstractValue::top().numeric());
     assert_eq!(
         joined.provenance(),
-        Value::constant(U256::ZERO).provenance()
+        AbstractValue::constant(U256::ZERO).provenance()
     );
     assert!(joined.contains(U256::from(3)) && joined.contains(U256::from(7)));
 }
@@ -53,24 +53,27 @@ fn capacity_promotes_to_top_instead_of_dropping_constants() {
 #[test]
 fn arithmetic_uses_evm_operand_order_and_modular_words() {
     let d = Domain::default();
-    let v = |x: u64| Value::constant(U256::from(x));
+    let v = |x: u64| AbstractValue::constant(U256::from(x));
     assert!(d.apply(0x03, &[v(3), v(2)]).contains(U256::from(1)));
     assert!(d.apply(0x03, &[v(2), v(3)]).contains(U256::MAX));
     assert!(d.apply(0x04, &[v(7), v(0)]).contains(U256::ZERO));
     assert!(d.apply(0x1b, &[v(256), v(1)]).contains(U256::ZERO));
     assert!(
-        d.apply(0x1d, &[v(256), Value::constant(U256::MAX)])
+        d.apply(0x1d, &[v(256), AbstractValue::constant(U256::MAX)])
             .contains(U256::MAX)
     );
     assert!(
-        d.apply(0x08, &[Value::constant(U256::MAX), v(1), v(17)])
+        d.apply(0x08, &[AbstractValue::constant(U256::MAX), v(1), v(17)])
             .contains(U256::from(1))
     );
 }
 
 #[test]
 fn unknown_comparisons_still_return_only_boolean_values() {
-    let boolean = Domain::default().apply(0x14, &[Value::top(), Value::constant(U256::ZERO)]);
+    let boolean = Domain::default().apply(
+        0x14,
+        &[AbstractValue::top(), AbstractValue::constant(U256::ZERO)],
+    );
     assert_eq!(boolean.constants().unwrap().len(), 2);
     assert!(boolean.contains(U256::ZERO) && boolean.contains(U256::from(1)));
     assert!(!boolean.contains(U256::from(2)));

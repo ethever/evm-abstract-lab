@@ -4,16 +4,16 @@
 //! 修复该 issue 时应同步收紧断言；当前候选不表示每个值都有具体执行见证。
 
 use super::ByteArray;
-use crate::domain::{Domain, Value};
+use crate::domain::{AbstractValue, Domain};
 use alloy_primitives::U256;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn byte_sequence(length: Value) -> ByteArray {
+fn byte_sequence(length: AbstractValue) -> ByteArray {
     // 表示层夹具，允许保留当前长度之外的稀疏事实；不是 EVM memory 写入轨迹。
     ByteArray {
         length,
-        bytes: BTreeMap::from([(7, Value::constant(U256::from(0xaa)))]),
-        default: Value::constant(U256::ZERO),
+        bytes: BTreeMap::from([(7, AbstractValue::constant(U256::from(0xaa)))]),
+        default: AbstractValue::constant(U256::ZERO),
         memory: false,
     }
 }
@@ -21,7 +21,7 @@ fn byte_sequence(length: Value) -> ByteArray {
 #[test]
 fn known_precision_gap_upper_length_bound_keeps_out_of_range_byte() {
     let domain = Domain::default();
-    let array = byte_sequence(Value::unsigned_range(U256::ZERO, U256::from(6)).unwrap());
+    let array = byte_sequence(AbstractValue::unsigned_range(U256::ZERO, U256::from(6)).unwrap());
     assert!(array.len().constants().is_none());
     assert!(!array.len().numeric().is_top());
     assert_eq!(
@@ -72,12 +72,12 @@ fn known_precision_gap_joined_length_lower_bound_adds_zero() {
 fn finite_lengths_distinguish_out_of_range_and_in_range_reads() {
     let domain = Domain::default();
     let out_of_range = domain.join(
-        &Value::constant(U256::ZERO),
-        &Value::constant(U256::from(6)),
+        &AbstractValue::constant(U256::ZERO),
+        &AbstractValue::constant(U256::from(6)),
     );
     let in_range = domain.join(
-        &Value::constant(U256::from(8)),
-        &Value::constant(U256::from(16)),
+        &AbstractValue::constant(U256::from(8)),
+        &AbstractValue::constant(U256::from(16)),
     );
     assert_eq!(
         byte_sequence(out_of_range).byte_at(7, domain).singleton(),
@@ -94,8 +94,8 @@ fn uncertain_length_needs_zero_and_stored_byte() {
     let domain = Domain::default();
     // 全未知长度与跨越边界的区间都确实允许越界和有效读取。
     for length in [
-        Value::top(),
-        Value::unsigned_range(U256::from(6), U256::from(8)).unwrap(),
+        AbstractValue::top(),
+        AbstractValue::unsigned_range(U256::from(6), U256::from(8)).unwrap(),
     ] {
         let actual = byte_sequence(length).byte_at(7, domain);
         assert_eq!(

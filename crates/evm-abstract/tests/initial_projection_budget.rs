@@ -4,7 +4,7 @@ use evm_abstract::{
     Address, Fork, U256,
     analysis::{Config, ExecutionConfig, FrontierReason, Status, analyze_world},
     domain::{
-        Domain, DomainSpec, Profile, Value,
+        AbstractValue, Domain, DomainSpec, Profile,
         facts::{UnaryPredicate, WordBounds},
     },
     render,
@@ -12,11 +12,11 @@ use evm_abstract::{
 };
 use std::num::NonZeroUsize;
 
-fn open_range(unknown_bits: usize) -> Value {
+fn open_range(unknown_bits: usize) -> AbstractValue {
     open_interval(U256::ZERO, (U256::from(1) << unknown_bits) - U256::from(1))
 }
 
-fn open_interval(lower: U256, upper: U256) -> Value {
+fn open_interval(lower: U256, upper: U256) -> AbstractValue {
     let domain = Domain::from_spec(DomainSpec::new(
         Profile::Product,
         NonZeroUsize::new(1).unwrap(),
@@ -43,7 +43,7 @@ fn fixture() -> (World, Entry) {
         environment: evm_abstract::world::EvmEnvironment {
             to: (address).into(),
             caller: (Address::ZERO).into(),
-            value: Value::constant(U256::ZERO),
+            value: AbstractValue::constant(U256::ZERO),
             calldata: ByteArray::empty(),
             is_static: false,
             ..evm_abstract::world::EvmEnvironment::default()
@@ -85,7 +85,7 @@ fn initial_projection_precharge_covers_open_entry_and_storage_values() {
             let mut account = world.account(entry.address).unwrap().clone();
             account
                 .storage
-                .insert(U256::ZERO, Value::constant(U256::ZERO));
+                .insert(U256::ZERO, AbstractValue::constant(U256::ZERO));
             world = World::new(Fork::Osaka, "storage projection baseline");
             world.insert(entry.address, account).unwrap();
         }
@@ -188,10 +188,10 @@ fn maximum_capacity_open_projection_stops_even_with_maximum_work() {
 #[test]
 fn maximum_capacity_top_and_small_finite_projection_remain_complete() {
     let finite = Domain::new(NonZeroUsize::new(3).unwrap()).join(
-        &Value::constant(U256::ZERO),
-        &Value::constant(U256::from(2)),
+        &AbstractValue::constant(U256::ZERO),
+        &AbstractValue::constant(U256::from(2)),
     );
-    for value in [Value::top(), finite] {
+    for value in [AbstractValue::top(), finite] {
         let (world, mut entry) = fixture();
         entry.environment.value = value;
         let graph = analyze_world(world, entry, constants_config(usize::MAX, 100_000)).unwrap();

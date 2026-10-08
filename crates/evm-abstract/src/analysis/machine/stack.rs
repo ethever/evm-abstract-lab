@@ -113,7 +113,7 @@ impl CallStack {
             .chain(self.children.iter_mut().map(|child| &mut child.state))
     }
 
-    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&crate::domain::Value)) {
+    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&crate::domain::AbstractValue)) {
         for frame in self.iter() {
             frame.visit_values(visit);
         }
@@ -123,7 +123,10 @@ impl CallStack {
         }
     }
 
-    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut crate::domain::Value)) {
+    pub(crate) fn update_values(
+        &mut self,
+        update: &mut impl FnMut(&mut crate::domain::AbstractValue),
+    ) {
         for frame in self.iter_mut() {
             frame.update_values(update);
         }

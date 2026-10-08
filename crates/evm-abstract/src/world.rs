@@ -16,7 +16,7 @@ pub use bytes::{ByteArray, RangeError};
 pub use snapshot::SnapshotIdentity;
 pub use store::{AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store};
 
-use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::Value};
+use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::AbstractValue};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -68,13 +68,13 @@ pub struct Account {
     /// Observed runtime code, delegation, empty code, or missing code.
     pub code: Code,
     /// Explicit initial slot values.
-    pub storage: BTreeMap<U256, Value>,
+    pub storage: BTreeMap<U256, AbstractValue>,
     /// Whether unspecified initial storage slots can have any value.
     pub storage_unknown: bool,
-    /// Initial balance; an unobserved balance must be [`Value::top`].
-    pub balance: Value,
+    /// Initial balance; an unobserved balance must be [`AbstractValue::top`].
+    pub balance: AbstractValue,
     /// Initial nonce; required for CREATE addresses and collision checks.
-    pub nonce: Value,
+    pub nonce: AbstractValue,
     /// Explicit account-presence observation, independently of empty code.
     pub existence: Existence,
 }
@@ -96,8 +96,8 @@ impl Account {
             code,
             storage: BTreeMap::new(),
             storage_unknown: false,
-            balance: Value::constant(U256::ZERO),
-            nonce: Value::constant(U256::ZERO),
+            balance: AbstractValue::constant(U256::ZERO),
+            nonce: AbstractValue::constant(U256::ZERO),
             existence: Existence::Present,
         })
     }
@@ -108,8 +108,8 @@ impl Account {
             code: Code::Empty,
             storage: BTreeMap::new(),
             storage_unknown: false,
-            balance: Value::constant(U256::ZERO),
-            nonce: Value::constant(U256::ZERO),
+            balance: AbstractValue::constant(U256::ZERO),
+            nonce: AbstractValue::constant(U256::ZERO),
             existence: Existence::Present,
         }
     }
@@ -128,8 +128,8 @@ impl Account {
             code: Code::Unknown,
             storage: BTreeMap::new(),
             storage_unknown: true,
-            balance: Value::top(),
-            nonce: Value::top(),
+            balance: AbstractValue::top(),
+            nonce: AbstractValue::top(),
             existence: Existence::Unknown,
         }
     }
@@ -187,7 +187,7 @@ impl World {
     pub(crate) fn install_storage(
         &mut self,
         address: Address,
-        storage: BTreeMap<U256, Value>,
+        storage: BTreeMap<U256, AbstractValue>,
     ) -> Result<(), WorldError> {
         let account = self
             .accounts
@@ -219,7 +219,7 @@ impl World {
             let default = if account.storage_unknown {
                 0
             } else {
-                domain.projection_work(&Value::constant(U256::ZERO))
+                domain.projection_work(&AbstractValue::constant(U256::ZERO))
             };
             account.storage.values().fold(
                 work.saturating_add(domain.projection_work(&account.balance))
@@ -400,7 +400,12 @@ impl Entry {
     }
 
     /// Create a concrete root call while leaving other environment facts unknown.
-    pub fn concrete(address: Address, caller: Address, value: Value, calldata: ByteArray) -> Self {
+    pub fn concrete(
+        address: Address,
+        caller: Address,
+        value: AbstractValue,
+        calldata: ByteArray,
+    ) -> Self {
         let mut entry = Self::new(address);
         entry.environment.caller = AddressInput::Concrete(caller);
         entry.environment.value = value;
