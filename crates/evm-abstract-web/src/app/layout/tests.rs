@@ -48,6 +48,26 @@ fn pane_rect(tree: &Tree<Pane>, target: Pane) -> Rect {
         .1
 }
 
+fn divider_stroke(output: &FullOutput, x: f32, pane: Rect) -> egui::Stroke {
+    output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::LineSegment { points, stroke }
+                if (points[0].x - x).abs() < 1.0
+                    && (points[1].x - x).abs() < 1.0
+                    && points[0].y <= pane.top() + 1.0
+                    && points[1].y >= pane.bottom() - 1.0
+                    && shape.clip_rect.contains(points[0])
+                    && shape.clip_rect.contains(points[1]) =>
+            {
+                Some(*stroke)
+            }
+            _ => None,
+        })
+        .expect("the divider must be painted across the visible pane")
+}
+
 fn settled(ctx: &Context, workspace: &mut Workspace, size: Vec2) -> FullOutput {
     frame(ctx, workspace, size, vec![]);
     frame(ctx, workspace, size, vec![]);
@@ -175,15 +195,33 @@ fn dragging_a_divider_survives_repeated_resizes_and_width_classes() {
     crate::palette::configure(&ctx);
     let mut workspace = ready();
     let size = Vec2::new(1440.0, 900.0);
-    settled(&ctx, &mut workspace, size);
+    for viewport in [size, Vec2::new(1024.0, 768.0), size] {
+        let output = settled(&ctx, &mut workspace, viewport);
+        let mut panes = pane_rects(active_tree(&workspace, viewport.x));
+        panes.sort_by(|left, right| left.1.left().total_cmp(&right.1.left()));
+        for adjacent in panes.windows(2) {
+            let x = (adjacent[0].1.right() + adjacent[1].1.left()) * 0.5;
+            let stroke = divider_stroke(&output, x, adjacent[0].1);
+            assert!(stroke.width > 0.0 && stroke.color.a() > 0);
+            assert_ne!(
+                stroke.color,
+                crate::palette::BACKGROUND,
+                "idle pane divider disappears into the background"
+            );
+        }
+    }
     let original = pane_rect(&workspace.layout.wide, Pane::Disassembly);
     let divider = Pos2::new(original.right() + 2.5, original.center().y);
-    frame(
+    let idle = divider_stroke(&settled(&ctx, &mut workspace, size), divider.x, original);
+    let hovered = frame(
         &ctx,
         &mut workspace,
         size,
         vec![Event::PointerMoved(divider)],
     );
+    let hovered = divider_stroke(&hovered, divider.x, original);
+    assert!(hovered.width > idle.width);
+    assert_ne!(hovered.color, idle.color);
     frame(
         &ctx,
         &mut workspace,
@@ -196,7 +234,9 @@ fn dragging_a_divider_survives_repeated_resizes_and_width_classes() {
         }],
     );
     let moved = divider + Vec2::new(90.0, 0.0);
-    frame(&ctx, &mut workspace, size, vec![Event::PointerMoved(moved)]);
+    let dragging = frame(&ctx, &mut workspace, size, vec![Event::PointerMoved(moved)]);
+    let dragging = divider_stroke(&dragging, divider.x, original);
+    assert_ne!(dragging.color, hovered.color);
     frame(
         &ctx,
         &mut workspace,
