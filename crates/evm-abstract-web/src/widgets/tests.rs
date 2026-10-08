@@ -72,6 +72,35 @@ fn text_position(output: &FullOutput, expected: &str) -> Option<Pos2> {
         })
 }
 
+fn source_heading_position(output: &FullOutput, view: View) -> Pos2 {
+    let text: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text),
+            _ => None,
+        })
+        .collect();
+    // The source heading has its coverage/program detail beside it. "SSA"
+    // alone also names a navigation button, a tab and the CFG content selector.
+    text.windows(2)
+        .find_map(|pair| {
+            let title = pair[0].galley.text();
+            let detail = pair[1].galley.text();
+            let matches = match view {
+                View::Ssa => {
+                    title == "SSA"
+                        && (detail.starts_with("verified complete")
+                            || detail.starts_with("partial coverage"))
+                }
+                View::Disassembly => title == "DISASSEMBLY" && detail.starts_with("Root program"),
+                _ => false,
+            };
+            matches.then_some(pair[0].pos)
+        })
+        .expect("source heading with its program/coverage detail")
+}
+
 fn first_pc(output: &FullOutput, view: View) -> (usize, Pos2) {
     output
         .shapes
@@ -117,18 +146,13 @@ fn manual_source_scroll_survives_view_parent_changes_and_resizing() {
         let before = settle(&ctx, &mut workspace, wide);
         let (pc, pos) = first_pc(&before, view);
         assert!(pc > 100, "fixture must scroll away from the first row");
-        let title = if view == View::Ssa {
-            "SSA"
-        } else {
-            "DISASSEMBLY"
-        };
-        let origin = text_position(&before, title).unwrap().x;
+        let origin = source_heading_position(&before, view).x;
         let offset = pos.x - origin;
         assert!(offset < -100.0, "fixture must also scroll horizontally");
         workspace.view = View::Split;
         let split = settle(&ctx, &mut workspace, wide);
         let (split_pc, split_pos) = first_pc(&split, view);
-        let split_origin = text_position(&split, title).unwrap().x;
+        let split_origin = source_heading_position(&split, view).x;
         assert_eq!(
             split_pc, pc,
             "{view:?} lost its manually scrolled row on reparenting"
@@ -143,7 +167,20 @@ fn manual_source_scroll_survives_view_parent_changes_and_resizing() {
             if view == View::Ssa && width < 1120.0 {
                 // Medium/narrow arrangements initially display Disassembly.
                 // Activate the real SSA tab, with an actual pointer click.
-                let pos = text_position(&output, "SSA").unwrap() + Vec2::splat(4.0);
+                let tab_y = text_position(&output, "Disassembly").unwrap().y;
+                let pos = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.text() == "SSA" && (text.pos.y - tab_y).abs() < 1.0 =>
+                        {
+                            Some(text.pos)
+                        }
+                        _ => None,
+                    })
+                    .expect("SSA tab beside the Disassembly tab")
+                    + Vec2::splat(4.0);
                 for pressed in [true, false] {
                     frame(
                         &ctx,
@@ -163,7 +200,7 @@ fn manual_source_scroll_survives_view_parent_changes_and_resizing() {
                 output = settle(&ctx, &mut workspace, size);
             }
             let (next_pc, next_pos) = first_pc(&output, view);
-            let next_origin = text_position(&output, title).unwrap().x;
+            let next_origin = source_heading_position(&output, view).x;
             assert_eq!(next_pc, pc, "{view:?} lost its row at width {width}");
             assert!(
                 (next_pos.x - next_origin - offset).abs() < 1.0,
@@ -173,7 +210,7 @@ fn manual_source_scroll_survives_view_parent_changes_and_resizing() {
         workspace.view = view;
         let resized = settle(&ctx, &mut workspace, Vec2::new(720.0, 900.0));
         let (resized_pc, resized_pos) = first_pc(&resized, view);
-        let resized_origin = text_position(&resized, title).unwrap().x;
+        let resized_origin = source_heading_position(&resized, view).x;
         assert_eq!(resized_pc, pc);
         assert!((resized_pos.x - resized_origin - offset).abs() < 1.0);
     }

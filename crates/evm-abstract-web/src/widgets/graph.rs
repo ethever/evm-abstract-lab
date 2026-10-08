@@ -1,37 +1,31 @@
 //! Compact CFG canvas. Automatic layout follows the viewport until an explicit
 //! camera gesture; Fit restores it. Node bounds come from the painted content.
 
+mod content;
+mod edges;
 mod layout;
+mod navigation;
 #[cfg(test)]
 mod tests;
 
 use std::collections::BTreeMap;
 
-use egui::{
-    Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
-};
-use evm_abstract_protocol::{AnalysisReport, BlockCoverage, CfgBlock, EdgeKind};
+use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use evm_abstract_protocol::{AnalysisReport, BlockCoverage};
 
 use super::heading;
 use crate::{app::Selection, palette};
-use layout::{EdgeRoute, Placement};
+use content::{NodeText, NodeView, node_text};
+use edges::{edge_label, paint_edge};
+use layout::Placement;
 
 const PAD: f32 = 6.0;
 const HEADER_HEIGHT: f32 = 33.0;
 const LINE_HEIGHT: f32 = 14.0;
-const PREVIEW_ROWS: usize = 4;
-
-struct NodeText {
-    title: String,
-    detail: String,
-    lines: Vec<(String, bool)>,
-    coverage: BlockCoverage,
-    frontier: bool,
-    size: Vec2,
-}
-
 pub(crate) struct Graph {
     pub(crate) zoom: f32,
+    content: NodeView,
+    content_anchor: Option<(usize, Vec2)>,
     pan: Vec2,
     nodes: BTreeMap<usize, NodeText>,
     placement: Placement,
@@ -45,6 +39,8 @@ impl Default for Graph {
     fn default() -> Self {
         Self {
             zoom: 1.0,
+            content: NodeView::default(),
+            content_anchor: None,
             pan: Vec2::ZERO,
             nodes: BTreeMap::new(),
             placement: Placement::default(),
@@ -63,7 +59,12 @@ impl Graph {
             "CONTROL FLOW",
             &format!("{} states · {} edges", report.cfg.len(), report.edges.len()),
         );
+        let mut content = self.content;
         ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut content, NodeView::Disassembly, "Disasm")
+                .on_hover_text("Show decoded bytecode in CFG nodes");
+            ui.selectable_value(&mut content, NodeView::Ssa, "SSA")
+                .on_hover_text("Show stack SSA definitions, arguments and effects in CFG nodes");
             if ui.small_button("Fit graph").on_hover_text("Fit all nodes and edges; follow future viewport changes").clicked() {
                 self.restore_automatic();
             }
@@ -72,8 +73,9 @@ impl Graph {
             { self.focus_pending = true; }
             ui.label(egui::RichText::new(format!("{:.0}% · {}", self.zoom * 100.0,
                 if self.automatic { "Auto" } else { "Manual" })).small().color(palette::MUTED))
-                .on_hover_text("Drag to pan; scroll or pinch to zoom. Double-click to restore automatic fit. Edge labels show their control-flow kind.");
+                .on_hover_text("Drag or two-finger scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Double-click to restore automatic fit. Edge labels show their control-flow kind.");
         });
+        self.set_content(content, selection.state);
         let (response, painter) = ui.allocate_painter(
             ui.available_size().max(Vec2::splat(1.0)),
             Sense::click_and_drag(),
@@ -91,11 +93,16 @@ impl Graph {
             self.nodes = report
                 .cfg
                 .iter()
-                .map(|block| (block.id, node_text(&painter, report, block)))
+                .map(|block| (block.id, node_text(&painter, report, block, self.content)))
                 .collect();
             self.layout_pending = true;
         }
         self.update_viewport(report, canvas.size());
+        if let Some((id, offset)) = self.content_anchor.take()
+            && let Some(rect) = self.placement.nodes.get(&id)
+        {
+            self.pan = canvas.size() * 0.5 + offset - rect.center().to_vec2() * self.zoom;
+        }
         if self.focus_pending {
             if let Some(rect) = selection
                 .state
@@ -110,30 +117,7 @@ impl Graph {
             }
             self.focus_pending = false;
         }
-        if response.dragged() {
-            self.automatic = false;
-            self.pan += response.drag_delta();
-        }
-        if response.hovered() {
-            let (scroll, pinch, pointer) = ui.input(|input| {
-                (
-                    input.smooth_scroll_delta().y,
-                    input.zoom_delta(),
-                    input.pointer.hover_pos(),
-                )
-            });
-            if let Some(pointer) = pointer {
-                let factor = if (pinch - 1.0).abs() > f32::EPSILON {
-                    pinch
-                } else {
-                    (scroll * 0.002).exp()
-                };
-                self.zoom_at(pointer - canvas.min, factor);
-            }
-        }
-        if response.double_clicked() {
-            self.restore_automatic();
-        }
+        self.navigate(ui, &response);
         self.grid(&painter, canvas);
         for edge in &report.edges {
             if let Some(route) = self.placement.edges.get(&edge.id) {
@@ -190,8 +174,8 @@ impl Graph {
                     "No execution receipt; only entry state is available".into()
                 }
             };
-            response.on_hover_text(format!("State S{} · basic block B{}\nFrame depth: {} · code: {}\nContext: {:?} · coverage: {:?}\nCurrent entry stack (bottom → top): {}\n{}",
-                block.id, block.basic_block, block.frame_depth, block.code_address, block.context, content.coverage, block.entry_stack.join(", "), exit));
+            response.on_hover_text(format!("State S{} · basic block B{}\nFrame depth: {} · code: {}\nContext: {:?} · coverage: {:?}\nCurrent entry stack (bottom → top): {}\n{}\n\n{}",
+                block.id, block.basic_block, block.frame_depth, block.code_address, block.context, content.coverage, block.entry_stack.join(", "), exit, content.tooltip));
         }
         if report.cfg.is_empty() {
             painter.text(
@@ -202,6 +186,62 @@ impl Graph {
                 palette::MUTED,
             );
         }
+    }
+
+    /// New reports invalidate scene/camera state, but the chosen representation
+    /// is a workspace preference and survives analysis requests.
+    pub(crate) fn reset_report(&mut self) {
+        *self = Self {
+            content: self.content,
+            ..Self::default()
+        };
+    }
+
+    pub(crate) fn content_label(&self) -> &'static str {
+        match self.content {
+            NodeView::Disassembly => "Disasm",
+            NodeView::Ssa => "SSA",
+        }
+    }
+
+    fn set_content(&mut self, content: NodeView, selected: Option<usize>) {
+        if content == self.content {
+            return;
+        }
+        self.content_anchor = if self.automatic {
+            None
+        } else {
+            self.viewport.and_then(|viewport| {
+                let screen = Rect::from_min_size(Pos2::ZERO, viewport);
+                let selected = selected
+                    .and_then(|id| self.placement.nodes.get(&id).map(|rect| (id, rect)))
+                    .filter(|(_, rect)| {
+                        screen.contains(Pos2::ZERO + self.pan + rect.center().to_vec2() * self.zoom)
+                    });
+                let center = (viewport * 0.5 - self.pan) / self.zoom;
+                selected
+                    .or_else(|| {
+                        self.placement
+                            .nodes
+                            .iter()
+                            .min_by(|(_, a), (_, b)| {
+                                (a.center().to_vec2() - center)
+                                    .length_sq()
+                                    .total_cmp(&(b.center().to_vec2() - center).length_sq())
+                            })
+                            .map(|(id, rect)| (*id, rect))
+                    })
+                    .map(|(id, rect)| {
+                        (
+                            id,
+                            self.pan + rect.center().to_vec2() * self.zoom - viewport * 0.5,
+                        )
+                    })
+            })
+        };
+        self.content = content;
+        self.nodes.clear();
+        self.layout_pending = true;
     }
 
     fn restore_automatic(&mut self) {
@@ -278,84 +318,6 @@ impl Graph {
     }
 }
 
-fn node_text(painter: &Painter, report: &AnalysisReport, block: &CfgBlock) -> NodeText {
-    let coverage = super::coverage(report, block.id);
-    let frontier = report
-        .frontiers
-        .iter()
-        .any(|frontier| frontier.from == Some(block.id));
-    let title = format!(
-        "S{}  ·  B{}{}",
-        block.id,
-        block.basic_block,
-        if coverage == BlockCoverage::Current {
-            String::new()
-        } else {
-            format!("  {coverage:?}")
-        }
-    );
-    let detail = format!(
-        "{} · frame {}{}",
-        block
-            .start_pc
-            .map_or_else(|| "no bytecode".into(), |pc| format!("0x{pc:04x}")),
-        block.frame_depth,
-        if frontier { " · !" } else { "" }
-    );
-    let mut lines: Vec<_> = block
-        .instructions
-        .iter()
-        .take(PREVIEW_ROWS)
-        .map(|instruction| {
-            let operand = instruction
-                .immediate
-                .as_ref()
-                .map_or(String::new(), |value| {
-                    if value.len() > 15 {
-                        format!(" {}…", &value[..14])
-                    } else {
-                        format!(" {value}")
-                    }
-                });
-            (
-                format!("{:04x}  {}{operand}", instruction.pc, instruction.name),
-                coverage == BlockCoverage::Current && block.executed_pcs.contains(&instruction.pc),
-            )
-        })
-        .collect();
-    if block.instructions.len() > PREVIEW_ROWS {
-        lines.push((
-            format!("+{} instructions", block.instructions.len() - PREVIEW_ROWS),
-            false,
-        ));
-    }
-    let mut width =
-        measured_width(painter, &title, 12.0).max(measured_width(painter, &detail, 10.0));
-    for (line, _) in &lines {
-        width = width.max(measured_width(painter, line, 11.0));
-    }
-    let size = Vec2::new(
-        (width + PAD * 2.0).max(104.0),
-        HEADER_HEIGHT + lines.len() as f32 * LINE_HEIGHT + PAD,
-    );
-    NodeText {
-        title,
-        detail,
-        lines,
-        coverage,
-        frontier,
-        size,
-    }
-}
-
-fn measured_width(painter: &Painter, text: &str, size: f32) -> f32 {
-    painter
-        .layout_no_wrap(text.into(), FontId::monospace(size), palette::TEXT)
-        .size()
-        .x
-        .ceil()
-}
-
 fn paint_node(
     painter: &Painter,
     rect: Rect,
@@ -413,89 +375,13 @@ fn paint_node(
         rect.top() + (HEADER_HEIGHT - 3.0) * zoom,
         Stroke::new(1.0, palette::BORDER),
     );
-    for (index, (line, executed)) in content.lines.iter().enumerate() {
+    for (index, (line, color)) in content.lines.iter().enumerate() {
         label(
             HEADER_HEIGHT + index as f32 * LINE_HEIGHT,
             line,
-            if *executed {
-                palette::TEXT
-            } else {
-                palette::MUTED
-            },
+            *color,
             11.0,
         );
-    }
-}
-
-fn edge_label(id: usize, kind: EdgeKind) -> String {
-    format!(
-        "e{id} {}",
-        match kind {
-            EdgeKind::BranchTrue => "true",
-            EdgeKind::BranchFalse => "false",
-            EdgeKind::Jump => "jump",
-            EdgeKind::Fallthrough => "next",
-            EdgeKind::Call => "call",
-            EdgeKind::Return => "return",
-            EdgeKind::Failure => "failure",
-            EdgeKind::Revert => "revert",
-        }
-    )
-}
-
-fn paint_edge(
-    painter: &Painter,
-    route: &EdgeRoute,
-    origin: Pos2,
-    kind: EdgeKind,
-    id: usize,
-    zoom: f32,
-    selected: bool,
-) {
-    let color = match kind {
-        EdgeKind::BranchTrue | EdgeKind::Jump => palette::ACCENT,
-        EdgeKind::BranchFalse => palette::WARNING,
-        EdgeKind::Call | EdgeKind::Return => palette::PURPLE,
-        EdgeKind::Failure | EdgeKind::Revert => palette::ERROR,
-        EdgeKind::Fallthrough => palette::BLUE,
-    };
-    let points: Vec<_> = route
-        .points
-        .iter()
-        .map(|point| origin + point.to_vec2() * zoom)
-        .collect();
-    let stroke = Stroke::new(
-        if selected { 1.6 } else { 1.0 },
-        if selected {
-            color
-        } else {
-            color.gamma_multiply(0.65)
-        },
-    );
-    painter.add(Shape::line(points.clone(), stroke));
-    let end = points[points.len() - 1];
-    let direction = (end - points[points.len() - 2]).normalized();
-    let perpendicular = Vec2::new(-direction.y, direction.x);
-    let size = (6.0 * zoom).max(2.0);
-    painter.add(Shape::convex_polygon(
-        vec![
-            end,
-            end - direction * size + perpendicular * size * 0.5,
-            end - direction * size - perpendicular * size * 0.5,
-        ],
-        stroke.color,
-        Stroke::NONE,
-    ));
-    if zoom > 0.35 {
-        let position = origin + route.label.to_vec2() * zoom;
-        let galley =
-            painter.layout_no_wrap(edge_label(id, kind), FontId::monospace(10.0 * zoom), color);
-        painter.rect_filled(
-            Rect::from_min_size(position, galley.size()).expand(1.0),
-            1.0,
-            palette::BACKGROUND,
-        );
-        painter.galley(position, galley, color);
     }
 }
 
