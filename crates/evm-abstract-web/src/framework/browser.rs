@@ -73,6 +73,10 @@ impl BrowserApp {
 }
 
 impl eframe::App for BrowserApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        self.workspace.prepare_input(input);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         while let Ok(result) = self.results.try_recv() {
             self.workspace.receive(result);

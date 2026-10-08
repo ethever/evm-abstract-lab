@@ -32,6 +32,7 @@ pub(crate) struct Graph {
     automatic: bool,
     layout_pending: bool,
     focus_pending: bool,
+    cancel_wheel: bool,
     viewport: Option<Vec2>,
 }
 
@@ -47,6 +48,7 @@ impl Default for Graph {
             automatic: true,
             layout_pending: true,
             focus_pending: false,
+            cancel_wheel: false,
             viewport: None,
         }
     }
@@ -54,6 +56,7 @@ impl Default for Graph {
 
 impl Graph {
     pub(crate) fn show(&mut self, ui: &mut Ui, report: &AnalysisReport, selection: &mut Selection) {
+        let fit_requested = self.fit_shortcut(ui);
         heading(
             ui,
             "CONTROL FLOW",
@@ -65,8 +68,8 @@ impl Graph {
                 .on_hover_text("Show decoded bytecode in CFG nodes");
             ui.selectable_value(&mut content, NodeView::Ssa, "SSA")
                 .on_hover_text("Show stack SSA definitions, arguments and effects in CFG nodes");
-            if ui.small_button("Fit graph").on_hover_text("Fit all nodes and edges; follow future viewport changes").clicked() {
-                self.restore_automatic();
+            if ui.small_button("Fit graph").on_hover_text("F / Shift+F: fit and center all nodes and edges; follow future viewport changes").clicked() {
+                self.request_fit(ui, true);
             }
             if ui.add_enabled(selection.state.is_some(), egui::Button::new("Focus selected").small())
                 .on_hover_text("Center the selected node and keep a manual camera").clicked()
@@ -117,7 +120,9 @@ impl Graph {
             }
             self.focus_pending = false;
         }
-        self.navigate(ui, &response);
+        if !fit_requested {
+            self.navigate(ui, &response);
+        }
         self.grid(&painter, canvas);
         for edge in &report.edges {
             if let Some(route) = self.placement.edges.get(&edge.id) {
@@ -193,6 +198,7 @@ impl Graph {
     pub(crate) fn reset_report(&mut self) {
         *self = Self {
             content: self.content,
+            cancel_wheel: self.cancel_wheel,
             ..Self::default()
         };
     }
@@ -292,11 +298,7 @@ impl Graph {
         if self.placement.bounds.is_finite() {
             let bounds = self.placement.bounds;
             self.zoom = layout::fit_scale(bounds.size(), size).min(1.0);
-            // Saved node space should not become a blank band before the entry.
-            self.pan = Vec2::new(
-                (size.x - bounds.width() * self.zoom) * 0.5,
-                layout::FIT_MARGIN,
-            ) - bounds.min.to_vec2() * self.zoom;
+            self.pan = size * 0.5 - bounds.center().to_vec2() * self.zoom;
         }
     }
 
