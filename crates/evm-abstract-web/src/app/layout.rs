@@ -1,12 +1,12 @@
 //! Responsive pane arrangements. Each width class retains its own divider
 //! shares and active tab, so resizing the browser never resets manual choices.
 
-use egui::Ui;
-use egui_tiles::{Behavior, Linear, LinearDir, TileId, Tiles, Tree, UiResponse};
+use egui::{Stroke, Ui};
+use egui_tiles::{Behavior, Linear, LinearDir, ResizeState, TileId, Tiles, Tree, UiResponse};
 use evm_abstract_protocol::AnalysisReport;
 
 use super::Selection;
-use crate::widgets;
+use crate::{palette, widgets};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Pane {
@@ -126,6 +126,16 @@ impl Behavior<Pane> for AnalysisPanes<'_> {
 
     fn gap_width(&self, _style: &egui::Style) -> f32 {
         5.0
+    }
+
+    fn resize_stroke(&self, _style: &egui::Style, state: ResizeState) -> Stroke {
+        // The default idle stroke uses extreme_bg_color, which our theme also
+        // uses for pane backgrounds. Keep the visual line independent of it.
+        match state {
+            ResizeState::Idle => Stroke::new(1.0, palette::MUTED),
+            ResizeState::Hovering => Stroke::new(2.0, palette::BLUE),
+            ResizeState::Dragging => Stroke::new(2.0, palette::ACCENT),
+        }
     }
 
     fn min_size(&self) -> f32 {
