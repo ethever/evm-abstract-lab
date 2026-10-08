@@ -402,3 +402,174 @@ fn visible_bytecode_editor_accepts_pointer_and_keyboard_input_after_resizes() {
         );
     }
 }
+
+fn press_f(
+    ctx: &Context,
+    workspace: &mut Workspace,
+    size: Vec2,
+    modifiers: Modifiers,
+    text: Option<&str>,
+) -> FullOutput {
+    let mut events = vec![Event::Key {
+        key: egui::Key::F,
+        physical_key: Some(egui::Key::F),
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }];
+    if let Some(text) = text {
+        events.push(Event::Text(text.into()));
+    }
+    frame(ctx, workspace, size, events);
+    frame(
+        ctx,
+        workspace,
+        size,
+        vec![Event::Key {
+            key: egui::Key::F,
+            physical_key: Some(egui::Key::F),
+            pressed: false,
+            repeat: false,
+            modifiers,
+        }],
+    );
+    settled(ctx, workspace, size)
+}
+
+fn graph_titles(output: &FullOutput) -> Vec<(String, Rect)> {
+    texts(output)
+        .into_iter()
+        .filter(|(label, _)| label.starts_with('S') && label.contains("  ·  B"))
+        .collect()
+}
+
+fn has_camera_label(output: &FullOutput, label: &str) -> bool {
+    texts(output).iter().any(|(text, _)| text == label)
+}
+
+#[test]
+fn f_and_shift_f_restore_the_visible_graph_fit_and_node_positions() {
+    let size = Vec2::new(1440.0, 900.0);
+    for view in [crate::app::View::Split, crate::app::View::Graph] {
+        for (modifiers, character) in [(Modifiers::NONE, "f"), (Modifiers::SHIFT, "F")] {
+            let ctx = Context::default();
+            crate::palette::configure(&ctx);
+            let mut workspace = ready();
+            workspace.view = view;
+            let fitted = settled(&ctx, &mut workspace, size);
+            assert!(has_camera_label(&fitted, "100% · Auto"));
+            let fitted_titles = graph_titles(&fitted);
+            assert_eq!(fitted_titles.len(), 3);
+            workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
+            let manual = settled(&ctx, &mut workspace, size);
+            assert!(has_camera_label(&manual, "50% · Manual"));
+            assert_ne!(graph_titles(&manual), fitted_titles);
+
+            let restored = press_f(&ctx, &mut workspace, size, modifiers, Some(character));
+            assert_eq!(workspace.graph.zoom, 1.0, "{view:?}, {character}");
+            assert!(has_camera_label(&restored, "100% · Auto"));
+            assert_eq!(
+                graph_titles(&restored),
+                fitted_titles,
+                "shortcut must restore the rendered camera, not only its mode label"
+            );
+        }
+    }
+}
+
+#[test]
+fn typing_f_and_shift_f_in_the_focused_editor_keeps_the_manual_camera() {
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let mut workspace = ready();
+    workspace.request.bytecode.clear();
+    let size = Vec2::new(1440.0, 900.0);
+    settled(&ctx, &mut workspace, size);
+    workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
+    settled(&ctx, &mut workspace, size);
+    let editor = ctx
+        .read_response(egui::Id::new("runtime_bytecode"))
+        .unwrap();
+    click(
+        &ctx,
+        &mut workspace,
+        size,
+        editor.interact_rect.left_center() + Vec2::new(10.0, 0.0),
+    );
+    assert!(
+        ctx.text_edit_focused(),
+        "exercise the actual TextEdit focus path"
+    );
+    let original_camera = graph_titles(&settled(&ctx, &mut workspace, size));
+    for (modifiers, character, expected) in
+        [(Modifiers::NONE, "f", "f"), (Modifiers::SHIFT, "F", "fF")]
+    {
+        let output = press_f(&ctx, &mut workspace, size, modifiers, Some(character));
+        assert_eq!(
+            workspace.request.bytecode, expected,
+            "text input must retain the typed letter"
+        );
+        assert!(ctx.text_edit_focused());
+        assert_eq!(workspace.graph.zoom, 0.5);
+        assert!(has_camera_label(&output, "50% · Manual"));
+        assert_eq!(graph_titles(&output), original_camera);
+    }
+}
+
+#[test]
+fn modified_find_shortcuts_do_not_reset_the_graph_camera() {
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let mut workspace = ready();
+    let size = Vec2::new(1440.0, 900.0);
+    settled(&ctx, &mut workspace, size);
+    workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
+    let original_camera = graph_titles(&settled(&ctx, &mut workspace, size));
+    for modifiers in [
+        Modifiers::CTRL,
+        Modifiers::ALT,
+        Modifiers {
+            command: true,
+            ..Modifiers::NONE
+        },
+        Modifiers {
+            mac_cmd: true,
+            ..Modifiers::NONE
+        },
+        Modifiers {
+            shift: true,
+            ctrl: true,
+            command: true,
+            ..Modifiers::NONE
+        },
+    ] {
+        let output = press_f(&ctx, &mut workspace, size, modifiers, None);
+        assert_eq!(workspace.graph.zoom, 0.5, "{modifiers:?}");
+        assert!(has_camera_label(&output, "50% · Manual"));
+        assert_eq!(graph_titles(&output), original_camera);
+    }
+}
+
+#[test]
+fn fit_shortcut_does_not_reach_a_hidden_graph_pane() {
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let mut workspace = ready();
+    let wide = Vec2::new(1440.0, 900.0);
+    settled(&ctx, &mut workspace, wide);
+    workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
+    for (view, size) in [
+        (crate::app::View::Disassembly, wide),
+        (crate::app::View::Ssa, wide),
+        (crate::app::View::Split, Vec2::new(390.0, 844.0)),
+    ] {
+        workspace.view = view;
+        let before = settled(&ctx, &mut workspace, size);
+        assert!(graph_titles(&before).is_empty());
+        press_f(&ctx, &mut workspace, size, Modifiers::NONE, Some("f"));
+        assert_eq!(
+            workspace.graph.zoom, 0.5,
+            "hidden graph must ignore F: {view:?}, {size:?}"
+        );
+    }
+}

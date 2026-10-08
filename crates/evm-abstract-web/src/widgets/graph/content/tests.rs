@@ -315,6 +315,38 @@ fn manual_mode_switch_preserves_selected_node_camera_anchor_and_zoom() {
 }
 
 #[test]
+fn fit_button_centers_both_representations_and_restores_automatic_mode() {
+    let report = report();
+    for content in [NodeView::Disassembly, NodeView::Ssa] {
+        let ctx = Context::default();
+        let mut graph = Graph::default();
+        let expected = Selection {
+            state: Some(205),
+            pc: Some(10),
+        };
+        let mut selection = expected;
+        frame(&ctx, &mut graph, &report, &mut selection, Vec::new());
+        if content == NodeView::Ssa {
+            click(&ctx, &mut graph, &report, &mut selection, "SSA");
+        }
+        graph.zoom_at(graph.viewport.unwrap() * 0.5, 1.8);
+        graph.pan += Vec2::new(90.0, -70.0);
+        assert!(!graph.automatic);
+        click(&ctx, &mut graph, &report, &mut selection, "Fit graph");
+        assert!(graph.automatic);
+        assert_eq!(graph.content, content);
+        assert_eq!(selection, expected);
+        let viewport = Rect::from_min_size(Pos2::ZERO, graph.viewport.unwrap());
+        let scene = graph.screen_rect(viewport, graph.placement.bounds);
+        assert!(viewport.contains_rect(scene));
+        assert!(
+            (scene.center() - viewport.center()).length() < 0.01,
+            "Fit graph left {content:?} off-center: {scene:?} in {viewport:?}"
+        );
+    }
+}
+
+#[test]
 fn chosen_representation_survives_reanalysis_and_viewport_view_changes() {
     let report = report();
     let ctx = Context::default();

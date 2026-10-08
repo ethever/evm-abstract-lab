@@ -81,6 +81,10 @@ fn assert_scene_fits(graph: &Graph) {
         viewport.contains_rect(scene),
         "scene {scene:?} escapes viewport {viewport:?}"
     );
+    assert!(
+        (scene.center() - viewport.center()).length() < 0.01,
+        "complete scene {scene:?} is not centered in viewport {viewport:?}"
+    );
 }
 
 fn diamond() -> AnalysisReport {
@@ -213,22 +217,15 @@ fn real_canvas_resize_reflows_and_fits_nodes_edges_and_labels() {
 }
 
 #[test]
-fn roomy_canvas_keeps_the_entry_rank_immediately_below_the_toolbar() {
+fn fit_centers_the_complete_scene_in_a_roomy_canvas() {
     let report = report();
     let ctx = Context::default();
     let mut graph = Graph::default();
-    render(&ctx, &mut graph, &report, Vec2::new(1440.0, 1200.0));
-    assert_eq!(graph.zoom, 1.0);
-    let viewport = Rect::from_min_size(Pos2::ZERO, graph.viewport.unwrap());
-    let entry = graph.screen_rect(viewport, graph.placement.nodes[&0]);
-    assert!(
-        (0.0..=8.0).contains(&entry.top()),
-        "entry leaves a large blank band: {entry:?}"
-    );
-    render(&ctx, &mut graph, &report, Vec2::new(1440.0, 1600.0));
-    let viewport = Rect::from_min_size(Pos2::ZERO, graph.viewport.unwrap());
-    assert!(graph.screen_rect(viewport, graph.placement.nodes[&0]).top() <= 8.0);
-    assert_scene_fits(&graph);
+    for size in [Vec2::new(1440.0, 1200.0), Vec2::new(1440.0, 1600.0)] {
+        render(&ctx, &mut graph, &report, size);
+        assert_eq!(graph.zoom, 1.0);
+        assert_scene_fits(&graph);
+    }
 }
 
 #[test]

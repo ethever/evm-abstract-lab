@@ -416,14 +416,59 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
                 zoom_screenshots[f"{layout_name or 'vertical'}-{name}"] = measured
                 previous = scale
 
+        # Compare shortcut behavior with the actual Fit button at the same
+        # viewport, without assuming where any individual node should end up.
+        canvas.click(position={"x": 143, "y": 110})
+        settle_gesture(page)
+        fit_keys = {"button": fitted["bounds"]}
+        for key, name in [("f", "f"), ("Shift+f", "shift-f")]:
+            page.mouse.move(30, height - 70)
+            page.mouse.wheel(-24, -12)
+            settle_gesture(page)
+            pinch_wheel(page, cdp, (720, height * 0.65), -18)
+            page.mouse.move(30, height - 70)
+            rendered_frame(page)
+            manual = node_snapshot(page, canvas, output, f"{prefix}-{name}-manual", region)
+            assert manual["bounds"][2] - manual["bounds"][0] > fitted_width + 8, "shortcut fixture did not enter a zoomed manual camera"
+            page.keyboard.press(key)
+            settle_gesture(page)
+            restored = node_snapshot(page, canvas, output, f"{prefix}-{name}-fit", region)
+            assert_translation(fitted, restored, 0, 0)
+            fit_keys[key] = restored["bounds"]
+
+        page.set_viewport_size({"width": 1440, "height": 1000})
+        settle_gesture(page)
+        page.mouse.move(30, 700)
+        page.mouse.wheel(-60, -30)
+        settle_gesture(page)
+        # Keep the old report and manual camera while editing. Establish the
+        # long editor's final height before measuring, then type actual f/F key
+        # events; either accidentally triggering Fit would move the graph.
+        bytecode = "6001" * 70 + "00"
+        canvas.click(position={"x": 300, "y": 60})
+        rendered_frame(page)
+        page.keyboard.press("Control+A")
+        page.keyboard.type(bytecode, delay=5)
+        settle_gesture(page)
+        editor_region = (4, 155, 1436, 970)
+        before_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-before-f", editor_region)
+        page.keyboard.type("fF", delay=40)
+        rendered_frame(page)
+        after_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-after-f", editor_region)
+        assert_translation(before_typing, after_typing, 0, 0)
+        with page.expect_response(lambda response: response.url.endswith("/api/analyze")) as response:
+            page.keyboard.press("Control+Enter")
+        reply = response.value
+        assert reply.status == 200
+        assert reply.request.post_data_json["bytecode"] == bytecode + "fF", "focused f/F keys did not reach the bytecode request"
+        expect(status).to_contain_text("Ready:")
+        focused_fit_keys = {"before": before_typing["bounds"], "after": after_typing["bounds"],
+                            "submitted_bytecode": reply.request.post_data_json["bytecode"]}
+
         neighboring = {}
         if dpr == 1:
-            page.set_viewport_size({"width": 1440, "height": 1000})
-            settle_gesture(page)
-            # Enough distinct PCs/SSA definitions to make both code panes scroll.
-            reply = submit_bytecode(page, canvas, "6001" * 70 + "00", output / "adjacent-scroll-input.png")
-            assert reply.status == 200
-            expect(status).to_contain_text("Ready:")
+            # The editor fixture has enough PCs/definitions for both code panes
+            # to scroll; trailing fF is an unreachable byte after STOP.
             canvas.click(position={"x": 720, "y": 700})
             page.keyboard.press("0")
             settle_gesture(page)
@@ -457,6 +502,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             "safari_format_gesture": {"ratio": safari_ratio, "requested_scale": 1.12,
                                       "platform": "synthetic gesturestart/change/end events in Chromium"},
             "ssa_mode": ssa, "ssa_fit": ssa_fit, "edge_zoom_screenshots": zoom_screenshots,
+            "fit_keys": fit_keys, "focused_fit_keys": focused_fit_keys,
             "neighboring_panes": neighboring,
         }
         context.close()
