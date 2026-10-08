@@ -1,0 +1,79 @@
+# egui Web 工作台
+
+工作台在浏览器中绘制反汇编、SSA 和 CFG。输入是普通 EVM 运行时字节码，可以选择 Cancun、Prague 或 Osaka 规则。分析仍由原生 Rust 后端完成，浏览器不加载原生 SMT 库。
+
+## 启动
+
+从仓库根目录运行：
+
+```bash
+nix run .#web
+```
+
+Nix 构建 WebAssembly、匹配版本的 wasm-bindgen JavaScript 绑定和原生服务，并将静态资源与 `/api/analyze` 放在同一来源下。浏览器打开服务打印的地址即可使用。
+
+单独构建可分发的静态资源：
+
+```bash
+nix build .#web-assets
+```
+
+`result/` 包含 HTML、JavaScript 和 Wasm。它仍需要连接同源原生分析服务；单独放到只提供静态文件的服务器上不能执行分析。
+
+## 使用控件
+
+页面首次加载会分析内置分支示例。可以粘贴十六进制字节码，选择规则版本，调整分析限额，再点 **Analyze** 或按 **Ctrl+Enter**。每次提交都会清空旧图，错误信息会出现在页面底部。
+
+- **Workspace / 0** 在宽窗口中同时查看三个视图，窄窗口优先显示 CFG；**1 / 2 / 3** 分别展开反汇编、CFG 和 SSA。文本框获得焦点时数字键仍用于输入。
+- 点击反汇编指令、SSA 指令行、SSA 块标题或 CFG 节点，在共享状态与 PC 上联动选择。不同调用帧和上下文保持独立；选择子帧时显示该帧的指令。
+- 在 CFG 空白处拖动平移，滚轮缩放；**Fit graph** 适配整图，**Focus selected** 定位选中节点。
+- SSA 将定义值、操作数、phi 前驱和 effect 分开着色；可滚动查看较长的指令及输入列表。
+- 底部显示收敛状态、部分 SSA、诊断和未展开前沿。展开诊断列表后可跳转到对应状态与指令。
+
+界面中的字节码编辑、按钮和菜单使用 egui 通用输入控件；反汇编行、SSA 行以及 CFG 节点和边使用项目自己的 Painter 控件。
+
+## 数据边界
+
+三个 crate 分别承担以下职责：
+
+| crate | 职责与依赖方向 |
+| --- | --- |
+| [`evm-abstract-protocol`](../crates/evm-abstract-protocol) | 请求、响应、枚举及数据 ID；只依赖 Serde，不依赖 egui 或执行引擎 |
+| [`evm-abstract-server`](../crates/evm-abstract-server) | 将协议请求转换为引擎输入，验证 SSA，并投影为结构化响应；提供 HTTP 和静态资源 |
+| [`evm-abstract-web`](../crates/evm-abstract-web) | 依赖共享协议；通过 Web API 获取结果，用 egui Painter 绘制各视图 |
+
+`POST /api/analyze` 接收 `AnalyzeRequest`，返回 `AnalyzeReply`。成功结果是 `AnalysisReport`，失败是带 `ApiErrorCode` 的 `ApiError`。传输使用 JSON，但两端均直接序列化或反序列化共享 Rust 类型，不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。
+
+反汇编保留 PC、opcode、立即数与基本块边界；CFG 保留原生状态及边 ID；SSA 保留值定义、操作数、phi 的前驱边、effect 引用和指令执行阶段。U256 立即数使用十六进制字符串，避免 JavaScript 数字精度损失。图和 SSA 共用原生状态 ID，同一个 PC 的不同上下文不会被合并为一个节点。
+
+## 如何理解分析结果
+
+当前请求是 **SingleProgram**：一段运行时字节码，calldata、环境和持久状态未知。此入口不加载 world 文件或 RPC 快照；这些输入继续使用[CLI](../README.md#命令与输出格式)。
+
+`Converged` 表示配置范围内的抽象工作表闭合，不表示程序安全，也不表示每条抽象边都可实际执行。`Incomplete` 表示仍有显式前沿。后端保留诊断和前沿的位置与原因，并使用经过验证的部分 SSA 表达已观察到的执行：
+
+- `Unexecuted` 和 `Stale` 状态不展示为当前有效的指令执行体。
+- 待处理指令保留实际执行阶段，不生成尚未观察到的结果值。
+- phi 和 effect 的输入只引用有执行证据的边；未支持的边保留原因。
+
+这与[部分 SSA 教程](04-ssa.md)和[模型边界](06-boundaries.md)使用同一套语义。
+
+## 构建与检查
+
+Rust、Wasm target、wasm-bindgen 和浏览器验证工具由 Nix 管理；依赖由 `Cargo.lock` 和 `flake.lock` 固定。浏览器包不引入桌面窗口依赖。
+
+修改前端后可在开发环境中直接重建：
+
+```bash
+nix develop
+cargo build --locked --release --jobs 8 --target-dir target -p evm-abstract-web --target wasm32-unknown-unknown
+wasm-bindgen --target web --out-name evm_abstract_web --out-dir dist target/wasm32-unknown-unknown/release/evm_abstract_web.wasm
+cp crates/evm-abstract-web/index.html dist/index.html
+cargo run --locked -p evm-abstract-server -- --assets dist
+```
+
+服务默认监听 `127.0.0.1:8080`；需要其他本地端口时传入 `--bind 127.0.0.1:8081`。`nix run .#web -- --bind 127.0.0.1:8081` 也可指定端口。
+
+完整验证仍运行[本地门禁](local-ci.md)。原有 native workspace 检查保留，另对 Wasm 目标执行构建、Clippy 和 Dylint。动态派发仅对 `evm_abstract_web::framework` 中的 egui 与 JavaScript 适配开放，控件、共享协议和原生分析服务继续受 `no_dyn` 约束，见[检查规则](no-dynamic-dispatch.md)。
+
+实现参考：[eframe WebRunner](https://docs.rs/eframe/0.36.2/wasm32-unknown-unknown/eframe/web/struct.WebRunner.html)、[egui Painter](https://docs.rs/egui/0.36.2/egui/struct.Painter.html)。

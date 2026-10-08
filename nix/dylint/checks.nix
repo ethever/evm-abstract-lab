@@ -59,11 +59,38 @@ let
         '';
       }
     );
+  webCommon =
+    common
+    // toolchain.environment packages.driver
+    // {
+      pname = "evm-abstract-web-no-dyn";
+      CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
+      CARGO_PROFILE = "dev";
+      CARGO_NET_OFFLINE = "true";
+      cargoExtraArgs = "--locked --offline -p evm-abstract-web --lib --target-dir target/dylint/target/${toolchain.name}";
+      nativeBuildInputs = [ packages.tools ];
+      buildInputs = [ ];
+      preConfigure = toolchain.enter packages.tools;
+      doCheck = false;
+    };
+  webArtifacts = lintCrane.buildDepsOnly webCommon;
 in
 {
   no-dyn = workspaceCheck "evm-abstract-no-dyn" "";
   imbl-no-dyn = workspaceCheck "evm-abstract-imbl-no-dyn" "--features imbl";
   all-features-no-dyn = workspaceCheck "evm-abstract-all-features-no-dyn" "--all-features";
+  web-no-dyn = lintCrane.mkCargoDerivation (
+    webCommon
+    // {
+      cargoArtifacts = webArtifacts;
+      doInstallCargoArtifacts = false;
+      buildPhaseCargoCommand = ''
+        cargo dylint --all --fail-on-no-libraries --no-build --no-metadata \
+          --lib-path ${packages.libraryPath} -- --locked --offline \
+          -p evm-abstract-web --lib --target wasm32-unknown-unknown
+      '';
+    }
+  );
   no-dyn-ui = lintCrane.mkCargoDerivation (
     packages.lintCommon
     // {

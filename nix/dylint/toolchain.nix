@@ -6,7 +6,9 @@
 }:
 let
   lib = pkgs.lib;
-  compiler = pkgs.rust-bin.fromRustupToolchainFile (lintRoot + "/rust-toolchain.toml");
+  compiler = (pkgs.rust-bin.fromRustupToolchainFile (lintRoot + "/rust-toolchain.toml")).override {
+    targets = [ "wasm32-unknown-unknown" ];
+  };
   channel =
     (builtins.fromTOML (builtins.readFile (lintRoot + "/rust-toolchain.toml"))).toolchain.channel;
   target = pkgs.stdenv.hostPlatform.rust.rustcTarget;

@@ -1,6 +1,6 @@
 /target/
+/dist/
 /result
 /result-*
 /.direnv/
 *.svg
-

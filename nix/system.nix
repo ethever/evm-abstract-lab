@@ -18,6 +18,15 @@ let
       sourceRoot
       ;
   };
+  web = import ./web.nix {
+    inherit
+      pkgs
+      craneLib
+      sourceRoot
+      build
+      dependencies
+      ;
+  };
   dylint = import ./dylint.nix {
     inherit pkgs craneLib sourceRoot;
     crane = inputs.crane;
@@ -34,11 +43,15 @@ let
   };
 in
 {
-  packages = dylint.packages // {
-    default = build.package;
-  };
+  packages =
+    dylint.packages
+    // web.packages
+    // {
+      default = build.package;
+    };
   apps =
     dylint.apps
+    // web.apps
     // (import ./commands.nix { inherit pkgs; })
     // {
       default = {
@@ -47,7 +60,14 @@ in
         meta = build.package.meta;
       };
     };
-  checks = checks // dylint.checks // nativeSmt.checks;
-  devShells.default = import ./shell.nix { inherit craneLib dependencies dylint; };
+  checks = checks // dylint.checks // nativeSmt.checks // web.checks;
+  devShells.default = import ./shell.nix {
+    inherit
+      craneLib
+      dependencies
+      dylint
+      web
+      ;
+  };
   formatter = pkgs.nixfmt;
 }

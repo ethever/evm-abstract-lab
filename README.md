@@ -158,9 +158,17 @@ RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留�
 
 gas 不精确计量，一般 hash 和未知环境采用保守近似，有界关系域也不提供完整路径可行性或跨交易不变量证明。RPC 仅在显式选择时采集固定区块 hash 的事实，默认按需补查具体被调用账户和 SLOAD 的有限槽键；未知调用目标、无法完整枚举的槽键与未观察的其他槽仍保持边界。采集过程完全信任选定的提供者；区块身份与初始事实指纹用于固定输入，不构成状态真实性的密码学证明。读结果前请确认[详细边界](docs/06-boundaries.md)。
 
+## 浏览器工作台
+
+```bash
+nix run .#web
+```
+
+打开命令打印的本地地址，在 egui 工作台输入运行时字节码，查看自绘的反汇编、SSA 和 CFG。浏览器通过共享 Rust 类型向原生分析服务发送请求；分析和 SMT 求解仍在后端运行。控件操作、开发构建、数据接口及当前输入范围见[Web 前端说明](docs/web-workbench.md)。
+
 ## 开发环境与实现入口
 
-应用 workspace 的 Rust 使用静态派发；[动态派发检查](docs/no-dynamic-dispatch.md)说明 Dylint 命令、检查范围和具体错误类型约定。
+应用 workspace 的 Rust 使用静态派发，egui/Web 适配模块有局部例外；[动态派发检查](docs/no-dynamic-dispatch.md)说明 Dylint 命令、检查范围和具体错误类型约定。
 
 ```bash
 nix develop
@@ -190,6 +198,9 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 内存、calldata 与 returndata 的抽象字节数组 | [`world/bytes.rs`](crates/evm-abstract/src/world/bytes.rs) |
 | 值的命名与结构验证 | [`ssa/`](crates/evm-abstract/src/ssa) |
 | 命令参数、世界文件解析 | [`evm-abstract-cli`](crates/evm-abstract-cli) |
+| 浏览器共享数据协议 | [`evm-abstract-protocol`](crates/evm-abstract-protocol) |
+| 原生分析服务与静态资源 | [`evm-abstract-server`](crates/evm-abstract-server) |
+| egui 自绘控件与 Web 适配 | [`evm-abstract-web`](crates/evm-abstract-web) |
 
 本仓库实现抽象 transfer（指令怎样更新抽象状态）、工作表与栈到 SSA 的转换；通用部分复用 `revm-bytecode` 的指令元数据、`alloy-primitives` 的 U256、`petgraph` 的图算法、`revm-precompile` 的原生计算、`reqwest` 的 RPC 传输及 Z3、Bitwuzla、cvc5 的位向量查询。这三个求解器都是原生链接依赖，Nix 开发环境和完整门禁提供其库；运行时通过进程内接口调用，不启动外部求解进程。测试使用 revm 具体执行和 proptest 性质检查；依赖资料见[参考页](docs/references.md)。
 

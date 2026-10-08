@@ -1,0 +1,39 @@
+[package]
+name                   = "evm-abstract-web"
+description            = "Custom-painted egui browser workspace for EVM disassembly, SSA and control-flow graphs"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+evm-abstract-protocol = { path = "../evm-abstract-protocol" }
+egui                  = "=0.36.2"
+serde_json.workspace  = true
+thiserror.workspace   = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "=0.36.2", default-features = false, features = [
+    "default_fonts",
+    "glow",
+] }
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "=0.4.77"
+web-sys = { version = "=0.3.104", features = [
+    "Document",
+    "Element",
+    "Headers",
+    "HtmlCanvasElement",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Window",
+] }
+
+[lints]
+workspace = true

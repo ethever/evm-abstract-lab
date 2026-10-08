@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0e131d">
+    <link rel="icon" href="data:,">
+    <title>EVM Abstract Lab · Analysis workspace</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0e131d; color: #e0e9f4; font: 16px system-ui, sans-serif; }
+      canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }
+      #boot { position: absolute; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; padding: 24px; }
+      .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+      #boot strong { color: #63d6ca; font-size: 24px; letter-spacing: .04em; }
+      #boot span { color: #91a4ba; max-width: 600px; }
+    </style>
+  </head>
+  <body>
+    <div id="boot" role="status"><strong>EVM ABSTRACT LAB</strong><span>Starting the analysis workspace…</span></div>
+    <div id="analysis-status" class="sr-only" role="status" aria-live="polite">Starting</div>
+    <canvas id="evm-canvas" aria-label="EVM analysis workspace: bytecode, disassembly, SSA and control-flow graph"></canvas>
+    <script type="module">
+      import init, { start } from './evm_abstract_web.js';
+      try {
+        await init();
+        await start('evm-canvas');
+        document.getElementById('boot').remove();
+      } catch (error) {
+        document.querySelector('#boot span').textContent = `Unable to start: ${error}. Verify that WebGL is enabled and the generated web assets are available.`;
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>
