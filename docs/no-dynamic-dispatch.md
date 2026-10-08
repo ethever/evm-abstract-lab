@@ -26,6 +26,8 @@ nix run --no-update-lock-file .#no-dyn-ui
 
 兼容命令 [`bash scripts/check-no-dyn.sh`](../scripts/check-no-dyn.sh) 也会先进入 Nix，再检查全部 targets、features 和 doctest。无需单独 `cargo install` 或下载另一份编译器。
 
+命令默认使用 Cargo 的可用 CPU 并发，不保留固定 CPU 余量。`DYLINT_JOBS` 可显式选择任意正整数并发数，也可以直接传入 Cargo 的 `--jobs` 参数；UI 与 doctest 使用[快速测试 profile](development.md#构建-profile-与缓存)。
+
 lint 库有独立的 [`rust-toolchain.toml`](../lints/no_dyn/rust-toolchain.toml) 和 [`Cargo.lock`](../lints/no_dyn/Cargo.lock)。它使用官方脚手架支持的 `nightly-2026-08-20`；应用的构建工具链仍由根目录的 [`rust-toolchain.toml`](../rust-toolchain.toml) 固定，两者都由 Nix 提供。完整检查复用预先构建的同一份 lint 库。修改 `lints/no_dyn` 后，重新运行 `nix run .#no-dyn` 或重新进入开发环境，使命令使用新源码生成的库；`no-dyn-ui` 和直接 `cargo dylint --all` 可用于开发 lint 本身。
 
 ## 检查内容

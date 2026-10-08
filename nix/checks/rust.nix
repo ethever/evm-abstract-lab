@@ -1,45 +1,32 @@
 { craneLib, build, ... }:
 let
-  inherit (build)
-    common
-    cargoArtifacts
-    package
-    imblCommon
-    imblArtifacts
-    imblPackage
-    ;
+  forVariant =
+    prefix: variant:
+    let
+      args = variant.common // {
+        inherit (variant) cargoArtifacts;
+      };
+    in
+    {
+      "${prefix}tests" = craneLib.cargoTest (
+        args // { cargoTestExtraArgs = "--all-targets -- --include-ignored"; }
+      );
+      # --all-targets excludes doctests; keep their execution explicit.
+      "${prefix}doctests" = craneLib.cargoDocTest (
+        args // { cargoTestExtraArgs = "-- --include-ignored"; }
+      );
+      "${prefix}clippy" = craneLib.cargoClippy (
+        args // { cargoClippyExtraArgs = "--all-targets -- -D warnings"; }
+      );
+      "${prefix}docs" = craneLib.cargoDoc (args // { RUSTDOCFLAGS = "-D warnings"; });
+    };
 in
-{
-  build-and-test = package;
-  imbl-build-and-test = imblPackage;
-  clippy = craneLib.cargoClippy (
-    common
-    // {
-      inherit cargoArtifacts;
-      cargoClippyExtraArgs = "--all-targets -- -D warnings";
-    }
-  );
-  imbl-clippy = craneLib.cargoClippy (
-    imblCommon
-    // {
-      cargoArtifacts = imblArtifacts;
-      cargoClippyExtraArgs = "--all-targets -- -D warnings";
-    }
-  );
+forVariant "" build.test
+// forVariant "imbl-" build.imblTest
+// forVariant "all-features-" build.allFeaturesTest
+// {
+  release-build = build.release.package;
+  imbl-release-build = build.imblRelease.package;
   # cargo fmt uses --all rather than Cargo's --workspace/--locked flags.
-  fmt = craneLib.cargoFmt (common // { cargoExtraArgs = "--all"; });
-  docs = craneLib.cargoDoc (
-    common
-    // {
-      inherit cargoArtifacts;
-      RUSTDOCFLAGS = "-D warnings";
-    }
-  );
-  imbl-docs = craneLib.cargoDoc (
-    imblCommon
-    // {
-      cargoArtifacts = imblArtifacts;
-      RUSTDOCFLAGS = "-D warnings";
-    }
-  );
+  fmt = craneLib.cargoFmt (build.common // { cargoExtraArgs = "--all"; });
 }

@@ -60,12 +60,50 @@ Bitwuzla 和 cvc5 从锁定源码构建，使各自嵌入的 CaDiCaL 符号保�
 
 保留的脚本有明确边界：极短的编辑器/命令兼容入口负责调用 Nix；文档链接反例、Taplo LSP 协议检查和性能采样是真实验证逻辑。依赖安装与版本选择由 Nix 模块承担，不在这些测试里另建一套环境。
 
+## 构建 profile 与缓存
+
+应用的 profile 在根目录 [`Cargo.toml`](../Cargo.toml) 定义。日常开发和测试优先缩短编译时间，安装的 CLI、分析服务和 Wasm 优先运行性能：
+
+| 命令 | Profile | 编译方式 |
+| --- | --- | --- |
+| `cargo build`、`cargo check`、`cargo run` | `dev` | `opt-level=0`、无调试信息、关闭 LTO、256 个 codegen units、增量编译 |
+| `cargo test`、Nix 工作区测试与 doctest | `test`，继承 `dev` | 同样使用快速编译，并开启 debug assertions 与整数溢出检查 |
+| `cargo build --release`、`nix build`、`nix run`、`nix profile add` | `release` | `opt-level=3`、完整 fat LTO、1 个 codegen unit、关闭增量编译、移除调试信息 |
+| `cargo bench` | `bench`，继承 `release` | 使用与交付产物相同的优化设置 |
+
+完整 LTO 跨 crate 优化，单个 codegen unit 减少 crate 内的优化边界，代价是编译与链接更慢。这是面向运行性能的静态优化配置；具体吞吐仍需用真实工作负载测量，PGO 需要另外采集有代表性的运行数据。设置含义见 [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html#lto)。编译器插件 `lints/no_dyn` 有独立的 workspace 和 nightly，其 UI 测试也使用快速的 test profile。
+
+```bash
+nix develop --no-update-lock-file --command cargo test --workspace --locked
+nix build --no-update-lock-file
+nix run --no-update-lock-file -- --help
+nix profile add .
+nix run --no-update-lock-file .#web -- --bind 127.0.0.1:8080
+```
+
+安装、开发环境和应用运行的构建依赖图中没有工作区测试、Dylint 检查或浏览器测试。项目定制的 Z3、Bitwuzla、cvc5 和 CaDiCaL 也使用不运行自测的安装构建，其上游自测在完整门禁中单独执行。安装成功只表示产物已生成；发布前的验证入口是 `nix flake check`。
+
+仓库没有 `jobs=8`、固定测试线程数或 CPU 预留。普通 Cargo 使用可用 CPU 的默认并发；Nix 构建遵循调用者的 Nix 配置和 `NIX_BUILD_CORES`。需要手动选择并发时，可以设置 Cargo 的 `--jobs` / `CARGO_BUILD_JOBS`，或者 Nix 的 `max-jobs` / `cores`；项目不添加额外上限。`DYLINT_JOBS` 和 `STATE_BACKEND_JOBS` 仅在显式设置时覆盖 Cargo 的默认选择。
+
+Nix 使用以下缓存层（[Crane 的依赖缓存](https://crane.dev/API.html#cranelibbuilddepsonly)）：
+
+| 层 | 缓存内容 | 何时重新生成 |
+| --- | --- | --- |
+| 工具链与原生库 | Rust、Dylint 工具、SMT 库 | 对应锁定输入、版本或原生构建设置变化 |
+| Vendored 源码 | 同一份 Cargo.lock 的第三方 crate 源码 | 锁文件或 registry 配置变化 |
+| Rust 依赖产物 | 默认 / imbl / 全 features 的快速测试依赖，默认 / imbl 的 release 依赖，Wasm 与 nightly lint 依赖 | 工具链、profile、features、target、依赖或编译环境变化 |
+| 应用产物 | CLI、分析服务、原生前端和优化后的 Wasm | 相关 Rust、C++、manifest 或编译期 fixture 变化 |
+| Web 打包 | wasm-bindgen 输出与 HTML 页面 | Wasm 产物、匹配的 wasm-bindgen 或 HTML 变化 |
+| 验证结果 | 独立的测试、lint、文档、原生库和浏览器检查 | 对应检查的输入变化 |
+
+修改应用 `.rs` 不会丢弃第三方依赖产物；修改 Markdown 不会重编应用；修改 Web HTML 只重做资源打包。不同 profile、features、target 和编译器的产物有独立缓存，避免把快速测试依赖当作 release 依赖复用。`nix flake check` 也复用输入未变化的验证结果，输入相同的缓存结果就是同一项检查的先前成功产物。
+
 ## 验证
 
 完整门禁覆盖 native workspace 与 Wasm 前端，在 Linux 上还运行实际浏览器检查；冻结提交要求见[本地检查流程](local-ci.md)。常用入口：
 
 ```bash
-nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --option cores 8
+nix flake check --print-build-logs --no-update-lock-file
 nix run --no-update-lock-file .#no-dyn
 nix run --no-update-lock-file .#no-dyn-ui
 nix fmt

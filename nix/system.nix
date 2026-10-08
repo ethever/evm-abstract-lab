@@ -47,7 +47,7 @@ in
     dylint.packages
     // web.packages
     // {
-      default = build.package;
+      default = build.release.package;
     };
   apps =
     dylint.apps
@@ -56,8 +56,8 @@ in
     // {
       default = {
         type = "app";
-        program = "${build.package}/bin/evm-abstract";
-        meta = build.package.meta;
+        program = "${build.release.package}/bin/evm-abstract";
+        meta = build.release.package.meta;
       };
     };
   checks = checks // dylint.checks // nativeSmt.checks // web.checks;

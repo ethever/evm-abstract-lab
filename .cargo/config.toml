@@ -1,3 +1,0 @@
-[build]
-# Keep host capacity available even when a dependency rebuild is needed.
-jobs = 8

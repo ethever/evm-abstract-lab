@@ -86,6 +86,14 @@ let
       '';
     }
   );
+  testArtifacts = lintCrane.buildDepsOnly (
+    lintCommon
+    // {
+      CARGO_PROFILE = "test";
+      cargoExtraArgs = "--locked --offline";
+      cargoBuildExtraArgs = "--all-targets";
+    }
+  );
 in
 {
   inherit
@@ -93,6 +101,7 @@ in
     driver
     lintCommon
     library
+    testArtifacts
     ;
   libraryPath = "${library}/lib/${libraryFile}";
 }
