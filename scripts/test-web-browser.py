@@ -247,6 +247,9 @@ def webgpu_unavailable(browser, url: str, output: Path):
         expect(boot).to_have_attribute("role", "alert", timeout=60000)
         expect(boot).to_contain_text("Unable to start WebGPU")
         expect(status).to_contain_text("Error: Unable to start WebGPU")
+        if failure == "adapter-null":
+            expect(boot).to_contain_text("could not create a usable WebGPU graphics device")
+            expect(boot).not_to_contain_text("not requested")
         assert not requests, "analysis started despite WebGPU initialization failure"
         evidence = page.evaluate("window.__webgpuEvidence")
         assert evidence["devices"] == 0

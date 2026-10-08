@@ -29,10 +29,14 @@
         }
         const { default: init, start } = await import('./evm_abstract_web.js');
         await init();
-        await start('evm-canvas');
+        try {
+          await start('evm-canvas');
+        } catch (cause) {
+          throw new Error('The browser could not create a usable WebGPU graphics device. Check WebGPU support and graphics acceleration.', { cause });
+        }
         document.getElementById('boot').remove();
       } catch (error) {
-        const message = `Unable to start WebGPU: ${error}. Check browser GPU support and the generated web assets.`;
+        const message = `Unable to start WebGPU: ${error instanceof Error ? error.message : error}`;
         document.querySelector('#boot span').textContent = message;
         document.getElementById('boot').setAttribute('role', 'alert');
         document.getElementById('analysis-status').textContent = `Error: ${message}`;
