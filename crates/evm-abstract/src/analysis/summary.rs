@@ -8,7 +8,8 @@
 //! instruction graph and world SSA retain every call and return boundary.
 
 use super::{
-    CallStack, Diagnostic, MachineEdge, MachinePayload, OutcomeKind, RootFrame, WorldAnalysis,
+    CallStack, Diagnostic, InstructionProgress, MachineEdge, MachinePayload, OutcomeKind,
+    RootFrame, WorldAnalysis,
     transfer::{CompletedCall, WorkBudget},
 };
 use crate::{
@@ -136,6 +137,7 @@ pub(super) struct Node {
     pub exit: MachinePayload,
     pub exit_stack: Vec<crate::domain::AbstractValue>,
     pub executed_pcs: Vec<usize>,
+    pub instruction_progress: Vec<InstructionProgress>,
     pub diagnostics: Vec<Diagnostic>,
     pub completed_calls: Vec<CompletedCall>,
 }
@@ -486,6 +488,11 @@ fn capture(
                 ),
                 exit_stack: state.exit_stack.clone(),
                 executed_pcs: state.executed_pcs.clone(),
+                instruction_progress: state
+                    .execution_evidence()
+                    .expect("closed node has execution evidence")
+                    .instructions()
+                    .to_vec(),
                 diagnostics: diagnostics
                     .iter()
                     .filter(|diagnostic| diagnostic.state == *id)

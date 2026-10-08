@@ -149,6 +149,25 @@ fn complete_read_only_relation_reuses_across_call_sites_and_output_ranges() {
             .iter()
             .all(|id| !enabled.states()[*id].executed_pcs.is_empty())
     );
+    // Replayed receipts must use the new caller's native state IDs, not the
+    // original certificate's numbering, and must retain instruction phases.
+    let partial = ssa::build_partial_world(&enabled).unwrap();
+    partial.verify(&enabled).unwrap();
+    assert!(partial.deferred_edges().is_empty());
+    assert_eq!(partial.transitions().len(), enabled.edges().len());
+    for state in enabled.states() {
+        let evidence = state.execution_evidence().unwrap();
+        assert!(evidence.is_current());
+        assert_eq!(evidence.instructions().len(), state.executed_pcs.len());
+        for (to, kind) in evidence.successors() {
+            assert!(
+                enabled
+                    .edges()
+                    .iter()
+                    .any(|edge| { edge.from == state.id && edge.to == *to && edge.kind == *kind })
+            );
+        }
+    }
 }
 
 #[test]
@@ -317,6 +336,15 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
     assert_eq!(analysis.status(), Status::Incomplete);
     assert!(analysis.work() <= budget);
     assert!(ssa::build_world(&analysis).is_err());
+    let partial = ssa::build_partial_world(&analysis).unwrap();
+    partial.verify(&analysis).unwrap();
+    assert_eq!(partial.status(), Status::Incomplete);
+    assert!(
+        partial
+            .frontiers()
+            .iter()
+            .any(|frontier| { frontier.reason == FrontierReason::SummaryWork })
+    );
 }
 
 #[test]

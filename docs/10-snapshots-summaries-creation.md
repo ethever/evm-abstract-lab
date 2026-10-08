@@ -98,7 +98,7 @@ A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入�
 
 摘要中的入口帧是相对于子图而言的：B 在 A→B 的全图里是子帧，在单独保存的 B 子图里成为入口。保存时保留 B 的执行数据与回滚点，外层返回契约不属于摘要输入与子图；复用时使用当前 caller 的继续信息，再把 B 接回调用栈。更深的子帧仍需保留各自的继续信息。这样既能复用 B 的行为，又能把这次结果复制到 A 新指定的输出区。状态归一化会清除临时复制身份；不可变环境输入的稳定身份则保留，并随完整环境参与摘要限定。独立环境各有自己的符号作用域；同一环境的克隆与 RPC 重跑保留原作用域。JSON 中同名的 `Caller` 只是报告内的标签，不能跨独立报告据此证明相等。callee 保存成相对入口时，也不会把其 memory 派生的 calldata 当成原根调用的 calldata。关系约束同样保留；重放时，输入绑定的符号继续指向同一输入，摘要内部新产生的 fresh 叶则统一改名，避免不同调用误用同一个未知运行时值。
 
-摘要的查找比较、快照 hashing、认证、复制和图导入都消耗同一份 `--max-work`；导入状态也计入全局状态预算。命中不会重置预算。`SummaryWork` 前沿表示这些操作未完成，状态为 `Incomplete`，SSA 验证器不会接受未闭合图。实现与回归见 [`summary.rs`](../crates/evm-abstract/src/analysis/summary.rs)、[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)。
+摘要的查找比较、快照 hashing、认证、复制和图导入都消耗同一份 `--max-work`；导入状态也计入全局状态预算。命中不会重置预算。`SummaryWork` 前沿表示这些操作未完成，状态为 `Incomplete`，完整 SSA 验证器不会接受未闭合图。显式选择部分 SSA 可以查看当前执行证据与未覆盖部分，仍保留该前沿；它不会使未完成 callee 获得完整摘要证书。实现与回归见 [`summary.rs`](../crates/evm-abstract/src/analysis/summary.rs)、[`summaries.rs`](../crates/evm-abstract/tests/summaries.rs)。
 
 ### 当前 JSON 怎样记录输入与帧
 
@@ -459,5 +459,22 @@ nix run . -- explain \
 默认 RPC `explain` 同样使用教学视图；在上面的命令末尾追加 `--verbose` 可查看完整 RPC 采集记录、快照与机器报告及原始 SSA。`explain` 复用 `analyze` 的 RPC 获取与按需发现策略，包括 `--no-rpc-discovery`、`--max-rpc-accounts` 和 `--max-rpc-requests`。这些开关及 `--account` / `--slot` / `--block-hash` / `--block-number` 仅用于 RPC；离线世界已经携带 fork，不能另传 `--fork`。世界和 RPC 入口要求 `--evm.to`，四种来源 `--world`、`--rpc`、`--hex`、`--file` 互斥。
 
 解释中只有实际帧捕获的代码被列入执行目录：委托代码按 code address 区分，CREATE initcode 与安装后的 runtime 还按代码 hash 和模式区分。只观察到的初始代码有独立标注，不等同于执行证据。RPC 补查或执行预算未完成时，默认视图继续打印部分 CFG、每个已知 outcome、所有诊断与 frontier，并省略完整 SSA，退出码为 2；`--verbose` 保留同一部分分析的完整报告。简化显示不会把 `Incomplete` 改成成功，也不会重新选择 fork、区块或重置预算。
+
+### 按原符号输入查看 WETH 的部分 SSA
+
+[第 13 课](13-evm-environment.md#1-默认输入与目标账户)的 WETH 命令保持 caller、value、calldata 为符号输入。只增加部分 SSA 开关即可阅读已经产生的值流，无需先把输入改成具体调用：
+
+```bash
+PARTIAL_SSA_STATUS=0
+NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 \
+nix run . -- explain --rpc http://127.0.0.1:8545 \
+  --evm.to 0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2 \
+  --allow-partial-ssa || PARTIAL_SSA_STATUS=$?
+printf 'exit=%s\n' "$PARTIAL_SSA_STATUS"
+```
+
+这段需要本机 RPC 上的实际 WETH 代码与状态。启动时仍固定一次 `latest` 的区块 hash，后续采集沿用该 hash；复现某次报告时加 `--block-hash` 选择报告中的同一 hash。开关不补齐未知目标、不放宽预算，也不缩小 caller、value、calldata 的范围。若分析仍为 `Incomplete`，读部分 SSA 中的指令阶段、已支持转移与全部前沿，退出码仍为 2；若收敛，则显示完整 SSA 并退出 0。
+
+需要 JSON 时，将命令改为 `analyze`，同时加 `--ssa --allow-partial-ssa --format json`；未完成结果为 `{"analysis":...,"partial_ssa":...}`，状态和 RPC 采集记录在 `.analysis` 内。部分 φ 不声称覆盖所有调用路径，旧执行输入失效时也不会继续显示其旧指令正文。完整字段读法见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。
 
 关系约束也是摘要输入的一部分。复用完整 callee 图时，调用输入中的符号保持绑定，callee 内部新产生的未知值会重新命名；悬挂 caller 中上一次调用的结果不会因此变成这次调用的同一个变量。关系的合并和资源规则见[第 15 课](15-symbolic-relations.md)。

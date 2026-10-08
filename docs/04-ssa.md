@@ -127,12 +127,12 @@ SSA 的 XOR 行会把同一个名字列为两个操作数，因为 DUP 复制引
 
 | 信息 | 怎样产生 | 保留到哪里 |
 | --- | --- | --- |
-| SSA 名字与 φ | 在已完成的 CFG 上构建定义、引用和前驱输入 | 保留整个 SSA 图的数据依赖，包括块间关系 |
+| 完整 SSA 名字与 φ | 在已完成的 CFG 上构建定义、引用和前驱输入 | 保留整个 SSA 图的数据依赖，包括块间关系 |
 | 局部复制身份 | 抽象执行给本次块执行的定义签发身份，DUP 复制，SWAP 调整位置 | 只用于块内受支持的相等运算；块边界、join 与调用边界会忘记身份 |
 | 固定输入符号 | 同一环境为根帧 calldata、caller/origin 等固定输入保留身份 | 身份一致时可跨块保留；不同环境、不同偏移或不相关子帧输入不能混同 |
 | Provenance 来源标签 | 读取建立观察位置的类别，纯运算合并输入来源 | 描述可能来源；两个值同属 Calldata 或 Storage 不证明相等 |
 
-临时复制身份不等于 `%n`，不会序列化进 JSON；固定输入符号的名称会序列化，但其内部环境命名空间不会公开。临时身份也不使两个相同抽象摘要自动成为同一个运行时值。当前 SSA 在 CFG 完成后生成，不能再将 φ 的来源关系反馈给前面的工作表，替它恢复任意槽位配对、分支约束或内存别名。组件交换的完整边界见[第 12 课](12-product-domains-facts.md)。
+临时复制身份不等于 `%n`，不会序列化进 JSON；固定输入符号的名称会序列化，但其内部环境命名空间不会公开。临时身份也不使两个相同抽象摘要自动成为同一个运行时值。当前完整 SSA 在 CFG 完成后生成，不能再将 φ 的来源关系反馈给前面的工作表，替它恢复任意槽位配对、分支约束或内存别名。组件交换的完整边界见[第 12 课](12-product-domains-facts.md)。
 
 ## 4. 循环为什么不需要无限多个名字
 
@@ -187,8 +187,80 @@ flowchart LR
 
 `analyze --world ... --ssa` 和 `explain --world ... --verbose` 还保留完整帧元数据、原始 `opcode` / `immediate` / `operands` / `results` / `fault` 字段，以及逐指令的 `!` 效果链。完整 SSA 的字节码行和效果行同样使用 B 标题及不带 `0x` 的 pc 列；空代码、原生预编译、无效委托和代码末尾的合成继续位置只显示原因，不伪造字节码 pc。各视图保留的证据见[第 09 课](09-cross-contract.md)。
 
-跨合约 SSA 需要完整的跨合约图；把几个独立栈 SSA 拼在一起，无法得到正确的调用与回滚语义。
+完整跨合约 SSA 需要完整的跨合约图；把几个独立栈 SSA 拼在一起，无法得到正确的调用与回滚语义。下面的部分 SSA 使用另一种证据契约，保留尚未覆盖的路径。
 
 SSA 验证通过，说明定义、使用和控制边满足这些结构规则。它没有证明 CFG 中每条路径都真实可执行，也没有给出整个 EVM 语义的形式证明。[下一课](05-sensitivity.md)会用同一个 helper 的两次调用，观察分析怎样通过“暂时不合并”改善精度。
+
+## 7. 未完成时按需查看部分 SSA
+
+不知道 CALL 的目标，或在预算前沿停下时，分析已经完成的一些指令仍有可读的值流。加 `--allow-partial-ssa` 可以给这些抽象执行证据起名字，同时列出未覆盖部分；它不会把分析改为 `Converged`。
+
+### 先运行一个未知调用目标
+
+这个离线程序把 `(CALLER AND 15) OR 240` 当作 CALL 目标。真实目标只能是 `0xf0`～`0xff`，共有 16 个；默认常量容量 8 无法完整列出它们，单段代码也没有这些账户的代码事实。caller 仍是符号输入，运行：
+
+```bash
+PARTIAL_SSA_STATUS=0
+nix run . -- explain \
+  --hex 5f5f5f5f5f33600f1660f0175af1 \
+  --allow-partial-ssa || PARTIAL_SSA_STATUS=$?
+printf 'exit=%s\n' "$PARTIAL_SSA_STATUS"
+```
+
+仍应看到 `Incomplete`、`UnknownTarget` 前沿与 `exit=2`；新增部分的标题是 `Partial SSA (machine state IDs)`。先看已经产生的 PUSH、CALLER、AND、OR、GAS 名字，再看 CALL 的阶段和保留下来的前沿。到达 CALL 不等于已知道它会调用哪个合约、返回什么；不能根据操作码通常会压入一个成功位，就给未完成调用编造一个结果。
+
+该开关用于 `ssa` 和 `explain`；世界/RPC 的 `analyze` 需同时加 `--ssa`。部分 SSA 支持文本和 JSON；`analyze --ssa --allow-partial-ssa --format dot` 会被拒绝。若分析已收敛，加开关仍输出原来的完整 SSA。
+
+### 每个状态的证据是否仍适用
+
+部分 SSA 的 `Current`、`Stale`、`Unexecuted` 描述该状态的执行证据，分别读作：
+
+| coverage | 表示什么 | 能怎样读正文 |
+| --- | --- | --- |
+| Current | 最近一次转换对应当前已合并的入口 | 可以读取其指令阶段；它也可能在块中途停止 |
+| Stale | 最近一次转换之后，入口经 join 扩大了，尚未重新执行 | 旧指令正文不用于解释新入口 |
+| Unexecuted | 该状态尚无一次转换的执行证据 | 没有指令正文；不代表这个块不可达 |
+
+例如 S2 曾在入口只有 1 时执行，后来另一条边带来 2，入口变成 `{1,2}`。如果在重访 S2 前预算耗尽，就不能把旧出口当成已经处理了 `{1,2}` 的结果。旧的累计边也不自动成为当前执行的继续边；缺少当前证据时，它们在 `Deferred edges` 中保留原因，如 `SourceStale` 或 `NotInExecutionEvidence`，不被改写成无副作用的边。
+
+### 一条指令已经走到哪一步
+
+`progress` 表示抽象执行最近观察到的阶段，与整个图是否完成分别判断：
+
+| progress | 已有证据 | 尚不能据此推出什么 |
+| --- | --- | --- |
+| Started | 已到达这个 pc，尚未消费栈参数 | 指令已产生普通结果 |
+| OperandsConsumed | 栈参数已消费，普通结果尚未产生；准备步骤可能已改变 memory 等状态 | 整条指令已完成；`observed partial effect` 只命名已观察到的部分效果 |
+| Completed | 这条普通指令的局部栈计算和效果已完成 | 整个图、后续调用或所有路径都已完成 |
+| Dispatched | 已进入跳转、终止、调用或失败分发；CALL/CREATE 结果只由已记录的继续边提供 | 所有可能目标都已分析；`UnknownTarget` 可以被忽略 |
+| Faulted | 记录了无效操作码或栈故障，没有普通栈结果 | 故障执行可以按普通指令生成值 |
+
+CALL/CREATE 的结果在已记录的 Return、Revert 或 Failure 继续转移上定义，不属于悬挂调用者的 CALL 指令正文。继续转移可能来自子调用结束，也可能来自调用被直接拒绝的失败。已知候选的调用、返回或失败边可以继续保留；未知候选仍留下前沿。这里的 `%value` 是栈值名字，`!effect` 是 memory、账户状态和回滚点等整机效果的名字，不能把一个效果名字当作每条路径的具体状态。
+
+### 部分 φ 的输入覆盖哪些边
+
+`partial phi(T0: %1, T3: %4)` 只把这两条有当前证据支持的入边接到入口名字。`incoming complete=false` 表示入边覆盖尚未闭合；`open incoming` 列出已记录但尚不能接入 SSA 的边编号。即使 `open incoming=[]`，`Incomplete` 的图也可能继续发现新的前驱，不能据此认定 φ 已覆盖所有执行。
+
+部分验证器核对指令阶段、定义与使用、已支持和延后的边，以及全部原始前沿；它不提供完整图的支配与覆盖证明。原来的完整 `Ssa` / `WorldSsa` 构建和验证仍拒绝 `Incomplete`。库接口与字段可从 [`ssa/partial.rs`](../crates/evm-abstract/src/ssa/partial.rs) 阅读。
+
+### 保存 JSON 并连接状态编号
+
+```bash
+PARTIAL_SSA_STATUS=0
+nix run . -- ssa \
+  --hex 5f5f5f5f5f33600f1660f0175af1 \
+  --allow-partial-ssa --format json > /tmp/partial-ssa.json \
+  || PARTIAL_SSA_STATUS=$?
+printf 'exit=%s\n' "$PARTIAL_SSA_STATUS"
+nix develop -c jq \
+  '.analysis.status, .machine_analysis.status, .partial_ssa.status, [.partial_ssa.frontiers[].reason], .state_mapping' \
+  /tmp/partial-ssa.json
+```
+
+单程序未完成 JSON 的根对象包含 `analysis`、`machine_analysis`、`partial_ssa` 与 `state_mapping`。`analysis` 保持局部 CFG 报告；`machine_analysis` 完整保留已发现的原生机器状态、帧、边与前沿，包括局部投影中没有的子调用。这三份 status 都保留 `Incomplete`；已收敛结果仍使用原来的 `analysis` 与 `ssa`。
+
+`state_mapping` 中的 `local_state` 是局部 `analysis.states` 的 S 编号，`machine_state` 是 `machine_analysis.states` 的原生机器 S 编号；部分 SSA 的 `blocks[].state` 也使用后者。两个编号不能直接互换；文本中的 `Single-program state mapping` 给出同一对应关系。部分 SSA 的 T 编号是 `machine_analysis.edges` 中的原始边编号，可能不连续：T3 可以在 `machine_analysis.edges[3]` 查原边，却不能直接索引部分 SSA 的 `transitions[3]`。
+
+世界/RPC 的部分 SSA 与 `analysis.states` 共用原生机器状态编号，不需要这组局部映射。[第 09 课](09-cross-contract.md)解释帧与继续边；[第 10 课的 RPC 阅读](10-snapshots-summaries-creation.md#按原符号输入查看-weth-的部分-ssa)给出保持符号输入的链上例子。
 
 继续：[第 05 课：敏感性](05-sensitivity.md)。

@@ -830,13 +830,14 @@ const RPC_ROOT_CODE: &str = "60205f5f5f5f6102006207a120f15060205ff3";
 const RPC_CALLEE_CODE: &str = "602a5f5260205ff3";
 
 #[derive(Clone, Copy)]
-enum RpcFixture {
+pub(super) enum RpcFixture {
     Observations,
     CallReturn,
+    UnknownTarget,
 }
 
-struct RpcServer {
-    endpoint: String,
+pub(super) struct RpcServer {
+    pub(super) endpoint: String,
     stop: Option<mpsc::Sender<()>>,
     done: Option<mpsc::Receiver<Vec<Json>>>,
 }
@@ -846,7 +847,7 @@ impl RpcServer {
         Self::with_fixture(scope, RpcFixture::Observations)
     }
 
-    fn with_fixture<'scope, 'env>(
+    pub(super) fn with_fixture<'scope, 'env>(
         scope: &'scope thread::Scope<'scope, 'env>,
         fixture: RpcFixture,
     ) -> Self {
@@ -903,7 +904,7 @@ impl RpcServer {
         }
     }
 
-    fn finish(mut self) -> Vec<Json> {
+    pub(super) fn finish(mut self) -> Vec<Json> {
         drop(self.stop.take());
         self.done.take().unwrap().recv().unwrap()
     }
@@ -921,6 +922,7 @@ impl Drop for RpcServer {
 fn rpc_result(request: &Json, fixture: RpcFixture) -> Json {
     let code = match fixture {
         RpcFixture::Observations => "3460105400",
+        RpcFixture::UnknownTarget => "5f5f5f5f5f33600f1660f0175af1",
         RpcFixture::CallReturn if request["params"][0] == ENTRY => RPC_ROOT_CODE,
         RpcFixture::CallReturn => RPC_CALLEE_CODE,
     };

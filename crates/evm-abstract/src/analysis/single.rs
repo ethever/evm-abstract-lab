@@ -39,6 +39,7 @@ pub(super) fn analyze(
         },
     )?;
     let mut states = Vec::new();
+    let mut execution_state_ids = Vec::new();
     let mut ids = BTreeMap::new();
     for source in execution.states() {
         if source.key.frames.len() != 1
@@ -48,6 +49,7 @@ pub(super) fn analyze(
         }
         let id = states.len();
         ids.insert(source.id, id);
+        execution_state_ids.push(source.id);
         let mut exit_stack = source.exit_stack.clone();
         if let Some(last) = program.blocks()[source.active().basic_block_index]
             .instructions
@@ -165,5 +167,6 @@ pub(super) fn analyze(
         status: execution.status(),
         transfers: execution.transfers(),
         execution,
+        execution_state_ids,
     })
 }

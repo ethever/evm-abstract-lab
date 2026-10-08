@@ -216,3 +216,23 @@ pub fn ssa(analysis: &Analysis, ssa: &Ssa) -> String {
     }
     output
 }
+
+/// Native partial SSA for a single-program view, with the real state-ID mapping.
+/// Child frames and continuation states need not appear in the projected CFG.
+pub fn partial_ssa(analysis: &Analysis, ir: &crate::ssa::PartialWorldSsa) -> String {
+    let mut output = world::partial_ssa(analysis.execution(), ir);
+    output.push_str("\nSingle-program state mapping\n");
+    output.push_str("  The CFG uses projected state IDs; the partial SSA above uses native machine state IDs.\n");
+    for state in analysis.states() {
+        writeln!(
+            output,
+            "  projected S{} -> machine S{}",
+            state.id,
+            analysis
+                .execution_state_id(state.id)
+                .expect("each projected state retains its machine identity"),
+        )
+        .unwrap();
+    }
+    output
+}

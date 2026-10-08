@@ -35,6 +35,9 @@ pub(crate) struct ExplainArgs {
     /// Expand all captured frames, machine effects and reports for world/RPC input.
     #[arg(long, requires = "world-input")]
     verbose: bool,
+    /// Emit recorded partial SSA when frontiers remain; the exit code stays 2.
+    #[arg(long)]
+    allow_partial_ssa: bool,
     /// Disable on-demand acquisition of missing RPC code and storage slots.
     #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     no_rpc_discovery: bool,
@@ -129,7 +132,13 @@ impl ExplainArgs {
             let analysis = args.analyze()?;
             let complete = analysis.status() == Status::Converged;
             let output = if self.verbose {
-                render::world::explain_verbose(&analysis)?
+                if self.allow_partial_ssa {
+                    render::world::explain_verbose_with_partial_ssa(&analysis)?
+                } else {
+                    render::world::explain_verbose(&analysis)?
+                }
+            } else if self.allow_partial_ssa {
+                render::world::explain_with_partial_ssa(&analysis)?
             } else {
                 render::world::explain(&analysis)?
             };
@@ -159,6 +168,11 @@ impl ExplainArgs {
         let complete = analysis.status() == Status::Converged;
         if complete {
             text.push_str(&render::ssa(&analysis, &ssa::build(&analysis)?));
+        } else if self.allow_partial_ssa {
+            text.push_str(&render::partial_ssa(
+                &analysis,
+                &ssa::build_partial_world(analysis.execution())?,
+            ));
         } else {
             text.push_str("SSA unavailable: analysis frontiers remain\n");
         }

@@ -25,6 +25,8 @@ mod domains;
 mod known_bits;
 #[path = "cli/numbers.rs"]
 mod numbers;
+#[path = "cli/partial_ssa.rs"]
+mod partial_ssa;
 #[path = "cli/rpc.rs"]
 mod rpc;
 #[path = "cli/smt.rs"]

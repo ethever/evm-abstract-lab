@@ -10,10 +10,12 @@ use crate::{
 use alloy_primitives::{Address, B256, U256};
 use serde::Serialize;
 
+mod evidence;
 mod frame;
 mod stack;
 mod symbolic;
 
+pub use evidence::{ExecutionEvidence, InstructionProgress};
 pub use frame::{ChildFrame, FrameState, RootFrame};
 pub use stack::CallStack;
 
@@ -223,9 +225,23 @@ pub struct MachineState {
     pub exit_stack: Vec<AbstractValue>,
     /// Instruction offsets actually visited in the last transfer.
     pub executed_pcs: Vec<usize>,
+    /// Receipt for the latest transfer; stale after its entry changes.
+    #[serde(skip)]
+    pub(crate) execution_evidence: Option<ExecutionEvidence>,
 }
 
 impl MachineState {
+    /// Phase and edge evidence for partial SSA, if this node was executed.
+    pub fn execution_evidence(&self) -> Option<&ExecutionEvidence> {
+        self.execution_evidence.as_ref()
+    }
+
+    pub(crate) fn invalidate_execution(&mut self) {
+        if let Some(evidence) = &mut self.execution_evidence {
+            evidence.current = false;
+        }
+    }
+
     /// Return the active frame identity or payload.
     pub fn active(&self) -> &FrameKey {
         self.key
