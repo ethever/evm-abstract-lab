@@ -63,7 +63,7 @@ STATE_BACKEND_REPEATS=3 \
   bash scripts/compare-state-backends.sh
 ```
 
-构建默认最多使用 `min(8, nproc−5)` 个并行任务，至少使用一个。`STATE_BACKEND_JOBS` 可以进一步降低并行数；脚本拒绝超过该 CPU 预留上限的值。slot 数限定为 1–65536，单项操作次数为 1–10000，重复次数为 1–25。`STATE_BACKEND_OUTPUT` 可更换输出根目录，默认是 `target/state-backend-comparison`。每次运行创建一个带 UTC 时间和随机后缀的独立子目录，并打印完整路径；失败重跑不会混入先前成功运行的聚合结果。
+构建使用 Cargo 的默认并发，没有额外上限或 CPU 预留。显式设置正整数 `STATE_BACKEND_JOBS` 时，脚本将其传给 Cargo 的 `--jobs`；未设置时，报告的 `build_jobs` 为 `null`，表示由 Cargo 选择。slot 数限定为 1–65536，单项操作次数为 1–10000，重复次数为 1–25。`STATE_BACKEND_OUTPUT` 可更换输出根目录，默认是 `target/state-backend-comparison`。每次运行创建一个带 UTC 时间和随机后缀的独立子目录，并打印完整路径；失败重跑不会混入先前成功运行的聚合结果。
 
 ## 测量边界
 

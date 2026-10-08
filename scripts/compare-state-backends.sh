@@ -4,28 +4,23 @@ set -euo pipefail
 task_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$task_root"
 
-task_cpu_count=$(nproc)
-task_job_limit=$((task_cpu_count - 5))
-if ((task_job_limit < 1)); then
-  task_job_limit=1
+task_jobs=${STATE_BACKEND_JOBS:-}
+task_build_args=()
+if [[ -n "$task_jobs" ]]; then
+  task_build_args=(--jobs "$task_jobs")
 fi
-task_default_jobs=$task_job_limit
-if ((task_default_jobs > 8)); then
-  task_default_jobs=8
-fi
-task_jobs=${STATE_BACKEND_JOBS:-$task_default_jobs}
 task_slots=${STATE_BACKEND_SLOTS:-64,4096}
 task_iterations=${STATE_BACKEND_ITERATIONS:-100}
 task_repeats=${STATE_BACKEND_REPEATS:-5}
 task_output=${STATE_BACKEND_OUTPUT:-target/state-backend-comparison}
 
-python3 - "$task_jobs" "$task_job_limit" "$task_slots" "$task_iterations" "$task_repeats" <<'PY'
+python3 - "$task_jobs" "$task_slots" "$task_iterations" "$task_repeats" <<'PY'
 import sys
 
-jobs, job_limit, sizes, iterations, repeats = sys.argv[1:]
+jobs, sizes, iterations, repeats = sys.argv[1:]
 try:
-    if not 1 <= int(jobs) <= int(job_limit):
-        raise ValueError(f"STATE_BACKEND_JOBS must be between 1 and {job_limit}")
+    if jobs and (not jobs.isdecimal() or int(jobs) < 1):
+        raise ValueError("STATE_BACKEND_JOBS must be a positive integer")
     if not sizes or not all(1 <= int(size) <= 65536 for size in sizes.split(",")):
         raise ValueError("STATE_BACKEND_SLOTS must list integers between 1 and 65536")
     if not 1 <= int(iterations) <= 10000:
@@ -45,7 +40,7 @@ for task_backend in std imbl; do
     -p evm-abstract -p evm-abstract-cli \
     --bin evm-abstract --example state-backends \
     --target-dir "target/state-backends-$task_backend" \
-    --jobs "$task_jobs" "${task_features[@]}"
+    "${task_build_args[@]}" "${task_features[@]}"
 done
 
 python3 - "$task_root" "$task_slots" "$task_iterations" "$task_repeats" "$task_output" "$task_jobs" <<'PY'
@@ -96,7 +91,7 @@ metadata = {
     "host": platform.platform(),
     "machine": platform.machine(),
     "cpu_count": os.cpu_count(),
-    "build_jobs": int(sys.argv[6]),
+    "build_jobs": int(sys.argv[6]) if sys.argv[6] else None,
     "slots": sizes,
     "iterations": iterations,
     "repeats": repeats,

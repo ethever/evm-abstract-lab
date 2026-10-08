@@ -16,12 +16,20 @@ git rev-parse HEAD origin/main
 ## 2. 在本地执行完整门禁
 
 ```bash
-nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --option cores 8
+nix flake check --print-build-logs --no-update-lock-file
 ```
 
-需要启用 `nix-command` 和 `flakes` 的 Nix。按机器余量调整 `max-jobs` 和 `cores`；这两个选项限制构建并发，不减少检查内容。`--no-update-lock-file` 防止检查时修改依赖锁。
+需要启用 `nix-command` 和 `flakes` 的 Nix。仓库不设置并发上限或 CPU 预留，构建并发由宿主 Nix 配置决定；调用者可以通过 `max-jobs` 和 `cores` 自行调整。`--no-update-lock-file` 防止检查时修改依赖锁。
 
-等待命令结束，确认 **Nix 自身的退出码为 0**。检查范围以 [`nix/system.nix` 汇总的 `checks`](../nix/system.nix) 为准，当前 Linux 共 24 项。Web 前端另外覆盖 Wasm 构建、Clippy、Dylint 与真实 Chromium 页面交互，定义见 [`nix/web.nix`](../nix/web.nix) 和 [Dylint 检查](../nix/dylint/checks.nix)。[检查模块](../nix/checks.nix)包含测试、格式、文档、打包后示例，另有原生库共存检查、默认 / imbl / 全 features 的 Dylint 动态派发检查和 lint 的 UI 回归测试（见[检查说明](no-dynamic-dispatch.md)）。`toml-lint` 用 Taplo 检查仓库 TOML 的语法与重复键；`toml-format` 检查格式，并通过真实 Taplo LSP 请求验证配置下的格式化结果与同版本 CLI 一致，均使用 Nix Taplo 并覆盖隐藏目录中的 TOML。规则见 [`taplo.toml`](../taplo.toml)。VS Code 和插件由用户自行安装；门禁检查项目工具和配置，不验证用户安装的任意插件版本。局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
+等待命令结束，确认 **Nix 自身的退出码为 0**。检查范围以 [`nix/system.nix` 汇总的 `checks`](../nix/system.nix) 为准，可以列出实际检查项：
+
+```bash
+nix eval --json .#checks.x86_64-linux --apply builtins.attrNames
+```
+
+[Rust 检查](../nix/checks/rust.nix)使用快速 test profile，分别覆盖默认、imbl、全部 features 的所有 targets 和 doctest，包含 ignored 测试，并分别运行 Clippy 和 Rustdoc。release 与 imbl release 产物也会构建，并用于[安装后示例](../nix/checks/examples.nix)、[后端对照与求解器检查](../nix/checks/runtime.nix)。测试和发布构建分开缓存，见[构建说明](development.md#构建-profile-与缓存)。
+
+Web 前端另外覆盖 Wasm 构建、Clippy、Dylint 与真实 Chromium 页面交互，定义见 [`nix/web.nix`](../nix/web.nix) 和 [Dylint 检查](../nix/dylint/checks.nix)。[原生求解器检查](../nix/smt.nix)包含 Z3、Bitwuzla、cvc5、CaDiCaL 的上游自测和实际安装库的共存检查。[检查模块](../nix/checks.nix)还包含 Rust / Nix 格式、文档、默认 / imbl / 全 features 的 Dylint 动态派发检查和 lint 的 UI 回归测试（见[检查说明](no-dynamic-dispatch.md)）。`toml-lint` 用 Taplo 检查仓库 TOML 的语法与重复键；`toml-format` 检查格式，并通过真实 Taplo LSP 请求验证配置下的格式化结果与同版本 CLI 一致，均使用 Nix Taplo 并覆盖隐藏目录中的 TOML。规则见 [`taplo.toml`](../taplo.toml)。VS Code 和插件由用户自行安装；门禁检查项目工具和配置，不验证用户安装的任意插件版本。局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
 
 失败或中断时，修正问题，再检查最终提交。若把输出通过管道交给 `tee` 保存，必须启用 `pipefail` 或另外保存 Nix 的退出码，避免把日志工具的成功当成检查成功。
 
