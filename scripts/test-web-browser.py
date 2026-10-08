@@ -146,11 +146,131 @@ def pinch_wheel(page, cdp, pointer, delta_y: float) -> None:
     settle_gesture(page)
 
 
+def observe_webgpu(page, unavailable: str | None = None) -> None:
+    """Observe the application's real browser API calls before WASM starts.
+
+    Wrappers call the native implementations unchanged. The test never supplies
+    a renderer or creates its own GPU device on the successful application path.
+    """
+    page.add_init_script("""(() => {
+        const unavailable = UNAVAILABLE;
+        const evidence = {contexts: [], adapter_requests: 0, adapters: [],
+                          devices: 0, configurations: [], textures: 0,
+                          submissions: 0, indexed_draws: 0, errors: []};
+        window.__webgpuEvidence = evidence;
+        const getContext = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function(kind, ...args) {
+            const result = getContext.call(this, kind, ...args);
+            evidence.contexts.push({canvas: this.id, kind, succeeded: result !== null});
+            return result;
+        };
+        if (typeof GPU !== 'undefined') {
+            const requestAdapter = GPU.prototype.requestAdapter;
+            GPU.prototype.requestAdapter = async function(...args) {
+                evidence.adapter_requests++;
+                if (unavailable === 'adapter-null') return null;
+                const adapter = await requestAdapter.apply(this, args);
+                if (adapter) {
+                    const info = adapter.info;
+                    evidence.adapters.push({vendor: info.vendor, architecture: info.architecture,
+                                            device: info.device, description: info.description,
+                                            fallback: info.isFallbackAdapter});
+                }
+                return adapter;
+            };
+            const requestDevice = GPUAdapter.prototype.requestDevice;
+            GPUAdapter.prototype.requestDevice = async function(...args) {
+                const device = await requestDevice.apply(this, args);
+                evidence.devices++;
+                device.addEventListener('uncapturederror', event => evidence.errors.push(event.error.message));
+                return device;
+            };
+            const configure = GPUCanvasContext.prototype.configure;
+            GPUCanvasContext.prototype.configure = function(config) {
+                const result = configure.call(this, config);
+                evidence.configurations.push({canvas: this.canvas.id, format: config.format,
+                                              alpha_mode: config.alphaMode, usage: config.usage});
+                return result;
+            };
+            const getCurrentTexture = GPUCanvasContext.prototype.getCurrentTexture;
+            GPUCanvasContext.prototype.getCurrentTexture = function() {
+                const texture = getCurrentTexture.call(this);
+                if (this.canvas.id === 'evm-canvas') evidence.textures++;
+                return texture;
+            };
+            const submit = GPUQueue.prototype.submit;
+            GPUQueue.prototype.submit = function(...args) {
+                const result = submit.apply(this, args);
+                evidence.submissions++;
+                return result;
+            };
+            const drawIndexed = GPURenderPassEncoder.prototype.drawIndexed;
+            GPURenderPassEncoder.prototype.drawIndexed = function(...args) {
+                const result = drawIndexed.apply(this, args);
+                evidence.indexed_draws++;
+                return result;
+            };
+        }
+        if (unavailable === 'missing-api') {
+            Object.defineProperty(navigator, 'gpu', {get: () => undefined});
+        }
+    })();""".replace("UNAVAILABLE", json.dumps(unavailable)))
+
+
+def webgpu_evidence(page):
+    evidence = page.evaluate("window.__webgpuEvidence")
+    contexts = evidence["contexts"]
+    assert any(item["canvas"] == "evm-canvas" and item["kind"] == "webgpu"
+               and item["succeeded"] for item in contexts), f"workspace never acquired WebGPU: {evidence}"
+    assert not any(item["kind"] in ["webgl", "webgl2", "experimental-webgl"]
+                   for item in contexts), f"unexpected WebGL fallback: {evidence}"
+    assert evidence["adapter_requests"] > 0 and evidence["adapters"], f"no real GPU adapter: {evidence}"
+    assert evidence["devices"] > 0, f"no real GPU device: {evidence}"
+    assert any(item["canvas"] == "evm-canvas" for item in evidence["configurations"]), f"WebGPU canvas was not configured: {evidence}"
+    assert evidence["textures"] > 0 and evidence["submissions"] > 0 and evidence["indexed_draws"] > 0, f"WebGPU did not render a frame: {evidence}"
+    assert not evidence["errors"], f"WebGPU validation errors: {evidence['errors']}"
+    return evidence
+
+
+def webgpu_unavailable(browser, url: str, output: Path):
+    results = {}
+    for failure in ["missing-api", "adapter-null"]:
+        page = browser.new_page(viewport={"width": 840, "height": 540})
+        observe_webgpu(page, failure)
+        requests = []
+        page.on("request", lambda request: requests.append(request.url)
+                if request.url.endswith("/api/analyze") else None)
+        page.goto(url, wait_until="networkidle")
+        boot = page.locator("#boot")
+        status = page.locator("#analysis-status")
+        expect(boot).to_be_visible()
+        expect(boot).to_have_attribute("role", "alert", timeout=60000)
+        expect(boot).to_contain_text("Unable to start WebGPU")
+        expect(status).to_contain_text("Error: Unable to start WebGPU")
+        if failure == "adapter-null":
+            expect(boot).to_contain_text("could not create a usable WebGPU graphics device")
+            expect(boot).not_to_contain_text("not requested")
+        assert not requests, "analysis started despite WebGPU initialization failure"
+        evidence = page.evaluate("window.__webgpuEvidence")
+        assert evidence["devices"] == 0
+        assert not any(item["kind"] in ["webgl", "webgl2", "experimental-webgl"]
+                       for item in evidence["contexts"]), f"failure attempted a WebGL fallback: {evidence}"
+        page.screenshot(path=str(output / f"webgpu-{failure}.png"))
+        results[failure] = {"status": status.text_content(), "renderer": evidence}
+        page.close()
+    return results
+
+
 def launch_browser(browser_type, executable: str, dpr: int = 1):
     return browser_type.launch(
         executable_path=executable, headless=True,
+        # WebGPU and Chromium's compositor share SwiftShader Vulkan. A virtual
+        # X display is required even with headless=True for canvas presentation;
+        # --disable-vulkan-surface would silently produce blank screenshots.
         args=["--no-sandbox", "--use-gl=angle", "--use-angle=swiftshader",
-              "--enable-unsafe-swiftshader", f"--force-device-scale-factor={dpr}"],
+              "--enable-unsafe-swiftshader", "--enable-unsafe-webgpu",
+              "--ignore-gpu-blocklist", "--enable-gpu", "--enable-features=Vulkan",
+              "--use-vulkan=swiftshader", f"--force-device-scale-factor={dpr}"],
     )
 
 
@@ -165,6 +285,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             viewport={"width": 1440, "height": 1000}, device_scale_factor=dpr,
         )
         page = context.new_page()
+        observe_webgpu(page)
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
         page.on("console", lambda message: failures.append(message.text)
@@ -331,7 +452,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
                 neighboring[name] = {"graph_before": before_node["bounds"], "graph_after": after_node["bounds"], "code_changed": True, "selected_header_pixels": [before_code["selected_pixels"], after_code["selected_pixels"]]}
         assert not failures, f"browser gesture errors at DPR {dpr}: {failures}"
         results[f"dpr{dpr}"] = {
-            "display": display, "initial": initial, "pan_background": panned, "pan_over_node": over_node,
+            "renderer": webgpu_evidence(page), "display": display, "initial": initial, "pan_background": panned, "pan_over_node": over_node,
             "ctrl_wheel_ratio": ctrl_ratio, "pinch_ratio": pinch_ratio,
             "safari_format_gesture": {"ratio": safari_ratio, "requested_scale": 1.12,
                                       "platform": "synthetic gesturestart/change/end events in Chromium"},
@@ -362,6 +483,7 @@ def main() -> None:
         with sync_playwright() as playwright:
             browser = launch_browser(playwright.chromium, args.browser)
             page = browser.new_page(viewport={"width": 1440, "height": 1000}, color_scheme="light")
+            observe_webgpu(page)
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.on(
@@ -460,10 +582,14 @@ def main() -> None:
                 assert reply.status == 200
                 expect(status).to_contain_text("Converged")
                 responsive_input[f"{width}x{height}"] = reply.request.post_data_json["bytecode"]
+            renderer = webgpu_evidence(page)
+            unavailable = webgpu_unavailable(browser, url, args.output)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
             assert not errors, "browser errors: " + "\n".join(errors)
             report = {
                 "browser": browser.version,
+                "renderer": renderer,
+                "webgpu_unavailable": unavailable,
                 "assets": args.assets,
                 "status": status.text_content(),
                 "cases": {
@@ -476,7 +602,7 @@ def main() -> None:
                 "viewport_screenshots": viewport_screenshots,
                 "responsive_input": responsive_input,
                 "graph_interactions": gestures,
-                "platform": "Linux headless Chromium; synthesized browser wheel events, not physical macOS hardware",
+                "platform": "Linux headless Chromium with Xvfb and SwiftShader WebGPU; synthesized browser gestures, not physical macOS hardware",
                 "browser_errors": errors,
             }
             (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")

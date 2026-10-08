@@ -95,7 +95,10 @@ in
     web-browser =
       pkgs.runCommand "evm-abstract-web-browser"
         {
-          nativeBuildInputs = [ browserPython ];
+          nativeBuildInputs = [
+            browserPython
+            pkgs.xvfb-run
+          ];
           # egui bundles canvas fonts, but Chromium's hidden IME input still
           # needs a system font to insert text inside the isolated Nix builder.
           FONTCONFIG_FILE = dependencies.fontConfig;
@@ -106,7 +109,9 @@ in
           export XDG_CONFIG_HOME="$TMPDIR/browser-config"
           export XDG_CACHE_HOME="$TMPDIR/browser-cache"
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
-          python ${sourceRoot}/scripts/test-web-browser.py \
+          # Headless Chromium still needs an X display for presenting software
+          # WebGPU canvas textures through its Vulkan compositor.
+          xvfb-run -a python ${sourceRoot}/scripts/test-web-browser.py \
             --server ${build.release.package}/bin/evm-abstract-server \
             --assets ${assets} --browser ${lib.getExe pkgs.chromium} --output "$out"
         '';
