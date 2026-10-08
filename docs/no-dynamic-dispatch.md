@@ -1,6 +1,6 @@
 # 禁止 Rust 动态派发
 
-应用 workspace 禁止 trait object（`dyn Trait`）和函数指针（`fn(...)`），包括库、CLI、示例和测试。使用具体类型、泛型、`impl Trait` 或枚举表达分支；闭包和函数项保持具体类型时允许。唯一的应用层例外是 [`evm_abstract_web::framework`](../crates/evm-abstract-web/src/framework.rs)：egui 的 `TextBuffer` 编辑接口、eframe 的应用回调和 wasm-bindgen 的 JavaScript 回调需要类型擦除，因此在这个框架接入模块内允许动态派发。自绘控件、前端状态、协议和后端仍遵循禁用规则。
+应用 workspace 禁止 trait object（`dyn Trait`）和函数指针（`fn(...)`），包括库、CLI、示例和测试。使用具体类型、泛型、`impl Trait` 或枚举表达分支；闭包和函数项保持具体类型时允许。唯一的应用层例外是 [`evm_abstract_web::framework`](../crates/evm-abstract-web/src/framework.rs)：egui 的 `TextBuffer` 编辑接口、egui_tiles 的 `Behavior` 布局回调、eframe 的应用回调和 wasm-bindgen 的 JavaScript 回调需要类型擦除，因此在这个框架接入模块内允许动态派发。自绘控件、前端状态、协议和后端仍遵循禁用规则。
 
 ## 运行
 

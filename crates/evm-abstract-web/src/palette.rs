@@ -32,4 +32,19 @@ pub fn configure(ctx: &Context) {
     visuals.widgets.inactive.weak_bg_fill = RAISED;
     visuals.widgets.hovered.weak_bg_fill = SELECTED;
     ctx.set_visuals(visuals);
+    ctx.global_style_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(5.0, 3.0);
+        style.spacing.button_padding = egui::vec2(6.0, 2.0);
+        style.spacing.interact_size.y = 20.0;
+        style.spacing.menu_margin = egui::Margin::same(5);
+        // Compact spacing, with the ordinary desktop text sizes preserved.
+        style.spacing.window_margin = egui::Margin::same(6);
+    });
+}
+
+/// Shared tight padding for navigation, input and status panels.
+pub(crate) fn chrome_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(BACKGROUND)
+        .inner_margin(egui::Margin::symmetric(6, 2))
 }
