@@ -13,17 +13,36 @@ use crate::app::{TransportError, Workspace};
 /// Start the browser workspace on an existing canvas element.
 #[wasm_bindgen]
 pub async fn start(canvas_id: &str) -> Result<(), JsValue> {
-    let document = web_sys::window()
-        .and_then(|window| window.document())
+    let window =
+        web_sys::window().ok_or_else(|| JsValue::from_str("The browser window is unavailable"))?;
+    if !window.is_secure_context() {
+        return Err(JsValue::from_str(
+            "WebGPU requires a secure context. Open this workspace over HTTPS or localhost.",
+        ));
+    }
+    let document = window
+        .document()
         .ok_or_else(|| JsValue::from_str("The browser document is unavailable"))?;
     let canvas = document
         .get_element_by_id(canvas_id)
         .ok_or_else(|| JsValue::from_str("The workspace canvas is missing"))?
         .dyn_into::<web_sys::HtmlCanvasElement>()?;
+    let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    // wgpu normally permits WebGL fallback on the web. This workspace requires
+    // the browser's WebGPU API, so absence of a usable adapter is a startup error.
+    setup.instance_descriptor.backends = wgpu::Backends::BROWSER_WEBGPU;
+    let options = eframe::WebOptions {
+        renderer: eframe::Renderer::Wgpu,
+        wgpu_options: eframe::WgpuConfiguration {
+            wgpu_setup: setup.into(),
+            ..eframe::WgpuConfiguration::default()
+        },
+        ..eframe::WebOptions::default()
+    };
     eframe::WebRunner::new()
         .start(
             canvas,
-            eframe::WebOptions::default(),
+            options,
             Box::new(|creation| {
                 crate::palette::configure(&creation.egui_ctx);
                 Ok(Box::new(BrowserApp::new()))

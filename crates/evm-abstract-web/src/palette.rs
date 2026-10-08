@@ -1,8 +1,11 @@
 //! A small semantic palette shared by the three custom-painted views.
 
+#[cfg(test)]
+mod tests;
+
 use egui::Color32;
 #[cfg(any(target_arch = "wasm32", test))]
-use egui::{Context, Stroke, Visuals};
+use egui::{Context, FontDefinitions, FontFamily, Stroke, Visuals};
 
 pub const BACKGROUND: Color32 = Color32::from_rgb(14, 19, 29);
 pub const PANEL: Color32 = Color32::from_rgb(21, 29, 42);
@@ -19,6 +22,19 @@ pub const SELECTED: Color32 = Color32::from_rgb(33, 65, 75);
 
 #[cfg(any(target_arch = "wasm32", test))]
 pub fn configure(ctx: &Context) {
+    let mut fonts = FontDefinitions::default();
+    let monospace = fonts.families[&FontFamily::Monospace].clone();
+    let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
+    // The bundled proportional/emoji chain lacks symbols used by status and
+    // instruction text (for example ● and →). Reuse the bundled monospace
+    // fallbacks after all existing proportional choices, preserving their
+    // ordinary text and emoji appearance without loading another font asset.
+    for name in monospace {
+        if !proportional.contains(&name) {
+            proportional.push(name);
+        }
+    }
+    ctx.set_fonts(fonts);
     ctx.set_theme(egui::Theme::Dark);
     let mut visuals = Visuals::dark();
     visuals.panel_fill = BACKGROUND;

@@ -12,21 +12,30 @@
       #boot { position: absolute; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; padding: 24px; }
       .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
       #boot strong { color: #63d6ca; font-size: 24px; letter-spacing: .04em; }
-      #boot span { color: #91a4ba; max-width: 600px; }
+      #boot span { color: #91a4ba; max-width: 600px; overflow-wrap: anywhere; }
     </style>
   </head>
   <body>
-    <div id="boot" role="status"><strong>EVM ABSTRACT LAB</strong><span>Starting the analysis workspace…</span></div>
+    <div id="boot" role="status"><strong>EVM ABSTRACT LAB</strong><span>Starting the WebGPU analysis workspace…</span></div>
     <div id="analysis-status" class="sr-only" role="status" aria-live="polite">Starting</div>
     <canvas id="evm-canvas" aria-label="EVM analysis workspace: bytecode, disassembly, SSA and control-flow graph"></canvas>
     <script type="module">
-      import init, { start } from './evm_abstract_web.js';
       try {
+        if (!window.isSecureContext) {
+          throw new Error('WebGPU requires a secure context. Open this workspace over HTTPS or localhost.');
+        }
+        if (!navigator.gpu) {
+          throw new Error('WebGPU is unavailable in this browser. Use a browser with WebGPU support and enable graphics acceleration.');
+        }
+        const { default: init, start } = await import('./evm_abstract_web.js');
         await init();
         await start('evm-canvas');
         document.getElementById('boot').remove();
       } catch (error) {
-        document.querySelector('#boot span').textContent = `Unable to start: ${error}. Verify that WebGL is enabled and the generated web assets are available.`;
+        const message = `Unable to start WebGPU: ${error}. Check browser GPU support and the generated web assets.`;
+        document.querySelector('#boot span').textContent = message;
+        document.getElementById('boot').setAttribute('role', 'alert');
+        document.getElementById('analysis-status').textContent = `Error: ${message}`;
         console.error(error);
       }
     </script>

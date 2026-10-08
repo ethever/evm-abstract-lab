@@ -1,4 +1,6 @@
-//! Virtual source rows use content-sized PC, opcode/operand and stack columns.
+//! Virtual source rows use content-sized PC and opcode/operand columns.
+
+mod tooltip;
 
 use egui::{FontId, ScrollArea, Sense, Ui, Vec2};
 use egui_extras::{Column, TableBuilder};
@@ -71,65 +73,107 @@ fn contents(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
-            ui.set_min_width(widths.iter().sum::<f32>() + 12.0);
+            ui.set_min_width(widths.iter().sum::<f32>() + 6.0);
             let height = ui.available_height() - ROW_HEIGHT;
             let mut table = TableBuilder::new(ui)
                 .id_salt("disasm_rows")
                 .column(Column::exact(widths[0]))
                 .column(Column::remainder().at_least(widths[1]))
-                .column(Column::exact(widths[2]))
                 .sense(Sense::click())
                 .striped(false)
                 .auto_shrink([false, false])
                 .min_scrolled_height(0.0)
                 .max_scroll_height(height.max(0.0));
-            if let Some(index) = focus { table = table.scroll_to_row(index, Some(egui::Align::Center)); }
-            table.header(ROW_HEIGHT, |mut header| {
-                for label in ["PC", "OPCODE / OPERAND", "IN→OUT"] {
-                    header.col(|ui| { text(ui, ui.max_rect().left_center() + Vec2::new(4.0, 0.0), label, palette::MUTED, 10.0); });
-                }
-            }).body(|body| {
-                body.rows(ROW_HEIGHT, rows.len(), |mut table_row| {
-                    let row = &rows[table_row.index()];
-                    table_row.set_selected(row.is_selected(*selection));
-                    table_row.set_overline(matches!(row, Row::Block { .. }));
-                    table_row.col(|ui| {
-                        if let Row::Instruction { instruction, .. } = row {
-                            text(ui, ui.max_rect().left_center() + Vec2::new(4.0, 0.0), format!("{:04x}", instruction.pc), palette::MUTED, 12.0);
-                        }
-                    });
-                    table_row.col(|ui| {
-                        let origin = ui.max_rect().left_center() + Vec2::new(4.0, 0.0);
-                        match row {
-                            Row::Block { id, pc, selected, .. } => {
-                                text(ui, origin, format!("B{id}  ·  0x{pc:04x}"), if *selected { palette::ACCENT } else { palette::MUTED }, 12.0);
+            if let Some(index) = focus {
+                table = table.scroll_to_row(index, Some(egui::Align::Center));
+            }
+            table
+                .header(ROW_HEIGHT, |mut header| {
+                    for label in ["PC", "OPCODE / OPERAND"] {
+                        header.col(|ui| {
+                            text(
+                                ui,
+                                ui.max_rect().left_center() + Vec2::new(4.0, 0.0),
+                                label,
+                                palette::MUTED,
+                                10.0,
+                            );
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(ROW_HEIGHT, rows.len(), |mut table_row| {
+                        let row = &rows[table_row.index()];
+                        table_row.set_selected(row.is_selected(*selection));
+                        table_row.set_overline(matches!(row, Row::Block { .. }));
+                        table_row.col(|ui| {
+                            if let Row::Instruction { instruction, .. } = row {
+                                text(
+                                    ui,
+                                    ui.max_rect().left_center() + Vec2::new(4.0, 0.0),
+                                    format!("{:04x}", instruction.pc),
+                                    palette::MUTED,
+                                    12.0,
+                                );
                             }
-                            Row::Instruction { instruction, executed, .. } => {
-                                let color = if !instruction.valid { palette::ERROR } else if *executed { palette::TEXT } else { palette::MUTED };
-                                let rect = text(ui, origin, &instruction.name, color, 12.0);
-                                if let Some(immediate) = &instruction.immediate {
-                                    text(ui, egui::pos2(rect.right(), origin.y), format!(" {immediate}"), palette::BLUE, 12.0);
+                        });
+                        table_row.col(|ui| {
+                            let origin = ui.max_rect().left_center() + Vec2::new(4.0, 0.0);
+                            match row {
+                                Row::Block {
+                                    id, pc, selected, ..
+                                } => {
+                                    text(
+                                        ui,
+                                        origin,
+                                        format!("B{id}  ·  0x{pc:04x}"),
+                                        if *selected {
+                                            palette::ACCENT
+                                        } else {
+                                            palette::MUTED
+                                        },
+                                        12.0,
+                                    );
+                                }
+                                Row::Instruction {
+                                    instruction,
+                                    executed,
+                                    ..
+                                } => {
+                                    let color = if !instruction.valid {
+                                        palette::ERROR
+                                    } else if *executed {
+                                        palette::TEXT
+                                    } else {
+                                        palette::MUTED
+                                    };
+                                    let rect = text(ui, origin, &instruction.name, color, 12.0);
+                                    if let Some(immediate) = &instruction.immediate {
+                                        text(
+                                            ui,
+                                            egui::pos2(rect.right(), origin.y),
+                                            format!(" {immediate}"),
+                                            palette::BLUE,
+                                            12.0,
+                                        );
+                                    }
                                 }
                             }
+                        });
+                        let response = table_row.response();
+                        if response.clicked() {
+                            *selection = row.target();
+                        }
+                        if let Row::Instruction {
+                            instruction,
+                            executed,
+                            ..
+                        } = row
+                        {
+                            response.on_hover_text(tooltip::instruction(instruction, *executed));
                         }
                     });
-                    table_row.col(|ui| {
-                        if let Row::Instruction { instruction, .. } = row {
-                            text(ui, ui.max_rect().left_center() + Vec2::new(4.0, 0.0), format!("{} → {}", instruction.stack_inputs, instruction.stack_outputs), palette::MUTED, 11.0);
-                        }
-                    });
-                    let response = table_row.response();
-                    if response.clicked() { *selection = row.target(); }
-                    if let Row::Instruction { instruction, executed, .. } = row {
-                        response.on_hover_text(format!(
-                            "0x{:04x} · opcode 0x{:02x} · {} encoded bytes\n{}{}\n{}",
-                            instruction.pc, instruction.opcode, instruction.size, instruction.name,
-                            instruction.immediate.as_ref().map_or(String::new(), |value| format!(" {value}")),
-                            if *executed { "Observed in the selected state" } else { "Decoded source; no current execution receipt for this instruction" },
-                        ));
-                    }
                 });
-            });
         });
 }
 
@@ -252,8 +296,8 @@ fn rows(report: &AnalysisReport, selection: Selection) -> Vec<Row<'_>> {
     rows
 }
 
-fn content_columns(rows: &[Row<'_>]) -> [usize; 3] {
-    rows.iter().fold([4, 15, 6], |mut columns, row| {
+fn content_columns(rows: &[Row<'_>]) -> [usize; 2] {
+    rows.iter().fold([4, 15], |mut columns, row| {
         match row {
             Row::Block { id, pc, .. } => {
                 columns[1] = columns[1].max(format!("B{id}  ·  0x{pc:04x}").chars().count())
@@ -266,14 +310,6 @@ fn content_columns(rows: &[Row<'_>]) -> [usize; 3] {
                             .immediate
                             .as_ref()
                             .map_or(0, |value| value.chars().count() + 1),
-                );
-                columns[2] = columns[2].max(
-                    format!(
-                        "{} → {}",
-                        instruction.stack_inputs, instruction.stack_outputs
-                    )
-                    .chars()
-                    .count(),
                 );
             }
         }
