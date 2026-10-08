@@ -4,6 +4,8 @@
 
 第一次使用仓库，先完成 [00：运行与输出](00-start.md) 的第一个实验。随后选择一条主线；章节编号用于定位正文，不要求按 00、01、02 的顺序全部读完。
 
+只想学习一个具体问题，可以先选[专题模块](modules.md)。每个模块再拆成几个小单元，标明最少前置知识和可以停下的位置；在模块里仍可选择理论或实现视角。两条完整路线用于串联模块，不是进入模块前必须完成的课程。
+
 | 路线 | 从什么问题开始 | 每一步怎样学 |
 | --- | --- | --- |
 | [理论路线：从语义与近似走到实现](routes/theory.md) | 一个摘要怎样代表许多执行，为什么合并后仍能使用这个结果？ | 先建立具体语义与抽象规则，再用仓库的实验、数据结构和精度边界检验理解 |
@@ -15,17 +17,17 @@
 
 下面的两列是同一主题的不同读法。读到一半想切换视角，可以直接横向跳转，不必重读另一条路线的开头。
 
-| 共同主题 | 理论入口 | 实现入口 | 共用正文与实验 |
+| 专题模块 | 理论入口 | 实现入口 | 共用正文与实验 |
 | --- | --- | --- | --- |
-| 执行规则与输入范围 | [具体执行的对象](routes/theory.md#execution) | [CLI 到字节码、世界和入口](routes/implementation.md#execution) | [00 运行](00-start.md)、[01 解码](01-bytecode.md)、[08 fork](08-forks.md)、[13 环境](13-evm-environment.md) |
-| 数值摘要与组合域 | [集合、序与近似](routes/theory.md#domains) | [AbstractValue、NumericValue 与运算](routes/implementation.md#domains) | [02 抽象域](02-domain.md)、[12 事实交换](12-product-domains-facts.md) |
-| 控制流、固定点与敏感性 | [传播为什么需要重访](routes/theory.md#control-flow) | [状态键、工作队列与合并](routes/implementation.md#control-flow) | [03 CFG](03-cfg.md)、[05 敏感性](05-sensitivity.md) |
-| 值流、φ 与部分 SSA | [定义来源和覆盖范围](routes/theory.md#ssa) | [执行记录、SSA 构建与渲染](routes/implementation.md#ssa) | [04 SSA](04-ssa.md)，包括[未完成分析](04-ssa.md#7-未完成时按需查看部分-ssa) |
-| 内存与 storage | [字节、槽位及别名](routes/theory.md#memory-storage) | [ByteArray、Store 与读写](routes/implementation.md#memory-storage) | [14 memory](14-memory-model.md)、[16 storage](16-storage-model.md) |
-| 身份、路径条件与 SMT | [关系保留了哪些关联](routes/theory.md#relations) | [表达式、约束与求解接口](routes/implementation.md#relations) | [15 符号关系](15-symbolic-relations.md) |
-| 调用、状态归属与回滚 | [调用前后哪些状态相连](routes/theory.md#calls-state) | [调用帧、保存点与状态后端](routes/implementation.md#calls-state) | [09 跨合约](09-cross-contract.md)、[11 状态容器](11-state-backends.md) |
-| 快照、复用与代码生命周期 | [事实与摘要在何时有效](routes/theory.md#rpc-summaries) | [RPC 轮次、摘要和创建](routes/implementation.md#rpc-summaries) | [10 快照与摘要](10-snapshots-summaries-creation.md) |
-| 模型边界与验证 | [结果支持什么结论](routes/theory.md#evidence) | [反例、对照执行与检查](routes/implementation.md#evidence) | [06 边界](06-boundaries.md)、[07 练习](07-exercises.md)、[本地检查](local-ci.md) |
+| [执行规则与输入范围](modules/execution.md) | [具体执行的对象](routes/theory.md#execution) | [CLI 到字节码、世界和入口](routes/implementation.md#execution) | [00 运行](00-start.md)、[01 解码](01-bytecode.md)、[08 fork](08-forks.md)、[13 环境](13-evm-environment.md) |
+| [数值摘要与组合域](modules/domains.md) | [集合、序与近似](routes/theory.md#domains) | [AbstractValue、NumericValue 与运算](routes/implementation.md#domains) | [02 抽象域](02-domain.md)、[12 事实交换](12-product-domains-facts.md) |
+| [控制流、固定点与敏感性](modules/control-flow.md) | [传播为什么需要重访](routes/theory.md#control-flow) | [状态键、工作队列与合并](routes/implementation.md#control-flow) | [03 CFG](03-cfg.md)、[05 敏感性](05-sensitivity.md) |
+| [值流、φ 与部分 SSA](modules/ssa.md) | [定义来源和覆盖范围](routes/theory.md#ssa) | [执行记录、SSA 构建与渲染](routes/implementation.md#ssa) | [04 SSA](04-ssa.md)，包括[未完成分析](04-ssa.md#7-未完成时按需查看部分-ssa) |
+| [内存与 storage](modules/memory-storage.md) | [字节、槽位及别名](routes/theory.md#memory-storage) | [ByteArray、Store 与读写](routes/implementation.md#memory-storage) | [14 memory](14-memory-model.md)、[16 storage](16-storage-model.md) |
+| [身份、路径条件与 SMT](modules/relations.md) | [关系保留了哪些关联](routes/theory.md#relations) | [表达式、约束与求解接口](routes/implementation.md#relations) | [15 符号关系](15-symbolic-relations.md) |
+| [调用、状态归属与回滚](modules/calls-state.md) | [调用前后哪些状态相连](routes/theory.md#calls-state) | [调用帧、保存点与状态后端](routes/implementation.md#calls-state) | [09 跨合约](09-cross-contract.md)、[11 状态容器](11-state-backends.md) |
+| [快照、复用与代码生命周期](modules/rpc-summaries.md) | [事实与摘要在何时有效](routes/theory.md#rpc-summaries) | [RPC 轮次、摘要和创建](routes/implementation.md#rpc-summaries) | [10 快照与摘要](10-snapshots-summaries-creation.md) |
+| [模型边界与验证](modules/evidence.md) | [结果支持什么结论](routes/theory.md#evidence) | [反例、对照执行与检查](routes/implementation.md#evidence) | [06 边界](06-boundaries.md)、[07 练习](07-exercises.md)、[本地检查](local-ci.md) |
 
 两条路线顺序不同：
 
@@ -41,7 +43,7 @@
 
 ## 怎样使用共用章节
 
-每课顶部都有两条路线中对应主题的链接。路线负责回答“为什么现在读这一部分，应该带着什么问题”；章节保存完整推导、命令、预期输出和源码入口。读完一个主题，回到当前路线继续下一步。旧的章节间链接仍可用于补足先修知识或查找相关实验。
+每课顶部都有所属模块和两条路线中对应主题的链接。路线负责回答“为什么现在读这一部分，应该带着什么问题”；章节保存完整推导、命令、预期输出和源码入口。读完一个主题，回到当前路线继续下一步。旧的章节间链接仍可用于补足先修知识或查找相关实验。
 
 练习也按主题使用：[第 07 课](07-exercises.md)里挑选当前主题的实验，先预测，再运行并解释差别。遇到 `%value`、`slot`、`S`、`B`、`F`、`T` 等输出记号，可回查 [04 的值与位置](04-ssa.md#1-先分清值名字和栈位置)和[部分 SSA](04-ssa.md#7-未完成时按需查看部分-ssa)。
 

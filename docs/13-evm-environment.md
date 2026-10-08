@@ -1,6 +1,6 @@
 # 13：明确 EVM 环境与符号输入
 
-阅读路线：[理论：输入范围与语义](routes/theory.md#execution) · [实现：入口参数与环境](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
+学习入口：[模块：字节码、协议与输入](modules/execution.md) · [理论：输入范围与语义](routes/theory.md#execution) · [实现：入口参数与环境](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
 
 分析的输入范围决定图覆盖哪些调用。世界或 RPC 只提供账户代码和初始状态；调用者、调用金额和 calldata 是另一组输入。
 

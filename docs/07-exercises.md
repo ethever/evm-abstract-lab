@@ -1,6 +1,6 @@
 # 07：按步骤把知识变成实验
 
-阅读路线：[理论：按主题核对推导](routes/theory.md#evidence) · [实现：按主题核对实现](routes/implementation.md#evidence) · [选择路线](learning-routes.md)。
+学习入口：[模块：边界、证据与验证](modules/evidence.md) · [理论：按主题核对推导](routes/theory.md#evidence) · [实现：按主题核对实现](routes/implementation.md#evidence) · [选择路线](learning-routes.md)。
 
 先完成 [00 的首个实验](00-start.md)，再按[所选路线](learning-routes.md)在相应主题后做练习。解码与协议实验对应执行规则，有限集合与组合域实验对应数值摘要，SSA 与 φ 实验对应值流，历史分组实验对应敏感性；世界实验配合[第 09 课](09-cross-contract.md)。后面的[SSA 优化](#10-进阶设计消除多余-φ)、[分支约束](#11-进阶设计让-true-分支记住-x5)、[边解释](#12-进阶设计解释一条边为什么存在)设计用来区分当前能力和需要新增的规则。
 

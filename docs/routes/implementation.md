@@ -1,5 +1,7 @@
 # 从实现出发：跟着一份输入穿过分析器
 
+只想学习当前专题，可从[模块总览](../modules.md)选择范围；下面每站也有独立模块入口。模块中的核心单元可以先学，扩展部分按需继续。
+
 这条路线适合已经能读一点 Rust、想知道“命令执行后，数据究竟去了哪里”的读者。从一个实际输出开始，沿函数调用和数据结构追踪，再用理论检查这段实现为什么允许合并、剪枝或停止。无需先读完所有源码；每站只追踪一组输入和输出。
 
 它与[从理论出发](theory.md)覆盖相同主题，顺序和提问方向不同。每站的“换个方向”链接落到另一条路线的同一主题；完整入口见[两条学习路线](../learning-routes.md)。课文仍保存详细推导、命令和预期输出，本页负责把它们串成一条可追踪的执行链。
@@ -22,6 +24,8 @@ flowchart TD
 
 ## 从 CLI 进入：这次究竟分析哪些执行？
 
+本主题的独立模块：[字节码、协议与输入](../modules/execution.md)。
+
 先运行[第 00 课的直线程序](../00-start.md#第一步准备运行环境)，对照 [`straight-line.hex`](../../examples/straight-line.hex) 的手算与 `disasm / CFG / SSA` 三种输出。随后打开 [`main.rs`](../../crates/evm-abstract-cli/src/main.rs)，从 `run` 的命令分支往回找 `AnalysisArgs::analyze` 和 `WorldArgs::analyze`。此时只追踪传给库的对象，不必逐个背 CLI 参数。
 
 | 到达库之前的数据 | 它代表什么 | 源码中怎样建立 |
@@ -42,6 +46,8 @@ flowchart TD
 <a id="control-flow"></a>
 
 ## 跟着工作队列：一个代码块怎样变成多个状态？
+
+本主题的独立模块：[CFG、固定点与敏感性](../modules/control-flow.md)。
 
 用 [`diamond.hex`](../../examples/diamond.hex) 做第一次完整追踪，按照[第 03 课的工作表表格](../03-cfg.md#3-手动走完一次工作表传播)记录“取出谁、执行后得到什么、谁重新排队”。源码从 [`Engine::run`](../../crates/evm-abstract/src/analysis/engine.rs#L282) 看三次交接：`transfer::execute` 执行当前块，`Engine::execution` 保存本次结果，`Engine::successor` 安装后继并决定是否重访。
 
@@ -67,6 +73,8 @@ flowchart TD
 
 ## 进入一条算术指令：AbstractValue 怎样变成另一个 AbstractValue？
 
+本主题的独立模块：[数值摘要与组合域](../modules/domains.md)。
+
 在 [`transfer::execute`](../../crates/evm-abstract/src/analysis/transfer.rs) 中找普通算术指令的处理：按 EVM 顺序弹出操作数，交给域运算，再把结果压回活动帧。它的输入是 opcode 和若干 `AbstractValue`；输出是数值结果以及本次计算留下的精度、表达式或资源信息。先用[第 02 课的 transfer 手算](../02-domain.md#4-transfer在摘要上执行指令)对齐弹栈顺序，再读 [`Domain::apply_detailed`](../../crates/evm-abstract/src/domain.rs#L294)。
 
 顺着结果往里追，会经过 [`AbstractValue`](../../crates/evm-abstract/src/domain/value.rs#L16) 和 [`NumericValue`](../../crates/evm-abstract/src/domain/numeric.rs)。前者把数值组件、来源、身份与可选表达式放在一起；后者表示同一个 word 的有限常量、位、区间和同余约束。`DomainSpec` 则是整次分析共用的策略，不能把某个值的内容和域策略混成同一对象。
@@ -84,6 +92,8 @@ flowchart TD
 <a id="memory-storage"></a>
 
 ## 跟着 MSTORE 与 SSTORE：值写到了哪一份状态？
+
+本主题的独立模块：[Memory & Storage](../modules/memory-storage.md)。
 
 先用 [`memory-word.hex`](../../examples/memory-word.hex) 的 [MSTORE/MLOAD 实验](../14-memory-model.md#2-第一个实验写入-42再读出来)，再用 [`storage-basic.json`](../../examples/storage-basic.json) 的 [SSTORE/SLOAD 实验](../16-storage-model.md#2-第一个实验替换-slot-0读取-slot-0-和-slot-1)。两者都从栈取 word，但寻址单位、初始默认值和所属状态不同。
 
@@ -107,6 +117,8 @@ flowchart TD
 
 ## 穿过 CALL：哪一帧暂停，哪些效果会回滚？
 
+本主题的独立模块：[调用、状态归属与回滚](../modules/calls-state.md)。
+
 用 [`call-return-branch.json`](../../examples/worlds/call-return-branch.json) 跟踪[第 09 课的调用实验](../09-cross-contract.md#1-第一个实验b-返回-1a-写入-1)。从 [`calls::call`](../../crates/evm-abstract/src/analysis/transfer/calls.rs#L247) 进入：输入是 caller 的机器载荷和 CALL 参数；输出可能是安装了子帧的后继、立即失败的后继，或尚不能展开的 frontier。CALL 不是另开一个完全独立的分析器。
 
 打开 [`CallStack`](../../crates/evm-abstract/src/analysis/machine/stack.rs) 与 [`RootFrame` / `ChildFrame`](../../crates/evm-abstract/src/analysis/machine/frame.rs#L94)。根帧始终存在；子帧还携带 [`Continuation`](../../crates/evm-abstract/src/analysis/machine.rs#L96)，记录 caller 的继续位置和请求的输出范围。callee 有独立的 memory、calldata、returndata，而所有帧共享交易 `Store`。再用[代理实验](../09-cross-contract.md#4-代理实验读谁的代码写谁的-storage)核对 [`proxy-storage.json`](../../examples/worlds/proxy-storage.json)：执行代码账户与 storage owner 必须分别追踪。
@@ -124,6 +136,8 @@ flowchart TD
 <a id="rpc-summaries"></a>
 
 ## 检查复用与事实来源：输入相同究竟要相同到哪里？
+
+本主题的独立模块：[RPC、快照与调用摘要](../modules/rpc-summaries.md)。
 
 这一站仍追踪同一台机器，但观察三种会改变后续工作的交接：完整子图被复用、初始世界补入事实，以及交易内创建/销毁账户。三者都必须保留“这些结果属于什么身份”的约束。
 
@@ -145,6 +159,8 @@ flowchart TD
 
 ## 回到 JUMPI：什么证据允许删掉一条边？
 
+本主题的独立模块：[符号关系与 SMT](../modules/relations.md)。
+
 运行 [`symbolic-conflicting-guards.hex`](../../examples/symbolic-conflicting-guards.hex) 的[矛盾条件实验](../15-symbolic-relations.md#1-先看同一个输入不能同时等于-1-和-2)，对照关闭和开启关系层的 JSON，定位关闭时保留、开启后消失的状态或边。再从 `transfer::execute` 的 JUMPI 分支进入 [`relations::branch`](../../crates/evm-abstract/src/analysis/transfer/relations.rs#L128)：输入是当前机器载荷、条件值和真假方向；正常情况下输出附有分支假设的后继载荷，证明不可行时则不生成后继。工作预算耗尽也可停止该分支并记录 `Work` 前沿，此时没有后继并不表示已证明不可达。
 
 顺着条件值的 `expression` 到 [`ExprId`](../../crates/evm-abstract/src/domain/symbolic.rs)，再读 [`RelationState::assume` / `check` / `unique_value`](../../crates/evm-abstract/src/domain/relational.rs)。表达式回答“这是哪个输入经过什么运算得到的值”，关系状态回答“当前路径保证哪些条件”。[`relational/solver.rs`](../../crates/evm-abstract/src/domain/relational/solver.rs) 将这些表达式编码成 EVM 的 256 位运算，[`embedded-smt`](../../crates/embedded-smt/src/lib.rs) 提供进程内求解接口。求解器不替机器执行 CALL，也不自动增加数组索引模型。
@@ -160,6 +176,8 @@ flowchart TD
 <a id="ssa"></a>
 
 ## 构建 SSA：名字必须由哪些执行证据支持？
+
+本主题的独立模块：[SSA 与部分执行](../modules/ssa.md)。
 
 先按[第 04 课的 DUP/SWAP 实验](../04-ssa.md#1-先分清值名字和栈位置)追踪栈里的名字，再看 [`diamond.hex`](../../examples/diamond.hex) 的[前驱标记 φ](../04-ssa.md#2-分支汇合时怎样给入口值命名)。这一步输入已经是分析图；输出为定义、使用、入口参数及边上传递的值。SSA 名字不是新的数值分析结果，φ 也不是求并集的运算。
 
@@ -187,6 +205,8 @@ flowchart TD
 <a id="evidence"></a>
 
 ## 读报告与测试：实现提供的结论到哪里为止？
+
+本主题的独立模块：[边界、证据与验证](../modules/evidence.md)。
 
 现在从 [`main.rs::run`](../../crates/evm-abstract-cli/src/main.rs#L369) 的输出分支走到 [`render::world`](../../crates/evm-abstract/src/render/world.rs)。输入是分析结果及可选 SSA；文本、JSON、DOT 只是不同观察方式。先按[第 06 课](../06-boundaries.md#1-先读完成状态再读图)读取环境、策略、`status` 和 `frontiers`，再解释某条边或某个值。
 

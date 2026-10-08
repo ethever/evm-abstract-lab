@@ -1,6 +1,6 @@
 # 12：组合域，把几种不完整的认识放在一起
 
-阅读路线：[理论：组合域与事实交换](routes/theory.md#domains) · [实现：数值层与规约](routes/implementation.md#domains) · [选择路线](learning-routes.md)。
+学习入口：[模块：数值摘要与组合域](modules/domains.md) · [理论：组合域与事实交换](routes/theory.md#domains) · [实现：数值层与规约](routes/implementation.md#domains) · [选择路线](learning-routes.md)。
 
 [第 2 课](02-domain.md)用有限常量集合表示一个栈槽的可能值。如果候选太多，集合容量装不下，就只能放弃枚举。组合域继续保存这些候选共有的位、范围和同余性质。例如，不能列完所有偶数，并不妨碍证明最低位一定为零。
 

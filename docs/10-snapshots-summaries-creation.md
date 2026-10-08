@@ -1,6 +1,6 @@
 # 10：复用调用结果、部署代码与固定快照
 
-阅读路线：[理论：快照、复用与代码生命周期](routes/theory.md#rpc-summaries) · [实现：RPC、摘要与创建](routes/implementation.md#rpc-summaries) · [选择路线](learning-routes.md)。
+学习入口：[模块：RPC、快照与调用摘要](modules/rpc-summaries.md) · [理论：快照、复用与代码生命周期](routes/theory.md#rpc-summaries) · [实现：RPC、摘要与创建](routes/implementation.md#rpc-summaries) · [选择路线](learning-routes.md)。
 
 读完[第 9 课](09-cross-contract.md)，你已经知道调用会产生返回字节和共享状态变化。本课逐个回答四个问题：相同调用能不能复用分析结果？新合约的代码从哪里来？SELFDESTRUCT 何时删除账户？没有普通字节码的预编译怎样执行？最后把这些实验连接到固定链上快照。
 

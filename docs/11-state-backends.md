@@ -1,6 +1,6 @@
 # 11：把状态快照与容器实现分开
 
-阅读路线：[理论：状态与保存点](routes/theory.md#calls-state) · [实现：容器后端与回滚](routes/implementation.md#calls-state) · [选择路线](learning-routes.md)。
+学习入口：[模块：调用、状态归属与回滚](modules/calls-state.md) · [理论：状态与保存点](routes/theory.md#calls-state) · [实现：容器后端与回滚](routes/implementation.md#calls-state) · [选择路线](learning-routes.md)。
 
 `A → B → C` 的状态回滚需要两层约定：容器能保留旧版本，执行器知道哪一层调用失败。仓库把前一层放入本地 crate [`snapshot-state`](../crates/snapshot-state)，后一层仍由 [`Store`](../crates/evm-abstract/src/world/store.rs) 和[调用处理](../crates/evm-abstract/src/analysis/transfer/calls.rs)负责。
 

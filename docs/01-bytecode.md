@@ -1,6 +1,6 @@
 # 01：从字节找到指令和基本块
 
-阅读路线：[理论：字节码与具体语义](routes/theory.md#execution) · [实现：解码与基本块](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
+学习入口：[模块：字节码、协议与输入](modules/execution.md) · [理论：字节码与具体语义](routes/theory.md#execution) · [实现：解码与基本块](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
 
 这一课解决两个问题：哪些字节是指令，哪些指令应该放在同一个基本块。做完后，你应能解释“字节码里看见 `5b`”为什么还不足以认定它是合法跳转目标。
 
