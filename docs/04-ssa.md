@@ -207,9 +207,11 @@ nix run . -- explain \
 printf 'exit=%s\n' "$PARTIAL_SSA_STATUS"
 ```
 
-仍应看到 `Incomplete`、`UnknownTarget` 前沿与 `exit=2`；新增部分的标题是 `Partial SSA (machine state IDs)`。先看已经产生的 PUSH、CALLER、AND、OR、GAS 名字，再看 CALL 的阶段和保留下来的前沿。到达 CALL 不等于已知道它会调用哪个合约、返回什么；不能根据操作码通常会压入一个成功位，就给未完成调用编造一个结果。
+仍应看到 `Incomplete`、`UnknownTarget` 前沿与 `exit=2`；新增部分的标题是 `Partial SSA (machine state IDs)`。默认文本先看已经产生的 PUSH、CALLER、AND、OR、GAS 名字，再看 CALL 的参数、已知继续边和保留下来的前沿。到达 CALL 不等于已知道它会调用哪个合约、返回什么；不能根据操作码通常会压入一个成功位，就给未完成调用编造一个结果。
 
 该开关用于 `ssa` 和 `explain`；世界/RPC 的 `analyze` 需同时加 `--ssa`。部分 SSA 支持文本和 JSON；`analyze --ssa --allow-partial-ssa --format dot` 会被拒绝。若分析已收敛，加开关仍输出原来的完整 SSA。
+
+部分 SSA 的默认文本突出指令与值流，不逐条展开常见的 `Completed`、`Dispatched` 进度注释或 `!effect` 效果链。`Started`、`OperandsConsumed`、`Faulted` 仍明确标注；Stale/Unexecuted、延后的边、开放入边与全部前沿也继续可见。需要全部阶段与效果链时，world/RPC 的 `explain` 加 `--verbose`；单程序 `ssa` 和世界/RPC 的 `analyze` 则用 `--format json` 查看完整字段。显示简化不改变结构验证、调用输入或退出码。
 
 ### 每个状态的证据是否仍适用
 
@@ -225,21 +227,23 @@ printf 'exit=%s\n' "$PARTIAL_SSA_STATUS"
 
 ### 一条指令已经走到哪一步
 
-`progress` 表示抽象执行最近观察到的阶段，与整个图是否完成分别判断：
+`progress` 表示抽象执行最近观察到的阶段，与整个图是否完成分别判断。JSON 始终保留全部阶段；详细文本展开这些阶段，默认文本只标出需要注意的未完成步骤和故障：
 
-| progress | 已有证据 | 尚不能据此推出什么 |
-| --- | --- | --- |
-| Started | 已到达这个 pc，尚未消费栈参数 | 指令已产生普通结果 |
-| OperandsConsumed | 栈参数已消费，普通结果尚未产生；准备步骤可能已改变 memory 等状态 | 整条指令已完成；`observed partial effect` 只命名已观察到的部分效果 |
-| Completed | 这条普通指令的局部栈计算和效果已完成 | 整个图、后续调用或所有路径都已完成 |
-| Dispatched | 已进入跳转、终止、调用或失败分发；CALL/CREATE 结果只由已记录的继续边提供 | 所有可能目标都已分析；`UnknownTarget` 可以被忽略 |
-| Faulted | 记录了无效操作码或栈故障，没有普通栈结果 | 故障执行可以按普通指令生成值 |
+| progress | 已有证据 | 默认文本 | 尚不能据此推出什么 |
+| --- | --- | --- | --- |
+| Started | 已到达这个 pc，尚未消费栈参数 | 明确标注，尚无普通结果 | 指令已产生普通结果 |
+| OperandsConsumed | 栈参数已消费，普通结果尚未产生；准备步骤可能已改变 memory 等状态 | 明确标注，步骤尚未完成 | 整条指令已完成；详细视图的 `observed partial effect` 只命名已观察到的部分效果 |
+| Completed | 这条普通指令的局部栈计算和效果已完成 | 保留指令与值流，省略正常进度注释 | 整个图、后续调用或所有路径都已完成 |
+| Dispatched | 已进入跳转、终止、调用或失败分发 | 保留指令、已知继续边与前沿，省略常见进度注释 | 所有可能目标都已分析；`UnknownTarget` 可以被忽略 |
+| Faulted | 记录了无效操作码或栈故障，没有普通栈结果 | 明确标注故障 | 故障执行可以按普通指令生成值 |
 
-CALL/CREATE 的结果在已记录的 Return、Revert 或 Failure 继续转移上定义，不属于悬挂调用者的 CALL 指令正文。继续转移可能来自子调用结束，也可能来自调用被直接拒绝的失败。已知候选的调用、返回或失败边可以继续保留；未知候选仍留下前沿。这里的 `%value` 是栈值名字，`!effect` 是 memory、账户状态和回滚点等整机效果的名字，不能把一个效果名字当作每条路径的具体状态。
+静态帧中禁止的状态修改、确定越界的 RETURNDATACOPY 也会记录为 Dispatched；默认文本仍明确标注这些异常终止，不把它们当作正常分派省略。
+
+CALL/CREATE 的结果在已记录的 Return、Revert 或 Failure 继续转移上定义，不属于悬挂调用者的 CALL 指令正文。继续转移可能来自子调用结束，也可能来自调用被直接拒绝的失败。已知候选的调用、返回或失败边可以继续保留；未知候选仍留下前沿。RETURN/REVERT 也会进入分发：根帧结束时，返回字节与状态效果在入口 outcome 中阅读；子帧结束时，沿 Return/Revert 转移恢复调用者。因此不能把所有 Dispatched 都解释成“结果只来自转移”。这里的 `%value` 是栈值名字；详细文本和 JSON 中的 `!effect` / 效果 ID 命名 memory、账户状态和回滚点等整机效果，不能把一个效果名字当作每条路径的具体状态。
 
 ### 部分 φ 的输入覆盖哪些边
 
-`partial phi(T0: %1, T3: %4)` 只把这两条有当前证据支持的入边接到入口名字。`incoming complete=false` 表示入边覆盖尚未闭合；`open incoming` 列出已记录但尚不能接入 SSA 的边编号。即使 `open incoming=[]`，`Incomplete` 的图也可能继续发现新的前驱，不能据此认定 φ 已覆盖所有执行。
+`partial phi(T0: %1, T3: %4)` 只把这两条有当前证据支持的入边接到入口名字。`incoming complete=false` 表示入边覆盖尚未闭合；`open incoming` 列出已记录但尚不能接入 SSA 的边编号。默认文本只显示非空的 `open incoming`，详细文本和 JSON 保留完整覆盖字段。即使 `open incoming=[]`，`Incomplete` 的图也可能继续发现新的前驱，不能据此认定 φ 已覆盖所有执行。
 
 部分验证器核对指令阶段、定义与使用、已支持和延后的边，以及全部原始前沿；它不提供完整图的支配与覆盖证明。原来的完整 `Ssa` / `WorldSsa` 构建和验证仍拒绝 `Incomplete`。库接口与字段可从 [`ssa/partial.rs`](../crates/evm-abstract/src/ssa/partial.rs) 阅读。
 

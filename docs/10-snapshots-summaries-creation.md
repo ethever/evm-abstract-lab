@@ -473,8 +473,10 @@ nix run . -- explain --rpc http://127.0.0.1:8545 \
 printf 'exit=%s\n' "$PARTIAL_SSA_STATUS"
 ```
 
-这段需要本机 RPC 上的实际 WETH 代码与状态。启动时仍固定一次 `latest` 的区块 hash，后续采集沿用该 hash；复现某次报告时加 `--block-hash` 选择报告中的同一 hash。开关不补齐未知目标、不放宽预算，也不缩小 caller、value、calldata 的范围。若分析仍为 `Incomplete`，读部分 SSA 中的指令阶段、已支持转移与全部前沿，退出码仍为 2；若收敛，则显示完整 SSA 并退出 0。
+这段需要本机 RPC 上的实际 WETH 代码与状态。启动时仍固定一次 `latest` 的区块 hash，后续采集沿用该 hash；复现某次报告时加 `--block-hash` 选择报告中的同一 hash。开关不补齐未知目标、不放宽预算，也不缩小 caller、value、calldata 的范围。若分析仍为 `Incomplete`，默认文本先读指令与值流、已支持转移、异常标记与全部前沿，退出码仍为 2；若收敛，则显示完整 SSA 并退出 0。
 
-需要 JSON 时，将命令改为 `analyze`，同时加 `--ssa --allow-partial-ssa --format json`；未完成结果为 `{"analysis":...,"partial_ssa":...}`，状态和 RPC 采集记录在 `.analysis` 内。部分 φ 不声称覆盖所有调用路径，旧执行输入失效时也不会继续显示其旧指令正文。完整字段读法见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。
+要展开所有指令阶段与效果链，在这条 world/RPC `explain` 命令上加 `--verbose`；核对同一分析输入时同时指定报告中的 `--block-hash`。默认隐藏的 Completed/Dispatched 注释与效果链只是显示详略，Started/OperandsConsumed/Faulted、Stale/Unexecuted、延后或开放的边与全部前沿继续可见。根帧的 RETURN 结果读 `Outcomes`，子帧的返回则沿 Return 转移追踪。
+
+需要 JSON 时，将命令改为 `analyze`，同时加 `--ssa --allow-partial-ssa --format json`；未完成结果为 `{"analysis":...,"partial_ssa":...}`，状态和 RPC 采集记录在 `.analysis` 内；JSON 保留完整 progress、效果及覆盖字段。部分 φ 不声称覆盖所有调用路径，旧执行输入失效时也不会继续显示其旧指令正文。完整字段读法见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。
 
 关系约束也是摘要输入的一部分。复用完整 callee 图时，调用输入中的符号保持绑定，callee 内部新产生的未知值会重新命名；悬挂 caller 中上一次调用的结果不会因此变成这次调用的同一个变量。关系的合并和资源规则见[第 15 课](15-symbolic-relations.md)。

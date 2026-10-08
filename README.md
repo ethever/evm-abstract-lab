@@ -106,7 +106,7 @@ flowchart TD
 | `explain` | `--hex` / `--file`，或 `--world` / 显式 `--rpc` + `--evm.to` | 反汇编、教学 CFG、赋值式 SSA；world/RPC 可加 `--verbose` 展开完整证据 |
 | `analyze` | `--world` 或显式 `--rpc`，以及 `--evm.to` | 跨合约图、返回结果、账户状态；text / JSON / DOT；`--ssa` 增加并验证 SSA |
 
-`ssa`、`explain` 可以显式加 `--allow-partial-ssa`；`analyze` 需同时加 `--ssa`，并选择 text 或 JSON。分析为 `Incomplete` 时，这个开关显示带覆盖说明的**部分 SSA**，仍保留全部前沿并退出 2；分析已 `Converged` 时继续输出原来的完整 SSA。部分 SSA 的指令阶段、未覆盖入边与单程序状态编号映射见[第 04 课](docs/04-ssa.md#7-未完成时按需查看部分-ssa)。
+`ssa`、`explain` 可以显式加 `--allow-partial-ssa`；`analyze` 需同时加 `--ssa`，并选择 text 或 JSON。分析为 `Incomplete` 时，这个开关显示带覆盖说明的**部分 SSA**，仍保留全部前沿并退出 2；分析已 `Converged` 时继续输出原来的完整 SSA。部分 SSA 的默认文本突出指令与值流，保留未完成步骤、故障、陈旧或未执行状态、未覆盖边与全部前沿；常见的 Completed/Dispatched 注释与效果链放在 world/RPC `explain --verbose` 或 JSON 中查看。部分 SSA 的指令阶段、未覆盖入边与单程序状态编号映射见[第 04 课](docs/04-ssa.md#7-未完成时按需查看部分-ssa)。
 
 用 `nix run . -- analyze --help` 查看全部参数。调用环境统一使用 `--evm.*`：`--evm.to` 确定执行 root frame 的合约，省略 caller、value、calldata 时分别覆盖未知调用者、任意 U256 金额、未知长度与内容的输入；origin 默认与 caller 是同一个输入。显式 `--evm.calldata 0x --evm.value 0` 才表示空数据、零金额。交易与区块环境、索引 hash 和 gas 上界的全部参数见[第 13 课](docs/13-evm-environment.md)；精度与预算参数见[第 05 课](docs/05-sensitivity.md)和[第 06 课](docs/06-boundaries.md)。
 

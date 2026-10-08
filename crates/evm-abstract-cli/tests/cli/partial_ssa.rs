@@ -55,6 +55,48 @@ fn assert_partial(rendered: &str, reason: &str) {
     assert!(!rendered.contains("SSA unavailable"));
 }
 
+fn partial_body(rendered: &str) -> &str {
+    rendered.split_once(PARTIAL).unwrap().1
+}
+
+fn assert_concise(rendered: &str) {
+    let partial = partial_body(rendered);
+    for detail in [
+        "progress=Completed",
+        "progress=Dispatched",
+        "effect !",
+        "effect phi",
+        "recorded effect",
+        "recorded prefix effect",
+        "entry effect",
+        "coverage=Current",
+        "open incoming=[]",
+    ] {
+        assert!(
+            !partial.contains(detail),
+            "default detail {detail}:\n{partial}"
+        );
+    }
+    assert!(
+        !partial
+            .as_bytes()
+            .windows(2)
+            .any(|bytes| bytes[0] == b'!' && bytes[1].is_ascii_digit())
+    );
+}
+
+fn assert_verbose(rendered: &str) {
+    let partial = partial_body(rendered);
+    assert!(partial.contains("progress=Completed"));
+    assert!(partial.contains("partial effect phi") && partial.contains("effect !"));
+    assert!(
+        partial
+            .as_bytes()
+            .windows(2)
+            .any(|bytes| bytes[0] == b'!' && bytes[1].is_ascii_digit())
+    );
+}
+
 struct WorldCode(PathBuf);
 
 impl WorldCode {
@@ -93,6 +135,16 @@ impl WorldCode {
         args.extend_from_slice(extra);
         run(&args)
     }
+
+    fn add_callee(&self, code: &str) {
+        let mut input: Json = serde_json::from_slice(&fs::read(&self.0).unwrap()).unwrap();
+        input["accounts"].as_array_mut().unwrap().push(json!({
+            "address": "0x0000000000000000000000000000000000000200",
+            "code": format!("0x{code}"), "balance": "0x0", "nonce": "0x0",
+            "storage_unknown": false,
+        }));
+        fs::write(&self.0, serde_json::to_vec(&input).unwrap()).unwrap();
+    }
 }
 
 impl Drop for WorldCode {
@@ -111,6 +163,16 @@ fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
         let output = run(&[command, "--hex", UNKNOWN, "--allow-partial-ssa"]);
         let rendered = text(&output, 2);
         assert_partial(&rendered, "UnknownTarget");
+        assert_concise(&rendered);
+        assert!(partial_body(&rendered).contains("Known transitions"));
+        assert!(partial_body(&rendered).contains("= PUSH0"));
+        assert!(
+            partial_body(&rendered)
+                .lines()
+                .any(|line| line.contains(": CALL ")
+                    && line.contains("UnknownTarget")
+                    && line.contains('U'))
+        );
         assert!(rendered.contains("projected S0 -> machine S0"));
     }
     let json = report(&run(&[
@@ -182,6 +244,30 @@ fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
         assert_eq!(source["to"], deferred["to"]);
         assert_eq!(source["kind"], deferred["kind"]);
     }
+    let rendered = text(
+        &run(&[
+            "ssa",
+            "--hex",
+            &nested,
+            "--evm.to",
+            ENTRY,
+            "--evm.value",
+            "0",
+            "--evm.calldata",
+            "0x",
+            "--allow-partial-ssa",
+        ]),
+        2,
+    );
+    assert_concise(&rendered);
+    assert!(
+        !json["partial_ssa"]["deferred_edges"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(partial_body(&rendered).contains("Deferred edges"));
+    assert!(partial_body(&rendered).contains("open incoming=["));
 }
 
 #[test]
@@ -205,9 +291,19 @@ fn world_and_both_explain_views_keep_partial_frontiers_and_default_contracts() {
         ("explain", vec![]),
         ("explain", vec!["--verbose"]),
     ] {
+        let verbose = extra.contains(&"--verbose");
         let mut args = extra;
         args.push("--allow-partial-ssa");
-        assert_partial(&text(&world.run(command, &args), 2), "UnknownTarget");
+        let rendered = text(&world.run(command, &args), 2);
+        assert_partial(&rendered, "UnknownTarget");
+        if verbose {
+            assert_verbose(&rendered);
+            assert!(partial_body(&rendered).contains("progress=Dispatched"));
+        } else {
+            assert_concise(&rendered);
+            assert!(partial_body(&rendered).contains("Known transitions"));
+            assert!(partial_body(&rendered).contains("= PUSH0"));
+        }
     }
     for item in json["partial_ssa"]["blocks"]
         .as_array()
@@ -246,11 +342,17 @@ fn blocked_memory_instruction_is_pending_without_a_normal_result() {
     assert!(load["results"].as_array().unwrap().is_empty());
     assert!(!instructions.iter().any(|item| item["opcode"] == 0x00));
     for extra in [vec![], vec!["--verbose"]] {
+        let verbose = extra.contains(&"--verbose");
         let mut args = vec!["--allow-partial-ssa", "--max-memory-bytes", "1"];
         args.extend(extra);
         let rendered = text(&world.run("explain", &args), 2);
         assert_partial(&rendered, "Memory");
         assert!(rendered.contains("progress=OperandsConsumed; pending operation"));
+        if verbose {
+            assert_verbose(&rendered);
+        } else {
+            assert_concise(&rendered);
+        }
     }
 }
 
@@ -321,6 +423,85 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
     let partial = rendered.split_once(PARTIAL).unwrap().1;
     assert!(partial.contains("coverage=Unexecuted"));
     assert!(!partial.contains("synthetic end-of-code"));
+    assert_concise(&rendered);
+    let faulted = WorldCode::new(&format!("33601357{UNKNOWN}005bfe"));
+    let rendered = text(&faulted.run("explain", &["--allow-partial-ssa"]), 2);
+    assert_concise(&rendered);
+    assert!(partial_body(&rendered).contains("progress=Faulted"));
+}
+
+#[test]
+fn verbose_return_dispatch_distinguishes_root_outcomes_from_child_continuations() {
+    let world = WorldCode::new(&format!("5f5f5f5f5f6102006207a120f150{UNKNOWN}505f5ff3"));
+    let mut input: Json = serde_json::from_slice(&fs::read(&world.0).unwrap()).unwrap();
+    input["accounts"].as_array_mut().unwrap().push(json!({
+        "address": "0x0000000000000000000000000000000000000200",
+        "code": "0x602a5f5260205ff3", "balance": "0x0", "nonce": "0x0",
+        "storage_unknown": false,
+    }));
+    fs::write(&world.0, serde_json::to_vec(&input).unwrap()).unwrap();
+    let compact = text(&world.run("explain", &["--allow-partial-ssa"]), 2);
+    assert_partial(&compact, "UnknownTarget");
+    assert_concise(&compact);
+    let verbose = text(
+        &world.run("explain", &["--allow-partial-ssa", "--verbose"]),
+        2,
+    );
+    assert_verbose(&verbose);
+    let returns: Vec<_> = partial_body(&verbose)
+        .lines()
+        .filter(|line| line.contains(": RETURN ") && line.contains("progress=Dispatched"))
+        .collect();
+    assert!(
+        returns
+            .iter()
+            .any(|line| line.contains("return dispatch; inspect recorded outcomes"))
+    );
+    assert!(
+        returns
+            .iter()
+            .any(|line| line.contains("return dispatch; inspect recorded caller continuations"))
+    );
+    assert!(!partial_body(&verbose).contains("results belong only to recorded transitions"));
+}
+
+#[test]
+fn concise_and_verbose_retain_proven_exceptional_dispatch_halts() {
+    let static_child = WorldCode::new(&format!("5f5f5f5f6102006207a120fa50{UNKNOWN}00"));
+    static_child.add_callee("60015f5500");
+    let return_oob = WorldCode::new(&format!("5a601357{UNKNOWN}005b60015f5f3e00"));
+    for (world, diagnostic, opcode) in [
+        (
+            &static_child,
+            "exceptional halt: state change in static frame",
+            ": SSTORE ",
+        ),
+        (
+            &return_oob,
+            "exceptional halt: return data out of bounds",
+            ": RETURNDATACOPY ",
+        ),
+    ] {
+        for verbose in [false, true] {
+            let mut args = vec!["--allow-partial-ssa"];
+            if verbose {
+                args.push("--verbose");
+            }
+            let rendered = text(&world.run("explain", &args), 2);
+            assert_partial(&rendered, "UnknownTarget");
+            let line = partial_body(&rendered)
+                .lines()
+                .find(|line| line.contains(opcode))
+                .unwrap();
+            assert!(line.contains(diagnostic), "{line}");
+            if verbose {
+                assert!(line.contains("progress=Dispatched"));
+                assert!(!line.contains("inspect recorded caller continuations"));
+            } else {
+                assert_concise(&rendered);
+            }
+        }
+    }
 }
 
 #[test]
@@ -381,6 +562,7 @@ fn fixed_rpc_unknown_target_supports_partial_analysis_and_both_explain_views() {
             ("explain", vec![]),
             ("explain", vec!["--verbose"]),
         ] {
+            let verbose = extra.contains(&"--verbose");
             let server = RpcServer::with_fixture(scope, RpcFixture::UnknownTarget);
             let mut args = vec![
                 command,
@@ -410,7 +592,15 @@ fn fixed_rpc_unknown_target_supports_partial_analysis_and_both_explain_views() {
                         .contains("UnknownTarget")
                 );
             } else {
-                assert_partial(&text(&output, 2), "UnknownTarget");
+                let rendered = text(&output, 2);
+                assert_partial(&rendered, "UnknownTarget");
+                if verbose {
+                    assert_verbose(&rendered);
+                    assert!(partial_body(&rendered).contains("progress=Dispatched"));
+                } else {
+                    assert_concise(&rendered);
+                    assert!(partial_body(&rendered).contains("Known transitions"));
+                }
             }
             let requests = server.finish();
             assert_eq!(

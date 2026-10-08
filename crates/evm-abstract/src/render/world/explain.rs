@@ -76,7 +76,7 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
         let ir = ssa::build_world(analysis)?;
         output.push_str(&super::ssa::render(analysis, &ir));
     } else if allow_partial_ssa {
-        output.push_str(&super::partial_ssa(
+        output.push_str(&super::partial_ssa_verbose(
             analysis,
             &ssa::build_partial_world(analysis)?,
         ));
