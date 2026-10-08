@@ -36,9 +36,9 @@ def rendered_frame(page) -> None:
 
 
 def submit_bytecode(page, canvas, bytecode: str, evidence: Path):
-    # At this fixed viewport the two-line egui bytecode editor sits below the
+    # At this fixed viewport the compact egui bytecode editor sits below the
     # toolbar. Use real pointer/keyboard input so serialization is tested too.
-    canvas.click(position={"x": 300, "y": 85})
+    canvas.click(position={"x": 300, "y": 60})
     rendered_frame(page)
     page.keyboard.press("Control+A")
     rendered_frame(page)
@@ -122,7 +122,34 @@ def main() -> None:
                 assert len(screenshot) > 10000, f"{name} did not paint a substantial canvas"
                 screenshots[name] = hashlib.sha256(screenshot).hexdigest()
             assert len(set(screenshots.values())) == 4, "view shortcuts did not repaint distinct custom views"
+            # Resize the same live analysis through desktop, split/tab and
+            # portrait/short-window layouts. No reload or new analysis may be
+            # needed to keep all views usable after resizing.
+            resize_requests = []
+            page.on("request", lambda request: resize_requests.append(request.url)
+                    if request.url.endswith("/api/analyze") else None)
+            viewports = [(1920, 1080), (1440, 900), (1024, 768), (768, 600),
+                         (390, 844), (844, 390), (320, 480), (1440, 1000)]
+            viewport_screenshots = {}
+            for width, height in viewports:
+                page.set_viewport_size({"width": width, "height": height})
+                page.wait_for_function(
+                    "([w,h]) => { const c = document.querySelector('#evm-canvas'); "
+                    "return c.width === Math.round(w * devicePixelRatio) && "
+                    "c.height === Math.round(h * devicePixelRatio); }", arg=[width, height])
+                for key, name in [("0", "workspace"), ("1", "disassembly"),
+                                  ("2", "cfg"), ("3", "ssa")]:
+                    page.keyboard.press(key)
+                    rendered_frame(page)
+                    screenshot = canvas.screenshot(path=str(args.output / f"resize-{width}x{height}-{name}.png"))
+                    assert len(screenshot) > 4000, f"blank {width}x{height} {name} view"
+                    viewport_screenshots[f"{width}x{height}-{name}"] = hashlib.sha256(screenshot).hexdigest()
+                expect(status).to_contain_text("Converged")
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                assert page.evaluate("document.documentElement.scrollHeight <= innerHeight")
+            assert not resize_requests, "layout resizing unexpectedly reran analysis"
             page.keyboard.press("0")
+            rendered_frame(page)
             invalid = submit_bytecode(page, canvas, "this is not bytecode", args.output / "invalid-input.png")
             assert invalid.status == 400
             assert invalid.json()["result"]["Err"]["code"] == "InvalidBytecode"
@@ -146,6 +173,18 @@ def main() -> None:
             expect(status).to_contain_text("SSA partial")
             (args.output / "incomplete.json").write_text(json.dumps(partial_reply, indent=2) + "\n")
             canvas.screenshot(path=str(args.output / "incomplete.png"))
+            # Native response rectangles can exist outside a clipped editor.
+            # Prove real input still reaches the backend in narrow and short
+            # windows, after the resize-only checks above.
+            responsive_input = {}
+            for width, height in [(390, 844), (844, 390), (320, 480)]:
+                page.set_viewport_size({"width": width, "height": height})
+                rendered_frame(page)
+                reply = submit_bytecode(page, canvas, "600160020100",
+                                        args.output / f"editor-{width}x{height}.png")
+                assert reply.status == 200
+                expect(status).to_contain_text("Converged")
+                responsive_input[f"{width}x{height}"] = reply.request.post_data_json["bytecode"]
             assert not errors, "browser errors: " + "\n".join(errors)
             report = {
                 "browser": browser.version,
@@ -158,6 +197,8 @@ def main() -> None:
                     "unknown_call": incomplete["status"],
                 },
                 "screenshots": screenshots,
+                "viewport_screenshots": viewport_screenshots,
+                "responsive_input": responsive_input,
                 "browser_errors": errors,
             }
             (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -24,7 +24,7 @@ fn instruction(pc: usize, name: &str) -> DisasmInstruction {
     }
 }
 
-fn report() -> AnalysisReport {
+pub(crate) fn report() -> AnalysisReport {
     let cfg: Vec<_> = [(0, 0, "CALLDATALOAD"), (1, 5, "PUSH1"), (2, 10, "ADD")]
         .into_iter()
         .map(|(id, pc, name)| CfgBlock {
@@ -135,7 +135,7 @@ fn report() -> AnalysisReport {
     }
 }
 
-fn ready() -> Workspace {
+pub(crate) fn ready() -> Workspace {
     let mut workspace = Workspace::default();
     workspace.begin_analysis();
     workspace.receive(Ok(AnalyzeReply {
@@ -214,12 +214,12 @@ fn all_three_custom_views_paint_structural_content() {
     for required in [
         "DISASSEMBLY",
         "CONTROL FLOW",
-        "STATIC SINGLE ASSIGNMENT",
+        "SSA",
         "CALLDATALOAD",
         "S2",
-        "v5",
-        "S0:v1",
-        "S1:v2",
+        "%5",
+        "S0:%1",
+        "S1:%2",
     ] {
         assert!(
             text.contains(required),
@@ -255,7 +255,7 @@ fn clicking_source_row_links_native_state_and_ssa_instruction() {
     );
     workspace.view = View::Ssa;
     let output = frame(&ctx, &mut workspace, vec![]);
-    assert!(painted_text(&output).iter().any(|(text, _)| text == "v5"));
+    assert!(painted_text(&output).iter().any(|(text, _)| text == "%5"));
 }
 
 #[test]
@@ -441,7 +441,7 @@ fn horizontal_scroll_reaches_the_last_phi_argument() {
     let output = frame(&ctx, &mut workspace, vec![]);
     let before = painted_text(&output)
         .into_iter()
-        .find(|(text, _)| text == "S39:v139")
+        .find(|(text, _)| text == "S39:%139")
         .unwrap()
         .1;
     assert!(before.x > 1440.0, "fixture must extend beyond the viewport");
@@ -464,7 +464,7 @@ fn horizontal_scroll_reaches_the_last_phi_argument() {
     let output = frame(&ctx, &mut workspace, vec![]);
     let after = painted_text(&output)
         .into_iter()
-        .find(|(text, _)| text == "S39:v139")
+        .find(|(text, _)| text == "S39:%139")
         .unwrap()
         .1;
     assert!(
@@ -511,12 +511,7 @@ fn automatic_row_focus_preserves_leading_columns_in_split_view() {
         .unwrap()
         .1
         .x;
-    let ssa_left = labels
-        .iter()
-        .find(|(text, _)| text == "STATIC SINGLE ASSIGNMENT")
-        .unwrap()
-        .1
-        .x;
+    let ssa_left = labels.iter().rfind(|(text, _)| text == "SSA").unwrap().1.x;
     let pc_left = labels.iter().find(|(text, _)| text == "0000").unwrap().1.x;
     let definition_left = labels.iter().find(|(text, _)| text == "S0").unwrap().1.x;
     assert!(
@@ -579,7 +574,7 @@ fn stale_and_unexecuted_blocks_never_claim_current_exit_evidence() {
         assert!(
             painted_text(&output)
                 .iter()
-                .any(|(text, _)| text == &format!("{coverage:?}"))
+                .any(|(text, _)| text.contains(&format!("{coverage:?}")))
         );
     }
 }

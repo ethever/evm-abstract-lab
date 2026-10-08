@@ -13,6 +13,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 evm-abstract-protocol = { path = "../evm-abstract-protocol" }
 egui                  = "=0.36.2"
+egui_extras           = { version = "=0.36.2", default-features = false }
+egui_tiles            = { version = "=0.17.1", default-features = false }
 serde_json.workspace  = true
 thiserror.workspace   = true
 
