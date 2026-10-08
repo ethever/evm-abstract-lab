@@ -1,5 +1,7 @@
 # 01：从字节找到指令和基本块
 
+阅读路线：[理论：字节码与具体语义](routes/theory.md#execution) · [实现：解码与基本块](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
+
 这一课解决两个问题：哪些字节是指令，哪些指令应该放在同一个基本块。做完后，你应能解释“字节码里看见 `5b`”为什么还不足以认定它是合法跳转目标。
 
 先完成[快速开始](00-start.md)。本课所有命令都在仓库根目录运行；`0x` 表示十六进制，栈列表按**栈底 → 栈顶**排列。
@@ -61,11 +63,11 @@ B0 @ 0x0000:
 nix run . -- explain --hex 61ab
 ```
 
-看反汇编中的 `PUSH2 0xab00`，再看 CFG 部分的 `stack out [{0xab00}]`。花括号表示一个槽位可能取到的值；此处只有一种可能，[下一课](02-domain.md)再解释集合。
+看反汇编中的 `PUSH2 0xab00`，再看 CFG 部分的 `stack out [{0xab00}]`。花括号表示一个槽位可能取到的值；此处只有一种可能，[抽象域一课](02-domain.md)解释集合。
 
 ## 3. 把指令切成基本块
 
-**基本块**是一段正常执行时顺序经过的指令。控制流要跳入、跳出或暂停时，需要一个块边界。先切块，[下一课](02-domain.md)以后再计算块间哪些边可能存在。
+**基本块**是一段正常执行时顺序经过的指令。控制流要跳入、跳出或暂停时，需要一个块边界。块间哪些边可能存在，还要结合[数值摘要](02-domain.md)与[控制流传播](03-cfg.md)来计算。
 
 本实现按以下规则切块：
 
@@ -156,4 +158,4 @@ fork 指执行层协议版本。本仓库支持 `cancun`、`prague`、`osaka`，
 
 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 中的 `push_data_is_not_a_jumpdest`、`truncated_push_pads_on_the_right`、`zero_condition_does_not_validate_invalid_target` 分别核对本课三个容易出错的边界。
 
-下一课：[用一份状态概括许多执行](02-domain.md)。你将看到同一个栈槽位为什么可以同时保存 `{1,2}`。
+相关主题：[用一份状态概括许多执行](02-domain.md)。你将看到同一个栈槽位为什么可以同时保存 `{1,2}`。

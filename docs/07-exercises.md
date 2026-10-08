@@ -1,6 +1,8 @@
 # 07：按步骤把知识变成实验
 
-先完成 [00](00-start.md) → [01](01-bytecode.md) → [02](02-domain.md) → [03](03-cfg.md) → [04](04-ssa.md) → [05](05-sensitivity.md) → [06](06-boundaries.md) 的基础阅读，再按顺序做解码、有限集合、SSA、历史分组和完成状态实验。组合域练习配合[第 12 课](12-product-domains-facts.md)；世界练习等读过[第 09 课](09-cross-contract.md)后再做。后面的[SSA 优化](#10-进阶设计消除多余-φ)、[分支约束](#11-进阶设计让-true-分支记住-x5)、[边解释](#12-进阶设计解释一条边为什么存在)设计用来区分当前能力和需要新增的规则。
+阅读路线：[理论：按主题核对推导](routes/theory.md#evidence) · [实现：按主题核对实现](routes/implementation.md#evidence) · [选择路线](learning-routes.md)。
+
+先完成 [00 的首个实验](00-start.md)，再按[所选路线](learning-routes.md)在相应主题后做练习。解码与协议实验对应执行规则，有限集合与组合域实验对应数值摘要，SSA 与 φ 实验对应值流，历史分组实验对应敏感性；世界实验配合[第 09 课](09-cross-contract.md)。后面的[SSA 优化](#10-进阶设计消除多余-φ)、[分支约束](#11-进阶设计让-true-分支记住-x5)、[边解释](#12-进阶设计解释一条边为什么存在)设计用来区分当前能力和需要新增的规则。
 
 每个练习都用同一种方法：
 
@@ -295,4 +297,23 @@ nix run . -- analyze --world /tmp/storage-experiment.json --evm.to 0x00000000000
 
 </details>
 
-基础实验做完后，读[第 08 课](08-forks.md)，检查同一字节码在不同协议规则下的区别。世界实验和扩展设计继续配合[第 09 课](09-cross-contract.md)、[第 10 课](10-snapshots-summaries-creation.md)阅读；组合域实验配合[第 12 课](12-product-domains-facts.md)核对事实、局部上限与共享工作预算。
+## 13. 判断部分 SSA 究竟记录到了哪里
+
+打开 [partial-ssa-memory.json](../examples/partial-ssa-memory.json)，先手写五条指令的正常栈变化，再按 [04 的实验命令](04-ssa.md#从块中途停下的实际输出开始)分别使用 1 和 32 字节内存上限。不要先看答案，预测四件事：MLOAD 是否有结果名字；ADD 是否出现于 SSA 正文；记录处的栈还剩什么；分析状态与退出码是什么。
+
+接着运行 [partial phi 示例](04-ssa.md#部分-φ-的输入覆盖哪些边)，找到一条 `T` 边及接收它的入口 φ，回答：输入列表只有一项，能否证明以后不会再发现别的入边？整张图 Incomplete，是否意味着每个块都只执行到中间？
+
+<details><summary>提示与验收</summary>
+
+| 内存上限 | MLOAD 和后续指令的证据 | 栈与完成状态 |
+| --- | --- | --- |
+| 1 | MLOAD 为 OperandsConsumed，消费偏移名字 `%1`，没有结果；ADD、STOP 未分析到 | `recorded prefix stack: F0: [%0]`，其中 `%0` 是之前的常量 1；Incomplete、退出 2 |
+| 32 | MLOAD 定义 `%2`，ADD 定义 `%3`，STOP 已记录 | 块末栈为 `[%3]`；Converged、退出 0 |
+
+`recorded prefix stack` 是当前记录阶段的栈，不承诺最后一条指令已经正常完成。φ 的 `T: %value` 项只说明沿该条已支持边传入哪个名字；当前实现未为 Incomplete 图中的每个块分别证明入边完整。单输入 φ 也可能只是未简化的入口命名。已记录到块末尾的路径可以与其他路径的前沿同时存在。
+
+最后分别从[理论路线](routes/theory.md#ssa)解释这里的覆盖限制，从[实现路线](routes/implementation.md#ssa)定位 `InstructionProgress`、`exit_frames` 与 φ 输入的构造。能把这些字段对应到实际输出，才算完成这一题。
+
+</details>
+
+继续当前[阅读路线](learning-routes.md)，或用[第 08 课](08-forks.md)检查协议规则。世界实验配合[第 09 课](09-cross-contract.md)、[第 10 课](10-snapshots-summaries-creation.md)；组合域实验配合[第 12 课](12-product-domains-facts.md)。

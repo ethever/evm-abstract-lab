@@ -2,7 +2,7 @@
 
 这个实验室用 Rust 实现一个 EVM 分析器，帮助你理解：**合约指令怎样计算，执行可能走哪些分支，一个值来自哪里，以及调用另一个合约后状态怎样变化。** EVM 是以太坊执行合约字节码的虚拟机。
 
-分析器根据给定的代码和初始事实，计算可能发生的执行。例如，不知道调用输入时，一条分支可能产生 1，另一条产生 2；分析结果用集合 `{1,2}` 同时记录两种可能。教程用中文讲解，从手算指令和读输出开始，再介绍抽象解释、控制流图和 SSA。
+分析器根据给定的代码和初始事实，计算可能发生的执行。例如，不知道调用输入时，一条分支可能产生 1，另一条产生 2；分析结果用集合 `{1,2}` 同时记录两种可能。教程用中文讲解，提供[理论与实现两条路线](docs/learning-routes.md)，结合手算指令、实际输出和源码理解同一组问题。
 
 ## 先运行一个例子
 
@@ -38,29 +38,16 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 ## 推荐阅读顺序
 
-先完成 [00](docs/00-start.md)、[01](docs/01-bytecode.md)、[02](docs/02-domain.md)、[03](docs/03-cfg.md)、[04](docs/04-ssa.md)、[05](docs/05-sensitivity.md)、[06](docs/06-boundaries.md) 的基础阅读，再按需要进入跨合约实验。每课给出运行步骤、要检查的输出和对应源码；不要求先读论文。
+先完成 [00：运行与输出](docs/00-start.md) 的第一个实验，然后选择一条主线。两条路线覆盖同一组主题，使用同一份章节和例子；区别是从问题进入理论，还是从数据与函数进入实现。章节编号用于查找，不要求从 00 一直顺读到 16。
 
-如果现在最关心 memory 与 storage，可以在读完 [00](docs/00-start.md)、[01](docs/01-bytecode.md)、[02](docs/02-domain.md) 后走一条更小的路线：**[14 的字节读写](docs/14-memory-model.md) → [16 的单账户 slot 读写](docs/16-storage-model.md) → [15 的表达式与路径条件](docs/15-symbolic-relations.md) → [09 的跨合约归属和回滚](docs/09-cross-contract.md)**。章节号用于查找，不要求先在完整 CALL 报告里同时理解这些概念。每一步都先画具体状态，再看抽象值、JSON 与额外候选。
-
-| 顺序 | 学完能回答什么 | 主要例子 |
+| 路线 | 适合带着什么问题阅读 | 推进方式 |
 | --- | --- | --- |
-| [00：运行与输出](docs/00-start.md) | pc、栈、反汇编、CFG、SSA 分别表示什么？ | [`straight-line.hex`](examples/straight-line.hex) |
-| [01：字节码与基本块](docs/01-bytecode.md) | 哪些字节是指令？为什么 PUSH 内部的 `5b` 不能跳转到？ | 短 hex、[`diamond.hex`](examples/diamond.hex) |
-| [02：抽象执行与域](docs/02-domain.md) | 如何用集合计算？合并与 `⊤` 分别保留什么信息？ | [`diamond.hex`](examples/diamond.hex) |
-| [03：CFG 与固定点](docs/03-cfg.md) | 怎样恢复动态跳转？循环里的信息如何反复传播？ | [`loop.hex`](examples/loop.hex)、[`dynamic-jump.hex`](examples/dynamic-jump.hex) |
-| [04：栈 SSA](docs/04-ssa.md) | 值名与栈位置有什么区别？汇合点的 φ 怎样选择来源？ | 分支、循环、DUP/SWAP |
-| [05：敏感性与精度](docs/05-sensitivity.md) | 哪些执行被合并？改变参数怎样保留更多区别？ | [`internal-calls.hex`](examples/internal-calls.hex)、[`stack-heights.hex`](examples/stack-heights.hex) |
-| [06：模型边界与证据](docs/06-boundaries.md) | 收敛能说明什么？对照测试与链上事实分别能证明什么？ | 预算、诊断、revm 对照 |
-| [09：跨合约执行](docs/09-cross-contract.md) | 返回值、代理、回滚和重入怎样影响账户状态？ | [`examples/worlds/`](examples/worlds) |
-| [10：快照、调用摘要与代码生命周期](docs/10-snapshots-summaries-creation.md) | 何时能复用分析？部署和销毁如何改变代码？ | 摘要、CREATE/CREATE2、预编译 |
-| [11：状态容器与后端对比](docs/11-state-backends.md) | 如何用同一接口比较 std 与 imbl 的检查点、写入和回滚？ | [`scripts/compare-state-backends.sh`](scripts/compare-state-backends.sh) |
-| [12：组合域与事实交换](docs/12-product-domains-facts.md) | 位、范围与同余怎样交换信息？来源和身份怎样分层？ | [`known-bits-branch.hex`](examples/known-bits-branch.hex)、[`copy-identity.hex`](examples/copy-identity.hex) |
-| [13：EVM 环境与符号输入](docs/13-evm-environment.md) | 默认覆盖哪些调用？怎样指定交易、区块和 gas 环境？ | `--evm.*`、caller/origin、BLOCKHASH/BLOBHASH |
-| [14：EVM内存与抽象字节数组](docs/14-memory-model.md) | MSTORE 怎样拆成字节？未知偏移、合并与复制怎样影响结果？ | MSTORE/MLOAD、MSTORE8、MSIZE、CALL 返回区 |
-| [15：符号表达式与关系约束](docs/15-symbolic-relations.md) | 分支条件怎样约束后续值？状态合并和 SMT 资源边界如何处理？ | 矛盾守卫、输入身份、进程内 SMT 求解器 |
-| [16：Storage 的读写、别名与回滚](docs/16-storage-model.md) | 一个 slot 怎样读写？默认值、弱更新、同符号键和调用保存点分别保留什么？ | 单 slot、两候选 slot、未知 slot、transient、回调回滚 |
+| [理论路线：从语义与近似走到实现](docs/routes/theory.md) | 摘要、合并、固定点和 SSA 为什么这样定义？这些定义能保证什么？ | 先建立概念与具体例子，再检查仓库怎样实现、在哪里近似或停止 |
+| [实现路线：跟着输入、状态与结果读代码](docs/routes/implementation.md) | 一条命令经过哪些模块，哪个类型保存状态，输出从哪里产生？ | 沿 CLI、机器状态、转换函数、调用与 SSA 追踪，再解释对应理论与不变量 |
 
-两课可穿插使用：[07：练习与提示](docs/07-exercises.md) 用来动手检查理解；[08：协议版本](docs/08-forks.md) 用来确认 fork 与指令规则。完成[第 02 课](docs/02-domain.md)后，可以进入[第 14 课](docs/14-memory-model.md)，先手算内存读写，再理解抽象字节数组。完成[第 05 课](docs/05-sensitivity.md)后，也可以直接进入[第 12 课](docs/12-product-domains-facts.md)，继续研究数值精度，再回到[跨合约实验](docs/09-cross-contract.md)。[例子索引](examples/README.md)按难度列出实验；[参考资料](docs/references.md)按问题指向规范、论文和教学材料。
+[路线总览](docs/learning-routes.md)按共同主题并排列出两个入口，可以在数值域、CFG、SSA、内存/storage、关系约束、调用/回滚、RPC/摘要或验证主题中切换视角。每课顶部都有返回相应路线的链接；[例子索引](examples/README.md)用于选实验，[第 07 课](docs/07-exercises.md)用于核对理解，[参考资料](docs/references.md)用于继续读规范和论文。
+
+如果你正在读 `recorded prefix stack`、`partial phi` 或 `OperandsConsumed`，直接进入 [04：部分 SSA 的逐步实验](docs/04-ssa.md#7-未完成时按需查看部分-ssa)，观察同一程序在内存上限不足与足够时的栈、指令结果和覆盖差异，再回到所选路线。
 
 ## 从单段代码到多个合约
 

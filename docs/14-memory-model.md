@@ -1,5 +1,7 @@
 # 14：EVM 内存与抽象字节数组
 
+阅读路线：[理论：内存与别名](routes/theory.md#memory-storage) · [实现：ByteArray 与读写](routes/implementation.md#memory-storage) · [选择路线](learning-routes.md)。
+
 `MSTORE` 把栈上的数写进 memory，`MLOAD` 再读出来。写入的是确定的数时，这很直观；如果数或地址都有多种可能，分析器应该保存什么？这就是本课要解释的内存模型。
 
 本课按三步展开：先画出一次真实执行中的字节；再把多次可能执行的结果合在一张表里；最后解释这张合并表保存了什么、忘掉了什么。每个实验都先限定输入，再读抽象结果。不要从一个 `⊤` 或 `Converged` 标签直接跳到结论。
@@ -800,6 +802,8 @@ printf 'exit=%s\n' "$memory_status"
 ```
 
 MSTORE(1, x) 需要长度 64，因此会留下 `Memory` 前沿、`Incomplete`，退出码为 2。这是分析器的追踪上限，不是对真实 EVM out-of-gas 的精确模拟。当前没有精确计算内存扩容 gas；工作预算 `max_work` 也不是 gas。
+
+要看清指令内部停在哪一步，接着做 [04 的 MLOAD 中断实验](04-ssa.md#从块中途停下的实际输出开始)。同一份 [partial-ssa-memory.json](../examples/partial-ssa-memory.json) 在上限为 1 时，MLOAD 已弹出偏移参数但尚无结果，后面的 ADD、STOP 没有记录；上限为 32 时则能分析完整个块。该实验逐项解释 `OperandsConsumed`、`recorded prefix stack` 和 `Memory` 前沿，并区分分析器的中间记录与真实 EVM 完成一条指令后的状态。
 
 库层的 [`RangeError`](../crates/evm-abstract/src/world/bytes.rs) 区分未知大小、偏移超出主机索引、加法溢出和范围超过上限。执行层遇到不能处理的字节范围时记录 `Memory` 前沿；耗尽共享逻辑工作预算则记录 `Work` 前沿。已有精度下降与真正未展开的工作分别报告。
 

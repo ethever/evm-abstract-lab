@@ -1,5 +1,7 @@
 # 08：fork——选择执行规则，再分析字节码
 
+阅读路线：[理论：协议语义](routes/theory.md#execution) · [实现：fork 与解码配置](routes/implementation.md#execution) · [选择路线](learning-routes.md)。
+
 **fork** 在本课中指一套协议版本的执行规则。字节码只是字节序列；还要选定规则，才能判断某个字节是不是有效指令、怎样执行，以及使用哪些预编译。
 
 本仓库支持 `cancun`、`prague`、`osaka`，项目默认配置是 `osaka`。这个默认值写在代码中，不会自动追随网络升级。分析真实历史状态时，应选择该链、该区块实际使用的规则；“使用默认值”不等于已核对快照对应的版本。
@@ -128,4 +130,4 @@ nix run . -- cfg --hex ef01001111111111111111111111111111111111111111 --fork osa
 
 “支持 Osaka”表示已实现模型按 Osaka 选择字节码与预编译规则，并不表示实现了完整协议的每个细节。内存、storage、调用、有限创建和 [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) 已进入模型；精确 gas、无法表示的原生输入、完整授权交易处理等限制仍见[第 06 课](06-boundaries.md)。规则选择与模型能力必须同时阅读。
 
-进阶继续：[第 09 课：跨合约调用](09-cross-contract.md)，再读[第 10 课：快照、摘要和创建](10-snapshots-summaries-creation.md)。
+相关主题：[第 09 课：跨合约调用](09-cross-contract.md)，再读[第 10 课：快照、摘要和创建](10-snapshots-summaries-creation.md)。

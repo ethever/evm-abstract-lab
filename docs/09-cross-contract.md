@@ -1,5 +1,7 @@
 # 09：跟着一次调用，跨过合约边界
 
+阅读路线：[理论：调用与回滚](routes/theory.md#calls-state) · [实现：帧、保存点与返回](routes/implementation.md#calls-state) · [选择路线](learning-routes.md)。
+
 [前几课](../README.md#推荐阅读顺序)分析一段字节码。本课把问题扩大一点：A 调用 B，B 返回的数值会不会改变 A 的分支？这要求分析器同时保存两个合约的执行位置、返回字节和 storage。
 
 先手算一条成功路径，再读包含其他可能性的抽象结果。本课命令将入口 caller 固定为 `0x...1000`、value 固定为零、calldata 固定为空；origin 省略，因此与入口 caller 相同。未指定的交易和区块字段仍为符号输入。省略 caller、value、calldata 时，分析覆盖更广的输入范围，规则见[第 13 课](13-evm-environment.md)。所有命令都在仓库根目录执行；示例是离线合成状态，不需要节点或资金。阅读前应了解 [栈](01-bytecode.md)、[值集合](02-domain.md) 和 [CFG](03-cfg.md)。

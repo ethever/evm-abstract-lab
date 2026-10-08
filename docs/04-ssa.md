@@ -1,6 +1,8 @@
 # 04：SSA——给流动的栈值起名字
 
-[前一课](03-cfg.md)的 CFG 告诉我们“执行可能去哪里”。这一课再回答：“这条 ADD 使用的两个值，各自从哪里来？”
+阅读路线：[理论：SSA 与覆盖证明](routes/theory.md#ssa) · [实现：SSA 构建与渲染](routes/implementation.md#ssa) · [选择路线](learning-routes.md)。
+
+[控制流一课](03-cfg.md)的 CFG 告诉我们“执行可能去哪里”。这一课再回答：“这条 ADD 使用的两个值，各自从哪里来？”
 
 **SSA** 是 Static Single Assignment，即静态单赋值表示。它为分析图中每个产生值的定义位置分配唯一名字，让后续指令直接引用这个名字。本课先读实际输出，再解释分支和循环中的值如何连接，以及这些名字与抽象执行中的固定输入、临时复制身份有何区别。
 
@@ -115,7 +117,7 @@ constants-only 的入口数值变成 Top；默认 product 只是不能完整列�
 
 SSA 名字本身也不是路径约束。看到 `%0` 被比较为 5，并不意味着当前分析已经在某条边上证明 `%0=5`；这取决于分析是否保存了比较与原值之间的关系。
 
-回到[上一课的 `DUP1; XOR` 实验](03-cfg.md#5-数值精度怎样改变候选边)：
+回到[控制流一课的 `DUP1; XOR` 实验](03-cfg.md#5-数值精度怎样改变候选边)：
 
 ```bash
 nix run . -- ssa --file examples/copy-identity.hex --context-depth 0
@@ -189,11 +191,98 @@ flowchart LR
 
 完整跨合约 SSA 需要完整的跨合约图；把几个独立栈 SSA 拼在一起，无法得到正确的调用与回滚语义。下面的部分 SSA 使用另一种证据契约，保留尚未覆盖的路径。
 
-SSA 验证通过，说明定义、使用和控制边满足这些结构规则。它没有证明 CFG 中每条路径都真实可执行，也没有给出整个 EVM 语义的形式证明。[下一课](05-sensitivity.md)会用同一个 helper 的两次调用，观察分析怎样通过“暂时不合并”改善精度。
+SSA 验证通过，说明定义、使用和控制边满足这些结构规则。它没有证明 CFG 中每条路径都真实可执行，也没有给出整个 EVM 语义的形式证明。[敏感性一课](05-sensitivity.md)会用同一个 helper 的两次调用，观察分析怎样通过“暂时不合并”改善精度。
 
 ## 7. 未完成时按需查看部分 SSA
 
 不知道 CALL 的目标，或在预算前沿停下时，分析已经完成的一些指令仍有可读的值流。加 `--allow-partial-ssa` 可以给这些抽象执行证据起名字，同时列出未覆盖部分；它不会把分析改为 `Converged`。
+
+### 从块中途停下的实际输出开始
+
+先用一个没有调用、没有跳转的小程序，观察“执行了块的一部分”具体是什么样子。[`partial-ssa-memory.json`](../examples/partial-ssa-memory.json) 只包含一个账户，代码为 `60015f510100`：
+
+```text
+B0 @ 0x0000:
+       0000: PUSH1 0x1
+       0002: PUSH0 0x0
+       0003: MLOAD
+       0004: ADD
+       0005: STOP
+```
+
+五条指令都属于静态基本块 B0。正常执行时，它把 1 压栈，读取偏移 0 处的 32 字节 memory，再相加。新调用帧的 memory 初始为零。先把分析器允许的 memory 范围限制为 1 字节；账户余额和 nonce 在文件中明确为零，调用 value 与 calldata 也在命令里明确给出：
+
+```bash
+PARTIAL_MEMORY_STATUS=0
+nix run . -- explain --world examples/partial-ssa-memory.json \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.value 0 --evm.calldata 0x \
+  --max-memory-bytes 1 --allow-partial-ssa \
+  || PARTIAL_MEMORY_STATUS=$?
+printf 'exit=%s\n' "$PARTIAL_MEMORY_STATUS"
+```
+
+退出码为 `2`，表示分析 `Incomplete`。反汇编仍显示五条指令；CFG 的 `pcs` 只有 `[0x0000, 0x0002, 0x0003]`；部分 SSA 的指令正文是：
+
+```text
+B0 @ 0x0000:
+       0000: %0 = PUSH1 0x1
+       0002: %1 = PUSH0 0x0
+       0003: MLOAD %1 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U0: Memory
+    recorded prefix stack: F0: [%0]
+```
+
+逐步对齐程序、记录阶段和栈，就能解释最后一行：
+
+| 已观察到的步骤 | SSA 栈，栈底 → 栈顶 | 对应数值 | 证据含义 |
+| --- | --- | --- | --- |
+| 进入 B0 | `[]` | `[]` | 根帧没有入口栈参数 |
+| PUSH1 完成 | `[%0]` | `[1]` | `%0` 是这个 PUSH 的结果名字 |
+| PUSH0 完成 | `[%0, %1]` | `[1, 0]` | `%1` 是 MLOAD 将使用的偏移 |
+| MLOAD 已消费参数 | `[%0]` | `[1]` | `%1` 已弹出；32 字节访问超过分析上限，尚未压入读取结果 |
+| ADD、STOP | 没有执行证据 | 没有执行证据 | 它们在捕获代码中存在，但本次块转换没有走到这里 |
+
+**recorded prefix stack 是“按已记录阶段走到这里时的栈”**。这里的 prefix 是这个状态最近一次抽象块转换的指令前缀，最后一条还可能只执行到一半；它不是某笔具体交易的调试轨迹。`MLOAD %1` 记录了已经消费的偏移，左边没有 `%2 =`，因为本次尝试没有正常结果可命名。若按操作码的通常栈效果硬补一个 MLOAD 结果，就会伪造证据。
+
+`F0` 是当前机器状态调用栈里的第 0 帧，按最早调用者在前编号；嵌套调用可能还有 F1、F2，它们各有自己的操作数栈。`[%0]` 是 F0 当前留下的一个 SSA 引用，并不表示栈上数值是 0。JSON 对应 `exit_frames: [[0]]`：外层按帧编号，内层按栈底到栈顶排列；数字 0 是 `%0` 的值 ID。虽然字段叫 `exit_frames`，在部分 SSA 中它保存的是当前前缀留下的栈，不能一概读成“整个基本块完成后的 stack out”。Stale/Unexecuted 时还有进一步限制，见[下文 coverage](#每个状态的证据是否仍适用)。
+
+再把同一命令的 `--max-memory-bytes 1` 改为 `--max-memory-bytes 32`：
+
+```bash
+nix run . -- explain --world examples/partial-ssa-memory.json \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.value 0 --evm.calldata 0x \
+  --max-memory-bytes 32 --allow-partial-ssa
+```
+
+这次退出 `0`，状态为 `Converged`，开关自动保留完整 SSA 输出：
+
+```text
+B0 @ 0x0000:
+       0000: %0 = PUSH1 0x1
+       0002: %1 = PUSH0 0x0
+       0003: %2 = MLOAD %1
+       0004: %3 = ADD %2 %0
+       0005: STOP
+       stack out (before dispatch) F0: [%3]
+```
+
+现在 MLOAD 的读取结果 0 有了名字 `%2`，ADD 的结果 1 有了名字 `%3`。前后 CFG 的数值栈都可能显示 `[{0x1}]`，但前一次是尚未参与 ADD 的 `%0`，后一次是 ADD 产生的 `%3`；只看最后的数值看不出执行到了哪里。这个上限是**分析资源限制**，不能把 `Memory` 前沿解释成具体 EVM 必然发生内存异常。`Converged` 也只说明这次分析按当前模型完成；报告仍可能含 `Failure` outcome，退出 `0` 不是“某笔具体交易一定成功”的断言。
+
+### 为什么基本块可以只执行一个前缀
+
+基本块是根据字节码的控制流边界划分的；抽象分析还要遵守预算、状态事实和模型能力。这是两件不同的事。上例的 MLOAD 不会切开静态基本块，但 [`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 可以在它的处理中提前返回：
+
+1. 到达指令，把 pc 记入 `executed_pcs`，阶段先记为 `Started`。
+2. 检查栈并弹出参数，把阶段改为 `OperandsConsumed`。
+3. MLOAD 调用 `touch_memory` 准备 32 字节访问；超过上限时记录 `Memory` 前沿并返回。
+4. 只有走完普通结果计算、压栈和相关效果，才记录 `Completed`。本例没有走到这一步，更没有继续到 ADD。
+
+工作预算也可能在进入下一条指令前、或消费参数后的处理中用尽。RPC 发现模式的 SLOAD 可能在消费槽键后发现 `MissingStorage`；[`analysis/rpc.rs`](../crates/evm-abstract/src/analysis/rpc.rs) 可以在固定快照补齐事实，再从入口重跑，所以某一轮的前沿不一定出现在最终报告中。
+
+反过来，**看到 frontier 不等于所有执行都立刻停止**。`boundary` 负责记录前沿，是否返回由调用处决定；某些关系分析限制会留下前沿并继续做保守计算，未知调用目标也可以同时保留有证据支持的失败或继续边。因此，应同时读当前指令的 `progress`、已经记录的后继边和整张图的 `status`。局部块完成、某条已知路径完成、整个图覆盖闭合，分别是不同的判断。
+
+CALL 则已被 [`Instruction::ends_block`](../crates/evm-abstract/src/bytecode.rs) 定义为静态块边界：调用者后面的 ADD 等指令属于继续块，需要继续边才能进入。下面用 CALL 说明图的覆盖仍开放；用上面的 MLOAD 才能直接看到**同一个静态块的中途停止**。
 
 ### 先运行一个未知调用目标
 
@@ -241,13 +330,108 @@ printf 'exit=%s\n' "$PARTIAL_SSA_STATUS"
 
 CALL/CREATE 的结果在已记录的 Return、Revert 或 Failure 继续转移上定义，不属于悬挂调用者的 CALL 指令正文。继续转移可能来自子调用结束，也可能来自调用被直接拒绝的失败。已知候选的调用、返回或失败边可以继续保留；未知候选仍留下前沿。RETURN/REVERT 也会进入分发：根帧结束时，返回字节与状态效果在入口 outcome 中阅读；子帧结束时，沿 Return/Revert 转移恢复调用者。因此不能把所有 Dispatched 都解释成“结果只来自转移”。这里的 `%value` 是栈值名字；详细文本和 JSON 中的 `!effect` / 效果 ID 命名 memory、账户状态和回滚点等整机效果，不能把一个效果名字当作每条路径的具体状态。
 
+### 进度和效果链怎样一起读
+
+在[内存上限实验](#从块中途停下的实际输出开始)的第一条命令中，为 `explain` 加上 `--verbose` 参数，可以看到：
+
+```text
+S0 | coverage=Current | incoming complete=false | open incoming=[]
+    !0 = partial effect phi()
+B0 @ 0x0000:
+       0000: %0 = PUSH1 0x1 ; progress=Completed
+         effect !0 -> !1
+       0002: %1 = PUSH0 0x0 ; progress=Completed
+         effect !1 -> !2
+       0003: MLOAD %1 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U0: Memory
+         observed partial effect !2 -> !3
+    recorded prefix stack: F0: [%0]
+    recorded prefix effect: !3
+```
+
+这里省略了 active 帧的元数据行。`%0`、`%1` 连接**栈值的定义与使用**；`!0`～`!3` 连接**整机效果的先后依赖**；`progress` 则解释这个步骤究竟完成到了哪里。三种信息不能互相代替。
+
+当前效果 SSA 使用一个粗粒度 bundle，覆盖 memory、calldata/returndata、storage、余额、日志和回滚检查点等依赖，见 [`ssa/world.rs`](../crates/evm-abstract/src/ssa/world.rs)。它没有把每个内存地址或 storage 槽拆成独立的效果链。PUSH 这样的普通操作也会分配后续效果名字，所以 `!0 -> !1` **不证明**这条 PUSH 修改了 storage 或 memory，也不是状态差异清单。
+
+`observed partial effect !2 -> !3` 表示 MLOAD 本次尝试已经观察到的阶段之后的效果名字。它保留参数消费后可能发生的准备工作，不证明 MLOAD 的正常语义已经完成，也不证明所有状态都还等于尝试之前。`Started` 连这样的后续效果名字也没有，详细文本会写 `effect !n remains open`。这些规则由 [`ssa/partial/build.rs`](../crates/evm-abstract/src/ssa/partial/build.rs) 按执行阶段构建，渲染器 [`render/world/partial.rs`](../crates/evm-abstract/src/render/world/partial.rs) 只决定默认省略哪些细节。
+
 ### 部分 φ 的输入覆盖哪些边
 
-`partial phi(T0: %1, T3: %4)` 只把这两条有当前证据支持的入边接到入口名字。`incoming complete=false` 表示入边覆盖尚未闭合；`open incoming` 列出已记录但尚不能接入 SSA 的边编号。默认文本只显示非空的 `open incoming`，详细文本和 JSON 保留完整覆盖字段。即使 `open incoming=[]`，`Incomplete` 的图也可能继续发现新的前驱，不能据此认定 φ 已覆盖所有执行。
+`partial phi(T0: %1, T3: %4)` 只把这两条有当前证据支持的入边接到入口名字。它保存“**哪条转移 → 哪个值定义**”的映射，并没有在这里计算 `%1 + %4`。T 是原生机器图的转移编号，不是字节码块 B，也不是单程序投影中的前驱 S。
+
+把前面的未知目标例子后面再接上 `PUSH1 1; ADD; STOP`，即可看到 φ 的输入如何被后续代码使用：
+
+```bash
+PARTIAL_PHI_STATUS=0
+nix run . -- explain \
+  --hex 5f5f5f5f5f33600f1660f0175af160010100 \
+  --allow-partial-ssa || PARTIAL_PHI_STATUS=$?
+printf 'exit=%s\n' "$PARTIAL_PHI_STATUS"
+```
+
+仍退出 `2`，仍保留 S0 的 `UnknownTarget`；同时已有一条失败继续边 T0，以及它到达的继续状态 S1。输出片段为：
+
+```text
+S1
+    %11 = partial phi(T0: %14) ; F0 slot 0
+B1 @ 0x000e:
+       000e: %12 = PUSH1 0x1
+       0010: %13 = ADD %12 %11
+       0011: STOP
+    recorded prefix stack: F0: [%13]
+
+Known transitions
+  T0 | S0 -> S1 | kind=Failure
+    deferred result: %14
+    F0: [%14]
+```
+
+这里也省略了 active 帧元数据行。沿着这条有证据的路径，值的连接依次是：
+
+| 位置 | 栈或映射 | 含义 |
+| --- | --- | --- |
+| S0 的 CALL 参数消费后 | F0 `[]` | CALL 本文没有提前定义普通结果 |
+| 失败继续转移 T0 | F0 `[%14]` | 继续转移定义 CALL 的失败结果；本例是失败位 0 |
+| S1 入口 | `T0: %14 → %11` | 用本状态的入口名字 `%11` 接收该转移带来的值 |
+| PUSH1 之后 | F0 `[%11, %12]` | 原来的调用结果位于底部 `slot 0`，新常量 1 在栈顶 |
+| ADD 之后 | F0 `[%13]` | 先弹 `%12`，再弹 `%11`；这条已知失败路径计算 `1 + 0` |
+
+`deferred result` 的“延后”是指结果定义放在调用继续转移上；T0 已在 `Known transitions` 中，不是 `Deferred edges` 里的无支持边。值 ID 的编号也不是运行顺序：先分配块中的名字，再分配转移结果，因此 `%14` 可以作为 `%11` 的输入。
+
+**为什么只有一个输入也有 φ？** 当前构建器给每个状态、每一帧的每个入口栈槽都分配名字，把它们当作块入口参数。`%11 = partial phi(T0: %14)` 是一个只有一项的参数映射；不要求先凑齐两个前驱才允许起名。完整 SSA 也采用[同样的入口命名策略](#5-本仓库如何构建和检查-ssa)。本例 S1 的指令已经走到 STOP，但 S0 的未知目标尚未覆盖，所以不能用 S1 的局部完成来宣称全图完成。
+
+**为什么未完成图里的 φ 都标为 partial？** [`ssa/partial/build.rs`](../crates/evm-abstract/src/ssa/partial/build.rs) 把每个块的 `incoming_complete` 初始值设为 `analysis.status() == Converged`。只要全图是 `Incomplete`，这些字段就全部是 `false`；这是当前实现统一保守的覆盖契约，**不表示已经证明每个块各缺一条局部入边**。渲染器对这个部分 IR 的入口定义统一使用 `partial phi`。
+
+还要区分下面两项：
+
+| 字段 | 具体含义 |
+| --- | --- |
+| `open_incoming` | 已经记录到机器图里、但缺少当前证据而不能接入这个 SSA 块的入边编号 |
+| `incoming_complete` | 整图分析与本块入边覆盖是否都已闭合 |
+
+因此 `open incoming=[]` 只说“当前已记录入边中没有这类待接入边”，不能排除继续分析后发现新前驱。`incoming complete=false` 也不提供缺边的数目和位置。默认文本只显示非空的 `open incoming`，详细文本和 JSON 保留完整覆盖字段。
 
 部分验证器核对指令阶段、定义与使用、已支持和延后的边，以及全部原始前沿；它不提供完整图的支配与覆盖证明。原来的完整 `Ssa` / `WorldSsa` 构建和验证仍拒绝 `Incomplete`。库接口与字段可从 [`ssa/partial.rs`](../crates/evm-abstract/src/ssa/partial.rs) 阅读。
 
 ### 保存 JSON 并连接状态编号
+
+要在机器可读结果里核对刚才的 MLOAD，世界入口使用 `analyze --ssa`：
+
+```bash
+PARTIAL_MEMORY_STATUS=0
+nix run . -- analyze --world examples/partial-ssa-memory.json \
+  --evm.to 0x0000000000000000000000000000000000000101 \
+  --evm.value 0 --evm.calldata 0x --max-memory-bytes 1 \
+  --ssa --allow-partial-ssa --format json > /tmp/partial-memory.json \
+  || PARTIAL_MEMORY_STATUS=$?
+printf 'exit=%s\n' "$PARTIAL_MEMORY_STATUS"
+nix develop -c jq \
+  '.partial_ssa.blocks[0] | {coverage, incoming_complete, open_incoming, exit_frames, last_instruction: .instructions[-1]}' \
+  /tmp/partial-memory.json
+```
+
+退出 `2`，读取到 `coverage="Current"`、`incoming_complete=false`、`open_incoming=[]`、`exit_frames=[[0]]`。最后一条指令的 `pc=3`、`operands=[1]`、`results=[]`、`progress="OperandsConsumed"`，效果字段为 `effect_input=2`、`effect_result=3`。这正对应文本中的 `MLOAD %1`、没有普通结果和 `observed partial effect !2 -> !3`；JSON 的 pc 为十进制数。
+
+单程序入口则用 `ssa --format json`。下面保留最初的未知目标例子，观察它另外提供的局部状态映射：
 
 ```bash
 PARTIAL_SSA_STATUS=0
@@ -267,4 +451,4 @@ nix develop -c jq \
 
 世界/RPC 的部分 SSA 与 `analysis.states` 共用原生机器状态编号，不需要这组局部映射。[第 09 课](09-cross-contract.md)解释帧与继续边；[第 10 课的 RPC 阅读](10-snapshots-summaries-creation.md#按原符号输入查看-weth-的部分-ssa)给出保持符号输入的链上例子。
 
-继续：[第 05 课：敏感性](05-sensitivity.md)。
+相关主题：[第 05 课：敏感性](05-sensitivity.md)解释入口如何分开或合并；继续学习时可使用页首的理论与实现路线。

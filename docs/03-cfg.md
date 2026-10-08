@@ -1,12 +1,14 @@
 # 03：CFG 是抽象执行长出来的图
 
-[上一课](02-domain.md)解释了一个块内的值如何汇合。这一课跟踪这些摘要怎样流到其他块、怎样重访循环，以及分析没有完成时留下什么证据。
+阅读路线：[理论：传播与固定点](routes/theory.md#control-flow) · [实现：调度、状态键与合并](routes/implementation.md#control-flow) · [选择路线](learning-routes.md)。
 
-这里使用单字节码的 `cfg` 视图，先学习局部控制流。[diamond](../examples/diamond.hex) 和 [loop](../examples/loop.hex) 用 `constants-only --no-relations` 延续[上一课](02-domain.md)的纯数值手算，再用默认组合域观察数值精度怎样改变分支。它们与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
+[数值摘要一课](02-domain.md)解释了一个块内的值如何汇合。这一课跟踪这些摘要怎样流到其他块、怎样重访循环，以及分析没有完成时留下什么证据。
+
+这里使用单字节码的 `cfg` 视图，先学习局部控制流。[diamond](../examples/diamond.hex) 和 [loop](../examples/loop.hex) 用 `constants-only --no-relations` 延续[数值摘要一课](02-domain.md)的纯数值手算，再用默认组合域观察数值精度怎样改变分支。它们与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
 
 ## 1. 先看一张能手算的图
 
-运行[上一课](02-domain.md)的菱形分支：
+运行[数值摘要一课](02-domain.md)的菱形分支：
 
 ```bash
 nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relations --context-depth 0
@@ -277,4 +279,4 @@ nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relati
 
 私有可见性限制外部调用，不说明实现意图。读方法时仍需核对：它更新哪份数据、凭什么跳过执行，以及预算中断后保留什么未完成证据；源码注释对应这些职责和不变量。
 
-下一课：[用 SSA 给栈值命名](04-ssa.md)。有了完整的前驱关系，才能准确解释一个值在汇合处来自哪里。
+相关主题：[用 SSA 给栈值命名](04-ssa.md)。有了完整的前驱关系，才能准确解释一个值在汇合处来自哪里。
