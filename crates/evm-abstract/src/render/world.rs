@@ -51,9 +51,15 @@ pub fn ssa(analysis: &WorldAnalysis, ir: &crate::ssa::WorldSsa) -> String {
 }
 
 /// Render a partial artifact built from this same native machine analysis.
-/// Coverage, open incoming edges and original frontiers remain visible.
+/// Normal progress and effect bookkeeping are omitted; exceptional coverage,
+/// open incoming edges and original frontiers remain visible.
 pub fn partial_ssa(analysis: &WorldAnalysis, ir: &crate::ssa::PartialWorldSsa) -> String {
     partial::render(analysis, ir)
+}
+
+/// Expand all instruction phases and effect dependencies of a partial artifact.
+pub fn partial_ssa_verbose(analysis: &WorldAnalysis, ir: &crate::ssa::PartialWorldSsa) -> String {
+    partial::render_verbose(analysis, ir)
 }
 
 /// DOT graph preserving call/return/revert/failure edge labels and frontiers.
