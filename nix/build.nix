@@ -1,4 +1,4 @@
-# Cargo dependencies remain pinned in Cargo.lock and are vendored by Crane.
+# Vendor once; keep dependency artifacts separate by profile and features.
 {
   pkgs,
   craneLib,
@@ -24,8 +24,9 @@ let
         || (fixture && (lib.hasSuffix ".hex" path || lib.hasSuffix ".json" path))
       );
   };
+  cargoVendorDir = craneLib.vendorCargoDeps { inherit src; };
   common = dependencies.environment // {
-    inherit src;
+    inherit src cargoVendorDir;
     inherit (dependencies) nativeBuildInputs buildInputs;
     strictDeps = true;
     pname = "evm-abstract";
@@ -38,21 +39,39 @@ let
       mainProgram = "evm-abstract";
     };
   };
-  cargoArtifacts = craneLib.buildDepsOnly common;
-  package = craneLib.buildPackage (common // { inherit cargoArtifacts; });
-  imblCommon = common // {
-    cargoExtraArgs = "--workspace --locked --features imbl";
-  };
-  imblArtifacts = craneLib.buildDepsOnly imblCommon;
-  imblPackage = craneLib.buildPackage (imblCommon // { cargoArtifacts = imblArtifacts; });
+  variant =
+    profile: features:
+    let
+      variantCommon = common // {
+        CARGO_PROFILE = profile;
+        cargoExtraArgs = "--workspace --locked ${features}";
+      };
+      cargoArtifacts = craneLib.buildDepsOnly (
+        variantCommon
+        // {
+          # The test cache compiles dummy tests (--no-run) and dev-dependencies.
+          # The release cache only builds production dependencies.
+          doCheck = profile == "test";
+        }
+      );
+    in
+    {
+      common = variantCommon;
+      inherit cargoArtifacts;
+      package = craneLib.buildPackage (
+        variantCommon
+        // {
+          inherit cargoArtifacts;
+          doCheck = false;
+        }
+      );
+    };
 in
 {
-  inherit
-    common
-    cargoArtifacts
-    package
-    imblCommon
-    imblArtifacts
-    imblPackage
-    ;
+  inherit common;
+  release = variant "release" "";
+  imblRelease = variant "release" "--features imbl";
+  test = variant "test" "";
+  imblTest = variant "test" "--features imbl";
+  allFeaturesTest = variant "test" "--all-features";
 }

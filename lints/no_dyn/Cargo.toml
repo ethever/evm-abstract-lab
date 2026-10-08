@@ -18,3 +18,12 @@ dylint_testing = "=6.1.0"
 
 [package.metadata.rust-analyzer]
 rustc_private = true
+
+# This compiler plugin is outside the application workspace; its UI tests need
+# the same fast development settings as the application tests.
+[profile.dev]
+opt-level     = 0
+debug         = 0
+lto           = "off"
+codegen-units = 256
+incremental   = true

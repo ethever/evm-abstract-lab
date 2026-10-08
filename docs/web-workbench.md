@@ -83,7 +83,7 @@ Rust、Wasm target、wasm-bindgen 和浏览器验证工具由 Nix 管理；依�
 
 ```bash
 nix develop
-cargo build --locked --release --jobs 8 --target-dir target -p evm-abstract-web --target wasm32-unknown-unknown
+cargo build --locked --release --target-dir target -p evm-abstract-web --target wasm32-unknown-unknown
 wasm-bindgen --target web --out-name evm_abstract_web --out-dir dist target/wasm32-unknown-unknown/release/evm_abstract_web.wasm
 cp crates/evm-abstract-web/index.html dist/index.html
 cargo run --locked -p evm-abstract-server -- --assets dist

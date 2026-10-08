@@ -5,7 +5,8 @@
   ...
 }:
 let
-  inherit (build) package imblPackage;
+  package = build.release.package;
+  imblPackage = build.imblRelease.package;
 in
 {
   state-backend-parity =

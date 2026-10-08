@@ -209,10 +209,12 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 每次 PR 合并前，必须在本地对最终提交执行完整门禁。准备提交、运行检查与记录结果的步骤见[本地检查流程](docs/local-ci.md)。
 
 ```bash
-nix flake check --print-build-logs --no-update-lock-file --option max-jobs 1 --option cores 8
+nix flake check --print-build-logs --no-update-lock-file
 ```
 
-它检查构建、工作区测试与 doctest、Clippy、Rust 格式、Rustdoc、Nix 格式、TOML 语法与格式、离线文档链接，以及打包后二进制的例子与图输出。开发时可按修改范围单独运行：
+安装与运行生成经过运行性能优化的 release 产物；工作区测试使用快速的 test profile，测试通过与否由 `nix flake check` 验证。构建没有项目固定的并发上限或 CPU 预留，profile 和 Nix 缓存分层见[构建说明](docs/development.md#构建-profile-与缓存)。
+
+完整门禁检查默认、imbl、全部 features 的工作区测试与 doctest（包含 ignored 测试）、Clippy、Rust 格式、Rustdoc、Nix 格式、TOML 语法与格式、离线文档链接、原生求解器自测，以及打包后二进制的例子、图输出和真实浏览器交互。开发时可按修改范围单独运行：
 
 ```bash
 cargo test --workspace --locked
@@ -221,7 +223,7 @@ cargo fmt --all -- --check
 cargo doc --workspace --no-deps --locked
 ```
 
-TOML 检查使用 Nix 中固定版本的 Taplo，规则见 [`taplo.toml`](taplo.toml)。它递归检查仓库的 TOML 文件，包括 [`.cargo/config.toml`](.cargo/config.toml)，排除构建产物和 Git 元数据；语法检查禁用联网 schema 验证。开发时检查或统一格式：
+TOML 检查使用 Nix 中固定版本的 Taplo，规则见 [`taplo.toml`](taplo.toml)。它递归检查仓库的 TOML 文件并覆盖隐藏目录，排除构建产物和 Git 元数据；语法检查禁用联网 schema 验证。开发时检查或统一格式：
 
 ```bash
 nix develop --command taplo lint --no-schema

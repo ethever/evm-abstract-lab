@@ -17,6 +17,7 @@ let
         filter = path: type: common.src.filter path type || lib.hasSuffix ".sh" path;
       };
       CARGO_NET_OFFLINE = "true";
+      CARGO_PROFILE = "dev";
       nativeBuildInputs = common.nativeBuildInputs ++ [
         packages.tools
         pkgs.pkg-config
@@ -94,11 +95,12 @@ in
   no-dyn-ui = lintCrane.mkCargoDerivation (
     packages.lintCommon
     // {
-      cargoArtifacts = null;
+      cargoArtifacts = packages.testArtifacts;
+      CARGO_PROFILE = "test";
       doInstallCargoArtifacts = false;
       doCheck = true;
-      buildPhaseCargoCommand = "cargo build --locked --offline";
-      checkPhaseCargoCommand = "cargo test --locked --offline";
+      buildPhaseCargoCommand = "";
+      checkPhaseCargoCommand = "cargoWithProfile test --locked --offline -- --include-ignored";
     }
   );
   no-dyn-fmt = lintCrane.cargoFmt (packages.lintCommon // { cargoExtraArgs = "--all"; });

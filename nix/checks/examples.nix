@@ -6,7 +6,7 @@
   ...
 }:
 let
-  inherit (build) package;
+  package = build.release.package;
   inherit (dependencies) fontConfig;
   concreteInputs = "--evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x";
 in

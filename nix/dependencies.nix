@@ -19,7 +19,6 @@ in
     CVC5_LIB_DIR = "${nativeSmt.cvc5}/lib";
     CVC5_INCLUDE_DIR = "${nativeSmt.cvc5}/include";
     SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-    RUST_TEST_THREADS = "8";
   };
   # OpenSSL is needed by the Dylint UI test's git2 dependency. Keep it explicit
   # instead of inheriting it accidentally from whichever checks happen to run.

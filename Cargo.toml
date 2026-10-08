@@ -50,3 +50,28 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 wildcard_imports = "deny"
+
+# Development and tests share cheap, incremental code generation. Keep the
+# runtime checks enabled so the fast test suite still catches arithmetic bugs.
+[profile.dev]
+opt-level        = 0
+debug            = 0
+lto              = "off"
+codegen-units    = 256
+incremental      = true
+debug-assertions = true
+overflow-checks  = true
+
+# Cargo's test profile inherits dev; cargo test needs no extra profile flag.
+[profile.test]
+opt-level = 0
+
+# Installed CLI, server and Wasm artifacts favor runtime optimization over
+# compilation speed. Benchmarks inherit these settings from release.
+[profile.release]
+opt-level     = 3
+lto           = "fat"
+codegen-units = 1
+incremental   = false
+debug         = 0
+strip         = "debuginfo"
