@@ -184,7 +184,7 @@ impl Workspace {
         self.selection = Selection::default();
         self.disasm_focus = Selection::default();
         self.ssa_focus = Selection::default();
-        self.graph = widgets::Graph::default();
+        self.graph.reset_report();
         self.request.clone()
     }
 
@@ -214,7 +214,7 @@ impl Workspace {
     pub fn accessible_status(&self) -> String {
         match (&self.phase, &self.report) {
             (Phase::Ready, Some(report)) => format!(
-                "Ready: {} instructions, {} CFG blocks, {} SSA blocks, {} SSA values; {:?}; SSA {}",
+                "Ready: {} instructions, {} CFG blocks, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}",
                 report
                     .disassembly
                     .iter()
@@ -228,7 +228,8 @@ impl Workspace {
                     "complete"
                 } else {
                     "partial"
-                }
+                },
+                self.graph.content_label()
             ),
             (Phase::Failed(message), _) => format!("Error: {message}"),
             (Phase::Loading, _) => "Loading: analyzing bytecode".into(),

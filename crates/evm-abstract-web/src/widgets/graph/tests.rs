@@ -292,16 +292,21 @@ fn content_measurement_shrinks_short_nodes_and_retains_empty_frame_semantics() {
     let ctx = Context::default();
     let mut sizes = None;
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
-        let short = node_text(ui.painter(), &report, &report.cfg[0]);
+        let short = node_text(
+            ui.painter(),
+            &report,
+            &report.cfg[0],
+            super::NodeView::Disassembly,
+        );
         let mut source = report.cfg[0].clone();
         source.instructions = vec![source.instructions[0].clone(); 6];
         source.instructions[0].name = "DELEGATECALL".into();
         source.instructions[0].immediate = Some("0xabcdef0123456789abcdef".into());
-        let long = node_text(ui.painter(), &report, &source);
+        let long = node_text(ui.painter(), &report, &source, super::NodeView::Disassembly);
         source.instructions.clear();
         source.start_pc = None;
         source.frame_depth = 2;
-        let empty = node_text(ui.painter(), &report, &source);
+        let empty = node_text(ui.painter(), &report, &source, super::NodeView::Disassembly);
         assert!(empty.lines.is_empty());
         assert!(empty.detail.starts_with("no bytecode"));
         assert!(empty.size.y < short.size.y);
