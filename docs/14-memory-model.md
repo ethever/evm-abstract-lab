@@ -74,7 +74,7 @@ MSTORE 使用**大端**编码：高位字节放在较小的地址，低位字节
 ```mermaid
 flowchart LR
     W["栈上的 256 位值"] -->|MSTORE| B["拆成 32 个字节"]
-    B --> M["memory：字节偏移到 Value"]
+    B --> M["memory：字节偏移到 AbstractValue"]
     M -->|MLOAD| R["按顺序拼回 256 位值"]
 ```
 
@@ -104,9 +104,9 @@ MLOAD(1) 读取 1～32，因此得到 `0x1234`。MLOAD(0) 读取的窗口是 0�
 
 ```rust
 pub struct ByteArray {
-    length: Value,
-    bytes: BTreeMap<usize, Value>,
-    default: Value,
+    length: AbstractValue,
+    bytes: BTreeMap<usize, AbstractValue>,
+    default: AbstractValue,
     memory: bool,
 }
 ```
@@ -116,7 +116,7 @@ pub struct ByteArray {
 | 字段 | 保存什么 | [第一个实验里的例子](#2-第一个实验写入-42再读出来) |
 | --- | --- | --- |
 | `length` | 可能的字节长度，也是 memory 的 MSIZE 摘要 | 写入后是 `{0x20}` |
-| `bytes` | 某个字节偏移上保存的 `Value` | 偏移 31 的值为 `{0x2a}` |
+| `bytes` | 某个字节偏移上保存的 `AbstractValue` | 偏移 31 的值为 `{0x2a}` |
 | `default` | 没有单独记录的位置的字节值 | 新 memory 中为 `{0x0}` |
 | `memory` | 是否启用 memory 的 32 字节扩容规则 | memory 为 true；calldata（本次调用的输入字节）、returndata（最近一次子调用的返回字节）为 false |
 
@@ -158,13 +158,13 @@ ByteArray 的读取摘要还要结合 `length`，保留序列长度之外补零�
 
 长度没有完整有限候选时，`byte_at` 也会把字节值与零合并。例如表中明确保存偏移 7 的 `{0xaa}`、但长度为 `⊤`，读取摘要会包含 `{0x0,0xaa}`；显式表项没有被删除，只是长度与字节分别保存，尚不能排除该位置在某条路径上越界。只有同时查看长度、显式字节和默认字节，才能理解数组。
 
-### 每个字节为什么也用 Value
+### 每个字节为什么也用 AbstractValue
 
-`Value` 描述**一个位置可能出现的数值**。例如 `{0x1,0x2}` 表示这个字节可能是 1 或 2；不是两个字节，也不是同时保存了两个具体值。
+`AbstractValue` 描述**一个位置可能出现的数值**。例如 `{0x1,0x2}` 表示这个字节可能是 1 或 2；不是两个字节，也不是同时保存了两个具体值。
 
 默认 `product` 可以在候选太多时继续保存固定位、区间或同余等约束。例如一个字节只可能是 1～255 中的奇数，完整候选需要 128 个常量；默认常量容量 8 列不完，其他组件仍可记录“值不超过 255”“最低位为 1”。MSTORE 拆字节和 MLOAD 拼 word 都调用同一个数值域进行运算。
 
-当前 `Value` 是 `AbstractValue` 的兼容名称。它同时容纳数值摘要和可选符号表达式，但两者回答不同问题：
+`AbstractValue` 同时容纳数值摘要和可选符号表达式，但两者回答不同问题：
 
 | 信息 | 例子 | 回答什么 |
 | --- | --- | --- |
@@ -175,7 +175,7 @@ ByteArray 的读取摘要还要结合 `length`，保留序列长度之外补零�
 
 这是字节表与[第 12 课的组合域](12-product-domains-facts.md)的连接点。整个数值没有限制时显示 `⊤`；单独的 `bits=` 全星号只表示位组件没有确定的位，不能忽略同一个值的其他约束。
 
-`Value` 是通用的 U256 摘要，并非 Rust 的 `u8` 类型。正常拆字节、MSTORE8 等运算会产生 8 位约束，但未知数组或未知地址写入直接使用 Top 时也可能失去这个约束；真实 EVM 字节的范围仍然是 0～255。
+`AbstractValue` 是通用的 U256 摘要，并非 Rust 的 `u8` 类型。正常拆字节、MSTORE8 等运算会产生 8 位约束，但未知数组或未知地址写入直接使用 Top 时也可能失去这个约束；真实 EVM 字节的范围仍然是 0～255。
 
 ## 4. 初始零、扩容和 MSIZE
 
@@ -275,7 +275,7 @@ nix run . -- explain --file examples/memory-word-overwrite.hex
 
 本仓库先在两份临时副本中分别写入，再按地址合并。结果是：
 
-| 位置 | 合并后的字节 Value | 读法 |
+| 位置 | 合并后的字节 AbstractValue | 读法 |
 | --- | --- | --- |
 | 0 | `{0x0,0xaa}` | 这次可能写它，也可能没有写它 |
 | 1 | `{0x0,0xaa}` | 同上 |
@@ -327,7 +327,7 @@ nix run . -- explain --file examples/memory-write-alias.hex --context-depth 0
 
 ## 7. 无法列出地址，与无法列出长度，是两个问题
 
-有限常量集合能枚举时，内存操作遍历它。**没有完整地址候选集合**时，即使偏移 `Value` 还有区间或固定位约束，当前实现也没有一般的区间寻址或符号地址求解。
+有限常量集合能枚举时，内存操作遍历它。**没有完整地址候选集合**时，即使偏移 `AbstractValue` 还有区间或固定位约束，当前实现也没有一般的区间寻址或符号地址求解。
 
 ### 7.1 不知道读哪儿
 
@@ -757,7 +757,7 @@ nix develop -c jq '
 
 默认值负责补上未记录的位置，length 决定序列边界。map 有 32 个键，不等于“这份 memory 的内容恰好只有 32 字节”。
 
-本例的值都有完整常量候选，所以查询 `.Constants`。其他程序的值可能是缺少 Constants 的约束对象，查询得到 null；也可能是纯 Top 字符串 `"Top"`，直接索引 `.Constants` 会报类型错误。先查看完整 Value 和它的 JSON 类型，再读位、区间、同余等组件；缺字段和 Top 都不能当作数值 0。遇到前沿时，`exit` 也可能没有完成结果；先查报告状态。
+本例的值都有完整常量候选，所以查询 `.Constants`。其他程序的值可能是缺少 Constants 的约束对象，查询得到 null；也可能是纯 Top 字符串 `"Top"`，直接索引 `.Constants` 会报类型错误。先查看完整 AbstractValue 和它的 JSON 类型，再读位、区间、同余等组件；缺字段和 Top 都不能当作数值 0。遇到前沿时，`exit` 也可能没有完成结果；先查报告状态。
 
 ### 返回数据的文本字节表
 
@@ -781,7 +781,7 @@ nix run . -- analyze --world examples/worlds/returndata-copy.json \
 | `Stored value / hex bytes` | 单字节抽象值，或连续且精确字节的 hex |
 | `exact hex:` | 长度和内容都足够确定、且满足显示提取上限时提供的完整字节串 |
 
-`stored byte facts: (none)` 只表示没有显式表项；还要检查长度和默认值。没有 `exact hex:` 也不能推出数组为空或没有任何已知字节。完整文本把连续、精确的字节压成 hex 行，保留抽象字节的 Value；它只整理显示，不把未知位置补成具体数据。
+`stored byte facts: (none)` 只表示没有显式表项；还要检查长度和默认值。没有 `exact hex:` 也不能推出数组为空或没有任何已知字节。完整文本把连续、精确的字节压成 hex 行，保留抽象字节的 AbstractValue；它只整理显示，不把未知位置补成具体数据。
 
 这张文本表在这里展示的是 returndata，不是执行后 memory 的完整 dump；二者共享数据结构，但所属字段与读取入口不同。[字节渲染实现](../crates/evm-abstract/src/render/world/text/bytes.rs)可以对应上表逐项阅读。
 
@@ -806,7 +806,7 @@ MSTORE(1, x) 需要长度 64，因此会留下 `Memory` 前沿、`Incomplete`，
 两个限制尤其要理解：
 
 - 偏移无法枚举时，长度可以直接粗化为 `⊤`，无需实际分配那些字节；这不证明真实访问一定在 64 KiB 内。
-- `max_memory_bytes` 不是整个分析进程的峰值 RAM 配额。多个状态、帧、Value、字节表及临时副本都会占用主机内存。
+- `max_memory_bytes` 不是整个分析进程的峰值 RAM 配额。多个状态、帧、AbstractValue、字节表及临时副本都会占用主机内存。
 
 `write_values` 等库写入先验证候选范围，再提交更新，避免在一个范围错误后留下写了一半的字节。但不能把这扩大成“任何 Incomplete 都完全没有修改状态”：指令转换可能已完成前面的步骤，报告仍保留到前沿为止的部分执行信息。
 
@@ -850,4 +850,4 @@ MSTORE(1, x) 需要长度 64，因此会留下 `Memory` 前沿、`Incomplete`，
 
 </details>
 
-接着读[第 16 课](16-storage-model.md)，用同样的前后状态表比较 storage 的默认值、读写与回滚；[第 15 课](15-symbolic-relations.md)进一步解释表达式和路径条件怎样保留关系。也可以回到[第 09 课](09-cross-contract.md)观察实际调用图，或读[第 12 课](12-product-domains-facts.md)研究单个 Value 的数值性质。[例子索引](../examples/README.md)列出本课的可运行输入。
+接着读[第 16 课](16-storage-model.md)，用同样的前后状态表比较 storage 的默认值、读写与回滚；[第 15 课](15-symbolic-relations.md)进一步解释表达式和路径条件怎样保留关系。也可以回到[第 09 课](09-cross-contract.md)观察实际调用图，或读[第 12 课](12-product-domains-facts.md)研究单个 AbstractValue 的数值性质。[例子索引](../examples/README.md)列出本课的可运行输入。

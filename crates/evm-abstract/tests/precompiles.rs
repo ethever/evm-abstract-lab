@@ -3,7 +3,7 @@
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{self, ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, Status},
-    domain::Value,
+    domain::AbstractValue,
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
@@ -28,7 +28,7 @@ fn abstract_call(
             environment: evm_abstract::world::EvmEnvironment {
                 to: (address(target)).into(),
                 caller: (address(0x900)).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: input,
                 is_static: false,
                 ..evm_abstract::world::EvmEnvironment::default()
@@ -139,7 +139,7 @@ fn identity_output_is_copied_back_to_the_callers_requested_range() {
             environment: evm_abstract::world::EvmEnvironment {
                 to: (address(0x101)).into(),
                 caller: (address(0x900)).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: ByteArray::empty(),
                 is_static: false,
                 ..evm_abstract::world::EvmEnvironment::default()
@@ -153,7 +153,7 @@ fn identity_output_is_copied_back_to_the_callers_requested_range() {
         o.kind == OutcomeKind::Return
             && o.data
                 .read_word(
-                    &Value::constant(U256::ZERO),
+                    &AbstractValue::constant(U256::ZERO),
                     evm_abstract::domain::Domain::default(),
                 )
                 .contains(U256::from(42))

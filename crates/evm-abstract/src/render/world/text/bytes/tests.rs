@@ -1,6 +1,6 @@
 use super::write_bytes;
 use crate::{
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::ByteArray,
 };
 use alloy_primitives::U256;
@@ -11,8 +11,8 @@ fn render(array: &ByteArray) -> String {
     output
 }
 
-fn constant(value: usize) -> Value {
-    Value::constant(U256::from(value))
+fn constant(value: usize) -> AbstractValue {
+    AbstractValue::constant(U256::from(value))
 }
 
 #[test]

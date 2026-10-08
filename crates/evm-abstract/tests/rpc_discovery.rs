@@ -4,7 +4,7 @@ use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     Fork,
     analysis::{self, ExecutionConfig, FrontierReason, Limit, OutcomeKind, Status, WorldAnalysis},
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     ssa,
     world::{
         Account, ByteArray, Entry,
@@ -28,8 +28,8 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> Value {
-    Value::constant(U256::from(number))
+fn word(number: u64) -> AbstractValue {
+    AbstractValue::constant(U256::from(number))
 }
 
 fn account(code: &str) -> Account {
@@ -231,7 +231,7 @@ fn response(accounts: &BTreeMap<Address, Account>, request: &Json) -> Json {
                     let value = account
                         .storage
                         .get(&slot)
-                        .and_then(Value::singleton)
+                        .and_then(AbstractValue::singleton)
                         .unwrap_or(U256::ZERO);
                     json!(format!("0x{value:064x}"))
                 }
@@ -564,8 +564,10 @@ fn finite_targets_are_projected_to_low160_and_acquired_once() {
         let mut entry = entry();
         let low = U256::from(0x200);
         let high = low | (U256::from(1) << 200);
-        entry.environment.value =
-            Domain::default().join(&Value::constant(low), &Value::constant(high));
+        entry.environment.value = Domain::default().join(
+            &AbstractValue::constant(low),
+            &AbstractValue::constant(high),
+        );
         let result = analysis::analyze_rpc(&server.input(), entry.clone(), config())
             .unwrap()
             .into_analysis();

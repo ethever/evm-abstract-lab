@@ -2,7 +2,7 @@ use super::render;
 use crate::{
     Fork,
     analysis::{ExecutionConfig, FrameCode, Status, WorldAnalysis, analyze_world},
-    domain::Value,
+    domain::AbstractValue,
     world::{Account, ByteArray, Entry, World},
 };
 use alloy_primitives::{Address, U256, hex, keccak256};
@@ -12,7 +12,12 @@ fn address(value: u64) -> Address {
 }
 
 fn entry(owner: Address, calldata: ByteArray) -> Entry {
-    Entry::concrete(owner, address(0x900), Value::constant(U256::ZERO), calldata)
+    Entry::concrete(
+        owner,
+        address(0x900),
+        AbstractValue::constant(U256::ZERO),
+        calldata,
+    )
 }
 
 fn run(world: World, owner: Address, calldata: ByteArray) -> WorldAnalysis {

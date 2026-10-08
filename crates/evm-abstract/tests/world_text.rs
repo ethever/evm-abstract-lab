@@ -5,7 +5,7 @@ use evm_abstract::{
     analysis::{
         ExecutionConfig, FrontierReason, OutcomeKind, Status, WorldAnalysis, analyze_world,
     },
-    domain::Value,
+    domain::AbstractValue,
     render,
     world::{Account, ByteArray, Entry, Existence, World},
 };
@@ -20,7 +20,7 @@ fn entry() -> Entry {
         environment: evm_abstract::world::EvmEnvironment {
             to: (address(0x101)).into(),
             caller: (Address::ZERO).into(),
-            value: Value::constant(U256::ZERO),
+            value: AbstractValue::constant(U256::ZERO),
             calldata: ByteArray::empty(),
             is_static: false,
             ..evm_abstract::world::EvmEnvironment::default()
@@ -48,12 +48,16 @@ fn fixture(name: &str) -> World {
             });
         account.balance = input["balance"]
             .as_str()
-            .map_or_else(Value::top, |value| Value::constant(number(value)));
+            .map_or_else(AbstractValue::top, |value| {
+                AbstractValue::constant(number(value))
+            });
         // Match the CLI's partial-observation boundary instead of inheriting
         // the synthetic constructor's known nonce and account presence.
         account.nonce = input["nonce"]
             .as_str()
-            .map_or_else(Value::top, |value| Value::constant(number(value)));
+            .map_or_else(AbstractValue::top, |value| {
+                AbstractValue::constant(number(value))
+            });
         account.existence = match input["existence"].as_str() {
             None | Some("unknown") => Existence::Unknown,
             Some("present") => Existence::Present,
@@ -65,7 +69,7 @@ fn fixture(name: &str) -> World {
             for (slot, value) in storage {
                 account.storage.insert(
                     number(slot),
-                    Value::constant(number(value.as_str().unwrap())),
+                    AbstractValue::constant(number(value.as_str().unwrap())),
                 );
             }
         }
@@ -425,7 +429,7 @@ fn possible_log_records_keep_site_topics_payload_and_unknown_flag() {
     }
 }
 
-fn stack(values: &[Value]) -> String {
+fn stack(values: &[AbstractValue]) -> String {
     format!(
         "[{}]",
         values
@@ -436,7 +440,7 @@ fn stack(values: &[Value]) -> String {
     )
 }
 
-fn length(value: &Value) -> String {
+fn length(value: &AbstractValue) -> String {
     if let Some(constants) = value.constants()
         && constants.len() == 1
     {
@@ -513,7 +517,7 @@ fn call_summary_reports_keep_cache_statistics_and_each_complete_relation() {
         (0x200, "60015f5260205ff3"),
     ] {
         let mut account = Account::from_hex(code, Fork::Osaka).unwrap();
-        account.balance = Value::constant(U256::from(1_000_000));
+        account.balance = AbstractValue::constant(U256::from(1_000_000));
         world.insert(address(owner), account).unwrap();
     }
     for enabled in [true, false] {

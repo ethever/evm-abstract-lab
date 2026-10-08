@@ -6,7 +6,7 @@ use evm_abstract::{
         Config, ExecutionConfig, FrontierReason, Status, SummaryInput, WorldAnalysis, analyze_world,
     },
     domain::{
-        Domain, DomainSpec, Profile, ReductionStatus, Value,
+        AbstractValue, Domain, DomainSpec, Profile, ReductionStatus,
         facts::{BitIndex, UnaryPredicate, WordBounds},
     },
     ssa,
@@ -15,8 +15,8 @@ use evm_abstract::{
 use revm_bytecode::opcode;
 use std::num::NonZeroUsize;
 
-fn word(value: u64) -> Value {
-    Value::constant(U256::from(value))
+fn word(value: u64) -> AbstractValue {
+    AbstractValue::constant(U256::from(value))
 }
 
 fn address(value: u64) -> Address {
@@ -79,7 +79,7 @@ fn fingerprints_bind_original_open_constraints_across_runtime_profiles() {
     account.storage.insert(U256::ZERO, even);
     let mut even_world = World::offline(Fork::Osaka, "domain-policy:v1", "domain policy test");
     even_world.insert(entry.address, account.clone()).unwrap();
-    account.storage.insert(U256::ZERO, Value::top());
+    account.storage.insert(U256::ZERO, AbstractValue::top());
     // 每个世界都绑定同一账户、代码和快照；只有开放数值约束不同。
     world = World::offline(Fork::Osaka, "domain-policy:v1", "domain policy test");
     world.insert(entry.address, account).unwrap();
@@ -135,7 +135,7 @@ fn json_distinguishes_a_top_component_from_the_whole_product() {
     assert!(byte_json.get("Constants").is_none());
     assert!(byte_json["known_bits"].is_object());
     assert!(byte_json["interval"].is_object());
-    assert_eq!(serde_json::to_value(Value::top()).unwrap(), "Top");
+    assert_eq!(serde_json::to_value(AbstractValue::top()).unwrap(), "Top");
     let (world, entry) = fixture("00");
     let graph = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
     let json = serde_json::to_value(&graph).unwrap();
@@ -219,7 +219,8 @@ fn successive_fact_rounds_materialize_a_real_cross_domain_chain() {
 
 #[test]
 fn fact_capacity_stops_feedback_even_with_an_unbounded_round_setting() {
-    let value = Domain::default().apply(opcode::BYTE, &[Value::top(), Value::top()]);
+    let value =
+        Domain::default().apply(opcode::BYTE, &[AbstractValue::top(), AbstractValue::top()]);
     let tiny = domain(Profile::Product, 1, usize::MAX, 1);
     for _ in 0..16 {
         let stopped = tiny.reduce(&value);

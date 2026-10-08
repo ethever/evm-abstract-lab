@@ -4,12 +4,12 @@ use super::address;
 use crate::{
     analysis::ExecutionConfig,
     bytecode::Program,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{Code, Store},
 };
 use revm_bytecode::opcode;
 
-pub(super) fn arithmetic_work(args: &[Value]) -> usize {
+pub(super) fn arithmetic_work(args: &[AbstractValue]) -> usize {
     args.iter()
         .try_fold(1usize, |size, value| {
             value.constants().map(|set| size.saturating_mul(set.len()))
@@ -17,7 +17,7 @@ pub(super) fn arithmetic_work(args: &[Value]) -> usize {
         .unwrap_or(1)
 }
 
-pub(super) fn maximum(value: &Value) -> usize {
+pub(super) fn maximum(value: &AbstractValue) -> usize {
     value
         .constants()
         .and_then(|values| values.iter().max())
@@ -27,7 +27,12 @@ pub(super) fn maximum(value: &Value) -> usize {
 
 // A conservative precharge includes finite domain combinations, byte visits,
 // and copying/joining sparse arrays. It happens before an allocating operation.
-pub(super) fn byte_work(args: &[&Value], bytes: usize, existing: usize, domain: Domain) -> usize {
+pub(super) fn byte_work(
+    args: &[&AbstractValue],
+    bytes: usize,
+    existing: usize,
+    domain: Domain,
+) -> usize {
     let branches = args.iter().fold(1usize, |cost, value| {
         cost.saturating_mul(value.constants().map_or(1, |set| set.len()))
     });
@@ -47,7 +52,7 @@ pub(super) fn byte_work(args: &[&Value], bytes: usize, existing: usize, domain: 
 pub(super) fn operation_work(
     result: &Execution,
     op: u8,
-    args: &[Value],
+    args: &[AbstractValue],
     program: &Program,
     domain: Domain,
     config: &ExecutionConfig,
@@ -98,13 +103,17 @@ pub(super) fn operation_work(
         opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain)
             .saturating_add(frame.memory.word_numeric_work(&args[0], domain)),
         opcode::MSTORE => byte_work(&args.iter().collect::<Vec<_>>(), 32, array_size, domain)
-            .saturating_add(32usize.saturating_mul(
-                domain.operation_work(&[Value::constant(crate::U256::ZERO), args[1].clone()]),
-            )),
-        opcode::MSTORE8 => byte_work(&args.iter().collect::<Vec<_>>(), 1, array_size, domain)
             .saturating_add(
-                domain.operation_work(&[args[1].clone(), Value::constant(crate::U256::from(255))]),
+                32usize.saturating_mul(domain.operation_work(&[
+                    AbstractValue::constant(crate::U256::ZERO),
+                    args[1].clone(),
+                ])),
             ),
+        opcode::MSTORE8 => byte_work(&args.iter().collect::<Vec<_>>(), 1, array_size, domain)
+            .saturating_add(domain.operation_work(&[
+                args[1].clone(),
+                AbstractValue::constant(crate::U256::from(255)),
+            ])),
         opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY => {
             byte_work(
                 &args.iter().collect::<Vec<_>>(),
@@ -162,7 +171,7 @@ pub(super) fn operation_work(
 
 fn external_code_work(
     store: &Store,
-    targets: &Value,
+    targets: &AbstractValue,
     domain: Domain,
     copied: bool,
     entry: &crate::world::Entry,
@@ -175,7 +184,7 @@ fn external_code_work(
                 .address_value(entry.environment.to)
                 .identity(),
         ) {
-        actual = Value::constant(crate::U256::from_be_slice(entry.address.as_slice()));
+        actual = AbstractValue::constant(crate::U256::from_be_slice(entry.address.as_slice()));
         &actual
     } else {
         targets

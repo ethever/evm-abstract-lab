@@ -6,7 +6,7 @@ use evm_abstract::{
     analysis::{self, Analysis, Config, EdgeKind, ExecutionConfig, OutcomeKind, Status},
     bytecode::Program,
     domain::{
-        Domain, DomainSpec, Profile, ReductionStatus, Value,
+        AbstractValue, Domain, DomainSpec, Profile, ReductionStatus,
         facts::{BitConstraints, BitIndex, FactError, UnaryPredicate, WordBounds},
         provenance::Origin,
     },
@@ -26,20 +26,19 @@ fn product(capacity: usize) -> Domain {
     ))
 }
 
-fn word(value: u64) -> Value {
-    Value::constant(U256::from(value))
+fn word(value: u64) -> AbstractValue {
+    AbstractValue::constant(U256::from(value))
 }
 
 fn bounds(lo: U256, hi: U256) -> UnaryPredicate {
     UnaryPredicate::UnsignedBounds(WordBounds::new(lo, hi).unwrap())
 }
 
-fn set(domain: Domain, values: &[u16]) -> Value {
-    values[1..]
-        .iter()
-        .fold(Value::constant(U256::from(values[0])), |old, value| {
-            domain.join(&old, &Value::constant(U256::from(*value)))
-        })
+fn set(domain: Domain, values: &[u16]) -> AbstractValue {
+    values[1..].iter().fold(
+        AbstractValue::constant(U256::from(values[0])),
+        |old, value| domain.join(&old, &AbstractValue::constant(U256::from(*value))),
+    )
 }
 
 fn analyze(code: &str, profile: Profile, capacity: usize) -> Analysis {
@@ -60,7 +59,7 @@ fn analyze(code: &str, profile: Profile, capacity: usize) -> Analysis {
     .unwrap()
 }
 
-fn odd_byte(domain: Domain) -> Value {
+fn odd_byte(domain: Domain) -> AbstractValue {
     domain
         .from_facts(&[
             bounds(U256::ZERO, U256::from(255)),
@@ -145,12 +144,12 @@ fn complete_finite_inference_never_truncates_a_large_candidate_cover() {
 #[test]
 fn boolean_clz_and_byte_bounds_survive_a_one_constant_capacity() {
     let domain = product(1);
-    let boolean = domain.apply(opcode::EQ, &[Value::top(), Value::top()]);
+    let boolean = domain.apply(opcode::EQ, &[AbstractValue::top(), AbstractValue::top()]);
     assert!(boolean.constants().is_none());
     assert!(boolean.contains(U256::ZERO));
     assert!(boolean.contains(U256::from(1)));
     assert!(!boolean.contains(U256::from(2)));
-    let clz = domain.apply(opcode::CLZ, &[Value::top()]);
+    let clz = domain.apply(opcode::CLZ, &[AbstractValue::top()]);
     assert!(clz.constants().is_none());
     assert_eq!(
         clz.interval().unsigned_bounds(),
@@ -160,7 +159,7 @@ fn boolean_clz_and_byte_bounds_survive_a_one_constant_capacity() {
         assert!(clz.contains(U256::from(possible)));
     }
     assert!(!clz.contains(U256::from(257)));
-    let byte = domain.apply(opcode::BYTE, &[Value::top(), Value::top()]);
+    let byte = domain.apply(opcode::BYTE, &[AbstractValue::top(), AbstractValue::top()]);
     assert_eq!(byte.known_bits().zero(), !U256::from(255));
     for possible in 0_u64..=255 {
         assert!(byte.contains(U256::from(possible)));
@@ -168,8 +167,8 @@ fn boolean_clz_and_byte_bounds_survive_a_one_constant_capacity() {
     assert!(!byte.contains(U256::from(256)));
     let baseline = Domain::new(NonZeroUsize::new(1).unwrap());
     assert_eq!(
-        baseline.apply(opcode::EQ, &[Value::top(), Value::top()]),
-        Value::top()
+        baseline.apply(opcode::EQ, &[AbstractValue::top(), AbstractValue::top()]),
+        AbstractValue::top()
     );
 }
 
@@ -253,7 +252,7 @@ fn odd_modulus_facts_do_not_cross_word_wrap_unchanged() {
     assert!(sum.contains(U256::ZERO));
     assert!(sum.contains(U256::MAX - U256::from(2)));
     assert!(sum.congruence().is_top());
-    let difference = domain.apply(opcode::SUB, &[input, Value::constant(U256::MAX)]);
+    let difference = domain.apply(opcode::SUB, &[input, AbstractValue::constant(U256::MAX)]);
     assert!(difference.contains(U256::MAX));
     assert!(difference.contains(U256::MAX - U256::from(3)));
 }
@@ -266,13 +265,13 @@ fn precision_limits_keep_sound_partial_results_and_report_the_boundary() {
         NonZeroUsize::new(1).unwrap(),
         NonZeroUsize::new(1024).unwrap(),
     ));
-    let input = Value::top();
+    let input = AbstractValue::top();
     let partial = domain.apply_detailed(opcode::MUL, &[input.clone(), word(0)]);
     assert_eq!(partial.status, ReductionStatus::RoundLimit);
     assert_eq!(partial.rounds, 1);
     assert_eq!(partial.value.singleton(), Some(U256::ZERO));
     assert!(partial.strengthened > 0);
-    assert_eq!(input, Value::top());
+    assert_eq!(input, AbstractValue::top());
     assert_eq!(
         domain.reduce(&partial.value).status,
         ReductionStatus::Stable
@@ -283,7 +282,7 @@ fn precision_limits_keep_sound_partial_results_and_report_the_boundary() {
         NonZeroUsize::new(8).unwrap(),
         NonZeroUsize::new(1).unwrap(),
     ));
-    let stopped = tiny.apply_detailed(opcode::MUL, &[Value::top(), word(0)]);
+    let stopped = tiny.apply_detailed(opcode::MUL, &[AbstractValue::top(), word(0)]);
     assert_eq!(stopped.status, ReductionStatus::FactLimit);
     assert_eq!(stopped.value.singleton(), Some(U256::ZERO));
 }
@@ -401,7 +400,7 @@ fn sparse_bytes_store_and_rollback_preserve_the_whole_product() {
     let saved = store.snapshot();
     let original = store.clone();
     store.write(address, &word(0), &word(2), domain);
-    store.write_transient(address, &word(1), &Value::top(), domain);
+    store.write_transient(address, &word(1), &AbstractValue::top(), domain);
     store.restore(saved);
     assert_eq!(store, original);
     assert_eq!(store.read(address, &word(0), domain), initial);
@@ -471,7 +470,7 @@ proptest! {
         prop_assert_eq!(domain.join(&left, &left), left.clone());
         prop_assert_eq!(domain.join(&left, &middle), domain.join(&middle, &left));
         prop_assert_eq!(domain.join(&domain.join(&left, &middle), &right), domain.join(&left, &domain.join(&middle, &right)));
-        prop_assert_eq!(domain.join(&left, &Value::top()), Value::top());
+        prop_assert_eq!(domain.join(&left, &AbstractValue::top()), AbstractValue::top());
         let combined = domain.join(&left, &middle);
         for value in a.into_iter().chain(b) {
             prop_assert!(combined.contains(U256::from(value)));

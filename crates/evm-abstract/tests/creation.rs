@@ -8,7 +8,7 @@ use evm_abstract::{
     analysis::{
         self, CreationBoundary, ExecutionConfig, FrontierReason, OutcomeKind, Status, WorldAnalysis,
     },
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{Account, ByteArray, Entry, Existence, Store, World},
 };
 use revm::{
@@ -26,10 +26,10 @@ use revm::{
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
-fn word(number: u64) -> Value {
-    Value::constant(U256::from(number))
+fn word(number: u64) -> AbstractValue {
+    AbstractValue::constant(U256::from(number))
 }
-fn finite_contains(value: Value, expected: u64) -> bool {
+fn finite_contains(value: AbstractValue, expected: u64) -> bool {
     value
         .constants()
         .is_some_and(|values| values.contains(&U256::from(expected)))
@@ -306,7 +306,7 @@ fn oracle_expect_creation(
                         && account.storage.iter().all(|(slot, value)| {
                             outcome
                                 .store
-                                .read(*owner, &Value::constant(*slot), Domain::default())
+                                .read(*owner, &AbstractValue::constant(*slot), Domain::default())
                                 .contains(value.present_value())
                         })
                         && account.info.code.as_ref().is_none_or(|code| {
@@ -413,7 +413,7 @@ fn insufficient_balance_and_maximum_sender_nonce_reject_before_nonce_bump() {
                 let mut account = account.clone();
                 if *owner == address(0x101) {
                     if maximum_nonce {
-                        account.nonce = Value::constant(U256::from(u64::MAX));
+                        account.nonce = AbstractValue::constant(U256::from(u64::MAX));
                     } else {
                         account.balance = word(6);
                     }
@@ -422,7 +422,7 @@ fn insufficient_balance_and_maximum_sender_nonce_reject_before_nonce_bump() {
             }
             let analysis = oracle(modified, destination, false, false, false);
             assert!(returned(&analysis).all(|store| store.nonce(address(0x101))
-                == Value::constant(U256::from(if maximum_nonce { u64::MAX } else { 0 }))
+                == AbstractValue::constant(U256::from(if maximum_nonce { u64::MAX } else { 0 }))
                 && store.existence(destination) == Existence::Absent));
         }
     }
@@ -465,7 +465,7 @@ fn unobserved_nonce_endowment_and_runtime_are_explicit_creation_boundaries() {
     for (owner, account) in world.accounts() {
         let mut account = account.clone();
         if *owner == address(0x101) {
-            account.nonce = Value::top();
+            account.nonce = AbstractValue::top();
         }
         unknown_nonce.insert(*owner, account).unwrap();
     }
@@ -521,7 +521,7 @@ fn unrepresentable_nonce_and_shared_creation_limits_are_explicit() {
     for (owner, account) in world.accounts() {
         let mut account = account.clone();
         if *owner == address(0x101) {
-            account.nonce = Value::constant(U256::MAX);
+            account.nonce = AbstractValue::constant(U256::MAX);
         }
         invalid_nonce.insert(*owner, account).unwrap();
     }
@@ -595,7 +595,11 @@ fn a_known_collision_fact_does_not_require_the_other_account_observation() {
         } else {
             Account::unknown()
         };
-        target.nonce = if observed_code { Value::top() } else { word(1) };
+        target.nonce = if observed_code {
+            AbstractValue::top()
+        } else {
+            word(1)
+        };
         modified.insert(destination, target).unwrap();
         let analysis = run(modified);
         assert_eq!(

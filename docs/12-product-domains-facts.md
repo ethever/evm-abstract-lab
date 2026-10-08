@@ -121,11 +121,11 @@ EVM 的一个 word 是 256 位，取值空间为 `0 .. 2^256-1`。组合域中�
 | `expression`：`ExprId` | 不可变输入、运行时新值及其 EVM 纯运算表达式 | 把每次经过同一个 pc 的新值当成同一个变量 |
 | 机器状态的 `relations` | 当前路径保留的跨值假设及数值保证 | 全局共享不同路径的假设 |
 
-`Value` 只是 `AbstractValue` 的过渡名称；内部没有通过 Deref 隐藏这几层。更改来源标签不改写身份，SMT 证明后的数值收窄也保留原变量与表达式。
+`AbstractValue` 通过显式字段组合这些信息，没有通过 Deref 隐藏这几层。更改来源标签不改写身份，SMT 证明后的数值收窄也保留原变量与表达式。
 
 来源记录的是当前观察和纯运算输入的类别摘要。MLOAD、SLOAD 等读取会重新标记为 Memory、Storage；纯算术合并输入类别并加入 Arithmetic。它不保存完整读取位置、祖先链或污点历史。
 
-[`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)只管理常量组件：Top 不限制候选，非空集合限制候选必须属于其中，空交返回错误。这个组件单独格式化时，Top 显示为 `⊤`。`Value::finite_constants()` 查看这个组件；`Value::contains()` 则检查它与位、区间、同余和非零保证的交集。常量组件为 Top 不等于整个值没有数值限制。
+[`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)只管理常量组件：Top 不限制候选，非空集合限制候选必须属于其中，空交返回错误。这个组件单独格式化时，Top 显示为 `⊤`。`AbstractValue::finite_constants()` 查看这个组件；`AbstractValue::contains()` 则检查它与位、区间、同余和非零保证的交集。常量组件为 Top 不等于整个值没有数值限制。
 
 有限集合无法枚举时，其他组件仍可以排除候选。JSON 没有 `Constants` 键，只说明这个组件不能给出完整列表。只有数值约束、来源、使用角色、固定身份和表达式都未知，且没有符号预算缺口时，整个值才序列化为 `"Top"`。数值上为 Top 的输入仍可带 `identity.input.name` 和 `expression`；`provenance` 只记录来源与角色；因此不能仅根据 JSON 是字符串还是对象判断数值精度。反过来，一个候选没有被约束排除，也不代表存在某条执行能取到它。
 

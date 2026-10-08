@@ -5,15 +5,15 @@ use evm_abstract::{
     Fork,
     analysis::{self, Config, ExecutionConfig, FrontierReason, Status},
     bytecode::Program,
-    domain::{Profile, Value},
+    domain::{AbstractValue, Profile},
     world::{Account, AddressInput, BlobHashes, ByteArray, Entry, EvmEnvironment, GasInput, World},
 };
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
-fn word(number: u64) -> Value {
-    Value::constant(U256::from(number))
+fn word(number: u64) -> AbstractValue {
+    AbstractValue::constant(U256::from(number))
 }
 fn analyze(code: &str, environment: EvmEnvironment, profile: Profile) -> analysis::Analysis {
     analysis::analyze_with_environment(
@@ -302,7 +302,7 @@ fn blobhash_distinguishes_open_inputs_closed_lists_and_partial_holes() {
         "60074900",
         EvmEnvironment {
             blob_hashes: BlobHashes {
-                length: Value::top(),
+                length: AbstractValue::top(),
                 hashes: [(U256::from(7), hash)].into(),
             },
             ..EvmEnvironment::default()

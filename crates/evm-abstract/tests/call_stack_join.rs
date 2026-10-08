@@ -3,7 +3,7 @@
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{Config, ExecutionConfig, MachineEdgeKind, Status, analyze_world},
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
@@ -12,8 +12,8 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> Value {
-    Value::constant(U256::from(number))
+fn word(number: u64) -> AbstractValue {
+    AbstractValue::constant(U256::from(number))
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn repeated_reverting_call_joins_checkpoints_and_output_ranges_before_resuming_r
             .active()
             .stack
             .iter()
-            .map(Value::singleton)
+            .map(AbstractValue::singleton)
             .collect::<Vec<_>>(),
         vec![word(0).singleton()]
     );
@@ -188,7 +188,7 @@ fn repeated_reverting_call_joins_checkpoints_and_output_ranges_before_resuming_r
     );
 }
 
-fn assert_numeric_eq(actual: Value, expected: Value) {
+fn assert_numeric_eq(actual: AbstractValue, expected: AbstractValue) {
     assert_eq!(actual.constants(), expected.constants());
     assert_eq!(actual.known_bits(), expected.known_bits());
     for value in expected.constants().unwrap() {

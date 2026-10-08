@@ -227,8 +227,8 @@ fn default_fuel_handles_a_scoped_address_equality_without_redundant_bool_circuit
     let numeric_condition = crate::domain::Domain::default().apply(
         opcode::EQ,
         &[
-            crate::domain::Value::unknown_address(),
-            crate::domain::Value::constant(U256::from(1)),
+            crate::domain::AbstractValue::unknown_address(),
+            crate::domain::AbstractValue::constant(U256::from(1)),
         ],
     );
     let policy = RelationLimits::default();

@@ -3,7 +3,7 @@
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, Status, analyze_world},
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
@@ -27,7 +27,7 @@ fn entry(number: u64) -> Entry {
         environment: evm_abstract::world::EvmEnvironment {
             to: (address(number)).into(),
             caller: (address(0x900)).into(),
-            value: Value::constant(U256::ZERO),
+            value: AbstractValue::constant(U256::ZERO),
             calldata: ByteArray::empty(),
             is_static: false,
             ..evm_abstract::world::EvmEnvironment::default()
@@ -154,10 +154,11 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
         ] {
             let owner = address(number);
             let mut account = Account::from_hex(code, fork).unwrap();
-            account.balance = Value::constant(U256::from(balance));
-            account
-                .storage
-                .insert(U256::ZERO, Value::constant(U256::from(initial_slot)));
+            account.balance = AbstractValue::constant(U256::from(balance));
+            account.storage.insert(
+                U256::ZERO,
+                AbstractValue::constant(U256::from(initial_slot)),
+            );
             world.insert(owner, account).unwrap();
             let bytecode = Bytecode::new_raw(Bytes::from(hex::decode(code).unwrap()));
             db.insert_account_info(
@@ -219,32 +220,36 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
             assert_eq!(
                 outcome
                     .store
-                    .read(address(0x101), &Value::constant(U256::ZERO), domain),
-                Value::constant(U256::from(3))
+                    .read(address(0x101), &AbstractValue::constant(U256::ZERO), domain),
+                AbstractValue::constant(U256::from(3))
+            );
+            assert_eq!(
+                outcome.store.read_transient(
+                    address(0x101),
+                    &AbstractValue::constant(U256::ZERO),
+                    domain
+                ),
+                AbstractValue::constant(U256::from(17))
             );
             assert_eq!(
                 outcome
                     .store
-                    .read_transient(address(0x101), &Value::constant(U256::ZERO), domain),
-                Value::constant(U256::from(17))
+                    .read(address(0x200), &AbstractValue::constant(U256::ZERO), domain),
+                AbstractValue::constant(U256::from(2))
             );
             assert_eq!(
                 outcome
                     .store
-                    .read(address(0x200), &Value::constant(U256::ZERO), domain),
-                Value::constant(U256::from(2))
+                    .read(address(0x300), &AbstractValue::constant(U256::ZERO), domain),
+                AbstractValue::constant(U256::from(4))
             );
             assert_eq!(
-                outcome
-                    .store
-                    .read(address(0x300), &Value::constant(U256::ZERO), domain),
-                Value::constant(U256::from(4))
-            );
-            assert_eq!(
-                outcome
-                    .store
-                    .read_transient(address(0x300), &Value::constant(U256::ZERO), domain),
-                Value::constant(U256::ZERO)
+                outcome.store.read_transient(
+                    address(0x300),
+                    &AbstractValue::constant(U256::ZERO),
+                    domain
+                ),
+                AbstractValue::constant(U256::ZERO)
             );
             assert_eq!(outcome.store.possible_logs().len(), 2);
             assert!(
@@ -268,7 +273,7 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
                         && account.storage.iter().all(|(slot, value)| {
                             outcome
                                 .store
-                                .read(*owner, &Value::constant(*slot), domain)
+                                .read(*owner, &AbstractValue::constant(*slot), domain)
                                 .contains(value.present_value())
                         })
                 })

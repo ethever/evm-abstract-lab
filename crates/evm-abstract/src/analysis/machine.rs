@@ -4,7 +4,7 @@
 use super::{Config, ConfigError, Diagnostic, EdgeKind, Limit, Status};
 use crate::{
     bytecode::Program,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{AddressInput, ByteArray, Entry, Store, World},
 };
 use alloy_primitives::{Address, B256, U256};
@@ -95,9 +95,9 @@ pub struct Continuation {
     /// Resume block; calls at end of code resume at a synthetic empty block.
     pub return_block: Option<usize>,
     /// Caller memory destination for the returned prefix.
-    pub output_offset: Value,
+    pub output_offset: AbstractValue,
     /// Requested output length; bytes beyond actual returndata stay unchanged.
-    pub output_size: Value,
+    pub output_size: AbstractValue,
     /// CREATE/CREATE2 deploy at this address and resume with an address result.
     pub creation: Option<Address>,
 }
@@ -220,7 +220,7 @@ pub struct MachineState {
     /// Common payload after executed instructions and before control dispatch.
     pub exit: Option<MachinePayload>,
     /// Active stack after the last transfer, with deferred call results still absent.
-    pub exit_stack: Vec<Value>,
+    pub exit_stack: Vec<AbstractValue>,
     /// Instruction offsets actually visited in the last transfer.
     pub executed_pcs: Vec<usize>,
 }

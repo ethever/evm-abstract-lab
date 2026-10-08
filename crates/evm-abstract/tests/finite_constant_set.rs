@@ -3,7 +3,7 @@
 use evm_abstract::{
     U256,
     domain::{
-        Domain, DomainSpec, Profile, Value,
+        AbstractValue, Domain, DomainSpec, Profile,
         facts::{FactError, FiniteSet, Symbol, UnaryPredicate},
         provenance::Origin,
     },
@@ -29,11 +29,11 @@ fn membership(values: &[u64]) -> UnaryPredicate {
 
 #[test]
 fn a_top_constant_component_does_not_erase_byte_constraints() {
-    let byte = Value::unknown_byte();
+    let byte = AbstractValue::unknown_byte();
     assert!(byte.finite_constants().is_top());
     assert_eq!(byte.finite_constants().as_values(), byte.constants());
     assert!(byte.constants().is_none());
-    assert_ne!(byte, Value::top());
+    assert_ne!(byte, AbstractValue::top());
     assert!(byte.contains(U256::ZERO));
     assert!(byte.contains(U256::from(255)));
     assert!(!byte.contains(U256::from(256)));
@@ -45,8 +45,8 @@ fn projecting_over_capacity_forgets_only_the_constant_component() {
     let wide = domain(Profile::Product, 3, 256);
     let input = [5_u64, 8]
         .into_iter()
-        .fold(Value::constant(U256::from(2)), |old, next| {
-            wide.join(&old, &Value::constant(U256::from(next)))
+        .fold(AbstractValue::constant(U256::from(2)), |old, next| {
+            wide.join(&old, &AbstractValue::constant(U256::from(next)))
         });
     let input = input.with_origin(Origin::Storage);
     assert_eq!(
@@ -68,7 +68,7 @@ fn projecting_over_capacity_forgets_only_the_constant_component() {
         assert!(!projected.contains(U256::from(excluded)));
     }
     let constants_only = domain(Profile::ConstantsOnly, 1, 256).project(&input);
-    assert_eq!(constants_only.numeric(), Value::top().numeric());
+    assert_eq!(constants_only.numeric(), AbstractValue::top().numeric());
     assert_eq!(constants_only.provenance(), input.provenance());
 }
 
@@ -94,7 +94,7 @@ fn fact_membership_uses_fact_capacity_before_domain_projection() {
         domain(Profile::ConstantsOnly, 1, 256)
             .from_facts(std::slice::from_ref(&input))
             .unwrap(),
-        Value::top()
+        AbstractValue::top()
     );
     assert_eq!(
         domain(Profile::Product, 3, 2).from_facts(&[input]),
@@ -126,8 +126,8 @@ fn contradictory_finite_intersections_remain_errors() {
 fn finite_queries_and_output_keep_the_existing_value_contract() {
     let domain = domain(Profile::Product, 2, 256);
     let value = domain.join(
-        &Value::constant(U256::from(8)),
-        &Value::constant(U256::from(16)),
+        &AbstractValue::constant(U256::from(8)),
+        &AbstractValue::constant(U256::from(16)),
     );
     let expected = constants(&[8, 16]);
     assert_eq!(value.finite_constants().as_values(), Some(&expected));
@@ -141,5 +141,5 @@ fn finite_queries_and_output_keep_the_existing_value_contract() {
     assert_eq!(json["Constants"], serde_json::to_value(expected).unwrap());
     assert_eq!(json.as_object().unwrap().len(), 6);
     assert!(json.get("finite").is_none());
-    assert_eq!(serde_json::to_value(Value::top()).unwrap(), "Top");
+    assert_eq!(serde_json::to_value(AbstractValue::top()).unwrap(), "Top");
 }

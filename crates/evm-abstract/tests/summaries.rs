@@ -9,7 +9,7 @@ use evm_abstract::{
         Config, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status,
         WorldAnalysis, analyze_world,
     },
-    domain::Value,
+    domain::AbstractValue,
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
@@ -29,10 +29,10 @@ fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
     let mut world = World::new(Fork::Osaka, "test:summary:fixed-snapshot");
     for (number, code) in accounts {
         let mut account = Account::from_hex(code, world.fork()).unwrap();
-        account.balance = Value::constant(U256::from(1_000_000));
+        account.balance = AbstractValue::constant(U256::from(1_000_000));
         account
             .storage
-            .insert(U256::ZERO, Value::constant(U256::from(7)));
+            .insert(U256::ZERO, AbstractValue::constant(U256::from(7)));
         world.insert(address(*number), account).unwrap();
     }
     let entry = Entry {
@@ -40,7 +40,7 @@ fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
         environment: evm_abstract::world::EvmEnvironment {
             to: (address(0x101)).into(),
             caller: (address(0x1000)).into(),
-            value: Value::constant(U256::ZERO),
+            value: AbstractValue::constant(U256::ZERO),
             calldata: ByteArray::empty(),
             is_static: false,
             ..evm_abstract::world::EvmEnvironment::default()
@@ -423,7 +423,7 @@ fn selfdestruct_balance_effects_invalidate_later_exact_inputs() {
         inputs
             .iter()
             .any(|input| input.store.read_balance(address(0x201))
-                == Value::constant(U256::from(1_000_000)))
+                == AbstractValue::constant(U256::from(1_000_000)))
     );
     assert!(inputs.iter().any(|input| {
         input
@@ -460,7 +460,7 @@ fn source_joins_do_not_widen_an_already_published_exact_relation() {
         .unwrap()
         .verify(&analysis)
         .unwrap();
-    let slot = Value::constant(U256::ZERO);
+    let slot = AbstractValue::constant(U256::ZERO);
     let original = analysis
         .summaries()
         .iter()
@@ -469,7 +469,7 @@ fn source_joins_do_not_widen_an_already_published_exact_relation() {
                 address(0x101),
                 &slot,
                 evm_abstract::domain::Domain::default(),
-            ) == Value::constant(U256::from(7))
+            ) == AbstractValue::constant(U256::from(7))
         })
         .expect("initial exact relation was never published");
     assert!(
@@ -488,7 +488,7 @@ fn source_joins_do_not_widen_an_already_published_exact_relation() {
             address(0x101),
             &slot,
             evm_abstract::domain::Domain::default(),
-        ) == Value::constant(U256::from(7))
+        ) == AbstractValue::constant(U256::from(7))
     }));
     assert!(analysis.summaries().iter().any(|record| {
         record

@@ -3,7 +3,7 @@
 use alloy_primitives::{B256, keccak256};
 use evm_abstract::{
     Address, Fork, U256,
-    domain::Value,
+    domain::AbstractValue,
     world::{Account, World, WorldError},
 };
 
@@ -29,7 +29,7 @@ fn fingerprint_is_order_independent_and_binds_snapshot_and_nonce() {
     assert_ne!(left.fingerprint(), changed.fingerprint());
     let mut changed = World::anchored(Fork::Osaka, U256::from(1), B256::repeat_byte(3), "export-a");
     let mut account = account;
-    account.nonce = Value::constant(U256::from(7));
+    account.nonce = AbstractValue::constant(U256::from(7));
     changed.insert(left_address, account).unwrap();
     changed.insert(right_address, Account::empty()).unwrap();
     assert_ne!(left.fingerprint(), changed.fingerprint());

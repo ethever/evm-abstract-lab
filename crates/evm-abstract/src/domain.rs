@@ -33,7 +33,7 @@ pub use identity::{InputIdentity, RuntimeIdentity, ValueIdentity};
 pub use numeric::NumericValue;
 pub use reduce::{Reduction, ReductionStatus};
 pub use spec::{DomainSpec, Profile};
-pub use value::{AbstractValue, Value};
+pub use value::AbstractValue;
 
 /// 根工作账本拒绝整项数值运算；不是 EVM gas 不足。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

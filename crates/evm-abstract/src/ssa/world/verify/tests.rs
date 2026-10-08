@@ -1,7 +1,7 @@
 use crate::{
     Address, Fork, U256,
     analysis::{self, ExecutionConfig},
-    domain::Value,
+    domain::AbstractValue,
     ssa::{self, SsaError},
     world::{Account, ByteArray, Entry, World},
 };
@@ -27,7 +27,7 @@ fn example() -> analysis::WorldAnalysis {
             environment: crate::world::EvmEnvironment {
                 to: (root).into(),
                 caller: (Address::repeat_byte(0x33)).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: ByteArray::empty(),
                 is_static: false,
                 ..crate::world::EvmEnvironment::default()
@@ -96,7 +96,7 @@ fn native_ssa_refuses_an_unresolved_world() {
             environment: crate::world::EvmEnvironment {
                 to: (Address::ZERO).into(),
                 caller: (Address::ZERO).into(),
-                value: Value::constant(U256::ZERO),
+                value: AbstractValue::constant(U256::ZERO),
                 calldata: ByteArray::empty(),
                 is_static: false,
                 ..crate::world::EvmEnvironment::default()

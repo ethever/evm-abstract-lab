@@ -1,7 +1,7 @@
 //! Snapshot identity is independent of caller-supplied source descriptions.
 
 use super::World;
-use crate::{Fork, domain::Value};
+use crate::{Fork, domain::AbstractValue};
 use alloy_primitives::{B256, U256, keccak256};
 use serde::Serialize;
 
@@ -113,7 +113,7 @@ fn append_len(bytes: &mut Vec<u8>, length: usize) {
     bytes.extend_from_slice(&(length as u64).to_be_bytes());
 }
 
-fn append_value(bytes: &mut Vec<u8>, value: &Value) {
+fn append_value(bytes: &mut Vec<u8>, value: &AbstractValue) {
     let encoded = serde_json::to_vec(value).expect("validated scalar facts serialize infallibly");
     append_len(bytes, encoded.len());
     bytes.extend_from_slice(&encoded);

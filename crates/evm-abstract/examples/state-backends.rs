@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, U256, keccak256};
 use evm_abstract::{
     Fork,
-    domain::{Domain, Value},
+    domain::{AbstractValue, Domain},
     world::{Account, Store, World, WorldError},
 };
 use serde::Serialize;
@@ -75,7 +75,7 @@ fn bounded_argument(
     Ok(value)
 }
 
-fn observation(value: Value) -> u64 {
+fn observation(value: AbstractValue) -> u64 {
     match value.constants() {
         Some(values) => values.iter().fold(values.len() as u64, |checksum, value| {
             checksum.wrapping_add(value.to::<u64>())
@@ -139,7 +139,7 @@ fn run() -> Result<(), ExampleError> {
         .map(|slot| {
             (
                 U256::from(slot),
-                Value::constant(U256::from(slot.saturating_add(1))),
+                AbstractValue::constant(U256::from(slot.saturating_add(1))),
             )
         })
         .collect();
@@ -147,11 +147,11 @@ fn run() -> Result<(), ExampleError> {
     world.insert(address, account)?;
     let baseline = Store::new(&world);
     let sparse_slots: Vec<_> = (0..slots.min(8))
-        .map(|slot| Value::constant(U256::from(slot)))
+        .map(|slot| AbstractValue::constant(U256::from(slot)))
         .collect();
-    let first_slot = Value::constant(U256::ZERO);
-    let unknown_slot = Value::top();
-    let replacement = Value::constant(U256::from(1_000_000));
+    let first_slot = AbstractValue::constant(U256::ZERO);
+    let unknown_slot = AbstractValue::top();
+    let replacement = AbstractValue::constant(U256::from(1_000_000));
     let mut alternate = baseline.clone();
     for slot in &sparse_slots {
         alternate.write(address, slot, &replacement, domain);

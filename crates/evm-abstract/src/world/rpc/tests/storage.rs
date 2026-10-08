@@ -3,7 +3,7 @@
 use super::{Reply, Server, healthy};
 use crate::{
     Address, U256,
-    domain::Value,
+    domain::AbstractValue,
     world::{
         Existence,
         rpc::{AcquisitionLimit, RpcBlock, RpcError, RpcFailureKind, Session},
@@ -56,10 +56,13 @@ fn incremental_storage_reuses_observations_and_pins_only_missing_slots() {
             assert_eq!(account.balance, initial.balance);
             assert_eq!(account.nonce, initial.nonce);
             assert_eq!(account.storage[&U256::ZERO], initial.storage[&U256::ZERO]);
-            assert_eq!(account.storage[&U256::from(1)], Value::constant(U256::ZERO));
+            assert_eq!(
+                account.storage[&U256::from(1)],
+                AbstractValue::constant(U256::ZERO)
+            );
             assert_eq!(
                 account.storage[&U256::from(2)],
-                Value::constant(U256::from(13))
+                AbstractValue::constant(U256::from(13))
             );
             assert!(account.storage_unknown);
             let observed = server.requests();
@@ -391,7 +394,7 @@ fn incremental_storage_retry_reacquires_the_entire_failed_batch() {
         }
         assert_eq!(
             session.world().account(address).unwrap().storage[&U256::from(1)],
-            Value::constant(U256::ZERO)
+            AbstractValue::constant(U256::ZERO)
         );
     });
 }
