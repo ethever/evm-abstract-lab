@@ -1,17 +1,21 @@
-//! Server-owned RPC endpoints and their credential-free public catalogue.
+//! Backend-configured RPC endpoints and their browser-visible catalogue.
 
 use evm_abstract_protocol as api;
-use std::{collections::BTreeSet, fs, io, path::Path};
+use std::{collections::BTreeSet, ffi::OsStr, fs, io, path::Path};
 use thiserror::Error;
 
 /// Startup configuration failure. Neither display nor debug contains config values.
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// The configuration file could not be read.
-    #[error("could not read RPC configuration ({0:?})")]
+    #[error(
+        "could not read RPC configuration file ({0:?}); --rpc-config accepts an HTTP(S) URL or the path to an existing JSON configuration file"
+    )]
     Read(io::ErrorKind),
     /// Invalid JSON shape, including duplicate, missing or unknown fields.
-    #[error("invalid RPC configuration JSON at line {line}, column {column}")]
+    #[error(
+        "invalid RPC configuration JSON at line {line}, column {column}; expected a providers array with id, name and endpoint entries"
+    )]
     Json {
         /// One-based JSON line.
         line: usize,
@@ -26,10 +30,13 @@ pub enum ConfigError {
         /// A fixed explanation that never includes supplied values.
         reason: &'static str,
     },
+    /// A directly supplied RPC URL is invalid; its value stays private.
+    #[error("invalid RPC URL: {0}; --rpc-config accepts an HTTP(S) URL or a JSON file path")]
+    Endpoint(&'static str),
 }
 
-// Deliberately omit Debug/Serialize: private endpoints never belong in diagnostics
-// or replies. Only `catalogue` projects the public ID and display name.
+// Deliberately omit Debug/Serialize so diagnostics never echo configuration.
+// Only `catalogue` exposes configured URL values for the browser's selector.
 struct Provider {
     id: String,
     name: String,
@@ -46,6 +53,24 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// Interpret an RPC URL as one default provider, or load a JSON file path.
+    ///
+    /// URL configuration stays in memory, and loading never contacts the RPC.
+    /// Non-UTF-8 file paths retain their native filesystem representation.
+    pub fn from_argument(source: &OsStr) -> Result<Self, ConfigError> {
+        if let Some(endpoint) = source.to_str().filter(|value| is_url_argument(value)) {
+            validate_endpoint(endpoint).map_err(ConfigError::Endpoint)?;
+            return Ok(Self {
+                providers: vec![Provider {
+                    id: "default".into(),
+                    name: "Default RPC".into(),
+                    endpoint: endpoint.into(),
+                }],
+            });
+        }
+        Self::load(Path::new(source))
+    }
+
     /// Read the configuration before starting the HTTP listener or worker pool.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let bytes = fs::read(path).map_err(|error| ConfigError::Read(error.kind()))?;
@@ -84,37 +109,21 @@ impl Registry {
                     "name must contain 1–128 characters without controls",
                 ));
             }
-            let endpoint = reqwest::Url::parse(&provider.endpoint)
-                .map_err(|_| invalid("endpoint must be an absolute HTTP(S) URL"))?;
-            if !matches!(endpoint.scheme(), "http" | "https")
-                || endpoint.host_str().is_none()
-                || endpoint.fragment().is_some()
-                || !provider
-                    .endpoint
-                    .split_once("://")
-                    .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case(endpoint.scheme()))
-                || provider
-                    .endpoint
-                    .chars()
-                    .any(|ch| ch.is_whitespace() || ch.is_control())
-            {
-                return Err(invalid(
-                    "endpoint must be an absolute HTTP(S) URL without whitespace or a fragment",
-                ));
-            }
+            validate_endpoint(&provider.endpoint).map_err(invalid)?;
         }
         Ok(Self {
             providers: config.providers,
         })
     }
 
-    /// Return only public metadata in configuration order, never endpoints.
+    /// Return names and URL values in configuration order for browser display.
     pub fn catalogue(&self) -> Vec<api::RpcProvider> {
         self.providers
             .iter()
             .map(|provider| api::RpcProvider {
                 id: provider.id.clone(),
                 name: provider.name.clone(),
+                endpoint: provider.endpoint.clone(),
             })
             .collect()
     }
@@ -143,6 +152,33 @@ impl Registry {
                 }),
             })
     }
+}
+
+fn is_url_argument(value: &str) -> bool {
+    value.split_once(':').is_some_and(|(scheme, rest)| {
+        scheme.eq_ignore_ascii_case("http")
+            || scheme.eq_ignore_ascii_case("https")
+            || (rest.starts_with("//") && !scheme.contains(['/', '\\']))
+    })
+}
+
+fn validate_endpoint(value: &str) -> Result<(), &'static str> {
+    let reason =
+        "endpoint must be an absolute HTTP(S) URL with a host, without whitespace or a fragment";
+    let endpoint = reqwest::Url::parse(value).map_err(|_| reason)?;
+    if !matches!(endpoint.scheme(), "http" | "https")
+        || endpoint.host_str().is_none()
+        || endpoint.fragment().is_some()
+        || !value
+            .split_once("://")
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case(endpoint.scheme()))
+        || value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Err(reason);
+    }
+    Ok(())
 }
 
 // Concrete visitors preserve no_dyn and reject ambiguous or misspelled config.

@@ -40,7 +40,7 @@ def server_url(process: subprocess.Popen[str]) -> str:
 
 
 @contextmanager
-def analysis_server(args, rpc_config: Path | None = None):
+def analysis_server(args, rpc_config: Path | str | None = None):
     command = [args.server, "--assets", args.assets, "--bind", "127.0.0.1:0",
                "--workers", "2", "--queue-capacity", "4"]
     if rpc_config is not None:
@@ -158,7 +158,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 4
+    assert initial_report["schema_version"] == 5
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
         assert initial_report["metadata"]["limits"][field] == value
@@ -191,7 +191,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 4
+    assert report["schema_version"] == 5
     assert report["status"] == "Converged", report["frontiers"]
     expected = {**defaults, **edited}
     for field, value in expected.items():
@@ -907,7 +907,7 @@ RPC_PROVIDERS = [
     {"id": "pending-fixture", "name": "Pending acquisition"},
     {"id": "world-fixture", "name": "World snapshot"},
 ]
-RPC_PRIVATE_TOKEN = "browser-must-not-receive-this-fixture-token"
+RPC_TEST_TOKEN = "rpc-value-shown-in-provider-selector"
 
 
 def open_rpc_input(page, canvas):
@@ -916,16 +916,18 @@ def open_rpc_input(page, canvas):
     settle_gesture(page)
 
 
-def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int):
-    expect(page.locator("#analysis-status")).to_contain_text(f"RPC provider: {RPC_PROVIDERS[0]['name']}")
+def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, providers):
+    expect(page.locator("#analysis-status")).to_contain_text(
+        f"RPC provider: {providers[0]['name']} ({providers[0]['endpoint']})")
     open_rpc_input(page, canvas)
     if provider_index:
         canvas.click(position={"x": 600, "y": 404})
         rendered_frame(page)
         canvas.screenshot(path=str(output / f"{name}-providers.png"))
         canvas.click(position={"x": 460, "y": 430 + provider_index * 23})
-    provider = RPC_PROVIDERS[provider_index]
-    expect(page.locator("#analysis-status")).to_contain_text(f"RPC provider: {provider['name']}")
+    provider = providers[provider_index]
+    expect(page.locator("#analysis-status")).to_contain_text(
+        f"RPC provider: {provider['name']} ({provider['endpoint']})")
     canvas.click(position={"x": 600, "y": 444})
     page.keyboard.press("Control+A")
     page.keyboard.type(rpc.root_address, delay=3)
@@ -937,12 +939,12 @@ def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int):
     request = admitted.request.post_data_json
     assert request["input"] == {"Rpc": {"provider_id": provider["id"], "address": rpc.root_address, "block": "Latest", "accounts": []}}, request
     assert rpc.endpoint not in admitted.request.post_data
-    assert RPC_PRIVATE_TOKEN not in admitted.request.post_data
+    assert RPC_TEST_TOKEN not in admitted.request.post_data
     assert request["environment"]["number"] is None
     return admitted
 
 
-def world_interactions(browser, url: str, output: Path, rpc, pending_rpc):
+def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, providers):
     results = {}
     page = browser.new_page(viewport={"width": 1440, "height": 1000})
     observe_webgpu(page)
@@ -952,7 +954,7 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc):
     status = page.locator("#analysis-status")
     expect(status).to_contain_text("Ready:", timeout=60000)
     canvas = page.locator("#evm-canvas")
-    admitted = submit_rpc(page, canvas, rpc, output, "world", provider_index=1)
+    admitted = submit_rpc(page, canvas, rpc, output, "world", provider_index=1, providers=providers)
     reply = complete_submission(page, admitted)
     envelope = reply.json()
     (output / "world-task-reply.json").write_text(json.dumps({"admission_http_status": reply.admission_status, "observed_http_status": reply.status, "reply": envelope}, indent=2) + "\n")
@@ -1008,7 +1010,7 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc):
     assert reads and all(request["params"][-1] == {"blockHash": rpc.block_hash, "requireCanonical": True} for request in reads)
     assert sum(request["method"] == "eth_getBlockByNumber" and request["params"][0] == "latest" for request in rpc.requests) == 1
     assert not pending_rpc.requests, "selecting the second provider contacted the default provider"
-    assert RPC_PRIVATE_TOKEN not in json.dumps(report), "provider credentials escaped into the public report"
+    assert RPC_TEST_TOKEN not in json.dumps(report), "provider URL escaped into the analysis report"
     (output / "world-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
     results["analysis"] = {"programs": len(report["programs"]), "states": len(report["states"]), "outcomes": len(report["outcomes"]), "rpc_requests": len(rpc.requests), "inspector_views": screenshots, "renderer": webgpu_evidence(page)}
     assert not failures, failures
@@ -1034,7 +1036,7 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc):
             route.continue_()
     page.route("**/api/tasks/*", hold_first_poll)
     page.on("requestfailed", lambda request: aborted.append({"url": request.url, "failure": request.failure}))
-    admitted = submit_rpc(page, canvas, rpc, output, "cancel", provider_index=0)
+    admitted = submit_rpc(page, canvas, rpc, output, "cancel", provider_index=0, providers=providers)
     assert admitted.status == 202, admitted.text()
     assert rpc.started.wait(5), "fixture did not enter a real pending RPC request"
     expect(status).to_contain_text("showing previous result")
@@ -1071,7 +1073,7 @@ def configured_world_interactions(browser, args):
         with TemporaryDirectory(prefix="web-rpc-providers-") as directory:
             configuration = Path(directory) / "providers.json"
             providers = [
-                {**provider, "endpoint": fixture.endpoint + "/rpc?token=" + RPC_PRIVATE_TOKEN}
+                {**provider, "endpoint": fixture.endpoint + "/rpc?token=" + RPC_TEST_TOKEN}
                 for provider, fixture in zip(RPC_PROVIDERS, [pending, rpc], strict=True)
             ]
             configuration.write_text(json.dumps({"providers": providers}) + "\n")
@@ -1079,15 +1081,45 @@ def configured_world_interactions(browser, args):
                 page = browser.new_page()
                 catalogue = page.request.get(url + "/api/rpc-providers")
                 assert catalogue.ok, catalogue.text()
-                assert catalogue.json() == {"result": {"Ok": RPC_PROVIDERS}}
-                assert RPC_PRIVATE_TOKEN not in catalogue.text()
-                assert all(fixture.endpoint not in catalogue.text() for fixture in [pending, rpc])
+                assert catalogue.json() == {"result": {"Ok": providers}}
                 page.close()
-                result = world_interactions(browser, url, args.output, rpc, pending)
-                result["providers"] = RPC_PROVIDERS
+                result = world_interactions(browser, url, args.output, rpc, pending, providers)
+                result["providers"] = providers
                 result["selected_provider_id"] = RPC_PROVIDERS[1]["id"]
-                result["endpoint_kept_on_server"] = True
+                result["endpoint_displayed_in_selector"] = True
+                result["submission_uses_provider_id"] = True
                 return result
+
+
+def url_configured_world_interactions(browser, args):
+    with RpcFixture() as rpc:
+        endpoint = rpc.endpoint + "/rpc?token=" + RPC_TEST_TOKEN
+        providers = [{"id": "default", "name": "Default RPC", "endpoint": endpoint}]
+        with analysis_server(args, endpoint) as url:
+            assert not rpc.requests, "loading a URL unexpectedly contacted the RPC"
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            catalogue = page.request.get(url + "/api/rpc-providers")
+            assert catalogue.ok, catalogue.text()
+            assert catalogue.json() == {"result": {"Ok": providers}}
+            page.goto(url, wait_until="networkidle")
+            expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=60000)
+            admitted = submit_rpc(page, page.locator("#evm-canvas"), rpc, args.output,
+                                  "url-default", provider_index=0, providers=providers)
+            reply = complete_submission(page, admitted)
+            envelope = reply.json()
+            assert reply.status == 200 and "Ok" in envelope["result"], envelope
+            report = envelope["result"]["Ok"]
+            assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
+            assert report["metadata"]["snapshot"]["block_hash"] == rpc.block_hash
+            assert report["acquisition"]["requests"] > 0 and rpc.requests
+            assert RPC_TEST_TOKEN not in json.dumps(report)
+            assert endpoint not in json.dumps(report)
+            (args.output / "url-default-task-reply.json").write_text(json.dumps(envelope, indent=2) + "\n")
+            page.close()
+            return {"providers": providers, "selected_provider_id": "default",
+                    "rpc_requests": len(rpc.requests), "endpoint_displayed_in_selector": True,
+                    "submission_uses_provider_id": True,
+                    "status": report["status"]}
 
 
 def assert_rpc_disabled(page, canvas, output: Path, name: str, analyze_y: int):
@@ -1200,7 +1232,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 4
+            assert analysis["schema_version"] == 5
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
@@ -1290,6 +1322,7 @@ def main() -> None:
             budgets = budget_interactions(browser, url, args.output)
             rpc_providers = unconfigured_rpc_interactions(browser, url, args.output)
             world = configured_world_interactions(browser, args)
+            url_world = url_configured_world_interactions(browser, args)
             panes = pane_interactions(browser, url, args.output)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
             assert not errors, "browser errors: " + "\n".join(errors)
@@ -1311,6 +1344,7 @@ def main() -> None:
                 "graph_interactions": gestures,
                 "pane_interactions": panes,
                 "world_interactions": world,
+                "url_configured_world": url_world,
                 "rpc_providers": rpc_providers,
                 "budget_interactions": budgets,
                 "platform": "Linux headless Chromium with Xvfb and SwiftShader WebGPU; synthesized browser gestures, not physical macOS hardware",

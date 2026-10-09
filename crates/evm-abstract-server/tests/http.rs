@@ -395,7 +395,7 @@ fn decode_providers(bytes: &[u8]) -> (String, RpcProvidersReply) {
 }
 
 #[test]
-fn provider_route_exposes_only_public_metadata_and_empty_configuration() {
+fn provider_route_exposes_configured_names_and_url_values_and_empty_configuration() {
     let assets = Assets::new();
     let providers = Registry::from_json(br#"{"providers":[{"id":"mainnet","name":"Ethereum mainnet","endpoint":"https://user:secret-pass@example.com/private?key=secret-key"},{"id":"local","name":"Local node","endpoint":"http://127.0.0.1:8545"}]}"#).unwrap();
     let configured = Pool::with_providers(
@@ -418,18 +418,12 @@ fn provider_route_exposes_only_public_metadata_and_empty_configuration() {
     assert_eq!(catalogue.len(), 2);
     assert_eq!(catalogue[0].id, "mainnet");
     assert_eq!(catalogue[0].name, "Ethereum mainnet");
+    assert_eq!(
+        catalogue[0].endpoint,
+        "https://user:secret-pass@example.com/private?key=secret-key"
+    );
     assert_eq!(catalogue[1].id, "local");
-    let text = std::str::from_utf8(&response).unwrap();
-    for secret in [
-        "endpoint",
-        "secret",
-        "user",
-        "example.com",
-        "127.0.0.1",
-        "private",
-    ] {
-        assert!(!text.contains(secret));
-    }
+    assert_eq!(catalogue[1].endpoint, "http://127.0.0.1:8545");
     let (headers, reply) = decode_providers(&exchange_with_pool(
         b"POST /api/rpc-providers HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
         &assets.0,

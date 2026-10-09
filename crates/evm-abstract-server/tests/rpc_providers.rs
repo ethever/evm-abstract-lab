@@ -3,6 +3,7 @@ use evm_abstract_protocol::{
     AnalysisInput, AnalyzeRequest, ApiErrorCode, BlockSelector, ErrorDetails, RpcInput,
 };
 use evm_abstract_server::rpc_providers::{ConfigError, Registry};
+use std::ffi::OsStr;
 
 fn config(id: &str, name: &str, endpoint: &str) -> Vec<u8> {
     // Use JSON string encoding so controls and non-ASCII names exercise validation,
@@ -17,7 +18,7 @@ fn config(id: &str, name: &str, endpoint: &str) -> Vec<u8> {
 }
 
 #[test]
-fn catalogue_preserves_configured_order_and_hides_endpoints() {
+fn catalogue_preserves_configured_order_and_exact_url_values() {
     let providers = Registry::from_json(br#"{"providers":[{"id":"test","name":"Local test","endpoint":"http://alice:password@127.0.0.1:8545/private?api_key=secret"},{"id":"mainnet","name":"Ethereum mainnet","endpoint":"https://example.com"}]}"#).unwrap();
     let catalogue = providers.catalogue();
     assert_eq!(
@@ -27,19 +28,11 @@ fn catalogue_preserves_configured_order_and_hides_endpoints() {
             .collect::<Vec<_>>(),
         ["test", "mainnet"]
     );
-    let encoded = serde_json::to_string(&catalogue).unwrap();
-    for secret in [
-        "endpoint",
-        "alice",
-        "password",
-        "private",
-        "api_key",
-        "secret",
-        "127.0.0.1",
-        "example.com",
-    ] {
-        assert!(!encoded.contains(secret), "catalogue disclosed {secret}");
-    }
+    assert_eq!(
+        catalogue[0].endpoint,
+        "http://alice:password@127.0.0.1:8545/private?api_key=secret"
+    );
+    assert_eq!(catalogue[1].endpoint, "https://example.com");
     assert!(Registry::default().catalogue().is_empty());
     assert!(
         Registry::from_json(br#"{"providers":[]}"#)
@@ -109,6 +102,58 @@ fn configuration_rejects_ambiguous_fields_and_invalid_provider_values() {
         "https://user:password@example.com",
     ] {
         assert!(Registry::from_json(&config("mainnet", "主网", endpoint)).is_ok());
+    }
+}
+
+#[test]
+fn url_argument_creates_a_default_provider_without_network_access() {
+    for endpoint in [
+        "http://127.0.0.1:8545",
+        "https://user:secret-pass@example.com/private?key=secret-key",
+        "http://[::1]:8545",
+        "HTTPS://example.com/rpc",
+    ] {
+        let providers = Registry::from_argument(OsStr::new(endpoint)).unwrap();
+        let catalogue = providers.catalogue();
+        assert_eq!(catalogue.len(), 1);
+        assert_eq!(catalogue[0].id, "default");
+        assert_eq!(catalogue[0].name, "Default RPC");
+        assert_eq!(catalogue[0].endpoint, endpoint);
+        let request = AnalyzeRequest {
+            input: AnalysisInput::Rpc(RpcInput {
+                provider_id: "default".into(),
+                address: "0x1111111111111111111111111111111111111111".into(),
+                block: BlockSelector::Latest,
+                accounts: Vec::new(),
+            }),
+            ..AnalyzeRequest::default()
+        };
+        providers.validate_request(&request).unwrap();
+    }
+}
+
+#[test]
+fn url_arguments_reuse_endpoint_validation_and_report_private_url_errors() {
+    for endpoint in [
+        "http://",
+        "https:example.com",
+        "http://[::1",
+        "http://example.com:99999",
+        "ftp://user:secret-pass@example.com/private",
+        "file:///secret-file",
+        "https://example.com/#secret",
+        "https://example.com/secret space",
+        "https://example.com/\nsecret",
+    ] {
+        let error = match Registry::from_argument(OsStr::new(endpoint)) {
+            Ok(_) => panic!("accepted invalid URL"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, ConfigError::Endpoint(_)));
+        let diagnostic = format!("{error} {error:?}");
+        assert!(diagnostic.contains("invalid RPC URL"));
+        assert!(diagnostic.contains("HTTP(S) URL"));
+        assert!(!diagnostic.contains("secret"));
     }
 }
 

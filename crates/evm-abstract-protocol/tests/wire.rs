@@ -196,11 +196,12 @@ fn transport_diagnostic_roundtrip_preserves_reason_beside_classification() {
 }
 
 #[test]
-fn rpc_catalogue_and_selection_are_strict_and_credential_free() {
+fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
     roundtrip(RpcProvidersReply {
         result: Ok(vec![RpcProvider {
             id: "mainnet".into(),
             name: "Ethereum mainnet".into(),
+            endpoint: "https://example.com/rpc?key=value".into(),
         }]),
     });
     roundtrip(RpcProvidersReply {
@@ -228,5 +229,5 @@ fn rpc_catalogue_and_selection_are_strict_and_credential_free() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 4);
+    assert_eq!(SCHEMA_VERSION, 5);
 }

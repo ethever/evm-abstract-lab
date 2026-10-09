@@ -75,7 +75,7 @@ impl RpcProviders {
                 .find(|provider| provider.id == selected)
                 .map_or_else(
                     || "Select an RPC provider".into(),
-                    |provider| format!("RPC provider: {}", provider.name),
+                    |provider| format!("RPC provider: {}", provider_label(provider)),
                 ),
             State::Failed(error) => format!("Could not load RPC providers: {error}"),
         }
@@ -85,18 +85,24 @@ impl RpcProviders {
         ui.label(RichText::new("RPC provider").color(palette::MUTED));
         match &self.state {
             State::Ready(providers) if !providers.is_empty() => {
-                let name = providers
+                let label = providers
                     .iter()
                     .find(|provider| provider.id == *selected)
-                    .map_or("Select an RPC provider", |provider| provider.name.as_str());
+                    .map_or_else(|| "Select an RPC provider".into(), provider_label);
                 egui::ComboBox::from_id_salt("rpc_provider")
                     .width(ui.available_width())
-                    .selected_text(name)
+                    .selected_text(&label)
+                    .truncate()
                     .show_ui(ui, |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         for provider in providers {
-                            ui.selectable_value(selected, provider.id.clone(), &provider.name);
+                            let label = provider_label(provider);
+                            ui.selectable_value(selected, provider.id.clone(), &label)
+                                .on_hover_text(label);
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text(label);
             }
             State::Unrequested | State::Loading => {
                 ui.horizontal(|ui| {
@@ -112,6 +118,10 @@ impl RpcProviders {
             }
         }
     }
+}
+
+fn provider_label(provider: &RpcProvider) -> String {
+    format!("{} ({})", provider.name, provider.endpoint)
 }
 
 #[cfg(test)]
