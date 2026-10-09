@@ -168,7 +168,7 @@ nix run .#web
 
 打开命令打印的本地地址，在 egui 工作台输入运行时字节码，查看自绘的反汇编、SSA 和 CFG。浏览器通过共享 Rust 类型向原生分析服务发送请求；分析和 SMT 求解仍在后端运行。控件操作、开发构建、数据接口及当前输入范围见[Web 前端说明](docs/web-workbench.md)。
 
-分析链上账户时，使用 `nix run .#web -- --rpc-config http://127.0.0.1:8545` 直接传入 RPC HTTP(S) URL；后端自动创建 **Default RPC** 提供者，无需 JSON 文件。需要多个提供者或自定义名称时，`--rpc-config` 也接受 JSON 配置文件路径。浏览器同时显示提供者的名称和 RPC URL，分析请求只提交其 ID。省略配置时仍可分析字节码，RPC 提交不可用。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)。
+分析链上账户时，使用 `nix run .#web -- --rpc-config http://127.0.0.1:8545` 直接传入 RPC HTTP(S) URL；后端自动创建 **Default RPC** 提供者，无需 JSON 文件。需要多个提供者或自定义名称时，`--rpc-config` 也接受 JSON 配置文件路径。浏览器同时显示提供者的名称和 RPC URL，分析请求只提交其 ID。首次打开时，有提供者则使用第一项自动分析 Ethereum 主网 USDC；未配置提供者则运行分支字节码示例，RPC 提交不可用。RPC 表单还可选择 WETH 或自定义入口地址，切换示例不会自动提交。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)。
 
 CLI 与 Web 保留全部预算和精度控件，共用同一套较大默认值，并允许显式覆盖；实际分析仍遵循指定的有限预算。完整默认值和 Web 类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 参数见[精度与预算表](docs/05-sensitivity.md#7-实验时分别调整精度与预算)。直接调用 Rust 库时，`Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 与 `RpcInput::new()` 仍使用库自身的较小默认配置。
 

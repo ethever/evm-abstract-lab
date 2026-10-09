@@ -90,7 +90,7 @@ impl eframe::App for BrowserApp {
         let mut request = self.workspace.show(ui);
         if self.initial_request {
             self.initial_request = false;
-            request = Some(self.workspace.initial_command());
+            request = request.or_else(|| self.workspace.startup_command());
         }
         for request in [request, self.workspace.rpc_provider_command()]
             .into_iter()

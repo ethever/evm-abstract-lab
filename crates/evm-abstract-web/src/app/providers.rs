@@ -38,9 +38,9 @@ impl RpcProviders {
         generation: u64,
         result: Result<RpcProvidersReply, TransportError>,
         selected: &mut String,
-    ) {
+    ) -> bool {
         if generation != self.generation || !matches!(self.state, State::Loading) {
-            return;
+            return false;
         }
         self.state = match result {
             Ok(RpcProvidersReply {
@@ -57,6 +57,11 @@ impl RpcProviders {
             Ok(RpcProvidersReply { result: Err(error) }) => State::Failed(TaskError::Api(error)),
             Err(error) => State::Failed(TaskError::Transport(error)),
         };
+        true
+    }
+
+    pub(super) fn loading_generation(&self) -> Option<u64> {
+        matches!(self.state, State::Loading).then_some(self.generation)
     }
 
     pub(super) fn valid_selection(&self, selected: &str) -> bool {
@@ -133,7 +138,7 @@ mod tests {
     };
 
     #[test]
-    fn catalog_fetch_and_failure_do_not_block_initial_submission_polling_or_cancellation() {
+    fn catalog_fetch_and_failure_do_not_block_manual_submission_polling_or_cancellation() {
         let mut workspace = Workspace::default();
         assert!(matches!(
             workspace.rpc_provider_command(),
@@ -144,7 +149,7 @@ mod tests {
             request,
         } = workspace.initial_command()
         else {
-            panic!("initial bytecode does not wait for catalog loading")
+            panic!("manual bytecode submission does not wait for catalog loading")
         };
         assert!(matches!(request.input, AnalysisInput::Bytecode(_)));
         workspace.receive_message(Message::Status {

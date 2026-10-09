@@ -2,6 +2,7 @@
 //! fields; submission always produces the shared, typed analysis request.
 
 mod environment;
+mod examples;
 mod limits;
 
 use egui::{Id, RichText, Ui};
@@ -47,7 +48,7 @@ impl Default for AnalysisForm {
             },
             rpc: RpcInput {
                 provider_id: String::new(),
-                address: String::new(),
+                address: examples::Example::Usdc.address().into(),
                 block: BlockSelector::Latest,
                 accounts: vec![],
             },
@@ -62,17 +63,32 @@ impl Default for AnalysisForm {
 }
 
 impl AnalysisForm {
+    /// Select the prepared RPC entry only when its configured provider is usable.
+    /// Startup owns when to call this; rendering never resets the address draft.
+    pub(super) fn select_rpc_example_if_available(&mut self) -> bool {
+        if self.providers.valid_selection(&self.rpc.provider_id) {
+            self.source = Source::Rpc;
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn provider_command(&mut self) -> Option<Command> {
         self.providers.next_command()
+    }
+
+    pub(super) fn provider_loading_generation(&self) -> Option<u64> {
+        self.providers.loading_generation()
     }
 
     pub(super) fn receive_providers(
         &mut self,
         generation: u64,
         result: Result<RpcProvidersReply, TransportError>,
-    ) {
+    ) -> bool {
         self.providers
-            .receive(generation, result, &mut self.rpc.provider_id);
+            .receive(generation, result, &mut self.rpc.provider_id)
     }
 
     pub(super) fn provider_status(&self) -> String {
@@ -223,13 +239,7 @@ impl AnalysisForm {
             }
             Source::Rpc => {
                 self.providers.show(ui, &mut self.rpc.provider_id);
-                field(
-                    ui,
-                    "Root account",
-                    "rpc_address",
-                    &mut self.rpc.address,
-                    "0x… (20 bytes)",
-                );
+                examples::root_account(ui, &mut self.rpc.address);
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Snapshot block");
                     let choice = match self.rpc.block {
@@ -341,11 +351,6 @@ impl AnalysisForm {
             }
         });
     }
-}
-
-fn field(ui: &mut Ui, label: &str, id: &str, value: &mut String, hint: &str) {
-    ui.label(RichText::new(label).color(palette::MUTED));
-    framework::line_editor(ui, id, value, hint);
 }
 
 fn optional_text(

@@ -10,7 +10,7 @@
 nix run .#web
 ```
 
-Nix 构建 WebAssembly、匹配版本的 wasm-bindgen JavaScript 绑定和原生服务，并将静态资源与 `/api/tasks` 放在同一来源下。浏览器打开服务打印的地址即可使用。
+Nix 构建 WebAssembly、匹配版本的 wasm-bindgen JavaScript 绑定和原生服务，并将静态资源与 `/api/tasks` 放在同一来源下。浏览器打开服务打印的地址即可使用。首次打开时先读取 RPC 提供者目录：有提供者则使用第一项自动分析下面的 Ethereum 主网 USDC 地址；目录为空则运行原有的分支字节码示例。目录加载失败时仍可使用字节码入口，并可在 RPC 表单点击 **Retry** 后手动提交分析。
 
 默认不配置 RPC 提供者，字节码分析可直接使用。需要分析链上账户时，直接传入 RPC HTTP(S) URL：
 
@@ -75,7 +75,16 @@ nix build .#web-assets
 
 通过 **New analysis** 打开弹窗表单，选择字节码或 RPC 链上账户输入。规则、调用环境、区块选择和预算集中在可滚动表单中；提交后收起输入，让主工作区留给结果。未指定 calldata 表示内容和长度未知，显式空字节串才表示空调用；value 和 caller 也区分未知与指定值。RPC 的区块参数默认 `latest`，每次任务只解析一次。
 
-RPC 表单在 **RPC provider** 下拉框的当前选项与每个候选项中同时显示后端配置的名称和 RPC URL，默认选择第一项，再填写 **Root account**。长名称或 URL 会按可用宽度省略显示，悬停可查看完整名称和地址。名单加载中、加载失败或为空时，**Analyze** 和 **Ctrl+Enter** 都不会提交 RPC 任务；失败或为空时可点击 **Retry** 重新获取名单。切回 **Bytecode** 仍能分析字节码。
+RPC 表单在 **RPC provider** 下拉框的当前选项与每个候选项中同时显示后端配置的名称和 RPC URL，默认选择第一项；**Root account** 预填 Ethereum 主网 USDC 地址。长名称或 URL 会按可用宽度省略显示，悬停可查看完整名称和地址。名单加载中、加载失败或为空时，**Analyze** 和 **Ctrl+Enter** 都不会提交 RPC 任务；失败或为空时可点击 **Retry** 重新获取名单。切回 **Bytecode** 仍能分析字节码。
+
+入口示例下拉框提供 **USDC**（默认）、**WETH** 与 **Custom**。两个预置地址均标记为 **Ethereum mainnet**，应搭配 Ethereum 主网 RPC：
+
+| 示例 | Root account | 官方来源 |
+| --- | --- | --- |
+| USDC | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | [Circle 支持的 USDC 合约](https://help.circle.com/support/en/usdc-supported-blockchains-minting-redemption-faqs?id=kb_article_view&sysparm_article=KB0010590) |
+| WETH | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | [ethereum.org 的 canonical WETH 实现](https://ethereum.org/wrapped-eth/) |
+
+选择 USDC 或 WETH 只把对应地址写入草稿；也可选择 **Custom** 手工编辑地址，重新打开表单会保留草稿。提供者、区块、环境和预算设置不变。切换下拉选项不会自动提交，点击 **Analyze** 或按 **Ctrl+Enter** 才开始新的分析。
 
 **Execution budget**、**Precision and solver**、**RPC acquisition budget** 保留全部预算与精度设置。CLI 的 `cfg`、`ssa`、`analyze`、`explain` 与 Web 共用下表中的较大默认值；可以在十进制文本框中继续调大，前端与后端都不另设业务最大值。输入、请求与报告保留原始整数，超过 `2^53` 的值也不会经过浮点数舍入。
 
