@@ -54,12 +54,7 @@ fn contents(
     // Width comes from the actual tokens, including effects, exit stacks and
     // transitions. A short report therefore fits a narrow pane without a
     // permanent blank gutter; long operands remain horizontally reachable.
-    let glyph_width = ui
-        .painter()
-        .layout_no_wrap("0".into(), FontId::monospace(12.0), palette::TEXT)
-        .size()
-        .x;
-    let width = rows.iter().map(Row::columns).max().unwrap_or_default() as f32 * glyph_width + 12.0;
+    let width = row_width(ui, &rows);
     ScrollArea::horizontal()
         .id_salt("ssa_scroll")
         .auto_shrink([false, false])
@@ -108,6 +103,21 @@ fn contents(
                 });
             });
         });
+}
+
+/// SSA displays the complete report, so pane sizing measures every retained
+/// block, including phi inputs, effects and transition rows.
+pub(crate) fn natural_width(ui: &Ui, report: &AnalysisReport) -> f32 {
+    row_width(ui, &rows(report)) + ui.spacing().scroll.allocated_width()
+}
+
+fn row_width(ui: &Ui, rows: &[Row]) -> f32 {
+    let glyph_width = ui
+        .painter()
+        .layout_no_wrap("0".into(), FontId::monospace(12.0), palette::TEXT)
+        .size()
+        .x;
+    rows.iter().map(Row::columns).max().unwrap_or_default() as f32 * glyph_width + 12.0
 }
 
 struct Token {

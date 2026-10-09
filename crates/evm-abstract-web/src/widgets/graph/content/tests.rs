@@ -28,8 +28,26 @@ fn frame(
     selection: &mut Selection,
     events: Vec<Event>,
 ) -> FullOutput {
+    frame_at(
+        ctx,
+        graph,
+        report,
+        selection,
+        events,
+        Vec2::new(1400.0, 900.0),
+    )
+}
+
+fn frame_at(
+    ctx: &Context,
+    graph: &mut Graph,
+    report: &evm_abstract_protocol::AnalysisReport,
+    selection: &mut Selection,
+    events: Vec<Event>,
+    size: Vec2,
+) -> FullOutput {
     let mut input = RawInput {
-        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0))),
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
         events,
         ..RawInput::default()
     };
@@ -310,14 +328,14 @@ fn manual_mode_switch_preserves_selected_node_camera_anchor_and_zoom() {
         pc: None,
     };
     frame(&ctx, &mut graph, &report, &mut selection, Vec::new());
-    graph.automatic = false;
+    graph.fitted = false;
     graph.zoom = 1.2;
     let offset = Vec2::new(12.0, -8.0);
     graph.pan = graph.viewport.unwrap() * 0.5 + offset
         - graph.placement.nodes[&205].center().to_vec2() * graph.zoom;
     click(&ctx, &mut graph, &report, &mut selection, "Disasm");
     assert_eq!(graph.content, NodeView::Disassembly);
-    assert!(!graph.automatic);
+    assert!(!graph.fitted);
     assert_eq!(graph.zoom, 1.2);
     let new_offset = graph.pan + graph.placement.nodes[&205].center().to_vec2() * graph.zoom
         - graph.viewport.unwrap() * 0.5;
@@ -325,7 +343,43 @@ fn manual_mode_switch_preserves_selected_node_camera_anchor_and_zoom() {
 }
 
 #[test]
-fn fit_button_centers_both_representations_and_restores_automatic_mode() {
+fn a_representation_switch_preserves_initial_fit_scale_and_canvas_anchor() {
+    let report = report();
+    let ctx = Context::default();
+    let mut graph = Graph::default();
+    let mut selection = Selection {
+        state: Some(205),
+        pc: None,
+    };
+    let small = Vec2::new(340.0, 260.0);
+    frame_at(&ctx, &mut graph, &report, &mut selection, Vec::new(), small);
+    let zoom = graph.zoom;
+    assert!(
+        zoom < 1.0,
+        "fixture must first fit its SSA content at a reduced scale"
+    );
+    let anchor = graph.pan + graph.placement.nodes[&205].center().to_vec2() * zoom;
+    let ssa_size = graph.nodes[&205].size;
+    graph.set_content(NodeView::Disassembly, selection.state);
+    frame_at(&ctx, &mut graph, &report, &mut selection, Vec::new(), small);
+    assert_eq!(
+        graph.zoom, zoom,
+        "switching to smaller cards must not automatically magnify the graph"
+    );
+    assert_ne!(graph.nodes[&205].size, ssa_size);
+    assert!(
+        (graph.pan + graph.placement.nodes[&205].center().to_vec2() * zoom - anchor).length()
+            < 0.01
+    );
+    let camera = (graph.zoom, graph.pan);
+    let nodes = graph.placement.nodes.clone();
+    frame(&ctx, &mut graph, &report, &mut selection, Vec::new());
+    assert_eq!((graph.zoom, graph.pan), camera);
+    assert_eq!(graph.placement.nodes, nodes);
+}
+
+#[test]
+fn fit_button_centers_both_representations_without_rearranging_nodes() {
     let report = report();
     for content in [NodeView::Disassembly, NodeView::Ssa] {
         let ctx = Context::default();
@@ -341,11 +395,15 @@ fn fit_button_centers_both_representations_and_restores_automatic_mode() {
         }
         graph.zoom_at(graph.viewport.unwrap() * 0.5, 1.8);
         graph.pan += Vec2::new(90.0, -70.0);
-        assert!(!graph.automatic);
+        assert!(!graph.fitted);
+        let nodes = graph.placement.nodes.clone();
+        let flow = graph.placement.flow;
         click(&ctx, &mut graph, &report, &mut selection, "Fit graph");
-        assert!(graph.automatic);
+        assert!(graph.fitted);
         assert_eq!(graph.content, content);
         assert_eq!(selection, expected);
+        assert_eq!(graph.placement.nodes, nodes);
+        assert_eq!(graph.placement.flow, flow);
         let viewport = Rect::from_min_size(Pos2::ZERO, graph.viewport.unwrap());
         let scene = graph.screen_rect(viewport, graph.placement.bounds);
         assert!(viewport.contains_rect(scene));

@@ -8,7 +8,9 @@ mod ssa;
 mod tests;
 
 pub(crate) use disassembly::disassembly;
+pub(crate) use disassembly::natural_width as disassembly_width;
 pub(crate) use graph::Graph;
+pub(crate) use ssa::natural_width as ssa_width;
 pub(crate) use ssa::ssa;
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, Ui, Vec2};

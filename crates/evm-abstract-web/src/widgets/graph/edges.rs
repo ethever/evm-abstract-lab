@@ -6,7 +6,7 @@ mod tests;
 
 use super::layout::EdgeRoute;
 use crate::palette;
-use egui::{FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
+use egui::{FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
 use evm_abstract_protocol::EdgeKind;
 
 pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
@@ -53,7 +53,11 @@ pub(super) fn paint_edge(
     // Unlike individual LineSegments, epaint does not round PathShape centers
     // to the physical pixel grid. Apply the same stroke-aware rounding here so
     // orthogonal segments retain equal coverage as the graph moves or scales.
-    let points = geometry::screen_points(&route.points, origin, zoom, stroke, pixels_per_point);
+    let incoming = geometry::screen_points(&route.to_label, origin, zoom, stroke, pixels_per_point);
+    if incoming.len() >= 2 {
+        painter.add(Shape::line(incoming, stroke));
+    }
+    let points = geometry::screen_points(&route.to_target, origin, zoom, stroke, pixels_per_point);
     if points.len() < 2 {
         return;
     }
@@ -71,16 +75,19 @@ pub(super) fn paint_edge(
         stroke.color,
         Stroke::NONE,
     ));
+    // The label is a layout vertex, not a floating mask over an edge. The two
+    // routes end/start at its boundary and only the target gets an arrowhead.
+    let label = Rect::from_min_max(
+        origin + route.label.min.to_vec2() * zoom,
+        origin + route.label.max.to_vec2() * zoom,
+    );
+    painter.rect(label, 3.0, palette::BACKGROUND, stroke, StrokeKind::Inside);
     if zoom > 0.35 {
         let galley =
             painter.layout_no_wrap(edge_label(id, kind), FontId::monospace(10.0 * zoom), color);
-        let padding = 1.0 / pixels_per_point;
-        let desired = Rect::from_min_size(origin + route.label.to_vec2() * zoom, galley.size())
-            .expand(padding);
-        // A fixed world offset is not enough: a rounded font line box and its
-        // screen-space padding can cover a horizontal route at small scales.
-        let mask = geometry::label_rect(desired, &points, stroke, pixels_per_point);
-        painter.rect_filled(mask, padding, palette::BACKGROUND);
-        painter.galley(mask.min + Vec2::splat(padding), galley, color);
+        let position = label.center() - galley.size() * 0.5;
+        painter
+            .with_clip_rect(label.intersect(painter.clip_rect()))
+            .galley(position, galley, color);
     }
 }

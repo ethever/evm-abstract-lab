@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 import re
 import selectors
+from statistics import median
 import subprocess
 import time
 
@@ -67,7 +68,7 @@ def settle_gesture(page) -> None:
     rendered_frame(page)
 
 
-def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, float, float]):
+def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, float, float], measure_nodes: bool = False):
     """Measure the rendered selected node, independently of application state.
 
     Chromium decodes its own screenshot into an unattached 2D canvas. This is
@@ -75,7 +76,7 @@ def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, floa
     Bounds are returned in CSS pixels even for a device_scale_factor of two.
     """
     return page.evaluate(
-        """async ({png, region}) => {
+        """async ({png, region, measureNodes}) => {
             const image = new Image();
             image.src = `data:image/png;base64,${png}`;
             await image.decode();
@@ -88,9 +89,15 @@ def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, floa
             const width = right - left, height = bottom - top;
             const pixels = context.getImageData(left, top, width, height).data;
             let minX = width, minY = height, maxX = -1, maxY = -1, count = 0;
+            const dividerCounts = new Uint32Array(width);
+            const mask = measureNodes ? new Uint8Array(width * height) : null;
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {
                     const i = (y * width + x) * 4;
+                    if (Math.abs(pixels[i] - 145) <= 50 && Math.abs(pixels[i + 1] - 164) <= 50 && Math.abs(pixels[i + 2] - 186) <= 50) dividerCounts[x]++;
+                    if (mask && ((pixels[i] === 21 && pixels[i + 1] === 29 && pixels[i + 2] === 42) ||
+                                 (pixels[i] === 33 && pixels[i + 1] === 65 && pixels[i + 2] === 75) ||
+                                 (pixels[i] === 47 && pixels[i + 1] === 62 && pixels[i + 2] === 80))) mask[y * width + x] = 1;
                     // The selected node's solid fill from the semantic palette.
                     if (pixels[i] === 33 && pixels[i + 1] === 65 && pixels[i + 2] === 75) {
                         minX = Math.min(minX, x); minY = Math.min(minY, y);
@@ -98,21 +105,53 @@ def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, floa
                     }
                 }
             }
+            // Full-height idle dividers are distinguishable from text, node
+            // borders and scrollbar thumbs. Collapse HiDPI columns to one line.
+            const dividers = [];
+            for (let x = 0; x < width;) {
+                if (dividerCounts[x] < height * 0.85) { x++; continue; }
+                const start = x;
+                while (x < width && dividerCounts[x] >= height * 0.85) x++;
+                dividers.push((left + (start + x) / 2) / scale);
+            }
+            const nodes = [];
+            if (mask) {
+                const queue = new Int32Array(width * height);
+                for (let start = 0; start < mask.length; start++) {
+                    if (!mask[start]) continue;
+                    let read = 0, write = 1, x0 = width, y0 = height, x1 = 0, y1 = 0;
+                    queue[0] = start; mask[start] = 0;
+                    while (read < write) {
+                        const at = queue[read++], x = at % width, y = Math.floor(at / width);
+                        x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+                        x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+                        for (const next of [x > 0 ? at - 1 : -1, x + 1 < width ? at + 1 : -1,
+                                            y > 0 ? at - width : -1, y + 1 < height ? at + width : -1]) {
+                            if (next >= 0 && mask[next]) { mask[next] = 0; queue[write++] = next; }
+                        }
+                    }
+                    if (write >= 30 * scale * scale && x1 - x0 >= 10 * scale && y1 - y0 >= 8 * scale) {
+                        nodes.push([(left + x0) / scale, (top + y0) / scale,
+                                    (left + x1 + 1) / scale, (top + y1 + 1) / scale]);
+                    }
+                }
+                nodes.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+            }
             const digest = await crypto.subtle.digest('SHA-256', pixels);
             const hash = Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2, '0')).join('');
             return {
                 bounds: count ? [(left + minX) / scale, (top + minY) / scale,
                                  (left + maxX + 1) / scale, (top + maxY + 1) / scale] : null,
-                selected_pixels: count, hash, scale
+                selected_pixels: count, hash, scale, dividers, nodes
             };
         }""",
-        {"png": base64.b64encode(screenshot).decode(), "region": region},
+        {"png": base64.b64encode(screenshot).decode(), "region": region, "measureNodes": measure_nodes},
     )
 
 
-def node_snapshot(page, canvas, output: Path, name: str, region=(4, 126, 1436, 970)):
+def node_snapshot(page, canvas, output: Path, name: str, region=(4, 126, 1436, 970), measure_nodes=False):
     screenshot = canvas.screenshot(path=str(output / f"{name}.png"))
-    metrics = screenshot_metrics(page, screenshot, region)
+    metrics = screenshot_metrics(page, screenshot, region, measure_nodes)
     assert metrics["bounds"] and metrics["selected_pixels"] >= 20, f"selected CFG node missing: {name}: {metrics}"
     return metrics
 
@@ -132,6 +171,148 @@ def assert_anchored_zoom(before, after, pointer) -> float:
         expected = pointer[axis] + (initial[axis] - pointer[axis]) * ratio
         assert abs(final[axis] - expected) <= 4.0, f"zoom moved the world point under the pointer: {initial} -> {final}, anchor {pointer}, ratio {ratio}"
     return ratio
+
+
+def resize_view(page, width: int, height: int) -> None:
+    page.set_viewport_size({"width": width, "height": height})
+    page.wait_for_function(
+        "() => { const c = document.querySelector('#evm-canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
+    rendered_frame(page)
+
+
+def assert_same_scene(before, after) -> None:
+    """Fit may uniformly scale/translate nodes, but must not rearrange them."""
+    assert len(before["nodes"]) == len(after["nodes"]) == 4, (before["nodes"], after["nodes"])
+    pairs = list(zip(before["nodes"], after["nodes"], strict=True))
+    # Node outlines retain screen-space width, so shrinking fill rectangles
+    # underestimates zoom. Relative distances between all four centers avoid
+    # that border bias and still reject any rearrangement of the scene.
+    centers = [([(old[0] + old[2]) / 2, (old[1] + old[3]) / 2],
+                [(new[0] + new[2]) / 2, (new[1] + new[3]) / 2])
+               for old, new in pairs]
+    scale = median(math.dist(centers[a][1], centers[b][1]) /
+                   math.dist(centers[a][0], centers[b][0])
+                   for a in range(len(centers)) for b in range(a + 1, len(centers)))
+    assert scale > 0
+    translation = [median((new[axis] + new[axis + 2]) / 2
+                          - (old[axis] + old[axis + 2]) / 2 * scale
+                          for old, new in pairs) for axis in [0, 1]]
+    for original, fitted in pairs:
+        for axis in [0, 1]:
+            original_center = (original[axis] + original[axis + 2]) / 2
+            fitted_center = (fitted[axis] + fitted[axis + 2]) / 2
+            expected = translation[axis] + original_center * scale
+            assert abs(fitted_center - expected) <= 4.0, f"Fit rearranged the scene: {before['nodes']} -> {after['nodes']}"
+            original_size = original[axis + 2] - original[axis]
+            fitted_size = fitted[axis + 2] - fitted[axis]
+            assert abs(fitted_size - original_size * scale) <= 3.0, "Fit resized a node independently of the scene"
+
+
+def frozen_camera(page, canvas, output: Path, prefix: str, inspect_scene: bool):
+    page.mouse.move(2, 2)
+    rendered_frame(page)
+    baseline = node_snapshot(page, canvas, output, f"{prefix}-before", measure_nodes=inspect_scene)
+    if inspect_scene:
+        assert len(baseline["nodes"]) == 4, baseline["nodes"]
+    enlarged = {}
+    for width, height in [(1920, 1100), (1440, 1200)]:
+        resize_view(page, width, height)
+        current = node_snapshot(page, canvas, output, f"{prefix}-{width}x{height}",
+                                (4, 126, width - 4, height - 30), inspect_scene)
+        # Same canvas origin: even the immediate enlarged frame must preserve
+        # the camera. Merely returning to the old size could hide auto-recentering.
+        assert_translation(baseline, current, 0, 0, tolerance=1.0)
+        if inspect_scene:
+            assert_same_scene(baseline, current)
+        enlarged[f"{width}x{height}"] = current["bounds"]
+    resize_view(page, 500, 380)
+    canvas.screenshot(path=str(output / f"{prefix}-clipped.png"))
+    resize_view(page, 1440, 1000)
+    for key in ["1", "3", "0", "2"]:
+        page.keyboard.press(key)
+        rendered_frame(page)
+    returned = node_snapshot(page, canvas, output, f"{prefix}-returned", measure_nodes=inspect_scene)
+    assert_translation(baseline, returned, 0, 0, tolerance=1.0)
+    if inspect_scene:
+        assert_same_scene(baseline, returned)
+    return {"before": baseline["bounds"], "enlarged": enlarged, "returned": returned["bounds"]}
+
+
+def workspace_panes(page, canvas, output: Path, name: str):
+    page.mouse.move(2, 2)
+    rendered_frame(page)
+    viewport = page.viewport_size
+    width, height = viewport["width"], viewport["height"]
+    png = canvas.screenshot(path=str(output / f"{name}.png"))
+    metrics = screenshot_metrics(page, png, (4, 160, width - 4, height - 30))
+    assert len(metrics["dividers"]) == 2, f"expected two visible workspace dividers: {metrics['dividers']}"
+    left, right = metrics["dividers"]
+    return {"left": left, "right": right, "disassembly_width": left - 6.5,
+            "ssa_width": width - right - 6.5, "graph_width": right - left - 5}, png
+
+
+def pane_interactions(browser, url: str, output: Path):
+    page = browser.new_page(viewport={"width": 1920, "height": 1000})
+    observe_webgpu(page)
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
+    page.goto(url, wait_until="networkidle")
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("Ready:", timeout=60000)
+    canvas = page.locator("#evm-canvas")
+    for bytecode, name in [("600160020100", "short"), ("7f" + "ff" * 32 + "00", "long")]:
+        reply = submit_bytecode(page, canvas, bytecode, output / f"panes-{name}-input.png")
+        assert reply.status == 200
+        expect(status).to_contain_text("Converged")
+        canvas.click(position={"x": 20, "y": 700})
+        page.keyboard.press("0")
+        settle_gesture(page)
+        resize_view(page, 2560, 1000)
+        current, _ = workspace_panes(page, canvas, output, f"panes-{name}-2560")
+        if name == "short":
+            short = current
+            resize_view(page, 1920, 1000)
+            smaller, _ = workspace_panes(page, canvas, output, "panes-short-1920")
+            for field in ["disassembly_width", "ssa_width"]:
+                assert abs(smaller[field] - short[field]) <= 1, f"side pane grew proportionally: {smaller} -> {short}"
+            assert abs(short["graph_width"] - smaller["graph_width"] - 640) <= 2
+        else:
+            long = current
+            assert long["disassembly_width"] > short["disassembly_width"] + 150, (short, long)
+            assert long["ssa_width"] > short["ssa_width"] + 150, (short, long)
+    # Fit once so the selected node is visible before exercising divider changes.
+    # No later resize or divider action is followed by Fit.
+    page.keyboard.press("f")
+    settle_gesture(page)
+    before_panes, before_png = workspace_panes(page, canvas, output, "panes-before-divider")
+    graph_region = (before_panes["left"] + 4, 160, before_panes["right"] - 4, 970)
+    before = screenshot_metrics(page, before_png, graph_region)
+    assert before["bounds"], before
+    page.mouse.move(before_panes["left"], 600)
+    page.mouse.down()
+    page.mouse.move(before_panes["left"] + 48, 600, steps=6)
+    page.mouse.up()
+    rendered_frame(page)
+    after_panes, after_png = workspace_panes(page, canvas, output, "panes-after-divider")
+    shift = after_panes["left"] - before_panes["left"]
+    assert shift > 30, (before_panes, after_panes)
+    after = screenshot_metrics(page, after_png, (after_panes["left"] + 4, 160, after_panes["right"] - 4, 970))
+    assert_translation(before, after, shift, 0, tolerance=1.0)
+    resize_view(page, 1128, 700)
+    canvas.screenshot(path=str(output / "panes-manual-clipped.png"))
+    resize_view(page, 2560, 1000)
+    restored_panes, restored_png = workspace_panes(page, canvas, output, "panes-manual-restored")
+    for field in ["disassembly_width", "ssa_width"]:
+        assert abs(after_panes[field] - restored_panes[field]) <= 1, (after_panes, restored_panes)
+    restored = screenshot_metrics(page, restored_png, (restored_panes["left"] + 4, 160, restored_panes["right"] - 4, 970))
+    assert_translation(after, restored, 0, 0, tolerance=1.0)
+    assert not errors, f"browser pane errors: {errors}"
+    result = {"short": short, "long": long, "manual": after_panes, "restored": restored_panes,
+              "camera_before_divider": before["bounds"], "camera_after_divider": after["bounds"],
+              "renderer": webgpu_evidence(page)}
+    page.close()
+    return result
 
 
 def pinch_wheel(page, cdp, pointer, delta_y: float) -> None:
@@ -313,6 +494,9 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         rendered_frame(page)
         cdp = context.new_cdp_session(page)
         prefix = f"gestures-dpr{dpr}"
+        initial_frozen = frozen_camera(page, canvas, output, f"{prefix}-initial-frozen", True)
+        page.keyboard.press("f")
+        settle_gesture(page)
         initial = node_snapshot(page, canvas, output, f"{prefix}-initial")
         page.mouse.move(30, 700)
         page.mouse.wheel(-48, -32)
@@ -376,6 +560,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         assert page.evaluate("devicePixelRatio") == dpr, "graph gesture changed browser page zoom"
         assert page.evaluate("visualViewport.scale") == 1, "graph gesture changed visual viewport zoom"
 
+        manual_frozen = frozen_camera(page, canvas, output, f"{prefix}-manual-frozen", False)
+
         # Start in the product default SSA, then exercise both directions using
         # real toolbar controls. Status and measured node widths verify the
         # representation change independently of screenshot hashes.
@@ -403,25 +589,30 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         settle_gesture(page)
         expect(status).to_contain_text("CFG nodes: Disasm")
         zoom_screenshots = {}
-        for layout_name, height in [("", 1000), ("-horizontal", 390)]:
+        scene_reference = None
+        for layout_name, height in [("tall", 1000), ("short", 390)]:
             page.set_viewport_size({"width": 1440, "height": height})
             page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
             canvas.click(position={"x": 143, "y": 110})
             settle_gesture(page)
             region = (4, 126, 1436, height - 30)
-            fitted = node_snapshot(page, canvas, output, f"{prefix}-edges{layout_name}-100", region)
-            zoom_screenshots[f"{layout_name or 'vertical'}-100"] = fitted
+            fitted = node_snapshot(page, canvas, output, f"{prefix}-edges-{layout_name}-fit", region, True)
+            if scene_reference is None:
+                scene_reference = fitted
+            else:
+                assert_same_scene(scene_reference, fitted)
+            zoom_screenshots[f"{layout_name}-fit"] = fitted
             previous = 1.0
             for scale in [0.75, 0.40, 0.36, 0.16]:
                 pinch_wheel(page, cdp, (720, height * 0.65), -math.log(scale / previous) / 0.01)
                 page.mouse.move(30, height - 70)
                 rendered_frame(page)
                 name = str(round(scale * 100))
-                measured = node_snapshot(page, canvas, output, f"{prefix}-edges{layout_name}-{name}", region)
+                measured = node_snapshot(page, canvas, output, f"{prefix}-edges-{layout_name}-{name}", region)
                 fitted_width = fitted["bounds"][2] - fitted["bounds"][0]
                 actual_width = measured["bounds"][2] - measured["bounds"][0]
                 assert abs(actual_width / fitted_width - scale) < 0.05, f"incorrect screenshot zoom at DPR {dpr}: {scale}: {measured}"
-                zoom_screenshots[f"{layout_name or 'vertical'}-{name}"] = measured
+                zoom_screenshots[f"{layout_name}-{name}"] = measured
                 previous = scale
 
         # Compare shortcut behavior with the actual Fit button at the same
@@ -462,6 +653,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
 
         page.set_viewport_size({"width": 1440, "height": 1000})
         settle_gesture(page)
+        page.keyboard.press("f")
+        settle_gesture(page)
         page.mouse.move(30, 700)
         page.mouse.wheel(-60, -30)
         settle_gesture(page)
@@ -496,20 +689,29 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             canvas.click(position={"x": 720, "y": 700})
             page.keyboard.press("0")
             settle_gesture(page)
-            # This long input wraps into two editor lines. Exclude the graph
-            # toolbar's selected Disasm button as well as neighboring panes.
-            graph_region = (400, 155, 950, 970)
+            # Moving into the workspace may clip the frozen full-view camera.
+            # Explicitly fit once, then verify neighbor scrolling cannot move it.
+            page.keyboard.press("f")
+            settle_gesture(page)
+            panes, _ = workspace_panes(page, canvas, output, "adjacent-pane-boundaries")
+            left, right = panes["left"], panes["right"]
+            graph_region = (left + 4, 155, right - 4, 970)
             for name, pointer, region in [
-                ("disassembly", (120, 400), (4, 100, 380, 900)),
-                ("ssa", (1100, 400), (975, 100, 1436, 900)),
+                ("disassembly", (left / 2, 400), (4, 100, left - 4, 900)),
+                ("ssa", ((right + 1440) / 2, 400), (right + 4, 100, 1436, 900)),
             ]:
-                page.mouse.move(*pointer)
-                rendered_frame(page)
+                # Read geometry with tooltips closed. In content-sized panes a
+                # source tooltip can overlap the neighboring selected node.
+                page.mouse.move(2, 2)
+                settle_gesture(page)
                 before_png = canvas.screenshot()
                 before_node = screenshot_metrics(page, before_png, graph_region)
                 before_code = screenshot_metrics(page, before_png, region)
                 assert before_node["bounds"], f"missing node before {name} scroll"
+                page.mouse.move(*pointer)
                 page.mouse.wheel(0, 220)
+                settle_gesture(page)
+                page.mouse.move(2, 2)
                 settle_gesture(page)
                 after_png = canvas.screenshot(path=str(output / f"adjacent-scroll-{name}.png"))
                 after_node = screenshot_metrics(page, after_png, graph_region)
@@ -525,6 +727,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             "ctrl_wheel_ratio": ctrl_ratio, "pinch_ratio": pinch_ratio,
             "safari_format_gesture": {"ratio": safari_ratio, "requested_scale": 1.12,
                                       "platform": "synthetic gesturestart/change/end events in Chromium"},
+            "initial_frozen": initial_frozen, "manual_frozen": manual_frozen,
             "initial_node_view": "SSA", "disasm_mode": disasm,
             "ssa_mode": ssa, "ssa_fit": ssa_fit, "edge_zoom_screenshots": zoom_screenshots,
             "fit_while_wheel_pending": True, "fit_keys": fit_keys,
@@ -657,6 +860,7 @@ def main() -> None:
                 responsive_input[f"{width}x{height}"] = reply.request.post_data_json["bytecode"]
             renderer = webgpu_evidence(page)
             unavailable = webgpu_unavailable(browser, url, args.output)
+            panes = pane_interactions(browser, url, args.output)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
             assert not errors, "browser errors: " + "\n".join(errors)
             report = {
@@ -675,6 +879,7 @@ def main() -> None:
                 "viewport_screenshots": viewport_screenshots,
                 "responsive_input": responsive_input,
                 "graph_interactions": gestures,
+                "pane_interactions": panes,
                 "platform": "Linux headless Chromium with Xvfb and SwiftShader WebGPU; synthesized browser gestures, not physical macOS hardware",
                 "browser_errors": errors,
             }

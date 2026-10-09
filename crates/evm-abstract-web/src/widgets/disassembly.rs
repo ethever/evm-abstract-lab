@@ -61,13 +61,7 @@ fn contents(
         .then(|| rows.iter().position(|row| row.is_focused(*selection)))
         .flatten();
     *previous = *selection;
-    let glyph = ui
-        .painter()
-        .layout_no_wrap("0".into(), FontId::monospace(12.0), palette::TEXT)
-        .size()
-        .x;
-    let columns = content_columns(&rows);
-    let widths = columns.map(|columns| columns as f32 * glyph + 8.0);
+    let widths = column_widths(ui, &rows);
     ScrollArea::horizontal()
         .id_salt("disasm_scroll")
         .auto_shrink([false, false])
@@ -175,6 +169,25 @@ fn contents(
                     });
                 });
         });
+}
+
+/// Desired outer pane width uses the same columns and selected-frame source as
+/// the table itself. A bounded parent can still expose overflow by scrolling.
+pub(crate) fn natural_width(ui: &Ui, report: &AnalysisReport, selection: Selection) -> f32 {
+    column_widths(ui, &rows(report, selection))
+        .iter()
+        .sum::<f32>()
+        + 6.0
+        + ui.spacing().scroll.allocated_width()
+}
+
+fn column_widths(ui: &Ui, rows: &[Row<'_>]) -> [f32; 2] {
+    let glyph = ui
+        .painter()
+        .layout_no_wrap("0".into(), FontId::monospace(12.0), palette::TEXT)
+        .size()
+        .x;
+    content_columns(rows).map(|columns| columns as f32 * glyph + 8.0)
 }
 
 enum Row<'a> {

@@ -5,7 +5,12 @@ use evm_abstract_protocol::{Diagnostic, DiagnosticKind};
 use super::{Pane, WidthClass};
 use crate::{Workspace, tests::ready};
 
-fn frame(ctx: &Context, workspace: &mut Workspace, size: Vec2, events: Vec<Event>) -> FullOutput {
+pub(super) fn frame(
+    ctx: &Context,
+    workspace: &mut Workspace,
+    size: Vec2,
+    events: Vec<Event>,
+) -> FullOutput {
     let mut input = RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
         events,
@@ -19,7 +24,7 @@ fn frame(ctx: &Context, workspace: &mut Workspace, size: Vec2, events: Vec<Event
     output
 }
 
-fn active_tree(workspace: &Workspace, width: f32) -> &Tree<Pane> {
+pub(super) fn active_tree(workspace: &Workspace, width: f32) -> &Tree<Pane> {
     match WidthClass::for_width(width - 8.0) {
         WidthClass::Wide => &workspace.layout.wide,
         WidthClass::Medium => &workspace.layout.medium,
@@ -39,7 +44,7 @@ fn pane_rects(tree: &Tree<Pane>) -> Vec<(Pane, Rect)> {
         .collect()
 }
 
-fn pane_rect(tree: &Tree<Pane>, target: Pane) -> Rect {
+pub(super) fn pane_rect(tree: &Tree<Pane>, target: Pane) -> Rect {
     pane_rects(tree)
         .into_iter()
         .find(|(pane, _)| *pane == target)
@@ -67,13 +72,13 @@ fn divider_stroke(output: &FullOutput, x: f32, pane: Rect) -> egui::Stroke {
         .expect("the divider must be painted across the visible pane")
 }
 
-fn settled(ctx: &Context, workspace: &mut Workspace, size: Vec2) -> FullOutput {
+pub(super) fn settled(ctx: &Context, workspace: &mut Workspace, size: Vec2) -> FullOutput {
     frame(ctx, workspace, size, vec![]);
     frame(ctx, workspace, size, vec![]);
     frame(ctx, workspace, size, vec![])
 }
 
-fn click(ctx: &Context, workspace: &mut Workspace, size: Vec2, pos: Pos2) {
+pub(super) fn click(ctx: &Context, workspace: &mut Workspace, size: Vec2, pos: Pos2) {
     for pressed in [true, false] {
         frame(
             ctx,
@@ -92,7 +97,7 @@ fn click(ctx: &Context, workspace: &mut Workspace, size: Vec2, pos: Pos2) {
     }
 }
 
-fn texts(output: &FullOutput) -> Vec<(String, Rect)> {
+pub(super) fn texts(output: &FullOutput) -> Vec<(String, Rect)> {
     fn collect(shape: &egui::Shape, result: &mut Vec<(String, Rect)>) {
         match shape {
             egui::Shape::Text(text) => result.push((
@@ -458,7 +463,7 @@ fn f_and_shift_f_restore_the_visible_graph_fit_and_node_positions() {
             workspace.view = view;
             let fitted = settled(&ctx, &mut workspace, size);
             let fitted_zoom = workspace.graph.zoom;
-            assert!(has_camera_label(&fitted, fitted_zoom, "Auto"));
+            assert!(has_camera_label(&fitted, fitted_zoom, "Fit"));
             let fitted_titles = graph_titles(&fitted);
             assert_eq!(fitted_titles.len(), 3);
             workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
@@ -470,7 +475,7 @@ fn f_and_shift_f_restore_the_visible_graph_fit_and_node_positions() {
 
             let restored = press_f(&ctx, &mut workspace, size, modifiers, Some(character));
             assert_eq!(workspace.graph.zoom, fitted_zoom, "{view:?}, {character}");
-            assert!(has_camera_label(&restored, fitted_zoom, "Auto"));
+            assert!(has_camera_label(&restored, fitted_zoom, "Fit"));
             assert_eq!(
                 graph_titles(&restored),
                 fitted_titles,
