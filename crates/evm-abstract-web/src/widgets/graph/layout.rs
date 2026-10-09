@@ -11,7 +11,7 @@ use egui::{Pos2, Rect, Vec2};
 use evm_abstract_protocol::{AnalysisReport, CfgEdge, EdgeKind};
 
 const CROSS_GAP: f32 = 22.0;
-const LAYER_GAP: f32 = 18.0;
+const LAYER_GAP: f32 = 12.0;
 const ROUTE_CLEARANCE: f32 = 3.0;
 const OUTER_GAP: f32 = 18.0;
 const LANE_GAP: f32 = 6.0;
@@ -211,9 +211,9 @@ pub(super) fn adaptive(
 }
 
 fn label_size(id: usize, kind: EdgeKind) -> Vec2 {
-    // ASCII labels use 10pt monospace; reserve a conservative 7pt advance and
-    // 6pt horizontal padding, plus enough height for glyphs and the capsule.
-    Vec2::new(super::edge_label(id, kind).len() as f32 * 7.0 + 12.0, 28.0)
+    // Secondary annotations use 9pt monospace with a conservative 6pt advance
+    // and 3pt horizontal padding. Keep a compact box for routing and avoidance.
+    Vec2::new(super::edge_label(id, kind).len() as f32 * 6.0 + 6.0, 16.0)
 }
 
 struct Vertex {

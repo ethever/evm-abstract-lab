@@ -6,7 +6,7 @@ mod tests;
 
 use super::layout::EdgeRoute;
 use crate::palette;
-use egui::{FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
+use egui::{FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use evm_abstract_protocol::EdgeKind;
 
 pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
@@ -54,6 +54,7 @@ pub(super) fn paint_edge(
     // to the physical pixel grid. Apply the same stroke-aware rounding here so
     // orthogonal segments retain equal coverage as the graph moves or scales.
     let incoming = geometry::screen_points(&route.to_label, origin, zoom, stroke, pixels_per_point);
+    let label_entry = incoming.last().copied();
     if incoming.len() >= 2 {
         painter.add(Shape::line(incoming, stroke));
     }
@@ -81,13 +82,23 @@ pub(super) fn paint_edge(
         origin + route.label.min.to_vec2() * zoom,
         origin + route.label.max.to_vec2() * zoom,
     );
-    painter.rect(label, 3.0, palette::BACKGROUND, stroke, StrokeKind::Inside);
+    // Preserve the routing gap without making each annotation look like a
+    // selected state or button. Edge kind remains visible in the colored lines.
+    painter.rect_filled(label, 2.0, palette::BACKGROUND);
     if zoom > 0.35 {
-        let galley =
-            painter.layout_no_wrap(edge_label(id, kind), FontId::monospace(10.0 * zoom), color);
+        let text_color = palette::MUTED.gamma_multiply(0.8);
+        let galley = painter.layout_no_wrap(
+            edge_label(id, kind),
+            FontId::monospace(9.0 * zoom),
+            text_color,
+        );
         let position = label.center() - galley.size() * 0.5;
         painter
             .with_clip_rect(label.intersect(painter.clip_rect()))
-            .galley(position, galley, color);
+            .galley(position, galley, text_color);
+    } else if let Some(entry) = label_entry {
+        // With neither text nor an outline, retain a continuous edge through
+        // the reserved slot instead of leaving an unexplained gap at low zoom.
+        painter.line_segment([entry, points[0]], stroke);
     }
 }
