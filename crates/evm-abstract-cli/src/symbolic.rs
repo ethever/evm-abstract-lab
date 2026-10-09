@@ -1,5 +1,6 @@
 //! One symbolic/relational policy shared by raw-bytecode and world entrypoints.
 
+use crate::defaults;
 use clap::{Args, ValueEnum};
 use evm_abstract::domain::relational::{RelationLimits, SmtProvider};
 
@@ -26,13 +27,13 @@ pub(crate) struct SymbolicArgs {
     #[arg(long)]
     no_relations: bool,
     /// Maximum expression/query nodes; overflow keeps a conservative result.
-    #[arg(long, default_value_t = 1024)]
+    #[arg(long, default_value_t = defaults::MAX_EXPRESSION_NODES)]
     max_symbolic_nodes: usize,
     /// Maximum symbolic expression depth.
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = defaults::MAX_EXPRESSION_DEPTH)]
     max_symbolic_depth: usize,
     /// Maximum constraints retained in one machine state.
-    #[arg(long, default_value_t = 128)]
+    #[arg(long, default_value_t = defaults::MAX_CONSTRAINTS)]
     max_relations: usize,
     /// In-process SMT provider; resource units differ between providers.
     #[arg(long = "smt.provider", value_enum, default_value = "z3")]
@@ -40,7 +41,7 @@ pub(crate) struct SymbolicArgs {
     /// Per-check allowance in provider-specific units, not a time limit.
     #[arg(
         long = "smt.rlimit",
-        default_value_t = 100_000,
+        default_value_t = defaults::SMT_RLIMIT,
         long_help = "Per-check allowance, not seconds: native resource units for Z3/cvc5, cooperative termination checks for Bitwuzla. Units are not comparable across providers."
     )]
     smt_rlimit: u32,

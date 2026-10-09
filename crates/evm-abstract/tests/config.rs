@@ -66,6 +66,52 @@ fn default_constants_capacity_is_eight() {
 }
 
 #[test]
+fn single_program_execution_policy_controls_actual_memory_and_work() {
+    // MSTORE beyond 64 KiB distinguishes an application policy from the smaller
+    // library defaults used by the existing single-program adapter.
+    let program = Program::from_hex("6001620100005200").unwrap();
+    let legacy = analysis::analyze(program.clone(), Config::default()).unwrap();
+    assert_eq!(legacy.status(), Status::Incomplete);
+    assert!(
+        legacy
+            .execution()
+            .frontiers()
+            .iter()
+            .any(|frontier| matches!(frontier.reason, FrontierReason::Memory))
+    );
+    let config = ExecutionConfig {
+        max_memory_bytes: 128 * 1024,
+        max_work: 100_000_000,
+        ..ExecutionConfig::default()
+    };
+    let expanded = analysis::analyze_with_execution_config(
+        program.clone(),
+        config.clone(),
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(expanded.status(), Status::Converged);
+    assert_eq!(expanded.execution().config().max_memory_bytes, 128 * 1024);
+    let bounded = analysis::analyze_with_execution_config(
+        program,
+        ExecutionConfig {
+            max_work: 1,
+            ..config
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(bounded.status(), Status::Incomplete);
+    assert!(
+        bounded
+            .execution()
+            .frontiers()
+            .iter()
+            .any(|frontier| matches!(frontier.reason, FrontierReason::Work))
+    );
+}
+
+#[test]
 fn admitted_domain_capacity_controls_the_actual_join() {
     let diamond = "600035600b576002600e565b60015b600a0100";
     for capacity in [1, 2] {

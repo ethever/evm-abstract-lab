@@ -101,9 +101,9 @@ flowchart TD
 
 用 `nix run . -- analyze --help` 查看全部参数。调用环境统一使用 `--evm.*`：`--evm.to` 确定执行 root frame 的合约，省略 caller、value、calldata 时分别覆盖未知调用者、任意 U256 金额、未知长度与内容的输入；origin 默认与 caller 是同一个输入。显式 `--evm.calldata 0x --evm.value 0` 才表示空数据、零金额。交易与区块环境、索引 hash 和 gas 上界的全部参数见[第 13 课](docs/13-evm-environment.md)；精度与预算参数见[第 05 课](docs/05-sensitivity.md)和[第 06 课](docs/06-boundaries.md)。
 
-`NumericValue` 默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`AbstractValue` 在数值摘要之外保存来源、角色、独立值身份和符号表达式。`--max-constants` 默认 8，接受运行平台能表示的任意正 `usize`，配置容量不会直接预分配集合。`--reduction-rounds` 默认 4，`--max-facts` 默认 256，两者限制临时数值事实交换。
+`NumericValue` 默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`AbstractValue` 在数值摘要之外保存来源、角色、独立值身份和符号表达式。CLI 与 Web 共用同一套分析配置：`--max-constants` 默认 512，接受运行平台能表示的任意正 `usize`，配置容量不会直接预分配集合。`--reduction-rounds` 默认 16，`--max-facts` 默认 4096，两者限制临时数值事实交换。
 
-机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过进程内 SMT 求解器排除已证明矛盾的路径，并将已证明的数值结论投影回执行值。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。`--smt.provider` 可选 `z3`（默认）、`bitwuzla` 或 `cvc5`。`--smt.rlimit` 默认 100000，为每次求解检查分配额度，没有墙钟 timeout；不同求解器的资源单位不能直接比较，Bitwuzla 按协作式停止检查的次数计数。表达式节点、深度和关系数量也有独立上限。查询不能完成时保留路径与类型化前沿。`analyze` 的 `--max-work` 默认 2000 万，覆盖执行、数值、符号及查询预留工作。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
+机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过进程内 SMT 求解器排除已证明矛盾的路径，并将已证明的数值结论投影回执行值。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。`--smt.provider` 可选 `z3`（默认）、`bitwuzla` 或 `cvc5`。`--smt.rlimit` 默认 10000000，为每次求解检查分配额度，没有墙钟 timeout；不同求解器的资源单位不能直接比较，Bitwuzla 按协作式停止检查的次数计数。表达式节点、深度和关系数量也有独立上限。查询不能完成时保留路径与类型化前沿。`cfg`、`ssa`、`analyze`、`explain` 的 `--max-work` 都默认 1000000000000，覆盖执行、数值、符号及查询预留工作。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
 
 CLI 的数量参数 `--evm.value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`；`--block-number` 接受相同进制写法，范围为 `0` 到 `2^64−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--evm.value 1000`（单位 wei）、`--block-number 26000000`、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
 
@@ -119,7 +119,7 @@ RPC 分析默认从同一固定快照填入 NUMBER、TIMESTAMP、COINBASE、PREV
 
 `--account` 仍可预先选择账户，`--slot ADDRESS:SLOT` 预先采集初始存储槽。默认发现也会为 SLOAD 补查可完整枚举的有限槽键，按状态所属账户读取；DELEGATECALL 读取代理的槽。同一地址和槽只采集一次，零值同样缓存；无限或无法完整枚举的槽键保持保守未知。RPC 使用 `{blockHash,requireCanonical:true}` 采集 code、balance、nonce 和所需 slot，完全信任选定提供者，不请求 `eth_getProof`。代码为空且其余已查询字段全零时，存在性仍为未知；非空代码或任一非零数值则表明账户存在。重组或查询错误不会使分析改用新的区块。
 
-加 `--no-rpc-discovery` 可只使用预先选择的账户和槽：缺代码留下 `MissingCode`，未观察的槽保留未知值。默认最多采集 256 个账户、尝试 16384 次请求，分别由 `--max-rpc-accounts`、`--max-rpc-requests` 设置。补查成功后会从入口重新分析，各轮共用 work、transfer 和状态分配预算；JSON 的 `rpc_acquisition` 记录累计账户、槽和失败证据。完整实验与错误解读见[第 10 课](docs/10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
+加 `--no-rpc-discovery` 可只使用预先选择的账户和槽：缺代码留下 `MissingCode`，未观察的槽保留未知值。CLI 默认最多采集 4096 个账户、尝试 1000000 次请求，分别由 `--max-rpc-accounts`、`--max-rpc-requests` 设置。单次响应默认最多 64 MiB、请求超时默认 120 秒，分别由 `--max-rpc-response-bytes`、`--rpc-timeout-ms` 调整。补查成功后会从入口重新分析，各轮共用 work、transfer 和状态分配预算；JSON 的 `rpc_acquisition` 记录累计账户、槽和失败证据。完整实验与错误解读见[第 10 课](docs/10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
 
 需要可视化实际分析结果时，先导出 DOT（Graphviz 的图描述格式），再转成 SVG：
 
@@ -170,7 +170,7 @@ nix run .#web
 
 分析链上账户时，使用 `nix run .#web -- --rpc-config http://127.0.0.1:8545` 直接传入 RPC HTTP(S) URL；后端自动创建 **Default RPC** 提供者，无需 JSON 文件。需要多个提供者或自定义名称时，`--rpc-config` 也接受 JSON 配置文件路径。浏览器同时显示提供者的名称和 RPC URL，分析请求只提交其 ID。省略配置时仍可分析字节码，RPC 提交不可用。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)。
 
-Web 保留全部预算和精度控件，使用较大默认值，并允许继续输入更大的整数，不另设业务最大值；实际分析仍遵循指定的有限预算。完整默认值和类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 默认值保持不变。
+CLI 与 Web 保留全部预算和精度控件，共用同一套较大默认值，并允许显式覆盖；实际分析仍遵循指定的有限预算。完整默认值和 Web 类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 参数见[精度与预算表](docs/05-sensitivity.md#7-实验时分别调整精度与预算)。直接调用 Rust 库时，`Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 与 `RpcInput::new()` 仍使用库自身的较小默认配置。
 
 ## 开发环境与实现入口
 

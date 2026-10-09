@@ -57,6 +57,8 @@ fn world_and_rpc_are_exclusive_and_rpc_can_pin_latest() {
         vec!["--no-rpc-discovery"],
         vec!["--max-rpc-accounts", "256"],
         vec!["--max-rpc-requests", "16384"],
+        vec!["--max-rpc-response-bytes", "4194304"],
+        vec!["--rpc-timeout-ms", "15000"],
     ] {
         let mut args = vec![
             "evm-abstract",
@@ -360,3 +362,6 @@ fn rpc_block_numbers_accept_decimal_and_hex_with_a_u64_bound() {
         .is_err()
     );
 }
+
+mod defaults;
+mod rpc_limits;

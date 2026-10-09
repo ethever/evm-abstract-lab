@@ -164,7 +164,7 @@ ByteArray 的读取摘要还要结合 `length`，保留序列长度之外补零�
 
 `AbstractValue` 描述**一个位置可能出现的数值**。例如 `{0x1,0x2}` 表示这个字节可能是 1 或 2；不是两个字节，也不是同时保存了两个具体值。
 
-默认 `product` 可以在候选太多时继续保存固定位、区间或同余等约束。例如一个字节只可能是 1～255 中的奇数，完整候选需要 128 个常量；默认常量容量 8 列不完，其他组件仍可记录“值不超过 255”“最低位为 1”。MSTORE 拆字节和 MLOAD 拼 word 都调用同一个数值域进行运算。
+默认 `product` 可以在候选太多时继续保存固定位、区间或同余等约束。例如一个字节只可能是 1～255 中的奇数，完整候选需要 128 个常量；显式设置 `--max-constants 8` 时列不完，其他组件仍可记录“值不超过 255”“最低位为 1”。MSTORE 拆字节和 MLOAD 拼 word 都调用同一个数值域进行运算。
 
 `AbstractValue` 同时容纳数值摘要和可选符号表达式，但两者回答不同问题：
 
@@ -789,7 +789,7 @@ nix run . -- analyze --world examples/worlds/returndata-copy.json \
 
 ## 13. 范围上限、错误与分析完成状态
 
-默认 [`ExecutionConfig`](../crates/evm-abstract/src/analysis/machine.rs) 的 `max_memory_bytes` 为 65,536，也就是 **64 KiB**。它限制能具体追踪的内存结束位置和提取的字节范围；32 字节取整后也必须满足上限。世界入口可以用 `--max-memory-bytes` 调整；单段 `cfg`、`ssa`、`explain --hex/--file` 使用内建执行配置，不接受这个参数。
+CLI/Web 的 `max_memory_bytes` 默认 67,108,864，即 **64 MiB**。它限制能具体追踪的内存结束位置和提取的字节范围；32 字节取整后也必须满足上限。`cfg`、`ssa`、`analyze`、`explain` 都可以用 `--max-memory-bytes` 调整，包括单段 `--hex` / `--file`。直接使用库的 [`ExecutionConfig::default()`](../crates/evm-abstract/src/analysis/machine.rs) 时，仍为 65,536 字节（64 KiB）。
 
 把[上一节世界](#12-怎样看完整-memory而不只看-stack-out)的上限缩到 32：
 
@@ -809,7 +809,7 @@ MSTORE(1, x) 需要长度 64，因此会留下 `Memory` 前沿、`Incomplete`，
 
 两个限制尤其要理解：
 
-- 偏移无法枚举时，长度可以直接粗化为 `⊤`，无需实际分配那些字节；这不证明真实访问一定在 64 KiB 内。
+- 偏移无法枚举时，长度可以直接粗化为 `⊤`，无需实际分配那些字节；这不证明真实访问一定在配置的范围内。
 - `max_memory_bytes` 不是整个分析进程的峰值 RAM 配额。多个状态、帧、AbstractValue、字节表及临时副本都会占用主机内存。
 
 `write_values` 等库写入先验证候选范围，再提交更新，避免在一个范围错误后留下写了一半的字节。但不能把这扩大成“任何 Incomplete 都完全没有修改状态”：指令转换可能已完成前面的步骤，报告仍保留到前沿为止的部分执行信息。

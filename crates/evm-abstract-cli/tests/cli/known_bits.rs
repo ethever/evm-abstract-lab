@@ -97,7 +97,7 @@ impl Drop for WorldCode {
 
 #[test]
 fn clz_cfg_shows_partial_nibbles_without_omitting_unknown_positions() {
-    let output = run_concrete(&["cfg", "--hex", "5f351e00"]);
+    let output = run_concrete(&["cfg", "--hex", "5f351e00", "--max-constants", "8"]);
     assert!(
         output.status.success(),
         "{}",
@@ -177,8 +177,10 @@ fn numeric_top_stays_compact_in_all_human_views() {
         "5f351e00",
         "--domain",
         "constants-only",
+        "--max-constants",
+        "8",
     ])));
-    // The 257 CLZ candidates exceed the default capacity of eight.
+    // The rendering fixture deliberately limits capacity to eight, below 257 CLZ candidates.
     for (command, view) in [
         ("cfg", vec![]),
         ("cfg", vec!["--format", "dot"]),
@@ -191,6 +193,8 @@ fn numeric_top_stays_compact_in_all_human_views() {
             "5f351e6006565b00",
             "--domain",
             "constants-only",
+            "--max-constants",
+            "8",
         ];
         args.extend_from_slice(&view);
         assert_numeric_top(&text(run_concrete(&args)));
@@ -202,7 +206,7 @@ fn numeric_top_stays_compact_in_all_human_views() {
         ("explain", vec![]),
         ("explain", vec!["--verbose"]),
     ] {
-        let mut args = vec!["--domain", "constants-only"];
+        let mut args = vec!["--domain", "constants-only", "--max-constants", "8"];
         args.extend_from_slice(&view);
         assert_numeric_top(&text(world.run_default(command, &args)));
     }
@@ -266,7 +270,13 @@ fn assert_clz_json(value: &Json) {
 fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
     for command in ["cfg", "ssa"] {
         let rendered = text(run_concrete(&[
-            command, "--hex", "5f351e00", "--format", "json",
+            command,
+            "--hex",
+            "5f351e00",
+            "--format",
+            "json",
+            "--max-constants",
+            "8",
         ]));
         let json: Json = serde_json::from_str(&rendered).unwrap();
         let report = if command == "ssa" {

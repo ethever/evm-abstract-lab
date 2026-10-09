@@ -1,14 +1,14 @@
 //! A single-program learning view projected from the native world machine.
 
 use super::{
-    Analysis, Config, ConfigError, Diagnostic, DiagnosticKind, Edge, EdgeKind, ExecutionConfig,
-    Frontier, FrontierReason, Limit, MachineEdgeKind, State, StateKey, analyze_world,
+    Analysis, ConfigError, Diagnostic, DiagnosticKind, Edge, EdgeKind, ExecutionConfig, Frontier,
+    FrontierReason, Limit, MachineEdgeKind, State, StateKey, analyze_world,
 };
 use crate::{bytecode::Program, domain::AbstractValue, world::EvmEnvironment};
 
 pub(super) fn analyze(
     program: Program,
-    config: Config,
+    config: ExecutionConfig,
     environment: EvmEnvironment,
 ) -> Result<Analysis, ConfigError> {
     use crate::world::{Account, Code, Entry, World};
@@ -27,16 +27,14 @@ pub(super) fn analyze(
     world
         .insert(address, account)
         .expect("the world uses the program's fork");
+    let analysis_config = config.analysis.clone();
     let execution = analyze_world(
         world,
         Entry {
             address,
             environment,
         },
-        ExecutionConfig {
-            analysis: config.clone(),
-            ..ExecutionConfig::default()
-        },
+        config,
     )?;
     let mut states = Vec::new();
     let mut execution_state_ids = Vec::new();
@@ -157,7 +155,7 @@ pub(super) fn analyze(
         .collect();
     Ok(Analysis {
         program,
-        config,
+        config: analysis_config,
         schema_version: super::SCHEMA_VERSION,
         domain_spec: execution.domain_spec(),
         states,

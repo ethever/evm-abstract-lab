@@ -107,7 +107,7 @@ in
         grep -q 'status=Converged' explain-capacity.txt
         evm-abstract cfg --hex 5f351e00 --domain constants-only --max-constants 257 --format json |
           jq -e '.config.max_constants == 257 and (.states[0].exit_stack[0].Constants | length == 257)' > /dev/null
-        evm-abstract explain --hex 5f351e00 --domain constants-only --max-constants 1000 > explain-capacity-work.txt && exit 1 || test "$?" = 2
+        evm-abstract explain --hex 5f351e00 --domain constants-only --max-constants 1000 --max-work 20000000 > explain-capacity-work.txt && exit 1 || test "$?" = 2
         grep -q 'status=Incomplete' explain-capacity-work.txt
         grep -q 'Work' explain-capacity-work.txt
         grep -q 'SSA unavailable' explain-capacity-work.txt

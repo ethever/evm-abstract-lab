@@ -198,27 +198,38 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
     let hex = run_concrete(&["explain", "--hex", &code]);
     success(&hex);
     assert_eq!(file.stdout, hex.stdout);
-    let explicit = run_concrete(&[
+    let defaults = evm_abstract_protocol::AnalysisLimits::default();
+    let explicit_values = [
+        ("--context-depth", defaults.context_depth),
+        ("--max-constants", defaults.max_constants),
+        ("--reduction-rounds", defaults.reduction_rounds),
+        ("--max-facts", defaults.max_facts),
+        ("--max-states", defaults.max_states),
+        ("--max-transfers", defaults.max_transfers),
+        ("--max-work", defaults.max_work),
+        ("--max-call-depth", defaults.max_call_depth),
+        ("--max-memory-bytes", defaults.max_memory_bytes),
+        ("--max-symbolic-nodes", defaults.max_expression_nodes),
+        ("--max-symbolic-depth", defaults.max_expression_depth),
+        ("--max-relations", defaults.max_constraints),
+        ("--smt.rlimit", u64::from(defaults.smt_rlimit)),
+    ]
+    .map(|(flag, value)| (flag, value.to_string()));
+    let mut args = vec![
         "explain",
         "--hex",
         &code,
         "--fork",
         "osaka",
-        "--context-depth",
-        "128",
-        "--max-constants",
-        "8",
         "--domain",
         "product",
-        "--reduction-rounds",
-        "4",
-        "--max-facts",
-        "256",
-        "--max-states",
-        "4096",
-        "--max-transfers",
-        "100000",
-    ]);
+        "--smt.provider",
+        "z3",
+    ];
+    for (flag, value) in &explicit_values {
+        args.extend([*flag, value.as_str()]);
+    }
+    let explicit = run_concrete(&args);
     success(&explicit);
     assert_eq!(hex.stdout, explicit.stdout);
     let explanation = text(&hex);

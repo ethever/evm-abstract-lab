@@ -193,7 +193,7 @@ nix run . -- analyze --world examples/worlds/call-return-branch.json --evm.to 0x
 
 前两段都是 `x*0`，仍能证明出口值为零，整体为 `Converged`。事实容量 1 留下 `FactExchangeLimited(FactLimit)`，文本以区间 `u[0x0,0x0]` 和 `bits=0x0000000000000000000000000000000000000000000000000000000000000000` 表示零；一轮上限留下 `FactExchangeLimited(RoundLimit)`，出口为 `{0x0}`。表示不同不意味着具体结果不同，也不能把局部报告当作数值矛盾。
 
-世界实验为 `Incomplete`、退出码 2，留下 `Work` 前沿。根工作预算默认 2000 万，域运算、事实交换、状态处理和所有调用帧共同使用；它衡量分析工作，不是 EVM gas。完整结果中要同时检查 `status`、diagnostics 和 frontiers，不能只看其中一个数字。
+世界实验为 `Incomplete`、退出码 2，留下 `Work` 前沿。CLI/Web 的根工作预算默认 1000000000000，域运算、事实交换、状态处理和所有调用帧共同使用；它衡量分析工作，不是 EVM gas。完整结果中要同时检查 `status`、diagnostics 和 frontiers，不能只看其中一个数字。
 
 </details>
 

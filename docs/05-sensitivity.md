@@ -159,20 +159,25 @@ nix run . -- cfg --file examples/stack-heights.hex --context-depth 0
 
 ## 7. 实验时分别调整精度与预算
 
-| 参数 | 当前默认值和可用范围 | 改变什么 |
+下表是 CLI 与 Web 共用的默认配置；命令行参数可以逐项覆盖。直接调用库 API 不会自动采用这套配置：[`Config::default()`](../crates/evm-abstract/src/analysis/config.rs) 仍为常量容量 8、交换轮数 4、事实容量 256、4096 个状态及 100000 次 transfer；[`ExecutionConfig::default()`](../crates/evm-abstract/src/analysis/machine.rs) 仍为 2000 万工作量、32 层调用和 64 KiB 内存。跳转历史默认深度均为 128。
+
+| 参数 | CLI / Web 默认值和可用范围 | 改变什么 |
 | --- | --- | --- |
 | `--domain` | 默认 `product`；也可选 `constants-only` | 组合数值约束，或有限常量集合的数值对照；两者都保留固定输入符号 |
-| `--max-constants` | 默认 8，范围 `1..=usize::MAX`，无额外上限 | 每个值的常量集合组件能保留多少个候选；超过容量后不能完整枚举 |
+| `--max-constants` | 默认 512，范围 `1..=usize::MAX`，无额外上限 | 每个值的常量集合组件能保留多少个候选；超过容量后不能完整枚举 |
 | `--context-depth` | 默认 128，非负整数，无额外上限（须能表示为 `usize`） | 保留多少个最近跳转来源，用于状态分组 |
-| `--reduction-rounds` | 默认 4，正整数 | 一次临时事实交换最多完成多少轮 |
-| `--max-facts` | 默认 256，正整数 | 一次临时交换能容纳多少个语义事实原子 |
+| `--reduction-rounds` | 默认 16，正整数 | 一次临时事实交换最多完成多少轮 |
+| `--max-facts` | 默认 4096，正整数 | 一次临时交换能容纳多少个语义事实原子 |
 | `--no-relations` | 未指定时启用关系分析 | 关闭表达式传播和持久关系查询，保留数值与复制/输入身份 |
-| `--max-symbolic-nodes` / `--max-symbolic-depth` | 默认 1024 / 64，正整数 | 限制表达式节点工作量与嵌套深度 |
-| `--max-relations` | 默认 128，正整数 | 单状态可保存的关系数量 |
+| `--max-symbolic-nodes` / `--max-symbolic-depth` | 默认 16384 / 256，正整数 | 限制表达式节点工作量与嵌套深度 |
+| `--max-relations` | 默认 2048，正整数 | 单状态可保存的关系数量 |
 | `--smt.provider` | 默认 `z3` | 进程内求解器，可选 `z3`、`bitwuzla`、`cvc5` |
-| `--smt.rlimit` | 默认 100000，正整数 | 单次检查的求解工作额度；不是秒数，各求解器的单位不同 |
-| `--max-states` | 默认 4096，正整数 | 最多建立多少个分析状态 |
-| `--max-transfers` | 默认 100000，正整数 | 最多执行多少次基本块传播，重新执行也计数 |
+| `--smt.rlimit` | 默认 10000000，正整数 | 单次检查的求解工作额度；不是秒数，各求解器的单位不同 |
+| `--max-states` | 默认 100000，正整数 | 最多建立多少个分析状态 |
+| `--max-transfers` | 默认 10000000，正整数 | 最多执行多少次基本块传播，重新执行也计数 |
+| `--max-work` | 默认 1000000000000，正整数 | 所有状态与调用帧共享的累计分析工作量 |
+| `--max-call-depth` | 默认 1025，正整数 | 活动与暂停帧的总深度 |
+| `--max-memory-bytes` | 默认 67108864（64 MiB），正整数 | 可具体追踪的内存范围与提取字节数 |
 
 `usize::MAX` 由运行平台决定：32 位平台是 `2^32−1`，64 位平台是 `2^64−1`。零和超过平台可表示范围的容量参数会被拒绝。常量集合按实际候选增长，不按 `--max-constants` 预分配；提高容量可能增加实际枚举、内存与工作量，执行仍受状态、transfer 和共享工作预算限制。
 
@@ -187,7 +192,7 @@ nix run . -- cfg --file examples/internal-calls.hex --context-depth 256
 
 这里要区分表示能力、局部精化和未完成边界。域、常量容量和历史深度决定能表示哪些区别；交换轮数和事实容量限制局部精化，达到上限时保留已证明的安全摘要，可以仍为 `Converged`；状态数、transfer 次数和累计工作量限制分析能执行多少工作，耗尽后留下 `Incomplete` 前沿。表达式、关系数量或 SMT 查询资源不足也留下类型化前沿，并保留仍可能的路径。常量集合不能枚举时，`product` 还可能保留其他数值约束，不能一律把整个值当作 Top。
 
-单账户学习入口也使用默认 2000 万的累计工作预算。`analyze` 可用 `--max-work` 显式调整它，并另设外部调用深度和内存预算，见[模型边界一课](06-boundaries.md)。交换参数不会按配置上限预分配事实表，但提高上限仍可能增加实际工作。精度与费用如何分别记录，见[第 12 课](12-product-domains-facts.md)。
+`cfg`、`ssa`、`analyze` 和 `explain` 都接受 `--max-work`、`--max-call-depth`、`--max-memory-bytes`；单段 `--hex` / `--file` 也会按这些显式执行参数运行。它们共享上表默认值，见[模型边界一课](06-boundaries.md)。交换参数不会按配置上限预分配事实表，但提高上限仍可能增加实际工作。精度与费用如何分别记录，见[第 12 课](12-product-domains-facts.md)。
 
 外部 CALL 的处理也不能用 k 代替。世界入口保存整条真实调用帧栈，包括每帧的代码账户、状态账户、caller、value、static 标志和继续位置。k 只控制各帧**内部**的跳转历史；`--max-call-depth` 控制外部帧深度，达到分析边界时留下 `Incomplete`。两者的详细关系见[第 09 课](09-cross-contract.md)。
 
