@@ -688,6 +688,7 @@ fn rpc_explain_discovers_missing_callee_snapshot_code_with_default_and_explicit_
         for extra in [
             vec![],
             vec!["--max-rpc-accounts", "256", "--max-rpc-requests", "16384"],
+            vec!["--max-rpc-accounts", "4097", "--max-rpc-requests", "65537"],
         ] {
             let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
             let output = rpc_command(&server, &extra);
@@ -806,8 +807,7 @@ fn rpc_explain_invalid_acquisition_limits_fail_before_networking() {
                 vec!["--max-rpc-requests", "0"],
                 "request limit must be positive",
             ),
-            (vec!["--max-rpc-accounts", "0"], "account limit 1..=4096"),
-            (vec!["--max-rpc-accounts", "4097"], "account limit 1..=4096"),
+            (vec!["--max-rpc-accounts", "0"], "must be positive"),
             (
                 vec!["--max-rpc-accounts", "1", "--account", CALLEE],
                 "fit the account limit",

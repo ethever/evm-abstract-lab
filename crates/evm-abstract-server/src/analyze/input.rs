@@ -157,58 +157,34 @@ pub(super) fn fork(input: api::Fork) -> evm_abstract::Fork {
         api::Fork::Osaka => evm_abstract::Fork::Osaka,
     }
 }
+// Only the host representation bounds integer conversion; teaching inputs have
+// no server-specific maximum. Positivity and semantic invariants stay native.
+fn host_size(value: u64, field: &str) -> Result<usize, api::ApiError> {
+    usize::try_from(value).map_err(|_| {
+        invalid(
+            api::ValidationErrorKind::Limits,
+            field,
+            "value does not fit this server's address space",
+        )
+    })
+}
+
 pub(super) fn config(
     input: &api::AnalysisLimits,
 ) -> Result<analysis::ExecutionConfig, api::ApiError> {
-    // Server admission caps bound shared worker memory and work before acquisition starts.
-    let bounded = [
-        ("max_states", input.max_states, 4096),
-        ("max_transfers", input.max_transfers, 100_000),
-        ("max_constants", input.max_constants, 32),
-        ("max_work", input.max_work, 100_000_000),
-        ("max_call_depth", input.max_call_depth, 128),
-        ("max_memory_bytes", input.max_memory_bytes, 1_048_576),
-        ("reduction_rounds", input.reduction_rounds, 32),
-        ("max_facts", input.max_facts, 16_384),
-        ("max_constraints", input.max_constraints, 4096),
-        ("max_expression_nodes", input.max_expression_nodes, 16_384),
-        ("max_expression_depth", input.max_expression_depth, 128),
-        ("rpc_max_accounts", input.rpc_max_accounts, 4096),
-        ("rpc_max_requests", input.rpc_max_requests, 65_536),
-        (
-            "rpc_max_response_bytes",
-            input.rpc_max_response_bytes,
-            67_108_864,
-        ),
-    ];
-    for (field, number, max) in bounded {
-        if !(1..=max).contains(&number) {
-            return Err(super::errors::limit(field, number as u64, 1, max as u64));
+    for (field, value) in [
+        ("rpc_max_accounts", input.rpc_max_accounts),
+        ("rpc_max_requests", input.rpc_max_requests),
+        ("rpc_max_response_bytes", input.rpc_max_response_bytes),
+        ("rpc_timeout_ms", input.rpc_timeout_ms),
+    ] {
+        if value == 0 {
+            return Err(invalid(
+                api::ValidationErrorKind::Limits,
+                field,
+                "RPC allowances and timeout must be positive",
+            ));
         }
-    }
-    if input.context_depth > 16 {
-        return Err(super::errors::limit(
-            "context_depth",
-            input.context_depth as u64,
-            0,
-            16,
-        ));
-    }
-    if !(1..=10_000_000).contains(&input.smt_rlimit) {
-        return Err(super::errors::limit(
-            "smt_rlimit",
-            u64::from(input.smt_rlimit),
-            1,
-            10_000_000,
-        ));
-    }
-    if !(1..=120_000).contains(&input.rpc_timeout_ms) {
-        return Err(super::errors::limit(
-            "rpc_timeout_ms",
-            input.rpc_timeout_ms,
-            1,
-            120_000,
-        ));
     }
     Ok(analysis::ExecutionConfig {
         analysis: analysis::Config {
@@ -216,17 +192,17 @@ pub(super) fn config(
                 api::DomainProfile::Product => Profile::Product,
                 api::DomainProfile::ConstantsOnly => Profile::ConstantsOnly,
             },
-            reduction_rounds: input.reduction_rounds,
-            max_facts: input.max_facts,
-            max_states: input.max_states,
-            max_transfers: input.max_transfers,
-            max_constants: input.max_constants,
-            context_depth: input.context_depth,
+            reduction_rounds: host_size(input.reduction_rounds, "reduction_rounds")?,
+            max_facts: host_size(input.max_facts, "max_facts")?,
+            max_states: host_size(input.max_states, "max_states")?,
+            max_transfers: host_size(input.max_transfers, "max_transfers")?,
+            max_constants: host_size(input.max_constants, "max_constants")?,
+            context_depth: host_size(input.context_depth, "context_depth")?,
             relations: RelationLimits {
                 enabled: input.relations_enabled,
-                max_constraints: input.max_constraints,
-                max_nodes: input.max_expression_nodes,
-                max_depth: input.max_expression_depth,
+                max_constraints: host_size(input.max_constraints, "max_constraints")?,
+                max_nodes: host_size(input.max_expression_nodes, "max_expression_nodes")?,
+                max_depth: host_size(input.max_expression_depth, "max_expression_depth")?,
                 rlimit: input.smt_rlimit,
                 provider: match input.smt_provider {
                     api::SmtProvider::Z3 => SmtProvider::Z3,
@@ -235,9 +211,9 @@ pub(super) fn config(
                 },
             },
         },
-        max_work: input.max_work,
-        max_call_depth: input.max_call_depth,
-        max_memory_bytes: input.max_memory_bytes,
+        max_work: host_size(input.max_work, "max_work")?,
+        max_call_depth: host_size(input.max_call_depth, "max_call_depth")?,
+        max_memory_bytes: host_size(input.max_memory_bytes, "max_memory_bytes")?,
         use_summaries: input.use_summaries,
     })
 }
@@ -270,8 +246,176 @@ pub(super) fn rpc(
             })
             .collect::<Result<_, api::ApiError>>()?,
         timeout: Duration::from_millis(limits.rpc_timeout_ms),
-        max_response_bytes: limits.rpc_max_response_bytes,
-        max_accounts: limits.rpc_max_accounts,
-        max_requests: limits.rpc_max_requests,
+        max_response_bytes: host_size(limits.rpc_max_response_bytes, "rpc_max_response_bytes")?,
+        max_accounts: host_size(limits.rpc_max_accounts, "rpc_max_accounts")?,
+        max_requests: host_size(limits.rpc_max_requests, "rpc_max_requests")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source() -> api::RpcInput {
+        api::RpcInput {
+            provider_id: "fixture".into(),
+            address: Address::repeat_byte(0x11).to_string(),
+            block: api::BlockSelector::Latest,
+            accounts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn values_above_every_former_server_ceiling_reach_the_native_policy_unchanged() {
+        let limits = api::AnalysisLimits {
+            max_states: 4_097,
+            max_transfers: 100_001,
+            context_depth: 17,
+            max_constants: 33,
+            max_work: 100_000_001,
+            max_call_depth: 129,
+            max_memory_bytes: 1_048_577,
+            reduction_rounds: 33,
+            max_facts: 16_385,
+            max_constraints: 4_097,
+            max_expression_nodes: 16_385,
+            max_expression_depth: 129,
+            smt_rlimit: 10_000_001,
+            rpc_max_accounts: 4_097,
+            rpc_max_requests: 65_537,
+            rpc_max_response_bytes: 67_108_865,
+            rpc_timeout_ms: 120_001,
+            ..api::AnalysisLimits::default()
+        };
+        let native = config(&limits).unwrap();
+        assert_eq!(native.analysis.max_states, 4_097);
+        assert_eq!(native.analysis.max_transfers, 100_001);
+        assert_eq!(native.analysis.context_depth, 17);
+        assert_eq!(native.analysis.max_constants, 33);
+        assert_eq!(native.max_work, 100_000_001);
+        assert_eq!(native.max_call_depth, 129);
+        assert_eq!(native.max_memory_bytes, 1_048_577);
+        assert_eq!(native.analysis.reduction_rounds, 33);
+        assert_eq!(native.analysis.max_facts, 16_385);
+        assert_eq!(native.analysis.relations.max_constraints, 4_097);
+        assert_eq!(native.analysis.relations.max_nodes, 16_385);
+        assert_eq!(native.analysis.relations.max_depth, 129);
+        assert_eq!(native.analysis.relations.rlimit, 10_000_001);
+        assert!(native.analysis.validate().is_ok());
+        let rpc = rpc(
+            &source(),
+            "http://127.0.0.1:8545",
+            evm_abstract::Fork::Osaka,
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(rpc.max_accounts, 4_097);
+        assert_eq!(rpc.max_requests, 65_537);
+        assert_eq!(rpc.max_response_bytes, 67_108_865);
+        assert_eq!(rpc.timeout, Duration::from_millis(120_001));
+    }
+
+    #[test]
+    fn only_host_integer_representation_bounds_sizes() {
+        assert_eq!(
+            host_size(usize::MAX as u64, "max_work").unwrap(),
+            usize::MAX
+        );
+        if usize::BITS < u64::BITS {
+            assert_eq!(
+                host_size(u64::MAX, "max_work").unwrap_err().code,
+                api::ApiErrorCode::InvalidLimits
+            );
+        }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn counts_above_u32_and_at_the_host_limit_are_not_narrowed_or_clamped() {
+        for count in [u64::from(u32::MAX) + 1, (1u64 << 53) + 1, u64::MAX] {
+            let limits = api::AnalysisLimits {
+                max_states: count,
+                max_transfers: count,
+                context_depth: count,
+                max_constants: count,
+                max_work: count,
+                max_call_depth: count,
+                max_memory_bytes: count,
+                reduction_rounds: count,
+                max_facts: count,
+                max_constraints: count,
+                max_expression_nodes: count,
+                max_expression_depth: count,
+                smt_rlimit: u32::MAX,
+                rpc_max_accounts: count,
+                rpc_max_requests: count,
+                rpc_max_response_bytes: count,
+                rpc_timeout_ms: count,
+                ..api::AnalysisLimits::default()
+            };
+            let native = config(&limits).unwrap();
+            assert_eq!(native.analysis.max_states as u64, count);
+            assert_eq!(native.analysis.max_transfers as u64, count);
+            assert_eq!(native.analysis.context_depth as u64, count);
+            assert_eq!(native.analysis.max_constants as u64, count);
+            assert_eq!(native.max_work as u64, count);
+            assert_eq!(native.max_call_depth as u64, count);
+            assert_eq!(native.max_memory_bytes as u64, count);
+            assert_eq!(native.analysis.reduction_rounds as u64, count);
+            assert_eq!(native.analysis.max_facts as u64, count);
+            assert_eq!(native.analysis.relations.max_constraints as u64, count);
+            assert_eq!(native.analysis.relations.max_nodes as u64, count);
+            assert_eq!(native.analysis.relations.max_depth as u64, count);
+            assert_eq!(native.analysis.relations.rlimit, u32::MAX);
+            assert!(native.analysis.validate().is_ok());
+            let rpc = rpc(
+                &source(),
+                "http://127.0.0.1:8545",
+                evm_abstract::Fork::Osaka,
+                &limits,
+            )
+            .unwrap();
+            assert_eq!(rpc.max_accounts as u64, count);
+            assert_eq!(rpc.max_requests as u64, count);
+            assert_eq!(rpc.max_response_bytes as u64, count);
+            assert_eq!(rpc.timeout, Duration::from_millis(count));
+        }
+    }
+
+    #[test]
+    fn zero_rpc_budgets_remain_invalid_before_network_acquisition() {
+        for limits in [
+            api::AnalysisLimits {
+                rpc_max_accounts: 0,
+                ..api::AnalysisLimits::default()
+            },
+            api::AnalysisLimits {
+                rpc_max_requests: 0,
+                ..api::AnalysisLimits::default()
+            },
+            api::AnalysisLimits {
+                rpc_max_response_bytes: 0,
+                ..api::AnalysisLimits::default()
+            },
+            api::AnalysisLimits {
+                rpc_timeout_ms: 0,
+                ..api::AnalysisLimits::default()
+            },
+        ] {
+            let rpc = rpc(
+                &source(),
+                "http://127.0.0.1:1",
+                evm_abstract::Fork::Osaka,
+                &limits,
+            )
+            .unwrap();
+            assert!(matches!(
+                evm_abstract::world::rpc::load(&rpc),
+                Err(evm_abstract::world::rpc::RpcError::Configuration {
+                    reason: evm_abstract::world::rpc::ConfigurationReason::Limits,
+                    ..
+                })
+            ));
+        }
+    }
 }

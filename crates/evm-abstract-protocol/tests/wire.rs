@@ -30,6 +30,58 @@ fn bytecode_and_rpc_requests_roundtrip() {
     request.environment.number = Some("0x42".into());
     roundtrip(request);
 }
+
+#[test]
+fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
+    let count = 9_007_199_254_740_993_u64;
+    let limits = AnalysisLimits {
+        max_states: count,
+        max_transfers: count,
+        context_depth: count,
+        max_constants: count,
+        max_work: count,
+        max_call_depth: count,
+        max_memory_bytes: count,
+        use_summaries: false,
+        domain_profile: DomainProfile::ConstantsOnly,
+        reduction_rounds: count,
+        max_facts: count,
+        relations_enabled: false,
+        max_constraints: count,
+        max_expression_nodes: count,
+        max_expression_depth: count,
+        smt_provider: SmtProvider::Cvc5,
+        smt_rlimit: u32::MAX,
+        rpc_max_accounts: count,
+        rpc_max_requests: count,
+        rpc_max_response_bytes: count,
+        rpc_timeout_ms: count,
+    };
+    roundtrip(AnalyzeRequest {
+        limits,
+        ..AnalyzeRequest::default()
+    });
+    let defaults = AnalysisLimits::default();
+    assert_eq!(defaults.max_work, 1_000_000_000_000);
+    assert!(defaults.max_work > u64::from(u32::MAX));
+    roundtrip(defaults);
+}
+
+#[test]
+fn cumulative_counters_preserve_u64_values_above_wasm_and_javascript_integer_ranges() {
+    for count in [u64::from(u32::MAX) + 1, 9_007_199_254_740_993, u64::MAX] {
+        let progress = AnalysisProgress {
+            phase: AnalysisPhase::Analyzing,
+            transfers: count,
+            work: count,
+            ..AnalysisProgress::default()
+        };
+        let json = serde_json::to_string(&progress).unwrap();
+        assert!(json.contains(&format!("\"transfers\":{count}")));
+        assert!(json.contains(&format!("\"work\":{count}")));
+        roundtrip(progress);
+    }
+}
 #[test]
 fn errors_and_job_states_roundtrip_without_invalid_optional_combinations() {
     let error = ApiError {
@@ -177,5 +229,5 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 4);
+    assert_eq!(SCHEMA_VERSION, 5);
 }

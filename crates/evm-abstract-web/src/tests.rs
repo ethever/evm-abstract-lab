@@ -320,6 +320,29 @@ fn click(ctx: &Context, workspace: &mut Workspace, pos: Pos2) {
 }
 
 #[test]
+fn report_counters_above_wasm_word_size_decode_and_render_exactly() {
+    let count = 9_007_199_254_740_993_u64;
+    let mut report = empty_report();
+    report.transfers = count;
+    report.metadata.work = count;
+    let reply = AnalyzeReply { result: Ok(report) };
+    let decoded: AnalyzeReply =
+        serde_json::from_slice(&serde_json::to_vec(&reply).unwrap()).unwrap();
+    assert_eq!(decoded, reply);
+    let mut workspace = Workspace::default();
+    workspace.receive(Ok(decoded));
+    assert!(workspace.accessible_status().starts_with("Ready:"));
+    let ctx = Context::default();
+    frame(&ctx, &mut workspace, vec![]);
+    let output = frame(&ctx, &mut workspace, vec![]);
+    assert!(
+        painted_text(&output)
+            .iter()
+            .any(|(text, _)| text.contains(&format!("{count} work")))
+    );
+}
+
+#[test]
 fn all_three_custom_views_paint_structural_content() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);

@@ -524,9 +524,7 @@ fn configured_loader_with_control(input: &RpcInput, control: &Control) -> Result
     let client_context = context(input, "client", None, None);
     if input.timeout.is_zero()
         || input.max_response_bytes == 0
-        || input.max_response_bytes > 64 * 1024 * 1024
         || input.max_accounts == 0
-        || input.max_accounts > 4096
         || input.max_requests == 0
     {
         return Err(RpcError::Configuration {
@@ -539,7 +537,7 @@ fn configured_loader_with_control(input: &RpcInput, control: &Control) -> Result
         || input
             .accounts
             .iter()
-            .any(|request| request.slots.len() > 1024 || !addresses.insert(request.address))
+            .any(|request| !addresses.insert(request.address))
     {
         return Err(RpcError::Configuration {
             context: Box::new(client_context),
@@ -555,7 +553,7 @@ fn configured_loader_with_control(input: &RpcInput, control: &Control) -> Result
         })?;
     let client = Client::builder()
         .timeout(input.timeout)
-        .connect_timeout(input.timeout.min(Duration::from_secs(5)))
+        .connect_timeout(input.timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|source| RpcError::Transport {

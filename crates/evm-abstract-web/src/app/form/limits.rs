@@ -3,6 +3,57 @@
 use super::AnalysisForm;
 use egui::Ui;
 use evm_abstract_protocol::{DomainProfile, SmtProvider};
+use std::{collections::BTreeMap, str::FromStr};
+
+use crate::{framework, palette};
+
+#[derive(Default)]
+pub(super) struct NumberInputs {
+    drafts: BTreeMap<&'static str, NumberDraft>,
+}
+
+struct NumberDraft {
+    text: String,
+    valid: bool,
+}
+
+impl NumberInputs {
+    pub(super) fn valid(&self) -> bool {
+        self.drafts.values().all(|draft| draft.valid)
+    }
+
+    // DragValue converts integer edits through f64, losing values above 2^53.
+    // Keep decimal text until the concrete integer type accepts it exactly.
+    fn number<T: FromStr + ToString>(&mut self, ui: &mut Ui, label: &'static str, value: &mut T) {
+        ui.label(label);
+        let draft = self.drafts.entry(label).or_insert_with(|| NumberDraft {
+            text: value.to_string(),
+            valid: true,
+        });
+        let response = framework::scoped_editor(
+            ui,
+            label,
+            &mut draft.text,
+            "Unsigned whole number",
+            180.0_f32.min(ui.available_width()),
+        );
+        if response.changed() {
+            match draft.text.parse() {
+                Ok(parsed) => {
+                    *value = parsed;
+                    draft.valid = true;
+                }
+                Err(_) => draft.valid = false,
+            }
+        }
+        ui.end_row();
+        if !draft.valid {
+            ui.label("");
+            ui.colored_label(palette::ERROR, "Enter a supported unsigned whole number");
+            ui.end_row();
+        }
+    }
+}
 
 impl AnalysisForm {
     pub(super) fn limits(&mut self, ui: &mut Ui) {
@@ -17,7 +68,7 @@ impl AnalysisForm {
                         ("Call depth", &mut self.limits.max_call_depth),
                         ("Memory bytes", &mut self.limits.max_memory_bytes),
                     ] {
-                        number(ui, label, value);
+                        self.limit_inputs.number(ui, label, value);
                     }
                 });
             ui.checkbox(
@@ -55,7 +106,7 @@ impl AnalysisForm {
                         ("Expression nodes", &mut self.limits.max_expression_nodes),
                         ("Expression depth", &mut self.limits.max_expression_depth),
                     ] {
-                        number(ui, label, value);
+                        self.limit_inputs.number(ui, label, value);
                     }
                 });
             ui.checkbox(
@@ -76,10 +127,15 @@ impl AnalysisForm {
                             );
                         }
                     });
-                ui.label("Resource limit")
-                    .on_hover_text("Provider work allowance; not milliseconds");
-                ui.add(egui::DragValue::new(&mut self.limits.smt_rlimit));
             });
+            egui::Grid::new("solver_limit")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    self.limit_inputs
+                        .number(ui, "Resource limit", &mut self.limits.smt_rlimit);
+                })
+                .response
+                .on_hover_text("Provider work allowance; not milliseconds");
         });
         egui::CollapsingHeader::new("RPC acquisition budget").show(ui, |ui| {
             egui::Grid::new("rpc_limits").num_columns(2).show(ui, |ui| {
@@ -88,18 +144,11 @@ impl AnalysisForm {
                     ("Requests", &mut self.limits.rpc_max_requests),
                     ("Response bytes", &mut self.limits.rpc_max_response_bytes),
                 ] {
-                    number(ui, label, value);
+                    self.limit_inputs.number(ui, label, value);
                 }
-                ui.label("Timeout (ms)");
-                ui.add(egui::DragValue::new(&mut self.limits.rpc_timeout_ms));
-                ui.end_row();
+                self.limit_inputs
+                    .number(ui, "Timeout (ms)", &mut self.limits.rpc_timeout_ms);
             });
         });
     }
-}
-
-fn number(ui: &mut Ui, label: &str, value: &mut usize) {
-    ui.label(label);
-    ui.add(egui::DragValue::new(value));
-    ui.end_row();
 }

@@ -98,6 +98,108 @@ fn enter() -> Event {
     }
 }
 
+fn replace_text(ctx: &Context, form: &mut AnalysisForm, text: &str) {
+    frame(
+        ctx,
+        form,
+        vec![
+            Event::Key {
+                key: Key::A,
+                physical_key: Some(Key::A),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Modifiers::NONE
+                },
+            },
+            Event::Text(text.into()),
+        ],
+    );
+}
+
+#[test]
+fn integer_budget_editor_preserves_values_above_f64_precision_and_old_caps() {
+    let ctx = Context::default();
+    ctx.global_style_mut(|style| style.animation_time = 0.0);
+    let mut form = AnalysisForm {
+        open: true,
+        ..AnalysisForm::default()
+    };
+    frame(&ctx, &mut form, vec![]);
+    let (_, output) = paint(&ctx, &mut form, vec![]);
+    click(&ctx, &mut form, text_center(&output, "Execution budget"));
+    let (_, output) = paint(&ctx, &mut form, vec![]);
+    click(&ctx, &mut form, text_center(&output, "1000000000000"));
+    replace_text(&ctx, &mut form, "9007199254740993");
+    let (_, output) = paint(&ctx, &mut form, vec![]);
+    text_center(&output, "9007199254740993");
+    let request = frame(&ctx, &mut form, vec![enter()]).unwrap();
+    assert_eq!(request.limits.max_work, 9_007_199_254_740_993);
+    assert_eq!(request.limits.max_states, 100_000);
+    assert_eq!(request.limits.max_memory_bytes, 64 * 1024 * 1024);
+    let json = serde_json::to_string(&request).unwrap();
+    assert!(json.contains("\"max_work\":9007199254740993"));
+}
+
+#[test]
+fn invalid_numeric_draft_blocks_button_and_keyboard_until_corrected() {
+    for invalid in ["not a number", "-1", "18446744073709551616"] {
+        let ctx = Context::default();
+        ctx.global_style_mut(|style| style.animation_time = 0.0);
+        let mut form = AnalysisForm {
+            open: true,
+            ..AnalysisForm::default()
+        };
+        frame(&ctx, &mut form, vec![]);
+        let (_, output) = paint(&ctx, &mut form, vec![]);
+        click(&ctx, &mut form, text_center(&output, "Execution budget"));
+        let (_, output) = paint(&ctx, &mut form, vec![]);
+        click(&ctx, &mut form, text_center(&output, "1000000000000"));
+        replace_text(&ctx, &mut form, invalid);
+        assert!(frame(&ctx, &mut form, vec![enter()]).is_none(), "{invalid}");
+        let (_, output) = paint(&ctx, &mut form, vec![]);
+        assert!(
+            click(&ctx, &mut form, text_center(&output, "Analyze")).is_none(),
+            "{invalid}"
+        );
+        assert!(form.open);
+        let (_, output) = paint(&ctx, &mut form, vec![]);
+        click(&ctx, &mut form, text_center(&output, invalid));
+        replace_text(&ctx, &mut form, "18446744073709551615");
+        let request = frame(&ctx, &mut form, vec![enter()]).unwrap();
+        assert_eq!(request.limits.max_work, u64::MAX);
+    }
+}
+
+#[test]
+fn precision_and_acquisition_inputs_accept_values_above_previous_admission_caps() {
+    for (header, initial, value) in [
+        ("Precision and solver", "512", "10000"),
+        ("RPC acquisition budget", "67108864", "9007199254740993"),
+    ] {
+        let ctx = Context::default();
+        ctx.global_style_mut(|style| style.animation_time = 0.0);
+        let mut form = AnalysisForm {
+            open: true,
+            ..AnalysisForm::default()
+        };
+        frame(&ctx, &mut form, vec![]);
+        let (_, output) = paint(&ctx, &mut form, vec![]);
+        click(&ctx, &mut form, text_center(&output, header));
+        let (_, output) = paint(&ctx, &mut form, vec![]);
+        click(&ctx, &mut form, text_center(&output, initial));
+        replace_text(&ctx, &mut form, value);
+        let request = frame(&ctx, &mut form, vec![enter()]).unwrap();
+        if header == "Precision and solver" {
+            assert_eq!(request.limits.max_constants, 10_000);
+        } else {
+            assert_eq!(request.limits.rpc_max_response_bytes, 9_007_199_254_740_993);
+        }
+    }
+}
+
 #[test]
 fn opening_focuses_the_real_bytecode_editor_and_submit_preserves_typed_request() {
     let ctx = Context::default();

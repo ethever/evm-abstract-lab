@@ -30,6 +30,7 @@ pub(super) struct AnalysisForm {
     fork: Fork,
     environment: EnvironmentInput,
     limits: AnalysisLimits,
+    limit_inputs: limits::NumberInputs,
     pub(super) error: Option<String>,
 }
 
@@ -54,6 +55,7 @@ impl Default for AnalysisForm {
             fork: defaults.fork,
             environment: defaults.environment,
             limits: defaults.limits,
+            limit_inputs: limits::NumberInputs::default(),
             error: None,
         }
     }
@@ -79,6 +81,7 @@ impl AnalysisForm {
 
     fn can_submit(&self, busy: bool) -> bool {
         !busy
+            && self.limit_inputs.valid()
             && (self.source == Source::Bytecode
                 || self.providers.valid_selection(&self.rpc.provider_id))
     }
@@ -142,6 +145,8 @@ impl AnalysisForm {
                     ui.label(
                         RichText::new(if busy {
                             "A task is still running"
+                        } else if !self.limit_inputs.valid() {
+                            "Correct invalid numeric settings to analyze"
                         } else if !self.can_submit(false) {
                             "Choose an available RPC provider to analyze"
                         } else {

@@ -241,10 +241,10 @@ fn rpc_cause(ui: &mut Ui, cause: &api::RpcFailureCause) {
             "Acquisition configuration",
             match reason {
                 api::RpcConfigurationReason::Limits => {
-                    "Acquisition limits are outside the supported range"
+                    "Acquisition resource allowances and timeout must be positive"
                 }
                 api::RpcConfigurationReason::InitialAccounts => {
-                    "Initial accounts must be unique and within account/slot bounds"
+                    "Initial accounts must be unique and within the configured account allowance"
                 }
                 api::RpcConfigurationReason::StorageAccountMissing => {
                     "Storage owner was not acquired"

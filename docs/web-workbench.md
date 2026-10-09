@@ -77,6 +77,32 @@ nix build .#web-assets
 
 RPC 表单在 **RPC provider** 下拉框的当前选项与每个候选项中同时显示后端配置的名称和 RPC URL，默认选择第一项，再填写 **Root account**。长名称或 URL 会按可用宽度省略显示，悬停可查看完整名称和地址。名单加载中、加载失败或为空时，**Analyze** 和 **Ctrl+Enter** 都不会提交 RPC 任务；失败或为空时可点击 **Retry** 重新获取名单。切回 **Bytecode** 仍能分析字节码。
 
+**Execution budget**、**Precision and solver**、**RPC acquisition budget** 保留全部预算与精度设置。Web 使用下表中的较大默认值；可以在十进制文本框中继续调大，前端与后端都不另设业务最大值。输入、请求与报告保留原始整数，超过 `2^53` 的值也不会经过浮点数舍入。
+
+| 参数 | Web 默认值 |
+| --- | --- |
+| States / `max_states` | 100,000 |
+| Transfers / `max_transfers` | 10,000,000 |
+| Logical work / `max_work` | 1,000,000,000,000 |
+| Call depth / `max_call_depth` | 1,025 |
+| Memory bytes / `max_memory_bytes` | 67,108,864（64 MiB） |
+| Jump context depth / `context_depth` | 0 |
+| Constants per value / `max_constants` | 512 |
+| Reduction rounds / `reduction_rounds` | 16 |
+| Scalar facts / `max_facts` | 4,096 |
+| Constraints / `max_constraints` | 2,048 |
+| Expression nodes / `max_expression_nodes` | 16,384 |
+| Expression depth / `max_expression_depth` | 256 |
+| Resource limit / `smt_rlimit` | 10,000,000 |
+| Accounts / `rpc_max_accounts` | 4,096 |
+| Requests / `rpc_max_requests` | 1,000,000 |
+| Response bytes / `rpc_max_response_bytes` | 67,108,864（64 MiB） |
+| Timeout (ms) / `rpc_timeout_ms` | 120,000（120 秒） |
+
+这些仍是用户指定的有限预算，达到执行、精度或采集边界时仍会停止相应工作并报告原因，不会自动改为无限。除 `context_depth` 可以为 0（不保留内部跳转历史）外，表中参数都必须是正整数。SMT 默认使用 Z3，额度计量的是所选求解器的资源单位，不是毫秒；默认启用关系推理、Product 数值域和完整被调用者摘要复用。RPC 的连接与整个请求（包括响应体）都遵循配置的 timeout，不再叠加固定 5 秒连接上限；账户、响应大小及初始槽位也不再有独立的 4096 / 64 MiB / 1024 硬上限。
+
+数值仍受类型可表示范围约束：`smt_rlimit` 为 `u32`，最大 4,294,967,295；其余表中字段为 `u64`，最大 18,446,744,073,709,551,615。后端还检查需要转换为原生 `usize` 的字段是否能在运行平台表示。超出类型范围的输入不会被夹紧或近似接受。CLI 的默认参数保持原样；本表只描述 Web 默认值。
+
 任务运行期间保留上一份完整结果，并显示新任务的状态与离散进度；新任务成功后才原子替换结果。输入草稿的编辑不会改变正在查看的报告。取消、失败或迟到的旧请求也不会把旧报告冒充新任务结果。
 
 - **Workspace / 0** 根据可用宽度切换布局：宽窗口并排显示三个视图，中等窗口将反汇编与 SSA 放入标签组并与 CFG 并排，窄窗口将三个视图放入标签组。代码面板初始按实际内容定宽，剩余空间给 CFG；长内容受可用空间限制，仍可横向滚动。拖动分隔线后保留该档布局的手动宽度，窗口空间不足时临时夹紧，恢复空间后还原。**1 / 2 / 3** 分别展开反汇编、CFG 和 SSA；文本框获得焦点时数字键仍用于输入。
@@ -122,7 +148,7 @@ RPC 表单在 **RPC provider** 下拉框的当前选项与每个候选项中同�
 | [`evm-abstract-server`](../crates/evm-abstract-server) | 将协议请求转换为引擎输入，验证 SSA，并投影为结构化响应；提供 HTTP 和静态资源 |
 | [`evm-abstract-web`](../crates/evm-abstract-web) | 依赖共享协议；通过 Web API 获取结果，用 egui Painter 绘制各视图 |
 
-共享协议版本为 4。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+共享协议版本为 5。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 
 | 请求 | 返回 |
 | --- | --- |
@@ -132,7 +158,9 @@ RPC 表单在 **RPC provider** 下拉框的当前选项与每个候选项中同�
 | `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
 
-版本 4 的提供者名单新增展示用的 `endpoint`；RPC 分析输入继续使用 `provider_id`，不接受浏览器在请求中指定 `endpoint`。例如 `AnalyzeRequest.input` 为 `{"Rpc":{"provider_id":"mainnet","address":"0x0000000000000000000000000000000000000101","block":"Latest","accounts":[]}}`；其余 `fork`、`environment`、`limits` 字段仍按共享请求类型提供。后端在任务入队前按 ID 查找配置，未知 ID 返回 `InvalidRequest`。此变更属于 Web 共享协议，CLI 的显式 `--rpc` 参数保持其原有用法。
+版本 5 的提供者名单新增展示用的 `endpoint`；RPC 分析输入继续使用 `provider_id`，不接受浏览器在请求中指定 `endpoint`。例如 `AnalyzeRequest.input` 为 `{"Rpc":{"provider_id":"mainnet","address":"0x0000000000000000000000000000000000000101","block":"Latest","accounts":[]}}`；其余 `fork`、`environment`、`limits` 字段仍按共享请求类型提供。后端在任务入队前按 ID 查找配置，未知 ID 返回 `InvalidRequest`。此变更属于 Web 共享协议，CLI 的显式 `--rpc` 参数保持其原有用法。
+
+版本 4 将 `AnalysisLimits` 中除 `smt_rlimit: u32` 外的数值统一为 `u64`，避免 Wasm 的 32 位 `usize` 限制后端预算。累计 work / transfers 遥测也使用 `u64`。浏览器在 Rust 中直接处理 JSON 文本，保留整数精度；其他客户端处理这些数字时也应使用可精确保留 64 位整数的解析方式。报告的 `metadata.limits` 保存实际提交的完整策略，不用默认值覆盖用户输入。
 
 报告包含代码目录、完整帧上下文、有效环境、快照身份、账户事实、入口／出口状态和终结结果。不可变 byte-array 与 store 使用报告内索引复用，每个 byte-array 的完整抽象字节值也用局部字典复用；符号表达式用扁平 DAG 表达，保留结构并避免 JSON 嵌套深度随表达式深度增长。状态轮询不重复下载整份报告。
 
@@ -183,5 +211,7 @@ cargo run --locked -p evm-abstract-server -- --assets dist
 浏览器回归使用 Chromium 的 SwiftShader 软件 WebGPU 适配器，检查实际 WebGPU 上下文及绘制调用，同时覆盖页面分析、DPR 1/2 和图交互。软件适配器验证渲染路径，不代表硬件 GPU 加速性能。
 
 RPC 回归先启动本地 JSON-RPC fixtures，再用真实配置文件启动分析服务，覆盖提供者名单、第二项选择与 `provider_id` 提交、跨合约结果和取消等待中的 RPC。另检查无配置时字节码可用、RPC 禁止提交，以及名单加载失败后的重试。
+
+预算回归在独立页面操作真实输入控件，填写超过旧上限及 `2^53` 的整数，再分析小字节码，核对原始 POST 和报告 `metadata.limits` 精确一致；同时检查 Web 默认值与协议版本。
 
 实现参考：[eframe WebRunner](https://docs.rs/eframe/0.36.2/wasm32-unknown-unknown/eframe/web/struct.WebRunner.html)、[egui Painter](https://docs.rs/egui/0.36.2/egui/struct.Painter.html)。
