@@ -6,6 +6,8 @@
 //! and never wall-clock time; none of the providers launches a child process.
 
 mod backend;
+mod cancellation;
+pub use cancellation::{Cancellation, current_cancellation, with_cancellation};
 mod bitwuzla;
 mod cvc5;
 mod term;
@@ -55,6 +57,8 @@ pub const DEFAULT_RLIMIT: u32 = 100_000;
 /// Failure to obtain an answer does not prove the formula false.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unknown {
+    /// The caller explicitly cancelled this query.
+    Cancelled,
     /// The selected provider exhausted its non-wall-clock allowance.
     ResourceLimit,
     /// The provider returned UNKNOWN for another or unspecified reason.
@@ -91,16 +95,25 @@ pub enum Outcome {
 /// terms are bounded by the caller; native resource limits govern solving, not
 /// every allocation, term-construction operation, or model extraction step.
 pub fn check(assertions: &[Bool], value: Option<&Bv>, provider: Provider, rlimit: u32) -> Outcome {
+    let cancellation = current_cancellation();
+    if cancellation.is_cancelled() {
+        return Outcome::Unknown(Unknown::Cancelled);
+    }
     if rlimit == 0 {
         return Outcome::Error(Error {
             provider,
             message: "rlimit must be positive".into(),
         });
     }
-    match provider {
+    let outcome = match provider {
         Provider::Z3 => z3::solve(assertions, value, rlimit),
         Provider::Bitwuzla => bitwuzla::solve(assertions, value, rlimit),
         Provider::Cvc5 => cvc5::solve(assertions, value, rlimit),
+    };
+    if cancellation.is_cancelled() {
+        Outcome::Unknown(Unknown::Cancelled)
+    } else {
+        outcome
     }
 }
 

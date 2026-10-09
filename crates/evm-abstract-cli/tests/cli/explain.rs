@@ -930,7 +930,7 @@ fn rpc_result(request: &Json, fixture: RpcFixture) -> Json {
         "eth_chainId" => json!("0x1"),
         "eth_getBlockByHash" => {
             assert_eq!(request["params"], json!([BLOCK, false]));
-            json!({"hash":BLOCK,"number":"0x10"})
+            json!({"hash":BLOCK,"number":"0x10", "parentHash":BLOCK, "timestamp":"0x1234", "miner":"0x0000000000000000000000000000000000000033", "mixHash":BLOCK, "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7"})
         }
         "eth_getCode" => json!(format!("0x{code}")),
         "eth_getBalance" => json!("0x1000000"),

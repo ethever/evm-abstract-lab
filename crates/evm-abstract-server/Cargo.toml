@@ -8,11 +8,13 @@ license.workspace      = true
 repository.workspace   = true
 
 [dependencies]
-evm-abstract          = { path = "../evm-abstract" }
-evm-abstract-protocol = { path = "../evm-abstract-protocol" }
-serde_json.workspace  = true
-thiserror.workspace   = true
-clap.workspace        = true
+alloy-primitives.workspace = true
+evm-abstract               = { path = "../evm-abstract" }
+evm-abstract-protocol      = { path = "../evm-abstract-protocol" }
+serde_json.workspace       = true
+serde.workspace            = true
+thiserror.workspace        = true
+clap.workspace             = true
 
 [lints]
 workspace = true

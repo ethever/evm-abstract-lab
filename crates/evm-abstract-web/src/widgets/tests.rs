@@ -12,12 +12,12 @@ use crate::{
 fn workspace() -> Workspace {
     let mut report = crate::tests::report();
     report.cfg.truncate(1);
-    report.disassembly.truncate(1);
+    report.programs[0].blocks.truncate(1);
     report.ssa.blocks.truncate(1);
     report.edges.clear();
     let immediate = format!("0x{}", "fe".repeat(256));
-    let source = report.disassembly[0].instructions[0].clone();
-    report.disassembly[0].instructions = (0..1000)
+    let source = report.programs[0].blocks[0].instructions[0].clone();
+    report.programs[0].blocks[0].instructions = (0..1000)
         .map(|pc| {
             let mut instruction = source.clone();
             instruction.pc = pc;
@@ -93,7 +93,7 @@ fn source_heading_position(output: &FullOutput, view: View) -> Pos2 {
                         && (detail.starts_with("verified complete")
                             || detail.starts_with("partial coverage"))
                 }
-                View::Disassembly => title == "DISASSEMBLY" && detail.starts_with("Root program"),
+                View::Disassembly => title == "DISASSEMBLY" && detail.starts_with("P0 · Runtime"),
                 _ => false,
             };
             matches.then_some(pair[0].pos)

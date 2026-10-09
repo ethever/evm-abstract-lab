@@ -19,6 +19,8 @@ pub(crate) enum CliError {
     #[error("{0}")]
     Config(ConfigError),
     #[error("{0}")]
+    Cancelled(evm_abstract::analysis::control::Cancelled),
+    #[error("{0}")]
     Input(InputError),
     #[error("{0}")]
     Environment(EnvironmentInputError),
@@ -63,6 +65,7 @@ impl From<RpcError> for CliError {
 impl From<RpcAnalysisError> for CliError {
     fn from(error: RpcAnalysisError) -> Self {
         match error {
+            RpcAnalysisError::Cancelled(error) => Self::Cancelled(error),
             RpcAnalysisError::Config(error) => Self::Config(error),
             RpcAnalysisError::Rpc(error) => Self::Rpc(error),
         }

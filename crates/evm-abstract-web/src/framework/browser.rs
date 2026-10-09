@@ -2,13 +2,17 @@
 //! futures necessarily use dynamic dispatch here; the workspace and painter
 //! widgets remain statically dispatched and contain no transport logic.
 
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::mpsc::{self, Receiver, Sender},
+};
 
-use evm_abstract_protocol::{API_PATH, AnalyzeReply, AnalyzeRequest};
-use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
+use evm_abstract_protocol::{API_PATH, AnalyzeReply, AnalyzeRequest, JobReply};
+use wasm_bindgen::{JsCast, JsValue, closure::Closure, prelude::wasm_bindgen};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
-use crate::app::{TransportError, Workspace};
+use crate::app::{Command, JobOperation, Message, TransportError, Workspace};
 
 /// Start the browser workspace on an existing canvas element.
 #[wasm_bindgen]
@@ -53,8 +57,8 @@ pub async fn start(canvas_id: &str) -> Result<(), JsValue> {
 
 struct BrowserApp {
     workspace: Workspace,
-    results: Receiver<Result<AnalyzeReply, TransportError>>,
-    sender: Sender<Result<AnalyzeReply, TransportError>>,
+    results: Receiver<Message>,
+    sender: Sender<Message>,
     initial_request: bool,
     last_status: String,
 }
@@ -79,18 +83,18 @@ impl eframe::App for BrowserApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         while let Ok(result) = self.results.try_recv() {
-            self.workspace.receive(result);
+            self.workspace.receive_message(result);
         }
         let mut request = self.workspace.show(ui);
         if self.initial_request {
             self.initial_request = false;
-            request = Some(self.workspace.begin_analysis());
+            request = Some(self.workspace.initial_command());
         }
         if let Some(request) = request {
             let sender = self.sender.clone();
             let context = ui.ctx().clone();
             spawn_local(async move {
-                let result = analyze(request).await;
+                let result = execute(request).await;
                 let _ = sender.send(result);
                 context.request_repaint();
             });
@@ -110,40 +114,122 @@ impl eframe::App for BrowserApp {
     }
 }
 
-async fn analyze(request: AnalyzeRequest) -> Result<AnalyzeReply, TransportError> {
-    let body = serde_json::to_string(&request).map_err(TransportError::Encode)?;
+async fn execute(command: Command) -> Message {
+    match command {
+        Command::Submit {
+            generation,
+            request,
+        } => Message::Status {
+            generation,
+            operation: JobOperation::Submit,
+            result: status("POST", API_PATH, Some(*request)).await,
+        },
+        Command::Poll { generation, id } => Message::Status {
+            generation,
+            operation: JobOperation::Poll,
+            result: status("GET", &format!("{API_PATH}/{id}"), None).await,
+        },
+        Command::Cancel { generation, id } => Message::Status {
+            generation,
+            operation: JobOperation::Cancel,
+            result: status("DELETE", &format!("{API_PATH}/{id}"), None).await,
+        },
+        Command::Result { generation, id } => Message::Result {
+            generation,
+            id,
+            result: Box::new(result(&format!("{API_PATH}/{id}/result")).await),
+        },
+    }
+}
+
+async fn status(
+    method: &str,
+    path: &str,
+    request: Option<AnalyzeRequest>,
+) -> Result<JobReply, TransportError> {
+    let (status, ok, body) = fetch(method, path, request).await?;
+    let reply: JobReply =
+        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
+    if !ok && reply.result.is_ok() {
+        return Err(TransportError::Http { status });
+    }
+    Ok(reply)
+}
+
+async fn result(path: &str) -> Result<AnalyzeReply, TransportError> {
+    let (status, ok, body) = fetch("GET", path, None).await?;
+    let reply: AnalyzeReply =
+        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
+    if !ok && reply.result.is_ok() {
+        return Err(TransportError::Http { status });
+    }
+    Ok(reply)
+}
+
+async fn fetch(
+    method: &str,
+    path: &str,
+    request: Option<AnalyzeRequest>,
+) -> Result<(u16, bool, String), TransportError> {
     let options = web_sys::RequestInit::new();
-    options.set_method("POST");
+    options.set_method(method);
     options.set_mode(web_sys::RequestMode::SameOrigin);
-    options.set_body(&JsValue::from_str(&body));
-    let request =
-        web_sys::Request::new_with_str_and_init(API_PATH, &options).map_err(browser_error)?;
-    request
-        .headers()
-        .set("Content-Type", "application/json")
-        .map_err(browser_error)?;
+    let controller = web_sys::AbortController::new().map_err(browser_error)?;
+    options.set_signal(Some(&controller.signal()));
+    if let Some(request) = request {
+        let body = serde_json::to_string(&request).map_err(TransportError::Encode)?;
+        options.set_body(&JsValue::from_str(&body));
+    }
+    let request = web_sys::Request::new_with_str_and_init(path, &options).map_err(browser_error)?;
+    if method == "POST" {
+        request
+            .headers()
+            .set("Content-Type", "application/json")
+            .map_err(browser_error)?;
+    }
     request
         .headers()
         .set("Accept", "application/json")
         .map_err(browser_error)?;
     let window = web_sys::window().ok_or(TransportError::MissingWindow)?;
-    let response = JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(browser_error)?
-        .dyn_into::<web_sys::Response>()
+    let seconds = if path.ends_with("/result") { 60 } else { 15 };
+    let timed_out = Rc::new(Cell::new(false));
+    let elapsed = Rc::clone(&timed_out);
+    let timeout = Closure::once(move || {
+        elapsed.set(true);
+        controller.abort();
+    });
+    let timer = window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            timeout.as_ref().unchecked_ref(),
+            seconds * 1000,
+        )
         .map_err(browser_error)?;
-    let status = response.status();
-    let body = JsFuture::from(response.text().map_err(browser_error)?)
-        .await
-        .map_err(browser_error)?
-        .as_string()
-        .ok_or(TransportError::NonTextResponse)?;
-    let reply: AnalyzeReply =
-        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
-    if !response.ok() && reply.result.is_ok() {
-        return Err(TransportError::Http { status });
+    let result = async {
+        let response = JsFuture::from(window.fetch_with_request(&request))
+            .await
+            .map_err(browser_error)?
+            .dyn_into::<web_sys::Response>()
+            .map_err(browser_error)?;
+        let status = response.status();
+        let ok = response.ok();
+        let body = JsFuture::from(response.text().map_err(browser_error)?)
+            .await
+            .map_err(browser_error)?
+            .as_string()
+            .ok_or(TransportError::NonTextResponse)?;
+        Ok((status, ok, body))
     }
-    Ok(reply)
+    .await;
+    window.clear_timeout_with_handle(timer);
+    drop(timeout);
+    if timed_out.get() {
+        Err(TransportError::Timeout {
+            seconds: seconds as u32,
+        })
+    } else {
+        result
+    }
 }
 
 fn browser_error(error: JsValue) -> TransportError {

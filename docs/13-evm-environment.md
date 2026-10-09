@@ -67,14 +67,14 @@ jq '.states[0].exit_stack[0].Constants' /tmp/evm-distinct-origin.json
 | `--evm.static` | root 与子帧的写限制 | 普通非 static 调用 |
 | `--evm.gas NUMBER` | GAS 的初始剩余 gas 上界 | 未知 |
 | `--evm.gas-price NUMBER` | GASPRICE | 未知 |
-| `--evm.coinbase ADDRESS` | COINBASE | 未知地址 |
-| `--evm.timestamp NUMBER` | TIMESTAMP | 未知 |
-| `--evm.number NUMBER` | NUMBER、BLOCKHASH 的有效范围 | 未知 |
-| `--evm.prevrandao NUMBER` | PREVRANDAO | 未知 |
-| `--evm.gas-limit NUMBER` | GASLIMIT | 未知 |
+| `--evm.coinbase ADDRESS` | COINBASE | RPC 快照的 miner；无观测时未知 |
+| `--evm.timestamp NUMBER` | TIMESTAMP | RPC 快照的 timestamp；无观测时未知 |
+| `--evm.number NUMBER` | NUMBER、BLOCKHASH 的有效范围 | RPC 快照的 number；无观测时未知 |
+| `--evm.prevrandao NUMBER` | PREVRANDAO | RPC 快照的 mixHash；无观测时未知 |
+| `--evm.gas-limit NUMBER` | GASLIMIT | RPC 快照的 gasLimit；无观测时未知 |
 | `--evm.chain-id NUMBER` | 执行 CHAINID | 链上 world 使用固定链身份，离线输入未知 |
-| `--evm.basefee NUMBER` | BASEFEE | 未知 |
-| `--evm.blob-basefee NUMBER` | BLOBBASEFEE | 未知 |
+| `--evm.basefee NUMBER` | BASEFEE | RPC 快照的 baseFeePerGas；未报告时未知 |
+| `--evm.blob-basefee NUMBER` | BLOBBASEFEE | 固定区块的 blob fee 观测；未报告 blob 字段时未知 |
 | `--evm.block-hash NUMBER:HASH` | BLOCKHASH 的历史 hash 表，允许重复参数 | 有效但未观察的项未知 |
 | `--evm.blob-hash INDEX:HASH` | BLOBHASH 的索引项，允许重复参数 | 未观察的有效项未知 |
 | `--evm.blob-count NUMBER` | BLOBHASH 的数量边界 | 未知数量 |
@@ -98,9 +98,11 @@ PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中�
 
 ## 3. 固定快照与执行环境
 
-RPC 启动时读取 chain ID，并把所选区块解析为一个固定 hash。省略 `--block-hash` 和 `--block-number` 时，`latest` 只解析一次；后续采集、callee 发现和分析重跑沿用同一个 hash。
+RPC 启动时读取 chain ID，并把所选区块解析为一个固定 hash，同时保存该区块的有类型 header 观测。省略 `--block-hash` 和 `--block-number` 时，`latest` 只解析一次；后续采集、callee 发现和分析重跑沿用同一个 hash。
 
-`--block-number` / `--block-hash` 选择账户状态快照。`--evm.number` / `--evm.block-hash` 定义 EVM 指令读取的区块环境，`--evm.chain-id` 定义执行 CHAINID 的覆盖值。执行环境覆盖不会改变 RPC 查询的数据来源，输出同时保留固定快照身份和环境假设。
+`--block-number` / `--block-hash` 选择账户状态快照。核心世界入口从这份快照填入省略的 NUMBER、TIMESTAMP、COINBASE、PREVRANDAO、GASLIMIT 和可用费用字段，并保留父块 hash 供 BLOCKHASH 使用；CLI、Web、`rpc::load` 后调用 `analyze_world` 都遵循同一规则。header 报告 blob 字段时，采集固定高度的 `eth_feeHistory` 费用观测，并在前后验证 canonical hash，避免把同一 VM fork 内不同 blob 参数阶段混为一谈。缺失的可选费用观测不被伪造为零。
+
+显式 `--evm.number`、`--evm.timestamp` 等参数优先于快照默认值；`--evm.chain-id` 也可以覆盖执行 CHAINID。这些覆盖不会改变 RPC 查询的数据来源，输出同时保留固定快照身份、原始 header 观测和有效执行环境。caller、origin、calldata、value、交易 gas price 和 blob 列表仍是交易输入，不能从区块头推定；省略时继续遵循上表的符号输入规则。
 
 ## 4. 索引 hash 与 gas
 

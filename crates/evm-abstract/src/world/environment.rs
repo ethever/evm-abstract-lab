@@ -216,7 +216,8 @@ pub struct EvmEnvironment {
     pub coinbase: AddressInput,
     /// Block timestamp.
     pub timestamp: AbstractValue,
-    /// Execution block number, independent of the fixed account-state snapshot.
+    /// Execution block number; RPC snapshots fill the default, while an explicit
+    /// override changes execution without changing the acquisition snapshot.
     pub number: AbstractValue,
     /// PREVRANDAO under all supported post-Merge forks.
     pub prevrandao: AbstractValue,

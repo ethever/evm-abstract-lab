@@ -64,6 +64,8 @@ impl RelationLimits {
 /// A query did not prove either satisfiability or contradiction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum QueryReason {
+    /// Explicit caller cancellation; the enclosing controlled analysis stops.
+    Cancelled,
     /// Relational queries were explicitly disabled.
     Disabled,
     /// Invalid zero-sized query policy.

@@ -281,7 +281,7 @@ fn incremental_storage_reorg_after_state_read_keeps_orphan_facts_out_of_cache() 
 }
 
 #[test]
-fn storage_requires_a_valid_pinned_height_without_restricting_code_acquisition() {
+fn all_rpc_acquisition_requires_a_valid_pinned_height() {
     thread::scope(|scope| {
         for block in [RpcBlock::Latest, RpcBlock::Hash(B256::repeat_byte(0x11))] {
             for malformed in [false, true] {
@@ -301,14 +301,7 @@ fn storage_requires_a_valid_pinned_height_without_restricting_code_acquisition()
                 let mut input = server.input();
                 input.block = block;
                 input.accounts[0].slots.clear();
-                let mut session = Session::load(&input).unwrap();
-                assert!(session.fetch_account(Address::repeat_byte(0x44)).unwrap());
-                let requests = session.requests();
-                let address = Address::repeat_byte(0x22);
-                let initial = session.world().account(address).unwrap().clone();
-                let error = session
-                    .fetch_storage(address, &BTreeSet::from([U256::from(1)]))
-                    .unwrap_err();
+                let error = Session::load(&input).unwrap_err();
                 assert_eq!(error.kind(), RpcFailureKind::Response);
                 assert_eq!(
                     error.context().method,
@@ -319,10 +312,20 @@ fn storage_requires_a_valid_pinned_height_without_restricting_code_acquisition()
                     }
                 );
                 assert_eq!(error.context().chain_id, Some(U256::from(1)));
-                assert_eq!(error.context().block_hash, Some(B256::repeat_byte(0x11)));
-                assert_eq!(session.world().account(address), Some(&initial));
-                assert_eq!(session.requests(), requests);
-                assert_eq!(server.requests().len(), requests);
+                assert_eq!(
+                    error.context().block_hash,
+                    match block {
+                        RpcBlock::Hash(hash) => Some(hash),
+                        _ => None,
+                    }
+                );
+                assert_eq!(server.requests().len(), 2);
+                assert!(
+                    !server
+                        .requests()
+                        .iter()
+                        .any(|request| request["method"] == "eth_getCode")
+                );
             }
         }
     });

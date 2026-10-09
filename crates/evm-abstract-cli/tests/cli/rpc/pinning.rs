@@ -37,10 +37,8 @@ fn latest_number_and_hash_pin_once_for_analyze_and_explain_with_recursive_discov
                             // A second moving-tag/height lookup sees another head, including
                             // during discovery. Every state read must keep the first hash.
                             let first = resolutions.fetch_add(1, Ordering::Relaxed) == 0;
-                            reply["result"] = json!({
-                                "hash": if first { BLOCK } else { MOVED_BLOCK },
-                                "number":"0x10",
-                            });
+                            reply["result"]["hash"] =
+                                json!(if first { BLOCK } else { MOVED_BLOCK });
                         }
                         "eth_getBlockByHash" => {
                             assert_eq!(request["params"], json!([BLOCK, false]))

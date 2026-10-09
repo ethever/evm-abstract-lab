@@ -19,6 +19,15 @@ struct Args {
     /// Directory containing the compiled index.html, JavaScript and WebAssembly.
     #[arg(long, default_value = "dist")]
     assets: PathBuf,
+    /// CPU analysis workers; defaults to half the host's available threads.
+    #[arg(long)]
+    workers: Option<usize>,
+    /// Waiting analyses in addition to active workers; defaults to twice workers.
+    #[arg(long)]
+    queue_capacity: Option<usize>,
+    /// Terminal tasks retained for inspection before the oldest are evicted.
+    #[arg(long, default_value_t = 16)]
+    retained_jobs: usize,
 }
 
 fn main() -> ExitCode {
@@ -33,7 +42,19 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args) -> Result<(), evm_abstract_server::http::ServerError> {
+    let mut config = evm_abstract_server::jobs::Config::default();
+    if let Some(workers) = args.workers {
+        config.workers = workers;
+    }
+    config.queue_capacity = args
+        .queue_capacity
+        .unwrap_or_else(|| config.workers.saturating_mul(2));
+    config.retained_jobs = args.retained_jobs;
     let listener = TcpListener::bind(args.bind)?;
-    println!("EVM workbench: http://{}", listener.local_addr()?);
-    evm_abstract_server::http::serve(&listener, &args.assets)
+    println!(
+        "EVM workbench: http://{} ({} analysis workers)",
+        listener.local_addr()?,
+        config.workers
+    );
+    evm_abstract_server::http::serve_with_config(&listener, &args.assets, config)
 }

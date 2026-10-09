@@ -96,7 +96,21 @@ impl Backend for Bitwuzla {
 
 pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Outcome {
     match Solver::new(rlimit) {
-        Ok(solver) => backend::execute(assertions, value, Bitwuzla(solver)),
+        Ok(solver) => {
+            let cancellation = crate::current_cancellation();
+            if !cancellation.is_enabled() {
+                return backend::execute(assertions, value, Bitwuzla(solver));
+            }
+            let interrupt = match solver.interrupt_handle() {
+                Ok(interrupt) => interrupt,
+                Err(reason) => return Outcome::Error(error(reason)),
+            };
+            crate::cancellation::interruptible(
+                &cancellation,
+                move || interrupt.interrupt(),
+                || backend::execute(assertions, value, Bitwuzla(solver)),
+            )
+        }
         Err(reason) => Outcome::Error(error(reason)),
     }
 }

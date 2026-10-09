@@ -3,8 +3,15 @@
 use crate::{
     analysis::{self, Analysis, Config},
     bytecode::Program,
-    ssa::{self, Ssa},
+    ssa::{self, Ssa, SsaError, SsaInvariant, SsaInvariantKind as Kind},
 };
+
+fn invariant(error: SsaError) -> SsaInvariant {
+    let SsaError::Invariant(detail) = error else {
+        panic!("expected structural invariant, got {error}")
+    };
+    *detail
+}
 
 fn diamond() -> (Analysis, Ssa) {
     let analysis = analysis::analyze(
@@ -33,12 +40,12 @@ fn state_at(analysis: &Analysis, pc: usize) -> usize {
 fn duplicate_definitions_are_rejected() {
     let (analysis, mut ssa) = diamond();
     ssa.blocks[0].instructions[1].results[0] = ssa.blocks[0].instructions[0].results[0];
-    assert!(
-        ssa.verify(&analysis)
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate definition")
-    );
+    let error = invariant(ssa.verify(&analysis).unwrap_err());
+    assert_eq!(error.kind, Kind::DuplicateDefinition);
+    assert_eq!(error.state, Some(0));
+    assert_eq!(error.pc, Some(ssa.blocks[0].instructions[1].pc));
+    assert_eq!(error.value, Some(ssa.blocks[0].instructions[0].results[0]));
+    assert_eq!((error.expected, error.observed), (Some(1), Some(2)));
 }
 
 #[test]
@@ -64,12 +71,11 @@ fn undefined_and_use_before_definition_are_rejected() {
     let (analysis, mut ssa) = diamond();
     let original = ssa.blocks[0].instructions[1].operands[0];
     ssa.blocks[0].instructions[1].operands[0] = usize::MAX;
-    assert!(
-        ssa.verify(&analysis)
-            .unwrap_err()
-            .to_string()
-            .contains("undefined value")
-    );
+    let error = invariant(ssa.verify(&analysis).unwrap_err());
+    assert_eq!(error.kind, Kind::UndefinedValue);
+    assert_eq!(error.state, Some(0));
+    assert_eq!(error.pc, Some(ssa.blocks[0].instructions[1].pc));
+    assert_eq!(error.value, Some(usize::MAX));
     ssa.blocks[0].instructions[1].operands[0] = ssa.blocks[0].instructions[2].results[0];
     assert!(
         ssa.verify(&analysis)
@@ -86,12 +92,10 @@ fn phi_inputs_must_cover_all_predecessors() {
     let (analysis, mut ssa) = diamond();
     let merge = state_at(&analysis, 14);
     ssa.blocks[merge].phis[0].inputs.pop();
-    assert!(
-        ssa.verify(&analysis)
-            .unwrap_err()
-            .to_string()
-            .contains("one input per distinct predecessor")
-    );
+    let error = invariant(ssa.verify(&analysis).unwrap_err());
+    assert_eq!(error.kind, Kind::PhiPredecessorCoverage);
+    assert_eq!((error.state, error.slot), (Some(merge), Some(0)));
+    assert_eq!((error.expected, error.observed), (Some(2), Some(1)));
 }
 
 #[test]

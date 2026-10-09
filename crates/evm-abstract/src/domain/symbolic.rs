@@ -48,12 +48,22 @@ pub struct InputAtom {
     pub symbol: Symbol,
 }
 
+/// Read-only structural expression used by typed reports and solver encoders.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub(crate) enum ExprKind {
+pub enum ExprKind {
+    /// Exact 256-bit word.
     Constant(U256),
+    /// Scoped immutable environment input.
     Input(InputAtom),
+    /// Fresh runtime identity; not a concrete value.
     Fresh(#[serde(skip)] u64),
-    Operation { opcode: u8, args: Vec<ExprId> },
+    /// A pure EVM operation in pop-argument order.
+    Operation {
+        /// Raw opcode.
+        opcode: u8,
+        /// Structurally retained operands.
+        args: Vec<ExprId>,
+    },
 }
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 struct Node {
@@ -236,7 +246,8 @@ impl ExprId {
             None
         }
     }
-    pub(crate) fn kind(&self) -> &ExprKind {
+    /// Borrow the expression structure without exposing mutable graph nodes.
+    pub fn kind(&self) -> &ExprKind {
         &self.0.kind
     }
     /// Immutable input leaves referenced by this expression.

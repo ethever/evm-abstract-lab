@@ -2,7 +2,7 @@ use crate::{
     Address, Fork, U256,
     analysis::{self, ExecutionConfig},
     domain::AbstractValue,
-    ssa::{self, SsaError},
+    ssa::{self, SsaError, SsaInvariantKind as Kind},
     world::{Account, ByteArray, Entry, World},
 };
 
@@ -66,10 +66,16 @@ fn verifier_rejects_wrong_caller_arguments_results_and_effects() {
         .unwrap();
     let mut wrong = valid.clone();
     wrong.transitions[return_index].result = None;
-    assert!(matches!(
-        wrong.verify(&analysis),
-        Err(SsaError::Invariant(_))
-    ));
+    let SsaError::Invariant(error) = wrong.verify(&analysis).unwrap_err() else {
+        panic!("expected invariant")
+    };
+    assert_eq!(error.kind, Kind::ContinuationResultMissing);
+    assert_eq!(error.edge, Some(return_index));
+    assert_eq!(
+        error.source_state,
+        Some(analysis.edges()[return_index].from)
+    );
+    assert_eq!(error.target_state, Some(analysis.edges()[return_index].to));
     let mut wrong = valid.clone();
     wrong.transitions[return_index].effect_input = valid.effect_count;
     assert!(wrong.verify(&analysis).is_err());

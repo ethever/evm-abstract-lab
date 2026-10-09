@@ -46,10 +46,10 @@ pub(crate) struct EvmArgs {
     /// Block beneficiary address.
     #[arg(id = "evm.coinbase", long = "evm.coinbase", value_parser = address)]
     pub coinbase: Option<Address>,
-    /// Block TIMESTAMP in seconds.
+    /// Block TIMESTAMP override in seconds; RPC defaults to the pinned header.
     #[arg(id = "evm.timestamp", long = "evm.timestamp", value_parser = number::parse)]
     pub timestamp: Option<U256>,
-    /// EVM NUMBER; independent of the RPC snapshot selector.
+    /// EVM NUMBER override; RPC defaults to the pinned header without changing the selector.
     #[arg(id = "evm.number", long = "evm.number", value_parser = number::parse)]
     pub number: Option<U256>,
     /// Block PREVRANDAO, supplied as a 256-bit quantity.

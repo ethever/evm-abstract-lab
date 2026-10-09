@@ -10,16 +10,17 @@ fn source_columns_size_to_current_data_including_full_push_values() {
         state: Some(0),
         pc: None,
     };
-    let ordinary = content_columns(&rows(&report, selection));
+    let ordinary = content_columns(&rows(&report, Some(0), selection));
     assert_eq!(ordinary, [4, 15]);
-    report.disassembly[0].instructions[0].name = "PUSH32".into();
-    report.disassembly[0].instructions[0].immediate = Some(format!("0x{}", "fe".repeat(32)));
-    let full_push = content_columns(&rows(&report, selection));
+    report.programs[0].blocks[0].instructions[0].name = "PUSH32".into();
+    report.programs[0].blocks[0].instructions[0].immediate = Some(format!("0x{}", "fe".repeat(32)));
+    let full_push = content_columns(&rows(&report, Some(0), selection));
     assert_eq!(full_push[1], 6 + 1 + 66);
     // The target is the native state, even when its basic-block ID is different.
     report.cfg[0].id = 91;
     let rows = rows(
         &report,
+        Some(0),
         Selection {
             state: Some(91),
             pc: None,
@@ -51,8 +52,8 @@ fn push_bounds(output: &FullOutput, immediate: &str) -> Rect {
 fn long_push_is_complete_and_horizontally_reachable_in_a_narrow_pane() {
     let mut report = crate::tests::report();
     let immediate = format!("0x{}", "fe".repeat(32));
-    report.disassembly[0].instructions[0].name = "PUSH32".into();
-    report.disassembly[0].instructions[0].immediate = Some(immediate.clone());
+    report.programs[0].blocks[0].instructions[0].name = "PUSH32".into();
+    report.programs[0].blocks[0].instructions[0].immediate = Some(immediate.clone());
     let ctx = Context::default();
     let mut selection = Selection {
         state: Some(0),
@@ -66,7 +67,7 @@ fn long_push_is_complete_and_horizontally_reachable_in_a_narrow_pane() {
                 events,
                 ..RawInput::default()
             },
-            |ui| disassembly(ui, &report, &mut selection, &mut previous),
+            |ui| disassembly(ui, &report, Some(0), &mut selection, &mut previous),
         );
         output.textures_delta.clear();
         output
@@ -118,7 +119,7 @@ fn stack_signatures_and_explanations_appear_only_on_instruction_hover() {
         if !observed {
             report.cfg[0].executed_pcs.clear();
         }
-        let instruction = &mut report.disassembly[0].instructions[0];
+        let instruction = &mut report.programs[0].blocks[0].instructions[0];
         instruction.opcode = opcode;
         instruction.name = name.into();
         instruction.stack_inputs = inputs;
@@ -142,7 +143,7 @@ fn stack_signatures_and_explanations_appear_only_on_instruction_hover() {
                     events,
                     ..RawInput::default()
                 },
-                |ui| disassembly(ui, &report, &mut selection, &mut previous),
+                |ui| disassembly(ui, &report, Some(0), &mut selection, &mut previous),
             );
             output.textures_delta.clear();
             output
@@ -209,4 +210,64 @@ fn invalid_and_deferred_instructions_do_not_claim_observed_results() {
         assert!(hover.contains("if the caller resumes"));
         assert!(hover.contains("incomplete analysis may not have this result yet"));
     }
+}
+
+#[test]
+fn selected_child_program_keeps_its_complete_source_and_native_state_identity() {
+    let mut report = crate::tests::report();
+    let mut child = report.cfg[0].clone();
+    child.id = 83;
+    child.program = Some(1);
+    child.frame_depth = 2;
+    child.code_address = "0x2222222222222222222222222222222222222222".into();
+    // DELEGATECALL-style storage identity is independent of executable source.
+    child.instructions[0].name = "CALLDATASIZE".into();
+    child.instructions[0].opcode = 0x36;
+    let first = evm_abstract_protocol::DisasmBlock {
+        id: 0,
+        start_pc: 0,
+        instructions: child.instructions.clone(),
+    };
+    let mut unexecuted = first.clone();
+    unexecuted.id = 9;
+    unexecuted.start_pc = 88;
+    unexecuted.instructions[0].pc = 88;
+    unexecuted.instructions[0].name = "RETURN".into();
+    unexecuted.instructions[0].opcode = 0xf3;
+    report.programs.push(crate::tests::source_program(
+        1,
+        child.code_address.clone(),
+        vec![first, unexecuted],
+    ));
+    report.cfg.push(child);
+    let mut receipt = report.ssa.blocks[0].clone();
+    receipt.state = 83;
+    report.ssa.blocks.push(receipt);
+    let rows = rows(
+        &report,
+        Some(1),
+        Selection {
+            state: Some(83),
+            pc: Some(0),
+        },
+    );
+    assert_eq!(
+        rows.len(),
+        4,
+        "the full child source includes an unexecuted block"
+    );
+    assert_eq!(
+        rows[1].target(),
+        Selection {
+            state: Some(83),
+            pc: Some(0)
+        }
+    );
+    assert!(
+        matches!(&rows[1], super::Row::Instruction { instruction, executed: true, .. } if instruction.name == "CALLDATASIZE")
+    );
+    assert!(
+        matches!(&rows[3], super::Row::Instruction { instruction, state: None, executed: false, .. } if instruction.name == "RETURN" && instruction.pc == 88)
+    );
+    assert!(rows.iter().all(|row| !matches!(row, super::Row::Instruction { instruction, .. } if instruction.name == "CALLDATALOAD")), "identical PCs in the root must never leak into child source");
 }

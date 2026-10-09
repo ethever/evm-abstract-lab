@@ -15,8 +15,10 @@
 //! 检查。域容量的非零条件在类型中携带。
 
 mod config;
+pub mod control;
 mod engine;
 mod machine;
+pub mod progress;
 mod rpc;
 mod single;
 mod summary;
@@ -34,6 +36,7 @@ pub use machine::{
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
+    analyze_rpc_with_control, analyze_rpc_with_observer,
 };
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;
@@ -256,6 +259,45 @@ pub fn analyze_world(
     config: ExecutionConfig,
 ) -> Result<WorldAnalysis, ConfigError> {
     engine::run_world(world, entry, config)
+}
+
+/// Analyze a world while publishing bounded, discrete execution observations.
+pub fn analyze_world_with_observer(
+    world: crate::world::World,
+    entry: crate::world::Entry,
+    config: ExecutionConfig,
+    observer: &progress::Observer,
+) -> Result<WorldAnalysis, ConfigError> {
+    engine::run_world_with_observer(world, entry, config, observer)
+}
+
+/// Failure of an explicitly controlled analysis, distinct from model frontiers.
+#[derive(Debug, thiserror::Error)]
+pub enum ControlledAnalysisError {
+    /// Invalid execution configuration or environment.
+    #[error("{0}")]
+    Config(ConfigError),
+    /// The caller cancelled this analysis; no partial report is returned.
+    #[error("analysis cancelled")]
+    Cancelled,
+}
+
+/// Run a world analysis with an explicit application control scope.
+pub fn analyze_world_with_control(
+    world: crate::world::World,
+    entry: crate::world::Entry,
+    config: ExecutionConfig,
+    control: &control::Control,
+) -> Result<WorldAnalysis, ControlledAnalysisError> {
+    control
+        .checkpoint()
+        .map_err(|_| ControlledAnalysisError::Cancelled)?;
+    let result =
+        control.scope(|| engine::run_world_with_observer(world, entry, config, control.observer()));
+    control
+        .checkpoint()
+        .map_err(|_| ControlledAnalysisError::Cancelled)?;
+    result.map_err(ControlledAnalysisError::Config)
 }
 
 /// Single-bytecode learning adapter. Environment, calldata and initial

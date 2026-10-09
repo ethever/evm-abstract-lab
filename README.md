@@ -115,6 +115,8 @@ nix run . -- analyze \
   --evm.to "$LAB_ENTRY" --format json
 ```
 
+RPC 分析默认从同一固定快照填入 NUMBER、TIMESTAMP、COINBASE、PREVRANDAO、GASLIMIT 与可用费用字段。显式 `--evm.*` 覆盖仍优先；caller、calldata、value 等交易输入仍按省略时的符号语义分析。详细规则见[固定快照与执行环境](docs/13-evm-environment.md#3-固定快照与执行环境)。
+
 `--account` 仍可预先选择账户，`--slot ADDRESS:SLOT` 预先采集初始存储槽。默认发现也会为 SLOAD 补查可完整枚举的有限槽键，按状态所属账户读取；DELEGATECALL 读取代理的槽。同一地址和槽只采集一次，零值同样缓存；无限或无法完整枚举的槽键保持保守未知。RPC 使用 `{blockHash,requireCanonical:true}` 采集 code、balance、nonce 和所需 slot，完全信任选定提供者，不请求 `eth_getProof`。代码为空且其余已查询字段全零时，存在性仍为未知；非空代码或任一非零数值则表明账户存在。重组或查询错误不会使分析改用新的区块。
 
 加 `--no-rpc-discovery` 可只使用预先选择的账户和槽：缺代码留下 `MissingCode`，未观察的槽保留未知值。默认最多采集 256 个账户、尝试 16384 次请求，分别由 `--max-rpc-accounts`、`--max-rpc-requests` 设置。补查成功后会从入口重新分析，各轮共用 work、transfer 和状态分配预算；JSON 的 `rpc_acquisition` 记录累计账户、槽和失败证据。完整实验与错误解读见[第 10 课](docs/10-snapshots-summaries-creation.md#可选实验从固定区块采集)。

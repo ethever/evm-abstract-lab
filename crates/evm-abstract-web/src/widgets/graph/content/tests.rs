@@ -422,12 +422,12 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     workspace.receive(Ok(AnalyzeReply {
         result: Ok(report.clone()),
     }));
-    assert!(workspace.accessible_status().ends_with("CFG nodes: SSA"));
-    workspace.begin_analysis();
+    assert!(workspace.accessible_status().contains("CFG nodes: SSA;"));
+    workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
         result: Ok(report.clone()),
     }));
-    assert!(workspace.accessible_status().ends_with("CFG nodes: SSA"));
+    assert!(workspace.accessible_status().contains("CFG nodes: SSA;"));
     workspace.view = View::Graph;
     let run = |workspace: &mut Workspace, size: Vec2, events| {
         let mut output = ctx.run_ui(
@@ -478,8 +478,8 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
             ],
         );
     }
-    assert!(workspace.accessible_status().ends_with("CFG nodes: Disasm"));
-    workspace.begin_analysis();
+    assert!(workspace.accessible_status().contains("CFG nodes: Disasm;"));
+    workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
     for (view, size) in [
         (View::Split, Vec2::new(844.0, 390.0)),
@@ -488,6 +488,6 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     ] {
         workspace.view = view;
         run(&mut workspace, size, Vec::new());
-        assert!(workspace.accessible_status().ends_with("CFG nodes: Disasm"));
+        assert!(workspace.accessible_status().contains("CFG nodes: Disasm;"));
     }
 }

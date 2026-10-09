@@ -24,6 +24,9 @@ unsafe extern "C" {
     fn evmbw_new(owner: u64, rlimit: u32) -> *mut c_void;
     fn evmbw_creation_error() -> *const c_char;
     fn evmbw_delete(session: *mut c_void);
+    fn evmbw_interrupt_new(session: *mut c_void) -> *mut c_void;
+    fn evmbw_interrupt_set(handle: *mut c_void);
+    fn evmbw_interrupt_delete(handle: *mut c_void);
     fn evmbw_error(session: *mut c_void) -> *const c_char;
     fn evmbw_bool(session: *mut c_void, value: u8, out: *mut u64) -> i32;
     fn evmbw_bv(session: *mut c_void, width: u32, hex: *const c_char, out: *mut u64) -> i32;
@@ -52,7 +55,42 @@ pub(super) struct Session {
     _single_threaded: PhantomData<Rc<()>>,
 }
 
+pub(super) struct Interrupt {
+    pointer: NonNull<c_void>,
+}
+// SAFETY: This handle owns an immutable C++ shared_ptr whose pointee is an
+// atomic<bool>. It contains no solver pointer; stores can race only other atomic
+// operations. Rust ownership ensures Drop cannot race a borrowed interrupt().
+unsafe impl Send for Interrupt {}
+// SAFETY: Concurrent interrupt() calls only perform atomic stores.
+unsafe impl Sync for Interrupt {}
+impl Interrupt {
+    pub(super) fn interrupt(&self) {
+        // SAFETY: The owned non-null handle remains alive for this borrow.
+        unsafe {
+            evmbw_interrupt_set(self.pointer.as_ptr());
+        }
+    }
+}
+impl Drop for Interrupt {
+    fn drop(&mut self) {
+        // SAFETY: Exactly one owner releases this C++ shared_ptr handle; other
+        // handles and the solver retain their own references to the atomic.
+        unsafe {
+            evmbw_interrupt_delete(self.pointer.as_ptr());
+        }
+    }
+}
+
 impl Session {
+    pub(super) fn interrupt_handle(&self) -> Result<Interrupt, Error> {
+        // SAFETY: Session is live and accessed on its owning thread. The new
+        // handle owns a separate reference to an independent atomic signal.
+        let pointer = unsafe { evmbw_interrupt_new(self.pointer.as_ptr()) };
+        NonNull::new(pointer)
+            .map(|pointer| Interrupt { pointer })
+            .ok_or_else(|| Error::Native("allocating cancellation handle failed".into()))
+    }
     pub(super) fn new(owner: u64, rlimit: u32) -> Result<Self, Error> {
         // SAFETY: Primitive arguments are validated by both callers and shim;
         // success transfers exclusive ownership of the allocated session.

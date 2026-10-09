@@ -426,6 +426,7 @@ fn prepared<'a>(
 
 fn unknown(reason: Unknown) -> QueryReason {
     match reason {
+        Unknown::Cancelled => QueryReason::Cancelled,
         Unknown::ResourceLimit => QueryReason::ResourceLimit,
         Unknown::Solver(reason) => QueryReason::SolverUnknown(reason),
     }

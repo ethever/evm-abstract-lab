@@ -1,15 +1,13 @@
-//! Bounded navigation, input and status chrome. Details scroll independently so
-//! long bytecode or diagnostics cannot consume the analysis viewport.
+//! Compact global navigation and task status; configuration lives in a modal.
 
-use egui::{RichText, Ui};
-use evm_abstract_protocol::{AnalysisStatus, Fork};
-
-use super::{BRANCH_EXAMPLE, Phase, Selection, View, Workspace};
+use super::{Command, View, Workspace, directory, inspector};
 use crate::palette;
+use egui::{RichText, Ui};
+use evm_abstract_protocol::{AnalysisReport, AnalysisStatus};
 
 impl Workspace {
     pub(super) fn header(&mut self, ui: &mut Ui) {
-        let compact = ui.available_width() < 720.0;
+        let compact = ui.available_width() < 800.0;
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(if compact {
@@ -21,250 +19,138 @@ impl Workspace {
                 .color(palette::ACCENT),
             );
             let views = [
-                (View::Split, "Workspace", "Workspace  0"),
-                (View::Disassembly, "Disassembly", "Disassembly  1"),
-                (View::Graph, "Control flow", "Control flow  2"),
-                (View::Ssa, "SSA", "SSA  3"),
+                (View::Split, "Workspace"),
+                (View::Disassembly, "Code"),
+                (View::Graph, "CFG"),
+                (View::Ssa, "SSA"),
             ];
             if compact {
-                let label = views
+                let title = views
                     .iter()
-                    .find(|(view, _, _)| *view == self.view)
-                    .map_or("Workspace", |(_, label, _)| *label);
+                    .find(|(view, _)| *view == self.view)
+                    .map_or("Workspace", |(_, title)| *title);
                 egui::ComboBox::from_id_salt("workspace_view")
-                    .selected_text(label)
-                    .width(108.0)
+                    .width(94.0)
+                    .selected_text(title)
                     .show_ui(ui, |ui| {
-                        for (view, _, shortcut) in views {
-                            ui.selectable_value(&mut self.view, view, shortcut);
+                        for (view, title) in views {
+                            ui.selectable_value(&mut self.view, view, title);
                         }
                     });
             } else {
-                for (view, label, shortcut) in views {
-                    ui.selectable_value(&mut self.view, view, label)
-                        .on_hover_text(shortcut);
+                for (index, (view, title)) in views.into_iter().enumerate() {
+                    ui.selectable_value(&mut self.view, view, title)
+                        .on_hover_text(format!("Shortcut {index}"));
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.toggle_value(&mut self.show_input, "Bytecode")
-                    .on_hover_text("Show or hide the runtime bytecode editor");
-            });
-        });
-    }
-
-    pub(super) fn input(&mut self, ui: &mut Ui, viewport_height: f32) -> bool {
-        let mut submit = false;
-        let wide = ui.available_width() >= 720.0;
-        ui.horizontal_wrapped(|ui| {
-            if wide {
-                ui.label(RichText::new("RUNTIME BYTECODE").small().color(palette::MUTED))
-                    .on_hover_text("Single runtime program with unknown calldata, environment and persistent state");
-            }
-            egui::ComboBox::from_id_salt("fork")
-                .selected_text(format!("{:?}", self.request.fork))
-                .width(72.0)
-                .show_ui(ui, |ui| {
-                    for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
-                        ui.selectable_value(&mut self.request.fork, fork, format!("{fork:?}"));
-                    }
-                })
-                .response
-                .on_hover_text("EVM fork");
-            ui.menu_button("Examples", |ui| {
-                if ui.button("Branch example").clicked() {
-                    self.request.bytecode = BRANCH_EXAMPLE.into();
-                    ui.close();
+                if ui
+                    .button(if compact { "Input" } else { "New analysis" })
+                    .clicked()
+                {
+                    self.form.open = true;
                 }
-                if ui.button("Arithmetic").clicked() {
-                    self.request.bytecode = "600160020160030200".into();
-                    ui.close();
-                }
-            });
-            ui.menu_button("Limits", |ui| {
-                egui::Grid::new("analysis_limits").show(ui, |ui| {
-                    ui.label("Maximum states");
-                    ui.add(egui::DragValue::new(&mut self.request.limits.max_states).range(1..=4096));
-                    ui.end_row();
-                    ui.label("Maximum transfers");
-                    ui.add(egui::DragValue::new(&mut self.request.limits.max_transfers).range(1..=100_000));
-                    ui.end_row();
-                    ui.label("Jump context depth");
-                    ui.add(egui::DragValue::new(&mut self.request.limits.context_depth).range(0..=16));
-                    ui.end_row();
-                    ui.label("Constants per value");
-                    ui.add(egui::DragValue::new(&mut self.request.limits.max_constants).range(1..=32));
-                    ui.end_row();
-                });
-            });
-            submit = ui.add_enabled(
-                self.phase != Phase::Loading,
-                egui::Button::new(RichText::new("▶ Analyze").strong().color(palette::BACKGROUND))
-                    .fill(palette::ACCENT),
-            ).on_hover_text("Analyze runtime bytecode · Ctrl+Enter").clicked();
-            if wide {
-                ui.label(RichText::new("Ctrl+Enter").small().color(palette::MUTED));
-            }
-            if self.phase == Phase::Loading {
-                ui.spinner();
-            }
-        });
-        let editor_height = if viewport_height < 480.0 { 24.0 } else { 40.0 };
-        crate::framework::bytecode_editor(ui, &mut self.request.bytecode, editor_height);
-        submit
-    }
-
-    pub(super) fn status(&mut self, ui: &mut Ui, viewport_height: f32) {
-        let details_height = (viewport_height * 0.20).clamp(36.0, 140.0);
-        match &self.phase {
-            Phase::Failed(message) => {
-                ui.horizontal(|ui| {
-                    ui.toggle_value(&mut self.show_details, "Error details");
-                    ui.add(
-                        egui::Label::new(RichText::new(message).color(palette::ERROR)).truncate(),
-                    )
-                    .on_hover_text(message);
-                });
-                if self.show_details {
-                    egui::ScrollArea::vertical()
-                        .id_salt("error_details")
-                        .min_scrolled_height(details_height)
-                        .max_height(details_height)
-                        .show(ui, |ui| {
-                            ui.colored_label(palette::ERROR, message);
-                        });
-                }
-            }
-            Phase::Loading => {
-                ui.colored_label(palette::ACCENT, "Analyzing bytecode…");
-            }
-            _ => {
-                if let Some(report) = &self.report {
-                    let complete = report.status == AnalysisStatus::Converged;
-                    let summary = format!(
-                        "{} bytes · {} states · {} edges · {} values · {} transfers",
-                        report.byte_len,
-                        report.cfg.len(),
-                        report.edges.len(),
-                        report.ssa.value_count,
-                        report.transfers,
-                    );
-                    let status = match (complete, report.ssa.complete) {
-                        (true, true) => "● Model converged",
-                        (false, true) => "● Incomplete coverage",
-                        (false, false) => "● Incomplete · partial SSA",
-                        (true, false) => "● Partial SSA",
-                    };
-                    let coverage = if report.ssa.complete {
-                        format!("Analysis: {:?}; SSA complete", report.status)
-                    } else {
-                        format!(
-                            "Analysis: {:?}; partial SSA · {} deferred edges; missing paths are not proven infeasible",
-                            report.status,
-                            report.ssa.deferred_edges.len()
-                        )
-                    };
-                    let narrow = ui.available_width() < 720.0;
-                    ui.horizontal(|ui| {
-                        ui.colored_label(
-                            if complete && report.ssa.complete {
-                                palette::ACCENT
-                            } else {
-                                palette::WARNING
-                            },
-                            status,
-                        )
-                        .on_hover_text(&coverage);
-                        ui.toggle_value(
-                            &mut self.show_details,
-                            if narrow {
-                                format!(
-                                    "Details {}",
-                                    report.diagnostics.len() + report.frontiers.len()
-                                )
-                            } else {
-                                format!(
-                                    "{} diagnostics · {} frontiers",
-                                    report.diagnostics.len(),
-                                    report.frontiers.len()
-                                )
-                            },
-                        )
-                        .on_hover_text(format!(
-                            "{} diagnostics · {} unexpanded frontiers\n{summary}\n{coverage}",
-                            report.diagnostics.len(),
-                            report.frontiers.len()
-                        ));
-                        if !narrow {
-                            ui.add(egui::Label::new(&summary).truncate())
-                                .on_hover_text(&summary);
-                        }
+                if compact {
+                    ui.menu_button("Panels", |ui| {
+                        ui.checkbox(&mut self.directory.open, "Programs / accounts");
+                        ui.checkbox(&mut self.inspector.expanded, "State inspector");
                     });
-                    if self.show_details {
-                        egui::ScrollArea::vertical()
-                            .id_salt("analysis_details")
-                            .min_scrolled_height(details_height)
-                            .max_height(details_height)
-                            .show(ui, |ui| {
-                                ui.label(&summary);
-                                if !report.ssa.complete {
-                                    ui.colored_label(palette::WARNING, &coverage);
-                                }
-                                if report.diagnostics.is_empty() && report.frontiers.is_empty() {
-                                    ui.label("No diagnostics or unexpanded frontiers reported.");
-                                }
-                                for diagnostic in &report.diagnostics {
-                                    if ui
-                                        .selectable_label(
-                                            false,
-                                            format!(
-                                                "S{} · 0x{:04x} · {:?}: {}",
-                                                diagnostic.state,
-                                                diagnostic.pc,
-                                                diagnostic.kind,
-                                                diagnostic.detail
-                                            ),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.selection = Selection {
-                                            state: Some(diagnostic.state),
-                                            pc: Some(diagnostic.pc),
-                                        };
-                                    }
-                                }
-                                for frontier in &report.frontiers {
-                                    if ui
-                                        .selectable_label(
-                                            false,
-                                            RichText::new(format!(
-                                                "{:?} · S{:?} · pc {:?}: {}",
-                                                frontier.kind,
-                                                frontier.from,
-                                                frontier.pc,
-                                                frontier.detail
-                                            ))
-                                            .color(palette::WARNING),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.selection = Selection {
-                                            state: frontier.from,
-                                            pc: frontier.pc,
-                                        };
-                                    }
-                                }
-                            });
-                    }
                 } else {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new("Select an instruction or graph node to link the views.")
-                                .color(palette::MUTED),
-                        )
-                        .truncate(),
-                    );
+                    ui.toggle_value(&mut self.inspector.expanded, "Inspect");
+                    ui.toggle_value(&mut self.directory.open, "World");
+                }
+            });
+        });
+    }
+
+    pub(super) fn status(&mut self, ui: &mut Ui) -> Option<Command> {
+        let mut command = None;
+        let wide = ui.available_width() > 780.0;
+        ui.horizontal(|ui| {
+            if self.task.cancellable() && ui.button("Cancel").clicked() {command=self.task.cancel();}
+            if self.task.busy() {
+                ui.spinner();
+                ui.add(egui::Label::new(RichText::new(self.task.label()).color(palette::ACCENT)).truncate()).on_hover_text(self.task.label());
+                if wide && let Some(snapshot)=&self.task.snapshot {
+                        ui.label(format!("#{:?} · {:?} · {} accounts · {} slots · {} states · {} transfers",snapshot.id.0,snapshot.progress.phase,snapshot.progress.accounts,snapshot.progress.slots,snapshot.progress.states,snapshot.progress.transfers));
+                }
+                if let Some(error)=&self.task.error {
+                    ui.colored_label(palette::WARNING,"Connection interrupted").on_hover_text(format!("{error}\nTask status is retained; polling will retry. Cancel can be retried."));
+                }
+            } else if let Some(error)=&self.task.error {
+                if ui.button("Edit inputs").clicked() {self.form.open=true;self.form.error=Some(error.to_string());}
+                ui.add(egui::Label::new(RichText::new(error.to_string()).color(palette::ERROR)).truncate()).on_hover_ui(|ui| {
+                    if let super::job::TaskError::Api(error)=error { inspector::api_error_details(ui,error); }
+                    else { ui.label(error.to_string()); }
+                });
+            } else if self.task.phase==super::job::TaskPhase::Cancelled {
+                ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
+            } else if let Some(report)=&self.report {
+                let complete=report.status==AnalysisStatus::Converged&&report.ssa.complete;
+                let label=if complete{"Model converged"}else{"Incomplete / partial SSA"};
+                ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
+                if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),report.metadata.work));}
+                if ui.button(format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len())).clicked() {
+                    self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Diagnostics;
+                }
+            } else {
+                ui.label(RichText::new(self.task.label()).color(palette::MUTED));
+            }
+            if self.previous_report {
+                ui.label(RichText::new("Previous result").small().color(palette::WARNING)).on_hover_text("The visible report belongs to the previous completed task.");
+            }
+        });
+        command
+    }
+}
+
+pub(super) fn result_context(
+    ui: &mut Ui,
+    report: &AnalysisReport,
+    program: Option<usize>,
+    previous: bool,
+) {
+    let source = program.and_then(|id| report.programs.iter().find(|program| program.id == id));
+    let program_label = source.map_or_else(
+        || "No captured program".into(),
+        |program| {
+            format!(
+                "P{} · {:?} · {}",
+                program.id,
+                program.kind,
+                directory::short(&program.code_address)
+            )
+        },
+    );
+    let snapshot = report.metadata.snapshot.as_ref().map_or_else(
+        || "Standalone bytecode".into(),
+        |snapshot| {
+            format!(
+                "chain {} · block {} · {}",
+                snapshot.chain_id,
+                snapshot.number.as_deref().unwrap_or("unreported"),
+                directory::short(&snapshot.block_hash)
+            )
+        },
+    );
+    let label = format!(
+        "{}{} · {:?} · {snapshot}",
+        if previous { "Previous result · " } else { "" },
+        program_label,
+        report.fork
+    );
+    ui.add(egui::Label::new(RichText::new(label).small().color(palette::MUTED)).truncate())
+        .on_hover_ui(|ui| {
+            if let Some(program) = source {
+                ui.monospace(&program.code_address);
+                ui.monospace(&program.code_hash);
+            }
+            if let Some(snapshot) = &report.metadata.snapshot {
+                ui.monospace(&snapshot.block_hash);
+                if ui.small_button("Copy block hash").clicked() {
+                    ui.ctx().copy_text(snapshot.block_hash.clone());
                 }
             }
-        }
-    }
+            ui.monospace(&report.metadata.fingerprint);
+        });
 }

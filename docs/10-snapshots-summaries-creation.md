@@ -330,7 +330,7 @@ jq '.world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
 | 每账户 `code_hash` | 原始代码字节 | 不绑定 storage、余额、nonce |
 | `fingerprint` | fork、identity、完整初始账户事实 | 一致性标识不是链状态的密码学证明 |
 
-world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block_hash` 始终是完整 32 字节 hash。RPC CLI 自动读取 chain ID；可用 `--block-hash` 指定完整 hash，或用互斥的 `--block-number` 指定区块号。两者都省略时，启动时读取一次 `latest`。区块号与 `latest` 都先解析为 hash，后续状态查询固定使用这个 hash；发现 callee、链头前进或多轮重跑都不会重新选择区块。`--block-number` 接受十进制或 `0x` / `0X` 十六进制，范围为 `0` 到 `2^64−1`；world JSON 的身份格式不变。fork 仍单独选择，身份不会替你选择执行规则。`--block-number` / `--block-hash` 选择账户状态快照；`--evm.number` 只覆盖 NUMBER，`--evm.chain-id` 只覆盖 CHAINID，不改变 `.world.identity` 中实际采集的链和区块。省略 `--evm.chain-id` 时，链上 world/RPC 的 CHAINID 取快照身份中的 chain ID；没有链身份的离线输入则保持未知。省略其他区块环境字段时，它们保持符号输入；不会仅因固定了账户状态就自动补齐全部区块头和交易事实。
+world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block_hash` 始终是完整 32 字节 hash。RPC CLI 自动读取 chain ID；可用 `--block-hash` 指定完整 hash，或用互斥的 `--block-number` 指定区块号。两者都省略时，启动时读取一次 `latest`。区块号与 `latest` 都先解析为 hash，后续状态查询固定使用这个 hash；发现 callee、链头前进或多轮重跑都不会重新选择区块。`--block-number` 接受十进制或 `0x` / `0X` 十六进制，范围为 `0` 到 `2^64−1`；world JSON 的身份格式不变。fork 仍单独选择，身份不会替你选择执行规则。`--block-number` / `--block-hash` 选择账户状态快照；`--evm.number` 只覆盖 NUMBER，`--evm.chain-id` 只覆盖 CHAINID，不改变 `.world.identity` 中实际采集的链和区块。省略 `--evm.chain-id` 时，链上 world/RPC 的 CHAINID 取快照身份中的 chain ID；没有链身份的离线输入则保持未知。省略 NUMBER、TIMESTAMP、COINBASE、PREVRANDAO、GASLIMIT 和可用费用字段时，核心入口从固定快照的区块头与费用观测填入默认值；父块 hash 也保留为 BLOCKHASH 观测。显式执行环境覆盖仍优先，交易 caller、calldata、value 等仍保持符号输入；区块快照不等于具体交易重放。
 
 链上 JSON 提供代码时必须同时提供匹配的 `code_hash`。runtime 按原始代码字节计算 Keccak；[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 委托标记按原始 23 字节计算；已确认 absent 的账户 hash 为零。输入可附带预期 fingerprint；解析器拒绝指纹失配、重复地址/slot、冲突代码 hash 和不合法的 absence 事实。
 

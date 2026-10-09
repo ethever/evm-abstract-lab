@@ -1,4 +1,5 @@
 use egui::{Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
+use evm_abstract_protocol as api;
 use evm_abstract_protocol::{
     AnalysisReport, AnalysisScope, AnalysisStatus, AnalyzeReply, ApiError, ApiErrorCode,
     BlockCoverage, CfgBlock, CfgEdge, DisasmBlock, DisasmInstruction, EdgeKind, Fork,
@@ -24,6 +25,117 @@ fn instruction(pc: usize, name: &str) -> DisasmInstruction {
     }
 }
 
+// A structurally typed, unanchored fixture. Individual tests provide the
+// graph/source facts they exercise; no RPC identity or transaction result is
+// invented for those rendering-only fixtures.
+pub(crate) fn empty_report() -> AnalysisReport {
+    let top = api::ValueInfo {
+        summary: "Top".into(),
+        constants: None,
+        known_zero: "0x0".into(),
+        known_one: "0x0".into(),
+        unsigned: api::WordBounds {
+            lower: "0x0".into(),
+            upper: format!("0x{}", "ff".repeat(32)),
+        },
+        signed: api::WordBounds {
+            lower: format!("0x80{}", "00".repeat(31)),
+            upper: format!("0x7f{}", "ff".repeat(31)),
+        },
+        congruence: api::CongruenceValue::Any,
+        origins: None,
+        code_address_role: false,
+        identity: None,
+        expression: None,
+        symbolic_limit: false,
+    };
+    let address = |kind| api::AddressValue::Symbolic(api::InputSymbol { kind, index: None });
+    AnalysisReport {
+        schema_version: SCHEMA_VERSION,
+        scope: AnalysisScope::SingleProgram,
+        fork: Fork::Osaka,
+        byte_len: 0,
+        status: AnalysisStatus::Converged,
+        transfers: 0,
+        disassembly: vec![],
+        cfg: vec![],
+        edges: vec![],
+        diagnostics: vec![],
+        frontiers: vec![],
+        ssa: SsaReport {
+            complete: true,
+            value_count: 0,
+            effect_count: 0,
+            blocks: vec![],
+            transitions: vec![],
+            deferred_edges: vec![],
+        },
+        metadata: api::ReportMetadata {
+            entry_address: "0x0000000000000000000000000000000000000000".into(),
+            root_program: None,
+            snapshot: None,
+            fingerprint: format!("0x{}", "00".repeat(32)),
+            work: 0,
+            limits: api::AnalysisLimits::default(),
+            environment: api::EnvironmentSnapshot {
+                to: address(api::InputSymbolKind::To),
+                caller: address(api::InputSymbolKind::Caller),
+                origin: address(api::InputSymbolKind::Caller),
+                call_value: top.clone(),
+                calldata: 0,
+                is_static: false,
+                gas_upper_bound: None,
+                gas_price: top.clone(),
+                coinbase: address(api::InputSymbolKind::Coinbase),
+                timestamp: top.clone(),
+                number: top.clone(),
+                prevrandao: top.clone(),
+                gas_limit: top.clone(),
+                chain_id: top.clone(),
+                base_fee: top.clone(),
+                blob_base_fee: top.clone(),
+                block_hashes: vec![],
+                blob_hashes: vec![],
+                blob_count: top.clone(),
+            },
+        },
+        programs: vec![],
+        accounts: vec![],
+        states: vec![],
+        stores: vec![],
+        outcomes: vec![],
+        acquisition: None,
+        byte_arrays: vec![api::ByteArraySnapshot {
+            length: top.clone(),
+            default: top,
+            values: vec![],
+            cells: vec![],
+            memory: false,
+        }],
+    }
+}
+
+pub(crate) fn source_program(
+    id: usize,
+    code_address: String,
+    blocks: Vec<DisasmBlock>,
+) -> api::ProgramInfo {
+    let byte_len = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .map(|instruction| instruction.pc + instruction.size)
+        .max()
+        .unwrap_or(0);
+    api::ProgramInfo {
+        id,
+        code_address,
+        code_hash: format!("0x{}", "00".repeat(32)),
+        kind: api::CodeKind::Runtime,
+        bytecode: format!("0x{}", "00".repeat(byte_len)),
+        blocks,
+    }
+}
+
 pub(crate) fn report() -> AnalysisReport {
     let cfg: Vec<_> = [(0, 0, "CALLDATALOAD"), (1, 5, "PUSH1"), (2, 10, "ADD")]
         .into_iter()
@@ -34,6 +146,8 @@ pub(crate) fn report() -> AnalysisReport {
             context: vec![],
             frame_depth: 1,
             code_address: "0x0000000000000000000000000000000000000000".into(),
+            storage_address: "0x0000000000000000000000000000000000000000".into(),
+            program: Some(0),
             instructions: vec![instruction(pc, name)],
             entry_stack: vec![],
             exit_stack: vec!["Top".into()],
@@ -86,7 +200,7 @@ pub(crate) fn report() -> AnalysisReport {
             open_incoming: vec![],
         })
         .collect();
-    AnalysisReport {
+    let mut report = AnalysisReport {
         schema_version: SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,
@@ -132,12 +246,20 @@ pub(crate) fn report() -> AnalysisReport {
         },
         diagnostics: vec![],
         frontiers: vec![],
-    }
+        ..empty_report()
+    };
+    report.programs.push(source_program(
+        0,
+        report.cfg[0].code_address.clone(),
+        report.disassembly.clone(),
+    ));
+    report.metadata.root_program = Some(0);
+    report
 }
 
 pub(crate) fn ready() -> Workspace {
     let mut workspace = Workspace::default();
-    workspace.begin_analysis();
+    workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
         result: Ok(report()),
     }));
@@ -317,16 +439,28 @@ fn keyboard_view_switching_uses_real_egui_input() {
 }
 
 #[test]
-fn reanalysis_clears_snapshot_and_backend_errors_remain_visible() {
+fn reanalysis_retains_previous_snapshot_and_backend_errors_remain_visible() {
     let mut workspace = ready();
     assert!(workspace.accessible_status().starts_with("Ready:"));
-    let request = workspace.begin_analysis();
+    let crate::Command::Submit { request, .. } = workspace.initial_command() else {
+        panic!("expected submit")
+    };
     assert_eq!(request.limits.context_depth, 0);
-    assert!(workspace.accessible_status().starts_with("Loading:"));
+    assert!(
+        workspace
+            .accessible_status()
+            .contains("showing previous result")
+    );
     workspace.receive(Ok(AnalyzeReply {
         result: Err(ApiError {
             code: ApiErrorCode::InvalidBytecode,
             message: "invalid hex at byte 1".into(),
+            details: api::ErrorDetails::Bytecode(api::BytecodeFailure::InvalidHex(
+                api::HexDigitFailure {
+                    index: 1,
+                    character: 'z',
+                },
+            )),
         }),
     }));
     assert!(
@@ -337,9 +471,10 @@ fn reanalysis_clears_snapshot_and_backend_errors_remain_visible() {
     let ctx = Context::default();
     let output = frame(&ctx, &mut workspace, vec![]);
     assert!(
-        !painted_text(&output)
+        painted_text(&output)
             .iter()
-            .any(|(text, _)| text == "DISASSEMBLY")
+            .any(|(text, _)| text == "DISASSEMBLY"),
+        "a rejected rerun must not discard the prior immutable report"
     );
 }
 
@@ -510,9 +645,16 @@ fn automatic_row_focus_preserves_leading_columns_in_split_view() {
         .unwrap()
         .1
         .x;
-    let ssa_left = labels.iter().rfind(|(text, _)| text == "SSA").unwrap().1.x;
+    let ssa_heading = labels
+        .windows(2)
+        .find(|pair| pair[0].0 == "SSA" && pair[1].0.starts_with("verified complete"))
+        .unwrap()[0]
+        .1;
+    let ssa_left = ssa_heading.x;
     let pc_left = labels.iter().find(|(text, _)| text == "0000").unwrap().1.x;
-    let definition_left = labels.iter().find(|(text, _)| text == "S0").unwrap().1.x;
+    // The inspector also labels S0, before the source panes are painted.
+    // The final standalone S0 is the actual SSA table definition.
+    let definition_left = labels.iter().rfind(|(text, _)| text == "S0").unwrap().1.x;
     assert!(
         pc_left >= disasm_left,
         "PC column is clipped by focus: {pc_left} < {disasm_left}"
@@ -583,6 +725,7 @@ fn child_without_bytecode_has_no_invented_program_counter() {
     let mut report = report();
     report.cfg[0].frame_depth = 2;
     report.cfg[0].start_pc = None;
+    report.cfg[0].program = None;
     report.cfg[0].instructions.clear();
     let mut workspace = Workspace::default();
     workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
@@ -593,7 +736,7 @@ fn child_without_bytecode_has_no_invented_program_counter() {
     assert!(
         labels
             .iter()
-            .any(|(text, _)| text == "No bytecode in selected frame")
+            .any(|(text, _)| text == "No captured bytecode for this frame or account")
     );
     assert!(!labels.iter().any(|(text, _)| text == "B0  ·  0x0000"));
 }

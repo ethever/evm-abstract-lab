@@ -6,7 +6,9 @@
 
 use super::{
     ConfigError, ExecutionConfig, FrontierReason, Limit, MachineFrontier, Status, WorldAnalysis,
+    control::{Cancelled, Control},
     engine::{self, Counters},
+    progress::{Observer, Phase},
     transfer::StorageReadPolicy,
 };
 use crate::{
@@ -93,9 +95,18 @@ pub enum RpcAnalysisError {
     /// Analysis did not start because its parameters were invalid.
     #[error("{0}")]
     Config(ConfigError),
+    /// The caller cancelled execution or acquisition.
+    #[error("{0}")]
+    Cancelled(Cancelled),
     /// No valid initial RPC world could be established.
     #[error("{0}")]
     Rpc(RpcError),
+}
+
+impl From<Cancelled> for RpcAnalysisError {
+    fn from(error: Cancelled) -> Self {
+        Self::Cancelled(error)
+    }
 }
 
 impl From<ConfigError> for RpcAnalysisError {
@@ -126,6 +137,42 @@ pub fn analyze_rpc(
     entry: Entry,
     config: ExecutionConfig,
 ) -> Result<RpcAnalysis, RpcAnalysisError> {
+    analyze_rpc_with_control(input, entry, config, &Control::default())
+}
+
+/// Analyze with bounded progress reporting and caller-owned cancellation.
+pub fn analyze_rpc_with_control(
+    input: &RpcInput,
+    entry: Entry,
+    config: ExecutionConfig,
+    control: &Control,
+) -> Result<RpcAnalysis, RpcAnalysisError> {
+    control.scope(|| analyze_controlled(input, entry, config, control))
+}
+
+/// Analyze with progress observations and no cancellation.
+pub fn analyze_rpc_with_observer(
+    input: &RpcInput,
+    entry: Entry,
+    config: ExecutionConfig,
+    observer: &Observer,
+) -> Result<RpcAnalysis, RpcAnalysisError> {
+    analyze_rpc_with_control(
+        input,
+        entry,
+        config,
+        &Control::with_observer(observer.clone()),
+    )
+}
+
+fn analyze_controlled(
+    input: &RpcInput,
+    entry: Entry,
+    config: ExecutionConfig,
+    control: &Control,
+) -> Result<RpcAnalysis, RpcAnalysisError> {
+    control.checkpoint()?;
+    control.observer().phase(Phase::Validating);
     config.domain()?;
     entry.environment.validate().map_err(ConfigError::from)?;
     if let Some(observed) = entry.environment.to.as_concrete()
@@ -150,13 +197,17 @@ pub fn analyze_rpc(
             slots: BTreeSet::new(),
         });
     }
-    let mut session = Session::load(&input)?;
+    let initial = Session::load_with_control(&input, control);
+    control.checkpoint()?;
+    let mut session = initial?;
     let mut budget = WorkBudget::new(config.max_work);
-    let mut counters = Counters::default();
+    let mut counters = Counters::with_observer(control.observer());
     let mut discovery = Discovery::default();
     let mut analysis;
     loop {
+        control.checkpoint()?;
         discovery.rounds += 1;
+        session.discovery_round(discovery.rounds);
         // 重跑复制也使用累计账本，不让补入的新初始事实重置预算。
         let copy_work = session
             .world()
@@ -173,6 +224,7 @@ pub fn analyze_rpc(
                 &mut counters,
                 StorageReadPolicy::Discover,
             )?;
+            control.checkpoint()?;
             return Ok(finish(analysis, acquisition, discovery));
         }
         analysis = engine::run_metered(
@@ -183,6 +235,7 @@ pub fn analyze_rpc(
             &mut counters,
             StorageReadPolicy::Discover,
         )?;
+        control.checkpoint()?;
         let mut accounts = BTreeSet::new();
         let mut storage: BTreeMap<Address, BTreeSet<U256>> = BTreeMap::new();
         for frontier in &analysis.frontiers {
@@ -212,7 +265,9 @@ pub fn analyze_rpc(
                 resource_frontier(&mut analysis, reason);
                 break;
             }
-            match session.fetch_account(address) {
+            let acquired = session.fetch_account(address);
+            control.checkpoint()?;
+            match acquired {
                 Ok(installed) => {
                     progress |= installed;
                     if installed {
@@ -237,7 +292,9 @@ pub fn analyze_rpc(
                 resource_frontier(&mut analysis, reason);
                 break;
             }
-            match session.fetch_storage(address, &slots) {
+            let acquired = session.fetch_storage(address, &slots);
+            control.checkpoint()?;
+            match acquired {
                 Ok(installed) => {
                     progress |= !installed.is_empty();
                     discovery.fetched_storage.extend(
@@ -266,6 +323,7 @@ pub fn analyze_rpc(
             break;
         }
     }
+    control.checkpoint()?;
     analysis.work = budget.used();
     let acquisition = discovery.acquisition(session.requests(), counters.states);
     Ok(finish(analysis, acquisition, discovery))

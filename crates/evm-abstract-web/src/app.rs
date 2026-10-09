@@ -1,15 +1,20 @@
-//! Typed workspace state and view composition, shared by browser and host tests.
+//! Typed task state, immutable reports and compact world-view composition.
 
 mod chrome;
+mod directory;
+mod form;
+mod inspector;
+mod job;
 mod layout;
 
-use egui::{Key, Modifiers, Ui};
-use evm_abstract_protocol::{
-    AnalysisLimits, AnalysisReport, AnalyzeReply, AnalyzeRequest, SCHEMA_VERSION,
-};
-
 use crate::{palette, widgets};
-
+use directory::{Directory, Pick};
+use egui::{Key, Modifiers, Ui};
+use evm_abstract_protocol::{AnalysisReport, AnalyzeReply, AnalyzeRequest, SCHEMA_VERSION};
+use form::AnalysisForm;
+use inspector::Inspector;
+pub use job::{Command, JobOperation, Message};
+use job::{Task, TaskError, TaskPhase};
 use layout::{AnalysisPanes, Pane, PaneLayout};
 
 /// Browser request failures, distinct from the backend's typed analysis errors.
@@ -25,6 +30,12 @@ pub enum TransportError {
         status: u16,
         /// JSON decoding failure.
         cause: serde_json::Error,
+    },
+    /// An individual HTTP exchange exceeded its deadline; native work may continue.
+    #[error("HTTP request timed out after {seconds}s")]
+    Timeout {
+        /// Deadline for this HTTP exchange, separate from analysis limits.
+        seconds: u32,
     },
     /// Browser fetch failed.
     #[error("Cannot reach the analysis server: {message}")]
@@ -63,67 +74,70 @@ pub(crate) enum View {
     Ssa,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-enum Phase {
-    #[default]
-    Idle,
-    Loading,
-    Ready,
-    Failed(String),
-}
-
-/// Pure egui application state. Analysis is sent and received as shared DTOs;
-/// browser callbacks and engine implementation types never enter this layer.
+/// Browser-independent workbench. Reports remain immutable while a new native
+/// task runs; stale callbacks cannot replace the selected result.
 pub struct Workspace {
-    request: AnalyzeRequest,
     report: Option<AnalysisReport>,
-    phase: Phase,
+    task: Task,
+    form: AnalysisForm,
+    directory: Directory,
+    inspector: Inspector,
+    previous_report: bool,
     pub(crate) selection: Selection,
     pub(crate) view: View,
+    program: Option<usize>,
+    account: Option<String>,
+    previous_state: Option<usize>,
     graph: widgets::Graph,
     layout: PaneLayout,
     disasm_focus: Selection,
     ssa_focus: Selection,
-    show_input: bool,
-    show_details: bool,
 }
 
 impl Default for Workspace {
     fn default() -> Self {
         Self {
-            request: AnalyzeRequest {
-                bytecode: BRANCH_EXAMPLE.into(),
-                limits: AnalysisLimits {
-                    context_depth: 0,
-                    ..AnalysisLimits::default()
-                },
-                ..AnalyzeRequest::default()
-            },
             report: None,
-            phase: Phase::Idle,
+            task: Task::default(),
+            form: AnalysisForm::default(),
+            directory: Directory::default(),
+            inspector: Inspector::default(),
+            previous_report: false,
             selection: Selection::default(),
             view: View::Split,
+            program: None,
+            account: None,
+            previous_state: None,
             graph: widgets::Graph::default(),
             layout: PaneLayout::default(),
             disasm_focus: Selection::default(),
             ssa_focus: Selection::default(),
-            show_input: true,
-            show_details: false,
         }
     }
 }
 
 impl Workspace {
-    /// Prepare raw input before egui processes the next frame, ending a graph
-    /// wheel gesture cancelled by Fit without discarding new input events.
+    /// End a graph wheel gesture cancelled by Fit before new events are applied.
     pub fn prepare_input(&mut self, input: &mut egui::RawInput) {
-        self.graph.prepare_input(input);
+        if !self.form.open {
+            self.graph.prepare_input(input);
+        }
     }
 
-    /// Paint the workspace and return a newly submitted, fully typed request.
-    pub fn show(&mut self, ui: &mut Ui) -> Option<AnalyzeRequest> {
-        let mut submit = false;
-        if !ui.ctx().text_edit_focused() {
+    /// Submit the initial example through the same asynchronous task lifecycle.
+    pub fn initial_command(&mut self) -> Command {
+        self.start(self.form.request())
+    }
+
+    fn start(&mut self, request: AnalyzeRequest) -> Command {
+        self.previous_report = self.report.is_some();
+        self.task.start(request)
+    }
+
+    /// Render the pure UI. The browser adapter executes the returned command.
+    pub fn show(&mut self, ui: &mut Ui) -> Option<Command> {
+        let mut command = None;
+        if !self.form.open && !ui.ctx().text_edit_focused() && !egui::Popup::is_any_open(ui.ctx()) {
             for (key, view) in [
                 (Key::Num0, View::Split),
                 (Key::Num1, View::Disassembly),
@@ -135,92 +149,279 @@ impl Workspace {
                 }
             }
         }
-        submit |= ui.input_mut(|input| input.consume_key(Modifiers::CTRL, Key::Enter));
-        let viewport_height = ui.available_height();
-        egui::Panel::top("workspace_header")
-            .frame(palette::chrome_frame())
-            .show(ui, |ui| self.header(ui));
-        egui::Panel::bottom("workspace_status")
-            .frame(palette::chrome_frame())
-            .show(ui, |ui| self.status(ui, viewport_height));
-        if self.show_input {
-            egui::Panel::top("bytecode_input")
-                .min_size(48.0)
-                .frame(palette::chrome_frame())
-                .show(ui, |ui| submit |= self.input(ui, viewport_height));
+        if !self.form.open && ui.input_mut(|input| input.consume_key(Modifiers::CTRL, Key::Enter)) {
+            self.form.open = true;
         }
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(palette::BACKGROUND)
-                    .inner_margin(4.0),
-            )
-            .show(ui, |ui| {
-                if let Some(report) = &self.report {
-                    let mut panes = AnalysisPanes {
-                        report,
-                        selection: &mut self.selection,
-                        graph: &mut self.graph,
-                        disasm_focus: &mut self.disasm_focus,
-                        ssa_focus: &mut self.ssa_focus,
-                    };
-                    match self.view {
-                        View::Split => self.layout.show(ui, &mut panes),
-                        View::Disassembly => panes.show(ui, Pane::Disassembly),
-                        View::Graph => panes.show(ui, Pane::Graph),
-                        View::Ssa => panes.show(ui, Pane::Ssa),
-                    }
-                } else {
-                    let message = match self.phase {
-                        Phase::Loading => "Analyzing bytecode…",
-                        Phase::Failed(_) => "Update the bytecode and select Analyze to try again.",
-                        _ => "Paste runtime bytecode above, then select Analyze.",
-                    };
-                    widgets::empty(ui, message);
+        let viewport = ui.available_size();
+        let modal_open = self.form.open;
+        ui.add_enabled_ui(!modal_open, |ui| {
+            egui::Panel::top("workspace_header")
+                .frame(palette::chrome_frame())
+                .show(ui, |ui| self.header(ui));
+            egui::Panel::bottom("workspace_status")
+                .frame(palette::chrome_frame())
+                .show(ui, |ui| {
+                    command = self.status(ui);
+                });
+            self.sync_selection();
+            if let Some(report) = &self.report {
+                egui::Panel::top("result_context")
+                    .frame(palette::chrome_frame())
+                    .show(ui, |ui| {
+                        chrome::result_context(ui, report, self.program, self.previous_report);
+                    });
+                if self.inspector.expanded {
+                    let maximum = (viewport.y * 0.38).max(80.0);
+                    egui::Panel::bottom("world_inspector")
+                        .resizable(true)
+                        .default_size(210.0)
+                        .min_size(80.0)
+                        .max_size(maximum)
+                        .frame(palette::chrome_frame())
+                        .show(ui, |ui| {
+                            // Reserve the chosen panel height even for an empty snapshot;
+                            // otherwise egui shrinks it after the graph's initial fit.
+                            ui.set_min_height(ui.available_height());
+                            self.inspector.show(
+                                ui,
+                                report,
+                                &mut self.selection,
+                                self.account.as_deref(),
+                            );
+                        });
                 }
-            });
-        (submit && self.phase != Phase::Loading).then(|| self.begin_analysis())
+            }
+            let mut pick = None;
+            if self.directory.open
+                && viewport.x >= 1050.0
+                && let Some(report) = &self.report
+            {
+                egui::Panel::left("world_directory")
+                    .resizable(true)
+                    .default_size(196.0)
+                    .min_size(140.0)
+                    .max_size(320.0)
+                    .frame(palette::chrome_frame())
+                    .show(ui, |ui| {
+                        pick =
+                            self.directory
+                                .show(ui, report, self.program, self.account.as_deref());
+                    });
+            }
+            if let Some(pick) = pick {
+                self.pick(pick);
+            }
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette::BACKGROUND)
+                        .inner_margin(4.0),
+                )
+                .show(ui, |ui| {
+                    if let Some(report) = &self.report {
+                        let mut panes = AnalysisPanes {
+                            report,
+                            selection: &mut self.selection,
+                            program: self.program,
+                            graph: &mut self.graph,
+                            disasm_focus: &mut self.disasm_focus,
+                            ssa_focus: &mut self.ssa_focus,
+                        };
+                        match self.view {
+                            View::Split => self.layout.show(ui, &mut panes),
+                            View::Disassembly => panes.show(ui, Pane::Disassembly),
+                            View::Graph => panes.show(ui, Pane::Graph),
+                            View::Ssa => panes.show(ui, Pane::Ssa),
+                        }
+                    } else {
+                        widgets::empty(
+                            ui,
+                            if self.task.busy() {
+                                "Analysis is running. Progress and cancellation are below."
+                            } else {
+                                "Select New analysis to load bytecode or an RPC account."
+                            },
+                        );
+                    }
+                });
+        });
+        if self.directory.open && viewport.x < 1050.0 && !self.form.open {
+            let mut open = true;
+            let mut pick = None;
+            if let Some(report) = &self.report {
+                egui::Window::new("Programs and accounts")
+                    .id(egui::Id::new("directory_window"))
+                    .open(&mut open)
+                    .default_width((viewport.x - 30.0).min(360.0))
+                    .max_height((viewport.y - 80.0).max(80.0))
+                    .show(ui.ctx(), |ui| {
+                        pick =
+                            self.directory
+                                .show(ui, report, self.program, self.account.as_deref())
+                    });
+            }
+            self.directory.open = open;
+            if let Some(pick) = pick {
+                self.pick(pick);
+                self.directory.open = false;
+            }
+        }
+        if let Some(request) = self.form.show(ui.ctx(), self.task.busy()) {
+            command = Some(self.start(request));
+        }
+        self.sync_selection();
+        if self.task.busy() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        command.or_else(|| self.task.next_command(ui.input(|input| input.time)))
     }
 
-    /// Clear the old snapshot and start a new request; input changes alone never
-    /// relabel an existing result as if it were analyzed under different rules.
-    pub fn begin_analysis(&mut self) -> AnalyzeRequest {
-        self.report = None;
-        self.phase = Phase::Loading;
-        self.selection = Selection::default();
-        self.disasm_focus = Selection::default();
-        self.ssa_focus = Selection::default();
-        self.graph.reset_report();
-        self.request.clone()
+    fn pick(&mut self, pick: Pick) {
+        let Some(report) = &self.report else {
+            return;
+        };
+        match pick {
+            Pick::Program(program) => {
+                self.program = Some(program);
+                self.account = None;
+                self.selection = Selection {
+                    state: report
+                        .cfg
+                        .iter()
+                        .find(|state| state.program == Some(program))
+                        .map(|state| state.id),
+                    pc: None,
+                };
+            }
+            Pick::Account(address) => {
+                self.selection = Selection {
+                    state: report
+                        .cfg
+                        .iter()
+                        .find(|state| state.storage_address == address)
+                        .map(|state| state.id),
+                    pc: None,
+                };
+                self.program = self
+                    .selection
+                    .state
+                    .and_then(|id| {
+                        report
+                            .cfg
+                            .iter()
+                            .find(|state| state.id == id)
+                            .and_then(|state| state.program)
+                    })
+                    .or_else(|| {
+                        report
+                            .accounts
+                            .iter()
+                            .find(|account| account.address == address)
+                            .and_then(|account| account.program)
+                    });
+                self.account = Some(address);
+                self.inspector.expanded = true;
+                self.inspector.tab = inspector::Tab::Storage;
+            }
+        }
+        self.previous_state = self.selection.state;
     }
 
-    /// Accept a typed transport result, including schema and backend failures.
+    fn sync_selection(&mut self) {
+        if self.selection.state == self.previous_state {
+            return;
+        }
+        self.previous_state = self.selection.state;
+        if let Some(report) = &self.report
+            && let Some(state) = report
+                .cfg
+                .iter()
+                .find(|state| Some(state.id) == self.selection.state)
+        {
+            self.program = state.program;
+            self.account = None;
+        }
+    }
+
+    /// Apply an asynchronous operation result, rejecting superseded tasks.
+    pub fn receive_message(&mut self, message: Message) {
+        match message {
+            Message::Status {
+                generation,
+                operation,
+                result,
+            } => self.task.receive_status(generation, operation, result),
+            Message::Result {
+                generation,
+                id,
+                result,
+            } => {
+                if !self.task.accepts_result(generation, id) {
+                    return;
+                }
+                match *result {
+                    Err(error) => self.task.retry_result(TaskError::Transport(error)),
+                    Ok(AnalyzeReply { result: Err(error) })
+                        if matches!(
+                            error.code,
+                            evm_abstract_protocol::ApiErrorCode::QueueFull
+                                | evm_abstract_protocol::ApiErrorCode::Transport
+                                | evm_abstract_protocol::ApiErrorCode::TaskNotReady
+                        ) =>
+                    {
+                        self.task.retry_result(TaskError::Api(error))
+                    }
+                    result => self.receive(result),
+                }
+            }
+        }
+    }
+
+    /// Apply a typed immutable result; schema failures never enter view state.
     pub fn receive(&mut self, result: Result<AnalyzeReply, TransportError>) {
-        self.report = None;
         match result {
             Ok(AnalyzeReply { result: Ok(report) }) if report.schema_version == SCHEMA_VERSION => {
-                self.selection.state = report.cfg.first().map(|block| block.id);
-                self.phase = Phase::Ready;
+                self.selection = Selection {
+                    state: report.cfg.first().map(|state| state.id),
+                    pc: None,
+                };
+                self.program = report
+                    .cfg
+                    .first()
+                    .map_or(report.metadata.root_program, |state| state.program);
+                self.previous_state = self.selection.state;
+                self.account = None;
+                self.disasm_focus = Selection::default();
+                self.ssa_focus = Selection::default();
+                self.graph.reset_report();
+                self.inspector.reset_report();
+                self.previous_report = false;
+                self.directory.open =
+                    report.metadata.snapshot.is_some() || report.programs.len() > 1;
                 self.report = Some(report);
+                self.task.complete();
             }
-            Ok(AnalyzeReply { result: Ok(report) }) => {
-                self.phase = Phase::Failed(format!(
-                    "Unsupported response schema {}; this workspace expects {}",
-                    report.schema_version, SCHEMA_VERSION
-                ));
-            }
-            Ok(AnalyzeReply { result: Err(error) }) => {
-                self.phase = Phase::Failed(format!("{:?}: {}", error.code, error.message))
-            }
-            Err(error) => self.phase = Phase::Failed(error.to_string()),
+            Ok(AnalyzeReply { result: Ok(report) }) => self.task.fail(TaskError::Schema {
+                received: report.schema_version,
+            }),
+            Ok(AnalyzeReply { result: Err(error) }) => self.task.fail(TaskError::Api(error)),
+            Err(error) => self.task.fail(TaskError::Transport(error)),
         }
     }
 
-    /// Text equivalent of the rendered snapshot's completion and coverage state.
+    /// Live status for assistive tools and real browser verification.
     pub fn accessible_status(&self) -> String {
-        match (&self.phase, &self.report) {
-            (Phase::Ready, Some(report)) => format!(
-                "Ready: {} instructions, {} CFG blocks, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}",
+        if let Some(error) = &self.task.error
+            && self.task.phase == TaskPhase::Failed
+        {
+            return format!("Error: {error}");
+        }
+        if self.task.phase == TaskPhase::Ready
+            && let Some(report) = &self.report
+        {
+            return format!(
+                "Ready: {} instructions, {} CFG blocks, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}",
                 report
                     .disassembly
                     .iter()
@@ -235,11 +436,40 @@ impl Workspace {
                 } else {
                     "partial"
                 },
-                self.graph.content_label()
-            ),
-            (Phase::Failed(message), _) => format!("Error: {message}"),
-            (Phase::Loading, _) => "Loading: analyzing bytecode".into(),
-            _ => "Idle: enter bytecode to analyze".into(),
+                self.graph.content_label(),
+                report.programs.len(),
+                report.accounts.len(),
+                report.outcomes.len(),
+                self.selection
+                    .state
+                    .map_or("none".into(), |state| format!("S{state}")),
+                self.program
+                    .map_or("none".into(), |program| format!("P{program}")),
+                self.inspector.accessible_summary(report, self.selection)
+            );
         }
+        let progress = self
+            .task
+            .snapshot
+            .as_ref()
+            .map(|snapshot| {
+                format!(
+                    " · {:?} · {} accounts · {} states · {} transfers",
+                    snapshot.progress.phase,
+                    snapshot.progress.accounts,
+                    snapshot.progress.states,
+                    snapshot.progress.transfers
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "{}{progress}{}",
+            self.task.label(),
+            if self.previous_report {
+                " · showing previous result"
+            } else {
+                ""
+            }
+        )
     }
 }

@@ -9,7 +9,7 @@ use super::{Row, rows, ssa};
 use crate::app::Selection;
 
 fn report() -> AnalysisReport {
-    AnalysisReport {
+    let mut report = AnalysisReport {
         schema_version: SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,
@@ -17,7 +17,12 @@ fn report() -> AnalysisReport {
         status: AnalysisStatus::Converged,
         transfers: 1,
         disassembly: Vec::new(),
-        cfg: Vec::new(),
+        cfg: vec![{
+            let mut state = crate::tests::report().cfg[0].clone();
+            state.id = 27;
+            state.program = Some(0);
+            state
+        }],
         edges: vec![CfgEdge {
             id: 88,
             from: 27,
@@ -76,7 +81,26 @@ fn report() -> AnalysisReport {
         },
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
-    }
+        ..crate::tests::empty_report()
+    };
+    report.cfg[0].start_pc = Some(400);
+    report.cfg[0].instructions[0].pc = 400;
+    report.cfg[0].instructions[0].name = "ADD".into();
+    report.cfg[0].instructions[0].opcode = 1;
+    report.cfg[0].instructions[0].stack_inputs = 2;
+    report.cfg[0].instructions[0].stack_outputs = 1;
+    report.disassembly = vec![evm_abstract_protocol::DisasmBlock {
+        id: 0,
+        start_pc: 400,
+        instructions: report.cfg[0].instructions.clone(),
+    }];
+    report.programs.push(crate::tests::source_program(
+        0,
+        report.cfg[0].code_address.clone(),
+        report.disassembly.clone(),
+    ));
+    report.metadata.root_program = Some(0);
+    report
 }
 
 #[test]
@@ -150,7 +174,7 @@ fn frame(
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 550.0))),
             ..RawInput::default()
         },
-        |ui| ssa(ui, report, selection, previous),
+        |ui| ssa(ui, report, Some(0), selection, previous),
     );
     output.textures_delta.clear();
     output

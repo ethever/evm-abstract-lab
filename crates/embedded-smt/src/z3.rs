@@ -150,6 +150,13 @@ pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Out
         let mut params = Params::new();
         params.set_u32("rlimit", rlimit);
         solver.set_params(&params);
-        backend::execute(assertions, value, Z3 { solver, rlimit })
+        let context = ::z3::Context::thread_local();
+        let handle = context.handle();
+        let cancellation = crate::current_cancellation();
+        crate::cancellation::interruptible(
+            &cancellation,
+            move || handle.interrupt(),
+            || backend::execute(assertions, value, Z3 { solver, rlimit }),
+        )
     })
 }

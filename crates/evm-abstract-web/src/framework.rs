@@ -37,3 +37,34 @@ pub(crate) fn pane_tree<Pane, B: egui_tiles::Behavior<Pane>>(
 ) {
     tree.ui(behavior, ui);
 }
+
+/// Text-buffer type erasure remains inside the framework boundary.
+pub(crate) fn line_editor(
+    ui: &mut egui::Ui,
+    id: &str,
+    text: &mut String,
+    hint: &str,
+) -> egui::Response {
+    ui.add(
+        egui::TextEdit::singleline(text)
+            .id(egui::Id::new(id))
+            .desired_width(ui.available_width())
+            .hint_text(hint),
+    )
+}
+
+/// Repeated rows use a parent-scoped ID instead of a global field identity.
+pub(crate) fn scoped_editor(
+    ui: &mut egui::Ui,
+    id: &str,
+    text: &mut String,
+    hint: &str,
+    width: f32,
+) -> egui::Response {
+    ui.add(
+        egui::TextEdit::singleline(text)
+            .id(ui.make_persistent_id(id))
+            .desired_width(width)
+            .hint_text(hint),
+    )
+}

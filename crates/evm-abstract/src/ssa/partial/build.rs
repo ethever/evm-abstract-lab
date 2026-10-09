@@ -2,8 +2,9 @@
 
 use super::{
     DeferredSsaEdge, PartialBlockCoverage, PartialInstruction, PartialWorldBlock, PartialWorldSsa,
-    coverage, deferred_reason, invariant, is_call,
+    coverage, deferred_reason, is_call,
 };
+use crate::ssa::{SsaInvariantKind as Kind, error::invariant};
 use crate::{
     analysis::{InstructionProgress, MachineEdgeKind, Status, WorldAnalysis},
     ssa::{EffectInput, EffectPhi, FramePhi, Instruction, SsaError, Transition},
@@ -12,10 +13,13 @@ use revm_bytecode::opcode;
 use std::collections::BTreeMap;
 
 pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaError> {
+    crate::ssa::checkpoint()?;
     let mut next = 0;
     let mut effect_next = 0;
     let mut blocks = Vec::new();
     for state in analysis.states() {
+        let invariant = |kind| invariant(kind).state(state.id);
+        crate::ssa::checkpoint()?;
         let mut phis = Vec::new();
         let mut stacks = Vec::new();
         for (frame, entry) in state.entry.call_stack.iter().enumerate() {
@@ -43,20 +47,24 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
         if block_coverage == PartialBlockCoverage::Current {
             let evidence = state.execution_evidence().expect("current receipt exists");
             if evidence.instructions().len() != state.executed_pcs.len() {
-                return Err(invariant("partial receipt does not match visited PCs"));
+                return Err(invariant(Kind::ReceiptPcCount)
+                    .expected(state.executed_pcs.len())
+                    .observed(evidence.instructions().len()));
             }
             let original = state
                 .program()
                 .and_then(|p| p.blocks().get(state.active().basic_block_index));
             let stack = stacks
                 .last_mut()
-                .ok_or_else(|| invariant("partial state has no frame"))?;
+                .ok_or_else(|| invariant(Kind::PartialFrameMissing))?;
             for (order, progress) in evidence.instructions().iter().copied().enumerate() {
+                let invariant = |kind| invariant(kind).pc(state.executed_pcs[order]);
+                crate::ssa::checkpoint()?;
                 let source = original
                     .and_then(|b| b.instructions.get(order))
-                    .ok_or_else(|| invariant("partial receipt is outside captured bytecode"))?;
+                    .ok_or_else(|| invariant(Kind::ReceiptOutsideRuntime))?;
                 if source.pc != state.executed_pcs[order] {
-                    return Err(invariant("partial receipt is not a bytecode prefix"));
+                    return Err(invariant(Kind::ReceiptPrefix));
                 }
                 let (inputs, outputs) = source.stack_io();
                 let fault = !source.is_valid()
@@ -74,7 +82,7 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
                     InstructionProgress::Started => {}
                     InstructionProgress::Faulted => {
                         if !fault {
-                            return Err(invariant("fault receipt has no bytecode/stack fault"));
+                            return Err(invariant(Kind::FaultReceipt));
                         }
                         item.fault = true;
                     }
@@ -83,15 +91,13 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
                             || source.immediate.is_some()
                             || (opcode::DUP1..=opcode::SWAP16).contains(&source.opcode)
                         {
-                            return Err(invariant("pending operand consumption is invalid"));
+                            return Err(invariant(Kind::PendingOperands));
                         }
                         item.operands = stack.drain(stack.len() - inputs..).rev().collect();
                     }
                     InstructionProgress::Completed | InstructionProgress::Dispatched => {
                         if fault {
-                            return Err(invariant(
-                                "completed receipt hides a bytecode/stack fault",
-                            ));
+                            return Err(invariant(Kind::CompletedReceiptFault));
                         }
                         if (opcode::DUP1..=opcode::DUP16).contains(&source.opcode) {
                             let value =
@@ -109,9 +115,7 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
                                 && outputs > 0
                                 && !is_call(source.opcode)
                             {
-                                return Err(invariant(
-                                    "dispatch receipt would invent a normal result",
-                                ));
+                                return Err(invariant(Kind::DispatchReceiptResult));
                             }
                             for _ in 0..if is_call(source.opcode) { 0 } else { outputs } {
                                 item.results.push(next);
@@ -154,6 +158,13 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
     let mut transitions = Vec::new();
     let mut deferred_edges = Vec::new();
     for (index, edge) in analysis.edges().iter().enumerate() {
+        let invariant = |kind| {
+            invariant(kind)
+                .edge(index)
+                .source_state(edge.from)
+                .target_state(edge.to)
+        };
+        crate::ssa::checkpoint()?;
         if let Some(reason) = deferred_reason(analysis, edge) {
             deferred_edges.push(DeferredSsaEdge {
                 edge: index,
@@ -181,7 +192,7 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
                 }
                 let stack = stacks
                     .last_mut()
-                    .ok_or_else(|| invariant("partial return has no caller"))?;
+                    .ok_or_else(|| invariant(Kind::PartialReturnCallerMissing))?;
                 stack.push(next);
                 let result = next;
                 next += 1;
@@ -210,6 +221,13 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
     }
     let by_edge: BTreeMap<_, _> = transitions.iter().map(|t| (t.edge, t)).collect();
     for (index, edge) in analysis.edges().iter().enumerate() {
+        let invariant = |kind| {
+            invariant(kind)
+                .edge(index)
+                .source_state(edge.from)
+                .target_state(edge.to)
+        };
+        crate::ssa::checkpoint()?;
         let Some(transition) = by_edge.get(&index) else {
             continue;
         };
@@ -220,7 +238,12 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
                 .get(phi.frame)
                 .and_then(|s| s.get(phi.slot))
                 .copied()
-                .ok_or_else(|| invariant("partial transition stack does not match destination"))?;
+                .ok_or_else(|| {
+                    invariant(Kind::PartialDestinationArguments)
+                        .state(edge.to)
+                        .frame(phi.frame)
+                        .slot(phi.slot)
+                })?;
             phi.inputs.push((index, value));
         }
         block.effect.inputs.push(EffectInput {

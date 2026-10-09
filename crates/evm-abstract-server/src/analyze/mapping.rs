@@ -72,3 +72,73 @@ pub(super) fn frontier(source: &analysis::FrontierReason) -> FrontierKind {
         analysis::FrontierReason::UnsupportedOpcode(_) => FrontierKind::UnsupportedOpcode,
     }
 }
+
+pub(super) fn reduction(
+    source: &analysis::DiagnosticKind,
+) -> Option<evm_abstract_protocol::ReductionReason> {
+    use evm_abstract::domain::ReductionStatus as N;
+    use evm_abstract_protocol::ReductionReason as P;
+    let analysis::DiagnosticKind::FactExchangeLimited(reason) = source else {
+        return None;
+    };
+    Some(match reason {
+        N::Stable => P::Stable,
+        N::RoundLimit => P::RoundLimit,
+        N::FactLimit => P::FactLimit,
+        N::Empty => P::Empty,
+        N::OriginConflict => P::OriginConflict,
+        N::SymbolicLimit => P::SymbolicLimit,
+    })
+}
+pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol::FrontierDetails {
+    use evm_abstract::analysis::{CreationBoundary as NC, FrontierReason as N};
+    use evm_abstract::domain::relational::QueryReason as NQ;
+    use evm_abstract_protocol::{CreationReason as C, FrontierDetails as P, QueryBoundary as Q};
+    match source {
+        N::Budget(bound) => P::Budget(limit(*bound)),
+        N::Work => P::Work,
+        N::SummaryWork => P::SummaryWork,
+        N::CallDepth => P::CallDepth,
+        N::Memory => P::Memory,
+        N::UnknownTarget => P::UnknownTarget,
+        N::MissingCode(address) => P::MissingCode(address.to_string()),
+        N::MissingStorage { address, slot } => {
+            P::MissingStorage(evm_abstract_protocol::StorageLocation {
+                address: address.to_string(),
+                slot: super::value::word(*slot),
+            })
+        }
+        N::RpcAcquisition { address, failure } => {
+            let mut report = super::rpc::failure(failure);
+            report.account = Some(address.to_string());
+            P::RpcAcquisition(Box::new(report))
+        }
+        N::Precompile(address) => P::Precompile(address.to_string()),
+        N::PrecompileInput(address) => P::PrecompileInput(address.to_string()),
+        N::UnsupportedOpcode(op) => P::UnsupportedOpcode(*op),
+        N::Relations(reason) => P::Relations(match reason {
+            NQ::Cancelled => Q::Cancelled,
+            NQ::Disabled => Q::Disabled,
+            NQ::Configuration => Q::Configuration,
+            NQ::ConstraintLimit => Q::ConstraintLimit,
+            NQ::ScalarFactLimit => Q::ScalarFactLimit,
+            NQ::ScalarFactError(message) => Q::ScalarFactError(message.clone()),
+            NQ::ExpressionLimit => Q::ExpressionLimit,
+            NQ::Unsupported(op) => Q::Unsupported(*op),
+            NQ::ResourceLimit => Q::ResourceLimit,
+            NQ::SolverUnknown(message) => Q::SolverUnknown(message.clone()),
+            NQ::ModelUnavailable => Q::ModelUnavailable,
+        }),
+        N::Creation(reason) => P::Creation(match reason {
+            NC::UnknownCreator => C::UnknownCreator,
+            NC::UnknownNonce(address) => C::UnknownNonce(address.to_string()),
+            NC::UnknownCollision(address) => C::UnknownCollision(address.to_string()),
+            NC::UnknownEndowment => C::UnknownEndowment,
+            NC::UnknownInitCode => C::UnknownInitCode,
+            NC::UnknownRuntimeCode => C::UnknownRuntimeCode,
+            NC::UnknownSalt => C::UnknownSalt,
+            NC::NonceOverflow(address) => C::NonceOverflow(address.to_string()),
+            NC::ReservedAddress(address) => C::ReservedAddress(address.to_string()),
+        }),
+    }
+}

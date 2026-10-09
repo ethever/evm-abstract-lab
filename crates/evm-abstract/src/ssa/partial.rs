@@ -149,13 +149,10 @@ impl PartialWorldSsa {
 
 /// Build only execution-evidenced prefixes; preserve `Incomplete` and every frontier.
 pub fn build_partial_world(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaError> {
+    crate::ssa::checkpoint()?;
     let ir = build::build(analysis)?;
     ir.verify(analysis)?;
     Ok(ir)
-}
-
-fn invariant(message: impl Into<String>) -> SsaError {
-    SsaError::Invariant(message.into())
 }
 
 fn is_call(op: u8) -> bool {
