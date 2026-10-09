@@ -67,7 +67,7 @@ fn trackpad_scroll_pans_both_axes_without_zoom_even_over_a_node() {
             (graph.pan - pan - delta).length() < 0.001,
             "pan missing over_node={over_node}"
         );
-        assert!(!graph.automatic);
+        assert!(!graph.fitted);
     }
 }
 
@@ -103,7 +103,7 @@ fn pinch_and_modified_scroll_zoom_around_pointer_without_scroll_translation() {
         frame(&ctx, &mut graph, vec![event], false);
         assert!(graph.zoom > zoom);
         assert!(((pointer - canvas.min - graph.pan) / graph.zoom - world).length() < 0.001);
-        assert!(!graph.automatic);
+        assert!(!graph.fitted);
     }
 }
 
@@ -130,7 +130,7 @@ fn scrolling_a_neighbor_pane_leaves_the_graph_camera_untouched() {
     assert!(offset > 0.0, "source pane must still receive its scroll");
     assert_eq!(graph.pan, pan);
     assert_eq!(graph.zoom, zoom);
-    assert!(graph.automatic);
+    assert!(graph.fitted);
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn fitting_over_a_neighbor_preserves_its_wheel_tail_and_fresh_input() {
         modifiers: Modifiers::NONE,
     };
     let (_, after_fit) = frame(&ctx, &mut graph, vec![key(true)], true);
-    assert!(graph.automatic);
+    assert!(graph.fitted);
     assert!(after_fit > first);
     let (_, fresh) = frame(
         &ctx,
@@ -178,7 +178,7 @@ fn fitting_over_a_neighbor_preserves_its_wheel_tail_and_fresh_input() {
         (settled - 125.0).abs() < 0.01,
         "Fit cancelled the neighbor's prior wheel tail: final source offset {settled}"
     );
-    assert!(graph.automatic);
+    assert!(graph.fitted);
 }
 
 #[test]
@@ -217,14 +217,14 @@ fn fit_shortcut_takes_priority_over_wheel_and_zoom_smoothing() {
                     frame(&ctx, &mut graph, gesture, false);
                 } else {
                     frame(&ctx, &mut graph, gesture, false);
-                    assert!(!graph.automatic);
+                    assert!(!graph.fitted);
                     assert!(graph.pan != fitted_pan || graph.zoom != fitted_zoom);
                     // Keep the pointer in the canvas and press F before the prior
                     // wheel animation settles. No new gesture follows the command.
                     frame(&ctx, &mut graph, vec![key(true)], false);
                 }
                 assert!(
-                    graph.automatic,
+                    graph.fitted,
                     "queued wheel input cancelled F: {modifiers:?}, same_frame={same_frame}"
                 );
                 let mut fresh_input = vec![key(false)];
@@ -233,10 +233,7 @@ fn fit_shortcut_takes_priority_over_wheel_and_zoom_smoothing() {
                     fresh_input = Vec::new();
                     for _ in 0..40 {
                         frame(&ctx, &mut graph, vec![], false);
-                        assert!(
-                            graph.automatic,
-                            "old smoothing resumed without a new gesture"
-                        );
+                        assert!(graph.fitted, "old smoothing resumed without a new gesture");
                         assert!((graph.pan - fitted_pan).length() < 0.01);
                         assert_eq!(graph.zoom, fitted_zoom);
                     }
@@ -247,7 +244,7 @@ fn fit_shortcut_takes_priority_over_wheel_and_zoom_smoothing() {
                 fresh_input.push(wheel(delta, Modifiers::NONE));
                 frame(&ctx, &mut graph, fresh_input, false);
                 assert!(
-                    !graph.automatic,
+                    !graph.fitted,
                     "a fresh wheel must still leave automatic mode"
                 );
                 assert!((graph.pan - fitted_pan - delta).length() < 0.01);

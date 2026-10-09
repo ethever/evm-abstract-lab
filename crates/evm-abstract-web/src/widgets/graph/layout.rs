@@ -1,29 +1,78 @@
-//! Deterministic rank packing. Candidate row widths are compared against the
-//! actual viewport, including routed edge and label bounds, before fitting.
+//! Initial layout over real states and edge-label vertices. Every visible edge
+//! is State -> EdgeLabel -> State; label boxes reserve space like other nodes.
+//! Virtual identities never enter the analysis or the exposed native node map.
 
-use egui::{Pos2, Rect, Vec2};
-use evm_abstract_protocol::{AnalysisReport, EdgeKind};
+#[cfg(test)]
+mod tests;
+
 use std::collections::{BTreeMap, VecDeque};
 
-const COLUMN_GAP: f32 = 22.0;
-const RANK_GAP: f32 = 30.0;
+use egui::{Pos2, Rect, Vec2};
+use evm_abstract_protocol::{AnalysisReport, CfgEdge, EdgeKind};
+
+const CROSS_GAP: f32 = 22.0;
+const LAYER_GAP: f32 = 18.0;
+const ROUTE_CLEARANCE: f32 = 3.0;
+const OUTER_GAP: f32 = 18.0;
+const LANE_GAP: f32 = 6.0;
 pub(super) const FIT_MARGIN: f32 = 7.0;
 
 pub(super) struct EdgeRoute {
-    pub points: Vec<Pos2>,
-    pub label: Pos2,
+    pub to_label: Vec<Pos2>,
+    pub to_target: Vec<Pos2>,
+    pub label: Rect,
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Flow {
     Down,
     Right,
 }
+
+impl Flow {
+    fn point(self, main: f32, cross: f32) -> Pos2 {
+        match self {
+            Self::Down => Pos2::new(cross, main),
+            Self::Right => Pos2::new(main, cross),
+        }
+    }
+
+    fn main(self, point: Pos2) -> f32 {
+        match self {
+            Self::Down => point.y,
+            Self::Right => point.x,
+        }
+    }
+
+    fn cross(self, point: Pos2) -> f32 {
+        match self {
+            Self::Down => point.x,
+            Self::Right => point.y,
+        }
+    }
+
+    fn depth(self, size: Vec2) -> f32 {
+        match self {
+            Self::Down => size.y,
+            Self::Right => size.x,
+        }
+    }
+
+    fn span(self, size: Vec2) -> f32 {
+        match self {
+            Self::Down => size.x,
+            Self::Right => size.y,
+        }
+    }
+}
+
 pub(super) struct Placement {
     pub nodes: BTreeMap<usize, Rect>,
     pub edges: BTreeMap<usize, EdgeRoute>,
     pub bounds: Rect,
     pub flow: Flow,
 }
+
 impl Default for Placement {
     fn default() -> Self {
         Self {
@@ -34,31 +83,124 @@ impl Default for Placement {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum VertexId {
+    State(usize),
+    EdgeLabel(usize),
+}
+
+struct Expanded {
+    layers: Vec<Vec<VertexId>>,
+    sizes: BTreeMap<VertexId, Vec2>,
+    levels: BTreeMap<usize, usize>,
+    edges: Vec<CfgEdge>,
+}
+
+impl Expanded {
+    fn new(report: &AnalysisReport, state_sizes: &BTreeMap<usize, Vec2>) -> Self {
+        let mut sizes: BTreeMap<_, _> = report
+            .cfg
+            .iter()
+            .filter_map(|state| {
+                state_sizes
+                    .get(&state.id)
+                    .copied()
+                    .filter(|size| size.is_finite() && size.min_elem() > 0.0)
+                    .map(|size| (VertexId::State(state.id), size))
+            })
+            .collect();
+        // Both endpoints must exist in the rendered state set. A dangling edge
+        // cannot create a phantom label, state, or BFS layer.
+        let edges: Vec<_> = report
+            .edges
+            .iter()
+            .filter(|edge| {
+                sizes.contains_key(&VertexId::State(edge.from))
+                    && sizes.contains_key(&VertexId::State(edge.to))
+            })
+            .map(|edge| (edge.id, edge))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .cloned()
+            .collect();
+        let mut outgoing = BTreeMap::<usize, Vec<usize>>::new();
+        for edge in &edges {
+            outgoing.entry(edge.from).or_default().push(edge.to);
+        }
+        let mut levels = BTreeMap::new();
+        let mut queue = VecDeque::new();
+        if let Some(root) = report
+            .cfg
+            .iter()
+            .find(|state| sizes.contains_key(&VertexId::State(state.id)))
+        {
+            levels.insert(root.id, 0usize);
+            queue.push_back(root.id);
+        }
+        while let Some(state) = queue.pop_front() {
+            let level = levels[&state] + 1;
+            for target in outgoing.get(&state).into_iter().flatten() {
+                if let std::collections::btree_map::Entry::Vacant(entry) = levels.entry(*target) {
+                    entry.insert(level);
+                    queue.push_back(*target);
+                }
+            }
+        }
+        let disconnected = levels.values().copied().max().unwrap_or(0) + 1;
+        let mut layers = BTreeMap::<usize, Vec<VertexId>>::new();
+        for vertex in sizes.keys() {
+            let VertexId::State(state) = *vertex else {
+                continue;
+            };
+            let level = *levels.entry(state).or_insert(disconnected);
+            layers.entry(level * 2).or_default().push(*vertex);
+        }
+        // Source grouping keeps labels near the rank whose outgoing edges they
+        // describe. Native edge IDs break ties deterministically.
+        let mut labels: Vec<_> = edges.iter().collect();
+        labels.sort_by_key(|edge| (levels[&edge.from], edge.from, edge.id));
+        for edge in labels {
+            let vertex = VertexId::EdgeLabel(edge.id);
+            sizes.insert(vertex, label_size(edge.id, edge.kind));
+            layers
+                .entry(levels[&edge.from] * 2 + 1)
+                .or_default()
+                .push(vertex);
+        }
+        Self {
+            layers: layers.into_values().collect(),
+            sizes,
+            levels,
+            edges,
+        }
+    }
+}
+
 pub(super) fn fit_scale(content: Vec2, viewport: Vec2) -> f32 {
     ((viewport.x - FIT_MARGIN * 2.0).max(1.0) / content.x.max(1.0))
         .min((viewport.y - FIT_MARGIN * 2.0).max(1.0) / content.y.max(1.0))
 }
+
 pub(super) fn adaptive(
     report: &AnalysisReport,
     sizes: &BTreeMap<usize, Vec2>,
     viewport: Vec2,
 ) -> Placement {
-    let ranks = ranks(report);
-    let widest = ranks.iter().map(Vec::len).max().unwrap_or(1).min(12);
+    let graph = Expanded::new(report, sizes);
+    if graph.sizes.is_empty() {
+        return Placement::default();
+    }
+    let widest = graph.layers.iter().map(Vec::len).max().unwrap_or(1).min(12);
     let mut best = Placement::default();
     let mut best_scale = -1.0;
-    // Real text sizes differ across nodes. Compare complete placements instead
-    // of guessing a column count from one fixed node width.
     for flow in [Flow::Down, Flow::Right] {
-        for columns in 1..=widest {
-            let candidate = arrange(report, sizes, &ranks, columns, flow);
-            // Vertical stays preferred whenever both orientations fit at native
-            // size. Short-wide canvases switch only to gain readable scale.
+        for capacity in 1..=widest {
+            let candidate = arrange(&graph, capacity, flow);
             let scale = fit_scale(candidate.bounds.size(), viewport).min(1.0);
-            let fewer_ranks = match flow {
-                Flow::Down => candidate.bounds.height() < best.bounds.height(),
-                Flow::Right => candidate.bounds.width() < best.bounds.width(),
-            };
+            let fewer_ranks = flow.depth(candidate.bounds.size()) < flow.depth(best.bounds.size());
+            // Preserve vertical orientation on equal capped fit; once native
+            // typography fits, avoid adding rows to chase unused magnification.
             if scale > best_scale || (scale == best_scale && flow == best.flow && fewer_ranks) {
                 best_scale = scale;
                 best = candidate;
@@ -67,191 +209,255 @@ pub(super) fn adaptive(
     }
     best
 }
-fn ranks(report: &AnalysisReport) -> Vec<Vec<usize>> {
-    let mut levels = BTreeMap::new();
-    let mut queue = VecDeque::new();
-    if let Some(root) = report.cfg.first() {
-        levels.insert(root.id, 0usize);
-        queue.push_back(root.id);
-    }
-    let mut outgoing = BTreeMap::<usize, Vec<usize>>::new();
-    for edge in &report.edges {
-        outgoing.entry(edge.from).or_default().push(edge.to);
-    }
-    while let Some(id) = queue.pop_front() {
-        let level = levels[&id] + 1;
-        for target in outgoing.get(&id).into_iter().flatten() {
-            if !levels.contains_key(target) {
-                levels.insert(*target, level);
-                queue.push_back(*target);
+
+fn label_size(id: usize, kind: EdgeKind) -> Vec2 {
+    // ASCII labels use 10pt monospace; reserve a conservative 7pt advance and
+    // 6pt horizontal padding, plus enough height for glyphs and the capsule.
+    Vec2::new(super::edge_label(id, kind).len() as f32 * 7.0 + 12.0, 28.0)
+}
+
+struct Vertex {
+    rect: Rect,
+    band: usize,
+}
+
+struct Band {
+    start: f32,
+    end: f32,
+    vertices: Vec<VertexId>,
+}
+
+struct Geometry {
+    vertices: BTreeMap<VertexId, Vertex>,
+    bands: Vec<Band>,
+    bounds: Rect,
+    flow: Flow,
+}
+
+impl Geometry {
+    fn pack(graph: &Expanded, capacity: usize, flow: Flow) -> Self {
+        let mut result = Self {
+            vertices: BTreeMap::new(),
+            bands: Vec::new(),
+            bounds: Rect::NOTHING,
+            flow,
+        };
+        let mut main = 0.0;
+        for layer in &graph.layers {
+            for ids in layer.chunks(capacity) {
+                let span = ids.iter().map(|id| flow.span(graph.sizes[id])).sum::<f32>()
+                    + CROSS_GAP * ids.len().saturating_sub(1) as f32;
+                let mut cross = -span * 0.5;
+                let mut depth = 0.0_f32;
+                for id in ids {
+                    let size = graph.sizes[id];
+                    let rect = Rect::from_min_size(flow.point(main, cross), size);
+                    result.vertices.insert(
+                        *id,
+                        Vertex {
+                            rect,
+                            band: result.bands.len(),
+                        },
+                    );
+                    result.bounds = result.bounds.union(rect);
+                    depth = depth.max(flow.depth(size));
+                    cross += flow.span(size) + CROSS_GAP;
+                }
+                result.bands.push(Band {
+                    start: main,
+                    end: main + depth,
+                    vertices: ids.to_vec(),
+                });
+                main += depth + LAYER_GAP;
             }
         }
+        result
     }
-    let mut rows = BTreeMap::<usize, Vec<usize>>::new();
-    let last = levels.values().copied().max().unwrap_or(0) + 1;
-    for block in &report.cfg {
-        rows.entry(levels.get(&block.id).copied().unwrap_or(last))
-            .or_default()
-            .push(block.id);
+
+    fn blocked(&self, points: &[Pos2], from: VertexId, to: VertexId) -> bool {
+        points.windows(2).any(|segment| {
+            let low = self.flow.main(segment[0]).min(self.flow.main(segment[1]));
+            let high = self.flow.main(segment[0]).max(self.flow.main(segment[1]));
+            // Bands are sorted, non-overlapping rank slices. Query only slices
+            // intersected by this segment, rather than scanning every vertex.
+            let first = self
+                .bands
+                .partition_point(|band| band.end + ROUTE_CLEARANCE <= low);
+            for band in self.bands[first..]
+                .iter()
+                .take_while(|band| band.start - ROUTE_CLEARANCE <= high)
+            {
+                if band.vertices.iter().any(|id| {
+                    *id != from
+                        && *id != to
+                        && crosses_interior(
+                            segment[0],
+                            segment[1],
+                            self.vertices[id].rect.expand(ROUTE_CLEARANCE),
+                        )
+                }) {
+                    return true;
+                }
+            }
+            false
+        })
     }
-    rows.into_values().collect()
+
+    fn link(
+        &self,
+        from: VertexId,
+        to: VertexId,
+        port: f32,
+        force_outer: bool,
+        lanes: &mut Lanes,
+    ) -> Vec<Pos2> {
+        let source = &self.vertices[&from];
+        let target = &self.vertices[&to];
+        let source_cross =
+            self.flow.cross(source.rect.min) + self.flow.span(source.rect.size()) * port;
+        let target_cross = self.flow.cross(target.rect.center());
+        let start = self
+            .flow
+            .point(self.flow.main(source.rect.max), source_cross);
+        let end = self
+            .flow
+            .point(self.flow.main(target.rect.min), target_cross);
+        let departure = self.bands[source.band].end + LAYER_GAP * 0.5;
+        let approach = self.bands[target.band].start - LAYER_GAP * 0.5;
+        if !force_outer && target.band > source.band {
+            for bend in [departure, approach] {
+                let path = compact(vec![
+                    start,
+                    self.flow.point(bend, source_cross),
+                    self.flow.point(bend, target_cross),
+                    end,
+                ]);
+                if !self.blocked(&path, from, to) {
+                    return path;
+                }
+            }
+        }
+        // Leave through the empty corridor after the complete source band,
+        // enter through the corridor before the target band, and travel beyond
+        // every state/label box between them. This also handles self/back edges.
+        let lane = lanes.allocate(departure.min(approach), departure.max(approach));
+        let outside = self.flow.cross(self.bounds.max) + OUTER_GAP + lane as f32 * LANE_GAP;
+        compact(vec![
+            start,
+            self.flow.point(departure, source_cross),
+            self.flow.point(departure, outside),
+            self.flow.point(approach, outside),
+            self.flow.point(approach, target_cross),
+            end,
+        ])
+    }
 }
-fn arrange(
-    report: &AnalysisReport,
-    sizes: &BTreeMap<usize, Vec2>,
-    ranks: &[Vec<usize>],
-    columns: usize,
-    flow: Flow,
-) -> Placement {
+
+#[derive(Default)]
+struct Lanes(Vec<Vec<(f32, f32)>>);
+
+impl Lanes {
+    fn allocate(&mut self, low: f32, high: f32) -> usize {
+        for (index, intervals) in self.0.iter_mut().enumerate() {
+            if intervals
+                .iter()
+                .all(|(start, end)| high < *start || low > *end)
+            {
+                intervals.push((low, high));
+                return index;
+            }
+        }
+        self.0.push(vec![(low, high)]);
+        self.0.len() - 1
+    }
+}
+
+fn arrange(graph: &Expanded, capacity: usize, flow: Flow) -> Placement {
+    let geometry = Geometry::pack(graph, capacity, flow);
     let mut result = Placement {
         flow,
+        bounds: geometry.bounds,
         ..Placement::default()
     };
-    let rank_gap = match flow {
-        Flow::Down => RANK_GAP,
-        // Labels on horizontal edges live entirely between adjacent columns.
-        Flow::Right => report
-            .edges
-            .iter()
-            .map(|edge| label_size(edge.id, edge.kind).x + 10.0)
-            .fold(RANK_GAP, f32::max),
-    };
-    let mut main = 0.0;
-    for rank in ranks {
-        for ids in rank.chunks(columns) {
-            let span = ids
-                .iter()
-                .map(|id| match flow {
-                    Flow::Down => sizes[id].x,
-                    Flow::Right => sizes[id].y,
-                })
-                .sum::<f32>()
-                + COLUMN_GAP * ids.len().saturating_sub(1) as f32;
-            let mut cross = -span * 0.5;
-            let mut depth = 0.0_f32;
-            for id in ids {
-                let size = sizes[id];
-                let origin = match flow {
-                    Flow::Down => Pos2::new(cross, main),
-                    Flow::Right => Pos2::new(main, cross),
-                };
-                let rect = Rect::from_min_size(origin, size);
-                result.nodes.insert(*id, rect);
-                result.bounds = result.bounds.union(rect);
-                let (node_depth, node_span) = match flow {
-                    Flow::Down => (size.y, size.x),
-                    Flow::Right => (size.x, size.y),
-                };
-                depth = depth.max(node_depth);
-                cross += node_span + COLUMN_GAP;
-            }
-            main += depth + rank_gap;
+    for (id, vertex) in &geometry.vertices {
+        if let VertexId::State(state) = id {
+            result.nodes.insert(*state, vertex.rect);
         }
     }
-    let node_bounds = result.bounds;
-    for edge in &report.edges {
-        let (Some(from), Some(to)) = (result.nodes.get(&edge.from), result.nodes.get(&edge.to))
-        else {
-            continue;
+    let mut lanes = Lanes::default();
+    for edge in &graph.edges {
+        let label_id = VertexId::EdgeLabel(edge.id);
+        let port = match edge.kind {
+            EdgeKind::BranchTrue => 0.28,
+            EdgeKind::BranchFalse => 0.72,
+            _ => 0.5,
         };
-        let route = match flow {
-            Flow::Down => route_down(*from, *to, node_bounds.right(), edge.kind, edge.id),
-            Flow::Right => route_right(
-                *from,
-                *to,
-                node_bounds.bottom(),
-                rank_gap,
-                edge.kind,
-                edge.id,
-            ),
-        };
-        for point in &route.points {
+        let to_label = geometry.link(
+            VertexId::State(edge.from),
+            label_id,
+            port,
+            false,
+            &mut lanes,
+        );
+        let to_target = geometry.link(
+            label_id,
+            VertexId::State(edge.to),
+            0.5,
+            graph.levels[&edge.to] <= graph.levels[&edge.from],
+            &mut lanes,
+        );
+        for point in to_label.iter().chain(&to_target) {
             result.bounds.extend_with(*point);
         }
-        // Reserve labels even at low zoom so zoom gestures never change layout.
-        result.bounds = result.bounds.union(Rect::from_min_size(
-            route.label,
-            label_size(edge.id, edge.kind),
-        ));
-        result.edges.insert(edge.id, route);
+        result.edges.insert(
+            edge.id,
+            EdgeRoute {
+                to_label,
+                to_target,
+                label: geometry.vertices[&label_id].rect,
+            },
+        );
     }
     result
 }
-fn label_size(id: usize, kind: EdgeKind) -> Vec2 {
-    Vec2::new(
-        super::edge_label(id, kind).chars().count() as f32 * 7.0 + 2.0,
-        14.0,
-    )
-}
 
-fn branch_port(kind: EdgeKind) -> f32 {
-    match kind {
-        EdgeKind::BranchTrue => 0.28,
-        EdgeKind::BranchFalse => 0.72,
-        _ => 0.5,
+fn compact(mut path: Vec<Pos2>) -> Vec<Pos2> {
+    path.dedup();
+    let mut result: Vec<Pos2> = Vec::with_capacity(path.len());
+    for point in path {
+        while result.len() >= 2 {
+            let previous = result[result.len() - 2];
+            let last = result[result.len() - 1];
+            if (previous.x == last.x
+                && last.x == point.x
+                && (last.y - previous.y) * (point.y - last.y) >= 0.0)
+                || (previous.y == last.y
+                    && last.y == point.y
+                    && (last.x - previous.x) * (point.x - last.x) >= 0.0)
+            {
+                result.pop();
+            } else {
+                break;
+            }
+        }
+        result.push(point);
     }
+    result
 }
 
-fn route_down(from: Rect, to: Rect, outer_right: f32, kind: EdgeKind, id: usize) -> EdgeRoute {
-    if to.top() >= from.bottom() + 1.0 {
-        let port = branch_port(kind);
-        let start = Pos2::new(from.left() + from.width() * port, from.bottom());
-        let end = to.center_top();
-        let middle = to.top() - RANK_GAP * 0.5;
-        // Source-only labels collapse onto each other for an unknown jump with
-        // many outgoing edges. Center each label on its own horizontal segment.
-        let label_width = super::edge_label(id, kind).chars().count() as f32 * 7.0;
-        EdgeRoute {
-            points: vec![
-                start,
-                Pos2::new(start.x, middle),
-                Pos2::new(end.x, middle),
-                end,
-            ],
-            label: Pos2::new((start.x + end.x - label_width) * 0.5, middle - 12.0),
-        }
+fn crosses_interior(from: Pos2, to: Pos2, rect: Rect) -> bool {
+    if from.x == to.x {
+        from.x > rect.left()
+            && from.x < rect.right()
+            && from.y.max(to.y) > rect.top()
+            && from.y.min(to.y) < rect.bottom()
+    } else if from.y == to.y {
+        from.y > rect.top()
+            && from.y < rect.bottom()
+            && from.x.max(to.x) > rect.left()
+            && from.x.min(to.x) < rect.right()
     } else {
-        let side = outer_right + 12.0 + (id % 5) as f32 * 6.0;
-        let start = from.right_center();
-        let end = Pos2::new(to.right(), to.center().y - 10.0);
-        EdgeRoute {
-            points: vec![start, Pos2::new(side, start.y), Pos2::new(side, end.y), end],
-            label: Pos2::new(side + 3.0, start.y - 12.0),
-        }
-    }
-}
-
-fn route_right(
-    from: Rect,
-    to: Rect,
-    outer_bottom: f32,
-    rank_gap: f32,
-    kind: EdgeKind,
-    id: usize,
-) -> EdgeRoute {
-    if to.left() >= from.right() + 1.0 {
-        let start = Pos2::new(from.right(), from.top() + from.height() * branch_port(kind));
-        let end = to.left_center();
-        let middle = to.left() - rank_gap * 0.5;
-        EdgeRoute {
-            points: vec![
-                start,
-                Pos2::new(middle, start.y),
-                Pos2::new(middle, end.y),
-                end,
-            ],
-            label: Pos2::new(
-                middle - label_size(id, kind).x * 0.5,
-                (start.y + end.y) * 0.5 - 12.0,
-            ),
-        }
-    } else {
-        let side = outer_bottom + 12.0 + (id % 5) as f32 * 6.0;
-        let start = from.center_bottom();
-        let end = Pos2::new(to.center().x - 10.0, to.bottom());
-        EdgeRoute {
-            points: vec![start, Pos2::new(start.x, side), Pos2::new(end.x, side), end],
-            label: Pos2::new(start.x + 3.0, side + 3.0),
-        }
+        // All routing primitives are orthogonal; reject a diagonal candidate.
+        true
     }
 }

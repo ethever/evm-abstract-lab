@@ -1,5 +1,6 @@
-//! Compact CFG canvas. Automatic layout follows the viewport until an explicit
-//! camera gesture; Fit restores it. Node bounds come from the painted content.
+//! Compact CFG canvas. A report is arranged and fitted once in its first usable
+//! viewport. Later resizes leave the scene and camera fixed; Fit only moves the
+//! camera. Node bounds come from the chosen source or SSA representation.
 
 mod content;
 mod edges;
@@ -29,8 +30,9 @@ pub(crate) struct Graph {
     pan: Vec2,
     nodes: BTreeMap<usize, NodeText>,
     placement: Placement,
-    automatic: bool,
+    fitted: bool,
     layout_pending: bool,
+    fit_pending: bool,
     focus_pending: bool,
     cancel_wheel: bool,
     viewport: Option<Vec2>,
@@ -45,8 +47,9 @@ impl Default for Graph {
             pan: Vec2::ZERO,
             nodes: BTreeMap::new(),
             placement: Placement::default(),
-            automatic: true,
+            fitted: true,
             layout_pending: true,
+            fit_pending: true,
             focus_pending: false,
             cancel_wheel: false,
             viewport: None,
@@ -56,6 +59,11 @@ impl Default for Graph {
 
 impl Graph {
     pub(crate) fn show(&mut self, ui: &mut Ui, report: &AnalysisReport, selection: &mut Selection) {
+        // The graph fills its assigned pane; an invisible measurement pass
+        // must not establish its one-time layout or consume camera input.
+        if ui.is_sizing_pass() {
+            return;
+        }
         let fit_requested = self.fit_shortcut(ui);
         heading(
             ui,
@@ -68,15 +76,15 @@ impl Graph {
                 .on_hover_text("Show decoded bytecode in CFG nodes");
             ui.selectable_value(&mut content, NodeView::Ssa, "SSA")
                 .on_hover_text("Show stack SSA definitions, arguments and effects in CFG nodes");
-            if ui.small_button("Fit graph").on_hover_text("F / Shift+F: fit and center all nodes and edges; follow future viewport changes").clicked() {
+            if ui.small_button("Fit graph").on_hover_text("F / Shift+F: fit and center the existing graph without rearranging nodes").clicked() {
                 self.request_fit(ui, true);
             }
             if ui.add_enabled(selection.state.is_some(), egui::Button::new("Focus selected").small())
                 .on_hover_text("Center the selected node and keep a manual camera").clicked()
             { self.focus_pending = true; }
             ui.label(egui::RichText::new(format!("{:.0}% · {}", self.zoom * 100.0,
-                if self.automatic { "Auto" } else { "Manual" })).small().color(palette::MUTED))
-                .on_hover_text("Drag or two-finger scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Double-click to restore automatic fit. Edge labels show their control-flow kind.");
+                if self.fitted { "Fit" } else { "Manual" })).small().color(palette::MUTED))
+                .on_hover_text("Drag or two-finger scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Double-click to fit the existing graph. Resizing keeps the current layout and camera.");
         });
         self.set_content(content, selection.state);
         let (response, painter) = ui.allocate_painter(
@@ -100,11 +108,8 @@ impl Graph {
                 .collect();
             self.layout_pending = true;
         }
-        self.update_viewport(report, canvas.size());
-        if let Some((id, offset)) = self.content_anchor.take()
-            && let Some(rect) = self.placement.nodes.get(&id)
-        {
-            self.pan = canvas.size() * 0.5 + offset - rect.center().to_vec2() * self.zoom;
+        if ui.ctx().will_discard() || !self.update_viewport(report, canvas.size()) {
+            return;
         }
         if self.focus_pending {
             if let Some(rect) = selection
@@ -112,7 +117,7 @@ impl Graph {
                 .and_then(|id| self.placement.nodes.get(&id))
                 .copied()
             {
-                self.automatic = false;
+                self.fitted = false;
                 self.zoom = ((canvas.width() - 12.0).max(1.0) / rect.width())
                     .min((canvas.height() - 12.0).max(1.0) / rect.height())
                     .min(1.0);
@@ -214,52 +219,46 @@ impl Graph {
         if content == self.content {
             return;
         }
-        self.content_anchor = if self.automatic {
-            None
-        } else {
-            self.viewport.and_then(|viewport| {
-                let screen = Rect::from_min_size(Pos2::ZERO, viewport);
-                let selected = selected
-                    .and_then(|id| self.placement.nodes.get(&id).map(|rect| (id, rect)))
-                    .filter(|(_, rect)| {
-                        screen.contains(Pos2::ZERO + self.pan + rect.center().to_vec2() * self.zoom)
-                    });
-                let center = (viewport * 0.5 - self.pan) / self.zoom;
-                selected
-                    .or_else(|| {
-                        self.placement
-                            .nodes
-                            .iter()
-                            .min_by(|(_, a), (_, b)| {
-                                (a.center().to_vec2() - center)
-                                    .length_sq()
-                                    .total_cmp(&(b.center().to_vec2() - center).length_sq())
-                            })
-                            .map(|(id, rect)| (*id, rect))
-                    })
-                    .map(|(id, rect)| {
-                        (
-                            id,
-                            self.pan + rect.center().to_vec2() * self.zoom - viewport * 0.5,
-                        )
-                    })
-            })
-        };
+        self.content_anchor = self.viewport.and_then(|viewport| {
+            let screen = Rect::from_min_size(Pos2::ZERO, viewport);
+            let selected = selected
+                .and_then(|id| self.placement.nodes.get(&id).map(|rect| (id, rect)))
+                .filter(|(_, rect)| {
+                    screen.contains(Pos2::ZERO + self.pan + rect.center().to_vec2() * self.zoom)
+                });
+            let center = (viewport * 0.5 - self.pan) / self.zoom;
+            selected
+                .or_else(|| {
+                    self.placement
+                        .nodes
+                        .iter()
+                        .min_by(|(_, a), (_, b)| {
+                            (a.center().to_vec2() - center)
+                                .length_sq()
+                                .total_cmp(&(b.center().to_vec2() - center).length_sq())
+                        })
+                        .map(|(id, rect)| (*id, rect))
+                })
+                .map(|(id, rect)| (id, self.pan + rect.center().to_vec2() * self.zoom))
+        });
         self.content = content;
         self.nodes.clear();
         self.layout_pending = true;
+        self.fitted = false;
     }
 
-    fn restore_automatic(&mut self) {
-        self.automatic = true;
-        self.layout_pending = true;
+    fn queue_fit(&mut self) {
+        self.fitted = true;
+        self.fit_pending = true;
+        self.focus_pending = false;
     }
 
-    fn update_viewport(&mut self, report: &AnalysisReport, size: Vec2) {
-        let resized = self
-            .viewport
-            .is_none_or(|previous| (previous - size).length_sq() > 0.25);
-        if self.layout_pending || (self.automatic && resized) {
+    fn update_viewport(&mut self, report: &AnalysisReport, size: Vec2) -> bool {
+        if !size.is_finite() || size.min_elem() <= 1.0 {
+            return false;
+        }
+        self.viewport = Some(size);
+        if self.layout_pending {
             let sizes = self
                 .nodes
                 .iter()
@@ -267,21 +266,27 @@ impl Graph {
                 .collect();
             self.placement = layout::adaptive(report, &sizes, size);
             self.layout_pending = false;
-            if self.automatic {
-                self.fit(size);
+            if let Some((id, position)) = self.content_anchor.take()
+                && let Some(rect) = self.placement.nodes.get(&id)
+            {
+                // A representation switch changes node measurements but keeps
+                // the anchor at the same position relative to the canvas.
+                self.pan = position - rect.center().to_vec2() * self.zoom;
             }
-        } else if resized && let Some(previous) = self.viewport {
-            // Keep the same world point under the viewport center in manual mode.
-            self.pan += (size - previous) * 0.5;
         }
-        self.viewport = Some(size);
+        if self.fit_pending {
+            self.fit(size);
+            self.fit_pending = false;
+            self.fitted = true;
+        }
+        true
     }
 
     pub(crate) fn zoom_at(&mut self, pointer: Vec2, factor: f32) {
         if !factor.is_finite() || factor <= 0.0 || (factor - 1.0).abs() <= f32::EPSILON {
             return;
         }
-        self.automatic = false;
+        self.fitted = false;
         let old = self.zoom;
         self.zoom = (self.zoom * factor).clamp(0.08, 2.5);
         self.pan = pointer - (pointer - self.pan) * (self.zoom / old);

@@ -5,15 +5,16 @@ use evm_abstract_protocol::EdgeKind;
 use super::{EdgeRoute, paint_edge};
 use crate::palette;
 
-const ZOOMS: [f32; 6] = [1.0, 0.75, 0.5, 0.36, 0.25, 0.1];
+const ZOOMS: [f32; 8] = [2.5, 2.0, 1.0, 0.75, 0.5, 0.36, 0.25, 0.1];
 
-fn render(
-    zoom: f32,
-    density: f32,
-    selected: bool,
-    offset: f32,
-) -> (PathShape, Option<Rect>, usize) {
-    render_at_label(zoom, density, selected, offset, Pos2::new(45.0, 8.0))
+struct PaintedEdge {
+    paths: [PathShape; 2],
+    label: Rect,
+    text: Option<Rect>,
+}
+
+fn render(zoom: f32, density: f32, selected: bool, offset: f32) -> PaintedEdge {
+    render_at_label(zoom, density, selected, offset, Pos2::new(130.0, 96.0))
 }
 
 fn render_at_label(
@@ -22,7 +23,7 @@ fn render_at_label(
     selected: bool,
     offset: f32,
     label: Pos2,
-) -> (PathShape, Option<Rect>, usize) {
+) -> PaintedEdge {
     let ctx = Context::default();
     let mut input = RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(600.0))),
@@ -33,12 +34,17 @@ fn render_at_label(
         .get_mut(&ViewportId::ROOT)
         .unwrap()
         .native_pixels_per_point = Some(density);
+    let label = Rect::from_min_size(label, Vec2::new(61.0, 28.0));
     let route = EdgeRoute {
-        points: vec![
+        to_label: vec![
             Pos2::new(20.0, 20.0),
-            Pos2::new(120.0, 20.0),
-            Pos2::new(120.0, 120.0),
-            Pos2::new(220.0, 120.0),
+            Pos2::new(label.center().x, 20.0),
+            label.center_top(),
+        ],
+        to_target: vec![
+            label.center_bottom(),
+            Pos2::new(label.center().x, 240.0),
+            Pos2::new(260.0, 240.0),
         ],
         label,
     };
@@ -54,14 +60,16 @@ fn render_at_label(
         );
     });
     output.textures_delta.clear();
-    let path = output
+    let paths: [PathShape; 2] = output
         .shapes
         .iter()
-        .find_map(|item| match &item.shape {
+        .filter_map(|item| match &item.shape {
             Shape::Path(path) if !path.closed => Some(path.clone()),
             _ => None,
         })
-        .unwrap();
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("a labeled edge has two separate paths");
     let arrow = output
         .shapes
         .iter()
@@ -71,21 +79,26 @@ fn render_at_label(
         })
         .expect("every visible route keeps its arrowhead");
     assert_eq!(arrow.points.len(), 3);
-    assert_eq!(arrow.points[0], *path.points.last().unwrap());
+    assert_eq!(arrow.points[0], *paths[1].points.last().unwrap());
     assert!(arrow.points.iter().all(|point| point.is_finite()));
     let side_a = arrow.points[1] - arrow.points[0];
     let side_b = arrow.points[2] - arrow.points[0];
     assert!((side_a.x * side_b.y - side_a.y * side_b.x).abs() > 0.1);
-    let mask = output.shapes.iter().find_map(|item| match &item.shape {
-        Shape::Rect(rect) if rect.fill == palette::BACKGROUND => Some(rect.rect),
-        _ => None,
-    });
-    let labels = output
+    let label = output
         .shapes
         .iter()
-        .filter(|item| matches!(&item.shape, Shape::Text(text) if text.galley.text() == "e0 next"))
-        .count();
-    (path, mask, labels)
+        .find_map(|item| match &item.shape {
+            Shape::Rect(rect) if rect.fill == palette::BACKGROUND => Some(rect.rect),
+            _ => None,
+        })
+        .expect("the label vertex stays visible even below the text threshold");
+    let text = output.shapes.iter().find_map(|item| match &item.shape {
+        Shape::Text(text) if text.galley.text() == "e0 next" => {
+            Some(Rect::from_min_size(text.pos, text.galley.size()))
+        }
+        _ => None,
+    });
+    PaintedEdge { paths, label, text }
 }
 
 fn alpha_at(mesh: &Mesh, point: Pos2) -> f32 {
@@ -149,11 +162,12 @@ fn tessellated_horizontal_and_vertical_edges_keep_equal_pixel_coverage() {
         for zoom in ZOOMS {
             for selected in [false, true] {
                 for offset in [0.0, 0.2, 0.49, 0.75] {
-                    let (path, _, _) = render(zoom, density, selected, offset);
+                    let edge = render(zoom, density, selected, offset);
+                    let path = &edge.paths[0];
                     let mut tessellator =
                         Tessellator::new(density, TessellationOptions::default(), [1, 1], vec![]);
                     let mut mesh = Mesh::default();
-                    tessellator.tessellate_path(&path, &mut mesh);
+                    tessellator.tessellate_path(path, &mut mesh);
                     let horizontal =
                         cross_section(&mesh, [path.points[0], path.points[1]], density);
                     let vertical = cross_section(&mesh, [path.points[1], path.points[2]], density);
@@ -180,26 +194,32 @@ fn tessellated_horizontal_and_vertical_edges_keep_equal_pixel_coverage() {
 }
 
 #[test]
-fn rendered_label_masks_do_not_erase_the_route_at_low_zoom() {
+fn label_vertices_keep_text_inside_and_routes_outside_at_readable_scales() {
     for density in [1.0, 2.0] {
         for zoom in ZOOMS {
             for selected in [false, true] {
-                for label in [Pos2::new(45.0, 8.0), Pos2::new(95.0, 58.0)] {
-                    let (path, mask, labels) = render_at_label(zoom, density, selected, 0.0, label);
+                for label in [Pos2::new(130.0, 96.0), Pos2::new(95.0, 140.0)] {
+                    let edge = render_at_label(zoom, density, selected, 0.0, label);
                     if zoom <= 0.35 {
-                        assert_eq!(labels, 0);
-                        continue;
-                    }
-                    assert_eq!(labels, 1, "readable labels must remain present");
-                    let mask = mask.unwrap();
-                    for segment in path.points.windows(2) {
-                        let stroke = Rect::from_two_pos(segment[0], segment[1])
-                            .expand(path.stroke.width / 2.0 + 0.5 / density);
-                        let intersection = mask.intersect(stroke);
+                        assert!(edge.text.is_none());
+                    } else {
+                        let text = edge.text.expect("readable edge text is painted");
                         assert!(
-                            !intersection.is_positive(),
-                            "DPR{density} zoom{zoom} selected{selected}: label mask{mask:?} erases edge{stroke:?}"
+                            edge.label.contains_rect(text),
+                            "DPR{density} zoom{zoom}: text{text:?} escapes reserved label vertex{:?}",
+                            edge.label
                         );
+                    }
+                    for path in &edge.paths {
+                        for segment in path.points.windows(2) {
+                            let stroke = Rect::from_two_pos(segment[0], segment[1])
+                                .expand(path.stroke.width / 2.0 + 0.5 / density);
+                            let interior = edge.label.shrink(path.stroke.width + 1.0 / density);
+                            assert!(
+                                !interior.intersect(stroke).is_positive(),
+                                "DPR{density} zoom{zoom}: route crosses label interior"
+                            );
+                        }
                     }
                 }
             }
