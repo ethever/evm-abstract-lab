@@ -67,10 +67,12 @@ fn providers() -> Vec<RpcProvider> {
         RpcProvider {
             id: "primary-id".into(),
             name: "Primary network".into(),
+            endpoint: "http://127.0.0.1:8545".into(),
         },
         RpcProvider {
             id: "archive-id".into(),
             name: "Archive network".into(),
+            endpoint: "https://example.com/archive".into(),
         },
     ]
 }
@@ -161,7 +163,7 @@ fn rpc_form_keeps_snapshot_identity_and_execution_overrides_distinct() {
 }
 
 #[test]
-fn rpc_selector_displays_names_and_submits_the_clicked_providers_id() {
+fn rpc_selector_displays_names_and_urls_and_submits_the_clicked_providers_id() {
     let ctx = Context::default();
     let mut form = AnalysisForm {
         open: true,
@@ -171,10 +173,21 @@ fn rpc_selector_displays_names_and_submits_the_clicked_providers_id() {
     load_providers(&mut form);
     frame(&ctx, &mut form, vec![]);
     let (_, output) = paint(&ctx, &mut form, vec![]);
-    click(&ctx, &mut form, text_center(&output, "Primary network"));
+    click(
+        &ctx,
+        &mut form,
+        text_center(&output, "Primary network (http://127.0.0.1:8545)"),
+    );
     let (_, output) = paint(&ctx, &mut form, vec![]);
-    click(&ctx, &mut form, text_center(&output, "Archive network"));
-    assert_eq!(form.provider_status(), "RPC provider: Archive network");
+    click(
+        &ctx,
+        &mut form,
+        text_center(&output, "Archive network (https://example.com/archive)"),
+    );
+    assert_eq!(
+        form.provider_status(),
+        "RPC provider: Archive network (https://example.com/archive)"
+    );
     let (_, output) = paint(&ctx, &mut form, vec![]);
     let request = click(&ctx, &mut form, text_center(&output, "Analyze")).unwrap();
     let AnalysisInput::Rpc(rpc) = request.input else {
@@ -275,7 +288,10 @@ fn retry_after_empty_or_failed_catalog_recovers_and_ignores_old_callbacks() {
                 result: Ok(providers()),
             }),
         );
-        assert_eq!(form.provider_status(), "RPC provider: Primary network");
+        assert_eq!(
+            form.provider_status(),
+            "RPC provider: Primary network (http://127.0.0.1:8545)"
+        );
         assert!(frame(&ctx, &mut form, vec![enter()]).is_some());
     }
 }

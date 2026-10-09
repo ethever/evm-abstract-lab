@@ -168,7 +168,7 @@ nix run .#web
 
 打开命令打印的本地地址，在 egui 工作台输入运行时字节码，查看自绘的反汇编、SSA 和 CFG。浏览器通过共享 Rust 类型向原生分析服务发送请求；分析和 SMT 求解仍在后端运行。控件操作、开发构建、数据接口及当前输入范围见[Web 前端说明](docs/web-workbench.md)。
 
-分析链上账户时，在后端配置 RPC 提供者并使用 `nix run .#web -- --rpc-config /absolute/path/to/rpc-providers.json` 启动；浏览器通过名称选择提供者，只提交其 ID。省略配置时仍可分析字节码，RPC 提交不可用。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)。
+分析链上账户时，使用 `nix run .#web -- --rpc-config http://127.0.0.1:8545` 直接传入 RPC HTTP(S) URL；后端自动创建 **Default RPC** 提供者，无需 JSON 文件。需要多个提供者或自定义名称时，`--rpc-config` 也接受 JSON 配置文件路径。浏览器同时显示提供者的名称和 RPC URL，分析请求只提交其 ID。省略配置时仍可分析字节码，RPC 提交不可用。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)。
 
 ## 开发环境与实现入口
 

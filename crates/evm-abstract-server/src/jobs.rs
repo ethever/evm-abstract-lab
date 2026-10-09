@@ -147,7 +147,7 @@ impl Pool {
         })
     }
 
-    /// Public provider metadata, excluding endpoint URLs and credentials.
+    /// Configured provider names and URL values for the browser's selector.
     pub fn rpc_providers(&self) -> Vec<evm_abstract_protocol::RpcProvider> {
         self.providers.catalogue()
     }

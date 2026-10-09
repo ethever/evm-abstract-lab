@@ -12,7 +12,15 @@ nix run .#web
 
 Nix 构建 WebAssembly、匹配版本的 wasm-bindgen JavaScript 绑定和原生服务，并将静态资源与 `/api/tasks` 放在同一来源下。浏览器打开服务打印的地址即可使用。
 
-默认不配置 RPC 提供者，字节码分析可直接使用。需要分析链上账户时，在后端准备 JSON 配置文件，例如 `rpc-providers.json`：
+默认不配置 RPC 提供者，字节码分析可直接使用。需要分析链上账户时，直接传入 RPC HTTP(S) URL：
+
+```bash
+nix run .#web -- --bind 0.0.0.0:1111 --rpc-config http://127.0.0.1:8545
+```
+
+`--rpc-config <URL_OR_FILE>` 接受 RPC URL 或 JSON 配置文件路径。传入 URL 时，后端自动创建一个 ID 为 `default`、显示名称为 **Default RPC** 的提供者；配置保存在服务内存中，无需编写或生成 JSON 文件。浏览器的 **RPC provider** 显示名称和实际 URL，例如 **Default RPC (http://127.0.0.1:8545)**。这与手动配置一个提供者等价，分析请求仍只提交提供者 ID。
+
+需要多个 RPC 提供者或自定义名称时，再准备 JSON 配置文件，例如 `rpc-providers.json`：
 
 ```json
 {
@@ -37,7 +45,7 @@ Nix 构建 WebAssembly、匹配版本的 wasm-bindgen JavaScript 绑定和原生
 nix run .#web -- --rpc-config /absolute/path/to/rpc-providers.json
 ```
 
-`id` 是请求使用的稳定标识，须唯一，由 1–64 个 ASCII 字母、数字、`-` 或 `_` 组成；`name` 是浏览器下拉框显示的名称，须非空、不含控制字符且不超过 128 个字符。`endpoint` 须为有主机名的 HTTP(S) URL，不含空白、控制字符或 fragment。配置文件保留在服务器上；浏览器只取得 `id`、`name`，不会取得 endpoint 或其中的凭据。配置在启动时读取，更新后重启服务生效；无法读取或无效的配置会使启动失败。省略 `--rpc-config` 或配置空 `providers` 时，RPC 表单提示未配置并禁止提交。
+`id` 是请求使用的稳定标识，须唯一，由 1–64 个 ASCII 字母、数字、`-` 或 `_` 组成；`name` 是浏览器下拉框显示的名称，须非空、不含控制字符且不超过 128 个字符。直接传入的 URL 与配置文件中的 `endpoint` 使用相同规则：须为有主机名的 HTTP(S) URL，不含空白、控制字符或 fragment。配置文件保留在服务器上；浏览器取得 `id`、`name` 和完整 `endpoint` 值，用于显示配置的名称和地址。配置在启动时读取，更新后重启服务生效；无效 URL、无法读取的配置文件或无效 JSON 会分别报告对应错误并使启动失败。文件不存在时，错误会明确指出读取配置文件失败，并提示 `--rpc-config` 也可直接接受 HTTP(S) URL。省略 `--rpc-config` 或配置空 `providers` 时，RPC 表单提示未配置并禁止提交。
 
 若 RPC 报错显示 `eth_chainId` 收到 HTTP `502`，表示后端在取得链 ID 时收到了网关错误，此时尚未开始 CFG 或合约分析。先检查配置的 endpoint 服务及后端网络、代理连接；公网 RPC 的这类错误不需要通过修改前端地址输入来修复，也不能仅凭 `502` 判断一定是代理导致。
 
@@ -67,7 +75,7 @@ nix build .#web-assets
 
 通过 **New analysis** 打开弹窗表单，选择字节码或 RPC 链上账户输入。规则、调用环境、区块选择和预算集中在可滚动表单中；提交后收起输入，让主工作区留给结果。未指定 calldata 表示内容和长度未知，显式空字节串才表示空调用；value 和 caller 也区分未知与指定值。RPC 的区块参数默认 `latest`，每次任务只解析一次。
 
-RPC 表单在 **RPC provider** 下拉框中显示后端配置的名称，默认选择第一项，再填写 **Root account**。名单加载中、加载失败或为空时，**Analyze** 和 **Ctrl+Enter** 都不会提交 RPC 任务；失败或为空时可点击 **Retry** 重新获取名单。切回 **Bytecode** 仍能分析字节码。
+RPC 表单在 **RPC provider** 下拉框的当前选项与每个候选项中同时显示后端配置的名称和 RPC URL，默认选择第一项，再填写 **Root account**。长名称或 URL 会按可用宽度省略显示，悬停可查看完整名称和地址。名单加载中、加载失败或为空时，**Analyze** 和 **Ctrl+Enter** 都不会提交 RPC 任务；失败或为空时可点击 **Retry** 重新获取名单。切回 **Bytecode** 仍能分析字节码。
 
 任务运行期间保留上一份完整结果，并显示新任务的状态与离散进度；新任务成功后才原子替换结果。输入草稿的编辑不会改变正在查看的报告。取消、失败或迟到的旧请求也不会把旧报告冒充新任务结果。
 
@@ -114,17 +122,17 @@ RPC 表单在 **RPC provider** 下拉框中显示后端配置的名称，默认�
 | [`evm-abstract-server`](../crates/evm-abstract-server) | 将协议请求转换为引擎输入，验证 SSA，并投影为结构化响应；提供 HTTP 和静态资源 |
 | [`evm-abstract-web`](../crates/evm-abstract-web) | 依赖共享协议；通过 Web API 获取结果，用 egui Painter 绘制各视图 |
 
-共享协议版本为 3。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+共享协议版本为 4。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 
 | 请求 | 返回 |
 | --- | --- |
-| `GET /api/rpc-providers` | `RpcProvidersReply`：`{"result":{"Ok":[{"id":"mainnet","name":"Ethereum mainnet"}]}}`；无配置时列表为空 |
+| `GET /api/rpc-providers` | `RpcProvidersReply`：`{"result":{"Ok":[{"id":"mainnet","name":"Ethereum mainnet","endpoint":"https://rpc.example.org/ethereum"}]}}`；无配置时列表为空 |
 | `POST /api/tasks`，body 为 `AnalyzeRequest` | `202` 与 `JobReply`，包含任务 ID |
 | `GET /api/tasks/{id}` | 小型 `JobSnapshot`：状态、阶段和累计计数 |
 | `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
 
-版本 3 的 RPC 输入使用 `provider_id`，不再接受浏览器提供的 `endpoint`。例如 `AnalyzeRequest.input` 为 `{"Rpc":{"provider_id":"mainnet","address":"0x0000000000000000000000000000000000000101","block":"Latest","accounts":[]}}`；其余 `fork`、`environment`、`limits` 字段仍按共享请求类型提供。后端在任务入队前按 ID 查找配置，未知 ID 返回 `InvalidRequest`。此变更属于 Web 共享协议，CLI 的显式 `--rpc` 参数保持其原有用法。
+版本 4 的提供者名单新增展示用的 `endpoint`；RPC 分析输入继续使用 `provider_id`，不接受浏览器在请求中指定 `endpoint`。例如 `AnalyzeRequest.input` 为 `{"Rpc":{"provider_id":"mainnet","address":"0x0000000000000000000000000000000000000101","block":"Latest","accounts":[]}}`；其余 `fork`、`environment`、`limits` 字段仍按共享请求类型提供。后端在任务入队前按 ID 查找配置，未知 ID 返回 `InvalidRequest`。此变更属于 Web 共享协议，CLI 的显式 `--rpc` 参数保持其原有用法。
 
 报告包含代码目录、完整帧上下文、有效环境、快照身份、账户事实、入口／出口状态和终结结果。不可变 byte-array 与 store 使用报告内索引复用，每个 byte-array 的完整抽象字节值也用局部字典复用；符号表达式用扁平 DAG 表达，保留结构并避免 JSON 嵌套深度随表达式深度增长。状态轮询不重复下载整份报告。
 
@@ -168,7 +176,7 @@ cargo run --locked -p evm-abstract-server -- --assets dist
 
 服务默认监听 `127.0.0.1:8080`；需要其他本地端口时传入 `--bind 127.0.0.1:8081`。`nix run .#web -- --bind 127.0.0.1:8081` 也可指定端口。
 
-本地开发服务同样支持 `cargo run --locked -p evm-abstract-server -- --assets dist --rpc-config /absolute/path/to/rpc-providers.json`。
+本地开发服务同样支持直接传入 URL：`cargo run --locked -p evm-abstract-server -- --assets dist --rpc-config http://127.0.0.1:8545`，也可将 URL 换成 JSON 配置文件路径。
 
 完整验证仍运行[本地门禁](local-ci.md)。原有 native workspace 检查保留，另对 Wasm 目标执行构建、Clippy 和 Dylint。动态派发仅对 `evm_abstract_web::framework` 中的 egui 文本编辑、egui_tiles 布局行为与 JavaScript 适配开放，控件、共享协议和原生分析服务继续受 `no_dyn` 约束，见[检查规则](no-dynamic-dispatch.md)。
 

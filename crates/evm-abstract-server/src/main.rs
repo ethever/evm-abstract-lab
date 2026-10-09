@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use std::{
+    ffi::OsString,
     net::{SocketAddr, TcpListener},
     path::PathBuf,
     process::ExitCode,
@@ -19,9 +20,12 @@ struct Args {
     /// Directory containing the compiled index.html, JavaScript and WebAssembly.
     #[arg(long, default_value = "dist")]
     assets: PathBuf,
-    /// JSON configuration of selectable backend RPC providers; omitted disables RPC input.
-    #[arg(long)]
-    rpc_config: Option<PathBuf>,
+    /// RPC HTTP(S) URL or JSON providers file path.
+    ///
+    /// A URL creates one provider with ID "default" and name "Default RPC".
+    /// For multiple providers, pass a JSON file path. Omit to disable RPC input.
+    #[arg(long, value_name = "URL_OR_FILE")]
+    rpc_config: Option<OsString>,
     /// CPU analysis workers; defaults to half the host's available threads.
     #[arg(long)]
     workers: Option<usize>,
@@ -56,7 +60,7 @@ fn run(args: Args) -> Result<(), evm_abstract_server::http::ServerError> {
     let providers = args
         .rpc_config
         .as_deref()
-        .map(evm_abstract_server::rpc_providers::Registry::load)
+        .map(evm_abstract_server::rpc_providers::Registry::from_argument)
         .transpose()
         .map_err(evm_abstract_server::http::ServerError::RpcConfig)?
         .unwrap_or_default();
