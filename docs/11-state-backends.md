@@ -37,7 +37,7 @@ cargo run --release --locked -p evm-abstract-cli --features imbl -- \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --format json
 ```
 
-以上两个命令把 caller、value 和 calldata 明确限定为同一具体输入。省略这些参数会分析符号输入；比较两种后端时也必须保留相同范围。结果 JSON 的 `schema_version` 为 3，调用环境在 `.entry.environment`，帧键 `.states[].key.frames[].caller` 用 `{"Concrete": "0x..."}` 或 `{"Symbolic": "Caller"}` 表示；`.address_value` 是逻辑 ADDRESS，`.address` 是状态账户键。每次环境的私有编号不进入 JSON；同名符号不构成不同分析之间的相等证明。
+以上两个命令把 caller、value 和 calldata 明确限定为同一具体输入。省略这些参数会分析符号输入；比较两种后端时也必须保留相同范围。结果 JSON 的 `schema_version` 为 4，调用环境在 `.entry.environment`，帧键 `.states[].key.frames[].caller` 用 `{"Concrete": "0x..."}` 或 `{"Symbolic": "Caller"}` 表示；`.address_value` 是逻辑 ADDRESS，`.address` 是状态账户键。每次环境的私有编号不进入 JSON；同名符号不构成不同分析之间的相等证明。
 
 feature 在一次构建中统一选择后端；同一个进程里的 Store 使用同一实现。并行比较使用独立 target 目录，避免后一次构建覆盖前一次的二进制。
 

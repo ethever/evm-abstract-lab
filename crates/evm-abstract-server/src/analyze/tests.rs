@@ -202,3 +202,62 @@ fn rpc_nested_failure_keeps_native_hashes_and_coordinates_in_json() {
     assert_eq!(cause.expected, expected.to_string());
     assert_eq!(cause.observed, observed.to_string());
 }
+
+#[test]
+fn relational_frontier_projection_preserves_native_causes_and_provider() {
+    use evm_abstract::domain::{
+        facts::{FactError, Symbol},
+        relational::{QueryReason, SmtError, SmtProvider},
+    };
+    let cases = [
+        (
+            QueryReason::ScalarFactError(FactError::InvalidOperation {
+                opcode: 0x16,
+                expected: 2,
+                actual: 1,
+            }),
+            api::QueryBoundary::ScalarFactError(api::FactFailure::InvalidOperation(
+                api::FactOperationFailure {
+                    opcode: 0x16,
+                    expected: 2,
+                    actual: 1,
+                },
+            )),
+        ),
+        (
+            QueryReason::ScalarFactError(FactError::Contradiction {
+                subject: Symbol::new(17),
+            }),
+            api::QueryBoundary::ScalarFactError(api::FactFailure::Contradiction(17)),
+        ),
+        (
+            QueryReason::SolverUnknown {
+                provider: SmtProvider::Bitwuzla,
+                reason: "incomplete theory".into(),
+            },
+            api::QueryBoundary::SolverUnknown(api::SolverUnknown {
+                provider: api::SmtProvider::Bitwuzla,
+                reason: "incomplete theory".into(),
+            }),
+        ),
+        (
+            QueryReason::SolverError(SmtError {
+                provider: SmtProvider::Cvc5,
+                message: "binding rejected term".into(),
+            }),
+            api::QueryBoundary::SolverError(api::SolverFailure {
+                provider: api::SmtProvider::Cvc5,
+                message: "binding rejected term".into(),
+            }),
+        ),
+    ];
+    for (native, expected) in cases {
+        let projected = mapping::reason(&analysis::FrontierReason::Relations(native));
+        assert_eq!(projected, api::FrontierDetails::Relations(expected));
+        let encoded = serde_json::to_vec(&projected).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<api::FrontierDetails>(&encoded).unwrap(),
+            projected
+        );
+    }
+}

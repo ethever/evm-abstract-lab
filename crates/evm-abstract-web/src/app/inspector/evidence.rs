@@ -193,14 +193,64 @@ fn query(ui: &mut Ui, reason: &api::QueryBoundary) {
         R::Unsupported(_) => "Unsupported pure operation",
         R::ResourceLimit => "Native solver resource allowance",
         R::SolverUnknown(_) => "Solver could not decide",
+        R::SolverError(_) => "Solver binding or encoding failed",
         R::ModelUnavailable => "Model value unavailable",
     };
     value::text(ui, "Query boundary", label);
     match reason {
-        R::ScalarFactError(message) | R::SolverUnknown(message) => {
-            value::text(ui, "Diagnostic", message)
+        R::ScalarFactError(error) => fact(ui, error),
+        R::SolverUnknown(detail) => {
+            value::text(ui, "Provider", format!("{:?}", detail.provider));
+            value::text(ui, "Native reason", &detail.reason);
+        }
+        R::SolverError(detail) => {
+            value::text(ui, "Provider", format!("{:?}", detail.provider));
+            value::text(ui, "Binding diagnostic", &detail.message);
         }
         R::Unsupported(opcode) => value::text(ui, "Opcode", format!("0x{opcode:02x}")),
         _ => {}
+    }
+}
+
+fn fact(ui: &mut Ui, error: &api::FactFailure) {
+    use api::FactFailure as F;
+    match error {
+        F::InvalidBitIndex(index) => {
+            value::text(ui, "Fact failure", "Bit index outside a 256-bit word");
+            value::text(ui, "Bit index", index.to_string());
+        }
+        F::ConflictingBits => {
+            value::text(ui, "Fact failure", "A bit was declared both zero and one")
+        }
+        F::InvalidBounds => value::text(
+            ui,
+            "Fact failure",
+            "Lower interval bound exceeds upper bound",
+        ),
+        F::EmptyFiniteSet => value::text(ui, "Fact failure", "Finite membership set was empty"),
+        F::InvalidModulus => value::text(ui, "Fact failure", "Congruence modulus was zero"),
+        F::UnsupportedOperation(opcode) => {
+            value::text(ui, "Fact failure", "Unsupported pure word operation");
+            value::text(ui, "Opcode", format!("0x{opcode:02x}"));
+        }
+        F::InvalidOperation(detail) => {
+            value::text(ui, "Fact failure", "Pure-operation operand count mismatch");
+            value::text(ui, "Opcode", format!("0x{:02x}", detail.opcode));
+            value::text(ui, "Expected operands", detail.expected.to_string());
+            value::text(ui, "Actual operands", detail.actual.to_string());
+        }
+        F::Contradiction(symbol) => {
+            value::text(ui, "Fact failure", "Numeric facts contradict");
+            value::text(ui, "Local fact symbol", symbol.to_string());
+        }
+        F::OriginContradiction(symbol) => {
+            value::text(ui, "Fact failure", "Origin declarations contradict");
+            value::text(ui, "Local fact symbol", symbol.to_string());
+        }
+        F::Capacity(detail) => {
+            value::text(ui, "Fact failure", "Semantic atom capacity exceeded");
+            value::text(ui, "Maximum atoms", detail.max_atoms.to_string());
+            value::text(ui, "Required atoms", detail.required.to_string());
+        }
     }
 }

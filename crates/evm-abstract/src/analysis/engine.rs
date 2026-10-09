@@ -120,7 +120,7 @@ pub(super) fn run_metered(
         world,
         entry,
         config,
-        schema_version: 3,
+        schema_version: super::SCHEMA_VERSION,
         domain_spec: domain.spec(),
         states: Vec::new(),
         edges: Vec::new(),

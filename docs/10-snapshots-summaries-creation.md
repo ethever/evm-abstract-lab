@@ -6,7 +6,7 @@
 
 [摘要](#1-调用摘要复用完整结果关系)、[创建](#2-create先执行构造代码再安装运行时代码)、[销毁](#3-selfdestruct转账和删除发生在不同时间)、[预编译](#4-预编译没有普通字节码也有调用帧)四个实验均使用离线合成事实，根帧地址为 A=`0x...0101`，命令明确给出 caller、零 value 和空 calldata，默认预算可完成。省略这些参数会得到符号输入，不等同于这组具体约束。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
-直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 3 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 4 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 所有反汇编与 SSA 基本块指令列表共用顶格的 `B# @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 B 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 B 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用赋值式指令正文；世界视图保留 C、F、state owner、context，以及按 T 标记并带 F/slot 的 φ。完整视图另保留所有帧元数据、原始指令字段和效果链，字节码行与效果行也使用这套布局。编号与证据的读法见[第 04 课](04-ssa.md)和[第 09 课](09-cross-contract.md#默认文本怎样读)。
 
@@ -113,11 +113,11 @@ jq '{schema_version,
                | {environment, relations, frame: .frame.state.key})}' /tmp/summary-on.json
 ```
 
-分析 `schema_version` 为 3。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
+分析 `schema_version` 为 4。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
 
 本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中，入口关系在 `.summaries[].input.relations`。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
 
-单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 3 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
+单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 4 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
 
 环境类型与输入作用域见 [`world/environment.rs`](../crates/evm-abstract/src/world/environment.rs)，JSON 边界见 [`analysis.rs`](../crates/evm-abstract/src/analysis.rs)，帧结构见 [`machine/frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)。
 

@@ -158,7 +158,7 @@ pub(super) fn analyze(
     Ok(Analysis {
         program,
         config,
-        schema_version: 3,
+        schema_version: super::SCHEMA_VERSION,
         domain_spec: execution.domain_spec(),
         states,
         edges,

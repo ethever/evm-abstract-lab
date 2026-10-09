@@ -331,7 +331,7 @@ pub enum FactChange {
 }
 
 /// 原始事实、语义矛盾与资源停止使用不同错误分支。
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Error)]
 pub enum FactError {
     /// 非法位编号。
     #[error("bit index {0} is outside a 256-bit word")]

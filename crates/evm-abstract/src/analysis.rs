@@ -41,6 +41,10 @@ pub use rpc::{
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;
 
+/// Serialized native analysis format. Version 4 retains typed scalar-fact and
+/// SMT provider failures in frontiers; the domain-policy schema is independent.
+pub const SCHEMA_VERSION: u16 = 4;
+
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct StateKey {

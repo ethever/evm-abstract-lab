@@ -141,7 +141,7 @@ S0 | B0 @ 0x0000 | stack height=0 | context=[]
 
 `stack in` / `stack out` 在这里表示**栈状态**，不是调用的输入字节和返回字节。
 
-`EVM inputs` 记录本次允许的输入；`⊤` 表示未知，未写 calldata 也不等于空 calldata。本程序不读取这些输入，所以未知环境仍不影响 `2+3=5`。文本 `domain schema=2` 是域策略的格式版本；结果 JSON 的 `schema_version` 为 3，`cfg` 的输入记录在 `.environment`，`ssa --format json` 的记录在 `.analysis.environment`。
+`EVM inputs` 记录本次允许的输入；`⊤` 表示未知，未写 calldata 也不等于空 calldata。本程序不读取这些输入，所以未知环境仍不影响 `2+3=5`。文本 `domain schema=2` 是域策略的格式版本；结果 JSON 的 `schema_version` 为 4，`cfg` 的输入记录在 `.environment`，`ssa --format json` 的记录在 `.analysis.environment`。
 
 `reduction rounds` 和 `fact atoms` 限制这些性质之间的一次信息交换，先保持默认值即可。[第 05 课](05-sensitivity.md)再区分精度参数与执行预算。
 

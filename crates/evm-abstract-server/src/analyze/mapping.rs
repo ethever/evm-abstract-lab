@@ -122,11 +122,20 @@ pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol
             NQ::Configuration => Q::Configuration,
             NQ::ConstraintLimit => Q::ConstraintLimit,
             NQ::ScalarFactLimit => Q::ScalarFactLimit,
-            NQ::ScalarFactError(message) => Q::ScalarFactError(message.clone()),
+            NQ::ScalarFactError(error) => Q::ScalarFactError(fact_failure(error)),
             NQ::ExpressionLimit => Q::ExpressionLimit,
             NQ::Unsupported(op) => Q::Unsupported(*op),
             NQ::ResourceLimit => Q::ResourceLimit,
-            NQ::SolverUnknown(message) => Q::SolverUnknown(message.clone()),
+            NQ::SolverUnknown { provider, reason } => {
+                Q::SolverUnknown(evm_abstract_protocol::SolverUnknown {
+                    provider: solver_provider(*provider),
+                    reason: reason.clone(),
+                })
+            }
+            NQ::SolverError(error) => Q::SolverError(evm_abstract_protocol::SolverFailure {
+                provider: solver_provider(error.provider),
+                message: error.message.clone(),
+            }),
             NQ::ModelUnavailable => Q::ModelUnavailable,
         }),
         N::Creation(reason) => P::Creation(match reason {
@@ -139,6 +148,50 @@ pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol
             NC::UnknownSalt => C::UnknownSalt,
             NC::NonceOverflow(address) => C::NonceOverflow(address.to_string()),
             NC::ReservedAddress(address) => C::ReservedAddress(address.to_string()),
+        }),
+    }
+}
+
+fn solver_provider(
+    source: evm_abstract::domain::relational::SmtProvider,
+) -> evm_abstract_protocol::SmtProvider {
+    use evm_abstract::domain::relational::SmtProvider as N;
+    use evm_abstract_protocol::SmtProvider as P;
+    match source {
+        N::Z3 => P::Z3,
+        N::Bitwuzla => P::Bitwuzla,
+        N::Cvc5 => P::Cvc5,
+    }
+}
+fn fact_failure(
+    source: &evm_abstract::domain::facts::FactError,
+) -> evm_abstract_protocol::FactFailure {
+    use evm_abstract::domain::facts::FactError as N;
+    use evm_abstract_protocol::{FactCapacityFailure, FactFailure as P, FactOperationFailure};
+    match source {
+        N::InvalidBitIndex(index) => P::InvalidBitIndex(*index),
+        N::ConflictingBits => P::ConflictingBits,
+        N::InvalidBounds => P::InvalidBounds,
+        N::EmptyFiniteSet => P::EmptyFiniteSet,
+        N::InvalidModulus => P::InvalidModulus,
+        N::UnsupportedOperation(opcode) => P::UnsupportedOperation(*opcode),
+        N::InvalidOperation {
+            opcode,
+            expected,
+            actual,
+        } => P::InvalidOperation(FactOperationFailure {
+            opcode: *opcode,
+            expected: *expected,
+            actual: *actual,
+        }),
+        N::Contradiction { subject } => P::Contradiction(subject.index()),
+        N::OriginContradiction { subject } => P::OriginContradiction(subject.index()),
+        N::Capacity {
+            max_atoms,
+            required,
+        } => P::Capacity(FactCapacityFailure {
+            max_atoms: *max_atoms,
+            required: *required,
         }),
     }
 }

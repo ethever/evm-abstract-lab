@@ -30,7 +30,7 @@ variant! {
         /// ScalarFactLimit boundary.
         ScalarFactLimit,
         /// ScalarFactError boundary.
-        ScalarFactError(String),
+        ScalarFactError(crate::FactFailure),
         /// ExpressionLimit boundary.
         ExpressionLimit,
         /// Unsupported boundary.
@@ -38,7 +38,9 @@ variant! {
         /// ResourceLimit boundary.
         ResourceLimit,
         /// SolverUnknown boundary.
-        SolverUnknown(String),
+        SolverUnknown(crate::SolverUnknown),
+        /// Native binding or encoding failed, independently of UNKNOWN.
+        SolverError(crate::SolverFailure),
         /// ModelUnavailable boundary.
         ModelUnavailable,
     }

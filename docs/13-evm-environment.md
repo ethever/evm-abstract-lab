@@ -85,7 +85,7 @@ PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中�
 
 ### 在 JSON 中查输入范围
 
-分析结果格式的 `schema_version` 是 3，数值域策略中的 `domain_spec.schema_version` 是 2。输入环境所在位置随输出入口变化：
+分析结果格式的 `schema_version` 是 4，数值域策略中的 `domain_spec.schema_version` 是 2。输入环境所在位置随输出入口变化：
 
 | 命令 | 环境路径 |
 | --- | --- |

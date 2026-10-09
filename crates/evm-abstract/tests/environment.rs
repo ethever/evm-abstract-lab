@@ -31,7 +31,7 @@ fn analyze(code: &str, environment: EvmEnvironment, profile: Profile) -> analysi
 fn single_analysis_json_retains_symbolic_defaults_and_explicit_environment_assumptions() {
     let default = analyze("00", EvmEnvironment::default(), Profile::Product);
     let json = serde_json::to_value(&default).unwrap();
-    assert_eq!(json["schema_version"], 3);
+    assert_eq!(json["schema_version"], 4);
     assert_eq!(
         json["environment"],
         serde_json::to_value(default.environment()).unwrap()

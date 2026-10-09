@@ -419,3 +419,66 @@ fn expanded_account_facts_leave_storage_cells_visible_in_a_short_area() {
         "slot list stays reachable below bounded facts: {expanded:?}"
     );
 }
+
+#[test]
+fn relational_frontier_details_show_fact_arity_and_distinguish_solver_failure() {
+    let mut report = crate::tests::report();
+    report.diagnostics.clear();
+    report.frontiers = vec![api::Frontier {
+        from: Some(0),
+        pc: Some(4),
+        kind: api::FrontierKind::Relations,
+        detail: "not the authoritative cause".into(),
+        reason: api::FrontierDetails::Relations(api::QueryBoundary::ScalarFactError(
+            api::FactFailure::InvalidOperation(api::FactOperationFailure {
+                opcode: 0x16,
+                expected: 2,
+                actual: 1,
+            }),
+        )),
+    }];
+    let context = egui::Context::default();
+    let mut time = 0.0;
+    let mut selection = Selection::default();
+    let arity = rendered(&context, &mut time, vec![], |ui| {
+        evidence::diagnostics(ui, &report, &mut selection)
+    });
+    for required in [
+        "Pure-operation operand count mismatch",
+        "0x16",
+        "Expected operands",
+        "2",
+        "Actual operands",
+        "1",
+    ] {
+        assert!(
+            arity.iter().any(|(text, _)| text == required),
+            "missing {required}: {arity:?}"
+        );
+    }
+    report.frontiers[0].reason =
+        api::FrontierDetails::Relations(api::QueryBoundary::SolverError(api::SolverFailure {
+            provider: api::SmtProvider::Cvc5,
+            message: "binding rejected term".into(),
+        }));
+    let failure = rendered(&context, &mut time, vec![], |ui| {
+        evidence::diagnostics(ui, &report, &mut selection)
+    });
+    for required in [
+        "Solver binding or encoding failed",
+        "Provider",
+        "Cvc5",
+        "Binding diagnostic",
+        "binding rejected term",
+    ] {
+        assert!(
+            failure.iter().any(|(text, _)| text == required),
+            "missing {required}: {failure:?}"
+        );
+    }
+    assert!(
+        !failure
+            .iter()
+            .any(|(text, _)| text == "Solver could not decide")
+    );
+}

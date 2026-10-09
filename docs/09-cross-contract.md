@@ -142,7 +142,7 @@ nix run . -- explain \
   --verbose
 ```
 
-完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=3`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=4`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 完整 SSA 继续逐帧列出 active/suspended、代码地址、storage owner、代码 hash、mode、caller、static、跳转历史和栈高，不会因为活动帧采用共用指令布局而省略暂停帧。`bytecode instructions` 与 `instruction effects` 共享当前 B 标题和不带 `0x` 的 pc 列，效果行不重复打印 B 标题；原始 `opcode`、`immediate`、`operands`、`results`、`fault` 正文和逐指令效果编号仍完整显示。教学视图便于读赋值式值流，完整视图便于核对字段和效果链，各自保留原有证据。
 

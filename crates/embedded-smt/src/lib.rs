@@ -66,7 +66,7 @@ pub enum Unknown {
 }
 
 /// A native or encoding error, distinct from a satisfiability answer.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, thiserror::Error)]
 #[error("{provider}: {message}")]
 pub struct Error {
     /// Provider that could not execute the request.

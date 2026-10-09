@@ -96,3 +96,35 @@ fn nullable_fields_remain_required_and_duplicate_null_is_rejected() {
         assert!(serde_json::from_str::<Frontier>(&invalid).is_err());
     }
 }
+
+#[test]
+fn relational_failures_preserve_fact_coordinates_and_solver_outcomes() {
+    for cause in [
+        QueryBoundary::ScalarFactError(FactFailure::InvalidOperation(FactOperationFailure {
+            opcode: 0x01,
+            expected: 2,
+            actual: 1,
+        })),
+        QueryBoundary::ScalarFactError(FactFailure::Capacity(FactCapacityFailure {
+            max_atoms: 64,
+            required: 65,
+        })),
+        QueryBoundary::ScalarFactError(FactFailure::OriginContradiction(7)),
+        QueryBoundary::SolverUnknown(SolverUnknown {
+            provider: SmtProvider::Z3,
+            reason: "theory limitation".into(),
+        }),
+        QueryBoundary::SolverError(SolverFailure {
+            provider: SmtProvider::Cvc5,
+            message: "native binding failure".into(),
+        }),
+    ] {
+        roundtrip(Frontier {
+            from: Some(12),
+            pc: Some(34),
+            kind: FrontierKind::Relations,
+            reason: FrontierDetails::Relations(cause),
+            detail: "supplemental diagnostic".into(),
+        });
+    }
+}
