@@ -1098,7 +1098,7 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     return results
 
 
-def entry_example_interactions(browser, url: str, output: Path, providers):
+def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     page = browser.new_page(viewport={"width": 1440, "height": 1000})
     observe_webgpu(page)
     baseline = automatic_rpc_entry(page, url, providers[0], output, "examples-startup")
@@ -1106,7 +1106,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers):
     submitted = []
     page.on("request", lambda request: submitted.append(request.post_data_json)
             if request.method == "POST" and request.url.endswith("/api/tasks") else None)
-    results = {"automatic_entry": baseline["input"], "selected_addresses": []}
+    results = {"automatic_entry": baseline["input"], "selected_addresses": [], "snapshot_pins": {}}
     for ordinal, (label, address, menu_y) in enumerate([("weth", WETH_ENTRY, 487), ("usdc", USDC_ENTRY, 464)]):
         open_rpc_input(page, canvas)
         if ordinal == 0:
@@ -1123,10 +1123,15 @@ def entry_example_interactions(browser, url: str, output: Path, providers):
         settle_gesture(page)
         assert len(submitted) == ordinal, "choosing an entry unexpectedly submitted analysis"
         canvas.screenshot(path=str(output / f"entry-{label}-selected.png"))
+        request_offset = len(rpc.requests)
         with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
             page.keyboard.press("Control+Enter")
         reply = complete_submission(page, response.value)
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
+        requests = rpc.requests[request_offset:]
+        pins = sum(request["method"] == "eth_getBlockByNumber" and request["params"][0] == "latest" for request in requests)
+        assert pins == 1, f"{label} must pin latest once: {requests}"
+        results["snapshot_pins"][label] = pins
         expected = json.loads(json.dumps(baseline))
         expected["input"]["Rpc"]["provider_id"] = providers[1]["id"]
         expected["input"]["Rpc"]["address"] = address
@@ -1144,10 +1149,15 @@ def entry_example_interactions(browser, url: str, output: Path, providers):
     open_rpc_input(page, canvas)
     canvas.screenshot(path=str(output / "entry-custom-reopened.png"))
     assert len(submitted) == 2
+    request_offset = len(rpc.requests)
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
         page.keyboard.press("Control+Enter")
     reply = complete_submission(page, response.value)
     assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
+    requests = rpc.requests[request_offset:]
+    pins = sum(request["method"] == "eth_getBlockByNumber" and request["params"][0] == "latest" for request in requests)
+    assert pins == 1, f"custom entry must pin latest once: {requests}"
+    results["snapshot_pins"]["custom"] = pins
     expected = json.loads(json.dumps(baseline))
     expected["input"]["Rpc"]["provider_id"] = providers[1]["id"]
     expected["input"]["Rpc"]["address"] = CUSTOM_ENTRY
@@ -1175,7 +1185,10 @@ def configured_world_interactions(browser, args):
                 assert catalogue.ok, catalogue.text()
                 assert catalogue.json() == {"result": {"Ok": providers}}
                 page.close()
-                examples = entry_example_interactions(browser, url, args.output, providers)
+                examples = entry_example_interactions(browser, url, args.output, providers, rpc)
+                # Each scenario audits its own pinned acquisition, independently
+                # of the completed WETH/USDC/custom-address example tasks.
+                rpc.requests.clear()
                 result = world_interactions(browser, url, args.output, rpc, pending, providers)
                 result["entry_examples"] = examples
                 result["providers"] = providers
