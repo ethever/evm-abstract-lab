@@ -10,7 +10,8 @@ mod request;
 mod tasks;
 
 use evm_abstract_protocol::{
-    API_PATH, ApiError, ApiErrorCode, ErrorDetails, JobReply, TransportErrorKind, TransportFailure,
+    API_PATH, ApiError, ApiErrorCode, ErrorDetails, JobReply, RPC_PROVIDERS_PATH,
+    RpcProvidersReply, TransportErrorKind, TransportFailure,
 };
 use std::{
     fs,
@@ -33,6 +34,9 @@ pub enum ServerError {
     /// Analysis worker pool could not be constructed.
     #[error("analysis pool: {0}")]
     Pool(crate::jobs::PoolError),
+    /// Backend RPC configuration could not be read or validated.
+    #[error("RPC configuration: {0}")]
+    RpcConfig(crate::rpc_providers::ConfigError),
 }
 
 impl From<io::Error> for ServerError {
@@ -60,7 +64,22 @@ pub fn serve_with_config(
     assets: &Path,
     config: crate::jobs::Config,
 ) -> Result<(), ServerError> {
-    let jobs = crate::jobs::Pool::new(config).map_err(ServerError::Pool)?;
+    serve_with_providers(
+        listener,
+        assets,
+        config,
+        crate::rpc_providers::Registry::default(),
+    )
+}
+
+/// Serve with a backend-owned RPC registry shared by admission and workers.
+pub fn serve_with_providers(
+    listener: &TcpListener,
+    assets: &Path,
+    config: crate::jobs::Config,
+    providers: crate::rpc_providers::Registry,
+) -> Result<(), ServerError> {
+    let jobs = crate::jobs::Pool::with_providers(config, providers).map_err(ServerError::Pool)?;
     let mut connections = connections::Pool::new(assets, jobs)?;
     for stream in listener.incoming() {
         let stream = stream?;
@@ -81,6 +100,27 @@ pub fn serve_connection(
         Ok(request) => request,
         Err(error) => return error_reply(&mut stream, error),
     };
+    if request.path == RPC_PROVIDERS_PATH {
+        let result = if request.method == "GET" {
+            Ok(jobs.rpc_providers())
+        } else {
+            Err(api_error(
+                ApiErrorCode::MethodNotAllowed,
+                "RPC providers accept GET",
+            ))
+        };
+        let status = result
+            .as_ref()
+            .err()
+            .map_or(200, |error| error_status(error.code));
+        let body = serde_json::to_vec(&RpcProvidersReply { result })?;
+        return respond(
+            &mut stream,
+            status,
+            "application/json; charset=utf-8",
+            &body,
+        );
+    }
     if request.path == API_PATH || request.path.starts_with(&format!("{API_PATH}/")) {
         return tasks::serve(&mut stream, request, jobs);
     }

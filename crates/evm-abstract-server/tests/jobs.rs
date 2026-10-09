@@ -331,3 +331,44 @@ fn impossible_pool_capacity_is_a_typed_error_before_threads_are_started() {
         Err(evm_abstract_server::jobs::PoolError::Capacity(_))
     ));
 }
+
+#[test]
+fn unknown_provider_is_rejected_before_queue_admission_even_when_full() {
+    let (executor, entered, release) = gate();
+    let pool = Pool::with_executor(
+        Config {
+            workers: 1,
+            queue_capacity: 0,
+            retained_jobs: 1,
+        },
+        executor.clone(),
+    )
+    .unwrap();
+    let running = pool.submit(AnalyzeRequest::default()).unwrap();
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        pool.submit(AnalyzeRequest::default()).unwrap_err().code,
+        ApiErrorCode::QueueFull
+    );
+    let request = AnalyzeRequest {
+        input: evm_abstract_protocol::AnalysisInput::Rpc(evm_abstract_protocol::RpcInput {
+            provider_id: "unknown".into(),
+            address: "0x1111111111111111111111111111111111111111".into(),
+            block: evm_abstract_protocol::BlockSelector::Latest,
+            accounts: Vec::new(),
+        }),
+        ..AnalyzeRequest::default()
+    };
+    let error = pool.submit(request).unwrap_err();
+    assert_eq!(error.code, ApiErrorCode::InvalidRequest);
+    let ErrorDetails::Validation(detail) = error.details else {
+        panic!("provider validation")
+    };
+    assert_eq!(detail.field.as_deref(), Some("provider_id"));
+    assert!(entered.try_recv().is_err());
+    assert_eq!(executor.active.load(Ordering::SeqCst), 1);
+    drop(release);
+    wait_terminal(&pool, running.id);
+    assert!(entered.try_recv().is_err());
+    pool.shutdown().unwrap();
+}

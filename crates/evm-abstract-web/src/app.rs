@@ -6,6 +6,7 @@ mod form;
 mod inspector;
 mod job;
 mod layout;
+mod providers;
 
 use crate::{palette, widgets};
 use directory::{Directory, Pick};
@@ -127,6 +128,16 @@ impl Workspace {
     /// Submit the initial example through the same asynchronous task lifecycle.
     pub fn initial_command(&mut self) -> Command {
         self.start(self.form.request())
+    }
+
+    /// Fetch the RPC catalog independently from any current analysis task.
+    pub fn rpc_provider_command(&mut self) -> Option<Command> {
+        self.form.provider_command()
+    }
+
+    /// Provider availability and selection for assistive tools.
+    pub fn accessible_rpc_provider_status(&self) -> String {
+        self.form.provider_status()
     }
 
     fn start(&mut self, request: AnalyzeRequest) -> Command {
@@ -347,6 +358,9 @@ impl Workspace {
     /// Apply an asynchronous operation result, rejecting superseded tasks.
     pub fn receive_message(&mut self, message: Message) {
         match message {
+            Message::RpcProviders { generation, result } => {
+                self.form.receive_providers(generation, result);
+            }
             Message::Status {
                 generation,
                 operation,

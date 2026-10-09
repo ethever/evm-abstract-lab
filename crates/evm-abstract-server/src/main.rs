@@ -19,6 +19,9 @@ struct Args {
     /// Directory containing the compiled index.html, JavaScript and WebAssembly.
     #[arg(long, default_value = "dist")]
     assets: PathBuf,
+    /// JSON configuration of selectable backend RPC providers; omitted disables RPC input.
+    #[arg(long)]
+    rpc_config: Option<PathBuf>,
     /// CPU analysis workers; defaults to half the host's available threads.
     #[arg(long)]
     workers: Option<usize>,
@@ -50,11 +53,18 @@ fn run(args: Args) -> Result<(), evm_abstract_server::http::ServerError> {
         .queue_capacity
         .unwrap_or_else(|| config.workers.saturating_mul(2));
     config.retained_jobs = args.retained_jobs;
+    let providers = args
+        .rpc_config
+        .as_deref()
+        .map(evm_abstract_server::rpc_providers::Registry::load)
+        .transpose()
+        .map_err(evm_abstract_server::http::ServerError::RpcConfig)?
+        .unwrap_or_default();
     let listener = TcpListener::bind(args.bind)?;
     println!(
         "EVM workbench: http://{} ({} analysis workers)",
         listener.local_addr()?,
         config.workers
     );
-    evm_abstract_server::http::serve_with_config(&listener, &args.assets, config)
+    evm_abstract_server::http::serve_with_providers(&listener, &args.assets, config, providers)
 }

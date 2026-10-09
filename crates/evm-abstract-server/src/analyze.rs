@@ -16,16 +16,32 @@ use evm_abstract::{
 };
 use evm_abstract_protocol as api;
 
-/// Analyze bytecode or an explicitly selected trusted RPC snapshot.
+/// Analyze bytecode without an RPC registry; RPC inputs require `analyze_with_providers`.
 pub fn analyze(request: api::AnalyzeRequest) -> Result<api::AnalysisReport, api::ApiError> {
-    analyze_with_control(request, &Control::default())
+    analyze_with_providers(request, &crate::rpc_providers::Registry::default())
 }
-/// Run with cooperative cancellation and typed bounded progress events.
+/// Analyze bytecode with cancellation and progress; no RPC providers are configured.
 pub fn analyze_with_control(
     request: api::AnalyzeRequest,
     control: &Control,
 ) -> Result<api::AnalysisReport, api::ApiError> {
-    control.scope(|| run(request, control))
+    analyze_with_control_and_providers(request, control, &crate::rpc_providers::Registry::default())
+}
+/// Analyze using only explicitly configured backend RPC providers.
+pub fn analyze_with_providers(
+    request: api::AnalyzeRequest,
+    providers: &crate::rpc_providers::Registry,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    analyze_with_control_and_providers(request, &Control::default(), providers)
+}
+/// Run with cancellation and the same provider registry used for job admission.
+pub fn analyze_with_control_and_providers(
+    request: api::AnalyzeRequest,
+    control: &Control,
+    providers: &crate::rpc_providers::Registry,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    providers.validate_request(&request)?;
+    control.scope(|| run(request, control, providers))
 }
 fn cancelled() -> api::ApiError {
     api::ApiError {
@@ -46,6 +62,7 @@ fn config_error(error: analysis::ConfigError) -> api::ApiError {
 fn run(
     request: api::AnalyzeRequest,
     control: &Control,
+    providers: &crate::rpc_providers::Registry,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     checkpoint(control)?;
     control.observer().phase(Phase::Validating);
@@ -104,7 +121,8 @@ fn run(
         api::AnalysisInput::Rpc(source) => {
             let address = input::address(&source.address, "address")?;
             environment.to = address.into();
-            let input = input::rpc(source, fork, &request.limits)?;
+            let endpoint = providers.endpoint(&source.provider_id)?;
+            let input = input::rpc(source, endpoint, fork, &request.limits)?;
             checkpoint(control)?;
             let native = analysis::analyze_rpc_with_control(
                 &input,

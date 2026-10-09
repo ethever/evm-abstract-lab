@@ -68,14 +68,16 @@ pub trait Executor: Clone + Send + 'static {
 }
 
 #[derive(Clone)]
-struct Native;
+struct Native {
+    providers: Arc<crate::rpc_providers::Registry>,
+}
 impl Executor for Native {
     fn execute(
         &self,
         request: AnalyzeRequest,
         control: &Control,
     ) -> Result<AnalysisReport, ApiError> {
-        crate::analyze::analyze_with_control(request, control)
+        crate::analyze::analyze_with_control_and_providers(request, control, &self.providers)
     }
 }
 
@@ -92,16 +94,44 @@ impl Drop for Handle {
 #[derive(Clone)]
 pub struct Pool {
     handle: Arc<Handle>,
+    providers: Arc<crate::rpc_providers::Registry>,
 }
 
 impl Pool {
     /// Start a native analysis pool with explicit scheduling bounds.
     pub fn new(config: Config) -> Result<Self, PoolError> {
-        Self::with_executor(config, Native)
+        Self::with_providers(config, crate::rpc_providers::Registry::default())
+    }
+
+    /// Start native workers sharing the backend-owned RPC configuration.
+    pub fn with_providers(
+        config: Config,
+        providers: crate::rpc_providers::Registry,
+    ) -> Result<Self, PoolError> {
+        let providers = Arc::new(providers);
+        Self::start(
+            config,
+            Native {
+                providers: Arc::clone(&providers),
+            },
+            providers,
+        )
     }
 
     /// Start a pool around a concrete executor without dynamic callbacks.
     pub fn with_executor<E: Executor>(config: Config, executor: E) -> Result<Self, PoolError> {
+        Self::start(
+            config,
+            executor,
+            Arc::new(crate::rpc_providers::Registry::default()),
+        )
+    }
+
+    fn start<E: Executor>(
+        config: Config,
+        executor: E,
+        providers: Arc<crate::rpc_providers::Registry>,
+    ) -> Result<Self, PoolError> {
         if config.workers == 0 || config.retained_jobs == 0 {
             return Err(PoolError::Configuration);
         }
@@ -113,11 +143,18 @@ impl Pool {
             .map_err(PoolError::Spawn)?;
         Ok(Self {
             handle: Arc::new(Handle { sender }),
+            providers,
         })
     }
 
-    /// Admit a request or return a typed queue-capacity failure.
+    /// Public provider metadata, excluding endpoint URLs and credentials.
+    pub fn rpc_providers(&self) -> Vec<evm_abstract_protocol::RpcProvider> {
+        self.providers.catalogue()
+    }
+
+    /// Admit a configured input or return a validation/queue-capacity failure.
     pub fn submit(&self, request: AnalyzeRequest) -> Result<JobSnapshot, ApiError> {
+        self.providers.validate_request(&request)?;
         let (reply, result) = mpsc::sync_channel(1);
         self.send(actor::Command::Submit {
             request: Box::new(request),

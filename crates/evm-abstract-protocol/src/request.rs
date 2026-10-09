@@ -39,10 +39,10 @@ record! {
     }
 }
 record! {
-    /// Native RPC analysis; endpoint credentials are never copied into reports.
+    /// Native RPC analysis through a server-configured provider.
     pub struct RpcInput {
-        /// Trusted HTTP(S) JSON-RPC endpoint.
-        pub endpoint: String,
+        /// Stable provider ID selected from the backend catalogue.
+        pub provider_id: String,
         /// Root execution/storage account.
         pub address: String,
         /// Block to pin.
@@ -251,7 +251,7 @@ impl Default for AnalysisLimits {
 record! {
     /// Validated by the server before a bounded native job begins.
     pub struct AnalyzeRequest {
-        /// Submitted program or trusted snapshot endpoint.
+        /// Submitted program or server-configured snapshot provider.
         pub input: AnalysisInput,
         /// Fixed execution rules.
         pub fork: crate::Fork,

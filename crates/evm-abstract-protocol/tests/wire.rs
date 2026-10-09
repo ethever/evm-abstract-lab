@@ -15,7 +15,7 @@ fn bytecode_and_rpc_requests_roundtrip() {
     roundtrip(AnalyzeRequest::default());
     let mut request = AnalyzeRequest {
         input: AnalysisInput::Rpc(RpcInput {
-            endpoint: "http://127.0.0.1:8545".into(),
+            provider_id: "mainnet".into(),
             address: format!("0x{}", "11".repeat(20)),
             block: BlockSelector::Number(42),
             accounts: vec![AccountQuery {
@@ -141,4 +141,40 @@ fn transport_diagnostic_roundtrip_preserves_reason_beside_classification() {
         redirect: false,
         native_diagnostic: "builder error: no native root certificates were found".into(),
     }));
+}
+
+#[test]
+fn rpc_catalogue_and_selection_are_strict_and_credential_free() {
+    roundtrip(RpcProvidersReply {
+        result: Ok(vec![RpcProvider {
+            id: "mainnet".into(),
+            name: "Ethereum mainnet".into(),
+        }]),
+    });
+    roundtrip(RpcProvidersReply {
+        result: Ok(Vec::new()),
+    });
+    let input = RpcInput {
+        provider_id: "mainnet".into(),
+        address: format!("0x{}", "11".repeat(20)),
+        block: BlockSelector::Latest,
+        accounts: Vec::new(),
+    };
+    let valid = serde_json::to_string(&input).unwrap();
+    assert!(!valid.contains("endpoint"));
+    for invalid in [
+        valid.replace("provider_id", "endpoint"),
+        valid.replacen("{", r#"{"endpoint":"http://user:secret@example.com", "#, 1),
+        valid.replace(r#""provider_id":"mainnet","#, ""),
+        valid.replace(
+            r#""provider_id":"mainnet""#,
+            r#""provider_id":"mainnet","provider_id":"other""#,
+        ),
+    ] {
+        assert!(
+            serde_json::from_str::<RpcInput>(&invalid).is_err(),
+            "{invalid}"
+        );
+    }
+    assert_eq!(SCHEMA_VERSION, 3);
 }

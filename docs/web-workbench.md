@@ -1,6 +1,6 @@
 # egui Web 工作台
 
-工作台在浏览器中显示反汇编、SSA、跨合约 CFG 和机器状态。输入可以是普通 EVM 运行时字节码，也可以是显式 RPC 与链上地址；执行规则可选 Cancun、Prague 或 Osaka。原生 Rust 后端直接调用核心分析库，不启动 CLI 子进程，浏览器不加载原生 SMT 库。
+工作台在浏览器中显示反汇编、SSA、跨合约 CFG 和机器状态。输入可以是普通 EVM 运行时字节码，也可以是后端配置的 RPC 提供者与链上地址；执行规则可选 Cancun、Prague 或 Osaka。原生 Rust 后端直接调用核心分析库，不启动 CLI 子进程，浏览器不加载原生 SMT 库。
 
 ## 启动
 
@@ -11,6 +11,45 @@ nix run .#web
 ```
 
 Nix 构建 WebAssembly、匹配版本的 wasm-bindgen JavaScript 绑定和原生服务，并将静态资源与 `/api/tasks` 放在同一来源下。浏览器打开服务打印的地址即可使用。
+
+默认不配置 RPC 提供者，字节码分析可直接使用。需要分析链上账户时，在后端准备 JSON 配置文件，例如 `rpc-providers.json`：
+
+```json
+{
+  "providers": [
+    {
+      "id": "mainnet",
+      "name": "Ethereum mainnet",
+      "endpoint": "https://rpc.example.org/ethereum"
+    },
+    {
+      "id": "local",
+      "name": "Local development chain",
+      "endpoint": "http://127.0.0.1:8545"
+    }
+  ]
+}
+```
+
+将示例地址替换为实际 RPC 地址，然后启动：
+
+```bash
+nix run .#web -- --rpc-config /absolute/path/to/rpc-providers.json
+```
+
+`id` 是请求使用的稳定标识，须唯一，由 1–64 个 ASCII 字母、数字、`-` 或 `_` 组成；`name` 是浏览器下拉框显示的名称，须非空、不含控制字符且不超过 128 个字符。`endpoint` 须为有主机名的 HTTP(S) URL，不含空白、控制字符或 fragment。配置文件保留在服务器上；浏览器只取得 `id`、`name`，不会取得 endpoint 或其中的凭据。配置在启动时读取，更新后重启服务生效；无法读取或无效的配置会使启动失败。省略 `--rpc-config` 或配置空 `providers` 时，RPC 表单提示未配置并禁止提交。
+
+若 RPC 报错显示 `eth_chainId` 收到 HTTP `502`，表示后端在取得链 ID 时收到了网关错误，此时尚未开始 CFG 或合约分析。先检查配置的 endpoint 服务及后端网络、代理连接；公网 RPC 的这类错误不需要通过修改前端地址输入来修复，也不能仅凭 `502` 判断一定是代理导致。
+
+后端的 reqwest 客户端继承服务进程的环境代理设置。访问本地或内网 RPC 时，将对应主机加入 `NO_PROXY` / `no_proxy`；下面的 loopback 例子合并并保留两个变量原有的名单：
+
+```bash
+rpc_no_proxy="127.0.0.1,localhost,::1${NO_PROXY:+,$NO_PROXY}${no_proxy:+,$no_proxy}"
+NO_PROXY="$rpc_no_proxy" no_proxy="$rpc_no_proxy" \
+nix run .#web -- --rpc-config /absolute/path/to/rpc-providers.json
+```
+
+内网 RPC 同样加入其实际主机名或 IP。更改配置或代理环境后重启服务，再重试分析。
 
 egui 通过 **wgpu / WebGPU** 绘制到 HTML canvas。Canvas 是页面上的绘图区域，WebGPU 是使用的渲染 API，两者并不冲突。浏览器必须提供 WebGPU 适配器，并从 `localhost`、`127.0.0.1` 或 HTTPS 安全上下文访问；普通 HTTP 局域网地址不满足要求。启动失败会显示错误，当前配置不回退到 WebGL。
 
@@ -26,7 +65,9 @@ nix build .#web-assets
 
 ## 使用控件
 
-通过 **New analysis** 打开弹窗表单，选择字节码或 RPC 地址输入。规则、调用环境、区块选择和预算集中在可滚动表单中；提交后收起输入，让主工作区留给结果。未指定 calldata 表示内容和长度未知，显式空字节串才表示空调用；value 和 caller 也区分未知与指定值。RPC 的区块参数默认 `latest`，每次任务只解析一次。
+通过 **New analysis** 打开弹窗表单，选择字节码或 RPC 链上账户输入。规则、调用环境、区块选择和预算集中在可滚动表单中；提交后收起输入，让主工作区留给结果。未指定 calldata 表示内容和长度未知，显式空字节串才表示空调用；value 和 caller 也区分未知与指定值。RPC 的区块参数默认 `latest`，每次任务只解析一次。
+
+RPC 表单在 **RPC provider** 下拉框中显示后端配置的名称，默认选择第一项，再填写 **Root account**。名单加载中、加载失败或为空时，**Analyze** 和 **Ctrl+Enter** 都不会提交 RPC 任务；失败或为空时可点击 **Retry** 重新获取名单。切回 **Bytecode** 仍能分析字节码。
 
 任务运行期间保留上一份完整结果，并显示新任务的状态与离散进度；新任务成功后才原子替换结果。输入草稿的编辑不会改变正在查看的报告。取消、失败或迟到的旧请求也不会把旧报告冒充新任务结果。
 
@@ -73,14 +114,17 @@ nix build .#web-assets
 | [`evm-abstract-server`](../crates/evm-abstract-server) | 将协议请求转换为引擎输入，验证 SSA，并投影为结构化响应；提供 HTTP 和静态资源 |
 | [`evm-abstract-web`](../crates/evm-abstract-web) | 依赖共享协议；通过 Web API 获取结果，用 egui Painter 绘制各视图 |
 
-共享协议版本为 2。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+共享协议版本为 3。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 
 | 请求 | 返回 |
 | --- | --- |
+| `GET /api/rpc-providers` | `RpcProvidersReply`：`{"result":{"Ok":[{"id":"mainnet","name":"Ethereum mainnet"}]}}`；无配置时列表为空 |
 | `POST /api/tasks`，body 为 `AnalyzeRequest` | `202` 与 `JobReply`，包含任务 ID |
 | `GET /api/tasks/{id}` | 小型 `JobSnapshot`：状态、阶段和累计计数 |
 | `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
+
+版本 3 的 RPC 输入使用 `provider_id`，不再接受浏览器提供的 `endpoint`。例如 `AnalyzeRequest.input` 为 `{"Rpc":{"provider_id":"mainnet","address":"0x0000000000000000000000000000000000000101","block":"Latest","accounts":[]}}`；其余 `fork`、`environment`、`limits` 字段仍按共享请求类型提供。后端在任务入队前按 ID 查找配置，未知 ID 返回 `InvalidRequest`。此变更属于 Web 共享协议，CLI 的显式 `--rpc` 参数保持其原有用法。
 
 报告包含代码目录、完整帧上下文、有效环境、快照身份、账户事实、入口／出口状态和终结结果。不可变 byte-array 与 store 使用报告内索引复用，每个 byte-array 的完整抽象字节值也用局部字典复用；符号表达式用扁平 DAG 表达，保留结构并避免 JSON 嵌套深度随表达式深度增长。状态轮询不重复下载整份报告。
 
@@ -124,8 +168,12 @@ cargo run --locked -p evm-abstract-server -- --assets dist
 
 服务默认监听 `127.0.0.1:8080`；需要其他本地端口时传入 `--bind 127.0.0.1:8081`。`nix run .#web -- --bind 127.0.0.1:8081` 也可指定端口。
 
+本地开发服务同样支持 `cargo run --locked -p evm-abstract-server -- --assets dist --rpc-config /absolute/path/to/rpc-providers.json`。
+
 完整验证仍运行[本地门禁](local-ci.md)。原有 native workspace 检查保留，另对 Wasm 目标执行构建、Clippy 和 Dylint。动态派发仅对 `evm_abstract_web::framework` 中的 egui 文本编辑、egui_tiles 布局行为与 JavaScript 适配开放，控件、共享协议和原生分析服务继续受 `no_dyn` 约束，见[检查规则](no-dynamic-dispatch.md)。
 
 浏览器回归使用 Chromium 的 SwiftShader 软件 WebGPU 适配器，检查实际 WebGPU 上下文及绘制调用，同时覆盖页面分析、DPR 1/2 和图交互。软件适配器验证渲染路径，不代表硬件 GPU 加速性能。
+
+RPC 回归先启动本地 JSON-RPC fixtures，再用真实配置文件启动分析服务，覆盖提供者名单、第二项选择与 `provider_id` 提交、跨合约结果和取消等待中的 RPC。另检查无配置时字节码可用、RPC 禁止提交，以及名单加载失败后的重试。
 
 实现参考：[eframe WebRunner](https://docs.rs/eframe/0.36.2/wasm32-unknown-unknown/eframe/web/struct.WebRunner.html)、[egui Painter](https://docs.rs/egui/0.36.2/egui/struct.Painter.html)。

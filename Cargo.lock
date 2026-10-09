@@ -2036,6 +2036,7 @@ dependencies = [
  "clap",
  "evm-abstract",
  "evm-abstract-protocol",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
