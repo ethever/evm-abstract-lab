@@ -7,10 +7,10 @@ mod limits;
 use egui::{Id, RichText, Ui};
 use evm_abstract_protocol::{
     AnalysisInput, AnalysisLimits, AnalyzeRequest, BlockSelector, BytecodeInput, EnvironmentInput,
-    Fork, RpcInput,
+    Fork, RpcInput, RpcProvidersReply,
 };
 
-use super::BRANCH_EXAMPLE;
+use super::{BRANCH_EXAMPLE, Command, TransportError, providers::RpcProviders};
 use crate::{framework, palette};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,7 @@ pub(super) struct AnalysisForm {
     source: Source,
     pub(super) bytecode: BytecodeInput,
     rpc: RpcInput,
+    providers: RpcProviders,
     fork: Fork,
     environment: EnvironmentInput,
     limits: AnalysisLimits,
@@ -44,11 +45,12 @@ impl Default for AnalysisForm {
                 address: None,
             },
             rpc: RpcInput {
-                endpoint: String::new(),
+                provider_id: String::new(),
                 address: String::new(),
                 block: BlockSelector::Latest,
                 accounts: vec![],
             },
+            providers: RpcProviders::default(),
             fork: defaults.fork,
             environment: defaults.environment,
             limits: defaults.limits,
@@ -58,6 +60,29 @@ impl Default for AnalysisForm {
 }
 
 impl AnalysisForm {
+    pub(super) fn provider_command(&mut self) -> Option<Command> {
+        self.providers.next_command()
+    }
+
+    pub(super) fn receive_providers(
+        &mut self,
+        generation: u64,
+        result: Result<RpcProvidersReply, TransportError>,
+    ) {
+        self.providers
+            .receive(generation, result, &mut self.rpc.provider_id);
+    }
+
+    pub(super) fn provider_status(&self) -> String {
+        self.providers.status(&self.rpc.provider_id)
+    }
+
+    fn can_submit(&self, busy: bool) -> bool {
+        !busy
+            && (self.source == Source::Bytecode
+                || self.providers.valid_selection(&self.rpc.provider_id))
+    }
+
     pub(super) fn request(&self) -> AnalyzeRequest {
         AnalyzeRequest {
             input: match self.source {
@@ -106,7 +131,7 @@ impl AnalysisForm {
                 ui.horizontal(|ui| {
                     submit = ui
                         .add_enabled(
-                            !busy,
+                            self.can_submit(busy),
                             egui::Button::new(
                                 RichText::new("Analyze").strong().color(palette::BACKGROUND),
                             )
@@ -117,6 +142,8 @@ impl AnalysisForm {
                     ui.label(
                         RichText::new(if busy {
                             "A task is still running"
+                        } else if !self.can_submit(false) {
+                            "Choose an available RPC provider to analyze"
                         } else {
                             "Ctrl+Enter to submit"
                         })
@@ -128,12 +155,12 @@ impl AnalysisForm {
         if !self.was_open {
             let id = match self.source {
                 Source::Bytecode => "runtime_bytecode",
-                Source::Rpc => "rpc_endpoint",
+                Source::Rpc => "rpc_address",
             };
             ctx.memory_mut(|memory| memory.request_focus(Id::new(id)));
             self.was_open = true;
         }
-        if !busy
+        if self.can_submit(busy)
             && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter))
         {
             submit = true;
@@ -190,13 +217,7 @@ impl AnalysisForm {
                 );
             }
             Source::Rpc => {
-                field(
-                    ui,
-                    "RPC endpoint",
-                    "rpc_endpoint",
-                    &mut self.rpc.endpoint,
-                    "https://…",
-                );
+                self.providers.show(ui, &mut self.rpc.provider_id);
                 field(
                     ui,
                     "Root account",

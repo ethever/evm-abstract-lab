@@ -12,6 +12,7 @@ alloy-primitives.workspace = true
 evm-abstract               = { path = "../evm-abstract" }
 evm-abstract-protocol      = { path = "../evm-abstract-protocol" }
 serde_json.workspace       = true
+reqwest.workspace          = true
 serde.workspace            = true
 thiserror.workspace        = true
 clap.workspace             = true

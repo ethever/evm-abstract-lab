@@ -243,11 +243,12 @@ pub(super) fn config(
 }
 pub(super) fn rpc(
     input: &api::RpcInput,
+    endpoint: &str,
     fork: evm_abstract::Fork,
     limits: &api::AnalysisLimits,
 ) -> Result<rpc::RpcInput, api::ApiError> {
     Ok(rpc::RpcInput {
-        endpoint: input.endpoint.clone(),
+        endpoint: endpoint.into(),
         fork,
         block: match &input.block {
             api::BlockSelector::Latest => rpc::RpcBlock::Latest,

@@ -8,7 +8,9 @@ use std::{
     sync::mpsc::{self, Receiver, Sender},
 };
 
-use evm_abstract_protocol::{API_PATH, AnalyzeReply, AnalyzeRequest, JobReply};
+use evm_abstract_protocol::{
+    API_PATH, AnalyzeReply, AnalyzeRequest, JobReply, RPC_PROVIDERS_PATH, RpcProvidersReply,
+};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure, prelude::wasm_bindgen};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
@@ -90,7 +92,10 @@ impl eframe::App for BrowserApp {
             self.initial_request = false;
             request = Some(self.workspace.initial_command());
         }
-        if let Some(request) = request {
+        for request in [request, self.workspace.rpc_provider_command()]
+            .into_iter()
+            .flatten()
+        {
             let sender = self.sender.clone();
             let context = ui.ctx().clone();
             spawn_local(async move {
@@ -101,7 +106,11 @@ impl eframe::App for BrowserApp {
         }
         // A live region also makes canvas-only loading/error states accessible
         // to assistive tools and browser smoke checks.
-        let status = self.workspace.accessible_status();
+        let status = format!(
+            "{}; {}",
+            self.workspace.accessible_status(),
+            self.workspace.accessible_rpc_provider_status()
+        );
         if status != self.last_status {
             if let Some(element) = web_sys::window()
                 .and_then(|window| window.document())
@@ -116,6 +125,10 @@ impl eframe::App for BrowserApp {
 
 async fn execute(command: Command) -> Message {
     match command {
+        Command::RpcProviders { generation } => Message::RpcProviders {
+            generation,
+            result: rpc_providers().await,
+        },
         Command::Submit {
             generation,
             request,
@@ -140,6 +153,16 @@ async fn execute(command: Command) -> Message {
             result: Box::new(result(&format!("{API_PATH}/{id}/result")).await),
         },
     }
+}
+
+async fn rpc_providers() -> Result<RpcProvidersReply, TransportError> {
+    let (status, ok, body) = fetch("GET", RPC_PROVIDERS_PATH, None).await?;
+    let reply: RpcProvidersReply =
+        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
+    if !ok && reply.result.is_ok() {
+        return Err(TransportError::Http { status });
+    }
+    Ok(reply)
 }
 
 async fn status(

@@ -4,6 +4,7 @@
 use super::TransportError;
 use evm_abstract_protocol::{
     AnalyzeReply, AnalyzeRequest, ApiError, JobId, JobReply, JobSnapshot, JobState,
+    RpcProvidersReply,
 };
 
 /// The HTTP status operation that produced a task snapshot.
@@ -19,6 +20,11 @@ pub enum JobOperation {
 
 /// Work requested by the pure UI; the framework executes the HTTP operation.
 pub enum Command {
+    /// Read the server-owned RPC provider catalog.
+    RpcProviders {
+        /// Catalog generation, independent from analysis task generations.
+        generation: u64,
+    },
     /// Submit a new immutable analysis request.
     Submit {
         /// UI generation, echoed into the callback.
@@ -51,6 +57,13 @@ pub enum Command {
 
 /// Typed asynchronous callback consumed by the browser-independent workspace.
 pub enum Message {
+    /// RPC catalog response, independent from any analysis result.
+    RpcProviders {
+        /// Generation from the originating catalog command.
+        generation: u64,
+        /// Public provider names and IDs, or a transport failure.
+        result: Result<RpcProvidersReply, TransportError>,
+    },
     /// Result of task submission, polling, or cancellation.
     Status {
         /// Generation from the originating command.

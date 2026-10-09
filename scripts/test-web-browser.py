@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -12,6 +13,7 @@ import selectors
 from statistics import median
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import time
 
 from playwright.sync_api import expect, sync_playwright
@@ -35,6 +37,25 @@ def server_url(process: subprocess.Popen[str]) -> str:
             if match:
                 return match.group(0)
     raise RuntimeError("server did not report its bound loopback URL")
+
+
+@contextmanager
+def analysis_server(args, rpc_config: Path | None = None):
+    command = [args.server, "--assets", args.assets, "--bind", "127.0.0.1:0",
+               "--workers", "2", "--queue-capacity", "4"]
+    if rpc_config is not None:
+        command.extend(["--rpc-config", str(rpc_config)])
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, bufsize=1)
+    try:
+        yield server_url(process)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
 
 def rendered_frame(page) -> None:
@@ -800,144 +821,273 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         browser.close()
     return results
 
-def submit_rpc(page, canvas, rpc, output: Path, name: str):
+RPC_PROVIDERS = [
+    {"id": "pending-fixture", "name": "Pending acquisition"},
+    {"id": "world-fixture", "name": "World snapshot"},
+]
+RPC_PRIVATE_TOKEN = "browser-must-not-receive-this-fixture-token"
+
+
+def open_rpc_input(page, canvas):
     open_input(page)
     canvas.click(position={"x": 465, "y": 386})
     settle_gesture(page)
-    for y, text in [(404, rpc.endpoint), (444, rpc.root_address)]:
-        canvas.click(position={"x": 600, "y": y})
-        page.keyboard.press("Control+A")
-        page.keyboard.type(text, delay=3)
+
+
+def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int):
+    expect(page.locator("#analysis-status")).to_contain_text(f"RPC provider: {RPC_PROVIDERS[0]['name']}")
+    open_rpc_input(page, canvas)
+    if provider_index:
+        canvas.click(position={"x": 600, "y": 404})
+        rendered_frame(page)
+        canvas.screenshot(path=str(output / f"{name}-providers.png"))
+        canvas.click(position={"x": 460, "y": 430 + provider_index * 23})
+    provider = RPC_PROVIDERS[provider_index]
+    expect(page.locator("#analysis-status")).to_contain_text(f"RPC provider: {provider['name']}")
+    canvas.click(position={"x": 600, "y": 444})
+    page.keyboard.press("Control+A")
+    page.keyboard.type(rpc.root_address, delay=3)
     rendered_frame(page)
     canvas.screenshot(path=str(output / f"{name}-input.png"))
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
         page.keyboard.press("Control+Enter")
     admitted = response.value
     request = admitted.request.post_data_json
-    assert request["input"] == {"Rpc": {"endpoint": rpc.endpoint, "address": rpc.root_address, "block": "Latest", "accounts": []}}, request
+    assert request["input"] == {"Rpc": {"provider_id": provider["id"], "address": rpc.root_address, "block": "Latest", "accounts": []}}, request
+    assert rpc.endpoint not in admitted.request.post_data
+    assert RPC_PRIVATE_TOKEN not in admitted.request.post_data
     assert request["environment"]["number"] is None
     return admitted
 
 
-def world_interactions(browser, url: str, output: Path):
+def world_interactions(browser, url: str, output: Path, rpc, pending_rpc):
     results = {}
-    with RpcFixture() as rpc:
-        page = browser.new_page(viewport={"width": 1440, "height": 1000})
-        observe_webgpu(page)
-        failures = []
-        page.on("pageerror", lambda error: failures.append(str(error)))
-        page.goto(url, wait_until="networkidle")
-        status = page.locator("#analysis-status")
-        expect(status).to_contain_text("Ready:", timeout=60000)
-        canvas = page.locator("#evm-canvas")
-        admitted = submit_rpc(page, canvas, rpc, output, "world")
-        reply = complete_submission(page, admitted)
-        envelope = reply.json()
-        (output / "world-task-reply.json").write_text(json.dumps({"admission_http_status": reply.admission_status, "observed_http_status": reply.status, "reply": envelope}, indent=2) + "\n")
-        assert reply.status == 200 and "Ok" in envelope["result"], f"RPC world task failed: {json.dumps(envelope, sort_keys=True)}"
-        report = envelope["result"]["Ok"]
-        assert len(report["programs"]) >= 2, "RPC call failed to capture the child program"
-        assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
-        assert max(block["frame_depth"] for block in report["cfg"]) == 2
-        snapshot = report["metadata"]["snapshot"]
-        assert int(snapshot["chain_id"], 16) == int(rpc.chain_id, 16) and snapshot["block_hash"] == rpc.block_hash
-        assert report["acquisition"]["requests"] > 0
-        assert report["outcomes"] and report["stores"] and report["byte_arrays"]
-        assert any(state["exit"] and len(state["exit"]["frames"]) == 2 for state in report["states"])
-        child = next(program for program in report["programs"] if program["code_address"] == rpc.child_address)
-        child_state = next(block for block in report["cfg"] if block["program"] == child["id"])
-        child_frames = [frame for state in report["states"] for point in (state["entry"], state["exit"]) if point for frame in point["frames"] if frame["program"] == child["id"]]
-        def contains(value, number):
-            return value["constants"] is not None and number in [int(word, 16) for word in value["constants"]]
-        def byte_at(array, offset, number):
-            return any(cell["offset"] == offset and contains(array["values"][cell["value"]], number) for cell in array["cells"])
-        assert any(contains(report["byte_arrays"][frame["calldata"]]["length"], 1) and byte_at(report["byte_arrays"][frame["calldata"]], 0, 0xab) for frame in child_frames)
-        assert any(byte_at(report["byte_arrays"][frame["memory"]], 0, 0xab) for frame in child_frames)
-        child_accounts = [account for store in report["stores"] for account in store["accounts"] if account["address"] == rpc.child_address]
-        assert any(any(int(entry["slot"], 16) == 3 and contains(entry["value"], 99) for entry in account["storage"]) for account in child_accounts)
-        assert any(any(int(entry["slot"], 16) == 2 and contains(entry["value"], 7) for entry in account["transient"]) for account in child_accounts)
-        # Select the actual child program from the native directory. It must
-        # update code, SSA, graph selection and the active frame together.
-        settle_gesture(page)
-        canvas.screenshot(path=str(output / "world-overview.png"))
-        canvas.click(position={"x": 80, "y": 135})
-        expect(status).to_contain_text(f"source P{child['id']}")
-        expect(status).to_contain_text(f"Selected S{child_state['id']}")
-        expect(status).to_contain_text("Frame 1")
-        canvas.screenshot(path=str(output / "world-child-frame.png"))
-        screenshots = {}
-        tabs = [(80, "Stack"), (137, "Memory"), (201, "Storage"), (268, "Transient"),
-                (335, "Calldata"), (408, "Returndata"), (488, "Outcomes"),
-                (567, "Acquisition"), (654, "Environment"), (741, "Diagnostics"), (30, "Frame")]
-        for x, tab in tabs:
-            canvas.click(position={"x": x, "y": 778})
-            expect(status).to_contain_text(tab)
-            rendered_frame(page)
-            png = canvas.screenshot(path=str(output / f"world-{tab.lower()}.png"))
-            screenshots[tab] = hashlib.sha256(png).hexdigest()
-        assert len(set(screenshots.values())) == len(tabs), "inspector controls did not expose distinct views"
-        canvas.click(position={"x": 166, "y": 801})
-        expect(status).to_contain_text("Observed exit")
-        canvas.click(position={"x": 137, "y": 778})
-        expect(status).to_contain_text("Memory")
-        canvas.screenshot(path=str(output / "world-child-exit-memory.png"))
-        # All acquisition reads remain on one canonical snapshot.
-        reads = [request for request in rpc.requests if request["method"] in ("eth_getCode", "eth_getStorageAt", "eth_getBalance", "eth_getTransactionCount")]
-        assert reads and all(request["params"][-1] == {"blockHash": rpc.block_hash, "requireCanonical": True} for request in reads)
-        assert sum(request["method"] == "eth_getBlockByNumber" and request["params"][0] == "latest" for request in rpc.requests) == 1
-        (output / "world-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
-        results["analysis"] = {"programs": len(report["programs"]), "states": len(report["states"]), "outcomes": len(report["outcomes"]), "rpc_requests": len(rpc.requests), "inspector_views": screenshots, "renderer": webgpu_evidence(page)}
-        assert not failures, failures
-        page.close()
-    with RpcFixture(block_method="eth_getCode") as rpc:
-        page = browser.new_page(viewport={"width": 1440, "height": 1000})
-        observe_webgpu(page)
-        page.goto(url, wait_until="networkidle")
-        status = page.locator("#analysis-status")
-        expect(status).to_contain_text("Ready:", timeout=60000)
-        canvas = page.locator("#evm-canvas")
-        page.evaluate("""() => {
-            window.taskStatusHistory = [];
-            new MutationObserver(() => window.taskStatusHistory.push(document.querySelector('#analysis-status').textContent))
-                .observe(document.querySelector('#analysis-status'), {childList:true,subtree:true,characterData:true});
-        }""")
-        held_polls = []
-        aborted = []
-        def hold_first_poll(route):
-            if route.request.method == "GET" and re.search(r"/api/tasks/\d+$", route.request.url) and not held_polls:
-                held_polls.append(route)
-            else:
-                route.continue_()
-        page.route("**/api/tasks/*", hold_first_poll)
-        page.on("requestfailed", lambda request: aborted.append({"url": request.url, "failure": request.failure}))
-        admitted = submit_rpc(page, canvas, rpc, output, "cancel")
-        assert admitted.status == 202, admitted.text()
-        assert rpc.started.wait(5), "fixture did not enter a real pending RPC request"
-        expect(status).to_contain_text("showing previous result")
-        for _ in range(50):
-            if held_polls:
-                break
-            page.wait_for_timeout(100)
-        assert held_polls, "fixture did not hold an actual browser status fetch"
-        canvas.screenshot(path=str(output / "cancel-pending.png"))
-        with page.expect_response(lambda response: response.request.method == "DELETE" and "/api/tasks/" in response.url) as cancelled:
-            canvas.click(position={"x": 30, "y": 988})
-        assert cancelled.value.ok
-        assert cancelled.value.json()["result"]["Ok"]["state"] == "Cancelling"
-        assert rpc.disconnected.wait(5), "cooperative cancellation did not close pending acquisition"
-        expect(status).to_contain_text("Cancelled", timeout=22000)
-        assert any("/api/tasks/" in failure["url"] for failure in aborted), "hung HTTP poll was never aborted"
-        history = page.evaluate("window.taskStatusHistory")
-        assert any("Cancelling" in text for text in history), history
-        assert "showing previous result" in status.text_content()
-        canvas.screenshot(path=str(output / "cancel-acknowledged.png"))
-        results["cancellation"] = {"history": history, "pending_rpc_closed": rpc.disconnected.is_set(), "aborted_http": aborted, "status": status.text_content()}
-        # Resolve the test harness interception after the application itself
-        # proved it aborted/recovered, so Playwright has no pending handler.
-        held_polls[0].abort()
-        page.unroute_all(behavior="wait")
-        page.close()
+    page = browser.new_page(viewport={"width": 1440, "height": 1000})
+    observe_webgpu(page)
+    failures = []
+    page.on("pageerror", lambda error: failures.append(str(error)))
+    page.goto(url, wait_until="networkidle")
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("Ready:", timeout=60000)
+    canvas = page.locator("#evm-canvas")
+    admitted = submit_rpc(page, canvas, rpc, output, "world", provider_index=1)
+    reply = complete_submission(page, admitted)
+    envelope = reply.json()
+    (output / "world-task-reply.json").write_text(json.dumps({"admission_http_status": reply.admission_status, "observed_http_status": reply.status, "reply": envelope}, indent=2) + "\n")
+    assert reply.status == 200 and "Ok" in envelope["result"], f"RPC world task failed: {json.dumps(envelope, sort_keys=True)}"
+    report = envelope["result"]["Ok"]
+    assert len(report["programs"]) >= 2, "RPC call failed to capture the child program"
+    assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
+    assert max(block["frame_depth"] for block in report["cfg"]) == 2
+    snapshot = report["metadata"]["snapshot"]
+    assert int(snapshot["chain_id"], 16) == int(rpc.chain_id, 16) and snapshot["block_hash"] == rpc.block_hash
+    assert report["acquisition"]["requests"] > 0
+    assert report["outcomes"] and report["stores"] and report["byte_arrays"]
+    assert any(state["exit"] and len(state["exit"]["frames"]) == 2 for state in report["states"])
+    child = next(program for program in report["programs"] if program["code_address"] == rpc.child_address)
+    child_state = next(block for block in report["cfg"] if block["program"] == child["id"])
+    child_frames = [frame for state in report["states"] for point in (state["entry"], state["exit"]) if point for frame in point["frames"] if frame["program"] == child["id"]]
+    def contains(value, number):
+        return value["constants"] is not None and number in [int(word, 16) for word in value["constants"]]
+    def byte_at(array, offset, number):
+        return any(cell["offset"] == offset and contains(array["values"][cell["value"]], number) for cell in array["cells"])
+    assert any(contains(report["byte_arrays"][frame["calldata"]]["length"], 1) and byte_at(report["byte_arrays"][frame["calldata"]], 0, 0xab) for frame in child_frames)
+    assert any(byte_at(report["byte_arrays"][frame["memory"]], 0, 0xab) for frame in child_frames)
+    child_accounts = [account for store in report["stores"] for account in store["accounts"] if account["address"] == rpc.child_address]
+    assert any(any(int(entry["slot"], 16) == 3 and contains(entry["value"], 99) for entry in account["storage"]) for account in child_accounts)
+    assert any(any(int(entry["slot"], 16) == 2 and contains(entry["value"], 7) for entry in account["transient"]) for account in child_accounts)
+    # Select the actual child program from the native directory. It must
+    # update code, SSA, graph selection and the active frame together.
+    settle_gesture(page)
+    canvas.screenshot(path=str(output / "world-overview.png"))
+    canvas.click(position={"x": 80, "y": 135})
+    expect(status).to_contain_text(f"source P{child['id']}")
+    expect(status).to_contain_text(f"Selected S{child_state['id']}")
+    expect(status).to_contain_text("Frame 1")
+    canvas.screenshot(path=str(output / "world-child-frame.png"))
+    screenshots = {}
+    tabs = [(80, "Stack"), (137, "Memory"), (201, "Storage"), (268, "Transient"),
+            (335, "Calldata"), (408, "Returndata"), (488, "Outcomes"),
+            (567, "Acquisition"), (654, "Environment"), (741, "Diagnostics"), (30, "Frame")]
+    for x, tab in tabs:
+        canvas.click(position={"x": x, "y": 778})
+        expect(status).to_contain_text(tab)
+        rendered_frame(page)
+        png = canvas.screenshot(path=str(output / f"world-{tab.lower()}.png"))
+        screenshots[tab] = hashlib.sha256(png).hexdigest()
+    assert len(set(screenshots.values())) == len(tabs), "inspector controls did not expose distinct views"
+    canvas.click(position={"x": 166, "y": 801})
+    expect(status).to_contain_text("Observed exit")
+    canvas.click(position={"x": 137, "y": 778})
+    expect(status).to_contain_text("Memory")
+    canvas.screenshot(path=str(output / "world-child-exit-memory.png"))
+    # All acquisition reads remain on one canonical snapshot.
+    reads = [request for request in rpc.requests if request["method"] in ("eth_getCode", "eth_getStorageAt", "eth_getBalance", "eth_getTransactionCount")]
+    assert reads and all(request["params"][-1] == {"blockHash": rpc.block_hash, "requireCanonical": True} for request in reads)
+    assert sum(request["method"] == "eth_getBlockByNumber" and request["params"][0] == "latest" for request in rpc.requests) == 1
+    assert not pending_rpc.requests, "selecting the second provider contacted the default provider"
+    assert RPC_PRIVATE_TOKEN not in json.dumps(report), "provider credentials escaped into the public report"
+    (output / "world-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
+    results["analysis"] = {"programs": len(report["programs"]), "states": len(report["states"]), "outcomes": len(report["outcomes"]), "rpc_requests": len(rpc.requests), "inspector_views": screenshots, "renderer": webgpu_evidence(page)}
+    assert not failures, failures
+    page.close()
+    rpc = pending_rpc
+    page = browser.new_page(viewport={"width": 1440, "height": 1000})
+    observe_webgpu(page)
+    page.goto(url, wait_until="networkidle")
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("Ready:", timeout=60000)
+    canvas = page.locator("#evm-canvas")
+    page.evaluate("""() => {
+        window.taskStatusHistory = [];
+        new MutationObserver(() => window.taskStatusHistory.push(document.querySelector('#analysis-status').textContent))
+            .observe(document.querySelector('#analysis-status'), {childList:true,subtree:true,characterData:true});
+    }""")
+    held_polls = []
+    aborted = []
+    def hold_first_poll(route):
+        if route.request.method == "GET" and re.search(r"/api/tasks/\d+$", route.request.url) and not held_polls:
+            held_polls.append(route)
+        else:
+            route.continue_()
+    page.route("**/api/tasks/*", hold_first_poll)
+    page.on("requestfailed", lambda request: aborted.append({"url": request.url, "failure": request.failure}))
+    admitted = submit_rpc(page, canvas, rpc, output, "cancel", provider_index=0)
+    assert admitted.status == 202, admitted.text()
+    assert rpc.started.wait(5), "fixture did not enter a real pending RPC request"
+    expect(status).to_contain_text("showing previous result")
+    for _ in range(50):
+        if held_polls:
+            break
+        page.wait_for_timeout(100)
+    assert held_polls, "fixture did not hold an actual browser status fetch"
+    canvas.screenshot(path=str(output / "cancel-pending.png"))
+    with page.expect_response(lambda response: response.request.method == "DELETE" and "/api/tasks/" in response.url) as cancelled:
+        canvas.click(position={"x": 30, "y": 988})
+    assert cancelled.value.ok
+    assert cancelled.value.json()["result"]["Ok"]["state"] == "Cancelling"
+    assert rpc.disconnected.wait(5), "cooperative cancellation did not close pending acquisition"
+    expect(status).to_contain_text("Cancelled", timeout=22000)
+    assert any("/api/tasks/" in failure["url"] for failure in aborted), "hung HTTP poll was never aborted"
+    history = page.evaluate("window.taskStatusHistory")
+    assert any("Cancelling" in text for text in history), history
+    assert "showing previous result" in status.text_content()
+    canvas.screenshot(path=str(output / "cancel-acknowledged.png"))
+    results["cancellation"] = {"history": history, "pending_rpc_closed": rpc.disconnected.is_set(), "aborted_http": aborted, "status": status.text_content()}
+    # Resolve the test harness interception after the application itself
+    # proved it aborted/recovered, so Playwright has no pending handler.
+    held_polls[0].abort()
+    page.unroute_all(behavior="wait")
+    page.close()
     return results
+
+
+def configured_world_interactions(browser, args):
+    # Endpoints must exist before the server loads its provider configuration.
+    # Both tasks use the real catalogue and ID resolution, including cancellation.
+    with RpcFixture(block_method="eth_getCode") as pending, RpcFixture() as rpc:
+        with TemporaryDirectory(prefix="web-rpc-providers-") as directory:
+            configuration = Path(directory) / "providers.json"
+            providers = [
+                {**provider, "endpoint": fixture.endpoint + "/rpc?token=" + RPC_PRIVATE_TOKEN}
+                for provider, fixture in zip(RPC_PROVIDERS, [pending, rpc], strict=True)
+            ]
+            configuration.write_text(json.dumps({"providers": providers}) + "\n")
+            with analysis_server(args, configuration) as url:
+                page = browser.new_page()
+                catalogue = page.request.get(url + "/api/rpc-providers")
+                assert catalogue.ok, catalogue.text()
+                assert catalogue.json() == {"result": {"Ok": RPC_PROVIDERS}}
+                assert RPC_PRIVATE_TOKEN not in catalogue.text()
+                assert all(fixture.endpoint not in catalogue.text() for fixture in [pending, rpc])
+                page.close()
+                result = world_interactions(browser, url, args.output, rpc, pending)
+                result["providers"] = RPC_PROVIDERS
+                result["selected_provider_id"] = RPC_PROVIDERS[1]["id"]
+                result["endpoint_kept_on_server"] = True
+                return result
+
+
+def assert_rpc_disabled(page, canvas, output: Path, name: str, analyze_y: int):
+    submissions = []
+    def observe_submission(request):
+        if request.method == "POST" and request.url.endswith("/api/tasks"):
+            submissions.append(request.post_data_json)
+    page.on("request", observe_submission)
+    try:
+        page.keyboard.press("Control+Enter")
+        settle_gesture(page)
+        canvas.click(position={"x": 382, "y": analyze_y})
+        settle_gesture(page)
+        assert not submissions, f"{name} allowed an RPC task without an available provider: {submissions}"
+        canvas.screenshot(path=str(output / f"{name}.png"))
+    finally:
+        page.remove_listener("request", observe_submission)
+
+
+def unconfigured_rpc_interactions(browser, url: str, output: Path):
+    page = browser.new_page(viewport={"width": 1440, "height": 1000})
+    observe_webgpu(page)
+    with page.expect_response(lambda response: response.url.endswith("/api/rpc-providers")) as catalogue:
+        page.goto(url, wait_until="networkidle")
+    assert catalogue.value.ok
+    assert catalogue.value.json() == {"result": {"Ok": []}}
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("Ready:", timeout=60000)
+    expect(status).to_contain_text("No RPC providers are configured on the server.")
+    canvas = page.locator("#evm-canvas")
+    bytecode = submit_bytecode(page, canvas, "600160020100", output / "rpc-empty-bytecode.png")
+    assert bytecode.status == 200 and bytecode.json()["result"]["Ok"]["status"] == "Converged"
+    open_rpc_input(page, canvas)
+    assert_rpc_disabled(page, canvas, output, "rpc-empty-disabled", analyze_y=667)
+    with page.expect_response(lambda response: response.url.endswith("/api/rpc-providers")) as retry:
+        canvas.click(position={"x": 372, "y": 414})
+    assert retry.value.json() == {"result": {"Ok": []}}
+    expect(status).to_contain_text("No RPC providers are configured on the server.")
+    page.close()
+
+    # Fail the initial catalogue, then delay a retry after bytecode is ready.
+    # This starts the production fetch deadline immediately before the loading
+    # assertions, rather than letting initial analysis consume that deadline.
+    page = browser.new_page(viewport={"width": 1440, "height": 1000})
+    observe_webgpu(page)
+    held_catalogues = []
+    catalogue_attempts = 0
+    def delay_catalogue(route):
+        nonlocal catalogue_attempts
+        catalogue_attempts += 1
+        if catalogue_attempts == 1:
+            route.fulfill(status=503, content_type="application/json", body='{"result":{"Ok":[]}}')
+        else:
+            held_catalogues.append(route)
+    page.route("**/api/rpc-providers", delay_catalogue)
+    page.goto(url, wait_until="networkidle")
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("Ready:", timeout=60000)
+    expect(status).to_contain_text("Could not load RPC providers:")
+    canvas = page.locator("#evm-canvas")
+    bytecode = submit_bytecode(page, canvas, "600160020100", output / "rpc-failed-bytecode.png")
+    assert bytecode.status == 200
+    open_rpc_input(page, canvas)
+    assert_rpc_disabled(page, canvas, output, "rpc-failed-disabled", analyze_y=667)
+    canvas.click(position={"x": 372, "y": 414})
+    expect(status).to_contain_text("Loading RPC providers")
+    assert len(held_catalogues) == 1
+    assert_rpc_disabled(page, canvas, output, "rpc-loading-disabled", analyze_y=660)
+    expect(status).to_contain_text("Loading RPC providers")
+    held_catalogues[0].fulfill(status=503, content_type="application/json", body='{"result":{"Ok":[]}}')
+    expect(status).to_contain_text("Could not load RPC providers:")
+    page.unroute("**/api/rpc-providers", delay_catalogue)
+    with page.expect_response(lambda response: response.url.endswith("/api/rpc-providers")) as retry:
+        canvas.click(position={"x": 372, "y": 414})
+    assert retry.value.ok and retry.value.json() == {"result": {"Ok": []}}
+    expect(status).to_contain_text("No RPC providers are configured on the server.")
+    canvas.screenshot(path=str(output / "rpc-retry-recovered.png"))
+    page.close()
+    return {"unconfigured_catalogue": [], "bytecode_available": True,
+            "disabled_rpc_states": ["empty", "loading", "failed"],
+            "checked_submission_paths": ["Analyze", "Control+Enter"],
+            "catalogue_retry": "real server returned empty catalogue"}
 
 
 def main() -> None:
@@ -948,15 +1098,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    process = subprocess.Popen(
-        [args.server, "--assets", args.assets, "--bind", "127.0.0.1:0", "--workers", "2", "--queue-capacity", "4"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    try:
-        url = server_url(process)
+    with analysis_server(args) as url:
         with sync_playwright() as playwright:
             browser = launch_browser(playwright.chromium, args.browser)
             page = browser.new_page(viewport={"width": 1440, "height": 1000}, color_scheme="light")
@@ -976,7 +1118,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 2
+            assert analysis["schema_version"] == 3
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
@@ -1063,7 +1205,8 @@ def main() -> None:
                 responsive_input[f"{width}x{height}"] = posted_bytecode(reply)
             renderer = webgpu_evidence(page)
             unavailable = webgpu_unavailable(browser, url, args.output)
-            world = world_interactions(browser, url, args.output)
+            rpc_providers = unconfigured_rpc_interactions(browser, url, args.output)
+            world = configured_world_interactions(browser, args)
             panes = pane_interactions(browser, url, args.output)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
             assert not errors, "browser errors: " + "\n".join(errors)
@@ -1085,19 +1228,13 @@ def main() -> None:
                 "graph_interactions": gestures,
                 "pane_interactions": panes,
                 "world_interactions": world,
+                "rpc_providers": rpc_providers,
                 "platform": "Linux headless Chromium with Xvfb and SwiftShader WebGPU; synthesized browser gestures, not physical macOS hardware",
                 "browser_errors": errors,
             }
             (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report, indent=2))
             browser.close()
-    finally:
-        process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 """Deterministic ordinary JSON-RPC fixture for the browser world workflow.
 
-Use ``with RpcFixture() as rpc:`` and submit rpc.endpoint + rpc.root_address.
+Use ``with RpcFixture() as rpc:`` before starting the native analysis server.
+Put rpc.endpoint in that server's provider configuration, then submit its
+provider ID and rpc.root_address from the browser. No endpoint is sent by the UI.
 The root reads an acquired slot, writes persistent and transient state, calls a
 second account with one byte of calldata, receives 32 bytes, then returns them.
 A separate ``RpcFixture(block_method="eth_getCode")`` leaves native acquisition

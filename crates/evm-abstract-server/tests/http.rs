@@ -1,11 +1,12 @@
 //! Actual TCP tests cover framing, typed API responses and the static asset host.
 
 use evm_abstract_protocol::{
-    AnalysisInput, AnalyzeReply, AnalyzeRequest, ApiErrorCode, BlockSelector, JobReply, JobState,
-    RpcInput,
+    AnalysisInput, AnalyzeReply, AnalyzeRequest, ApiErrorCode, BlockSelector, ErrorDetails,
+    JobReply, JobState, RpcInput, RpcProvidersReply,
 };
 use evm_abstract_server::http::serve_connection;
 use evm_abstract_server::jobs::{Config, Pool};
+use evm_abstract_server::rpc_providers::Registry;
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -145,9 +146,22 @@ fn decode_job(bytes: &[u8]) -> (String, JobReply) {
 #[test]
 fn http_poll_assets_and_cancel_remain_responsive_during_pending_rpc() {
     let assets = Assets::new();
-    let pool = pool();
     let rpc = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", rpc.local_addr().unwrap());
+    let providers = Registry::from_json(
+        format!(r#"{{"providers":[{{"id":"fixture","name":"Fixture","endpoint":"{endpoint}"}}]}}"#)
+            .as_bytes(),
+    )
+    .unwrap();
+    let pool = Pool::with_providers(
+        Config {
+            workers: 1,
+            queue_capacity: 2,
+            retained_jobs: 4,
+        },
+        providers,
+    )
+    .unwrap();
     let (accepted, request_started) = mpsc::sync_channel(1);
     let (closed, disconnected) = mpsc::sync_channel(1);
     thread::scope(|scope| {
@@ -181,7 +195,7 @@ fn http_poll_assets_and_cancel_remain_responsive_during_pending_rpc() {
         });
         let input = AnalyzeRequest {
             input: AnalysisInput::Rpc(RpcInput {
-                endpoint,
+                provider_id: "fixture".into(),
                 address: "0x1111111111111111111111111111111111111111".into(),
                 block: BlockSelector::Latest,
                 accounts: Vec::new(),
@@ -367,4 +381,147 @@ fn canonical_path_check_blocks_symlinks_outside_asset_root() {
         decode(&response).1.result.unwrap_err().code,
         ApiErrorCode::NotFound
     );
+}
+
+fn decode_providers(bytes: &[u8]) -> (String, RpcProvidersReply) {
+    let boundary = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap();
+    (
+        std::str::from_utf8(&bytes[..boundary]).unwrap().to_owned(),
+        serde_json::from_slice(&bytes[boundary + 4..]).unwrap(),
+    )
+}
+
+#[test]
+fn provider_route_exposes_only_public_metadata_and_empty_configuration() {
+    let assets = Assets::new();
+    let providers = Registry::from_json(br#"{"providers":[{"id":"mainnet","name":"Ethereum mainnet","endpoint":"https://user:secret-pass@example.com/private?key=secret-key"},{"id":"local","name":"Local node","endpoint":"http://127.0.0.1:8545"}]}"#).unwrap();
+    let configured = Pool::with_providers(
+        Config {
+            workers: 1,
+            queue_capacity: 1,
+            retained_jobs: 1,
+        },
+        providers,
+    )
+    .unwrap();
+    let response = exchange_with_pool(
+        b"GET /api/rpc-providers HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        &assets.0,
+        &configured,
+    );
+    let (headers, reply) = decode_providers(&response);
+    assert!(headers.starts_with("HTTP/1.1 200"));
+    let catalogue = reply.result.unwrap();
+    assert_eq!(catalogue.len(), 2);
+    assert_eq!(catalogue[0].id, "mainnet");
+    assert_eq!(catalogue[0].name, "Ethereum mainnet");
+    assert_eq!(catalogue[1].id, "local");
+    let text = std::str::from_utf8(&response).unwrap();
+    for secret in [
+        "endpoint",
+        "secret",
+        "user",
+        "example.com",
+        "127.0.0.1",
+        "private",
+    ] {
+        assert!(!text.contains(secret));
+    }
+    let (headers, reply) = decode_providers(&exchange_with_pool(
+        b"POST /api/rpc-providers HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+        &assets.0,
+        &configured,
+    ));
+    assert!(headers.starts_with("HTTP/1.1 405"));
+    assert_eq!(
+        reply.result.unwrap_err().code,
+        ApiErrorCode::MethodNotAllowed
+    );
+    configured.shutdown().unwrap();
+    let (headers, reply) = decode_providers(&exchange(
+        b"GET /api/rpc-providers HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        &assets.0,
+    ));
+    assert!(headers.starts_with("HTTP/1.1 200"));
+    assert!(reply.result.unwrap().is_empty());
+}
+
+#[test]
+fn rpc_submission_rejects_unknown_ids_and_legacy_endpoints_before_network_or_job_creation() {
+    let assets = Assets::new();
+    let rpc = TcpListener::bind("127.0.0.1:0").unwrap();
+    rpc.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}/secret?key=secret-key", rpc.local_addr().unwrap());
+    let providers = Registry::from_json(
+        format!(
+            r#"{{"providers":[{{"id":"registered","name":"Fixture","endpoint":"{endpoint}"}}]}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let pool = Pool::with_providers(
+        Config {
+            workers: 1,
+            queue_capacity: 0,
+            retained_jobs: 1,
+        },
+        providers,
+    )
+    .unwrap();
+    let input = AnalyzeRequest {
+        input: AnalysisInput::Rpc(RpcInput {
+            provider_id: "unknown".into(),
+            address: "0x1111111111111111111111111111111111111111".into(),
+            block: BlockSelector::Latest,
+            accounts: Vec::new(),
+        }),
+        ..AnalyzeRequest::default()
+    };
+    let valid = serde_json::to_string(&input).unwrap();
+    for (body, provider_error) in [
+        (valid.clone(), true),
+        (valid.replace("unknown", &endpoint), true),
+        (
+            valid.replace(
+                r#""provider_id":"unknown""#,
+                &format!(r#""endpoint":"{endpoint}""#),
+            ),
+            false,
+        ),
+        (
+            valid.replace(
+                r#""provider_id":"unknown""#,
+                &format!(r#""provider_id":"registered","endpoint":"{endpoint}""#),
+            ),
+            false,
+        ),
+    ] {
+        let request = format!(
+            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let response = exchange_with_pool(request.as_bytes(), &assets.0, &pool);
+        let (header, reply) = decode_job(&response);
+        assert!(header.starts_with("HTTP/1.1 400"));
+        let error = reply.result.unwrap_err();
+        assert_eq!(error.code, ApiErrorCode::InvalidRequest);
+        if provider_error {
+            let ErrorDetails::Validation(detail) = error.details else {
+                panic!("typed validation")
+            };
+            assert_eq!(detail.field.as_deref(), Some("provider_id"));
+            assert_eq!(detail.value, None);
+        }
+        assert!(!std::str::from_utf8(&response).unwrap().contains("secret"));
+        assert_eq!(
+            rpc.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+    // Invalid RPC inputs never consumed a slot; bytecode still enters the pool.
+    pool.submit(AnalyzeRequest::default()).unwrap();
+    pool.shutdown().unwrap();
 }

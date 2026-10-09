@@ -16,6 +16,7 @@ mod query_errors;
 mod request;
 mod rpc;
 mod rpc_causes;
+mod rpc_providers;
 mod ssa;
 mod ssa_errors;
 mod state;
@@ -29,6 +30,7 @@ pub use query_errors::*;
 pub use request::*;
 pub use rpc::*;
 pub use rpc_causes::*;
+pub use rpc_providers::*;
 pub use ssa::*;
 pub use ssa_errors::*;
 pub use state::*;
@@ -36,7 +38,7 @@ pub use state::*;
 /// Same-origin analysis endpoint.
 pub const API_PATH: &str = "/api/tasks";
 /// Wire schema version, independent of the engine's private JSON formats.
-pub const SCHEMA_VERSION: u16 = 2;
+pub const SCHEMA_VERSION: u16 = 3;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 

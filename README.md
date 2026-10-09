@@ -168,6 +168,8 @@ nix run .#web
 
 打开命令打印的本地地址，在 egui 工作台输入运行时字节码，查看自绘的反汇编、SSA 和 CFG。浏览器通过共享 Rust 类型向原生分析服务发送请求；分析和 SMT 求解仍在后端运行。控件操作、开发构建、数据接口及当前输入范围见[Web 前端说明](docs/web-workbench.md)。
 
+分析链上账户时，在后端配置 RPC 提供者并使用 `nix run .#web -- --rpc-config /absolute/path/to/rpc-providers.json` 启动；浏览器通过名称选择提供者，只提交其 ID。省略配置时仍可分析字节码，RPC 提交不可用。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)。
+
 ## 开发环境与实现入口
 
 应用 workspace 的 Rust 使用静态派发，egui/Web 适配模块有局部例外；[动态派发检查](docs/no-dynamic-dispatch.md)说明 Dylint 命令、检查范围和具体错误类型约定。

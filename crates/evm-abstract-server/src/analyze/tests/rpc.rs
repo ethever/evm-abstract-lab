@@ -53,7 +53,17 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
     thread::scope(|scope| {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let endpoint = format!(
+            "http://{}/secret-path?key=secret-token",
+            listener.local_addr().unwrap()
+        );
+        let providers = crate::rpc_providers::Registry::from_json(
+            format!(
+                r#"{{"providers":[{{"id":"fixture","name":"Fixture","endpoint":"{endpoint}"}}]}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         let (counts, completed) = mpsc::sync_channel(1);
@@ -81,7 +91,7 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
         });
         let mut request = api::AnalyzeRequest {
             input: api::AnalysisInput::Rpc(api::RpcInput {
-                endpoint,
+                provider_id: "fixture".into(),
                 address: Address::repeat_byte(0x22).to_string(),
                 block: api::BlockSelector::Latest,
                 accounts: Vec::new(),
@@ -90,10 +100,14 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
         };
         request.environment.number = Some("99".into());
         request.environment.chain_id = Some("33".into());
-        let result = analyze(request);
+        let result = analyze_with_providers(request, &providers);
         stop.store(true, Ordering::Release);
         let requests = completed.recv().unwrap();
         let report = result.unwrap();
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("secret-path"));
+        assert!(!json.contains("secret-token"));
+        assert!(!json.contains(&endpoint));
         let snapshot = report.metadata.snapshot.unwrap();
         assert_eq!(snapshot.chain_id, "0x1");
         assert_eq!(snapshot.number.as_deref(), Some("0x2a"));
