@@ -83,7 +83,7 @@ in
         if grep -q 'Verified cross-contract SSA:' explain-partial.txt; then exit 1; fi
         # Packaged CLIs expose symbolic inputs and preserve the caller/origin alias.
         evm-abstract cfg --hex 33321400 --format json > symbolic-environment.json
-        jq -e '.schema_version == 3 and .domain_spec.schema_version == 2 and .config.relations.enabled and (.config.relations | has("timeout_ms") | not) and .environment.to == {"Symbolic":"To"} and .environment.caller == {"Symbolic":"Caller"} and .environment.origin == null and .environment.value == "Top" and .environment.calldata.length == "Top" and .states[0].exit_stack[0].Constants == ["0x1"]' symbolic-environment.json > /dev/null
+        jq -e '.schema_version == 4 and .domain_spec.schema_version == 2 and .config.relations.enabled and (.config.relations | has("timeout_ms") | not) and .environment.to == {"Symbolic":"To"} and .environment.caller == {"Symbolic":"Caller"} and .environment.origin == null and .environment.value == "Top" and .environment.calldata.length == "Top" and .states[0].exit_stack[0].Constants == ["0x1"]' symbolic-environment.json > /dev/null
         evm-abstract cfg --hex 3033363446484a00 ${concreteInputs} --evm.chain-id 56 --evm.basefee 7 --evm.blob-basefee 8 --format json > concrete-environment.json
         jq -e '[.states[0].exit_stack[].Constants[0]] == ["0x101","0x1000","0x0","0x0","0x38","0x7","0x8"]' concrete-environment.json > /dev/null
         evm-abstract explain --file ${sourceRoot}/examples/straight-line.hex > explain-program.txt
