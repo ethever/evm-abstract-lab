@@ -75,13 +75,13 @@ nix run . -- explain --file examples/osaka-clz.hex --fork prague
 
 输入是有限集合时，分析逐个计算，再合并。例如 `{0,1}` 的结果是 `{256,255}`。
 
-输入是 Top 时，CLZ 的数学结果范围是 `0..=256`，共 257 个值。constants-only 在默认容量 8 下无法完整枚举，结果表示为 Top；`--max-constants` 至少为 257 且执行预算足够时可保留全部候选。例如：
+输入是 Top 时，CLZ 的数学结果范围是 `0..=256`，共 257 个值。constants-only 显式使用 `--max-constants 8` 时无法完整枚举，结果表示为 Top；CLI 默认容量 512 已能容纳全部候选。`--max-constants` 至少为 257 且执行预算足够时可保留全部候选。例如：
 
 ```bash
 nix run . -- explain --hex 5f351e00 --domain constants-only --max-constants 257
 ```
 
-这段代码先读取未知 calldata word，再计算 CLZ，结果完整保留从 `0x0` 到 `0x100` 的 257 个候选。容量接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；超过容量时必须放弃整个列表，不能删掉部分合法结果。更大的容量仍可能耗尽执行预算：本例改为容量 1000 后会在 CLZ 前耗尽固定 2000 万工作预算，输出 `status=Incomplete` 与 `Work` 前沿，退出码为 2。默认 product 在常量组件为 Top 时仍可由区间和固定位组件保存约束，见[第 02 课](02-domain.md#4-transfer在摘要上执行指令)。
+这段代码先读取未知 calldata word，再计算 CLZ，结果完整保留从 `0x0` 到 `0x100` 的 257 个候选。容量接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；超过容量时必须放弃整个列表，不能删掉部分合法结果。更大的容量仍可能耗尽执行预算：本例同时指定 `--max-constants 1000 --max-work 20000000` 后会在 CLZ 前耗尽指定的 2000 万工作预算，输出 `status=Incomplete` 与 `Work` 前沿，退出码为 2。默认 product 在常量组件为 Top 时仍可由区间和固定位组件保存约束，见[第 02 课](02-domain.md#4-transfer在摘要上执行指令)。
 
 实现复用 U256 的 `leading_zeros()`。启用规则见 [`fork.rs`](../crates/evm-abstract/src/fork.rs)，解码见 [`bytecode.rs`](../crates/evm-abstract/src/bytecode.rs)，抽象数值计算见 [`domain.rs`](../crates/evm-abstract/src/domain.rs)。SSA 使用指令的输入/输出元数据连接定义，不需要另写一份 CLZ 数值语义。
 

@@ -1,5 +1,6 @@
 //! CLI 只负责参数、文件和输出；分析与渲染逻辑在库中，便于逐层学习和复用。
 
+mod defaults;
 mod error;
 mod evm;
 mod explain;
@@ -29,6 +30,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
+    time::Duration,
 };
 
 #[derive(Parser)]
@@ -110,7 +112,7 @@ struct WorldArgs {
         long,
         requires = "rpc",
         conflicts_with = "world",
-        default_value_t = 256
+        default_value_t = defaults::MAX_RPC_ACCOUNTS
     )]
     max_rpc_accounts: usize,
     /// Maximum cumulative RPC requests, including identity checks and failures.
@@ -118,9 +120,15 @@ struct WorldArgs {
         long,
         requires = "rpc",
         conflicts_with = "world",
-        default_value_t = 16_384
+        default_value_t = defaults::MAX_RPC_REQUESTS
     )]
     max_rpc_requests: usize,
+    /// Maximum bytes accepted per RPC response.
+    #[arg(long, requires = "rpc", conflicts_with = "world", default_value_t = defaults::MAX_RPC_RESPONSE_BYTES)]
+    max_rpc_response_bytes: usize,
+    /// Total timeout per RPC request, including its response body, in milliseconds.
+    #[arg(long, requires = "rpc", conflicts_with = "world", default_value_t = defaults::RPC_TIMEOUT_MS)]
+    rpc_timeout_ms: u64,
     /// Exact 32-byte block hash; defaults to pinning the RPC's latest block.
     #[arg(long, requires = "rpc", conflicts_with_all = ["block_number", "world"])]
     block_hash: Option<String>,
@@ -142,34 +150,34 @@ struct WorldArgs {
     #[command(flatten)]
     evm: EvmArgs,
     /// Maximum live frames, including entry; reaching the cap retains a frontier.
-    #[arg(long, default_value_t = 32)]
+    #[arg(long, default_value_t = defaults::MAX_CALL_DEPTH)]
     max_call_depth: usize,
     /// Maximum cumulative execution and domain work.
-    #[arg(long, default_value_t = 20_000_000)]
+    #[arg(long, default_value_t = defaults::MAX_WORK)]
     max_work: usize,
     /// Maximum tracked memory bytes per frame.
-    #[arg(long, default_value_t = 65_536)]
+    #[arg(long, default_value_t = defaults::MAX_MEMORY_BYTES)]
     max_memory_bytes: usize,
-    /// Constants retained per value; positive usize, default 8, without an additional cap.
-    #[arg(long, default_value_t = 8)]
+    /// Constants retained per value; positive usize, without an additional cap.
+    #[arg(long, default_value_t = defaults::MAX_CONSTANTS)]
     max_constants: usize,
     /// Numerical domain: combined facts or the constants-only comparison.
     #[arg(long, value_enum, default_value_t = DomainProfile::Product)]
     domain: DomainProfile,
     /// Maximum complete rounds per temporary fact exchange.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = defaults::REDUCTION_ROUNDS)]
     reduction_rounds: usize,
     /// Maximum semantic atoms per temporary fact lattice.
-    #[arg(long, default_value_t = 256)]
+    #[arg(long, default_value_t = defaults::MAX_FACTS)]
     max_facts: usize,
     /// Recent jump-source blocks retained within each frame; 0 disables context sensitivity.
-    #[arg(long, default_value_t = 128)]
+    #[arg(long, default_value_t = defaults::CONTEXT_DEPTH)]
     context_depth: usize,
     /// Maximum abstract machine states.
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = defaults::MAX_STATES)]
     max_states: usize,
     /// Maximum block transfers, including revisits.
-    #[arg(long, default_value_t = 100_000)]
+    #[arg(long, default_value_t = defaults::MAX_TRANSFERS)]
     max_transfers: usize,
 }
 
@@ -205,6 +213,15 @@ struct Input {
 
 #[derive(Args)]
 struct AnalysisArgs {
+    /// Maximum cumulative execution and domain work.
+    #[arg(long, default_value_t = defaults::MAX_WORK)]
+    max_work: usize,
+    /// Maximum live frames, including the entry frame.
+    #[arg(long, default_value_t = defaults::MAX_CALL_DEPTH)]
+    max_call_depth: usize,
+    /// Maximum tracked memory bytes per frame and extracted byte-array range.
+    #[arg(long, default_value_t = defaults::MAX_MEMORY_BYTES)]
+    max_memory_bytes: usize,
     #[command(flatten)]
     symbolic: symbolic::SymbolicArgs,
     #[command(flatten)]
@@ -212,25 +229,25 @@ struct AnalysisArgs {
     #[command(flatten)]
     evm: EvmArgs,
     /// Recent jump-source blocks retained in the context; 0 disables context sensitivity.
-    #[arg(long, default_value_t = 128)]
+    #[arg(long, default_value_t = defaults::CONTEXT_DEPTH)]
     context_depth: usize,
-    /// Constants retained per stack slot; positive usize, default 8, without an additional cap.
-    #[arg(long, default_value_t = 8)]
+    /// Constants retained per stack slot; positive usize, without an additional cap.
+    #[arg(long, default_value_t = defaults::MAX_CONSTANTS)]
     max_constants: usize,
     /// Numerical domain: combined facts or the constants-only comparison.
     #[arg(long, value_enum, default_value_t = DomainProfile::Product)]
     domain: DomainProfile,
     /// Maximum complete rounds per temporary fact exchange.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = defaults::REDUCTION_ROUNDS)]
     reduction_rounds: usize,
     /// Maximum semantic atoms per temporary fact lattice.
-    #[arg(long, default_value_t = 256)]
+    #[arg(long, default_value_t = defaults::MAX_FACTS)]
     max_facts: usize,
     /// Maximum abstract states; exhaustion returns exit code 2.
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = defaults::MAX_STATES)]
     max_states: usize,
     /// Maximum block transfers, including revisits; exhaustion returns exit code 2.
-    #[arg(long, default_value_t = 100_000)]
+    #[arg(long, default_value_t = defaults::MAX_TRANSFERS)]
     max_transfers: usize,
 }
 
@@ -284,9 +301,15 @@ impl AnalysisArgs {
             max_transfers: self.max_transfers,
         };
         let environment = self.evm.environment()?;
-        Ok(analysis::analyze_with_environment(
+        Ok(analysis::analyze_with_execution_config(
             self.input.load()?,
-            config,
+            ExecutionConfig {
+                analysis: config,
+                max_work: self.max_work,
+                max_call_depth: self.max_call_depth,
+                max_memory_bytes: self.max_memory_bytes,
+                use_summaries: true,
+            },
             environment,
         )?)
     }
@@ -325,6 +348,8 @@ impl WorldArgs {
                     .collect();
                 input.max_accounts = self.max_rpc_accounts;
                 input.max_requests = self.max_rpc_requests;
+                input.max_response_bytes = self.max_rpc_response_bytes;
+                input.timeout = Duration::from_millis(self.rpc_timeout_ms);
                 (None, Some(input))
             }
             _ => unreachable!("clap requires exactly one world input"),

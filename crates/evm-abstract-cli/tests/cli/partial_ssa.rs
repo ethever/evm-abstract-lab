@@ -21,6 +21,15 @@ fn run(args: &[&str]) -> Output {
         .unwrap()
 }
 
+// This fixture intentionally keeps sixteen possible CALLER-derived targets
+// above the finite-set capacity. Larger application defaults must not turn an
+// UnknownTarget rendering regression into a different MissingCode experiment.
+fn run_unknown(args: &[&str]) -> Output {
+    let mut args = args.to_vec();
+    args.extend(["--max-constants", "8"]);
+    run(&args)
+}
+
 fn text(output: &Output, exit: i32) -> String {
     assert_eq!(
         output.status.code(),
@@ -136,6 +145,12 @@ impl WorldCode {
         run(&args)
     }
 
+    fn run_unknown(&self, command: &str, extra: &[&str]) -> Output {
+        let mut args = extra.to_vec();
+        args.extend(["--max-constants", "8"]);
+        self.run(command, &args)
+    }
+
     fn add_callee(&self, code: &str) {
         let mut input: Json = serde_json::from_slice(&fs::read(&self.0).unwrap()).unwrap();
         input["accounts"].as_array_mut().unwrap().push(json!({
@@ -155,12 +170,12 @@ impl Drop for WorldCode {
 
 #[test]
 fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
-    let strict = run(&["ssa", "--hex", UNKNOWN]);
+    let strict = run_unknown(&["ssa", "--hex", UNKNOWN]);
     assert_eq!(strict.status.code(), Some(2));
     assert!(strict.stdout.is_empty());
     assert!(String::from_utf8_lossy(&strict.stderr).contains("SSA unavailable"));
     for command in ["ssa", "explain"] {
-        let output = run(&[command, "--hex", UNKNOWN, "--allow-partial-ssa"]);
+        let output = run_unknown(&[command, "--hex", UNKNOWN, "--allow-partial-ssa"]);
         let rendered = text(&output, 2);
         assert_partial(&rendered, "UnknownTarget");
         assert_concise(&rendered);
@@ -175,7 +190,7 @@ fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
         );
         assert!(rendered.contains("projected S0 -> machine S0"));
     }
-    let json = report(&run(&[
+    let json = report(&run_unknown(&[
         "ssa",
         "--hex",
         UNKNOWN,
@@ -191,7 +206,7 @@ fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
     // A native child is absent from the local CFG. A real post-call POP/STOP
     // block makes the later continuation IDs observable in the projection.
     let nested = format!("5f5f5f5f5f60046207a120f150{UNKNOWN}5000");
-    let json = report(&run(&[
+    let json = report(&run_unknown(&[
         "ssa",
         "--hex",
         &nested,
@@ -245,7 +260,7 @@ fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
         assert_eq!(source["kind"], deferred["kind"]);
     }
     let rendered = text(
-        &run(&[
+        &run_unknown(&[
             "ssa",
             "--hex",
             &nested,
@@ -273,12 +288,12 @@ fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
 #[test]
 fn world_and_both_explain_views_keep_partial_frontiers_and_default_contracts() {
     let world = WorldCode::new(UNKNOWN);
-    let strict = world.run("analyze", &["--ssa", "--format", "json"]);
+    let strict = world.run_unknown("analyze", &["--ssa", "--format", "json"]);
     text(&strict, 2);
     let strict_json: Json = serde_json::from_slice(&strict.stdout).unwrap();
     assert_eq!(strict_json["status"], "Incomplete");
     assert!(strict_json.get("partial_ssa").is_none() && strict_json.get("ssa").is_none());
-    let json = report(&world.run(
+    let json = report(&world.run_unknown(
         "analyze",
         &["--ssa", "--allow-partial-ssa", "--format", "json"],
     ));
@@ -294,7 +309,7 @@ fn world_and_both_explain_views_keep_partial_frontiers_and_default_contracts() {
         let verbose = extra.contains(&"--verbose");
         let mut args = extra;
         args.push("--allow-partial-ssa");
-        let rendered = text(&world.run(command, &args), 2);
+        let rendered = text(&world.run_unknown(command, &args), 2);
         assert_partial(&rendered, "UnknownTarget");
         if verbose {
             assert_verbose(&rendered);
@@ -425,7 +440,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
     assert!(!partial.contains("synthetic end-of-code"));
     assert_concise(&rendered);
     let faulted = WorldCode::new(&format!("33601357{UNKNOWN}005bfe"));
-    let rendered = text(&faulted.run("explain", &["--allow-partial-ssa"]), 2);
+    let rendered = text(&faulted.run_unknown("explain", &["--allow-partial-ssa"]), 2);
     assert_concise(&rendered);
     assert!(partial_body(&rendered).contains("progress=Faulted"));
 }
@@ -440,11 +455,11 @@ fn verbose_return_dispatch_distinguishes_root_outcomes_from_child_continuations(
         "storage_unknown": false,
     }));
     fs::write(&world.0, serde_json::to_vec(&input).unwrap()).unwrap();
-    let compact = text(&world.run("explain", &["--allow-partial-ssa"]), 2);
+    let compact = text(&world.run_unknown("explain", &["--allow-partial-ssa"]), 2);
     assert_partial(&compact, "UnknownTarget");
     assert_concise(&compact);
     let verbose = text(
-        &world.run("explain", &["--allow-partial-ssa", "--verbose"]),
+        &world.run_unknown("explain", &["--allow-partial-ssa", "--verbose"]),
         2,
     );
     assert_verbose(&verbose);
@@ -487,7 +502,7 @@ fn concise_and_verbose_retain_proven_exceptional_dispatch_halts() {
             if verbose {
                 args.push("--verbose");
             }
-            let rendered = text(&world.run("explain", &args), 2);
+            let rendered = text(&world.run_unknown("explain", &args), 2);
             assert_partial(&rendered, "UnknownTarget");
             let line = partial_body(&rendered)
                 .lines()
@@ -579,7 +594,7 @@ fn fixed_rpc_unknown_target_supports_partial_analysis_and_both_explain_views() {
                 "--allow-partial-ssa",
             ];
             args.extend(extra);
-            let output = run(&args);
+            let output = run_unknown(&args);
             if command == "analyze" {
                 let json = report(&output);
                 assert_eq!(

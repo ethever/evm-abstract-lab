@@ -23,19 +23,19 @@ JUMPI(condition, 0x000c)
 | `x AND 15` | 0 到 15，共 16 个值 | 高 252 位为零 |
 | 再 `OR 1` | 1、3、5、7、9、11、13、15 | 最低位为一，所以非零 |
 
-最终候选只有 8 个，但中间步骤已有 16 个。默认常量容量为 8：如果中途丢掉所有信息，就无法靠下一条 OR 重新知道最低位为一。KnownBits 组件逐位保存必须为零、必须为一或尚未确定的性质，避免这次信息丢失；内部与 JSON 用两个位掩码编码，文本直接显示[十六进制位模式](#怎样读十六进制位模式)。
+最终候选只有 8 个，但中间步骤已有 16 个。这个对照显式使用 `--max-constants 8`：如果中途丢掉所有信息，就无法靠下一条 OR 重新知道最低位为一。KnownBits 组件逐位保存必须为零、必须为一或尚未确定的性质，避免这次信息丢失；内部与 JSON 用两个位掩码编码，文本直接显示[十六进制位模式](#怎样读十六进制位模式)。
 
 这次只比较数值组件，先用 `--no-relations` 关闭符号表达式传播和路径约束。`--domain` 选择数值表示，与关系开关是两项独立策略：
 
 ```bash
 nix run . -- cfg \
   --file examples/known-bits-branch.hex \
-  --no-relations --context-depth 0 --format json > /tmp/facts-product.json
+  --no-relations --context-depth 0 --max-constants 8 --format json > /tmp/facts-product.json
 
 nix run . -- cfg \
   --file examples/known-bits-branch.hex \
   --domain constants-only \
-  --no-relations --context-depth 0 --format json > /tmp/facts-constants.json
+  --no-relations --context-depth 0 --max-constants 8 --format json > /tmp/facts-constants.json
 
 jq '.status, [.edges[] | .kind]' /tmp/facts-product.json
 jq '.status, [.edges[] | .kind]' /tmp/facts-constants.json
@@ -255,21 +255,21 @@ Stable 只针对当前规则；它不说明已经表达全部 EVM 关系。Round
 
 ## 7. 选择策略并读懂 JSON
 
-默认数值策略为 product，常量容量 8、交换轮数 4、事实容量 256；符号表达式和持久关系默认开启。以下命令把设置显式写出，便于复现实验：
+CLI/Web 默认数值策略为 product，常量容量 512、交换轮数 16、事实容量 4096；符号表达式和持久关系默认开启。以下命令把设置显式写出，便于复现实验：
 
 ```bash
 nix run . -- analyze \
   --world examples/worlds/returndata-copy.json \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-  --domain product --reduction-rounds 4 --max-facts 256 \
-  --max-work 20000000 --format json > /tmp/facts-world.json
+  --domain product --max-constants 512 --reduction-rounds 16 --max-facts 4096 \
+  --max-work 1000000000000 --format json > /tmp/facts-world.json
 
 jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
 结果的 `schema_version` 为 4；其中 `domain_spec.schema_version` 为 2，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `cost_version` 为 2，`provenance_policy` 是 `scoped-expressions-and-value-identities-v3`。`domain_spec.relations` 冻结关系开关、表达式/约束预算和 SMT 的 `rlimit`，同样参与摘要资格。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
 
-`--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 constants-only 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；默认容量 8 则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
+`--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 constants-only 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；CLI 默认容量 512 可以容纳全部候选；显式降至 8 时则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
 
 `cfg` 和 `ssa` 同样接受 `--domain`、`--reduction-rounds` 与 `--max-facts`。把 product 换成 constants-only 只改变数值组件；用 `--no-relations` 可另外关闭表达式传播和路径约束，保留输入身份。隔离有限集合精度时应同时关闭关系模式；两项交换上限必须为正。提高上限可能增加精度与工作量，不能自动消除模型前沿。不同策略的 work 数字应结合费用策略解读。
 

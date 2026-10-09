@@ -16,7 +16,7 @@ fn json(output: Output) -> Value {
 }
 
 #[test]
-fn default_smt_policy_is_z3_with_a_hundred_thousand_resource_units() {
+fn default_smt_policy_matches_web_for_program_and_world() {
     let raw = json(run_concrete(&["cfg", "--hex", "00", "--format", "json"]));
     let world = json(analyze("call-return-branch", &["--format", "json"]));
     for policy in [
@@ -24,7 +24,10 @@ fn default_smt_policy_is_z3_with_a_hundred_thousand_resource_units() {
         &world["config"]["analysis"]["relations"],
     ] {
         assert_eq!(policy["provider"], "z3");
-        assert_eq!(policy["rlimit"], 100_000);
+        assert_eq!(
+            policy["rlimit"],
+            evm_abstract_protocol::AnalysisLimits::default().smt_rlimit
+        );
     }
 }
 

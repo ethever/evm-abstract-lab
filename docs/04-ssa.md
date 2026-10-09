@@ -286,13 +286,13 @@ CALL 则已被 [`Instruction::ends_block`](../crates/evm-abstract/src/bytecode.r
 
 ### 先运行一个未知调用目标
 
-这个离线程序把 `(CALLER AND 15) OR 240` 当作 CALL 目标。真实目标只能是 `0xf0`～`0xff`，共有 16 个；默认常量容量 8 无法完整列出它们，单段代码也没有这些账户的代码事实。caller 仍是符号输入，运行：
+这个离线程序把 `(CALLER AND 15) OR 240` 当作 CALL 目标。真实目标只能是 `0xf0`～`0xff`，共有 16 个；本例把常量容量显式设为 8，无法完整列出它们，单段代码也没有这些账户的代码事实。caller 仍是符号输入，运行：
 
 ```bash
 PARTIAL_SSA_STATUS=0
 nix run . -- explain \
   --hex 5f5f5f5f5f33600f1660f0175af1 \
-  --allow-partial-ssa || PARTIAL_SSA_STATUS=$?
+  --max-constants 8 --allow-partial-ssa || PARTIAL_SSA_STATUS=$?
 printf 'exit=%s\n' "$PARTIAL_SSA_STATUS"
 ```
 

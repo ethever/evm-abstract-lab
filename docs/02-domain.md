@@ -88,7 +88,7 @@ Top **不是**“没有值”，也不是分析停止。比如未知 calldata wo
 
 `⊔` 叫 **join（汇合运算）**。它返回当前表示法中覆盖两个输入的最精确摘要。取交集会丢失某条路径；只保留先到达的值也会漏掉后到达的路径。
 
-默认每个集合最多保存 8 个不同常量。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限。超过容量时，常量集合组件升到 Top，而不是删掉部分元素。constants-only 的数值分析只使用这个组件，因此整个数值也变成 Top。用同一个程序缩小容量：
+CLI 默认每个集合最多保存 512 个不同常量。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限。超过容量时，常量集合组件升到 Top，而不是删掉部分元素。constants-only 的数值分析只使用这个组件，因此整个数值也变成 Top。用同一个程序缩小容量：
 
 ```bash
 nix run . -- cfg --no-relations --domain constants-only --file examples/diamond.hex --context-depth 0 --max-constants 1
@@ -154,15 +154,15 @@ STOP
 
 预期 `stack out [{0x1}]`。交换律会让 ADD 的顺序错误不易被发现，SUB 可以直接揭示它。
 
-Osaka 的 `CLZ` 计算 256 位数的前导零数量：最高位为 1 得 0，只有最低位为 1 得 255，全零得 256。未知输入的结果只可能在 `0..=256`，完整集合需要 257 个常量。constants-only 在默认容量 8 下返回 Top；容量至少为 257 且执行预算足够时，可保留这 257 个完整候选。默认组合域即使无法列完，也能由区间和固定位组件保留范围 `0..=256` 与结果高位为零的性质：
+Osaka 的 `CLZ` 计算 256 位数的前导零数量：最高位为 1 得 0，只有最低位为 1 得 255，全零得 256。未知输入的结果只可能在 `0..=256`，完整集合需要 257 个常量。下面显式设置 `--max-constants 8` 时，constants-only 返回 Top；容量至少为 257 且执行预算足够时，可保留这 257 个完整候选。组合域在相同的小容量下即使无法列完，也能由区间和固定位组件保留范围 `0..=256` 与结果高位为零的性质：
 
 ```bash
-nix run . -- cfg --no-relations --hex 5f351e00 --domain constants-only
+nix run . -- cfg --no-relations --hex 5f351e00 --domain constants-only --max-constants 8
 nix run . -- explain --no-relations --hex 5f351e00 --domain constants-only --max-constants 257
-nix run . -- cfg --no-relations --hex 5f351e00
+nix run . -- cfg --no-relations --hex 5f351e00 --max-constants 8
 ```
 
-这段代码是 `PUSH0; CALLDATALOAD; CLZ; STOP`。第一条命令的出口值是 Top，显示为 `⊤`；第二条完整保留从 `0x0` 到 `0x100` 的 257 个候选；第三条使用默认组合域，没有完整常量集合，出口为：
+这段代码是 `PUSH0; CALLDATALOAD; CLZ; STOP`。第一条命令的出口值是 Top，显示为 `⊤`；第二条完整保留从 `0x0` 到 `0x100` 的 257 个候选；第三条使用 product、同样把容量设为 8，没有完整常量集合，出口为：
 
 ```text
   stack out [u[0x0,0x100] bits=0x0000000000000000000000000000000000000000000000000000000000000[000*]** mod(0x1)=0x0]
@@ -173,10 +173,10 @@ nix run . -- cfg --no-relations --hex 5f351e00
 容量也可以设为 1000：
 
 ```bash
-nix run . -- explain --no-relations --hex 5f351e00 --domain constants-only --max-constants 1000
+nix run . -- explain --no-relations --hex 5f351e00 --domain constants-only --max-constants 1000 --max-work 20000000
 ```
 
-这个参数不会再因超过 64 而被拒绝，但接受配置不等于完成执行。单账户教学入口仍受固定 2000 万共享工作预算限制；这条容量 1000 的命令会在执行到 CLZ 前耗尽预算，输出 `status=Incomplete` 与 `Work` 前沿，显示 `SSA unavailable`，退出码为 2。较大的容量会增加工作估算，其他输入也可能发生预算中断。因此要同时检查状态与最终数值，不能只凭容量足够就宣称已完整枚举。
+这个参数不会再因超过 64 而被拒绝，但接受配置不等于完成执行。这条命令显式把共享工作预算降到 2000 万；容量 1000 的分析会在执行到 CLZ 前耗尽预算，输出 `status=Incomplete` 与 `Work` 前沿，显示 `SSA unavailable`，退出码为 2。较大的容量会增加工作估算，其他输入也可能发生预算中断。因此要同时检查状态与最终数值，不能只凭容量足够就宣称已完整枚举。
 
 ## 5. 为什么摘要会包含实际不会出现的组合
 
@@ -206,7 +206,7 @@ nix run . -- explain --no-relations --hex 5f351e00 --domain constants-only --max
 
 ## 6. 为什么循环不会要求无限扩大的集合
 
-先看 constants-only 中不断把计数器加 1 的循环。循环入口反复汇合新值时，摘要可能这样增长：
+先把常量容量设为 8，看 constants-only 中不断把计数器加 1 的循环。循环入口反复汇合新值时，摘要可能这样增长：
 
 ```text
 {0} → {0,1} → {0,1,2} → … → {0,…,7} → ⊤

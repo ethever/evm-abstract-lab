@@ -62,6 +62,6 @@ in
           ' "$out/$provider.json" > /dev/null
         done
         ${package}/bin/evm-abstract cfg --hex 00 --format json > "$out/default.json"
-        jq -e '.config.relations.provider == "z3" and .config.relations.rlimit == 100000' "$out/default.json" > /dev/null
+        jq -e '.config.relations.provider == "z3" and .config.relations.rlimit == 10000000' "$out/default.json" > /dev/null
       '';
 }

@@ -123,7 +123,7 @@ join 只扩大入口摘要，已有边只增加。默认组合域还会在同一
 **固定点（fixed point）**是再次执行和传播也不会新增摘要或边的状态。分析器需要稳定摘要，而不是把循环展开固定次数后假定结束。
 
 ```bash
-nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations --context-depth 0
+nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations --context-depth 0 --max-constants 8
 ```
 
 这个程序先设 `i=0`，然后重复 `i=i+1`，在 `i<10` 时跳回 pc=`0x02`。具体执行的 i 依次为 0、1、2……，最后到 10 时退出。
@@ -134,7 +134,7 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations
 入口 {0}        执行后得到 {1}       join → {0,1}
 入口 {0,1}      执行后得到 {1,2}     join → {0,1,2}
 …
-入口 {0,…,7}    新值超过默认容量 8    join → ⊤
+入口 {0,…,7}    新值超过指定容量 8    join → ⊤
 入口 ⊤          后续摘要仍被 ⊤ 覆盖   不再新增信息
 ```
 
@@ -142,8 +142,8 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations
 
 ```text
 status=Converged fork=osaka states=3 edges=3 transfers=11 context_depth=0
-domain=ConstantsOnly | domain schema=2 | reduction rounds=4 | fact atoms=256
-relations=false | SMT=in-process z3 | rlimit=100000 | resource unit=z3 resource units | expression nodes=1024 | depth=64 | constraints=128
+domain=ConstantsOnly | domain schema=2 | reduction rounds=16 | fact atoms=4096
+relations=false | SMT=in-process z3 | rlimit=10000000 | resource unit=z3 resource units | expression nodes=16384 | depth=256 | constraints=2048
 S1 | B1 @ 0x0002 | stack height=1 | context=[]
   relations in=0 out=0
   stack in  [⊤]

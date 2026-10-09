@@ -308,7 +308,7 @@ pub fn analyze_world_with_control(
 /// persistent state remain unknown; missing external code is an explicit
 /// incomplete frontier in the same native machine used by [`analyze_world`].
 pub fn analyze(program: Program, config: Config) -> Result<Analysis, ConfigError> {
-    single::analyze(program, config, crate::world::EvmEnvironment::default())
+    analyze_with_environment(program, config, crate::world::EvmEnvironment::default())
 }
 
 /// Analyze bytecode under explicit or symbolic root, transaction and block inputs.
@@ -319,6 +319,26 @@ pub fn analyze(program: Program, config: Config) -> Result<Analysis, ConfigError
 pub fn analyze_with_environment(
     program: Program,
     config: Config,
+    environment: crate::world::EvmEnvironment,
+) -> Result<Analysis, ConfigError> {
+    analyze_with_execution_config(
+        program,
+        ExecutionConfig {
+            analysis: config,
+            ..ExecutionConfig::default()
+        },
+        environment,
+    )
+}
+
+/// Analyze one bytecode program with an explicit transaction-wide execution policy.
+///
+/// Applications can select the same work, memory and call budgets as their world
+/// entrypoints while retaining the single-program CFG/SSA projection. Unlike
+/// [`analyze_with_environment`], this entrypoint uses all supplied execution limits.
+pub fn analyze_with_execution_config(
+    program: Program,
+    config: ExecutionConfig,
     environment: crate::world::EvmEnvironment,
 ) -> Result<Analysis, ConfigError> {
     single::analyze(program, config, environment)

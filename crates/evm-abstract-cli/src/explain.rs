@@ -2,15 +2,11 @@
 //! 四个输入来源互斥；世界/RPC 复用 analyze 的准入、采集与执行规则。
 
 use crate::{
-    AnalysisArgs, DomainProfile, Input, StorageSlot, WorldArgs, error::CliError, evm::EvmArgs,
-    number, parse_slot,
+    AnalysisArgs, DomainProfile, Input, StorageSlot, WorldArgs, defaults, error::CliError,
+    evm::EvmArgs, number, parse_slot,
 };
 use clap::{ArgGroup, Args};
-use evm_abstract::{
-    Fork,
-    analysis::{ExecutionConfig, Status},
-    render, ssa,
-};
+use evm_abstract::{Fork, analysis::Status, render, ssa};
 use std::path::PathBuf;
 
 #[derive(Args)]
@@ -41,12 +37,18 @@ pub(crate) struct ExplainArgs {
     /// Disable on-demand acquisition of missing RPC code and storage slots.
     #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     no_rpc_discovery: bool,
-    /// Maximum initial and discovered RPC accounts; default 256.
-    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
-    max_rpc_accounts: Option<usize>,
-    /// Maximum cumulative RPC requests; default 16384.
-    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
-    max_rpc_requests: Option<usize>,
+    /// Maximum initial and discovered RPC accounts.
+    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"], default_value_t = defaults::MAX_RPC_ACCOUNTS)]
+    max_rpc_accounts: usize,
+    /// Maximum cumulative RPC requests, including identity checks and failures.
+    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"], default_value_t = defaults::MAX_RPC_REQUESTS)]
+    max_rpc_requests: usize,
+    /// Maximum bytes accepted per RPC response.
+    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"], default_value_t = defaults::MAX_RPC_RESPONSE_BYTES)]
+    max_rpc_response_bytes: usize,
+    /// Total timeout per RPC request, including its response body, in milliseconds.
+    #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"], default_value_t = defaults::RPC_TIMEOUT_MS)]
+    rpc_timeout_ms: u64,
     /// Exact 32-byte block hash; defaults to pinning the RPC's latest block.
     #[arg(long, requires = "rpc", conflicts_with_all = ["block_number", "hex", "file", "world"])]
     block_hash: Option<String>,
@@ -67,35 +69,35 @@ pub(crate) struct ExplainArgs {
     /// Disable complete callee summary reuse for the world.
     #[arg(long, requires = "world-input")]
     no_summaries: bool,
-    /// Maximum live world call frames; default 32.
-    #[arg(long, requires = "world-input")]
-    max_call_depth: Option<usize>,
-    /// Shared world work budget; default 20000000.
-    #[arg(long, requires = "world-input")]
-    max_work: Option<usize>,
-    /// World memory/range byte budget; default 65536.
-    #[arg(long, requires = "world-input")]
-    max_memory_bytes: Option<usize>,
-    /// Constants retained per value; positive usize, default 8, without an additional cap.
-    #[arg(long, default_value_t = 8)]
+    /// Maximum live frames, including the entry frame.
+    #[arg(long, default_value_t = defaults::MAX_CALL_DEPTH)]
+    max_call_depth: usize,
+    /// Maximum cumulative execution and domain work.
+    #[arg(long, default_value_t = defaults::MAX_WORK)]
+    max_work: usize,
+    /// Maximum tracked memory bytes per frame and extracted byte-array range.
+    #[arg(long, default_value_t = defaults::MAX_MEMORY_BYTES)]
+    max_memory_bytes: usize,
+    /// Constants retained per value; positive usize, without an additional cap.
+    #[arg(long, default_value_t = defaults::MAX_CONSTANTS)]
     max_constants: usize,
     /// Numerical domain profile, shared across every call.
     #[arg(long,value_enum,default_value_t=DomainProfile::Product)]
     domain: DomainProfile,
     /// Maximum rounds in one temporary semantic fact exchange.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = defaults::REDUCTION_ROUNDS)]
     reduction_rounds: usize,
     /// Maximum semantic atoms in one temporary fact exchange.
-    #[arg(long, default_value_t = 256)]
+    #[arg(long, default_value_t = defaults::MAX_FACTS)]
     max_facts: usize,
     /// Recent jump-source blocks per frame; zero disables context sensitivity.
-    #[arg(long, default_value_t = 128)]
+    #[arg(long, default_value_t = defaults::CONTEXT_DEPTH)]
     context_depth: usize,
     /// Maximum abstract states; unfinished explanations exit with code 2.
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = defaults::MAX_STATES)]
     max_states: usize,
     /// Maximum block transfers, including revisits.
-    #[arg(long, default_value_t = 100_000)]
+    #[arg(long, default_value_t = defaults::MAX_TRANSFERS)]
     max_transfers: usize,
 }
 
@@ -103,14 +105,15 @@ impl ExplainArgs {
     /// 同一份解释只运行一次分析。输入事实、准入错误及预算语义与原入口保持一致。
     pub(crate) fn run(self) -> Result<(String, bool), CliError> {
         if self.world.is_some() || self.rpc.is_some() {
-            let defaults = ExecutionConfig::default();
             let args = WorldArgs {
                 symbolic: self.symbolic,
                 world: self.world,
                 rpc: self.rpc,
                 no_rpc_discovery: self.no_rpc_discovery,
-                max_rpc_accounts: self.max_rpc_accounts.unwrap_or(256),
-                max_rpc_requests: self.max_rpc_requests.unwrap_or(16_384),
+                max_rpc_accounts: self.max_rpc_accounts,
+                max_rpc_requests: self.max_rpc_requests,
+                max_rpc_response_bytes: self.max_rpc_response_bytes,
+                rpc_timeout_ms: self.rpc_timeout_ms,
                 block_hash: self.block_hash,
                 block_number: self.block_number,
                 account: self.account,
@@ -118,9 +121,9 @@ impl ExplainArgs {
                 fork: self.fork,
                 no_summaries: self.no_summaries,
                 evm: self.evm,
-                max_call_depth: self.max_call_depth.unwrap_or(defaults.max_call_depth),
-                max_work: self.max_work.unwrap_or(defaults.max_work),
-                max_memory_bytes: self.max_memory_bytes.unwrap_or(defaults.max_memory_bytes),
+                max_call_depth: self.max_call_depth,
+                max_work: self.max_work,
+                max_memory_bytes: self.max_memory_bytes,
                 max_constants: self.max_constants,
                 domain: self.domain,
                 reduction_rounds: self.reduction_rounds,
@@ -145,6 +148,9 @@ impl ExplainArgs {
             return Ok((output, complete));
         }
         let args = AnalysisArgs {
+            max_work: self.max_work,
+            max_call_depth: self.max_call_depth,
+            max_memory_bytes: self.max_memory_bytes,
             symbolic: self.symbolic,
             evm: self.evm,
             input: Input {

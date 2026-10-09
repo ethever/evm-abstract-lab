@@ -440,11 +440,11 @@ esac
 
 槽批次有多个键时，任一请求失败都会丢弃整个批次。`failures[].slot` 与 `failed_storage` 标明无法安装的观测键；`failure.context.slot` 标明实际失败的 storage 请求。例如读取 slot 0 成功、slot 1 失败，两项受影响观测的错误上下文都可指向 slot 1。错误发生在链或区块校验时没有单独的 storage 请求槽，控制流程则将受影响槽补入上下文。
 
-默认 `--max-rpc-accounts 256` 限制初始与动态账户总数，`--max-rpc-requests 16384` 限制全部 HTTP 尝试，包括身份检查与失败请求。迟发采集耗尽这些额度也留下 `RpcAcquisition`。所有重跑轮次另共用同一 `--max-work`、`--max-transfers` 和 `--max-states`；以前的图虽然被替换，已耗工作和状态分配仍计费，因此最终图的 `states` 长度可能小于 `states_created`。达到执行预算后保留对应工作或资源前沿。默认每请求超时 15 秒，响应最多 4 MiB；库 API 可选择其他有界限制。
+CLI 默认 `--max-rpc-accounts 4096` 限制初始与动态账户总数，`--max-rpc-requests 1000000` 限制全部 HTTP 尝试，包括身份检查与失败请求。迟发采集耗尽这些额度也留下 `RpcAcquisition`。所有重跑轮次另共用同一 `--max-work`、`--max-transfers` 和 `--max-states`；以前的图虽然被替换，已耗工作和状态分配仍计费，因此最终图的 `states` 长度可能小于 `states_created`。达到执行预算后保留对应工作或资源前沿。CLI 默认每请求超时 120 秒、响应最多 64 MiB，可分别通过 `--rpc-timeout-ms 120000` 与 `--max-rpc-response-bytes 67108864` 覆盖；`analyze` 与 RPC `explain` 都接受这些选项。
 
 所有状态查询在启动解析后始终使用固定 hash。槽批次采集前后还用 `eth_getBlockByNumber` 查询该 hash 对应的固定高度，要求当前 canonical hash 与启动身份一致；因此即使节点仍能用旧 hash 返回区块，也能在安装前识别该高度发生的重组。这个高度检查不会重新选择分析区块；失败后不回退到 `latest` 或改用新 hash，也不会把缺失响应填成空代码、零余额。**当前完全信任选定的 RPC 提供者。** 账户与槽位观察直接来自普通状态查询，不请求 `eth_getProof`，也不依赖节点的历史 proof window。代码 hash 根据获取的原始代码字节计算；区块身份与 fingerprint 用于记录和固定输入，不证明提供者返回的状态真实，也不能让 `Converged` 成为任意合约安全证明。
 
-库入口同样显式选择 RPC：`RpcInput::new(endpoint, fork)` 默认使用 `RpcBlock::Latest`；将 `input.block` 设为 `RpcBlock::Number(number)` 或 `RpcBlock::Hash(hash)` 可选择确切区块。session 启动时解析身份，后续采集与分析重跑始终沿用已固定的 hash。
+库入口同样显式选择 RPC：`RpcInput::new(endpoint, fork)` 默认使用 `RpcBlock::Latest`，并保留库默认的 256 个账户、16384 次请求、每请求 15 秒和 4 MiB 响应上限；它不采用 CLI/Web 默认配置。这些公开字段均可显式调整。将 `input.block` 设为 `RpcBlock::Number(number)` 或 `RpcBlock::Hash(hash)` 可选择确切区块。session 启动时解析身份，后续采集与分析重跑始终沿用已固定的 hash。
 
 完整 `analyze` 文本、`explain --verbose`、JSON 和 DOT 都保留 snapshot identity、fingerprint、帧模式/hash 和摘要信息。完整文本中，`Snapshot` 查输入身份，`Outcomes` 查每个最终结果的账户和字节，`Call summaries` 查保存与复用；默认 `explain` 按[第 9 课的分区](09-cross-contract.md#默认文本怎样读)阅读代码、CFG、值流和结果概要。JSON 还保留初始 world、完整域策略、摘要输入/输出、执行中的 Store 和 RPC 累计采集记录；DOT 的蓝色证书节点标出认证来源和复用位置。实现入口是 [`world/snapshot.rs`](../crates/evm-abstract/src/world/snapshot.rs)、[`world/rpc/session.rs`](../crates/evm-abstract/src/world/rpc/session.rs)、[`analysis/rpc.rs`](../crates/evm-abstract/src/analysis/rpc.rs)；本地 HTTP 的实际 CLI 对照在 [`tests/cli/rpc.rs`](../crates/evm-abstract-cli/tests/cli/rpc.rs)，有限槽、缓存与迟发错误回归在 [`tests/cli/rpc/storage.rs`](../crates/evm-abstract-cli/tests/cli/rpc/storage.rs)。
 

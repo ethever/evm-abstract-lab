@@ -25,6 +25,8 @@ mod pinning;
 #[path = "rpc/storage.rs"]
 mod storage;
 
+#[path = "rpc/budgets.rs"]
+mod budgets;
 #[path = "rpc/smt.rs"]
 mod smt;
 
@@ -94,6 +96,8 @@ impl Fixture {
 enum Reply {
     Json(Json),
     Bytes(Vec<u8>),
+    // Budget probes may reject Content-Length before accepting the large body.
+    BytesWithPeerAbort(Vec<u8>),
     Http(u16),
 }
 
@@ -147,10 +151,11 @@ impl RpcServer {
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
                 let request: Json = serde_json::from_slice(&body).unwrap();
-                let (status, bytes) = match handler(&request) {
-                    Reply::Json(reply) => (200, serde_json::to_vec(&reply).unwrap()),
-                    Reply::Bytes(bytes) => (200, bytes),
-                    Reply::Http(status) => (status, Vec::new()),
+                let (status, bytes, allow_peer_abort) = match handler(&request) {
+                    Reply::Json(reply) => (200, serde_json::to_vec(&reply).unwrap(), false),
+                    Reply::Bytes(bytes) => (200, bytes, false),
+                    Reply::BytesWithPeerAbort(bytes) => (200, bytes, true),
+                    Reply::Http(status) => (status, Vec::new(), false),
                 };
                 write!(
                     stream,
@@ -158,7 +163,9 @@ impl RpcServer {
                     bytes.len()
                 )
                 .unwrap();
-                stream.write_all(&bytes).unwrap();
+                if let Err(error)=stream.write_all(&bytes) {
+                    assert!(allow_peer_abort && matches!(error.kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted), "RPC fixture response: {error}");
+                }
                 requests.push(request);
             }
             completed.send(requests).unwrap();

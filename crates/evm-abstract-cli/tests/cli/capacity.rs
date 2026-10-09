@@ -89,6 +89,8 @@ fn requested_explain_capacity_is_admitted_and_retains_work_frontiers() {
         "constants-only",
         "--max-constants",
         "1000",
+        "--max-work",
+        "20000000",
     ]);
     assert_eq!(output.status.code(), Some(2));
     assert!(
@@ -130,14 +132,17 @@ fn world_entrypoint_preserves_large_capacity_and_frozen_policy() {
 }
 
 #[test]
-fn default_capacity_stays_eight_for_program_and_world() {
+fn default_capacity_matches_web_for_program_and_world() {
     for output in [
         run_concrete(&["cfg", "--hex", "00", "--format", "json"]),
         analyze("call-return-branch", &["--format", "json"]),
     ] {
         assert!(output.status.success());
         let json: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(json["domain_spec"]["capacity"], 8);
+        assert_eq!(
+            json["domain_spec"]["capacity"],
+            evm_abstract_protocol::AnalysisLimits::default().max_constants
+        );
     }
 }
 
