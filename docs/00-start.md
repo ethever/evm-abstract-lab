@@ -111,7 +111,7 @@ B0 @ 0x0000:
 **CFG**（Control Flow Graph，控制流图）用节点表示执行位置，用边表示下一步可以到哪里。输出片段：
 
 ```text
-status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=8
+status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=128
 domain=Product | domain schema=2 | reduction rounds=4 | fact atoms=256
 relations=true | SMT=in-process z3 | rlimit=100000 | resource unit=z3 resource units | expression nodes=1024 | depth=64 | constraints=128
 
@@ -133,7 +133,7 @@ S0 | B0 @ 0x0000 | stack height=0 | context=[]
 | `stack out []` | 块执行结束时栈为空；中间的 5 已被 MSTORE 消耗 |
 | `states=1 edges=0` | 一个可达状态，没有块间边；不表示没有执行指令 |
 | `transfers=1` | 分析器处理这个块一次 |
-| `context=[]` | 尚未经过 JUMP/JUMPI，所以历史为空；默认最多保留 8 个最近来源，[第 05 课](05-sensitivity.md) 再比较 |
+| `context=[]` | 尚未经过 JUMP/JUMPI，所以历史为空；默认最多保留 128 个最近来源，[第 05 课](05-sensitivity.md) 再比较 |
 | `Converged` | 本抽象模型的待处理工作已经完成；不是合约安全结论 |
 | `domain=Product` | 默认数值层保存位、范围等性质；本例常量仍显示为 `{0x...}` |
 | `relations=true` / `rlimit=100000` | 两种数值 profile 都默认开启独立关系层；SMT 只使用确定性资源上限 |

@@ -145,11 +145,11 @@ nix run . -- cfg --hex 6005600e565b50600c600e565b005b6000356015575b602a9056 --co
 
 ```bash
 nix run . -- cfg --file examples/internal-calls.hex --format json | jq '.config.context_depth, .status'
-nix run . -- cfg --file examples/internal-calls.hex --context-depth 10
-nix run . -- cfg --file examples/internal-calls.hex --context-depth 10 --max-states 2
+nix run . -- cfg --file examples/internal-calls.hex --context-depth 256
+nix run . -- cfg --file examples/internal-calls.hex --context-depth 256 --max-states 2
 ```
 
-深度 10 会被配置拒绝吗？实际历史长度会立即变成 10 吗？最后一次实验缺少的边能否证明不可达？
+深度 256 会被配置拒绝吗？实际历史长度会立即变成 256 吗？最后一次实验缺少的边能否证明不可达？
 
 <details><summary>提示与验收</summary>
 
@@ -159,7 +159,7 @@ nix run . -- cfg --file examples/internal-calls.hex --context-depth 10 --max-sta
 
 context 的数字是十进制来源块起始 pc；14 即 `0x0e`。验收需解释对应状态与返回边，而不只是“k=2 的状态更多”。已有具体对照见 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs)；给变体增加覆盖测试时也应让 revm 真正执行两次调用。
 
-JSON 的默认深度为 8、状态为 `Converged`。深度 10 合法，分析不会预先建立长度 10 的历史；历史随实际跳转增长。`--max-states 2` 使结果为 `Incomplete`、退出码 2，留下 `States` 前沿。配置接受任何可表示为 `usize` 的非负深度，但实际执行仍受状态、transfer 和工作预算限制。
+JSON 的默认深度为 128、状态为 `Converged`。深度 256 合法，分析不会预先建立长度 256 的历史；历史随实际跳转增长。`--max-states 2` 使结果为 `Incomplete`、退出码 2，留下 `States` 前沿。配置接受任何可表示为 `usize` 的非负深度，但实际执行仍受状态、transfer 和工作预算限制。
 
 </details>
 

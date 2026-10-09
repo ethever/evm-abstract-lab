@@ -468,7 +468,7 @@ fn reanalysis_retains_previous_snapshot_and_backend_errors_remain_visible() {
     let crate::Command::Submit { request, .. } = workspace.initial_command() else {
         panic!("expected submit")
     };
-    assert_eq!(request.limits.context_depth, 0);
+    assert_eq!(request.limits.context_depth, 128);
     assert!(
         workspace
             .accessible_status()

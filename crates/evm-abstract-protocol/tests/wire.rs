@@ -62,6 +62,7 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         ..AnalyzeRequest::default()
     });
     let defaults = AnalysisLimits::default();
+    assert_eq!(defaults.context_depth, 128);
     assert_eq!(defaults.max_work, 1_000_000_000_000);
     assert!(defaults.max_work > u64::from(u32::MAX));
     roundtrip(defaults);

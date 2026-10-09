@@ -163,7 +163,7 @@ struct WorldArgs {
     #[arg(long, default_value_t = 256)]
     max_facts: usize,
     /// Recent jump-source blocks retained within each frame; 0 disables context sensitivity.
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 128)]
     context_depth: usize,
     /// Maximum abstract machine states.
     #[arg(long, default_value_t = 4096)]
@@ -212,7 +212,7 @@ struct AnalysisArgs {
     #[command(flatten)]
     evm: EvmArgs,
     /// Recent jump-source blocks retained in the context; 0 disables context sensitivity.
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 128)]
     context_depth: usize,
     /// Constants retained per stack slot; positive usize, default 8, without an additional cap.
     #[arg(long, default_value_t = 8)]

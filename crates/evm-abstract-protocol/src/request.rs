@@ -228,7 +228,7 @@ impl Default for AnalysisLimits {
         Self {
             max_states: 100_000,
             max_transfers: 10_000_000,
-            context_depth: 0,
+            context_depth: 128,
             max_constants: 512,
             max_work: 1_000_000_000_000,
             max_call_depth: 1025,

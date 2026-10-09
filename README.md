@@ -28,7 +28,7 @@ nix run . -- explain --file examples/straight-line.hex
 nix run . -- cfg --file examples/diamond.hex --context-depth 0
 ```
 
-这里显式设置 `--context-depth 0`，让两条路径在相同栈高的汇合块合并。默认值是 8，会按最近跳转来源区分状态；参数的含义见[第 05 课](docs/05-sensitivity.md)。
+这里显式设置 `--context-depth 0`，让两条路径在相同栈高的汇合块合并。默认值是 128，会按最近跳转来源区分状态；参数的含义见[第 05 课](docs/05-sensitivity.md)。
 
 在 `pc=0x000e` 的状态找到 `stack in [{0x1, 0x2}]`。外层是栈，内层是**一个栈槽的可能值集合**；不是栈上同时有两个值。这一步连接具体执行与抽象分析。
 

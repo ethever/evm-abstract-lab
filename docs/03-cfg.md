@@ -68,7 +68,7 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 (基本块编号, 入口栈高, 最近 k 个跳转来源块的起始 pc)
 ```
 
-同一个键的输入允许 join；不同键保存为不同节点。节点创建后键保持不变，更新的是它的入口摘要。本课 [diamond](../examples/diamond.hex) 与 [loop](../examples/loop.hex) 显式设置 `k=0`，历史为空；未指定参数时默认为 `k=8`。历史由 JUMP/JUMPI 所在块的起始 pc 构成，不是跳转指令自身的 pc，也不是外部 CALL 的调用栈。
+同一个键的输入允许 join；不同键保存为不同节点。节点创建后键保持不变，更新的是它的入口摘要。本课 [diamond](../examples/diamond.hex) 与 [loop](../examples/loop.hex) 显式设置 `k=0`，历史为空；未指定参数时默认为 `k=128`。历史由 JUMP/JUMPI 所在块的起始 pc 构成，不是跳转指令自身的 pc，也不是外部 CALL 的调用栈。
 
 为什么栈高也要进键？运行：
 

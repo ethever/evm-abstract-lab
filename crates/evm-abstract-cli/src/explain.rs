@@ -89,7 +89,7 @@ pub(crate) struct ExplainArgs {
     #[arg(long, default_value_t = 256)]
     max_facts: usize,
     /// Recent jump-source blocks per frame; zero disables context sensitivity.
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 128)]
     context_depth: usize,
     /// Maximum abstract states; unfinished explanations exit with code 2.
     #[arg(long, default_value_t = 4096)]
