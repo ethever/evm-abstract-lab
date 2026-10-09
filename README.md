@@ -170,6 +170,8 @@ nix run .#web
 
 分析链上账户时，在后端配置 RPC 提供者并使用 `nix run .#web -- --rpc-config /absolute/path/to/rpc-providers.json` 启动；浏览器通过名称选择提供者，只提交其 ID。省略配置时仍可分析字节码，RPC 提交不可用。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)。
 
+Web 保留全部预算和精度控件，使用较大默认值，并允许继续输入更大的整数，不另设业务最大值；实际分析仍遵循指定的有限预算。完整默认值和类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 默认值保持不变。
+
 ## 开发环境与实现入口
 
 应用 workspace 的 Rust 使用静态派发，egui/Web 适配模块有局部例外；[动态派发检查](docs/no-dynamic-dispatch.md)说明 Dylint 命令、检查范围和具体错误类型约定。

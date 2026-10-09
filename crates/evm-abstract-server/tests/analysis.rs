@@ -312,3 +312,156 @@ fn dense_byte_arrays_share_complete_values_without_losing_cells() {
     let decoded: evm_abstract_protocol::AnalysisReport = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, report);
 }
+
+#[test]
+fn user_budget_above_old_state_ceiling_builds_a_complete_graph_and_ssa() {
+    // Retaining 4096 jump sources gives this tiny self-loop 4097 distinct
+    // contexts before its history stabilizes. Each is a real native state.
+    let mut input = request("5b5f56");
+    input.limits.context_depth = 4_096;
+    input.limits.max_states = 4_100;
+    input.limits.max_transfers = 4_100;
+    let selected_limits = input.limits.clone();
+    let report = analyze(input).unwrap();
+    assert_eq!(report.cfg.len(), 4_097);
+    assert_eq!(report.status, AnalysisStatus::Converged);
+    assert!(report.frontiers.is_empty());
+    assert!(report.ssa.complete);
+    assert_eq!(report.ssa.blocks.len(), report.cfg.len());
+    assert_eq!(report.metadata.limits, selected_limits);
+}
+
+#[test]
+fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() {
+    // Repeated sparse MSTORE at 1 MiB needs a span beyond the old memory ceiling.
+    // The configured finite domain makes this account for >100 million units,
+    // while only 32 concrete memory bytes need storing.
+    let code = format!("{}602062100000f3", "602a6210000052".repeat(20));
+    let mut input = request(&code);
+    input.limits.max_memory_bytes = 1_048_576 + 32;
+    input.limits.max_work = 10_000_000_000;
+    input.limits.max_constants = 512;
+    let selected_limits = input.limits.clone();
+    let report = analyze(input.clone()).unwrap();
+    assert_eq!(
+        report.status,
+        AnalysisStatus::Converged,
+        "{:?}",
+        report.frontiers
+    );
+    assert!(report.ssa.complete);
+    assert!(
+        report.metadata.work > 100_000_000,
+        "work={}",
+        report.metadata.work
+    );
+    assert_eq!(report.metadata.limits, selected_limits);
+    let returned = report
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.kind == evm_abstract_protocol::OutcomeKind::Return)
+        .unwrap();
+    let bytes = &report.byte_arrays[returned.data];
+    assert_eq!(bytes.length.constants, Some(vec!["0x20".into()]));
+    assert!(
+        bytes.cells.iter().any(|cell| cell.offset == 31
+            && bytes.values[cell.value].constants == Some(vec!["0x2a".into()]))
+    );
+    for (max_work, max_memory, frontier) in [
+        (
+            100_000_000,
+            selected_limits.max_memory_bytes,
+            FrontierKind::Work,
+        ),
+        (selected_limits.max_work, 1_048_576, FrontierKind::Memory),
+    ] {
+        let mut bounded = input.clone();
+        bounded.limits.max_work = max_work;
+        bounded.limits.max_memory_bytes = max_memory;
+        let partial = analyze(bounded).unwrap();
+        assert_eq!(partial.status, AnalysisStatus::Incomplete);
+        assert!(!partial.ssa.complete);
+        assert!(partial.frontiers.iter().any(|item| item.kind == frontier));
+    }
+}
+
+#[test]
+fn nonpositive_execution_and_precision_budgets_still_fail_native_admission() {
+    use evm_abstract_protocol::AnalysisLimits;
+    for limits in [
+        AnalysisLimits {
+            max_states: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            max_transfers: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            max_work: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            max_call_depth: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            max_memory_bytes: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            max_constants: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            reduction_rounds: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            max_facts: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            max_constraints: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            max_expression_nodes: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            max_expression_depth: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            smt_rlimit: 0,
+            ..AnalysisLimits::default()
+        },
+    ] {
+        let mut input = request("00");
+        input.limits = limits;
+        assert_eq!(
+            analyze(input).unwrap_err().code,
+            ApiErrorCode::InvalidLimits
+        );
+    }
+    // Context-insensitivity is a valid precision choice with a distinct zero meaning.
+    assert!(analyze(request("00")).unwrap().ssa.complete);
+}
+
+#[test]
+fn bytecode_requests_still_require_positive_rpc_settings() {
+    for field in 0..4 {
+        let mut input = request("00");
+        match field {
+            0 => input.limits.rpc_max_accounts = 0,
+            1 => input.limits.rpc_max_requests = 0,
+            2 => input.limits.rpc_max_response_bytes = 0,
+            _ => input.limits.rpc_timeout_ms = 0,
+        }
+        assert_eq!(
+            analyze(input).unwrap_err().code,
+            ApiErrorCode::InvalidLimits
+        );
+    }
+}

@@ -9,14 +9,10 @@ use serde::Serialize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, thiserror::Error)]
 pub enum ConfigurationReason {
     /// Acquisition bounds are invalid.
-    #[error(
-        "timeout and request limit must be positive, response limit 1..=64 MiB, and account limit 1..=4096"
-    )]
+    #[error("timeout, response limit, account limit, and request limit must be positive")]
     Limits,
     /// Initial observations are duplicated or exceed admission limits.
-    #[error(
-        "initial accounts must be unique, fit the account limit, and have at most 1024 slots each"
-    )]
+    #[error("initial accounts must be unique and fit the account limit")]
     InitialAccounts,
     /// Storage refinement needs an already observed account.
     #[error("storage acquisition requires an already observed account")]

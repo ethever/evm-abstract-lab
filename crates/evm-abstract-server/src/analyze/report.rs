@@ -182,7 +182,7 @@ pub(super) fn report(
             analysis::Status::Converged => api::AnalysisStatus::Converged,
             analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
         },
-        transfers: native.transfers(),
+        transfers: native.transfers() as u64,
         disassembly,
         cfg,
         edges: native
@@ -226,7 +226,7 @@ pub(super) fn report(
             fingerprint: world.fingerprint().to_string(),
             environment,
             limits: request.limits.clone(),
-            work: native.work(),
+            work: native.work() as u64,
         },
         programs: pools.programs,
         accounts,

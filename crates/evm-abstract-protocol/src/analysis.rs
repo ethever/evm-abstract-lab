@@ -209,7 +209,7 @@ record! {
         /// Model closure, independent of SSA display selection.
         pub status: AnalysisStatus,
         /// Executed transfers, including revisits.
-        pub transfers: usize,
+        pub transfers: u64,
         /// Complete root source disassembly.
         pub disassembly: Vec<DisasmBlock>,
         /// Reachable native machine-state nodes.

@@ -175,48 +175,50 @@ choice! {
     }
 }
 record! {
-    /// All execution, precision and acquisition controls.
+    /// Execution, precision and acquisition controls with platform-independent integers.
+    /// Values have no application-defined maximum; the native host validates
+    /// representability and semantic requirements before execution.
     pub struct AnalysisLimits {
         /// Maximum graph states.
-        pub max_states: usize,
+        pub max_states: u64,
         /// Maximum cumulative transfers.
-        pub max_transfers: usize,
+        pub max_transfers: u64,
         /// Retained internal jump history.
-        pub context_depth: usize,
+        pub context_depth: u64,
         /// Constants per abstract value.
-        pub max_constants: usize,
+        pub max_constants: u64,
         /// Maximum cumulative logical execution work.
-        pub max_work: usize,
+        pub max_work: u64,
         /// Maximum simultaneously retained frames.
-        pub max_call_depth: usize,
+        pub max_call_depth: u64,
         /// Maximum modeled byte-array span.
-        pub max_memory_bytes: usize,
+        pub max_memory_bytes: u64,
         /// Enable complete callee summary reuse.
         pub use_summaries: bool,
         /// Numeric abstraction.
         pub domain_profile: DomainProfile,
         /// Fact reduction rounds.
-        pub reduction_rounds: usize,
+        pub reduction_rounds: u64,
         /// Maximum retained scalar facts.
-        pub max_facts: usize,
+        pub max_facts: u64,
         /// Enable relational SMT queries.
         pub relations_enabled: bool,
         /// Maximum retained relational constraints.
-        pub max_constraints: usize,
+        pub max_constraints: u64,
         /// Expression and encoding node bound.
-        pub max_expression_nodes: usize,
+        pub max_expression_nodes: u64,
         /// Expression nesting bound.
-        pub max_expression_depth: usize,
+        pub max_expression_depth: u64,
         /// Explicit solver provider.
         pub smt_provider: SmtProvider,
         /// Per-check provider resource allowance, not milliseconds.
         pub smt_rlimit: u32,
         /// Maximum acquired accounts.
-        pub rpc_max_accounts: usize,
+        pub rpc_max_accounts: u64,
         /// Maximum cumulative HTTP requests.
-        pub rpc_max_requests: usize,
+        pub rpc_max_requests: u64,
         /// Maximum accepted bytes per RPC response.
-        pub rpc_max_response_bytes: usize,
+        pub rpc_max_response_bytes: u64,
         /// Per-request RPC timeout in milliseconds.
         pub rpc_timeout_ms: u64,
     }
@@ -224,27 +226,27 @@ record! {
 impl Default for AnalysisLimits {
     fn default() -> Self {
         Self {
-            max_states: 512,
-            max_transfers: 10_000,
+            max_states: 100_000,
+            max_transfers: 10_000_000,
             context_depth: 0,
-            max_constants: 8,
-            max_work: 20_000_000,
-            max_call_depth: 32,
-            max_memory_bytes: 65_536,
+            max_constants: 512,
+            max_work: 1_000_000_000_000,
+            max_call_depth: 1025,
+            max_memory_bytes: 64 * 1024 * 1024,
             use_summaries: true,
             domain_profile: DomainProfile::Product,
-            reduction_rounds: 4,
-            max_facts: 256,
+            reduction_rounds: 16,
+            max_facts: 4096,
             relations_enabled: true,
-            max_constraints: 128,
-            max_expression_nodes: 1024,
-            max_expression_depth: 64,
+            max_constraints: 2048,
+            max_expression_nodes: 16_384,
+            max_expression_depth: 256,
             smt_provider: SmtProvider::Z3,
-            smt_rlimit: 100_000,
-            rpc_max_accounts: 256,
-            rpc_max_requests: 16_384,
-            rpc_max_response_bytes: 4 * 1024 * 1024,
-            rpc_timeout_ms: 15_000,
+            smt_rlimit: 10_000_000,
+            rpc_max_accounts: 4096,
+            rpc_max_requests: 1_000_000,
+            rpc_max_response_bytes: 64 * 1024 * 1024,
+            rpc_timeout_ms: 120_000,
         }
     }
 }

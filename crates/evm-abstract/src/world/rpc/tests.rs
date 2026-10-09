@@ -2,6 +2,7 @@
 
 mod cancellation;
 mod environment;
+mod limits;
 mod storage;
 
 use super::{AccountRequest, RpcBlock, RpcError, RpcFailureKind, RpcInput, Session, load};
