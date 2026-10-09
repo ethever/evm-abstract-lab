@@ -126,7 +126,25 @@ pub struct Solver {
     owner: u64,
 }
 
+/// Thread-safe one-way stop signal, independent of the solver's term storage.
+/// It may outlive the originating solver; a signal never affects another solver.
+pub struct Interrupt {
+    native: ffi::Interrupt,
+}
+impl Interrupt {
+    /// Ask Bitwuzla and its SAT backend to stop at their next termination poll.
+    pub fn interrupt(&self) {
+        self.native.interrupt();
+    }
+}
+
 impl Solver {
+    /// Obtain a shareable cancellation signal without moving the native solver.
+    pub fn interrupt_handle(&self) -> Result<Interrupt, Error> {
+        self.native
+            .interrupt_handle()
+            .map(|native| Interrupt { native })
+    }
     /// Create a session with a positive per-check termination poll budget.
     ///
     /// Model generation is enabled, the SAT backend is CaDiCaL, and all

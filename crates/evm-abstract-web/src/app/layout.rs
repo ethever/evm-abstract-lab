@@ -1,5 +1,7 @@
 //! Responsive panes size code from its content and give the remaining width to
-//! the graph. Each width class retains explicit divider choices and active tabs.
+//! the graph. Long automatic code panes stop at 28% each so the graph stays
+//! readable; short panes retain their natural width. Manual divider choices and
+//! active tabs persist independently for each width class.
 
 use egui::{Stroke, Ui};
 use egui_tiles::{
@@ -87,17 +89,23 @@ impl PaneLayout {
         let width = ui.available_width();
         match WidthClass::for_width(width) {
             WidthClass::Wide => {
+                let available = width - 2.0 * GAP;
                 let desired = self.wide_manual.unwrap_or_else(|| {
                     [
-                        widgets::disassembly_width(ui, panes.report, *panes.selection),
-                        widgets::ssa_width(ui, panes.report),
+                        widgets::disassembly_width(
+                            ui,
+                            panes.report,
+                            panes.program,
+                            *panes.selection,
+                        ),
+                        widgets::ssa_width(ui, panes.report, panes.program, *panes.selection),
                     ]
+                    .map(|natural| natural.min(available * 0.28))
                 });
-                let available = width - 2.0 * GAP;
                 let graph_min = if self.wide_manual.is_some() {
                     PANE_MIN
                 } else {
-                    GRAPH_AUTO_MIN
+                    GRAPH_AUTO_MIN.max(available * 0.40)
                 };
                 let [left, right] = bounded_sides(desired, available - graph_min);
                 let before = set_widths(&mut self.wide, &[left, available - left - right, right]);
@@ -112,8 +120,18 @@ impl PaneLayout {
                 let desired =
                     self.medium_manual
                         .unwrap_or_else(|| match active_code_tab(&self.medium) {
-                            Pane::Ssa => widgets::ssa_width(ui, panes.report),
-                            _ => widgets::disassembly_width(ui, panes.report, *panes.selection),
+                            Pane::Ssa => widgets::ssa_width(
+                                ui,
+                                panes.report,
+                                panes.program,
+                                *panes.selection,
+                            ),
+                            _ => widgets::disassembly_width(
+                                ui,
+                                panes.report,
+                                panes.program,
+                                *panes.selection,
+                            ),
                         });
                 let available = width - GAP;
                 let graph_min = if self.medium_manual.is_some() {
@@ -193,6 +211,7 @@ fn bounded_sides(desired: [f32; 2], budget: f32) -> [f32; 2] {
 /// Hidden tabs keep their independent source scroll and graph navigation state.
 pub(super) struct AnalysisPanes<'a> {
     pub(super) report: &'a AnalysisReport,
+    pub(super) program: Option<usize>,
     pub(super) selection: &'a mut Selection,
     pub(super) graph: &'a mut widgets::Graph,
     pub(super) disasm_focus: &'a mut Selection,
@@ -203,10 +222,22 @@ impl AnalysisPanes<'_> {
     pub(super) fn show(&mut self, ui: &mut Ui, pane: Pane) {
         match pane {
             Pane::Disassembly => {
-                widgets::disassembly(ui, self.report, self.selection, self.disasm_focus);
+                widgets::disassembly(
+                    ui,
+                    self.report,
+                    self.program,
+                    self.selection,
+                    self.disasm_focus,
+                );
             }
             Pane::Graph => self.graph.show(ui, self.report, self.selection),
-            Pane::Ssa => widgets::ssa(ui, self.report, self.selection, self.ssa_focus),
+            Pane::Ssa => widgets::ssa(
+                ui,
+                self.report,
+                self.program,
+                self.selection,
+                self.ssa_focus,
+            ),
         }
     }
 }

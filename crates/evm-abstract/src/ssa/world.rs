@@ -5,6 +5,7 @@
 
 use super::{Instruction, SsaError, ValueId};
 use crate::analysis::{MachineEdgeKind, Status, WorldAnalysis};
+use crate::ssa::{SsaInvariantKind as Kind, error::invariant};
 use revm_bytecode::opcode;
 use serde::Serialize;
 
@@ -117,10 +118,6 @@ impl WorldSsa {
     }
 }
 
-fn invariant(message: impl Into<String>) -> SsaError {
-    SsaError::Invariant(message.into())
-}
-
 fn is_call(op: u8) -> bool {
     matches!(
         op,
@@ -136,6 +133,7 @@ fn is_call(op: u8) -> bool {
 /// Build SSA for the native multi-account graph. Missing facts, unsupported
 /// semantics and resource frontiers all prevent a claim of complete SSA.
 pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
+    crate::ssa::checkpoint()?;
     if analysis.status() != Status::Converged {
         return Err(SsaError::IncompleteAnalysis);
     }
@@ -143,6 +141,8 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
     let mut effect_next = 0;
     let mut blocks = Vec::new();
     for state in analysis.states() {
+        let invariant = |kind| invariant(kind).state(state.id);
+        crate::ssa::checkpoint()?;
         let mut phis = Vec::new();
         let mut stacks = Vec::new();
         for (frame, item) in state.entry.call_stack.iter().enumerate() {
@@ -172,12 +172,13 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
             .and_then(|program| program.blocks().get(state.active().basic_block_index));
         let stack = stacks
             .last_mut()
-            .ok_or_else(|| invariant("state has no active frame"))?;
+            .ok_or_else(|| invariant(Kind::ActiveFrameMissing))?;
         for source in original
             .into_iter()
             .flat_map(|block| block.instructions.iter())
             .take(state.executed_pcs.len())
         {
+            crate::ssa::checkpoint()?;
             let op = source.opcode;
             let (inputs, outputs) = source.stack_io();
             let fault =
@@ -231,6 +232,13 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
     }
     let mut transitions = Vec::new();
     for (index, edge) in analysis.edges().iter().enumerate() {
+        let invariant = |kind| {
+            invariant(kind)
+                .edge(index)
+                .source_state(edge.from)
+                .target_state(edge.to)
+        };
+        crate::ssa::checkpoint()?;
         let source = &blocks[edge.from];
         let destination = &analysis.states()[edge.to];
         let mut stacks = source.exit_frames.clone();
@@ -245,7 +253,7 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
                 result = Some(next);
                 stacks
                     .last_mut()
-                    .ok_or_else(|| invariant("return has no caller"))?
+                    .ok_or_else(|| invariant(Kind::ReturnCallerMissing))?
                     .push(next);
                 next += 1;
             }
@@ -272,6 +280,13 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
         transitions.push(transition);
     }
     for (index, edge) in analysis.edges().iter().enumerate() {
+        let invariant = |kind| {
+            invariant(kind)
+                .edge(index)
+                .source_state(edge.from)
+                .target_state(edge.to)
+        };
+        crate::ssa::checkpoint()?;
         let transition = &transitions[index];
         let block = &mut blocks[edge.to];
         for phi in &mut block.phis {
@@ -280,7 +295,12 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
                 .get(phi.frame)
                 .and_then(|s| s.get(phi.slot))
                 .copied()
-                .ok_or_else(|| invariant("transition stack does not match destination"))?;
+                .ok_or_else(|| {
+                    invariant(Kind::DestinationArguments)
+                        .state(edge.to)
+                        .frame(phi.frame)
+                        .slot(phi.slot)
+                })?;
             phi.inputs.push((index, value));
         }
         block.effect.inputs.push(EffectInput {

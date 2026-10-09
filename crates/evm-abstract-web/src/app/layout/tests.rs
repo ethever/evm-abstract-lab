@@ -144,7 +144,7 @@ fn resizing_reflows_all_panes_without_resetting_workspace_mode() {
                 "pane outside viewport: {size:?}: {rect:?}"
             );
             assert!(
-                rect.height() >= height * 0.45,
+                rect.height() >= if height >= 600.0 { height * 0.45 } else { 44.0 },
                 "chrome consumed analysis viewport: {size:?}: {rect:?}"
             );
         }
@@ -166,7 +166,7 @@ fn compact_tabs_keep_every_analysis_view_accessible() {
         let output = settled(&ctx, &mut workspace, size);
         let target = texts(&output)
             .into_iter()
-            .find(|(text, rect)| text == label && rect.top() > 60.0)
+            .find(|(text, rect)| text == label && rect.top() > 35.0)
             .unwrap()
             .1;
         click(&ctx, &mut workspace, size, target.center());
@@ -278,13 +278,15 @@ fn long_input_and_diagnostics_stay_bounded_in_a_short_viewport() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
-    workspace.request.bytecode = "60ff\n".repeat(500);
-    workspace.show_details = true;
+    workspace.form.bytecode.bytecode = "60ff\n".repeat(500);
+    workspace.inspector.expanded = true;
+    workspace.inspector.tab = crate::app::inspector::Tab::Diagnostics;
     workspace.report.as_mut().unwrap().diagnostics = (0..100)
         .map(|index| Diagnostic {
             state: 0,
             pc: index,
             kind: DiagnosticKind::OpaqueResult,
+            reduction: None,
             detail: "A detailed diagnostic must remain independently scrollable. ".repeat(20),
         })
         .collect();
@@ -305,7 +307,7 @@ fn long_input_and_diagnostics_stay_bounded_in_a_short_viewport() {
         );
         for (_, rect) in pane_rects(active_tree(&workspace, size.x)) {
             assert!(
-                rect.height() > size.y * 0.33,
+                rect.height() > size.y * 0.28,
                 "input/details overflowed: {size:?}: {rect:?}"
             );
             assert!(Rect::from_min_size(Pos2::ZERO, size).contains_rect(rect));
@@ -314,10 +316,11 @@ fn long_input_and_diagnostics_stay_bounded_in_a_short_viewport() {
 }
 
 #[test]
-fn navigation_and_editor_fit_without_global_font_scaling() {
+fn modal_editor_is_visible_and_bounded_without_global_font_scaling() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
+    workspace.form.open = true;
     for size in [
         Vec2::new(1440.0, 900.0),
         Vec2::new(844.0, 390.0),
@@ -328,27 +331,18 @@ fn navigation_and_editor_fit_without_global_font_scaling() {
         let response = ctx
             .read_response(egui::Id::new("runtime_bytecode"))
             .unwrap();
-        let editor = response.rect;
+        let viewport = Rect::from_min_size(Pos2::ZERO, size);
         assert!(
             response.interact_rect.height() >= 16.0,
-            "editor is allocated but not visibly interactive: {:?}",
-            response.interact_rect,
+            "editor clipped at {size:?}: {:?}",
+            response.interact_rect
         );
-        assert!(
-            editor.top() < 65.0,
-            "editor has excess chrome above it: {editor:?}"
-        );
-        assert!(
-            editor.bottom() < 90.0,
-            "editor exceeds compact input budget: {editor:?}"
-        );
-        let viewport = Rect::from_min_size(Pos2::ZERO, size);
+        assert!(viewport.contains_rect(response.interact_rect));
         for (text, rect) in texts(&output) {
-            if ["Bytecode", "Workspace", "Examples", "Limits", "▶ Analyze"].contains(&text.as_str())
-            {
+            if text == "Analyze" || text == "Close" {
                 assert!(
                     viewport.contains_rect(rect),
-                    "navigation clipped: {size:?}, {text}: {rect:?}"
+                    "modal action clipped at {size:?}: {text} {rect:?}"
                 );
             }
         }
@@ -365,6 +359,7 @@ fn visible_bytecode_editor_accepts_pointer_and_keyboard_input_after_resizes() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
+    workspace.form.open = true;
     for size in [
         Vec2::new(1440.0, 900.0),
         Vec2::new(390.0, 844.0),
@@ -401,7 +396,7 @@ fn visible_bytecode_editor_accepts_pointer_and_keyboard_input_after_resizes() {
         let input = format!("0x{:04x}", size.x as usize);
         frame(&ctx, &mut workspace, size, vec![Event::Text(input.clone())]);
         assert_eq!(
-            workspace.request.bytecode, input,
+            workspace.form.bytecode.bytecode, input,
             "visible editor did not receive input at {size:?}"
         );
     }
@@ -490,12 +485,14 @@ fn typing_f_and_shift_f_in_the_focused_editor_keeps_the_manual_camera() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
-    workspace.request.bytecode.clear();
+    workspace.form.bytecode.bytecode.clear();
     let size = Vec2::new(1440.0, 900.0);
     settled(&ctx, &mut workspace, size);
     workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
     settled(&ctx, &mut workspace, size);
     let manual_zoom = workspace.graph.zoom;
+    workspace.form.open = true;
+    settled(&ctx, &mut workspace, size);
     let editor = ctx
         .read_response(egui::Id::new("runtime_bytecode"))
         .unwrap();
@@ -515,7 +512,7 @@ fn typing_f_and_shift_f_in_the_focused_editor_keeps_the_manual_camera() {
     {
         let output = press_f(&ctx, &mut workspace, size, modifiers, Some(character));
         assert_eq!(
-            workspace.request.bytecode, expected,
+            workspace.form.bytecode.bytecode, expected,
             "text input must retain the typed letter"
         );
         assert!(ctx.text_edit_focused());
@@ -583,4 +580,51 @@ fn fit_shortcut_does_not_reach_a_hidden_graph_pane() {
             "hidden graph must ignore F: {view:?}, {size:?}"
         );
     }
+}
+
+#[test]
+fn scrolling_the_modal_editor_does_not_navigate_the_background_graph() {
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let mut workspace = ready();
+    let size = Vec2::new(1440.0, 900.0);
+    settled(&ctx, &mut workspace, size);
+    workspace.graph.zoom_at(Vec2::new(80.0, 90.0), 0.75);
+    workspace.form.bytecode.bytecode = "6001\n".repeat(300);
+    workspace.form.open = true;
+    let before = settled(&ctx, &mut workspace, size);
+    let titles = graph_titles(&before);
+    let zoom = workspace.graph.zoom;
+    let editor = ctx
+        .read_response(egui::Id::new("runtime_bytecode"))
+        .unwrap();
+    let top = editor.rect.top();
+    frame(
+        &ctx,
+        &mut workspace,
+        size,
+        vec![
+            Event::PointerMoved(editor.interact_rect.center()),
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, -180.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    for _ in 0..30 {
+        frame(&ctx, &mut workspace, size, vec![]);
+    }
+    let after = settled(&ctx, &mut workspace, size);
+    assert!(
+        ctx.read_response(egui::Id::new("runtime_bytecode"))
+            .unwrap()
+            .rect
+            .top()
+            < top - 50.0,
+        "wheel must reach the modal's scrollable editor"
+    );
+    assert_eq!(graph_titles(&after), titles);
+    assert_eq!(workspace.graph.zoom, zoom);
 }

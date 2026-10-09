@@ -262,7 +262,9 @@ impl Drop for RpcServer {
 fn rpc_result(request: &Json, chain_id: &str) -> Json {
     match request["method"].as_str().unwrap() {
         "eth_chainId" => json!(chain_id),
-        "eth_getBlockByHash" | "eth_getBlockByNumber" => json!({"hash":BLOCK,"number":"0x10"}),
+        "eth_getBlockByHash" | "eth_getBlockByNumber" => {
+            json!({"hash":BLOCK,"number":"0x10", "parentHash":BLOCK, "timestamp":"0x1234", "miner":"0x0000000000000000000000000000000000000033", "mixHash":BLOCK, "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7"})
+        }
         "eth_getCode" => json!("0x3460105400"),
         "eth_getBalance" => json!("0x1000000"),
         "eth_getTransactionCount" => json!("0x0"),

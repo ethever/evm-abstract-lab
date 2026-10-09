@@ -7,6 +7,7 @@ pub struct WorkBudget {
     maximum: usize,
     consumed: usize,
     exhausted: bool,
+    cancellation: embedded_smt::Cancellation,
 }
 impl WorkBudget {
     /// 不预分配；零额度允许用于验证中断行为。
@@ -15,10 +16,15 @@ impl WorkBudget {
             maximum,
             consumed: 0,
             exhausted: false,
+            cancellation: embedded_smt::current_cancellation(),
         }
     }
     /// 事务式预留。超限保留此前消费量，并记录中断。
     pub fn charge(&mut self, amount: usize) -> bool {
+        if self.cancellation.is_cancelled() {
+            self.exhausted = true;
+            return false;
+        }
         if amount > self.maximum.saturating_sub(self.consumed) {
             self.exhausted = true;
             return false;
@@ -28,7 +34,7 @@ impl WorkBudget {
     }
     /// 是否有操作因额度不足被拒绝。
     pub fn exhausted(&self) -> bool {
-        self.exhausted
+        self.exhausted || self.cancellation.is_cancelled()
     }
     /// 已成功预留的工作量。
     pub fn used(&self) -> usize {

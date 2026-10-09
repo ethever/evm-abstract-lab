@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod scalar;
 mod solver;
-pub use embedded_smt::Provider as SmtProvider;
+pub use embedded_smt::{Error as SmtError, Provider as SmtProvider};
 pub use scalar::ScalarQuery;
 #[cfg(test)]
 mod tests;
@@ -64,6 +64,8 @@ impl RelationLimits {
 /// A query did not prove either satisfiability or contradiction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum QueryReason {
+    /// Explicit caller cancellation; the enclosing controlled analysis stops.
+    Cancelled,
     /// Relational queries were explicitly disabled.
     Disabled,
     /// Invalid zero-sized query policy.
@@ -73,15 +75,22 @@ pub enum QueryReason {
     /// The bounded local scalar fact table could not complete the projection.
     ScalarFactLimit,
     /// Local fact interpretation failed without proving numerical bottom.
-    ScalarFactError(String),
+    ScalarFactError(super::facts::FactError),
     /// Expression size or encoded work exceeds the query policy.
     ExpressionLimit,
     /// A pure operation is conservatively opaque in the current encoder.
     Unsupported(u8),
     /// Native solver exhausted its deterministic resource allowance.
     ResourceLimit,
-    /// Native solver could not complete its bounded query.
-    SolverUnknown(String),
+    /// Native solver returned UNKNOWN for a provider-specific reason.
+    SolverUnknown {
+        /// Provider that returned UNKNOWN.
+        provider: SmtProvider,
+        /// Original native explanation; it is not an adapter error.
+        reason: String,
+    },
+    /// The native binding or checked adapter failed; this is distinct from UNKNOWN.
+    SolverError(SmtError),
     /// A model or its word value was unavailable.
     ModelUnavailable,
 }

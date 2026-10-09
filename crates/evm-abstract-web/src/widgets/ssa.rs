@@ -11,6 +11,7 @@ use crate::{app::Selection, palette};
 pub(crate) fn ssa(
     ui: &mut Ui,
     report: &AnalysisReport,
+    program: Option<usize>,
     selection: &mut Selection,
     previous: &mut Selection,
 ) {
@@ -18,13 +19,14 @@ pub(crate) fn ssa(
     // responsive tiles. Its absolute UI identity preserves both scroll axes
     // when the parent tree changes, without overriding manual navigation.
     ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("ssa_view")), |ui| {
-        contents(ui, report, selection, previous)
+        contents(ui, report, program, selection, previous)
     });
 }
 
 fn contents(
     ui: &mut Ui,
     report: &AnalysisReport,
+    program: Option<usize>,
     selection: &mut Selection,
     previous: &mut Selection,
 ) {
@@ -42,7 +44,7 @@ fn contents(
             report.ssa.effect_count,
         ),
     );
-    let rows = rows(report);
+    let rows = scoped_rows(report, program, *selection);
     let focus = (*selection != *previous)
         .then(|| {
             rows.iter().position(|row| {
@@ -107,8 +109,13 @@ fn contents(
 
 /// SSA displays the complete report, so pane sizing measures every retained
 /// block, including phi inputs, effects and transition rows.
-pub(crate) fn natural_width(ui: &Ui, report: &AnalysisReport) -> f32 {
-    row_width(ui, &rows(report)) + ui.spacing().scroll.allocated_width()
+pub(crate) fn natural_width(
+    ui: &Ui,
+    report: &AnalysisReport,
+    program: Option<usize>,
+    selection: Selection,
+) -> f32 {
+    row_width(ui, &scoped_rows(report, program, selection)) + ui.spacing().scroll.allocated_width()
 }
 
 fn row_width(ui: &Ui, rows: &[Row]) -> f32 {
@@ -181,9 +188,29 @@ fn frames(frames: &[Vec<usize>]) -> String {
         .join("  ")
 }
 
+fn scoped_rows(report: &AnalysisReport, program: Option<usize>, selection: Selection) -> Vec<Row> {
+    build_rows(report, |state| {
+        report.cfg.iter().any(|block| {
+            block.id == state
+                && block.program == program
+                && (program.is_some() || selection.state == Some(state))
+        })
+    })
+}
+
+#[cfg(test)]
 fn rows(report: &AnalysisReport) -> Vec<Row> {
+    build_rows(report, |_| true)
+}
+
+fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<Row> {
     let mut rows = Vec::new();
-    for block in &report.ssa.blocks {
+    for block in report
+        .ssa
+        .blocks
+        .iter()
+        .filter(|block| include(block.state))
+    {
         let mut header = Row::new();
         header.header = true;
         header.target = Some(Selection {

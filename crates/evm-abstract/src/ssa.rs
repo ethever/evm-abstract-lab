@@ -7,6 +7,8 @@
 //! dominance 算法使用 petgraph，`verify` 检查唯一赋值、支配和 φ 边一致性。
 
 mod build;
+mod error;
+pub use error::{SsaInvariant, SsaInvariantKind};
 mod partial;
 mod verify;
 mod world;
@@ -87,12 +89,23 @@ pub struct Ssa {
 /// 输入未完成，或构建结果违反 SSA 不变量。
 #[derive(Debug, Error)]
 pub enum SsaError {
+    /// The enclosing analysis was cancelled before the next SSA operation.
+    #[error("SSA construction cancelled")]
+    Cancelled,
     /// 缺边会使 φ 和 dominance 产生误导，因此拒绝截断分析。
     #[error("SSA requires a converged graph; analysis has unresolved frontiers")]
     IncompleteAnalysis,
     /// 内部不变量失败，保留可定位的信息。
     #[error("SSA invariant failed: {0}")]
-    Invariant(String),
+    Invariant(Box<SsaInvariant>),
+}
+
+pub(crate) fn checkpoint() -> Result<(), SsaError> {
+    if embedded_smt::current_cancellation().is_cancelled() {
+        Err(SsaError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 impl Ssa {

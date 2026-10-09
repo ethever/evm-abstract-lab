@@ -1,5 +1,8 @@
 //! Snapshot identity is independent of caller-supplied source descriptions.
 
+mod environment;
+pub use environment::SnapshotEnvironment;
+
 use super::World;
 use crate::{Fork, domain::AbstractValue};
 use alloy_primitives::{B256, U256, keccak256};
@@ -24,6 +27,21 @@ pub enum SnapshotIdentity {
 }
 
 impl World {
+    /// Block observations acquired atomically with this RPC snapshot.
+    pub fn snapshot_environment(&self) -> Option<&SnapshotEnvironment> {
+        self.snapshot_environment.as_ref()
+    }
+
+    pub(crate) fn apply_snapshot_environment(&self, environment: &mut super::EvmEnvironment) {
+        if let Some(snapshot) = &self.snapshot_environment {
+            snapshot.apply(environment);
+            if environment.chain_id.is_none()
+                && let SnapshotIdentity::Chain { chain_id, .. } = self.identity()
+            {
+                environment.chain_id = Some(AbstractValue::constant(*chain_id));
+            }
+        }
+    }
     /// Start an explicitly synthetic snapshot with a separate source description.
     pub fn offline(fork: Fork, label: impl Into<String>, provenance: impl Into<String>) -> Self {
         let mut world = Self::new(fork, provenance);
@@ -104,6 +122,14 @@ impl World {
                 bytes.extend_from_slice(&slot.to_be_bytes::<32>());
                 append_value(&mut bytes, value);
             }
+        }
+        if let Some(environment) = &self.snapshot_environment {
+            // Preserve historical fingerprints for offline snapshots without
+            // header observations while binding all newly acquired RPC facts.
+            bytes.extend_from_slice(b"rpc-environment-v1");
+            bytes.extend(
+                serde_json::to_vec(environment).expect("typed header observations serialize"),
+            );
         }
         keccak256(bytes)
     }

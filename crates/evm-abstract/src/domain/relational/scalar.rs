@@ -158,7 +158,7 @@ fn failed(error: FactError) -> ScalarQuery {
         | FactError::EmptyFiniteSet
         | FactError::ConflictingBits
         | FactError::InvalidBounds => ScalarQuery::Infeasible,
-        other => ScalarQuery::Unknown(QueryReason::ScalarFactError(other.to_string())),
+        other => ScalarQuery::Unknown(QueryReason::ScalarFactError(other)),
     }
 }
 impl RelationState {

@@ -1,11 +1,15 @@
 //! 两阶段构建：先给所有入栈槽位命名，再执行块并连接 φ。
 
-use super::{Block, Instruction, Phi, PhiInput, Ssa, SsaError, ValueId};
+use super::{
+    Block, Instruction, Phi, PhiInput, Ssa, SsaError, SsaInvariantKind as Kind, ValueId,
+    error::invariant,
+};
 use crate::analysis::{Analysis, Status};
 use revm_bytecode::opcode;
 use std::collections::BTreeSet;
 
 pub(super) fn build(analysis: &Analysis) -> Result<Ssa, SsaError> {
+    crate::ssa::checkpoint()?;
     if analysis.status() != Status::Converged {
         return Err(SsaError::IncompleteAnalysis);
     }
@@ -33,10 +37,12 @@ pub(super) fn build(analysis: &Analysis) -> Result<Ssa, SsaError> {
         .collect();
 
     for state in analysis.states() {
+        crate::ssa::checkpoint()?;
         let block = &mut blocks[state.id];
         let mut stack: Vec<ValueId> = block.phis.iter().map(|phi| phi.result).collect();
         let source = &analysis.program().blocks()[state.key.basic_block_index];
         for instruction in source.instructions.iter().take(state.executed_pcs.len()) {
+            crate::ssa::checkpoint()?;
             let op = instruction.opcode;
             let (inputs, outputs) = instruction.stack_io();
             let fault = !instruction.is_valid()
@@ -77,11 +83,14 @@ pub(super) fn build(analysis: &Analysis) -> Result<Ssa, SsaError> {
     // 因为两条边携带相同出栈，不能伪造两份不同的块参数。
     let predecessor_pairs: BTreeSet<_> = analysis.edges().iter().map(|e| (e.from, e.to)).collect();
     for (from, to) in predecessor_pairs {
+        crate::ssa::checkpoint()?;
         let outgoing = blocks[from].exit_stack.clone();
         if outgoing.len() != blocks[to].phis.len() {
-            return Err(SsaError::Invariant(format!(
-                "stack height mismatch on {from} -> {to}"
-            )));
+            return Err(invariant(Kind::EdgeStackHeight)
+                .source_state(from)
+                .target_state(to)
+                .expected(blocks[to].phis.len())
+                .observed(outgoing.len()));
         }
         for (phi, value) in blocks[to].phis.iter_mut().zip(outgoing) {
             phi.inputs.push(PhiInput {

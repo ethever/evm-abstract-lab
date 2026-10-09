@@ -15,8 +15,9 @@ fn natural(ctx: &Context, workspace: &Workspace) -> [f32; 2] {
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
         let report = workspace.report.as_ref().unwrap();
         widths = [
-            widgets::disassembly_width(ui, report, workspace.selection).max(PANE_MIN),
-            widgets::ssa_width(ui, report).max(PANE_MIN),
+            widgets::disassembly_width(ui, report, workspace.program, workspace.selection)
+                .max(PANE_MIN),
+            widgets::ssa_width(ui, report, workspace.program, workspace.selection).max(PANE_MIN),
         ];
     });
     output.textures_delta.clear();
@@ -54,8 +55,8 @@ fn long_push_and_phi_keep_a_graph_budget_without_hiding_source_data() {
     let mut workspace = ready();
     let report = workspace.report.as_mut().unwrap();
     let immediate = format!("0x{}", "fe".repeat(32));
-    report.disassembly[0].instructions[0].name = "PUSH32".into();
-    report.disassembly[0].instructions[0].immediate = Some(immediate.clone());
+    report.programs[0].blocks[0].instructions[0].name = "PUSH32".into();
+    report.programs[0].blocks[0].instructions[0].immediate = Some(immediate.clone());
     report.ssa.blocks[2].phis[0].inputs = (0..80)
         .map(|id| PhiInput {
             edge: id,
@@ -98,6 +99,15 @@ fn selected_child_source_and_reanalysis_remeasure_automatic_panes() {
     child.instructions[0].pc = 1000;
     child.instructions[0].name = "PUSH32".into();
     child.instructions[0].immediate = Some(format!("0x{}", "ff".repeat(32)));
+    child.program = Some(1);
+    let mut source = report.programs[0].clone();
+    source.id = 1;
+    source.blocks = vec![evm_abstract_protocol::DisasmBlock {
+        id: child.basic_block,
+        start_pc: 1000,
+        instructions: child.instructions.clone(),
+    }];
+    report.programs.push(source);
     report.cfg.push(child);
     workspace.selection = Selection {
         state: Some(99),
@@ -107,15 +117,16 @@ fn selected_child_source_and_reanalysis_remeasure_automatic_panes() {
     let child_widths = widths(&workspace, size);
     assert!(child_widths[0] > original[0] + 200.0);
     assert!(
-        (child_widths[2] - original[2]).abs() < 1.0,
-        "SSA still displays every block"
+        child_widths[2] <= original[2],
+        "SSA must scope to selected program instead of reserving unrelated root content"
     );
     workspace.selection.state = Some(0);
     settled(&ctx, &mut workspace, size);
     assert!((widths(&workspace, size)[0] - original[0]).abs() < 1.0);
     let mut replacement = crate::tests::report();
-    replacement.disassembly[0].instructions[0].immediate = Some(format!("0x{}", "ab".repeat(32)));
-    workspace.begin_analysis();
+    replacement.programs[0].blocks[0].instructions[0].immediate =
+        Some(format!("0x{}", "ab".repeat(32)));
+    workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
         result: Ok(replacement),
     }));
@@ -178,8 +189,9 @@ fn manual_divider_widths_survive_growth_content_changes_and_reanalysis() {
         }
     }
     let mut replacement = crate::tests::report();
-    replacement.disassembly[0].instructions[0].immediate = Some(format!("0x{}", "ff".repeat(32)));
-    workspace.begin_analysis();
+    replacement.programs[0].blocks[0].instructions[0].immediate =
+        Some(format!("0x{}", "ff".repeat(32)));
+    workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
         result: Ok(replacement),
     }));
@@ -214,4 +226,32 @@ fn medium_code_tabs_use_active_content_and_keep_the_graph_visible() {
     assert!(pane_rect(&workspace.layout.medium, Pane::Graph).width() >= GRAPH_AUTO_MIN - 1.0);
     let desired = natural(&ctx, &workspace)[1];
     assert!((ssa - desired).abs() < 1.0);
+}
+
+#[test]
+fn long_code_in_a_world_directory_does_not_squeeze_the_graph_to_a_thin_column() {
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let mut workspace = ready();
+    workspace.directory.open = true;
+    let report = workspace.report.as_mut().unwrap();
+    report.programs[0].blocks[0].instructions[0].immediate = Some(format!("0x{}", "ef".repeat(32)));
+    report.ssa.blocks[2].phis[0].inputs = (0..70)
+        .map(|id| PhiInput {
+            edge: id,
+            predecessor: id,
+            value: id + 100,
+        })
+        .collect();
+    let size = Vec2::new(1440.0, 1000.0);
+    settled(&ctx, &mut workspace, size);
+    let panes = widths(&workspace, size);
+    let available: f32 = panes.iter().sum();
+    assert!(
+        panes[1] >= available * 0.40,
+        "graph must remain readable beside long code: {panes:?}"
+    );
+    for width in [panes[0], panes[2]] {
+        assert!(width <= available * 0.28 + 1.0);
+    }
 }

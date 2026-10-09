@@ -5,9 +5,13 @@
 //! framing headers and ambiguous paths are rejected. Static paths are checked
 //! after canonicalization, including symlink resolution. No ambient RPC is used.
 
+mod connections;
 mod request;
+mod tasks;
 
-use evm_abstract_protocol::{API_PATH, AnalyzeReply, AnalyzeRequest, ApiError, ApiErrorCode};
+use evm_abstract_protocol::{
+    API_PATH, ApiError, ApiErrorCode, ErrorDetails, JobReply, TransportErrorKind, TransportFailure,
+};
 use std::{
     fs,
     io::{self, Write},
@@ -26,6 +30,9 @@ pub enum ServerError {
     /// A typed response could not be encoded.
     #[error("response encoding: {0}")]
     Json(serde_json::Error),
+    /// Analysis worker pool could not be constructed.
+    #[error("analysis pool: {0}")]
+    Pool(crate::jobs::PoolError),
 }
 
 impl From<io::Error> for ServerError {
@@ -39,59 +46,43 @@ impl From<serde_json::Error> for ServerError {
     }
 }
 
-/// Serve requests sequentially with bounded input and analysis work.
+/// Serve bounded HTTP connections independently of the CPU analysis pool.
 ///
 /// Individual client disconnects do not stop the listener. The application owns
 /// binding and prints the selected address before entering this loop.
 pub fn serve(listener: &TcpListener, assets: &Path) -> Result<(), ServerError> {
+    serve_with_config(listener, assets, crate::jobs::Config::default())
+}
+
+/// Serve with explicit CPU worker, queue and retained-result limits.
+pub fn serve_with_config(
+    listener: &TcpListener,
+    assets: &Path,
+    config: crate::jobs::Config,
+) -> Result<(), ServerError> {
+    let jobs = crate::jobs::Pool::new(config).map_err(ServerError::Pool)?;
+    let mut connections = connections::Pool::new(assets, jobs)?;
     for stream in listener.incoming() {
         let stream = stream?;
-        if let Err(error) = serve_connection(stream, assets) {
-            eprintln!("{error}");
-        }
+        connections.accept(stream)?;
     }
     Ok(())
 }
 
 /// Serve one accepted connection; exposed for real transport integration tests.
-pub fn serve_connection(mut stream: TcpStream, assets: &Path) -> Result<(), ServerError> {
+pub fn serve_connection(
+    mut stream: TcpStream,
+    assets: &Path,
+    jobs: &crate::jobs::Pool,
+) -> Result<(), ServerError> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let request = match request::read(&mut stream) {
         Ok(request) => request,
         Err(error) => return error_reply(&mut stream, error),
     };
-    if request.path == API_PATH {
-        if request.method != "POST" {
-            return error_reply(
-                &mut stream,
-                api_error(ApiErrorCode::MethodNotAllowed, "use POST for /api/analyze"),
-            );
-        }
-        let input: AnalyzeRequest = match serde_json::from_slice(&request.body) {
-            Ok(input) => input,
-            Err(error) => {
-                return error_reply(
-                    &mut stream,
-                    api_error(
-                        ApiErrorCode::InvalidRequest,
-                        format!("invalid request JSON: {error}"),
-                    ),
-                );
-            }
-        };
-        let result = crate::analyze::analyze(input);
-        let status = result
-            .as_ref()
-            .err()
-            .map_or(200, |error| error_status(error.code));
-        let body = serde_json::to_vec(&AnalyzeReply { result })?;
-        return respond(
-            &mut stream,
-            status,
-            "application/json; charset=utf-8",
-            &body,
-        );
+    if request.path == API_PATH || request.path.starts_with(&format!("{API_PATH}/")) {
+        return tasks::serve(&mut stream, request, jobs);
     }
     if request.method != "GET" {
         return error_reply(
@@ -160,9 +151,21 @@ pub fn serve_connection(mut stream: TcpStream, assets: &Path) -> Result<(), Serv
 }
 
 fn api_error(code: ApiErrorCode, message: impl Into<String>) -> ApiError {
+    let kind = match code {
+        ApiErrorCode::MethodNotAllowed => TransportErrorKind::Method,
+        ApiErrorCode::NotFound => TransportErrorKind::Route,
+        ApiErrorCode::RequestTooLarge => TransportErrorKind::Size,
+        ApiErrorCode::Internal | ApiErrorCode::Transport => TransportErrorKind::Network,
+        _ => TransportErrorKind::HttpRequest,
+    };
     ApiError {
         code,
         message: message.into(),
+        details: ErrorDetails::Transport(TransportFailure {
+            kind,
+            status: None,
+            bytes: None,
+        }),
     }
 }
 
@@ -175,12 +178,19 @@ fn error_status(code: ApiErrorCode) -> u16 {
         ApiErrorCode::Internal => 500,
         ApiErrorCode::NotFound => 404,
         ApiErrorCode::MethodNotAllowed => 405,
+        ApiErrorCode::Rpc => 502,
+        ApiErrorCode::TaskNotFound => 404,
+        ApiErrorCode::TaskNotReady => 409,
+        ApiErrorCode::QueueFull => 429,
+        ApiErrorCode::Cancelled => 410,
+        ApiErrorCode::WorkerFailed => 503,
+        ApiErrorCode::Transport => 502,
     }
 }
 
 fn error_reply(stream: &mut TcpStream, error: ApiError) -> Result<(), ServerError> {
     let status = error_status(error.code);
-    let body = serde_json::to_vec(&AnalyzeReply { result: Err(error) })?;
+    let body = serde_json::to_vec(&JobReply { result: Err(error) })?;
     respond(stream, status, "application/json; charset=utf-8", &body)
 }
 
@@ -192,10 +202,16 @@ fn respond(
 ) -> Result<(), ServerError> {
     let reason = match status {
         200 => "OK",
+        202 => "Accepted",
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
+        410 => "Gone",
         413 => "Content Too Large",
+        429 => "Too Many Requests",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
     write!(

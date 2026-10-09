@@ -11,9 +11,12 @@ import re
 import selectors
 from statistics import median
 import subprocess
+import sys
 import time
 
 from playwright.sync_api import expect, sync_playwright
+sys.dont_write_bytecode = True
+from web_test_rpc import RpcFixture
 
 
 def server_url(process: subprocess.Popen[str]) -> str:
@@ -38,27 +41,68 @@ def rendered_frame(page) -> None:
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
 
 
+class AnalysisResponse:
+    """Final typed envelope plus the actual originating form submission."""
+    def __init__(self, response, envelope, status):
+        self.request = response.request
+        self.status = status
+        self.admission_status = response.status
+        self.envelope = envelope
+
+    def json(self):
+        return self.envelope
+
+
+def complete_submission(page, admitted):
+    reply = admitted.json()["result"]
+    if "Err" in reply:
+        return AnalysisResponse(admitted, {"result": reply}, admitted.status)
+    job = reply["Ok"]
+    observed_status = admitted.status
+    task_url = admitted.url + "/" + str(job["id"])
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        state = job["state"]
+        if state == "Completed":
+            result = page.request.get(task_url + "/result")
+            expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=60000)
+            return AnalysisResponse(admitted, result.json(), result.status)
+        if isinstance(state, dict) and "Failed" in state:
+            error = state["Failed"]
+            expect(page.locator("#analysis-status")).to_contain_text("Error:", timeout=60000)
+            return AnalysisResponse(admitted, {"result": {"Err": error}}, observed_status)
+        assert state not in ["Cancelling", "Cancelled"], f"unexpected cancellation: {job}"
+        page.wait_for_timeout(100)
+        result = page.request.get(task_url)
+        assert result.ok, result.text()
+        observed_status = result.status
+        job = result.json()["result"]["Ok"]
+    raise AssertionError(f"task did not reach a terminal state: {job}")
+
+
+def open_input(page):
+    # The product shortcut opens the modal and focuses its initial source field.
+    page.keyboard.press("Control+Enter")
+    settle_gesture(page)
+
+
+def posted_bytecode(reply):
+    return reply.request.post_data_json["input"]["Bytecode"]["bytecode"]
+
+
 def submit_bytecode(page, canvas, bytecode: str, evidence: Path):
-    # At this fixed viewport the compact egui bytecode editor sits below the
-    # toolbar. Use real pointer/keyboard input so serialization is tested too.
-    canvas.click(position={"x": 300, "y": 60})
-    rendered_frame(page)
+    open_input(page)
     page.keyboard.press("Control+A")
     rendered_frame(page)
-    focus = page.evaluate("document.activeElement.tagName")
-    print(f"Typing {bytecode!r} with browser focus on {focus}", flush=True)
-    # Send normal key events: egui can receive them through either its canvas
-    # or its hidden IME input. insert_text emits only an input event and is
-    # ineffective when Chromium has retained canvas focus.
     page.keyboard.type(bytecode, delay=5)
     rendered_frame(page)
     canvas.screenshot(path=str(evidence))
-    with page.expect_response(lambda response: response.url.endswith("/api/analyze")) as response:
+    with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
         page.keyboard.press("Control+Enter")
-    reply = response.value
-    posted = reply.request.post_data_json["bytecode"]
+    admitted = response.value
+    posted = posted_bytecode(admitted)
     assert posted == bytecode, f"editor input did not reach the typed request: expected {bytecode!r}, got {posted!r}"
-    return reply
+    return complete_submission(page, admitted)
 
 
 
@@ -149,7 +193,7 @@ def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, floa
     )
 
 
-def node_snapshot(page, canvas, output: Path, name: str, region=(4, 126, 1436, 970), measure_nodes=False):
+def node_snapshot(page, canvas, output: Path, name: str, region=(4, 104, 1436, 970), measure_nodes=False):
     screenshot = canvas.screenshot(path=str(output / f"{name}.png"))
     metrics = screenshot_metrics(page, screenshot, region, measure_nodes)
     assert metrics["bounds"] and metrics["selected_pixels"] >= 20, f"selected CFG node missing: {name}: {metrics}"
@@ -251,6 +295,13 @@ def workspace_panes(page, canvas, output: Path, name: str):
             "ssa_width": width - right - 6.5, "graph_width": right - left - 5}, png
 
 
+def hide_inspector(page, canvas):
+    # Native geometry tests cover this right-aligned header control; the action
+    # is exercised with an actual pointer and leaves more canvas for gestures.
+    canvas.click(position={"x": page.viewport_size["width"] - 124, "y": 12})
+    settle_gesture(page)
+
+
 def pane_interactions(browser, url: str, output: Path):
     page = browser.new_page(viewport={"width": 1920, "height": 1000})
     observe_webgpu(page)
@@ -261,6 +312,7 @@ def pane_interactions(browser, url: str, output: Path):
     status = page.locator("#analysis-status")
     expect(status).to_contain_text("Ready:", timeout=60000)
     canvas = page.locator("#evm-canvas")
+    hide_inspector(page, canvas)
     for bytecode, name in [("600160020100", "short"), ("7f" + "ff" * 32 + "00", "long")]:
         reply = submit_bytecode(page, canvas, bytecode, output / f"panes-{name}-input.png")
         assert reply.status == 200
@@ -420,7 +472,7 @@ def webgpu_unavailable(browser, url: str, output: Path):
         observe_webgpu(page, failure)
         requests = []
         page.on("request", lambda request: requests.append(request.url)
-                if request.url.endswith("/api/analyze") else None)
+                if request.url.endswith("/api/tasks") else None)
         page.goto(url, wait_until="networkidle")
         boot = page.locator("#boot")
         status = page.locator("#analysis-status")
@@ -490,6 +542,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             });
             observer.observe(canvas, {box: 'device-pixel-content-box'});
         })""")
+        hide_inspector(page, canvas)
         page.keyboard.press("2")
         rendered_frame(page)
         cdp = context.new_cdp_session(page)
@@ -566,26 +619,26 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         # real toolbar controls. Status and measured node widths verify the
         # representation change independently of screenshot hashes.
         expect(status).to_contain_text("CFG nodes: SSA")
-        canvas.click(position={"x": 28, "y": 110})
+        canvas.click(position={"x": 28, "y": 86})
         settle_gesture(page)
         expect(status).to_contain_text("CFG nodes: Disasm")
         disasm = node_snapshot(page, canvas, output, f"{prefix}-nodes-disasm")
         disasm_width = disasm["bounds"][2] - disasm["bounds"][0]
         assert disasm["hash"] != safari_zoom["hash"], "Disasm mode retained SSA pixels"
         assert safari_zoom["bounds"][2] - safari_zoom["bounds"][0] > disasm_width + 10, "Disasm mode did not replace the fixture's SSA definitions/effects"
-        canvas.click(position={"x": 78, "y": 110})
+        canvas.click(position={"x": 78, "y": 86})
         settle_gesture(page)
         expect(status).to_contain_text("CFG nodes: SSA")
         ssa = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa")
         assert ssa["hash"] != disasm["hash"], "SSA mode retained disassembly pixels"
         ssa_width = ssa["bounds"][2] - ssa["bounds"][0]
         assert ssa_width > disasm_width + 10, "SSA definitions/effects did not expand the fixture's rendered node"
-        canvas.click(position={"x": 143, "y": 110})
+        canvas.click(position={"x": 143, "y": 86})
         settle_gesture(page)
         expect(status).to_contain_text("CFG nodes: SSA")
         ssa_fit = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa-fit")
         assert ssa_fit["bounds"][2] - ssa_fit["bounds"][0] < ssa_width, "Fit did not return the enlarged SSA graph to a readable overview"
-        canvas.click(position={"x": 28, "y": 110})
+        canvas.click(position={"x": 28, "y": 86})
         settle_gesture(page)
         expect(status).to_contain_text("CFG nodes: Disasm")
         zoom_screenshots = {}
@@ -593,9 +646,9 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         for layout_name, height in [("tall", 1000), ("short", 390)]:
             page.set_viewport_size({"width": 1440, "height": height})
             page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
-            canvas.click(position={"x": 143, "y": 110})
+            canvas.click(position={"x": 143, "y": 86})
             settle_gesture(page)
-            region = (4, 126, 1436, height - 30)
+            region = (4, 104, 1436, height - 30)
             fitted = node_snapshot(page, canvas, output, f"{prefix}-edges-{layout_name}-fit", region, True)
             if scene_reference is None:
                 scene_reference = fitted
@@ -617,7 +670,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
 
         # Compare shortcut behavior with the actual Fit button at the same
         # viewport, without assuming where any individual node should end up.
-        canvas.click(position={"x": 143, "y": 110})
+        canvas.click(position={"x": 143, "y": 86})
         settle_gesture(page)
         fit_keys = {"button": fitted["bounds"]}
         fresh_wheel_after_fit = None
@@ -658,29 +711,38 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         page.mouse.move(30, 700)
         page.mouse.wheel(-60, -30)
         settle_gesture(page)
-        # Keep the old report and manual camera while editing. Establish the
-        # long editor's final height before measuring, then type actual f/F key
-        # events; either accidentally triggering Fit would move the graph.
-        bytecode = "6001" * 70 + "00"
-        canvas.click(position={"x": 300, "y": 60})
-        rendered_frame(page)
+        # The modal blocks background graph shortcuts. Compare the actual
+        # camera before opening and after dismissing it, then submit the exact
+        # draft containing f/F through the same form.
+        bytecode = "\n".join(f"60{index:02x}" for index in range(70)) + "\n00"
+        editor_region = (4, 104, 1436, 970)
+        before_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-before-f", editor_region)
+        open_input(page)
         page.keyboard.press("Control+A")
         page.keyboard.type(bytecode, delay=5)
         settle_gesture(page)
-        editor_region = (4, 155, 1436, 970)
-        before_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-before-f", editor_region)
+        editor_before_scroll = canvas.screenshot(path=str(output / f"{prefix}-modal-before-scroll.png"))
+        page.mouse.move(600, 420)
+        page.mouse.wheel(0, -300)
+        settle_gesture(page)
+        editor_after_scroll = canvas.screenshot(path=str(output / f"{prefix}-modal-after-scroll.png"))
+        assert screenshot_metrics(page, editor_before_scroll, (350, 365, 1090, 480))["hash"] != screenshot_metrics(page, editor_after_scroll, (350, 365, 1090, 480))["hash"], "wheel did not scroll the actual modal editor"
         page.keyboard.type("fF", delay=40)
         rendered_frame(page)
+        canvas.screenshot(path=str(output / f"{prefix}-editor-draft-f.png"))
+        page.keyboard.press("Escape")
+        settle_gesture(page)
         after_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-after-f", editor_region)
         assert_translation(before_typing, after_typing, 0, 0)
-        with page.expect_response(lambda response: response.url.endswith("/api/analyze")) as response:
+        open_input(page)
+        with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
             page.keyboard.press("Control+Enter")
-        reply = response.value
+        reply = complete_submission(page, response.value)
         assert reply.status == 200
-        assert reply.request.post_data_json["bytecode"] == bytecode + "fF", "focused f/F keys did not reach the bytecode request"
+        assert posted_bytecode(reply) == bytecode + "fF", "focused f/F keys did not reach the bytecode request"
         expect(status).to_contain_text("Ready:")
         focused_fit_keys = {"before": before_typing["bounds"], "after": after_typing["bounds"],
-                            "submitted_bytecode": reply.request.post_data_json["bytecode"]}
+                            "submitted_bytecode": posted_bytecode(reply)}
 
         neighboring = {}
         if dpr == 1:
@@ -697,8 +759,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             left, right = panes["left"], panes["right"]
             graph_region = (left + 4, 155, right - 4, 970)
             for name, pointer, region in [
-                ("disassembly", (left / 2, 400), (4, 100, left - 4, 900)),
-                ("ssa", ((right + 1440) / 2, 400), (right + 4, 100, 1436, 900)),
+                ("disassembly", (left / 2, 400), (4, 74, left - 4, 900)),
+                ("ssa", ((right + 1440) / 2, 400), (right + 4, 74, 1436, 900)),
             ]:
                 # Read geometry with tooltips closed. In content-sized panes a
                 # source tooltip can overlap the neighboring selected node.
@@ -738,6 +800,146 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         browser.close()
     return results
 
+def submit_rpc(page, canvas, rpc, output: Path, name: str):
+    open_input(page)
+    canvas.click(position={"x": 465, "y": 386})
+    settle_gesture(page)
+    for y, text in [(404, rpc.endpoint), (444, rpc.root_address)]:
+        canvas.click(position={"x": 600, "y": y})
+        page.keyboard.press("Control+A")
+        page.keyboard.type(text, delay=3)
+    rendered_frame(page)
+    canvas.screenshot(path=str(output / f"{name}-input.png"))
+    with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
+        page.keyboard.press("Control+Enter")
+    admitted = response.value
+    request = admitted.request.post_data_json
+    assert request["input"] == {"Rpc": {"endpoint": rpc.endpoint, "address": rpc.root_address, "block": "Latest", "accounts": []}}, request
+    assert request["environment"]["number"] is None
+    return admitted
+
+
+def world_interactions(browser, url: str, output: Path):
+    results = {}
+    with RpcFixture() as rpc:
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        observe_webgpu(page)
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(url, wait_until="networkidle")
+        status = page.locator("#analysis-status")
+        expect(status).to_contain_text("Ready:", timeout=60000)
+        canvas = page.locator("#evm-canvas")
+        admitted = submit_rpc(page, canvas, rpc, output, "world")
+        reply = complete_submission(page, admitted)
+        envelope = reply.json()
+        (output / "world-task-reply.json").write_text(json.dumps({"admission_http_status": reply.admission_status, "observed_http_status": reply.status, "reply": envelope}, indent=2) + "\n")
+        assert reply.status == 200 and "Ok" in envelope["result"], f"RPC world task failed: {json.dumps(envelope, sort_keys=True)}"
+        report = envelope["result"]["Ok"]
+        assert len(report["programs"]) >= 2, "RPC call failed to capture the child program"
+        assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
+        assert max(block["frame_depth"] for block in report["cfg"]) == 2
+        snapshot = report["metadata"]["snapshot"]
+        assert int(snapshot["chain_id"], 16) == int(rpc.chain_id, 16) and snapshot["block_hash"] == rpc.block_hash
+        assert report["acquisition"]["requests"] > 0
+        assert report["outcomes"] and report["stores"] and report["byte_arrays"]
+        assert any(state["exit"] and len(state["exit"]["frames"]) == 2 for state in report["states"])
+        child = next(program for program in report["programs"] if program["code_address"] == rpc.child_address)
+        child_state = next(block for block in report["cfg"] if block["program"] == child["id"])
+        child_frames = [frame for state in report["states"] for point in (state["entry"], state["exit"]) if point for frame in point["frames"] if frame["program"] == child["id"]]
+        def contains(value, number):
+            return value["constants"] is not None and number in [int(word, 16) for word in value["constants"]]
+        def byte_at(array, offset, number):
+            return any(cell["offset"] == offset and contains(array["values"][cell["value"]], number) for cell in array["cells"])
+        assert any(contains(report["byte_arrays"][frame["calldata"]]["length"], 1) and byte_at(report["byte_arrays"][frame["calldata"]], 0, 0xab) for frame in child_frames)
+        assert any(byte_at(report["byte_arrays"][frame["memory"]], 0, 0xab) for frame in child_frames)
+        child_accounts = [account for store in report["stores"] for account in store["accounts"] if account["address"] == rpc.child_address]
+        assert any(any(int(entry["slot"], 16) == 3 and contains(entry["value"], 99) for entry in account["storage"]) for account in child_accounts)
+        assert any(any(int(entry["slot"], 16) == 2 and contains(entry["value"], 7) for entry in account["transient"]) for account in child_accounts)
+        # Select the actual child program from the native directory. It must
+        # update code, SSA, graph selection and the active frame together.
+        settle_gesture(page)
+        canvas.screenshot(path=str(output / "world-overview.png"))
+        canvas.click(position={"x": 80, "y": 135})
+        expect(status).to_contain_text(f"source P{child['id']}")
+        expect(status).to_contain_text(f"Selected S{child_state['id']}")
+        expect(status).to_contain_text("Frame 1")
+        canvas.screenshot(path=str(output / "world-child-frame.png"))
+        screenshots = {}
+        tabs = [(80, "Stack"), (137, "Memory"), (201, "Storage"), (268, "Transient"),
+                (335, "Calldata"), (408, "Returndata"), (488, "Outcomes"),
+                (567, "Acquisition"), (654, "Environment"), (741, "Diagnostics"), (30, "Frame")]
+        for x, tab in tabs:
+            canvas.click(position={"x": x, "y": 778})
+            expect(status).to_contain_text(tab)
+            rendered_frame(page)
+            png = canvas.screenshot(path=str(output / f"world-{tab.lower()}.png"))
+            screenshots[tab] = hashlib.sha256(png).hexdigest()
+        assert len(set(screenshots.values())) == len(tabs), "inspector controls did not expose distinct views"
+        canvas.click(position={"x": 166, "y": 801})
+        expect(status).to_contain_text("Observed exit")
+        canvas.click(position={"x": 137, "y": 778})
+        expect(status).to_contain_text("Memory")
+        canvas.screenshot(path=str(output / "world-child-exit-memory.png"))
+        # All acquisition reads remain on one canonical snapshot.
+        reads = [request for request in rpc.requests if request["method"] in ("eth_getCode", "eth_getStorageAt", "eth_getBalance", "eth_getTransactionCount")]
+        assert reads and all(request["params"][-1] == {"blockHash": rpc.block_hash, "requireCanonical": True} for request in reads)
+        assert sum(request["method"] == "eth_getBlockByNumber" and request["params"][0] == "latest" for request in rpc.requests) == 1
+        (output / "world-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
+        results["analysis"] = {"programs": len(report["programs"]), "states": len(report["states"]), "outcomes": len(report["outcomes"]), "rpc_requests": len(rpc.requests), "inspector_views": screenshots, "renderer": webgpu_evidence(page)}
+        assert not failures, failures
+        page.close()
+    with RpcFixture(block_method="eth_getCode") as rpc:
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        observe_webgpu(page)
+        page.goto(url, wait_until="networkidle")
+        status = page.locator("#analysis-status")
+        expect(status).to_contain_text("Ready:", timeout=60000)
+        canvas = page.locator("#evm-canvas")
+        page.evaluate("""() => {
+            window.taskStatusHistory = [];
+            new MutationObserver(() => window.taskStatusHistory.push(document.querySelector('#analysis-status').textContent))
+                .observe(document.querySelector('#analysis-status'), {childList:true,subtree:true,characterData:true});
+        }""")
+        held_polls = []
+        aborted = []
+        def hold_first_poll(route):
+            if route.request.method == "GET" and re.search(r"/api/tasks/\d+$", route.request.url) and not held_polls:
+                held_polls.append(route)
+            else:
+                route.continue_()
+        page.route("**/api/tasks/*", hold_first_poll)
+        page.on("requestfailed", lambda request: aborted.append({"url": request.url, "failure": request.failure}))
+        admitted = submit_rpc(page, canvas, rpc, output, "cancel")
+        assert admitted.status == 202, admitted.text()
+        assert rpc.started.wait(5), "fixture did not enter a real pending RPC request"
+        expect(status).to_contain_text("showing previous result")
+        for _ in range(50):
+            if held_polls:
+                break
+            page.wait_for_timeout(100)
+        assert held_polls, "fixture did not hold an actual browser status fetch"
+        canvas.screenshot(path=str(output / "cancel-pending.png"))
+        with page.expect_response(lambda response: response.request.method == "DELETE" and "/api/tasks/" in response.url) as cancelled:
+            canvas.click(position={"x": 30, "y": 988})
+        assert cancelled.value.ok
+        assert cancelled.value.json()["result"]["Ok"]["state"] == "Cancelling"
+        assert rpc.disconnected.wait(5), "cooperative cancellation did not close pending acquisition"
+        expect(status).to_contain_text("Cancelled", timeout=22000)
+        assert any("/api/tasks/" in failure["url"] for failure in aborted), "hung HTTP poll was never aborted"
+        history = page.evaluate("window.taskStatusHistory")
+        assert any("Cancelling" in text for text in history), history
+        assert "showing previous result" in status.text_content()
+        canvas.screenshot(path=str(output / "cancel-acknowledged.png"))
+        results["cancellation"] = {"history": history, "pending_rpc_closed": rpc.disconnected.is_set(), "aborted_http": aborted, "status": status.text_content()}
+        # Resolve the test harness interception after the application itself
+        # proved it aborted/recovered, so Playwright has no pending handler.
+        held_polls[0].abort()
+        page.unroute_all(behavior="wait")
+        page.close()
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True)
@@ -747,7 +949,7 @@ def main() -> None:
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(
-        [args.server, "--assets", args.assets, "--bind", "127.0.0.1:0"],
+        [args.server, "--assets", args.assets, "--bind", "127.0.0.1:0", "--workers", "2", "--queue-capacity", "4"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -765,16 +967,16 @@ def main() -> None:
                 "console",
                 lambda message: errors.append(message.text)
                 if message.type == "error"
-                and not (message.location.get("url", "").endswith("/api/analyze") and "400" in message.text)
+                and not (message.location.get("url", "").endswith("/api/tasks") and "400" in message.text)
                 else None,
             )
-            with page.expect_response(lambda response: response.url.endswith("/api/analyze")) as response:
+            with page.expect_response(lambda response: response.url.endswith("/api/tasks")) as response:
                 page.goto(url, wait_until="networkidle")
-            reply = response.value
+            reply = complete_submission(page, response.value)
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 1
+            assert analysis["schema_version"] == 2
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
@@ -800,7 +1002,7 @@ def main() -> None:
             # needed to keep all views usable after resizing.
             resize_requests = []
             page.on("request", lambda request: resize_requests.append(request.url)
-                    if request.url.endswith("/api/analyze") else None)
+                    if request.url.endswith("/api/tasks") else None)
             viewports = [(1920, 1080), (1440, 900), (1024, 768), (768, 600),
                          (390, 844), (844, 390), (320, 480), (1440, 1000)]
             viewport_screenshots = {}
@@ -824,7 +1026,8 @@ def main() -> None:
             page.keyboard.press("0")
             rendered_frame(page)
             invalid = submit_bytecode(page, canvas, "this is not bytecode", args.output / "invalid-input.png")
-            assert invalid.status == 400
+            assert invalid.admission_status == 202
+            assert invalid.status in (200, 202), "worker failures belong to typed task status"
             assert invalid.json()["result"]["Err"]["code"] == "InvalidBytecode"
             expect(status).to_contain_text("Error: InvalidBytecode")
             canvas.screenshot(path=str(args.output / "invalid-bytecode.png"))
@@ -857,9 +1060,10 @@ def main() -> None:
                                         args.output / f"editor-{width}x{height}.png")
                 assert reply.status == 200
                 expect(status).to_contain_text("Converged")
-                responsive_input[f"{width}x{height}"] = reply.request.post_data_json["bytecode"]
+                responsive_input[f"{width}x{height}"] = posted_bytecode(reply)
             renderer = webgpu_evidence(page)
             unavailable = webgpu_unavailable(browser, url, args.output)
+            world = world_interactions(browser, url, args.output)
             panes = pane_interactions(browser, url, args.output)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
             assert not errors, "browser errors: " + "\n".join(errors)
@@ -880,6 +1084,7 @@ def main() -> None:
                 "responsive_input": responsive_input,
                 "graph_interactions": gestures,
                 "pane_interactions": panes,
+                "world_interactions": world,
                 "platform": "Linux headless Chromium with Xvfb and SwiftShader WebGPU; synthesized browser gestures, not physical macOS hardware",
                 "browser_errors": errors,
             }

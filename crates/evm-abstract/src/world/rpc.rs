@@ -6,19 +6,30 @@
 //! Chain identity and the selected block are resolved once before acquisition.
 //! The caller fully trusts the endpoint; account facts use ordinary state RPC.
 
+mod failure;
+mod loader;
+pub use failure::{
+    CodeFailure, ConfigurationReason, DelegationFailure, FailureCause, HeaderField, HeaderValue,
+    ResponseReason, TransportFailure, WorldFailure,
+};
 mod session;
 #[cfg(test)]
 mod tests;
+mod wire;
 
 pub use session::Session;
 
-use super::{Account, Existence, World, WorldError};
-use crate::{Fork, bytecode::DecodeError, domain::AbstractValue};
-use alloy_primitives::{Address, B256, U256, hex};
-use reqwest::blocking::Client;
+use super::{World, WorldError};
+use crate::{
+    Fork,
+    analysis::{control::Control, progress::Observer},
+    bytecode::DecodeError,
+};
+use alloy_primitives::{Address, B256, U256};
+use loader::Loader;
+use reqwest::Client;
 use serde::Serialize;
-use serde_json::{Value as Json, json};
-use std::{collections::BTreeSet, fmt, io::Read, time::Duration};
+use std::{collections::BTreeSet, fmt, time::Duration};
 
 /// One explicitly requested account and its observed storage slots.
 #[derive(Clone, Debug)]
@@ -126,6 +137,8 @@ pub enum AcquisitionLimit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RpcFailureKind {
+    /// The caller cancelled this operation before another observation completed.
+    Cancelled,
     /// Invalid local limits or duplicate initial acquisition entries.
     Configuration,
     /// A cumulative account or request bound was reached.
@@ -163,12 +176,27 @@ pub struct Failure {
     pub context: RpcContext,
     /// Typed failure category, independent of the explanatory message.
     pub kind: RpcFailureKind,
+    /// Structured nested cause with complete native coordinates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<FailureCause>,
     /// Cumulative resource whose bound was reached, when applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource: Option<AcquisitionLimit>,
     /// Reached cumulative bound, when applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    /// HTTP status when the transport completed with a non-success response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    /// JSON-RPC error code, without the endpoint's untrusted message payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_code: Option<i64>,
+    /// Line of malformed JSON or a typed response-schema failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json_line: Option<usize>,
+    /// Column of malformed JSON or a typed response-schema failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json_column: Option<usize>,
     /// Public explanation without transport URLs or untrusted remote messages.
     pub message: String,
 }
@@ -179,12 +207,24 @@ pub struct Failure {
 /// directly; the standard error trait does not expose an erased source chain.
 #[derive(Debug)]
 pub enum RpcError {
+    /// Cancellation drops the in-flight request/body future before returning.
+    Cancelled {
+        /// Fixed request provenance known at the cancellation checkpoint.
+        context: Box<RpcContext>,
+    },
+    /// The private asynchronous network reactor could not be created.
+    Runtime {
+        /// Local setup provenance.
+        context: Box<RpcContext>,
+        /// Original reactor setup failure.
+        source: std::io::Error,
+    },
     /// Invalid request limits or duplicate acquisition entries.
     Configuration {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
         /// Which local configuration invariant failed.
-        reason: &'static str,
+        reason: ConfigurationReason,
     },
     /// A cumulative session acquisition bound was reached before a request.
     AcquisitionLimit {
@@ -221,7 +261,7 @@ pub enum RpcError {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
         /// Original I/O error, including body timeout.
-        source: std::io::Error,
+        source: reqwest::Error,
     },
     /// The body was not a JSON document.
     Json {
@@ -250,7 +290,9 @@ pub enum RpcError {
         /// Fixed snapshot and method provenance.
         context: Box<RpcContext>,
         /// The failed validation invariant.
-        reason: &'static str,
+        reason: ResponseReason,
+        /// Concrete schema decoding error, retained without exposing payload text.
+        source: Option<serde_json::Error>,
     },
     /// The endpoint returned a different chain identity.
     ChainMismatch {
@@ -285,6 +327,10 @@ pub enum RpcError {
 impl fmt::Display for RpcError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled { context } => write!(formatter, "RPC cancelled ({context})"),
+            Self::Runtime { context, source } => {
+                write!(formatter, "RPC reactor setup failed ({context}): {source}")
+            }
             Self::Configuration { context, reason } => {
                 write!(formatter, "invalid RPC configuration ({context}): {reason}")
             }
@@ -317,7 +363,9 @@ impl fmt::Display for RpcError {
             Self::MissingResult { context } => {
                 write!(formatter, "RPC result is missing or null ({context})")
             }
-            Self::Response { context, reason } => {
+            Self::Response {
+                context, reason, ..
+            } => {
                 write!(formatter, "invalid RPC response ({context}): {reason}")
             }
             Self::ChainMismatch { context, observed } => {
@@ -348,7 +396,9 @@ impl RpcError {
     /// Fixed provenance available without parsing a human-readable message.
     pub fn context(&self) -> &RpcContext {
         match self {
-            Self::Configuration { context, .. }
+            Self::Cancelled { context }
+            | Self::Runtime { context, .. }
+            | Self::Configuration { context, .. }
             | Self::AcquisitionLimit { context, .. }
             | Self::Transport { context, .. }
             | Self::Http { context, .. }
@@ -368,6 +418,8 @@ impl RpcError {
     /// Classification available without parsing the displayed explanation.
     pub fn kind(&self) -> RpcFailureKind {
         match self {
+            Self::Cancelled { .. } => RpcFailureKind::Cancelled,
+            Self::Runtime { .. } => RpcFailureKind::Transport,
             Self::Configuration { .. } => RpcFailureKind::Configuration,
             Self::AcquisitionLimit { .. } => RpcFailureKind::AcquisitionLimit,
             Self::Transport { .. } => RpcFailureKind::Transport,
@@ -396,8 +448,49 @@ impl RpcError {
         Failure {
             context: self.context().clone(),
             kind: self.kind(),
+            cause: match self {
+                Self::Configuration { reason, .. } => Some(FailureCause::Configuration(*reason)),
+                Self::Response { reason, .. } => Some(FailureCause::Response(reason.clone())),
+                Self::Code { source, .. } => Some(FailureCause::Code(source.into())),
+                Self::World { source, .. } => Some(FailureCause::World(source.into())),
+                Self::ChainMismatch { observed, .. } => {
+                    Some(FailureCause::ChainMismatch(*observed))
+                }
+                Self::BlockMismatch { observed, .. } => {
+                    Some(FailureCause::BlockMismatch(*observed))
+                }
+                Self::Transport { source, .. } | Self::Read { source, .. } => {
+                    Some(FailureCause::Transport(source.into()))
+                }
+                Self::Runtime { source, .. } => Some(FailureCause::Runtime(source.raw_os_error())),
+                _ => None,
+            },
             resource,
             limit,
+            http_status: match self {
+                Self::Http { status, .. } => Some(*status),
+                _ => None,
+            },
+            rpc_code: match self {
+                Self::Remote { code, .. } => Some(*code),
+                _ => None,
+            },
+            json_line: match self {
+                Self::Json { source, .. }
+                | Self::Response {
+                    source: Some(source),
+                    ..
+                } => Some(source.line()),
+                _ => None,
+            },
+            json_column: match self {
+                Self::Json { source, .. }
+                | Self::Response {
+                    source: Some(source),
+                    ..
+                } => Some(source.column()),
+                _ => None,
+            },
             message: self.to_string(),
         }
     }
@@ -412,7 +505,22 @@ pub fn load(input: &RpcInput) -> Result<World, RpcError> {
     Session::load(input).map(Session::into_world)
 }
 
+/// Acquire a pinned snapshot with cancellation and typed progress observations.
+pub fn load_with_control(input: &RpcInput, control: &Control) -> Result<World, RpcError> {
+    Session::load_with_control(input, control).map(Session::into_world)
+}
+
+/// Observe acquisition without enabling cancellation.
+pub fn load_with_observer(input: &RpcInput, observer: &Observer) -> Result<World, RpcError> {
+    load_with_control(input, &Control::with_observer(observer.clone()))
+}
+
+#[cfg(test)]
 fn configured_loader(input: &RpcInput) -> Result<Loader, RpcError> {
+    configured_loader_with_control(input, &Control::default())
+}
+
+fn configured_loader_with_control(input: &RpcInput, control: &Control) -> Result<Loader, RpcError> {
     let client_context = context(input, "client", None, None);
     if input.timeout.is_zero()
         || input.max_response_bytes == 0
@@ -423,7 +531,7 @@ fn configured_loader(input: &RpcInput) -> Result<Loader, RpcError> {
     {
         return Err(RpcError::Configuration {
             context: Box::new(client_context),
-            reason: "timeout and request limit must be positive, response limit 1..=64 MiB, and account limit 1..=4096",
+            reason: ConfigurationReason::Limits,
         });
     }
     let mut addresses = BTreeSet::new();
@@ -435,9 +543,16 @@ fn configured_loader(input: &RpcInput) -> Result<Loader, RpcError> {
     {
         return Err(RpcError::Configuration {
             context: Box::new(client_context),
-            reason: "initial accounts must be unique, fit the account limit, and have at most 1024 slots each",
+            reason: ConfigurationReason::InitialAccounts,
         });
     }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|source| RpcError::Runtime {
+            context: Box::new(client_context.clone()),
+            source,
+        })?;
     let client = Client::builder()
         .timeout(input.timeout)
         .connect_timeout(input.timeout.min(Duration::from_secs(5)))
@@ -450,6 +565,13 @@ fn configured_loader(input: &RpcInput) -> Result<Loader, RpcError> {
     Ok(Loader {
         input: input.clone(),
         client,
+        runtime: Some(runtime),
+        control: control.clone(),
+        header: None,
+        environment: None,
+        round: 0,
+        acquired_accounts: 0,
+        acquired_slots: 0,
         next_id: 0,
         chain_id: None,
         block_hash: None,
@@ -475,343 +597,10 @@ fn context(
     }
 }
 
-fn invalid(context: &RpcContext, reason: &'static str) -> RpcError {
+fn invalid(context: &RpcContext, reason: ResponseReason) -> RpcError {
     RpcError::Response {
         context: Box::new(context.clone()),
         reason,
+        source: None,
     }
-}
-
-#[derive(Debug)]
-struct Loader {
-    input: RpcInput,
-    client: Client,
-    next_id: usize,
-    chain_id: Option<U256>,
-    block_hash: Option<B256>,
-    block_number: Option<U256>,
-}
-
-impl Loader {
-    fn context(
-        &self,
-        method: &'static str,
-        account: Option<Address>,
-        slot: Option<U256>,
-    ) -> RpcContext {
-        let mut context = context(&self.input, method, account, slot);
-        context.chain_id = self.chain_id;
-        context.block_hash = self.block_hash.or(context.block_hash);
-        context
-    }
-
-    fn selector(&self) -> Json {
-        let block_hash = self.block_hash.expect("state acquisition follows pinning");
-        json!({"blockHash": block_hash, "requireCanonical": true})
-    }
-
-    fn world(&self) -> World {
-        World::anchored(
-            self.input.fork,
-            self.chain_id.expect("world construction follows pinning"),
-            self.block_hash.expect("world construction follows pinning"),
-            "explicit-rpc",
-        )
-    }
-
-    fn pin(&mut self) -> Result<(), RpcError> {
-        self.check_chain()?;
-        let (method, params) = match self.input.block {
-            RpcBlock::Latest => ("eth_getBlockByNumber", json!(["latest", false])),
-            RpcBlock::Number(number) => (
-                "eth_getBlockByNumber",
-                json!([format!("{number:#x}"), false]),
-            ),
-            RpcBlock::Hash(hash) => ("eth_getBlockByHash", json!([hash, false])),
-        };
-        let context = self.context(method, None, None);
-        let value = self.call(&context, params)?;
-        let observed = hash(&value["hash"], &context)?;
-        if let RpcBlock::Hash(expected) = self.input.block
-            && observed != expected
-        {
-            return Err(RpcError::BlockMismatch {
-                context: Box::new(context),
-                observed,
-            });
-        }
-        if let RpcBlock::Number(expected) = self.input.block
-            && quantity(&value["number"], &context)? != U256::from(expected)
-        {
-            return Err(invalid(
-                &context,
-                "returned block number differs from requested height",
-            ));
-        }
-        self.block_hash = Some(observed);
-        // Minimal headers remain accepted for code-only acquisition. Storage
-        // refinement requires a valid fixed height before its first request.
-        self.block_number = value
-            .get("number")
-            .and_then(|number| quantity(number, &context).ok());
-        Ok(())
-    }
-
-    fn call(&mut self, context: &RpcContext, params: Json) -> Result<Json, RpcError> {
-        if self.next_id >= self.input.max_requests {
-            return Err(RpcError::AcquisitionLimit {
-                context: Box::new(context.clone()),
-                resource: AcquisitionLimit::Requests,
-                limit: self.input.max_requests,
-            });
-        }
-        self.next_id += 1;
-        let id = self.next_id as u64;
-        let response = self
-            .client
-            .post(&self.input.endpoint)
-            // A request timeout also reaches reqwest's async body deadline;
-            // the blocking client's timeout alone only bounds each read wait.
-            .timeout(self.input.timeout)
-            .json(&json!({"jsonrpc":"2.0", "id":id, "method":context.method, "params":params}))
-            .send()
-            .map_err(|source| RpcError::Transport {
-                context: Box::new(context.clone()),
-                source: source.without_url(),
-            })?;
-        if !response.status().is_success() {
-            return Err(RpcError::Http {
-                context: Box::new(context.clone()),
-                status: response.status().as_u16(),
-            });
-        }
-        let limit = self.input.max_response_bytes;
-        if response
-            .content_length()
-            .is_some_and(|length| length > limit as u64)
-        {
-            return Err(RpcError::ResponseLimit {
-                context: Box::new(context.clone()),
-                limit,
-            });
-        }
-        let mut bytes = Vec::new();
-        response
-            .take(limit as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|source| RpcError::Read {
-                context: Box::new(context.clone()),
-                source,
-            })?;
-        if bytes.len() > limit {
-            return Err(RpcError::ResponseLimit {
-                context: Box::new(context.clone()),
-                limit,
-            });
-        }
-        let value: Json = serde_json::from_slice(&bytes).map_err(|source| RpcError::Json {
-            context: Box::new(context.clone()),
-            source,
-        })?;
-        let envelope = value
-            .as_object()
-            .ok_or_else(|| invalid(context, "expected JSON-RPC object"))?;
-        if envelope.get("jsonrpc").and_then(Json::as_str) != Some("2.0")
-            || envelope.get("id").and_then(Json::as_u64) != Some(id)
-        {
-            return Err(invalid(context, "JSON-RPC version or response id mismatch"));
-        }
-        if let Some(error) = envelope.get("error") {
-            if envelope.contains_key("result") {
-                return Err(invalid(context, "result and error both supplied"));
-            }
-            let code = error
-                .get("code")
-                .and_then(Json::as_i64)
-                .ok_or_else(|| invalid(context, "missing JSON-RPC error code"))?;
-            let message = error
-                .get("message")
-                .and_then(Json::as_str)
-                .ok_or_else(|| invalid(context, "missing JSON-RPC error message"))?;
-            return Err(RpcError::Remote {
-                context: Box::new(context.clone()),
-                code,
-                message: message.to_owned(),
-            });
-        }
-        envelope
-            .get("result")
-            .filter(|result| !result.is_null())
-            .cloned()
-            .ok_or_else(|| RpcError::MissingResult {
-                context: Box::new(context.clone()),
-            })
-    }
-
-    fn check_chain(&mut self) -> Result<(), RpcError> {
-        let context = self.context("eth_chainId", None, None);
-        let value = self.call(&context, json!([]))?;
-        let observed = quantity(&value, &context)?;
-        if let Some(expected) = self.chain_id {
-            if observed != expected {
-                return Err(RpcError::ChainMismatch {
-                    context: Box::new(context),
-                    observed,
-                });
-            }
-        } else {
-            self.chain_id = Some(observed);
-        }
-        Ok(())
-    }
-
-    fn check_block(&mut self) -> Result<(), RpcError> {
-        let block_hash = self.block_hash.expect("block checks follow pinning");
-        let context = self.context("eth_getBlockByHash", None, None);
-        let value = self.call(&context, json!([block_hash, false]))?;
-        let observed = hash(&value["hash"], &context)?;
-        if observed != block_hash {
-            return Err(RpcError::BlockMismatch {
-                context: Box::new(context),
-                observed,
-            });
-        }
-        Ok(())
-    }
-
-    fn storage_block_number(&self) -> Result<U256, RpcError> {
-        self.block_number.ok_or_else(|| {
-            let method = match self.input.block {
-                RpcBlock::Hash(_) => "eth_getBlockByHash",
-                RpcBlock::Latest | RpcBlock::Number(_) => "eth_getBlockByNumber",
-            };
-            invalid(
-                &self.context(method, None, None),
-                "resolved block header has no valid number for canonical storage checks",
-            )
-        })
-    }
-
-    fn check_storage_block(&mut self, number: U256) -> Result<(), RpcError> {
-        let block_hash = self.block_hash.expect("block checks follow pinning");
-        let context = self.context("eth_getBlockByNumber", None, None);
-        let value = self.call(&context, json!([format!("{number:#x}"), false]))?;
-        let observed = hash(&value["hash"], &context)?;
-        if observed != block_hash {
-            return Err(RpcError::BlockMismatch {
-                context: Box::new(context),
-                observed,
-            });
-        }
-        if quantity(&value["number"], &context)? != number {
-            return Err(invalid(
-                &context,
-                "returned canonical block number differs from pinned height",
-            ));
-        }
-        Ok(())
-    }
-
-    fn account(&mut self, world: &mut World, request: &AccountRequest) -> Result<(), RpcError> {
-        let address = request.address;
-        let code_context = self.context("eth_getCode", Some(address), None);
-        let code = self.call(&code_context, json!([address, self.selector()]))?;
-        let bytes = data(&code, &code_context)?;
-        let mut account =
-            Account::from_hex(&hex::encode(bytes), self.input.fork).map_err(|source| {
-                RpcError::Code {
-                    context: Box::new(code_context.clone()),
-                    source,
-                }
-            })?;
-        account.storage_unknown = true;
-        let balance_context = self.context("eth_getBalance", Some(address), None);
-        let balance = quantity(
-            &self.call(&balance_context, json!([address, self.selector()]))?,
-            &balance_context,
-        )?;
-        account.balance = AbstractValue::constant(balance);
-        let nonce_context = self.context("eth_getTransactionCount", Some(address), None);
-        let nonce = quantity(
-            &self.call(&nonce_context, json!([address, self.selector()]))?,
-            &nonce_context,
-        )?;
-        account.nonce = AbstractValue::constant(nonce);
-        // Ordinary state RPC cannot distinguish an absent account from an
-        // existing account with empty code, zero balance and zero nonce.
-        account.existence =
-            if account.code != super::Code::Empty || balance != U256::ZERO || nonce != U256::ZERO {
-                Existence::Present
-            } else {
-                Existence::Unknown
-            };
-        for &key in &request.slots {
-            let observed = self.storage(address, key)?;
-            if observed != U256::ZERO {
-                account.existence = Existence::Present;
-            }
-            account
-                .storage
-                .insert(key, AbstractValue::constant(observed));
-        }
-        world
-            .insert(address, account)
-            .map_err(|source| RpcError::World {
-                context: Box::new(code_context),
-                source,
-            })?;
-        Ok(())
-    }
-
-    fn storage(&mut self, address: Address, key: U256) -> Result<U256, RpcError> {
-        let slot_context = self.context("eth_getStorageAt", Some(address), Some(key));
-        let value = self.call(
-            &slot_context,
-            json!([address, format!("{key:#x}"), self.selector()]),
-        )?;
-        let bytes = data(&value, &slot_context)?;
-        if bytes.len() != 32 {
-            return Err(invalid(
-                &slot_context,
-                "storage result must be exactly 32 bytes",
-            ));
-        }
-        Ok(U256::from_be_slice(&bytes))
-    }
-}
-
-fn word(value: &Json, context: &RpcContext) -> Result<U256, RpcError> {
-    let text = value
-        .as_str()
-        .ok_or_else(|| invalid(context, "expected hex word"))?;
-    let digits = text
-        .strip_prefix("0x")
-        .filter(|digits| !digits.is_empty() && digits.len() <= 64)
-        .ok_or_else(|| invalid(context, "hex word must contain 1..=64 digits after 0x"))?;
-    if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(invalid(context, "invalid hex word digits"));
-    }
-    U256::from_str_radix(digits, 16).map_err(|_| invalid(context, "invalid 256-bit word"))
-}
-
-fn quantity(value: &Json, context: &RpcContext) -> Result<U256, RpcError> {
-    let result = word(value, context)?;
-    let text = value.as_str().expect("word checked string");
-    if text.len() > 3 && text.as_bytes()[2] == b'0' {
-        return Err(invalid(context, "noncanonical JSON-RPC quantity"));
-    }
-    Ok(result)
-}
-
-fn data(value: &Json, context: &RpcContext) -> Result<Vec<u8>, RpcError> {
-    let digits = value
-        .as_str()
-        .and_then(|text| text.strip_prefix("0x"))
-        .ok_or_else(|| invalid(context, "expected 0x-prefixed byte data"))?;
-    hex::decode(digits).map_err(|_| invalid(context, "invalid byte data"))
-}
-
-fn hash(value: &Json, context: &RpcContext) -> Result<B256, RpcError> {
-    let bytes = data(value, context)?;
-    B256::try_from(bytes.as_slice()).map_err(|_| invalid(context, "hash must be exactly 32 bytes"))
 }

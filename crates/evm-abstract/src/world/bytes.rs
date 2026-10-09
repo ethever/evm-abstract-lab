@@ -212,17 +212,17 @@ impl ByteArray {
 
     /// Explicit sparse byte facts, in offset order, without padding or joining.
     /// Rendering these facts must not change them through [`Self::byte_at`].
-    pub(crate) fn stored_bytes(&self) -> impl Iterator<Item = (usize, &AbstractValue)> {
+    pub fn stored_bytes(&self) -> impl Iterator<Item = (usize, &AbstractValue)> {
         self.bytes.iter().map(|(offset, value)| (*offset, value))
     }
 
     /// Value used at offsets without an explicit sparse fact.
-    pub(crate) fn default_byte(&self) -> &AbstractValue {
+    pub fn default_byte(&self) -> &AbstractValue {
         &self.default
     }
 
     /// Whether expansion follows EVM memory's 32-byte allocation rule.
-    pub(crate) fn is_memory(&self) -> bool {
+    pub fn is_memory(&self) -> bool {
         self.memory
     }
 

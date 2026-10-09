@@ -6,7 +6,7 @@
 
 [摘要](#1-调用摘要复用完整结果关系)、[创建](#2-create先执行构造代码再安装运行时代码)、[销毁](#3-selfdestruct转账和删除发生在不同时间)、[预编译](#4-预编译没有普通字节码也有调用帧)四个实验均使用离线合成事实，根帧地址为 A=`0x...0101`，命令明确给出 caller、零 value 和空 calldata，默认预算可完成。省略这些参数会得到符号输入，不等同于这组具体约束。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
-直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 3 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 4 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 所有反汇编与 SSA 基本块指令列表共用顶格的 `B# @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 B 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 B 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用赋值式指令正文；世界视图保留 C、F、state owner、context，以及按 T 标记并带 F/slot 的 φ。完整视图另保留所有帧元数据、原始指令字段和效果链，字节码行与效果行也使用这套布局。编号与证据的读法见[第 04 课](04-ssa.md)和[第 09 课](09-cross-contract.md#默认文本怎样读)。
 
@@ -113,11 +113,11 @@ jq '{schema_version,
                | {environment, relations, frame: .frame.state.key})}' /tmp/summary-on.json
 ```
 
-分析 `schema_version` 为 3。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
+分析 `schema_version` 为 4。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
 
 本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中，入口关系在 `.summaries[].input.relations`。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
 
-单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 3 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
+单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 4 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
 
 环境类型与输入作用域见 [`world/environment.rs`](../crates/evm-abstract/src/world/environment.rs)，JSON 边界见 [`analysis.rs`](../crates/evm-abstract/src/analysis.rs)，帧结构见 [`machine/frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)。
 
@@ -330,7 +330,7 @@ jq '.world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
 | 每账户 `code_hash` | 原始代码字节 | 不绑定 storage、余额、nonce |
 | `fingerprint` | fork、identity、完整初始账户事实 | 一致性标识不是链状态的密码学证明 |
 
-world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block_hash` 始终是完整 32 字节 hash。RPC CLI 自动读取 chain ID；可用 `--block-hash` 指定完整 hash，或用互斥的 `--block-number` 指定区块号。两者都省略时，启动时读取一次 `latest`。区块号与 `latest` 都先解析为 hash，后续状态查询固定使用这个 hash；发现 callee、链头前进或多轮重跑都不会重新选择区块。`--block-number` 接受十进制或 `0x` / `0X` 十六进制，范围为 `0` 到 `2^64−1`；world JSON 的身份格式不变。fork 仍单独选择，身份不会替你选择执行规则。`--block-number` / `--block-hash` 选择账户状态快照；`--evm.number` 只覆盖 NUMBER，`--evm.chain-id` 只覆盖 CHAINID，不改变 `.world.identity` 中实际采集的链和区块。省略 `--evm.chain-id` 时，链上 world/RPC 的 CHAINID 取快照身份中的 chain ID；没有链身份的离线输入则保持未知。省略其他区块环境字段时，它们保持符号输入；不会仅因固定了账户状态就自动补齐全部区块头和交易事实。
+world JSON 中链上身份的 `chain_id` 使用 `0x` 十六进制格式，`block_hash` 始终是完整 32 字节 hash。RPC CLI 自动读取 chain ID；可用 `--block-hash` 指定完整 hash，或用互斥的 `--block-number` 指定区块号。两者都省略时，启动时读取一次 `latest`。区块号与 `latest` 都先解析为 hash，后续状态查询固定使用这个 hash；发现 callee、链头前进或多轮重跑都不会重新选择区块。`--block-number` 接受十进制或 `0x` / `0X` 十六进制，范围为 `0` 到 `2^64−1`；world JSON 的身份格式不变。fork 仍单独选择，身份不会替你选择执行规则。`--block-number` / `--block-hash` 选择账户状态快照；`--evm.number` 只覆盖 NUMBER，`--evm.chain-id` 只覆盖 CHAINID，不改变 `.world.identity` 中实际采集的链和区块。省略 `--evm.chain-id` 时，链上 world/RPC 的 CHAINID 取快照身份中的 chain ID；没有链身份的离线输入则保持未知。省略 NUMBER、TIMESTAMP、COINBASE、PREVRANDAO、GASLIMIT 和可用费用字段时，核心入口从固定快照的区块头与费用观测填入默认值；父块 hash 也保留为 BLOCKHASH 观测。显式执行环境覆盖仍优先，交易 caller、calldata、value 等仍保持符号输入；区块快照不等于具体交易重放。
 
 链上 JSON 提供代码时必须同时提供匹配的 `code_hash`。runtime 按原始代码字节计算 Keccak；[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 委托标记按原始 23 字节计算；已确认 absent 的账户 hash 为零。输入可附带预期 fingerprint；解析器拒绝指纹失配、重复地址/slot、冲突代码 hash 和不合法的 absence 事实。
 

@@ -8,15 +8,35 @@
 #[macro_use]
 mod codec;
 mod analysis;
+mod boundaries;
+mod errors;
+mod input_errors;
+mod jobs;
+mod query_errors;
+mod request;
+mod rpc;
+mod rpc_causes;
 mod ssa;
+mod ssa_errors;
+mod state;
 
 pub use analysis::*;
+pub use boundaries::*;
+pub use errors::*;
+pub use input_errors::*;
+pub use jobs::*;
+pub use query_errors::*;
+pub use request::*;
+pub use rpc::*;
+pub use rpc_causes::*;
 pub use ssa::*;
+pub use ssa_errors::*;
+pub use state::*;
 
 /// Same-origin analysis endpoint.
-pub const API_PATH: &str = "/api/analyze";
+pub const API_PATH: &str = "/api/tasks";
 /// Wire schema version, independent of the engine's private JSON formats.
-pub const SCHEMA_VERSION: u16 = 1;
+pub const SCHEMA_VERSION: u16 = 2;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 
@@ -29,53 +49,6 @@ choice! {
         Prague,
         /// Osaka execution rules.
         Osaka,
-    }
-}
-
-record! {
-    /// Bounded analysis controls, validated by the native application.
-    pub struct AnalysisLimits {
-        /// Maximum graph states, between 1 and 4096.
-        pub max_states: usize,
-        /// Maximum transfers, between 1 and 100000.
-        pub max_transfers: usize,
-        /// Recent internal jump sources retained, between 0 and 16.
-        pub context_depth: usize,
-        /// Constants retained per abstract value, between 1 and 32.
-        pub max_constants: usize,
-    }
-}
-
-impl Default for AnalysisLimits {
-    fn default() -> Self {
-        Self {
-            max_states: 512,
-            max_transfers: 10_000,
-            context_depth: 2,
-            max_constants: 8,
-        }
-    }
-}
-
-record! {
-    /// Analyze ordinary runtime bytecode with unknown environment and state.
-    pub struct AnalyzeRequest {
-        /// Hexadecimal runtime bytecode; whitespace and a `0x` prefix are accepted.
-        pub bytecode: String,
-        /// Execution fork, fixed for the whole report.
-        pub fork: Fork,
-        /// Worklist and precision bounds.
-        pub limits: AnalysisLimits,
-    }
-}
-
-impl Default for AnalyzeRequest {
-    fn default() -> Self {
-        Self {
-            bytecode: "600160020100".into(),
-            fork: Fork::Osaka,
-            limits: AnalysisLimits::default(),
-        }
     }
 }
 
@@ -96,6 +69,20 @@ choice! {
         NotFound,
         /// This route does not accept the HTTP method.
         MethodNotAllowed,
+        /// RPC acquisition failed.
+        Rpc,
+        /// Task identity is unknown.
+        TaskNotFound,
+        /// Task has not produced a result.
+        TaskNotReady,
+        /// Scheduling capacity is exhausted.
+        QueueFull,
+        /// Analysis was cancelled.
+        Cancelled,
+        /// Native worker failed.
+        WorkerFailed,
+        /// Browser or server transport failed.
+        Transport,
     }
 }
 
@@ -106,6 +93,8 @@ record! {
         pub code: ApiErrorCode,
         /// Explanation suitable for display beside the input editor.
         pub message: String,
+        /// Authoritative typed failure detail.
+        pub details: ErrorDetails,
     }
 }
 

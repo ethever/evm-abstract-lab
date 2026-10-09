@@ -13,7 +13,7 @@ pub use environment::{AddressInput, BlobHashes, EvmEnvironment, GasInput, InputS
 mod store;
 
 pub use bytes::{ByteArray, RangeError};
-pub use snapshot::SnapshotIdentity;
+pub use snapshot::{SnapshotEnvironment, SnapshotIdentity};
 pub use store::{AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store};
 
 use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::AbstractValue};
@@ -140,6 +140,8 @@ impl Account {
 pub struct World {
     fork: Fork,
     identity: SnapshotIdentity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_environment: Option<SnapshotEnvironment>,
     provenance: String,
     accounts: BTreeMap<Address, Account>,
 }
@@ -230,19 +232,26 @@ impl World {
         })
     }
     pub(crate) fn work_size(&self) -> usize {
-        self.accounts.values().fold(16usize, |work, account| {
-            let code = match &account.code {
-                Code::Runtime(program) => program.byte_len().saturating_mul(3),
-                Code::Delegation(_) => 23,
-                _ => 1,
-            };
-            account.storage.values().fold(
-                work.saturating_add(code)
-                    .saturating_add(account.balance.work_size())
-                    .saturating_add(account.nonce.work_size()),
-                |n, value| n.saturating_add(value.work_size()),
-            )
-        })
+        self.accounts.values().fold(
+            if self.snapshot_environment.is_some() {
+                32
+            } else {
+                16
+            },
+            |work, account| {
+                let code = match &account.code {
+                    Code::Runtime(program) => program.byte_len().saturating_mul(3),
+                    Code::Delegation(_) => 23,
+                    _ => 1,
+                };
+                account.storage.values().fold(
+                    work.saturating_add(code)
+                        .saturating_add(account.balance.work_size())
+                        .saturating_add(account.nonce.work_size()),
+                    |n, value| n.saturating_add(value.work_size()),
+                )
+            },
+        )
     }
     /// Start an unanchored synthetic fixture using provenance as its label.
     /// A free-form string never establishes a live chain or block identity.
@@ -253,6 +262,7 @@ impl World {
             identity: SnapshotIdentity::Offline {
                 label: provenance.clone(),
             },
+            snapshot_environment: None,
             provenance,
             accounts: BTreeMap::new(),
         }

@@ -7,7 +7,7 @@ mod widgets;
 
 mod framework;
 
-pub use app::{TransportError, Workspace};
+pub use app::{Command, JobOperation, Message, TransportError, Workspace};
 
 #[cfg(target_arch = "wasm32")]
 pub use framework::start;

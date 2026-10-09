@@ -8,6 +8,9 @@ use embedded_smt::{Bool, Bv as BV, Context, Outcome, Unknown};
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+mod tests;
+
 struct Encoder<'a> {
     limits: &'a RelationLimits,
     symbols: Context,
@@ -424,10 +427,11 @@ fn prepared<'a>(
     Ok((assertions, encoder))
 }
 
-fn unknown(reason: Unknown) -> QueryReason {
+fn unknown(reason: Unknown, provider: super::SmtProvider) -> QueryReason {
     match reason {
+        Unknown::Cancelled => QueryReason::Cancelled,
         Unknown::ResourceLimit => QueryReason::ResourceLimit,
-        Unknown::Solver(reason) => QueryReason::SolverUnknown(reason),
+        Unknown::Solver(reason) => QueryReason::SolverUnknown { provider, reason },
     }
 }
 
@@ -435,10 +439,8 @@ fn checked(assertions: &[Bool], limits: &RelationLimits) -> CheckResult {
     match embedded_smt::check(assertions, None, limits.provider, limits.rlimit) {
         Outcome::Sat(_) => CheckResult::Sat,
         Outcome::Unsat => CheckResult::Unsat,
-        Outcome::Unknown(reason) => CheckResult::Unknown(unknown(reason)),
-        Outcome::Error(error) => {
-            CheckResult::Unknown(QueryReason::SolverUnknown(error.to_string()))
-        }
+        Outcome::Unknown(reason) => CheckResult::Unknown(unknown(reason, limits.provider)),
+        Outcome::Error(error) => CheckResult::Unknown(QueryReason::SolverError(error)),
     }
 }
 
@@ -488,9 +490,11 @@ pub(super) fn unique(
             Outcome::Sat(Some(value)) => value,
             Outcome::Sat(None) => return ValueQuery::Unknown(QueryReason::ModelUnavailable),
             Outcome::Unsat => return ValueQuery::Infeasible,
-            Outcome::Unknown(reason) => return ValueQuery::Unknown(unknown(reason)),
+            Outcome::Unknown(reason) => {
+                return ValueQuery::Unknown(unknown(reason, limits.provider));
+            }
             Outcome::Error(error) => {
-                return ValueQuery::Unknown(QueryReason::SolverUnknown(error.to_string()));
+                return ValueQuery::Unknown(QueryReason::SolverError(error));
             }
         };
     let constant = if let Some(hex) = printed.strip_prefix("#x") {

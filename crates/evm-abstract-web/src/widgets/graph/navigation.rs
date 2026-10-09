@@ -30,7 +30,7 @@ impl Graph {
     }
 
     pub(super) fn fit_shortcut(&mut self, ui: &Ui) -> bool {
-        if ui.ctx().text_edit_focused() {
+        if !ui.is_enabled() || ui.ctx().text_edit_focused() || egui::Popup::is_any_open(ui.ctx()) {
             return false;
         }
         let pressed = ui.input_mut(|input| {
@@ -54,6 +54,9 @@ impl Graph {
     }
 
     pub(super) fn navigate(&mut self, ui: &mut Ui, response: &Response) {
+        if !ui.is_enabled() || egui::Popup::is_any_open(ui.ctx()) {
+            return;
+        }
         let canvas = response.rect;
         if response.dragged() {
             self.fitted = false;

@@ -995,6 +995,42 @@ impl Store {
         &self.persistent.slots
     }
 
+    /// Explicit transient slots, keyed independently of executable code identity.
+    pub fn transient_slots(&self) -> &OrderedMap<(Address, U256), AbstractValue> {
+        &self.transient.slots
+    }
+
+    /// Default current value for unspecified persistent slots of this account.
+    pub fn storage_default(&self, address: Address) -> &AbstractValue {
+        self.persistent
+            .defaults
+            .get(&address)
+            .unwrap_or(&self.persistent.global_default)
+    }
+
+    /// Default current value for unspecified transient slots of this account.
+    pub fn transient_default(&self, address: Address) -> &AbstractValue {
+        self.transient
+            .defaults
+            .get(&address)
+            .unwrap_or(&self.transient.global_default)
+    }
+
+    /// Persistent default for accounts without a per-account default.
+    pub fn global_storage_default(&self) -> &AbstractValue {
+        &self.persistent.global_default
+    }
+
+    /// Transient default for accounts without a per-account default.
+    pub fn global_transient_default(&self) -> &AbstractValue {
+        &self.transient.global_default
+    }
+
+    /// Balance of accounts without an explicit entry.
+    pub fn balance_default(&self) -> &AbstractValue {
+        &self.balance_default
+    }
+
     /// Accounts with explicit initial observations or transaction effects.
     /// This finite set does not imply that omitted accounts are absent.
     pub fn addresses(&self) -> BTreeSet<Address> {

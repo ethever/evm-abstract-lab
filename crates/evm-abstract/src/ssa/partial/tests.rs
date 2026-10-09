@@ -6,7 +6,7 @@ use crate::{
         Status, WorldAnalysis,
     },
     domain::AbstractValue,
-    ssa::{self, SsaError},
+    ssa::{self, SsaError, SsaInvariantKind as Kind},
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
 use revm_bytecode::opcode;
@@ -315,7 +315,12 @@ fn partial_verifier_rejects_phase_result_opcode_and_operand_tampering() {
     let ir = build_partial_world(&analysis).unwrap();
     let mut phase = ir.clone();
     phase.blocks[0].instructions.last_mut().unwrap().progress = InstructionProgress::Completed;
-    assert!(phase.verify(&analysis).is_err());
+    let SsaError::Invariant(error) = phase.verify(&analysis).unwrap_err() else {
+        panic!("expected invariant")
+    };
+    assert_eq!(error.kind, Kind::PartialInstructionIdentity);
+    assert_eq!(error.state, Some(0));
+    assert_eq!(error.pc, Some(4));
     let mut result = ir.clone();
     result.blocks[0]
         .instructions
@@ -352,7 +357,13 @@ fn partial_verifier_rejects_lost_frontiers_and_broken_effects() {
     assert!(frontiers.verify(&analysis).is_err());
     let mut effects = ir.clone();
     effects.blocks[0].instructions[0].effect_input = ir.effect_count();
-    assert!(effects.verify(&analysis).is_err());
+    let SsaError::Invariant(error) = effects.verify(&analysis).unwrap_err() else {
+        panic!("expected invariant")
+    };
+    assert_eq!(error.kind, Kind::PartialInstructionEffectChain);
+    assert_eq!((error.state, error.pc), (Some(0), Some(0)));
+    assert_eq!(error.expected, Some(ir.blocks[0].effect.result));
+    assert_eq!(error.observed, Some(ir.effect_count()));
     let mut transition = ir.clone();
     transition
         .transitions

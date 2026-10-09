@@ -1,154 +1,131 @@
-//! Convert immutable native analysis into the engine-independent browser protocol.
-//!
-//! Every graph and SSA reference uses the native machine namespace. Incomplete
-//! reports retain execution phases, deferred edges and all native frontiers.
-
+//! Typed request admission and complete immutable world-report projection.
+//! Native state/edge IDs and SSA coverage survive without a local-CFG projection.
+mod errors;
+mod input;
 mod mapping;
+mod pools;
+mod report;
+mod rpc;
 mod ssa;
-
-use evm_abstract::{analysis, bytecode::Program};
-use evm_abstract_protocol::{
-    AnalysisReport, AnalysisScope, AnalysisStatus, AnalyzeRequest, ApiError, ApiErrorCode,
-    CfgBlock, CfgEdge, Diagnostic, DisasmBlock, Fork, Frontier, MAX_REQUEST_BYTES, SCHEMA_VERSION,
+mod value;
+use evm_abstract::{
+    Address,
+    analysis::{self, control::Control, progress::Phase},
+    bytecode::Program,
+    world::{Account, Code, Entry, World},
 };
+use evm_abstract_protocol as api;
 
-/// Decode and analyze one bounded request without networking or ambient state.
-pub fn analyze(request: AnalyzeRequest) -> Result<AnalysisReport, ApiError> {
-    let limits = &request.limits;
-    if !(1..=4096).contains(&limits.max_states)
-        || !(1..=100_000).contains(&limits.max_transfers)
-        || limits.context_depth > 16
-        || !(1..=32).contains(&limits.max_constants)
-    {
-        return Err(ApiError {
-            code: ApiErrorCode::InvalidLimits,
-            message: "limits require states 1..4096, transfers 1..100000, context depth 0..16 and constants 1..32".into(),
-        });
-    }
-    if request.bytecode.len() > MAX_REQUEST_BYTES {
-        return Err(ApiError {
-            code: ApiErrorCode::RequestTooLarge,
-            message: "bytecode text exceeds request bound".into(),
-        });
-    }
-    let fork = match request.fork {
-        Fork::Cancun => evm_abstract::Fork::Cancun,
-        Fork::Prague => evm_abstract::Fork::Prague,
-        Fork::Osaka => evm_abstract::Fork::Osaka,
-    };
-    let program =
-        Program::from_hex_with_fork(&request.bytecode, fork).map_err(|error| ApiError {
-            code: ApiErrorCode::InvalidBytecode,
-            message: error.to_string(),
-        })?;
-    if program.byte_len() > 65_536 {
-        return Err(ApiError {
-            code: ApiErrorCode::RequestTooLarge,
-            message: "runtime bytecode exceeds 65536 bytes".into(),
-        });
-    }
-    let config = analysis::Config {
-        max_states: limits.max_states,
-        max_transfers: limits.max_transfers,
-        max_constants: limits.max_constants,
-        context_depth: limits.context_depth,
-        ..analysis::Config::default()
-    };
-    let graph = analysis::analyze(program, config).map_err(|error| ApiError {
-        code: ApiErrorCode::InvalidLimits,
-        message: error.to_string(),
-    })?;
-    let native = graph.execution();
-    let ssa = ssa::report(native).map_err(|error| ApiError {
-        code: ApiErrorCode::Internal,
-        message: error.to_string(),
-    })?;
-    Ok(AnalysisReport {
-        schema_version: SCHEMA_VERSION,
-        scope: AnalysisScope::SingleProgram,
-        fork: request.fork,
-        byte_len: graph.program().byte_len(),
-        status: match native.status() {
-            analysis::Status::Converged => AnalysisStatus::Converged,
-            analysis::Status::Incomplete => AnalysisStatus::Incomplete,
-        },
-        transfers: native.transfers(),
-        disassembly: graph
-            .program()
-            .blocks()
-            .iter()
-            .map(|block| DisasmBlock {
-                id: block.id,
-                start_pc: block.start_pc,
-                instructions: block
-                    .instructions
-                    .iter()
-                    .map(mapping::instruction)
-                    .collect(),
-            })
-            .collect(),
-        cfg: native
-            .states()
-            .iter()
-            .map(|state| {
-                let block = state
-                    .program()
-                    .and_then(|program| program.blocks().get(state.active().basic_block_index));
-                CfgBlock {
-                    id: state.id,
-                    basic_block: state.active().basic_block_index,
-                    start_pc: block.map(|block| block.start_pc),
-                    context: state.active().jump_history.clone(),
-                    frame_depth: state.key.frames.len(),
-                    code_address: state.active().code_address.to_string(),
-                    instructions: block
-                        .into_iter()
-                        .flat_map(|block| &block.instructions)
-                        .map(mapping::instruction)
-                        .collect(),
-                    entry_stack: state
-                        .entry
-                        .active()
-                        .stack
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect(),
-                    exit_stack: state.exit_stack.iter().map(ToString::to_string).collect(),
-                    executed_pcs: state.executed_pcs.clone(),
-                }
-            })
-            .collect(),
-        edges: native
-            .edges()
-            .iter()
-            .enumerate()
-            .map(|(id, edge)| CfgEdge {
-                id,
-                from: edge.from,
-                to: edge.to,
-                kind: mapping::edge(edge.kind),
-            })
-            .collect(),
-        ssa,
-        diagnostics: native
-            .diagnostics()
-            .iter()
-            .map(|item| Diagnostic {
-                state: item.state,
-                pc: item.pc,
-                kind: mapping::diagnostic(&item.kind),
-                detail: format!("{:?}", item.kind),
-            })
-            .collect(),
-        frontiers: native
-            .frontiers()
-            .iter()
-            .map(|item| Frontier {
-                from: item.from,
-                pc: item.pc,
-                kind: mapping::frontier(&item.reason),
-                detail: format!("{:?}", item.reason),
-            })
-            .collect(),
-    })
+/// Analyze bytecode or an explicitly selected trusted RPC snapshot.
+pub fn analyze(request: api::AnalyzeRequest) -> Result<api::AnalysisReport, api::ApiError> {
+    analyze_with_control(request, &Control::default())
 }
+/// Run with cooperative cancellation and typed bounded progress events.
+pub fn analyze_with_control(
+    request: api::AnalyzeRequest,
+    control: &Control,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    control.scope(|| run(request, control))
+}
+fn cancelled() -> api::ApiError {
+    api::ApiError {
+        code: api::ApiErrorCode::Cancelled,
+        message: "analysis cancelled".into(),
+        details: api::ErrorDetails::Task(api::TaskFailure {
+            kind: api::TaskErrorKind::Cancelled,
+            id: None,
+        }),
+    }
+}
+fn checkpoint(control: &Control) -> Result<(), api::ApiError> {
+    control.checkpoint().map_err(|_| cancelled())
+}
+fn config_error(error: analysis::ConfigError) -> api::ApiError {
+    errors::configuration(error)
+}
+fn run(
+    request: api::AnalyzeRequest,
+    control: &Control,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    checkpoint(control)?;
+    control.observer().phase(Phase::Validating);
+    let config = input::config(&request.limits)?;
+    let mut environment = input::environment(&request.environment)?;
+    let fork = input::fork(request.fork);
+    let (native, scope) = match &request.input {
+        api::AnalysisInput::Bytecode(source) => {
+            if source.bytecode.len() > api::MAX_REQUEST_BYTES {
+                return Err(input::invalid(
+                    api::ValidationErrorKind::Bytecode,
+                    "bytecode",
+                    "bytecode text exceeds the request bound",
+                ));
+            }
+            let program =
+                Program::from_hex_with_fork(&source.bytecode, fork).map_err(errors::bytecode)?;
+            if program.byte_len() > 65_536 {
+                return Err(input::invalid(
+                    api::ValidationErrorKind::Bytecode,
+                    "bytecode",
+                    "runtime bytecode exceeds 65536 bytes",
+                ));
+            }
+            // An internal owner is required by Store, but unspecified logical ADDRESS remains symbolic.
+            let address = source
+                .address
+                .as_ref()
+                .map(|text| input::address(text, "address"))
+                .transpose()?;
+            if let Some(address) = address {
+                environment.to = address.into();
+            }
+            let address = address.unwrap_or_else(|| Address::repeat_byte(0x11));
+            let mut world = World::offline(fork, "web-bytecode", "explicit browser bytecode");
+            let mut account = Account::unknown();
+            account.code = Code::Runtime(program);
+            world.insert(address, account).map_err(errors::world)?;
+            checkpoint(control)?;
+            control.observer().phase(Phase::Analyzing);
+            let native = analysis::analyze_world_with_control(
+                world,
+                Entry {
+                    address,
+                    environment,
+                },
+                config,
+                control,
+            )
+            .map_err(|error| match error {
+                analysis::ControlledAnalysisError::Config(error) => config_error(error),
+                analysis::ControlledAnalysisError::Cancelled => cancelled(),
+            })?;
+            (native, api::AnalysisScope::SingleProgram)
+        }
+        api::AnalysisInput::Rpc(source) => {
+            let address = input::address(&source.address, "address")?;
+            environment.to = address.into();
+            let input = input::rpc(source, fork, &request.limits)?;
+            checkpoint(control)?;
+            let native = analysis::analyze_rpc_with_control(
+                &input,
+                Entry {
+                    address,
+                    environment,
+                },
+                config,
+                control,
+            )
+            .map_err(|error| match error {
+                analysis::RpcAnalysisError::Cancelled(_) => cancelled(),
+                analysis::RpcAnalysisError::Config(error) => config_error(error),
+                analysis::RpcAnalysisError::Rpc(error) => rpc::error(error),
+            })?
+            .into_analysis();
+            (native, api::AnalysisScope::RpcWorld)
+        }
+    };
+    report::report(&native, &request, scope, control)
+}
+
+#[cfg(test)]
+mod tests;

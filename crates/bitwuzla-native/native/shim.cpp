@@ -5,6 +5,8 @@
 #include <bitwuzla/cpp/terminator.h>
 
 #include <cstddef>
+#include <atomic>
+#include <memory>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
@@ -22,7 +24,8 @@ struct TermRef {
 
 class PollTerminator final : public bitwuzla::Terminator {
  public:
-  explicit PollTerminator(std::uint32_t limit) : limit_(limit) {}
+  PollTerminator(std::uint32_t limit, std::shared_ptr<std::atomic<bool>> cancelled)
+      : limit_(limit), cancelled_(std::move(cancelled)) {}
 
   void start() noexcept {
     polls_ = 0;
@@ -30,6 +33,7 @@ class PollTerminator final : public bitwuzla::Terminator {
   }
 
   bool terminate() override {
+    if (cancelled_->load(std::memory_order_acquire)) return true;
     if (exhausted_) return true;
     ++polls_;
     exhausted_ = polls_ >= limit_;
@@ -41,6 +45,7 @@ class PollTerminator final : public bitwuzla::Terminator {
 
  private:
   const std::uint32_t limit_;
+  std::shared_ptr<std::atomic<bool>> cancelled_;
   std::uint64_t polls_ = 0;
   bool exhausted_ = false;
 };
@@ -59,6 +64,7 @@ struct Session {
   const std::uint64_t owner;
   bitwuzla::TermManager manager;
   bitwuzla::Options options;
+  std::shared_ptr<std::atomic<bool>> cancelled;
   // Destruction order keeps this terminator and manager alive for the solver.
   PollTerminator terminator;
   bitwuzla::Bitwuzla solver;
@@ -69,7 +75,8 @@ struct Session {
   bool poisoned = false;
 
   Session(std::uint64_t owner_id, std::uint32_t limit)
-      : owner(owner_id), options(configured_options()), terminator(limit),
+      : owner(owner_id), options(configured_options()),
+        cancelled(std::make_shared<std::atomic<bool>>(false)), terminator(limit, cancelled),
         solver(manager, options) {
     solver.configure_terminator(&terminator);
   }
@@ -276,6 +283,23 @@ void evmbw_delete(void* opaque) noexcept {
   try { delete static_cast<Session*>(opaque); } catch (...) {}
 }
 
+// The handle shares only an atomic signal, never the non-thread-safe solver.
+void* evmbw_interrupt_new(void* opaque) noexcept {
+  try {
+    if (opaque == nullptr) return nullptr;
+    return new std::shared_ptr<std::atomic<bool>>(static_cast<Session*>(opaque)->cancelled);
+  } catch (...) { return nullptr; }
+}
+
+void evmbw_interrupt_set(void* opaque) noexcept {
+  auto* handle = static_cast<std::shared_ptr<std::atomic<bool>>*>(opaque);
+  (*handle)->store(true, std::memory_order_release);
+}
+
+void evmbw_interrupt_delete(void* opaque) noexcept {
+  delete static_cast<std::shared_ptr<std::atomic<bool>>*>(opaque);
+}
+
 const char* evmbw_error(void* opaque) noexcept {
   return opaque == nullptr ? "null native session" : static_cast<Session*>(opaque)->error;
 }
@@ -340,6 +364,12 @@ int evmbw_check(void* opaque, std::uint32_t* status, std::uint8_t* exhausted,
     }
     session.had_sat = false;
     session.terminator.start();
+    if (session.cancelled->load(std::memory_order_acquire)) {
+      *status = 0;
+      *exhausted = 0;
+      *polls = 0;
+      return;
+    }
     const auto result = session.solver.check_sat();
     *status = result == bitwuzla::Result::SAT ? 10 : result == bitwuzla::Result::UNSAT ? 20 : 0;
     *exhausted = session.terminator.exhausted() ? 1 : 0;

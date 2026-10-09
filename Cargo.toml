@@ -38,8 +38,8 @@ z3 = "=0.20.2"
 cvc5 = "=0.6.0"
 cc = "=1.5.1"
 pkg-config = "=0.3.34"
+tokio = { version = "=1.53.2", features = ["rt", "time", "macros", "net"] }
 reqwest = { version = "=0.13.4", default-features = false, features = [
-    "blocking",
     "json",
     "rustls",
 ] }

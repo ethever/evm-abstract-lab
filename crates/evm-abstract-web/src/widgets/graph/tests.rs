@@ -146,7 +146,7 @@ fn a_new_report_gets_a_new_initial_layout_and_fit() {
 }
 
 fn report() -> AnalysisReport {
-    let cfg = (0..9)
+    let cfg: Vec<_> = (0..9)
         .map(|index| CfgBlock {
             id: index * 7,
             basic_block: index,
@@ -154,6 +154,8 @@ fn report() -> AnalysisReport {
             context: vec![],
             frame_depth: 1,
             code_address: "0x11".into(),
+            storage_address: "0x11".into(),
+            program: Some(0),
             instructions: vec![DisasmInstruction {
                 pc: index * 2,
                 opcode: 0,
@@ -169,14 +171,27 @@ fn report() -> AnalysisReport {
             executed_pcs: vec![index * 2],
         })
         .collect();
-    AnalysisReport {
-        schema_version: 1,
+    let disassembly = cfg
+        .iter()
+        .map(|block| evm_abstract_protocol::DisasmBlock {
+            id: block.basic_block,
+            start_pc: block.start_pc.unwrap(),
+            instructions: block.instructions.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut report = AnalysisReport {
+        schema_version: evm_abstract_protocol::SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,
         byte_len: 18,
         status: AnalysisStatus::Converged,
         transfers: 9,
-        disassembly: vec![],
+        disassembly: disassembly.clone(),
+        programs: vec![crate::tests::source_program(
+            0,
+            cfg[0].code_address.clone(),
+            disassembly,
+        )],
         cfg,
         edges: (1..9)
             .map(|index| CfgEdge {
@@ -196,7 +211,10 @@ fn report() -> AnalysisReport {
         },
         diagnostics: vec![],
         frontiers: vec![],
-    }
+        ..crate::tests::empty_report()
+    };
+    report.metadata.root_program = Some(0);
+    report
 }
 
 // These fixtures exercise source-card geometry and deliberately carry no SSA.
@@ -454,6 +472,7 @@ fn content_measurement_shrinks_short_nodes_and_retains_empty_frame_semantics() {
         let long = node_text(ui.painter(), &report, &source, super::NodeView::Disassembly);
         source.instructions.clear();
         source.start_pc = None;
+        source.program = None;
         source.frame_depth = 2;
         let empty = node_text(ui.painter(), &report, &source, super::NodeView::Disassembly);
         assert!(empty.lines.is_empty());

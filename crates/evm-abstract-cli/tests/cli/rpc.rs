@@ -16,6 +16,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "rpc/environment.rs"]
+mod environment;
+
 #[path = "rpc/pinning.rs"]
 mod pinning;
 
@@ -62,7 +65,9 @@ impl Fixture {
         let method = request["method"].as_str().unwrap();
         let result = match method {
             "eth_chainId" => json!("0x1"),
-            "eth_getBlockByHash" | "eth_getBlockByNumber" => json!({"hash":BLOCK,"number":"0x10"}),
+            "eth_getBlockByHash" | "eth_getBlockByNumber" => {
+                json!({"hash":BLOCK,"number":"0x10", "parentHash":BLOCK, "timestamp":"0x1234", "miner":"0x0000000000000000000000000000000000000033", "mixHash":BLOCK, "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7"})
+            }
             _ => {
                 let address = request["params"][0].as_str().unwrap();
                 let account = self

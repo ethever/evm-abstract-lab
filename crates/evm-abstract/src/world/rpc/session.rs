@@ -5,8 +5,19 @@
 //! transaction state; this cache contains only initial observations at the
 //! once-resolved block hash.
 
-use super::{AccountRequest, AcquisitionLimit, Loader, RpcError, RpcInput, configured_loader};
-use crate::{domain::AbstractValue, world::World};
+#[cfg(test)]
+use super::configured_loader;
+use super::{
+    AccountRequest, AcquisitionLimit, Loader, RpcError, RpcInput, configured_loader_with_control,
+};
+use crate::{
+    analysis::{
+        control::Control,
+        progress::{Observer, Phase},
+    },
+    domain::AbstractValue,
+    world::World,
+};
 use alloy_primitives::{Address, U256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,15 +31,32 @@ pub struct Session {
 impl Session {
     /// Load the explicitly selected accounts as one checked initial batch.
     pub fn load(input: &RpcInput) -> Result<Self, RpcError> {
-        let mut loader = configured_loader(input)?;
+        Self::load_with_control(input, &Control::default())
+    }
+
+    /// Load initial observations with cooperative cancellation and progress.
+    pub fn load_with_control(input: &RpcInput, control: &Control) -> Result<Self, RpcError> {
+        let mut loader = configured_loader_with_control(input, control)?;
         loader.pin()?;
+        control.observer().phase(Phase::Acquiring);
         let mut world = loader.world();
         for request in &input.accounts {
             loader.account(&mut world, request)?;
         }
         loader.check_chain()?;
         loader.check_block()?;
+        loader.observe_world(&world);
         Ok(Self { loader, world })
+    }
+
+    /// Observe acquisition without enabling cancellation.
+    pub fn load_with_observer(input: &RpcInput, observer: &Observer) -> Result<Self, RpcError> {
+        Self::load_with_control(input, &Control::with_observer(observer.clone()))
+    }
+
+    pub(crate) fn discovery_round(&mut self, round: usize) {
+        self.loader.round = round;
+        self.loader.progress();
     }
 
     /// Current complete account observations at the fixed chain and block hash.
@@ -55,6 +83,7 @@ impl Session {
             });
         }
         let mut pending = self.loader.world();
+        self.loader.control.observer().phase(Phase::Acquiring);
         self.loader.check_chain()?;
         self.loader.check_block()?;
         self.loader.account(
@@ -75,6 +104,7 @@ impl Session {
                 context: Box::new(self.loader.context("eth_getCode", Some(address), None)),
                 source,
             })?;
+        self.loader.observe_world(&self.world);
         Ok(true)
     }
 
@@ -106,7 +136,7 @@ impl Session {
                     Some(address),
                     slots.first().copied(),
                 )),
-                reason: "storage acquisition requires an already observed account",
+                reason: super::ConfigurationReason::StorageAccountMissing,
             })?;
         if !account.storage_unknown {
             return Ok(Vec::new());
@@ -120,6 +150,7 @@ impl Session {
             return Ok(Vec::new());
         }
         let block_number = self.loader.storage_block_number()?;
+        self.loader.control.observer().phase(Phase::Acquiring);
         self.loader.check_chain()?;
         self.loader.check_storage_block(block_number)?;
         let mut pending = BTreeMap::new();
@@ -138,6 +169,7 @@ impl Session {
                 context: Box::new(self.loader.context("eth_getStorageAt", Some(address), None)),
                 source,
             })?;
+        self.loader.observe_world(&self.world);
         Ok(installed)
     }
 

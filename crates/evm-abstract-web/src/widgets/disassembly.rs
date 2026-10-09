@@ -12,6 +12,7 @@ use crate::{app::Selection, palette};
 pub(crate) fn disassembly(
     ui: &mut Ui,
     report: &AnalysisReport,
+    program: Option<usize>,
     selection: &mut Selection,
     previous: &mut Selection,
 ) {
@@ -20,43 +21,38 @@ pub(crate) fn disassembly(
     // when the parent tree changes, without overriding manual navigation.
     ui.scope_builder(
         egui::UiBuilder::new().id(egui::Id::new("disassembly_view")),
-        |ui| contents(ui, report, selection, previous),
+        |ui| contents(ui, report, program, selection, previous),
     );
 }
 
 fn contents(
     ui: &mut Ui,
     report: &AnalysisReport,
+    program: Option<usize>,
     selection: &mut Selection,
     previous: &mut Selection,
 ) {
-    let child = report
-        .cfg
-        .iter()
-        .find(|block| Some(block.id) == selection.state && block.frame_depth > 1);
+    let source = program.and_then(|id| report.programs.iter().find(|source| source.id == id));
     heading(
         ui,
         "DISASSEMBLY",
-        &child.map_or_else(
-            || {
+        &source.map_or_else(
+            || "No captured bytecode".into(),
+            |source| {
                 format!(
-                    "Root program · {} bytes · {:?}",
-                    report.byte_len, report.fork
-                )
-            },
-            |block| {
-                format!(
-                    "Selected frame · depth {} · S{}",
-                    block.frame_depth, block.id
+                    "P{} · {:?} · {} bytes",
+                    source.id,
+                    source.kind,
+                    source.bytecode.trim_start_matches("0x").len() / 2
                 )
             },
         ),
     );
-    if child.is_some_and(|block| block.start_pc.is_none()) {
-        super::empty(ui, "No bytecode in selected frame");
+    if source.is_none() {
+        super::empty(ui, "No captured bytecode for this frame or account");
         return;
     }
-    let rows = rows(report, *selection);
+    let rows = rows(report, program, *selection);
     let focus = (*selection != *previous)
         .then(|| rows.iter().position(|row| row.is_focused(*selection)))
         .flatten();
@@ -173,8 +169,13 @@ fn contents(
 
 /// Desired outer pane width uses the same columns and selected-frame source as
 /// the table itself. A bounded parent can still expose overflow by scrolling.
-pub(crate) fn natural_width(ui: &Ui, report: &AnalysisReport, selection: Selection) -> f32 {
-    column_widths(ui, &rows(report, selection))
+pub(crate) fn natural_width(
+    ui: &Ui,
+    report: &AnalysisReport,
+    program: Option<usize>,
+    selection: Selection,
+) -> f32 {
+    column_widths(ui, &rows(report, program, selection))
         .iter()
         .sum::<f32>()
         + 6.0
@@ -244,67 +245,44 @@ impl Row<'_> {
     }
 }
 
-fn rows(report: &AnalysisReport, selection: Selection) -> Vec<Row<'_>> {
+fn rows(report: &AnalysisReport, program: Option<usize>, selection: Selection) -> Vec<Row<'_>> {
     let mut rows = Vec::new();
-    if let Some(block) = report
-        .cfg
-        .iter()
-        .find(|block| Some(block.id) == selection.state && block.frame_depth > 1)
-    {
-        if let Some(pc) = block.start_pc {
-            rows.push(Row::Block {
-                id: block.basic_block,
-                pc,
-                state: Some(block.id),
-                selected: true,
-            });
-            rows.extend(
-                block
-                    .instructions
-                    .iter()
-                    .map(|instruction| Row::Instruction {
-                        instruction,
-                        state: Some(block.id),
-                        selected_block: true,
-                        executed: super::coverage(report, block.id) == BlockCoverage::Current
-                            && block.executed_pcs.contains(&instruction.pc),
+    let Some(source) = program.and_then(|id| report.programs.iter().find(|source| source.id == id))
+    else {
+        return rows;
+    };
+    for block in &source.blocks {
+        let selected_state = report.cfg.iter().find(|state| {
+            state.program == program
+                && state.basic_block == block.id
+                && Some(state.id) == selection.state
+        });
+        let state = selected_state.or_else(|| {
+            report
+                .cfg
+                .iter()
+                .find(|state| state.program == program && state.basic_block == block.id)
+        });
+        rows.push(Row::Block {
+            id: block.id,
+            pc: block.start_pc,
+            state: state.map(|state| state.id),
+            selected: selected_state.is_some(),
+        });
+        rows.extend(
+            block
+                .instructions
+                .iter()
+                .map(|instruction| Row::Instruction {
+                    instruction,
+                    state: state.map(|state| state.id),
+                    selected_block: selected_state.is_some(),
+                    executed: state.is_some_and(|state| {
+                        super::coverage(report, state.id) == BlockCoverage::Current
+                            && state.executed_pcs.contains(&instruction.pc)
                     }),
-            );
-        }
-    } else {
-        for block in &report.disassembly {
-            let selected_state = report.cfg.iter().find(|state| {
-                state.frame_depth == 1
-                    && state.basic_block == block.id
-                    && Some(state.id) == selection.state
-            });
-            let state = selected_state.or_else(|| {
-                report
-                    .cfg
-                    .iter()
-                    .find(|state| state.frame_depth == 1 && state.basic_block == block.id)
-            });
-            rows.push(Row::Block {
-                id: block.id,
-                pc: block.start_pc,
-                state: state.map(|state| state.id),
-                selected: selected_state.is_some(),
-            });
-            rows.extend(
-                block
-                    .instructions
-                    .iter()
-                    .map(|instruction| Row::Instruction {
-                        instruction,
-                        state: state.map(|state| state.id),
-                        selected_block: selected_state.is_some(),
-                        executed: state.is_some_and(|state| {
-                            super::coverage(report, state.id) == BlockCoverage::Current
-                                && state.executed_pcs.contains(&instruction.pc)
-                        }),
-                    }),
-            );
-        }
+                }),
+        );
     }
     rows
 }

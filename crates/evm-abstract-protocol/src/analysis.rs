@@ -1,8 +1,10 @@
 choice! {
-    /// Input assumptions; this version does not accept an RPC or an offline world.
+    /// Input assumptions recorded with the result.
     pub enum AnalysisScope {
-        /// One runtime program; calldata, environment and persistent state unknown.
+        /// One runtime program with explicit or unknown transaction inputs.
         SingleProgram,
+        /// Pinned trusted RPC world and explicit root execution.
+        RpcWorld,
     }
 }
 choice! {
@@ -61,6 +63,10 @@ record! {
         pub frame_depth: usize,
         /// Executable account identity, distinct from the storage account.
         pub code_address: String,
+        /// Active persistent/transient storage owner.
+        pub storage_address: String,
+        /// Active source program in the report directory.
+        pub program: Option<usize>,
         /// Source instructions for this frame, including generated initcode.
         pub instructions: Vec<DisasmInstruction>,
         /// Active stack on entry, bottom to top; each entry is an abstract value summary.
@@ -133,6 +139,8 @@ record! {
         pub pc: usize,
         /// Typed diagnostic category.
         pub kind: DiagnosticKind,
+        /// Typed precision exchange reason, when this is a fact-exchange diagnostic.
+        pub reduction: Option<crate::ReductionReason>,
         /// Detailed explanation, including engine-specific precision limits.
         pub detail: String,
     }
@@ -181,6 +189,8 @@ record! {
         pub pc: Option<usize>,
         /// Stable boundary category.
         pub kind: FrontierKind,
+        /// Authoritative boundary facts; the message is supplemental.
+        pub reason: crate::FrontierDetails,
         /// Full engine boundary detail, including account/slot when available.
         pub detail: String,
     }
@@ -194,7 +204,7 @@ record! {
         pub scope: AnalysisScope,
         /// Execution rules fixed during decoding.
         pub fork: crate::Fork,
-        /// Submitted root program size in bytes.
+        /// Resolved root executable source size in bytes.
         pub byte_len: usize,
         /// Model closure, independent of SSA display selection.
         pub status: AnalysisStatus,
@@ -212,5 +222,21 @@ record! {
         pub diagnostics: Vec<Diagnostic>,
         /// Every unexpanded model or resource frontier.
         pub frontiers: Vec<Frontier>,
+        /// Pinned identity and effective root environment.
+        pub metadata: crate::ReportMetadata,
+        /// Complete captured executable programs.
+        pub programs: Vec<crate::ProgramInfo>,
+        /// Initial snapshot accounts, before transaction effects.
+        pub accounts: Vec<crate::AccountState>,
+        /// Entry and retained exit payloads keyed by native state.
+        pub states: Vec<crate::StateDetails>,
+        /// Shared typed byte arrays referenced by frames, logs and outcomes.
+        pub byte_arrays: Vec<crate::ByteArraySnapshot>,
+        /// Shared transaction and rollback stores.
+        pub stores: Vec<crate::StoreSnapshot>,
+        /// Terminal root results and state changes.
+        pub outcomes: Vec<crate::Outcome>,
+        /// Fixed-snapshot account/storage acquisition evidence.
+        pub acquisition: Option<crate::AcquisitionReport>,
     }
 }

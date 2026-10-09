@@ -1,5 +1,7 @@
 //! Local JSON-RPC regressions exercise the real HTTP and input boundaries.
 
+mod cancellation;
+mod environment;
 mod storage;
 
 use super::{AccountRequest, RpcBlock, RpcError, RpcFailureKind, RpcInput, Session, load};
@@ -28,6 +30,11 @@ enum Reply {
     Trickle(Json),
     Http(u16),
     Delay(Duration),
+    Hold {
+        started: std::sync::mpsc::Sender<()>,
+        closed: std::sync::mpsc::Sender<bool>,
+        body: bool,
+    },
 }
 
 struct Server {
@@ -85,6 +92,15 @@ impl Server {
                     Reply::Bytes(bytes) => (200, bytes, false),
                     Reply::Trickle(value) => (200, serde_json::to_vec(&value).unwrap(), true),
                     Reply::Http(status) => (status, Vec::new(), false),
+                    Reply::Hold { started, closed, body } => {
+                        if body {
+                            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n{").unwrap();
+                        }
+                        started.send(()).unwrap();
+                        let disconnected = matches!(stream.read(&mut [0]), Ok(0));
+                        closed.send(disconnected).unwrap();
+                        continue;
+                    }
                     Reply::Delay(delay) => {
                         thread::sleep(delay);
                         continue;
@@ -140,7 +156,7 @@ fn healthy(request: &Json) -> Json {
     let result = match request["method"].as_str().unwrap() {
         "eth_chainId" => json!("0x1"),
         "eth_getBlockByHash" | "eth_getBlockByNumber" => {
-            json!({"hash": B256::repeat_byte(0x11), "number":"0x2a"})
+            json!({"hash": B256::repeat_byte(0x11), "number":"0x2a", "parentHash": B256::repeat_byte(0x10), "timestamp":"0x1234", "miner": Address::repeat_byte(0x33), "mixHash": B256::repeat_byte(0x44), "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7"})
         }
         "eth_getCode" => json!("0x00"),
         "eth_getBalance" => json!("0x9"),
@@ -620,6 +636,38 @@ fn bootstrap_connection_failure_does_not_fabricate_snapshot_identity() {
     assert_eq!(error.context().method, "eth_chainId");
     assert_eq!(error.context().chain_id, None);
     assert_eq!(error.context().block_hash, None);
+}
+
+#[test]
+fn native_transport_diagnostic_keeps_io_cause_without_url_or_credentials() {
+    use super::FailureCause;
+    let endpoint = "http://rpc-user-sensitive:rpc-pass-sensitive@127.0.0.1:0/private-rpc-sensitive?api_key=rpc-query-sensitive";
+    let failure = load(&RpcInput::new(endpoint, Fork::Osaka))
+        .unwrap_err()
+        .failure();
+    let Some(FailureCause::Transport(cause)) = &failure.cause else {
+        panic!("expected an actual connection failure: {failure:?}");
+    };
+    assert!(cause.connect, "{cause:?}");
+    assert!(
+        cause.native_diagnostic.contains("ConnectionRefused"),
+        "the diagnostic must retain the underlying I/O cause: {}",
+        cause.native_diagnostic
+    );
+    let wire = serde_json::to_string(&failure).unwrap();
+    for secret in [
+        endpoint,
+        "rpc-user-sensitive",
+        "rpc-pass-sensitive",
+        "private-rpc-sensitive",
+        "rpc-query-sensitive",
+        "http://",
+    ] {
+        assert!(
+            !wire.contains(secret),
+            "serialized transport error leaked {secret}"
+        );
+    }
 }
 
 fn incremental_healthy(request: &Json) -> Json {

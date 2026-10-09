@@ -48,8 +48,17 @@ pub(super) fn run_world(
     entry: Entry,
     config: ExecutionConfig,
 ) -> Result<WorldAnalysis, ConfigError> {
+    run_world_with_observer(world, entry, config, &super::progress::Observer::default())
+}
+
+pub(super) fn run_world_with_observer(
+    world: World,
+    entry: Entry,
+    config: ExecutionConfig,
+    observer: &super::progress::Observer,
+) -> Result<WorldAnalysis, ConfigError> {
     let mut budget = WorkBudget::new(config.max_work);
-    let mut counters = Counters::default();
+    let mut counters = Counters::with_observer(observer);
     run_metered(
         world,
         entry,
@@ -65,17 +74,37 @@ pub(super) fn run_world(
 pub(super) struct Counters {
     pub states: usize,
     pub transfers: usize,
+    observer: super::progress::Observer,
+}
+
+impl Counters {
+    pub(super) fn with_observer(observer: &super::progress::Observer) -> Self {
+        Self {
+            observer: observer.clone(),
+            ..Self::default()
+        }
+    }
+
+    fn report(&self, work: usize) {
+        self.observer.emit(super::progress::Event::Execution {
+            states: self.states,
+            transfers: self.transfers,
+            work,
+        });
+    }
 }
 
 /// Execute one fixed snapshot under the caller's cumulative resource ledger.
 pub(super) fn run_metered(
     world: World,
-    entry: Entry,
+    mut entry: Entry,
     config: ExecutionConfig,
     budget: &mut WorkBudget,
     counters: &mut Counters,
     storage_reads: transfer::StorageReadPolicy,
 ) -> Result<WorldAnalysis, ConfigError> {
+    counters.observer.phase(super::progress::Phase::Analyzing);
+    world.apply_snapshot_environment(&mut entry.environment);
     entry.environment.validate()?;
     if let Some(observed) = entry.environment.to.as_concrete()
         && observed != entry.address
@@ -91,7 +120,7 @@ pub(super) fn run_metered(
         world,
         entry,
         config,
-        schema_version: 3,
+        schema_version: super::SCHEMA_VERSION,
         domain_spec: domain.spec(),
         states: Vec::new(),
         edges: Vec::new(),
@@ -187,6 +216,7 @@ pub(super) fn run_metered(
         updates: vec![0],
     };
     engine.run();
+    engine.counters.report(engine.budget.used());
     Ok(engine.result)
 }
 
@@ -281,6 +311,7 @@ impl Engine<'_> {
     /// 节点永远完成：后续 join 若扩大入口，`successor` 会让它重新参与传播。
     fn run(&mut self) {
         while let Some(id) = self.queue.pop_front() {
+            self.counters.report(self.budget.used());
             // 回放可能已经用证书满足这个节点，只移除了其 queued 标记。
             // 物理队列里的旧编号仍可存在；没有标记时跳过，不重复执行已满足节点。
             if !self.queued.remove(&id) {

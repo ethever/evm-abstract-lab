@@ -102,6 +102,8 @@ in
           # egui bundles canvas fonts, but Chromium's hidden IME input still
           # needs a system font to insert text inside the isolated Nix builder.
           FONTCONFIG_FILE = dependencies.fontConfig;
+          # The RPC client's TLS verifier also initializes for loopback HTTP.
+          inherit (dependencies.environment) SSL_CERT_FILE;
         }
         ''
           # Chromium's crash reporter resolves its database through XDG even
