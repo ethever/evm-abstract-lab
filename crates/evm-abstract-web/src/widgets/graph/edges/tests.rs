@@ -11,6 +11,7 @@ struct PaintedEdge {
     paths: [PathShape; 2],
     label: Rect,
     text: Option<Rect>,
+    bridge: Option<[Pos2; 2]>,
 }
 
 fn render(zoom: f32, density: f32, selected: bool, offset: f32) -> PaintedEdge {
@@ -34,7 +35,7 @@ fn render_at_label(
         .get_mut(&ViewportId::ROOT)
         .unwrap()
         .native_pixels_per_point = Some(density);
-    let label = Rect::from_min_size(label, Vec2::new(61.0, 28.0));
+    let label = Rect::from_min_size(label, Vec2::new(48.0, 16.0));
     let route = EdgeRoute {
         to_label: vec![
             Pos2::new(20.0, 20.0),
@@ -91,14 +92,23 @@ fn render_at_label(
             Shape::Rect(rect) if rect.fill == palette::BACKGROUND => Some(rect.rect),
             _ => None,
         })
-        .expect("the label vertex stays visible even below the text threshold");
+        .expect("the label routing slot retains its background at every scale");
     let text = output.shapes.iter().find_map(|item| match &item.shape {
         Shape::Text(text) if text.galley.text() == "e0 next" => {
             Some(Rect::from_min_size(text.pos, text.galley.size()))
         }
         _ => None,
     });
-    PaintedEdge { paths, label, text }
+    let bridge = output.shapes.iter().find_map(|item| match &item.shape {
+        Shape::LineSegment { points, .. } => Some(*points),
+        _ => None,
+    });
+    PaintedEdge {
+        paths,
+        label,
+        text,
+        bridge,
+    }
 }
 
 fn alpha_at(mesh: &Mesh, point: Pos2) -> f32 {
@@ -202,7 +212,16 @@ fn label_vertices_keep_text_inside_and_routes_outside_at_readable_scales() {
                     let edge = render_at_label(zoom, density, selected, 0.0, label);
                     if zoom <= 0.35 {
                         assert!(edge.text.is_none());
+                        assert_eq!(
+                            edge.bridge,
+                            Some([
+                                *edge.paths[0].points.last().unwrap(),
+                                edge.paths[1].points[0],
+                            ]),
+                            "hidden labels must not break edge connectivity"
+                        );
                     } else {
+                        assert!(edge.bridge.is_none());
                         let text = edge.text.expect("readable edge text is painted");
                         assert!(
                             edge.label.contains_rect(text),
