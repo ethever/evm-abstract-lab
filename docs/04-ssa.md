@@ -60,7 +60,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 nix run . -- ssa --file examples/diamond.hex --context-depth 0
 ```
 
-本例显式设置 `--context-depth 0`，让两条路径进入同一个分析状态；[后面的循环例子](#4-循环为什么不需要无限多个名字)也使用这个设置。默认深度 8 会保留更多跳转历史，见[第 05 课](05-sensitivity.md)。关注汇合处 `pc=0x0e`。两条前驱分别把 1 和 2 留在栈上：
+本例显式设置 `--context-depth 0`，让两条路径进入同一个分析状态；[后面的循环例子](#4-循环为什么不需要无限多个名字)也使用这个设置。默认深度 128 会保留更多跳转历史，见[第 05 课](05-sensitivity.md)。关注汇合处 `pc=0x0e`。两条前驱分别把 1 和 2 留在栈上：
 
 ```mermaid
 flowchart TD

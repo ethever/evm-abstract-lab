@@ -163,7 +163,7 @@ nix run . -- cfg --file examples/stack-heights.hex --context-depth 0
 | --- | --- | --- |
 | `--domain` | 默认 `product`；也可选 `constants-only` | 组合数值约束，或有限常量集合的数值对照；两者都保留固定输入符号 |
 | `--max-constants` | 默认 8，范围 `1..=usize::MAX`，无额外上限 | 每个值的常量集合组件能保留多少个候选；超过容量后不能完整枚举 |
-| `--context-depth` | 默认 8，非负整数，无额外上限（须能表示为 `usize`） | 保留多少个最近跳转来源，用于状态分组 |
+| `--context-depth` | 默认 128，非负整数，无额外上限（须能表示为 `usize`） | 保留多少个最近跳转来源，用于状态分组 |
 | `--reduction-rounds` | 默认 4，正整数 | 一次临时事实交换最多完成多少轮 |
 | `--max-facts` | 默认 256，正整数 | 一次临时交换能容纳多少个语义事实原子 |
 | `--no-relations` | 未指定时启用关系分析 | 关闭表达式传播和持久关系查询，保留数值与复制/输入身份 |
@@ -176,11 +176,11 @@ nix run . -- cfg --file examples/stack-heights.hex --context-depth 0
 
 `usize::MAX` 由运行平台决定：32 位平台是 `2^32−1`，64 位平台是 `2^64−1`。零和超过平台可表示范围的容量参数会被拒绝。常量集合按实际候选增长，不按 `--max-constants` 预分配；提高容量可能增加实际枚举、内存与工作量，执行仍受状态、transfer 和共享工作预算限制。
 
-`--context-depth 0` 关闭跳转历史分组。默认保留 8 项，也可以显式指定更大深度，例如：
+`--context-depth 0` 关闭跳转历史分组。默认保留 128 项，也可以显式指定更大深度，例如：
 
 ```bash
 nix run . -- cfg --file examples/internal-calls.hex
-nix run . -- cfg --file examples/internal-calls.hex --context-depth 10
+nix run . -- cfg --file examples/internal-calls.hex --context-depth 256
 ```
 
 增大 k 可能区分更多状态，也可能增加内存与分析工作；它不是“分析必然更精确或更快”的保证。历史按实际经过的跳转增长，不按 k 预先分配；实际保留的历史项也参与累计工作计费，包括机器状态的复制、比较和摘要输入认证。

@@ -101,7 +101,7 @@ fn cfg_json_includes_status_contexts_and_unknown_jump_diagnostic() {
 }
 
 #[test]
-fn cfg_file_accepts_depth_ten_and_preserves_default_and_explicit_depths() {
+fn cfg_file_preserves_default_128_and_explicit_context_depths() {
     let path = format!(
         "{}/../../examples/internal-calls.hex",
         env!("CARGO_MANIFEST_DIR")
@@ -113,7 +113,16 @@ fn cfg_file_accepts_depth_ten_and_preserves_default_and_explicit_depths() {
         String::from_utf8_lossy(&text.stderr)
     );
     assert!(String::from_utf8_lossy(&text.stdout).contains("context_depth=10"));
-    for explicit in [None, Some(0), Some(10), Some(usize::MAX)] {
+    for explicit in [
+        None,
+        Some(0),
+        Some(1),
+        Some(2),
+        Some(8),
+        Some(10),
+        Some(128),
+        Some(usize::MAX),
+    ] {
         let mut args = vec!["cfg", "--file", &path, "--format", "json"];
         let depth = explicit.map(|value| value.to_string());
         if let Some(depth) = &depth {
@@ -127,19 +136,43 @@ fn cfg_file_accepts_depth_ten_and_preserves_default_and_explicit_depths() {
         );
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(json["status"], "Converged");
-        assert_eq!(json["config"]["context_depth"], explicit.unwrap_or(8));
+        assert_eq!(json["config"]["context_depth"], explicit.unwrap_or(128));
         let states = json["states"].as_array().unwrap();
-        if explicit == Some(0) {
-            assert!(
-                states
-                    .iter()
-                    .all(|state| { state["key"]["context"].as_array().unwrap().is_empty() })
-            );
-        } else {
-            assert!(
-                states
-                    .iter()
-                    .any(|state| { state["key"]["context"].as_array().unwrap().len() > 3 })
+        let depth = explicit.unwrap_or(128);
+        assert!(
+            states
+                .iter()
+                .all(|state| state["key"]["context"].as_array().unwrap().len() <= depth)
+        );
+        // The finite execution performs jumps from blocks 0, 14, 5 and 14.
+        // Assert the actual suffix, including depth 0/1/2, rather than only
+        // echoing an admitted CLI argument or requiring a history longer than k.
+        let complete_history = [0, 14, 5, 14];
+        let expected_history =
+            serde_json::json!(&complete_history[complete_history.len().saturating_sub(depth)..]);
+        assert!(
+            states
+                .iter()
+                .any(|state| state["key"]["context"] == expected_history)
+        );
+        let helper_block = json["program"]["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|block| block["start_pc"] == 14)
+            .unwrap();
+        let helpers: Vec<_> = states
+            .iter()
+            .filter(|state| state["key"]["basic_block_index"] == helper_block)
+            .collect();
+        assert_eq!(helpers.len(), if depth == 0 { 1 } else { 2 });
+        for helper in helpers {
+            assert_eq!(
+                helper["entry_stack"][0]["Constants"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                if depth == 0 { 2 } else { 1 }
             );
         }
     }
@@ -152,6 +185,7 @@ fn ssa_json_carries_cfg_and_value_definitions() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["ssa"]["value_count"], 3);
     assert_eq!(json["analysis"]["status"], "Converged");
+    assert_eq!(json["analysis"]["config"]["context_depth"], 128);
 }
 
 #[test]
@@ -272,8 +306,17 @@ fn analyze(name: &str, extra: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn world_analyze_uses_the_same_default_and_accepts_larger_context_depths() {
-    for explicit in [None, Some(0), Some(10), Some(usize::MAX)] {
+fn world_analyze_preserves_default_128_and_explicit_context_depths() {
+    for explicit in [
+        None,
+        Some(0),
+        Some(1),
+        Some(2),
+        Some(8),
+        Some(10),
+        Some(128),
+        Some(usize::MAX),
+    ] {
         let mut extra = vec!["--format", "json"];
         let depth = explicit.map(|value| value.to_string());
         if let Some(depth) = &depth {
@@ -289,8 +332,20 @@ fn world_analyze_uses_the_same_default_and_accepts_larger_context_depths() {
         assert_eq!(json["status"], "Converged");
         assert_eq!(
             json["config"]["analysis"]["context_depth"],
-            explicit.unwrap_or(8)
+            explicit.unwrap_or(128)
         );
+        let depth = explicit.unwrap_or(128);
+        let histories: Vec<_> = json["states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|state| state["key"]["frames"].as_array().unwrap())
+            .map(|frame| frame["jump_history"].as_array().unwrap())
+            .collect();
+        assert!(histories.iter().all(|history| history.len() <= depth));
+        if depth > 0 {
+            assert!(histories.iter().any(|history| !history.is_empty()));
+        }
     }
 }
 

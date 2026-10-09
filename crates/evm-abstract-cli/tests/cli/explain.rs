@@ -205,7 +205,7 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
         "--fork",
         "osaka",
         "--context-depth",
-        "8",
+        "128",
         "--max-constants",
         "8",
         "--domain",
@@ -222,8 +222,18 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
     success(&explicit);
     assert_eq!(hex.stdout, explicit.stdout);
     let explanation = text(&hex);
-    assert!(explanation.contains("context_depth=8") && explanation.contains("domain=Product"));
+    assert!(explanation.contains("context_depth=128") && explanation.contains("domain=Product"));
     assert!(explanation.contains("stack SSA:") && !explanation.contains(VERIFIED));
+    for depth in ["0", "1", "2", "8"] {
+        let overridden = run_concrete(&["explain", "--hex", &code, "--context-depth", depth]);
+        success(&overridden);
+        // This program has no jumps: changing the history policy changes its
+        // declared depth while preserving every disassembly/CFG/SSA line.
+        assert_eq!(
+            text(&overridden),
+            explanation.replace("context_depth=128", &format!("context_depth={depth}"))
+        );
+    }
     for fork in ["cancun", "prague", "osaka"] {
         let output = run_concrete(&["explain", "--hex", "00", "--fork", fork]);
         success(&output);

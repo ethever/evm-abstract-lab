@@ -16,7 +16,7 @@
 | 6．[internal-calls.hex](internal-calls.hex) | 同一 helper 的两次内部跳转，比较历史长度 | helper 在 `pc=0x0e`，比较 `context_depth=0/1` | [05：跳转历史](../docs/05-sensitivity.md) |
 | 7．[osaka-clz.hex](osaka-clz.hex) | 协议版本影响指令有效性和计算跳转 | Osaka 下 CLZ(1)=255，跳到 `pc=0x08` | [08：fork](../docs/08-forks.md) |
 
-先用 `explain` 同时查看反汇编、CFG、SSA；只想看图时改用 `cfg`。下面的 [diamond](diamond.hex) 和 [loop](loop.hex) 显式使用 `--context-depth 0`，[loop](loop.hex) 另外关闭关系层以观察纯数值固定点；以便观察汇合与循环固定点；未指定时默认为 8：
+先用 `explain` 同时查看反汇编、CFG、SSA；只想看图时改用 `cfg`。下面的 [diamond](diamond.hex) 和 [loop](loop.hex) 显式使用 `--context-depth 0`，[loop](loop.hex) 另外关闭关系层以观察纯数值固定点；以便观察汇合与循环固定点；未指定时默认为 128：
 
 ```bash
 nix run . -- explain --file examples/straight-line.hex

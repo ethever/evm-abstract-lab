@@ -35,7 +35,7 @@
 nix run . -- cfg --no-relations --domain constants-only --file examples/diamond.hex --context-depth 0
 ```
 
-本课显式使用 `--context-depth 0`，不按跳转历史分组，以便观察同一状态内的值集合汇合。默认值 8 的分组方式留到[第 05 课](05-sensitivity.md)比较。找到 pc=`0x000e` 的汇合状态，当前输出为：
+本课显式使用 `--context-depth 0`，不按跳转历史分组，以便观察同一状态内的值集合汇合。默认值 128 的分组方式留到[第 05 课](05-sensitivity.md)比较。找到 pc=`0x000e` 的汇合状态，当前输出为：
 
 ```text
 S3 | B3 @ 0x000e | stack height=1 | context=[]

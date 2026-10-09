@@ -55,8 +55,8 @@ fn validated_boundary_values_keep_their_original_options() {
 }
 
 #[test]
-fn default_context_depth_is_eight() {
-    assert_eq!(Config::default().context_depth, 8);
+fn default_context_depth_is_128() {
+    assert_eq!(Config::default().context_depth, 128);
 }
 
 #[test]

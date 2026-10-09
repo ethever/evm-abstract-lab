@@ -134,7 +134,7 @@ def budget_interactions(browser, url: str, output: Path):
         "max_work": 1_000_000_000_000,
         "max_call_depth": 1025,
         "max_memory_bytes": 64 * 1024 * 1024,
-        "context_depth": 0,
+        "context_depth": 128,
         "max_constants": 512,
         "reduction_rounds": 16,
         "max_facts": 4096,
@@ -329,10 +329,11 @@ def resize_view(page, width: int, height: int) -> None:
 
 def assert_same_scene(before, after) -> None:
     """Fit may uniformly scale/translate nodes, but must not rearrange them."""
-    assert len(before["nodes"]) == len(after["nodes"]) == 4, (before["nodes"], after["nodes"])
+    # The default jump history separates the fixture's two merge states.
+    assert len(before["nodes"]) == len(after["nodes"]) == 5, (before["nodes"], after["nodes"])
     pairs = list(zip(before["nodes"], after["nodes"], strict=True))
     # Node outlines retain screen-space width, so shrinking fill rectangles
-    # underestimates zoom. Relative distances between all four centers avoid
+    # underestimates zoom. Relative distances between all five centers avoid
     # that border bias and still reject any rearrangement of the scene.
     centers = [([(old[0] + old[2]) / 2, (old[1] + old[3]) / 2],
                 [(new[0] + new[2]) / 2, (new[1] + new[3]) / 2])
@@ -360,7 +361,7 @@ def frozen_camera(page, canvas, output: Path, prefix: str, inspect_scene: bool):
     rendered_frame(page)
     baseline = node_snapshot(page, canvas, output, f"{prefix}-before", measure_nodes=inspect_scene)
     if inspect_scene:
-        assert len(baseline["nodes"]) == 4, baseline["nodes"]
+        assert len(baseline["nodes"]) == 5, baseline["nodes"]
     enlarged = {}
     for width, height in [(1920, 1100), (1440, 1200)]:
         resize_view(page, width, height)

@@ -22,7 +22,7 @@ pub struct Config {
     pub relations: crate::domain::relational::RelationLimits,
     /// 每个槽位最多保留的常量数；任意正 usize，默认 8，不按上限预分配。
     pub max_constants: usize,
-    /// 保留最近 k 个跳转来源块；0 代表上下文不敏感，默认 8。
+    /// 保留最近 k 个跳转来源块；0 代表上下文不敏感，默认 128。
     /// 接受任意 usize，不按 k 预分配；实际历史增长受执行资源预算约束。
     pub context_depth: usize,
     /// 可创建的状态数上限；限制触发后结果是 Incomplete。
@@ -39,7 +39,7 @@ impl Default for Config {
             max_facts: 256,
             relations: crate::domain::relational::RelationLimits::default(),
             max_constants: 8,
-            context_depth: 8,
+            context_depth: 128,
             max_states: 4096,
             max_transfers: 100_000,
         }
