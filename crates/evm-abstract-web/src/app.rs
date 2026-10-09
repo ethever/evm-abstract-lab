@@ -7,6 +7,7 @@ mod inspector;
 mod job;
 mod layout;
 mod providers;
+mod startup;
 
 use crate::{palette, widgets};
 use directory::{Directory, Pick};
@@ -80,6 +81,7 @@ pub(crate) enum View {
 pub struct Workspace {
     report: Option<AnalysisReport>,
     task: Task,
+    startup: startup::Startup,
     form: AnalysisForm,
     directory: Directory,
     inspector: Inspector,
@@ -100,6 +102,7 @@ impl Default for Workspace {
         Self {
             report: None,
             task: Task::default(),
+            startup: startup::Startup::default(),
             form: AnalysisForm::default(),
             directory: Directory::default(),
             inspector: Inspector::default(),
@@ -125,7 +128,7 @@ impl Workspace {
         }
     }
 
-    /// Submit the initial example through the same asynchronous task lifecycle.
+    /// Explicitly submit the current input through the asynchronous task lifecycle.
     pub fn initial_command(&mut self) -> Command {
         self.start(self.form.request())
     }
@@ -141,6 +144,7 @@ impl Workspace {
     }
 
     fn start(&mut self, request: AnalyzeRequest) -> Command {
+        self.startup = startup::Startup::Finished;
         self.previous_report = self.report.is_some();
         self.task.start(request)
     }
@@ -247,7 +251,9 @@ impl Workspace {
                     } else {
                         widgets::empty(
                             ui,
-                            if self.task.busy() {
+                            if self.startup.loading() {
+                                "Loading the initial example…"
+                            } else if self.task.busy() {
                                 "Analysis is running. Progress and cancellation are below."
                             } else {
                                 "Select New analysis to load bytecode or an RPC account."
@@ -277,6 +283,9 @@ impl Workspace {
                 self.directory.open = false;
             }
         }
+        if self.form.open {
+            self.startup = startup::Startup::Finished;
+        }
         if let Some(request) = self.form.show(ui.ctx(), self.task.busy()) {
             command = Some(self.start(request));
         }
@@ -285,7 +294,9 @@ impl Workspace {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
         }
-        command.or_else(|| self.task.next_command(ui.input(|input| input.time)))
+        command
+            .or_else(|| self.pending_startup_command())
+            .or_else(|| self.task.next_command(ui.input(|input| input.time)))
     }
 
     fn pick(&mut self, pick: Pick) {
@@ -359,7 +370,9 @@ impl Workspace {
     pub fn receive_message(&mut self, message: Message) {
         match message {
             Message::RpcProviders { generation, result } => {
-                self.form.receive_providers(generation, result);
+                if self.form.receive_providers(generation, result) {
+                    self.startup.receive_catalog(generation);
+                }
             }
             Message::Status {
                 generation,
@@ -426,6 +439,9 @@ impl Workspace {
 
     /// Live status for assistive tools and real browser verification.
     pub fn accessible_status(&self) -> String {
+        if self.startup.loading() {
+            return "Loading the initial example…".into();
+        }
         if let Some(error) = &self.task.error
             && self.task.phase == TaskPhase::Failed
         {

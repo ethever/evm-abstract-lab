@@ -93,6 +93,9 @@ impl Workspace {
                 if ui.button(format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len())).clicked() {
                     self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Diagnostics;
                 }
+            } else if self.startup.loading() {
+                ui.spinner();
+                ui.label(RichText::new("Loading the initial example…").color(palette::MUTED));
             } else {
                 ui.label(RichText::new(self.task.label()).color(palette::MUTED));
             }

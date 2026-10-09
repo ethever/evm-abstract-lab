@@ -909,12 +909,40 @@ RPC_PROVIDERS = [
     {"id": "world-fixture", "name": "World snapshot"},
 ]
 RPC_TEST_TOKEN = "rpc-value-shown-in-provider-selector"
+USDC_ENTRY = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+WETH_ENTRY = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+CUSTOM_ENTRY = "0x3333333333333333333333333333333333333333"
 
 
-def open_rpc_input(page, canvas):
+class EntryRpcFixture(RpcFixture):
+    """Preset addresses execute tiny fixture code, never live token contracts."""
+    def _result(self, method, params):
+        account_methods = ("eth_getCode", "eth_getBalance", "eth_getTransactionCount", "eth_getStorageAt")
+        if method in account_methods and params[0].lower() in (USDC_ENTRY.lower(), WETH_ENTRY.lower(), CUSTOM_ENTRY):
+            assert params[-1] == {"blockHash": self.block_hash, "requireCanonical": True}
+            return {"eth_getCode": "0x00", "eth_getBalance": "0x100000", "eth_getTransactionCount": "0x1", "eth_getStorageAt": "0x" + "00" * 32}[method]
+        return super()._result(method, params)
+
+
+def automatic_rpc_entry(page, url: str, provider, output: Path, name: str):
+    with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as initial:
+        page.goto(url, wait_until="networkidle")
+    reply = complete_submission(page, initial.value)
+    request = reply.request.post_data_json
+    assert request["input"] == {"Rpc": {"provider_id": provider["id"], "address": USDC_ENTRY, "block": "Latest", "accounts": []}}, request
+    assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
+    report = reply.json()["result"]["Ok"]
+    assert report["metadata"]["entry_address"].lower() == USDC_ENTRY.lower()
+    assert len(report["cfg"]) == 1 and report["programs"][0]["bytecode"] in ("00", "0x00"), "preset fixture unexpectedly analyzed live code"
+    (output / f"{name}-automatic-usdc.json").write_text(json.dumps({"request": request, "entry_address": report["metadata"]["entry_address"], "status": report["status"]}, indent=2) + "\n")
+    return request
+
+
+def open_rpc_input(page, canvas, *, from_bytecode=False):
     open_input(page)
-    canvas.click(position={"x": 465, "y": 386})
-    settle_gesture(page)
+    if from_bytecode:
+        canvas.click(position={"x": 465, "y": 386})
+        settle_gesture(page)
 
 
 def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, providers):
@@ -922,14 +950,14 @@ def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, 
         f"RPC provider: {providers[0]['name']} ({providers[0]['endpoint']})")
     open_rpc_input(page, canvas)
     if provider_index:
-        canvas.click(position={"x": 600, "y": 404})
+        canvas.click(position={"x": 600, "y": 402})
         rendered_frame(page)
         canvas.screenshot(path=str(output / f"{name}-providers.png"))
-        canvas.click(position={"x": 460, "y": 430 + provider_index * 23})
+        canvas.click(position={"x": 460, "y": 428 + provider_index * 23})
     provider = providers[provider_index]
     expect(page.locator("#analysis-status")).to_contain_text(
         f"RPC provider: {provider['name']} ({provider['endpoint']})")
-    canvas.click(position={"x": 600, "y": 444})
+    canvas.click(position={"x": 600, "y": 448})
     page.keyboard.press("Control+A")
     page.keyboard.type(rpc.root_address, delay=3)
     rendered_frame(page)
@@ -951,7 +979,8 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     observe_webgpu(page)
     failures = []
     page.on("pageerror", lambda error: failures.append(str(error)))
-    page.goto(url, wait_until="networkidle")
+    startup = automatic_rpc_entry(page, url, providers[0], output, "world-startup")
+    pending_rpc.requests.clear()
     status = page.locator("#analysis-status")
     expect(status).to_contain_text("Ready:", timeout=60000)
     canvas = page.locator("#evm-canvas")
@@ -1019,7 +1048,8 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     rpc = pending_rpc
     page = browser.new_page(viewport={"width": 1440, "height": 1000})
     observe_webgpu(page)
-    page.goto(url, wait_until="networkidle")
+    automatic_rpc_entry(page, url, providers[0], output, "cancel-startup")
+    rpc.block_method = "eth_getCode"
     status = page.locator("#analysis-status")
     expect(status).to_contain_text("Ready:", timeout=60000)
     canvas = page.locator("#evm-canvas")
@@ -1064,13 +1094,74 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     held_polls[0].abort()
     page.unroute_all(behavior="wait")
     page.close()
+    results["automatic_entry"] = startup["input"]
+    return results
+
+
+def entry_example_interactions(browser, url: str, output: Path, providers):
+    page = browser.new_page(viewport={"width": 1440, "height": 1000})
+    observe_webgpu(page)
+    baseline = automatic_rpc_entry(page, url, providers[0], output, "examples-startup")
+    canvas = page.locator("#evm-canvas")
+    submitted = []
+    page.on("request", lambda request: submitted.append(request.post_data_json)
+            if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+    results = {"automatic_entry": baseline["input"], "selected_addresses": []}
+    for ordinal, (label, address, menu_y) in enumerate([("weth", WETH_ENTRY, 487), ("usdc", USDC_ENTRY, 464)]):
+        open_rpc_input(page, canvas)
+        if ordinal == 0:
+            # The entry choice must preserve an independently chosen provider.
+            canvas.click(position={"x": 600, "y": 402})
+            rendered_frame(page)
+            canvas.click(position={"x": 460, "y": 451})
+            expect(page.locator("#analysis-status")).to_contain_text(
+                f"RPC provider: {providers[1]['name']} ({providers[1]['endpoint']})")
+        canvas.click(position={"x": 454, "y": 425})
+        rendered_frame(page)
+        canvas.screenshot(path=str(output / f"entry-{label}-options.png"))
+        canvas.click(position={"x": 460, "y": menu_y})
+        settle_gesture(page)
+        assert len(submitted) == ordinal, "choosing an entry unexpectedly submitted analysis"
+        canvas.screenshot(path=str(output / f"entry-{label}-selected.png"))
+        with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
+            page.keyboard.press("Control+Enter")
+        reply = complete_submission(page, response.value)
+        assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
+        expected = json.loads(json.dumps(baseline))
+        expected["input"]["Rpc"]["provider_id"] = providers[1]["id"]
+        expected["input"]["Rpc"]["address"] = address
+        assert reply.request.post_data_json == expected, "entry selection reset unrelated request fields"
+        assert reply.json()["result"]["Ok"]["metadata"]["entry_address"].lower() == address.lower()
+        results["selected_addresses"].append(address)
+    open_rpc_input(page, canvas)
+    canvas.click(position={"x": 600, "y": 448})
+    page.keyboard.press("Control+A")
+    page.keyboard.type(CUSTOM_ENTRY, delay=3)
+    rendered_frame(page)
+    canvas.screenshot(path=str(output / "entry-custom-edited.png"))
+    page.keyboard.press("Escape")
+    settle_gesture(page)
+    open_rpc_input(page, canvas)
+    canvas.screenshot(path=str(output / "entry-custom-reopened.png"))
+    assert len(submitted) == 2
+    with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
+        page.keyboard.press("Control+Enter")
+    reply = complete_submission(page, response.value)
+    assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
+    expected = json.loads(json.dumps(baseline))
+    expected["input"]["Rpc"]["provider_id"] = providers[1]["id"]
+    expected["input"]["Rpc"]["address"] = CUSTOM_ENTRY
+    assert reply.request.post_data_json == expected, "reopening the form replaced the hand-edited address"
+    results["custom_reopened_address"] = CUSTOM_ENTRY
+    results["renderer"] = webgpu_evidence(page)
+    page.close()
     return results
 
 
 def configured_world_interactions(browser, args):
     # Endpoints must exist before the server loads its provider configuration.
     # Both tasks use the real catalogue and ID resolution, including cancellation.
-    with RpcFixture(block_method="eth_getCode") as pending, RpcFixture() as rpc:
+    with EntryRpcFixture() as pending, EntryRpcFixture() as rpc:
         with TemporaryDirectory(prefix="web-rpc-providers-") as directory:
             configuration = Path(directory) / "providers.json"
             providers = [
@@ -1084,7 +1175,9 @@ def configured_world_interactions(browser, args):
                 assert catalogue.ok, catalogue.text()
                 assert catalogue.json() == {"result": {"Ok": providers}}
                 page.close()
+                examples = entry_example_interactions(browser, url, args.output, providers)
                 result = world_interactions(browser, url, args.output, rpc, pending, providers)
+                result["entry_examples"] = examples
                 result["providers"] = providers
                 result["selected_provider_id"] = RPC_PROVIDERS[1]["id"]
                 result["endpoint_displayed_in_selector"] = True
@@ -1093,7 +1186,7 @@ def configured_world_interactions(browser, args):
 
 
 def url_configured_world_interactions(browser, args):
-    with RpcFixture() as rpc:
+    with EntryRpcFixture() as rpc:
         endpoint = rpc.endpoint + "/rpc?token=" + RPC_TEST_TOKEN
         providers = [{"id": "default", "name": "Default RPC", "endpoint": endpoint}]
         with analysis_server(args, endpoint) as url:
@@ -1102,7 +1195,7 @@ def url_configured_world_interactions(browser, args):
             catalogue = page.request.get(url + "/api/rpc-providers")
             assert catalogue.ok, catalogue.text()
             assert catalogue.json() == {"result": {"Ok": providers}}
-            page.goto(url, wait_until="networkidle")
+            automatic_rpc_entry(page, url, providers[0], args.output, "url-startup")
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=60000)
             admitted = submit_rpc(page, page.locator("#evm-canvas"), rpc, args.output,
                                   "url-default", provider_index=0, providers=providers)
@@ -1153,10 +1246,10 @@ def unconfigured_rpc_interactions(browser, url: str, output: Path):
     canvas = page.locator("#evm-canvas")
     bytecode = submit_bytecode(page, canvas, "600160020100", output / "rpc-empty-bytecode.png")
     assert bytecode.status == 200 and bytecode.json()["result"]["Ok"]["status"] == "Converged"
-    open_rpc_input(page, canvas)
-    assert_rpc_disabled(page, canvas, output, "rpc-empty-disabled", analyze_y=667)
+    open_rpc_input(page, canvas, from_bytecode=True)
+    assert_rpc_disabled(page, canvas, output, "rpc-empty-disabled", analyze_y=669)
     with page.expect_response(lambda response: response.url.endswith("/api/rpc-providers")) as retry:
-        canvas.click(position={"x": 372, "y": 414})
+        canvas.click(position={"x": 372, "y": 410.5})
     assert retry.value.json() == {"result": {"Ok": []}}
     expect(status).to_contain_text("No RPC providers are configured on the server.")
     page.close()
@@ -1183,18 +1276,18 @@ def unconfigured_rpc_interactions(browser, url: str, output: Path):
     canvas = page.locator("#evm-canvas")
     bytecode = submit_bytecode(page, canvas, "600160020100", output / "rpc-failed-bytecode.png")
     assert bytecode.status == 200
-    open_rpc_input(page, canvas)
-    assert_rpc_disabled(page, canvas, output, "rpc-failed-disabled", analyze_y=667)
-    canvas.click(position={"x": 372, "y": 414})
+    open_rpc_input(page, canvas, from_bytecode=True)
+    assert_rpc_disabled(page, canvas, output, "rpc-failed-disabled", analyze_y=669)
+    canvas.click(position={"x": 372, "y": 410.5})
     expect(status).to_contain_text("Loading RPC providers")
     assert len(held_catalogues) == 1
-    assert_rpc_disabled(page, canvas, output, "rpc-loading-disabled", analyze_y=660)
+    assert_rpc_disabled(page, canvas, output, "rpc-loading-disabled", analyze_y=663)
     expect(status).to_contain_text("Loading RPC providers")
     held_catalogues[0].fulfill(status=503, content_type="application/json", body='{"result":{"Ok":[]}}')
     expect(status).to_contain_text("Could not load RPC providers:")
     page.unroute("**/api/rpc-providers", delay_catalogue)
     with page.expect_response(lambda response: response.url.endswith("/api/rpc-providers")) as retry:
-        canvas.click(position={"x": 372, "y": 414})
+        canvas.click(position={"x": 372, "y": 410.5})
     assert retry.value.ok and retry.value.json() == {"result": {"Ok": []}}
     expect(status).to_contain_text("No RPC providers are configured on the server.")
     canvas.screenshot(path=str(output / "rpc-retry-recovered.png"))
