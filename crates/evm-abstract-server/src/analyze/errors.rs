@@ -63,15 +63,3 @@ pub(super) fn world(source: evm_abstract::world::WorldError) -> api::ApiError {
         )),
     }
 }
-pub(super) fn limit(field: &str, value: u64, minimum: u64, maximum: u64) -> api::ApiError {
-    api::ApiError {
-        code: api::ApiErrorCode::InvalidLimits,
-        message: format!("{field} must be in {minimum}..={maximum}"),
-        details: api::ErrorDetails::Limit(api::LimitFailure {
-            field: field.into(),
-            value,
-            minimum,
-            maximum,
-        }),
-    }
-}

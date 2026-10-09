@@ -440,8 +440,8 @@ fn drain_progress(entry: &mut Entry) {
                 work,
             } => {
                 progress.states = progress.states.max(states);
-                progress.transfers = progress.transfers.max(transfers);
-                progress.work = progress.work.max(work);
+                progress.transfers = progress.transfers.max(transfers as u64);
+                progress.work = progress.work.max(work as u64);
             }
             Event::Acquisition {
                 round,

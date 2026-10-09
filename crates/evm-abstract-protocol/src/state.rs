@@ -526,9 +526,9 @@ record! {
         pub fingerprint: String,
         /// Actual effective root inputs.
         pub environment: EnvironmentSnapshot,
-        /// Requested bounded analysis policy.
+        /// Effective execution, precision and acquisition settings.
         pub limits: crate::AnalysisLimits,
         /// Consumed logical execution work.
-        pub work: usize,
+        pub work: u64,
     }
 }

@@ -21,7 +21,7 @@ choice! {
     pub enum AnalysisPhase {
         /// Waiting for a bounded worker slot.
         Queued,
-        /// Validating request fields and limits.
+        /// Validating request fields and configuration.
         Validating,
         /// Resolving the chain and exact canonical block.
         Pinning,
@@ -55,9 +55,9 @@ record! {
         /// Machine states created.
         pub states: usize,
         /// Transfers performed.
-        pub transfers: usize,
+        pub transfers: u64,
         /// Logical execution work charged.
-        pub work: usize,
+        pub work: u64,
     }
 }
 impl Default for AnalysisProgress {
