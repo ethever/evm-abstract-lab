@@ -149,7 +149,36 @@ pub(super) fn cause(source: &native::FailureCause) -> api::RpcFailureCause {
             body: failure.body,
             decode: failure.decode,
             redirect: failure.redirect,
+            native_diagnostic: failure.native_diagnostic.clone(),
         }),
         N::Runtime(code) => P::Runtime(*code),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn transport_diagnostic_survives_native_mapping_and_wire_roundtrip() {
+        let diagnostic = "builder error: no native root certificates were found";
+        let native = native::FailureCause::Transport(native::TransportFailure {
+            timeout: false,
+            connect: false,
+            builder: true,
+            request: false,
+            body: false,
+            decode: false,
+            redirect: false,
+            native_diagnostic: diagnostic.into(),
+        });
+        let projected = cause(&native);
+        let encoded = serde_json::to_vec(&projected).unwrap();
+        let decoded: api::RpcFailureCause = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, projected);
+        let api::RpcFailureCause::Transport(detail) = decoded else {
+            panic!("typed transport cause")
+        };
+        assert!(detail.builder);
+        assert_eq!(detail.native_diagnostic, diagnostic);
     }
 }

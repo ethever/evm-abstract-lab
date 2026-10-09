@@ -832,8 +832,10 @@ def world_interactions(browser, url: str, output: Path):
         canvas = page.locator("#evm-canvas")
         admitted = submit_rpc(page, canvas, rpc, output, "world")
         reply = complete_submission(page, admitted)
-        assert reply.status == 200, reply.json()
-        report = reply.json()["result"]["Ok"]
+        envelope = reply.json()
+        (output / "world-task-reply.json").write_text(json.dumps({"admission_http_status": reply.admission_status, "observed_http_status": reply.status, "reply": envelope}, indent=2) + "\n")
+        assert reply.status == 200 and "Ok" in envelope["result"], f"RPC world task failed: {json.dumps(envelope, sort_keys=True)}"
+        report = envelope["result"]["Ok"]
         assert len(report["programs"]) >= 2, "RPC call failed to capture the child program"
         assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
         assert max(block["frame_depth"] for block in report["cfg"]) == 2

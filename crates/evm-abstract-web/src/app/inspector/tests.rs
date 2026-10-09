@@ -482,3 +482,45 @@ fn relational_frontier_details_show_fact_arity_and_distinguish_solver_failure() 
             .any(|(text, _)| text == "Solver could not decide")
     );
 }
+
+#[test]
+fn transport_diagnostic_is_visible_next_to_native_classification() {
+    let failure = api::RpcFailure {
+        kind: api::RpcFailureKind::Transport,
+        chain_id: None,
+        block_hash: None,
+        method: "client".into(),
+        account: None,
+        slot: None,
+        resource: None,
+        limit: None,
+        http_status: None,
+        rpc_code: None,
+        json_line: None,
+        json_column: None,
+        cause: Some(api::RpcFailureCause::Transport(api::RpcTransportFailure {
+            timeout: false,
+            connect: false,
+            builder: true,
+            request: false,
+            body: false,
+            decode: false,
+            redirect: false,
+            native_diagnostic: "No native root certificates".into(),
+        })),
+        message: "builder error".into(),
+    };
+    let context = egui::Context::default();
+    let mut time = 0.0;
+    let text = rendered(&context, &mut time, vec![], |ui| errors::rpc(ui, &failure));
+    for required in [
+        "Request builder",
+        "Native diagnostic",
+        "No native root certificates",
+    ] {
+        assert!(
+            text.iter().any(|(text, _)| text == required),
+            "missing {required}: {text:?}"
+        );
+    }
+}

@@ -274,6 +274,7 @@ fn rpc_cause(ui: &mut Ui, cause: &api::RpcFailureCause) {
                     value::text(ui, "Transport classification", label);
                 }
             }
+            value::text(ui, "Native diagnostic", &detail.native_diagnostic);
         }
         api::RpcFailureCause::Runtime(code) => value::text(
             ui,

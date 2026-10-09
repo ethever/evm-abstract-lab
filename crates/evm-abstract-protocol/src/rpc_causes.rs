@@ -185,6 +185,9 @@ record! {
         pub decode: bool,
         /// redirect fact.
         pub redirect: bool,
+        /// Native transport diagnostic after endpoint URLs have been removed.
+        /// This supplements the typed classifications without erasing the cause.
+        pub native_diagnostic: String,
     }
 }
 variant! {

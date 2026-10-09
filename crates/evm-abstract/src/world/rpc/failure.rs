@@ -234,8 +234,8 @@ impl From<&WorldError> for WorldFailure {
     }
 }
 
-/// Reqwest's public source classifications, retained independently of URL text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// Reqwest's public classifications and the upstream diagnostic after URL removal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TransportFailure {
     /// Deadline expired.
     pub timeout: bool,
@@ -251,6 +251,9 @@ pub struct TransportFailure {
     pub decode: bool,
     /// Redirect handling failed.
     pub redirect: bool,
+    /// Upstream cause retained as opaque diagnostic text. Every production
+    /// request/build/read error removes its URL before reaching this projection.
+    pub native_diagnostic: String,
 }
 impl From<&reqwest::Error> for TransportFailure {
     fn from(error: &reqwest::Error) -> Self {
@@ -262,6 +265,7 @@ impl From<&reqwest::Error> for TransportFailure {
             body: error.is_body(),
             decode: error.is_decode(),
             redirect: error.is_redirect(),
+            native_diagnostic: format!("{error:?}"),
         }
     }
 }

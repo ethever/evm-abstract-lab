@@ -638,6 +638,38 @@ fn bootstrap_connection_failure_does_not_fabricate_snapshot_identity() {
     assert_eq!(error.context().block_hash, None);
 }
 
+#[test]
+fn native_transport_diagnostic_keeps_io_cause_without_url_or_credentials() {
+    use super::FailureCause;
+    let endpoint = "http://rpc-user-sensitive:rpc-pass-sensitive@127.0.0.1:0/private-rpc-sensitive?api_key=rpc-query-sensitive";
+    let failure = load(&RpcInput::new(endpoint, Fork::Osaka))
+        .unwrap_err()
+        .failure();
+    let Some(FailureCause::Transport(cause)) = &failure.cause else {
+        panic!("expected an actual connection failure: {failure:?}");
+    };
+    assert!(cause.connect, "{cause:?}");
+    assert!(
+        cause.native_diagnostic.contains("ConnectionRefused"),
+        "the diagnostic must retain the underlying I/O cause: {}",
+        cause.native_diagnostic
+    );
+    let wire = serde_json::to_string(&failure).unwrap();
+    for secret in [
+        endpoint,
+        "rpc-user-sensitive",
+        "rpc-pass-sensitive",
+        "private-rpc-sensitive",
+        "rpc-query-sensitive",
+        "http://",
+    ] {
+        assert!(
+            !wire.contains(secret),
+            "serialized transport error leaked {secret}"
+        );
+    }
+}
+
 fn incremental_healthy(request: &Json) -> Json {
     healthy(request)
 }

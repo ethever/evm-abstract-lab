@@ -128,3 +128,17 @@ fn relational_failures_preserve_fact_coordinates_and_solver_outcomes() {
         });
     }
 }
+
+#[test]
+fn transport_diagnostic_roundtrip_preserves_reason_beside_classification() {
+    roundtrip(RpcFailureCause::Transport(RpcTransportFailure {
+        timeout: false,
+        connect: false,
+        builder: true,
+        request: false,
+        body: false,
+        decode: false,
+        redirect: false,
+        native_diagnostic: "builder error: no native root certificates were found".into(),
+    }));
+}
