@@ -98,7 +98,13 @@ impl PaneLayout {
                             panes.program,
                             *panes.selection,
                         ),
-                        widgets::ssa_width(ui, panes.report, panes.program, *panes.selection),
+                        widgets::ssa_width_cached(
+                            ui,
+                            panes.report,
+                            panes.program,
+                            *panes.selection,
+                            panes.ssa_cache,
+                        ),
                     ]
                     .map(|natural| natural.min(available * 0.28))
                 });
@@ -120,11 +126,12 @@ impl PaneLayout {
                 let desired =
                     self.medium_manual
                         .unwrap_or_else(|| match active_code_tab(&self.medium) {
-                            Pane::Ssa => widgets::ssa_width(
+                            Pane::Ssa => widgets::ssa_width_cached(
                                 ui,
                                 panes.report,
                                 panes.program,
                                 *panes.selection,
+                                panes.ssa_cache,
                             ),
                             _ => widgets::disassembly_width(
                                 ui,
@@ -216,6 +223,7 @@ pub(super) struct AnalysisPanes<'a> {
     pub(super) graph: &'a mut widgets::Graph,
     pub(super) disasm_focus: &'a mut Selection,
     pub(super) ssa_focus: &'a mut Selection,
+    pub(super) ssa_cache: &'a mut widgets::SsaCache,
 }
 
 impl AnalysisPanes<'_> {
@@ -231,12 +239,13 @@ impl AnalysisPanes<'_> {
                 );
             }
             Pane::Graph => self.graph.show(ui, self.report, self.selection),
-            Pane::Ssa => widgets::ssa(
+            Pane::Ssa => widgets::ssa_cached(
                 ui,
                 self.report,
                 self.program,
                 self.selection,
                 self.ssa_focus,
+                self.ssa_cache,
             ),
         }
     }

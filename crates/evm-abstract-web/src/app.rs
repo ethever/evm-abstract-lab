@@ -91,10 +91,11 @@ pub struct Workspace {
     program: Option<usize>,
     account: Option<String>,
     previous_state: Option<usize>,
-    graph: widgets::Graph,
+    pub(crate) graph: widgets::Graph,
     layout: PaneLayout,
     disasm_focus: Selection,
     ssa_focus: Selection,
+    ssa_cache: widgets::SsaCache,
 }
 
 impl Default for Workspace {
@@ -116,6 +117,7 @@ impl Default for Workspace {
             layout: PaneLayout::default(),
             disasm_focus: Selection::default(),
             ssa_focus: Selection::default(),
+            ssa_cache: widgets::SsaCache::default(),
         }
     }
 }
@@ -241,6 +243,7 @@ impl Workspace {
                             graph: &mut self.graph,
                             disasm_focus: &mut self.disasm_focus,
                             ssa_focus: &mut self.ssa_focus,
+                            ssa_cache: &mut self.ssa_cache,
                         };
                         match self.view {
                             View::Split => self.layout.show(ui, &mut panes),
@@ -421,6 +424,7 @@ impl Workspace {
                 self.account = None;
                 self.disasm_focus = Selection::default();
                 self.ssa_focus = Selection::default();
+                self.ssa_cache.clear();
                 self.graph.reset_report();
                 self.inspector.reset_report();
                 self.previous_report = false;
@@ -451,7 +455,7 @@ impl Workspace {
             && let Some(report) = &self.report
         {
             return format!(
-                "Ready: {} instructions, {} CFG blocks, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}",
+                "Ready: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}",
                 report
                     .disassembly
                     .iter()
@@ -475,7 +479,8 @@ impl Workspace {
                     .map_or("none".into(), |state| format!("S{state}")),
                 self.program
                     .map_or("none".into(), |program| format!("P{program}")),
-                self.inspector.accessible_summary(report, self.selection)
+                self.inspector.accessible_summary(report, self.selection),
+                self.graph.accessible_summary()
             );
         }
         let progress = self

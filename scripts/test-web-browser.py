@@ -296,7 +296,7 @@ def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, floa
     )
 
 
-def node_snapshot(page, canvas, output: Path, name: str, region=(4, 104, 1436, 970), measure_nodes=False):
+def node_snapshot(page, canvas, output: Path, name: str, region=(4, 123, 1436, 970), measure_nodes=False):
     screenshot = canvas.screenshot(path=str(output / f"{name}.png"))
     metrics = screenshot_metrics(page, screenshot, region, measure_nodes)
     assert metrics["bounds"] and metrics["selected_pixels"] >= 20, f"selected CFG node missing: {name}: {metrics}"
@@ -366,7 +366,7 @@ def frozen_camera(page, canvas, output: Path, prefix: str, inspect_scene: bool):
     for width, height in [(1920, 1100), (1440, 1200)]:
         resize_view(page, width, height)
         current = node_snapshot(page, canvas, output, f"{prefix}-{width}x{height}",
-                                (4, 126, width - 4, height - 30), inspect_scene)
+                                (4, 123, width - 4, height - 30), inspect_scene)
         # Same canvas origin: even the immediate enlarged frame must preserve
         # the camera. Merely returning to the old size could hide auto-recentering.
         assert_translation(baseline, current, 0, 0, tolerance=1.0)
@@ -611,6 +611,131 @@ def launch_browser(browser_type, executable: str, dpr: int = 1):
     )
 
 
+def graph_mode(page, canvas, mode: str):
+    # Product toolbar labels, exercised through real pointer events. Its first
+    # content/navigation row stays unchanged; scopes occupy the second row.
+    x = {"Blocks": 29, "States": 84, "Local": 133}[mode]
+    canvas.click(position={"x": x, "y": 109})
+    expect(page.locator("#analysis-status")).to_contain_text(f"CFG view: {mode}")
+    settle_gesture(page)
+
+
+def graph_scope(page, mode: str, nodes: int, shown: int, total: int):
+    status = page.locator("#analysis-status")
+    for phrase in [f"CFG view: {mode}", f"{nodes} shown nodes", f"{shown}/{total} states"]:
+        expect(status).to_contain_text(phrase)
+    match = re.search(r"CFG view: (\w+); (\d+) shown nodes; (\d+)/(\d+) states; (\d+) shown edges; (\d+) native edges; (\d+) hidden states; (\d+) boundary edges; ([^;]+)", status.text_content())
+    assert match, status.text_content()
+    fields = ["nodes", "shown_states", "total_states", "edges", "native_edges", "hidden_states", "boundary_edges"]
+    return {"mode": match[1], **dict(zip(fields, map(int, match.group(2,3,4,5,6,7,8)), strict=True)), "scope": match[9]}
+
+
+def pick_graph_instance(page, canvas, state: int):
+    # Real native TextEdit and virtual list coordinates from the egui geometry
+    # probe. Search accepts an original state ID, not a display-node ordinal.
+    canvas.click(position={"x": 200, "y": 108})
+    page.keyboard.press("Control+A")
+    page.keyboard.type(f"S{state}", delay=10)
+    settle_gesture(page)
+    canvas.click(position={"x": 110, "y": 131})
+    expect(page.locator("#analysis-status")).to_contain_text(f"Selected S{state}; source P0")
+    settle_gesture(page)
+
+
+def block_overview_interactions(browser, url: str, output: Path):
+    page = browser.new_page(viewport={"width": 1440, "height": 1000})
+    observe_webgpu(page)
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as initial:
+        page.goto(url, wait_until="networkidle")
+    initial_reply = complete_submission(page, initial.value)
+    report = initial_reply.json()["result"]["Ok"]
+    assert len(report["cfg"]) == len(report["ssa"]["blocks"]) == 5
+    identities = {state["id"]: (state["program"], state["basic_block"], state["start_pc"]) for state in report["cfg"]}
+    assert len(set(identities.values())) == 4
+    aggregate_edges = {(identities[edge["from"]], identities[edge["to"]], edge["kind"]) for edge in report["edges"]}
+    assert len(aggregate_edges) == 4
+    submitted = []
+    page.on("request", lambda request: submitted.append(request.post_data_json)
+            if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+    canvas = page.locator("#evm-canvas")
+    hide_inspector(page, canvas)
+    page.keyboard.press("2")
+    settle_gesture(page)
+    blocks = graph_scope(page, "Blocks", 4, 5, 5)
+    assert blocks["edges"] == 4 and blocks["native_edges"] == len(report["edges"])
+    block_pixels = node_snapshot(page, canvas, output, "overview-blocks", measure_nodes=True)
+    assert len(block_pixels["nodes"]) == 4, block_pixels
+    graph_mode(page, canvas, "States")
+    states = graph_scope(page, "States", 5, 5, 5)
+    assert states["edges"] == states["native_edges"] == len(report["edges"])
+    state_pixels = node_snapshot(page, canvas, output, "overview-states", measure_nodes=True)
+    assert len(state_pixels["nodes"]) == 5, state_pixels
+    graph_mode(page, canvas, "Local")
+    local = graph_scope(page, "Local", 5, 5, 5)
+    assert local["scope"] == "Cross-program neighborhood"
+    canvas.screenshot(path=str(output / "overview-local-branch.png"))
+    graph_mode(page, canvas, "Blocks")
+    assert not submitted, "changing graph scope unexpectedly reran analysis"
+
+    loop_reply = submit_bytecode(page, canvas, "5b600056", output / "overview-loop-input.png")
+    assert loop_reply.status == 200 and "Ok" in loop_reply.json()["result"], loop_reply.json()
+    loop = loop_reply.json()["result"]["Ok"]
+    assert loop["metadata"]["limits"]["context_depth"] == 128
+    assert loop["status"] == "Converged" and loop["ssa"]["complete"]
+    assert len(loop["cfg"]) == len(loop["ssa"]["blocks"]) == 129
+    assert {state["id"] for state in loop["cfg"]} == set(range(129))
+    assert len(loop["edges"]) == 129
+    settle_gesture(page)
+    grouped = graph_scope(page, "Blocks", 1, 129, 129)
+    assert grouped["edges"] == 1 and grouped["native_edges"] == 129
+    one_card = node_snapshot(page, canvas, output, "overview-loop-129-instances", measure_nodes=True)
+    assert len(one_card["nodes"]) == 1, one_card
+    left, top, right, bottom = one_card["bounds"]
+    canvas.click(position={"x": (left + right) / 2, "y": (top + bottom) / 2})
+    settle_gesture(page)
+    canvas.screenshot(path=str(output / "overview-loop-instances.png"))
+    pick_graph_instance(page, canvas, 128)
+    graph_scope(page, "Blocks", 1, 129, 129)
+    # Expose both the native inspector and the full SSA table for the selected
+    # instance. A virtualized table must finish its long focus animation.
+    hide_inspector(page, canvas)  # toggle the initially hidden inspector on
+    page.keyboard.press("3")
+    page.wait_for_timeout(800)
+    rendered_frame(page)
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("Selected S128; source P0")
+    expect(status).to_contain_text("Inspector: Frame")
+    expect(status).to_contain_text("Frame 0")
+    png = canvas.screenshot(path=str(output / "overview-loop-native-ssa.png"))
+    ssa_pixels = screenshot_metrics(page, png, (4, 75, 1436, 760))
+    assert ssa_pixels["selected_pixels"] > 100, "the selected S128 SSA block was not scrolled into view"
+    selected = next(state for state in loop["states"] if state["state"] == 128)
+    assert len(selected["entry"]["frames"][0]["context"]) == 128
+    page.keyboard.press("2")
+    settle_gesture(page)
+    canvas.click(position={"x": 300, "y": 109})  # Instances toolbar
+    settle_gesture(page)
+    pick_graph_instance(page, canvas, 128)
+    graph_mode(page, canvas, "Local")
+    neighborhood = graph_scope(page, "Local", 3, 3, 129)
+    assert neighborhood["hidden_states"] == 126 and neighborhood["boundary_edges"] == 1
+    assert neighborhood["edges"] == 3
+    expect(status).to_contain_text("Converged")
+    canvas.screenshot(path=str(output / "overview-loop-local-boundary.png"))
+    assert len(submitted) == 1, "instance selection or local display changed the backend analysis"
+    assert not errors, errors
+    result = {"blocks": blocks, "states": states, "local": local, "loop": grouped,
+              "loop_local": neighborhood, "selected_native_state": 128,
+              "block_pixels": block_pixels, "state_pixels": state_pixels,
+              "loop_pixels": one_card, "selected_ssa_pixels": ssa_pixels["selected_pixels"],
+              "renderer": webgpu_evidence(page)}
+    (output / "overview-loop-analysis.json").write_text(json.dumps(loop, indent=2) + "\n")
+    page.close()
+    return result
+
+
 def graph_interactions(browser_type, executable: str, url: str, output: Path):
     results = {}
     for dpr in [1, 2]:
@@ -649,6 +774,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         hide_inspector(page, canvas)
         page.keyboard.press("2")
         rendered_frame(page)
+        graph_mode(page, canvas, "States")
         cdp = context.new_cdp_session(page)
         prefix = f"gestures-dpr{dpr}"
         initial_frozen = frozen_camera(page, canvas, output, f"{prefix}-initial-frozen", True)
@@ -752,7 +878,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
             canvas.click(position={"x": 143, "y": 86})
             settle_gesture(page)
-            region = (4, 104, 1436, height - 30)
+            region = (4, 123, 1436, height - 30)
             fitted = node_snapshot(page, canvas, output, f"{prefix}-edges-{layout_name}-fit", region, True)
             if scene_reference is None:
                 scene_reference = fitted
@@ -819,7 +945,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         # camera before opening and after dismissing it, then submit the exact
         # draft containing f/F through the same form.
         bytecode = "\n".join(f"60{index:02x}" for index in range(70)) + "\n00"
-        editor_region = (4, 104, 1436, 970)
+        editor_region = (4, 123, 1436, 970)
         before_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-before-f", editor_region)
         open_input(page)
         page.keyboard.press("Control+A")
@@ -973,6 +1099,53 @@ def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, 
     return admitted
 
 
+def world_graph_scopes(page, canvas, report, child, child_state, output: Path):
+    # Keep the native child selected while narrowing visibility. Switching to
+    # Local must cross the real CALL/RETURN links even with P1 still selected.
+    states = report["cfg"]
+    edges = report["edges"]
+    child_ids = {state["id"] for state in states if state["program"] == child["id"]}
+    assert len(states) == 3 and child_ids == {child_state["id"]}
+    boundary = [edge for edge in edges if (edge["from"] in child_ids) != (edge["to"] in child_ids)]
+    assert len(boundary) == 2 and {edge["kind"] for edge in boundary} == {"Call", "Return"}
+    submitted = []
+    page.on("request", lambda request: submitted.append(request.url)
+            if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+    canvas.click(position={"x": page.viewport_size["width"] - 180, "y": 12})  # World directory
+    hide_inspector(page, canvas)
+    page.keyboard.press("2")
+    settle_gesture(page)
+    graph_mode(page, canvas, "States")
+    full = graph_scope(page, "States", 3, 3, 3)
+    assert full["scope"] == "All programs" and full["native_edges"] == len(edges)
+    canvas.click(position={"x": 205, "y": 109})  # native program ComboBox
+    rendered_frame(page)
+    canvas.screenshot(path=str(output / "world-graph-program-menu.png"))
+    canvas.click(position={"x": 205, "y": 181})  # P1 · Runtime (native menu geometry)
+    settle_gesture(page)
+    filtered = graph_scope(page, "States", 1, 1, 3)
+    assert filtered["scope"] == f"P{child['id']}"
+    assert filtered["edges"] == filtered["native_edges"] == 0
+    assert filtered["hidden_states"] == 2 and filtered["boundary_edges"] == 2
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text(f"Selected S{child_state['id']}; source P{child['id']}")
+    child_pixels = node_snapshot(page, canvas, output, "world-graph-child-program", measure_nodes=True)
+    assert len(child_pixels["nodes"]) == 1, child_pixels
+    graph_mode(page, canvas, "Local")
+    local = graph_scope(page, "Local", 3, 3, 3)
+    assert local["scope"] == "Cross-program neighborhood"
+    assert local["hidden_states"] == local["boundary_edges"] == 0
+    assert local["edges"] == local["native_edges"] == len(edges)
+    expect(status).to_contain_text(f"Selected S{child_state['id']}; source P{child['id']}")
+    expect(status).to_contain_text("Converged")
+    local_pixels = node_snapshot(page, canvas, output, "world-graph-local-cross-program", measure_nodes=True)
+    assert len(local_pixels["nodes"]) == 3, local_pixels
+    assert not submitted, "program filtering or local exploration reran analysis"
+    return {"all_programs": full, "child_program": filtered, "cross_program_local": local,
+            "selected_native_state": child_state["id"], "child_pixels": child_pixels,
+            "local_pixels": local_pixels}
+
+
 def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, providers):
     results = {}
     page = browser.new_page(viewport={"width": 1440, "height": 1000})
@@ -1035,6 +1208,7 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     canvas.click(position={"x": 137, "y": 778})
     expect(status).to_contain_text("Memory")
     canvas.screenshot(path=str(output / "world-child-exit-memory.png"))
+    graph_scopes = world_graph_scopes(page, canvas, report, child, child_state, output)
     # All acquisition reads remain on one canonical snapshot.
     reads = [request for request in rpc.requests if request["method"] in ("eth_getCode", "eth_getStorageAt", "eth_getBalance", "eth_getTransactionCount")]
     assert reads and all(request["params"][-1] == {"blockHash": rpc.block_hash, "requireCanonical": True} for request in reads)
@@ -1042,7 +1216,7 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     assert not pending_rpc.requests, "selecting the second provider contacted the default provider"
     assert RPC_TEST_TOKEN not in json.dumps(report), "provider URL escaped into the analysis report"
     (output / "world-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
-    results["analysis"] = {"programs": len(report["programs"]), "states": len(report["states"]), "outcomes": len(report["outcomes"]), "rpc_requests": len(rpc.requests), "inspector_views": screenshots, "renderer": webgpu_evidence(page)}
+    results["analysis"] = {"programs": len(report["programs"]), "states": len(report["states"]), "outcomes": len(report["outcomes"]), "rpc_requests": len(rpc.requests), "inspector_views": screenshots, "graph_scopes": graph_scopes, "renderer": webgpu_evidence(page)}
     assert not failures, failures
     page.close()
     rpc = pending_rpc
@@ -1430,6 +1604,7 @@ def main() -> None:
             rpc_providers = unconfigured_rpc_interactions(browser, url, args.output)
             world = configured_world_interactions(browser, args)
             url_world = url_configured_world_interactions(browser, args)
+            overview = block_overview_interactions(browser, url, args.output)
             panes = pane_interactions(browser, url, args.output)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
             assert not errors, "browser errors: " + "\n".join(errors)
@@ -1450,6 +1625,7 @@ def main() -> None:
                 "responsive_input": responsive_input,
                 "graph_interactions": gestures,
                 "pane_interactions": panes,
+                "block_overview": overview,
                 "world_interactions": world,
                 "url_configured_world": url_world,
                 "rpc_providers": rpc_providers,

@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use egui::{Pos2, Rect, Vec2};
 use evm_abstract_protocol::{AnalysisReport, CfgEdge, EdgeKind};
 
-use super::{Expanded, Flow, Placement, VertexId, adaptive, arrange, label_size};
+use super::{
+    Expanded, Flow, Placement, VertexId, adaptive, adaptive_scene, arrange, candidate_capacities,
+    label_size,
+};
 
 fn fixture(
     states: &[(usize, Vec2)],
@@ -248,4 +251,93 @@ fn self_back_same_rank_and_skipping_edges_route_around_all_unrelated_vertices() 
             }
         }
     }
+}
+
+#[test]
+fn projected_edge_labels_reserve_the_supplied_text_and_connect_visible_representatives() {
+    let (report, sizes) = fixture(
+        &[(7, Vec2::new(150.0, 80.0)), (91, Vec2::new(210.0, 125.0))],
+        &[(300, 7, 91, EdgeKind::Jump), (400, 91, 7, EdgeKind::Return)],
+    );
+    let ids = [7, 91];
+    let labels = BTreeMap::from([
+        (300, "jump (129 contexts)".into()),
+        (400, "return (2048)".into()),
+    ]);
+    let expanded = Expanded::scene(&ids, &report.edges, &sizes, &labels);
+    for flow in [Flow::Down, Flow::Right] {
+        let placed = arrange(&expanded, 2, flow);
+        for edge in &report.edges {
+            assert_eq!(
+                placed.edges[&edge.id].label.width(),
+                labels[&edge.id].len() as f32 * 6.0 + 6.0
+            );
+        }
+        validate(&report, &placed);
+    }
+    let placed = adaptive_scene(
+        &ids,
+        &report.edges,
+        &sizes,
+        &labels,
+        Vec2::new(844.0, 390.0),
+    );
+    assert_eq!(placed.nodes.keys().copied().collect::<Vec<_>>(), ids);
+    validate(&report, &placed);
+}
+
+#[test]
+fn candidate_search_is_exhaustive_for_small_scenes_and_bounded_for_large_state_views() {
+    let states: Vec<_> = (0..130).map(|id| (id, Vec2::new(170.0, 80.0))).collect();
+    let edges: Vec<_> = (1..130).map(|id| (id, 0, id, EdgeKind::Jump)).collect();
+    let (report, sizes) = fixture(&states, &edges);
+    let large = Expanded::new(&report, &sizes);
+    assert_eq!(large.sizes.len(), 259);
+    for viewport in [Vec2::new(320.0, 800.0), Vec2::new(1400.0, 800.0)] {
+        for flow in [Flow::Down, Flow::Right] {
+            let capacities = candidate_capacities(&large, viewport, flow);
+            assert_eq!(
+                capacities.len(),
+                1,
+                "large scenes should route one candidate per orientation"
+            );
+            assert!((1..=12).contains(&capacities[0]));
+        }
+    }
+    let (small_report, small_sizes) = fixture(&states[..10], &edges[..9]);
+    let small = Expanded::new(&small_report, &small_sizes);
+    for flow in [Flow::Down, Flow::Right] {
+        assert_eq!(
+            candidate_capacities(&small, Vec2::new(1400.0, 800.0), flow),
+            (1..=9).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn large_wide_scene_uses_multiple_columns_without_exhaustive_search() {
+    let states: Vec<_> = (0..300).map(|id| (id, Vec2::new(170.0, 80.0))).collect();
+    // Disconnected source blocks isolate packing density from edge routing.
+    let (report, sizes) = fixture(&states, &[]);
+    let graph = Expanded::new(&report, &sizes);
+    let wide = Vec2::new(1400.0, 800.0);
+    let narrow = Vec2::new(320.0, 800.0);
+    let down = candidate_capacities(&graph, wide, Flow::Down);
+    let right = candidate_capacities(&graph, wide, Flow::Right);
+    assert_eq!(down.len(), 1);
+    assert_eq!(right.len(), 1);
+    assert!(down[0] > 1 && right[0] > 1);
+    assert!(down[0] > candidate_capacities(&graph, narrow, Flow::Down)[0]);
+    let packed = arrange(&graph, down[0], Flow::Down);
+    let single_column = arrange(&graph, 1, Flow::Down);
+    assert_eq!(packed.nodes.len(), states.len());
+    assert!(packed.bounds.height() < single_column.bounds.height() / 2.0);
+    assert!(packed.bounds.width() <= wide.x);
+    let fitted = adaptive(&report, &sizes, wide);
+    assert_eq!(fitted.nodes.len(), states.len());
+    assert!(fitted.bounds.is_finite());
+    assert!(
+        super::fit_scale(fitted.bounds.size(), wide)
+            > super::fit_scale(single_column.bounds.size(), wide)
+    );
 }

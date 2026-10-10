@@ -9,9 +9,11 @@ mod tests;
 
 pub(crate) use disassembly::disassembly;
 pub(crate) use disassembly::natural_width as disassembly_width;
-pub(crate) use graph::Graph;
+pub(crate) use graph::{Graph, GraphMode};
+#[cfg(test)]
 pub(crate) use ssa::natural_width as ssa_width;
-pub(crate) use ssa::ssa;
+pub(crate) use ssa::natural_width_cached as ssa_width_cached;
+pub(crate) use ssa::{SsaCache, ssa_cached};
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 

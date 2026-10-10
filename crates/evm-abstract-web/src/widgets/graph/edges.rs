@@ -25,12 +25,33 @@ pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
     )
 }
 
+#[cfg(test)]
 pub(super) fn paint_edge(
     painter: &Painter,
     route: &EdgeRoute,
     origin: Pos2,
     kind: EdgeKind,
     id: usize,
+    zoom: f32,
+    selected: bool,
+) {
+    paint_edge_text(
+        painter,
+        route,
+        origin,
+        kind,
+        &edge_label(id, kind),
+        zoom,
+        selected,
+    );
+}
+
+pub(super) fn paint_edge_text(
+    painter: &Painter,
+    route: &EdgeRoute,
+    origin: Pos2,
+    kind: EdgeKind,
+    label_text: &str,
     zoom: f32,
     selected: bool,
 ) {
@@ -87,11 +108,8 @@ pub(super) fn paint_edge(
     painter.rect_filled(label, 2.0, palette::BACKGROUND);
     if zoom > 0.35 {
         let text_color = palette::MUTED.gamma_multiply(0.8);
-        let galley = painter.layout_no_wrap(
-            edge_label(id, kind),
-            FontId::monospace(9.0 * zoom),
-            text_color,
-        );
+        let galley =
+            painter.layout_no_wrap(label_text.into(), FontId::monospace(9.0 * zoom), text_color);
         let position = label.center() - galley.size() * 0.5;
         painter
             .with_clip_rect(label.intersect(painter.clip_rect()))

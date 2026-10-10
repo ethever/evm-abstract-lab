@@ -5,7 +5,7 @@ use evm_abstract_protocol::{
     SsaTransition,
 };
 
-use super::{Row, rows, ssa};
+use super::{Row, rows, scoped_rows, ssa};
 use crate::app::Selection;
 
 fn report() -> AnalysisReport {
@@ -235,5 +235,136 @@ fn table_virtualizes_dense_rows_and_focuses_an_offscreen_native_instruction() {
         positions(&output)
             .iter()
             .any(|(text, pos)| text == "03e7  " && (0.0..550.0).contains(&pos.y))
+    );
+}
+
+#[test]
+fn program_scope_preserves_every_native_context_and_transition_to_other_programs() {
+    let mut report = report();
+    let cfg = report.cfg[0].clone();
+    let ssa = report.ssa.blocks[0].clone();
+    report.cfg = (0..131)
+        .map(|position| {
+            let mut state = cfg.clone();
+            state.id = position * 17 + 27;
+            state.context = vec![position];
+            state.program = if position < 129 { Some(0) } else { Some(9) };
+            state
+        })
+        .collect();
+    report.ssa.blocks = report
+        .cfg
+        .iter()
+        .map(|state| {
+            let mut block = ssa.clone();
+            block.state = state.id;
+            block
+        })
+        .collect();
+    report.edges[0].to = report.cfg[129].id;
+    let scoped = scoped_rows(
+        &report,
+        Some(0),
+        Selection {
+            state: Some(27),
+            pc: None,
+        },
+    );
+    let headers: Vec<_> = scoped
+        .iter()
+        .filter(|row| row.header)
+        .map(|row| row.target.unwrap().state.unwrap())
+        .collect();
+    assert_eq!(
+        headers,
+        report.cfg[..129]
+            .iter()
+            .map(|state| state.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        scoped
+            .iter()
+            .filter(|row| row.plain_text().contains("%13 = ADD"))
+            .count(),
+        129
+    );
+    let transition = scoped
+        .iter()
+        .find(|row| row.plain_text().starts_with("e88 "))
+        .unwrap();
+    assert_eq!(transition.target.unwrap().state, Some(report.cfg[129].id));
+    assert!(transition.tooltip.contains("Arguments: [%13]"));
+    assert!(
+        transition
+            .tooltip
+            .contains("Destination frame stacks: f0 [%13, %14]")
+    );
+    let other = scoped_rows(
+        &report,
+        Some(9),
+        Selection {
+            state: Some(27),
+            pc: None,
+        },
+    );
+    assert_eq!(other.iter().filter(|row| row.header).count(), 2);
+    assert!(!other.iter().any(|row| row.plain_text().starts_with("e88 ")));
+}
+
+#[test]
+fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_reason() {
+    let mut report = report();
+    report.cfg[0].program = None;
+    let mut other_cfg = report.cfg[0].clone();
+    other_cfg.id = 91;
+    report.cfg.push(other_cfg);
+    let mut other_ssa = report.ssa.blocks[0].clone();
+    other_ssa.state = 91;
+    report.ssa.blocks.push(other_ssa);
+    report.ssa.transitions.clear();
+    report
+        .ssa
+        .deferred_edges
+        .push(evm_abstract_protocol::DeferredEdge {
+            edge: 88,
+            reason: evm_abstract_protocol::DeferredReason::SourceStale,
+        });
+    let scoped = scoped_rows(
+        &report,
+        None,
+        Selection {
+            state: Some(27),
+            pc: None,
+        },
+    );
+    assert_eq!(scoped.iter().filter(|row| row.header).count(), 1);
+    assert_eq!(scoped[0].target.unwrap().state, Some(27));
+    assert!(
+        scoped
+            .iter()
+            .any(|row| row.plain_text() == "e88 → S91 · deferred Some(SourceStale)")
+    );
+    let other = scoped_rows(
+        &report,
+        None,
+        Selection {
+            state: Some(91),
+            pc: None,
+        },
+    );
+    assert_eq!(other.iter().filter(|row| row.header).count(), 1);
+    assert_eq!(other[0].target.unwrap().state, Some(91));
+    assert!(scoped_rows(&report, None, Selection::default()).is_empty());
+    assert!(
+        scoped_rows(
+            &report,
+            Some(0),
+            Selection {
+                state: Some(27),
+                pc: None
+            }
+        )
+        .is_empty()
     );
 }

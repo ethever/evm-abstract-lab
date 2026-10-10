@@ -1,24 +1,33 @@
-//! Compact CFG canvas. A report is arranged and fitted once in its first usable
-//! viewport. Later resizes leave the scene and camera fixed; Fit only moves the
-//! camera. Node bounds come from the chosen source or SSA representation.
+//! CFG views over an immutable native report. Source blocks fold only for
+//! display; selecting an instance always uses its original state and SSA IDs.
 
 mod content;
+mod controls;
 mod edges;
+mod index;
 mod layout;
 mod navigation;
+mod projection;
+mod scene;
 #[cfg(test)]
 mod tests;
-
-use std::collections::BTreeMap;
-
-use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use evm_abstract_protocol::{AnalysisReport, BlockCoverage};
+mod visibility;
 
 use super::heading;
 use crate::{app::Selection, palette};
-use content::{NodeText, NodeView, node_text};
-use edges::{edge_label, paint_edge};
+#[cfg(test)]
+use content::node_text;
+use content::{NodeText, NodeView, node_preview, node_tooltip};
+use edges::{edge_label, paint_edge_text};
+use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use evm_abstract_protocol::{AnalysisReport, BlockCoverage};
+use index::ReportIndex;
 use layout::Placement;
+use projection::DisplayGraph;
+pub(crate) use projection::GraphMode;
+use scene::ReportStamp;
+use std::collections::{BTreeMap, BTreeSet};
+use visibility::Visibility;
 
 const PAD: f32 = 6.0;
 const HEADER_HEIGHT: f32 = 33.0;
@@ -26,6 +35,27 @@ const LINE_HEIGHT: f32 = 14.0;
 pub(crate) struct Graph {
     pub(crate) zoom: f32,
     content: NodeView,
+    mode: GraphMode,
+    program_scope: Option<usize>,
+    neighborhood_hops: usize,
+    local_center: Option<usize>,
+    index: Option<ReportIndex>,
+    report_stamp: Option<ReportStamp>,
+    display: DisplayGraph,
+    display_dirty: bool,
+    shown_states: usize,
+    native_edges: usize,
+    node_positions: BTreeMap<usize, usize>,
+    edge_positions: BTreeMap<usize, usize>,
+    edge_labels: BTreeMap<usize, String>,
+    native_edge_to_display: BTreeMap<usize, usize>,
+    highlighted_edges: BTreeSet<usize>,
+    highlighted_state: Option<usize>,
+    highlight_dirty: bool,
+    node_visibility: Visibility,
+    edge_visibility: Visibility,
+    instance_group: Option<usize>,
+    instance_filter: String,
     content_anchor: Option<(usize, Vec2)>,
     pan: Vec2,
     nodes: BTreeMap<usize, NodeText>,
@@ -43,6 +73,27 @@ impl Default for Graph {
         Self {
             zoom: 1.0,
             content: NodeView::default(),
+            mode: GraphMode::default(),
+            program_scope: None,
+            neighborhood_hops: 2,
+            local_center: None,
+            index: None,
+            report_stamp: None,
+            display: DisplayGraph::default(),
+            display_dirty: true,
+            shown_states: 0,
+            native_edges: 0,
+            node_positions: BTreeMap::new(),
+            edge_positions: BTreeMap::new(),
+            edge_labels: BTreeMap::new(),
+            native_edge_to_display: BTreeMap::new(),
+            highlighted_edges: BTreeSet::new(),
+            highlighted_state: None,
+            highlight_dirty: true,
+            node_visibility: Visibility::default(),
+            edge_visibility: Visibility::default(),
+            instance_group: None,
+            instance_filter: String::new(),
             content_anchor: None,
             pan: Vec2::ZERO,
             nodes: BTreeMap::new(),
@@ -59,61 +110,54 @@ impl Default for Graph {
 
 impl Graph {
     pub(crate) fn show(&mut self, ui: &mut Ui, report: &AnalysisReport, selection: &mut Selection) {
-        // The graph fills its assigned pane; an invisible measurement pass
-        // must not establish its one-time layout or consume camera input.
         if ui.is_sizing_pass() {
             return;
         }
+        self.ensure_scene(report, selection.state);
         let fit_requested = self.fit_shortcut(ui);
         heading(
             ui,
             "CONTROL FLOW",
-            &format!("{} states · {} edges", report.cfg.len(), report.edges.len()),
+            &format!(
+                "{} nodes · {} / {} states · {} edges",
+                self.display.nodes.len(),
+                self.shown_states,
+                report.cfg.len(),
+                self.display.edges.len()
+            ),
         );
-        let mut content = self.content;
-        ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut content, NodeView::Disassembly, "Disasm")
-                .on_hover_text("Show decoded bytecode in CFG nodes");
-            ui.selectable_value(&mut content, NodeView::Ssa, "SSA")
-                .on_hover_text("Show stack SSA definitions, arguments and effects in CFG nodes");
-            if ui.small_button("Fit graph").on_hover_text("F / Shift+F: fit and center the existing graph without rearranging nodes").clicked() {
-                self.request_fit(ui, true);
-            }
-            if ui.add_enabled(selection.state.is_some(), egui::Button::new("Focus selected").small())
-                .on_hover_text("Center the selected node and keep a manual camera").clicked()
-            { self.focus_pending = true; }
-            ui.label(egui::RichText::new(format!("{:.0}% · {}", self.zoom * 100.0,
-                if self.fitted { "Fit" } else { "Manual" })).small().color(palette::MUTED))
-                .on_hover_text("Drag or two-finger scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Double-click to fit the existing graph. Resizing keeps the current layout and camera.");
-        });
-        self.set_content(content, selection.state);
+        self.controls(ui, report, selection);
+        self.ensure_scene(report, selection.state);
+        self.view_legend(ui);
         let (response, painter) = ui.allocate_painter(
             ui.available_size().max(Vec2::splat(1.0)),
             Sense::click_and_drag(),
         );
         let canvas = response.rect;
         painter.rect_filled(canvas, 3.0, palette::BACKGROUND);
-        // A Graph belongs to one immutable report; Workspace resets it when a
-        // request starts. The ID comparison also handles a replaced sparse graph.
-        if self.nodes.len() != report.cfg.len()
-            || report
-                .cfg
-                .iter()
-                .any(|block| !self.nodes.contains_key(&block.id))
+        if self.nodes.is_empty()
+            && let Some(index) = &self.index
         {
-            self.nodes = report
-                .cfg
+            self.nodes = self
+                .display
+                .nodes
                 .iter()
-                .map(|block| (block.id, node_text(&painter, report, block, self.content)))
+                .map(|node| {
+                    (
+                        node.id,
+                        node_preview(&painter, report, index, node, self.content),
+                    )
+                })
                 .collect();
-            self.layout_pending = true;
         }
         if ui.ctx().will_discard() || !self.update_viewport(report, canvas.size()) {
             return;
         }
+        let selected_node = selection
+            .state
+            .and_then(|state| self.display.state_to_node.get(&state).copied());
         if self.focus_pending {
-            if let Some(rect) = selection
-                .state
+            if let Some(rect) = selected_node
                 .and_then(|id| self.placement.nodes.get(&id))
                 .copied()
             {
@@ -129,80 +173,111 @@ impl Graph {
             self.navigate(ui, &response);
         }
         self.grid(&painter, canvas);
-        for edge in &report.edges {
-            if let Some(route) = self.placement.edges.get(&edge.id) {
-                paint_edge(
-                    &painter,
-                    route,
-                    canvas.min + self.pan,
-                    edge.kind,
-                    edge.id,
-                    self.zoom,
-                    selection.state == Some(edge.from) || selection.state == Some(edge.to),
+        self.update_highlight(report, selection.state);
+        let visible = Rect::from_min_max(
+            Pos2::ZERO - self.pan / self.zoom,
+            Pos2::ZERO + (canvas.size() - self.pan) / self.zoom,
+        )
+        .expand(16.0 / self.zoom);
+        for id in self.edge_visibility.query(visible) {
+            let Some(route) = self.placement.edges.get(&id) else {
+                continue;
+            };
+            let Some(edge) = self
+                .edge_positions
+                .get(&id)
+                .and_then(|position| self.display.edges.get(*position))
+            else {
+                continue;
+            };
+            let label = self.edge_labels.get(&id).map_or("", String::as_str);
+            paint_edge_text(
+                &painter,
+                route,
+                canvas.min + self.pan,
+                edge.kind,
+                label,
+                self.zoom,
+                self.highlighted_edges.contains(&id),
+            );
+            let label_rect = self.screen_rect(canvas, route.label);
+            if canvas.intersects(label_rect) {
+                let hover = ui.interact(
+                    label_rect.intersect(canvas),
+                    ui.id().with(("cfg_edge", id)),
+                    Sense::hover(),
                 );
+                hover.on_hover_ui(|ui| self.edge_detail(ui, report, id));
             }
         }
-        for block in &report.cfg {
-            let (Some(world), Some(content)) = (
-                self.placement.nodes.get(&block.id),
-                self.nodes.get(&block.id),
-            ) else {
+        for id in self.node_visibility.query(visible) {
+            let (Some(world), Some(content)) = (self.placement.nodes.get(&id), self.nodes.get(&id))
+            else {
+                continue;
+            };
+            let Some(node) = self
+                .node_positions
+                .get(&id)
+                .and_then(|position| self.display.nodes.get(*position))
+            else {
                 continue;
             };
             let rect = self.screen_rect(canvas, *world);
             if !canvas.intersects(rect) {
                 continue;
             }
-            let response = ui.interact(
+            let hit = ui.interact(
                 rect.intersect(canvas),
-                ui.id().with(("cfg_node", block.id)),
+                ui.id().with(("cfg_node", id)),
                 Sense::click(),
             );
             paint_node(
                 &painter,
                 rect,
                 content,
-                selection.state == Some(block.id),
-                response.hovered(),
+                selected_node == Some(id),
+                hit.hovered(),
                 self.zoom,
             );
-            if response.clicked() {
-                *selection = Selection {
-                    state: Some(block.id),
-                    pc: None,
-                };
+            if hit.clicked() {
+                let state = selection
+                    .state
+                    .filter(|state| self.display.state_to_node.get(state) == Some(&id))
+                    .or_else(|| node.members.first().copied());
+                *selection = Selection { state, pc: None };
+                if node.members.len() > 1 {
+                    self.instance_group = Some(id);
+                    self.instance_filter.clear();
+                }
+                ui.ctx().request_repaint();
             }
-            let exit = match content.coverage {
-                BlockCoverage::Current => {
-                    format!("Observed exit stack: {}", block.exit_stack.join(", "))
+            hit.on_hover_ui(|ui| {
+                if let Some(index) = &self.index {
+                    ui.monospace(node_tooltip(report, index, node, self.content));
                 }
-                BlockCoverage::Stale => format!(
-                    "Historical exit stack (entry changed): {}",
-                    block.exit_stack.join(", ")
-                ),
-                BlockCoverage::Unexecuted => {
-                    "No execution receipt; only entry state is available".into()
-                }
-            };
-            response.on_hover_text(format!("State S{} · basic block B{}\nFrame depth: {} · code: {}\nContext: {:?} · coverage: {:?}\nCurrent entry stack (bottom → top): {}\n{}\n\n{}",
-                block.id, block.basic_block, block.frame_depth, block.code_address, block.context, content.coverage, block.entry_stack.join(", "), exit, content.tooltip));
+            });
         }
-        if report.cfg.is_empty() {
+        if self.display.nodes.is_empty() {
             painter.text(
                 canvas.center(),
                 Align2::CENTER_CENTER,
-                "No reachable states",
+                "No reachable states in this view",
                 FontId::proportional(13.0),
                 palette::MUTED,
             );
         }
+        if ui.is_enabled() {
+            self.instances(ui.ctx(), report, selection);
+        }
     }
 
-    /// New reports invalidate scene/camera state, but the chosen representation
-    /// is a workspace preference and survives analysis requests.
+    /// New reports invalidate all report-bound mappings; view/content choices
+    /// remain preferences, while a program filter belongs to the old report.
     pub(crate) fn reset_report(&mut self) {
         *self = Self {
             content: self.content,
+            mode: self.mode,
+            neighborhood_hops: self.neighborhood_hops,
             cancel_wheel: self.cancel_wheel,
             ..Self::default()
         };
@@ -215,6 +290,23 @@ impl Graph {
         }
     }
 
+    pub(crate) fn set_mode(&mut self, mode: GraphMode) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.invalidate_scene();
+        }
+    }
+
+    fn invalidate_scene(&mut self) {
+        self.display_dirty = true;
+        self.nodes.clear();
+        self.content_anchor = None;
+        self.instance_group = None;
+        self.layout_pending = true;
+        self.fit_pending = true;
+        self.fitted = true;
+    }
+
     fn set_content(&mut self, content: NodeView, selected: Option<usize>) {
         if content == self.content {
             return;
@@ -222,7 +314,8 @@ impl Graph {
         self.content_anchor = self.viewport.and_then(|viewport| {
             let screen = Rect::from_min_size(Pos2::ZERO, viewport);
             let selected = selected
-                .and_then(|id| self.placement.nodes.get(&id).map(|rect| (id, rect)))
+                .and_then(|state| self.display.state_to_node.get(&state))
+                .and_then(|id| self.placement.nodes.get(id).map(|rect| (*id, rect)))
                 .filter(|(_, rect)| {
                     screen.contains(Pos2::ZERO + self.pan + rect.center().to_vec2() * self.zoom)
                 });
@@ -253,7 +346,7 @@ impl Graph {
         self.focus_pending = false;
     }
 
-    fn update_viewport(&mut self, report: &AnalysisReport, size: Vec2) -> bool {
+    fn update_viewport(&mut self, _report: &AnalysisReport, size: Vec2) -> bool {
         if !size.is_finite() || size.min_elem() <= 1.0 {
             return false;
         }
@@ -264,13 +357,14 @@ impl Graph {
                 .iter()
                 .map(|(id, node)| (*id, node.size))
                 .collect();
-            self.placement = layout::adaptive(report, &sizes, size);
+            let ids: Vec<_> = self.display.nodes.iter().map(|node| node.id).collect();
+            self.placement =
+                layout::adaptive_scene(&ids, &self.display.edges, &sizes, &self.edge_labels, size);
+            self.rebuild_visibility();
             self.layout_pending = false;
             if let Some((id, position)) = self.content_anchor.take()
                 && let Some(rect) = self.placement.nodes.get(&id)
             {
-                // A representation switch changes node measurements but keeps
-                // the anchor at the same position relative to the canvas.
                 self.pan = position - rect.center().to_vec2() * self.zoom;
             }
         }

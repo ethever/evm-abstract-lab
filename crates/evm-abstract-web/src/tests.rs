@@ -259,6 +259,9 @@ pub(crate) fn report() -> AnalysisReport {
 
 pub(crate) fn ready() -> Workspace {
     let mut workspace = Workspace::default();
+    // Existing source/SSA identity and camera regressions exercise native
+    // states. The overview integration tests construct the product default.
+    workspace.graph.set_mode(widgets::GraphMode::States);
     workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
         result: Ok(report()),
@@ -763,3 +766,6 @@ fn child_without_bytecode_has_no_invented_program_counter() {
     );
     assert!(!labels.iter().any(|(text, _)| text == "B0  ·  0x0000"));
 }
+
+#[path = "tests/overview.rs"]
+mod overview;
