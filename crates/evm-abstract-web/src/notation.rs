@@ -1,12 +1,14 @@
 //! Native typesetting of canonical notation. Unicode stays in jobs, widget
 //! metadata and copies; small font subsets map indices to ordinary glyphs.
 
+#[cfg(any(target_arch = "wasm32", test))]
 use std::sync::Arc;
 
+#[cfg(any(target_arch = "wasm32", test))]
+use egui::FontDefinitions;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{
-    Align, Align2, Color32, FontDefinitions, FontFamily, FontId, FontSelection, Painter, Pos2,
-    Rect, Ui, WidgetText,
+    Align, Align2, Color32, FontFamily, FontId, FontSelection, Painter, Pos2, Rect, Ui, WidgetText,
 };
 use evm_abstract_notation::subscript_digit;
 
@@ -19,6 +21,7 @@ const MATH_SANS: &str = "MathIndicesSans";
 
 /// The subsets preserve their source typeface's metrics. They are selected only
 /// for indexed runs; the existing body/code/emoji fallback chains are untouched.
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn install_fonts(fonts: &mut FontDefinitions) {
     for (name, bytes) in [
         (
