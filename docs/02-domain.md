@@ -38,13 +38,13 @@ nix run . -- cfg --no-relations --domain constants-only --file examples/diamond.
 本课显式使用 `--context-depth 0`，不按跳转历史分组，以便观察同一状态内的值集合汇合。默认值 128 的分组方式留到[第 05 课](05-sensitivity.md)比较。找到 pc=`0x000e` 的汇合状态，当前输出为：
 
 ```text
-S3 | B3 @ 0x000e | stack height=1 | context=[]
+σᵖ₃ | B₃ @ 0x000e | stack height=1 | context=[]
   relations in=0 out=0
   stack in  [{0x1, 0x2}]
   stack out [{0xb, 0xc}]
 ```
 
-`0xb` 和 `0xc` 就是十进制 11 和 12。`stack in` 是进入这个块前的栈，`stack out` 是执行整个块后的栈。`S` 与 `B` 的区别留到[控制流一课](03-cfg.md)。
+`0xb` 和 `0xc` 就是十进制 11 和 12。`stack in` 是进入这个块前的栈，`stack out` 是执行整个块后的栈。`σᵖᵢ` 与 `Bᵢ` 的区别留到[控制流一课](03-cfg.md)。
 
 **花括号里的多个数属于同一个槽位。** `[{1,2}]` 的栈高是 1，`[{1},{2}]` 的栈高是 2。
 

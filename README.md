@@ -17,10 +17,10 @@ nix run . -- explain --file examples/straight-line.hex
 | 输出 | 回答的问题 | 先找什么 |
 | --- | --- | --- |
 | 反汇编 | 每段字节是什么指令？ | `0004: ADD`：加法指令位于字节偏移 4 |
-| CFG（控制流图） | 执行顺序和分支是什么？ | `S0 \| B0`、`stack in []`、`stack out []`：一个块，入口和出口栈都为空 |
+| CFG（控制流图） | 执行顺序和分支是什么？ | `σᵖ₀ \| B₀`、`stack in []`、`stack out []`：一个块，入口和出口栈都为空 |
 | SSA（静态单赋值） | 一个值在哪里产生、被谁使用？ | `%2 = ADD %1 %0`：给加法结果起名，并记录两个来源 |
 
-不知道 `S0`、`%2` 或空栈是什么意思，直接读 [00：第一遍运行与输出解读](docs/00-start.md)。它包含完整的逐指令栈表和环境报错处理。
+状态、块、帧和效果使用[统一符号](docs/notation.md)，SSA 值名仍用 `%编号`。不知道 `σᵖ₀`、`%2` 或空栈是什么意思，直接读 [00：第一遍运行与输出解读](docs/00-start.md)。它包含完整的逐指令栈表和环境报错处理。
 
 再看有分支的程序：
 
@@ -51,7 +51,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 [路线总览](docs/learning-routes.md)按同一组模块连接理论与实现入口。每课顶部也有所属模块和两条路线的链接；[例子索引](examples/README.md)用于选实验，[第 07 课](docs/07-exercises.md)用于核对理解，[参考资料](docs/references.md)用于继续读规范和论文。
 
-如果你正在读 `recorded prefix stack`、`partial phi` 或 `OperandsConsumed`，直接进入 [04：部分 SSA 的逐步实验](docs/04-ssa.md#7-未完成时按需查看部分-ssa)，观察同一程序在内存上限不足与足够时的栈、指令结果和覆盖差异，再回到所选路线。
+如果你正在读 `recorded prefix stack`、`partial φ` 或 `OperandsConsumed`，直接进入 [04：部分 SSA 的逐步实验](docs/04-ssa.md#7-未完成时按需查看部分-ssa)，观察同一程序在内存上限不足与足够时的栈、指令结果和覆盖差异，再回到所选路线。
 
 ## 从单段代码到多个合约
 
@@ -67,11 +67,11 @@ nix run . -- explain \
 
 `explain` 默认串联实际捕获代码的反汇编、简明 CFG 与独立结果概要、赋值式跨合约 SSA。需要完整帧记录和效果链时加 `--verbose`；完整报告仍由 `analyze` 提供，结构化数据使用 `analyze --format json`。
 
-反汇编与 SSA 的基本块指令列表共用顶格的 `B0 @ 0x0000:` 标题，指令 pc 写作 `0000:`，数字列与标题中 `0x` 后的数字对齐。SSA 的 S 状态元数据和入口 φ 在 B 标题前独立显示；S 与 B 不是同一种编号。单字节码与世界教学 SSA 共用赋值式指令正文，世界视图另保留代码、帧、状态账户及转移身份；完整视图继续保留所有帧与原始效果证据。示例与读法见[第 04 课](docs/04-ssa.md)。
+反汇编与 SSA 的基本块指令列表共用顶格的 `B₀ @ 0x0000:` 标题，指令 pc 写作 `0000:`，数字列与标题中 `0x` 后的数字对齐。SSA 的 σᵢ 状态元数据和入口 φ 在 Bᵢ 标题前独立显示；σᵢ 与 Bᵢ 不是同一种编号。单字节码与世界教学 SSA 共用赋值式指令正文，世界视图另保留代码、帧、状态账户及转移身份；完整视图继续保留所有帧与原始效果证据。示例与读法见[第 04 课](docs/04-ssa.md)。
 
 这个离线实验里，A 调用 B，B 返回 32 字节的数值 1，A 据此选择分支并写自己的存储。输出的 `Call` / `Return` 是调用和返回边，`outcome` 是入口执行结束时的可能结果。模型也保留 gas 不足等失败可能，成功轨迹不等于全部抽象结果。逐步解读见[第 09 课](docs/09-cross-contract.md)。
 
-`analyze` 默认文本及 `explain --verbose` 的完整报告按完成状态、快照、身份引用、执行状态、转移、入口结果、调用摘要、诊断和未完成前沿分区。先看 `Analysis`，再沿 `Transitions` 的 `S` 编号追踪调用；`Outcomes` 的每个 `O` 分别携带自己的返回字节和最终账户状态。`References` 列出地址 `A0`、hash `H0` 等短引用对应的完整值，JSON 和 DOT 仍保留完整身份。[文本阅读路线](docs/09-cross-contract.md#默认文本怎样读) 解释各分区及字节表示。
+`analyze` 默认文本及 `explain --verbose` 的完整报告按完成状态、快照、身份引用、执行状态、转移、入口结果、调用摘要、诊断和未完成前沿分区。先看 `Analysis`，再沿 `Transitions` 的 `σᵢ` 编号追踪调用；`Outcomes` 的每个 `Oᵢ` 分别携带自己的返回字节和最终账户状态。`References` 列出地址 `A₀`、hash `H₀` 等短引用对应的完整值，JSON 和 DOT 仍保留完整身份。[文本阅读路线](docs/09-cross-contract.md#默认文本怎样读) 解释各分区及字节表示。
 
 **调用摘要**保存已完成子调用在特定输入下的结果和执行子图，供之后前提相同的调用复用。`Call summaries` 中的保存数量 `published` 与复用次数 `hits` 是两件事；只调用一次时可以保存结果而没有命中。[第 10 课](docs/10-snapshots-summaries-creation.md) 从两次调用的例子开始解释。
 
@@ -203,6 +203,7 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 账户事实与账户状态 | [`world/`](crates/evm-abstract/src/world) |
 | 内存、calldata 与 returndata 的抽象字节数组 | [`world/bytes.rs`](crates/evm-abstract/src/world/bytes.rs) |
 | 值的命名与结构验证 | [`ssa/`](crates/evm-abstract/src/ssa) |
+| 身份显示符号与状态搜索 | [`evm-abstract-notation`](crates/evm-abstract-notation) |
 | 命令参数、世界文件解析 | [`evm-abstract-cli`](crates/evm-abstract-cli) |
 | 浏览器共享数据协议 | [`evm-abstract-protocol`](crates/evm-abstract-protocol) |
 | 原生分析服务与静态资源 | [`evm-abstract-server`](crates/evm-abstract-server) |

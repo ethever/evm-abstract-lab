@@ -630,15 +630,19 @@ def graph_scope(page, mode: str, nodes: int, shown: int, total: int):
     return {"mode": match[1], **dict(zip(fields, map(int, match.group(2,3,4,5,6,7,8)), strict=True)), "scope": match[9]}
 
 
-def pick_graph_instance(page, canvas, state: int):
+def symbol(base: str, index: int):
+    return base + str(index).translate(str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉"))
+
+
+def pick_graph_instance(page, canvas, state: int, query: str | None = None):
     # Real native TextEdit and virtual list coordinates from the egui geometry
     # probe. Search accepts an original state ID, not a display-node ordinal.
     canvas.click(position={"x": 200, "y": 108})
     page.keyboard.press("Control+A")
-    page.keyboard.type(f"S{state}", delay=10)
+    page.keyboard.insert_text(query if query is not None else symbol("σ", state))
     settle_gesture(page)
     canvas.click(position={"x": 110, "y": 131})
-    expect(page.locator("#analysis-status")).to_contain_text(f"Selected S{state}; source P0")
+    expect(page.locator("#analysis-status")).to_contain_text(f"Selected {symbol('σ', state)}; source {symbol('P', 0)}")
     settle_gesture(page)
 
 
@@ -696,7 +700,13 @@ def block_overview_interactions(browser, url: str, output: Path):
     canvas.click(position={"x": (left + right) / 2, "y": (top + bottom) / 2})
     settle_gesture(page)
     canvas.screenshot(path=str(output / "overview-loop-instances.png"))
-    pick_graph_instance(page, canvas, 128)
+    search_forms = [(127, "127"), (128, "σ₁₂₈"), (127, "sigma_127"), (128, "S128")]
+    for index, (state, query) in enumerate(search_forms):
+        if index:
+            canvas.click(position={"x": 300, "y": 109})  # Instances toolbar
+            settle_gesture(page)
+        pick_graph_instance(page, canvas, state, query)
+    canvas.screenshot(path=str(output / "overview-loop-symbol-search.png"))
     graph_scope(page, "Blocks", 1, 129, 129)
     # Expose both the native inspector and the full SSA table for the selected
     # instance. A virtualized table must finish its long focus animation.
@@ -705,12 +715,12 @@ def block_overview_interactions(browser, url: str, output: Path):
     page.wait_for_timeout(800)
     rendered_frame(page)
     status = page.locator("#analysis-status")
-    expect(status).to_contain_text("Selected S128; source P0")
+    expect(status).to_contain_text("Selected σ₁₂₈; source P₀")
     expect(status).to_contain_text("Inspector: Frame")
-    expect(status).to_contain_text("Frame 0")
+    expect(status).to_contain_text("Frame f₀")
     png = canvas.screenshot(path=str(output / "overview-loop-native-ssa.png"))
     ssa_pixels = screenshot_metrics(page, png, (4, 75, 1436, 760))
-    assert ssa_pixels["selected_pixels"] > 100, "the selected S128 SSA block was not scrolled into view"
+    assert ssa_pixels["selected_pixels"] > 100, "the selected σ₁₂₈ SSA block was not scrolled into view"
     selected = next(state for state in loop["states"] if state["state"] == 128)
     assert len(selected["entry"]["frames"][0]["context"]) == 128
     page.keyboard.press("2")
@@ -1124,11 +1134,11 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path):
     canvas.click(position={"x": 205, "y": 181})  # P1 · Runtime (native menu geometry)
     settle_gesture(page)
     filtered = graph_scope(page, "States", 1, 1, 3)
-    assert filtered["scope"] == f"P{child['id']}"
+    assert filtered["scope"] == symbol("P", child["id"])
     assert filtered["edges"] == filtered["native_edges"] == 0
     assert filtered["hidden_states"] == 2 and filtered["boundary_edges"] == 2
     status = page.locator("#analysis-status")
-    expect(status).to_contain_text(f"Selected S{child_state['id']}; source P{child['id']}")
+    expect(status).to_contain_text(f"Selected {symbol('σ', child_state['id'])}; source {symbol('P', child['id'])}")
     child_pixels = node_snapshot(page, canvas, output, "world-graph-child-program", measure_nodes=True)
     assert len(child_pixels["nodes"]) == 1, child_pixels
     graph_mode(page, canvas, "Local")
@@ -1136,7 +1146,7 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path):
     assert local["scope"] == "Cross-program neighborhood"
     assert local["hidden_states"] == local["boundary_edges"] == 0
     assert local["edges"] == local["native_edges"] == len(edges)
-    expect(status).to_contain_text(f"Selected S{child_state['id']}; source P{child['id']}")
+    expect(status).to_contain_text(f"Selected {symbol('σ', child_state['id'])}; source {symbol('P', child['id'])}")
     expect(status).to_contain_text("Converged")
     local_pixels = node_snapshot(page, canvas, output, "world-graph-local-cross-program", measure_nodes=True)
     assert len(local_pixels["nodes"]) == 3, local_pixels
@@ -1188,9 +1198,9 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     settle_gesture(page)
     canvas.screenshot(path=str(output / "world-overview.png"))
     canvas.click(position={"x": 80, "y": 135})
-    expect(status).to_contain_text(f"source P{child['id']}")
-    expect(status).to_contain_text(f"Selected S{child_state['id']}")
-    expect(status).to_contain_text("Frame 1")
+    expect(status).to_contain_text(f"source {symbol('P', child['id'])}")
+    expect(status).to_contain_text(f"Selected {symbol('σ', child_state['id'])}")
+    expect(status).to_contain_text("Frame f₁")
     canvas.screenshot(path=str(output / "world-child-frame.png"))
     screenshots = {}
     tabs = [(80, "Stack"), (137, "Memory"), (201, "Storage"), (268, "Transient"),

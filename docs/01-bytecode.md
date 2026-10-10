@@ -36,12 +36,12 @@ nix run . -- disasm --hex 605b00
 关键输出是：
 
 ```text
-B0 @ 0x0000:
+B₀ @ 0x0000:
        0000: PUSH1          0x5b
        0002: STOP
 ```
 
-指令行的 pc 省略 `0x`，仍是十六进制；数字列随块编号宽度与标题中 `0x` 后的数字对齐。SSA 也使用这套 B 标题和 pc 列，状态元数据与入口 φ 在标题前另行显示，见[第 04 课](04-ssa.md)。
+指令行的 pc 省略 `0x`，仍是十六进制；数字列随块编号宽度与标题中 `0x` 后的数字对齐。SSA 也使用这套 Bᵢ 标题和 pc 列，状态元数据与入口 φ 在标题前另行显示，见[第 04 课](04-ssa.md)。
 
 没有 `0001: JUMPDEST`。虽然 `5b` 单独作为操作码时表示 `JUMPDEST`，这里它属于 PUSH 数据，不能被执行，也不能作为合法跳转目的地。
 
@@ -81,9 +81,9 @@ nix run . -- explain --hex 61ab
 
 最后一类涉及跨合约执行，先记住边界规则即可，[第九课](09-cross-contract.md)再解释调用帧。
 
-块编号 `B0`、`B1` 按代码位置递增，是当前程序的索引。`B1` 不等于 pc=1；它的字节地址另由 `@ 0x...` 显示。
+块编号 `B₀`、`B₁` 按代码位置递增，是当前程序的索引。`B₁` 不等于 pc=1；它的字节地址另由 `@ 0x...` 显示。
 
-`cfg --format json` 的结果格式版本是 `.schema_version=4`，环境记录是 `.environment`。其状态 JSON 用 `key.basic_block_index` 记录这个索引：要找到实际 pc，先用索引读取 `program.blocks`，再看该块的 `start_pc`。状态编号 `S` 则表示一次分析中的执行位置；一个基本块可能对应多个状态。下面用分支例子核对两套编号：
+`cfg --format json` 的结果格式版本是 `.schema_version=4`，环境记录是 `.environment`。其状态 JSON 用 `key.basic_block_index` 记录这个索引：要找到实际 pc，先用索引读取 `program.blocks`，再看该块的 `start_pc`。状态编号 `σᵖᵢ` 则表示一次分析中的执行位置；一个基本块可能对应多个状态。下面用分支例子核对两套编号：
 
 ```bash
 nix run . -- cfg --file examples/diamond.hex --context-depth 0 --format json > /tmp/blocks.json
@@ -101,15 +101,15 @@ nix run . -- explain --hex 005b600100
 反汇编有两个块：
 
 ```text
-B0 @ 0x0000:
+B₀ @ 0x0000:
        0000: STOP
-B1 @ 0x0001:
+B₁ @ 0x0001:
        0001: JUMPDEST
        0002: PUSH1          0x1
        0004: STOP
 ```
 
-CFG 部分却只有 `S0 | B0`，没有 `B1` 对应的状态。从 pc=0 的空栈入口开始，第一条 STOP 已经结束执行，也没有跳往 B1 的路径。
+CFG 部分却只有 `σᵖ₀ | B₀`，没有 `B₁` 对应的状态。从 pc=0 的空栈入口开始，第一条 STOP 已经结束执行，也没有跳往 B₁ 的路径。
 
 为什么还要解码停止指令后面的字节？在一般程序中，前面的其他分支可能跳进那里的 JUMPDEST，从而绕过停止指令；是否能到达，要由控制流分析判断。**反汇编回答“有哪些指令”，CFG 分析回答“从给定入口有哪些可能的执行转移”。**
 

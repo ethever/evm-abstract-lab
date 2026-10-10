@@ -37,7 +37,7 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 
 使用 [partial-ssa-memory.json](partial-ssa-memory.json)，按 [04 的逐步实验](../docs/04-ssa.md#从块中途停下的实际输出开始)运行相同程序的两个内存上限：1 字节时，MLOAD 取走偏移后遇到 `Memory` 前沿，保留 `OperandsConsumed`、没有结果名字，退出 2；32 字节时，MLOAD、ADD、STOP 都有完整记录，退出 0。两个报告要一起读，才能区分程序里的基本块和本轮分析记录到的前缀。
 
-再做 [04 的 partial phi 实验](../docs/04-ssa.md#部分-φ-的输入覆盖哪些边)，沿已记录的 T 边找到入口栈名字，解释为什么一个输入也有 φ，以及 `partial` 为什么表示覆盖范围尚未闭合。这两项是[理论 SSA](../docs/routes/theory.md#ssa)与[实现 SSA](../docs/routes/implementation.md#ssa)的共同实验。
+再做 [04 的 partial φ 实验](../docs/04-ssa.md#部分-φ-的输入覆盖哪些边)，沿已记录的 Tᵢ 边找到入口栈名字，解释为什么一个输入也有 φ，以及 `partial` 为什么表示覆盖范围尚未闭合。这两项是[理论 SSA](../docs/routes/theory.md#ssa)与[实现 SSA](../docs/routes/implementation.md#ssa)的共同实验。
 
 ## 内存：从字节读写到抽象数组
 
@@ -131,7 +131,7 @@ nix run . -- explain \
   --evm.value 0 --evm.calldata 0x
 ```
 
-A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获代码的反汇编、简明 CFG 与栈、每个 `O` 的结果概要，最后显示 `Verified cross-contract SSA:`。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中分别保留的结果；具体地址短引用的完整值在 `Addresses` 中，未知地址直接使用符号名字。SSA 用 `%结果 = 指令 %操作数` 展示值流，`T` 标识转移。需要完整环境字段、捕获帧与效果链时加 `--verbose`；需要查询 JSON 字段时改用 `analyze --format json`，再加 `--ssa` 可导出完成图的 SSA。JSON 为 `schema_version=4`，caller 和逻辑 `address_value` 的有类型格式见[第 09 课的代理实验](../docs/09-cross-contract.md#4-代理实验读谁的代码写谁的-storage)。
+A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获代码的反汇编、简明 CFG 与栈、每个 `Oᵢ` 的结果概要，最后显示 `Verified cross-contract SSA:`。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中分别保留的结果；具体地址短引用的完整值在 `Addresses` 中，未知地址直接使用符号名字。SSA 用 `%结果 = 指令 %操作数` 展示值流，`Tᵢ` 标识转移。需要完整环境字段、捕获帧与效果链时加 `--verbose`；需要查询 JSON 字段时改用 `analyze --format json`，再加 `--ssa` 可导出完成图的 SSA。JSON 为 `schema_version=4`，caller 和逻辑 `address_value` 的有类型格式见[第 09 课的代理实验](../docs/09-cross-contract.md#4-代理实验读谁的代码写谁的-storage)。
 
 反汇编中的代码身份由代码地址、hash 和模式区分；状态账户另行保留。代理可以共享实现代码，创建例子可以在同一地址执行 InitCode 与新安装的 Runtime。指令列表与状态入口、出口栈共同描述抽象分析，不能当作逐指令具体步骤记录。表中写的是**具体成功轨迹**；抽象模型还保留 gas 等失败可能，因此实际输出可能包含更大的值集合或其他 outcome。`Incomplete` 时 `explain` 保留反汇编、部分图、每个已知结果及全部诊断与前沿，显示 `SSA unavailable` 并退出 `2`；`--verbose` 保留完整报告分区。
 

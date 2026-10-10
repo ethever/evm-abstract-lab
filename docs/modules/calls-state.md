@@ -34,7 +34,7 @@
 
 **理论角度：**代码相同不表示存储相同。DELEGATECALL 使用实现代码而保留代理的状态身份；重入还说明，同一个账户可以同时对应多个调用帧，各有栈和 memory，但共享当前账户状态。
 
-**实现角度：**对照 [`FrameKey`](../../crates/evm-abstract/src/analysis/machine.rs) 的 `code_address`、`address`、`address_value` 与 [`FrameState`](../../crates/evm-abstract/src/analysis/machine/frame.rs)。S 编号标记整机状态，不能直接当成账户编号；帧内跳转历史也不能代替完整调用栈。
+**实现角度：**对照 [`FrameKey`](../../crates/evm-abstract/src/analysis/machine.rs) 的 `code_address`、`address`、`address_value` 与 [`FrameState`](../../crates/evm-abstract/src/analysis/machine/frame.rs)。σᵢ 编号标记整机状态，不能直接当成账户编号；帧内跳转历史也不能代替完整调用栈。
 
 **观察与停点：**代理实验中实现 code address 都是 `0x...0300`，state owner 分别为 `0x...0201`、`0x...0202`。随后做[重入实验](../09-cross-contract.md#6-重入新帧读到当前状态)：成功进入的内层 A 读到外层刚写的 1；抽象报告仍可能把最终 slot 1 合为 `{0,1}`，其中 1 对应该成功路径。
 

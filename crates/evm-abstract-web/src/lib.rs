@@ -2,6 +2,7 @@
 //! browser transport, and consume only the shared protocol's typed snapshot.
 
 mod app;
+mod notation;
 mod palette;
 mod widgets;
 

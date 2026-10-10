@@ -102,6 +102,7 @@ fn click(
 fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = Graph::default();
     graph.set_mode(GraphMode::States);
     let mut selection = Selection {
@@ -114,7 +115,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
         graph.nodes[&205]
             .lines
             .iter()
-            .any(|(line, _)| line.contains("%5 = φ(S0:%1 (e1), S1:%2 (e2))")),
+            .any(|(line, _)| line.contains("%5 = φ(σ₀:%1 (e₁), σ₁:%2 (e₂))")),
         "a fresh CFG must render SSA definitions without a toolbar click"
     );
     click(&ctx, &mut graph, &report, &mut selection, "Disasm");
@@ -133,15 +134,15 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
         content
             .lines
             .iter()
-            .any(|(line, _)| line.contains("%5 = φ(S0:%1 (e1), S1:%2 (e2))"))
+            .any(|(line, _)| line.contains("%5 = φ(σ₀:%1 (e₁), σ₁:%2 (e₂))"))
     );
     assert!(
         content
             .lines
             .iter()
-            .any(|(line, _)| line.contains("%5 = ADD %1, %2 · μ2→μ5"))
+            .any(|(line, _)| line.contains("%5 = ADD %1, %2 · μ₂→μ₅"))
     );
-    assert!(leaf_tooltip(&report, 205, NodeView::Ssa).contains("exit μ5 · f0 [%5]"));
+    assert!(leaf_tooltip(&report, 205, NodeView::Ssa).contains("exit μ₅ · f₀ [%5]"));
     assert!(
         content.tooltip.is_empty(),
         "graph construction must not eagerly format tooltips"
@@ -198,9 +199,10 @@ fn diamond_merge_preview_shows_phi_add_definition_and_exit_use_together() {
     block.exit_frames = vec![vec![8]];
     block.exit_effect = 14;
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
         let content = node_text(ui.painter(), &report, &report.cfg[2], NodeView::Ssa);
-        for required in ["%6 = φ(", "%8 = ADD %7, %6", "STOP", "exit μ14 · f0 [%8]"] {
+        for required in ["%6 = φ(", "%8 = ADD %7, %6", "STOP", "exit μ₁₄ · f₀ [%8]"] {
             assert!(
                 content
                     .lines
@@ -255,6 +257,7 @@ fn ssa_preview_keeps_terminal_phase_and_full_phi_transition_details() {
         result: Some(777),
     });
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
         let content = node_text(ui.painter(), &report, &report.cfg[2], NodeView::Ssa);
         assert_eq!(content.lines.len(), 8);
@@ -277,9 +280,9 @@ fn ssa_preview_keeps_terminal_phase_and_full_phi_transition_details() {
         for required in [
             "%109 = φ",
             "0005",
-            "e88 → S1",
-            "μ5→μ6 · %777",
-            "Arguments [%1, %2] · f0 [%777]",
+            "e₈₈ → σ₁",
+            "μ₅→μ₆ · %777",
+            "Arguments [%1, %2] · f₀ [%777]",
         ] {
             assert!(
                 content.tooltip.contains(required),
@@ -294,6 +297,7 @@ fn ssa_preview_keeps_terminal_phase_and_full_phi_transition_details() {
 #[test]
 fn ssa_entry_only_and_missing_receipts_never_invent_execution() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     for coverage in [BlockCoverage::Stale, BlockCoverage::Unexecuted] {
         let mut report = report();
         report.ssa.blocks[2].coverage = coverage;
@@ -327,6 +331,7 @@ fn ssa_entry_only_and_missing_receipts_never_invent_execution() {
 fn manual_mode_switch_preserves_selected_node_camera_anchor_and_zoom() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = Graph::default();
     graph.set_mode(GraphMode::States);
     let mut selection = Selection {
@@ -352,6 +357,7 @@ fn manual_mode_switch_preserves_selected_node_camera_anchor_and_zoom() {
 fn a_representation_switch_preserves_initial_fit_scale_and_canvas_anchor() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = Graph::default();
     graph.set_mode(GraphMode::States);
     let mut selection = Selection {
@@ -390,6 +396,7 @@ fn fit_button_centers_both_representations_without_rearranging_nodes() {
     let report = report();
     for content in [NodeView::Disassembly, NodeView::Ssa] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         let mut graph = Graph::default();
         graph.set_mode(GraphMode::States);
         let expected = Selection {
@@ -426,6 +433,7 @@ fn fit_button_centers_both_representations_without_rearranging_nodes() {
 fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut workspace = Workspace::default();
     workspace.graph.set_mode(GraphMode::States);
     workspace.receive(Ok(AnalyzeReply {

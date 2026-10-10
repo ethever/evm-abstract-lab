@@ -1,8 +1,9 @@
 //! Compact global navigation and task status; configuration lives in a modal.
 
 use super::{Command, View, Workspace, directory, inspector};
-use crate::palette;
+use crate::{notation, palette};
 use egui::{RichText, Ui};
+use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol::{AnalysisReport, AnalysisStatus};
 
 impl Workspace {
@@ -72,16 +73,16 @@ impl Workspace {
                 ui.spinner();
                 ui.add(egui::Label::new(RichText::new(self.task.label()).color(palette::ACCENT)).truncate()).on_hover_text(self.task.label());
                 if wide && let Some(snapshot)=&self.task.snapshot {
-                        ui.label(format!("#{:?} · {:?} · {} accounts · {} slots · {} states · {} transfers",snapshot.id.0,snapshot.progress.phase,snapshot.progress.accounts,snapshot.progress.slots,snapshot.progress.states,snapshot.progress.transfers));
+                        ui.label(notation::widget(ui,format!("{} · {:?} · {} accounts · {} slots · {} states · {} transfers",WideSymbol::Task(snapshot.id.0),snapshot.progress.phase,snapshot.progress.accounts,snapshot.progress.slots,snapshot.progress.states,snapshot.progress.transfers)));
                 }
                 if let Some(error)=&self.task.error {
-                    ui.colored_label(palette::WARNING,"Connection interrupted").on_hover_text(format!("{error}\nTask status is retained; polling will retry. Cancel can be retried."));
+                    ui.colored_label(palette::WARNING,"Connection interrupted").on_hover_text(notation::widget(ui, format!("{error}\nTask status is retained; polling will retry. Cancel can be retried.")));
                 }
             } else if let Some(error)=&self.task.error {
                 if ui.button("Edit inputs").clicked() {self.form.open=true;self.form.error=Some(error.to_string());}
-                ui.add(egui::Label::new(RichText::new(error.to_string()).color(palette::ERROR)).truncate()).on_hover_ui(|ui| {
+                ui.add(egui::Label::new(notation::widget(ui,RichText::new(error.to_string()).color(palette::ERROR))).truncate()).on_hover_ui(|ui| {
                     if let super::job::TaskError::Api(error)=error { inspector::api_error_details(ui,error); }
-                    else { ui.label(error.to_string()); }
+                    else { ui.label(notation::widget(ui,error.to_string())); }
                 });
             } else if self.task.phase==super::job::TaskPhase::Cancelled {
                 ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
@@ -118,8 +119,8 @@ pub(super) fn result_context(
         || "No captured program".into(),
         |program| {
             format!(
-                "P{} · {:?} · {}",
-                program.id,
+                "{} · {:?} · {}",
+                Symbol::Program(program.id),
                 program.kind,
                 directory::short(&program.code_address)
             )
@@ -142,18 +143,24 @@ pub(super) fn result_context(
         program_label,
         report.fork
     );
-    ui.add(egui::Label::new(RichText::new(label).small().color(palette::MUTED)).truncate())
-        .on_hover_ui(|ui| {
-            if let Some(program) = source {
-                ui.monospace(&program.code_address);
-                ui.monospace(&program.code_hash);
+    ui.add(
+        egui::Label::new(notation::widget(
+            ui,
+            RichText::new(label).small().color(palette::MUTED),
+        ))
+        .truncate(),
+    )
+    .on_hover_ui(|ui| {
+        if let Some(program) = source {
+            ui.monospace(&program.code_address);
+            ui.monospace(&program.code_hash);
+        }
+        if let Some(snapshot) = &report.metadata.snapshot {
+            ui.monospace(&snapshot.block_hash);
+            if ui.small_button("Copy block hash").clicked() {
+                ui.ctx().copy_text(snapshot.block_hash.clone());
             }
-            if let Some(snapshot) = &report.metadata.snapshot {
-                ui.monospace(&snapshot.block_hash);
-                if ui.small_button("Copy block hash").clicked() {
-                    ui.ctx().copy_text(snapshot.block_hash.clone());
-                }
-            }
-            ui.monospace(&report.metadata.fingerprint);
-        });
+        }
+        ui.monospace(&report.metadata.fingerprint);
+    });
 }

@@ -12,6 +12,7 @@ default = []
 imbl    = ["snapshot-state/imbl"]
 
 [dependencies]
+evm-abstract-notation = { path = "../evm-abstract-notation" }
 snapshot-state = { path = "../snapshot-state" }
 alloy-primitives.workspace = true
 revm-bytecode.workspace = true

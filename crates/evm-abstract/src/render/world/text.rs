@@ -1,5 +1,7 @@
 //! Complete world reports, grouped by identity, graph evidence and outcomes.
 
+use evm_abstract_notation::Symbol;
+
 use super::{identity, observations};
 use crate::{
     analysis::{FrameCode, FrameKey, WorldAnalysis},
@@ -140,7 +142,10 @@ pub fn render(analysis: &WorldAnalysis) -> String {
         .states()
         .iter()
         .map(|state| {
-            let mut row = vec![format!("S{}", state.id), state.key.frames.len().to_string()];
+            let mut row = vec![
+                format!("{}", Symbol::State(state.id)),
+                state.key.frames.len().to_string(),
+            ];
             row.extend(frame_cells(state.active(), &refs));
             row
         })
@@ -166,7 +171,7 @@ pub fn render(analysis: &WorldAnalysis) -> String {
     output.push_str("\nState details\n");
     for state in analysis.states() {
         let frame = state.entry.active();
-        writeln!(output, "  S{}", state.id).unwrap();
+        writeln!(output, "  {}", Symbol::State(state.id)).unwrap();
         write_table(
             &mut output,
             "    ",
@@ -203,8 +208,8 @@ pub fn render(analysis: &WorldAnalysis) -> String {
             .iter()
             .map(|edge| {
                 vec![
-                    format!("S{}", edge.from),
-                    format!("S{}", edge.to),
+                    format!("{}", Symbol::State(edge.from)),
+                    format!("{}", Symbol::State(edge.to)),
                     format!("{:?}", edge.kind),
                 ]
             })
@@ -218,8 +223,10 @@ pub fn render(analysis: &WorldAnalysis) -> String {
     for (index, outcome) in analysis.outcomes().iter().enumerate() {
         writeln!(
             output,
-            "  O{index} | S{} | {:?}",
-            outcome.state, outcome.kind
+            "  {} | {} | {:?}",
+            Symbol::Outcome(index),
+            Symbol::State(outcome.state),
+            outcome.kind
         )
         .unwrap();
         write_bytes(&mut output, "    ", "returndata", &outcome.data);
@@ -252,13 +259,14 @@ pub fn render(analysis: &WorldAnalysis) -> String {
         let reused = record
             .reused_at
             .iter()
-            .map(|id| format!("S{id}"))
+            .map(|id| Symbol::State(*id).to_string())
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(
             output,
-            "  summary#{index} | source=S{} | reused_at=[{reused}]",
-            record.source_state
+            "  {} | source={} | reused_at=[{reused}]",
+            Symbol::Summary(index),
+            Symbol::State(record.source_state)
         )
         .unwrap();
         write_table(
@@ -285,7 +293,7 @@ pub fn render(analysis: &WorldAnalysis) -> String {
                 .enumerate()
                 .map(|(id, result)| {
                     vec![
-                        id.to_string(),
+                        format!("{}:{}", Symbol::Summary(index), Symbol::Outcome(id)),
                         format!("{:?}", result.kind),
                         length(result.data.len()),
                         refs.hash(result.store.code_identity()).to_owned(),
@@ -305,7 +313,7 @@ pub fn render(analysis: &WorldAnalysis) -> String {
             .iter()
             .map(|diagnostic| {
                 vec![
-                    format!("S{}", diagnostic.state),
+                    format!("{}", Symbol::State(diagnostic.state)),
                     format!("0x{:x}", diagnostic.pc),
                     format!("{:?}", diagnostic.kind),
                 ]
@@ -320,10 +328,11 @@ pub fn render(analysis: &WorldAnalysis) -> String {
     for (index, frontier) in analysis.frontiers().iter().enumerate() {
         writeln!(
             output,
-            "  F{index} | from={} | pc={} | reason={:?}",
+            "  {} | from={} | pc={} | reason={:?}",
+            Symbol::Frontier(index),
             frontier
                 .from
-                .map_or_else(|| "none".to_owned(), |id| format!("S{id}")),
+                .map_or_else(|| "none".to_owned(), |id| Symbol::State(id).to_string()),
             frontier
                 .pc
                 .map_or_else(|| "none".to_owned(), |pc| format!("0x{pc:x}")),
@@ -342,7 +351,7 @@ pub fn render(analysis: &WorldAnalysis) -> String {
                 .iter()
                 .enumerate()
                 .map(|(index, frame)| {
-                    let mut row = vec![index.to_string()];
+                    let mut row = vec![Symbol::Frame(index).to_string()];
                     row.extend(frame_cells(frame, &refs));
                     row.push(format!("{:?}", frame.jump_history));
                     row
@@ -374,7 +383,7 @@ pub fn render(analysis: &WorldAnalysis) -> String {
 
 fn frame_cells(frame: &FrameKey, refs: &References) -> Vec<String> {
     vec![
-        format!("B{}", frame.basic_block_index),
+        format!("{}", Symbol::Block(frame.basic_block_index)),
         frame.stack_height.to_string(),
         refs.address(frame.code_address).to_owned(),
         refs.address_input(frame.address_value),
@@ -443,10 +452,11 @@ fn write_store(output: &mut String, store: &Store, refs: &References) {
     for (index, (site, log)) in store.possible_logs().iter().enumerate() {
         writeln!(
             output,
-            "      L{index} | address={} | code={} | pc=0x{:x}",
+            "      {} | address={} | code={} | pc=0x{:x}",
+            Symbol::Log(index),
             refs.address(site.address),
             refs.address(site.code_address),
-            site.pc,
+            site.pc
         )
         .unwrap();
         write_table(

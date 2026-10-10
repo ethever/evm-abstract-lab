@@ -3,6 +3,8 @@
 //! 代码目录不重新查询初始账户：创建部署的覆盖层、委托调用的代码身份和
 //! 暂停帧都必须保留。反汇编是语法指令列表，不能冒充抽象状态图的具体执行轨迹。
 
+use evm_abstract_notation::Symbol;
+
 use crate::{
     analysis::{FrameCode, MachinePayload, MachineState, Status, WorldAnalysis},
     bytecode::Program,
@@ -137,8 +139,9 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis) {
     for (index, ((address, hash, mode), code)) in codes.iter_mut().enumerate() {
         writeln!(
             output,
-            "\n  C{index} | code={} | code_hash={hash} | mode={mode:?}",
-            super::environment::owner(analysis, *address),
+            "\n  {} | code={} | code_hash={hash} | mode={mode:?}",
+            Symbol::Code(index),
+            super::environment::owner(analysis, *address)
         )
         .unwrap();
         let owners = code
@@ -161,8 +164,9 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis) {
             };
             writeln!(
                 output,
-                "      S{} frame={} {phase} {role}",
-                reference.state, reference.frame
+                "      {} frame={} {phase} {role}",
+                Symbol::State(reference.state),
+                Symbol::Frame(reference.frame)
             )
             .unwrap();
         }
@@ -206,7 +210,7 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis) {
                     if block == program.blocks().len() {
                         "synthetic end-of-code continuation (no instruction)".to_owned()
                     } else {
-                        format!("B{block}")
+                        format!("{}", Symbol::Block(block))
                     }
                 },
             );
@@ -218,8 +222,8 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis) {
                 .join(", ");
             writeln!(
                 output,
-                "      S{} | {location} | executed_pcs=[{pcs}]",
-                state.id
+                "      {} | {location} | executed_pcs=[{pcs}]",
+                Symbol::State(state.id)
             )
             .unwrap();
         }

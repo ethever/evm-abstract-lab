@@ -131,6 +131,7 @@ fn replace_text(ctx: &Context, form: &mut AnalysisForm, text: &str) {
 #[test]
 fn integer_budget_editor_preserves_values_above_f64_precision_and_old_caps() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     ctx.global_style_mut(|style| style.animation_time = 0.0);
     let mut form = AnalysisForm {
         open: true,
@@ -156,6 +157,7 @@ fn integer_budget_editor_preserves_values_above_f64_precision_and_old_caps() {
 fn invalid_numeric_draft_blocks_button_and_keyboard_until_corrected() {
     for invalid in ["not a number", "-1", "18446744073709551616"] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         ctx.global_style_mut(|style| style.animation_time = 0.0);
         let mut form = AnalysisForm {
             open: true,
@@ -189,6 +191,7 @@ fn precision_and_acquisition_inputs_accept_values_above_previous_admission_caps(
         ("RPC acquisition budget", "67108864", "9007199254740993"),
     ] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         ctx.global_style_mut(|style| style.animation_time = 0.0);
         let mut form = AnalysisForm {
             open: true,
@@ -212,6 +215,7 @@ fn precision_and_acquisition_inputs_accept_values_above_previous_admission_caps(
 #[test]
 fn opening_focuses_the_real_bytecode_editor_and_submit_preserves_typed_request() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut form = AnalysisForm {
         open: true,
         ..AnalysisForm::default()
@@ -237,6 +241,7 @@ fn opening_focuses_the_real_bytecode_editor_and_submit_preserves_typed_request()
 #[test]
 fn rpc_form_keeps_snapshot_identity_and_execution_overrides_distinct() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut form = AnalysisForm {
         open: true,
         source: Source::Rpc,
@@ -274,6 +279,7 @@ fn rpc_form_keeps_snapshot_identity_and_execution_overrides_distinct() {
 #[test]
 fn rpc_selector_displays_names_and_urls_and_submits_the_clicked_providers_id() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut form = AnalysisForm {
         open: true,
         source: Source::Rpc,
@@ -315,6 +321,7 @@ fn missing_catalog_or_invalid_selection_blocks_button_and_keyboard_but_not_bytec
         "invalid-selection",
     ] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         let mut form = AnalysisForm {
             open: true,
             source: Source::Rpc,
@@ -363,6 +370,7 @@ fn missing_catalog_or_invalid_selection_blocks_button_and_keyboard_but_not_bytec
 fn retry_after_empty_or_failed_catalog_recovers_and_ignores_old_callbacks() {
     for failed in [false, true] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         let mut form = AnalysisForm {
             open: true,
             source: Source::Rpc,
@@ -477,6 +485,7 @@ fn visible_label(output: &FullOutput, label: &str, viewport: Rect) -> Pos2 {
 #[test]
 fn ethereum_entry_examples_submit_the_chosen_address_and_preserve_every_other_input() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     ctx.global_style_mut(|style| style.animation_time = 0.0);
     let mut form = AnalysisForm {
         open: true,
@@ -533,6 +542,7 @@ fn ethereum_entry_examples_submit_the_chosen_address_and_preserve_every_other_in
 fn custom_entry_remains_editable_visible_and_persistent_in_narrow_windows() {
     for size in [Vec2::new(390.0, 844.0), Vec2::new(320.0, 480.0)] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         ctx.global_style_mut(|style| style.animation_time = 0.0);
         let mut form = AnalysisForm {
             open: true,
@@ -579,6 +589,7 @@ fn custom_entry_remains_editable_visible_and_persistent_in_narrow_windows() {
 #[test]
 fn typing_a_known_address_changes_the_label_without_rewriting_the_draft() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut form = AnalysisForm {
         open: true,
         source: Source::Rpc,

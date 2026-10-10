@@ -29,7 +29,7 @@ nix run . -- cfg --hex 605b005b00
 | `0x03` | 真正的 JUMPDEST |
 | `0x04` | STOP |
 
-disasm 有 B0、B1 两个块；CFG 只有入口 S0，没有边。`0x03` 是合法目标，但本程序入口在 STOP 处结束，没有跳到它。验收要同时解释解码结果和可达图。
+disasm 有 B₀、B₁ 两个块；CFG 只有入口 σᵖ₀，没有边。`0x03` 是合法目标，但本程序入口在 STOP 处结束，没有跳到它。验收要同时解释解码结果和可达图。
 
 </details>
 
@@ -89,13 +89,13 @@ nix run . -- ssa --hex 60018060029000
 nix run . -- ssa --file examples/diamond.hex --context-depth 0
 ```
 
-回答：最终有三个栈槽位，为什么只有两个值定义？[diamond](../examples/diamond.hex) 的 `%0` 为什么不是第一条 PUSH？从 S1 进入汇合点时，φ 接收哪个名字？
+回答：最终有三个栈槽位，为什么只有两个值定义？[diamond](../examples/diamond.hex) 的 `%0` 为什么不是第一条 PUSH？从 σᵖ₁ 进入汇合点时，φ 接收哪个名字？
 
 <details><summary>提示与验收</summary>
 
 第一个程序 `values=2`，出栈 `[%0,%1,%0]`。DUP 复制引用，SWAP 改变位置，都不产生新值定义。
 
-[diamond](../examples/diamond.hex) 为入口槽位先分配 `%0`，所以第一条 PUSH 是 `%1`。汇合点是 `phi(S1: %4, S2: %5)`；从 S1 来取 `%4`，从 S2 来取 `%5`。`slot 0` 表示入口栈底位置，`%0` 表示定义身份，`abstract {0x1,0x2}` 表示可能数值；三者应分别解释。
+[diamond](../examples/diamond.hex) 为入口槽位先分配 `%0`，所以第一条 PUSH 是 `%1`。汇合点是 `φ(σᵖ₁: %4, σᵖ₂: %5)`；从 σᵖ₁ 来取 `%4`，从 σᵖ₂ 来取 `%5`。`slot 0` 表示入口栈底位置，`%0` 表示定义身份，`abstract {0x1,0x2}` 表示可能数值；三者应分别解释。
 
 </details>
 
@@ -301,13 +301,13 @@ nix run . -- analyze --world /tmp/storage-experiment.json --evm.to 0x00000000000
 
 打开 [partial-ssa-memory.json](../examples/partial-ssa-memory.json)，先手写五条指令的正常栈变化，再按 [04 的实验命令](04-ssa.md#从块中途停下的实际输出开始)分别使用 1 和 32 字节内存上限。不要先看答案，预测四件事：MLOAD 是否有结果名字；ADD 是否出现于 SSA 正文；记录处的栈还剩什么；分析状态与退出码是什么。
 
-接着运行 [partial phi 示例](04-ssa.md#部分-φ-的输入覆盖哪些边)，找到一条 `T` 边及接收它的入口 φ，回答：输入列表只有一项，能否证明以后不会再发现别的入边？整张图 Incomplete，是否意味着每个块都只执行到中间？
+接着运行 [partial φ 示例](04-ssa.md#部分-φ-的输入覆盖哪些边)，找到一条 `Tᵢ` 边及接收它的入口 φ，回答：输入列表只有一项，能否证明以后不会再发现别的入边？整张图 Incomplete，是否意味着每个块都只执行到中间？
 
 <details><summary>提示与验收</summary>
 
 | 内存上限 | MLOAD 和后续指令的证据 | 栈与完成状态 |
 | --- | --- | --- |
-| 1 | MLOAD 为 OperandsConsumed，消费偏移名字 `%1`，没有结果；ADD、STOP 未分析到 | `recorded prefix stack: F0: [%0]`，其中 `%0` 是之前的常量 1；Incomplete、退出 2 |
+| 1 | MLOAD 为 OperandsConsumed，消费偏移名字 `%1`，没有结果；ADD、STOP 未分析到 | `recorded prefix stack: f₀: [%0]`，其中 `%0` 是之前的常量 1；Incomplete、退出 2 |
 | 32 | MLOAD 定义 `%2`，ADD 定义 `%3`，STOP 已记录 | 块末栈为 `[%3]`；Converged、退出 0 |
 
 `recorded prefix stack` 是当前记录阶段的栈，不承诺最后一条指令已经正常完成。φ 的 `T: %value` 项只说明沿该条已支持边传入哪个名字；当前实现未为 Incomplete 图中的每个块分别证明入边完整。单输入 φ 也可能只是未简化的入口命名。已记录到块末尾的路径可以与其他路径的前沿同时存在。

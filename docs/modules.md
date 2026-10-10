@@ -12,7 +12,7 @@
 | --- | --- | --- | --- |
 | [Memory & Storage](modules/memory-storage.md) | 字节与 slot 有什么区别？写后读为什么多出候选？ | memory 读写、storage 读写、别名与弱更新、归属与回滚 | [14](14-memory-model.md)、[16](16-storage-model.md) |
 | [SSA 与部分执行](modules/ssa.md) | `%value`、φ、prefix stack、progress 各在说明什么？ | 值名与位置、入口 φ、执行前缀、覆盖与验证 | [04](04-ssa.md) |
-| [CFG、固定点与敏感性](modules/control-flow.md) | 一个 B 为什么对应多个 S？为什么同一状态会重跑？ | 状态与边、工作表、上下文划分、未知跳转 | [03](03-cfg.md)、[05](05-sensitivity.md) |
+| [CFG、固定点与敏感性](modules/control-flow.md) | 一个 Bᵢ 为什么对应多个 σᵢ？为什么同一状态会重跑？ | 状态与边、工作表、上下文划分、未知跳转 | [03](03-cfg.md)、[05](05-sensitivity.md) |
 | [数值摘要与组合域](modules/domains.md) | `{1,2}`、Top、位与范围保留了什么？ | 覆盖与精度、join/transfer、组件交换、限制与身份 | [02](02-domain.md)、[12](12-product-domains-facts.md) |
 | [符号关系与 SMT](modules/relations.md) | 同一个未知值如何跨指令关联？什么证据允许排除分支？ | 输入身份、分支假设、关系合并与作用域、表示和资源边界 | [15](15-symbolic-relations.md) |
 | [调用、状态归属与回滚](modules/calls-state.md) | 谁的代码在跑？失败恢复哪一份状态？ | 调用与返回、代理/重入、嵌套回滚、状态容器与边界 | [09](09-cross-contract.md)、[11](11-state-backends.md) |

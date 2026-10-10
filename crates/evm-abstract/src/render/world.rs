@@ -4,6 +4,8 @@
 //! and caller remain visible so a shared implementation never looks like one
 //! shared account, and frontiers remain visible even when analysis is partial.
 
+use evm_abstract_notation::Symbol;
+
 use crate::{
     analysis::WorldAnalysis,
     world::{Existence, SnapshotIdentity, Store},
@@ -85,10 +87,10 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
     for state in analysis.states() {
         let frame = state.active();
         let label = format!(
-            "S{} depth={} B{} mode={:?}\ncode={}\ncode_hash={}\naddress={}\ncaller={} static={}",
-            state.id,
+            "{} depth={} {} mode={:?}\ncode={}\ncode_hash={}\naddress={}\ncaller={} static={}",
+            Symbol::State(state.id),
             state.key.frames.len(),
-            frame.basic_block_index,
+            Symbol::Block(frame.basic_block_index),
             frame.mode,
             environment::owner(analysis, frame.code_address),
             frame.code_hash,
@@ -112,7 +114,12 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
         writeln!(
             output,
             "  F{index} [label={:?}, shape=diamond, color=red];",
-            format!("{:?} pc={:?}", frontier.reason, frontier.pc)
+            format!(
+                "{} {:?} pc={:?}",
+                Symbol::Frontier(index),
+                frontier.reason,
+                frontier.pc
+            )
         )
         .unwrap();
         if let Some(from) = frontier.from {
@@ -137,7 +144,8 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
             output,
             "  O{index} [label={:?}, shape=oval];",
             format!(
-                "{:?} returndata_len={}\n{accounts}",
+                "{} {:?} returndata_len={}\n{accounts}",
+                Symbol::Outcome(index),
                 outcome.kind,
                 outcome.data.len()
             )
@@ -156,12 +164,19 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
             output,
             "  C{index} [label={:?}, shape=note, color=blue];",
             format!(
-                "summary#{index} states={} edges={} outputs={}\ncode_hash={}\nreused_at={:?}",
+                "{} / {} states={} edges={} outputs={}\ncode_hash={}\nreused_at=[{}]",
+                Symbol::Certificate(index),
+                Symbol::Summary(index),
                 record.state_count,
                 record.edge_count,
                 record.outputs.len(),
                 hash_label(record.input.code_hash),
-                record.reused_at
+                record
+                    .reused_at
+                    .iter()
+                    .map(|state| Symbol::State(*state).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         )
         .unwrap();

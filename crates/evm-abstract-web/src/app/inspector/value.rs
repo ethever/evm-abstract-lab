@@ -1,7 +1,8 @@
 //! Readable numeric/symbolic components, without reducing domain evidence to JSON.
 
-use crate::palette;
+use crate::{notation, palette};
 use egui::{RichText, Ui};
+use evm_abstract_notation::WideSymbol;
 use evm_abstract_protocol::{AddressValue, CongruenceValue, Expression, InputSymbol, ValueInfo};
 
 pub(super) fn address(value: &AddressValue) -> String {
@@ -19,13 +20,19 @@ fn symbol(value: &InputSymbol) -> String {
 }
 
 pub(super) fn cell(ui: &mut Ui, value: &ValueInfo) {
-    ui.add(egui::Label::new(RichText::new(&value.summary).monospace()).truncate())
-        .on_hover_ui(|ui| {
-            ui.set_max_width(600.0);
-            egui::ScrollArea::both()
-                .max_height(320.0)
-                .show(ui, |ui| details(ui, value));
-        });
+    ui.add(
+        egui::Label::new(notation::widget(
+            ui,
+            RichText::new(&value.summary).monospace(),
+        ))
+        .truncate(),
+    )
+    .on_hover_ui(|ui| {
+        ui.set_max_width(600.0);
+        egui::ScrollArea::both()
+            .max_height(320.0)
+            .show(ui, |ui| details(ui, value));
+    });
 }
 
 pub(super) fn named(ui: &mut Ui, label: &str, value: &ValueInfo) {
@@ -37,13 +44,16 @@ pub(super) fn named(ui: &mut Ui, label: &str, value: &ValueInfo) {
 pub(super) fn text(ui: &mut Ui, label: &str, value: impl Into<String>) {
     let value = value.into();
     ui.label(RichText::new(label).color(palette::MUTED));
-    ui.add(egui::Label::new(RichText::new(&value).monospace()).truncate())
-        .on_hover_text(&value);
+    ui.add(egui::Label::new(notation::widget(ui, RichText::new(&value).monospace())).truncate())
+        .on_hover_text(notation::widget(ui, &value));
     ui.end_row();
 }
 
 pub(super) fn details(ui: &mut Ui, value: &ValueInfo) {
-    ui.label(RichText::new(&value.summary).monospace().strong());
+    ui.label(notation::widget(
+        ui,
+        RichText::new(&value.summary).monospace().strong(),
+    ));
     egui::Grid::new("abstract_value_components")
         .num_columns(2)
         .show(ui, |ui| {
@@ -97,7 +107,11 @@ pub(super) fn details(ui: &mut Ui, value: &ValueInfo) {
                 text(
                     ui,
                     "Equality identity",
-                    format!("scope {} · {}", identity.scope, symbol(&identity.symbol)),
+                    format!(
+                        "{} · {}",
+                        WideSymbol::Scope(identity.scope),
+                        symbol(&identity.symbol)
+                    ),
                 );
             }
             if value.code_address_role {
@@ -109,26 +123,43 @@ pub(super) fn details(ui: &mut Ui, value: &ValueInfo) {
     }
     if let Some(graph) = &value.expression {
         ui.separator();
-        ui.label(format!("Expression root #{}", graph.root));
+        ui.label(notation::widget(
+            ui,
+            format!(
+                "Expression root {}",
+                WideSymbol::Expression(graph.root as u64)
+            ),
+        ));
         for (index, expression) in graph.nodes.iter().enumerate() {
             let expression = match expression {
                 Expression::Constant(word) => word.clone(),
                 Expression::Input(input) => {
-                    format!("input {} · {}", input.scope, symbol(&input.symbol))
+                    format!(
+                        "input {} · {}",
+                        WideSymbol::Scope(input.scope),
+                        symbol(&input.symbol)
+                    )
                 }
-                Expression::Fresh(id) => format!("fresh {id}"),
+                Expression::Fresh(id) => WideSymbol::Fresh(*id).to_string(),
                 Expression::Operation(operation) => format!(
                     "opcode 0x{:02x}({})",
                     operation.opcode,
                     operation
                         .arguments
                         .iter()
-                        .map(|id| format!("#{id}"))
+                        .map(|id| WideSymbol::Expression(*id as u64).to_string())
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
             };
-            ui.monospace(format!("#{index} = {expression}"));
+            ui.label(notation::widget(
+                ui,
+                RichText::new(format!(
+                    "{} = {expression}",
+                    WideSymbol::Expression(index as u64)
+                ))
+                .monospace(),
+            ));
         }
     }
 }

@@ -39,6 +39,7 @@ fn snapshot(graph: &Graph) -> SceneSnapshot {
 fn frozen_scene_and_camera_survive_wide_narrow_wide_viewports() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     for manual in [false, true] {
         let mut graph = disassembly_graph();
         render(&ctx, &mut graph, &report, Vec2::new(1100.0, 450.0));
@@ -72,6 +73,7 @@ fn frozen_scene_and_camera_survive_wide_narrow_wide_viewports() {
 fn frozen_scene_fit_changes_camera_without_repacking_nodes_or_edges() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::new(1100.0, 450.0));
     let scene = snapshot(&graph);
@@ -90,6 +92,7 @@ fn frozen_scene_fit_changes_camera_without_repacking_nodes_or_edges() {
 fn frozen_scene_waits_for_a_usable_initial_canvas() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::splat(1.0));
     assert!(
@@ -106,6 +109,7 @@ fn frozen_scene_waits_for_a_usable_initial_canvas() {
 fn a_sizing_pass_cannot_consume_the_first_layout_or_fit() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
         ui.scope_builder(egui::UiBuilder::new().sizing_pass(), |ui| {
@@ -124,6 +128,7 @@ fn a_sizing_pass_cannot_consume_the_first_layout_or_fit() {
 fn a_new_report_gets_a_new_initial_layout_and_fit() {
     let mut report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::new(1100.0, 450.0));
     let old_scene = snapshot(&graph);
@@ -327,6 +332,7 @@ fn render_with_chrome(ctx: &Context, graph: &mut Graph, report: &AnalysisReport,
 fn short_wide_diamond_uses_horizontal_ranks_at_native_text_scale() {
     let report = diamond();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     render_with_chrome(&ctx, &mut graph, &report, Vec2::new(844.0, 390.0));
     assert!(
@@ -369,6 +375,7 @@ fn short_wide_diamond_uses_horizontal_ranks_at_native_text_scale() {
 fn initial_layout_adapts_to_the_first_canvas_size() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::new(1100.0, 450.0));
     assert_scene_fits(&graph);
@@ -391,6 +398,7 @@ fn initial_layout_adapts_to_the_first_canvas_size() {
 fn fit_centers_the_complete_scene_in_a_roomy_canvas() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     for size in [Vec2::new(1440.0, 1200.0), Vec2::new(1440.0, 1600.0)] {
         render(&ctx, &mut graph, &report, size);
@@ -405,6 +413,7 @@ fn fit_centers_the_complete_scene_in_a_roomy_canvas() {
 fn resize_preserves_manual_canvas_coordinates_and_fit_centers_the_scene() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::new(900.0, 500.0));
     let previous = graph.viewport.unwrap();
@@ -433,6 +442,7 @@ fn resize_preserves_manual_canvas_coordinates_and_fit_centers_the_scene() {
 fn focus_selected_centers_its_measured_rect_and_enters_manual_mode() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     let screen = Vec2::new(700.0, 380.0);
     render(&ctx, &mut graph, &report, screen);
@@ -459,6 +469,7 @@ fn focus_selected_centers_its_measured_rect_and_enters_manual_mode() {
 fn content_measurement_shrinks_short_nodes_and_retains_empty_frame_semantics() {
     let report = report();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut sizes = None;
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
         let short = node_text(
@@ -510,6 +521,7 @@ fn cycles_self_edges_and_label_detours_are_inside_fit_bounds() {
         },
     ]);
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::new(390.0, 500.0));
     for id in [42, 44] {

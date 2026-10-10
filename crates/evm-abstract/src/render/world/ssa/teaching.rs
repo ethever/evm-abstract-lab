@@ -3,6 +3,8 @@
 //! DUP/SWAP 只调整已有名称；调用结果在恢复调用者的转换处定义。
 //! 检查点和粗粒度效果只在跨帧转换处展示，完整证据由详细视图提供。
 
+use evm_abstract_notation::Symbol;
+
 use crate::render::{
     instruction::{InstructionLayout, write_ssa_body},
     world::teaching::References,
@@ -29,9 +31,9 @@ pub(in crate::render::world) fn render(analysis: &WorldAnalysis, ir: &WorldSsa) 
         ir.value_count()
     )
     .unwrap();
-    output.push_str("  S# = machine state; B# = frame-local block; F# = frame; T# = transition; %value = stack value.\n");
+    output.push_str("  σᵢ = machine state; Bᵢ = frame-local block; fᵢ = frame; Tᵢ = transition; %value = stack value.\n");
     output.push_str("  Frames are oldest caller first; stacks are bottom-to-top; instruction operands are EVM pop order.\n");
-    output.push_str("  DUP/SWAP preserve value names; !effect is a coarse machine-effect bundle including rollback checkpoints.\n");
+    output.push_str("  DUP/SWAP preserve value names; μᵢ is a coarse machine-effect bundle including rollback checkpoints.\n");
     for block in ir.blocks() {
         output.push('\n');
         write_block(
@@ -64,23 +66,25 @@ fn write_block(
     let owner = references.address_input(frame.address_value);
     writeln!(
         output,
-        "S{} | {code} | F{} active | state owner={owner} | context={:?}:",
-        block.state,
-        state.key.frames.len() - 1,
-        frame.jump_history,
+        "{} | {code} | {} active | state owner={owner} | context={:?}:",
+        Symbol::State(block.state),
+        Symbol::Frame(state.key.frames.len() - 1),
+        frame.jump_history
     )
     .unwrap();
     for phi in &block.phis {
         let inputs = phi
             .inputs
             .iter()
-            .map(|(transition, value)| format!("T{transition}: %{value}"))
+            .map(|(transition, value)| format!("{}: %{value}", Symbol::Transition(*transition)))
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(
             output,
-            "    %{} = phi({inputs}) ; F{} slot {}",
-            phi.result, phi.frame, phi.slot
+            "    %{} = φ({inputs}) ; {} slot {}",
+            phi.result,
+            Symbol::Frame(phi.frame),
+            phi.slot
         )
         .unwrap();
     }
@@ -133,7 +137,7 @@ fn write_stacks(output: &mut String, stacks: &[Vec<ValueId>]) {
         if frame != 0 {
             output.push_str("; ");
         }
-        write!(output, "F{frame}: {}", super::values(stack)).unwrap();
+        write!(output, "{}: {}", Symbol::Frame(frame), super::values(stack)).unwrap();
     }
 }
 
@@ -144,7 +148,14 @@ fn write_transition(
     transition: &Transition,
 ) {
     let edge = &analysis.edges()[transition.edge];
-    write!(output, "  T{index} | S{} -> S{} | ", edge.from, edge.to).unwrap();
+    write!(
+        output,
+        "  {} | {} → {} | ",
+        Symbol::Transition(index),
+        Symbol::State(edge.from),
+        Symbol::State(edge.to)
+    )
+    .unwrap();
     if let MachineEdgeKind::Intraprocedural(kind) = transition.kind {
         writeln!(output, "{kind:?}").unwrap();
         return;
@@ -161,29 +172,29 @@ fn write_transition(
     match transition.kind {
         MachineEdgeKind::Call => writeln!(
             output,
-            "    suspend F{}; enter F{}; save rollback checkpoint",
-            source_depth - 1,
-            destination_depth - 1
+            "    suspend {}; enter {}; save rollback checkpoint",
+            Symbol::Frame(source_depth - 1),
+            Symbol::Frame(destination_depth - 1)
         ),
         MachineEdgeKind::Return => writeln!(
             output,
-            "    resume F{}; commit child effects",
-            destination_depth - 1
+            "    resume {}; commit child effects",
+            Symbol::Frame(destination_depth - 1)
         ),
         MachineEdgeKind::Revert => writeln!(
             output,
-            "    resume F{}; rollback to saved checkpoint; retain revert data",
-            destination_depth - 1
+            "    resume {}; rollback to saved checkpoint; retain revert data",
+            Symbol::Frame(destination_depth - 1)
         ),
         MachineEdgeKind::Failure if source_depth > destination_depth => writeln!(
             output,
-            "    resume F{}; rollback to saved checkpoint; empty returndata",
-            destination_depth - 1
+            "    resume {}; rollback to saved checkpoint; empty returndata",
+            Symbol::Frame(destination_depth - 1)
         ),
         MachineEdgeKind::Failure => writeln!(
             output,
-            "    F{} continues; invocation rejected; empty returndata",
-            destination_depth - 1
+            "    {} continues; invocation rejected; empty returndata",
+            Symbol::Frame(destination_depth - 1)
         ),
         MachineEdgeKind::Intraprocedural(_) => unreachable!(),
     }
@@ -228,8 +239,9 @@ fn write_transition(
     write_stacks(output, &transition.stacks);
     writeln!(
         output,
-        " | effects !{} -> !{}",
-        transition.effect_input, transition.effect_result
+        " | effects {} → {}",
+        Symbol::Effect(transition.effect_input),
+        Symbol::Effect(transition.effect_result)
     )
     .unwrap();
 }

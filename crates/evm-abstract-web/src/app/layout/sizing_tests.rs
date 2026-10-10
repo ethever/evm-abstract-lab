@@ -80,7 +80,7 @@ fn long_push_and_phi_keep_a_graph_budget_without_hiding_source_data() {
             .iter()
             .any(|(text, _)| text == &format!(" {immediate}"))
     );
-    assert!(painted.iter().any(|(text, _)| text == "S79:%179"));
+    assert!(painted.iter().any(|(text, _)| text == "σ79:%179"));
 }
 
 #[test]

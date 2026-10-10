@@ -8,7 +8,7 @@
 
 直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 4 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
-所有反汇编与 SSA 基本块指令列表共用顶格的 `B# @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 B 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 B 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用赋值式指令正文；世界视图保留 C、F、state owner、context，以及按 T 标记并带 F/slot 的 φ。完整视图另保留所有帧元数据、原始指令字段和效果链，字节码行与效果行也使用这套布局。编号与证据的读法见[第 04 课](04-ssa.md)和[第 09 课](09-cross-contract.md#默认文本怎样读)。
+所有反汇编与 SSA 基本块指令列表共用顶格的 `Bᵢ @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 Bᵢ 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 Bᵢ 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用赋值式指令正文；世界视图保留 Cᵢ、fᵢ、state owner、context，以及按 Tᵢ 标记并带 fᵢ/slot 的 φ。完整视图另保留所有帧元数据、原始指令字段和效果链，字节码行与效果行也使用这套布局。编号与证据的读法见[第 04 课](04-ssa.md)和[第 09 课](09-cross-contract.md#默认文本怎样读)。
 
 ## 1. 调用摘要：复用完整结果关系
 
@@ -166,7 +166,7 @@ jq '[.analysis.outcomes[].store.account_observations[]
 
 第一个查询应找到同一地址的 `InitCode` 与 `Runtime` 两种 `mode`，并带不同代码 hash。第二个查询看最终账户事实：某些失败可能仍为 absent；成功部署的账户为 present、nonce=`0x1`、code_size=8。
 
-`explain` 的 `Execution code` 也分别列出实际捕获的 InitCode 与后续 Runtime 指令，使用各自的 hash 和模式；它从分析时保存的代码字节反汇编，不会用初始 world 中的空代码替代新安装的 runtime。同一账户地址可以对应多个代码版本，代码地址也可能与使用代码的状态账户不同。两个代码版本都可以有 B0，必须结合 C、mode 和 hash 判断身份。默认 CFG 通过代码目录编号连接到抽象图；`--verbose` 另保留每个捕获帧的入口、出口引用。这些引用都不是具体部署交易的逐指令轨迹。SSA 的返回转移还区分 CREATE 地址结果和普通 CALL 的成功位。
+`explain` 的 `Execution code` 也分别列出实际捕获的 InitCode 与后续 Runtime 指令，使用各自的 hash 和模式；它从分析时保存的代码字节反汇编，不会用初始 world 中的空代码替代新安装的 runtime。同一账户地址可以对应多个代码版本，代码地址也可能与使用代码的状态账户不同。两个代码版本都可以有 B₀，必须结合 C、mode 和 hash 判断身份。默认 CFG 通过代码目录编号连接到抽象图；`--verbose` 另保留每个捕获帧的入口、出口引用。这些引用都不是具体部署交易的逐指令轨迹。SSA 的返回转移还区分 CREATE 地址结果和普通 CALL 的成功位。
 
 `account_observations` 是方便阅读的账户汇总，不包含 storage slot；slot 仍在 `store.persistent.slots`。nonce 和余额是抽象值，JSON 中确定的数值仍写成含 `Constants` 的对象；已知的 `code_size` 则是整数，本例为 8。代码 hash 为零表示已确认 absent；代码为空但账户存在时，hash 是空字节的 Keccak，两者不同。
 
@@ -289,7 +289,7 @@ jq '.analysis.edges,
 
 模式列表含 `{"Precompile":"0x0000000000000000000000000000000000000004"}`，图中有 `Call` / `Return` 边。成功返回包含 `length={0x20}`、最后一字节 `0x2a`；抽象值可能同时含零，原因是 CALL 的保守失败可能没有填充输出区。完整图仍能构建 SSA；没有提供的预编译账户存在性/余额事实仍保持未知。
 
-预编译的 SSA 状态仍有帧、入口 φ、转移和效果证据，但没有普通字节码指令。文本保留原生执行原因，不会借用 caller 的 B 标题或造一个 pc。空代码、无效嵌套委托和代码末尾的合成继续位置同样显示自身原因，只有实际字节码块才使用 B 标题与 pc 列。
+预编译的 SSA 状态仍有帧、入口 φ、转移和效果证据，但没有普通字节码指令。文本保留原生执行原因，不会借用 caller 的 Bᵢ 标题或造一个 pc。空代码、无效嵌套委托和代码末尾的合成继续位置同样显示自身原因，只有实际字节码块才使用 Bᵢ 标题与 pc 列。
 
 密码学执行复用锁定的 [`revm-precompile 43.0.3`](https://docs.rs/revm-precompile/43.0.3/revm_precompile/)。分析器先检查输入资格并预留保守工作量，再进入后端：
 

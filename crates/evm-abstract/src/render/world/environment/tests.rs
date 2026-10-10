@@ -136,10 +136,10 @@ fn a_concrete_caller_equal_to_the_internal_owner_keeps_its_concrete_identity() {
     let analysis = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
     let report = world::explain(&analysis).unwrap();
     assert!(
-        report.contains("to=symbolic(To) | caller=A0 | origin=A0 (same as caller)"),
+        report.contains("to=symbolic(To) | caller=A₀ | origin=A₀ (same as caller)"),
         "{report}"
     );
-    assert!(report.contains(&format!("A0 = {internal}")), "{report}");
+    assert!(report.contains(&format!("A₀ = {internal}")), "{report}");
     assert!(report.contains("code=symbolic(To)"), "{report}");
 }
 

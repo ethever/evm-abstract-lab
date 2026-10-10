@@ -68,7 +68,7 @@ flowchart TD
 
 ### 从 JSON 中确认边确实被排除了
 
-状态 S 与原始块 B 不是同一编号。下面按 `basic_block_index=2` 找到第一次 true 后继所在的状态，再查看它的出边；这里的 B2 从 pc `0x09` 开始。
+状态 σᵖᵢ 与原始块 Bᵢ 不是同一编号。下面按 `basic_block_index=2` 找到第一次 true 后继所在的状态，再查看它的出边；这里的 B₂ 从 pc `0x09` 开始。
 
 ```bash
 jq '(.states[] | select(.key.basic_block_index == 2) | .id) as $source
@@ -102,7 +102,7 @@ jq '(.states[] | select(.key.basic_block_index == 2) | .id) as $source
 
 两次结果都可以是 Converged：一个模型已排除矛盾路径，另一个模型覆盖了更多路径。这是精度的差别，不能把保留假路径直接解释成分析没有完成。
 
-要看条件怎样存入当前状态，可以查询 B2 的入口：
+要看条件怎样存入当前状态，可以查询 B₂ 的入口：
 
 ```bash
 jq '.states[] | select(.key.basic_block_index == 2)

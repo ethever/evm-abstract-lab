@@ -3,6 +3,7 @@
 use super::value;
 use crate::palette;
 use egui::{RichText, Ui};
+use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{AnalysisReport, FrameSnapshot};
 
 pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
@@ -27,12 +28,12 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
             value::text(
                 ui,
                 "Block / context",
-                format!("B{} · {:?}", frame.basic_block, frame.context),
+                format!("{} · {:?}", Symbol::Block(frame.basic_block), frame.context),
             );
             value::text(
                 ui,
                 "Rollback snapshot",
-                format!("Store #{}", frame.rollback_store),
+                Symbol::Store(frame.rollback_store).to_string(),
             );
         });
     if let Some(continuation) = &frame.continuation {
@@ -46,7 +47,7 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                     "Return block",
                     continuation
                         .return_block
-                        .map_or("None".into(), |block| format!("B{block}")),
+                        .map_or("None".into(), |block| Symbol::Block(block).to_string()),
                 );
                 value::named(ui, "Output offset", &continuation.output_offset);
                 value::named(ui, "Output span", &continuation.output_size);

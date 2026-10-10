@@ -1,5 +1,7 @@
 //! 通过真实 CLI，把指令列表的列位置逐项对应到解码后的输入程序。
 
+use evm_abstract_notation::{Symbol, normalize_subscripts};
+
 use super::run_concrete;
 use evm_abstract::{Fork, bytecode::Program};
 use serde_json::Value as Json;
@@ -28,8 +30,10 @@ fn text(output: &Output, exit_code: i32) -> String {
 
 fn block_header(line: &str) -> bool {
     line.trim_start().strip_prefix('B').is_some_and(|tail| {
-        tail.split_once(" @ 0x")
-            .is_some_and(|(id, _)| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+        tail.split_once(" @ 0x").is_some_and(|(id, _)| {
+            let normalized = normalize_subscripts(id);
+            !normalized.is_empty() && normalized.bytes().all(|byte| byte.is_ascii_digit())
+        })
     })
 }
 
@@ -64,10 +68,10 @@ fn assert_instruction_lists(output: &str, programs: &[Program]) {
     for ((line_index, header), (program, block)) in headers.into_iter().zip(blocks) {
         assert_eq!(
             *header,
-            format!("B{} @ 0x{:04x}:", block.id, block.start_pc),
+            format!("{} @ 0x{:04x}:", Symbol::Block(block.id), block.start_pc),
             "block headers must begin at global column zero"
         );
-        let digit_column = header.find("0x").unwrap() + 2;
+        let digit_column = header[..header.find("0x").unwrap()].chars().count() + 2;
         for (offset, instruction) in block.instructions.iter().enumerate() {
             let row = lines[line_index + offset + 1];
             let unindented = row.trim_start();
@@ -273,7 +277,7 @@ fn fork_invalid_opcode_annotation_survives_instruction_alignment() {
             assert!(
                 output
                     .lines()
-                    .any(|line| line == "diagnostic S0 @ 0x0002: InvalidOpcode")
+                    .any(|line| line == "diagnostic σᵖ₀ @ 0x0002: InvalidOpcode")
             );
             program_directory(&output)
         } else {

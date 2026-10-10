@@ -253,7 +253,11 @@ impl Graph {
             }
             hit.on_hover_ui(|ui| {
                 if let Some(index) = &self.index {
-                    ui.monospace(node_tooltip(report, index, node, self.content));
+                    ui.label(crate::notation::widget(
+                        ui,
+                        egui::RichText::new(node_tooltip(report, index, node, self.content))
+                            .monospace(),
+                    ));
                 }
             });
         }
@@ -452,7 +456,8 @@ fn paint_node(
     }
     let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
     let label = |y: f32, text: &str, color: Color32, size: f32| {
-        painter.text(
+        crate::notation::paint(
+            &painter,
             rect.min + Vec2::new(PAD, y) * zoom,
             Align2::LEFT_TOP,
             text,

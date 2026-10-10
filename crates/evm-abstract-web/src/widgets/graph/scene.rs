@@ -3,6 +3,7 @@
 
 use super::{Graph, GraphMode, ReportIndex, Visibility, edge_label};
 use egui::Ui;
+use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::AnalysisReport;
 use std::collections::BTreeMap;
 
@@ -157,21 +158,37 @@ impl Graph {
         let Some(members) = self.display.edge_members.get(&edge) else {
             return;
         };
-        ui.label(format!("{} original state edge(s)", members.len()));
+        ui.label(crate::notation::widget(
+            ui,
+            format!("{} original state edge(s)", members.len()),
+        ));
         if self.mode == GraphMode::Blocks {
-            ui.label("Source overview: connected summary edges may use different state instances.");
+            ui.label(crate::notation::widget(
+                ui,
+                "Source overview: connected summary edges may use different state instances.",
+            ));
         }
         if let Some(index) = &self.index {
             for id in members.iter().take(12) {
                 if let Some(edge) = index.edge(report, *id) {
-                    ui.monospace(format!(
-                        "e{}: S{} → S{} · {:?}",
-                        edge.id, edge.from, edge.to, edge.kind
+                    ui.label(crate::notation::widget(
+                        ui,
+                        egui::RichText::new(format!(
+                            "{}: {} → {} · {:?}",
+                            Symbol::Edge(edge.id),
+                            Symbol::State(edge.from),
+                            Symbol::State(edge.to),
+                            edge.kind
+                        ))
+                        .monospace(),
                     ));
                 }
             }
             if members.len() > 12 {
-                ui.label(format!("{} more original edges", members.len() - 12));
+                ui.label(crate::notation::widget(
+                    ui,
+                    format!("{} more original edges", members.len() - 12),
+                ));
             }
         }
     }
@@ -185,7 +202,7 @@ impl Graph {
             "Cross-program neighborhood".into()
         } else {
             self.program_scope
-                .map_or("All programs".into(), |id| format!("P{id}"))
+                .map_or("All programs".into(), |id| Symbol::Program(id).to_string())
         };
         format!(
             "CFG view: {:?}; {} shown nodes; {}/{total} states; {} shown edges; {} native edges; {} hidden states; {} boundary edges; {scope}",

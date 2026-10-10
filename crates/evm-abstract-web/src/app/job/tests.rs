@@ -182,3 +182,17 @@ fn typed_http_capacity_errors_preserve_running_jobs_and_completed_result_callbac
     task.complete();
     assert_eq!(task.phase, TaskPhase::Ready);
 }
+
+#[test]
+fn task_identity_error_formats_full_u64_handles_as_symbols() {
+    let expected = evm_abstract_notation::WideSymbol::Task(u64::MAX).to_string();
+    let received = evm_abstract_notation::WideSymbol::Task(u64::MAX - 1).to_string();
+    let error = TaskError::Identity {
+        expected: JobId(u64::MAX),
+        received: JobId(u64::MAX - 1),
+    };
+    assert_eq!(
+        error.to_string(),
+        format!("Task response identity mismatch: expected {expected}, received {received}")
+    );
+}

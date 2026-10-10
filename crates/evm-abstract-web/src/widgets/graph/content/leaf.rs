@@ -2,6 +2,7 @@
 use super::{DISASM_ROWS, NodeText, NodeView, ReportIndex, SSA_COLUMNS, SSA_ROWS, abbreviate};
 use crate::palette;
 use egui::Color32;
+use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
     AnalysisReport, BlockCoverage, CfgBlock, DisasmInstruction, InstructionProgress, Phi, SsaBlock,
     SsaInstruction,
@@ -20,9 +21,9 @@ pub(super) fn preview(
     let coverage = ssa.map_or(BlockCoverage::Unexecuted, |ssa| ssa.coverage);
     let frontier = index.has_frontier(block.id);
     let title = format!(
-        "S{}  ·  B{}{}",
-        block.id,
-        block.basic_block,
+        "{}  ·  {}{}",
+        Symbol::State(block.id),
+        Symbol::Block(block.basic_block),
         if coverage == BlockCoverage::Current {
             String::new()
         } else {
@@ -30,7 +31,7 @@ pub(super) fn preview(
         }
     );
     let mut detail = format!(
-        "{} · frame {}{}",
+        "{} · depth {}{}",
         block
             .start_pc
             .map_or_else(|| "no bytecode".into(), |pc| format!("0x{pc:04x}")),
@@ -186,9 +187,9 @@ pub(super) fn tooltip(
         NodeView::Ssa => ssa_tooltip(report, index, block.id, ssa),
     };
     format!(
-        "State S{} · basic block B{}\nFrame depth: {} · code: {}\nStorage owner: {}\nContext: {:?} · coverage: {:?}\nCurrent entry stack (bottom → top): {}\n{}\n\n{}",
-        block.id,
-        block.basic_block,
+        "State {} · basic block {}\nFrame depth: {} · code: {}\nStorage owner: {}\nContext: {:?} · coverage: {:?}\nCurrent entry stack (bottom → top): {}\n{}\n\n{}",
+        Symbol::State(block.id),
+        Symbol::Block(block.basic_block),
         block.frame_depth,
         block.code_address,
         block.storage_address,
@@ -232,12 +233,12 @@ fn ssa_tooltip(
         let edge = &report.edges[position];
         if let Some(transition) = index.transition(report, edge.id) {
             full.push(format!(
-                "e{} → S{} · {:?} · μ{}→μ{}{}\n  Arguments [{}] · {}",
-                edge.id,
-                edge.to,
+                "{} → {} · {:?} · {}→{}{}\n  Arguments [{}] · {}",
+                Symbol::Edge(edge.id),
+                Symbol::State(edge.to),
                 edge.kind,
-                transition.effect_input,
-                transition.effect_result,
+                Symbol::Effect(transition.effect_input),
+                Symbol::Effect(transition.effect_result),
                 transition
                     .result
                     .map_or(String::new(), |result| format!(" · %{result}")),
@@ -246,9 +247,9 @@ fn ssa_tooltip(
             ));
         } else {
             full.push(format!(
-                "e{} → S{} · deferred {:?}",
-                edge.id,
-                edge.to,
+                "{} → {} · deferred {:?}",
+                Symbol::Edge(edge.id),
+                Symbol::State(edge.to),
                 index
                     .deferred(report, edge.id)
                     .map(|deferred| deferred.reason)
@@ -259,42 +260,53 @@ fn ssa_tooltip(
 }
 fn phi_text(phi: &Phi, preview: bool) -> String {
     format!(
-        "%{} = φ({})  f{}/slot{}",
+        "%{} = φ({})  {}/slot{}",
         phi.result,
         joined(&phi.inputs, preview, |input| format!(
-            "S{}:%{} (e{})",
-            input.predecessor, input.value, input.edge
+            "{}:%{} ({})",
+            Symbol::State(input.predecessor),
+            input.value,
+            Symbol::Edge(input.edge)
         )),
-        phi.frame,
+        Symbol::Frame(phi.frame),
         phi.slot
     )
 }
 fn effect_text(block: &SsaBlock, preview: bool) -> String {
     format!(
-        "μ{} = effect φ({}){}",
-        block.effect,
+        "{} = effect φ({}){}",
+        Symbol::Effect(block.effect),
         joined(&block.effect_inputs, preview, |input| format!(
-            "e{}:μ{}",
-            input.edge, input.effect
+            "{}:{}",
+            Symbol::Edge(input.edge),
+            Symbol::Effect(input.effect)
         )),
         if block.open_incoming.is_empty() {
             String::new()
         } else if preview {
             format!(" · {} open", block.open_incoming.len())
         } else {
-            format!(" · open {:?}", block.open_incoming)
+            format!(
+                " · open [{}]",
+                block
+                    .open_incoming
+                    .iter()
+                    .map(|edge| Symbol::Edge(*edge).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
     )
 }
 fn exit_text(block: &SsaBlock, preview: bool) -> String {
     format!(
-        "{} μ{} · {}",
+        "{} {} · {}",
         if block.coverage == BlockCoverage::Current {
             "exit"
         } else {
             "entry only"
         },
-        block.exit_effect,
+        Symbol::Effect(block.exit_effect),
         frames(&block.exit_frames, preview)
     )
 }
@@ -332,11 +344,12 @@ fn instruction_text(instruction: &SsaInstruction, preview: bool) -> String {
         format!(" · {:?}", instruction.progress)
     };
     let effect = format!(
-        " · μ{}→{}{phase}{}",
-        instruction.effect_input,
-        instruction
-            .effect_result
-            .map_or_else(|| "pending".into(), |effect| format!("μ{effect}")),
+        " · {}→{}{phase}{}",
+        Symbol::Effect(instruction.effect_input),
+        instruction.effect_result.map_or_else(
+            || "pending".into(),
+            |effect| Symbol::Effect(effect).to_string()
+        ),
         if instruction.fault { " · fault" } else { "" }
     );
     let body = if preview {
@@ -368,7 +381,13 @@ fn frames(stacks: &[Vec<usize>], preview: bool) -> String {
         .iter()
         .take(limit)
         .enumerate()
-        .map(|(frame, stack)| format!("f{frame} [{}]", values(stack, preview)))
+        .map(|(frame, stack)| {
+            format!(
+                "{notation_0} [{}]",
+                values(stack, preview),
+                notation_0 = Symbol::Frame(frame)
+            )
+        })
         .collect::<Vec<_>>()
         .join("  ");
     if stacks.len() > limit {

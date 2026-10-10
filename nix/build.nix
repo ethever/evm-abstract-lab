@@ -22,6 +22,10 @@ let
         craneLib.filterCargoSources path type
         || (native && (lib.hasSuffix ".cpp" path || lib.hasSuffix ".h" path))
         || (fixture && (lib.hasSuffix ".hex" path || lib.hasSuffix ".json" path))
+        || (
+          lib.hasPrefix "crates/evm-abstract-web/assets/fonts/" relative
+          && (lib.hasSuffix ".ttf" path || lib.hasSuffix ".txt" path)
+        )
       );
   };
   cargoVendorDir = craneLib.vendorCargoDeps { inherit src; };

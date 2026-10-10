@@ -71,10 +71,11 @@ fn grouped_ssa_never_relabels_one_members_names_as_the_whole_block() {
     let (report, node) = grouped();
     let index = ReportIndex::new(&report);
     let context = Context::default();
+    crate::notation::initialize_fonts(&context);
     let mut output =
         context.run_ui(RawInput::default(), |ui| {
             let preview = node_preview(ui.painter(), &report, &index, &node, NodeView::Ssa);
-            assert_eq!(preview.title, "P0:B2 · 3 states");
+            assert_eq!(preview.title, "P₀:B₂ · 3 states");
             assert!(
                 preview
                     .lines
@@ -130,6 +131,7 @@ fn mixed_receipts_and_call_storage_roles_remain_visible_without_a_fake_current_g
     ];
     let index = ReportIndex::new(&report);
     let context = Context::default();
+    crate::notation::initialize_fonts(&context);
     let mut output = context.run_ui(RawInput::default(), |ui| {
         let preview = node_preview(ui.painter(), &report, &index, &node, NodeView::Ssa);
         assert_eq!(preview.coverage, api::BlockCoverage::Stale);
@@ -151,9 +153,9 @@ fn mixed_receipts_and_call_storage_roles_remain_visible_without_a_fake_current_g
         }
         let tooltip = node_tooltip(&report, &index, &node, NodeView::Ssa);
         for required in [
-            "S205",
-            "S999",
-            "S1001",
+            "σ₂₀₅",
+            "σ₉₉₉",
+            "σ₁₀₀₁",
             "not machine payloads or SSA definitions",
         ] {
             assert!(tooltip.contains(required));
@@ -206,6 +208,7 @@ fn large_receipts_keep_preview_bounded_and_generate_complete_details_only_on_dem
     };
     let index = ReportIndex::new(&report);
     let context = Context::default();
+    crate::notation::initialize_fonts(&context);
     let mut output = context.run_ui(RawInput::default(), |ui| {
         let preview = node_preview(ui.painter(), &report, &index, &node, NodeView::Ssa);
         assert!(preview.tooltip.is_empty());
@@ -223,7 +226,8 @@ fn large_receipts_keep_preview_bounded_and_generate_complete_details_only_on_dem
                 .any(|(line, _)| line.contains("%1999") || line.contains("%88888"))
         );
         let full = node_tooltip(&report, &index, &node, NodeView::Ssa);
-        for required in ["%1999", "03e7", "f31 [", "e900 → S999", "μ70→μ71 · %88888"] {
+        for required in ["%1999", "03e7", "f₃₁ [", "e₉₀₀ → σ₉₉₉", "μ₇₀→μ₇₁ · %88888"]
+        {
             assert!(full.contains(required), "full lazy tooltip lost {required}");
         }
     });
@@ -244,9 +248,9 @@ fn group_member_hover_is_bounded_and_keeps_original_sparse_ids() {
     }
     let index = ReportIndex::new(&report);
     let tooltip = node_tooltip(&report, &index, &node, NodeView::Ssa);
-    assert!(tooltip.contains("S205 ·"));
-    assert!(tooltip.contains("S392 ·"));
-    assert!(!tooltip.contains("S409 ·"));
+    assert!(tooltip.contains("σ₂₀₅ ·"));
+    assert!(tooltip.contains("σ₃₉₂ ·"));
+    assert!(!tooltip.contains("σ₄₀₉ ·"));
     assert!(tooltip.contains("88 more states. Open Instances"));
     assert!(tooltip.lines().count() < 24);
 }

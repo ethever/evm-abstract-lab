@@ -39,7 +39,7 @@ fn captured_variant<'a>(output: &'a str, address: Address, hash: &str) -> &'a st
         .split("\n  C")
         .skip(1)
         .find(|variant| {
-            variant.starts_with(|character: char| character.is_ascii_digit())
+            variant.starts_with(|character: char| matches!(character, '₀'..='₉'))
                 && variant
                     .lines()
                     .next()
@@ -133,8 +133,8 @@ fn shared_delegate_code_is_deduplicated_but_preserves_distinct_state_owners() {
         captured_variant(codes, implementation, &keccak256([0x5f, 0x00]).to_string());
     assert!(implementation_code.contains(&format!("state owners: {creator}, {implementation}")));
     assert_eq!(codes.matches("Captured instruction list").count(), 2);
-    assert!(codes.contains("frame=0 entry suspended"));
-    assert!(implementation_code.contains("frame=1 entry active"));
+    assert!(codes.contains("frame=f₀ entry suspended"));
+    assert!(implementation_code.contains("frame=f₁ entry active"));
     assert_eq!(render(&analysis).unwrap(), output);
 }
 
@@ -151,7 +151,7 @@ fn partial_native_frame_has_frontiers_without_invented_bytecode_or_ssa() {
     let codes = code_section(&output);
     assert!(codes.contains("Native precompile"));
     assert!(codes.contains("no bytecode instruction list"));
-    assert!(!codes.contains("B0 @"));
+    assert!(!codes.contains("B₀ @"));
     assert!(!codes.contains("Captured instruction list"));
     assert!(output.contains("PrecompileInput"));
     assert!(output.ends_with("SSA unavailable: cross-contract frontiers remain\n"));
@@ -166,7 +166,7 @@ fn empty_code_and_missing_entry_remain_distinct_without_fake_disassembly() {
     assert_eq!(empty.status(), Status::Converged);
     let empty_output = render(&empty).unwrap();
     assert!(code_section(&empty_output).contains("Empty executable code"));
-    assert!(!code_section(&empty_output).contains("B0 @"));
+    assert!(!code_section(&empty_output).contains("B₀ @"));
     assert!(!empty_output.contains("SSA unavailable"));
 
     let missing = run(
@@ -178,7 +178,7 @@ fn empty_code_and_missing_entry_remain_distinct_without_fake_disassembly() {
     assert!(missing.states().is_empty());
     let missing_output = render(&missing).unwrap();
     assert!(code_section(&missing_output).contains("No executable frame was captured"));
-    assert!(!code_section(&missing_output).contains("B0 @"));
+    assert!(!code_section(&missing_output).contains("B₀ @"));
     assert!(missing_output.contains("MissingCode"));
     assert!(missing_output.ends_with("SSA unavailable: cross-contract frontiers remain\n"));
 }

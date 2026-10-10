@@ -1,5 +1,6 @@
 //! Screen-space CFG edges, arrows and labels.
 
+use evm_abstract_notation::Symbol;
 mod geometry;
 #[cfg(test)]
 mod tests;
@@ -11,7 +12,7 @@ use evm_abstract_protocol::EdgeKind;
 
 pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
     format!(
-        "e{id} {}",
+        "{notation_0} {}",
         match kind {
             EdgeKind::BranchTrue => "true",
             EdgeKind::BranchFalse => "false",
@@ -21,7 +22,8 @@ pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
             EdgeKind::Return => "return",
             EdgeKind::Failure => "failure",
             EdgeKind::Revert => "revert",
-        }
+        },
+        notation_0 = Symbol::Edge(id)
     )
 }
 
@@ -108,8 +110,11 @@ pub(super) fn paint_edge_text(
     painter.rect_filled(label, 2.0, palette::BACKGROUND);
     if zoom > 0.35 {
         let text_color = palette::MUTED.gamma_multiply(0.8);
-        let galley =
-            painter.layout_no_wrap(label_text.into(), FontId::monospace(9.0 * zoom), text_color);
+        let galley = painter.layout_job(crate::notation::job(
+            label_text,
+            FontId::monospace(9.0 * zoom),
+            text_color,
+        ));
         let position = label.center() - galley.size() * 0.5;
         painter
             .with_clip_rect(label.intersect(painter.clip_rect()))

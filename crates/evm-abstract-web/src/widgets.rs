@@ -28,22 +28,29 @@ pub(crate) fn heading(ui: &mut Ui, title: &str, detail: &str) {
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.add_space(4.0);
-                ui.label(
+                ui.label(crate::notation::widget(
+                    ui,
                     RichText::new(title)
                         .size(11.5)
                         .strong()
                         .color(palette::TEXT),
-                )
-                .on_hover_text(if title == "SSA" {
-                    "Static single assignment"
-                } else {
-                    title
-                });
+                ))
+                .on_hover_text(crate::notation::widget(
+                    ui,
+                    if title == "SSA" {
+                        "Static single assignment"
+                    } else {
+                        title
+                    },
+                ));
                 ui.add(
-                    egui::Label::new(RichText::new(detail).size(10.5).color(palette::MUTED))
-                        .truncate(),
+                    egui::Label::new(crate::notation::widget(
+                        ui,
+                        RichText::new(detail).size(10.5).color(palette::MUTED),
+                    ))
+                    .truncate(),
                 )
-                .on_hover_text(detail);
+                .on_hover_text(crate::notation::widget(ui, detail));
             },
         )
         .response;
@@ -57,7 +64,13 @@ pub(crate) fn heading(ui: &mut Ui, title: &str, detail: &str) {
 
 pub(crate) fn empty(ui: &mut Ui, text: &str) {
     ui.centered_and_justified(|ui| {
-        ui.add(egui::Label::new(RichText::new(text).size(14.0).color(palette::MUTED)).wrap());
+        ui.add(
+            egui::Label::new(crate::notation::widget(
+                ui,
+                RichText::new(text).size(14.0).color(palette::MUTED),
+            ))
+            .wrap(),
+        );
     });
 }
 
@@ -83,7 +96,8 @@ pub(crate) fn row_background(ui: &Ui, rect: Rect, selected: bool, hovered: bool)
 }
 
 pub(crate) fn text(ui: &Ui, at: Pos2, value: impl AsRef<str>, color: Color32, size: f32) -> Rect {
-    ui.painter().text(
+    crate::notation::paint(
+        ui.painter(),
         at,
         Align2::LEFT_CENTER,
         value.as_ref(),

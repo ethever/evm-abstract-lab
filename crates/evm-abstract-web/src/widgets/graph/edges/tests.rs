@@ -26,6 +26,7 @@ fn render_at_label(
     label: Pos2,
 ) -> PaintedEdge {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut input = RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(600.0))),
         ..RawInput::default()
@@ -94,7 +95,7 @@ fn render_at_label(
         })
         .expect("the label routing slot retains its background at every scale");
     let text = output.shapes.iter().find_map(|item| match &item.shape {
-        Shape::Text(text) if text.galley.text() == "e0 next" => {
+        Shape::Text(text) if text.galley.text() == "e₀ next" => {
             Some(Rect::from_min_size(text.pos, text.galley.size()))
         }
         _ => None,

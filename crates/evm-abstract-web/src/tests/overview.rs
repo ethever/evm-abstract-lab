@@ -28,7 +28,11 @@ fn text_rect(output: &FullOutput, accept: impl Fn(&str) -> bool) -> Rect {
         result: &mut Vec<Rect>,
     ) {
         match shape {
-            egui::Shape::Text(text) if accept(text.galley.text()) => {
+            egui::Shape::Text(text)
+                if accept(&evm_abstract_notation::normalize_subscripts(
+                    text.galley.text(),
+                )) =>
+            {
                 let rect = Rect::from_min_size(text.pos, text.galley.size());
                 if rect.intersect(clip).height() >= rect.height() - 1.0 {
                     result.push(rect);
@@ -46,7 +50,46 @@ fn text_rect(output: &FullOutput, accept: impl Fn(&str) -> bool) -> Rect {
     for shape in &output.shapes {
         collect(&shape.shape, shape.clip_rect, &accept, &mut rects);
     }
-    *rects.last().expect("expected visible interactive label")
+    *rects.last().unwrap_or_else(|| {
+        panic!(
+            "expected visible interactive label; actual text: {:?}",
+            painted_text(output)
+        )
+    })
+}
+fn assert_typeset_index(output: &FullOutput, expected: &str) {
+    fn matches(shape: &egui::Shape, expected: &str) -> bool {
+        match shape {
+            egui::Shape::Text(text)
+                if evm_abstract_notation::normalize_subscripts(text.galley.text()) == expected =>
+            {
+                let sections = &text.galley.job.sections;
+                let largest = sections
+                    .iter()
+                    .map(|section| section.format.font_id.size)
+                    .fold(0.0, f32::max);
+                sections.iter().any(|section| {
+                    let index =
+                        &text.galley.job.text[section.byte_range.start.0..section.byte_range.end.0];
+                    index
+                        .chars()
+                        .all(|digit| evm_abstract_notation::subscript_digit(digit).is_some())
+                        && !index.is_empty()
+                        && section.format.font_id.size < largest
+                        && section.format.valign == egui::Align::BOTTOM
+                })
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().any(|shape| matches(shape, expected)),
+            _ => false,
+        }
+    }
+    assert!(
+        output
+            .shapes
+            .iter()
+            .any(|shape| matches(&shape.shape, expected)),
+        "{expected} must render its index with smaller, lower digits"
+    );
 }
 fn choose(ctx: &Context, workspace: &mut Workspace, label: &str) {
     let output = settled(ctx, workspace);
@@ -211,7 +254,7 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
     let instances = text_rect(&output, |text| text.starts_with("Instances"));
     click(&ctx, &mut workspace, instances.center());
     let output = settled(&ctx, &mut workspace);
-    let first = text_rect(&output, |text| text == "S41" || text.starts_with("S41 "));
+    let first = text_rect(&output, |text| text == "σ41" || text.starts_with("σ41 "));
     frame(
         &ctx,
         &mut workspace,
@@ -229,7 +272,7 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
         frame(&ctx, &mut workspace, vec![]);
     }
     let output = settled(&ctx, &mut workspace);
-    let prefix = format!("S{last}");
+    let prefix = format!("σ{last}");
     let target = text_rect(&output, |text| {
         text == prefix || text.starts_with(&format!("{prefix} "))
     });
@@ -243,14 +286,14 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
         }
     );
     assert_scope(&workspace, "Blocks", 1, "129/129");
-    assert!(
-        workspace
-            .accessible_status()
-            .contains(&format!("Selected S{last}; source P0"))
-    );
+    assert!(workspace.accessible_status().contains(&format!(
+        "Selected {}; source {}",
+        evm_abstract_notation::Symbol::State(last),
+        evm_abstract_notation::Symbol::Program(0)
+    )));
     choose(&ctx, &mut workspace, "Stack");
     let output = settled(&ctx, &mut workspace);
-    assert!(workspace.accessible_status().contains("Frame 0"));
+    assert!(workspace.accessible_status().contains("Frame f₀"));
     assert!(
         painted_text(&output)
             .iter()
@@ -284,6 +327,7 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
         "both SSA's selected native block and inspector must identify the chosen instance: {:?}",
         painted_text(&output)
     );
+    assert_typeset_index(&output, &prefix);
     let instruction = text_rect(&output, |text| text == format!("%{}", last + 1));
     click(&ctx, &mut workspace, instruction.center());
     assert_eq!(
@@ -318,32 +362,53 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
     );
     // The same picker also reaches a sparse native ID through its real search
     // control, independently of the previously scrolled virtual list.
-    let search = ctx
-        .read_response(egui::Id::new("cfg_instance_search"))
-        .unwrap();
-    click(&ctx, &mut workspace, search.interact_rect.center());
-    frame(
-        &ctx,
-        &mut workspace,
-        vec![
-            Event::Key {
-                key: Key::A,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: Modifiers {
-                    ctrl: true,
-                    command: true,
-                    ..Modifiers::NONE
+    let queries = [
+        last.to_string(),
+        evm_abstract_notation::Symbol::State(last).to_string(),
+        format!("sigma_{last}"),
+        format!("S{last}"),
+    ];
+    for (index, query) in queries.into_iter().enumerate() {
+        if index > 0 {
+            let output = settled(&ctx, &mut workspace);
+            let instances = text_rect(&output, |text| text.starts_with("Instances"));
+            click(&ctx, &mut workspace, instances.center());
+            settled(&ctx, &mut workspace);
+        }
+        let search = ctx
+            .read_response(egui::Id::new("cfg_instance_search"))
+            .unwrap();
+        click(&ctx, &mut workspace, search.interact_rect.center());
+        frame(
+            &ctx,
+            &mut workspace,
+            vec![
+                Event::Key {
+                    key: Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers {
+                        ctrl: true,
+                        command: true,
+                        ..Modifiers::NONE
+                    },
                 },
-            },
-            Event::Text(prefix.clone()),
-        ],
-    );
-    let output = settled(&ctx, &mut workspace);
-    let target = text_rect(&output, |text| text.starts_with(&format!("{prefix} ·")));
-    click(&ctx, &mut workspace, target.center());
-    settled(&ctx, &mut workspace);
+                Event::Text(query),
+            ],
+        );
+        let output = settled(&ctx, &mut workspace);
+        let target = text_rect(&output, |text| text.starts_with(&format!("{prefix} ·")));
+        let row = painted_text(&output)
+            .into_iter()
+            .find(|(text, _)| text.starts_with(&format!("{prefix} ·")))
+            .unwrap()
+            .0;
+        assert_typeset_index(&output, &row);
+        click(&ctx, &mut workspace, target.center());
+        settled(&ctx, &mut workspace);
+        assert_eq!(workspace.selection.state, Some(last));
+    }
     choose(&ctx, &mut workspace, "Local");
     assert_scope(&workspace, "Local", 3, "3/129");
     let status = workspace.accessible_status();

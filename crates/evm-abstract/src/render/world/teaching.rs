@@ -1,4 +1,6 @@
 //! 教学视图共享身份索引。短名字总有完整图例，不能把代码地址与状态账户混为一谈。
+use evm_abstract_notation::Symbol;
+
 use crate::analysis::{FrameCode, FrameKey, WorldAnalysis};
 use crate::world::AddressInput;
 use alloy_primitives::{Address, B256};
@@ -65,12 +67,12 @@ impl References {
             addresses: addresses
                 .into_iter()
                 .enumerate()
-                .map(|(i, address)| (address, format!("A{i}")))
+                .map(|(i, address)| (address, format!("{}", Symbol::Account(i))))
                 .collect(),
             codes: codes
                 .into_iter()
                 .enumerate()
-                .map(|(i, code)| (code, format!("C{i}")))
+                .map(|(i, code)| (code, format!("{}", Symbol::Code(i))))
                 .collect(),
             owner_alias,
         }

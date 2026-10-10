@@ -1,5 +1,7 @@
 //! Readable world reports preserve distinct paths, full identities and sparse byte facts.
 
+use evm_abstract_notation::{Symbol, normalize_subscripts};
+
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{
@@ -124,7 +126,11 @@ fn numbered<'a>(text: &'a str, prefix: &str) -> Vec<&'a str> {
                 .trim()
                 .trim_end_matches(':');
             let suffix = first.strip_prefix(prefix)?;
-            if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+            if suffix.is_empty()
+                || !normalize_subscripts(suffix)
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit())
+            {
                 return None;
             }
             Some(text.find(line).unwrap())
@@ -190,8 +196,8 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
     );
     for (index, (outcome, report)) in analysis.outcomes().iter().zip(outcomes).enumerate() {
         let header = cells(report.lines().next().unwrap());
-        assert_eq!(header[0], format!("O{index}"));
-        assert!(header.contains(&format!("S{}", outcome.state).as_str()));
+        assert_eq!(header[0], format!("{}", Symbol::Outcome(index)));
+        assert!(header.contains(&format!("{}", Symbol::State(outcome.state)).as_str()));
         assert!(header.contains(&format!("{:?}", outcome.kind).as_str()));
         assert!(report.contains(&format!("length={}", outcome.data.len())));
         assert!(report.contains("default={0x0}"));
@@ -227,7 +233,10 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
             .filter(|row| {
                 row.first().is_some_and(|cell| {
                     cell.strip_prefix('A').is_some_and(|suffix| {
-                        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+                        !suffix.is_empty()
+                            && normalize_subscripts(suffix)
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit())
                     })
                 })
             })
@@ -257,7 +266,12 @@ fn full_identity_legends_and_state_table_keep_proxy_code_and_storage_owners_dist
         .map(cells)
         .filter(|row| {
             row.first().is_some_and(|cell| {
-                cell.starts_with('S') && cell[1..].bytes().all(|byte| byte.is_ascii_digit())
+                cell.strip_prefix('σ').is_some_and(|suffix| {
+                    !suffix.is_empty()
+                        && normalize_subscripts(suffix)
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit())
+                })
             })
         })
         .collect();
@@ -275,7 +289,7 @@ fn full_identity_legends_and_state_table_keep_proxy_code_and_storage_owners_dist
         let hash = alias(&text, "Hashes", "States", &frame.code_hash.to_string());
         let row = rows
             .iter()
-            .find(|row| row[0] == format!("S{}", state.id))
+            .find(|row| row[0] == format!("{}", Symbol::State(state.id)))
             .unwrap();
         assert!(
             row.contains(&code.as_str())
@@ -283,7 +297,7 @@ fn full_identity_legends_and_state_table_keep_proxy_code_and_storage_owners_dist
                 && row.contains(&caller.as_str())
                 && row.contains(&hash.as_str())
         );
-        assert!(row.contains(&format!("B{}", frame.basic_block_index).as_str()));
+        assert!(row.contains(&format!("{}", Symbol::Block(frame.basic_block_index)).as_str()));
         assert!(row.contains(&format!("{:?}", frame.mode).as_str()));
         if frame.code_address == address(0x300) {
             assert_ne!(
@@ -325,7 +339,7 @@ fn incomplete_reports_preserve_all_frontiers_and_every_target_frame() {
         assert!(!analysis.frontiers().is_empty());
         let text = render::world::text(&analysis);
         assert!(section(&text, "Analysis", "Snapshot").contains("Incomplete"));
-        let reports = numbered(section(&text, "Frontiers", ""), "F");
+        let reports = numbered(section(&text, "Frontiers", ""), "U");
         assert_eq!(
             reports.len(),
             analysis.frontiers().len(),
@@ -338,7 +352,7 @@ fn incomplete_reports_preserve_all_frontiers_and_every_target_frame() {
                         && report.contains("MissingCode")
             );
             if let Some(from) = frontier.from {
-                assert!(report.contains(&format!("S{from}")));
+                assert!(report.contains(&format!("{}", Symbol::State(from))));
             }
             if let Some(target) = &frontier.target {
                 let frame_rows: Vec<_> = report
@@ -346,7 +360,12 @@ fn incomplete_reports_preserve_all_frontiers_and_every_target_frame() {
                     .map(cells)
                     .filter(|row| {
                         row.first().is_some_and(|cell| {
-                            !cell.is_empty() && cell.bytes().all(|byte| byte.is_ascii_digit())
+                            cell.strip_prefix('f').is_some_and(|suffix| {
+                                !suffix.is_empty()
+                                    && normalize_subscripts(suffix)
+                                        .bytes()
+                                        .all(|byte| byte.is_ascii_digit())
+                            })
                         })
                     })
                     .collect();
@@ -358,7 +377,7 @@ fn incomplete_reports_preserve_all_frontiers_and_every_target_frame() {
                 for (index, row) in frame_rows.iter().enumerate() {
                     assert_eq!(
                         row[0],
-                        index.to_string(),
+                        Symbol::Frame(index).to_string(),
                         "target frames must retain root-to-active order"
                     );
                 }
@@ -379,7 +398,9 @@ fn incomplete_reports_preserve_all_frontiers_and_every_target_frame() {
                             && row.contains(&owner.as_str())
                             && row.contains(&caller.as_str())
                             && row.contains(&hash.as_str())
-                            && row.contains(&format!("B{}", frame.basic_block_index).as_str())
+                            && row.contains(
+                                &format!("{}", Symbol::Block(frame.basic_block_index)).as_str()
+                            )
                     );
                     assert!(row.contains(&frame.stack_height.to_string().as_str()));
                     assert!(row.contains(&frame.is_static.to_string().as_str()));
@@ -454,7 +475,7 @@ fn length(value: &AbstractValue) -> String {
 fn state_details_and_transitions_preserve_original_graph_evidence() {
     let analysis = analyze("returndata-copy", ExecutionConfig::default());
     let text = render::world::text(&analysis);
-    let reports = numbered(section(&text, "State details", "Transitions"), "S");
+    let reports = numbered(section(&text, "State details", "Transitions"), "σ");
     assert_eq!(reports.len(), analysis.states().len());
     for (state, report) in analysis.states().iter().zip(reports) {
         let frame = state.entry.active();
@@ -491,7 +512,12 @@ fn state_details_and_transitions_preserve_original_graph_evidence() {
         .map(cells)
         .filter(|row| {
             row.first().is_some_and(|cell| {
-                cell.starts_with('S') && cell[1..].bytes().all(|byte| byte.is_ascii_digit())
+                cell.strip_prefix('σ').is_some_and(|suffix| {
+                    !suffix.is_empty()
+                        && normalize_subscripts(suffix)
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit())
+                })
             })
         })
         .collect();
@@ -499,8 +525,8 @@ fn state_details_and_transitions_preserve_original_graph_evidence() {
     for edge in analysis.edges() {
         assert!(rows.iter().any(|row| *row
             == [
-                format!("S{}", edge.from).as_str(),
-                format!("S{}", edge.to).as_str(),
+                format!("{}", Symbol::State(edge.from)).as_str(),
+                format!("{}", Symbol::State(edge.to)).as_str(),
                 format!("{:?}", edge.kind).as_str()
             ]));
     }
@@ -555,7 +581,7 @@ fn call_summary_reports_keep_cache_statistics_and_each_complete_relation() {
             );
         }
         assert!(section.contains(&format!("enabled={enabled}")));
-        let reports = numbered(section, "summary#");
+        let reports = numbered(section, "summary");
         assert_eq!(reports.len(), analysis.summaries().len());
         for (record, report) in analysis.summaries().iter().zip(reports) {
             assert!(
@@ -563,7 +589,7 @@ fn call_summary_reports_keep_cache_statistics_and_each_complete_relation() {
                     .lines()
                     .next()
                     .unwrap()
-                    .contains(&format!("source=S{}", record.source_state))
+                    .contains(&format!("source={}", Symbol::State(record.source_state)))
             );
             for (field, value) in [
                 ("states", record.state_count),
@@ -591,7 +617,7 @@ fn call_summary_reports_keep_cache_statistics_and_each_complete_relation() {
                         .lines()
                         .next()
                         .unwrap()
-                        .contains(&format!("S{reused}"))
+                        .contains(&format!("{}", Symbol::State(*reused)))
                 );
             }
             let outputs: Vec<_> = report
@@ -599,7 +625,14 @@ fn call_summary_reports_keep_cache_statistics_and_each_complete_relation() {
                 .map(cells)
                 .filter(|row| {
                     row.first().is_some_and(|cell| {
-                        !cell.is_empty() && cell.bytes().all(|byte| byte.is_ascii_digit())
+                        cell.rsplit_once(':')
+                            .and_then(|(_, result)| result.strip_prefix('O'))
+                            .is_some_and(|suffix| {
+                                !suffix.is_empty()
+                                    && normalize_subscripts(suffix)
+                                        .bytes()
+                                        .all(|byte| byte.is_ascii_digit())
+                            })
                     })
                 })
                 .collect();

@@ -1,0 +1,43 @@
+{
+  "source_package": "epaint_default_fonts",
+  "source_version": "0.36.2",
+  "generator": "generate.py",
+  "fonttools_version": "4.57.0",
+  "aliases": {
+    "U+2080": "0",
+    "U+2081": "1",
+    "U+2082": "2",
+    "U+2083": "3",
+    "U+2084": "4",
+    "U+2085": "5",
+    "U+2086": "6",
+    "U+2087": "7",
+    "U+2088": "8",
+    "U+2089": "9",
+    "U+1D56": "p"
+  },
+  "fonts": [
+    {
+      "source": "Hack-Regular.ttf",
+      "source_sha256": "15f55cc0c85a2988d2b4b3a8cdb5d77fdfbaf319e1bb5309d725db9818fb7125",
+      "output": "math-indices-hack.ttf",
+      "output_sha256": "2fc798fd50be2f4cb5f6ff2d197c57ade74e28803d1205f7653e0305a1dc6396",
+      "bytes": 15752,
+      "family": "MathIndices Hack",
+      "license": "Hack-Regular.txt",
+      "license_sha256": "47c0cccbeec7e8614548cc485588b28149e7874188df5f41b36efebcee285c87",
+      "glyph_count": 12
+    },
+    {
+      "source": "Ubuntu-Light.ttf",
+      "source_sha256": "80307b8da7649aa4ee4d484b232140e3ce1ec0ca093073d3c53c8f5a5ced7a70",
+      "output": "math-indices-sans.ttf",
+      "output_sha256": "b911d87c0b9084e97e8bd239e16d421230c669f7b8d0da94881fd813c7be4122",
+      "bytes": 24748,
+      "family": "MathIndices Sans",
+      "license": "UFL.txt",
+      "license_sha256": "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002",
+      "glyph_count": 12
+    }
+  ]
+}

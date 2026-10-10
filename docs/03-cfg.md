@@ -18,9 +18,9 @@ nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relati
 
 ```mermaid
 flowchart TD
-    A["B0 · pc=0x00<br/>读取 calldata 条件；JUMPI"] -->|条件非零| B["B2 · pc=0x0b<br/>PUSH 1"]
-    A -->|条件为零| C["B1 · pc=0x06<br/>PUSH 2；JUMP 0x0e"]
-    B --> D["B3 · pc=0x0e<br/>PUSH 10；ADD；STOP"]
+    A["B₀ · pc=0x00<br/>读取 calldata 条件；JUMPI"] -->|条件非零| B["B₂ · pc=0x0b<br/>PUSH 1"]
+    A -->|条件为零| C["B₁ · pc=0x06<br/>PUSH 2；JUMP 0x0e"]
+    B --> D["B₃ · pc=0x0e<br/>PUSH 10；ADD；STOP"]
     C --> D
 ```
 
@@ -37,12 +37,14 @@ flowchart TD
 
 “True”在这里指非零，不只指数字 1。这张图包含分析允许的正常转移；它不保证每条拼接路径都有具体输入能实现。
 
-## 2. 分清代码块 B 与分析状态 S
+<a id="2-分清代码块-b-与分析状态-s"></a>
 
-`B3` 是 `Program.blocks()` 中索引为 3 的固定基本块。`S3` 是分析中创建的一个状态节点，保存“以什么摘要进入这个块”。两种编号服务于不同目的：
+## 2. 分清代码块 Bᵢ 与分析状态 σᵖᵢ
+
+`B₃` 是 `Program.blocks()` 中索引为 3 的固定基本块。`σᵖ₃` 是分析中创建的一个状态节点，保存“以什么摘要进入这个块”。两种编号服务于不同目的：
 
 ```text
-S3 | B3 @ 0x000e | stack height=1 | context=[]
+σᵖ₃ | B₃ @ 0x000e | stack height=1 | context=[]
   relations in=0 out=0
   stack in  [{0x1, 0x2}]
   stack out [{0xb, 0xc}]
@@ -50,17 +52,17 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 
 | 字段 | 怎样读 |
 | --- | --- |
-| `S3` | 状态编号，按分析发现节点的顺序创建 |
-| `B3 @ 0x000e` | 对应基本块及其起始字节偏移 |
+| `σᵖ₃` | 状态编号，按分析发现节点的顺序创建 |
+| `B₃ @ 0x000e` | 对应基本块及其起始字节偏移 |
 | `stack height=1` | 进入该块时有 1 个栈槽位 |
 | `context=[]` | 本例显式设置 k=0，不区分跳转历史 |
 | `relations in/out` | 入口/最近一次出口保存的关系数；本课纯数值实验为零 |
 | `stack in` | 已汇合的入口栈摘要 |
 | `stack out` | 最近一次块执行留下的栈摘要；异常或预算中断时可能只执行了块内前缀 |
 
-`B3` 的 3 是基本块索引，`0x000e` 是入口字节偏移：它们分别回答“块数组中的哪一项”和“字节码中的哪个位置”。JSON 状态键将前者明确命名为 `basic_block_index`；不要把它读成 pc 或链上区块号。
+`B₃` 的 3 是基本块索引，`0x000e` 是入口字节偏移：它们分别回答“块数组中的哪一项”和“字节码中的哪个位置”。JSON 状态键将前者明确命名为 `basic_block_index`；不要把它读成 pc 或链上区块号。
 
-所以 S 编号不一定按 pc 排序，也不要求与 B 编号一致。例如本例中的 `S1` 对应 `B2`，因为非零分支先被加入队列。
+所以 σᵖᵢ 编号不一定按 pc 排序，也不要求与 Bᵢ 编号一致。例如本例中的 `σᵖ₁` 对应 `B₂`，因为非零分支先被加入队列。
 
 对本课的局部视图，状态键为：
 
@@ -76,7 +78,7 @@ S3 | B3 @ 0x000e | stack height=1 | context=[]
 nix run . -- cfg --file examples/stack-heights.hex --no-relations --context-depth 0
 ```
 
-在 pc=`0x000c`，你会看到两个状态：`S3 | B3 | stack height=1` 的输入是 `[{0x7}]`，`S4 | B3 | stack height=0` 的输入是 `[]`。空栈与一槽栈不能逐槽合并，否则会丢掉一种栈形状。这个例子直观说明：一个代码块可以有多个分析节点。
+在 pc=`0x000c`，你会看到两个状态：`σᵖ₃ | B₃ | stack height=1` 的输入是 `[{0x7}]`，`σᵖ₄ | B₃ | stack height=0` 的输入是 `[]`。空栈与一槽栈不能逐槽合并，否则会丢掉一种栈形状。这个例子直观说明：一个代码块可以有多个分析节点。
 
 世界分析的实际状态还包含活动/暂停的调用帧、每帧内存和账户 Store，键也保留相应结构身份。本课的三项键是局部输出投影；不要把它当作完整机器的全部状态，详见[第九课](09-cross-contract.md)。
 
@@ -88,7 +90,7 @@ nix run . -- cfg --file examples/stack-heights.hex --no-relations --context-dept
 
 ```mermaid
 flowchart TD
-    A[取出待处理状态 S] --> B[用最新入口摘要执行整个块]
+    A[取出待处理状态 σᵖᵢ] --> B[用最新入口摘要执行整个块]
     B --> C[得到每个正常后继的状态键与输入]
     C --> D{该键已有节点吗？}
     D -->|没有| E[创建节点、保存输入、加入队列]
@@ -108,13 +110,13 @@ flowchart TD
 
 | 此轮执行 | 输入 → 输出 | 新传播的信息 | 本轮后的队列 |
 | --- | --- | --- | --- |
-| 初始 | S0 入口为空栈 | S0 等待执行 | `[S0]` |
-| S0 / B0 | `[] → []` | 创建 S1/B2 与 S2/B1 | `[S1,S2]` |
-| S1 / B2 | `[] → [{1}]` | 创建 S3/B3，入口 `[{1}]` | `[S2,S3]` |
-| S2 / B1 | `[] → [{2}]` | S3 入口 join 成 `[{1,2}]` | `[S3]` |
-| S3 / B3 | `[{1,2}] → [{11,12}]` | STOP，没有后继 | `[]` |
+| 初始 | σᵖ₀ 入口为空栈 | σᵖ₀ 等待执行 | `[σᵖ₀]` |
+| σᵖ₀ / B₀ | `[] → []` | 创建 σᵖ₁/B₂ 与 σᵖ₂/B₁ | `[σᵖ₁,σᵖ₂]` |
+| σᵖ₁ / B₂ | `[] → [{1}]` | 创建 σᵖ₃/B₃，入口 `[{1}]` | `[σᵖ₂,σᵖ₃]` |
+| σᵖ₂ / B₁ | `[] → [{2}]` | σᵖ₃ 入口 join 成 `[{1,2}]` | `[σᵖ₃]` |
+| σᵖ₃ / B₃ | `[{1,2}] → [{11,12}]` | STOP，没有后继 | `[]` |
 
-S3 收到第二条路径时已经排队，所以不重复加入；等它真正被取出时，会使用最新的 `{1,2}`。若一个汇合状态先执行、后来才收到新值，则必须再次入队并传播。这是为什么“一个节点在队列中最多一份”不等于“一个块只能执行一次”。
+σᵖ₃ 收到第二条路径时已经排队，所以不重复加入；等它真正被取出时，会使用最新的 `{1,2}`。若一个汇合状态先执行、后来才收到新值，则必须再次入队并传播。这是为什么“一个节点在队列中最多一份”不等于“一个块只能执行一次”。
 
 join 只扩大入口摘要，已有边只增加。默认组合域还会在同一已知状态多次更新后应用区间 widening，保持覆盖已有输入和新输入；本课 constants-only 没有区间需要扩大。已经处理过某状态，并不能成为忽略新输入的理由。
 
@@ -144,15 +146,15 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations
 status=Converged fork=osaka states=3 edges=3 transfers=11 context_depth=0
 domain=ConstantsOnly | domain schema=2 | reduction rounds=16 | fact atoms=4096
 relations=false | SMT=in-process z3 | rlimit=10000000 | resource unit=z3 resource units | expression nodes=16384 | depth=256 | constraints=2048
-S1 | B1 @ 0x0002 | stack height=1 | context=[]
+σᵖ₁ | B₁ @ 0x0002 | stack height=1 | context=[]
   relations in=0 out=0
   stack in  [⊤]
   stack out [⊤]
-  -> S1 BranchTrue
-  -> S2 BranchFalse
+  → σᵖ₁ BranchTrue
+  → σᵖ₂ BranchFalse
 ```
 
-只有 3 个状态，却执行了 11 次块转换：循环节点确实被重访。`S1 → S1` 是回边；`S1 → S2` 是可能退出的边。出口的 `⊤` 表示整值为 Top，即本次数值摘要没有保留任何固定位或其他数值约束。
+只有 3 个状态，却执行了 11 次块转换：循环节点确实被重访。`σᵖ₁ → σᵖ₁` 是回边；`σᵖ₁ → σᵖ₂` 是可能退出的边。出口的 `⊤` 表示整值为 Top，即本次数值摘要没有保留任何固定位或其他数值约束。
 
 本实验显式关闭关系传播，没有在非零分支上给 i 附加 `i<10` 的约束，因此摘要会包含实际循环中不会出现的值。`Converged` 表示已完成当前抽象模型的传播，不表示每个数值都已精确，也不表示合约安全。增大 `--max-constants` 只改变保存常量的容量，不会自动加入分支约束。
 
@@ -213,8 +215,8 @@ pc=0x0a: STOP
 本命令省略 `--evm.calldata`，读取的目标没有数值限制，为 Top。为了覆盖每一种合法跳转，分析器会连接到程序中**全部真正的 JUMPDEST**。本例只有一个，于是输出同时包含：
 
 ```text
-S0 → S1 Jump
-diagnostic S0 @ 0x0003: UnknownJump
+σᵖ₀ → σᵖ₁ Jump
+diagnostic σᵖ₀ @ 0x0003: UnknownJump
 ```
 
 在 `explain` 的 SSA 部分还应看到 `0009: SSTORE`。即使目标不精确，这条可能发生的写入也保留下来了。
@@ -225,7 +227,7 @@ Top 也包括非法目标。`UnknownJump` 因此还表示存在异常终止的�
 
 ## 7. 看清诊断与未完成前沿
 
-诊断说明某处发生了程序异常，或数值只能粗略表示。**前沿（frontier）**则记录分析未能继续完成的边界，例如“从 S0 出发，本应创建这个后继键，但状态预算已用尽”。两者回答不同问题。
+诊断说明某处发生了程序异常，或数值只能粗略表示。**前沿（frontier）**则记录分析未能继续完成的边界，例如“从 σᵖ₀ 出发，本应创建这个后继键，但状态预算已用尽”。两者回答不同问题。
 
 | 情况 | 后续处理 | 可以是 `Converged` 吗？ |
 | --- | --- | --- |
@@ -262,7 +264,7 @@ nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relati
 2. [`engine.rs`](../crates/evm-abstract/src/analysis/engine.rs) 的 `run_world` 初始化入口节点，再看 `Engine::run` 怎样取队列项、检查预算和调用 `transfer::execute`。
 3. [`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 的 `execute` 及 JUMP/JUMPI 分支：弹出目标与条件，枚举合法后继；开启关系模式时，[`transfer/relations.rs`](../crates/evm-abstract/src/analysis/transfer/relations.rs) 为后继应用条件、查询矛盾并精化数值。
 4. 回到 [`Engine::execution`](../crates/evm-abstract/src/analysis/engine.rs) 收集块转换的证据，再读 [`Engine::successor`](../crates/evm-abstract/src/analysis/engine.rs)：按键查找节点，join 输入，决定是否入队并保存边。随后回到 [`run`](../crates/evm-abstract/src/analysis/engine.rs) 看下一次调度。
-5. [`single.rs`](../crates/evm-abstract/src/analysis/single.rs)：把同一世界分析核心投影为本课看到的局部 S/B 视图。
+5. [`single.rs`](../crates/evm-abstract/src/analysis/single.rs)：把同一世界分析核心投影为本课看到的局部 σᵖᵢ/Bᵢ 视图。
 
 阅读时核对五条规则：不同栈高不合并；同一键的输入通过 join 与固定的区间 widening 策略扩大；扩大后需要重访；旧边不删除；任何未完成展开都保留前沿。相关样例由 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 与 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 核对。
 

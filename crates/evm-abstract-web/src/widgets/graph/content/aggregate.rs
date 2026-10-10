@@ -1,6 +1,7 @@
 //! Source-block summaries count native instances without combining their SSA.
 use super::{DisplayNode, NodeText, NodeView, ReportIndex, abbreviate, leaf};
 use crate::palette;
+use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{AnalysisReport, BlockCoverage, CfgBlock, FrameSnapshot};
 
 const MEMBERS_IN_TOOLTIP: usize = 12;
@@ -157,10 +158,11 @@ fn active_frame<'a>(
 }
 fn title(node: &DisplayNode) -> String {
     format!(
-        "{}:B{} · {} states",
+        "{}:{} · {} states",
         node.program
-            .map_or("No program".into(), |program| format!("P{program}")),
-        node.basic_block,
+            .map_or("No program".into(), |program| Symbol::Program(program)
+                .to_string()),
+        Symbol::Block(node.basic_block),
         node.members.len()
     )
 }
@@ -285,13 +287,17 @@ pub(super) fn tooltip(
             .map_or(BlockCoverage::Unexecuted, |block| block.coverage);
         if let Some(block) = index.cfg(report, state) {
             lines.push(format!(
-                "S{state} · {coverage:?} · depth {} · storage {} · {} history items",
+                "{notation_0} · {coverage:?} · depth {} · storage {} · {} history items",
                 block.frame_depth,
                 block.storage_address,
-                block.context.len()
+                block.context.len(),
+                notation_0 = Symbol::State(state)
             ));
         } else {
-            lines.push(format!("S{state} · unavailable CFG record"));
+            lines.push(format!(
+                "{notation_0} · unavailable CFG record",
+                notation_0 = Symbol::State(state)
+            ));
         }
     }
     if node.members.len() > MEMBERS_IN_TOOLTIP {

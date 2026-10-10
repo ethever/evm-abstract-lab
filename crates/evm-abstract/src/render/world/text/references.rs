@@ -1,5 +1,7 @@
 //! Stable aliases always resolve to full identities in the report legends.
 
+use evm_abstract_notation::Symbol;
+
 use super::super::observations;
 use crate::{
     analysis::{FrameCode, MachineKey, WorldAnalysis},
@@ -60,12 +62,12 @@ impl References {
             addresses: addresses
                 .into_iter()
                 .enumerate()
-                .map(|(index, address)| (address, format!("A{index}")))
+                .map(|(index, address)| (address, format!("{}", Symbol::Account(index))))
                 .collect(),
             hashes: hashes
                 .into_iter()
                 .enumerate()
-                .map(|(index, hash)| (hash, format!("H{index}")))
+                .map(|(index, hash)| (hash, format!("{}", Symbol::Hash(index))))
                 .collect(),
             owner_alias,
         }

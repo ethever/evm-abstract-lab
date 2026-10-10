@@ -36,7 +36,7 @@
 
 **实现角度：**顺着 [`relations::branch`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 进入 [`RelationState::assume` / `check`](../../crates/evm-abstract/src/domain/relational.rs)。true/false 后继各保存自己的假设；`refine` 再把已证明的后果反馈到数值摘要。完整过程见[指令转换与精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)。
 
-**观察与停点：**按正文 JSON 查询，B2 的出边只有 `BranchFalse`，入口 v 的常量为 `{1}`；关闭关系后两条分支都保留。两份分析都可 `Converged`，边多是精度差别，不自动表示传播未完成。
+**观察与停点：**按正文 JSON 查询，B₂ 的出边只有 `BranchFalse`，入口 v 的常量为 `{1}`；关闭关系后两条分支都保留。两份分析都可 `Converged`，边多是精度差别，不自动表示传播未完成。
 
 **自检：**为什么 SAT 只说明当前编码可满足，不能直接证明一笔完整 EVM 交易能走通？Unknown 为什么不能被当成 UNSAT 删除分支？完成这两问就已达到本模块的基础目标。
 

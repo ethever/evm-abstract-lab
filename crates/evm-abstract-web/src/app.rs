@@ -12,6 +12,7 @@ mod startup;
 use crate::{palette, widgets};
 use directory::{Directory, Pick};
 use egui::{Key, Modifiers, Ui};
+use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol::{AnalysisReport, AnalyzeReply, AnalyzeRequest, SCHEMA_VERSION};
 use form::AnalysisForm;
 use inspector::Inspector;
@@ -476,9 +477,10 @@ impl Workspace {
                 report.outcomes.len(),
                 self.selection
                     .state
-                    .map_or("none".into(), |state| format!("S{state}")),
+                    .map_or("none".into(), |state| Symbol::State(state).to_string()),
                 self.program
-                    .map_or("none".into(), |program| format!("P{program}")),
+                    .map_or("none".into(), |program| Symbol::Program(program)
+                        .to_string()),
                 self.inspector.accessible_summary(report, self.selection),
                 self.graph.accessible_summary()
             );
@@ -489,7 +491,8 @@ impl Workspace {
             .as_ref()
             .map(|snapshot| {
                 format!(
-                    " · {:?} · {} accounts · {} states · {} transfers",
+                    " · {} · {:?} · {} accounts · {} states · {} transfers",
+                    WideSymbol::Task(snapshot.id.0),
                     snapshot.progress.phase,
                     snapshot.progress.accounts,
                     snapshot.progress.states,

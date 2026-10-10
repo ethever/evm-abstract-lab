@@ -321,7 +321,7 @@ nix run . -- explain --file examples/memory-word-overwrite.hex
 nix run . -- explain --file examples/memory-write-alias.hex --context-depth 0
 ```
 
-在 `B3 @ 0x000e` 的汇合状态找到 `stack in [{0xaa}, {0x0, 0x1}]`：左边是待写字节值，右边的地址位于栈顶。MSTORE8 消耗两个槽位，后续 MLOAD(0) 与 MSIZE 留下两个结果。
+在 `B₃ @ 0x000e` 的汇合状态找到 `stack in [{0xaa}, {0x0, 0x1}]`：左边是待写字节值，右边的地址位于栈顶。MSTORE8 消耗两个槽位，后续 MLOAD(0) 与 MSIZE 留下两个结果。
 
 第一槽会包含四种 word，其中甚至有 0；第二槽为 `{0x20}`。这不是说真实执行可以一次不写任何位置：两个位置的候选已被独立保存，重新组合时允许 `00 00`，也允许 `aa aa`。真正的一次写入只有前一张表中的两行。[第 8 节](#8-为什么刚存进去再读出来会多出候选)用更短的数值解释同一种关联损失。
 
@@ -469,7 +469,7 @@ nix run . -- explain --hex 5f356002905f375900
 nix run . -- explain --file examples/memory-byte-correlation.hex --context-depth 0
 ```
 
-这个程序的两条分支分别压入 `0x0101`、`0x0202`，汇合后执行 `MSTORE(0, x); MLOAD(0)`。在 `B3 @ 0x000f` 应看到：
+这个程序的两条分支分别压入 `0x0101`、`0x0202`，汇合后执行 `MSTORE(0, x); MLOAD(0)`。在 `B₃ @ 0x000f` 应看到：
 
 ```text
   stack in  [{0x101, 0x202}]
@@ -552,7 +552,7 @@ BYTE 的编号从 word 的最高字节 0 开始，最低字节是 31。这些表
 nix run . -- explain --file examples/memory-byte-correlation.hex --context-depth 8
 ```
 
-跳转历史让到达 B3 的两条路径保持为不同状态。一个状态的输入、输出都只有 `{0x202}`，另一个都只有 `{0x101}`。因为存入 memory 时还没有把两条路径合并，字节各自都确定，没有机会产生交叉组合。
+跳转历史让到达 B₃ 的两条路径保持为不同状态。一个状态的输入、输出都只有 `{0x202}`，另一个都只有 `{0x101}`。因为存入 memory 时还没有把两条路径合并，字节各自都确定，没有机会产生交叉组合。
 
 这次改善来自[第 05 课的状态划分](05-sensitivity.md)。它没有给 ByteArray 增加一般的字节关联：更复杂的汇合、部分写入或已经丢失的表达式关系仍可能出现类似精度损失；完整 word 表达式恢复和状态划分是另外两种机制。
 

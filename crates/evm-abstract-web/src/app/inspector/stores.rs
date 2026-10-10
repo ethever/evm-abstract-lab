@@ -3,6 +3,7 @@
 use super::value;
 use crate::palette;
 use egui::{RichText, Ui};
+use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{AccountState, AnalysisReport, StoreSnapshot, ValueInfo};
 
 pub(super) fn account<'a>(
@@ -56,7 +57,11 @@ pub(super) fn storage(
                                 value::text(ui, "Delegation implementation", target);
                             }
                             if let Some(program) = account.program {
-                                value::text(ui, "Captured program", format!("P{program}"));
+                                value::text(
+                                    ui,
+                                    "Captured program",
+                                    Symbol::Program(program).to_string(),
+                                );
                             }
                             value::text(ui, "Created in transaction", certainty(account.created));
                             value::text(

@@ -47,6 +47,7 @@ fn wheel(delta: Vec2, modifiers: Modifiers) -> Event {
 fn trackpad_scroll_pans_both_axes_without_zoom_even_over_a_node() {
     for over_node in [false, true] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         let mut graph = Graph::default();
         graph.set_mode(crate::widgets::GraphMode::States);
         frame(&ctx, &mut graph, vec![], false);
@@ -94,6 +95,7 @@ fn pinch_and_modified_scroll_zoom_around_pointer_without_scroll_translation() {
         ),
     ] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         let mut graph = Graph::default();
         graph.set_mode(crate::widgets::GraphMode::States);
         frame(&ctx, &mut graph, vec![], false);
@@ -112,6 +114,7 @@ fn pinch_and_modified_scroll_zoom_around_pointer_without_scroll_translation() {
 #[test]
 fn scrolling_a_neighbor_pane_leaves_the_graph_camera_untouched() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = Graph::default();
     graph.set_mode(crate::widgets::GraphMode::States);
     frame(&ctx, &mut graph, vec![], true);
@@ -139,6 +142,7 @@ fn scrolling_a_neighbor_pane_leaves_the_graph_camera_untouched() {
 #[test]
 fn fitting_over_a_neighbor_preserves_its_wheel_tail_and_fresh_input() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut graph = Graph::default();
     graph.set_mode(crate::widgets::GraphMode::States);
     frame(&ctx, &mut graph, vec![], true);
@@ -198,6 +202,7 @@ fn fit_shortcut_takes_priority_over_wheel_and_zoom_smoothing() {
         ] {
             for resume_immediately in [false, true] {
                 let ctx = Context::default();
+                crate::notation::initialize_fonts(&ctx);
                 let mut graph = Graph::default();
                 graph.set_mode(crate::widgets::GraphMode::States);
                 frame(&ctx, &mut graph, vec![], false);

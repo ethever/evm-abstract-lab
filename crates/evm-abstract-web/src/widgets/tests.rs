@@ -93,7 +93,7 @@ fn source_heading_position(output: &FullOutput, view: View) -> Pos2 {
                         && (detail.starts_with("verified complete")
                             || detail.starts_with("partial coverage"))
                 }
-                View::Disassembly => title == "DISASSEMBLY" && detail.starts_with("P0 · Runtime"),
+                View::Disassembly => title == "DISASSEMBLY" && detail.starts_with("P₀ · Runtime"),
                 _ => false,
             };
             matches.then_some(pair[0].pos)
@@ -125,6 +125,7 @@ fn first_pc(output: &FullOutput, view: View) -> (usize, Pos2) {
 fn manual_source_scroll_survives_view_parent_changes_and_resizing() {
     for view in [View::Disassembly, View::Ssa] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         let mut workspace = workspace();
         workspace.view = view;
         let wide = Vec2::new(1440.0, 900.0);
@@ -220,6 +221,7 @@ fn manual_source_scroll_survives_view_parent_changes_and_resizing() {
 fn selected_offscreen_source_row_remains_visible_when_moved_to_workspace() {
     for view in [View::Disassembly, View::Ssa] {
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         let mut workspace = workspace();
         workspace.view = view;
         workspace.selection = Selection {

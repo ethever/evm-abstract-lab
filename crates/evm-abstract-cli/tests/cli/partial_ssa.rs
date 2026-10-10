@@ -73,8 +73,8 @@ fn assert_concise(rendered: &str) {
     for detail in [
         "progress=Completed",
         "progress=Dispatched",
-        "effect !",
-        "effect phi",
+        "effect μ",
+        "effect φ",
         "recorded effect",
         "recorded prefix effect",
         "entry effect",
@@ -86,24 +86,14 @@ fn assert_concise(rendered: &str) {
             "default detail {detail}:\n{partial}"
         );
     }
-    assert!(
-        !partial
-            .as_bytes()
-            .windows(2)
-            .any(|bytes| bytes[0] == b'!' && bytes[1].is_ascii_digit())
-    );
+    assert!(!partial.contains('μ'));
 }
 
 fn assert_verbose(rendered: &str) {
     let partial = partial_body(rendered);
     assert!(partial.contains("progress=Completed"));
-    assert!(partial.contains("partial effect phi") && partial.contains("effect !"));
-    assert!(
-        partial
-            .as_bytes()
-            .windows(2)
-            .any(|bytes| bytes[0] == b'!' && bytes[1].is_ascii_digit())
-    );
+    assert!(partial.contains("partial effect φ") && partial.contains("effect μ"));
+    assert!(partial.contains('μ'));
 }
 
 struct WorldCode(PathBuf);
@@ -188,7 +178,7 @@ fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
                     && line.contains("UnknownTarget")
                     && line.contains('U'))
         );
-        assert!(rendered.contains("projected S0 -> machine S0"));
+        assert!(rendered.contains("projected σᵖ₀ → machine σ₀"));
     }
     let json = report(&run_unknown(&[
         "ssa",
