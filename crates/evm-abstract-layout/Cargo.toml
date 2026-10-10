@@ -1,0 +1,16 @@
+[package]
+name                   = "evm-abstract-layout"
+description            = "Typed, viewport-independent hierarchical CFG geometry"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+elkrs                 = "=0.1.1"
+evm-abstract-notation = { path = "../evm-abstract-notation" }
+thiserror.workspace   = true
+
+[lints]
+workspace = true

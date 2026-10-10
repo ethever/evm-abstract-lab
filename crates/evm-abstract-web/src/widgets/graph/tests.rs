@@ -4,15 +4,15 @@ use evm_abstract_protocol::{
     Fork, SsaReport,
 };
 
-use super::{Graph, layout::Flow, node_text};
+use super::{Graph, node_text};
 use crate::app::Selection;
 
 #[derive(Debug, PartialEq)]
 struct SceneSnapshot {
     nodes: std::collections::BTreeMap<usize, Rect>,
-    edges: Vec<(usize, [Vec<Pos2>; 2], Rect)>,
+    edges: Vec<(usize, Vec<Pos2>, Rect)>,
+    groups: Vec<super::layout::Group>,
     bounds: Rect,
-    flow: Flow,
 }
 
 fn snapshot(graph: &Graph) -> SceneSnapshot {
@@ -22,16 +22,10 @@ fn snapshot(graph: &Graph) -> SceneSnapshot {
             .placement
             .edges
             .iter()
-            .map(|(id, edge)| {
-                (
-                    *id,
-                    [edge.to_label.clone(), edge.to_target.clone()],
-                    edge.label,
-                )
-            })
+            .map(|(id, edge)| (*id, edge.path.clone(), edge.label))
             .collect(),
         bounds: graph.placement.bounds,
-        flow: graph.placement.flow,
+        groups: graph.placement.groups.clone(),
     }
 }
 
@@ -329,69 +323,32 @@ fn render_with_chrome(ctx: &Context, graph: &mut Graph, report: &AnalysisReport,
 }
 
 #[test]
-fn short_wide_diamond_uses_horizontal_ranks_at_native_text_scale() {
-    let report = diamond();
+fn fresh_scenes_have_identical_geometry_in_every_initial_viewport() {
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
-    let mut graph = disassembly_graph();
-    render_with_chrome(&ctx, &mut graph, &report, Vec2::new(844.0, 390.0));
-    assert!(
-        graph.viewport.unwrap().y < 260.0,
-        "must exercise the real short canvas"
-    );
-    assert_eq!(graph.placement.flow, Flow::Right);
-    assert_eq!(
-        graph.zoom, 1.0,
-        "horizontal room should preserve native text size"
-    );
-    assert_scene_fits(&graph);
-    for route in graph.placement.edges.values() {
-        let label = route.label;
-        assert!(
-            graph
-                .placement
-                .nodes
-                .values()
-                .all(|node| !node.intersects(label)),
-            "edge label overlaps a node"
-        );
+    for report in [report(), diamond()] {
+        let mut reference = None;
+        for size in [
+            Vec2::new(1100.0, 450.0),
+            Vec2::new(390.0, 720.0),
+            Vec2::new(844.0, 200.0),
+            Vec2::new(1440.0, 900.0),
+        ] {
+            let mut graph = disassembly_graph();
+            render_with_chrome(&ctx, &mut graph, &report, size);
+            assert!(graph.layout_error.is_none(), "{:?}", graph.layout_error);
+            assert_scene_fits(&graph);
+            let scene = snapshot(&graph);
+            if let Some(reference) = &reference {
+                assert_eq!(
+                    &scene, reference,
+                    "initial viewport changed geometry: {size:?}"
+                );
+            } else {
+                reference = Some(scene);
+            }
+        }
     }
-    let mut graph = disassembly_graph();
-    render_with_chrome(&ctx, &mut graph, &report, Vec2::new(390.0, 844.0));
-    assert_eq!(graph.placement.flow, Flow::Down);
-    assert_scene_fits(&graph);
-    let mut graph = disassembly_graph();
-    render_with_chrome(&ctx, &mut graph, &report, Vec2::new(1440.0, 900.0));
-    assert_eq!(
-        graph.placement.flow,
-        Flow::Down,
-        "vertical must win equal native-size fits"
-    );
-    assert_eq!(graph.zoom, 1.0);
-    assert_scene_fits(&graph);
-}
-
-#[test]
-fn initial_layout_adapts_to_the_first_canvas_size() {
-    let report = report();
-    let ctx = Context::default();
-    crate::notation::initialize_fonts(&ctx);
-    let mut graph = disassembly_graph();
-    render(&ctx, &mut graph, &report, Vec2::new(1100.0, 450.0));
-    assert_scene_fits(&graph);
-    let wide = graph.placement.nodes.clone();
-    let mut graph = disassembly_graph();
-    render(&ctx, &mut graph, &report, Vec2::new(390.0, 720.0));
-    assert_scene_fits(&graph);
-    assert_ne!(
-        wide, graph.placement.nodes,
-        "a fresh portrait scene may pack the broad rank differently"
-    );
-    let mut graph = disassembly_graph();
-    render(&ctx, &mut graph, &report, Vec2::new(844.0, 200.0));
-    assert_scene_fits(&graph);
-    assert!(graph.fitted);
-    assert_eq!(graph.placement.nodes.len(), 9);
 }
 
 #[test]
@@ -410,6 +367,71 @@ fn fit_centers_the_complete_scene_in_a_roomy_canvas() {
 }
 
 #[test]
+fn zoom_below_eight_percent_preserves_gesture_direction_anchor_and_geometry() {
+    let mut report = report();
+    let template = report.cfg[0].clone();
+    report.cfg = (0..128)
+        .map(|index| {
+            let mut block = template.clone();
+            block.id = index * 7;
+            block.basic_block = index;
+            block.start_pc = Some(index);
+            block.instructions[0].pc = index;
+            block.instructions[0].opcode = 0x5b;
+            block.instructions[0].name = "JUMPDEST".into();
+            block.executed_pcs = vec![index];
+            block
+        })
+        .collect();
+    report.edges = (1..128)
+        .map(|index| CfgEdge {
+            id: index * 3,
+            from: (index - 1) * 7,
+            to: index * 7,
+            kind: EdgeKind::Fallthrough,
+        })
+        .collect();
+    let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
+    let mut graph = disassembly_graph();
+    let screen = Vec2::new(900.0, 380.0);
+    render(&ctx, &mut graph, &report, screen);
+    assert!(graph.layout_error.is_none(), "{:?}", graph.layout_error);
+    assert_scene_fits(&graph);
+    assert!(
+        graph.zoom > 0.0 && graph.zoom < 0.08,
+        "a real long-chain Fit must exercise a scale below 8%: {}",
+        graph.zoom
+    );
+    let scene = snapshot(&graph);
+    let pointer = graph.viewport.unwrap() * 0.37;
+    for factor in [0.5, 1.25, 0.8, 2.0] {
+        let previous = graph.zoom;
+        let world = (pointer - graph.pan) / previous;
+        graph.zoom_at(pointer, factor);
+        assert!((graph.zoom / previous - factor).abs() < 0.000001);
+        let anchored = (pointer - graph.pan) / graph.zoom;
+        assert!((anchored - world).length() / world.length().max(1.0) < 0.000001);
+        assert!(!graph.fitted);
+        render(&ctx, &mut graph, &report, screen);
+        assert_eq!(
+            snapshot(&graph),
+            scene,
+            "zoom must not change nodes, groups, routes or label rectangles"
+        );
+    }
+    graph.queue_fit();
+    render(&ctx, &mut graph, &report, screen);
+    let camera = (graph.zoom, graph.pan, graph.fitted);
+    // A positive finite factor can still underflow in multiplication. Ignoring
+    // that unrepresentable gesture must keep the complete camera valid.
+    graph.zoom_at(pointer, f32::from_bits(1));
+    assert_eq!((graph.zoom, graph.pan, graph.fitted), camera);
+    render(&ctx, &mut graph, &report, screen);
+    assert_eq!(snapshot(&graph), scene);
+}
+
+#[test]
 fn resize_preserves_manual_canvas_coordinates_and_fit_centers_the_scene() {
     let report = report();
     let ctx = Context::default();
@@ -422,13 +444,21 @@ fn resize_preserves_manual_canvas_coordinates_and_fit_centers_the_scene() {
     let pan = graph.pan;
     let zoom = graph.zoom;
     let nodes = graph.placement.nodes.clone();
-    graph.update_viewport(&report, Vec2::new(390.0, 600.0));
+    graph.update_viewport(
+        &report,
+        Vec2::new(390.0, 600.0),
+        &egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING),
+    );
     assert_eq!(graph.pan, pan);
     assert_eq!(graph.zoom, zoom);
     assert_eq!(graph.placement.nodes, nodes);
     assert!(!graph.fitted);
     graph.queue_fit();
-    graph.update_viewport(&report, Vec2::new(390.0, 600.0));
+    graph.update_viewport(
+        &report,
+        Vec2::new(390.0, 600.0),
+        &egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING),
+    );
     assert!(graph.fitted);
     assert_scene_fits(&graph);
     graph.zoom_at(Vec2::ZERO, 1.0);
@@ -528,14 +558,13 @@ fn cycles_self_edges_and_label_detours_are_inside_fit_bounds() {
         let route = &graph.placement.edges[&id];
         assert!(
             route
-                .to_label
+                .path
                 .iter()
-                .chain(&route.to_target)
                 .all(|point| point.is_finite() && graph.placement.bounds.contains(*point))
         );
         assert_ne!(
-            route.to_target[route.to_target.len() - 1],
-            route.to_target[route.to_target.len() - 2]
+            route.path[route.path.len() - 1],
+            route.path[route.path.len() - 2]
         );
         assert!(graph.placement.bounds.contains_rect(route.label));
     }

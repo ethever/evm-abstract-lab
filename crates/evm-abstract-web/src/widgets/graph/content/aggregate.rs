@@ -6,6 +6,7 @@ use evm_abstract_protocol::{AnalysisReport, BlockCoverage, CfgBlock, FrameSnapsh
 
 const MEMBERS_IN_TOOLTIP: usize = 12;
 const SHARED_SOURCE_ROWS: usize = 3;
+const COMPACT_MEMBERS: usize = 3;
 
 #[derive(Default)]
 struct CountRange {
@@ -266,6 +267,21 @@ pub(super) fn preview(
         summary.coverage(),
         summary.frontiers > 0,
     )
+    .with_identity(vec![title(node), compact_members(node)])
+}
+
+fn compact_members(node: &DisplayNode) -> String {
+    let mut text = node
+        .members
+        .iter()
+        .take(COMPACT_MEMBERS)
+        .map(|state| Symbol::State(*state).to_string())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if node.members.len() > COMPACT_MEMBERS {
+        text.push_str(&format!(" · +{}", node.members.len() - COMPACT_MEMBERS));
+    }
+    text
 }
 
 pub(super) fn tooltip(

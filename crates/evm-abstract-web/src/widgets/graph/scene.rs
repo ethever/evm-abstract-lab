@@ -1,7 +1,7 @@
 //! Cached projection and scene indices. Workspace resets these for a new
 //! immutable report; cheap shape checks also handle standalone graph fixtures.
 
-use super::{Graph, GraphMode, ReportIndex, Visibility, edge_label};
+use super::{Graph, GraphMode, NodeView, ReportIndex, Visibility, edge_label};
 use egui::Ui;
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::AnalysisReport;
@@ -129,7 +129,7 @@ impl Graph {
             .iter()
             .map(|(id, route)| {
                 let mut bounds = route.label;
-                for point in route.to_label.iter().chain(&route.to_target) {
+                for point in &route.path {
                     bounds.extend_with(*point);
                 }
                 (*id, bounds)
@@ -204,8 +204,23 @@ impl Graph {
             self.program_scope
                 .map_or("All programs".into(), |id| Symbol::Program(id).to_string())
         };
+        let detail = match (self.detail_level, self.content) {
+            (super::paint::DetailLevel::Identity, _) => "identities",
+            (super::paint::DetailLevel::Preview, NodeView::Ssa) => "SSA preview",
+            (super::paint::DetailLevel::Preview, NodeView::Disassembly) => "disassembly preview",
+        };
+        let layout = self.layout_error.as_ref().map_or_else(
+            || {
+                format!(
+                    "{} groups; CFG detail: {detail}; CFG zoom: {:.3}%",
+                    self.placement.groups.len(),
+                    self.zoom * 100.0,
+                )
+            },
+            |error| format!("Layout unavailable: {error}"),
+        );
         format!(
-            "CFG view: {:?}; {} shown nodes; {}/{total} states; {} shown edges; {} native edges; {} hidden states; {} boundary edges; {scope}",
+            "CFG view: {:?}; {} shown nodes; {}/{total} states; {} shown edges; {} native edges; {} hidden states; {} boundary edges; {scope}; {layout}",
             self.mode,
             self.display.nodes.len(),
             self.shown_states,

@@ -49,7 +49,10 @@ pub(super) fn preview(
             ssa_preview(ssa)
         }
     };
-    NodeText::new(title, detail, lines, coverage, frontier)
+    NodeText::new(title, detail, lines, coverage, frontier).with_identity(vec![
+        Symbol::State(block.id).to_string(),
+        Symbol::Block(block.basic_block).to_string(),
+    ])
 }
 
 pub(super) fn source_instruction(instruction: &DisasmInstruction) -> String {

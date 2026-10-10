@@ -1,0 +1,9 @@
+{
+  "kind": "synthetic bytecode regression",
+  "purpose": "Four consecutive source blocks retain separate native states, SSA instructions, and three fallthrough edges inside one spatial chain",
+  "byte_length": 29,
+  "expected_native_states": 4,
+  "expected_source_blocks": 4,
+  "expected_original_edges": 3,
+  "expected_spatial_groups": 1
+}

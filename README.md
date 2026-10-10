@@ -166,7 +166,7 @@ gas 不精确计量，一般 hash 和未知环境采用保守近似，有界关�
 nix run .#web
 ```
 
-打开命令打印的本地地址，在 egui 工作台输入运行时字节码，查看自绘的反汇编、SSA 和 CFG。浏览器通过共享 Rust 类型向原生分析服务发送请求；分析和 SMT 求解仍在后端运行。控件操作、开发构建、数据接口及当前输入范围见[Web 前端说明](docs/web-workbench.md)。
+打开命令打印的本地地址，在 egui 工作台输入运行时字节码，查看自绘的反汇编、SSA 和 CFG。浏览器通过共享 Rust 类型向原生分析服务发送请求；分析和 SMT 求解仍在后端运行。控件操作、开发构建、数据接口及当前输入范围见[Web 前端说明](docs/web-workbench.md)。CFG 在浏览器主线程使用纯 Rust ELK 生成与窗口尺寸无关的分组布局；选型实测、几何边界和当前限制见[Rust ELK 布局说明](docs/elk-layout.md)。
 
 分析链上账户时，使用 `nix run .#web -- --rpc-config http://127.0.0.1:8545` 直接传入 RPC HTTP(S) URL；后端自动创建 **Default RPC** 提供者，无需 JSON 文件。需要多个提供者或自定义名称时，`--rpc-config` 也接受 JSON 配置文件路径。浏览器同时显示提供者的名称和 RPC URL，分析请求只提交其 ID。首次打开时，有提供者则使用第一项自动分析 Ethereum 主网 USDC；未配置提供者则运行分支字节码示例，RPC 提交不可用。RPC 表单还可选择 WETH 或自定义入口地址，切换示例不会自动提交。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)。
 
@@ -204,6 +204,7 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 内存、calldata 与 returndata 的抽象字节数组 | [`world/bytes.rs`](crates/evm-abstract/src/world/bytes.rs) |
 | 值的命名与结构验证 | [`ssa/`](crates/evm-abstract/src/ssa) |
 | 身份显示符号与状态搜索 | [`evm-abstract-notation`](crates/evm-abstract-notation) |
+| CFG 空间分组与 Rust ELK 几何 | [`evm-abstract-layout`](crates/evm-abstract-layout) |
 | 命令参数、世界文件解析 | [`evm-abstract-cli`](crates/evm-abstract-cli) |
 | 浏览器共享数据协议 | [`evm-abstract-protocol`](crates/evm-abstract-protocol) |
 | 原生分析服务与静态资源 | [`evm-abstract-server`](crates/evm-abstract-server) |

@@ -1844,6 +1844,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
+name = "elkrs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0aa6d17007599c4bb42b342b55148832289bc8c7e41d83f01b19af1ef363de4"
+dependencies = [
+ "indexmap 2.14.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "elliptic-curve"
 version = "0.13.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2024,6 +2035,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "evm-abstract-layout"
+version = "0.4.0"
+dependencies = [
+ "elkrs",
+ "evm-abstract-notation",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "evm-abstract-notation"
 version = "0.4.0"
 
@@ -2057,6 +2077,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_tiles",
+ "evm-abstract-layout",
  "evm-abstract-notation",
  "evm-abstract-protocol",
  "serde_json",

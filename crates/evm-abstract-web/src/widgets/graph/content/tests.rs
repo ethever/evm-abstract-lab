@@ -412,13 +412,13 @@ fn fit_button_centers_both_representations_without_rearranging_nodes() {
         graph.pan += Vec2::new(90.0, -70.0);
         assert!(!graph.fitted);
         let nodes = graph.placement.nodes.clone();
-        let flow = graph.placement.flow;
+        let geometry = graph.placement.clone();
         click(&ctx, &mut graph, &report, &mut selection, "Fit graph");
         assert!(graph.fitted);
         assert_eq!(graph.content, content);
         assert_eq!(selection, expected);
         assert_eq!(graph.placement.nodes, nodes);
-        assert_eq!(graph.placement.flow, flow);
+        assert_eq!(graph.placement, geometry);
         let viewport = Rect::from_min_size(Pos2::ZERO, graph.viewport.unwrap());
         let scene = graph.screen_rect(viewport, graph.placement.bounds);
         assert!(viewport.contains_rect(scene));

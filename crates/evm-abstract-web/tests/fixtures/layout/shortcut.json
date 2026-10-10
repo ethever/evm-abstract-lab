@@ -1,0 +1,9 @@
+{
+  "kind": "synthetic bytecode regression",
+  "purpose": "R to A, R to B, and A to B form an acyclic shortcut; the two native B contexts remain distinct",
+  "byte_length": 11,
+  "expected_native_states": 4,
+  "expected_source_blocks": 3,
+  "expected_original_edges": 3,
+  "expected_spatial_groups": 0
+}

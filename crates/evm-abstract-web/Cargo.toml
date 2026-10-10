@@ -11,6 +11,7 @@ repository.workspace   = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+evm-abstract-layout   = { path = "../evm-abstract-layout" }
 evm-abstract-notation = { path = "../evm-abstract-notation" }
 evm-abstract-protocol = { path = "../evm-abstract-protocol" }
 egui                  = "=0.36.2"

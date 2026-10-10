@@ -76,12 +76,7 @@ pub(super) fn paint_edge_text(
     // Unlike individual LineSegments, epaint does not round PathShape centers
     // to the physical pixel grid. Apply the same stroke-aware rounding here so
     // orthogonal segments retain equal coverage as the graph moves or scales.
-    let incoming = geometry::screen_points(&route.to_label, origin, zoom, stroke, pixels_per_point);
-    let label_entry = incoming.last().copied();
-    if incoming.len() >= 2 {
-        painter.add(Shape::line(incoming, stroke));
-    }
-    let points = geometry::screen_points(&route.to_target, origin, zoom, stroke, pixels_per_point);
+    let points = geometry::screen_points(&route.path, origin, zoom, stroke, pixels_per_point);
     if points.len() < 2 {
         return;
     }
@@ -99,16 +94,14 @@ pub(super) fn paint_edge_text(
         stroke.color,
         Stroke::NONE,
     ));
-    // The label is a layout vertex, not a floating mask over an edge. The two
-    // routes end/start at its boundary and only the target gets an arrowhead.
-    let label = Rect::from_min_max(
-        origin + route.label.min.to_vec2() * zoom,
-        origin + route.label.max.to_vec2() * zoom,
-    );
-    // Preserve the routing gap without making each annotation look like a
-    // selected state or button. Edge kind remains visible in the colored lines.
-    painter.rect_filled(label, 2.0, palette::BACKGROUND);
-    if zoom > 0.35 {
+    // ELK jointly places the route and its annotation. The label may sit beside
+    // a segment; drawing it must never add bends or break the original path.
+    if zoom > 0.35 && !label_text.is_empty() {
+        let label = Rect::from_min_max(
+            origin + route.label.min.to_vec2() * zoom,
+            origin + route.label.max.to_vec2() * zoom,
+        );
+        painter.rect_filled(label, 2.0, palette::BACKGROUND);
         let text_color = palette::MUTED.gamma_multiply(0.8);
         let galley = painter.layout_job(crate::notation::job(
             label_text,
@@ -119,9 +112,5 @@ pub(super) fn paint_edge_text(
         painter
             .with_clip_rect(label.intersect(painter.clip_rect()))
             .galley(position, galley, text_color);
-    } else if let Some(entry) = label_entry {
-        // With neither text nor an outline, retain a continuous edge through
-        // the reserved slot instead of leaving an unexplained gap at low zoom.
-        painter.line_segment([entry, points[0]], stroke);
     }
 }
