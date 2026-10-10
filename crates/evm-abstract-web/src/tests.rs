@@ -564,14 +564,22 @@ fn graph_layout_handles_cycles_disconnected_nodes_and_sparse_native_ids() {
 }
 
 #[test]
-fn zoom_clamps_extremes() {
+fn zoom_caps_enlargement_and_rejects_invalid_factors() {
     let mut graph = widgets::Graph::default();
     graph.zoom_at(Vec2::new(50.0, 30.0), 2.0);
     assert_eq!(graph.zoom, 2.0);
     graph.zoom_at(Vec2::new(50.0, 30.0), 100.0);
     assert_eq!(graph.zoom, 2.5);
     graph.zoom_at(Vec2::new(50.0, 30.0), 0.0001);
-    assert_eq!(graph.zoom, 0.08);
+    assert!(graph.zoom > 0.0 && graph.zoom < 0.08);
+    let small = graph.zoom;
+    graph.zoom_at(Vec2::new(50.0, 30.0), 0.5);
+    assert!(graph.zoom > 0.0 && graph.zoom < small);
+    let unchanged = graph.zoom;
+    for factor in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        graph.zoom_at(Vec2::new(50.0, 30.0), factor);
+        assert_eq!(graph.zoom, unchanged);
+    }
 }
 
 #[test]
