@@ -1,0 +1,32 @@
+{
+  "name": "ethereum-weth9",
+  "contract": "Canonical Ethereum WETH9",
+  "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+  "chain_id": 1,
+  "block_number": 26162721,
+  "block_hash": "0x249b266a4b3e71abf93278a2e96938a49099ac2afafa6f8193e28c21872d57dc",
+  "requireCanonical": true,
+  "code_hash": "0xd0a06b12ac47863b5c7be4185c2deaad1c61557033f56c7d4ea74429cbb25e23",
+  "byte_length": 3124,
+  "rpc_method": "eth_getCode",
+  "rpc_block_selector": {
+    "blockHash": "0x249b266a4b3e71abf93278a2e96938a49099ac2afafa6f8193e28c21872d57dc",
+    "requireCanonical": true
+  },
+  "acquisition": "ordinary trusted local RPC; no eth_getProof",
+  "fetched_at": "2026-10-10T14:47:28.113571+00:00",
+  "browser_entry": {
+    "label": "transferFrom(address,address,uint256)",
+    "arguments": [
+      "0x1111111111111111111111111111111111111111",
+      "0x2222222222222222222222222222222222222222",
+      1
+    ],
+    "calldata": "0x23b872dd000000000000000000000000111111111111111111111111111111111111111100000000000000000000000022222222222222222222222222222222222222220000000000000000000000000000000000000000000000000000000000000001",
+    "scope": "One exact ABI entry; balances, allowance and caller remain abstract. This does not cover all WETH entrypoints.",
+    "expected_status": "Converged",
+    "minimum_native_states": 20,
+    "minimum_source_blocks": 18,
+    "expected_frontiers": 0
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "kind": "synthetic bytecode regression",
+  "purpose": "128 native source blocks remain separate inside a spatial chain; initial fit below 8 percent must allow continuous zoom-out",
+  "byte_length": 897,
+  "expected_native_states": 128,
+  "expected_source_blocks": 128,
+  "expected_original_edges": 127,
+  "expected_spatial_groups": 1
+}

@@ -1,0 +1,36 @@
+{
+  "fork": "osaka",
+  "provenance": "synthetic:browser-hierarchical-cfg:nested-call:v1",
+  "accounts": [
+    {
+      "address": "0x1111111111111111111111111111111111111111",
+      "code": "0x5b6001600201505b5f5f5f5f5f73222222222222222222222222222222222222222261fffff15000",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0x100000",
+      "nonce": "0x1"
+    },
+    {
+      "address": "0x2222222222222222222222222222222222222222",
+      "code": "0x5b6001600201505b5f5f5f5f5f73333333333333333333333333333333333333333361fffff15000",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0x100000",
+      "nonce": "0x1"
+    },
+    {
+      "address": "0x3333333333333333333333333333333333333333",
+      "code": "0x5b6001600201505b60036004015000",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0x100000",
+      "nonce": "0x1"
+    }
+  ],
+  "browser_expectations": {
+    "root": "0x1111111111111111111111111111111111111111",
+    "minimum_programs": 3,
+    "maximum_frame_depth": 3,
+    "minimum_spatial_groups": 3
+  }
+}

@@ -4,9 +4,11 @@
 mod content;
 mod controls;
 mod edges;
+mod groups;
 mod index;
 mod layout;
 mod navigation;
+mod paint;
 mod projection;
 mod scene;
 #[cfg(test)]
@@ -19,8 +21,8 @@ use crate::{app::Selection, palette};
 use content::node_text;
 use content::{NodeText, NodeView, node_preview, node_tooltip};
 use edges::{edge_label, paint_edge_text};
-use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use evm_abstract_protocol::{AnalysisReport, BlockCoverage};
+use egui::{Align2, FontId, Painter, Pos2, Rect, Sense, Ui, Vec2};
+use evm_abstract_protocol::AnalysisReport;
 use index::ReportIndex;
 use layout::Placement;
 use projection::DisplayGraph;
@@ -60,6 +62,8 @@ pub(crate) struct Graph {
     pan: Vec2,
     nodes: BTreeMap<usize, NodeText>,
     placement: Placement,
+    layout_error: Option<evm_abstract_layout::LayoutError>,
+    detail_level: paint::DetailLevel,
     fitted: bool,
     layout_pending: bool,
     fit_pending: bool,
@@ -98,6 +102,8 @@ impl Default for Graph {
             pan: Vec2::ZERO,
             nodes: BTreeMap::new(),
             placement: Placement::default(),
+            layout_error: None,
+            detail_level: paint::DetailLevel::Preview,
             fitted: true,
             layout_pending: true,
             fit_pending: true,
@@ -150,7 +156,7 @@ impl Graph {
                 })
                 .collect();
         }
-        if ui.ctx().will_discard() || !self.update_viewport(report, canvas.size()) {
+        if ui.ctx().will_discard() || !self.update_viewport(report, canvas.size(), &painter) {
             return;
         }
         let selected_node = selection
@@ -173,12 +179,32 @@ impl Graph {
             self.navigate(ui, &response);
         }
         self.grid(&painter, canvas);
+        if let Some(error) = &self.layout_error {
+            crate::notation::paint(
+                &painter,
+                canvas.center(),
+                Align2::CENTER_CENTER,
+                &format!("Unable to arrange this graph: {error}"),
+                FontId::monospace(12.0),
+                palette::WARNING,
+            );
+            return;
+        }
         self.update_highlight(report, selection.state);
         let visible = Rect::from_min_max(
             Pos2::ZERO - self.pan / self.zoom,
             Pos2::ZERO + (canvas.size() - self.pan) / self.zoom,
         )
         .expand(16.0 / self.zoom);
+        groups::paint(
+            ui,
+            &painter,
+            &self.placement.groups,
+            canvas,
+            self.pan,
+            self.zoom,
+            visible,
+        );
         for id in self.edge_visibility.query(visible) {
             let Some(route) = self.placement.edges.get(&id) else {
                 continue;
@@ -210,6 +236,8 @@ impl Graph {
                 hover.on_hover_ui(|ui| self.edge_detail(ui, report, id));
             }
         }
+        let detail_level = paint::detail_level(ui, self.zoom);
+        self.detail_level = detail_level;
         for id in self.node_visibility.query(visible) {
             let (Some(world), Some(content)) = (self.placement.nodes.get(&id), self.nodes.get(&id))
             else {
@@ -231,13 +259,14 @@ impl Graph {
                 ui.id().with(("cfg_node", id)),
                 Sense::click(),
             );
-            paint_node(
+            paint::node(
                 &painter,
                 rect,
                 content,
                 selected_node == Some(id),
                 hit.hovered(),
                 self.zoom,
+                detail_level,
             );
             if hit.clicked() {
                 let state = selection
@@ -306,6 +335,7 @@ impl Graph {
         self.nodes.clear();
         self.content_anchor = None;
         self.instance_group = None;
+        self.layout_error = None;
         self.layout_pending = true;
         self.fit_pending = true;
         self.fitted = true;
@@ -350,7 +380,7 @@ impl Graph {
         self.focus_pending = false;
     }
 
-    fn update_viewport(&mut self, _report: &AnalysisReport, size: Vec2) -> bool {
+    fn update_viewport(&mut self, report: &AnalysisReport, size: Vec2, painter: &Painter) -> bool {
         if !size.is_finite() || size.min_elem() <= 1.0 {
             return false;
         }
@@ -361,9 +391,30 @@ impl Graph {
                 .iter()
                 .map(|(id, node)| (*id, node.size))
                 .collect();
-            let ids: Vec<_> = self.display.nodes.iter().map(|node| node.id).collect();
-            self.placement =
-                layout::adaptive_scene(&ids, &self.display.edges, &sizes, &self.edge_labels, size);
+            let input =
+                self.index
+                    .as_ref()
+                    .map_or_else(evm_abstract_layout::Input::default, |index| {
+                        layout::prepare(
+                            report,
+                            index,
+                            &self.display,
+                            &sizes,
+                            &self.edge_labels,
+                            painter,
+                        )
+                    });
+            match layout::scene(&input) {
+                Ok(placement) => {
+                    self.placement = placement;
+                    self.layout_error = None;
+                }
+                Err(error) => {
+                    self.placement = Placement::default();
+                    self.layout_error = Some(error);
+                    self.fit_pending = false;
+                }
+            }
             self.rebuild_visibility();
             self.layout_pending = false;
             if let Some((id, position)) = self.content_anchor.take()
@@ -384,10 +435,21 @@ impl Graph {
         if !factor.is_finite() || factor <= 0.0 || (factor - 1.0).abs() <= f32::EPSILON {
             return;
         }
-        self.fitted = false;
         let old = self.zoom;
-        self.zoom = (self.zoom * factor).clamp(0.08, 2.5);
-        self.pan = pointer - (pointer - self.pan) * (self.zoom / old);
+        // Fit can legitimately make a large graph smaller than 8%. An
+        // arbitrary lower clamp would turn its next zoom-out into zoom-in.
+        let zoom = (old * factor).min(2.5);
+        let ratio = zoom / old;
+        if zoom <= 0.0 || !ratio.is_finite() || ratio <= 0.0 {
+            return;
+        }
+        let pan = pointer - (pointer - self.pan) * ratio;
+        if !pan.is_finite() {
+            return;
+        }
+        self.fitted = false;
+        self.zoom = zoom;
+        self.pan = pan;
     }
 
     fn screen_rect(&self, canvas: Rect, world: Rect) -> Rect {
@@ -423,74 +485,6 @@ impl Graph {
     }
 }
 
-fn paint_node(
-    painter: &Painter,
-    rect: Rect,
-    content: &NodeText,
-    selected: bool,
-    hovered: bool,
-    zoom: f32,
-) {
-    let border = if selected {
-        palette::ACCENT
-    } else if content.frontier || content.coverage != BlockCoverage::Current {
-        palette::WARNING
-    } else if hovered {
-        palette::BLUE
-    } else {
-        palette::BORDER
-    };
-    painter.rect(
-        rect,
-        4.0,
-        if selected {
-            palette::SELECTED
-        } else {
-            palette::PANEL
-        },
-        Stroke::new(if selected { 1.5 } else { 1.0 }, border),
-        StrokeKind::Inside,
-    );
-    if zoom < 0.22 {
-        return;
-    }
-    let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
-    let label = |y: f32, text: &str, color: Color32, size: f32| {
-        crate::notation::paint(
-            &painter,
-            rect.min + Vec2::new(PAD, y) * zoom,
-            Align2::LEFT_TOP,
-            text,
-            FontId::monospace(size * zoom),
-            color,
-        );
-    };
-    label(
-        4.0,
-        &content.title,
-        if content.coverage == BlockCoverage::Current {
-            palette::ACCENT
-        } else {
-            palette::WARNING
-        },
-        12.0,
-    );
-    label(18.0, &content.detail, palette::MUTED, 10.0);
-    painter.hline(
-        rect.x_range(),
-        rect.top() + (HEADER_HEIGHT - 3.0) * zoom,
-        Stroke::new(1.0, palette::BORDER),
-    );
-    for (index, (line, color)) in content.lines.iter().enumerate() {
-        label(
-            HEADER_HEIGHT + index as f32 * LINE_HEIGHT,
-            line,
-            *color,
-            11.0,
-        );
-    }
-}
-
 /// Lightweight deterministic layout entry used by the native identity regression.
 #[cfg(test)]
 pub(crate) fn layout(report: &AnalysisReport) -> BTreeMap<usize, Pos2> {
@@ -499,7 +493,7 @@ pub(crate) fn layout(report: &AnalysisReport) -> BTreeMap<usize, Pos2> {
         .iter()
         .map(|block| (block.id, Vec2::new(140.0, 70.0)))
         .collect();
-    layout::adaptive(report, &sizes, Vec2::new(800.0, 600.0))
+    layout::for_report(report, &sizes)
         .nodes
         .into_iter()
         .map(|(id, rect)| (id, rect.min))

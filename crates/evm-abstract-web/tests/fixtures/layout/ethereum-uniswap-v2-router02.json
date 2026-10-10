@@ -1,0 +1,36 @@
+{
+  "name": "ethereum-uniswap-v2-router02",
+  "contract": "Ethereum Uniswap V2 Router02",
+  "address": "0x7a250d5630b4cf539739df2c5dacb4c659f2488d",
+  "chain_id": 1,
+  "block_number": 26162721,
+  "block_hash": "0x249b266a4b3e71abf93278a2e96938a49099ac2afafa6f8193e28c21872d57dc",
+  "requireCanonical": true,
+  "code_hash": "0xa324bc7db3d091b6f1a2d526e48a9c7039e03b3cc35f7d44b15ac7a1544c11d2",
+  "byte_length": 21943,
+  "rpc_method": "eth_getCode",
+  "rpc_block_selector": {
+    "blockHash": "0x249b266a4b3e71abf93278a2e96938a49099ac2afafa6f8193e28c21872d57dc",
+    "requireCanonical": true
+  },
+  "acquisition": "ordinary trusted local RPC; no eth_getProof",
+  "fetched_at": "2026-10-10T14:47:28.115689+00:00",
+  "browser_entry": {
+    "label": "getAmountsOut(uint256,address[])",
+    "arguments": [
+      1000000,
+      [
+        "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "0x6b175474e89094c44da98b954eedeac495271d0f"
+      ]
+    ],
+    "calldata": "0xd06ca61f00000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000003000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000006b175474e89094c44da98b954eedeac495271d0f",
+    "scope": "One exact ABI entry in standalone bytecode; external pair code is unavailable and its frontier must remain visible. This does not cover all router entrypoints.",
+    "expected_status": "Incomplete",
+    "minimum_native_states": 40,
+    "minimum_source_blocks": 35,
+    "expected_frontiers": 1,
+    "expected_frontier_reason": "MissingCode"
+  }
+}

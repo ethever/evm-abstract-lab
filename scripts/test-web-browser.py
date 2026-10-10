@@ -74,19 +74,19 @@ class AnalysisResponse:
         return self.envelope
 
 
-def complete_submission(page, admitted):
+def complete_submission(page, admitted, timeout_seconds: int = 60):
     reply = admitted.json()["result"]
     if "Err" in reply:
         return AnalysisResponse(admitted, {"result": reply}, admitted.status)
     job = reply["Ok"]
     observed_status = admitted.status
     task_url = admitted.url + "/" + str(job["id"])
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         state = job["state"]
         if state == "Completed":
             result = page.request.get(task_url + "/result")
-            expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=60000)
+            expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)
             return AnalysisResponse(admitted, result.json(), result.status)
         if isinstance(state, dict) and "Failed" in state:
             error = state["Failed"]
@@ -296,10 +296,10 @@ def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, floa
     )
 
 
-def node_snapshot(page, canvas, output: Path, name: str, region=(4, 123, 1436, 970), measure_nodes=False):
+def node_snapshot(page, canvas, output: Path, name: str, region=(4, 123, 1436, 970), measure_nodes=False, min_selected_pixels=20):
     screenshot = canvas.screenshot(path=str(output / f"{name}.png"))
     metrics = screenshot_metrics(page, screenshot, region, measure_nodes)
-    assert metrics["bounds"] and metrics["selected_pixels"] >= 20, f"selected CFG node missing: {name}: {metrics}"
+    assert metrics["bounds"] and metrics["selected_pixels"] >= min_selected_pixels, f"selected CFG node missing: {name}: {metrics}"
     return metrics
 
 
@@ -346,13 +346,26 @@ def assert_same_scene(before, after) -> None:
                           - (old[axis] + old[axis + 2]) / 2 * scale
                           for old, new in pairs) for axis in [0, 1]]
     for original, fitted in pairs:
+        def contains(card, fill):
+            return (card[0] <= fill[0] and card[1] <= fill[1]
+                    and card[2] >= fill[2] and card[3] >= fill[3])
+
+        selected_before = contains(original, before["bounds"])
+        selected_after = contains(fitted, after["bounds"])
+        assert selected_before == selected_after, "Fit changed the selected card's scene association"
+        # Preview's header separator has BORDER pixels reaching the card's
+        # outline. Identity omits that separator, so its selected component
+        # stops at the inside stroke. Compare pure SELECTED fill in both modes
+        # while retaining outline centers and the existing size tolerance.
+        original_measure = before["bounds"] if selected_before else original
+        fitted_measure = after["bounds"] if selected_after else fitted
         for axis in [0, 1]:
             original_center = (original[axis] + original[axis + 2]) / 2
             fitted_center = (fitted[axis] + fitted[axis + 2]) / 2
             expected = translation[axis] + original_center * scale
             assert abs(fitted_center - expected) <= 4.0, f"Fit rearranged the scene: {before['nodes']} -> {after['nodes']}"
-            original_size = original[axis + 2] - original[axis]
-            fitted_size = fitted[axis + 2] - fitted[axis]
+            original_size = original_measure[axis + 2] - original_measure[axis]
+            fitted_size = fitted_measure[axis + 2] - fitted_measure[axis]
             assert abs(fitted_size - original_size * scale) <= 3.0, "Fit resized a node independently of the scene"
 
 
@@ -895,16 +908,24 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             else:
                 assert_same_scene(scene_reference, fitted)
             zoom_screenshots[f"{layout_name}-fit"] = fitted
+            fitted_zoom = float(re.search(r"; CFG zoom: ([0-9.]+)%", status.text_content())[1])
             previous = 1.0
             for scale in [0.75, 0.40, 0.36, 0.16]:
                 pinch_wheel(page, cdp, (720, height * 0.65), -math.log(scale / previous) / 0.01)
                 page.mouse.move(30, height - 70)
                 rendered_frame(page)
                 name = str(round(scale * 100))
-                measured = node_snapshot(page, canvas, output, f"{prefix}-edges-{layout_name}-{name}", region)
+                measured = node_snapshot(page, canvas, output, f"{prefix}-edges-{layout_name}-{name}", region,
+                                         min_selected_pixels=1 if scale <= 0.16 else 20)
                 fitted_width = fitted["bounds"][2] - fitted["bounds"][0]
                 actual_width = measured["bounds"][2] - measured["bounds"][0]
-                assert abs(actual_width / fitted_width - scale) < 0.05, f"incorrect screenshot zoom at DPR {dpr}: {scale}: {measured}"
+                observed_zoom = float(re.search(r"; CFG zoom: ([0-9.]+)%", status.text_content())[1])
+                assert abs(observed_zoom / fitted_zoom - scale) < 0.005, f"incorrect camera zoom at DPR {dpr}: {scale}: {observed_zoom}/{fitted_zoom}"
+                # The inside stroke and antialiasing retain physical width;
+                # tiny fill rectangles have a fixed pixel bias, independent of
+                # their scale. Keep a visible selected fill and compare actual
+                # pixels as well as the product's precise camera percentage.
+                assert abs(actual_width - fitted_width * scale) <= 4.0, f"incorrect screenshot zoom at DPR {dpr}: {scale}: {measured}"
                 zoom_screenshots[f"{layout_name}-{name}"] = measured
                 previous = scale
 
@@ -1495,17 +1516,465 @@ def unconfigured_rpc_interactions(browser, url: str, output: Path):
             "catalogue_retry": "real server returned empty catalogue"}
 
 
+LAYOUT_FIXTURES = Path(__file__).resolve().parent.parent / "crates/evm-abstract-web/tests/fixtures/layout"
+LAYOUT_DEFAULT_LIMITS = {
+    "max_states":100_000, "max_transfers":10_000_000, "context_depth":128,
+    "max_constants":512, "max_work":1_000_000_000_000, "max_call_depth":1025,
+    "max_memory_bytes":64*1024*1024, "use_summaries":True, "domain_profile":"Product",
+    "reduction_rounds":16, "max_facts":4096, "relations_enabled":True,
+    "max_constraints":2048, "max_expression_nodes":16_384, "max_expression_depth":256,
+    "smt_provider":"Z3", "smt_rlimit":10_000_000, "rpc_max_accounts":4096,
+    "rpc_max_requests":1_000_000, "rpc_max_response_bytes":64*1024*1024,
+    "rpc_timeout_ms":120_000,
+}
+
+
+def layout_fixture(name: str):
+    code = (LAYOUT_FIXTURES / f"{name}.hex").read_text().strip()
+    metadata = json.loads((LAYOUT_FIXTURES / f"{name}.json").read_text())
+    assert len(bytes.fromhex(code)) == metadata["byte_length"]
+    return code, metadata
+
+
+def layout_modal(page, canvas):
+    viewport = page.viewport_size
+    boxes = screenshot_metrics(page, canvas.screenshot(),
+                               (0, 0, viewport["width"], viewport["height"]), True)["nodes"]
+    return max(boxes, key=lambda rect: (rect[2]-rect[0])*(rect[3]-rect[1]))
+
+
+def layout_entry_form(page, canvas, entry):
+    """Edit actual egui controls; the typed POST below verifies every choice."""
+    root_offset = 10 if "address" in entry else 0
+    if "address" in entry:
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0]+18, "y": modal[1]+173})
+        settle_gesture(page)
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0]+250, "y": modal[1]+198})
+        page.keyboard.insert_text(entry["address"])
+        rendered_frame(page)
+    modal = layout_modal(page, canvas)
+    canvas.click(position={"x": modal[0]+100, "y": modal[1]+209+root_offset})
+    settle_gesture(page)
+    modal = layout_modal(page, canvas)
+    canvas.click(position={"x": modal[0]+175, "y": modal[1]+337+root_offset})
+    settle_gesture(page)
+    modal = layout_modal(page, canvas)
+    canvas.click(position={"x": modal[0]+250, "y": modal[1]+358+root_offset})
+    page.keyboard.insert_text(entry["calldata"])
+    rendered_frame(page)
+    if "chain_id" in entry:
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0]+100, "y": modal[1]+443+root_offset})
+        settle_gesture(page)
+        page.mouse.move(800, 660)
+        page.mouse.wheel(0, 240)
+        settle_gesture(page)
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0]+36, "y": modal[1]+466})
+        settle_gesture(page)
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0]+250, "y": modal[1]+488})
+        page.keyboard.insert_text(entry["chain_id"])
+        rendered_frame(page)
+
+
+def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_seconds=60, entry=None):
+    # Exercise the real multiline editor as a paste. Typing every byte with a
+    # delay would add minutes unrelated to analysis or layout for real runtimes.
+    open_input(page)
+    page.keyboard.press("Control+A")
+    page.keyboard.insert_text(code)
+    rendered_frame(page)
+    if entry is not None:
+        layout_entry_form(page, canvas, entry)
+    canvas.screenshot(path=str(output / f"{name}-input.png"))
+    with page.expect_response(lambda response: response.url.endswith("/api/tasks")
+                              and response.request.method == "POST") as response:
+        page.keyboard.press("Control+Enter")
+    admitted = response.value
+    assert posted_bytecode(admitted) == code
+    request = admitted.request.post_data_json
+    if entry is not None:
+        assert request["environment"]["calldata"] == {"Exact": entry["calldata"]}, request
+        if "address" in entry:
+            assert request["input"]["Bytecode"]["address"] == entry["address"], request
+        if "chain_id" in entry:
+            assert request["environment"]["chain_id"] == entry["chain_id"], request
+        assert request["limits"] == LAYOUT_DEFAULT_LIMITS, request["limits"]
+    (output / f"{name}-request.json").write_text(admitted.request.post_data + "\n")
+    result = complete_submission(page, admitted, timeout_seconds)
+    assert result.status == 200 and "Ok" in result.json()["result"], result.json()
+    report = result.json()["result"]["Ok"]
+    assert report["programs"][0]["bytecode"].removeprefix("0x") == code
+    if entry is not None:
+        assert report["metadata"]["limits"] == LAYOUT_DEFAULT_LIMITS
+        environment = report["metadata"]["environment"]
+        calldata = report["byte_arrays"][environment["calldata"]]
+        expected = bytes.fromhex(entry["calldata"].removeprefix("0x"))
+        assert [int(value,16) for value in calldata["length"]["constants"]] == [len(expected)]
+        cells = {cell["offset"]:calldata["values"][cell["value"]] for cell in calldata["cells"]}
+        for offset, byte in enumerate(expected):
+            value = cells.get(offset, calldata["default"])
+            assert [int(word,16) for word in value["constants"]] == [byte], (offset,value,byte)
+        if "address" in entry:
+            assert environment["to"]["Concrete"].lower() == entry["address"].lower()
+        if "chain_id" in entry:
+            assert [int(value,16) for value in environment["chain_id"]["constants"]] == [int(entry["chain_id"],16)]
+    (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
+    return report
+
+
+def layout_counts(page, report, expected_groups: int | None = None, mode="Blocks"):
+    identities = {
+        node["id"]: ((node["program"], node["basic_block"], node["start_pc"])
+                     if mode == "Blocks" and node["program"] is not None and node["start_pc"] is not None
+                     else ("state", node["id"]))
+        for node in report["cfg"]
+    }
+    edge_count = len({(identities[edge["from"]], identities[edge["to"]], edge["kind"])
+                      for edge in report["edges"]}) if mode == "Blocks" else len(report["edges"])
+    scene = graph_scope(page, mode, len(set(identities.values())), len(report["cfg"]), len(report["cfg"]))
+    assert scene["edges"] == edge_count and scene["native_edges"] == len(report["edges"]), scene
+    status = page.locator("#analysis-status").text_content()
+    assert "Layout unavailable:" not in status, status
+    match = re.search(r"; (\d+) groups; CFG detail: (identities|SSA preview)", status)
+    assert match, status
+    scene.update(groups=int(match[1]), detail=match[2])
+    if expected_groups is not None:
+        assert scene["groups"] == expected_groups, scene
+    return scene
+
+
+def layout_page(browser, url: str):
+    page = browser.new_page(viewport={"width": 1440, "height": 1000})
+    observe_webgpu(page)
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    with page.expect_response(lambda response: response.url.endswith("/api/tasks")
+                              and response.request.method == "POST") as initial:
+        page.goto(url, wait_until="networkidle")
+    complete_submission(page, initial.value)
+    canvas = page.locator("#evm-canvas")
+    hide_inspector(page, canvas)
+    page.keyboard.press("2")
+    settle_gesture(page)
+    return page, canvas, errors
+
+
+def assert_layout_same_geometry(before, after):
+    """Compare rendered leaf rectangles after removing uniform camera changes."""
+    first = sorted(before["nodes"], key=lambda rect: (rect[1], rect[0]))
+    second = sorted(after["nodes"], key=lambda rect: (rect[1], rect[0]))
+    assert len(first) == len(second) >= 2, (first, second)
+    pairs = list(zip(first, second, strict=True))
+    centers = [([(a[0] + a[2]) / 2, (a[1] + a[3]) / 2],
+                [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]) for a, b in pairs]
+    scale = median(math.dist(centers[a][1], centers[b][1]) / math.dist(centers[a][0], centers[b][0])
+                   for a in range(len(centers)) for b in range(a + 1, len(centers)))
+    offset = [median(new[axis] - old[axis] * scale for old, new in centers) for axis in [0, 1]]
+    for (a, b), (old, new) in zip(pairs, centers, strict=True):
+        for axis in [0, 1]:
+            assert abs(new[axis] - (old[axis] * scale + offset[axis])) <= 4.0, (first, second)
+            assert abs((b[axis + 2] - b[axis]) - (a[axis + 2] - a[axis]) * scale) <= 3.0
+    return {"camera_scale": scale, "camera_translation": offset}
+
+
+def layout_ink(page, png, region):
+    return page.evaluate("""async ({png, region}) => {
+        const image = new Image(); image.src = `data:image/png;base64,${png}`; await image.decode();
+        const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+        const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+        const scale = image.width / innerWidth;
+        const [left, top, right, bottom] = region.map(v => Math.round(v * scale));
+        const pixels = context.getImageData(left, top, right-left, bottom-top).data;
+        let preview = 0, annotation = 0;
+        for (let i=0; i<pixels.length; i+=4) {
+            const [r,g,b] = [pixels[i],pixels[i+1],pixels[i+2]];
+            if (r>180 && g>190 && b>205) preview++;
+            if (r>=60 && r<=165 && g-r>=10 && g-r<=45 && b-g>=10 && b-g<=40) annotation++;
+        }
+        return {preview_pixels:preview, annotation_pixels:annotation};
+    }""", {"png":base64.b64encode(png).decode(), "region":region})
+
+
+def layout_card_extent(page, png):
+    # Include tiny cards below the ordinary connected-component size cutoff.
+    # Solid fills become subpixel at this scale. Measure the brighter real card
+    # outlines/edges instead; the background grid and dim group dashes remain
+    # below this palette threshold.
+    return page.evaluate("""async png => {
+        const image = new Image(); image.src = `data:image/png;base64,${png}`; await image.decode();
+        const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height;
+        const context=canvas.getContext('2d'); context.drawImage(image,0,0);
+        const scale=image.width/innerWidth;
+        const top=Math.round(123*scale), bottom=Math.round((innerHeight-30)*scale);
+        const data=context.getImageData(0,top,image.width,bottom-top).data;
+        let left=image.width,right=-1,first=bottom,last=-1,count=0;
+        for(let y=0;y<bottom-top;y++) for(let x=4*scale;x<image.width-4*scale;x++) {
+            const i=(y*image.width+x)*4, r=data[i],g=data[i+1],b=data[i+2];
+            if(g>=48 && g-r>=10 && b>=g-25) {
+                left=Math.min(left,x);right=Math.max(right,x);first=Math.min(first,y+top);last=Math.max(last,y+top);count++;
+            }
+        }
+        return {bounds:count?[left/scale,first/scale,(right+1)/scale,(last+1)/scale]:null,pixels:count};
+    }""", base64.b64encode(png).decode())
+
+
+def hierarchy_long_chain_interactions(browser, url, output):
+    page, canvas, errors = layout_page(browser, url)
+    code, metadata = layout_fixture("long-linear-chain")
+    report = layout_submission(page, canvas, code, output, "long-linear-chain")
+    assert report["status"] == "Converged", report["frontiers"]
+    assert len(report["cfg"]) == metadata["expected_native_states"]
+    assert len(report["edges"]) == metadata["expected_original_edges"]
+    scene = layout_counts(page, report, metadata["expected_spatial_groups"])
+    assert scene["nodes"] == metadata["expected_source_blocks"]
+    assert scene["detail"] == "identities"
+    status = page.locator("#analysis-status").text_content()
+    fit_zoom = float(re.search(r"; CFG zoom: ([0-9.]+)%", status)[1])
+    assert 0 < fit_zoom < 8, status
+    before = layout_card_extent(page, canvas.screenshot(path=str(output/"hierarchy-long-chain-fit.png")))
+    assert before["bounds"] and before["pixels"] > 50, before
+    requests = []
+    page.on("request", lambda request: requests.append(request.url)
+            if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+    pointer = ((before["bounds"][0]+before["bounds"][2])/2,
+               (before["bounds"][1]+before["bounds"][3])/2)
+    page.mouse.move(*pointer)
+    page.keyboard.down("Control"); page.mouse.wheel(0, 160); page.keyboard.up("Control")
+    page.mouse.move(2,2); settle_gesture(page)
+    after = layout_card_extent(page, canvas.screenshot(path=str(output/"hierarchy-long-chain-zoom-out.png")))
+    assert after["bounds"] and after["pixels"] > 50, after
+    before_height = before["bounds"][3]-before["bounds"][1]
+    after_height = after["bounds"][3]-after["bounds"][1]
+    assert after_height < before_height-10, "zoom-out enlarged or retained the fitted long chain"
+    zoom_out = float(re.search(r"; CFG zoom: ([0-9.]+)%", page.locator("#analysis-status").text_content())[1])
+    assert 0 < zoom_out < fit_zoom
+    camera_ratio = zoom_out/fit_zoom
+    assert abs(after_height-before_height*camera_ratio) <= 4.0, (before,after,fit_zoom,zoom_out)
+    for axis in [0,1]:
+        for corner in [axis,axis+2]:
+            expected = pointer[axis]+(before["bounds"][corner]-pointer[axis])*camera_ratio
+            assert abs(after["bounds"][corner]-expected) <= 4.0, (before,after,pointer,camera_ratio)
+    assert layout_counts(page, report, 1) == scene
+    assert not requests and not errors, (requests, errors)
+    result = {"scene":scene,"fit":before,"zoom_out":after,"height_ratio":after_height/before_height,
+              "fit_zoom_percent":fit_zoom,"zoom_out_percent":zoom_out,
+              "renderer":webgpu_evidence(page)}
+    page.close()
+    return result
+
+
+def hierarchy_small_interactions(browser, url: str, output: Path):
+    page, canvas, errors = layout_page(browser, url)
+    results = {}
+    for name in ["shortcut", "linear-chain"]:
+        code, metadata = layout_fixture(name)
+        report = layout_submission(page, canvas, code, output, name)
+        assert report["status"] == "Converged", report["frontiers"]
+        assert len(report["cfg"]) == metadata["expected_native_states"]
+        assert len(report["edges"]) == metadata["expected_original_edges"]
+        scene = layout_counts(page, report, metadata["expected_spatial_groups"])
+        assert scene["nodes"] == metadata["expected_source_blocks"]
+        pixels = node_snapshot(page, canvas, output, f"hierarchy-{name}", measure_nodes=True)
+        assert len(pixels["nodes"]) == scene["nodes"], "spatial annotations were counted as real CFG states"
+        if name == "shortcut":
+            nodes = sorted(pixels["nodes"], key=lambda rect: rect[1])
+            _, a, b = nodes
+            assert a[3] < b[1], "shortcut target was placed beside/before its true predecessor"
+            interval = (max(a[0],b[0]), a[3]+1, min(a[2],b[2]), b[1]-1)
+            ink = layout_ink(page, canvas.screenshot(path=str(output / "hierarchy-shortcut-label.png")), interval)
+            assert ink["annotation_pixels"] > 0, "the direct A to B annotation was not painted between its endpoints"
+            results[name] = {"scene":scene,"pixels":pixels,"between_endpoints":ink}
+        else:
+            results[name] = {"scene":scene,"pixels":pixels}
+            requests = []
+            page.on("request", lambda request: requests.append(request.url)
+                    if request.method=="POST" and request.url.endswith("/api/tasks") else None)
+            pointer = ((pixels["bounds"][0]+pixels["bounds"][2])/2,(pixels["bounds"][1]+pixels["bounds"][3])/2)
+            for _ in range(12):
+                if "CFG detail: identities" in page.locator("#analysis-status").text_content(): break
+                page.mouse.move(*pointer); page.keyboard.down("Control"); page.mouse.wheel(0,160); page.keyboard.up("Control"); settle_gesture(page)
+            expect(page.locator("#analysis-status")).to_contain_text("CFG detail: identities")
+            low_zoom=float(re.search(r"; CFG zoom: ([0-9.]+)%",page.locator("#analysis-status").text_content())[1])
+            assert low_zoom <= 55
+            page.mouse.move(2,2);settle_gesture(page)
+            low = node_snapshot(page,canvas,output,"hierarchy-chain-identities",measure_nodes=True)
+            assert len(low["nodes"])==4,low
+            target = max(low["nodes"],key=lambda rect:rect[1])
+            first_state = report["cfg"][0]["id"]
+            state = first_state
+            while (outgoing := [edge for edge in report["edges"] if edge["from"]==state]):
+                assert len(outgoing)==1
+                state=outgoing[0]["to"]
+            pointer=((target[0]+target[2])/2,(target[1]+target[3])/2)
+            canvas.click(position={"x":pointer[0],"y":pointer[1]}); page.mouse.move(2,2); settle_gesture(page)
+            expect(page.locator("#analysis-status")).to_contain_text(f"Selected {symbol('σ',state)};")
+            low_ink=layout_ink(page,canvas.screenshot(),target)
+            assert low_ink["preview_pixels"]==0, "low zoom retained the white SSA instruction body"
+            for _ in range(12):
+                if "CFG detail: SSA preview" in page.locator("#analysis-status").text_content(): break
+                page.mouse.move(*pointer);page.keyboard.down("Control");page.mouse.wheel(0,-120);page.keyboard.up("Control");settle_gesture(page)
+            page.mouse.move(2,2);settle_gesture(page)
+            expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
+            high_zoom=float(re.search(r"; CFG zoom: ([0-9.]+)%",page.locator("#analysis-status").text_content())[1])
+            assert high_zoom >= 65
+            high=node_snapshot(page,canvas,output,"hierarchy-chain-ssa")
+            high_ink=layout_ink(page,canvas.screenshot(),high["bounds"])
+            assert high_ink["preview_pixels"]>0, "high zoom did not restore real SSA instruction ink"
+            assert layout_counts(page,report,1)["shown_states"]==4
+            assert not requests,"semantic zoom or clicking a leaf reran analysis"
+            results[name].update(low=low,high=high,low_ink=low_ink,high_ink=high_ink,
+                                 low_zoom_percent=low_zoom,high_zoom_percent=high_zoom,selected_native_state=state)
+    assert not errors,errors
+    results["renderer"]=webgpu_evidence(page)
+    page.close()
+    # Fresh pages create the same layout for two genuinely different initial
+    # viewports. This checks more than resizing an already-cached scene.
+    samples=[]
+    code,_=layout_fixture("shortcut")
+    for width,height in [(1440,1000),(640,800)]:
+        page=browser.new_page(viewport={"width":width,"height":height});observe_webgpu(page)
+        with page.expect_response(lambda response:response.url.endswith("/api/tasks") and response.request.method=="POST") as initial:
+            page.goto(url,wait_until="networkidle")
+        complete_submission(page,initial.value)
+        canvas=page.locator("#evm-canvas")
+        # Inspector is right-aligned and omitted from the graph comparison.
+        if width>=800: hide_inspector(page,canvas)
+        else:
+            canvas.click(position={"x":width-78,"y":12});rendered_frame(page)
+            # Use the public Panels menu's State inspector checkbox.
+            canvas.click(position={"x":width-80,"y":62});settle_gesture(page)
+            expect(page.locator("#analysis-status")).to_contain_text("Inspector hidden")
+        page.keyboard.press("2");settle_gesture(page)
+        report=layout_submission(page,canvas,code,output,f"hierarchy-initial-{width}")
+        layout_counts(page,report,0)
+        samples.append(node_snapshot(page,canvas,output,f"hierarchy-initial-{width}-scene",(4,123,width-4,height-30),True))
+        page.close()
+    results["initial_viewports"]={"wide":samples[0],"narrow":samples[1],"normalization":assert_layout_same_geometry(*samples)}
+    return results
+
+
+class NestedLayoutRpcFixture(EntryRpcFixture):
+    def __init__(self):
+        super().__init__()
+        self.world=json.loads((LAYOUT_FIXTURES/"nested-call-world.json").read_text())
+        self.accounts={account["address"]:account for account in self.world["accounts"]}
+        self.root_code=self.accounts[self.root_address]["code"]
+        self.child_code=self.accounts[self.child_address]["code"]
+
+    def _result(self,method,params):
+        if method in ("eth_getCode","eth_getBalance","eth_getTransactionCount","eth_getStorageAt") and params[0].lower() in self.accounts:
+            assert params[-1]=={"blockHash":self.block_hash,"requireCanonical":True}
+            account=self.accounts[params[0].lower()]
+            return {"eth_getCode":account["code"],"eth_getBalance":account["balance"],"eth_getTransactionCount":account["nonce"],"eth_getStorageAt":"0x"+"00"*32}[method]
+        return super()._result(method,params)
+
+
+def hierarchy_call_interactions(browser,args):
+    with NestedLayoutRpcFixture() as rpc, TemporaryDirectory(prefix="layout-rpc-") as directory:
+        providers=[{"id":"layout-world","name":"Synthetic nested layout calls","endpoint":rpc.endpoint}]
+        config=Path(directory)/"providers.json";config.write_text(json.dumps({"providers":providers})+"\n")
+        with analysis_server(args,config) as url:
+            page=browser.new_page(viewport={"width":1440,"height":1000});observe_webgpu(page)
+            automatic_rpc_entry(page,url,providers[0],args.output,"hierarchy-call-startup")
+            canvas=page.locator("#evm-canvas")
+            admitted=submit_rpc(page,canvas,rpc,args.output,"hierarchy-calls",0,providers)
+            reply=complete_submission(page,admitted)
+            assert reply.status==200 and "Ok" in reply.json()["result"],reply.json()
+            report=reply.json()["result"]["Ok"]
+            assert len(report["programs"])>=3
+            assert max(state["frame_depth"] for state in report["cfg"])==3
+            assert sum(edge["kind"]=="Call" for edge in report["edges"])>=2
+            assert sum(edge["kind"]=="Return" for edge in report["edges"])>=2
+            (args.output/"hierarchy-nested-calls-analysis.json").write_text(json.dumps(report,indent=2)+"\n")
+            canvas.click(position={"x":1440-180,"y":12});hide_inspector(page,canvas)
+            page.keyboard.press("2");settle_gesture(page);graph_mode(page,canvas,"States")
+            scene=layout_counts(page,report,mode="States")
+            assert scene["groups"]>=3
+            pixels=node_snapshot(page,canvas,args.output,"hierarchy-nested-calls",measure_nodes=True)
+            assert len(pixels["nodes"])==len(report["cfg"]),"program/chain frames became phantom selectable states"
+            return {"scene":scene,"pixels":pixels,"programs":len(report["programs"]),"renderer":webgpu_evidence(page)}
+
+
+def hierarchy_real_runtime_interactions(browser,url,args):
+    results={}
+    for name in ["ethereum-weth9","ethereum-uniswap-v2-router02","ethereum-multicall3"]:
+        page,canvas,errors=layout_page(browser,url)
+        code,metadata=layout_fixture(name)
+        assert metadata["chain_id"]==1 and metadata["requireCanonical"]
+        entry=metadata["browser_entry"]
+        report=layout_submission(page,canvas,code,args.output,name,timeout_seconds=1800,entry=entry)
+        assert report["programs"][0]["code_hash"]==metadata["code_hash"]
+        assert report["status"] == entry["expected_status"]
+        assert len(report["cfg"]) >= entry["minimum_native_states"]
+        assert len(report["frontiers"]) == entry["expected_frontiers"]
+        if "expected_frontier_reason" in entry:
+            assert all(frontier["kind"] == entry["expected_frontier_reason"] for frontier in report["frontiers"])
+        scene=layout_counts(page,report)
+        assert scene["nodes"] >= entry["minimum_source_blocks"]
+        if report["status"]=="Incomplete":
+            assert report["frontiers"] and not report["ssa"]["complete"]
+            expect(page.locator("#analysis-status")).to_contain_text("Incomplete")
+        # A full overview can contain many tiny cards. Focus is a camera action,
+        # leaving the entire captured graph and its coverage untouched.
+        canvas.screenshot(path=str(args.output/f"hierarchy-{name}-overview.png"))
+        canvas.click(position={"x":225,"y":83});settle_gesture(page)
+        expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
+        focused=node_snapshot(page,canvas,args.output,f"hierarchy-{name}-focused")
+        assert layout_counts(page,report)=={**scene,"detail":"SSA preview"}
+        native_scene = None
+        if name == "ethereum-multicall3":
+            requests = []
+            page.on("request", lambda request: requests.append(request.url)
+                    if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+            graph_mode(page,canvas,"States")
+            page.keyboard.press("f");settle_gesture(page)
+            native_scene = layout_counts(page,report,mode="States")
+            assert native_scene["nodes"] >= 600 and native_scene["nodes"] == len(report["cfg"])
+            assert native_scene["native_edges"] == len(report["edges"])
+            canvas.screenshot(path=str(args.output/f"hierarchy-{name}-states-overview.png"))
+            canvas.click(position={"x":225,"y":83});settle_gesture(page)
+            expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
+            native_focus = node_snapshot(page,canvas,args.output,f"hierarchy-{name}-states-focused")
+            selected = re.search(r"Selected (σ[^;]+);",page.locator("#analysis-status").text_content())[1]
+            assert selected in [symbol("σ",node["id"]) for node in report["cfg"]]
+            assert not requests, "native projection/focus triggered another real-runtime analysis"
+            native_scene.update(focused=native_focus,selected_native_state=selected)
+        assert not errors,errors
+        results[name]={"provenance":metadata,"status":report["status"],"scene":scene,"native_scene":native_scene,"focused":focused,"frontiers":len(report["frontiers"]),"renderer":webgpu_evidence(page)}
+        page.close()
+    return results
+
+
+def hierarchy_interactions(browser,url,args,include_real=True):
+    result={"small":hierarchy_small_interactions(browser,url,args.output),
+            "long_chain":hierarchy_long_chain_interactions(browser,url,args.output),
+            "nested_calls":hierarchy_call_interactions(browser,args)}
+    if include_real:result["real_runtimes"]=hierarchy_real_runtime_interactions(browser,url,args)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True)
     parser.add_argument("--assets", required=True)
     parser.add_argument("--browser", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--layout-only",action="store_true",help="Run the complete hierarchical CFG browser acceptance cases")
+    parser.add_argument("--layout-small-only",action="store_true",help="Run only synthetic hierarchy/zoom cases while real analyses are running")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     with analysis_server(args) as url:
         with sync_playwright() as playwright:
             browser = launch_browser(playwright.chromium, args.browser)
+            if args.layout_only or args.layout_small_only:
+                report=hierarchy_interactions(browser,url,args,include_real=not args.layout_small_only)
+                (args.output/"hierarchy-report.json").write_text(json.dumps(report,indent=2)+"\n")
+                browser.close()
+                return
             page = browser.new_page(viewport={"width": 1440, "height": 1000}, color_scheme="light")
             observe_webgpu(page)
             errors = []
@@ -1617,6 +2086,7 @@ def main() -> None:
             overview = block_overview_interactions(browser, url, args.output)
             panes = pane_interactions(browser, url, args.output)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
+            hierarchy = hierarchy_interactions(browser,url,args)
             assert not errors, "browser errors: " + "\n".join(errors)
             report = {
                 "browser": browser.version,
@@ -1642,6 +2112,7 @@ def main() -> None:
                 "budget_interactions": budgets,
                 "platform": "Linux headless Chromium with Xvfb and SwiftShader WebGPU; synthesized browser gestures, not physical macOS hardware",
                 "browser_errors": errors,
+                "hierarchical_cfg": hierarchy,
             }
             (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report, indent=2))

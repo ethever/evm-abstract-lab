@@ -24,6 +24,9 @@ pub(super) enum NodeView {
 
 pub(super) struct NodeText {
     pub title: String,
+    /// Bounded identity rows for semantic zoom. Folded cards name their source
+    /// group and native members rather than inventing a single group state.
+    pub compact: Vec<String>,
     pub detail: String,
     pub lines: Vec<(String, Color32)>,
     pub coverage: BlockCoverage,
@@ -43,6 +46,7 @@ impl NodeText {
         frontier: bool,
     ) -> Self {
         Self {
+            compact: vec![title.clone()],
             title,
             detail,
             lines,
@@ -52,6 +56,10 @@ impl NodeText {
             #[cfg(test)]
             tooltip: String::new(),
         }
+    }
+    fn with_identity(mut self, rows: Vec<String>) -> Self {
+        self.compact = rows;
+        self
     }
     fn measured(mut self, painter: &Painter) -> Self {
         let mut width = measured_width(painter, &self.title, 12.0).max(measured_width(

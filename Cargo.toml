@@ -4,6 +4,7 @@ members = [
     "crates/embedded-smt",
     "crates/evm-abstract",
     "crates/evm-abstract-cli",
+    "crates/evm-abstract-layout",
     "crates/evm-abstract-notation",
     "crates/evm-abstract-protocol",
     "crates/evm-abstract-server",
