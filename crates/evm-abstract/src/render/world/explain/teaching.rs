@@ -2,6 +2,8 @@
 //!
 //! 目录使用帧实际捕获的程序；简略效果只用于阅读，不能作为结果去重依据。
 
+use evm_abstract_notation::Symbol;
+
 use super::super::teaching::References;
 use crate::{
     analysis::{FrameCode, FrameKey, MachinePayload, MachineState, Status, WorldAnalysis},
@@ -76,7 +78,7 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
     );
     output
         .push_str("  Context-sensitive abstract state graph; not a concrete instruction trace.\n");
-    output.push_str("  S# = state; B# = frame-local block; F# = frame within a state; C# = captured code; U# = unresolved frontier; stacks are bottom-to-top.\n");
+    output.push_str("  σᵢ = state; Bᵢ = frame-local block; fᵢ = frame within a state; Cᵢ = captured code; Uᵢ = unresolved frontier; stacks are bottom-to-top.\n");
     write_rpc(&mut output, analysis, &refs);
     let relations = analysis.config().analysis.relations;
     writeln!(output, "  relations={} | SMT=in-process {} | rlimit={} | resource unit={} | expression nodes={} | depth={} | constraints={}",
@@ -274,7 +276,7 @@ fn location(state: &MachineState) -> String {
         .program()
         .and_then(|program| program.blocks().get(frame.basic_block_index))
     {
-        return format!("B{} @ 0x{:04x}", block.id, block.start_pc);
+        return format!("{} @ 0x{:04x}", Symbol::Block(block.id), block.start_pc);
     }
     match frame.mode {
         FrameCode::Runtime | FrameCode::InitCode => {
@@ -296,12 +298,12 @@ fn write_cfg(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
         let frame = state.entry.active();
         write!(
             output,
-            "  S{} | {} | F{} active | code={}",
-            state.id,
+            "  {} | {} | {} active | code={}",
+            Symbol::State(state.id),
             location(state),
-            state.entry.call_stack.depth() - 1,
+            Symbol::Frame(state.entry.call_stack.depth() - 1),
             refs.code(&frame.key)
-                .expect("captured frame has code reference"),
+                .expect("captured frame has code reference")
         )
         .unwrap();
         if frame.key.address != frame.key.code_address {
@@ -335,7 +337,7 @@ fn write_cfg(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
             .join(", ");
         writeln!(output, "    pcs=[{pcs}]").unwrap();
         for edge in analysis.edges().iter().filter(|edge| edge.from == state.id) {
-            writeln!(output, "    -> S{} {:?}", edge.to, edge.kind).unwrap();
+            writeln!(output, "    → {} {:?}", Symbol::State(edge.to), edge.kind).unwrap();
         }
     }
 }
@@ -367,7 +369,7 @@ fn data_summary(data: &ByteArray) -> String {
 fn write_outcomes(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
     output.push_str("\nOutcomes\n");
     output.push_str(
-        "  Each O# keeps its own state and effects; equal returndata does not merge outcomes.\n",
+        "  Each Oᵢ keeps its own state and effects; equal returndata does not merge outcomes.\n",
     );
     output.push_str("  Selected effect facts below; complete storage, balances, lifecycle, logs and byte facts: --verbose or analyze.\n");
     if analysis.outcomes().is_empty() {
@@ -384,11 +386,12 @@ fn write_outcomes(output: &mut String, analysis: &WorldAnalysis, refs: &Referenc
         let initial = initial.as_ref().expect("outcomes have an initial store");
         writeln!(
             output,
-            "  O{index} | S{} | {:?} | returndata length={} | {}",
-            outcome.state,
+            "  {} | {} | {:?} | returndata length={} | {}",
+            Symbol::Outcome(index),
+            Symbol::State(outcome.state),
             outcome.kind,
             length(outcome.data.len()),
-            data_summary(&outcome.data),
+            data_summary(&outcome.data)
         )
         .unwrap();
         let changed = outcome
@@ -477,8 +480,10 @@ fn write_diagnostics(output: &mut String, analysis: &WorldAnalysis) {
     for diagnostic in analysis.diagnostics() {
         writeln!(
             output,
-            "  S{} @ 0x{:04x}: {:?}",
-            diagnostic.state, diagnostic.pc, diagnostic.kind,
+            "  {} @ 0x{:04x}: {:?}",
+            Symbol::State(diagnostic.state),
+            diagnostic.pc,
+            diagnostic.kind
         )
         .unwrap();
     }
@@ -492,14 +497,19 @@ fn write_frontiers(output: &mut String, analysis: &WorldAnalysis, refs: &Referen
     for (index, frontier) in analysis.frontiers().iter().enumerate() {
         writeln!(
             output,
-            "  U{index} | from={} | pc={} | reason={:?}",
-            frontier
-                .from
-                .map_or_else(|| "none".to_owned(), |state| format!("S{state}")),
+            "  {} | from={} | pc={} | reason={:?}",
+            Symbol::Frontier(index),
+            frontier.from.map_or_else(
+                || "none".to_owned(),
+                |state| format!(
+                    "{symbol_state_state}",
+                    symbol_state_state = Symbol::State(state)
+                )
+            ),
             frontier
                 .pc
                 .map_or_else(|| "none".to_owned(), |pc| format!("0x{pc:04x}")),
-            frontier.reason,
+            frontier.reason
         )
         .unwrap();
         if let Some(target) = &frontier.target {
@@ -514,7 +524,13 @@ fn write_frontiers(output: &mut String, analysis: &WorldAnalysis, refs: &Referen
 }
 
 fn write_frontier_frame(output: &mut String, refs: &References, frame: usize, key: &FrameKey) {
-    write!(output, "      F{frame} | B{} | ", key.basic_block_index).unwrap();
+    write!(
+        output,
+        "      {} | {} | ",
+        Symbol::Frame(frame),
+        Symbol::Block(key.basic_block_index)
+    )
+    .unwrap();
     if let Some(code) = refs.code(key) {
         write!(output, "code={code}").unwrap();
     } else {

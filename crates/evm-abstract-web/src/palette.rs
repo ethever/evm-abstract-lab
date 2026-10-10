@@ -34,6 +34,7 @@ pub fn configure(ctx: &Context) {
             proportional.push(name);
         }
     }
+    crate::notation::install_fonts(&mut fonts);
     ctx.set_fonts(fonts);
     ctx.set_theme(egui::Theme::Dark);
     let mut visuals = Visuals::dark();

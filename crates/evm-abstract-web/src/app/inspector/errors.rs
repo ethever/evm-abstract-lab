@@ -1,7 +1,9 @@
 //! Field-by-field presentation of the shared error algebra. Messages supplement
 //! typed causes; no JSON or Debug dump is needed to recover expected facts.
 use super::value;
+use crate::notation;
 use egui::Ui;
+use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol as api;
 
 pub(super) fn fields(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
@@ -21,7 +23,7 @@ fn word_pair(ui: &mut Ui, expected: &str, observed: &str) {
 }
 
 pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
-    ui.label(&error.message);
+    ui.label(notation::widget(ui, &error.message));
     fields(ui, |ui| {
         value::text(ui, "Category", format!("{:?}", error.code))
     });
@@ -75,7 +77,7 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
         api::ErrorDetails::Task(detail) => fields(ui, |ui| {
             value::text(ui, "Task failure", format!("{:?}", detail.kind));
             if let Some(id) = detail.id {
-                value::text(ui, "Task", id.to_string());
+                value::text(ui, "Task", WideSymbol::Task(id.0).to_string());
             }
         }),
         api::ErrorDetails::Worker(detail) => fields(ui, |ui| {
@@ -90,23 +92,29 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
         api::ErrorDetails::Ssa(api::SsaFailure::Invariant(detail)) => fields(ui, |ui| {
             value::text(ui, "SSA contract", format!("{:?}", detail.kind));
             for (label, number) in [
-                ("State", detail.state),
-                ("Edge", detail.edge),
                 ("PC", detail.pc),
-                ("Frame", detail.frame),
                 ("Stack slot", detail.slot),
-                ("Source state", detail.source_state),
-                ("Target state", detail.target_state),
                 ("Expected", detail.expected),
                 ("Observed", detail.observed),
             ] {
                 count(ui, label, number);
             }
+            for (label, reference) in [
+                ("State", detail.state.map(Symbol::State)),
+                ("Edge", detail.edge.map(Symbol::Edge)),
+                ("Frame", detail.frame.map(Symbol::Frame)),
+                ("Source state", detail.source_state.map(Symbol::State)),
+                ("Target state", detail.target_state.map(Symbol::State)),
+            ] {
+                if let Some(reference) = reference {
+                    value::text(ui, label, reference.to_string());
+                }
+            }
             if let Some(id) = detail.value {
                 value::text(ui, "SSA value", format!("%{id}"));
             }
             if let Some(id) = detail.effect {
-                value::text(ui, "SSA effect", format!("μ{id}"));
+                value::text(ui, "SSA effect", Symbol::Effect(id).to_string());
             }
         }),
     }
@@ -195,7 +203,7 @@ fn world(ui: &mut Ui, detail: &api::WorldFailure) {
 }
 
 pub(super) fn rpc(ui: &mut Ui, failure: &api::RpcFailure) {
-    ui.label(&failure.message);
+    ui.label(notation::widget(ui, &failure.message));
     fields(ui, |ui| {
         value::text(ui, "RPC category", format!("{:?}", failure.kind));
         value::text(ui, "Method", &failure.method);

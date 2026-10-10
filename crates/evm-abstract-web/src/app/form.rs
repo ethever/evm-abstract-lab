@@ -12,7 +12,7 @@ use evm_abstract_protocol::{
 };
 
 use super::{BRANCH_EXAMPLE, Command, TransportError, providers::RpcProviders};
-use crate::{framework, palette};
+use crate::{framework, notation, palette};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Source {
@@ -143,7 +143,10 @@ impl AnalysisForm {
                         self.environment(ui);
                         self.limits(ui);
                         if let Some(error) = &self.error {
-                            ui.colored_label(palette::ERROR, error);
+                            ui.label(notation::widget(
+                                ui,
+                                RichText::new(error).color(palette::ERROR),
+                            ));
                         }
                     });
                 ui.separator();

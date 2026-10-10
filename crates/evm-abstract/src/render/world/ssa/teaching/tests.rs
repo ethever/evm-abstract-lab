@@ -1,3 +1,5 @@
+use evm_abstract_notation::Symbol;
+
 use super::render;
 use crate::{
     Address, Fork, U256,
@@ -66,7 +68,9 @@ fn contains(text: &str, expected: &str) {
 }
 
 fn transition_section(text: &str, index: usize) -> &str {
-    let start = text.find(&format!("  T{index} | ")).unwrap();
+    let start = text
+        .find(&format!("  {} | ", Symbol::Transition(index)))
+        .unwrap();
     let rest = &text[start..];
     let end = rest.find("\n  T").unwrap_or(rest.len());
     &rest[..end]
@@ -78,15 +82,15 @@ fn shared_layout_separates_world_metadata_from_real_bytecode_block_titles() {
     let (ir, text) = rendered(&graph);
     contains(
         &text,
-        "\nS0 | C0 | F0 active | state owner=A0 | context=[]:\nB0 @ 0x0000:\n",
+        "\nσ₀ | C₀ | f₀ active | state owner=A₀ | context=[]:\nB₀ @ 0x0000:\n",
     );
-    let body = text.split_once("B0 @ 0x0000:\n").unwrap().1;
+    let body = text.split_once("B₀ @ 0x0000:\n").unwrap().1;
     let instructions = body
         .lines()
         .take_while(|line| !line.contains("stack out (before dispatch)"))
         .collect::<Vec<_>>();
     assert_eq!(instructions.len(), ir.blocks()[0].instructions.len());
-    let title_pc_column = "B0 @ 0x".len();
+    let title_pc_column = "B₀ @ 0x".chars().count();
     for line in instructions {
         assert_eq!(line.find(':').unwrap(), title_pc_column + 4);
         assert!(line[..title_pc_column].chars().all(|c| c == ' '));
@@ -103,9 +107,13 @@ fn shared_layout_grows_for_multi_digit_world_block_ids() {
     for block in ir.blocks() {
         let state = &graph.states()[block.state];
         let source = &state.program().unwrap().blocks()[state.active().basic_block_index];
-        let title = format!("B{} @ 0x{:04x}:\n", source.id, source.start_pc);
+        let title = format!(
+            "{} @ 0x{:04x}:\n",
+            Symbol::Block(source.id),
+            source.start_pc
+        );
         let body = text.split_once(&title).unwrap().1;
-        let column = title.find("0x").unwrap() + 2;
+        let column = title[..title.find("0x").unwrap()].chars().count() + 2;
         let instructions = body
             .lines()
             .take_while(|line| !line.contains("stack out (before dispatch)"))
@@ -133,7 +141,7 @@ fn tac_keeps_pop_order_and_dup_swap_alias_identity() {
     contains(&text, "0005: SWAP1 %0 %1 ; aliases reordered");
     contains(&text, "0006: %2 = SUB %1 %0");
     contains(&text, "0007: %3 = ADD %2 %0");
-    contains(&text, "stack out (before dispatch) F0: [%3]");
+    contains(&text, "stack out (before dispatch) f₀: [%3]");
     assert_eq!(
         ir.value_count(),
         4,
@@ -146,7 +154,7 @@ fn tac_keeps_pop_order_and_dup_swap_alias_identity() {
         "results=",
         "fault=",
         "code hash=",
-        "effect phi",
+        "effect φ",
         "instruction effects:",
     ] {
         assert!(!text.contains(noisy), "unexpected {noisy:?} in:\n{text}");
@@ -164,16 +172,16 @@ fn call_result_definitions_belong_to_resume_transitions() {
     let (blocks, transitions) = text.split_once("\nTransitions\n").unwrap();
     assert!(!blocks.contains("CALL result"));
     contains(blocks, " CALL %");
-    contains(blocks, "F1 active");
+    contains(blocks, "f₁ active");
     assert!(blocks.lines().any(|line| {
-        line.contains("stack out") && line.contains("F0: [%") && line.contains("; F1:")
+        line.contains("stack out") && line.contains("f₀: [%") && line.contains("; f₁:")
     }));
     for (index, transition) in ir.transitions().iter().enumerate() {
         let body = transition_section(&text, index);
         match transition.kind {
             MachineEdgeKind::Call => {
                 assert_eq!(transition.result, None);
-                contains(body, "suspend F0; enter F1; save rollback checkpoint");
+                contains(body, "suspend f₀; enter f₁; save rollback checkpoint");
                 assert!(!body.contains("CALL result"));
             }
             MachineEdgeKind::Return | MachineEdgeKind::Failure => {
@@ -181,7 +189,7 @@ fn call_result_definitions_belong_to_resume_transitions() {
                 let expected = usize::from(transition.kind == MachineEdgeKind::Return);
                 contains(body, &format!("CALL result %{result} = {expected}"));
                 if transition.kind == MachineEdgeKind::Return {
-                    contains(body, "resume F0; commit child effects");
+                    contains(body, "resume f₀; commit child effects");
                 }
                 assert_eq!(
                     transitions
@@ -311,9 +319,15 @@ fn parallel_transition_phi_inputs_and_loop_states_are_preserved() {
         .find(|(index, _)| *index == second)
         .unwrap()
         .1;
-    contains(&text, &format!("T{first}: %{first_value}"));
-    contains(&text, &format!("T{second}: %{second_value}"));
-    contains(&text, &format!("%{} = phi(", phi.result));
+    contains(
+        &text,
+        &format!("{}: %{first_value}", Symbol::Transition(first)),
+    );
+    contains(
+        &text,
+        &format!("{}: %{second_value}", Symbol::Transition(second)),
+    );
+    contains(&text, &format!("%{} = φ(", phi.result));
     let loop_graph = fixture("60005b600101600256", None, ByteArray::empty());
     let (ir, text) = rendered(&loop_graph);
     let joined = ir
@@ -322,19 +336,25 @@ fn parallel_transition_phi_inputs_and_loop_states_are_preserved() {
         .find(|block| block.phis.iter().any(|phi| phi.inputs.len() > 1))
         .unwrap();
     let phi = joined.phis.iter().find(|phi| phi.inputs.len() > 1).unwrap();
-    assert!(
-        text.lines()
-            .any(|line| line.starts_with(&format!("S{} | C", joined.state))
-                && line.contains(" | context="))
-    );
+    assert!(text.lines().any(|line| {
+        line.starts_with(&format!("{} | C", Symbol::State(joined.state)))
+            && line.contains(" | context=")
+    }));
     let state = &loop_graph.states()[joined.state];
     let source = &state.program().unwrap().blocks()[state.active().basic_block_index];
     contains(
         &text,
-        &format!("\nB{} @ 0x{:04x}:\n", source.id, source.start_pc),
+        &format!(
+            "\n{} @ 0x{:04x}:\n",
+            Symbol::Block(source.id),
+            source.start_pc
+        ),
     );
     for (transition, value) in &phi.inputs {
-        contains(&text, &format!("T{transition}: %{value}"));
+        contains(
+            &text,
+            &format!("{}: %{value}", Symbol::Transition(*transition)),
+        );
     }
 }
 
@@ -343,7 +363,7 @@ fn native_empty_delegation_and_synthetic_locations_do_not_invent_pcs() {
     let empty = fixture("", None, ByteArray::empty());
     let (_, text) = rendered(&empty);
     contains(&text, "empty executable code; implicit completion");
-    assert!(!text.contains("B0 @ 0x0000"));
+    assert!(!text.contains("B₀ @ 0x0000"));
     let native = run(
         World::new(Fork::Osaka, "native teaching fixture"),
         address(4),
@@ -373,8 +393,11 @@ fn native_empty_delegation_and_synthetic_locations_do_not_invent_pcs() {
             .and_then(|program| program.blocks().get(state.active().basic_block_index))
             .is_none()
     }) {
-        let body = text.split_once(&format!("S{} | ", state.id)).unwrap().1;
-        let body = body.split_once("\nS").map_or(body, |(body, _)| body);
+        let body = text
+            .split_once(&format!("{} | ", Symbol::State(state.id)))
+            .unwrap()
+            .1;
+        let body = body.split_once("\nσ").map_or(body, |(body, _)| body);
         let body = body
             .split_once("\nTransitions")
             .map_or(body, |(body, _)| body);
@@ -467,9 +490,9 @@ fn delegatecall_header_separates_code_identity_from_state_owner() {
     contains(
         &text,
         &format!(
-            "S{} | C1 | F1 active | state owner=A0 | context=[]:",
-            child.id
+            "{} | C₁ | f₁ active | state owner=A₀ | context=[]:",
+            Symbol::State(child.id)
         ),
     );
-    contains(&text, "\nB0 @ 0x0000:\n");
+    contains(&text, "\nB₀ @ 0x0000:\n");
 }

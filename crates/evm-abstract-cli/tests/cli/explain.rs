@@ -79,12 +79,12 @@ fn assert_full_report(explanation: &str, report: &Output) {
 fn assert_human_ssa(explanation: &str) {
     let (_, ssa) = explanation.split_once(VERIFIED).unwrap();
     assert!(ssa.contains('%'), "SSA value names are missing");
-    assert!(ssa.contains('!'), "SSA effect names are missing");
+    assert!(ssa.contains('μ'), "SSA effect names are missing");
     assert!(
         ssa.contains("transitions=0")
             || ssa.split_whitespace().any(|word| {
                 word.strip_prefix('T').is_some_and(|rest| {
-                    rest.starts_with(|character: char| character.is_ascii_digit())
+                    rest.starts_with(|character: char| matches!(character, '₀'..='₉'))
                 })
             }),
         "SSA transition names are missing"

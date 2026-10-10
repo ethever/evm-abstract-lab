@@ -49,7 +49,7 @@ pub(crate) fn line_editor(
         egui::TextEdit::singleline(text)
             .id(egui::Id::new(id))
             .desired_width(ui.available_width())
-            .hint_text(hint),
+            .hint_text(crate::notation::widget(ui, hint)),
     )
 }
 
@@ -65,6 +65,6 @@ pub(crate) fn scoped_editor(
         egui::TextEdit::singleline(text)
             .id(ui.make_persistent_id(id))
             .desired_width(width)
-            .hint_text(hint),
+            .hint_text(crate::notation::widget(ui, hint)),
     )
 }

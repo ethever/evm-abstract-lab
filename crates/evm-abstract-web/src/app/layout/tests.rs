@@ -101,7 +101,7 @@ pub(super) fn texts(output: &FullOutput) -> Vec<(String, Rect)> {
     fn collect(shape: &egui::Shape, result: &mut Vec<(String, Rect)>) {
         match shape {
             egui::Shape::Text(text) => result.push((
-                text.galley.text().into(),
+                evm_abstract_notation::normalize_subscripts(text.galley.text()),
                 Rect::from_min_size(text.pos, text.galley.size()),
             )),
             egui::Shape::Vec(shapes) => {
@@ -438,7 +438,7 @@ fn press_f(
 fn graph_titles(output: &FullOutput) -> Vec<(String, Rect)> {
     texts(output)
         .into_iter()
-        .filter(|(label, _)| label.starts_with('S') && label.contains("  ·  B"))
+        .filter(|(label, _)| label.starts_with('σ') && label.contains("  ·  B"))
         .collect()
 }
 

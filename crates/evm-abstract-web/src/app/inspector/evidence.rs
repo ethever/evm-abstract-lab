@@ -1,7 +1,8 @@
 //! Acquisition and model-coverage evidence remain visible independently of selection.
 use super::{errors, value};
-use crate::{app::Selection, palette};
+use crate::{app::Selection, notation, palette};
 use egui::{RichText, Ui};
+use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{self as api, AnalysisReport};
 
 pub(super) fn acquisition(ui: &mut Ui, report: &AnalysisReport) {
@@ -79,9 +80,14 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
         if ui
             .selectable_label(
                 false,
-                format!(
-                    "S{} · 0x{:04x} · {:?}",
-                    diagnostic.state, diagnostic.pc, diagnostic.kind
+                notation::widget(
+                    ui,
+                    format!(
+                        "{} · 0x{:04x} · {:?}",
+                        Symbol::State(diagnostic.state),
+                        diagnostic.pc,
+                        diagnostic.kind
+                    ),
                 ),
             )
             .clicked()
@@ -101,15 +107,19 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
     }
     for frontier in &report.frontiers {
         let location = match (frontier.from, frontier.pc) {
-            (Some(state), Some(pc)) => format!("S{state} · 0x{pc:x}"),
-            (Some(state), None) => format!("S{state}"),
+            (Some(state), Some(pc)) => format!("{} · 0x{pc:x}", Symbol::State(state)),
+            (Some(state), None) => Symbol::State(state).to_string(),
             (None, Some(pc)) => format!("0x{pc:x}"),
             (None, None) => "Pending entry".into(),
         };
         if ui
             .selectable_label(
                 false,
-                RichText::new(format!("{location} · {:?}", frontier.kind)).color(palette::WARNING),
+                notation::widget(
+                    ui,
+                    RichText::new(format!("{location} · {:?}", frontier.kind))
+                        .color(palette::WARNING),
+                ),
             )
             .clicked()
         {

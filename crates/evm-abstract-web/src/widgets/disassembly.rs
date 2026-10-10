@@ -1,5 +1,6 @@
 //! Virtual source rows use content-sized PC and opcode/operand columns.
 
+use evm_abstract_notation::Symbol;
 mod tooltip;
 
 use egui::{FontId, ScrollArea, Sense, Ui, Vec2};
@@ -40,8 +41,8 @@ fn contents(
             || "No captured bytecode".into(),
             |source| {
                 format!(
-                    "P{} · {:?} · {} bytes",
-                    source.id,
+                    "{} · {:?} · {} bytes",
+                    Symbol::Program(source.id),
                     source.kind,
                     source.bytecode.trim_start_matches("0x").len() / 2
                 )
@@ -116,7 +117,10 @@ fn contents(
                                     text(
                                         ui,
                                         origin,
-                                        format!("B{id}  ·  0x{pc:04x}"),
+                                        format!(
+                                            "{notation_0}  ·  0x{pc:04x}",
+                                            notation_0 = Symbol::Block(*id)
+                                        ),
                                         if *selected {
                                             palette::ACCENT
                                         } else {
@@ -160,7 +164,12 @@ fn contents(
                             ..
                         } = row
                         {
-                            response.on_hover_text(tooltip::instruction(instruction, *executed));
+                            response.on_hover_ui(|ui| {
+                                ui.label(crate::notation::widget(
+                                    ui,
+                                    tooltip::instruction(instruction, *executed),
+                                ));
+                            });
                         }
                     });
                 });
@@ -291,7 +300,14 @@ fn content_columns(rows: &[Row<'_>]) -> [usize; 2] {
     rows.iter().fold([4, 15], |mut columns, row| {
         match row {
             Row::Block { id, pc, .. } => {
-                columns[1] = columns[1].max(format!("B{id}  ·  0x{pc:04x}").chars().count())
+                columns[1] = columns[1].max(
+                    format!(
+                        "{notation_0}  ·  0x{pc:04x}",
+                        notation_0 = Symbol::Block(*id)
+                    )
+                    .chars()
+                    .count(),
+                )
             }
             Row::Instruction { instruction, .. } => {
                 columns[0] = columns[0].max(format!("{:04x}", instruction.pc).len());

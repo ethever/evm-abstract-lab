@@ -45,7 +45,7 @@
 
 每课顶部都有所属模块和两条路线中对应主题的链接。路线负责回答“为什么现在读这一部分，应该带着什么问题”；章节保存完整推导、命令、预期输出和源码入口。读完一个主题，回到当前路线继续下一步。旧的章节间链接仍可用于补足先修知识或查找相关实验。
 
-练习也按主题使用：[第 07 课](07-exercises.md)里挑选当前主题的实验，先预测，再运行并解释差别。遇到 `%value`、`slot`、`S`、`B`、`F`、`T` 等输出记号，可回查 [04 的值与位置](04-ssa.md#1-先分清值名字和栈位置)和[部分 SSA](04-ssa.md#7-未完成时按需查看部分-ssa)。
+练习也按主题使用：[第 07 课](07-exercises.md)里挑选当前主题的实验，先预测，再运行并解释差别。遇到 `%value`、`slot`、`σᵢ`、`Bᵢ`、`fᵢ`、`Tᵢ` 等输出记号，可回查 [04 的值与位置](04-ssa.md#1-先分清值名字和栈位置)和[部分 SSA](04-ssa.md#7-未完成时按需查看部分-ssa)。
 
 判断自己是否完成一个主题，可以做三件事：用一个具体输入说明语义；在输出里定位相应事实；找到产生或验证这个事实的代码，并说明它的限制。例如看到 `Incomplete`，还需区分整张图未完成、某块尚未执行，以及某条指令只消费了参数。
 
@@ -53,7 +53,7 @@
 
 | 你现在看到的现象 | 从哪里开始，再回哪条路线 |
 | --- | --- |
-| 一串 `%编号`、`partial phi`、`recorded prefix stack` | [04 的部分 SSA 实验](04-ssa.md#7-未完成时按需查看部分-ssa)，然后回 [理论 SSA](routes/theory.md#ssa) 或 [实现 SSA](routes/implementation.md#ssa) |
+| 一串 `%编号`、`partial φ`、`recorded prefix stack` | [04 的部分 SSA 实验](04-ssa.md#7-未完成时按需查看部分-ssa)，然后回 [理论 SSA](routes/theory.md#ssa) 或 [实现 SSA](routes/implementation.md#ssa) |
 | 一个值变成 `⊤`，却仍显示 `Converged` | [06 的完成状态与精度](06-boundaries.md)，然后读[数值摘要](routes/theory.md#domains) |
 | 内存或槽位写入后读取，为什么多出候选值 | [14 内存](14-memory-model.md)、[16 storage](16-storage-model.md)，然后比较两条路线的 `memory-storage` 主题 |
 | RPC 取到了代码，仍出现未知调用或补查 | [10 的固定快照](10-snapshots-summaries-creation.md#可选实验从固定区块采集)，然后读 [RPC 实现](routes/implementation.md#rpc-summaries) |

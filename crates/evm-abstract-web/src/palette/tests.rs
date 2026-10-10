@@ -91,10 +91,10 @@ fn fallback_preserves_existing_font_order_data_and_text_metrics() {
     let original = FontDefinitions::default();
     configured.fonts(|fonts| {
         let definitions = fonts.definitions();
-        assert_eq!(
-            definitions.font_data.keys().collect::<Vec<_>>(),
-            original.font_data.keys().collect::<Vec<_>>()
-        );
+        for (name, data) in &original.font_data {
+            assert_eq!(&definitions.font_data[name], data);
+        }
+        assert_eq!(definitions.font_data.len(), original.font_data.len() + 2);
         assert_eq!(
             definitions.families[&FontFamily::Monospace],
             original.families[&FontFamily::Monospace]

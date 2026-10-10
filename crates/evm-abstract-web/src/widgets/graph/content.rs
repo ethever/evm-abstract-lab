@@ -1,6 +1,7 @@
 //! Bounded CFG card previews. Native instance details are formatted only when
 //! hovered; folding source blocks never merges SSA names or effect histories.
 
+use evm_abstract_notation::Symbol;
 mod aggregate;
 mod leaf;
 
@@ -82,7 +83,7 @@ pub(super) fn node_preview(
         leaf::preview(report, index, block, view)
     } else {
         NodeText::new(
-            format!("S{}", node.id),
+            Symbol::State(node.id).to_string(),
             "Unavailable state".into(),
             vec![],
             BlockCoverage::Unexecuted,
@@ -102,7 +103,10 @@ pub(super) fn node_tooltip(
     } else if let Some(block) = index.cfg(report, node.id) {
         leaf::tooltip(report, index, block, view)
     } else {
-        format!("Native state S{} is unavailable in this report.", node.id)
+        format!(
+            "Native state {} is unavailable in this report.",
+            Symbol::State(node.id)
+        )
     }
 }
 
@@ -135,7 +139,11 @@ fn abbreviate(text: &str, columns: usize) -> String {
 }
 fn measured_width(painter: &Painter, text: &str, size: f32) -> f32 {
     painter
-        .layout_no_wrap(text.into(), FontId::monospace(size), palette::TEXT)
+        .layout_job(crate::notation::job(
+            text,
+            FontId::monospace(size),
+            palette::TEXT,
+        ))
         .size()
         .x
         .ceil()

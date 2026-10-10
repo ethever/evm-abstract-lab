@@ -9,8 +9,9 @@ mod stores;
 mod value;
 
 use super::Selection;
-use crate::palette;
+use crate::{notation, palette};
 use egui::{RichText, Ui};
+use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
     AnalysisReport, ApiError, BlockCoverage, FrameSnapshot, MachineSnapshot, StoreSnapshot,
 };
@@ -107,7 +108,9 @@ impl Inspector {
         };
         let frame = machine
             .and_then(|machine| selected_frame(machine, self.frame))
-            .map_or("No frame".into(), |frame| format!("Frame {}", frame.index));
+            .map_or("No frame".into(), |frame| {
+                format!("Frame {}", Symbol::Frame(frame.index))
+            });
         let store = if self.rollback && matches!(self.tab, Tab::Storage | Tab::Transient) {
             " · Rollback store"
         } else {
@@ -187,16 +190,16 @@ impl Inspector {
             .state
             .map(|state| crate::widgets::coverage(report, state));
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(selection.state.map_or("No state selected".into(),|state|format!("S{state}"))).strong());
+            ui.label(notation::widget(ui, RichText::new(selection.state.map_or("No state selected".into(), |state| Symbol::State(state).to_string())).strong()));
             ui.selectable_value(&mut self.point,Point::Entry,"Block entry");
             ui.add_enabled_ui(has_exit, |ui| {
                 ui.selectable_value(&mut self.point,Point::Exit,if coverage==Some(BlockCoverage::Current) {"Observed exit"} else {"Historical exit"});
             });
             if let Some(machine)=self.machine(report,*selection) {
                 let selected=selected_frame(machine,self.frame).map_or(0,|frame|frame.index);
-                egui::ComboBox::from_id_salt("inspector_frame").width(85.0).selected_text(format!("Frame {selected}")).show_ui(ui,|ui| {
+                egui::ComboBox::from_id_salt("inspector_frame").width(85.0).selected_text(notation::widget(ui, format!("Frame {}", Symbol::Frame(selected)))).show_ui(ui,|ui| {
                     for frame in &machine.frames {
-                        ui.selectable_value(&mut self.frame,Some(frame.index),format!("Frame {}{}",frame.index,if frame.index+1==machine.frames.len(){" · active"}else{" · suspended"}));
+                        ui.selectable_value(&mut self.frame,Some(frame.index),notation::widget(ui, format!("Frame {}{}", Symbol::Frame(frame.index), if frame.index+1==machine.frames.len(){" · active"}else{" · suspended"})));
                     }
                 });
             }
@@ -294,12 +297,15 @@ impl Inspector {
         let selected = &report.outcomes[self.outcome];
         egui::ComboBox::from_id_salt("outcome_selection")
             .width(ui.available_width().min(340.0))
-            .selected_text(format!(
-                "Outcome {} / {} · S{} · {:?}",
-                self.outcome + 1,
-                report.outcomes.len(),
-                selected.state,
-                selected.kind
+            .selected_text(notation::widget(
+                ui,
+                format!(
+                    "Outcome {} / {} · {} · {:?}",
+                    Symbol::Outcome(self.outcome),
+                    report.outcomes.len(),
+                    Symbol::State(selected.state),
+                    selected.kind
+                ),
             ))
             .show_ui(ui, |ui| {
                 for (index, outcome) in report.outcomes.iter().enumerate() {
@@ -307,11 +313,14 @@ impl Inspector {
                         .selectable_value(
                             &mut self.outcome,
                             index,
-                            format!(
-                                "Outcome {} · S{} · {:?}",
-                                index + 1,
-                                outcome.state,
-                                outcome.kind
+                            notation::widget(
+                                ui,
+                                format!(
+                                    "Outcome {} · {} · {:?}",
+                                    Symbol::Outcome(index),
+                                    Symbol::State(outcome.state),
+                                    outcome.kind
+                                ),
                             ),
                         )
                         .clicked()

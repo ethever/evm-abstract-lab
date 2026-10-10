@@ -1,5 +1,6 @@
 //! 从安装后同名的真实二进制验证输入、状态、JSON 和 exit code 契约。
 
+use evm_abstract_notation::normalize_subscripts;
 use std::process::Command;
 
 #[path = "cli/environment.rs"]
@@ -511,7 +512,10 @@ fn requested_world_text_is_readable_and_format_switches_keep_complete_evidence()
         .filter(|line| {
             let first = line.split('|').next().unwrap().trim();
             first.strip_prefix('O').is_some_and(|index| {
-                !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+                !index.is_empty()
+                    && normalize_subscripts(index)
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit())
             })
         })
         .collect();

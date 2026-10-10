@@ -196,6 +196,7 @@ fn typed_rpc_header_mismatch_renders_both_values_even_when_the_message_omits_the
         })),
     };
     let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
     let mut output = context.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -208,7 +209,9 @@ fn typed_rpc_header_mismatch_renders_both_values_even_when_the_message_omits_the
     );
     fn collect(shape: &egui::Shape, text: &mut Vec<String>) {
         match shape {
-            egui::Shape::Text(item) => text.push(item.galley.text().to_owned()),
+            egui::Shape::Text(item) => text.push(evm_abstract_notation::normalize_subscripts(
+                item.galley.text(),
+            )),
             egui::Shape::Vec(items) => {
                 for item in items {
                     collect(item, text);
@@ -236,13 +239,20 @@ fn rendered(
     events: Vec<egui::Event>,
     contents: impl FnMut(&mut egui::Ui),
 ) -> Vec<(String, egui::Rect)> {
+    rendered_at(context, time, events, egui::vec2(520.0, 240.0), contents)
+}
+
+fn rendered_at(
+    context: &egui::Context,
+    time: &mut f64,
+    events: Vec<egui::Event>,
+    size: egui::Vec2,
+    contents: impl FnMut(&mut egui::Ui),
+) -> Vec<(String, egui::Rect)> {
     *time += 0.1;
     let mut output = context.run_ui(
         egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(520.0, 240.0),
-            )),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             time: Some(*time),
             events,
             ..Default::default()
@@ -254,7 +264,10 @@ fn rendered(
             egui::Shape::Text(item) => {
                 let rect = egui::Rect::from_min_size(item.pos, item.galley.size());
                 if clip.intersects(rect) {
-                    text.push((item.galley.text().to_owned(), rect.intersect(clip)));
+                    text.push((
+                        evm_abstract_notation::normalize_subscripts(item.galley.text()),
+                        rect.intersect(clip),
+                    ));
                 }
             }
             egui::Shape::Vec(items) => {
@@ -318,6 +331,7 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
         })
         .collect();
     let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
     context.global_style_mut(|style| style.animation_time = 0.0);
     let mut time = 0.0;
     let mut selection = Selection::default();
@@ -334,7 +348,7 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
     );
     let position = text
         .iter()
-        .find(|(text, _)| text.starts_with("Outcome 1 / 64"))
+        .find(|(text, _)| text.starts_with("Outcome O0 / 64"))
         .unwrap()
         .1
         .center();
@@ -343,7 +357,7 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
     });
     let menu = opened
         .iter()
-        .find(|(text, _)| text.starts_with("Outcome 1 ·"))
+        .find(|(text, _)| text.starts_with("Outcome O0 ·"))
         .unwrap()
         .1
         .center();
@@ -368,7 +382,7 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
     }
     let last = visible
         .iter()
-        .find(|(text, _)| text.starts_with("Outcome 64 ·"))
+        .find(|(text, _)| text.starts_with("Outcome O63 ·"))
         .expect("last outcome is reachable by scrolling the chooser")
         .1
         .center();
@@ -395,6 +409,7 @@ fn expanded_account_facts_leave_storage_cells_visible_in_a_short_area() {
     let address = initial.address.clone();
     report.accounts = vec![initial];
     let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
     context.global_style_mut(|style| style.animation_time = 0.0);
     let mut time = 0.0;
     let text = rendered(&context, &mut time, vec![], |ui| {
@@ -438,6 +453,7 @@ fn relational_frontier_details_show_fact_arity_and_distinguish_solver_failure() 
         )),
     }];
     let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
     let mut time = 0.0;
     let mut selection = Selection::default();
     let arity = rendered(&context, &mut time, vec![], |ui| {
@@ -511,6 +527,7 @@ fn transport_diagnostic_is_visible_next_to_native_classification() {
         message: "builder error".into(),
     };
     let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
     let mut time = 0.0;
     let text = rendered(&context, &mut time, vec![], |ui| errors::rpc(ui, &failure));
     for required in [
@@ -523,4 +540,230 @@ fn transport_diagnostic_is_visible_next_to_native_classification() {
             "missing {required}: {text:?}"
         );
     }
+}
+
+#[test]
+fn native_state_and_frame_symbols_match_accessibility_without_renumbering() {
+    let mut workspace = crate::Workspace::default();
+    let mut report = crate::tests::report();
+    report.cfg.truncate(1);
+    report.cfg[0].id = 425;
+    report.cfg[0].program = Some(128);
+    report.cfg[0].frame_depth = 18;
+    report.edges.clear();
+    report.ssa.blocks.truncate(1);
+    report.ssa.blocks[0].state = 425;
+    report.programs[0].id = 128;
+    report.metadata.root_program = Some(128);
+    report.stores = (0..129).map(|_| store()).collect();
+    let frames = (0..18)
+        .map(|index| {
+            let mut frame = frame(index, 128);
+            frame.program = Some(128);
+            frame.code_address = report.cfg[0].code_address.clone();
+            frame.storage_address = report.cfg[0].storage_address.clone();
+            frame.code_hash = report.programs[0].code_hash.clone();
+            frame
+        })
+        .collect();
+    report.states = vec![api::StateDetails {
+        state: 425,
+        entry: api::MachineSnapshot { frames, store: 0 },
+        exit: None,
+    }];
+    workspace.receive(Ok(api::AnalyzeReply { result: Ok(report) }));
+    assert_eq!(workspace.selection.state, Some(425));
+    assert_eq!(workspace.program, Some(128));
+    let status = workspace.accessible_status();
+    for expected in ["Selected σ₄₂₅", "source P₁₂₈", "Frame f₁₇"] {
+        assert!(status.contains(expected), "missing {expected}: {status}");
+    }
+    let context = egui::Context::default();
+    crate::palette::configure(&context);
+    let mut time = 0.0;
+    let report = workspace.report.as_ref().unwrap();
+    let visible = rendered(&context, &mut time, vec![], |ui| {
+        workspace
+            .inspector
+            .show(ui, report, &mut workspace.selection, None);
+    });
+    for expected in ["σ425", "Frame f17"] {
+        assert!(
+            visible.iter().any(|(text, _)| text == expected),
+            "missing {expected}: {visible:?}"
+        );
+    }
+    assert_eq!(workspace.selection.state, Some(425));
+}
+
+#[test]
+fn frontier_symbol_click_retains_original_state_and_instruction_coordinates() {
+    let mut report = crate::tests::report();
+    report.diagnostics.clear();
+    report.frontiers = vec![api::Frontier {
+        from: Some(425),
+        pc: Some(0x42),
+        kind: api::FrontierKind::Work,
+        detail: String::new(),
+        reason: api::FrontierDetails::Work,
+    }];
+    let context = egui::Context::default();
+    crate::palette::configure(&context);
+    let mut time = 0.0;
+    let mut selection = Selection::default();
+    let visible = rendered(&context, &mut time, vec![], |ui| {
+        evidence::diagnostics(ui, &report, &mut selection)
+    });
+    let position = visible
+        .iter()
+        .find(|(text, _)| text.starts_with("σ425 · 0x42"))
+        .expect("frontier shows a native state symbol")
+        .1
+        .center();
+    click(&context, &mut time, position, |ui| {
+        evidence::diagnostics(ui, &report, &mut selection)
+    });
+    assert_eq!(
+        selection,
+        Selection {
+            state: Some(425),
+            pc: Some(0x42)
+        }
+    );
+}
+
+#[test]
+fn typed_ssa_error_coordinates_use_symbols_and_preserve_percent_values() {
+    let error = api::ApiError {
+        code: api::ApiErrorCode::Internal,
+        message: "SSA contract failed".into(),
+        details: api::ErrorDetails::Ssa(api::SsaFailure::Invariant(Box::new(api::SsaInvariant {
+            kind: api::SsaInvariantKind::EdgeStackHeight,
+            state: Some(425),
+            edge: Some(128),
+            pc: None,
+            frame: Some(17),
+            slot: None,
+            value: Some(128),
+            effect: Some(128),
+            source_state: None,
+            target_state: None,
+            expected: None,
+            observed: None,
+        }))),
+    };
+    let context = egui::Context::default();
+    crate::palette::configure(&context);
+    let mut time = 0.0;
+    let visible = rendered(&context, &mut time, vec![], |ui| errors::api(ui, &error));
+    for expected in ["σ425", "e128", "f17", "%128", "μ128"] {
+        assert!(
+            visible.iter().any(|(text, _)| text == expected),
+            "missing {expected}: {visible:?}"
+        );
+    }
+}
+
+#[test]
+fn expression_references_and_u64_names_are_typeset_without_changing_values() {
+    let mut observed = word("0x1");
+    let input = api::InputIdentity {
+        scope: u64::MAX,
+        symbol: api::InputSymbol {
+            kind: api::InputSymbolKind::To,
+            index: None,
+        },
+    };
+    observed.identity = Some(input.clone());
+    observed.expression = Some(api::ExpressionGraph {
+        nodes: vec![
+            api::Expression::Input(input),
+            api::Expression::Fresh(u64::MAX),
+            api::Expression::Operation(api::ExpressionOperation {
+                opcode: 0x01,
+                arguments: vec![0, 1],
+            }),
+        ],
+        root: 2,
+    });
+    let context = egui::Context::default();
+    crate::palette::configure(&context);
+    let mut time = 0.0;
+    let visible = rendered_at(
+        &context,
+        &mut time,
+        vec![],
+        egui::vec2(1200.0, 900.0),
+        |ui| value::details(ui, &observed),
+    );
+    for expected in [
+        format!("scope{} · To", u64::MAX),
+        "Expression root expr2".into(),
+        format!("expr0 = input scope{} · To", u64::MAX),
+        format!("expr1 = fresh{}", u64::MAX),
+        "expr2 = opcode 0x01(expr0, expr1)".into(),
+        "0x1".into(),
+    ] {
+        assert!(
+            visible.iter().any(|(text, _)| text == &expected),
+            "missing {expected}: {visible:?}"
+        );
+    }
+    assert_eq!(observed.identity.unwrap().scope, u64::MAX);
+    assert_eq!(
+        observed.expression.unwrap().nodes[1],
+        api::Expression::Fresh(u64::MAX)
+    );
+}
+
+#[test]
+fn task_progress_and_typed_task_error_keep_the_full_u64_handle() {
+    let context = egui::Context::default();
+    crate::palette::configure(&context);
+    let mut time = 0.0;
+    let mut workspace = crate::Workspace::default();
+    workspace.task.phase = crate::app::job::TaskPhase::Running;
+    workspace.task.snapshot = Some(api::JobSnapshot {
+        id: api::JobId(u64::MAX),
+        state: api::JobState::Running,
+        progress: api::AnalysisProgress::default(),
+    });
+    assert!(
+        workspace
+            .accessible_status()
+            .contains(&evm_abstract_notation::WideSymbol::Task(u64::MAX).to_string())
+    );
+    let visible = rendered_at(
+        &context,
+        &mut time,
+        vec![],
+        egui::vec2(1200.0, 240.0),
+        |ui| {
+            workspace.status(ui);
+        },
+    );
+    let prefix = format!("task{} ·", u64::MAX);
+    assert!(
+        visible.iter().any(|(text, _)| text.starts_with(&prefix)),
+        "missing {prefix}: {visible:?}"
+    );
+    assert_eq!(
+        workspace.task.snapshot.as_ref().unwrap().id,
+        api::JobId(u64::MAX)
+    );
+    let error = api::ApiError {
+        code: api::ApiErrorCode::TaskNotFound,
+        message: "Task unavailable".into(),
+        details: api::ErrorDetails::Task(api::TaskFailure {
+            kind: api::TaskErrorKind::NotFound,
+            id: Some(api::JobId(u64::MAX)),
+        }),
+    };
+    let visible = rendered(&context, &mut time, vec![], |ui| errors::api(ui, &error));
+    assert!(
+        visible
+            .iter()
+            .any(|(text, _)| text == &format!("task{}", u64::MAX)),
+        "missing task: {visible:?}"
+    );
 }

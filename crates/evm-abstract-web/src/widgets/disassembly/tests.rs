@@ -55,6 +55,7 @@ fn long_push_is_complete_and_horizontally_reachable_in_a_narrow_pane() {
     report.programs[0].blocks[0].instructions[0].name = "PUSH32".into();
     report.programs[0].blocks[0].instructions[0].immediate = Some(immediate.clone());
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut selection = Selection {
         state: Some(0),
         pc: None,

@@ -86,7 +86,7 @@ stack out [{0x2a}, {0x7}]
 
 外层 `[]` 是两个栈位置，内层 `{}` 是每个位置的数值候选。`0x2a` 是十进制 42，`0x7` 是 7。两个候选集合都只有一个数，说明这里数值已确定。
 
-报告的成功 `Return` outcome 会列出 `A0[0x0]={0x2a}`。这里 `A0` 是报告的地址目录编号，不是 slot 0；slot 编号在方括号里面。STOP 在本项目的结束分类中属于成功 `Return`，其返回字节为空，不表示程序执行了 RETURN 指令。
+报告的成功 `Return` outcome 会列出 `A₀[0x0]={0x2a}`。这里 `A₀` 是报告的地址目录编号，不是 slot 0；slot 编号在方括号里面。STOP 在本项目的结束分类中属于成功 `Return`，其返回字节为空，不表示程序执行了 RETURN 指令。
 
 ### 报告为什么还会有 Failure
 
@@ -253,9 +253,9 @@ nix run . -- explain --world examples/storage-finite-alias.json \
 
 ```mermaid
 flowchart TD
-    B0["B0：栈底保留9，读取word q"] -->|q=0| B1["B1：压入slot 0"]
-    B0 -->|q≠0| B2["B2：压入slot 1"]
-    B1 --> B3["B3：汇合后栈[9,{0,1}]；SSTORE"]
+    B0["B₀：栈底保留9，读取word q"] -->|q=0| B1["B₁：压入slot 0"]
+    B0 -->|q≠0| B2["B₂：压入slot 1"]
+    B1 --> B3["B₃：汇合后栈[9,{0,1}]；SSTORE"]
     B2 --> B3
     B3 --> R["SLOAD 0；SLOAD 1；STOP"]
 ```
@@ -282,7 +282,7 @@ flowchart TD
 | `0x14` | SLOAD | `[9,7]` | `[4,9]` |
 | `0x15` | STOP | `[9,7]` | `[4,9]` |
 
-报告中的 B3 汇合状态则是：
+报告中的 B₃ 汇合状态则是：
 
 ```text
 stack in  [{0x9}, {0x0, 0x1}]
@@ -374,11 +374,11 @@ nix run . -- explain --world examples/storage-symbolic-key.json \
 一般数组理论会保存类似关系：
 
 ```text
-S1 = store(S0,k,7)
-select(S1,k) = 7
+store₁ = store(store₀,k,7)
+select(store₁,k) = 7
 ```
 
-这个 `store/select` 是逻辑数组操作的记号，不是当前 Store 的 Rust 方法签名。当前实现把 S1 概括成各单元和默认值，尚未保存这条符号索引更新关系。
+这个 `store/select` 是逻辑数组操作的记号，不是当前 Store 的 Rust 方法签名。当前实现把 store₁ 概括成各单元和默认值，尚未保存这条符号索引更新关系。
 
 “有表达式域”“有路径关系”“有具体位置映射”与“有完整符号数组模型”是不同能力。关系精化如果能证明 k=0，现有映射可以受益；不能证明具体键时，现有映射仍会弱更新。提高常量容量也不能列完任意 U256 的所有候选。
 

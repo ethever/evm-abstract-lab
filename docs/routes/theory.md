@@ -60,9 +60,9 @@ EVM 的跳转目标来自栈，因此“有哪些边”和“栈里有哪些可�
 
 循环不应靠“执行过一次”就停止。有限集合会在容量边界扩大为 Top；组合域对反复扩大的区间使用 widening，把继续外移的端点扩大到极值，减少逐个扩大范围的工作。两者都可能损失精度。状态、transfer 与累计工作预算仍可能先耗尽，此时必须保留未完成前沿。
 
-1. 对照[第 03 课的工作表](../03-cfg.md#3-手动走完一次工作表传播)，用 diamond 逐轮写出队列和汇合入口；再运行[循环实验](../03-cfg.md#4-循环的固定点长什么样)的 [`loop.hex`](../../examples/loop.hex)。指出“再次处理这个 S”的原因，并区分字节码块 B 与分析状态 S。
+1. 对照[第 03 课的工作表](../03-cfg.md#3-手动走完一次工作表传播)，用 diamond 逐轮写出队列和汇合入口；再运行[循环实验](../03-cfg.md#4-循环的固定点长什么样)的 [`loop.hex`](../../examples/loop.hex)。指出“再次处理这个 σᵖᵢ”的原因，并区分字节码块 Bᵢ 与分析状态 σᵖᵢ。
 2. 阅读[未知跳转的处理](../03-cfg.md#6-跳转目标未知时仍须保留后续行为)，用 [`dynamic-jump.hex`](../../examples/dynamic-jump.hex)检查候选目标为什么仍须来自合法 JUMPDEST。目标值变粗可以增加边；额外边表示抽象可能，不能单凭它声称存在走通整条路径的输入。
-3. 按[第 05 课的内部调用实验](../05-sensitivity.md#2-先手算两次内部调用)，比较 [`internal-calls.hex`](../../examples/internal-calls.hex) 在历史深度 0 和 1 下的 helper。写出“同一块、同一栈高、不同跳转来源”怎样变成不同 S，再读[历史遗忘](../05-sensitivity.md#5-历史如何更新又如何失忆)。这里的敏感性决定哪些输入暂时分开，并没有恢复完整的 Solidity 函数或真实 CALL 栈。
+3. 按[第 05 课的内部调用实验](../05-sensitivity.md#2-先手算两次内部调用)，比较 [`internal-calls.hex`](../../examples/internal-calls.hex) 在历史深度 0 和 1 下的 helper。写出“同一块、同一栈高、不同跳转来源”怎样变成不同 σᵖᵢ，再读[历史遗忘](../05-sensitivity.md#5-历史如何更新又如何失忆)。这里的敏感性决定哪些输入暂时分开，并没有恢复完整的 Solidity 函数或真实 CALL 栈。
 
 源码看 [`analysis/engine.rs`](../../crates/evm-abstract/src/analysis/engine.rs) 的 `successor`：先 join，检测严格变化，按策略 widening，再使旧执行证据失效并重新排队；单程序状态键可对照 [`analysis.rs`](../../crates/evm-abstract/src/analysis.rs)。阅读引擎结束处时留意：完成状态还检查是否有 frontier，不能只拿“队列空了”当作 `Converged` 的充分解释。完整机器状态还包括调用帧和共享 Store，第七步补齐。
 
@@ -90,7 +90,7 @@ SSA 在静态表示中给每个值定义分配一个唯一名字，让使用者�
 | `Current` / `Stale` / `Unexecuted` | 最近执行是否对应当前入口，还是入口已扩大，或根本尚未执行？ | [状态证据](../04-ssa.md#每个状态的证据是否仍适用) |
 | `Started`、`OperandsConsumed` 等 progress | 只到达 pc、已消费参数、已完成普通效果，还是进入分发或故障；效果名字对应哪一步？ | [指令阶段](../04-ssa.md#一条指令已经走到哪一步)、[进度与效果链](../04-ssa.md#进度和效果链怎样一起读) |
 | partial φ、deferred edges、open incoming | 哪些入边有当前证据，哪些仍无法接入，图是否还可能发现新前驱？ | [部分 φ 的覆盖](../04-ssa.md#部分-φ-的输入覆盖哪些边) |
-| S/T 编号与 `state_mapping` | 名字对应局部状态还是原生机器状态；边编号能否直接当作数组下标？ | [JSON 编号连接](../04-ssa.md#保存-json-并连接状态编号) |
+| σᵖᵢ / σᵢ / Tᵢ 编号与 `state_mapping` | 名字对应局部状态还是原生机器状态；边编号能否直接当作数组下标？ | [JSON 编号连接](../04-ssa.md#保存-json-并连接状态编号) |
 
 源码对照 [`ssa/build.rs`](../../crates/evm-abstract/src/ssa/build.rs) 的完整构建入口与 [`ssa/partial.rs`](../../crates/evm-abstract/src/ssa/partial.rs) 的覆盖类型，阶段证据来自 [`analysis/machine/evidence.rs`](../../crates/evm-abstract/src/analysis/machine/evidence.rs)。完整构建仍拒绝 `Incomplete`；部分结构验证也不会补齐未知调用、证明全部路径覆盖，或把退出码 2 改成成功。
 

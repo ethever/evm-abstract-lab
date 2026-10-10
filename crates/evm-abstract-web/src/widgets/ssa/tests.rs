@@ -118,18 +118,18 @@ fn percent_names_cover_definitions_phi_exits_and_transition_tooltips() {
         .collect::<Vec<_>>()
         .join("\n");
     for expected in [
-        "%11 = φ(S8:%10)",
-        "%13 = ADD %11 %12 · μ2→μ3",
-        "exit μ3 · f0 [%13]",
-        "μ3→μ4 · %14",
-        "μ2 = effect φ(e77:μ1)",
+        "%11 = φ(σ₈:%10)",
+        "%13 = ADD %11 %12 · μ₂→μ₃",
+        "exit μ₃ · f₀ [%13]",
+        "μ₃→μ₄ · %14",
+        "μ₂ = effect φ(e₇₇:μ₁)",
     ] {
         assert!(visible.contains(expected), "missing {expected}: {visible}");
     }
     for expected in [
-        "edge e77 from S8: %10",
+        "edge e₇₇ from σ₈: %10",
         "Arguments: [%13]",
-        "Destination frame stacks: f0 [%13, %14]",
+        "Destination frame stacks: f₀ [%13, %14]",
         "Completed",
     ] {
         assert!(details.contains(expected), "missing {expected}: {details}");
@@ -159,7 +159,7 @@ fn incomplete_attempt_keeps_effect_and_phase_on_the_instruction_row() {
     instruction.results.clear();
     let rendered = rows(&report);
     let instruction = &rendered[3];
-    assert!(instruction.plain_text().ends_with("μ2→pending · Started"));
+    assert!(instruction.plain_text().ends_with("μ₂→pending · Started"));
     assert!(!instruction.plain_text().contains("%13 ="));
 }
 
@@ -203,6 +203,7 @@ fn table_virtualizes_dense_rows_and_focuses_an_offscreen_native_instruction() {
         })
         .collect();
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut selection = Selection {
         state: Some(27),
         pc: None,
@@ -291,14 +292,14 @@ fn program_scope_preserves_every_native_context_and_transition_to_other_programs
     );
     let transition = scoped
         .iter()
-        .find(|row| row.plain_text().starts_with("e88 "))
+        .find(|row| row.plain_text().starts_with("e₈₈ "))
         .unwrap();
     assert_eq!(transition.target.unwrap().state, Some(report.cfg[129].id));
     assert!(transition.tooltip.contains("Arguments: [%13]"));
     assert!(
         transition
             .tooltip
-            .contains("Destination frame stacks: f0 [%13, %14]")
+            .contains("Destination frame stacks: f₀ [%13, %14]")
     );
     let other = scoped_rows(
         &report,
@@ -309,7 +310,7 @@ fn program_scope_preserves_every_native_context_and_transition_to_other_programs
         },
     );
     assert_eq!(other.iter().filter(|row| row.header).count(), 2);
-    assert!(!other.iter().any(|row| row.plain_text().starts_with("e88 ")));
+    assert!(!other.iter().any(|row| row.plain_text().starts_with("e₈₈ ")));
 }
 
 #[test]
@@ -343,7 +344,7 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
     assert!(
         scoped
             .iter()
-            .any(|row| row.plain_text() == "e88 → S91 · deferred Some(SourceStale)")
+            .any(|row| row.plain_text() == "e₈₈ → σ₉₁ · deferred Some(SourceStale)")
     );
     let other = scoped_rows(
         &report,

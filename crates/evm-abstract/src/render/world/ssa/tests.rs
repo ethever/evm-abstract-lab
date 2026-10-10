@@ -1,3 +1,5 @@
+use evm_abstract_notation::Symbol;
+
 use super::render;
 use crate::{
     Address, Fork, U256,
@@ -88,8 +90,8 @@ fn names(values: &Json) -> String {
     )
 }
 
-fn number(value: &Json) -> u64 {
-    value.as_u64().unwrap()
+fn number(value: &Json) -> usize {
+    usize::try_from(value.as_u64().unwrap()).unwrap()
 }
 
 fn contains(text: &str, expected: &str) {
@@ -106,8 +108,8 @@ fn shared_layout_keeps_real_block_titles_and_bare_instruction_effect_pcs() {
     let graph = fixture("60015f5500", None, ByteArray::empty());
     let (ir, text) = rendered(&graph);
     let block = &ir.blocks()[0];
-    contains(&text, "\nB0 @ 0x0000:\n");
-    let instructions = text.split_once("B0 @ 0x0000:\n").unwrap().1;
+    contains(&text, "\nB₀ @ 0x0000:\n");
+    let instructions = text.split_once("B₀ @ 0x0000:\n").unwrap().1;
     let instructions = instructions
         .lines()
         .take_while(|line| !line.contains("stack out"))
@@ -123,11 +125,21 @@ fn shared_layout_keeps_real_block_titles_and_bare_instruction_effect_pcs() {
     for (pc, input, result) in &block.effects {
         let effect = effects
             .lines()
-            .find(|line| line.contains(&format!("!{input} -> !{result}")))
+            .find(|line| {
+                line.contains(&format!(
+                    "{} → {}",
+                    Symbol::Effect(*input),
+                    Symbol::Effect(*result)
+                ))
+            })
             .unwrap();
         assert_eq!(
             effect.trim_start(),
-            format!("{pc:04x}: !{input} -> !{result}")
+            format!(
+                "{pc:04x}: {} → {}",
+                Symbol::Effect(*input),
+                Symbol::Effect(*result)
+            )
         );
         let instruction = instructions
             .iter()
@@ -146,14 +158,22 @@ fn shared_layout_grows_for_multi_digit_block_ids_and_wide_pcs() {
     for block in ir.blocks() {
         let state = &graph.states()[block.state];
         let source = &state.program().unwrap().blocks()[state.active().basic_block_index];
-        let title = format!("B{} @ 0x{:04x}:\n", source.id, source.start_pc);
+        let title = format!(
+            "{} @ 0x{:04x}:\n",
+            Symbol::Block(source.id),
+            source.start_pc
+        );
         let rows = text.split_once(&title).unwrap().1;
-        let column = title.find("0x").unwrap() + 2;
+        let column = title[..title.find("0x").unwrap()].chars().count() + 2;
         for row in rows.lines().take_while(|line| !line.contains("stack out")) {
             assert_eq!(row.find(':').unwrap(), column + 4);
             assert!(row[..column].chars().all(|c| c == ' '));
         }
-        let body = section(&text, &format!("S{} | active=", block.state), "\nS");
+        let body = section(
+            &text,
+            &format!("{} | active=", Symbol::State(block.state)),
+            "\nσ",
+        );
         let effects = section(body, "    instruction effects:\n", "    exit effect:");
         for row in effects.lines() {
             assert_eq!(row.find(':').unwrap(), column + 4);
@@ -165,7 +185,7 @@ fn shared_layout_grows_for_multi_digit_block_ids_and_wide_pcs() {
     code.push_str("5b5f5000");
     let graph = fixture(&code, None, ByteArray::empty());
     let (_, text) = rendered(&graph);
-    contains(&text, "\nB2 @ 0x10000:\n       10000: JUMPDEST");
+    contains(&text, "\nB₂ @ 0x10000:\n       10000: JUMPDEST");
     contains(&text, "       10003: STOP");
 }
 
@@ -206,19 +226,19 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
             ],
         );
         let id = number(&block["state"]);
-        let body = section(&text, &format!("S{id} | active="), "\nS");
+        let body = section(&text, &format!("{} | active=", Symbol::State(id)), "\nσ");
         let body = body
             .split_once("\nTransitions")
             .map_or(body, |(body, _)| body);
-        let state = &graph.states()[usize::try_from(id).unwrap()];
+        let state = &graph.states()[id];
         contains(body, &format!("call depth={}", state.key.frames.len()));
         contains(
             body,
             &format!("machine code identity={}", state.key.code_identity),
         );
         for (frame, key) in state.key.frames.iter().enumerate() {
-            contains(body, &format!("F{frame} "));
-            contains(body, &format!("B{} (", key.basic_block_index));
+            contains(body, &format!("{} ", Symbol::Frame(frame)));
+            contains(body, &format!("{} (", Symbol::Block(key.basic_block_index)));
             contains(
                 body,
                 &format!("mode={:?} | stack height={}", key.mode, key.stack_height),
@@ -239,22 +259,28 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
             );
         }
         let phis = block["phis"].as_array().unwrap();
-        assert_eq!(body.matches(" = frame phi(").count(), phis.len());
+        assert_eq!(body.matches(" = frame φ(").count(), phis.len());
         for phi in phis {
             fields(phi, &["frame", "slot", "result", "inputs"]);
             let inputs = phi["inputs"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|pair| format!("T{}: %{}", number(&pair[0]), number(&pair[1])))
+                .map(|pair| {
+                    format!(
+                        "{}: %{}",
+                        Symbol::Transition(number(&pair[0])),
+                        number(&pair[1])
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             contains(
                 body,
                 &format!(
-                    "%{} = frame phi(F{}, slot={}, inputs=[{inputs}])",
+                    "%{} = frame φ({}, slot={}, inputs=[{inputs}])",
                     number(&phi["result"]),
-                    number(&phi["frame"]),
+                    Symbol::Frame(number(&phi["frame"])),
                     number(&phi["slot"])
                 ),
             );
@@ -265,9 +291,9 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
         for input in effect_inputs {
             fields(input, &["transition", "effect"]);
             inputs.push(format!(
-                "T{}: !{}",
-                number(&input["transition"]),
-                number(&input["effect"])
+                "{}: {}",
+                Symbol::Transition(number(&input["transition"])),
+                Symbol::Effect(number(&input["effect"]))
             ));
         }
         let effect = if inputs.is_empty() {
@@ -278,8 +304,8 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
         contains(
             body,
             &format!(
-                "!{} = effect phi({effect})",
-                number(&block["effect"]["result"])
+                "{} = effect φ({effect})",
+                Symbol::Effect(number(&block["effect"]["result"]))
             ),
         );
         let instructions = block["instructions"].as_array().unwrap();
@@ -316,22 +342,28 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
             block["exit_frames"].as_array().unwrap().len()
         );
         for (frame, stack) in block["exit_frames"].as_array().unwrap().iter().enumerate() {
-            contains(stacks, &format!("F{frame}: {}", names(stack)));
+            contains(
+                stacks,
+                &format!("{}: {}", Symbol::Frame(frame), names(stack)),
+            );
         }
         for effect in block["effects"].as_array().unwrap() {
             contains(
                 body,
                 &format!(
-                    "{:04x}: !{} -> !{}",
+                    "{:04x}: {} → {}",
                     number(&effect[0]),
-                    number(&effect[1]),
-                    number(&effect[2])
+                    Symbol::Effect(number(&effect[1])),
+                    Symbol::Effect(number(&effect[2]))
                 ),
             );
         }
         contains(
             body,
-            &format!("exit effect: !{}", number(&block["exit_effect"])),
+            &format!(
+                "exit effect: {}",
+                Symbol::Effect(number(&block["exit_effect"]))
+            ),
         );
     }
     for (index, transition) in json["transitions"].as_array().unwrap().iter().enumerate() {
@@ -347,15 +379,19 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
                 "result",
             ],
         );
-        let edge = &graph.edges()[usize::try_from(number(&transition["edge"])).unwrap()];
-        let body = section(&text, &format!("  T{index} | "), "\n  T");
+        let edge = &graph.edges()[number(&transition["edge"])];
+        let body = section(
+            &text,
+            &format!("  {} | ", Symbol::Transition(index)),
+            "\n  T",
+        );
         contains(
             body,
             &format!(
-                "edge={} | S{} -> S{} | kind={:?}",
-                number(&transition["edge"]),
-                edge.from,
-                edge.to,
+                "edge={} | {} → {} | kind={:?}",
+                Symbol::Edge(number(&transition["edge"])),
+                Symbol::State(edge.from),
+                Symbol::State(edge.to),
                 ir.transitions()[index].kind
             ),
         );
@@ -370,14 +406,17 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
             transition["stacks"].as_array().unwrap().len()
         );
         for (frame, stack) in transition["stacks"].as_array().unwrap().iter().enumerate() {
-            contains(stacks, &format!("F{frame}: {}", names(stack)));
+            contains(
+                stacks,
+                &format!("{}: {}", Symbol::Frame(frame), names(stack)),
+            );
         }
         contains(
             body,
             &format!(
-                "effect: !{} -> !{}",
-                number(&transition["effect_input"]),
-                number(&transition["effect_result"])
+                "effect: {} → {}",
+                Symbol::Effect(number(&transition["effect_input"])),
+                Symbol::Effect(number(&transition["effect_result"]))
             ),
         );
         let result = transition["result"]
@@ -407,8 +446,8 @@ fn call_revert_and_immediate_failure_keep_dispatch_and_deferred_results_explicit
                 .any(|transition| transition.kind == kind)
         );
     }
-    contains(&text, "F0 suspended");
-    contains(&text, "F1 active");
+    contains(&text, "f₀ suspended");
+    contains(&text, "f₁ active");
     contains(&text, "CALL success boolean");
     contains(
         &text,
@@ -454,7 +493,11 @@ fn creation_results_are_addresses_for_success_and_same_frame_failure() {
         .enumerate()
         .filter(|(_, transition)| transition.result.is_some())
     {
-        let body = section(&text, &format!("  T{index} | "), "\n  T");
+        let body = section(
+            &text,
+            &format!("  {} | ", Symbol::Transition(index)),
+            "\n  T",
+        );
         contains(body, "CREATE/CREATE2 address");
         assert!(!body.contains("CALL success boolean"));
         let edge = &graph.edges()[transition.edge];
@@ -474,7 +517,7 @@ fn empty_native_and_faulted_blocks_do_not_invent_bytecode_steps() {
     assert!(ir.blocks()[0].instructions.is_empty());
     contains(&text, "mode=Empty");
     contains(&text, "bytecode instructions:\n      (none;");
-    contains(&text, "effect phi(root world/entry; inputs=[])");
+    contains(&text, "effect φ(root world/entry; inputs=[])");
     contains(&text, "Transitions\n  (none)");
     assert!(
         !text
@@ -527,7 +570,13 @@ fn parallel_edges_have_distinct_transition_and_effect_phi_inputs() {
     for index in [first, second] {
         contains(
             &text,
-            &format!("T{index} | edge={index} | S{} -> S{}", edge.from, edge.to),
+            &format!(
+                "{} | edge={} | {} → {}",
+                Symbol::Transition(index),
+                Symbol::Edge(index),
+                Symbol::State(edge.from),
+                Symbol::State(edge.to)
+            ),
         );
     }
     let destination = &ir.blocks()[edge.to];
@@ -540,11 +589,19 @@ fn parallel_edges_have_distinct_transition_and_effect_phi_inputs() {
     );
     contains(
         &text,
-        &format!("T{first}: !{}", ir.transitions()[first].effect_result),
+        &format!(
+            "{}: {}",
+            Symbol::Transition(first),
+            Symbol::Effect(ir.transitions()[first].effect_result)
+        ),
     );
     contains(
         &text,
-        &format!("T{second}: !{}", ir.transitions()[second].effect_result),
+        &format!(
+            "{}: {}",
+            Symbol::Transition(second),
+            Symbol::Effect(ir.transitions()[second].effect_result)
+        ),
     );
 }
 

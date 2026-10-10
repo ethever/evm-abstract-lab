@@ -1,5 +1,7 @@
 //! 教学视图通过真实 CLI 验证，完整机器证据仍可由 verbose/analyze 取得。
 
+use evm_abstract_notation::Symbol;
+
 use super::run_concrete;
 use serde_json::Value as Json;
 use std::{
@@ -68,15 +70,18 @@ fn assert_diagnostics(explanation: &str, report: &Json) {
     let rows = section
         .lines()
         .filter(|line| {
-            line.trim_start()
-                .strip_prefix('S')
-                .is_some_and(|tail| tail.starts_with(|character: char| character.is_ascii_digit()))
+            line.trim_start().strip_prefix('σ').is_some_and(|tail| {
+                tail.starts_with(|character: char| "₀₁₂₃₄₅₆₇₈₉".contains(character))
+            })
         })
         .count();
     let diagnostics = report["diagnostics"].as_array().unwrap();
     assert_eq!(rows, diagnostics.len());
     for diagnostic in diagnostics {
-        let state = format!("S{}", diagnostic["state"]);
+        let state = format!(
+            "{}",
+            Symbol::State((diagnostic["state"]).as_u64().unwrap() as usize)
+        );
         let pc = format!("0x{:04x}", diagnostic["pc"].as_u64().unwrap());
         let kind = variant(&diagnostic["kind"]);
         assert!(
@@ -143,7 +148,7 @@ fn default_world_explain_connects_disassembly_cfg_values_and_separate_outcomes()
     ] {
         assert!(explanation.contains(evidence), "missing {evidence}");
     }
-    assert!(explanation.contains(" = phi(T"));
+    assert!(explanation.contains(" = φ(T"));
     assert!(explanation.contains(" = MLOAD %"));
     assert!(explanation.contains("SSTORE %"));
     assert!(explanation.contains("BranchTrue") && explanation.contains("BranchFalse"));
@@ -155,17 +160,23 @@ fn default_world_explain_connects_disassembly_cfg_values_and_separate_outcomes()
     for (id, outcome) in report["outcomes"].as_array().unwrap().iter().enumerate() {
         let line = explanation
             .lines()
-            .find(|line| line.trim_start().starts_with(&format!("O{id} |")))
+            .find(|line| {
+                line.trim_start()
+                    .starts_with(&format!("{} |", Symbol::Outcome(id)))
+            })
             .unwrap_or_else(|| panic!("missing separate outcome O{id}"));
         assert!(line.contains(outcome["kind"].as_str().unwrap()));
-        assert!(line.contains(&format!("S{}", outcome["state"])));
+        assert!(line.contains(&format!(
+            "{}",
+            Symbol::State((outcome["state"]).as_u64().unwrap() as usize)
+        )));
     }
     for detail in [
         "captured frames:",
         "Active abstract transfers:",
         "machine code identity=",
         "jump history=",
-        "frame phis (stack in):",
+        "frame φ functions (stack in):",
         "instruction effects:",
         "opcode=",
         "immediate=",
@@ -306,7 +317,7 @@ fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
             .lines()
             .filter(|line| {
                 line.trim_start().strip_prefix('U').is_some_and(|tail| {
-                    tail.starts_with(|character: char| character.is_ascii_digit())
+                    tail.starts_with(|character: char| matches!(character, '₀'..='₉'))
                         && tail.contains(" | from=")
                 })
             })
@@ -319,12 +330,16 @@ fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
         for (id, frontier) in report["frontiers"].as_array().unwrap().iter().enumerate() {
             let line = frontiers
                 .lines()
-                .find(|line| line.trim_start().starts_with(&format!("U{id} | from=")))
+                .find(|line| {
+                    line.trim_start()
+                        .starts_with(&format!("{} | from=", Symbol::Frontier(id)))
+                })
                 .unwrap();
             assert!(line.contains(variant(&frontier["reason"])));
-            let source = frontier["from"]
-                .as_u64()
-                .map_or_else(|| "none".to_owned(), |state| format!("S{state}"));
+            let source = frontier["from"].as_u64().map_or_else(
+                || "none".to_owned(),
+                |state| format!("{}", Symbol::State(state as usize)),
+            );
             assert!(line.contains(&format!("from={source}")));
         }
         assert_diagnostics(&explanation, &report);
@@ -357,7 +372,7 @@ fn verbose_preserves_full_analyze_report_and_original_ssa_fields() {
         "machine code identity=",
         "code hash=",
         "jump history=",
-        "effect phi(",
+        "effect φ(",
         "opcode=",
         "immediate=",
         "operands=",

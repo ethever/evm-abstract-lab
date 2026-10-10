@@ -13,12 +13,12 @@
 在这个单账户视图中，分析状态的键是：
 
 ```text
-StateKey = (基本块 B，入口栈高，最近 k 个跳转来源块的起始 pc)
+StateKey = (基本块 Bᵢ，入口栈高，最近 k 个跳转来源块的起始 pc)
 ```
 
-键相同的输入可以合并；键不同就保存为不同的 S 状态。**敏感性**描述分析保留哪些区别、据此把执行分成哪些组。
+键相同的输入可以合并；键不同就保存为不同的 σᵖᵢ 状态。**敏感性**描述分析保留哪些区别、据此把执行分成哪些组。
 
-例如，同一个 B3 的两次输入都是一个栈槽位，但分别来自不同调用点。如果 `k=0`，历史为空，它们可能合并；如果 `k=1`，最后一个跳转来源不同，就能暂时分开。
+例如，同一个 B₃ 的两次输入都是一个栈槽位，但分别来自不同调用点。如果 `k=0`，历史为空，它们可能合并；如果 `k=1`，最后一个跳转来源不同，就能暂时分开。
 
 这里的“上下文”是分析用于分组的控制历史。它不是 Solidity 源码中的函数名，也不是完整的 EVM 调用栈。
 
@@ -69,12 +69,12 @@ nix run . -- cfg --file examples/internal-calls.hex --context-depth 0
 关注 helper 的状态：
 
 ```text
-S1 | B3 @ 0x000e | stack height=1 | context=[]
+σᵖ₁ | B₃ @ 0x000e | stack height=1 | context=[]
   relations in=0 out=0
   stack in  [{0x5, 0xc}]
   stack out [{0x2a}]
-  -> S2 Jump
-  -> S3 Jump
+  → σᵖ₂ Jump
+  → σᵖ₃ Jump
 ```
 
 按以下顺序理解：
@@ -96,26 +96,26 @@ nix run . -- ssa --file examples/internal-calls.hex --context-depth 1
 helper 现在有两个状态：
 
 ```text
-S1 | B3 @ 0x000e | stack height=1 | context=[0]
+σᵖ₁ | B₃ @ 0x000e | stack height=1 | context=[0]
   relations in=0 out=0
   stack in  [{0x5}]
   stack out [{0x2a}]
-  -> S2 Jump
+  → σᵖ₂ Jump
 
-S3 | B3 @ 0x000e | stack height=1 | context=[5]
+σᵖ₃ | B₃ @ 0x000e | stack height=1 | context=[5]
   relations in=0 out=0
   stack in  [{0xc}]
   stack out [{0x2a}]
-  -> S4 Jump
+  → σᵖ₄ Jump
 ```
 
 | 分析设置 | helper 状态 | 入口返回地址 | 返回去向 |
 | --- | --- | --- | --- |
-| k=0 | 一个 S，历史 `[]` | `{0x5,0xc}` | 两个返回点 |
-| k=1 | 一个 S，历史 `[0]` | `{0x5}` | `0x05` |
-| k=1 | 另一个 S，历史 `[5]` | `{0xc}` | `0x0c` |
+| k=0 | 一个 σᵖᵢ，历史 `[]` | `{0x5,0xc}` | 两个返回点 |
+| k=1 | 一个 σᵖᵢ，历史 `[0]` | `{0x5}` | `0x05` |
+| k=1 | 另一个 σᵖᵢ，历史 `[5]` | `{0xc}` | `0x0c` |
 
-**B3 没有变成两份字节码。**分析只是为同一个 B3 保存了两个 S；SSA 也会为两个 S 各自建立入口 φ 和定义。
+**B₃ 没有变成两份字节码。**分析只是为同一个 B₃ 保存了两个 σᵖᵢ；SSA 也会为两个 σᵖᵢ 各自建立入口 φ 和定义。
 
 `context` 中的数字用十进制显示，而 `@ 0x...` 用十六进制。比如返回点的 `context=[14]` 表示来源块从 `0x0e` 开始。历史记录的是 **JUMP/JUMPI 所在基本块的起始 pc**，不是跳转指令自身的 pc，也不是目的地址。
 
@@ -151,7 +151,7 @@ k=2：只留 [14, 21]
 nix run . -- cfg --file examples/stack-heights.hex --context-depth 0
 ```
 
-在 `pc=0x0c`，一个状态 `stack in [{0x7}]`、`stack height=1`；另一个状态 `stack in []`、`stack height=0`。两个都属于 B3，却不能强行合为一个栈。这种区分不仅影响精度，也保证栈槽位和 SSA 入口的含义成立。
+在 `pc=0x0c`，一个状态 `stack in [{0x7}]`、`stack height=1`；另一个状态 `stack in []`、`stack height=0`。两个都属于 B₃，却不能强行合为一个栈。这种区分不仅影响精度，也保证栈槽位和 SSA 入口的含义成立。
 
 有限集合把不同数值放在一个槽位摘要里，并不保存完整路径或多个槽位之间的配对关系。组合数值域的位信息可以证明条件非零；两种数值 profile 共用的 AbstractValue 另以受信任的块内复制身份证明 `x XOR x = 0`。固定输入符号关联同一环境中跨块保留的相同输入；符号表达式与状态级关系进一步保存派生值和分支约束，受独立资源策略限制。
 

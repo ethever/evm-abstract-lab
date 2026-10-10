@@ -4,6 +4,8 @@ pub mod world;
 
 mod instruction;
 
+use evm_abstract_notation::Symbol;
+
 use crate::{
     analysis::{Analysis, DiagnosticKind},
     bytecode::Program,
@@ -78,8 +80,12 @@ pub fn cfg(analysis: &Analysis) -> String {
         let block = &analysis.program().blocks()[state.key.basic_block_index];
         writeln!(
             output,
-            "S{} | B{} @ 0x{:04x} | stack height={} | context={:?}",
-            state.id, block.id, block.start_pc, state.key.stack_height, state.key.context
+            "{} | {} @ 0x{:04x} | stack height={} | context={:?}",
+            Symbol::ProjectedState(state.id),
+            Symbol::Block(block.id),
+            block.start_pc,
+            state.key.stack_height,
+            state.key.context
         )
         .unwrap();
         writeln!(
@@ -97,22 +103,39 @@ pub fn cfg(analysis: &Analysis) -> String {
         )
         .unwrap();
         for edge in analysis.edges().iter().filter(|edge| edge.from == state.id) {
-            writeln!(output, "  -> S{} {:?}", edge.to, edge.kind).unwrap();
+            writeln!(
+                output,
+                "  → {} {:?}",
+                Symbol::ProjectedState(edge.to),
+                edge.kind
+            )
+            .unwrap();
         }
     }
     for diagnostic in analysis.diagnostics() {
         writeln!(
             output,
-            "diagnostic S{} @ 0x{:04x}: {:?}",
-            diagnostic.state, diagnostic.pc, diagnostic.kind
+            "diagnostic {} @ 0x{:04x}: {:?}",
+            Symbol::ProjectedState(diagnostic.state),
+            diagnostic.pc,
+            diagnostic.kind
         )
         .unwrap();
     }
-    for frontier in analysis.frontiers() {
+    for (index, frontier) in analysis.frontiers().iter().enumerate() {
         writeln!(
             output,
-            "frontier {:?}: from={:?} target={:?} reason={:?}",
-            frontier.limit, frontier.from, frontier.target, frontier.reason
+            "frontier {} {:?}: from={} target={} | stack height={} | context={:?} reason={:?}",
+            Symbol::Frontier(index),
+            frontier.limit,
+            frontier.from.map_or_else(
+                || "none".to_owned(),
+                |state| Symbol::ProjectedState(state).to_string()
+            ),
+            Symbol::Block(frontier.target.basic_block_index),
+            frontier.target.stack_height,
+            frontier.target.context,
+            frontier.reason
         )
         .unwrap();
     }
@@ -128,8 +151,8 @@ pub fn dot(analysis: &Analysis) -> String {
         .map(|state| {
             let pc = analysis.program().blocks()[state.key.basic_block_index].start_pc;
             graph.add_node(format!(
-                "S{} pc=0x{:x}\nstack height={} ctx={:?}\nstack in {}",
-                state.id,
+                "{} pc=0x{:x}\nstack height={} ctx={:?}\nstack in {}",
+                Symbol::ProjectedState(state.id),
                 pc,
                 state.key.stack_height,
                 state.key.context,
@@ -178,20 +201,21 @@ pub fn ssa(analysis: &Analysis, ssa: &Ssa) -> String {
         let source = &analysis.program().blocks()[state.key.basic_block_index];
         writeln!(
             output,
-            "S{} | context={:?}:",
-            block.state, state.key.context
+            "{} | context={:?}:",
+            Symbol::ProjectedState(block.state),
+            state.key.context
         )
         .unwrap();
         for phi in &block.phis {
             let inputs = phi
                 .inputs
                 .iter()
-                .map(|i| format!("S{}: %{}", i.predecessor, i.value))
+                .map(|i| format!("{}: %{}", Symbol::ProjectedState(i.predecessor), i.value))
                 .collect::<Vec<_>>()
                 .join(", ");
             writeln!(
                 output,
-                "  %{} = phi({inputs}) ; slot {}, abstract {}",
+                "  %{} = φ({inputs}) ; slot {}, abstract {}",
                 phi.result, phi.slot, state.entry_stack[phi.slot]
             )
             .unwrap();
@@ -226,11 +250,13 @@ pub fn partial_ssa(analysis: &Analysis, ir: &crate::ssa::PartialWorldSsa) -> Str
     for state in analysis.states() {
         writeln!(
             output,
-            "  projected S{} -> machine S{}",
-            state.id,
-            analysis
-                .execution_state_id(state.id)
-                .expect("each projected state retains its machine identity"),
+            "  projected {} → machine {}",
+            Symbol::ProjectedState(state.id),
+            Symbol::State(
+                analysis
+                    .execution_state_id(state.id)
+                    .expect("each projected state retains its machine identity")
+            )
         )
         .unwrap();
     }

@@ -4,6 +4,7 @@
 use super::{Graph, NodeView};
 use crate::{app::Selection, palette, widgets::GraphMode};
 use egui::{Context, RichText, Ui};
+use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::AnalysisReport;
 
 impl Graph {
@@ -18,13 +19,13 @@ impl Graph {
             .state
             .is_some_and(|state| self.display.state_to_node.contains_key(&state));
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut content, NodeView::Disassembly, "Disasm")
-                .on_hover_text("Decoded source instructions");
-            ui.selectable_value(&mut content, NodeView::Ssa, "SSA")
-                .on_hover_text("Original SSA for individual states; aggregate cards summarize their instances");
+            ui.selectable_value(&mut content, NodeView::Disassembly, crate::notation::widget(ui, "Disasm"))
+                .on_hover_text(crate::notation::widget(ui, "Decoded source instructions"));
+            ui.selectable_value(&mut content, NodeView::Ssa, crate::notation::widget(ui, "SSA"))
+                .on_hover_text(crate::notation::widget(ui, "Original SSA for individual states; aggregate cards summarize their instances"));
             if ui
                 .small_button("Fit graph")
-                .on_hover_text("F / Shift+F: center the existing scene")
+                .on_hover_text(crate::notation::widget(ui, "F / Shift+F: center the existing scene"))
                 .clicked()
             {
                 self.request_fit(ui, true);
@@ -36,52 +37,52 @@ impl Graph {
                 self.focus_pending = true;
             }
             ui.label(
-                RichText::new(format!(
+                crate::notation::widget(ui, RichText::new(format!(
                     "{:.0}% · {}",
                     self.zoom * 100.0,
                     if self.fitted { "Fit" } else { "Manual" }
                 ))
                 .small()
-                .color(palette::MUTED),
+                .color(palette::MUTED)),
             )
-                .on_hover_text("Drag or scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Resizing preserves the scene and camera.");
+                .on_hover_text(crate::notation::widget(ui, "Drag or scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Resizing preserves the scene and camera."));
         });
         self.set_content(content, selection.state);
         let mut mode = self.mode;
         let mut scope = self.program_scope;
         let mut hops = self.neighborhood_hops;
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut mode, GraphMode::Blocks, "Blocks")
-                .on_hover_text("Each program basic block appears once. Summary paths can combine different instances; choose a state for its actual SSA.");
-            ui.selectable_value(&mut mode, GraphMode::States, "States")
-                .on_hover_text("Every original native analysis state and edge");
+            ui.selectable_value(&mut mode, GraphMode::Blocks, crate::notation::widget(ui, "Blocks"))
+                .on_hover_text(crate::notation::widget(ui, "Each program basic block appears once. Summary paths can combine different instances; choose a state for its actual SSA."));
+            ui.selectable_value(&mut mode, GraphMode::States, crate::notation::widget(ui, "States"))
+                .on_hover_text(crate::notation::widget(ui, "Every original native analysis state and edge"));
             ui.add_enabled_ui(selection.state.is_some(), |ui| {
-                ui.selectable_value(&mut mode, GraphMode::Local, "Local")
-                    .on_hover_text("Recorded predecessors and successors of the selected state, including calls across programs; at most 200 states");
+                ui.selectable_value(&mut mode, GraphMode::Local, crate::notation::widget(ui, "Local"))
+                    .on_hover_text(crate::notation::widget(ui, "Recorded predecessors and successors of the selected state, including calls across programs; at most 200 states"));
             });
             if mode == GraphMode::Local {
                 ui.label(
-                    RichText::new("Cross-program neighborhood")
+                    crate::notation::widget(ui, RichText::new("Cross-program neighborhood")
                         .small()
-                        .color(palette::MUTED),
+                        .color(palette::MUTED)),
                 );
-                ui.label("Hops");
+                ui.label(crate::notation::widget(ui, "Hops"));
                 ui.add(egui::DragValue::new(&mut hops).range(1..=4));
             } else {
                 egui::ComboBox::from_id_salt("cfg_program_scope")
-                    .selected_text(scope.map_or("All programs".into(), |id| format!("P{id}")))
+                    .selected_text(crate::notation::widget(ui, scope.map_or("All programs".into(), |id| Symbol::Program(id).to_string())))
                     .width(104.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut scope, None, "All programs");
+                        ui.selectable_value(&mut scope, None, crate::notation::widget(ui, "All programs"));
                         for program in &report.programs {
                             ui.selectable_value(
                                 &mut scope,
                                 Some(program.id),
-                                format!("P{} · {:?}", program.id, program.kind),
+                                crate::notation::widget(ui, format!("{} · {:?}", Symbol::Program(program.id), program.kind)),
                             )
-                            .on_hover_text(format!(
+                            .on_hover_text(crate::notation::widget(ui, format!(
                                 "{}\n{}", program.code_address, program.code_hash
-                            ));
+                            )));
                         }
                     });
             }
@@ -101,12 +102,12 @@ impl Graph {
             }
             if let Some(state) = selection.state {
                 ui.label(
-                    RichText::new(format!(
-                        "Selected S{state}{}",
+                    crate::notation::widget(ui, RichText::new(format!(
+                        "Selected {notation_0}{}",
                         if selected_visible { "" } else { " · outside view" }
-                    ))
+                    , notation_0 = Symbol::State(state)))
                     .small()
-                    .color(palette::MUTED),
+                    .color(palette::MUTED)),
                 );
             }
         });
@@ -126,14 +127,14 @@ impl Graph {
     pub(super) fn view_legend(&self, ui: &mut Ui) {
         if self.display.hidden_states > 0 || self.display.boundary_edges > 0 {
             ui.label(
-                RichText::new(format!(
+                crate::notation::widget(ui, RichText::new(format!(
                     "View hides {} states · {} boundary edges",
                     self.display.hidden_states, self.display.boundary_edges
                 ))
                 .small()
-                .color(palette::MUTED),
+                .color(palette::MUTED)),
             )
-            .on_hover_text("This is a display subset. The analysis result and its completion status are unchanged.");
+            .on_hover_text(crate::notation::widget(ui, "This is a display subset. The analysis result and its completion status are unchanged."));
         }
     }
 
@@ -165,33 +166,28 @@ impl Graph {
             .default_width(460.0)
             .max_width((ctx.content_rect().width() - 24.0).max(180.0))
             .show(ctx, |ui| {
-                ui.label(format!(
-                    "{}:B{} · {} state instances",
-                    node.program.map_or("Native".into(), |id| format!("P{id}")),
-                    node.basic_block,
+                ui.label(crate::notation::widget(ui, format!(
+                    "{}:{} · {} state instances",
+                    node.program.map_or("Native".into(), |id| Symbol::Program(id).to_string()),
+                    Symbol::Block(node.basic_block),
                     node.members.len()
-                ));
+                )));
                 ui.label(
-                    RichText::new("Choose an original state to view its SSA, stack and effects. This overview does not merge their execution contexts.")
+                    crate::notation::widget(ui, RichText::new("Choose an original state to view its SSA, stack and effects. This overview does not merge their execution contexts.")
                         .small()
-                        .color(palette::MUTED),
+                        .color(palette::MUTED)),
                 );
                 ui.horizontal(|ui| {
-                    ui.label("Find state");
+                    ui.label(crate::notation::widget(ui, "Find state"));
                     crate::framework::line_editor(
                         ui,
                         "cfg_instance_search",
                         &mut self.instance_filter,
-                        "S128 or state ID",
+                        "σ₁₂₈ or numeric state ID",
                     );
                 });
                 let query = self.instance_filter.trim();
-                let selected_id = query
-                    .strip_prefix('S')
-                    .or_else(|| query.strip_prefix('s'))
-                    .unwrap_or(query)
-                    .parse::<usize>()
-                    .ok();
+                let selected_id = evm_abstract_notation::parse_state(query);
                 let matching = selected_id
                     .filter(|state| self.display.state_to_node.get(state) == Some(&group_id));
                 let rows = if query.is_empty() {
@@ -200,7 +196,7 @@ impl Graph {
                     usize::from(matching.is_some())
                 };
                 if rows == 0 {
-                    ui.label("No matching state in this block");
+                    ui.label(crate::notation::widget(ui, "No matching state in this block"));
                 }
                 egui::ScrollArea::vertical()
                     .id_salt("cfg_instance_rows")
@@ -217,16 +213,16 @@ impl Graph {
                             );
                             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                             let label = format!(
-                                "S{state} · {coverage:?} · frame {} · stack {} · {} jumps",
+                                "{notation_0} · {coverage:?} · depth {} · stack {} · {} jumps",
                                 block.frame_depth, block.entry_stack.len(), block.context.len()
-                            );
+                            , notation_0 = Symbol::State(state));
                             let tooltip = format!(
                                 "Code: {}\nStorage: {}\nContext: {:?}",
                                 block.code_address, block.storage_address, block.context
                             );
                             if ui
-                                .selectable_label(selection.state == Some(state), label)
-                                .on_hover_text(tooltip)
+                                .selectable_label(selection.state == Some(state), crate::notation::widget(ui, label))
+                                .on_hover_text(crate::notation::widget(ui, tooltip))
                                 .clicked()
                             {
                                 picked = Some(state);

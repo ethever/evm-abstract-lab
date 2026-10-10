@@ -1,3 +1,5 @@
+use evm_abstract_notation::Symbol;
+
 use super::render;
 use crate::{
     Fork,
@@ -52,7 +54,7 @@ fn default_teaching_view_joins_code_cfg_results_and_instruction_ssa() {
     let output = render(&analysis).unwrap();
     assert!(output.contains("status=Converged"));
     assert!(output.contains("Instruction lists are syntactic"));
-    assert!(output.contains("S0 | B0 @ 0x0000 | F0 active | code=C0"));
+    assert!(output.contains("σ₀ | B₀ @ 0x0000 | f₀ active | code=C₀"));
     assert!(output.contains("stack in  []"));
     assert!(output.contains("stack out []"));
     assert!(
@@ -148,8 +150,8 @@ fn shared_delegate_code_has_one_catalogue_entry_and_distinct_state_owners() {
     let output = render(&analysis).unwrap();
     let codes = section(&output, "Execution code", "CFG");
     assert_eq!(codes.matches("Captured instruction list").count(), 2);
-    assert!(codes.contains("state owners: A0, A1"));
-    assert!(section(&output, "CFG", "Outcomes").contains("code=C1 | state owner=A0"));
+    assert!(codes.contains("state owners: A₀, A₁"));
+    assert!(section(&output, "CFG", "Outcomes").contains("code=C₁ | state owner=A₀"));
     assert_eq!(output.matches(&owner.to_string()).count(), 1);
     assert_eq!(output.matches(&implementation.to_string()).count(), 1);
 }
@@ -169,12 +171,14 @@ fn equal_returned_bytes_keep_distinct_outcomes_and_storage_facts() {
     let outcomes = section(&output, "Outcomes", "Diagnostics");
     for (index, outcome) in analysis.outcomes().iter().enumerate() {
         assert!(outcomes.contains(&format!(
-            "O{index} | S{} | {:?}",
-            outcome.state, outcome.kind
+            "{} | {} | {:?}",
+            Symbol::Outcome(index),
+            Symbol::State(outcome.state),
+            outcome.kind
         )));
     }
-    assert!(outcomes.contains("A0[0x0]={0x1}"));
-    assert!(outcomes.contains("A0[0x0]={0x2}"));
+    assert!(outcomes.contains("A₀[0x0]={0x1}"));
+    assert!(outcomes.contains("A₀[0x0]={0x2}"));
     assert!(outcomes.contains("equal returndata does not merge outcomes"));
 }
 
@@ -262,8 +266,10 @@ fn converged_unknown_jump_and_fact_caps_remain_visible() {
     assert_eq!(diagnostics.lines().count(), analysis.diagnostics().len());
     for diagnostic in analysis.diagnostics() {
         assert!(diagnostics.contains(&format!(
-            "S{} @ 0x{:04x}: {:?}",
-            diagnostic.state, diagnostic.pc, diagnostic.kind,
+            "{} @ 0x{:04x}: {:?}",
+            Symbol::State(diagnostic.state),
+            diagnostic.pc,
+            diagnostic.kind
         )));
     }
     assert!(output.contains("fact atoms=256"));
@@ -287,11 +293,15 @@ fn partial_native_and_missing_code_have_every_frontier_without_fake_ssa() {
         let output = render(analysis).unwrap();
         assert!(output.contains("\nCFG\n"));
         for (index, frontier) in analysis.frontiers().iter().enumerate() {
-            assert!(output.contains(&format!("U{index} | from=")));
+            assert!(output.contains(&format!("{} | from=", Symbol::Frontier(index))));
             assert!(output.contains(&format!("reason={:?}", frontier.reason)));
             if let Some(target) = &frontier.target {
                 for (frame, key) in target.frames.iter().enumerate() {
-                    assert!(output.contains(&format!("F{frame} | B{}", key.basic_block_index)));
+                    assert!(output.contains(&format!(
+                        "{} | {}",
+                        Symbol::Frame(frame),
+                        Symbol::Block(key.basic_block_index)
+                    )));
                     assert!(output.contains(&format!("context={:?}", key.jump_history)));
                 }
             }
@@ -302,7 +312,7 @@ fn partial_native_and_missing_code_have_every_frontier_without_fake_ssa() {
     let native_output = render(&native).unwrap();
     assert!(native_output.contains("Native precompile"));
     assert!(!native_output.contains("Captured instruction list"));
-    assert!(!native_output.contains("B0 @"));
+    assert!(!native_output.contains("B₀ @"));
 }
 
 #[test]
@@ -337,7 +347,7 @@ fn partial_runtime_keeps_code_and_cfg_without_a_successful_call_guess() {
     assert!(!analysis.states().is_empty());
     let output = render(&analysis).unwrap();
     assert!(output.contains("Captured instruction list"));
-    assert!(output.contains("S0 | B0 @ 0x0000"));
+    assert!(output.contains("σ₀ | B₀ @ 0x0000"));
     assert!(output.contains("reason=UnknownTarget"));
     assert!(output.contains("SSA unavailable"));
 }
@@ -382,7 +392,7 @@ fn synthetic_call_continuation_is_distinct_from_a_bytecode_block() {
     let output = render(&analysis).unwrap();
     assert!(
         section(&output, "CFG", "Outcomes")
-            .contains("synthetic end-of-code continuation (no instruction) | F0 active",)
+            .contains("synthetic end-of-code continuation (no instruction) | f₀ active",)
     );
     assert!(output.contains("empty code (implicit halt)"));
     assert_eq!(

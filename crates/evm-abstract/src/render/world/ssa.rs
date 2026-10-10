@@ -3,6 +3,8 @@
 //! 调用者提供已经验证的 WorldSsa。效果名表示包含检查点的整机 bundle，
 //! 并不拆分内存别名或声称提供精确的 MemorySSA。
 
+use evm_abstract_notation::Symbol;
+
 use crate::{
     analysis::{FrameCode, FrameKey, MachineEdgeKind, MachineState, WorldAnalysis},
     bytecode::Program,
@@ -29,7 +31,7 @@ pub(super) fn render(analysis: &WorldAnalysis, ssa: &WorldSsa) -> String {
         ssa.effect_count()
     )
     .unwrap();
-    output.push_str("  S# = machine state; B# = frame-local basic block; F# = frame; T# = transition; %value = stack value; !effect = machine effects.\n");
+    output.push_str("  σᵢ = machine state; Bᵢ = frame-local basic block; fᵢ = frame; Tᵢ = transition; %value = stack value; μᵢ = machine effects.\n");
     output.push_str("  Frames are oldest caller first; stacks are bottom-to-top; instruction operands are pop order.\n");
     output.push_str("  Effects are coarse bundles of memory, calldata, returndata, persistent/transient storage, balances, nonces, code/account lifecycle, logs, environment and rollback checkpoints; this is not alias-partitioned MemorySSA.\n");
     output.push_str("  DUP/SWAP results reuse existing value names. fault marks invalid-opcode or stack faults only; other execution failures are recorded in transitions and outcomes.\n");
@@ -61,9 +63,9 @@ fn write_block(
     let depth = state.key.frames.len();
     writeln!(
         output,
-        "S{} | active=F{} | call depth={} | machine code identity={}",
-        block.state,
-        depth - 1,
+        "{} | active={} | call depth={} | machine code identity={}",
+        Symbol::State(block.state),
+        Symbol::Frame(depth - 1),
         depth,
         state.key.code_identity
     )
@@ -84,7 +86,7 @@ fn write_block(
             analysis,
         );
     }
-    output.push_str("    frame phis (stack in):\n");
+    output.push_str("    frame φ functions (stack in):\n");
     if block.phis.is_empty() {
         output.push_str("      (none)\n");
     }
@@ -92,21 +94,23 @@ fn write_block(
         let inputs = phi
             .inputs
             .iter()
-            .map(|(transition, value)| format!("T{transition}: %{value}"))
+            .map(|(transition, value)| format!("{}: %{value}", Symbol::Transition(*transition)))
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(
             output,
-            "      %{} = frame phi(F{}, slot={}, inputs=[{inputs}])",
-            phi.result, phi.frame, phi.slot
+            "      %{} = frame φ({}, slot={}, inputs=[{inputs}])",
+            phi.result,
+            Symbol::Frame(phi.frame),
+            phi.slot
         )
         .unwrap();
     }
     if block.effect.inputs.is_empty() {
         writeln!(
             output,
-            "    !{} = effect phi(root world/entry; inputs=[])",
-            block.effect.result
+            "    {} = effect φ(root world/entry; inputs=[])",
+            Symbol::Effect(block.effect.result)
         )
         .unwrap();
     } else {
@@ -114,13 +118,19 @@ fn write_block(
             .effect
             .inputs
             .iter()
-            .map(|input| format!("T{}: !{}", input.transition, input.effect))
+            .map(|input| {
+                format!(
+                    "{}: {}",
+                    Symbol::Transition(input.transition),
+                    Symbol::Effect(input.effect)
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(
             output,
-            "    !{} = effect phi(inputs=[{inputs}])",
-            block.effect.result
+            "    {} = effect φ(inputs=[{inputs}])",
+            Symbol::Effect(block.effect.result)
         )
         .unwrap();
     }
@@ -157,9 +167,20 @@ fn write_block(
             .as_ref()
             .expect("instruction effect has a real bytecode block")
             .write_pc(output, *pc);
-        writeln!(output, "!{input} -> !{result}").unwrap();
+        writeln!(
+            output,
+            "{} → {}",
+            Symbol::Effect(*input),
+            Symbol::Effect(*result)
+        )
+        .unwrap();
     }
-    writeln!(output, "    exit effect: !{}", block.exit_effect).unwrap();
+    writeln!(
+        output,
+        "    exit effect: {}",
+        Symbol::Effect(block.exit_effect)
+    )
+    .unwrap();
 }
 
 fn write_frame(
@@ -188,8 +209,11 @@ fn write_frame(
         );
     writeln!(
         output,
-        "    F{index} {role} | B{} ({location}) | mode={:?} | stack height={}",
-        frame.basic_block_index, frame.mode, frame.stack_height
+        "    {} {role} | {} ({location}) | mode={:?} | stack height={}",
+        Symbol::Frame(index),
+        Symbol::Block(frame.basic_block_index),
+        frame.mode,
+        frame.stack_height
     )
     .unwrap();
     writeln!(
@@ -234,7 +258,7 @@ fn write_stacks(output: &mut String, stacks: &[Vec<ValueId>], layout: Option<&In
         } else {
             output.push_str("      ");
         }
-        writeln!(output, "F{frame}: {}", values(stack)).unwrap();
+        writeln!(output, "{}: {}", Symbol::Frame(frame), values(stack)).unwrap();
     }
 }
 
@@ -258,8 +282,12 @@ fn write_transition(
     let edge = &analysis.edges()[transition.edge];
     writeln!(
         output,
-        "  T{index} | edge={} | S{} -> S{} | kind={:?}",
-        transition.edge, edge.from, edge.to, transition.kind
+        "  {} | edge={} | {} → {} | kind={:?}",
+        Symbol::Transition(index),
+        Symbol::Edge(transition.edge),
+        Symbol::State(edge.from),
+        Symbol::State(edge.to),
+        transition.kind
     )
     .unwrap();
     writeln!(output, "    operands={}", values(&transition.operands)).unwrap();
@@ -267,8 +295,9 @@ fn write_transition(
     write_stacks(output, &transition.stacks, None);
     writeln!(
         output,
-        "    effect: !{} -> !{}",
-        transition.effect_input, transition.effect_result
+        "    effect: {} → {}",
+        Symbol::Effect(transition.effect_input),
+        Symbol::Effect(transition.effect_result)
     )
     .unwrap();
     if let Some(result) = transition.result {

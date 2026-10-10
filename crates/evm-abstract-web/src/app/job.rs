@@ -2,6 +2,7 @@
 //! callbacks from replacing a newer immutable report.
 
 use super::TransportError;
+use evm_abstract_notation::WideSymbol;
 use evm_abstract_protocol::{
     AnalyzeReply, AnalyzeRequest, ApiError, JobId, JobReply, JobSnapshot, JobState,
     RpcProvidersReply,
@@ -118,7 +119,9 @@ impl std::fmt::Display for TaskError {
             ),
             Self::Identity { expected, received } => write!(
                 f,
-                "Task response identity mismatch: expected {expected}, received {received}"
+                "Task response identity mismatch: expected {}, received {}",
+                WideSymbol::Task(expected.0),
+                WideSymbol::Task(received.0)
             ),
         }
     }

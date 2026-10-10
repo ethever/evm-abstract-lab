@@ -1,0 +1,11 @@
+[package]
+name                   = "evm-abstract-notation"
+description            = "Shared mathematical notation for EVM analysis identities"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true

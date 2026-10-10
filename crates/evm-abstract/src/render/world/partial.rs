@@ -4,6 +4,8 @@
 //! Pending instructions retain their recorded phase without manufacturing a
 //! normal result or an unobserved effect; unexecuted nodes contain no TAC.
 
+use evm_abstract_notation::Symbol;
+
 use crate::{
     analysis::{InstructionProgress, WorldAnalysis},
     render::instruction::{InstructionLayout, write_ssa_body},
@@ -55,22 +57,21 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
     )
     .unwrap();
     output.push_str(
-        "  S# = native machine state; T# = original machine edge; %value = stack name.\n",
+        "  σᵢ = native machine state; Tᵢ = original machine edge; %value = stack name.\n",
     );
     output.push_str(
         "  Only recorded prefixes and edges are shown; incoming paths may still be incomplete.\n",
     );
     if verbose {
-        output.push_str(
-            "  !effect = recorded machine effects; progress = observed instruction phase.\n",
-        );
+        output
+            .push_str("  μᵢ = recorded machine effects; progress = observed instruction phase.\n");
         output.push_str("  Current = evidence for the current joined entry; Stale = evidence for an earlier entry; Unexecuted = no transfer receipt.\n");
     }
     output.push_str("\nBlocks\n");
     for block in ir.blocks() {
         let state = &analysis.states()[block.state];
         let frame = state.active();
-        write!(output, "S{}", block.state).unwrap();
+        write!(output, "{}", Symbol::State(block.state)).unwrap();
         if verbose || block.coverage != PartialBlockCoverage::Current {
             write!(output, " | coverage={:?}", block.coverage).unwrap();
         }
@@ -78,30 +79,42 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
             write!(output, " | incoming complete={}", block.incoming_complete).unwrap();
         }
         if verbose || !block.open_incoming.is_empty() {
-            write!(output, " | open incoming={:?}", block.open_incoming).unwrap();
+            write!(
+                output,
+                " | open incoming=[{}]",
+                block
+                    .open_incoming
+                    .iter()
+                    .map(|edge| Symbol::Edge(*edge).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .unwrap();
         }
         output.push('\n');
         writeln!(
             output,
-            "  active=F{} | depth={} | mode={:?} | code={} | storage owner={}",
-            state.key.frames.len() - 1,
+            "  active={} | depth={} | mode={:?} | code={} | storage owner={}",
+            Symbol::Frame(state.key.frames.len() - 1),
             state.key.frames.len(),
             frame.mode,
             super::environment::owner(analysis, frame.code_address),
-            frame.address_value,
+            frame.address_value
         )
         .unwrap();
         for phi in &block.phis {
             let inputs = phi
                 .inputs
                 .iter()
-                .map(|(edge, value)| format!("T{edge}: %{value}"))
+                .map(|(edge, value)| format!("{}: %{value}", Symbol::Transition(*edge)))
                 .collect::<Vec<_>>()
                 .join(", ");
             writeln!(
                 output,
-                "    %{} = partial phi({inputs}) ; F{} slot {}",
-                phi.result, phi.frame, phi.slot,
+                "    %{} = partial φ({inputs}) ; {} slot {}",
+                phi.result,
+                Symbol::Frame(phi.frame),
+                phi.slot
             )
             .unwrap();
         }
@@ -110,13 +123,19 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
                 .effect
                 .inputs
                 .iter()
-                .map(|input| format!("T{}: !{}", input.transition, input.effect))
+                .map(|input| {
+                    format!(
+                        "{}: {}",
+                        Symbol::Transition(input.transition),
+                        Symbol::Effect(input.effect)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             writeln!(
                 output,
-                "    !{} = partial effect phi({inputs})",
-                block.effect.result
+                "    {} = partial effect φ({inputs})",
+                Symbol::Effect(block.effect.result)
             )
             .unwrap();
         }
@@ -174,7 +193,13 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
             for (index, frontier) in ir.frontiers().iter().enumerate().filter(|(_, frontier)| {
                 frontier.from == Some(block.state) && frontier.pc == Some(item.instruction.pc)
             }) {
-                write!(output, " ; frontier U{index}: {:?}", frontier.reason).unwrap();
+                write!(
+                    output,
+                    " ; frontier {}: {:?}",
+                    Symbol::Frontier(index),
+                    frontier.reason
+                )
+                .unwrap();
             }
             output.push('\n');
             if verbose {
@@ -185,9 +210,20 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
                     } else {
                         "effect"
                     };
-                    writeln!(output, "  {label} !{} -> !{effect}", item.effect_input).unwrap();
+                    writeln!(
+                        output,
+                        "  {label} {} → {}",
+                        Symbol::Effect(item.effect_input),
+                        Symbol::Effect(effect)
+                    )
+                    .unwrap();
                 } else {
-                    writeln!(output, "  effect !{} remains open", item.effect_input).unwrap();
+                    writeln!(
+                        output,
+                        "  effect {} remains open",
+                        Symbol::Effect(item.effect_input)
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -204,7 +240,7 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
                 .map(|value| format!("%{value}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            write!(output, " F{frame}: [{values}]").unwrap();
+            write!(output, " {}: [{values}]", Symbol::Frame(frame)).unwrap();
         }
         output.push('\n');
         if verbose {
@@ -213,7 +249,12 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
             } else {
                 "entry effect (no current exit)"
             };
-            writeln!(output, "    {effect_label}: !{}", block.exit_effect).unwrap();
+            writeln!(
+                output,
+                "    {effect_label}: {}",
+                Symbol::Effect(block.exit_effect)
+            )
+            .unwrap();
         }
     }
     if verbose || !ir.transitions().is_empty() {
@@ -223,15 +264,19 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
         let edge = &analysis.edges()[transition.edge];
         write!(
             output,
-            "  T{} | S{} -> S{} | kind={:?}",
-            transition.edge, edge.from, edge.to, transition.kind,
+            "  {} | {} → {} | kind={:?}",
+            Symbol::Transition(transition.edge),
+            Symbol::State(edge.from),
+            Symbol::State(edge.to),
+            transition.kind
         )
         .unwrap();
         if verbose {
             write!(
                 output,
-                " | effect !{} -> !{}",
-                transition.effect_input, transition.effect_result
+                " | effect {} → {}",
+                Symbol::Effect(transition.effect_input),
+                Symbol::Effect(transition.effect_result)
             )
             .unwrap();
         }
@@ -245,7 +290,7 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
                 .map(|value| format!("%{value}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            writeln!(output, "    F{frame}: [{values}]").unwrap();
+            writeln!(output, "    {}: [{values}]", Symbol::Frame(frame)).unwrap();
         }
     }
     if verbose || !ir.deferred_edges().is_empty() {
@@ -254,8 +299,12 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
     for edge in ir.deferred_edges() {
         writeln!(
             output,
-            "  T{} | S{} -> S{} | kind={:?} | reason={:?}",
-            edge.edge, edge.from, edge.to, edge.kind, edge.reason
+            "  {} | {} → {} | kind={:?} | reason={:?}",
+            Symbol::Transition(edge.edge),
+            Symbol::State(edge.from),
+            Symbol::State(edge.to),
+            edge.kind,
+            edge.reason
         )
         .unwrap();
     }
@@ -265,10 +314,27 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
     for (index, frontier) in ir.frontiers().iter().enumerate() {
         writeln!(
             output,
-            "  U{index} | from={:?} | pc={:?} | reason={:?} | target={:?}",
-            frontier.from, frontier.pc, frontier.reason, frontier.target
+            "  {} | from={} | pc={:?} | reason={:?}",
+            Symbol::Frontier(index),
+            frontier.from.map_or_else(
+                || "none".to_owned(),
+                |state| Symbol::State(state).to_string()
+            ),
+            frontier.pc,
+            frontier.reason
         )
         .unwrap();
+        if let Some(target) = &frontier.target {
+            writeln!(output, "    target code identity={}", target.code_identity).unwrap();
+            for (frame, key) in target.frames.iter().enumerate() {
+                writeln!(output, "      {} | {} | mode={:?} | stack height={} | code={} | code hash={} | storage owner={} | address={} | caller={} | static={} | context={:?}",
+                    Symbol::Frame(frame), Symbol::Block(key.basic_block_index), key.mode,
+                    key.stack_height, key.code_address, key.code_hash, key.address_value,
+                    key.address, key.caller, key.is_static, key.jump_history).unwrap();
+            }
+        } else {
+            output.push_str("    target=none\n");
+        }
     }
     output
 }

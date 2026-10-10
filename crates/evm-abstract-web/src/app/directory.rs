@@ -1,7 +1,8 @@
 //! Captured programs and observed accounts share native identities with selection.
 
-use crate::{framework, palette};
+use crate::{framework, notation, palette};
 use egui::{RichText, Ui};
+use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::AnalysisReport;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -55,12 +56,16 @@ impl Directory {
                         {
                             continue;
                         }
-                        let title = format!("P{} · {}", program.id, short(&program.code_address));
+                        let title = format!(
+                            "{} · {}",
+                            Symbol::Program(program.id),
+                            short(&program.code_address)
+                        );
                         if ui
                             .add(
                                 egui::Button::selectable(
                                     selected_program == Some(program.id),
-                                    RichText::new(title).monospace(),
+                                    notation::widget(ui, RichText::new(title).monospace()),
                                 )
                                 .truncate(),
                             )

@@ -1,6 +1,7 @@
 //! SSA uses compact virtual table rows. Tokens retain semantic coloring while
 //! native state/PC targets keep table selection linked to the graph and source.
 
+use evm_abstract_notation::Symbol;
 mod cache;
 
 pub(crate) use cache::SsaCache;
@@ -110,7 +111,12 @@ fn contents(
                     {
                         *selection = target;
                     }
-                    response.on_hover_text(&row.tooltip);
+                    response.on_hover_ui(|ui| {
+                        ui.label(crate::notation::widget(
+                            ui,
+                            egui::RichText::new(&row.tooltip).monospace().size(12.0),
+                        ));
+                    });
                 });
             });
         });
@@ -222,7 +228,13 @@ fn frames(frames: &[Vec<usize>]) -> String {
     frames
         .iter()
         .enumerate()
-        .map(|(frame, stack)| format!("f{frame} [{}]", values(stack)))
+        .map(|(frame, stack)| {
+            format!(
+                "{notation_0} [{}]",
+                values(stack),
+                notation_0 = Symbol::Frame(frame)
+            )
+        })
         .collect::<Vec<_>>()
         .join("  ")
 }
@@ -276,7 +288,7 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
             state: Some(block.state),
             pc: None,
         });
-        header.token(format!("S{}", block.state), palette::ACCENT);
+        header.token(Symbol::State(block.state).to_string(), palette::ACCENT);
         header.token(
             format!(
                 "  {:?} · {} incoming",
@@ -304,22 +316,27 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
                     row.token(", ", palette::MUTED);
                 }
                 row.token(
-                    format!("S{}:%{}", input.predecessor, input.value),
+                    format!("{}:%{}", Symbol::State(input.predecessor), input.value),
                     palette::BLUE,
                 );
             }
             row.token(")", palette::MUTED);
-            row.token(format!("  f{}/slot{}", phi.frame, phi.slot), palette::MUTED);
+            row.token(
+                format!("  {}/slot{}", Symbol::Frame(phi.frame), phi.slot),
+                palette::MUTED,
+            );
             row.tooltip = format!(
                 "{}\nFrame {}, stack slot {} (bottom to top)\n{}",
                 row.plain_text(),
-                phi.frame,
+                Symbol::Frame(phi.frame),
                 phi.slot,
                 phi.inputs
                     .iter()
                     .map(|input| format!(
-                        "edge e{} from S{}: %{}",
-                        input.edge, input.predecessor, input.value
+                        "edge {} from {}: %{}",
+                        Symbol::Edge(input.edge),
+                        Symbol::State(input.predecessor),
+                        input.value
                     ))
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -329,18 +346,30 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
         let mut effect = Row::new();
         effect.token(
             format!(
-                "μ{} = effect φ({}){}",
-                block.effect,
+                "{} = effect φ({}){}",
+                Symbol::Effect(block.effect),
                 block
                     .effect_inputs
                     .iter()
-                    .map(|input| format!("e{}:μ{}", input.edge, input.effect))
+                    .map(|input| format!(
+                        "{}:{}",
+                        Symbol::Edge(input.edge),
+                        Symbol::Effect(input.effect)
+                    ))
                     .collect::<Vec<_>>()
                     .join(", "),
                 if block.open_incoming.is_empty() {
                     String::new()
                 } else {
-                    format!(" · open {:?}", block.open_incoming)
+                    format!(
+                        " · open [{}]",
+                        block
+                            .open_incoming
+                            .iter()
+                            .map(|edge| Symbol::Edge(*edge).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 },
             ),
             palette::MUTED,
@@ -379,11 +408,11 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
             }
             row.token(
                 format!(
-                    " · μ{}→{}",
-                    instruction.effect_input,
+                    " · {}→{}",
+                    Symbol::Effect(instruction.effect_input),
                     instruction
                         .effect_result
-                        .map_or_else(|| "pending".into(), |id| format!("μ{id}"))
+                        .map_or_else(|| "pending".into(), |id| Symbol::Effect(id).to_string())
                 ),
                 if instruction.progress == InstructionProgress::Completed {
                     palette::MUTED
@@ -398,9 +427,9 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
                 row.token(format!(" · {:?}", instruction.progress), palette::WARNING);
             }
             row.tooltip = format!(
-                "{}\nState S{} · pc 0x{:04x}\nArguments are in EVM pop order.\n{:?}{}",
+                "{}\nState {} · pc 0x{:04x}\nArguments are in EVM pop order.\n{:?}{}",
                 row.plain_text(),
-                block.state,
+                Symbol::State(block.state),
                 instruction.pc,
                 instruction.progress,
                 if instruction.fault {
@@ -414,13 +443,13 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
         let mut exit = Row::new();
         exit.token(
             format!(
-                "{} μ{} · {}",
+                "{} {} · {}",
                 if block.coverage == BlockCoverage::Current {
                     "exit"
                 } else {
                     "entry only"
                 },
-                block.exit_effect,
+                Symbol::Effect(block.exit_effect),
                 frames(&block.exit_frames)
             ),
             palette::MUTED,
@@ -437,21 +466,21 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
             row.token(
                 if let Some(transition) = transition {
                     format!(
-                        "e{} → S{} · {:?} · μ{}→μ{}{}",
-                        edge.id,
-                        edge.to,
+                        "{} → {} · {:?} · {}→{}{}",
+                        Symbol::Edge(edge.id),
+                        Symbol::State(edge.to),
                         edge.kind,
-                        transition.effect_input,
-                        transition.effect_result,
+                        Symbol::Effect(transition.effect_input),
+                        Symbol::Effect(transition.effect_result),
                         transition
                             .result
                             .map_or(String::new(), |id| format!(" · %{id}"))
                     )
                 } else {
                     format!(
-                        "e{} → S{} · deferred {:?}",
-                        edge.id,
-                        edge.to,
+                        "{} → {} · deferred {:?}",
+                        Symbol::Edge(edge.id),
+                        Symbol::State(edge.to),
                         deferred.get(&edge.id)
                     )
                 },

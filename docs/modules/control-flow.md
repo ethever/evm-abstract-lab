@@ -12,15 +12,15 @@
 
 ## 1. 分开字节码块和分析状态
 
-**问题：**B 是代码位置，S 又多保存了什么？同一个 B 可以有几个 S？
+**问题：**Bᵢ 是代码位置，σᵖᵢ 又多保存了什么？同一个 Bᵢ 可以有几个 σᵖᵢ？
 
-从 [`diamond.hex`](../../examples/diamond.hex) 的[手算 CFG](../03-cfg.md#1-先看一张能手算的图)开始，按[代码块与分析状态](../03-cfg.md#2-分清代码块-b-与分析状态-s)给每个 S 找到所属 B 和起始 pc。
+从 [`diamond.hex`](../../examples/diamond.hex) 的[手算 CFG](../03-cfg.md#1-先看一张能手算的图)开始，按[代码块与分析状态](../03-cfg.md#2-分清代码块-b-与分析状态-s)给每个 σᵖᵢ 找到所属 Bᵢ 和起始 pc。
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
 | 状态分组决定哪些输入先合并。同一代码位置的不同栈高不能直接逐槽 join，保留的控制历史也可使输入分组。 | 在 [`StateKey`](../../crates/evm-abstract/src/analysis.rs) 中找块索引、入口栈高、context；再看原生 [`MachineKey`](../../crates/evm-abstract/src/analysis/machine.rs) 如何包含调用帧结构。 |
 
-**完成产物：**画一张“S → B → pc”的对应表。追加[栈高对照实验](../05-sensitivity.md#6-四种敏感性不是同一个能力)的 [`stack-heights.hex`](../../examples/stack-heights.hex)，指出同一 pc 上两个 S 为什么必须分开。
+**完成产物：**画一张“σᵖᵢ → Bᵢ → pc”的对应表。追加[栈高对照实验](../05-sensitivity.md#6-四种敏感性不是同一个能力)的 [`stack-heights.hex`](../../examples/stack-heights.hex)，指出同一 pc 上两个 σᵖᵢ 为什么必须分开。
 
 <a id="worklist"></a>
 
@@ -48,7 +48,7 @@
 | --- | --- |
 | 敏感性通过暂缓合并保留区别，可以减少由不相容输入拼出的伪路径。它与单个槽的数值表示能力不同。 | 在 [`transfer.rs`](../../crates/evm-abstract/src/analysis/transfer.rs) 的跳转处理中追踪 history 更新，再看 [`StateKey`](../../crates/evm-abstract/src/analysis.rs) 如何呈现 context。 |
 
-**完成产物：**列出 helper 的每个 S、入口返回地址和后继。解释 k=0 时额外的返回组合，以及[更多跳转如何挤掉旧历史](../05-sensitivity.md#5-历史如何更新又如何失忆)。k=1 改善了本例，不等于恢复全部函数边界或完整调用串。
+**完成产物：**列出 helper 的每个 σᵖᵢ、入口返回地址和后继。解释 k=0 时额外的返回组合，以及[更多跳转如何挤掉旧历史](../05-sensitivity.md#5-历史如何更新又如何失忆)。k=1 改善了本例，不等于恢复全部函数边界或完整调用串。
 
 <a id="unknown-jumps"></a>
 

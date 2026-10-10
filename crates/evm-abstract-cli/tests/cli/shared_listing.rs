@@ -1,5 +1,7 @@
 //! 真实 CLI 的四类指令列表共享布局，正文与输入程序及 JSON IR 逐条对应。
 
+use evm_abstract_notation::{Symbol, normalize_subscripts};
+
 use super::run_concrete;
 use alloy_primitives::U256;
 use evm_abstract::bytecode::Program;
@@ -34,8 +36,24 @@ fn json(args: &[&str]) -> Json {
     serde_json::from_str(&stdout(args, 0)).unwrap()
 }
 
+fn notation_prefix(prefix: char) -> &'static str {
+    match prefix {
+        'S' => "σ",
+        'F' => "f",
+        '!' => "μ",
+        'B' => "B",
+        'T' => "T",
+        'C' => "C",
+        _ => panic!("unsupported entity prefix {prefix}"),
+    }
+}
+
 fn named_index(line: &str, prefix: char) -> Option<usize> {
-    let tail = line.trim_start().strip_prefix(prefix)?;
+    let normalized = normalize_subscripts(line);
+    let tail = normalized
+        .trim_start()
+        .strip_prefix(notation_prefix(prefix))?;
+    let tail = tail.strip_prefix('ᵖ').unwrap_or(tail);
     let length = tail.bytes().take_while(u8::is_ascii_digit).count();
     (length > 0).then(|| tail[..length].parse().unwrap())
 }
@@ -60,17 +78,22 @@ fn instruction_rows<'a>(lines: &[&'a str]) -> Vec<(&'a str, &'a str, &'a str)> {
             let (pc, body) = line.trim_start().split_once(": ")?;
             (pc.len() >= 4
                 && pc.bytes().all(|byte| byte.is_ascii_hexdigit())
-                && !body.starts_with('!'))
+                && !body.starts_with('μ'))
             .then_some((*line, pc, body))
         })
         .collect()
 }
 
 fn indices(value: &str, prefix: char) -> Vec<u64> {
-    value
-        .split(prefix)
+    normalize_subscripts(value)
+        .split(if prefix == '%' {
+            "%"
+        } else {
+            notation_prefix(prefix)
+        })
         .skip(1)
         .filter_map(|tail| {
+            let tail = tail.strip_prefix('ᵖ').unwrap_or(tail);
             let length = tail.bytes().take_while(u8::is_ascii_digit).count();
             (length > 0).then(|| tail[..length].parse().unwrap())
         })
@@ -154,8 +177,8 @@ fn assert_instruction(body: &str, instruction: &Json, detailed: bool, aliases: b
 
 fn assert_block_rows(lines: &[&str], block: &Json, source: &Json, detailed: bool, aliases: bool) {
     let header = format!(
-        "B{} @ 0x{:04x}:",
-        source["id"].as_u64().unwrap(),
+        "{} @ 0x{:04x}:",
+        Symbol::Block((source["id"].as_u64().unwrap()) as usize),
         source["start_pc"].as_u64().unwrap()
     );
     let headers: Vec<_> = lines
@@ -164,7 +187,7 @@ fn assert_block_rows(lines: &[&str], block: &Json, source: &Json, detailed: bool
         .copied()
         .collect();
     assert_eq!(headers, vec![header.as_str()], "basic block identity");
-    let digit_column = header.find("0x").unwrap() + 2;
+    let digit_column = header[..header.find("0x").unwrap()].chars().count() + 2;
     let rows = instruction_rows(lines);
     let instructions = block["instructions"].as_array().unwrap();
     assert_eq!(rows.len(), instructions.len(), "{header}: row count");
@@ -220,7 +243,7 @@ fn assert_single_listing(text: &str, report: &Json) {
                 .iter()
                 .find(|line| {
                     line.trim_start()
-                        .starts_with(&format!("%{} = phi(", phi["result"]))
+                        .starts_with(&format!("%{} = φ(", phi["result"]))
                 })
                 .unwrap();
             assert_eq!(
@@ -307,7 +330,7 @@ fn assert_frame_metadata(output: &str, lines: &[&str], state: &Json, detailed: b
             .iter()
             .position(|line| {
                 line.trim_start()
-                    .starts_with(&format!("F{} active |", depth - 1))
+                    .starts_with(&format!("{} active |", Symbol::Frame(depth - 1)))
             })
             .unwrap();
         let identity: BTreeMap<_, _> = lines[active + 1]
@@ -342,7 +365,10 @@ fn assert_frame_metadata(output: &str, lines: &[&str], state: &Json, detailed: b
         assert_eq!(code.len(), 1);
         let reference = output
             .lines()
-            .find(|line| line.trim_start().starts_with(&format!("C{} |", code[0])))
+            .find(|line| {
+                line.trim_start()
+                    .starts_with(&format!("{} |", Symbol::Code(code[0] as usize)))
+            })
             .unwrap();
         let fields: BTreeMap<_, _> = reference
             .split(" | ")
@@ -398,19 +424,17 @@ fn assert_world_listing(output: &str, report: &Json, detailed: bool) {
             assert!(instruction_rows(lines).is_empty());
         }
         let depth = state["key"]["frames"].as_array().unwrap().len();
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains(&format!("F{} active", depth - 1))
-                    || line.contains(&format!("active=F{}", depth - 1)))
-        );
+        assert!(lines.iter().any(|line| {
+            line.contains(&format!("{} active", Symbol::Frame(depth - 1)))
+                || line.contains(&format!("active={}", Symbol::Frame(depth - 1)))
+        }));
         for phi in block["phis"].as_array().unwrap() {
             let line = lines
                 .iter()
                 .find(|line| {
                     line.trim_start()
                         .starts_with(&format!("%{} = ", phi["result"]))
-                        && line.contains("phi(")
+                        && line.contains("φ(")
                 })
                 .unwrap();
             let inputs = phi["inputs"].as_array().unwrap();
@@ -433,8 +457,10 @@ fn assert_world_listing(output: &str, report: &Json, detailed: bool) {
             let effect = lines
                 .iter()
                 .find(|line| {
-                    line.trim_start()
-                        .starts_with(&format!("!{} = effect phi(", block["effect"]["result"]))
+                    line.trim_start().starts_with(&format!(
+                        "{} = effect φ(",
+                        Symbol::Effect((block["effect"]["result"]).as_u64().unwrap() as usize)
+                    ))
                 })
                 .unwrap();
             assert_eq!(
@@ -464,7 +490,7 @@ fn assert_world_listing(output: &str, report: &Json, detailed: bool) {
                 .unwrap();
             let actual: Vec<_> = lines[effects + 1..]
                 .iter()
-                .filter(|line| line.contains(" -> !"))
+                .filter(|line| line.contains(" → μ"))
                 .collect();
             let expected = block["effects"].as_array().unwrap();
             assert_eq!(actual.len(), expected.len());
@@ -475,11 +501,11 @@ fn assert_world_listing(output: &str, report: &Json, detailed: bool) {
                 );
                 assert!(line.contains(&format!("{:04x}:", effect[0].as_u64().unwrap())));
             }
-            assert!(
-                lines
-                    .iter()
-                    .any(|line| line.trim() == format!("exit effect: !{}", block["exit_effect"]))
-            );
+            assert!(lines.iter().any(|line| line.trim()
+                == format!(
+                    "exit effect: {}",
+                    Symbol::Effect((block["exit_effect"]).as_u64().unwrap() as usize)
+                )));
         }
         let out = lines
             .iter()
@@ -582,13 +608,13 @@ fn assert_raw_directory(output: &str, programs: &[Program]) {
     for ((start, header), (program, block)) in headers.iter().zip(blocks) {
         assert_eq!(
             **header,
-            format!("B{} @ 0x{:04x}:", block.id, block.start_pc)
+            format!("{} @ 0x{:04x}:", Symbol::Block(block.id), block.start_pc)
         );
         for (offset, instruction) in block.instructions.iter().enumerate() {
             let row = lines[start + offset + 1];
             assert_eq!(
                 row.len() - row.trim_start().len(),
-                header.find("0x").unwrap() + 2
+                header[..header.find("0x").unwrap()].chars().count() + 2
             );
             let (pc, body) = row.trim_start().split_once(": ").unwrap();
             assert_eq!(pc, format!("{:04x}", instruction.pc));

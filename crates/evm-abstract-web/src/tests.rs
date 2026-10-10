@@ -294,7 +294,10 @@ fn painted_text(output: &FullOutput) -> Vec<(String, Pos2)> {
 
 fn collect_text(shape: &egui::Shape, result: &mut Vec<(String, Pos2)>) {
     match shape {
-        egui::Shape::Text(text) => result.push((text.galley.text().to_owned(), text.pos)),
+        egui::Shape::Text(text) => result.push((
+            evm_abstract_notation::normalize_subscripts(text.galley.text()),
+            text.pos,
+        )),
         egui::Shape::Vec(shapes) => {
             for shape in shapes {
                 collect_text(shape, result);
@@ -336,6 +339,7 @@ fn report_counters_above_wasm_word_size_decode_and_render_exactly() {
     workspace.receive(Ok(decoded));
     assert!(workspace.accessible_status().starts_with("Ready:"));
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     frame(&ctx, &mut workspace, vec![]);
     let output = frame(&ctx, &mut workspace, vec![]);
     assert!(
@@ -363,10 +367,10 @@ fn all_three_custom_views_paint_structural_content() {
         "CONTROL FLOW",
         "SSA",
         "CALLDATALOAD",
-        "S2",
+        "σ2",
         "%5",
-        "S0:%1",
-        "S1:%2",
+        "σ0:%1",
+        "σ1:%2",
     ] {
         assert!(
             text.contains(required),
@@ -382,6 +386,7 @@ fn all_three_custom_views_paint_structural_content() {
 #[test]
 fn clicking_source_row_links_native_state_and_ssa_instruction() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut workspace = ready();
     workspace.view = View::Disassembly;
     frame(&ctx, &mut workspace, vec![]);
@@ -408,13 +413,14 @@ fn clicking_source_row_links_native_state_and_ssa_instruction() {
 #[test]
 fn clicking_cfg_node_selects_same_native_state() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut workspace = ready();
     workspace.view = View::Graph;
     frame(&ctx, &mut workspace, vec![]);
     let output = frame(&ctx, &mut workspace, vec![]);
     let pos = painted_text(&output)
         .into_iter()
-        .find(|(text, _)| text == "S2  ·  B2")
+        .find(|(text, _)| text == "σ2  ·  B2")
         .unwrap()
         .1
         + Vec2::splat(4.0);
@@ -431,6 +437,7 @@ fn clicking_cfg_node_selects_same_native_state() {
 #[test]
 fn keyboard_view_switching_uses_real_egui_input() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut workspace = ready();
     for (key, view) in [
         (Key::Num1, View::Disassembly),
@@ -495,6 +502,7 @@ fn reanalysis_retains_previous_snapshot_and_backend_errors_remain_visible() {
             .contains("InvalidBytecode: invalid hex at byte 1")
     );
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let output = frame(&ctx, &mut workspace, vec![]);
     assert!(
         painted_text(&output)
@@ -597,11 +605,12 @@ fn horizontal_scroll_reaches_the_last_phi_argument() {
     workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
     workspace.view = View::Ssa;
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     frame(&ctx, &mut workspace, vec![]);
     let output = frame(&ctx, &mut workspace, vec![]);
     let before = painted_text(&output)
         .into_iter()
-        .find(|(text, _)| text == "S39:%139")
+        .find(|(text, _)| text == "σ39:%139")
         .unwrap()
         .1;
     assert!(before.x > 1440.0, "fixture must extend beyond the viewport");
@@ -624,7 +633,7 @@ fn horizontal_scroll_reaches_the_last_phi_argument() {
     let output = frame(&ctx, &mut workspace, vec![]);
     let after = painted_text(&output)
         .into_iter()
-        .find(|(text, _)| text == "S39:%139")
+        .find(|(text, _)| text == "σ39:%139")
         .unwrap()
         .1;
     assert!(
@@ -659,6 +668,7 @@ fn workspace_keeps_dark_palette_when_browser_prefers_light() {
 #[test]
 fn automatic_row_focus_preserves_leading_columns_in_split_view() {
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let mut workspace = ready();
     for _ in 0..30 {
         frame(&ctx, &mut workspace, vec![]);
@@ -678,9 +688,9 @@ fn automatic_row_focus_preserves_leading_columns_in_split_view() {
         .1;
     let ssa_left = ssa_heading.x;
     let pc_left = labels.iter().find(|(text, _)| text == "0000").unwrap().1.x;
-    // The inspector also labels S0, before the source panes are painted.
-    // The final standalone S0 is the actual SSA table definition.
-    let definition_left = labels.iter().rfind(|(text, _)| text == "S0").unwrap().1.x;
+    // The inspector also labels σ0, before the source panes are painted.
+    // The final standalone σ0 is the actual SSA table definition.
+    let definition_left = labels.iter().rfind(|(text, _)| text == "σ0").unwrap().1.x;
     assert!(
         pc_left >= disasm_left,
         "PC column is clipped by focus: {pc_left} < {disasm_left}"
@@ -715,6 +725,7 @@ fn stale_and_unexecuted_blocks_never_claim_current_exit_evidence() {
         workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
         workspace.view = View::Ssa;
         let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
         frame(&ctx, &mut workspace, vec![]);
         let output = frame(&ctx, &mut workspace, vec![]);
         let labels = painted_text(&output);
@@ -757,6 +768,7 @@ fn child_without_bytecode_has_no_invented_program_counter() {
     workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
     workspace.view = View::Disassembly;
     let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
     let output = frame(&ctx, &mut workspace, vec![]);
     let labels = painted_text(&output);
     assert!(

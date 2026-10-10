@@ -19,6 +19,7 @@ fn headers(cache: &SsaCache) -> Vec<usize> {
 fn width_and_table_share_rows_across_frames_and_native_selection_changes() {
     let report = crate::tests::report();
     let context = Context::default();
+    crate::notation::initialize_fonts(&context);
     let mut cache = SsaCache::default();
     let mut selection = Selection {
         state: Some(0),

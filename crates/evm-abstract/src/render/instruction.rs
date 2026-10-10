@@ -3,6 +3,8 @@
 //! 调用方分别组织状态/帧元数据、phi、效果和转移；这里不合并这些语义身份。
 //! 布局只用于真实字节码块，原生调用和合成继续点不得制造 PC。
 
+use evm_abstract_notation::Symbol;
+
 use crate::ssa::Instruction;
 use revm_bytecode::opcode::OpCode;
 use std::fmt::Write;
@@ -15,10 +17,10 @@ pub(super) struct InstructionLayout {
 impl InstructionLayout {
     /// 块标题顶格；至少四位十六进制，不截断更大的 PC。
     pub(super) fn block(output: &mut String, block_id: usize, pc: usize) -> Self {
-        let prefix = format!("B{block_id} @ 0x");
+        let prefix = format!("{} @ 0x", Symbol::Block(block_id));
         writeln!(output, "{prefix}{pc:04x}:").unwrap();
         Self {
-            pc_column: prefix.len(),
+            pc_column: prefix.chars().count(),
         }
     }
 
