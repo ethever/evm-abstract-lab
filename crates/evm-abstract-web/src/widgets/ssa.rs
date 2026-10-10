@@ -1,6 +1,12 @@
 //! SSA uses compact virtual table rows. Tokens retain semantic coloring while
 //! native state/PC targets keep table selection linked to the graph and source.
 
+mod cache;
+
+pub(crate) use cache::SsaCache;
+
+use std::collections::{BTreeMap, BTreeSet};
+
 use egui::{Color32, FontId, ScrollArea, Sense, Ui, Vec2};
 use egui_extras::{Column, TableBuilder};
 use evm_abstract_protocol::{AnalysisReport, BlockCoverage, InstructionProgress};
@@ -8,18 +14,19 @@ use evm_abstract_protocol::{AnalysisReport, BlockCoverage, InstructionProgress};
 use super::{ROW_HEIGHT, heading, row_background, text};
 use crate::{app::Selection, palette};
 
-pub(crate) fn ssa(
+pub(crate) fn ssa_cached(
     ui: &mut Ui,
     report: &AnalysisReport,
     program: Option<usize>,
     selection: &mut Selection,
     previous: &mut Selection,
+    cache: &mut SsaCache,
 ) {
     // Exactly one instance is visible at a time, whether standalone or inside
     // responsive tiles. Its absolute UI identity preserves both scroll axes
     // when the parent tree changes, without overriding manual navigation.
     ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("ssa_view")), |ui| {
-        contents(ui, report, program, selection, previous)
+        contents(ui, report, program, selection, previous, cache)
     });
 }
 
@@ -29,6 +36,7 @@ fn contents(
     program: Option<usize>,
     selection: &mut Selection,
     previous: &mut Selection,
+    cache: &mut SsaCache,
 ) {
     heading(
         ui,
@@ -44,7 +52,8 @@ fn contents(
             report.ssa.effect_count,
         ),
     );
-    let rows = scoped_rows(report, program, *selection);
+    cache.prepare(report, program, *selection);
+    let rows = cache.rows();
     let focus = (*selection != *previous)
         .then(|| {
             rows.iter().position(|row| {
@@ -56,7 +65,7 @@ fn contents(
     // Width comes from the actual tokens, including effects, exit stacks and
     // transitions. A short report therefore fits a narrow pane without a
     // permanent blank gutter; long operands remain horizontally reachable.
-    let width = row_width(ui, &rows);
+    let width = row_width(ui, cache.columns());
     ScrollArea::horizontal()
         .id_salt("ssa_scroll")
         .auto_shrink([false, false])
@@ -107,24 +116,54 @@ fn contents(
         });
 }
 
-/// SSA displays the complete report, so pane sizing measures every retained
-/// block, including phi inputs, effects and transition rows.
+/// Measure every retained native block in the active scope, including phi
+/// inputs, effects and transitions. Graph folding never folds these SSA rows.
+pub(crate) fn natural_width_cached(
+    ui: &Ui,
+    report: &AnalysisReport,
+    program: Option<usize>,
+    selection: Selection,
+    cache: &mut SsaCache,
+) -> f32 {
+    cache.prepare(report, program, selection);
+    row_width(ui, cache.columns()) + ui.spacing().scroll.allocated_width()
+}
+
+fn row_width(ui: &Ui, columns: usize) -> f32 {
+    let glyph_width = ui
+        .painter()
+        .layout_no_wrap("0".into(), FontId::monospace(12.0), palette::TEXT)
+        .size()
+        .x;
+    columns as f32 * glyph_width + 12.0
+}
+
+#[cfg(test)]
+pub(crate) fn ssa(
+    ui: &mut Ui,
+    report: &AnalysisReport,
+    program: Option<usize>,
+    selection: &mut Selection,
+    previous: &mut Selection,
+) {
+    ssa_cached(
+        ui,
+        report,
+        program,
+        selection,
+        previous,
+        &mut SsaCache::default(),
+    );
+}
+
+#[cfg(test)]
 pub(crate) fn natural_width(
     ui: &Ui,
     report: &AnalysisReport,
     program: Option<usize>,
     selection: Selection,
 ) -> f32 {
-    row_width(ui, &scoped_rows(report, program, selection)) + ui.spacing().scroll.allocated_width()
-}
-
-fn row_width(ui: &Ui, rows: &[Row]) -> f32 {
-    let glyph_width = ui
-        .painter()
-        .layout_no_wrap("0".into(), FontId::monospace(12.0), palette::TEXT)
-        .size()
-        .x;
-    rows.iter().map(Row::columns).max().unwrap_or_default() as f32 * glyph_width + 12.0
+    natural_width_cached(ui, report, program, selection, &mut SsaCache::default())
 }
 
 struct Token {
@@ -189,13 +228,17 @@ fn frames(frames: &[Vec<usize>]) -> String {
 }
 
 fn scoped_rows(report: &AnalysisReport, program: Option<usize>, selection: Selection) -> Vec<Row> {
-    build_rows(report, |state| {
-        report.cfg.iter().any(|block| {
-            block.id == state
-                && block.program == program
-                && (program.is_some() || selection.state == Some(state))
+    // Program membership is independent of SSA receipt count. Compute it once
+    // so many context instances do not each scan the entire native CFG.
+    let included: BTreeSet<_> = report
+        .cfg
+        .iter()
+        .filter(|block| {
+            block.program == program && (program.is_some() || selection.state == Some(block.id))
         })
-    })
+        .map(|block| block.id)
+        .collect();
+    build_rows(report, |state| included.contains(&state))
 }
 
 #[cfg(test)]
@@ -204,6 +247,22 @@ fn rows(report: &AnalysisReport) -> Vec<Row> {
 }
 
 fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<Row> {
+    let mut outgoing = BTreeMap::<_, Vec<_>>::new();
+    for edge in &report.edges {
+        outgoing.entry(edge.from).or_default().push(edge);
+    }
+    let transitions: BTreeMap<_, _> = report
+        .ssa
+        .transitions
+        .iter()
+        .map(|transition| (transition.edge, transition))
+        .collect();
+    let deferred: BTreeMap<_, _> = report
+        .ssa
+        .deferred_edges
+        .iter()
+        .map(|edge| (edge.edge, edge.reason))
+        .collect();
     let mut rows = Vec::new();
     for block in report
         .ssa
@@ -368,12 +427,8 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
         );
         exit.tooltip = exit.plain_text();
         rows.push(exit);
-        for edge in report.edges.iter().filter(|edge| edge.from == block.state) {
-            let transition = report
-                .ssa
-                .transitions
-                .iter()
-                .find(|transition| transition.edge == edge.id);
+        for edge in outgoing.get(&block.state).into_iter().flatten() {
+            let transition = transitions.get(&edge.id).copied();
             let mut row = Row::new();
             row.target = Some(Selection {
                 state: Some(edge.to),
@@ -397,12 +452,7 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
                         "e{} → S{} · deferred {:?}",
                         edge.id,
                         edge.to,
-                        report
-                            .ssa
-                            .deferred_edges
-                            .iter()
-                            .find(|deferred| deferred.edge == edge.id)
-                            .map(|deferred| deferred.reason)
+                        deferred.get(&edge.id)
                     )
                 },
                 palette::ACCENT,

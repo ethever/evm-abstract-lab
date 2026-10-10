@@ -1,7 +1,7 @@
 use egui::{Context, Event, FullOutput, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 use evm_abstract_protocol::{AnalyzeReply, BlockCoverage, InstructionProgress, SsaTransition};
 
-use super::super::Graph;
+use super::super::{Graph, projection::GraphMode};
 use super::{NodeView, node_text};
 use crate::{
     Workspace,
@@ -103,6 +103,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
     let report = report();
     let ctx = Context::default();
     let mut graph = Graph::default();
+    graph.set_mode(GraphMode::States);
     let mut selection = Selection {
         state: Some(205),
         pc: Some(10),
@@ -140,7 +141,11 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
             .iter()
             .any(|(line, _)| line.contains("%5 = ADD %1, %2 · μ2→μ5"))
     );
-    assert!(content.tooltip.contains("exit μ5 · f0 [%5]"));
+    assert!(leaf_tooltip(&report, 205, NodeView::Ssa).contains("exit μ5 · f0 [%5]"));
+    assert!(
+        content.tooltip.is_empty(),
+        "graph construction must not eagerly format tooltips"
+    );
     assert_ne!(
         content.size, source_size,
         "mode switch must invalidate measured node content"
@@ -156,7 +161,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
     click(&ctx, &mut graph, &report, &mut selection, "Disasm");
     assert_eq!(graph.content, NodeView::Disassembly);
     assert_eq!(graph.nodes[&205].size, source_size);
-    assert!(!graph.nodes[&205].tooltip.contains("%5 ="));
+    assert!(!leaf_tooltip(&report, 205, NodeView::Disassembly).contains("%5 ="));
 }
 
 #[test]
@@ -323,6 +328,7 @@ fn manual_mode_switch_preserves_selected_node_camera_anchor_and_zoom() {
     let report = report();
     let ctx = Context::default();
     let mut graph = Graph::default();
+    graph.set_mode(GraphMode::States);
     let mut selection = Selection {
         state: Some(205),
         pc: None,
@@ -347,6 +353,7 @@ fn a_representation_switch_preserves_initial_fit_scale_and_canvas_anchor() {
     let report = report();
     let ctx = Context::default();
     let mut graph = Graph::default();
+    graph.set_mode(GraphMode::States);
     let mut selection = Selection {
         state: Some(205),
         pc: None,
@@ -384,6 +391,7 @@ fn fit_button_centers_both_representations_without_rearranging_nodes() {
     for content in [NodeView::Disassembly, NodeView::Ssa] {
         let ctx = Context::default();
         let mut graph = Graph::default();
+        graph.set_mode(GraphMode::States);
         let expected = Selection {
             state: Some(205),
             pc: Some(10),
@@ -419,6 +427,7 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     let report = report();
     let ctx = Context::default();
     let mut workspace = Workspace::default();
+    workspace.graph.set_mode(GraphMode::States);
     workspace.receive(Ok(AnalyzeReply {
         result: Ok(report.clone()),
     }));
@@ -490,4 +499,21 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
         run(&mut workspace, size, Vec::new());
         assert!(workspace.accessible_status().contains("CFG nodes: Disasm;"));
     }
+}
+
+fn leaf_tooltip(
+    report: &evm_abstract_protocol::AnalysisReport,
+    state: usize,
+    view: NodeView,
+) -> String {
+    let index = super::ReportIndex::new(report);
+    let block = index.cfg(report, state).unwrap();
+    let node = super::DisplayNode {
+        id: state,
+        members: vec![state],
+        program: block.program,
+        basic_block: block.basic_block,
+        start_pc: block.start_pc,
+    };
+    super::node_tooltip(report, &index, &node, view)
 }

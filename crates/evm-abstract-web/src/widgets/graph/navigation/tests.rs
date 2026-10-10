@@ -48,6 +48,7 @@ fn trackpad_scroll_pans_both_axes_without_zoom_even_over_a_node() {
     for over_node in [false, true] {
         let ctx = Context::default();
         let mut graph = Graph::default();
+        graph.set_mode(crate::widgets::GraphMode::States);
         frame(&ctx, &mut graph, vec![], false);
         let (canvas, _) = frame(&ctx, &mut graph, vec![], false);
         let pointer = if over_node {
@@ -94,6 +95,7 @@ fn pinch_and_modified_scroll_zoom_around_pointer_without_scroll_translation() {
     ] {
         let ctx = Context::default();
         let mut graph = Graph::default();
+        graph.set_mode(crate::widgets::GraphMode::States);
         frame(&ctx, &mut graph, vec![], false);
         let (canvas, _) = frame(&ctx, &mut graph, vec![], false);
         let pointer = canvas.min + Vec2::new(180.0, 170.0);
@@ -111,6 +113,7 @@ fn pinch_and_modified_scroll_zoom_around_pointer_without_scroll_translation() {
 fn scrolling_a_neighbor_pane_leaves_the_graph_camera_untouched() {
     let ctx = Context::default();
     let mut graph = Graph::default();
+    graph.set_mode(crate::widgets::GraphMode::States);
     frame(&ctx, &mut graph, vec![], true);
     frame(&ctx, &mut graph, vec![], true);
     let pan = graph.pan;
@@ -137,6 +140,7 @@ fn scrolling_a_neighbor_pane_leaves_the_graph_camera_untouched() {
 fn fitting_over_a_neighbor_preserves_its_wheel_tail_and_fresh_input() {
     let ctx = Context::default();
     let mut graph = Graph::default();
+    graph.set_mode(crate::widgets::GraphMode::States);
     frame(&ctx, &mut graph, vec![], true);
     frame(&ctx, &mut graph, vec![], true);
     graph.zoom_at(Vec2::new(180.0, 150.0), 0.5);
@@ -195,6 +199,7 @@ fn fit_shortcut_takes_priority_over_wheel_and_zoom_smoothing() {
             for resume_immediately in [false, true] {
                 let ctx = Context::default();
                 let mut graph = Graph::default();
+                graph.set_mode(crate::widgets::GraphMode::States);
                 frame(&ctx, &mut graph, vec![], false);
                 let (canvas, _) = frame(&ctx, &mut graph, vec![], false);
                 let fitted_pan = graph.pan;

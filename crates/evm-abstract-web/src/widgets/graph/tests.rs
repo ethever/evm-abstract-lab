@@ -220,10 +220,12 @@ fn report() -> AnalysisReport {
 // These fixtures exercise source-card geometry and deliberately carry no SSA.
 // Default SSA behavior is tested with real typed SSA blocks in content/tests.rs.
 fn disassembly_graph() -> Graph {
-    Graph {
-        content: super::NodeView::Disassembly,
+    let mut graph = Graph {
+        content: super::content::NodeView::Disassembly,
         ..Graph::default()
-    }
+    };
+    graph.set_mode(crate::widgets::GraphMode::States);
+    graph
 }
 
 fn render(ctx: &Context, graph: &mut Graph, report: &AnalysisReport, size: Vec2) {

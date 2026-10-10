@@ -8,7 +8,9 @@ mod tests;
 use std::collections::{BTreeMap, VecDeque};
 
 use egui::{Pos2, Rect, Vec2};
-use evm_abstract_protocol::{AnalysisReport, CfgEdge, EdgeKind};
+#[cfg(test)]
+use evm_abstract_protocol::AnalysisReport;
+use evm_abstract_protocol::{CfgEdge, EdgeKind};
 
 const CROSS_GAP: f32 = 22.0;
 const LAYER_GAP: f32 = 12.0;
@@ -98,22 +100,31 @@ struct Expanded {
 }
 
 impl Expanded {
+    #[cfg(test)]
     fn new(report: &AnalysisReport, state_sizes: &BTreeMap<usize, Vec2>) -> Self {
-        let mut sizes: BTreeMap<_, _> = report
-            .cfg
+        let nodes: Vec<_> = report.cfg.iter().map(|state| state.id).collect();
+        Self::scene(&nodes, &report.edges, state_sizes, &BTreeMap::new())
+    }
+
+    fn scene(
+        node_ids: &[usize],
+        edges: &[CfgEdge],
+        state_sizes: &BTreeMap<usize, Vec2>,
+        labels: &BTreeMap<usize, String>,
+    ) -> Self {
+        let mut sizes: BTreeMap<_, _> = node_ids
             .iter()
             .filter_map(|state| {
                 state_sizes
-                    .get(&state.id)
+                    .get(state)
                     .copied()
                     .filter(|size| size.is_finite() && size.min_elem() > 0.0)
-                    .map(|size| (VertexId::State(state.id), size))
+                    .map(|size| (VertexId::State(*state), size))
             })
             .collect();
         // Both endpoints must exist in the rendered state set. A dangling edge
         // cannot create a phantom label, state, or BFS layer.
-        let edges: Vec<_> = report
-            .edges
+        let edges: Vec<_> = edges
             .iter()
             .filter(|edge| {
                 sizes.contains_key(&VertexId::State(edge.from))
@@ -130,13 +141,12 @@ impl Expanded {
         }
         let mut levels = BTreeMap::new();
         let mut queue = VecDeque::new();
-        if let Some(root) = report
-            .cfg
+        if let Some(root) = node_ids
             .iter()
-            .find(|state| sizes.contains_key(&VertexId::State(state.id)))
+            .find(|state| sizes.contains_key(&VertexId::State(**state)))
         {
-            levels.insert(root.id, 0usize);
-            queue.push_back(root.id);
+            levels.insert(*root, 0usize);
+            queue.push_back(*root);
         }
         while let Some(state) = queue.pop_front() {
             let level = levels[&state] + 1;
@@ -158,11 +168,15 @@ impl Expanded {
         }
         // Source grouping keeps labels near the rank whose outgoing edges they
         // describe. Native edge IDs break ties deterministically.
-        let mut labels: Vec<_> = edges.iter().collect();
-        labels.sort_by_key(|edge| (levels[&edge.from], edge.from, edge.id));
-        for edge in labels {
+        let mut ordered_edges: Vec<_> = edges.iter().collect();
+        ordered_edges.sort_by_key(|edge| (levels[&edge.from], edge.from, edge.id));
+        for edge in ordered_edges {
             let vertex = VertexId::EdgeLabel(edge.id);
-            sizes.insert(vertex, label_size(edge.id, edge.kind));
+            let label = labels
+                .get(&edge.id)
+                .cloned()
+                .unwrap_or_else(|| super::edge_label(edge.id, edge.kind));
+            sizes.insert(vertex, text_label_size(&label));
             layers
                 .entry(levels[&edge.from] * 2 + 1)
                 .or_default()
@@ -182,20 +196,31 @@ pub(super) fn fit_scale(content: Vec2, viewport: Vec2) -> f32 {
         .min((viewport.y - FIT_MARGIN * 2.0).max(1.0) / content.y.max(1.0))
 }
 
+#[cfg(test)]
 pub(super) fn adaptive(
     report: &AnalysisReport,
     sizes: &BTreeMap<usize, Vec2>,
     viewport: Vec2,
 ) -> Placement {
-    let graph = Expanded::new(report, sizes);
+    let nodes: Vec<_> = report.cfg.iter().map(|state| state.id).collect();
+    adaptive_scene(&nodes, &report.edges, sizes, &BTreeMap::new(), viewport)
+}
+
+pub(super) fn adaptive_scene(
+    node_ids: &[usize],
+    edges: &[CfgEdge],
+    sizes: &BTreeMap<usize, Vec2>,
+    labels: &BTreeMap<usize, String>,
+    viewport: Vec2,
+) -> Placement {
+    let graph = Expanded::scene(node_ids, edges, sizes, labels);
     if graph.sizes.is_empty() {
         return Placement::default();
     }
-    let widest = graph.layers.iter().map(Vec::len).max().unwrap_or(1).min(12);
     let mut best = Placement::default();
     let mut best_scale = -1.0;
     for flow in [Flow::Down, Flow::Right] {
-        for capacity in 1..=widest {
+        for capacity in candidate_capacities(&graph, viewport, flow) {
             let candidate = arrange(&graph, capacity, flow);
             let scale = fit_scale(candidate.bounds.size(), viewport).min(1.0);
             let fewer_ranks = flow.depth(candidate.bounds.size()) < flow.depth(best.bounds.size());
@@ -210,10 +235,39 @@ pub(super) fn adaptive(
     best
 }
 
+// Full state graphs can contain thousands of context instances. Keep the
+// original exhaustive small-scene choice, but route a large graph only twice
+// (one capacity in each orientation), rather than constructing 24 placements.
+fn candidate_capacities(graph: &Expanded, viewport: Vec2, flow: Flow) -> Vec<usize> {
+    let widest = graph.layers.iter().map(Vec::len).max().unwrap_or(1).min(12);
+    if graph.sizes.len() <= 256 {
+        return (1..=widest).collect();
+    }
+    // Estimate how many real nodes fit across this orientation. Tiny virtual
+    // labels must not dilute the mean and cause crowded state rows; labels
+    // still reserve their full bounds during packing and final fit.
+    let (total_span, count) = graph
+        .sizes
+        .iter()
+        .filter(|(vertex, _)| matches!(vertex, VertexId::State(_)))
+        .fold((0.0, 0usize), |(sum, count), (_, size)| {
+            (sum + flow.span(*size), count + 1)
+        });
+    let average_span = total_span / count.max(1) as f32;
+    let available = (flow.span(viewport) - FIT_MARGIN * 2.0).max(0.0);
+    let capacity = ((available + CROSS_GAP) / (average_span + CROSS_GAP)) as usize;
+    vec![capacity.clamp(1, widest)]
+}
+
+#[cfg(test)]
 fn label_size(id: usize, kind: EdgeKind) -> Vec2 {
+    text_label_size(&super::edge_label(id, kind))
+}
+
+fn text_label_size(label: &str) -> Vec2 {
     // Secondary annotations use 9pt monospace with a conservative 6pt advance
     // and 3pt horizontal padding. Keep a compact box for routing and avoidance.
-    Vec2::new(super::edge_label(id, kind).len() as f32 * 6.0 + 6.0, 16.0)
+    Vec2::new(label.chars().count() as f32 * 6.0 + 6.0, 16.0)
 }
 
 struct Vertex {
