@@ -89,19 +89,20 @@ in
         evm-abstract explain --file ${sourceRoot}/examples/straight-line.hex > explain-program.txt
         grep -q 'stack SSA:' explain-program.txt
         evm-abstract explain --file ${sourceRoot}/examples/known-bits-branch.hex --context-depth 0 > explain-aligned.txt
-        grep -q '^B0 @ 0x0000:$' explain-aligned.txt
+        grep -q '^B₀ @ 0x0000:$' explain-aligned.txt
         grep -q '^       0000: PUSH0' explain-aligned.txt
         evm-abstract ssa --file ${sourceRoot}/examples/dynamic-jump.hex > ssa-aligned.txt
-        grep -q '^S0 | context=\[\]:$' ssa-aligned.txt
-        grep -q '^B0 @ 0x0000:$' ssa-aligned.txt
+        grep -q '^σᵖ₀ | context=\[\]:$' ssa-aligned.txt
+        grep -q '^B₀ @ 0x0000:$' ssa-aligned.txt
         grep -q '^       0000: %0 = PUSH1 0x0$' ssa-aligned.txt
         grep -q '^       0002: %1 = CALLDATALOAD %0$' ssa-aligned.txt
         evm-abstract analyze --world ${sourceRoot}/examples/worlds/call-return-branch.json ${concreteInputs} --ssa > ssa-world-aligned.txt
         grep -q '^       0000: PUSH1 | opcode=0x60' ssa-world-aligned.txt
         if grep -Eq '^ +pc=0x[0-9a-f]+:' ssa-world-aligned.txt; then exit 1; fi
+        # Alternation matches complete subscript digits even under the C locale.
         for report in explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt; do
-          grep -Eq '^B[0-9]+ @ 0x[0-9a-f]+:$' "$report"
-          if grep -Eq '^ +B[0-9]+ @ 0x[0-9a-f]+:$' "$report"; then exit 1; fi
+          grep -Eq '^B(₀|₁|₂|₃|₄|₅|₆|₇|₈|₉)+ @ 0x[0-9a-f]+:$' "$report"
+          if grep -Eq '^ +B(₀|₁|₂|₃|₄|₅|₆|₇|₈|₉)+ @ 0x[0-9a-f]+:$' "$report"; then exit 1; fi
         done
         evm-abstract explain --hex 5f351e00 --domain constants-only --max-constants 257 > explain-capacity.txt
         grep -q 'status=Converged' explain-capacity.txt
