@@ -230,7 +230,7 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
         let body = body
             .split_once("\nTransitions")
             .map_or(body, |(body, _)| body);
-        let state = &graph.states()[usize::try_from(id).unwrap()];
+        let state = &graph.states()[id];
         contains(body, &format!("call depth={}", state.key.frames.len()));
         contains(
             body,
