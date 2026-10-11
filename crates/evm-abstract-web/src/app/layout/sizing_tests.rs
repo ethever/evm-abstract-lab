@@ -207,25 +207,29 @@ fn medium_code_tabs_use_active_content_and_keep_the_graph_visible() {
     crate::palette::configure(&ctx);
     let mut workspace = ready();
     let size = Vec2::new(900.0, 700.0);
+    let desired = natural(&ctx, &workspace)[1];
     let output = settled(&ctx, &mut workspace, size);
-    let disassembly = pane_rect(&workspace.layout.medium, Pane::Disassembly).width();
+    let ssa = pane_rect(&workspace.layout.medium, Pane::Ssa).width();
+    assert!((ssa - desired).abs() < 1.0);
     let code_id = columns(&workspace.layout.medium).children[0];
     let tabs = workspace.layout.medium.tiles.rect(code_id).unwrap();
     let target = texts(&output)
         .into_iter()
         .find(|(text, rect)| {
-            text == "SSA" && tabs.contains(rect.center()) && rect.center().y < tabs.top() + 24.0
+            text == "Disassembly"
+                && tabs.contains(rect.center())
+                && rect.center().y < tabs.top() + 24.0
         })
         .unwrap()
         .1
         .center();
     click(&ctx, &mut workspace, size, target);
     settled(&ctx, &mut workspace, size);
-    let ssa = pane_rect(&workspace.layout.medium, Pane::Ssa).width();
+    let disassembly = pane_rect(&workspace.layout.medium, Pane::Disassembly).width();
     assert!(ssa > disassembly + 30.0);
     assert!(pane_rect(&workspace.layout.medium, Pane::Graph).width() >= GRAPH_AUTO_MIN - 1.0);
-    let desired = natural(&ctx, &workspace)[1];
-    assert!((ssa - desired).abs() < 1.0);
+    let desired = natural(&ctx, &workspace)[0];
+    assert!((disassembly - desired).abs() < 1.0);
 }
 
 #[test]

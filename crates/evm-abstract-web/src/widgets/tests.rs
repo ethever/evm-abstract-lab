@@ -165,22 +165,19 @@ fn manual_source_scroll_survives_view_parent_changes_and_resizing() {
         for width in [844.0, 390.0, 1440.0] {
             let size = Vec2::new(width, 900.0);
             let mut output = settle(&ctx, &mut workspace, size);
-            if view == View::Ssa && width < 1120.0 {
-                // Medium/narrow arrangements initially display Disassembly.
-                // Activate the real SSA tab, with an actual pointer click.
-                let tab_y = text_position(&output, "Disassembly").unwrap().y;
+            if view == View::Disassembly && width < 1120.0 {
+                // Compact arrangements initially display SSA. Exercise the
+                // deliberate Disassembly choice with an actual tab click.
                 let pos = output
                     .shapes
                     .iter()
                     .find_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text)
-                            if text.galley.text() == "SSA" && (text.pos.y - tab_y).abs() < 1.0 =>
-                        {
+                        egui::Shape::Text(text) if text.galley.text() == "Disassembly" => {
                             Some(text.pos)
                         }
                         _ => None,
                     })
-                    .expect("SSA tab beside the Disassembly tab")
+                    .expect("Disassembly source tab")
                     + Vec2::splat(4.0);
                 for pressed in [true, false] {
                     frame(

@@ -1,6 +1,6 @@
 use egui::{Context, Event, FullOutput, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 use egui_tiles::{Tile, Tree};
-use evm_abstract_protocol::{Diagnostic, DiagnosticKind};
+use evm_abstract_protocol::{AnalyzeReply, Diagnostic, DiagnosticKind};
 
 use super::{Pane, WidthClass};
 use crate::{Workspace, tests::ready};
@@ -135,9 +135,16 @@ fn resizing_reflows_all_panes_without_resetting_workspace_mode() {
         (1440.0, 900.0, 3),
     ] {
         let size = Vec2::new(width, height);
-        settled(&ctx, &mut workspace, size);
+        let output = settled(&ctx, &mut workspace, size);
         let rects = pane_rects(active_tree(&workspace, width));
         assert_eq!(rects.len(), pane_count, "{size:?}: {rects:?}");
+        assert!(rects.iter().any(|(pane, _)| *pane == Pane::Ssa));
+        assert!(
+            texts(&output)
+                .iter()
+                .any(|(text, _)| text.starts_with("verified complete")),
+            "the initial source pane must render SSA at {size:?}"
+        );
         for (_, rect) in rects {
             assert!(
                 Rect::from_min_size(Pos2::ZERO, size).contains_rect(rect),
@@ -191,6 +198,61 @@ fn compact_tabs_keep_every_analysis_view_accessible() {
     let panes = pane_rects(&workspace.layout.medium);
     assert!(panes.iter().any(|(pane, _)| *pane == Pane::Graph));
     assert!(panes.iter().any(|(pane, _)| *pane == Pane::Ssa));
+}
+
+#[test]
+fn compact_source_tab_choices_survive_resizing_and_reanalysis() {
+    for (size, other) in [
+        (Vec2::new(900.0, 700.0), Vec2::new(390.0, 844.0)),
+        (Vec2::new(390.0, 844.0), Vec2::new(900.0, 700.0)),
+    ] {
+        let ctx = Context::default();
+        crate::palette::configure(&ctx);
+        let mut workspace = ready();
+        workspace.selection = crate::app::Selection {
+            state: Some(2),
+            pc: Some(10),
+        };
+        let selection = workspace.selection;
+        let output = settled(&ctx, &mut workspace, size);
+        let target = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "Disassembly")
+            .unwrap()
+            .1;
+        click(&ctx, &mut workspace, size, target.center());
+        let output = settled(&ctx, &mut workspace, size);
+        assert!(texts(&output).iter().any(|(text, _)| text == "DISASSEMBLY"));
+        assert_eq!(workspace.selection, selection);
+
+        settled(&ctx, &mut workspace, Vec2::new(1440.0, 900.0));
+        settled(&ctx, &mut workspace, other);
+        assert!(
+            pane_rects(active_tree(&workspace, other.x))
+                .iter()
+                .any(|(pane, _)| *pane == Pane::Ssa),
+            "a tab choice must not override another width class's SSA default"
+        );
+        settled(&ctx, &mut workspace, size);
+        assert!(
+            pane_rects(active_tree(&workspace, size.x))
+                .iter()
+                .any(|(pane, _)| *pane == Pane::Disassembly)
+        );
+        assert_eq!(workspace.selection, selection);
+
+        workspace.initial_command();
+        workspace.receive(Ok(AnalyzeReply {
+            result: Ok(crate::tests::report()),
+        }));
+        let output = settled(&ctx, &mut workspace, size);
+        assert!(texts(&output).iter().any(|(text, _)| text == "DISASSEMBLY"));
+        assert!(
+            pane_rects(active_tree(&workspace, size.x))
+                .iter()
+                .any(|(pane, _)| *pane == Pane::Disassembly)
+        );
+    }
 }
 
 #[test]
