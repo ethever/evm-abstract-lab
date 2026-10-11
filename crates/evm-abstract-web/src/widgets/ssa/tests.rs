@@ -6,7 +6,7 @@ use evm_abstract_protocol::{
 };
 
 use super::{Row, rows, scoped_rows, ssa};
-use crate::app::Selection;
+use crate::{app::Selection, ssa_display::SsaDisplay};
 
 fn report() -> AnalysisReport {
     let mut report = AnalysisReport {
@@ -174,7 +174,16 @@ fn frame(
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 550.0))),
             ..RawInput::default()
         },
-        |ui| ssa(ui, report, Some(0), selection, previous),
+        |ui| {
+            ssa(
+                ui,
+                report,
+                Some(0),
+                SsaDisplay::Compact,
+                selection,
+                previous,
+            )
+        },
     );
     output.textures_delta.clear();
     output
@@ -202,6 +211,10 @@ fn table_virtualizes_dense_rows_and_focuses_an_offscreen_native_instruction() {
             instruction
         })
         .collect();
+    let hidden = &mut report.ssa.blocks[0].instructions[999];
+    hidden.opcode = 0x50;
+    hidden.name = "POP".into();
+    hidden.results.clear();
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
     let mut selection = Selection {
@@ -237,6 +250,168 @@ fn table_virtualizes_dense_rows_and_focuses_an_offscreen_native_instruction() {
             .iter()
             .any(|(text, pos)| text == "03e7  " && (0.0..550.0).contains(&pos.y))
     );
+    assert!(
+        positions(&output)
+            .iter()
+            .any(|(text, pos)| text == "POP" && (0.0..550.0).contains(&pos.y))
+    );
+}
+
+fn stack_moves_and_important_operations() -> AnalysisReport {
+    let mut report = report();
+    let template = report.ssa.blocks[0].instructions[0].clone();
+    let operations = std::iter::once((0x50, "POP".to_owned()))
+        .chain((0x80..=0x8f).map(|opcode| (opcode, format!("DUP{}", opcode - 0x7f))))
+        .chain((0x90..=0x9f).map(|opcode| (opcode, format!("SWAP{}", opcode - 0x8f))))
+        .chain(
+            [
+                (0x5b, "JUMPDEST"),
+                (0x52, "MSTORE"),
+                (0x55, "SSTORE"),
+                (0xa0, "LOG0"),
+                (0xf1, "CALL"),
+                (0xf0, "CREATE"),
+                (0x56, "JUMP"),
+                (0xfd, "REVERT"),
+            ]
+            .into_iter()
+            .map(|(opcode, name)| (opcode, name.to_owned())),
+        );
+    report.ssa.blocks[0].instructions = operations
+        .enumerate()
+        .map(|(pc, (opcode, name))| {
+            let mut instruction = template.clone();
+            instruction.pc = pc;
+            instruction.opcode = opcode;
+            instruction.name = name;
+            instruction.results.clear();
+            instruction
+        })
+        .collect();
+    report
+}
+
+#[test]
+fn compact_rows_hide_completed_stack_moves_and_full_restores_all_instruction_details() {
+    let report = stack_moves_and_important_operations();
+    let compact = scoped_rows(&report, Some(0), SsaDisplay::Compact, Selection::default());
+    let full = scoped_rows(&report, Some(0), SsaDisplay::Full, Selection::default());
+    let instruction_rows = |rows: &[Row]| {
+        rows.iter()
+            .filter(|row| row.target.is_some_and(|target| target.pc.is_some()))
+            .count()
+    };
+    assert_eq!(instruction_rows(&compact), 8);
+    assert_eq!(instruction_rows(&full), 41);
+    for instruction in &report.ssa.blocks[0].instructions {
+        let target = Some(Selection {
+            state: Some(27),
+            pc: Some(instruction.pc),
+        });
+        let full_row = full.iter().find(|row| row.target == target).unwrap();
+        assert!(full_row.plain_text().contains(" · μ₂→μ₃ · Completed"));
+        assert!(
+            full_row
+                .plain_text()
+                .starts_with(&format!("{:04x}  ", instruction.pc))
+        );
+        let compact_row = compact.iter().find(|row| row.target == target);
+        if instruction.pc < 33 {
+            assert!(compact_row.is_none(), "{} must be hidden", instruction.name);
+        } else {
+            let row = compact_row.unwrap();
+            assert!(row.plain_text().contains(&instruction.name));
+            assert!(!row.plain_text().contains('μ'));
+            assert!(!row.plain_text().contains("Completed"));
+            assert!(row.tooltip.contains(" · μ₂→μ₃"));
+            assert!(row.tooltip.contains("Completed"));
+            assert!(
+                row.tooltip
+                    .contains(&format!("State σ₂₇ · pc 0x{:04x}", instruction.pc))
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_rows_keep_pending_faulted_and_noncurrent_stack_moves() {
+    let mut report = report();
+    let template = report.ssa.blocks[0].instructions[0].clone();
+    report.ssa.blocks[0].instructions = [
+        InstructionProgress::Started,
+        InstructionProgress::OperandsConsumed,
+        InstructionProgress::Dispatched,
+        InstructionProgress::Faulted,
+        InstructionProgress::Completed,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(pc, progress)| {
+        let mut instruction = template.clone();
+        instruction.pc = pc;
+        instruction.opcode = 0x50;
+        instruction.name = "POP".into();
+        instruction.results.clear();
+        instruction.progress = progress;
+        instruction.fault = progress == InstructionProgress::Completed;
+        instruction
+    })
+    .collect();
+    let compact = scoped_rows(&report, Some(0), SsaDisplay::Compact, Selection::default());
+    for instruction in &report.ssa.blocks[0].instructions {
+        let row = compact
+            .iter()
+            .find(|row| {
+                row.target
+                    .is_some_and(|target| target.pc == Some(instruction.pc))
+            })
+            .unwrap();
+        assert!(row.plain_text().contains(" · μ₂→μ₃"));
+        assert!(
+            row.plain_text()
+                .ends_with(&format!(" · {:?}", instruction.progress))
+        );
+    }
+    for coverage in [BlockCoverage::Unexecuted, BlockCoverage::Stale] {
+        report.ssa.blocks[0].coverage = coverage;
+        let instruction = &mut report.ssa.blocks[0].instructions[0];
+        instruction.progress = InstructionProgress::Completed;
+        instruction.fault = false;
+        let compact = scoped_rows(&report, Some(0), SsaDisplay::Compact, Selection::default());
+        assert!(compact.iter().any(|row| {
+            row.target.is_some_and(|target| target.pc == Some(0))
+                && row.plain_text().contains("POP")
+        }));
+    }
+}
+
+#[test]
+fn compact_rows_reveal_only_the_selected_native_state_and_pc() {
+    let mut report = stack_moves_and_important_operations();
+    let mut cfg = report.cfg[0].clone();
+    cfg.id = 91;
+    report.cfg.push(cfg);
+    let mut block = report.ssa.blocks[0].clone();
+    block.state = 91;
+    report.ssa.blocks.push(block);
+    let selection = Selection {
+        state: Some(91),
+        pc: Some(5),
+    };
+    let compact = scoped_rows(&report, Some(0), SsaDisplay::Compact, selection);
+    let revealed: Vec<_> = compact
+        .iter()
+        .filter(|row| {
+            row.target
+                .is_some_and(|target| target.pc.is_some_and(|pc| pc < 33))
+        })
+        .collect();
+    assert_eq!(revealed.len(), 1);
+    let row = revealed[0];
+    assert_eq!(row.target, Some(selection));
+    assert!(row.plain_text().starts_with("0005  DUP5"));
+    assert!(!row.plain_text().contains('μ'));
+    assert!(row.tooltip.contains(" · μ₂→μ₃"));
 }
 
 #[test]
@@ -266,6 +441,7 @@ fn program_scope_preserves_every_native_context_and_transition_to_other_programs
     let scoped = scoped_rows(
         &report,
         Some(0),
+        SsaDisplay::Compact,
         Selection {
             state: Some(27),
             pc: None,
@@ -304,6 +480,7 @@ fn program_scope_preserves_every_native_context_and_transition_to_other_programs
     let other = scoped_rows(
         &report,
         Some(9),
+        SsaDisplay::Compact,
         Selection {
             state: Some(27),
             pc: None,
@@ -334,6 +511,7 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
     let scoped = scoped_rows(
         &report,
         None,
+        SsaDisplay::Compact,
         Selection {
             state: Some(27),
             pc: None,
@@ -349,6 +527,7 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
     let other = scoped_rows(
         &report,
         None,
+        SsaDisplay::Compact,
         Selection {
             state: Some(91),
             pc: None,
@@ -356,11 +535,12 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
     );
     assert_eq!(other.iter().filter(|row| row.header).count(), 1);
     assert_eq!(other[0].target.unwrap().state, Some(91));
-    assert!(scoped_rows(&report, None, Selection::default()).is_empty());
+    assert!(scoped_rows(&report, None, SsaDisplay::Compact, Selection::default()).is_empty());
     assert!(
         scoped_rows(
             &report,
             Some(0),
+            SsaDisplay::Compact,
             Selection {
                 state: Some(27),
                 pc: None

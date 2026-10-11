@@ -9,7 +9,7 @@ use egui::{Color32, FontId, Painter, Vec2};
 use evm_abstract_protocol::{AnalysisReport, BlockCoverage};
 
 use super::{HEADER_HEIGHT, LINE_HEIGHT, PAD, index::ReportIndex, projection::DisplayNode};
-use crate::palette;
+use crate::{app::Selection, palette, ssa_display::SsaDisplay};
 
 const DISASM_ROWS: usize = 4;
 const SSA_ROWS: usize = 8;
@@ -76,8 +76,34 @@ impl NodeText {
         );
         self
     }
+
+    /// A selected row can come from outside the bounded preview. Keep its
+    /// native instruction visible within the geometry reserved by both views;
+    /// its complete text remains available in the native-state tooltip.
+    fn within(mut self, painter: &Painter, size: Vec2) -> Self {
+        let width = size.x - PAD * 2.0;
+        for (line, _) in &mut self.lines {
+            if measured_width(painter, line, 11.0) <= width {
+                continue;
+            }
+            let mut lower = 0;
+            let mut upper = line.chars().count();
+            while lower < upper {
+                let columns = lower + (upper - lower).div_ceil(2);
+                if measured_width(painter, &abbreviate(line, columns), 11.0) <= width {
+                    lower = columns;
+                } else {
+                    upper = columns - 1;
+                }
+            }
+            *line = abbreviate(line, lower);
+        }
+        self.size = size;
+        self
+    }
 }
 
+#[cfg(test)]
 pub(super) fn node_preview(
     painter: &Painter,
     report: &AnalysisReport,
@@ -85,10 +111,49 @@ pub(super) fn node_preview(
     node: &DisplayNode,
     view: NodeView,
 ) -> NodeText {
+    node_preview_with_display(
+        painter,
+        report,
+        index,
+        node,
+        view,
+        SsaDisplay::default(),
+        Selection::default(),
+    )
+}
+
+pub(super) fn node_preview_with_display(
+    painter: &Painter,
+    report: &AnalysisReport,
+    index: &ReportIndex,
+    node: &DisplayNode,
+    view: NodeView,
+    display: SsaDisplay,
+    selection: Selection,
+) -> NodeText {
     let text = if node.members.len() > 1 {
         aggregate::preview(report, index, node, view)
     } else if let Some(block) = index.cfg(report, node.id) {
-        leaf::preview(report, index, block, view)
+        let selected_pc = (selection.state == Some(block.id))
+            .then_some(selection.pc)
+            .flatten();
+        if view == NodeView::Ssa {
+            let compact = leaf::preview(report, index, block, view, SsaDisplay::Compact, None)
+                .measured(painter);
+            let full =
+                leaf::preview(report, index, block, view, SsaDisplay::Full, None).measured(painter);
+            let size = compact.size.max(full.size);
+            let text = if selected_pc.is_some() {
+                leaf::preview(report, index, block, view, display, selected_pc)
+            } else {
+                match display {
+                    SsaDisplay::Compact => compact,
+                    SsaDisplay::Full => full,
+                }
+            };
+            return text.within(painter, size);
+        }
+        leaf::preview(report, index, block, view, display, selected_pc)
     } else {
         NodeText::new(
             Symbol::State(node.id).to_string(),
@@ -128,7 +193,8 @@ pub(super) fn node_text(
     view: NodeView,
 ) -> NodeText {
     let index = ReportIndex::new(report);
-    let mut text = leaf::preview(report, &index, block, view).measured(painter);
+    let mut text =
+        leaf::preview(report, &index, block, view, SsaDisplay::default(), None).measured(painter);
     text.tooltip = leaf::tooltip(report, &index, block, view);
     text
 }

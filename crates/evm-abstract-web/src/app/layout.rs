@@ -107,6 +107,7 @@ impl PaneLayout {
                             ui,
                             panes.report,
                             panes.program,
+                            panes.ssa_display,
                             *panes.selection,
                             panes.ssa_cache,
                         ),
@@ -135,6 +136,7 @@ impl PaneLayout {
                                 ui,
                                 panes.report,
                                 panes.program,
+                                panes.ssa_display,
                                 *panes.selection,
                                 panes.ssa_cache,
                             ),
@@ -229,6 +231,7 @@ pub(super) struct AnalysisPanes<'a> {
     pub(super) disasm_focus: &'a mut Selection,
     pub(super) ssa_focus: &'a mut Selection,
     pub(super) ssa_cache: &'a mut widgets::SsaCache,
+    pub(super) ssa_display: crate::ssa_display::SsaDisplay,
 }
 
 impl AnalysisPanes<'_> {
@@ -243,11 +246,16 @@ impl AnalysisPanes<'_> {
                     self.disasm_focus,
                 );
             }
-            Pane::Graph => self.graph.show(ui, self.report, self.selection),
+            Pane::Graph => {
+                self.graph
+                    .set_ssa_display(self.ssa_display, *self.selection);
+                self.graph.show(ui, self.report, self.selection);
+            }
             Pane::Ssa => widgets::ssa_cached(
                 ui,
                 self.report,
                 self.program,
+                self.ssa_display,
                 self.selection,
                 self.ssa_focus,
                 self.ssa_cache,
@@ -303,6 +311,8 @@ impl Behavior<Pane> for AnalysisPanes<'_> {
     }
 }
 
+#[cfg(test)]
+mod details_tests;
 #[cfg(test)]
 mod sizing_tests;
 #[cfg(test)]

@@ -17,7 +17,14 @@ fn natural(ctx: &Context, workspace: &Workspace) -> [f32; 2] {
         widths = [
             widgets::disassembly_width(ui, report, workspace.program, workspace.selection)
                 .max(PANE_MIN),
-            widgets::ssa_width(ui, report, workspace.program, workspace.selection).max(PANE_MIN),
+            widgets::ssa_width(
+                ui,
+                report,
+                workspace.program,
+                workspace.ssa_display,
+                workspace.selection,
+            )
+            .max(PANE_MIN),
         ];
     });
     output.textures_delta.clear();

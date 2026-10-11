@@ -699,13 +699,33 @@ fn automatic_row_focus_preserves_leading_columns_in_split_view() {
     // The inspector also labels σ0, before the source panes are painted.
     // The final standalone σ0 is the actual SSA table definition.
     let definition_left = labels.iter().rfind(|(text, _)| text == "σ0").unwrap().1.x;
+    let definition_clip_left = output
+        .shapes
+        .iter()
+        .rev()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text)
+                if evm_abstract_notation::normalize_subscripts(text.galley.text()) == "σ0" =>
+            {
+                Some(shape.clip_rect.left())
+            }
+            _ => None,
+        })
+        .expect("the standalone definition must have a real painter clip");
     assert!(
         pc_left >= disasm_left,
         "PC column is clipped by focus: {pc_left} < {disasm_left}"
     );
     assert!(
-        definition_left >= ssa_left,
-        "SSA definition is clipped by focus: {definition_left} < {ssa_left}"
+        definition_left >= definition_clip_left,
+        "SSA definition is clipped by focus: {definition_left} < {definition_clip_left}"
+    );
+    // Table text is snapped to physical pixels; the heading's widget position
+    // can remain fractional after natural pane sizing. Check clipping against
+    // the actual clip and alignment within that single-pixel rounding budget.
+    assert!(
+        (definition_left - ssa_left).abs() <= 1.0 / ctx.pixels_per_point(),
+        "SSA leading column does not align with its heading"
     );
     workspace.selection = Selection {
         state: Some(2),

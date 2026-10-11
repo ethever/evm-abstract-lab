@@ -97,6 +97,7 @@ pub struct Workspace {
     disasm_focus: Selection,
     ssa_focus: Selection,
     ssa_cache: widgets::SsaCache,
+    ssa_display: crate::ssa_display::SsaDisplay,
 }
 
 impl Default for Workspace {
@@ -119,6 +120,7 @@ impl Default for Workspace {
             disasm_focus: Selection::default(),
             ssa_focus: Selection::default(),
             ssa_cache: widgets::SsaCache::default(),
+            ssa_display: crate::ssa_display::SsaDisplay::default(),
         }
     }
 }
@@ -186,7 +188,13 @@ impl Workspace {
                 egui::Panel::top("result_context")
                     .frame(palette::chrome_frame())
                     .show(ui, |ui| {
-                        chrome::result_context(ui, report, self.program, self.previous_report);
+                        chrome::result_context(
+                            ui,
+                            report,
+                            self.program,
+                            self.previous_report,
+                            &mut self.ssa_display,
+                        );
                     });
                 if self.inspector.expanded {
                     let maximum = (viewport.y * 0.38).max(80.0);
@@ -245,6 +253,7 @@ impl Workspace {
                             disasm_focus: &mut self.disasm_focus,
                             ssa_focus: &mut self.ssa_focus,
                             ssa_cache: &mut self.ssa_cache,
+                            ssa_display: self.ssa_display,
                         };
                         match self.view {
                             View::Split => self.layout.show(ui, &mut panes),
@@ -456,7 +465,7 @@ impl Workspace {
             && let Some(report) = &self.report
         {
             return format!(
-                "Ready: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}",
+                "Ready: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}; SSA details: {:?}",
                 report
                     .disassembly
                     .iter()
@@ -482,7 +491,8 @@ impl Workspace {
                     .map_or("none".into(), |program| Symbol::Program(program)
                         .to_string()),
                 self.inspector.accessible_summary(report, self.selection),
-                self.graph.accessible_summary()
+                self.graph.accessible_summary(),
+                self.ssa_display
             );
         }
         let progress = self

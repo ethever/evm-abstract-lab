@@ -16,10 +16,10 @@ mod tests;
 mod visibility;
 
 use super::heading;
-use crate::{app::Selection, palette};
+use crate::{app::Selection, palette, ssa_display::SsaDisplay};
 #[cfg(test)]
 use content::node_text;
-use content::{NodeText, NodeView, node_preview, node_tooltip};
+use content::{NodeText, NodeView, node_preview_with_display, node_tooltip};
 use edges::{edge_label, paint_edge_text};
 use egui::{Align2, FontId, Painter, Pos2, Rect, Sense, Ui, Vec2};
 use evm_abstract_protocol::AnalysisReport;
@@ -37,6 +37,9 @@ const LINE_HEIGHT: f32 = 14.0;
 pub(crate) struct Graph {
     pub(crate) zoom: f32,
     content: NodeView,
+    ssa_display: SsaDisplay,
+    ssa_selection: Selection,
+    preview_dirty: BTreeSet<usize>,
     mode: GraphMode,
     program_scope: Option<usize>,
     neighborhood_hops: usize,
@@ -77,6 +80,9 @@ impl Default for Graph {
         Self {
             zoom: 1.0,
             content: NodeView::default(),
+            ssa_display: SsaDisplay::default(),
+            ssa_selection: Selection::default(),
+            preview_dirty: BTreeSet::new(),
             mode: GraphMode::default(),
             program_scope: None,
             neighborhood_hops: 2,
@@ -119,6 +125,7 @@ impl Graph {
         if ui.is_sizing_pass() {
             return;
         }
+        self.set_ssa_display(self.ssa_display, *selection);
         self.ensure_scene(report, selection.state);
         let fit_requested = self.fit_shortcut(ui);
         heading(
@@ -134,6 +141,7 @@ impl Graph {
         );
         self.controls(ui, report, selection);
         self.ensure_scene(report, selection.state);
+        self.set_ssa_display(self.ssa_display, *selection);
         self.view_legend(ui);
         let (response, painter) = ui.allocate_painter(
             ui.available_size().max(Vec2::splat(1.0)),
@@ -151,10 +159,41 @@ impl Graph {
                 .map(|node| {
                     (
                         node.id,
-                        node_preview(&painter, report, index, node, self.content),
+                        node_preview_with_display(
+                            &painter,
+                            report,
+                            index,
+                            node,
+                            self.content,
+                            self.ssa_display,
+                            self.ssa_selection,
+                        ),
                     )
                 })
                 .collect();
+            self.preview_dirty.clear();
+        } else if let Some(index) = &self.index {
+            for id in std::mem::take(&mut self.preview_dirty) {
+                let Some(node) = self
+                    .node_positions
+                    .get(&id)
+                    .and_then(|position| self.display.nodes.get(*position))
+                else {
+                    continue;
+                };
+                self.nodes.insert(
+                    id,
+                    node_preview_with_display(
+                        &painter,
+                        report,
+                        index,
+                        node,
+                        self.content,
+                        self.ssa_display,
+                        self.ssa_selection,
+                    ),
+                );
+            }
         }
         if ui.ctx().will_discard() || !self.update_viewport(report, canvas.size(), &painter) {
             return;
@@ -313,6 +352,7 @@ impl Graph {
     pub(crate) fn reset_report(&mut self) {
         *self = Self {
             content: self.content,
+            ssa_display: self.ssa_display,
             mode: self.mode,
             neighborhood_hops: self.neighborhood_hops,
             cancel_wheel: self.cancel_wheel,
@@ -327,6 +367,34 @@ impl Graph {
         }
     }
 
+    /// SSA detail choices change cached text only. Both bounded presentations
+    /// reserve the same natural geometry, so native routes and camera stay put.
+    pub(crate) fn set_ssa_display(&mut self, display: SsaDisplay, selection: Selection) {
+        if self.ssa_display != display {
+            self.ssa_display = display;
+            if self.content == NodeView::Ssa {
+                self.nodes.clear();
+                self.preview_dirty.clear();
+            }
+        }
+        if self.ssa_selection != selection
+            && self.ssa_display == SsaDisplay::Compact
+            && self.content == NodeView::Ssa
+        {
+            for selection in [self.ssa_selection, selection] {
+                if let (Some(state), Some(_)) = (selection.state, selection.pc)
+                    && let Some(id) = self.display.state_to_node.get(&state)
+                    && self.node_positions.get(id).is_some_and(|position| {
+                        self.display.nodes[*position].members.as_slice() == [state]
+                    })
+                {
+                    self.preview_dirty.insert(*id);
+                }
+            }
+        }
+        self.ssa_selection = selection;
+    }
+
     pub(crate) fn set_mode(&mut self, mode: GraphMode) {
         if self.mode != mode {
             self.mode = mode;
@@ -337,6 +405,7 @@ impl Graph {
     fn invalidate_scene(&mut self) {
         self.display_dirty = true;
         self.nodes.clear();
+        self.preview_dirty.clear();
         self.content_anchor = None;
         self.instance_group = None;
         self.layout_error = None;
@@ -374,6 +443,7 @@ impl Graph {
         });
         self.content = content;
         self.nodes.clear();
+        self.preview_dirty.clear();
         self.layout_pending = true;
         self.fitted = false;
     }

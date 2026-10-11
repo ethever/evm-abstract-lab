@@ -113,6 +113,7 @@ pub(super) fn result_context(
     report: &AnalysisReport,
     program: Option<usize>,
     previous: bool,
+    display: &mut crate::ssa_display::SsaDisplay,
 ) {
     let source = program.and_then(|id| report.programs.iter().find(|program| program.id == id));
     let program_label = source.map_or_else(
@@ -143,24 +144,48 @@ pub(super) fn result_context(
         program_label,
         report.fork
     );
-    ui.add(
-        egui::Label::new(notation::widget(
-            ui,
-            RichText::new(label).small().color(palette::MUTED),
-        ))
-        .truncate(),
-    )
-    .on_hover_ui(|ui| {
-        if let Some(program) = source {
-            ui.monospace(&program.code_address);
-            ui.monospace(&program.code_hash);
-        }
-        if let Some(snapshot) = &report.metadata.snapshot {
-            ui.monospace(&snapshot.block_hash);
-            if ui.small_button("Copy block hash").clicked() {
-                ui.ctx().copy_text(snapshot.block_hash.clone());
+    ui.scope(|ui| {
+        // Keep this metadata strip at its existing small-text height so the
+        // details toggle does not consume the analysis area in short windows.
+        ui.spacing_mut().interact_size.y = ui.text_style_height(&egui::TextStyle::Small);
+        ui.spacing_mut().button_padding.y = 0.0;
+        ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let full = *display == crate::ssa_display::SsaDisplay::Full;
+            if ui
+                .add(egui::Button::new("SSA details").small().selected(full))
+                .on_hover_text("Show completed stack operations, effect chains and completion annotations in SSA views")
+                .clicked()
+            {
+                *display = if full {
+                    crate::ssa_display::SsaDisplay::Compact
+                } else {
+                    crate::ssa_display::SsaDisplay::Full
+                };
             }
-        }
-        ui.monospace(&report.metadata.fingerprint);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(notation::widget(
+                        ui,
+                        RichText::new(label).small().color(palette::MUTED),
+                    ))
+                    .truncate(),
+                )
+                .on_hover_ui(|ui| {
+                    if let Some(program) = source {
+                        ui.monospace(&program.code_address);
+                        ui.monospace(&program.code_hash);
+                    }
+                    if let Some(snapshot) = &report.metadata.snapshot {
+                        ui.monospace(&snapshot.block_hash);
+                        if ui.small_button("Copy block hash").clicked() {
+                            ui.ctx().copy_text(snapshot.block_hash.clone());
+                        }
+                    }
+                    ui.monospace(&report.metadata.fingerprint);
+                });
+            });
+        });
+        });
     });
 }

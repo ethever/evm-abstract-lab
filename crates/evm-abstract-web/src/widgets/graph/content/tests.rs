@@ -140,7 +140,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
         content
             .lines
             .iter()
-            .any(|(line, _)| line.contains("%5 = ADD %1, %2 · μ₂→μ₅"))
+            .any(|(line, _)| line.contains("%5 = ADD %1, %2") && !line.contains('μ'))
     );
     assert!(leaf_tooltip(&report, 205, NodeView::Ssa).contains("exit μ₅ · f₀ [%5]"));
     assert!(

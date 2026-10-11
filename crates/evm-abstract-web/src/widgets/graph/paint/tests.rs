@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use egui::{Context, Event, FullOutput, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
-use evm_abstract_protocol::AnalysisReport;
+use evm_abstract_protocol::{AnalysisReport, InstructionProgress, SsaInstruction};
 
 use super::super::{Graph, content::NodeView, layout::Group, projection::GraphMode};
-use crate::app::Selection;
+use crate::{app::Selection, ssa_display::SsaDisplay};
 
 /// Render the production graph with all nodes visible. The generous viewport
 /// isolates semantic zoom from clipping, and leaves layout entirely untouched.
@@ -299,6 +299,275 @@ fn zooming_restores_the_selected_disassembly_preview() {
             !graph
                 .accessible_summary()
                 .contains("CFG detail: SSA preview")
+        );
+        assert_eq!(geometry(&graph), measured);
+    }
+}
+
+fn receipt(pc: usize, opcode: u8, name: &str) -> SsaInstruction {
+    SsaInstruction {
+        pc,
+        opcode,
+        name: name.into(),
+        immediate: None,
+        operands: vec![1, 2],
+        results: vec![],
+        fault: false,
+        progress: InstructionProgress::Completed,
+        effect_input: pc,
+        effect_result: Some(pc + 1),
+    }
+}
+
+fn with_receipts(instructions: Vec<SsaInstruction>) -> AnalysisReport {
+    let mut report = crate::tests::report();
+    report.ssa.blocks[2].phis.clear();
+    report.ssa.blocks[2].instructions = instructions;
+    report
+}
+
+fn native_graph(report: &AnalysisReport) -> (Context, Graph, Selection) {
+    let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
+    let mut graph = Graph::default();
+    graph.set_mode(GraphMode::States);
+    let mut selection = Selection::default();
+    frame(&ctx, &mut graph, report, &mut selection, vec![]);
+    graph.fitted = false;
+    graph.zoom = 1.0;
+    graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2();
+    (ctx, graph, selection)
+}
+
+#[test]
+fn ssa_detail_switch_paints_stack_receipts_and_phases_with_frozen_geometry() {
+    let mut call = receipt(105, 0xf1, "CALL");
+    call.progress = InstructionProgress::Dispatched;
+    let report = with_receipts(vec![
+        receipt(100, 0x5b, "JUMPDEST"),
+        receipt(101, 0x80, "DUP1"),
+        receipt(102, 0x9f, "SWAP16"),
+        receipt(103, 0x50, "POP"),
+        receipt(104, 0x01, "ADD"),
+        call,
+    ]);
+    let original = report.ssa.blocks[2].instructions.clone();
+    let (ctx, mut graph, mut selection) = native_graph(&report);
+    let measured = geometry(&graph);
+    let edges = graph.display.edges.clone();
+    let labels = graph.edge_labels.clone();
+    let camera = (graph.zoom, graph.pan);
+    for display in [SsaDisplay::Compact, SsaDisplay::Full, SsaDisplay::Compact] {
+        graph.set_ssa_display(display, selection);
+        let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+        let lines = card_text(&output, &graph, canvas);
+        for name in ["JUMPDEST", "ADD", "CALL"] {
+            assert!(
+                lines.iter().any(|line| line.contains(name)),
+                "missing {name}"
+            );
+        }
+        for name in ["DUP1", "SWAP16", "POP"] {
+            assert_eq!(
+                lines.iter().any(|line| line.contains(name)),
+                display == SsaDisplay::Full,
+                "unexpected {name} in {display:?}"
+            );
+        }
+        let add = lines.iter().find(|line| line.contains("  ADD")).unwrap();
+        assert_eq!(add.contains('μ'), display == SsaDisplay::Full);
+        assert_eq!(add.contains("Completed"), display == SsaDisplay::Full);
+        assert!(lines.iter().any(|line| line.contains("CALL")
+            && line.contains("Dispatched")
+            && line.contains('μ')));
+        assert_eq!(geometry(&graph), measured);
+        assert_eq!(graph.display.edges, edges);
+        assert_eq!(graph.edge_labels, labels);
+        assert_eq!((graph.zoom, graph.pan), camera);
+        assert!(!graph.layout_pending);
+        assert!(!graph.fit_pending);
+    }
+    assert_eq!(report.ssa.blocks[2].instructions, original);
+    let node = &graph.display.nodes[graph.node_positions[&2]];
+    let tooltip = super::super::content::node_tooltip(
+        &report,
+        graph.index.as_ref().unwrap(),
+        node,
+        NodeView::Ssa,
+    );
+    for raw in ["DUP1", "SWAP16", "POP", "Completed", "μ₁₀₄→μ₁₀₅"] {
+        assert!(tooltip.contains(raw), "tooltip lost {raw}");
+    }
+}
+
+#[test]
+fn compact_ssa_paints_faults_unfinished_stack_operations_and_effects() {
+    let mut dup = receipt(100, 0x8f, "DUP16");
+    dup.fault = true;
+    let mut swap = receipt(101, 0x90, "SWAP1");
+    swap.progress = InstructionProgress::Dispatched;
+    let mut pop = receipt(102, 0x50, "POP");
+    pop.progress = InstructionProgress::Started;
+    pop.effect_result = None;
+    let report = with_receipts(vec![
+        dup,
+        swap,
+        pop,
+        receipt(103, 0x55, "SSTORE"),
+        receipt(104, 0x5b, "JUMPDEST"),
+        receipt(105, 0xff, "SELFDESTRUCT"),
+    ]);
+    let (ctx, mut graph, mut selection) = native_graph(&report);
+    let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+    let lines = card_text(&output, &graph, canvas);
+    for required in [
+        "DUP16",
+        "SWAP1",
+        "POP",
+        "SSTORE",
+        "JUMPDEST",
+        "SELFDESTRUCT",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.contains(required)),
+            "missing {required}"
+        );
+    }
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("DUP16") && line.contains("fault") && line.contains('μ'))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("SWAP1") && line.contains("Dispatched"))
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("POP")
+            && line.contains("pending")
+            && line.contains("Started"))
+    );
+    assert!(
+        graph.nodes[&2]
+            .lines
+            .iter()
+            .any(|(line, color)| line.contains("DUP16") && *color == crate::palette::ERROR)
+    );
+}
+
+#[test]
+fn compact_preview_fills_filtered_quota_and_temporarily_reveals_a_buried_native_pc() {
+    let mut instructions: Vec<_> = (0..1024).map(|pc| receipt(pc, 0x9f, "SWAP16")).collect();
+    instructions.extend((1024..1032).map(|pc| receipt(pc, 0x01, "ADD")));
+    instructions.push(receipt(1032, 0x00, "STOP"));
+    let report = with_receipts(instructions);
+    let (ctx, mut graph, mut selection) = native_graph(&report);
+    let measured = geometry(&graph);
+    let camera = (graph.zoom, graph.pan);
+    let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+    let lines = card_text(&output, &graph, canvas);
+    assert_eq!(
+        lines.iter().filter(|line| line.contains("  ADD")).count(),
+        5
+    );
+    assert!(lines.iter().any(|line| line.contains("STOP")));
+    assert!(lines.iter().all(|line| !line.contains("SWAP16")));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("1024 details hidden"))
+    );
+    for selected_pc in [Some(512), Some(700), None] {
+        selection = Selection {
+            state: Some(2),
+            pc: selected_pc,
+        };
+        graph.set_ssa_display(SsaDisplay::Compact, selection);
+        let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+        let lines = card_text(&output, &graph, canvas);
+        let revealed: Vec<_> = lines
+            .iter()
+            .filter(|line| line.contains("SWAP16"))
+            .collect();
+        assert_eq!(revealed.len(), usize::from(selected_pc.is_some()));
+        if let Some(pc) = selected_pc {
+            assert!(revealed[0].starts_with(&format!("{pc:04x}")));
+        }
+        assert!(lines.iter().any(|line| line.contains("STOP")));
+        assert_eq!(graph.nodes[&2].lines.len(), 8);
+        assert_eq!(geometry(&graph), measured);
+        assert_eq!((graph.zoom, graph.pan), camera);
+        assert!(!graph.layout_pending);
+    }
+}
+
+#[test]
+fn selected_stack_row_fits_natural_reserved_width_and_retains_full_tooltip() {
+    let mut instructions: Vec<_> = (0..20).map(|pc| receipt(pc, 0x01, "ADD")).collect();
+    let mut wide = receipt(20, 0x9f, "SWAP16");
+    wide.operands = vec![usize::MAX, usize::MAX - 1];
+    instructions.push(wide);
+    instructions.push(receipt(21, 0x00, "STOP"));
+    let report = with_receipts(instructions);
+    let (ctx, mut graph, _) = native_graph(&report);
+    let measured = geometry(&graph);
+    let camera = (graph.zoom, graph.pan);
+    let mut selection = Selection {
+        state: Some(2),
+        pc: Some(20),
+    };
+    graph.set_ssa_display(SsaDisplay::Compact, selection);
+    let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+    let lines = card_text(&output, &graph, canvas);
+    let revealed = lines.iter().find(|line| line.contains("SWAP16")).unwrap();
+    assert!(revealed.starts_with("0014  SWAP16"));
+    assert!(
+        revealed.ends_with('…'),
+        "wide native arguments must stay within the reserved card"
+    );
+    assert_eq!(geometry(&graph), measured);
+    assert_eq!((graph.zoom, graph.pan), camera);
+    let node = &graph.display.nodes[graph.node_positions[&2]];
+    let tooltip = super::super::content::node_tooltip(
+        &report,
+        graph.index.as_ref().unwrap(),
+        node,
+        NodeView::Ssa,
+    );
+    assert!(tooltip.contains(&format!("SWAP16 %{}, %{}", usize::MAX, usize::MAX - 1)));
+}
+
+#[test]
+fn ssa_detail_and_selected_pc_keep_aggregate_cards_as_source_summaries() {
+    let mut report = with_receipts(vec![receipt(100, 0x80, "DUP1")]);
+    let mut extra = report.cfg[2].clone();
+    extra.id = 999;
+    report.cfg.push(extra);
+    let mut extra_ssa = report.ssa.blocks[2].clone();
+    extra_ssa.state = 999;
+    extra_ssa.instructions[0].results = vec![9101];
+    report.ssa.blocks.push(extra_ssa);
+    let (ctx, mut graph, _) = native_graph(&report);
+    graph.set_mode(GraphMode::Blocks);
+    let mut selection = Selection {
+        state: Some(999),
+        pc: Some(100),
+    };
+    frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+    graph.fitted = false;
+    graph.zoom = 1.0;
+    graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2();
+    let measured = geometry(&graph);
+    for display in [SsaDisplay::Compact, SsaDisplay::Full] {
+        graph.set_ssa_display(display, selection);
+        let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+        let lines = card_text(&output, &graph, canvas);
+        assert!(lines.contains(&"Select an instance for SSA"));
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("%9101") && !line.contains("DUP1"))
         );
         assert_eq!(geometry(&graph), measured);
     }
