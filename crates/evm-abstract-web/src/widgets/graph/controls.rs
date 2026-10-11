@@ -7,6 +7,8 @@ use egui::{Context, RichText, Ui};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::AnalysisReport;
 
+const TERMINATION_LEGEND: &str = "CFG termination colors\nDeep green: normal end / return\nDeep purple: REVERT\nDeep red: exception\nNeutral: mixed, continuing, or no complete termination evidence\nRoot end and Frame return labels show native state counts.\nDashed amber outline: unresolved frontier / non-current coverage\nTurquoise outer outline: selected state\nAt low zoom, identity text and termination colors remain visible.";
+
 impl Graph {
     pub(super) fn controls(
         &mut self,
@@ -45,7 +47,13 @@ impl Graph {
                 .small()
                 .color(palette::MUTED)),
             )
-                .on_hover_text(crate::notation::widget(ui, "Drag or scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Resizing preserves the scene and camera."));
+                .on_hover_text(crate::notation::widget(ui, format!("Drag or scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Resizing preserves the scene and camera.\n\n{TERMINATION_LEGEND}")));
+            // Do not create another wrapped toolbar row on a narrow canvas.
+            // The existing zoom label also exposes the full legend on hover.
+            if ui.available_width() >= 70.0 {
+                ui.label(crate::notation::widget(ui, RichText::new("End colors").small().color(palette::MUTED)))
+                    .on_hover_text(crate::notation::widget(ui, TERMINATION_LEGEND));
+            }
         });
         self.set_content(content, selection.state);
         let mut mode = self.mode;

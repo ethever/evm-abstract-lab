@@ -2,7 +2,7 @@
 //! all measured geometry, and a small hysteresis band avoids wheel jitter.
 
 use egui::{Align2, FontId, Painter, Rect, Stroke, StrokeKind, Ui, Vec2};
-use evm_abstract_protocol::BlockCoverage;
+use evm_abstract_protocol::{BlockCoverage, OutcomeKind};
 
 use super::{HEADER_HEIGHT, LINE_HEIGHT, PAD, content::NodeText};
 use crate::palette;
@@ -50,8 +50,6 @@ pub(super) fn node(
 ) {
     let border = if selected {
         palette::ACCENT
-    } else if content.frontier || content.coverage != BlockCoverage::Current {
-        palette::WARNING
     } else if hovered {
         palette::BLUE
     } else {
@@ -60,14 +58,37 @@ pub(super) fn node(
     painter.rect(
         rect,
         4.0,
-        if selected {
-            palette::SELECTED
-        } else {
-            palette::PANEL
+        match content.termination.single_kind() {
+            Some(OutcomeKind::Return) => palette::TERMINAL_NORMAL,
+            Some(OutcomeKind::Revert) => palette::TERMINAL_REVERT,
+            Some(OutcomeKind::Failure) => palette::TERMINAL_EXCEPTION,
+            None => palette::PANEL,
         },
         Stroke::new(if selected { 1.5 } else { 1.0 }, border),
         StrokeKind::Inside,
     );
+    if content.frontier
+        || content.coverage != BlockCoverage::Current
+        || content.termination.unresolved > 0
+        || content.termination.non_current > 0
+    {
+        // The inset dashed outline keeps incomplete coverage visible alongside
+        // the independent outer selection/hover outline and semantic fill.
+        let inset = 3.0_f32.min(rect.width().min(rect.height()) * 0.2);
+        let warning = rect.shrink(inset);
+        painter.extend(egui::Shape::dashed_line(
+            &[
+                warning.left_top(),
+                warning.right_top(),
+                warning.right_bottom(),
+                warning.left_bottom(),
+                warning.left_top(),
+            ],
+            Stroke::new(1.0, palette::WARNING),
+            4.0,
+            3.0,
+        ));
+    }
     let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
     if level == DetailLevel::Identity {
         identity(&painter, rect, content, zoom);
@@ -90,7 +111,7 @@ pub(super) fn node(
         rect.top() + (HEADER_HEIGHT - 3.0) * zoom,
         Stroke::new(1.0, palette::BORDER),
     );
-    for (index, (line, color)) in content.lines.iter().enumerate() {
+    for (index, (line, color)) in content.badges.iter().chain(&content.lines).enumerate() {
         label(
             HEADER_HEIGHT + index as f32 * LINE_HEIGHT,
             line,

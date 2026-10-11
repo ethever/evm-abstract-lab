@@ -4,11 +4,15 @@
 use evm_abstract_notation::Symbol;
 mod aggregate;
 mod leaf;
+mod outcome;
 
 use egui::{Color32, FontId, Painter, Vec2};
 use evm_abstract_protocol::{AnalysisReport, BlockCoverage};
 
-use super::{HEADER_HEIGHT, LINE_HEIGHT, PAD, index::ReportIndex, projection::DisplayNode};
+use super::{
+    HEADER_HEIGHT, LINE_HEIGHT, PAD, index::ReportIndex, projection::DisplayNode,
+    termination::TerminationSummary,
+};
 use crate::{app::Selection, palette, ssa_display::SsaDisplay};
 
 const DISASM_ROWS: usize = 4;
@@ -29,6 +33,10 @@ pub(super) struct NodeText {
     pub compact: Vec<String>,
     pub detail: String,
     pub lines: Vec<(String, Color32)>,
+    /// Termination rows have their own measured space and never consume the
+    /// bounded SSA/disassembly preview quota.
+    pub badges: Vec<(String, Color32)>,
+    pub termination: TerminationSummary,
     pub coverage: BlockCoverage,
     pub frontier: bool,
     pub size: Vec2,
@@ -50,6 +58,8 @@ impl NodeText {
             title,
             detail,
             lines,
+            badges: vec![],
+            termination: TerminationSummary::default(),
             coverage,
             frontier,
             size: Vec2::ZERO,
@@ -61,18 +71,23 @@ impl NodeText {
         self.compact = rows;
         self
     }
+    fn with_termination(mut self, summary: TerminationSummary) -> Self {
+        self.badges = outcome::badges(summary);
+        self.termination = summary;
+        self
+    }
     fn measured(mut self, painter: &Painter) -> Self {
         let mut width = measured_width(painter, &self.title, 12.0).max(measured_width(
             painter,
             &self.detail,
             10.0,
         ));
-        for (line, _) in &self.lines {
+        for (line, _) in self.badges.iter().chain(&self.lines) {
             width = width.max(measured_width(painter, line, 11.0));
         }
         self.size = Vec2::new(
             (width + PAD * 2.0).max(104.0),
-            HEADER_HEIGHT + self.lines.len() as f32 * LINE_HEIGHT + PAD,
+            HEADER_HEIGHT + (self.badges.len() + self.lines.len()) as f32 * LINE_HEIGHT + PAD,
         );
         self
     }
@@ -131,6 +146,7 @@ pub(super) fn node_preview_with_display(
     display: SsaDisplay,
     selection: Selection,
 ) -> NodeText {
+    let termination = index.termination_summary(&node.members);
     let text = if node.members.len() > 1 {
         aggregate::preview(report, index, node, view)
     } else if let Some(block) = index.cfg(report, node.id) {
@@ -139,12 +155,15 @@ pub(super) fn node_preview_with_display(
             .flatten();
         if view == NodeView::Ssa {
             let compact = leaf::preview(report, index, block, view, SsaDisplay::Compact, None)
+                .with_termination(termination)
                 .measured(painter);
-            let full =
-                leaf::preview(report, index, block, view, SsaDisplay::Full, None).measured(painter);
+            let full = leaf::preview(report, index, block, view, SsaDisplay::Full, None)
+                .with_termination(termination)
+                .measured(painter);
             let size = compact.size.max(full.size);
             let text = if selected_pc.is_some() {
                 leaf::preview(report, index, block, view, display, selected_pc)
+                    .with_termination(termination)
             } else {
                 match display {
                     SsaDisplay::Compact => compact,
@@ -163,7 +182,7 @@ pub(super) fn node_preview_with_display(
             false,
         )
     };
-    text.measured(painter)
+    text.with_termination(termination).measured(painter)
 }
 pub(super) fn node_tooltip(
     report: &AnalysisReport,
@@ -171,7 +190,7 @@ pub(super) fn node_tooltip(
     node: &DisplayNode,
     view: NodeView,
 ) -> String {
-    if node.members.len() > 1 {
+    let detail = if node.members.len() > 1 {
         aggregate::tooltip(report, index, node, view)
     } else if let Some(block) = index.cfg(report, node.id) {
         leaf::tooltip(report, index, block, view)
@@ -180,7 +199,11 @@ pub(super) fn node_tooltip(
             "Native state {} is unavailable in this report.",
             Symbol::State(node.id)
         )
-    }
+    };
+    format!(
+        "{detail}\n\n{}",
+        outcome::tooltip(index.termination_summary(&node.members))
+    )
 }
 
 /// Existing leaf tests exercise full details through this convenience wrapper.
@@ -193,9 +216,15 @@ pub(super) fn node_text(
     view: NodeView,
 ) -> NodeText {
     let index = ReportIndex::new(report);
-    let mut text =
-        leaf::preview(report, &index, block, view, SsaDisplay::default(), None).measured(painter);
-    text.tooltip = leaf::tooltip(report, &index, block, view);
+    let summary = index.termination_summary(&[block.id]);
+    let mut text = leaf::preview(report, &index, block, view, SsaDisplay::default(), None)
+        .with_termination(summary)
+        .measured(painter);
+    text.tooltip = format!(
+        "{}\n\n{}",
+        leaf::tooltip(report, &index, block, view),
+        outcome::tooltip(summary)
+    );
     text
 }
 

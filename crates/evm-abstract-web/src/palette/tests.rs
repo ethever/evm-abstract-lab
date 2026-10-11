@@ -1,6 +1,9 @@
 use egui::{Context, FontDefinitions, FontFamily, FontId, Pos2, RawInput, Vec2};
 
-use super::{TEXT, configure};
+use super::{
+    ACCENT, MUTED, PANEL, TERMINAL_EXCEPTION, TERMINAL_NORMAL, TERMINAL_REVERT, TEXT, WARNING,
+    configure,
+};
 
 fn initialize(ctx: &Context) {
     let mut output = ctx.run_ui(RawInput::default(), |_| {});
@@ -123,5 +126,30 @@ fn fallback_preserves_existing_font_order_data_and_text_metrics() {
             shaped_metrics(&configured, font.clone(), text),
             shaped_metrics(&default, font, text)
         );
+    }
+}
+
+fn luminance(color: egui::Color32) -> f32 {
+    let channel = |value: u8| {
+        let value = f32::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+}
+
+#[test]
+fn termination_fills_keep_preview_and_identity_text_readable() {
+    for background in [PANEL, TERMINAL_NORMAL, TERMINAL_REVERT, TERMINAL_EXCEPTION] {
+        for foreground in [TEXT, MUTED, ACCENT, WARNING] {
+            let contrast = (luminance(foreground) + 0.05) / (luminance(background) + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "CFG text {foreground:?} on {background:?} has contrast {contrast}"
+            );
+        }
     }
 }

@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use egui::{Context, Event, FullOutput, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
-use evm_abstract_protocol::{AnalysisReport, InstructionProgress, SsaInstruction};
+use evm_abstract_protocol::{
+    AnalysisReport, BlockCoverage, CfgEdge, EdgeKind, Frontier, FrontierDetails, FrontierKind,
+    InstructionProgress, Outcome, OutcomeKind, SsaInstruction,
+};
 
 use super::super::{Graph, content::NodeView, layout::Group, projection::GraphMode};
 use crate::{app::Selection, ssa_display::SsaDisplay};
@@ -571,4 +574,215 @@ fn ssa_detail_and_selected_pc_keep_aggregate_cards_as_source_summaries() {
         );
         assert_eq!(geometry(&graph), measured);
     }
+}
+
+fn outcome(state: usize, kind: OutcomeKind) -> Outcome {
+    Outcome {
+        state,
+        kind,
+        data: 0,
+        store: 0,
+    }
+}
+
+fn terminal_report() -> AnalysisReport {
+    let mut report = crate::tests::report();
+    report.edges.clear();
+    report.outcomes = vec![
+        outcome(0, OutcomeKind::Return),
+        outcome(1, OutcomeKind::Revert),
+        outcome(2, OutcomeKind::Failure),
+    ];
+    report
+}
+
+fn card<'a>(
+    output: &'a FullOutput,
+    graph: &Graph,
+    canvas: Rect,
+    state: usize,
+) -> &'a egui::epaint::RectShape {
+    let expected = graph.screen_rect(canvas, graph.placement.nodes[&state]);
+    output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.rect == expected => Some(rect),
+            _ => None,
+        })
+        .expect("production graph must paint the measured card rectangle")
+}
+
+fn warning_dashes(output: &FullOutput, rect: Rect) -> usize {
+    let outline = rect.shrink(3.0_f32.min(rect.width().min(rect.height()) * 0.2));
+    output
+        .shapes
+        .iter()
+        .filter(|shape| {
+            matches!(&shape.shape, egui::Shape::LineSegment { points, stroke }
+                if stroke.color == crate::palette::WARNING
+                    && stroke.width == 1.0
+                    && points.iter().all(|point| outline.contains(*point)))
+        })
+        .count()
+}
+
+#[test]
+fn terminal_cards_paint_three_semantic_fills_and_selection_preserves_each_fill() {
+    let report = terminal_report();
+    let (ctx, mut graph, mut selection) = native_graph(&report);
+    let measured = geometry(&graph);
+    let expected = [
+        (0, crate::palette::TERMINAL_NORMAL, "Root end: normal 1"),
+        (1, crate::palette::TERMINAL_REVERT, "Root end: REVERT 1"),
+        (
+            2,
+            crate::palette::TERMINAL_EXCEPTION,
+            "Root end: exception 1",
+        ),
+    ];
+    for (state, fill, label) in expected {
+        for selected in [false, true] {
+            selection.state = selected.then_some(state);
+            let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+            let painted = card(&output, &graph, canvas, state);
+            assert_eq!(painted.fill, fill);
+            assert_eq!(
+                painted.stroke.color,
+                if selected {
+                    crate::palette::ACCENT
+                } else {
+                    crate::palette::BORDER
+                }
+            );
+            assert_eq!(painted.stroke.width, if selected { 1.5 } else { 1.0 });
+            assert_eq!(warning_dashes(&output, painted.rect), 0);
+            assert!(card_text(&output, &graph, canvas).contains(&label));
+            assert_eq!(geometry(&graph), measured);
+        }
+    }
+}
+
+#[test]
+fn coverage_and_frontier_warnings_have_independent_dashes_and_selection_outline() {
+    let mut report = terminal_report();
+    report.frontiers.push(Frontier {
+        from: Some(0),
+        pc: Some(0),
+        kind: FrontierKind::Memory,
+        reason: FrontierDetails::Memory,
+        detail: "unresolved memory".into(),
+    });
+    report.ssa.blocks[1].coverage = BlockCoverage::Stale;
+    let (ctx, mut graph, mut selection) = native_graph(&report);
+    for state in [0, 1] {
+        selection.state = Some(state);
+        let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+        let painted = card(&output, &graph, canvas, state);
+        assert_eq!(painted.fill, crate::palette::PANEL);
+        assert_eq!(painted.stroke.color, crate::palette::ACCENT);
+        assert_eq!(painted.stroke.width, 1.5);
+        assert!(warning_dashes(&output, painted.rect) > 4);
+        assert!(graph.nodes[&state].badges[0].0.contains("incomplete"));
+    }
+    // An unresolved state without any ending evidence stays neutral and never
+    // gains a normal-end badge merely because no continuation was observed.
+    report.outcomes.clear();
+    graph.reset_report();
+    let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+    let painted = card(&output, &graph, canvas, 0);
+    assert_eq!(painted.fill, crate::palette::PANEL);
+    assert!(warning_dashes(&output, painted.rect) > 4);
+    assert!(graph.nodes[&0].badges.is_empty());
+}
+
+#[test]
+fn mixed_aggregate_counts_and_may_terminate_cards_keep_a_neutral_fill() {
+    let mut report = terminal_report();
+    report.cfg[1].basic_block = 0;
+    report.cfg[1].start_pc = report.cfg[0].start_pc;
+    report.cfg[1].instructions = report.cfg[0].instructions.clone();
+    let (ctx, mut graph, mut selection) = native_graph(&report);
+    graph.set_mode(GraphMode::Blocks);
+    frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+    graph.fitted = false;
+    graph.zoom = 1.0;
+    graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2();
+    let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+    assert_eq!(card(&output, &graph, canvas, 0).fill, crate::palette::PANEL);
+    let lines = card_text(&output, &graph, canvas);
+    assert!(lines.contains(&"Mixed / incomplete termination"));
+    assert!(lines.contains(&"Root end: normal 1 · REVERT 1"));
+    assert!(lines.contains(&"Select an instance for SSA"));
+    let node = &graph.display.nodes[graph.node_positions[&0]];
+    let tooltip = super::super::content::node_tooltip(
+        &report,
+        graph.index.as_ref().unwrap(),
+        node,
+        NodeView::Ssa,
+    );
+    assert!(tooltip.contains("Root end: normal 1 · REVERT 1 · exception 0"));
+
+    report.edges.push(CfgEdge {
+        id: 98,
+        from: 2,
+        to: 0,
+        kind: EdgeKind::Fallthrough,
+    });
+    graph.reset_report();
+    let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+    assert_eq!(card(&output, &graph, canvas, 2).fill, crate::palette::PANEL);
+    assert!(card_text(&output, &graph, canvas).contains(&"May terminate · continuing 1"));
+    assert!(card_text(&output, &graph, canvas).contains(&"Root end: exception 1"));
+}
+
+#[test]
+fn frame_return_badges_low_zoom_and_ssa_detail_share_frozen_measured_geometry() {
+    let mut report = terminal_report();
+    report.outcomes.retain(|outcome| outcome.state != 2);
+    report.cfg[2].frame_depth = 2;
+    report.edges.push(CfgEdge {
+        id: 98,
+        from: 2,
+        to: 0,
+        kind: EdgeKind::Return,
+    });
+    let (ctx, mut graph, mut selection) = native_graph(&report);
+    let measured = geometry(&graph);
+    let topology = graph.display.edges.clone();
+    let preview_budget = graph.nodes[&2].lines.len();
+    for display in [SsaDisplay::Compact, SsaDisplay::Full] {
+        graph.set_ssa_display(display, selection);
+        for (zoom, detailed) in [(1.0, true), (0.4, false)] {
+            graph.zoom = zoom;
+            graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2() * zoom;
+            let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
+            assert_eq!(
+                card(&output, &graph, canvas, 2).fill,
+                crate::palette::TERMINAL_NORMAL
+            );
+            let labels = card_text(&output, &graph, canvas);
+            assert_eq!(labels.contains(&"Frame return: normal 1"), detailed);
+            if !detailed {
+                assert!(labels.contains(&"σ₂"));
+                assert!(labels.contains(&"B₂"));
+                assert!(labels.iter().all(|line| !line.contains("Root end")
+                    && !line.contains("Frame return")
+                    && !line.contains('%')));
+            }
+            assert_eq!(geometry(&graph), measured);
+            assert_eq!(graph.display.edges, topology);
+            assert_eq!(graph.nodes[&2].lines.len(), preview_budget);
+            assert_eq!(graph.nodes[&2].badges.len(), 1);
+        }
+    }
+    let node = &graph.display.nodes[graph.node_positions[&2]];
+    let tooltip = super::super::content::node_tooltip(
+        &report,
+        graph.index.as_ref().unwrap(),
+        node,
+        NodeView::Ssa,
+    );
+    assert!(tooltip.contains("Frame return: normal 1 · REVERT 0 · exception 0"));
+    assert!(tooltip.contains("Root end: normal 0 · REVERT 0 · exception 0"));
 }
