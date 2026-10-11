@@ -7,6 +7,8 @@ use evm_abstract_protocol::{
 use super::{Graph, node_text};
 use crate::app::Selection;
 
+mod flow;
+
 #[derive(Debug, PartialEq)]
 struct SceneSnapshot {
     nodes: std::collections::BTreeMap<usize, Rect>,

@@ -1,6 +1,7 @@
 //! Screen-space CFG edges, arrows and labels.
 
 use evm_abstract_notation::Symbol;
+mod flow;
 mod geometry;
 #[cfg(test)]
 mod tests;
@@ -9,6 +10,8 @@ use super::layout::EdgeRoute;
 use crate::palette;
 use egui::{FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use evm_abstract_protocol::EdgeKind;
+
+pub(super) const FLOW_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
 pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
     format!(
@@ -56,7 +59,7 @@ pub(super) fn paint_edge_text(
     label_text: &str,
     zoom: f32,
     selected: bool,
-) {
+) -> bool {
     let color = match kind {
         EdgeKind::BranchTrue | EdgeKind::Jump => palette::ACCENT,
         EdgeKind::BranchFalse => palette::WARNING,
@@ -78,7 +81,7 @@ pub(super) fn paint_edge_text(
     // orthogonal segments retain equal coverage as the graph moves or scales.
     let points = geometry::screen_points(&route.path, origin, zoom, stroke, pixels_per_point);
     if points.len() < 2 {
-        return;
+        return false;
     }
     painter.add(Shape::line(points.clone(), stroke));
     let end = points[points.len() - 1];
@@ -94,6 +97,7 @@ pub(super) fn paint_edge_text(
         stroke.color,
         Stroke::NONE,
     ));
+    let animated = selected && flow::paint(painter, &points, color, zoom);
     // ELK jointly places the route and its annotation. The label may sit beside
     // a segment; drawing it must never add bends or break the original path.
     if zoom > 0.35 && !label_text.is_empty() {
@@ -113,4 +117,5 @@ pub(super) fn paint_edge_text(
             .with_clip_rect(label.intersect(painter.clip_rect()))
             .galley(position, galley, text_color);
     }
+    animated
 }

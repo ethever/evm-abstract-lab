@@ -69,11 +69,16 @@ impl Default for PaneLayout {
         let code = tiles.insert_tab_tile(vec![disassembly, ssa]);
         let graph = tiles.insert_pane(Pane::Graph);
         let root = tiles.insert_container(Linear::new(LinearDir::Horizontal, vec![code, graph]));
-        let medium = Tree::new("workspace_medium", root, tiles);
-        let narrow = Tree::new_tabs(
+        let mut medium = Tree::new("workspace_medium", root, tiles);
+        let mut narrow = Tree::new_tabs(
             "workspace_narrow",
             vec![Pane::Disassembly, Pane::Graph, Pane::Ssa],
         );
+        // Keep the tab order while opening source code as SSA in each compact
+        // arrangement. Later tab choices belong to their own width class.
+        for tree in [&mut medium, &mut narrow] {
+            tree.make_active(|_, tile| matches!(tile, Tile::Pane(Pane::Ssa)));
+        }
         Self {
             wide,
             medium,

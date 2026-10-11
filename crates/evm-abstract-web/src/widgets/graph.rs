@@ -205,6 +205,7 @@ impl Graph {
             self.zoom,
             visible,
         );
+        let mut animating_edges = false;
         for id in self.edge_visibility.query(visible) {
             let Some(route) = self.placement.edges.get(&id) else {
                 continue;
@@ -217,7 +218,7 @@ impl Graph {
                 continue;
             };
             let label = self.edge_labels.get(&id).map_or("", String::as_str);
-            paint_edge_text(
+            animating_edges |= paint_edge_text(
                 &painter,
                 route,
                 canvas.min + self.pan,
@@ -235,6 +236,9 @@ impl Graph {
                 );
                 hover.on_hover_ui(|ui| self.edge_detail(ui, report, id));
             }
+        }
+        if animating_edges {
+            ui.ctx().request_repaint_after(edges::FLOW_FRAME_INTERVAL);
         }
         let detail_level = paint::detail_level(ui, self.zoom);
         self.detail_level = detail_level;
