@@ -77,7 +77,10 @@ fn world_text_ssa_and_dot_labels_share_symbols_but_dot_and_json_ids_are_stable()
         teaching.contains("σ₀ | B₀ @ 0x0000 | f₀ active | code=C₀"),
         "{teaching}"
     );
-    assert!(teaching.contains("%0 = PUSH1 0x1"), "{teaching}");
+    assert!(
+        teaching.contains("%0 = CONST 0x1 ; origin=PUSH1"),
+        "{teaching}"
+    );
     let report = render::world::text(&analysis);
     assert!(report.contains("σ₀") && report.contains("O₀"), "{report}");
     let dot = render::world::dot(&analysis);

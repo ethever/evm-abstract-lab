@@ -1365,6 +1365,18 @@ def hide_inspector(page, canvas):
     settle_gesture(page)
 
 
+def select_inspector_tab(page, canvas, tab: str):
+    # Measured on the 1440x1000 native inspector toolbar. SSA value follows
+    # Stack, so every later tab is shifted by its rendered width and spacing.
+    positions = {
+        "Frame": 30, "Stack": 80, "SSA value": 141, "Memory": 210,
+        "Storage": 274, "Transient": 341, "Calldata": 408, "Returndata": 481,
+        "Outcomes": 561, "Acquisition": 640, "Environment": 727, "Diagnostics": 814,
+    }
+    canvas.click(position={"x": positions[tab], "y": 778})
+    expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: {tab}")
+
+
 def pane_interactions(browser, url: str, output: Path):
     page = browser.new_page(viewport={"width": 1920, "height": 1000})
     observe_webgpu(page)
@@ -2178,11 +2190,10 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     expect(status).to_contain_text("Frame f₁")
     canvas.screenshot(path=str(output / "world-child-frame.png"))
     screenshots = {}
-    tabs = [(80, "Stack"), (137, "Memory"), (201, "Storage"), (268, "Transient"),
-            (335, "Calldata"), (408, "Returndata"), (488, "Outcomes"),
-            (567, "Acquisition"), (654, "Environment"), (741, "Diagnostics"), (30, "Frame")]
-    for x, tab in tabs:
-        canvas.click(position={"x": x, "y": 778})
+    tabs = ["Stack", "Memory", "Storage", "Transient", "Calldata", "Returndata",
+            "Outcomes", "Acquisition", "Environment", "Diagnostics", "Frame"]
+    for tab in tabs:
+        select_inspector_tab(page, canvas, tab)
         expect(status).to_contain_text(tab)
         rendered_frame(page)
         png = canvas.screenshot(path=str(output / f"world-{tab.lower()}.png"))
@@ -2190,7 +2201,7 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     assert len(set(screenshots.values())) == len(tabs), "inspector controls did not expose distinct views"
     canvas.click(position={"x": 166, "y": 801})
     expect(status).to_contain_text("Observed exit")
-    canvas.click(position={"x": 137, "y": 778})
+    select_inspector_tab(page, canvas, "Memory")
     expect(status).to_contain_text("Memory")
     canvas.screenshot(path=str(output / "world-child-exit-memory.png"))
     graph_scopes = world_graph_scopes(page, canvas, report, child, child_state, output)

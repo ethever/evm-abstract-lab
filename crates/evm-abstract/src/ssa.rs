@@ -107,7 +107,7 @@ pub enum SsaError {
     Invariant(Box<SsaInvariant>),
     /// A normalized value or its proof does not match the verified execution.
     #[error("SSA normalization invariant failed: {0}")]
-    Normalization(#[source] Box<NormalizationInvariant>),
+    Normalization(Box<NormalizationInvariant>),
 }
 
 pub(crate) fn checkpoint() -> Result<(), SsaError> {
