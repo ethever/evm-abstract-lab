@@ -9,6 +9,13 @@
 mod build;
 mod error;
 pub use error::{SsaInvariant, SsaInvariantKind};
+pub mod normalized;
+pub use normalized::{
+    FactScope, FactSource, FactValidity, NormalizationInvariant, NormalizationInvariantKind,
+    NormalizedBlock, NormalizedInstruction, NormalizedOperation, NormalizedSsa, ValueFact,
+    ValueMapping, ValueOperand, ValueOrigin, ValueTransformation, build_normalized,
+    build_normalized_partial_world, build_normalized_world,
+};
 mod partial;
 mod verify;
 mod world;
@@ -50,7 +57,7 @@ pub struct Phi {
 }
 
 /// 保留每条已执行 opcode 的定义和使用，包含零输出的副作用指令。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Instruction {
     /// 原始指令 pc。
     pub pc: usize,
@@ -98,6 +105,9 @@ pub enum SsaError {
     /// 内部不变量失败，保留可定位的信息。
     #[error("SSA invariant failed: {0}")]
     Invariant(Box<SsaInvariant>),
+    /// A normalized value or its proof does not match the verified execution.
+    #[error("SSA normalization invariant failed: {0}")]
+    Normalization(Box<NormalizationInvariant>),
 }
 
 pub(crate) fn checkpoint() -> Result<(), SsaError> {

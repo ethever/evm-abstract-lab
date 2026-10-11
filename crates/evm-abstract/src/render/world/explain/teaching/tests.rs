@@ -62,7 +62,7 @@ fn default_teaching_view_joins_code_cfg_results_and_instruction_ssa() {
         "{output}"
     );
     assert!(output.contains("Verified cross-contract SSA:"));
-    assert!(output.contains("= PUSH1 0x2a"));
+    assert!(output.contains("= CONST 0x2a ; origin=PUSH1"));
     assert!(
         output.contains("complete storage, balances, lifecycle, logs and byte facts: --verbose")
     );
@@ -192,7 +192,7 @@ fn root_revert_retains_its_data_and_rollback_ssa() {
         "{output}"
     );
     assert!(output.contains("abstract explicit storage changes: (none)"));
-    assert!(output.contains("REVERT %"));
+    assert!(output.contains("REVERT 0x0 0x20"));
 }
 
 #[test]

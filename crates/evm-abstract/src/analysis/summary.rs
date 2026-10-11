@@ -8,8 +8,8 @@
 //! instruction graph and world SSA retain every call and return boundary.
 
 use super::{
-    CallStack, Diagnostic, InstructionProgress, MachineEdge, MachinePayload, OutcomeKind,
-    RootFrame, WorldAnalysis,
+    CallStack, Diagnostic, InstructionProgress, InstructionValue, MachineEdge, MachinePayload,
+    OutcomeKind, RootFrame, WorldAnalysis,
     transfer::{CompletedCall, WorkBudget},
 };
 use crate::{
@@ -18,7 +18,10 @@ use crate::{
 };
 use alloy_primitives::{B256, keccak256};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+};
 
 mod replay;
 pub(super) use replay::Replay;
@@ -138,6 +141,7 @@ pub(super) struct Node {
     pub exit_stack: Vec<crate::domain::AbstractValue>,
     pub executed_pcs: Vec<usize>,
     pub instruction_progress: Vec<InstructionProgress>,
+    pub instruction_values: Arc<[InstructionValue]>,
     pub diagnostics: Vec<Diagnostic>,
     pub completed_calls: Vec<CompletedCall>,
 }
@@ -493,6 +497,12 @@ fn capture(
                     .expect("closed node has execution evidence")
                     .instructions()
                     .to_vec(),
+                instruction_values: Arc::clone(
+                    &state
+                        .execution_evidence()
+                        .expect("closed node has execution evidence")
+                        .instruction_values,
+                ),
                 diagnostics: diagnostics
                     .iter()
                     .filter(|diagnostic| diagnostic.state == *id)

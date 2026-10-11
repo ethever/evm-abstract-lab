@@ -3,11 +3,12 @@
 pub mod world;
 
 mod instruction;
+mod normalized;
 
 use evm_abstract_notation::Symbol;
 
 use crate::{
-    analysis::{Analysis, DiagnosticKind},
+    analysis::{Analysis, DiagnosticKind, FrameCode},
     bytecode::Program,
     domain::AbstractValue,
     ssa::Ssa,
@@ -259,6 +260,126 @@ pub fn partial_ssa(analysis: &Analysis, ir: &crate::ssa::PartialWorldSsa) -> Str
             )
         )
         .unwrap();
+    }
+    output
+}
+
+/// Render the final native artifact with explicit single-program state mapping.
+/// A wholly projected graph retains the single-program labels and block layout.
+pub fn normalized_ssa(analysis: &Analysis, ir: &crate::ssa::NormalizedSsa) -> String {
+    let projected = ir.complete()
+        && analysis.states().len() == ir.blocks().len()
+        && analysis.states().iter().all(|state| {
+            let machine = &analysis.execution().states()[analysis
+                .execution_state_id(state.id)
+                .expect("each projected state retains its machine identity")];
+            // A projected index can also name native execution with no program.
+            // Only a matching captured runtime block supplies a bytecode PC.
+            machine.active().mode == FrameCode::Runtime
+                && machine
+                    .program()
+                    .and_then(|program| program.blocks().get(machine.active().basic_block_index))
+                    .is_some_and(|source| {
+                        analysis.program().blocks().get(state.key.basic_block_index) == Some(source)
+                    })
+        });
+    let mut output = if projected {
+        normalized_program(analysis, ir)
+    } else {
+        world::normalized_ssa(analysis.execution(), ir)
+    };
+    output.push_str("\nSingle-program state mapping\n");
+    if projected {
+        output.push_str("  CFG and SSA block labels use projected state IDs; value definitions come from the native machine SSA.\n");
+    } else {
+        output.push_str(
+            "  The CFG uses projected state IDs; the SSA above uses native machine state IDs.\n",
+        );
+    }
+    for state in analysis.states() {
+        writeln!(
+            output,
+            "  projected {} → machine {}",
+            Symbol::ProjectedState(state.id),
+            Symbol::State(
+                analysis
+                    .execution_state_id(state.id)
+                    .expect("each projected state retains its machine identity")
+            )
+        )
+        .unwrap();
+    }
+    output
+}
+
+fn normalized_program(analysis: &Analysis, ir: &crate::ssa::NormalizedSsa) -> String {
+    let mut output = format!(
+        "stack SSA: fork={} values={} status={:?}\n",
+        analysis.program().fork(),
+        ir.value_count(),
+        analysis.status()
+    );
+    world::environment::write(&mut output, analysis.environment(), None, false, |input| {
+        input.to_string()
+    });
+    let projected: std::collections::BTreeMap<_, _> = analysis
+        .states()
+        .iter()
+        .map(|state| {
+            (
+                analysis
+                    .execution_state_id(state.id)
+                    .expect("projected machine identity"),
+                state.id,
+            )
+        })
+        .collect();
+    for state in analysis.states() {
+        let machine = analysis
+            .execution_state_id(state.id)
+            .expect("projected machine identity");
+        let block = &ir.blocks()[machine];
+        let source = &analysis.program().blocks()[state.key.basic_block_index];
+        writeln!(
+            output,
+            "{} | context={:?}:",
+            Symbol::ProjectedState(state.id),
+            state.key.context
+        )
+        .unwrap();
+        for phi in &block.phis {
+            let inputs = phi
+                .inputs
+                .iter()
+                .map(|(edge, value)| {
+                    let from = analysis.execution().edges()[*edge].from;
+                    format!("{}: %{value}", Symbol::ProjectedState(projected[&from]))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(
+                output,
+                "  %{} = φ({inputs}) ; slot {}, abstract {}",
+                phi.result, phi.slot, state.entry_stack[phi.slot]
+            )
+            .unwrap();
+        }
+        let layout = InstructionLayout::block(&mut output, source.id, source.start_pc);
+        for row in &block.instructions {
+            layout.write_pc(&mut output, row.origin.pc);
+            instruction::write_normalized_body(&mut output, row);
+            if row.origin.fault {
+                output.push_str(" ; exceptional halt");
+            }
+            output.push('\n');
+        }
+        let values = block.exit_frames[0]
+            .iter()
+            .map(|value| format!("%{value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        layout.indent(&mut output);
+        writeln!(output, "stack out [{values}]").unwrap();
     }
     output
 }

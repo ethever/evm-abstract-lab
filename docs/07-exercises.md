@@ -89,13 +89,13 @@ nix run . -- ssa --hex 60018060029000
 nix run . -- ssa --file examples/diamond.hex --context-depth 0
 ```
 
-回答：最终有三个栈槽位，为什么只有两个值定义？[diamond](../examples/diamond.hex) 的 `%0` 为什么不是第一条 PUSH？从 σᵖ₁ 进入汇合点时，φ 接收哪个名字？
+回答：最终有三个栈槽位，为什么只有两个值定义？[diamond](../examples/diamond.hex) 的第一条 PUSH 定义 `%0`，汇合入口定义 `%6`，为什么它们不是同一个名字？从 σᵖ₁ 进入汇合点时，φ 接收哪个名字？
 
 <details><summary>提示与验收</summary>
 
 第一个程序 `values=2`，出栈 `[%0,%1,%0]`。DUP 复制引用，SWAP 改变位置，都不产生新值定义。
 
-[diamond](../examples/diamond.hex) 为入口槽位先分配 `%0`，所以第一条 PUSH 是 `%1`。汇合点是 `φ(σᵖ₁: %4, σᵖ₂: %5)`；从 σᵖ₁ 来取 `%4`，从 σᵖ₂ 来取 `%5`。`slot 0` 表示入口栈底位置，`%0` 表示定义身份，`abstract {0x1,0x2}` 表示可能数值；三者应分别解释。
+[diamond](../examples/diamond.hex) 的最终名字按原生状态中的入口参数和指令定义分配。根块第一条 PUSH 定义 `%0`，正文为 `CONST 0x0 ; origin=PUSH1`；汇合入口另有 `%6 = φ(σᵖ₁: %3, σᵖ₂: %4)`，从 σᵖ₁ 来取 `%3`，从 σᵖ₂ 来取 `%4`。`slot 0` 表示入口栈底位置，`%6` 表示定义身份，`abstract {0x1,0x2}` 表示可能数值；三者应分别解释。
 
 </details>
 

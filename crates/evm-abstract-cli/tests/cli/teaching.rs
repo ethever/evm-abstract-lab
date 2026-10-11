@@ -149,8 +149,8 @@ fn default_world_explain_connects_disassembly_cfg_values_and_separate_outcomes()
         assert!(explanation.contains(evidence), "missing {evidence}");
     }
     assert!(explanation.contains(" = φ(T"));
-    assert!(explanation.contains(" = MLOAD %"));
-    assert!(explanation.contains("SSTORE %"));
+    assert!(explanation.contains("origin=MLOAD") || explanation.contains(" = MLOAD "));
+    assert!(explanation.contains("SSTORE "));
     assert!(explanation.contains("BranchTrue") && explanation.contains("BranchFalse"));
     let report = json(&world(
         "analyze",
@@ -199,11 +199,11 @@ fn teaching_tac_names_definitions_and_keeps_evm_pop_order() {
     success(&output);
     let explanation = text(&output);
     for operation in [
-        "%0 = PUSH1 0x9",
-        "%1 = PUSH1 0x2",
-        "%2 = SUB %1 %0",
-        "MSTORE %3 %2",
-        "RETURN %5 %4",
+        "%0 = CONST 0x9 ; origin=PUSH1",
+        "%1 = CONST 0x2 ; origin=PUSH1",
+        "%2 = CONST 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff9 ; origin=SUB",
+        "MSTORE 0x0 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff9",
+        "RETURN 0x0 0x20",
     ] {
         assert!(
             explanation.contains(operation),

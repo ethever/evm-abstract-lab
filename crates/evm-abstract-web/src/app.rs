@@ -66,6 +66,13 @@ const BRANCH_EXAMPLE: &str = "5f35600a576001600d565b60025b60030100";
 pub(crate) struct Selection {
     pub state: Option<usize>,
     pub pc: Option<usize>,
+    pub value: Option<usize>,
+}
+
+impl Selection {
+    pub(crate) fn same_native(self, other: Self) -> bool {
+        self.state == other.state && self.pc == other.pc
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -321,6 +328,7 @@ impl Workspace {
                 self.program = Some(program);
                 self.account = None;
                 self.selection = Selection {
+                    value: None,
                     state: report
                         .cfg
                         .iter()
@@ -331,6 +339,7 @@ impl Workspace {
             }
             Pick::Account(address) => {
                 self.selection = Selection {
+                    value: None,
                     state: report
                         .cfg
                         .iter()
@@ -364,6 +373,7 @@ impl Workspace {
     }
 
     fn sync_selection(&mut self) {
+        self.inspector.select_value(self.selection.value);
         if self.selection.state == self.previous_state {
             return;
         }
@@ -423,6 +433,7 @@ impl Workspace {
         match result {
             Ok(AnalyzeReply { result: Ok(report) }) if report.schema_version == SCHEMA_VERSION => {
                 self.selection = Selection {
+                    value: None,
                     state: report.cfg.first().map(|state| state.id),
                     pc: None,
                 };

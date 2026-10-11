@@ -1,3 +1,6 @@
+mod values;
+pub use values::*;
+
 choice! {
     /// Currentness of the retained execution receipt for a block.
     pub enum BlockCoverage {
@@ -51,6 +54,8 @@ record! {
 record! {
     /// One bytecode attempt with named uses, definitions and effects.
     pub struct SsaInstruction {
+        /// Normalized value computation; original instruction fields remain provenance.
+        pub operation: SsaOperation,
         /// Opcode byte offset.
         pub pc: usize,
         /// Raw opcode byte.
@@ -157,6 +162,8 @@ record! {
         pub value_count: usize,
         /// Number of unique machine-effect definitions.
         pub effect_count: usize,
+        /// Definition facts and provenance, indexed by final contiguous ValueId.
+        pub values: Vec<SsaValue>,
         /// Blocks in native state order.
         pub blocks: Vec<SsaBlock>,
         /// Supported transitions; IDs may be sparse.

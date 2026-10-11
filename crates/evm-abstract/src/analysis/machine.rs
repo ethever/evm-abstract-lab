@@ -15,7 +15,7 @@ mod frame;
 mod stack;
 mod symbolic;
 
-pub use evidence::{ExecutionEvidence, InstructionProgress};
+pub use evidence::{ExecutionEvidence, InstructionProgress, InstructionValue};
 pub use frame::{ChildFrame, FrameState, RootFrame};
 pub use stack::CallStack;
 

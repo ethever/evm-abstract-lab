@@ -240,6 +240,7 @@ impl Graph {
             });
         if let Some(state) = picked {
             *selection = Selection {
+                value: None,
                 state: Some(state),
                 pc: None,
             };

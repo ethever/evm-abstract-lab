@@ -319,7 +319,11 @@ impl Graph {
                     .state
                     .filter(|state| self.display.state_to_node.get(state) == Some(&id))
                     .or_else(|| node.members.first().copied());
-                *selection = Selection { state, pc: None };
+                *selection = Selection {
+                    value: None,
+                    state,
+                    pc: None,
+                };
                 if node.members.len() > 1 {
                     self.instance_group = Some(id);
                     self.instance_filter.clear();
@@ -380,7 +384,7 @@ impl Graph {
                 self.preview_dirty.clear();
             }
         }
-        if self.ssa_selection != selection
+        if !self.ssa_selection.same_native(selection)
             && self.ssa_display == SsaDisplay::Compact
             && self.content == NodeView::Ssa
         {

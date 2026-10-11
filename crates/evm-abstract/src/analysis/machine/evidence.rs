@@ -2,7 +2,9 @@
 //! A changed entry invalidates the receipt until that entry is executed again.
 
 use super::MachineEdgeKind;
+use crate::domain::{AbstractValue, NumericValue, provenance::Provenance};
 use serde::Serialize;
+use std::sync::Arc;
 
 /// Progress actually reached by one visited bytecode instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -21,20 +23,62 @@ pub enum InstructionProgress {
     Faulted,
 }
 
+/// Numeric and source facts for one normal instruction definition in the
+/// current receipt. Stack aliases and deferred dispatch results have no record.
+/// Keeping only these layers avoids retaining symbolic terms or machine states.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstructionValue {
+    instruction_index: usize,
+    numeric: NumericValue,
+    provenance: Provenance,
+}
+
+impl InstructionValue {
+    pub(crate) fn new(instruction_index: usize, value: &AbstractValue) -> Self {
+        Self {
+            instruction_index,
+            numeric: value.numeric().clone(),
+            provenance: value.provenance().clone(),
+        }
+    }
+
+    /// Index into the receipt's instruction phases and the state's visited PCs.
+    pub fn instruction_index(&self) -> usize {
+        self.instruction_index
+    }
+
+    /// Constraints observed for the normal result, independently of its source.
+    pub fn numeric(&self) -> &NumericValue {
+        &self.numeric
+    }
+
+    /// Possible source categories and the code-address usage role.
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
 /// Current-input execution evidence used by partial SSA. This internal receipt
 /// does not change the existing analysis JSON's numeric or graph contracts.
 #[derive(Clone, Debug)]
 pub struct ExecutionEvidence {
     pub(crate) current: bool,
     pub(crate) instructions: Vec<InstructionProgress>,
+    /// Sparse, ordered normal definitions. Summary certificates share these
+    /// immutable projections; no fresh-expression renaming is required.
+    pub(crate) instruction_values: Arc<[InstructionValue]>,
     pub(crate) successors: Vec<(usize, MachineEdgeKind)>,
 }
 
 impl ExecutionEvidence {
-    pub(crate) fn new(instructions: Vec<InstructionProgress>) -> Self {
+    pub(crate) fn new(
+        instructions: Vec<InstructionProgress>,
+        instruction_values: impl Into<Arc<[InstructionValue]>>,
+    ) -> Self {
         Self {
             current: true,
             instructions,
+            instruction_values: instruction_values.into(),
             successors: Vec::new(),
         }
     }
@@ -49,9 +93,18 @@ impl ExecutionEvidence {
         &self.instructions
     }
 
+    /// Sparse normal-result observations in instruction order. A changed entry
+    /// makes every old observation unavailable until the state executes again.
+    pub fn instruction_values(&self) -> Option<&[InstructionValue]> {
+        self.current.then_some(self.instruction_values.as_ref())
+    }
+
     /// Graph successors installed by this receipt, with native state IDs.
     /// Older accumulated edges are not evidence for the latest prefix.
     pub fn successors(&self) -> &[(usize, MachineEdgeKind)] {
         &self.successors
     }
 }
+
+#[cfg(test)]
+mod tests;

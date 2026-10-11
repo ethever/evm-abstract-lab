@@ -23,6 +23,7 @@ fn width_and_table_share_rows_across_frames_and_native_selection_changes() {
     crate::notation::initialize_fonts(&context);
     let mut cache = SsaCache::default();
     let mut selection = Selection {
+        value: None,
         state: Some(0),
         pc: None,
     };
@@ -31,6 +32,7 @@ fn width_and_table_share_rows_across_frames_and_native_selection_changes() {
     let mut widths = Vec::new();
     for state in [0, 2, 1] {
         selection = Selection {
+            value: None,
             state: Some(state),
             pc: Some(5),
         };
@@ -91,6 +93,7 @@ fn scope_changes_rebuild_native_rows_and_no_code_scope_tracks_the_selected_state
         None,
         SsaDisplay::Compact,
         Selection {
+            value: None,
             state: Some(2),
             pc: None,
         },
@@ -101,6 +104,7 @@ fn scope_changes_rebuild_native_rows_and_no_code_scope_tracks_the_selected_state
         None,
         SsaDisplay::Compact,
         Selection {
+            value: None,
             state: Some(0),
             pc: None,
         },
@@ -120,6 +124,7 @@ fn accepting_a_new_report_clears_both_rows_and_width_even_with_identical_program
     // A replacement can have identical graph IDs but different operands or
     // coverage, so its owner must explicitly invalidate rather than hash IDs.
     report.ssa.blocks[0].instructions[0].name = "NEW_RECEIPT_".repeat(original_width + 1);
+    crate::tests::refresh_operation(&mut report.ssa.blocks[0].instructions[0]);
     cache.clear();
     assert!(cache.rows().is_empty());
     assert_eq!(cache.columns(), 0);
@@ -140,6 +145,7 @@ fn display_and_hidden_selection_rebuild_rows_while_ordinary_selection_reuses_sto
     let mut instruction = report.ssa.blocks[0].instructions[0].clone();
     instruction.opcode = 0x80;
     instruction.name = "DUP1".into();
+    crate::tests::refresh_operation(&mut instruction);
     instruction.pc = 30;
     instruction.progress = evm_abstract_protocol::InstructionProgress::Completed;
     instruction.fault = false;
@@ -147,14 +153,20 @@ fn display_and_hidden_selection_rebuild_rows_while_ordinary_selection_reuses_sto
     let mut swap = instruction.clone();
     swap.opcode = 0x90;
     swap.name = "SWAP1".into();
+    crate::tests::refresh_operation(&mut swap);
     swap.pc = 31;
     let mut visible = instruction.clone();
     visible.opcode = 0x52;
     visible.name = "MSTORE".into();
+    crate::tests::refresh_operation(&mut visible);
     visible.pc = 32;
     report.ssa.blocks[0].coverage = evm_abstract_protocol::BlockCoverage::Current;
     report.ssa.blocks[0].instructions = vec![instruction, swap, visible];
-    let selection = |pc| Selection { state: Some(0), pc };
+    let selection = |pc| Selection {
+        value: None,
+        state: Some(0),
+        pc,
+    };
     let has_pc = |cache: &SsaCache, pc| {
         cache
             .rows()
@@ -171,6 +183,7 @@ fn display_and_hidden_selection_rebuild_rows_while_ordinary_selection_reuses_sto
     for selected in [
         selection(Some(32)),
         Selection {
+            value: None,
             state: Some(1),
             pc: Some(5),
         },
@@ -216,6 +229,7 @@ fn a_replacement_report_clears_the_hidden_instruction_index() {
     let instruction = &mut report.ssa.blocks[0].instructions[0];
     instruction.opcode = 0x50;
     instruction.name = "POP".into();
+    crate::tests::refresh_operation(instruction);
     instruction.progress = evm_abstract_protocol::InstructionProgress::Completed;
     instruction.fault = false;
     report.ssa.blocks[0].coverage = evm_abstract_protocol::BlockCoverage::Current;
@@ -224,6 +238,7 @@ fn a_replacement_report_clears_the_hidden_instruction_index() {
     assert!(!cache.hidden.is_empty());
     report.ssa.blocks[0].instructions[0].opcode = 0x52;
     report.ssa.blocks[0].instructions[0].name = "MSTORE".into();
+    crate::tests::refresh_operation(&mut report.ssa.blocks[0].instructions[0]);
     cache.clear();
     assert!(cache.hidden.is_empty());
     cache.prepare(&report, Some(0), SsaDisplay::Compact, Selection::default());

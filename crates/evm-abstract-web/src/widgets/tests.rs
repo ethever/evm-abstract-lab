@@ -31,6 +31,7 @@ fn workspace() -> Workspace {
             let mut instruction = instruction.clone();
             instruction.pc = pc;
             instruction.immediate = Some(immediate.clone());
+            crate::tests::refresh_operation(&mut instruction);
             instruction
         })
         .collect();
@@ -222,6 +223,7 @@ fn selected_offscreen_source_row_remains_visible_when_moved_to_workspace() {
         let mut workspace = workspace();
         workspace.view = view;
         workspace.selection = Selection {
+            value: None,
             state: Some(0),
             pc: Some(999),
         };

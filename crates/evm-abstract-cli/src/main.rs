@@ -409,17 +409,12 @@ fn run() -> Result<ExitCode, CliError> {
             }
             let analysis = args.analyze()?;
             let complete = analysis.status() == Status::Converged;
-            let ir = if ssa && complete {
-                Some(ssa::build_world(&analysis)?)
+            let ir = if ssa && (complete || allow_partial_ssa) {
+                Some(ssa::build_normalized_partial_world(&analysis)?)
             } else {
                 None
             };
-            let partial_ir = if ssa && allow_partial_ssa && !complete {
-                Some(ssa::build_partial_world(&analysis)?)
-            } else {
-                None
-            };
-            if ssa && !complete && partial_ir.is_none() {
+            if ssa && !complete && ir.is_none() {
                 eprintln!("SSA unavailable: cross-contract frontiers remain");
             }
             (
@@ -428,24 +423,23 @@ fn run() -> Result<ExitCode, CliError> {
                         let mut output = render::world::text(&analysis);
                         if let Some(ir) = ir {
                             output.push('\n');
-                            output.push_str(&render::world::ssa(&analysis, &ir));
-                        } else if let Some(ir) = partial_ir {
-                            output.push('\n');
-                            output.push_str(&render::world::partial_ssa(&analysis, &ir));
+                            output.push_str(&if complete {
+                                render::world::normalized_ssa_verbose(&analysis, &ir)
+                            } else {
+                                render::world::normalized_ssa(&analysis, &ir)
+                            });
                         }
                         output
                     }
                     CfgFormat::Json => match ir {
-                        Some(ir) => serde_json::to_string_pretty(
+                        Some(ir) if complete => serde_json::to_string_pretty(
                             &serde_json::json!({"analysis": render::world::json(&analysis)?, "ssa": ir}),
                         )?,
-                        None => match partial_ir {
-                            Some(ir) => serde_json::to_string_pretty(&serde_json::json!({
-                                "analysis": render::world::json(&analysis)?,
-                                "partial_ssa": ir,
-                            }))?,
-                            None => serde_json::to_string_pretty(&render::world::json(&analysis)?)?,
-                        },
+                        Some(ir) => serde_json::to_string_pretty(&serde_json::json!({
+                            "analysis": render::world::json(&analysis)?,
+                            "partial_ssa": ir,
+                        }))?,
+                        None => serde_json::to_string_pretty(&render::world::json(&analysis)?)?,
                     },
                     CfgFormat::Dot => render::world::dot(&analysis),
                 },
@@ -487,24 +481,24 @@ fn run() -> Result<ExitCode, CliError> {
                     );
                     return Ok(ExitCode::from(2));
                 }
-                let ir = ssa::build_partial_world(analysis.execution())?;
+                let ir = ssa::build_normalized_partial_world(analysis.execution())?;
                 (
                     match format {
-                        TextFormat::Text => render::partial_ssa(&analysis, &ir),
+                        TextFormat::Text => render::normalized_ssa(&analysis, &ir),
                         TextFormat::Json => {
-                            serde_json::to_string_pretty(&partial_program_json(&analysis, &ir))?
+                            serde_json::to_string_pretty(&normalized_program_json(&analysis, &ir))?
                         }
                     },
                     false,
                 )
             } else {
-                let ssa = ssa::build(&analysis)?;
+                let ssa = ssa::build_normalized(&analysis)?;
                 (
                     match format {
-                        TextFormat::Text => render::ssa(&analysis, &ssa),
-                        TextFormat::Json => serde_json::to_string_pretty(
-                            &serde_json::json!({"analysis": analysis, "ssa": ssa}),
-                        )?,
+                        TextFormat::Text => render::normalized_ssa(&analysis, &ssa),
+                        TextFormat::Json => {
+                            serde_json::to_string_pretty(&normalized_program_json(&analysis, &ssa))?
+                        }
                     },
                     true,
                 )
@@ -525,9 +519,9 @@ fn run() -> Result<ExitCode, CliError> {
     })
 }
 
-fn partial_program_json(
+fn normalized_program_json(
     analysis: &analysis::Analysis,
-    ir: &ssa::PartialWorldSsa,
+    ir: &ssa::NormalizedSsa,
 ) -> serde_json::Value {
     let state_mapping: Vec<_> = analysis
         .states()
@@ -540,12 +534,14 @@ fn partial_program_json(
             })
         })
         .collect();
-    serde_json::json!({
+    let mut output = serde_json::json!({
         "analysis": analysis,
         "machine_analysis": analysis.execution(),
-        "partial_ssa": ir,
         "state_mapping": state_mapping,
-    })
+    });
+    output[if ir.complete() { "ssa" } else { "partial_ssa" }] = serde_json::to_value(ir)
+        .expect("the normalized artifact serializes without fallible map keys");
+    output
 }
 
 fn main() -> ExitCode {

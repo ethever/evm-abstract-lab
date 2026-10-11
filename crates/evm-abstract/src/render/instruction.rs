@@ -5,7 +5,7 @@
 
 use evm_abstract_notation::Symbol;
 
-use crate::ssa::Instruction;
+use crate::ssa::{Instruction, NormalizedInstruction, NormalizedOperation, ValueOperand};
 use revm_bytecode::opcode::OpCode;
 use std::fmt::Write;
 
@@ -53,5 +53,51 @@ pub(super) fn write_ssa_body(output: &mut String, instruction: &Instruction) {
     }
     for value in &instruction.operands {
         write!(output, " %{value}").unwrap();
+    }
+}
+
+/// Final computations stay flat and retain the original bytecode identity.
+pub(super) fn write_normalized_body(output: &mut String, row: &NormalizedInstruction) {
+    if !row.origin.results.is_empty() {
+        let results = row
+            .origin
+            .results
+            .iter()
+            .map(|value| format!("%{value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(output, "{results} = ").unwrap();
+    }
+    match &row.operation {
+        NormalizedOperation::Constant { value } => write!(output, "CONST 0x{value:x}").unwrap(),
+        NormalizedOperation::Copy { value } => {
+            output.push_str("COPY ");
+            write_operand(output, value);
+        }
+        NormalizedOperation::Opcode { opcode, operands } => {
+            write!(output, "{}", OpCode::name_by_op(*opcode)).unwrap();
+            if let Some(immediate) = row.origin.immediate {
+                write!(output, " 0x{immediate:x}").unwrap();
+            }
+            for value in operands {
+                output.push(' ');
+                write_operand(output, value);
+            }
+        }
+    }
+    if !matches!(row.operation, NormalizedOperation::Opcode { .. }) {
+        write!(
+            output,
+            " ; origin={}",
+            OpCode::name_by_op(row.origin.opcode)
+        )
+        .unwrap();
+    }
+}
+
+fn write_operand(output: &mut String, value: &ValueOperand) {
+    match value {
+        ValueOperand::Value(value) => write!(output, "%{value}").unwrap(),
+        ValueOperand::Constant(value) => write!(output, "0x{value:x}").unwrap(),
     }
 }

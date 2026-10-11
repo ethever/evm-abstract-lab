@@ -26,6 +26,8 @@ mod defaults;
 mod domains;
 #[path = "cli/known_bits.rs"]
 mod known_bits;
+#[path = "cli/normalized.rs"]
+mod normalized;
 #[path = "cli/numbers.rs"]
 mod numbers;
 #[path = "cli/partial_ssa.rs"]

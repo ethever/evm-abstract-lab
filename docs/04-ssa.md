@@ -6,6 +6,8 @@
 
 **SSA** 是 Static Single Assignment，即静态单赋值表示。它为分析图中每个产生值的定义位置分配唯一名字，让后续指令直接引用这个名字。本课先读实际输出，再解释分支和循环中的值如何连接，以及这些名字与抽象执行中的固定输入、临时复制身份有何区别。
 
+当前 CLI 和 Web 在命名后默认进行常量传播、折叠和基础代数简化，逐条显示 `CONST`、`COPY` 或操作。原始 opcode、使用、PC 与执行效果仍作为来源保存；φ 和无用定义暂不消除。值事实、作用范围及最终编号的说明见 [SSA 基础规范化](ssa-normalization.md)。
+
 以下命令都在仓库根目录执行，所有栈都按**栈底 → 栈顶**排列。
 
 ## 1. 先分清值、名字和栈位置
@@ -21,10 +23,10 @@ nix run . -- ssa --hex 60018060029000
 ```text
 σᵖ₀ | context=[]:
 B₀ @ 0x0000:
-       0000: %0 = PUSH1 0x1
-       0002: DUP1 %0
-       0003: %1 = PUSH1 0x2
-       0005: SWAP1 %1 %0
+       0000: %0 = CONST 0x1 ; origin=PUSH1
+       0002: DUP1 0x1
+       0003: %1 = CONST 0x2 ; origin=PUSH1
+       0005: SWAP1 0x2 0x1
        0006: STOP
        stack out [%0, %1, %0]
 ```
@@ -41,6 +43,8 @@ B₀ @ 0x0000:
 | SWAP1 | `[%0, %1, %0]` | `[1,2,1]` | 交换两个栈位置，名字仍指向原定义 |
 
 所以，`values=2` 数的是两个**值定义**，不是最终三个栈槽位。
+
+正文已把确定的操作数传播成常量，所以上面显示 `DUP1 0x1`。原始操作数仍指向 `%0`，栈里的两个引用也仍是同一个值；传播常量没有另建一份值或改变栈操作证据。
 
 | 记号 | 回答的问题 | 容易误读的地方 |
 | --- | --- | --- |
@@ -64,23 +68,23 @@ nix run . -- ssa --file examples/diamond.hex --context-depth 0
 
 ```mermaid
 flowchart TD
-    A["σᵖ₀：检查 calldata"] -->|条件非零| B["σᵖ₁：%4 = PUSH1 1"]
-    A -->|条件为零| C["σᵖ₂：%5 = PUSH1 2"]
+    A["σᵖ₀：检查 calldata"] -->|条件非零| B["σᵖ₁：%3 = CONST 1"]
+    A -->|条件为零| C["σᵖ₂：%4 = CONST 2"]
     B --> D["σᵖ₃：入口槽位接收前驱的值"]
     C --> D
-    D --> E["%0 = φ(σᵖ₁: %4, σᵖ₂: %5)"]
-    E --> F["%8 = ADD %7 %0；%7 来自 PUSH1 10"]
+    D --> E["%6 = φ(σᵖ₁: %3, σᵖ₂: %4)"]
+    E --> F["%8 = ADD 10 %6；常量来自 %7"]
 ```
 
 对应的真实输出片段是：
 
 ```text
 σᵖ₃ | context=[]:
-  %0 = φ(σᵖ₁: %4, σᵖ₂: %5) ; slot 0, abstract {0x1, 0x2}
+  %6 = φ(σᵖ₁: %3, σᵖ₂: %4) ; slot 0, abstract {0x1, 0x2}
 B₃ @ 0x000e:
        000e: JUMPDEST
-       000f: %7 = PUSH1 0xa
-       0011: %8 = ADD %7 %0
+       000f: %7 = CONST 0xa ; origin=PUSH1
+       0011: %8 = ADD 0xa %6
        0012: STOP
        stack out [%8]
 ```
@@ -89,13 +93,13 @@ B₃ @ 0x000e:
 
 **φ（phi）** 为汇合块的入口值命名。它的输入带有前驱标签，含义是：
 
-1. 如果这次执行从 σᵖ₁ 进入 σᵖ₃，`%0` 接收 `%4` 的值，也就是 1。
-2. 如果从 σᵖ₂ 进入，`%0` 接收 `%5` 的值，也就是 2。
+1. 如果这次执行从 σᵖ₁ 进入 σᵖ₃，`%6` 接收 `%3` 的值，也就是 1。
+2. 如果从 σᵖ₂ 进入，`%6` 接收 `%4` 的值，也就是 2。
 3. ADD 使用这个选定的值和 10，这次具体执行得到 11 或 12。
 
 φ 不把两个输入相加，也不在一次具体执行中同时取两个输入。多个入口 φ 在进入块时按同一条前驱边接收值，可视为并行赋值。
 
-这里 `ADD %7 %0` 仍按 EVM 的弹栈顺序列参数：先弹出栈顶的 `%7`，再弹出 `%0`。对 ADD 顺序不影响结果，对 SUB、DIV 等就必须认真区分。
+这里 `ADD 0xa %6` 仍按 EVM 的弹栈顺序列参数：先弹出栈顶 `%7` 的值 10，再弹出 `%6`。原操作数 `%7` 和 `%6` 保留在来源字段。对 ADD 顺序不影响结果，对 SUB、DIV 等就必须认真区分。
 
 ## 3. φ、抽象值和复制身份各负责什么
 
@@ -103,7 +107,7 @@ B₃ @ 0x000e:
 
 | 表示 | 内容 | 用途 |
 | --- | --- | --- |
-| `φ(σᵖ₁: %4, σᵖ₂: %5)` | 值来自哪条前驱边、哪个定义 | 连接数据依赖 |
+| `φ(σᵖ₁: %3, σᵖ₂: %4)` | 值来自哪条前驱边、哪个定义 | 连接数据依赖 |
 | `abstract {0x1,0x2}` | 分析保存的入口槽位数值摘要；默认还含位、区间等组件 | 计算后续的抽象结果 |
 
 集合组件的 **join（合并）** 把两条路径上的 `{1}` 和 `{2}` 合成 `{1,2}`。φ 则保留前驱与定义之间的对应关系。用这个例子比较：
@@ -123,7 +127,7 @@ SSA 名字本身也不是路径约束。看到 `%0` 被比较为 5，并不意�
 nix run . -- ssa --file examples/copy-identity.hex --context-depth 0
 ```
 
-SSA 的 XOR 行会把同一个名字列为两个操作数，因为 DUP 复制引用。该例的根 calldata 读取保留固定输入符号，product 和 constants-only 在构建 CFG 时都能证明 `x XOR x = 0`，因此只保留 false 分支；SSA 则继续保留 XOR 指令及其结果定义，并没有把代码改写成 PUSH 0。
+原 XOR 的两个操作数引用同一个名字，因为 DUP 复制引用。该例的根 calldata 读取保留固定输入符号，product 和 constants-only 在构建 CFG 时都能证明 `x XOR x = 0`，因此只保留 false 分支；默认规范化 SSA 还会把该结果显示为 `CONST 0x0 ; origin=XOR`，并保留原 XOR 的 PC、操作数和执行效果。
 
 这些信息的边界是：
 
@@ -168,7 +172,7 @@ flowchart LR
     B --> C["用所有前驱的出栈补齐 φ 输入"]
 ```
 
-先分配名字，再连接输入，使回边能引用已有名字，不必展开循环。它也解释了 [diamond](../examples/diamond.hex) 中为什么 `%0` 在最后显示的汇合块定义，而第一条 PUSH 是 `%1`：**编号保证唯一，不保证按 pc 排序**。
+先分配名字，再连接输入，使回边能引用已有名字，不必展开循环。之后的规范化统一分配连续最终编号，并同步更新引用与事实映射。[diamond](../examples/diamond.hex) 的当前最终编号从第一个 PUSH 的 `%0` 开始，汇合参数是 `%6`；**编号保证唯一且连续，不保证按 pc 排序，也不保证不同报告中同号值具有相同身份**。
 
 这个教学实现为所有入口槽位建立 φ，只有一个前驱的块也会显示 φ。这样每个块都能从自己的入口名字开始构建；表示合法，但没有做最小化。删除多余 φ 需要同步改写所有引用和出栈，不能只删掉输出中的一行。
 
@@ -179,7 +183,7 @@ flowchart LR
 
 “A **支配** B”是说：从入口到 B 的每条路径都经过 A。φ 的输入使用发生在前驱边上，因此输入定义必须支配**对应前驱的出口**，不要求它支配整个汇合块。这正是两条分支各自定义的值能进入同一个 φ 的原因。
 
-同一对状态有时同时存在 true、false 两条边。当前两条边携带同一份出栈，所以 φ 按前驱 σᵖᵢ 去重。若未来每条边能携带不同的收窄信息，就需要把 φ 输入进一步关联到具体边。
+同一对状态有时同时存在 true、false 两条边。原始单程序 `Ssa` 构建器按前驱 σᵖᵢ 去重；默认规范化结果基于原生机器 SSA，φ 输入按转移身份保留，包括平行边。单程序文本可以把来源显示成投影前驱标签，JSON 的 φ 输入与 `state_mapping` 则保留其原生关系。
 
 ## 6. 这份 SSA 的证据范围
 
@@ -226,9 +230,9 @@ printf 'exit=%s\n' "$PARTIAL_MEMORY_STATUS"
 
 ```text
 B₀ @ 0x0000:
-       0000: %0 = PUSH1 0x1
-       0002: %1 = PUSH0 0x0
-       0003: MLOAD %1 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U₀: Memory
+       0000: %0 = CONST 0x1 ; origin=PUSH1
+       0002: %1 = CONST 0x0 ; origin=PUSH0
+       0003: MLOAD 0x0 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U₀: Memory
     recorded prefix stack: f₀: [%0]
 ```
 
@@ -242,7 +246,7 @@ B₀ @ 0x0000:
 | MLOAD 已消费参数 | `[%0]` | `[1]` | `%1` 已弹出；32 字节访问超过分析上限，尚未压入读取结果 |
 | ADD、STOP | 没有执行证据 | 没有执行证据 | 它们在捕获代码中存在，但本次块转换没有走到这里 |
 
-**recorded prefix stack 是“按已记录阶段走到这里时的栈”**。这里的 prefix 是这个状态最近一次抽象块转换的指令前缀，最后一条还可能只执行到一半；它不是某笔具体交易的调试轨迹。`MLOAD %1` 记录了已经消费的偏移，左边没有 `%2 =`，因为本次尝试没有正常结果可命名。若按操作码的通常栈效果硬补一个 MLOAD 结果，就会伪造证据。
+**recorded prefix stack 是“按已记录阶段走到这里时的栈”**。这里的 prefix 是这个状态最近一次抽象块转换的指令前缀，最后一条还可能只执行到一半；它不是某笔具体交易的调试轨迹。`MLOAD 0x0` 展示已经消费的 `%1` 所携带的确定偏移，左边没有 `%2 =`，因为本次尝试没有正常结果可命名。若按操作码的通常栈效果硬补一个 MLOAD 结果，就会伪造证据。
 
 `f₀` 是当前机器状态调用栈里的第 0 帧，按最早调用者在前编号；嵌套调用可能还有 f₁、f₂，它们各有自己的操作数栈。`[%0]` 是 f₀ 当前留下的一个 SSA 引用，并不表示栈上数值是 0。JSON 对应 `exit_frames: [[0]]`：外层按帧编号，内层按栈底到栈顶排列；数字 0 是 `%0` 的值 ID。虽然字段叫 `exit_frames`，在部分 SSA 中它保存的是当前前缀留下的栈，不能一概读成“整个基本块完成后的 stack out”。Stale/Unexecuted 时还有进一步限制，见[下文 coverage](#每个状态的证据是否仍适用)。
 
@@ -259,10 +263,10 @@ nix run . -- explain --world examples/partial-ssa-memory.json \
 
 ```text
 B₀ @ 0x0000:
-       0000: %0 = PUSH1 0x1
-       0002: %1 = PUSH0 0x0
-       0003: %2 = MLOAD %1
-       0004: %3 = ADD %2 %0
+       0000: %0 = CONST 0x1 ; origin=PUSH1
+       0002: %1 = CONST 0x0 ; origin=PUSH0
+       0003: %2 = CONST 0x0 ; origin=MLOAD
+       0004: %3 = CONST 0x1 ; origin=ADD
        0005: STOP
        stack out (before dispatch) f₀: [%3]
 ```
@@ -338,11 +342,11 @@ CALL/CREATE 的结果在已记录的 Return、Revert 或 Failure 继续转移上
 σ₀ | coverage=Current | incoming complete=false | open incoming=[]
     μ₀ = partial effect φ()
 B₀ @ 0x0000:
-       0000: %0 = PUSH1 0x1 ; progress=Completed
+       0000: %0 = CONST 0x1 ; origin=PUSH1 ; progress=Completed
   effect μ₀ → μ₁
-       0002: %1 = PUSH0 0x0 ; progress=Completed
+       0002: %1 = CONST 0x0 ; origin=PUSH0 ; progress=Completed
   effect μ₁ → μ₂
-       0003: MLOAD %1 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U₀: Memory
+       0003: MLOAD 0x0 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U₀: Memory
   observed partial effect μ₂ → μ₃
     recorded prefix stack: f₀: [%0]
     recorded prefix effect: μ₃
@@ -374,8 +378,8 @@ printf 'exit=%s\n' "$PARTIAL_PHI_STATUS"
 σ₁
     %11 = partial φ(T₀: %14) ; f₀ slot 0
 B₁ @ 0x000e:
-       000e: %12 = PUSH1 0x1
-       0010: %13 = ADD %12 %11
+       000e: %12 = CONST 0x1 ; origin=PUSH1
+       0010: %13 = ADD 0x1 %11
        0011: STOP
     recorded prefix stack: f₀: [%13]
 

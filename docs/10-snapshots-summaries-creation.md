@@ -8,7 +8,7 @@
 
 直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 4 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
-所有反汇编与 SSA 基本块指令列表共用顶格的 `Bᵢ @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 Bᵢ 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 Bᵢ 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用赋值式指令正文；世界视图保留 Cᵢ、fᵢ、state owner、context，以及按 Tᵢ 标记并带 fᵢ/slot 的 φ。完整视图另保留所有帧元数据、原始指令字段和效果链，字节码行与效果行也使用这套布局。编号与证据的读法见[第 04 课](04-ssa.md)和[第 09 课](09-cross-contract.md#默认文本怎样读)。
+所有反汇编与 SSA 基本块指令列表共用顶格的 `Bᵢ @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 Bᵢ 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 Bᵢ 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用归一化后的赋值式指令正文；世界视图保留 Cᵢ、fᵢ、state owner、context，以及按 Tᵢ 标记并带 fᵢ/slot 的 φ。完整视图展开所有帧元数据和原始效果链，字节码行与效果行也使用这套布局；原始指令字段、最终计算与值依赖保留在 JSON 中。编号与证据的读法见[第 04 课](04-ssa.md)、[第 09 课](09-cross-contract.md#默认文本怎样读)和[SSA 值归一化](ssa-normalization.md)。
 
 ## 1. 调用摘要：复用完整结果关系
 
@@ -458,7 +458,7 @@ nix run . -- explain \
 
 这条最小命令在启动时固定一次 `latest`，并使用符号调用输入；不预设其结果为 `Converged`。明确空 calldata、零 CALLVALUE 等约束时，分别添加 `--evm.calldata 0x`、`--evm.value 0`，不能靠省略参数表达这些值。重现已有分析时，加 `--block-hash "$LAB_BLOCK_HASH"`；按区块高度选择时，用 `--block-number`。两种选择互斥。
 
-默认 RPC `explain` 同样使用教学视图；在上面的命令末尾追加 `--verbose` 可查看完整 RPC 采集记录、快照与机器报告及原始 SSA。`explain` 复用 `analyze` 的 RPC 获取与按需发现策略，包括 `--no-rpc-discovery`、`--max-rpc-accounts` 和 `--max-rpc-requests`。这些开关及 `--account` / `--slot` / `--block-hash` / `--block-number` 仅用于 RPC；离线世界已经携带 fork，不能另传 `--fork`。世界和 RPC 入口要求 `--evm.to`，四种来源 `--world`、`--rpc`、`--hex`、`--file` 互斥。
+默认 RPC `explain` 同样使用教学视图；在上面的命令末尾追加 `--verbose` 可查看完整 RPC 采集记录、快照与机器报告，以及同一份归一化 SSA 的完整帧和效果链。`explain` 复用 `analyze` 的 RPC 获取与按需发现策略，包括 `--no-rpc-discovery`、`--max-rpc-accounts` 和 `--max-rpc-requests`。这些开关及 `--account` / `--slot` / `--block-hash` / `--block-number` 仅用于 RPC；离线世界已经携带 fork，不能另传 `--fork`。世界和 RPC 入口要求 `--evm.to`，四种来源 `--world`、`--rpc`、`--hex`、`--file` 互斥。
 
 解释中只有实际帧捕获的代码被列入执行目录：委托代码按 code address 区分，CREATE initcode 与安装后的 runtime 还按代码 hash 和模式区分。只观察到的初始代码有独立标注，不等同于执行证据。RPC 补查或执行预算未完成时，默认视图继续打印部分 CFG、每个已知 outcome、所有诊断与 frontier，并省略完整 SSA，退出码为 2；`--verbose` 保留同一部分分析的完整报告。简化显示不会把 `Incomplete` 改成成功，也不会重新选择 fork、区块或重置预算。
 

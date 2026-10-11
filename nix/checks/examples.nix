@@ -67,7 +67,7 @@ in
         grep -q 'Captured instruction list' explain-call.txt
         grep -q 'Verified cross-contract SSA:' explain-call.txt
         grep -q 'CALL result %' explain-call.txt
-        grep -Eq '%[0-9]+ = (PUSH|MLOAD|EQ)' explain-call.txt
+        grep -Eq '%[0-9]+ = CONST 0x[0-9a-f]+ ; origin=(PUSH[0-9]+|MLOAD|EQ)' explain-call.txt
         if grep -q 'opcode=' explain-call.txt; then exit 1; fi
         evm-abstract explain --world ${sourceRoot}/examples/worlds/call-return-branch.json ${concreteInputs} --verbose > explain-verbose.txt
         grep -q 'captured frames:' explain-verbose.txt
@@ -94,10 +94,10 @@ in
         evm-abstract ssa --file ${sourceRoot}/examples/dynamic-jump.hex > ssa-aligned.txt
         grep -q '^σᵖ₀ | context=\[\]:$' ssa-aligned.txt
         grep -q '^B₀ @ 0x0000:$' ssa-aligned.txt
-        grep -q '^       0000: %0 = PUSH1 0x0$' ssa-aligned.txt
-        grep -q '^       0002: %1 = CALLDATALOAD %0$' ssa-aligned.txt
+        grep -q '^       0000: %0 = CONST 0x0 ; origin=PUSH1$' ssa-aligned.txt
+        grep -q '^       0002: %1 = CALLDATALOAD 0x0$' ssa-aligned.txt
         evm-abstract analyze --world ${sourceRoot}/examples/worlds/call-return-branch.json ${concreteInputs} --ssa > ssa-world-aligned.txt
-        grep -q '^       0000: PUSH1 | opcode=0x60' ssa-world-aligned.txt
+        grep -q '^       0000: %0 = CONST 0x20 ; origin=PUSH1 | opcode=0x60' ssa-world-aligned.txt
         if grep -Eq '^ +pc=0x[0-9a-f]+:' ssa-world-aligned.txt; then exit 1; fi
         # Alternation matches complete subscript digits even under the C locale.
         for report in explain-call.txt explain-verbose.txt explain-create.txt explain-partial.txt; do

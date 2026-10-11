@@ -1,6 +1,9 @@
 //! One native state's existing card semantics, with bounded preview traversal.
 use super::{DISASM_ROWS, NodeText, NodeView, ReportIndex, SSA_COLUMNS, SSA_ROWS, abbreviate};
-use crate::{palette, ssa_display::SsaDisplay};
+use crate::{
+    palette,
+    ssa_display::{SsaDisplay, operation_parts, source_text},
+};
 use egui::Color32;
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
@@ -264,12 +267,13 @@ fn ssa_tooltip(
     full.extend(block.phis.iter().map(|phi| phi_text(phi, false)));
     full.push(effect_text(block, false));
     if block.coverage == BlockCoverage::Current {
-        full.extend(
-            block
-                .instructions
-                .iter()
-                .map(|instruction| instruction_text(instruction, false, SsaDisplay::Full)),
-        );
+        full.extend(block.instructions.iter().map(|instruction| {
+            format!(
+                "{}\n  {}",
+                instruction_text(instruction, false, SsaDisplay::Full),
+                source_text(instruction),
+            )
+        }));
     }
     full.push(exit_text(block, false));
     for &position in index.outgoing(state) {
@@ -359,28 +363,19 @@ fn instruction_text(instruction: &SsaInstruction, preview: bool, display: SsaDis
     } else {
         format!("{} = ", values(&instruction.results, preview))
     };
-    let immediate = instruction
-        .immediate
-        .as_ref()
-        .map_or(String::new(), |value| {
-            format!(
-                " {}",
-                if preview {
-                    abbreviate(value, 18)
-                } else {
-                    value.clone()
-                }
-            )
-        });
-    let operands = if instruction.operands.is_empty() {
+    let (name, arguments) = operation_parts(&instruction.operation);
+    let operands = if arguments.is_empty() {
         String::new()
     } else {
-        format!(" {}", values(&instruction.operands, preview))
+        format!(
+            " {}",
+            joined(&arguments, preview, |operand| {
+                let text = operand.text();
+                if preview { abbreviate(&text, 18) } else { text }
+            })
+        )
     };
-    let body = format!(
-        "{:04x}  {results}{}{immediate}{operands}",
-        instruction.pc, instruction.name
-    );
+    let body = format!("{:04x}  {results}{name}{operands}", instruction.pc);
     let phase =
         if !display.show_completed() && instruction.progress == InstructionProgress::Completed {
             String::new()

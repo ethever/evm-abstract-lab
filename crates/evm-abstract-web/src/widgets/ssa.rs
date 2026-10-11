@@ -13,7 +13,11 @@ use egui_extras::{Column, TableBuilder};
 use evm_abstract_protocol::{AnalysisReport, BlockCoverage, InstructionProgress};
 
 use super::{ROW_HEIGHT, heading, row_background, text};
-use crate::{app::Selection, palette, ssa_display::SsaDisplay};
+use crate::{
+    app::Selection,
+    palette,
+    ssa_display::{DisplayOperand, SsaDisplay, operation_parts, source_text},
+};
 
 pub(crate) fn ssa_cached(
     ui: &mut Ui,
@@ -57,10 +61,12 @@ fn contents(
     );
     cache.prepare(report, program, display, *selection);
     let rows = cache.rows();
-    let focus = (*selection != *previous)
+    let focus = (!selection.same_native(*previous))
         .then(|| {
             rows.iter().position(|row| {
-                row.target == Some(*selection) && (selection.pc.is_some() || row.header)
+                row.target
+                    .is_some_and(|target| target.same_native(*selection))
+                    && (selection.pc.is_some() || row.header)
             })
         })
         .flatten();
@@ -96,6 +102,7 @@ fn contents(
                         target.state == selection.state
                             && (row.header || (target.pc.is_some() && target.pc == selection.pc))
                     });
+                    let mut value_click = None;
                     table_row.col(|ui| {
                         let rect = ui.max_rect();
                         if row.header {
@@ -103,12 +110,44 @@ fn contents(
                         }
                         row_background(ui, rect, selected, ui.rect_contains_pointer(rect));
                         let mut cursor = rect.left_center() + Vec2::new(4.0, 0.0);
-                        for token in &row.tokens {
-                            cursor.x = text(ui, cursor, &token.text, token.color, 12.0).right();
+                        for (index, token) in row.tokens.iter().enumerate() {
+                            let rect = text(ui, cursor, &token.text, token.color, 12.0);
+                            cursor.x = rect.right();
+                            if let Some(value) = token.value {
+                                if selection.value == Some(value) {
+                                    ui.painter().line_segment(
+                                        [rect.left_bottom(), rect.right_bottom()],
+                                        egui::Stroke::new(1.0, palette::ACCENT),
+                                    );
+                                }
+                                let response = ui.interact(
+                                    rect,
+                                    ui.id().with(("ssa_value", index)),
+                                    Sense::click(),
+                                );
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Link,
+                                        true,
+                                        format!("Inspect SSA value %{value}"),
+                                    )
+                                });
+                                if response.clicked() {
+                                    value_click = Some(value);
+                                }
+                                response
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(format!("Inspect SSA value %{value}"));
+                            }
                         }
                     });
                     let response = table_row.response();
-                    if response.clicked()
+                    if let Some(value) = value_click {
+                        *selection = Selection {
+                            value: Some(value),
+                            ..row.target.unwrap_or(*selection)
+                        };
+                    } else if response.clicked()
                         && let Some(target) = row.target
                     {
                         *selection = target;
@@ -188,6 +227,7 @@ pub(crate) fn natural_width(
 struct Token {
     text: String,
     color: Color32,
+    value: Option<usize>,
 }
 
 struct Row {
@@ -211,6 +251,19 @@ impl Row {
         self.tokens.push(Token {
             text: text.into(),
             color,
+            value: None,
+        });
+    }
+
+    fn value(&mut self, value: usize, color: Color32) {
+        self.value_label(format!("%{value}"), value, color);
+    }
+
+    fn value_label(&mut self, text: String, value: usize, color: Color32) {
+        self.tokens.push(Token {
+            text,
+            color,
+            value: Some(value),
         });
     }
 
@@ -318,6 +371,7 @@ fn build_rows(
         let mut header = Row::new();
         header.header = true;
         header.target = Some(Selection {
+            value: None,
             state: Some(block.state),
             pc: None,
         });
@@ -342,14 +396,19 @@ fn build_rows(
         rows.push(header);
         for phi in &block.phis {
             let mut row = Row::new();
-            row.token(format!("%{}", phi.result), palette::PURPLE);
+            row.target = Some(Selection {
+                state: Some(block.state),
+                ..Selection::default()
+            });
+            row.value(phi.result, palette::PURPLE);
             row.token(" = φ(", palette::MUTED);
             for (index, input) in phi.inputs.iter().enumerate() {
                 if index > 0 {
                     row.token(", ", palette::MUTED);
                 }
-                row.token(
+                row.value_label(
                     format!("{}:%{}", Symbol::State(input.predecessor), input.value),
+                    input.value,
                     palette::BLUE,
                 );
             }
@@ -411,10 +470,15 @@ fn build_rows(
         rows.push(effect);
         for instruction in &block.instructions {
             let target = Selection {
+                value: None,
                 state: Some(block.state),
                 pc: Some(instruction.pc),
             };
-            if !display.instruction_visible(block.coverage, instruction, target == selection) {
+            if !display.instruction_visible(
+                block.coverage,
+                instruction,
+                target.same_native(selection),
+            ) {
                 continue;
             }
             let mut row = Row::new();
@@ -424,24 +488,26 @@ fn build_rows(
                 if index > 0 {
                     row.token(", ", palette::MUTED);
                 }
-                row.token(format!("%{result}"), palette::PURPLE);
+                row.value(*result, palette::PURPLE);
             }
             if !instruction.results.is_empty() {
                 row.token(" = ", palette::MUTED);
             }
+            let (name, operands) = operation_parts(&instruction.operation);
             row.token(
-                &instruction.name,
+                name,
                 if instruction.fault {
                     palette::ERROR
                 } else {
                     palette::TEXT
                 },
             );
-            if let Some(value) = &instruction.immediate {
-                row.token(format!(" {value}"), palette::BLUE);
-            }
-            for operand in &instruction.operands {
-                row.token(format!(" %{operand}"), palette::BLUE);
+            for operand in operands {
+                row.token(" ", palette::BLUE);
+                match operand {
+                    DisplayOperand::Value(value) => row.value(value, palette::BLUE),
+                    DisplayOperand::Constant(word) => row.token(word, palette::BLUE),
+                }
             }
             let effect = format!(
                 " · {}→{}",
@@ -479,10 +545,11 @@ fn build_rows(
                 );
             }
             row.tooltip = format!(
-                "{}\nState {} · pc 0x{:04x}\nArguments are in EVM pop order.\n{:?}{}",
+                "{}\nState {} · pc 0x{:04x}\n{}\nArguments are in EVM pop order.\n{:?}{}",
                 detail,
                 Symbol::State(block.state),
                 instruction.pc,
+                source_text(instruction),
                 instruction.progress,
                 if instruction.fault {
                     " · exceptional halt"
@@ -512,6 +579,7 @@ fn build_rows(
             let transition = transitions.get(&edge.id).copied();
             let mut row = Row::new();
             row.target = Some(Selection {
+                value: None,
                 state: Some(edge.to),
                 pc: None,
             });

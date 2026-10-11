@@ -1,4 +1,5 @@
 pub(super) mod errors;
+mod values;
 use evm_abstract::{analysis, ssa};
 use evm_abstract_protocol::{
     BlockCoverage, DeferredEdge, DeferredReason, EffectInput, InstructionProgress, Phi, PhiInput,
@@ -9,17 +10,14 @@ pub(super) fn report(
     graph: &analysis::WorldAnalysis,
     control: &analysis::control::Control,
 ) -> Result<SsaReport, ssa::SsaError> {
-    let complete = graph.status() == analysis::Status::Converged;
-    // The complete flag requires the stronger closed-world verifier. The shared
-    // presentation below also retains phases and effect dependencies for each row.
-    if complete {
-        ssa::build_world(graph)?;
-    }
-    let ir = ssa::build_partial_world(graph)?;
+    // The builder validates original receipts first, then independently checks
+    // value rewrites. Only the final normalized SSA is exported.
+    let ir = ssa::build_normalized_partial_world(graph)?;
     Ok(SsaReport {
-        complete,
+        complete: ir.complete(),
         value_count: ir.value_count(),
         effect_count: ir.effect_count(),
+        values: values::report(graph, &ir, control)?,
         blocks: ir
             .blocks()
             .iter()
@@ -57,7 +55,7 @@ pub(super) fn report(
                         .enumerate()
                         .map(|(index, item)| {
                             control.checkpoint().map_err(|_| ssa::SsaError::Cancelled)?;
-                            let source = &item.instruction;
+                            let source = &item.origin;
                             let name = graph.states()[block.state]
                                 .program()
                                 .and_then(|program| {
@@ -68,6 +66,7 @@ pub(super) fn report(
                                 .and_then(|source| source.instructions.get(index))
                                 .map_or("UNKNOWN", |instruction| instruction.name());
                             Ok(SsaInstruction {
+                                operation: values::operation(&item.operation, name),
                                 pc: source.pc,
                                 opcode: source.opcode,
                                 name: name.into(),

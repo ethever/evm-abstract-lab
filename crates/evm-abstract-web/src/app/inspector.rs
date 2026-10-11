@@ -5,6 +5,7 @@ mod buffers;
 mod context;
 mod errors;
 mod evidence;
+mod ssa;
 mod stores;
 mod value;
 
@@ -21,6 +22,7 @@ pub(super) enum Tab {
     #[default]
     Frame,
     Stack,
+    SsaValue,
     Memory,
     Storage,
     Transient,
@@ -33,9 +35,10 @@ pub(super) enum Tab {
 }
 
 impl Tab {
-    const ALL: [(Self, &'static str); 11] = [
+    const ALL: [(Self, &'static str); 12] = [
         (Self::Frame, "Frame"),
         (Self::Stack, "Stack"),
+        (Self::SsaValue, "SSA value"),
         (Self::Memory, "Memory"),
         (Self::Storage, "Storage"),
         (Self::Transient, "Transient"),
@@ -67,6 +70,7 @@ pub(super) struct Inspector {
     point: Point,
     frame: Option<usize>,
     last_state: Option<usize>,
+    last_value: Option<usize>,
     outcome: usize,
     rollback: bool,
 }
@@ -78,6 +82,7 @@ impl Default for Inspector {
             point: Point::Entry,
             frame: None,
             last_state: None,
+            last_value: None,
             outcome: 0,
             rollback: false,
         }
@@ -92,6 +97,9 @@ impl Inspector {
     ) -> String {
         if !self.expanded {
             return format!("Inspector hidden · {}", self.tab.label());
+        }
+        if self.tab == Tab::SsaValue {
+            return ssa::summary(report, selection);
         }
         let machine = self.machine(report, selection);
         let boundary = match self.point {
@@ -127,8 +135,19 @@ impl Inspector {
         self.point = Point::Entry;
         self.frame = None;
         self.last_state = None;
+        self.last_value = None;
         self.outcome = 0;
         self.rollback = false;
+    }
+
+    pub(super) fn select_value(&mut self, value: Option<usize>) {
+        if self.last_value != value {
+            self.last_value = value;
+            if value.is_some() {
+                self.expanded = true;
+                self.tab = Tab::SsaValue;
+            }
+        }
     }
 
     fn machine<'a>(
@@ -181,6 +200,10 @@ impl Inspector {
                 }
             });
         });
+        if self.tab == Tab::SsaValue {
+            ssa::show(ui, report, selection);
+            return;
+        }
         let has_exit = report
             .states
             .iter()
@@ -285,6 +308,7 @@ impl Inspector {
                 evidence::diagnostics(ui, report, selection)
             }),
             Tab::Outcomes => self.outcomes(ui, report, selection),
+            Tab::SsaValue => unreachable!("SSA values use definition-scoped inspection"),
         }
     }
 
@@ -326,6 +350,7 @@ impl Inspector {
                         .clicked()
                     {
                         *selection = Selection {
+                            value: None,
                             state: Some(outcome.state),
                             pc: None,
                         };

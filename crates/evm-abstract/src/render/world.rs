@@ -64,6 +64,24 @@ pub fn partial_ssa_verbose(analysis: &WorldAnalysis, ir: &crate::ssa::PartialWor
     partial::render_verbose(analysis, ir)
 }
 
+/// Render the shared final SSA while retaining native state and transition IDs.
+pub fn normalized_ssa(analysis: &WorldAnalysis, ir: &crate::ssa::NormalizedSsa) -> String {
+    if ir.complete() {
+        ssa::teaching::render_normalized(analysis, ir)
+    } else {
+        partial::render_normalized(analysis, ir, false)
+    }
+}
+
+/// Expand frame, phase and effect evidence around the same final computations.
+pub fn normalized_ssa_verbose(analysis: &WorldAnalysis, ir: &crate::ssa::NormalizedSsa) -> String {
+    if ir.complete() {
+        ssa::render_normalized(analysis, ir)
+    } else {
+        partial::render_normalized(analysis, ir, true)
+    }
+}
+
 /// DOT graph preserving call/return/revert/failure edge labels and frontiers.
 pub fn dot(analysis: &WorldAnalysis) -> String {
     let mut output = String::from("digraph world {\n  rankdir=LR;\n");

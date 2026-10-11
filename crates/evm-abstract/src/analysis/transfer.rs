@@ -1,7 +1,6 @@
 //! Basic-block execution on a transaction-wide machine. Calls suspend a frame;
 //! returns resume it with the same transaction store and an explicit result.
 
-use super::InstructionProgress;
 use super::{
     DiagnosticKind, EdgeKind,
     machine::{
@@ -9,6 +8,7 @@ use super::{
         OutcomeKind,
     },
 };
+use super::{InstructionProgress, InstructionValue};
 use crate::{
     domain::{AbstractValue, Domain, provenance::Origin},
     world::{AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, Store, Symbol, World},
@@ -71,6 +71,7 @@ pub(super) struct Execution {
     pub payload: MachinePayload,
     pub executed_pcs: Vec<usize>,
     pub instruction_progress: Vec<InstructionProgress>,
+    pub instruction_values: Vec<InstructionValue>,
     pub successors: Vec<Successor>,
     pub diagnostics: Vec<(usize, DiagnosticKind)>,
     pub frontiers: Vec<(usize, FrontierReason, Option<MachineKey>)>,
@@ -110,6 +111,7 @@ pub(super) fn resume_summary(
         payload: payload.clone(),
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
+        instruction_values: Vec::new(),
         successors: Vec::new(),
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
@@ -253,6 +255,7 @@ pub(super) fn execute(
         payload,
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
+        instruction_values: Vec::new(),
         successors: Vec::new(),
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
@@ -346,6 +349,10 @@ pub(super) fn execute(
         }
         if let Some(value) = instruction.immediate {
             stack.push(AbstractValue::constant(value));
+            result.instruction_values.push(InstructionValue::new(
+                result.executed_pcs.len() - 1,
+                stack.last().expect("PUSH produced its normal result"),
+            ));
             result.mark_instruction(InstructionProgress::Completed);
             continue;
         }
@@ -1025,6 +1032,9 @@ pub(super) fn execute(
                         value.forget_identity();
                     }
                 }
+                result
+                    .instruction_values
+                    .push(InstructionValue::new(result.executed_pcs.len() - 1, &value));
                 result
                     .payload
                     .active_mut()

@@ -215,6 +215,7 @@ fn native_state_selection_works_in_both_identity_and_preview_modes() {
             .screen_rect(canvas, graph.placement.nodes[&2])
             .center();
         selection = Selection {
+            value: None,
             state: Some(0),
             pc: Some(0),
         };
@@ -238,6 +239,7 @@ fn native_state_selection_works_in_both_identity_and_preview_modes() {
         assert_eq!(
             selection,
             Selection {
+                value: None,
                 state: Some(2),
                 pc: None
             }
@@ -309,6 +311,7 @@ fn zooming_restores_the_selected_disassembly_preview() {
 
 fn receipt(pc: usize, opcode: u8, name: &str) -> SsaInstruction {
     SsaInstruction {
+        operation: crate::tests::opcode_operation(opcode, name, &[1, 2], None),
         pc,
         opcode,
         name: name.into(),
@@ -483,6 +486,7 @@ fn compact_preview_fills_filtered_quota_and_temporarily_reveals_a_buried_native_
     );
     for selected_pc in [Some(512), Some(700), None] {
         selection = Selection {
+            value: None,
             state: Some(2),
             pc: selected_pc,
         };
@@ -510,6 +514,7 @@ fn selected_stack_row_fits_natural_reserved_width_and_retains_full_tooltip() {
     let mut instructions: Vec<_> = (0..20).map(|pc| receipt(pc, 0x01, "ADD")).collect();
     let mut wide = receipt(20, 0x9f, "SWAP16");
     wide.operands = vec![usize::MAX, usize::MAX - 1];
+    crate::tests::refresh_operation(&mut wide);
     instructions.push(wide);
     instructions.push(receipt(21, 0x00, "STOP"));
     let report = with_receipts(instructions);
@@ -517,6 +522,7 @@ fn selected_stack_row_fits_natural_reserved_width_and_retains_full_tooltip() {
     let measured = geometry(&graph);
     let camera = (graph.zoom, graph.pan);
     let mut selection = Selection {
+        value: None,
         state: Some(2),
         pc: Some(20),
     };
@@ -554,6 +560,7 @@ fn ssa_detail_and_selected_pc_keep_aggregate_cards_as_source_summaries() {
     let (ctx, mut graph, _) = native_graph(&report);
     graph.set_mode(GraphMode::Blocks);
     let mut selection = Selection {
+        value: None,
         state: Some(999),
         pc: Some(100),
     };

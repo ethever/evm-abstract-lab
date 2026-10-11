@@ -277,5 +277,42 @@ variant! {
         Coverage,
         /// Exact verifier invariant and contextual coordinates.
         Invariant(Box<SsaInvariant>),
+        /// Value normalization failed its separate proof or mapping contract.
+        Normalization(SsaNormalizationInvariant),
+    }
+}
+
+choice! {
+    /// Exact contract checked after value normalization.
+    pub enum SsaNormalizationKind {
+        /// Original execution identity changed.
+        Origin,
+        /// Final value definitions are not unique and contiguous.
+        ValueNames,
+        /// A computation lacks a valid simplification proof.
+        Operation,
+        /// A fact is invalid or escapes its scope.
+        Facts,
+        /// Origin, equivalence or dependencies are invalid.
+        Mappings,
+        /// Original effects changed.
+        Effects,
+        /// Native transitions changed.
+        Transitions,
+        /// Coverage or frontiers changed.
+        Coverage,
+    }
+}
+record! {
+    /// A normalization failure with original native coordinates.
+    pub struct SsaNormalizationInvariant {
+        /// Exact violated normalization contract.
+        pub kind: SsaNormalizationKind,
+        /// Native state, when localized.
+        pub state: Option<usize>,
+        /// Original bytecode offset, when localized.
+        pub pc: Option<usize>,
+        /// Final SSA value, when localized.
+        pub value: Option<usize>,
     }
 }

@@ -42,6 +42,8 @@ impl SsaCache {
         display: SsaDisplay,
         selection: Selection,
     ) {
+        let mut selection = selection;
+        selection.value = None;
         let scope = match program {
             Some(program) => Scope::Program(program),
             None => Scope::NoCode(selection.state),

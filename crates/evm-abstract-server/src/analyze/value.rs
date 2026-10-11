@@ -78,7 +78,7 @@ fn expression(source: &ExprId) -> api::ExpressionGraph {
     let root = intern(source, &mut nodes, &mut std::collections::BTreeMap::new());
     api::ExpressionGraph { nodes, root }
 }
-fn origin(source: Origin) -> api::ValueOrigin {
+pub(super) fn origin(source: Origin) -> api::ValueOrigin {
     use api::ValueOrigin as O;
     match source {
         Origin::Constant => O::Constant,

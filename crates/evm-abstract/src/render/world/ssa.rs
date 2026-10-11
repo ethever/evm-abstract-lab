@@ -8,8 +8,11 @@ use evm_abstract_notation::Symbol;
 use crate::{
     analysis::{FrameCode, FrameKey, MachineEdgeKind, MachineState, WorldAnalysis},
     bytecode::Program,
-    render::instruction::InstructionLayout,
-    ssa::{Instruction, Transition, ValueId, WorldBlock, WorldSsa},
+    render::{
+        instruction::InstructionLayout,
+        normalized::{Artifact, Block, Row},
+    },
+    ssa::{NormalizedSsa, Transition, ValueId, WorldSsa},
 };
 use revm_bytecode::opcode::{self, OpCode};
 use std::fmt::Write;
@@ -21,11 +24,19 @@ mod tests;
 
 /// 将已验证的栈 SSA 和粗粒度效果 SSA 连同原图上下文一起展示。
 pub(super) fn render(analysis: &WorldAnalysis, ssa: &WorldSsa) -> String {
+    render_artifact(analysis, Artifact::World(ssa))
+}
+
+pub(super) fn render_normalized(analysis: &WorldAnalysis, ssa: &NormalizedSsa) -> String {
+    render_artifact(analysis, Artifact::Normalized(ssa))
+}
+
+fn render_artifact(analysis: &WorldAnalysis, ssa: Artifact<'_>) -> String {
     let mut output = String::from("Verified cross-contract SSA:\n");
     writeln!(
         output,
         "  blocks={} | transitions={} | stack values={} | effect bundles={}",
-        ssa.blocks().len(),
+        ssa.block_count(),
         ssa.transitions().len(),
         ssa.value_count(),
         ssa.effect_count()
@@ -58,7 +69,7 @@ fn write_block(
     output: &mut String,
     analysis: &WorldAnalysis,
     state: &MachineState,
-    block: &WorldBlock,
+    block: Block<'_>,
 ) {
     let depth = state.key.frames.len();
     writeln!(
@@ -90,7 +101,7 @@ fn write_block(
     if block.phis.is_empty() {
         output.push_str("      (none)\n");
     }
-    for phi in &block.phis {
+    for phi in block.phis {
         let inputs = phi
             .inputs
             .iter()
@@ -142,7 +153,7 @@ fn write_block(
     if block.instructions.is_empty() {
         writeln!(output, "      (none; {})", empty_instruction_reason(state)).unwrap();
     }
-    for instruction in &block.instructions {
+    for instruction in block.instructions.iter() {
         write_instruction(
             output,
             instruction,
@@ -157,21 +168,21 @@ fn write_block(
         output.push_str("    ");
     }
     output.push_str("stack out (before dispatch):\n");
-    write_stacks(output, &block.exit_frames, layout.as_ref());
+    write_stacks(output, block.exit_frames, layout.as_ref());
     output.push_str("    instruction effects:\n");
-    if block.effects.is_empty() {
+    if block.effects().next().is_none() {
         output.push_str("      (none)\n");
     }
-    for (pc, input, result) in &block.effects {
+    for (pc, input, result) in block.effects() {
         layout
             .as_ref()
             .expect("instruction effect has a real bytecode block")
-            .write_pc(output, *pc);
+            .write_pc(output, pc);
         writeln!(
             output,
             "{} → {}",
-            Symbol::Effect(*input),
-            Symbol::Effect(*result)
+            Symbol::Effect(input),
+            Symbol::Effect(result)
         )
         .unwrap();
     }
@@ -232,11 +243,18 @@ fn write_frame(
     .unwrap();
 }
 
-fn write_instruction(output: &mut String, instruction: &Instruction, layout: &InstructionLayout) {
+fn write_instruction(output: &mut String, row: Row<'_>, layout: &InstructionLayout) {
+    let instruction = row.origin;
     let immediate = instruction
         .immediate
         .map_or_else(|| "none".to_owned(), |value| format!("0x{value:x}"));
     layout.write_pc(output, instruction.pc);
+    if row.normalized.is_some() {
+        row.write_body(output);
+        writeln!(output, " | opcode=0x{:02x} | immediate={} | operands={} | results={} | fault={} | progress={:?}",
+            instruction.opcode, immediate, values(&instruction.operands), values(&instruction.results), instruction.fault, row.progress).unwrap();
+        return;
+    }
     writeln!(
         output,
         "{} | opcode=0x{:02x} | immediate={} | operands={} | results={} | fault={}",

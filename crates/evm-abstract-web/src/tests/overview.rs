@@ -281,6 +281,7 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
     assert_eq!(
         workspace.selection,
         Selection {
+            value: None,
             state: Some(last),
             pc: None
         }
@@ -333,6 +334,7 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
     assert_eq!(
         workspace.selection,
         Selection {
+            value: Some(last + 1),
             state: Some(last),
             pc: Some(0)
         }
@@ -355,6 +357,7 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
     assert_eq!(
         workspace.selection,
         Selection {
+            value: None,
             state: Some(last),
             pc: None
         },

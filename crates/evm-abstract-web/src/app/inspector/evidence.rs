@@ -93,6 +93,7 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
             .clicked()
         {
             *selection = Selection {
+                value: None,
                 state: Some(diagnostic.state),
                 pc: Some(diagnostic.pc),
             };
@@ -124,6 +125,7 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
             .clicked()
         {
             *selection = Selection {
+                value: None,
                 state: frontier.from,
                 pc: frontier.pc,
             };

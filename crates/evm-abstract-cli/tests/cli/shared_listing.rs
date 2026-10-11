@@ -121,16 +121,56 @@ fn opcode_name(opcode: u64) -> &'static str {
         .name()
 }
 
+fn operand(value: &Json) -> String {
+    if let Some(value) = value["Value"].as_u64() {
+        format!("%{value}")
+    } else {
+        format!("0x{:x}", word(value["Constant"].as_str().unwrap()))
+    }
+}
+
+fn assert_computation(body: &str, instruction: &Json) {
+    let (computation, comment) = body.split_once(" ; ").unwrap_or((body, ""));
+    let (results, operation) = computation.split_once(" = ").unwrap_or(("", computation));
+    assert_eq!(indices(results, '%'), json_indices(&instruction["results"]));
+    let operation_ir = &instruction["operation"];
+    let expected = if let Some(value) = operation_ir["Constant"]["value"].as_str() {
+        assert!(comment.contains(&format!(
+            "origin={}",
+            opcode_name(instruction["opcode"].as_u64().unwrap())
+        )));
+        format!("CONST 0x{:x}", word(value))
+    } else if operation_ir["Copy"].is_object() {
+        assert!(comment.contains(&format!(
+            "origin={}",
+            opcode_name(instruction["opcode"].as_u64().unwrap())
+        )));
+        format!("COPY {}", operand(&operation_ir["Copy"]["value"]))
+    } else {
+        let opcode = &operation_ir["Opcode"];
+        let mut expected = opcode_name(opcode["opcode"].as_u64().unwrap()).to_owned();
+        if let Some(immediate) = instruction["immediate"].as_str() {
+            expected.push_str(&format!(" 0x{:x}", word(immediate)));
+        }
+        for value in opcode["operands"].as_array().unwrap() {
+            expected.push(' ');
+            expected.push_str(&operand(value));
+        }
+        expected
+    };
+    assert_eq!(operation, expected);
+}
+
 // TAC 与完整字段采用不同语法，二者都还原成 IR 的数值字段来比较。
 fn assert_instruction(body: &str, instruction: &Json, detailed: bool, aliases: bool) {
     let opcode = instruction["opcode"].as_u64().unwrap();
     if detailed {
         let mut fields = body.split(" | ");
-        assert_eq!(fields.next().unwrap(), opcode_name(opcode));
+        assert_computation(fields.next().unwrap(), instruction);
         let fields: BTreeMap<_, _> = fields.map(|field| field.split_once('=').unwrap()).collect();
         assert_eq!(
             fields.len(),
-            5,
+            6,
             "all instruction evidence must remain visible"
         );
         assert_eq!(
@@ -151,19 +191,13 @@ fn assert_instruction(body: &str, instruction: &Json, detailed: bool, aliases: b
             fields["fault"].parse::<bool>().unwrap(),
             instruction["fault"]
         );
+        assert_eq!(
+            fields["progress"],
+            instruction["progress"].as_str().unwrap()
+        );
     } else {
-        let (operation, comment) = body.split_once(" ; ").unwrap_or((body, ""));
-        let (results, operation) = operation.split_once(" = ").unwrap_or(("", operation));
-        assert_eq!(indices(results, '%'), json_indices(&instruction["results"]));
-        let mut fields = operation.split_whitespace();
-        assert_eq!(fields.next().unwrap(), opcode_name(opcode));
-        if let Some(immediate) = instruction["immediate"].as_str() {
-            assert_eq!(word(fields.next().unwrap()), word(immediate));
-        }
-        let operands: Vec<_> = fields
-            .map(|field| field.strip_prefix('%').unwrap().parse::<u64>().unwrap())
-            .collect();
-        assert_eq!(operands, json_indices(&instruction["operands"]));
+        assert_computation(body, instruction);
+        let comment = body.split_once(" ; ").map_or("", |(_, comment)| comment);
         assert_eq!(comment.contains("exceptional halt"), instruction["fault"]);
         if aliases && instruction["fault"] == false {
             if (0x80..=0x8f).contains(&opcode) {
@@ -252,7 +286,20 @@ fn assert_single_listing(text: &str, report: &Json) {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|input| input["predecessor"].as_u64().unwrap())
+                    .map(|input| {
+                        let from = report["machine_analysis"]["edges"]
+                            [input[0].as_u64().unwrap() as usize]["from"]
+                            .as_u64()
+                            .unwrap();
+                        report["state_mapping"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|mapping| mapping["machine_state"] == from)
+                            .unwrap()["local_state"]
+                            .as_u64()
+                            .unwrap()
+                    })
                     .collect::<Vec<_>>()
             );
             assert_eq!(
@@ -263,7 +310,7 @@ fn assert_single_listing(text: &str, report: &Json) {
                             .as_array()
                             .unwrap()
                             .iter()
-                            .map(|input| input["value"].as_u64().unwrap())
+                            .map(|input| input[1].as_u64().unwrap())
                     )
                     .collect::<Vec<_>>()
             );
@@ -281,7 +328,7 @@ fn assert_single_listing(text: &str, report: &Json) {
             .iter()
             .find(|line| line.trim_start().starts_with("stack out ["))
             .unwrap();
-        assert_eq!(indices(exit, '%'), json_indices(&block["exit_stack"]));
+        assert_eq!(indices(exit, '%'), json_indices(&block["exit_frames"][0]));
     }
 }
 
@@ -492,14 +539,22 @@ fn assert_world_listing(output: &str, report: &Json, detailed: bool) {
                 .iter()
                 .filter(|line| line.contains(" → μ"))
                 .collect();
-            let expected = block["effects"].as_array().unwrap();
+            let expected = block["instructions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| !row["effect_result"].is_null())
+                .collect::<Vec<_>>();
             assert_eq!(actual.len(), expected.len());
             for (line, effect) in actual.into_iter().zip(expected) {
                 assert_eq!(
                     indices(line, '!'),
-                    vec![effect[1].as_u64().unwrap(), effect[2].as_u64().unwrap()]
+                    vec![
+                        effect["effect_input"].as_u64().unwrap(),
+                        effect["effect_result"].as_u64().unwrap()
+                    ]
                 );
-                assert!(line.contains(&format!("{:04x}:", effect[0].as_u64().unwrap())));
+                assert!(line.contains(&format!("{:04x}:", effect["pc"].as_u64().unwrap())));
             }
             assert!(lines.iter().any(|line| line.trim()
                 == format!(

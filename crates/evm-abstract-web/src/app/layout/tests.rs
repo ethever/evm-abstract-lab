@@ -210,6 +210,7 @@ fn compact_source_tab_choices_survive_resizing_and_reanalysis() {
         crate::palette::configure(&ctx);
         let mut workspace = ready();
         workspace.selection = crate::app::Selection {
+            value: None,
             state: Some(2),
             pc: Some(10),
         };

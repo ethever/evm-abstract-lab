@@ -32,6 +32,7 @@ fn report() -> AnalysisReport {
         ssa: SsaReport {
             complete: true,
             value_count: 5,
+            values: vec![],
             effect_count: 3,
             blocks: vec![SsaBlock {
                 state: 27,
@@ -48,6 +49,7 @@ fn report() -> AnalysisReport {
                     }],
                 }],
                 instructions: vec![SsaInstruction {
+                    operation: crate::tests::opcode_operation(1, "ADD", &[11, 12], None),
                     pc: 400,
                     opcode: 1,
                     name: "ADD".into(),
@@ -137,6 +139,7 @@ fn percent_names_cover_definitions_phi_exits_and_transition_tooltips() {
     assert_eq!(
         rows[3].target,
         Some(Selection {
+            value: None,
             state: Some(27),
             pc: Some(400)
         })
@@ -144,6 +147,7 @@ fn percent_names_cover_definitions_phi_exits_and_transition_tooltips() {
     assert_eq!(
         rows[5].target,
         Some(Selection {
+            value: None,
             state: Some(91),
             pc: None
         })
@@ -169,9 +173,20 @@ fn frame(
     selection: &mut Selection,
     previous: &mut Selection,
 ) -> FullOutput {
+    frame_with_events(ctx, report, selection, previous, vec![])
+}
+
+fn frame_with_events(
+    ctx: &Context,
+    report: &AnalysisReport,
+    selection: &mut Selection,
+    previous: &mut Selection,
+    events: Vec<egui::Event>,
+) -> FullOutput {
     let mut output = ctx.run_ui(
         RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 550.0))),
+            events,
             ..RawInput::default()
         },
         |ui| {
@@ -187,6 +202,90 @@ fn frame(
     );
     output.textures_delta.clear();
     output
+}
+
+#[test]
+fn normalized_operations_keep_native_opcode_and_operand_provenance_in_tooltips() {
+    use evm_abstract_protocol::{SsaOpcodeOperation, SsaOperand, SsaOperation};
+
+    for (operation, expected) in [
+        (SsaOperation::Constant("0x3".into()), "%13 = CONST 0x3"),
+        (SsaOperation::Copy(SsaOperand::Value(11)), "%13 = COPY %11"),
+        (
+            SsaOperation::Opcode(SsaOpcodeOperation {
+                opcode: 1,
+                name: "ADD".into(),
+                operands: vec![SsaOperand::Constant("0x1".into()), SsaOperand::Value(12)],
+            }),
+            "%13 = ADD 0x1 %12",
+        ),
+    ] {
+        let mut report = report();
+        report.ssa.blocks[0].instructions[0].operation = operation;
+        let rendered = rows(&report);
+        let row = &rendered[3];
+        assert!(row.plain_text().contains(expected), "{}", row.plain_text());
+        assert!(row.tooltip.contains("Original opcode: 0x01 ADD %11 %12"));
+        assert!(row.tooltip.contains("μ₂→μ₃"));
+        assert!(row.tooltip.contains("Completed"));
+        assert_eq!(
+            row.target,
+            Some(Selection {
+                state: Some(27),
+                pc: Some(400),
+                value: None,
+            })
+        );
+    }
+}
+
+#[test]
+fn clicking_a_value_token_selects_its_id_and_retains_the_native_reading_row() {
+    let report = report();
+    let context = Context::default();
+    crate::notation::initialize_fonts(&context);
+    let mut selection = Selection {
+        state: Some(27),
+        ..Selection::default()
+    };
+    let mut previous = selection;
+    frame(&context, &report, &mut selection, &mut previous);
+    let output = frame(&context, &report, &mut selection, &mut previous);
+    let value = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "%13" => {
+                Some(Rect::from_min_size(text.pos, text.galley.size()).center())
+            }
+            _ => None,
+        })
+        .expect("instruction result token is visible");
+    for pressed in [true, false] {
+        frame_with_events(
+            &context,
+            &report,
+            &mut selection,
+            &mut previous,
+            vec![
+                egui::Event::PointerMoved(value),
+                egui::Event::PointerButton {
+                    pos: value,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    assert_eq!(
+        selection,
+        Selection {
+            state: Some(27),
+            pc: Some(400),
+            value: Some(13)
+        }
+    );
 }
 
 fn positions(output: &FullOutput) -> Vec<(String, Pos2)> {
@@ -214,10 +313,12 @@ fn table_virtualizes_dense_rows_and_focuses_an_offscreen_native_instruction() {
     let hidden = &mut report.ssa.blocks[0].instructions[999];
     hidden.opcode = 0x50;
     hidden.name = "POP".into();
+    crate::tests::refresh_operation(hidden);
     hidden.results.clear();
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
     let mut selection = Selection {
+        value: None,
         state: Some(27),
         pc: None,
     };
@@ -284,6 +385,7 @@ fn stack_moves_and_important_operations() -> AnalysisReport {
             instruction.pc = pc;
             instruction.opcode = opcode;
             instruction.name = name;
+            crate::tests::refresh_operation(&mut instruction);
             instruction.results.clear();
             instruction
         })
@@ -305,6 +407,7 @@ fn compact_rows_hide_completed_stack_moves_and_full_restores_all_instruction_det
     assert_eq!(instruction_rows(&full), 41);
     for instruction in &report.ssa.blocks[0].instructions {
         let target = Some(Selection {
+            value: None,
             state: Some(27),
             pc: Some(instruction.pc),
         });
@@ -351,6 +454,7 @@ fn compact_rows_keep_pending_faulted_and_noncurrent_stack_moves() {
         instruction.pc = pc;
         instruction.opcode = 0x50;
         instruction.name = "POP".into();
+        crate::tests::refresh_operation(&mut instruction);
         instruction.results.clear();
         instruction.progress = progress;
         instruction.fault = progress == InstructionProgress::Completed;
@@ -395,6 +499,7 @@ fn compact_rows_reveal_only_the_selected_native_state_and_pc() {
     block.state = 91;
     report.ssa.blocks.push(block);
     let selection = Selection {
+        value: None,
         state: Some(91),
         pc: Some(5),
     };
@@ -443,6 +548,7 @@ fn program_scope_preserves_every_native_context_and_transition_to_other_programs
         Some(0),
         SsaDisplay::Compact,
         Selection {
+            value: None,
             state: Some(27),
             pc: None,
         },
@@ -482,6 +588,7 @@ fn program_scope_preserves_every_native_context_and_transition_to_other_programs
         Some(9),
         SsaDisplay::Compact,
         Selection {
+            value: None,
             state: Some(27),
             pc: None,
         },
@@ -513,6 +620,7 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
         None,
         SsaDisplay::Compact,
         Selection {
+            value: None,
             state: Some(27),
             pc: None,
         },
@@ -529,6 +637,7 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
         None,
         SsaDisplay::Compact,
         Selection {
+            value: None,
             state: Some(91),
             pc: None,
         },
@@ -542,6 +651,7 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
             Some(0),
             SsaDisplay::Compact,
             Selection {
+                value: None,
                 state: Some(27),
                 pc: None
             }
