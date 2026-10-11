@@ -203,6 +203,7 @@ fn report() -> AnalysisReport {
             })
             .collect(),
         ssa: SsaReport {
+            values: vec![],
             complete: true,
             value_count: 0,
             effect_count: 0,
@@ -480,6 +481,7 @@ fn focus_selected_centers_its_measured_rect_and_enters_manual_mode() {
     render(&ctx, &mut graph, &report, screen);
     graph.focus_pending = true;
     let mut selection = Selection {
+        value: None,
         state: Some(49),
         pc: None,
     };

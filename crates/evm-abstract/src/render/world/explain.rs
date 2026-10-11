@@ -75,12 +75,12 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
     output.push_str(&super::text(analysis));
     output.push('\n');
     if analysis.status() == Status::Converged {
-        let ir = ssa::build_world(analysis)?;
-        output.push_str(&super::ssa::render(analysis, &ir));
+        let ir = ssa::build_normalized_world(analysis)?;
+        output.push_str(&super::normalized_ssa_verbose(analysis, &ir));
     } else if allow_partial_ssa {
-        output.push_str(&super::partial_ssa_verbose(
+        output.push_str(&super::normalized_ssa_verbose(
             analysis,
-            &ssa::build_partial_world(analysis)?,
+            &ssa::build_normalized_partial_world(analysis)?,
         ));
     } else {
         output.push_str("SSA unavailable: cross-contract frontiers remain\n");

@@ -472,8 +472,10 @@ impl Engine<'_> {
         }
         self.result.states[id].exit_stack = execution.payload.active().stack.clone();
         self.result.states[id].executed_pcs = execution.executed_pcs;
-        self.result.states[id].execution_evidence =
-            Some(ExecutionEvidence::new(execution.instruction_progress));
+        self.result.states[id].execution_evidence = Some(ExecutionEvidence::new(
+            execution.instruction_progress,
+            execution.instruction_values,
+        ));
         self.result.states[id].exit = Some(execution.payload);
         self.completed_calls[id] = execution.completed_calls;
         for (pc, kind) in execution.diagnostics {
@@ -649,8 +651,10 @@ impl Engine<'_> {
                     self.result.states[existing].exit = Some(node.exit);
                     self.result.states[existing].exit_stack = node.exit_stack;
                     self.result.states[existing].executed_pcs = node.executed_pcs;
-                    self.result.states[existing].execution_evidence =
-                        Some(ExecutionEvidence::new(node.instruction_progress));
+                    self.result.states[existing].execution_evidence = Some(ExecutionEvidence::new(
+                        node.instruction_progress,
+                        node.instruction_values,
+                    ));
                     self.completed_calls[existing] = node.completed_calls;
                 } else if self.queued.insert(existing) {
                     self.queue.push_back(existing);
@@ -671,7 +675,10 @@ impl Engine<'_> {
                     exit: Some(node.exit),
                     exit_stack: node.exit_stack,
                     executed_pcs: node.executed_pcs,
-                    execution_evidence: Some(ExecutionEvidence::new(node.instruction_progress)),
+                    execution_evidence: Some(ExecutionEvidence::new(
+                        node.instruction_progress,
+                        node.instruction_values,
+                    )),
                 });
                 self.counters.states += 1;
                 self.completed_calls.push(node.completed_calls);

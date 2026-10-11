@@ -6,12 +6,15 @@
 use evm_abstract_notation::Symbol;
 
 use crate::render::{
-    instruction::{InstructionLayout, write_ssa_body},
+    instruction::InstructionLayout,
+    normalized::{Artifact, Block, Row},
     world::teaching::References,
 };
+#[cfg(test)]
+use crate::ssa::WorldSsa;
 use crate::{
     analysis::{MachineEdgeKind, MachineState, WorldAnalysis},
-    ssa::{Instruction, Transition, ValueId, WorldBlock, WorldSsa},
+    ssa::{NormalizedSsa, Transition, ValueId},
 };
 use revm_bytecode::opcode;
 use std::fmt::Write;
@@ -20,13 +23,25 @@ use std::fmt::Write;
 mod tests;
 
 /// 简洁视图保留原图的状态、转换编号和操作数弹出顺序。
+#[cfg(test)]
 pub(in crate::render::world) fn render(analysis: &WorldAnalysis, ir: &WorldSsa) -> String {
+    render_artifact(analysis, Artifact::World(ir))
+}
+
+pub(in crate::render::world) fn render_normalized(
+    analysis: &WorldAnalysis,
+    ir: &NormalizedSsa,
+) -> String {
+    render_artifact(analysis, Artifact::Normalized(ir))
+}
+
+fn render_artifact(analysis: &WorldAnalysis, ir: Artifact<'_>) -> String {
     let references = References::new(analysis);
     let mut output = String::from("Verified cross-contract SSA:\n");
     writeln!(
         output,
         "  states={} | transitions={} | stack values={}",
-        ir.blocks().len(),
+        ir.block_count(),
         ir.transitions().len(),
         ir.value_count()
     )
@@ -56,7 +71,7 @@ pub(in crate::render::world) fn render(analysis: &WorldAnalysis, ir: &WorldSsa) 
 fn write_block(
     output: &mut String,
     state: &MachineState,
-    block: &WorldBlock,
+    block: Block<'_>,
     references: &References,
 ) {
     let frame = state.active();
@@ -72,7 +87,7 @@ fn write_block(
         frame.jump_history
     )
     .unwrap();
-    for phi in &block.phis {
+    for phi in block.phis {
         let inputs = phi
             .inputs
             .iter()
@@ -100,7 +115,7 @@ fn write_block(
         )
         .unwrap();
     }
-    for instruction in &block.instructions {
+    for instruction in block.instructions.iter() {
         write_instruction(
             output,
             instruction,
@@ -115,13 +130,14 @@ fn write_block(
         output.push_str("    ");
     }
     output.push_str("stack out (before dispatch) ");
-    write_stacks(output, &block.exit_frames);
+    write_stacks(output, block.exit_frames);
     output.push('\n');
 }
 
-fn write_instruction(output: &mut String, instruction: &Instruction, layout: &InstructionLayout) {
+fn write_instruction(output: &mut String, row: Row<'_>, layout: &InstructionLayout) {
+    let instruction = row.origin;
     layout.write_pc(output, instruction.pc);
-    write_ssa_body(output, instruction);
+    row.write_body(output);
     if instruction.fault {
         output.push_str(" ; exceptional halt (opcode/stack)");
     } else if (opcode::DUP1..=opcode::DUP16).contains(&instruction.opcode) {

@@ -117,6 +117,7 @@ fn selected_child_source_and_reanalysis_remeasure_automatic_panes() {
     report.programs.push(source);
     report.cfg.push(child);
     workspace.selection = Selection {
+        value: None,
         state: Some(99),
         pc: None,
     };

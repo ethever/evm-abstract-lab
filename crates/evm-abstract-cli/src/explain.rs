@@ -173,11 +173,14 @@ impl ExplainArgs {
         text.push('\n');
         let complete = analysis.status() == Status::Converged;
         if complete {
-            text.push_str(&render::ssa(&analysis, &ssa::build(&analysis)?));
-        } else if self.allow_partial_ssa {
-            text.push_str(&render::partial_ssa(
+            text.push_str(&render::normalized_ssa(
                 &analysis,
-                &ssa::build_partial_world(analysis.execution())?,
+                &ssa::build_normalized(&analysis)?,
+            ));
+        } else if self.allow_partial_ssa {
+            text.push_str(&render::normalized_ssa(
+                &analysis,
+                &ssa::build_normalized_partial_world(analysis.execution())?,
             ));
         } else {
             text.push_str("SSA unavailable: analysis frontiers remain\n");

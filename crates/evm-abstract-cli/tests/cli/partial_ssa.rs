@@ -170,7 +170,7 @@ fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
         assert_partial(&rendered, "UnknownTarget");
         assert_concise(&rendered);
         assert!(partial_body(&rendered).contains("Known transitions"));
-        assert!(partial_body(&rendered).contains("= PUSH0"));
+        assert!(partial_body(&rendered).contains("= CONST 0x0 ; origin=PUSH0"));
         assert!(
             partial_body(&rendered)
                 .lines()
@@ -307,7 +307,7 @@ fn world_and_both_explain_views_keep_partial_frontiers_and_default_contracts() {
         } else {
             assert_concise(&rendered);
             assert!(partial_body(&rendered).contains("Known transitions"));
-            assert!(partial_body(&rendered).contains("= PUSH0"));
+            assert!(partial_body(&rendered).contains("= CONST 0x0 ; origin=PUSH0"));
         }
     }
     for item in json["partial_ssa"]["blocks"]

@@ -21,6 +21,31 @@ fn report() -> evm_abstract_protocol::AnalysisReport {
     report
 }
 
+#[test]
+fn cfg_preview_consumes_normalized_operations_and_retains_native_receipt_details() {
+    use evm_abstract_protocol::{SsaOperand, SsaOperation};
+
+    for (operation, expected) in [
+        (SsaOperation::Constant("0x3".into()), "%5 = CONST 0x3"),
+        (SsaOperation::Copy(SsaOperand::Value(1)), "%5 = COPY %1"),
+    ] {
+        let mut report = report();
+        let instruction = &mut report.ssa.blocks[2].instructions[0];
+        instruction.operation = operation;
+        let context = Context::default();
+        crate::notation::initialize_fonts(&context);
+        let mut output = context.run_ui(RawInput::default(), |ui| {
+            let node = node_text(ui.painter(), &report, &report.cfg[2], NodeView::Ssa);
+            assert!(node.lines.iter().any(|(line, _)| line.contains(expected)));
+            assert!(node.tooltip.contains(expected));
+            assert!(node.tooltip.contains("Original opcode: 0x01 ADD %1 %2"));
+            assert!(node.tooltip.contains("μ₂→μ₅"));
+            assert!(node.tooltip.contains("Completed"));
+        });
+        output.textures_delta.clear();
+    }
+}
+
 fn frame(
     ctx: &Context,
     graph: &mut Graph,
@@ -106,6 +131,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
     let mut graph = Graph::default();
     graph.set_mode(GraphMode::States);
     let mut selection = Selection {
+        value: None,
         state: Some(205),
         pc: Some(10),
     };
@@ -155,6 +181,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
     assert_eq!(
         selection,
         Selection {
+            value: None,
             state: Some(205),
             pc: Some(10)
         }
@@ -186,6 +213,7 @@ fn diamond_merge_preview_shows_phi_add_definition_and_exit_use_together() {
         instruction.operands = operands;
         instruction.results = results;
         instruction.immediate = immediate;
+        crate::tests::refresh_operation(&mut instruction);
         instruction.effect_input = 10 + index;
         instruction.effect_result = Some(11 + index);
         instruction.progress = if name == "STOP" {
@@ -239,6 +267,7 @@ fn ssa_preview_keeps_terminal_phase_and_full_phi_transition_details() {
         .collect();
     let call = block.instructions.last_mut().unwrap();
     call.name = "CALL".into();
+    crate::tests::refresh_operation(call);
     call.progress = InstructionProgress::Dispatched;
     call.results.clear();
     report.edges.push(evm_abstract_protocol::CfgEdge {
@@ -335,6 +364,7 @@ fn manual_mode_switch_preserves_selected_node_camera_anchor_and_zoom() {
     let mut graph = Graph::default();
     graph.set_mode(GraphMode::States);
     let mut selection = Selection {
+        value: None,
         state: Some(205),
         pc: None,
     };
@@ -361,6 +391,7 @@ fn a_representation_switch_preserves_initial_fit_scale_and_canvas_anchor() {
     let mut graph = Graph::default();
     graph.set_mode(GraphMode::States);
     let mut selection = Selection {
+        value: None,
         state: Some(205),
         pc: None,
     };
@@ -400,6 +431,7 @@ fn fit_button_centers_both_representations_without_rearranging_nodes() {
         let mut graph = Graph::default();
         graph.set_mode(GraphMode::States);
         let expected = Selection {
+            value: None,
             state: Some(205),
             pc: Some(10),
         };

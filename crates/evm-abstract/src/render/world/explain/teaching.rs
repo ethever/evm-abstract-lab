@@ -91,14 +91,14 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
     write_frontiers(&mut output, analysis, &refs);
     output.push('\n');
     if analysis.status() == Status::Converged {
-        output.push_str(&super::super::ssa::teaching::render(
+        output.push_str(&super::super::normalized_ssa(
             analysis,
-            &ssa::build_world(analysis)?,
+            &ssa::build_normalized_world(analysis)?,
         ));
     } else if allow_partial_ssa {
-        output.push_str(&super::super::partial_ssa(
+        output.push_str(&super::super::normalized_ssa(
             analysis,
-            &ssa::build_partial_world(analysis)?,
+            &ssa::build_normalized_partial_world(analysis)?,
         ));
     } else {
         output.push_str("SSA unavailable: cross-contract frontiers remain\n");

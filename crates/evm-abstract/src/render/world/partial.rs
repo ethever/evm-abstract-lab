@@ -8,27 +8,35 @@ use evm_abstract_notation::Symbol;
 
 use crate::{
     analysis::{InstructionProgress, WorldAnalysis},
-    render::instruction::{InstructionLayout, write_ssa_body},
-    ssa::{PartialBlockCoverage, PartialWorldSsa},
+    render::{instruction::InstructionLayout, normalized::Artifact},
+    ssa::{NormalizedSsa, PartialBlockCoverage, PartialWorldSsa},
 };
 use revm_bytecode::opcode;
 use std::fmt::Write;
 
 pub(super) fn render(analysis: &WorldAnalysis, ir: &PartialWorldSsa) -> String {
-    render_with_mode(analysis, ir, false)
+    render_with_mode(analysis, Artifact::Partial(ir), false)
 }
 
 pub(super) fn render_verbose(analysis: &WorldAnalysis, ir: &PartialWorldSsa) -> String {
-    render_with_mode(analysis, ir, true)
+    render_with_mode(analysis, Artifact::Partial(ir), true)
 }
 
-fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: bool) -> String {
+pub(super) fn render_normalized(
+    analysis: &WorldAnalysis,
+    ir: &NormalizedSsa,
+    verbose: bool,
+) -> String {
+    render_with_mode(analysis, Artifact::Normalized(ir), verbose)
+}
+
+fn render_with_mode(analysis: &WorldAnalysis, ir: Artifact<'_>, verbose: bool) -> String {
     let mut output = String::from("Partial SSA (machine state IDs):\n");
     write!(
         output,
         "  status={:?} | states={} | known transitions={} | deferred transitions={} | stack values={}",
         ir.status(),
-        ir.blocks().len(),
+        ir.block_count(),
         ir.transitions().len(),
         ir.deferred_edges().len(),
         ir.value_count(),
@@ -42,15 +50,12 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
         output,
         "  coverage: current={} | unexecuted={} | stale={} | frontiers={}",
         ir.blocks()
-            .iter()
             .filter(|block| matches!(block.coverage, PartialBlockCoverage::Current))
             .count(),
         ir.blocks()
-            .iter()
             .filter(|block| matches!(block.coverage, PartialBlockCoverage::Unexecuted))
             .count(),
         ir.blocks()
-            .iter()
             .filter(|block| matches!(block.coverage, PartialBlockCoverage::Stale))
             .count(),
         ir.frontiers().len(),
@@ -102,7 +107,7 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
             frame.address_value
         )
         .unwrap();
-        for phi in &block.phis {
+        for phi in block.phis {
             let inputs = phi
                 .inputs
                 .iter()
@@ -149,12 +154,12 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
         {
             output.push_str("    (no bytecode instruction evidence)\n");
         }
-        for item in &block.instructions {
+        for item in block.instructions.iter() {
             let layout = layout.as_ref().expect("recorded instruction has bytecode");
-            layout.write_pc(&mut output, item.instruction.pc);
-            write_ssa_body(&mut output, &item.instruction);
+            layout.write_pc(&mut output, item.origin.pc);
+            item.write_body(&mut output);
             let exceptional_dispatch = if item.progress == InstructionProgress::Dispatched {
-                exceptional_dispatch_note(item.instruction.opcode, frame.is_static)
+                exceptional_dispatch_note(item.origin.opcode, frame.is_static)
             } else {
                 None
             };
@@ -176,10 +181,7 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
                     ),
                     InstructionProgress::Completed => {}
                     InstructionProgress::Dispatched if exceptional_dispatch.is_none() => {
-                        output.push_str(dispatch_note(
-                            item.instruction.opcode,
-                            state.key.frames.len(),
-                        ));
+                        output.push_str(dispatch_note(item.origin.opcode, state.key.frames.len()));
                     }
                     InstructionProgress::Dispatched => {}
                     InstructionProgress::Faulted => {
@@ -191,7 +193,7 @@ fn render_with_mode(analysis: &WorldAnalysis, ir: &PartialWorldSsa, verbose: boo
                 output.push_str(note);
             }
             for (index, frontier) in ir.frontiers().iter().enumerate().filter(|(_, frontier)| {
-                frontier.from == Some(block.state) && frontier.pc == Some(item.instruction.pc)
+                frontier.from == Some(block.state) && frontier.pc == Some(item.origin.pc)
             }) {
                 write!(
                     output,

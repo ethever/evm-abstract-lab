@@ -128,6 +128,7 @@ Web 协议的数值仍受类型可表示范围约束：`smt_rlimit` 为 `u32`，
 - 点击 CFG 节点后，高亮的入边、出边会显示沿实际 source → target 方向移动的亮箭头：入边流向选中节点，出边从它流出，回边和自环按各自路径继续流动。缩放、平移和窗口变化仍保留现有布局；动画只在可见的高亮路径上刷新。
 - CFG 卡片按终止证据显示背景：同类正常结束为深绿，显式 `REVERT` 为深紫，异常结束为深红；混合类型、仍有继续路径或证据不完整时保持中性。**Root end** 表示根执行结果，**Frame return** 表示子帧结束并恢复调用方，标签按具有该类证据的原生状态计数，同一状态可能出现在多个类别中。分类读取完整原生报告，不以当前视图中的出度、末条解码指令或一条 `Failure` 边猜测终止；同深度的调用拒绝仍属于继续路径。选中以青色外框显示并保留语义底色，分析前沿／非当前覆盖另用琥珀色虚线框表示；低缩放继续显示身份与底色，悬停可查看全部类型和计数。工具栏 **End colors** 或缩放提示可查看图例。该显示不修改分析结果、原始状态或边。
 - SSA 值名统一使用 `%0`、`%1`，与 CLI 一致。定义值、操作数、phi 前驱和 effect 分开着色；普通指令与 effect 使用紧凑单行，部分执行阶段仍显式显示，完整信息可悬停查看。长立即数和 phi 输入可横向滚动。
+- SSA 默认采用共享核心的常量传播、折叠和基础代数简化，逐条显示 `CONST`、`COPY` 或带平坦参数的操作。原 PC、opcode、操作数、效果、故障与阶段保留在来源详情中；φ 和无用定义继续保留，CFG 拓扑不变。点击 `%value` 可在 **SSA value** 检查器查看连续最终编号、原定义、变换规则和带独立范围／有效性的数值事实；等价值与原计算依赖分别列出，**Go to source** 连接原生状态和 PC。查看或切换值只使用本报告，不重新分析。完整说明见 [SSA 基础规范化与值事实](ssa-normalization.md)。
 - 结果信息栏的 **SSA details** 同时控制 SSA 面板与 CFG 的 SSA 预览。默认收起正常完成且无故障的 `DUP1…16`、`SWAP1…16`、`POP`，并省略正常指令后的 `μᵢ→μⱼ` 注释；打开后恢复这些行、效果链和 `Completed` 标记。`JUMPDEST`、值定义、调用、控制流、存储／内存操作，以及故障和未完成阶段继续显示。原生状态、PC、值与效果身份仍保存在完整报告中；选中原本隐藏的 PC 会临时显露对应行，悬停详情也保留完整记录。每次切换只更新展示，不重新分析；该偏好跨视图、窗口尺寸与后续分析保留。
 - 可收合的账户／程序目录列出取得的代码与地址；程序选择与状态选择分别保留，尚未执行的源码也可以查看。
 - 底部检查器按所选状态、entry/exit 和调用帧显示上下文、stack、memory、storage、transient storage、calldata、returndata。稀疏字节与槽位保留默认值、未知信息和精度，不把未观察位置一律画成零。
@@ -166,7 +167,7 @@ Web 协议的数值仍受类型可表示范围约束：`smt_rlimit` 为 `u32`，
 | [`evm-abstract-server`](../crates/evm-abstract-server) | 将协议请求转换为引擎输入，验证 SSA，并投影为结构化响应；提供 HTTP 和静态资源 |
 | [`evm-abstract-web`](../crates/evm-abstract-web) | 依赖共享协议和符号库；通过 Web API 获取结果，用 egui Painter 绘制各视图 |
 
-共享协议版本为 5。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+共享协议版本为 6。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 
 | 请求 | 返回 |
 | --- | --- |
@@ -176,7 +177,7 @@ Web 协议的数值仍受类型可表示范围约束：`smt_rlimit` 为 `u32`，
 | `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
 
-版本 5 的提供者名单新增展示用的 `endpoint`；RPC 分析输入继续使用 `provider_id`，不接受浏览器在请求中指定 `endpoint`。例如 `AnalyzeRequest.input` 为 `{"Rpc":{"provider_id":"mainnet","address":"0x0000000000000000000000000000000000000101","block":"Latest","accounts":[]}}`；其余 `fork`、`environment`、`limits` 字段仍按共享请求类型提供。后端在任务入队前按 ID 查找配置，未知 ID 返回 `InvalidRequest`。此变更属于 Web 共享协议，CLI 的显式 `--rpc` 参数保持其原有用法。
+版本 6 为 SSA 增加规范化 `operation`、按最终 ValueId 索引的 `values`、带范围的事实和来源关系；原始 opcode、PC、效果与执行阶段仍保留。版本 5 的提供者名单新增展示用的 `endpoint`；RPC 分析输入继续使用 `provider_id`，不接受浏览器在请求中指定 `endpoint`。例如 `AnalyzeRequest.input` 为 `{"Rpc":{"provider_id":"mainnet","address":"0x0000000000000000000000000000000000000101","block":"Latest","accounts":[]}}`；其余 `fork`、`environment`、`limits` 字段仍按共享请求类型提供。后端在任务入队前按 ID 查找配置，未知 ID 返回 `InvalidRequest`。这些变更属于 Web 共享协议，CLI 的显式 `--rpc` 参数保持其原有用法。
 
 版本 4 将 `AnalysisLimits` 中除 `smt_rlimit: u32` 外的数值统一为 `u64`，避免 Wasm 的 32 位 `usize` 限制后端预算。累计 work / transfers 遥测也使用 `u64`。浏览器在 Rust 中直接处理 JSON 文本，保留整数精度；其他客户端处理这些数字时也应使用可精确保留 64 位整数的解析方式。报告的 `metadata.limits` 保存实际提交的完整策略，不用默认值覆盖用户输入。
 

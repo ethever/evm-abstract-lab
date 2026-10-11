@@ -9,7 +9,10 @@ use crate::{
     },
     world::ByteArray,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 pub(in crate::analysis) struct Replay<'a> {
     certificate: &'a Certificate,
@@ -185,6 +188,7 @@ impl<'a> Replay<'a> {
             exit_stack,
             executed_pcs: source.executed_pcs.clone(),
             instruction_progress: source.instruction_progress.clone(),
+            instruction_values: Arc::clone(&source.instruction_values),
             diagnostics: source.diagnostics.clone(),
             completed_calls,
         })

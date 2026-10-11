@@ -219,12 +219,14 @@ impl Row<'_> {
     fn target(&self) -> Selection {
         match self {
             Self::Block { state, pc, .. } => Selection {
+                value: None,
                 state: *state,
                 pc: Some(*pc),
             },
             Self::Instruction {
                 instruction, state, ..
             } => Selection {
+                value: None,
                 state: *state,
                 pc: Some(instruction.pc),
             },

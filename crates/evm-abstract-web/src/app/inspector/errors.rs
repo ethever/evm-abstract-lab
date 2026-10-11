@@ -117,6 +117,16 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
                 value::text(ui, "SSA effect", Symbol::Effect(id).to_string());
             }
         }),
+        api::ErrorDetails::Ssa(api::SsaFailure::Normalization(detail)) => fields(ui, |ui| {
+            value::text(ui, "SSA normalization", format!("{:?}", detail.kind));
+            if let Some(state) = detail.state {
+                value::text(ui, "State", Symbol::State(state).to_string());
+            }
+            count(ui, "PC", detail.pc);
+            if let Some(id) = detail.value {
+                value::text(ui, "SSA value", format!("%{id}"));
+            }
+        }),
     }
 }
 

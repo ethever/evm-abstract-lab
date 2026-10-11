@@ -30,9 +30,9 @@ use serde::{Serialize, Serializer, ser::SerializeMap};
 pub use config::{Config, ConfigError, ValidatedConfig};
 pub use machine::{
     CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence, FrameCode, FrameKey,
-    FrameState, FrontierReason, InstructionProgress, MachineEdge, MachineEdgeKind, MachineFrontier,
-    MachineKey, MachineOutcome, MachinePayload, MachineState, OutcomeKind, RootFrame,
-    WorldAnalysis,
+    FrameState, FrontierReason, InstructionProgress, InstructionValue, MachineEdge,
+    MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome, MachinePayload, MachineState,
+    OutcomeKind, RootFrame, WorldAnalysis,
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,

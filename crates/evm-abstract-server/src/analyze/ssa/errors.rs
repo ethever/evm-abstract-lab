@@ -7,6 +7,25 @@ pub(crate) fn convert(source: SsaError) -> api::ApiError {
     let details = match source {
         SsaError::Cancelled => return super::super::cancelled(),
         SsaError::IncompleteAnalysis => api::SsaFailure::Coverage,
+        SsaError::Normalization(source) => {
+            use api::SsaNormalizationKind as P;
+            use evm_abstract::ssa::NormalizationInvariantKind as N;
+            api::SsaFailure::Normalization(api::SsaNormalizationInvariant {
+                kind: match source.kind {
+                    N::Origin => P::Origin,
+                    N::ValueNames => P::ValueNames,
+                    N::Operation => P::Operation,
+                    N::Facts => P::Facts,
+                    N::Mappings => P::Mappings,
+                    N::Effects => P::Effects,
+                    N::Transitions => P::Transitions,
+                    N::Coverage => P::Coverage,
+                },
+                state: source.state,
+                pc: source.pc,
+                value: source.value,
+            })
+        }
         SsaError::Invariant(source) => api::SsaFailure::Invariant(Box::new(api::SsaInvariant {
             kind: match source.kind {
                 N::CallDispatch => P::CallDispatch,

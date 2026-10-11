@@ -158,7 +158,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 5
+    assert initial_report["schema_version"] == 6
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
         assert initial_report["metadata"]["limits"][field] == value
@@ -191,7 +191,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 5
+    assert report["schema_version"] == 6
     assert report["status"] == "Converged", report["frontiers"]
     expected = {**defaults, **edited}
     for field, value in expected.items():
@@ -947,6 +947,126 @@ def selected_ending(page):
     assert match,status
     keys=['members','root_normal','root_revert','root_failure','frame_normal','frame_revert','frame_failure','continuing','unresolved','non_current','unobserved']
     return {'kind':match[1],**dict(zip(keys,map(int,match.groups()[1:]),strict=True))}
+
+
+def ssa_definition_tokens(page, png, top):
+    """Locate real purple definition tokens; ordinary operand links are blue."""
+    return page.evaluate("""async ({png,top}) => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+        const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;
+        const context=canvas.getContext('2d');context.drawImage(image,0,0);
+        const scale=image.width/innerWidth,left=Math.round(4*scale),right=Math.round(350*scale);
+        const first=Math.round(top*scale),last=Math.round((innerHeight-30)*scale);
+        const width=right-left,height=last-first;
+        const pixels=context.getImageData(left,first,width,height).data,rows=[];
+        for(let y=0;y<height;y++) {
+            let x0=width,x1=-1,count=0;
+            for(let x=0;x<width;x++) {
+                const i=(y*width+x)*4,r=pixels[i],g=pixels[i+1],b=pixels[i+2];
+                if(r>=150 && g>=100 && g<=205 && b>=210 && b-r>=25 && r-g>=20) {
+                    x0=Math.min(x0,x);x1=Math.max(x1,x);count++;
+                }
+            }
+            if(!count) continue;
+            const current=[(left+x0)/scale,(first+y)/scale,(left+x1+1)/scale,(first+y+1)/scale];
+            const previous=rows.at(-1);
+            if(previous && current[1]-previous[3]<=4) {
+                previous[0]=Math.min(previous[0],current[0]);previous[2]=Math.max(previous[2],current[2]);previous[3]=current[3];
+            } else rows.push(current);
+        }
+        return rows;
+    }""",{'png':base64.b64encode(png).decode(),'top':top})
+
+
+def ssa_values_interactions(browser, url, output):
+    page,canvas,errors=layout_page(browser,url)
+    status=page.locator('#analysis-status')
+    posts=[]
+    page.on('request',lambda request:posts.append(request.url)
+            if request.method=='POST' and request.url.endswith('/api/tasks') else None)
+    results={}
+    cases=[('fold','600260030100','Converged'),
+           ('copy','345f0100','Converged'),
+           ('partial','60026003015f5f5f5f5f5f355af100','Incomplete')]
+    for name,code,completion in cases:
+        if 'Inspector hidden' not in status.text_content():hide_inspector(page,canvas)
+        report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
+        assert report['schema_version']==6 and report['status']==completion
+        ssa=report['ssa']
+        assert len(ssa['values'])==ssa['value_count']
+        assert [value['id'] for value in ssa['values']]==list(range(ssa['value_count']))
+        block=next(block for block in ssa['blocks'] if any(item['opcode']==1 for item in block['instructions']))
+        operation=next(item for item in block['instructions'] if item['opcode']==1)
+        value=ssa['values'][operation['results'][0]]
+        assert operation['progress']=='Completed' and operation['effect_result'] is not None
+        assert value['dependencies']==operation['operands']
+        if name=='copy':
+            caller=next(item['results'][0] for item in block['instructions'] if item['opcode']==0x34)
+            assert operation['operation']=={'Copy':{'Value':caller}}
+            assert value['equivalent']==caller
+        else:
+            assert operation['operation']=={'Constant':'0x5'}
+            assert value['equivalent'] is None
+            assert any(fact['scope']=='Definition' and fact['constant']=='0x5' for fact in value['facts'])
+        if name=='partial':
+            assert any(fact['scope']=={'State':block['state']} for fact in value['facts'])
+            assert any(frontier['kind']=='UnknownTarget' for frontier in report['frontiers'])
+        page.keyboard.press('3');settle_gesture(page);page.mouse.move(2,2)
+        png=canvas.screenshot(path=str(output/f'ssa-values-{name}-table.png'))
+        selected=screenshot_metrics(page,png,(4,75,1436,970))
+        assert selected['bounds'],selected
+        tokens=ssa_definition_tokens(page,png,selected['bounds'][3])
+        ids=[phi['result'] for phi in block['phis']]
+        ids.extend(result for item in block['instructions'] for result in item['results'])
+        index=ids.index(value['id'])
+        assert len(tokens)>index,(tokens,ids)
+        box=tokens[index]
+        canvas.click(position={'x':(box[0]+box[2])/2,'y':(box[1]+box[3])/2})
+        page.mouse.move(2,2);settle_gesture(page)
+        expect(status).to_contain_text(f"Inspector: SSA value %{value['id']}")
+        expect(status).to_contain_text('COPY' if name=='copy' else 'CONST 0x5')
+        if name=='partial':expect(status).to_contain_text(f"State {symbol('σ',block['state'])}")
+        canvas.screenshot(path=str(output/f'ssa-values-{name}-inspector.png'))
+        before=status.text_content()
+        ssa_details_toggle(page,canvas,'Full')
+        expect(status).to_contain_text(f"Inspector: SSA value %{value['id']}")
+        ssa_details_toggle(page,canvas,'Compact')
+        navigation=None
+        if name=='fold':
+            # The selected inspector tab anchors its public ValueId editor and
+            # the first-row source button without exposing egui rectangles.
+            png=canvas.screenshot()
+            inspector=screenshot_metrics(page,png,(4,650,1436,970))
+            assert inspector['bounds'],inspector
+            tab_bottom=inspector['bounds'][3]
+            native_region=(4,selected['bounds'][3]+1,1436,450)
+            native_before=screenshot_metrics(page,png,native_region)
+            assert native_before['bounds'],native_before
+            canvas.dblclick(position={'x':85,'y':tab_bottom+12})
+            page.keyboard.press('Control+A');page.keyboard.insert_text('0');page.keyboard.press('Enter')
+            page.mouse.move(2,2);settle_gesture(page)
+            expect(status).to_contain_text('Inspector: SSA value %0')
+            expect(status).to_contain_text('CONST 0x2')
+            inspected=screenshot_metrics(page,canvas.screenshot(),native_region)
+            assert inspected['bounds']==native_before['bounds'], 'inspecting another value moved the selected native instruction'
+            canvas.click(position={'x':100,'y':tab_bottom+44})
+            page.mouse.move(2,2);settle_gesture(page)
+            source=screenshot_metrics(page,canvas.screenshot(path=str(output/'ssa-values-source-navigation.png')),native_region)
+            assert source['bounds'],source
+            first_y=(tokens[0][1]+tokens[0][3])/2
+            assert source['bounds'][1]<=first_y<=source['bounds'][3], 'Go to source did not select the original PUSH instruction'
+            navigation={'inspector_tab':inspector['bounds'],'before':native_before['bounds'],
+                        'inspected':inspected['bounds'],'source':source['bounds']}
+        results[name]={'value':value,'original_instruction':operation,'definition_token':box,
+                       'inspector':before,'navigation':navigation,
+                       'cfg_states':len(report['cfg']),'frontiers':len(report['frontiers'])}
+    assert len(posts)==len(cases),'value inspection or reading-mode changes reran analysis'
+    assert not errors,errors
+    results['renderer']=webgpu_evidence(page)
+    results['analysis_submissions']=len(posts)
+    (output/'ssa-values-report.json').write_text(json.dumps(results,indent=2)+'\n')
+    page.close()
+    return results
 
 
 def warning_pixels(page, png, card):
@@ -2803,12 +2923,17 @@ def main() -> None:
     parser.add_argument("--layout-small-only",action="store_true",help="Run only synthetic hierarchy/zoom cases while real analyses are running")
     parser.add_argument("--flow-only",action="store_true",help="Run selected-edge motion and compact-workspace SSA acceptance cases")
     parser.add_argument("--ssa-details-only",action="store_true",help="Run shared SSA reading mode and source-PC reveal acceptance cases")
+    parser.add_argument("--ssa-values-only",action="store_true",help="Run normalized SSA and scoped value inspector acceptance")
     parser.add_argument("--termination-only",action="store_true",help="Run semantic ending styles and existing selected-node flow/SSA acceptance")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     with analysis_server(args) as url:
         with sync_playwright() as playwright:
             browser = launch_browser(playwright.chromium, args.browser)
+            if args.ssa_values_only:
+                ssa_values_interactions(browser,url,args.output)
+                browser.close()
+                return
             if args.termination_only:
                 report={'termination':termination_interactions(browser,url,args),
                         'edge_flow':edge_flow_interactions(browser,url,args.output),
@@ -2849,7 +2974,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 5
+            assert analysis["schema_version"] == 6
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
@@ -2945,6 +3070,7 @@ def main() -> None:
             flow = edge_flow_interactions(browser, url, args.output)
             compact_ssa = compact_ssa_interactions(browser, url, args.output)
             ssa_details = ssa_details_interactions(browser, url, args.output)
+            ssa_values = ssa_values_interactions(browser, url, args.output)
             termination = termination_interactions(browser, url, args)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
             hierarchy = hierarchy_interactions(browser,url,args)
@@ -2969,6 +3095,7 @@ def main() -> None:
                 "edge_flow": flow,
                 "compact_ssa": compact_ssa,
                 "ssa_details": ssa_details,
+                "ssa_values": ssa_values,
                 "termination": termination,
                 "block_overview": overview,
                 "world_interactions": world,

@@ -7,6 +7,7 @@ use crate::app::Selection;
 fn source_columns_size_to_current_data_including_full_push_values() {
     let mut report = crate::tests::report();
     let selection = Selection {
+        value: None,
         state: Some(0),
         pc: None,
     };
@@ -22,6 +23,7 @@ fn source_columns_size_to_current_data_including_full_push_values() {
         &report,
         Some(0),
         Selection {
+            value: None,
             state: Some(91),
             pc: None,
         },
@@ -29,6 +31,7 @@ fn source_columns_size_to_current_data_including_full_push_values() {
     assert_eq!(
         rows[1].target(),
         Selection {
+            value: None,
             state: Some(91),
             pc: Some(0)
         }
@@ -57,6 +60,7 @@ fn long_push_is_complete_and_horizontally_reachable_in_a_narrow_pane() {
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
     let mut selection = Selection {
+        value: None,
         state: Some(0),
         pc: None,
     };
@@ -132,6 +136,7 @@ fn stack_signatures_and_explanations_appear_only_on_instruction_hover() {
             style.interaction.tooltip_delay = 0.0
         });
         let mut selection = Selection {
+            value: None,
             state: None,
             pc: None,
         };
@@ -248,6 +253,7 @@ fn selected_child_program_keeps_its_complete_source_and_native_state_identity() 
         &report,
         Some(1),
         Selection {
+            value: None,
             state: Some(83),
             pc: Some(0),
         },
@@ -260,6 +266,7 @@ fn selected_child_program_keeps_its_complete_source_and_native_state_identity() 
     assert_eq!(
         rows[1].target(),
         Selection {
+            value: None,
             state: Some(83),
             pc: Some(0)
         }

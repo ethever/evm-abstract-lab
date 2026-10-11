@@ -25,6 +25,32 @@ fn instruction(pc: usize, name: &str) -> DisasmInstruction {
     }
 }
 
+pub(crate) fn opcode_operation(
+    opcode: u8,
+    name: &str,
+    operands: &[usize],
+    immediate: Option<&str>,
+) -> api::SsaOperation {
+    api::SsaOperation::Opcode(api::SsaOpcodeOperation {
+        opcode,
+        name: name.into(),
+        operands: immediate
+            .into_iter()
+            .map(|word| api::SsaOperand::Constant(word.into()))
+            .chain(operands.iter().map(|value| api::SsaOperand::Value(*value)))
+            .collect(),
+    })
+}
+
+pub(crate) fn refresh_operation(instruction: &mut SsaInstruction) {
+    instruction.operation = opcode_operation(
+        instruction.opcode,
+        &instruction.name,
+        &instruction.operands,
+        instruction.immediate.as_deref(),
+    );
+}
+
 // A structurally typed, unanchored fixture. Individual tests provide the
 // graph/source facts they exercise; no RPC identity or transaction result is
 // invented for those rendering-only fixtures.
@@ -65,6 +91,7 @@ pub(crate) fn empty_report() -> AnalysisReport {
         ssa: SsaReport {
             complete: true,
             value_count: 0,
+            values: vec![],
             effect_count: 0,
             blocks: vec![],
             transitions: vec![],
@@ -182,6 +209,7 @@ pub(crate) fn report() -> AnalysisReport {
                 vec![]
             },
             instructions: vec![SsaInstruction {
+                operation: opcode_operation(0x01, &block.instructions[0].name, &[1, 2], None),
                 pc: block.start_pc.unwrap(),
                 opcode: 0x01,
                 name: block.instructions[0].name.clone(),
@@ -239,6 +267,7 @@ pub(crate) fn report() -> AnalysisReport {
         ssa: SsaReport {
             complete: true,
             value_count: 6,
+            values: vec![],
             effect_count: 6,
             blocks,
             transitions: vec![],
@@ -401,6 +430,7 @@ fn clicking_source_row_links_native_state_and_ssa_instruction() {
     assert_eq!(
         workspace.selection,
         Selection {
+            value: None,
             state: Some(2),
             pc: Some(10)
         }
@@ -428,6 +458,7 @@ fn clicking_cfg_node_selects_same_native_state() {
     assert_eq!(
         workspace.selection,
         Selection {
+            value: None,
             state: Some(2),
             pc: None
         }
@@ -587,6 +618,7 @@ fn long_push_and_phi_rows_reserve_scrollable_painter_extents() {
     let mut report = report();
     let ordinary_width = widgets::test_content_columns(&report);
     report.ssa.blocks[0].instructions[0].immediate = Some(format!("0x{}", "ff".repeat(32)));
+    refresh_operation(&mut report.ssa.blocks[0].instructions[0]);
     let push_width = widgets::test_content_columns(&report);
     assert!(push_width > ordinary_width);
     report.ssa.blocks[2].phis[0].inputs = (0..40)
@@ -728,6 +760,7 @@ fn automatic_row_focus_preserves_leading_columns_in_split_view() {
         "SSA leading column does not align with its heading"
     );
     workspace.selection = Selection {
+        value: None,
         state: Some(2),
         pc: Some(10),
     };

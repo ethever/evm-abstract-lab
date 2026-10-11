@@ -626,6 +626,7 @@ fn frontier_symbol_click_retains_original_state_and_instruction_coordinates() {
     assert_eq!(
         selection,
         Selection {
+            value: None,
             state: Some(425),
             pc: Some(0x42)
         }
