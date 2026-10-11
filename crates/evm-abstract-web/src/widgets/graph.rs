@@ -11,6 +11,7 @@ mod navigation;
 mod paint;
 mod projection;
 mod scene;
+mod termination;
 #[cfg(test)]
 mod tests;
 mod visibility;
@@ -47,6 +48,7 @@ pub(crate) struct Graph {
     index: Option<ReportIndex>,
     report_stamp: Option<ReportStamp>,
     display: DisplayGraph,
+    ending_summary: termination::TerminationSummary,
     display_dirty: bool,
     shown_states: usize,
     native_edges: usize,
@@ -90,6 +92,7 @@ impl Default for Graph {
             index: None,
             report_stamp: None,
             display: DisplayGraph::default(),
+            ending_summary: termination::TerminationSummary::default(),
             display_dirty: true,
             shown_states: 0,
             native_edges: 0,

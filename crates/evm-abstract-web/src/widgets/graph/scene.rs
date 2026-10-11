@@ -72,6 +72,14 @@ impl Graph {
             selected,
             self.neighborhood_hops,
         );
+        self.ending_summary = index.termination_summary(
+            &self
+                .display
+                .state_to_node
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+        );
         self.shown_states = self.display.state_to_node.len();
         self.native_edges = self.display.edge_members.values().map(Vec::len).sum();
         self.node_positions = self
@@ -219,15 +227,55 @@ impl Graph {
             },
             |error| format!("Layout unavailable: {error}"),
         );
+        let selected_ending = self
+            .highlighted_state
+            .and_then(|state| self.display.state_to_node.get(&state))
+            .and_then(|id| self.nodes.get(id))
+            .map_or_else(
+                || "Selected CFG ending: unavailable in this view".into(),
+                |node| {
+                    let summary = node.termination;
+                    let kind = match summary.single_kind() {
+                        Some(evm_abstract_protocol::OutcomeKind::Return) => "normal",
+                        Some(evm_abstract_protocol::OutcomeKind::Revert) => "REVERT",
+                        Some(evm_abstract_protocol::OutcomeKind::Failure) => "exception",
+                        None if summary.has_termination() => "mixed / possible ending",
+                        None => "no termination evidence",
+                    };
+                    format!(
+                        "Selected CFG ending: {kind}; {} native members; root normal {}, REVERT {}, exception {}; frame normal {}, REVERT {}, exception {}; continuing {}, unresolved {}, non-current {}, unobserved {}",
+                        summary.members,
+                        summary.root.returns,
+                        summary.root.reverts,
+                        summary.root.failures,
+                        summary.frame.returns,
+                        summary.frame.reverts,
+                        summary.frame.failures,
+                        summary.continuing,
+                        summary.unresolved,
+                        summary.non_current,
+                        summary.unobserved,
+                    )
+                },
+            );
         format!(
-            "CFG view: {:?}; {} shown nodes; {}/{total} states; {} shown edges; {} native edges; {} hidden states; {} boundary edges; {scope}; {layout}",
+            "CFG view: {:?}; {} shown nodes; {}/{total} states; {} shown edges; {} native edges; {} hidden states; {} boundary edges; {scope}; {layout}; CFG endings: root return {}, revert {}, failure {}; frame return {}, revert {}, failure {}; continuing {}, unresolved {}, unobserved {}; {selected_ending}",
             self.mode,
             self.display.nodes.len(),
             self.shown_states,
             self.display.edges.len(),
             self.native_edges,
             self.display.hidden_states,
-            self.display.boundary_edges
+            self.display.boundary_edges,
+            self.ending_summary.root.returns,
+            self.ending_summary.root.reverts,
+            self.ending_summary.root.failures,
+            self.ending_summary.frame.returns,
+            self.ending_summary.frame.reverts,
+            self.ending_summary.frame.failures,
+            self.ending_summary.continuing,
+            self.ending_summary.unresolved,
+            self.ending_summary.unobserved,
         )
     }
 }

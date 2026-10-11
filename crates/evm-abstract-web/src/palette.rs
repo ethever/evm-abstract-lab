@@ -19,6 +19,10 @@ pub const PURPLE: Color32 = Color32::from_rgb(201, 165, 255);
 pub const WARNING: Color32 = Color32::from_rgb(245, 193, 117);
 pub const ERROR: Color32 = Color32::from_rgb(249, 130, 142);
 pub const SELECTED: Color32 = Color32::from_rgb(33, 65, 75);
+/// CFG fills describe observed termination; selection uses a separate outline.
+pub const TERMINAL_NORMAL: Color32 = Color32::from_rgb(20, 52, 42);
+pub const TERMINAL_REVERT: Color32 = Color32::from_rgb(48, 30, 62);
+pub const TERMINAL_EXCEPTION: Color32 = Color32::from_rgb(62, 27, 34);
 
 #[cfg(any(target_arch = "wasm32", test))]
 pub fn configure(ctx: &Context) {

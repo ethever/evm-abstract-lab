@@ -9,6 +9,8 @@ use evm_abstract_protocol::{
     AnalysisReport, CfgBlock, CfgEdge, DeferredEdge, SsaBlock, SsaTransition, StateDetails,
 };
 
+use super::termination::{TerminationSummary, Terminations};
+
 #[derive(Default)]
 pub(super) struct ReportIndex {
     cfg: BTreeMap<usize, usize>,
@@ -20,6 +22,7 @@ pub(super) struct ReportIndex {
     outgoing: BTreeMap<usize, Vec<usize>>,
     incoming: BTreeMap<usize, Vec<usize>>,
     frontiers: BTreeMap<usize, usize>,
+    terminations: Terminations,
 }
 
 impl ReportIndex {
@@ -64,6 +67,7 @@ impl ReportIndex {
                 .enumerate()
                 .map(|(pos, item)| (item.edge, pos))
                 .collect(),
+            terminations: Terminations::new(report),
             ..Self::default()
         };
         for (position, edge) in report.edges.iter().enumerate() {
@@ -129,5 +133,9 @@ impl ReportIndex {
 
     pub(super) fn has_frontier(&self, state: usize) -> bool {
         self.frontier_count(state) > 0
+    }
+
+    pub(super) fn termination_summary(&self, members: &[usize]) -> TerminationSummary {
+        self.terminations.summary(members)
     }
 }

@@ -1,6 +1,6 @@
 use evm_abstract_protocol::{
     CfgEdge, DeferredEdge, DeferredReason, EdgeKind, Frontier, FrontierDetails, FrontierKind,
-    MachineSnapshot, SsaTransition, StateDetails,
+    MachineSnapshot, Outcome, OutcomeKind, SsaTransition, StateDetails,
 };
 
 use super::ReportIndex;
@@ -98,4 +98,31 @@ fn sparse_ids_resolve_original_records_and_keep_adjacency_positions() {
     assert!(index.deferred(&report, 999).is_none());
     assert!(index.outgoing(12345).is_empty());
     assert!(index.incoming(12345).is_empty());
+}
+
+#[test]
+fn cached_termination_summary_resolves_sparse_native_members() {
+    let mut report = crate::tests::report();
+    for (position, id) in [91, 7, 205].into_iter().enumerate() {
+        report.cfg[position].id = id;
+        report.ssa.blocks[position].state = id;
+    }
+    report.cfg[1].frame_depth = 2;
+    report.edges = vec![CfgEdge {
+        id: 999,
+        from: 7,
+        to: 91,
+        kind: EdgeKind::Return,
+    }];
+    report.outcomes = vec![Outcome {
+        state: 205,
+        kind: OutcomeKind::Return,
+        data: 0,
+        store: 0,
+    }];
+    let summary = ReportIndex::new(&report).termination_summary(&[205, 7]);
+    assert_eq!(summary.members, 2);
+    assert_eq!(summary.root.returns, 1);
+    assert_eq!(summary.frame.returns, 1);
+    assert_eq!(summary.single_kind(), Some(OutcomeKind::Return));
 }

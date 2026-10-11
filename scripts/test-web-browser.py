@@ -298,9 +298,141 @@ def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, floa
 
 def node_snapshot(page, canvas, output: Path, name: str, region=(4, 123, 1436, 970), measure_nodes=False, min_selected_pixels=20):
     screenshot = canvas.screenshot(path=str(output / f"{name}.png"))
-    metrics = screenshot_metrics(page, screenshot, region, measure_nodes)
+    metrics = graph_screenshot_metrics(page, screenshot, region, measure_nodes)
     assert metrics["bounds"] and metrics["selected_pixels"] >= min_selected_pixels, f"selected CFG node missing: {name}: {metrics}"
     return metrics
+
+
+def graph_screenshot_metrics(page, screenshot: bytes, region, measure_nodes=False):
+    """Measure CFG cards by their semantic fill and actual selection outline.
+
+    Source tables still use screenshot_metrics and the ordinary SELECTED fill.
+    A long continuous accent border distinguishes the selected card from its
+    accent-colored title, endpoint arrows and highlighted incident edges.
+    """
+    return page.evaluate("""async ({png,region,measureNodes}) => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+        const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;
+        const context=canvas.getContext('2d');context.drawImage(image,0,0);
+        const scale=image.width/innerWidth;
+        const [left,top,right,bottom]=region.map(value=>Math.round(value*scale));
+        const width=right-left,height=bottom-top;
+        const pixels=context.getImageData(left,top,width,height).data;
+        const fills=[[21,29,42],[20,52,42],[48,30,62],[62,27,34]];
+        const kinds=['ordinary','normal','revert','failure'];
+        const mask=new Uint8Array(width*height),fillAt=new Int8Array(width*height);fillAt.fill(-1);
+        for(let at=0;at<mask.length;at++) {
+            const i=at*4;
+            const fill=fills.findIndex(color=>pixels[i]===color[0] && pixels[i+1]===color[1] && pixels[i+2]===color[2]);
+            fillAt[at]=fill;
+            if(fill>=0 || (pixels[i]===47 && pixels[i+1]===62 && pixels[i+2]===80)) mask[at]=1;
+        }
+        const accent=(x,y)=>{
+            if(x<0 || x>=width || y<0 || y>=height) return false;
+            const i=(y*width+x)*4,r=pixels[i],g=pixels[i+1],b=pixels[i+2];
+            return r>=45 && r<=125 && g>=130 && g<=235 && b>=120 && b<=225 && g-r>=60 && b-r>=50;
+        };
+        const outline=(x,y)=>{
+            if(accent(x,y)) return true;
+            if(x<0 || x>=width || y<0 || y>=height) return false;
+            const i=(y*width+x)*4,r=pixels[i],g=pixels[i+1],b=pixels[i+2];
+            const border=r>=30 && r<=90 && g>=40 && g<=110 && b>=55 && b<=140
+                && g-r>=5 && g-r<=35 && b-g>=8 && b-g<=40;
+            const hover=r>=70 && g>=95 && b>=140 && g-r>=30 && b-g>=35 && b-r>=70;
+            return border || hover;
+        };
+        const run=(start,end,fixed,horizontal,match=accent)=>{
+            let current=0,best=0;
+            for(let at=start;at<=end;at++) {
+                current=(horizontal?match(at,fixed):match(fixed,at))?current+1:0;
+                best=Math.max(best,current);
+            }
+            return best;
+        };
+        const records=[],queue=new Int32Array(width*height);
+        for(let start=0;start<mask.length;start++) {
+            if(!mask[start]) continue;
+            let read=0,write=1,x0=width,y0=height,x1=0,y1=0;
+            let fx0=width,fy0=height,fx1=0,fy1=0,fillCount=0;
+            const fillCounts=[0,0,0,0];queue[0]=start;mask[start]=0;
+            while(read<write) {
+                const at=queue[read++],x=at%width,y=Math.floor(at/width);
+                x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x);y1=Math.max(y1,y);
+                if(fillAt[at]>=0) {
+                    fillCounts[fillAt[at]]++;fillCount++;
+                    fx0=Math.min(fx0,x);fy0=Math.min(fy0,y);fx1=Math.max(fx1,x);fy1=Math.max(fy1,y);
+                }
+                for(const next of [x>0?at-1:-1,x+1<width?at+1:-1,y>0?at-width:-1,y+1<height?at+width:-1]) {
+                    if(next>=0 && mask[next]) {mask[next]=0;queue[write++]=next;}
+                }
+            }
+            if(!fillCount || x1-x0<2*scale || y1-y0<2*scale) continue;
+            let borderPixels=0,bx0=width,by0=height,bx1=-1,by1=-1;
+            const margin=Math.ceil(3*scale);
+            const sides={top:0,bottom:0,left:0,right:0};
+            const outlineSides={top:0,bottom:0,left:0,right:0};
+            const positions={top:[],bottom:[],left:[],right:[]};
+            for(let offset=-margin;offset<=margin;offset++) {
+                sides.top=Math.max(sides.top,run(x0,x1,y0+offset,true)/(x1-x0+1));
+                sides.bottom=Math.max(sides.bottom,run(x0,x1,y1+offset,true)/(x1-x0+1));
+                sides.left=Math.max(sides.left,run(y0,y1,x0+offset,false)/(y1-y0+1));
+                sides.right=Math.max(sides.right,run(y0,y1,x1+offset,false)/(y1-y0+1));
+                for(const [side,start,end,fixed,horizontal] of [
+                    ['top',x0,x1,y0+offset,true],['bottom',x0,x1,y1+offset,true],
+                    ['left',y0,y1,x0+offset,false],['right',y0,y1,x1+offset,false]]) {
+                    const score=run(start,end,fixed,horizontal,outline)/(end-start+1);
+                    outlineSides[side]=Math.max(outlineSides[side],score);
+                    if(score>=0.45) positions[side].push(fixed);
+                }
+            }
+            for(let y=Math.max(0,y0-margin);y<=Math.min(height-1,y1+margin);y++)
+                for(let x=Math.max(0,x0-margin);x<=Math.min(width-1,x1+margin);x++)
+                    if((x<=x0+margin || x>=x1-margin || y<=y0+margin || y>=y1-margin) && accent(x,y)) {
+                        borderPixels++;bx0=Math.min(bx0,x);by0=Math.min(by0,y);bx1=Math.max(bx1,x);by1=Math.max(by1,y);
+                    }
+            const css=(a,b,c,d)=>[(left+a)/scale,(top+b)/scale,(left+c+1)/scale,(top+d+1)/scale];
+            const fill=fillCounts.indexOf(Math.max(...fillCounts));
+            const regionClipped={left:fx0===0,top:fy0===0,right:fx1===width-1,bottom:fy1===height-1};
+            const viewportClipped={left:left+fx0===0,top:top+fy0===0,right:left+fx1===image.width-1,bottom:top+fy1===image.height-1};
+            const visibleSides=Object.keys(sides).filter(side=>!regionClipped[side] && sides[side]>=0.45);
+            const measurable=write>=30*scale*scale && Math.max(x1-x0+1,bx1-bx0+1)>=10*scale
+                && Math.max(y1-y0+1,by1-by0+1)>=8*scale;
+            const fourSides=Object.values(outlineSides).every(score=>score>=0.45);
+            const ox0=fourSides?Math.min(...positions.left):x0,oy0=fourSides?Math.min(...positions.top):y0;
+            const ox1=fourSides?Math.max(...positions.right):x1,oy1=fourSides?Math.max(...positions.bottom):y1;
+            // Card outlines have rounded corners. A canvas clip at the straight
+            // header separator can mimic four sides, but lacks these cutouts.
+            const roundedCorners=fourSides && [[ox0,oy0],[ox1,oy0],[ox0,oy1],[ox1,oy1]].every(([x,y])=>
+                x>=0 && x<width && y>=0 && y<height && !outline(x,y) && fillAt[y*width+x]<0);
+            const complete=fourSides && roundedCorners;
+            const outlineBounds=css(ox0,oy0,ox1,oy1);
+            records.push({bounds:css(x0,y0,x1,y1),fill_bounds:css(fx0,fy0,fx1,fy1),outline_bounds:outlineBounds,
+                          outer_bounds:borderPixels?css(bx0,by0,bx1,by1):css(x0,y0,x1,y1),
+                          kind:kinds[fill],fill_pixels:fillCount,border_pixels:borderPixels,side_scores:sides,
+                          outline_side_scores:outlineSides,
+                          visible_selection_sides:visibleSides,region_clipped:regionClipped,viewport_clipped:viewportClipped,
+                          full_outline_visible:complete,
+                          rounded_corners_visible:roundedCorners,
+                          potential_canvas_clipping:Object.fromEntries(Object.entries(outlineSides).map(([side,score])=>[side,score<0.45])),
+                          measurable});
+        }
+        records.sort((a,b)=>a.outline_bounds[0]-b.outline_bounds[0] || a.outline_bounds[1]-b.outline_bounds[1]);
+        // Letter counters contain small islands of the same background color.
+        // They belong to the surrounding card, never to another CFG node.
+        const cards=records.filter(record=>record.measurable && !records.some(other=>other!==record
+            && other.measurable && other.bounds[0]<=record.bounds[0] && other.bounds[1]<=record.bounds[1]
+            && other.bounds[2]>=record.bounds[2] && other.bounds[3]>=record.bounds[3]
+            && (other.bounds[2]-other.bounds[0])*(other.bounds[3]-other.bounds[1])
+                >(record.bounds[2]-record.bounds[0])*(record.bounds[3]-record.bounds[1])));
+        const candidates=cards.filter(record=>record.visible_selection_sides.length>=2);
+        const selected=candidates.length===1?candidates[0]:null;
+        const digest=await crypto.subtle.digest('SHA-256',pixels);
+        return {bounds:selected?.fill_bounds ?? null,selected_pixels:selected?.border_pixels ?? 0,
+                selected_kind:selected?.kind ?? null,selected_record:selected ?? null,
+                selection_candidates:candidates.length,nodes:measureNodes?cards.map(record=>record.outline_bounds):[],
+                node_records:cards,region,viewport:[innerWidth,innerHeight],scale,dividers:[],
+                hash:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
+    }""", {"png":base64.b64encode(screenshot).decode(),"region":region,"measureNodes":measure_nodes})
 
 
 def flow_pixels(page, screenshot: bytes, regions, screenshot_box):
@@ -659,7 +791,7 @@ def details_graph_snapshot(page, canvas, output, name):
     page.mouse.move(2,2);settle_gesture(page)
     png=canvas.screenshot(path=str(output/f"{name}.png"))
     size=page.viewport_size
-    node=screenshot_metrics(page,png,(4,123,size["width"]-4,size["height"]-30),True)
+    node=graph_screenshot_metrics(page,png,(4,123,size["width"]-4,size["height"]-30),True)
     assert node["bounds"] and len(node["nodes"])==1,node
     left,top,right,bottom=node["bounds"]
     # Exclude the selected card's border, title and source-location header.
@@ -809,7 +941,195 @@ def ssa_details_interactions(browser, url: str, output: Path):
     return result
 
 
+def selected_ending(page):
+    status=page.locator("#analysis-status").text_content()
+    match=re.search(r"Selected CFG ending: (.+?); (\d+) native members; root normal (\d+), REVERT (\d+), exception (\d+); frame normal (\d+), REVERT (\d+), exception (\d+); continuing (\d+), unresolved (\d+), non-current (\d+), unobserved (\d+)",status)
+    assert match,status
+    keys=['members','root_normal','root_revert','root_failure','frame_normal','frame_revert','frame_failure','continuing','unresolved','non_current','unobserved']
+    return {'kind':match[1],**dict(zip(keys,map(int,match.groups()[1:]),strict=True))}
+
+
+def warning_pixels(page, png, card):
+    """Inspect the independent inset warning dashes above the card's text."""
+    return page.evaluate("""async ({png,card}) => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+        const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;
+        const context=canvas.getContext('2d');context.drawImage(image,0,0);
+        const scale=image.width/innerWidth;
+        const left=Math.floor((card[0]+6)*scale),right=Math.ceil((card[2]-6)*scale);
+        const top=Math.floor((card[1]-1)*scale),height=Math.ceil(6*scale),width=right-left;
+        const data=context.getImageData(left,top,width,height).data;
+        let best={pixels:0,runs:0};
+        for(let y=0;y<height;y++) {
+            let count=0,runs=0,previous=false;
+            for(let x=0;x<width;x++) {
+                const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2];
+                const warning=r>=180 && g>=140 && g<=215 && b>=60 && b<=165 && r-g>=30;
+                if(warning) {count++;if(!previous) runs++;}previous=warning;
+            }
+            if(count>best.pixels) best={pixels:count,runs};
+        }
+        return best;
+    }""", {'png':base64.b64encode(png).decode(),'card':card})
+
+
+def termination_interactions(browser, url, args):
+    page,canvas,errors=layout_page(browser,url)
+    output=args.output
+    posts=[]
+    page.on('request',lambda request:posts.append(request.url)
+            if request.method=='POST' and request.url.endswith('/api/tasks') else None)
+    results={}
+    for name,code,kind,color in [('normal','6003565b00','Return','normal'),
+                                ('revert','6003565b5f5ffd','Revert','revert'),
+                                ('failure','6003565bfe','Failure','failure')]:
+        report=layout_submission(page,canvas,code,output,f'termination-{name}')
+        target=next(node for node in report['cfg'] if node['start_pc']==3)
+        assert {item['kind'] for item in report['outcomes'] if item['state']==target['id']}=={kind}
+        graph_mode(page,canvas,'States');page.keyboard.press('f');settle_gesture(page)
+        before=node_snapshot(page,canvas,output,f'termination-{name}-unselected',measure_nodes=True)
+        candidate=next(record for record in before['node_records'] if record['kind']==color)
+        left,top,right,bottom=candidate['bounds']
+        canvas.click(position={'x':(left+right)/2,'y':(top+bottom)/2});page.mouse.move(2,2);settle_gesture(page)
+        expect(page.locator('#analysis-status')).to_contain_text(f"Selected {symbol('σ',target['id'])};")
+        selected=node_snapshot(page,canvas,output,f'termination-{name}-selected',measure_nodes=True)
+        ending=selected_ending(page)
+        assert ending['members']==1 and ending['continuing']==ending['unresolved']==0,ending
+        assert ending[{'normal':'root_normal','revert':'root_revert','failure':'root_failure'}[color]]==1,ending
+        assert selected['selected_kind']==color,selected
+        assert candidate['kind']==selected['selected_kind'], 'selection covered the semantic background'
+        low=None
+        if name=='normal':
+            pointer=((left+right)/2,(top+bottom)/2)
+            for _ in range(12):
+                if 'CFG detail: identities' in page.locator('#analysis-status').text_content():break
+                page.mouse.move(*pointer);page.keyboard.down('Control');page.mouse.wheel(0,120);page.keyboard.up('Control');settle_gesture(page)
+            page.mouse.move(2,2);settle_gesture(page)
+            expect(page.locator('#analysis-status')).to_contain_text('CFG detail: identities')
+            low=node_snapshot(page,canvas,output,'termination-normal-low-zoom',min_selected_pixels=1)
+            assert low['selected_kind']=='normal',low
+            assert selected_ending(page)['root_normal']==1
+        results[name]={'typed_outcome':kind,'target_state':target['id'],'before':candidate,'selected':selected,'ending':ending,'low_zoom':low}
+        # S0 deliberately retains the model's entry-failure alternative plus
+        # the real observed JUMP. It must stay neutral and label continuation.
+        page.keyboard.press('f');settle_gesture(page)
+        scene=node_snapshot(page,canvas,output,f'termination-{name}-refit',measure_nodes=True)
+        entry=next(record for record in scene['node_records'] if record['kind']=='ordinary')
+        box=entry['bounds'];canvas.click(position={'x':(box[0]+box[2])/2,'y':(box[1]+box[3])/2})
+        page.mouse.move(2,2);settle_gesture(page)
+        expect(page.locator('#analysis-status')).to_contain_text('Selected σ₀;')
+        mixed=selected_ending(page)
+        assert mixed['kind']=='mixed / possible ending' and mixed['root_failure']==mixed['continuing']==1,mixed
+        neutral=node_snapshot(page,canvas,output,f'termination-{name}-entry-mixed')
+        assert neutral['selected_kind']=='ordinary',neutral
+        results[name]['entry_mixed']=mixed
+
+    mixed_report=layout_submission(page,canvas,'346007576009565b5f5b5000',output,'termination-mixed-block')
+    members={node['id'] for node in mixed_report['cfg'] if node['start_pc']==9}
+    assert len(members)==2
+    observed={member:tuple(sorted({item['kind'] for item in mixed_report['outcomes'] if item['state']==member})) for member in members}
+    assert set(observed.values())=={('Return',),('Failure',)},observed
+    graph_mode(page,canvas,'Blocks');page.keyboard.press('f');settle_gesture(page)
+    scene=node_snapshot(page,canvas,output,'termination-mixed-block-before',measure_nodes=True)
+    box=max(scene['nodes'],key=lambda rect:(rect[1]+rect[3])/2)
+    canvas.click(position={'x':(box[0]+box[2])/2,'y':(box[1]+box[3])/2});page.mouse.move(2,2);settle_gesture(page)
+    assert any(f"Selected {symbol('σ',member)};" in page.locator('#analysis-status').text_content() for member in members)
+    summary=selected_ending(page)
+    assert summary['members']==2 and summary['root_normal']==summary['root_failure']==1 and summary['continuing']==0,summary
+    mixed=node_snapshot(page,canvas,output,'termination-mixed-block-selected',measure_nodes=True)
+    assert mixed['selected_kind']=='ordinary',mixed
+    results['mixed_aggregation']={'members':sorted(members),'summary':summary,'pixels':mixed}
+
+    partial=layout_submission(page,canvas,'5f5f5f5f5f5f355af100',output,'termination-frontier')
+    assert partial['status']=='Incomplete' and partial['frontiers']
+    graph_mode(page,canvas,'States');page.keyboard.press('f');settle_gesture(page)
+    frontier=node_snapshot(page,canvas,output,'termination-frontier-selected',measure_nodes=True)
+    summary=selected_ending(page)
+    assert summary['unresolved']>0 and frontier['selected_kind']=='ordinary',summary
+    dashes=warning_pixels(page,canvas.screenshot(),frontier['bounds'])
+    assert dashes['pixels']>20 and dashes['runs']>=3,dashes
+    assert frontier['selected_pixels']>20, 'warning replaced the independent selection outline'
+    results['frontier']={'summary':summary,'pixels':frontier,'warning_dashes':dashes}
+    assert len(posts)==5, 'selection or semantic zoom reran termination analyses'
+    assert not errors,errors
+    results['renderer']=webgpu_evidence(page)
+    page.close()
+    results['child_frames']=termination_call_interactions(browser,args)
+    (output/'termination-report.json').write_text(json.dumps(results,indent=2)+'\n')
+    return results
+
+
+def termination_call_interactions(browser,args):
+    class TerminalRpc(EntryRpcFixture):
+        root_code='0x6003565b5f5f5f5f5f73'+'22'*20+'61fffff100'
+        child_code='0x00'
+    with TerminalRpc() as rpc,TemporaryDirectory(prefix='termination-rpc-') as directory:
+        providers=[{'id':'terminal-world','name':'Termination child frame fixture','endpoint':rpc.endpoint}]
+        config=Path(directory)/'providers.json';config.write_text(json.dumps({'providers':providers})+'\n')
+        with analysis_server(args,config) as url:
+            page=browser.new_page(viewport={'width':1440,'height':1000});observe_webgpu(page)
+            automatic_rpc_entry(page,url,providers[0],args.output,'termination-call-startup')
+            canvas=page.locator('#evm-canvas')
+            admitted=submit_rpc(page,canvas,rpc,args.output,'termination-child-call',0,providers)
+            reply=complete_submission(page,admitted)
+            assert reply.status==200 and 'Ok' in reply.json()['result'],reply.json()
+            report=reply.json()['result']['Ok']
+            (args.output/'termination-child-call-analysis.json').write_text(json.dumps(report,indent=2)+'\n')
+            depths={node['id']:node['frame_depth'] for node in report['cfg']}
+            failure=next(edge for edge in report['edges'] if edge['kind']=='Failure' and depths[edge['from']]==depths[edge['to']]==1)
+            caller=failure['from']
+            assert not any(outcome['state']==caller for outcome in report['outcomes'])
+            returning=next(edge for edge in report['edges'] if edge['kind']=='Return' and depths[edge['from']]==2 and depths[edge['to']]==1)
+            canvas.click(position={'x':1440-180,'y':12});hide_inspector(page,canvas)
+            page.keyboard.press('2');settle_gesture(page);graph_mode(page,canvas,'States');page.keyboard.press('f');settle_gesture(page)
+            submitted=[]
+            page.on('request',lambda request:submitted.append(request.url) if request.method=='POST' and request.url.endswith('/api/tasks') else None)
+            # The one green child frame and one green resumed root are verified
+            # by real clicks and original state IDs, not inferred from opcode.
+            scene=node_snapshot(page,canvas,args.output,'termination-call-overview',measure_nodes=True)
+            frame=None
+            for record in scene['node_records']:
+                if record['kind']!='normal':continue
+                box=record['bounds'];canvas.click(position={'x':(box[0]+box[2])/2,'y':(box[1]+box[3])/2});page.mouse.move(2,2);settle_gesture(page)
+                if f"Selected {symbol('σ',returning['from'])};" not in page.locator('#analysis-status').text_content():continue
+                summary=selected_ending(page)
+                assert summary['frame_normal']==1 and summary['root_normal']==summary['root_failure']==0,summary
+                frame={'summary':summary,'pixels':node_snapshot(page,canvas,args.output,'termination-frame-return-selected')}
+                break
+            assert frame is not None, 'real child RETURN edge did not paint a normal frame ending'
+            neutral=None
+            for record in scene['node_records']:
+                if record['kind']!='ordinary':continue
+                box=record['bounds'];canvas.click(position={'x':(box[0]+box[2])/2,'y':(box[1]+box[3])/2});page.mouse.move(2,2);settle_gesture(page)
+                if f"Selected {symbol('σ',caller)};" not in page.locator('#analysis-status').text_content():continue
+                summary=selected_ending(page)
+                assert summary['kind']=='no termination evidence' and summary['continuing']==1,summary
+                assert summary['root_failure']==summary['frame_failure']==0,summary
+                neutral={'summary':summary,'pixels':node_snapshot(page,canvas,args.output,'termination-call-failure-continuing')}
+                break
+            assert neutral is not None, 'same-depth call failure was falsely classified as a terminal ending'
+            assert not submitted, 'terminal node selection reran the RPC analysis'
+            result={'frame_return':frame,'recoverable_call_failure':neutral,'typed_failure_edge':failure,'typed_return_edge':returning,'renderer':webgpu_evidence(page)}
+            page.close()
+            return result
+
+
+def require_selected_complete(metrics):
+    record=metrics['selected_record']
+    assert record and not any(record['region_clipped'].values()), 'geometry requires the complete selected fill'
+    assert not any(record['viewport_clipped'].values()), 'geometry requires a visible complete card'
+    assert record['full_outline_visible'], 'geometry requires four real outlines, including the internal graph painter clip'
+
+
+def require_scene_complete(metrics):
+    assert len(metrics['nodes'])==len(metrics['node_records'])
+    for record in metrics['node_records']:
+        assert record['full_outline_visible'],f"scene geometry needs all four real outlines: {record}"
+        assert not any(record['region_clipped'].values()) and not any(record['viewport_clipped'].values()),record
+
+
 def assert_translation(before, after, dx: float, dy: float, tolerance: float = 3.0) -> None:
+    for metrics in [before,after]:require_selected_complete(metrics)
     initial, final = before["bounds"], after["bounds"]
     expected = [dx, dy, dx, dy]
     for old, new, delta in zip(initial, final, expected, strict=True):
@@ -817,6 +1137,7 @@ def assert_translation(before, after, dx: float, dy: float, tolerance: float = 3
 
 
 def assert_anchored_zoom(before, after, pointer) -> float:
+    for metrics in [before,after]:require_selected_complete(metrics)
     initial, final = before["bounds"], after["bounds"]
     ratio = (final[2] - final[0]) / (initial[2] - initial[0])
     assert ratio > 1.05, f"zoom gesture did not enlarge the selected node: {initial} -> {final}"
@@ -835,6 +1156,7 @@ def resize_view(page, width: int, height: int) -> None:
 
 def assert_same_scene(before, after) -> None:
     """Fit may uniformly scale/translate nodes, but must not rearrange them."""
+    require_scene_complete(before);require_scene_complete(after)
     # The default jump history separates the fixture's two merge states.
     assert len(before["nodes"]) == len(after["nodes"]) == 5, (before["nodes"], after["nodes"])
     pairs = list(zip(before["nodes"], after["nodes"], strict=True))
@@ -859,10 +1181,8 @@ def assert_same_scene(before, after) -> None:
         selected_before = contains(original, before["bounds"])
         selected_after = contains(fitted, after["bounds"])
         assert selected_before == selected_after, "Fit changed the selected card's scene association"
-        # Preview's header separator has BORDER pixels reaching the card's
-        # outline. Identity omits that separator, so its selected component
-        # stops at the inside stroke. Compare pure SELECTED fill in both modes
-        # while retaining outline centers and the existing size tolerance.
+        # The selected card retains its semantic fill. Compare its pure fill
+        # in both modes, with all centers measured from actual outer outlines.
         original_measure = before["bounds"] if selected_before else original
         fitted_measure = after["bounds"] if selected_after else fitted
         for axis in [0, 1]:
@@ -962,7 +1282,7 @@ def pane_interactions(browser, url: str, output: Path):
     settle_gesture(page)
     before_panes, before_png = workspace_panes(page, canvas, output, "panes-before-divider")
     graph_region = (before_panes["left"] + 4, 160, before_panes["right"] - 4, 970)
-    before = screenshot_metrics(page, before_png, graph_region)
+    before = graph_screenshot_metrics(page, before_png, graph_region)
     assert before["bounds"], before
     page.mouse.move(before_panes["left"], 600)
     page.mouse.down()
@@ -972,7 +1292,7 @@ def pane_interactions(browser, url: str, output: Path):
     after_panes, after_png = workspace_panes(page, canvas, output, "panes-after-divider")
     shift = after_panes["left"] - before_panes["left"]
     assert shift > 30, (before_panes, after_panes)
-    after = screenshot_metrics(page, after_png, (after_panes["left"] + 4, 160, after_panes["right"] - 4, 970))
+    after = graph_screenshot_metrics(page, after_png, (after_panes["left"] + 4, 160, after_panes["right"] - 4, 970))
     assert_translation(before, after, shift, 0, tolerance=1.0)
     resize_view(page, 1128, 700)
     canvas.screenshot(path=str(output / "panes-manual-clipped.png"))
@@ -980,7 +1300,7 @@ def pane_interactions(browser, url: str, output: Path):
     restored_panes, restored_png = workspace_panes(page, canvas, output, "panes-manual-restored")
     for field in ["disassembly_width", "ssa_width"]:
         assert abs(after_panes[field] - restored_panes[field]) <= 1, (after_panes, restored_panes)
-    restored = screenshot_metrics(page, restored_png, (restored_panes["left"] + 4, 160, restored_panes["right"] - 4, 970))
+    restored = graph_screenshot_metrics(page, restored_png, (restored_panes["left"] + 4, 160, restored_panes["right"] - 4, 970))
     assert_translation(after, restored, 0, 0, tolerance=1.0)
     assert not errors, f"browser pane errors: {errors}"
     result = {"short": short, "long": long, "manual": after_panes, "restored": restored_panes,
@@ -1382,6 +1702,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         settle_gesture(page)
         expect(status).to_contain_text("CFG nodes: Disasm")
         disasm = node_snapshot(page, canvas, output, f"{prefix}-nodes-disasm")
+        require_selected_complete(disasm);require_selected_complete(safari_zoom)
         disasm_width = disasm["bounds"][2] - disasm["bounds"][0]
         assert disasm["hash"] != safari_zoom["hash"], "Disasm mode retained SSA pixels"
         assert safari_zoom["bounds"][2] - safari_zoom["bounds"][0] > disasm_width + 10, "Disasm mode did not replace the fixture's SSA definitions/effects"
@@ -1389,6 +1710,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         settle_gesture(page)
         expect(status).to_contain_text("CFG nodes: SSA")
         ssa = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa")
+        require_selected_complete(ssa)
         assert ssa["hash"] != disasm["hash"], "SSA mode retained disassembly pixels"
         ssa_width = ssa["bounds"][2] - ssa["bounds"][0]
         assert ssa_width > disasm_width + 10, "SSA definitions/effects did not expand the fixture's rendered node"
@@ -1396,6 +1718,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         settle_gesture(page)
         expect(status).to_contain_text("CFG nodes: SSA")
         ssa_fit = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa-fit")
+        require_selected_complete(ssa_fit)
         assert ssa_fit["bounds"][2] - ssa_fit["bounds"][0] < ssa_width, "Fit did not return the enlarged SSA graph to a readable overview"
         canvas.click(position={"x": 28, "y": 86})
         settle_gesture(page)
@@ -1409,6 +1732,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             settle_gesture(page)
             region = (4, 123, 1436, height - 30)
             fitted = node_snapshot(page, canvas, output, f"{prefix}-edges-{layout_name}-fit", region, True)
+            require_selected_complete(fitted)
             if scene_reference is None:
                 scene_reference = fitted
             else:
@@ -1423,6 +1747,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
                 name = str(round(scale * 100))
                 measured = node_snapshot(page, canvas, output, f"{prefix}-edges-{layout_name}-{name}", region,
                                          min_selected_pixels=1 if scale <= 0.16 else 20)
+                require_selected_complete(measured)
                 fitted_width = fitted["bounds"][2] - fitted["bounds"][0]
                 actual_width = measured["bounds"][2] - measured["bounds"][0]
                 observed_zoom = float(re.search(r"; CFG zoom: ([0-9.]+)%", status.text_content())[1])
@@ -1443,12 +1768,15 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
         fresh_wheel_after_fit = None
         for key, name in [("f", "f"), ("Shift+f", "shift-f")]:
             page.mouse.move(30, height - 70)
-            page.mouse.wheel(-24, -12)
+            # Leave room above the selected root before enlarging it in the
+            # short viewport, so the width comparison measures a whole card.
+            page.mouse.wheel(-24, -48)
             settle_gesture(page)
             pinch_wheel(page, cdp, (720, height * 0.65), -18)
             page.mouse.move(30, height - 70)
             rendered_frame(page)
             manual = node_snapshot(page, canvas, output, f"{prefix}-{name}-manual", region)
+            require_selected_complete(manual)
             assert manual["bounds"][2] - manual["bounds"][0] > fitted_width + 8, "shortcut fixture did not enter a zoomed manual camera"
             if key == "f":
                 # Do not settle here: Fit must override both the current wheel
@@ -1534,7 +1862,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
                 page.mouse.move(2, 2)
                 settle_gesture(page)
                 before_png = canvas.screenshot()
-                before_node = screenshot_metrics(page, before_png, graph_region)
+                before_node = graph_screenshot_metrics(page, before_png, graph_region)
                 before_code = screenshot_metrics(page, before_png, region)
                 assert before_node["bounds"], f"missing node before {name} scroll"
                 page.mouse.move(*pointer)
@@ -1543,7 +1871,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
                 page.mouse.move(2, 2)
                 settle_gesture(page)
                 after_png = canvas.screenshot(path=str(output / f"adjacent-scroll-{name}.png"))
-                after_node = screenshot_metrics(page, after_png, graph_region)
+                after_node = graph_screenshot_metrics(page, after_png, graph_region)
                 after_code = screenshot_metrics(page, after_png, region)
                 assert_translation(before_node, after_node, 0, 0)
                 assert before_code["hash"] != after_code["hash"], f"{name} pane did not scroll"
@@ -2171,6 +2499,7 @@ def layout_page(browser, url: str):
 
 def assert_layout_same_geometry(before, after):
     """Compare rendered leaf rectangles after removing uniform camera changes."""
+    require_scene_complete(before);require_scene_complete(after)
     first = sorted(before["nodes"], key=lambda rect: (rect[1], rect[0]))
     second = sorted(after["nodes"], key=lambda rect: (rect[1], rect[0]))
     assert len(first) == len(second) >= 2, (first, second)
@@ -2287,6 +2616,7 @@ def hierarchy_small_interactions(browser, url: str, output: Path):
         pixels = node_snapshot(page, canvas, output, f"hierarchy-{name}", measure_nodes=True)
         assert len(pixels["nodes"]) == scene["nodes"], "spatial annotations were counted as real CFG states"
         if name == "shortcut":
+            require_scene_complete(pixels)
             nodes = sorted(pixels["nodes"], key=lambda rect: rect[1])
             _, a, b = nodes
             assert a[3] < b[1], "shortcut target was placed beside/before its true predecessor"
@@ -2473,11 +2803,20 @@ def main() -> None:
     parser.add_argument("--layout-small-only",action="store_true",help="Run only synthetic hierarchy/zoom cases while real analyses are running")
     parser.add_argument("--flow-only",action="store_true",help="Run selected-edge motion and compact-workspace SSA acceptance cases")
     parser.add_argument("--ssa-details-only",action="store_true",help="Run shared SSA reading mode and source-PC reveal acceptance cases")
+    parser.add_argument("--termination-only",action="store_true",help="Run semantic ending styles and existing selected-node flow/SSA acceptance")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     with analysis_server(args) as url:
         with sync_playwright() as playwright:
             browser = launch_browser(playwright.chromium, args.browser)
+            if args.termination_only:
+                report={'termination':termination_interactions(browser,url,args),
+                        'edge_flow':edge_flow_interactions(browser,url,args.output),
+                        'ssa_details':ssa_details_interactions(browser,url,args.output),
+                        'graph_interactions':graph_interactions(playwright.chromium,args.browser,url,args.output)}
+                (args.output/'termination-acceptance-report.json').write_text(json.dumps(report,indent=2)+'\n')
+                browser.close()
+                return
             if args.ssa_details_only:
                 ssa_details_interactions(browser,url,args.output)
                 browser.close()
@@ -2606,6 +2945,7 @@ def main() -> None:
             flow = edge_flow_interactions(browser, url, args.output)
             compact_ssa = compact_ssa_interactions(browser, url, args.output)
             ssa_details = ssa_details_interactions(browser, url, args.output)
+            termination = termination_interactions(browser, url, args)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
             hierarchy = hierarchy_interactions(browser,url,args)
             assert not errors, "browser errors: " + "\n".join(errors)
@@ -2629,6 +2969,7 @@ def main() -> None:
                 "edge_flow": flow,
                 "compact_ssa": compact_ssa,
                 "ssa_details": ssa_details,
+                "termination": termination,
                 "block_overview": overview,
                 "world_interactions": world,
                 "url_configured_world": url_world,
