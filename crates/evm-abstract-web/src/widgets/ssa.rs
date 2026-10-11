@@ -13,12 +13,13 @@ use egui_extras::{Column, TableBuilder};
 use evm_abstract_protocol::{AnalysisReport, BlockCoverage, InstructionProgress};
 
 use super::{ROW_HEIGHT, heading, row_background, text};
-use crate::{app::Selection, palette};
+use crate::{app::Selection, palette, ssa_display::SsaDisplay};
 
 pub(crate) fn ssa_cached(
     ui: &mut Ui,
     report: &AnalysisReport,
     program: Option<usize>,
+    display: SsaDisplay,
     selection: &mut Selection,
     previous: &mut Selection,
     cache: &mut SsaCache,
@@ -27,7 +28,7 @@ pub(crate) fn ssa_cached(
     // responsive tiles. Its absolute UI identity preserves both scroll axes
     // when the parent tree changes, without overriding manual navigation.
     ui.scope_builder(egui::UiBuilder::new().id(egui::Id::new("ssa_view")), |ui| {
-        contents(ui, report, program, selection, previous, cache)
+        contents(ui, report, program, display, selection, previous, cache)
     });
 }
 
@@ -35,6 +36,7 @@ fn contents(
     ui: &mut Ui,
     report: &AnalysisReport,
     program: Option<usize>,
+    display: SsaDisplay,
     selection: &mut Selection,
     previous: &mut Selection,
     cache: &mut SsaCache,
@@ -53,7 +55,7 @@ fn contents(
             report.ssa.effect_count,
         ),
     );
-    cache.prepare(report, program, *selection);
+    cache.prepare(report, program, display, *selection);
     let rows = cache.rows();
     let focus = (*selection != *previous)
         .then(|| {
@@ -128,10 +130,11 @@ pub(crate) fn natural_width_cached(
     ui: &Ui,
     report: &AnalysisReport,
     program: Option<usize>,
+    display: SsaDisplay,
     selection: Selection,
     cache: &mut SsaCache,
 ) -> f32 {
-    cache.prepare(report, program, selection);
+    cache.prepare(report, program, display, selection);
     row_width(ui, cache.columns()) + ui.spacing().scroll.allocated_width()
 }
 
@@ -149,6 +152,7 @@ pub(crate) fn ssa(
     ui: &mut Ui,
     report: &AnalysisReport,
     program: Option<usize>,
+    display: SsaDisplay,
     selection: &mut Selection,
     previous: &mut Selection,
 ) {
@@ -156,6 +160,7 @@ pub(crate) fn ssa(
         ui,
         report,
         program,
+        display,
         selection,
         previous,
         &mut SsaCache::default(),
@@ -167,9 +172,17 @@ pub(crate) fn natural_width(
     ui: &Ui,
     report: &AnalysisReport,
     program: Option<usize>,
+    display: SsaDisplay,
     selection: Selection,
 ) -> f32 {
-    natural_width_cached(ui, report, program, selection, &mut SsaCache::default())
+    natural_width_cached(
+        ui,
+        report,
+        program,
+        display,
+        selection,
+        &mut SsaCache::default(),
+    )
 }
 
 struct Token {
@@ -239,26 +252,46 @@ fn frames(frames: &[Vec<usize>]) -> String {
         .join("  ")
 }
 
-fn scoped_rows(report: &AnalysisReport, program: Option<usize>, selection: Selection) -> Vec<Row> {
+fn scoped_states(
+    report: &AnalysisReport,
+    program: Option<usize>,
+    selection: Selection,
+) -> BTreeSet<usize> {
     // Program membership is independent of SSA receipt count. Compute it once
     // so many context instances do not each scan the entire native CFG.
-    let included: BTreeSet<_> = report
+    report
         .cfg
         .iter()
         .filter(|block| {
             block.program == program && (program.is_some() || selection.state == Some(block.id))
         })
         .map(|block| block.id)
-        .collect();
-    build_rows(report, |state| included.contains(&state))
+        .collect()
+}
+
+fn scoped_rows(
+    report: &AnalysisReport,
+    program: Option<usize>,
+    display: SsaDisplay,
+    selection: Selection,
+) -> Vec<Row> {
+    let included = scoped_states(report, program, selection);
+    build_rows(report, display, selection, |state| {
+        included.contains(&state)
+    })
 }
 
 #[cfg(test)]
 fn rows(report: &AnalysisReport) -> Vec<Row> {
-    build_rows(report, |_| true)
+    build_rows(report, SsaDisplay::Full, Selection::default(), |_| true)
 }
 
-fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<Row> {
+fn build_rows(
+    report: &AnalysisReport,
+    display: SsaDisplay,
+    selection: Selection,
+    include: impl Fn(usize) -> bool,
+) -> Vec<Row> {
     let mut outgoing = BTreeMap::<_, Vec<_>>::new();
     for edge in &report.edges {
         outgoing.entry(edge.from).or_default().push(edge);
@@ -377,11 +410,15 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
         effect.tooltip = effect.plain_text();
         rows.push(effect);
         for instruction in &block.instructions {
-            let mut row = Row::new();
-            row.target = Some(Selection {
+            let target = Selection {
                 state: Some(block.state),
                 pc: Some(instruction.pc),
-            });
+            };
+            if !display.instruction_visible(block.coverage, instruction, target == selection) {
+                continue;
+            }
+            let mut row = Row::new();
+            row.target = Some(target);
             row.token(format!("{:04x}  ", instruction.pc), palette::MUTED);
             for (index, result) in instruction.results.iter().enumerate() {
                 if index > 0 {
@@ -406,29 +443,44 @@ fn build_rows(report: &AnalysisReport, include: impl Fn(usize) -> bool) -> Vec<R
             for operand in &instruction.operands {
                 row.token(format!(" %{operand}"), palette::BLUE);
             }
-            row.token(
-                format!(
-                    " · {}→{}",
-                    Symbol::Effect(instruction.effect_input),
-                    instruction
-                        .effect_result
-                        .map_or_else(|| "pending".into(), |id| Symbol::Effect(id).to_string())
-                ),
-                if instruction.progress == InstructionProgress::Completed {
-                    palette::MUTED
-                } else {
-                    palette::WARNING
-                },
+            let effect = format!(
+                " · {}→{}",
+                Symbol::Effect(instruction.effect_input),
+                instruction
+                    .effect_result
+                    .map_or_else(|| "pending".into(), |id| Symbol::Effect(id).to_string())
             );
-            // Ordinary completion is implicit in the compact line; every
-            // partial or fault phase stays explicit, with the exact phase also
-            // recorded in the full row tooltip.
-            if instruction.progress != InstructionProgress::Completed {
-                row.token(format!(" · {:?}", instruction.progress), palette::WARNING);
+            // Compact rows retain all instruction detail in the tooltip, even
+            // when their ordinary machine-effect chain is visually omitted.
+            let detail = format!("{}{effect}", row.plain_text());
+            if display.show_effect(instruction) {
+                row.token(
+                    effect,
+                    if instruction.progress == InstructionProgress::Completed {
+                        palette::MUTED
+                    } else {
+                        palette::WARNING
+                    },
+                );
+            }
+            if display.show_completed()
+                || instruction.progress != InstructionProgress::Completed
+                || instruction.fault
+            {
+                row.token(
+                    format!(" · {:?}", instruction.progress),
+                    if instruction.fault {
+                        palette::ERROR
+                    } else if instruction.progress == InstructionProgress::Completed {
+                        palette::MUTED
+                    } else {
+                        palette::WARNING
+                    },
+                );
             }
             row.tooltip = format!(
                 "{}\nState {} · pc 0x{:04x}\nArguments are in EVM pop order.\n{:?}{}",
-                row.plain_text(),
+                detail,
                 Symbol::State(block.state),
                 instruction.pc,
                 instruction.progress,

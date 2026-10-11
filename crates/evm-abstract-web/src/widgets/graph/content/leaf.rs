@@ -1,6 +1,6 @@
 //! One native state's existing card semantics, with bounded preview traversal.
 use super::{DISASM_ROWS, NodeText, NodeView, ReportIndex, SSA_COLUMNS, SSA_ROWS, abbreviate};
-use crate::palette;
+use crate::{palette, ssa_display::SsaDisplay};
 use egui::Color32;
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
@@ -16,6 +16,8 @@ pub(super) fn preview(
     index: &ReportIndex,
     block: &CfgBlock,
     view: NodeView,
+    display: SsaDisplay,
+    selected_pc: Option<usize>,
 ) -> NodeText {
     let ssa = index.ssa(report, block.id);
     let coverage = ssa.map_or(BlockCoverage::Unexecuted, |ssa| ssa.coverage);
@@ -46,7 +48,7 @@ pub(super) fn preview(
             } else {
                 " · incoming open"
             });
-            ssa_preview(ssa)
+            ssa_preview(ssa, display, selected_pc)
         }
     };
     NodeText::new(title, detail, lines, coverage, frontier).with_identity(vec![
@@ -92,7 +94,11 @@ fn disassembly_preview(block: &CfgBlock, coverage: BlockCoverage) -> Vec<(String
     }
     lines
 }
-fn ssa_preview(block: Option<&SsaBlock>) -> Vec<(String, Color32)> {
+fn ssa_preview(
+    block: Option<&SsaBlock>,
+    display: SsaDisplay,
+    selected_pc: Option<usize>,
+) -> Vec<(String, Color32)> {
     let Some(block) = block else {
         return vec![("SSA unavailable for this state".into(), palette::WARNING)];
     };
@@ -115,23 +121,57 @@ fn ssa_preview(block: Option<&SsaBlock>) -> Vec<(String, Color32)> {
         &[]
     };
     let capacity = SSA_ROWS - lines.len() - 1;
-    let leading = if instructions.len() <= capacity {
-        instructions.len()
-    } else {
-        capacity.saturating_sub(1)
-    };
-    for instruction in instructions.iter().take(leading) {
-        lines.push(instruction_preview(instruction));
+    // Scan receipts once, retaining only the bounded preview plus its last and
+    // selected operation. Hidden stack receipts do not consume the quota.
+    let mut shown = Vec::with_capacity(capacity);
+    let mut count = 0;
+    let mut last = None;
+    let mut selected = None;
+    for (position, instruction) in instructions.iter().enumerate() {
+        let is_selected = selected_pc == Some(instruction.pc);
+        if !display.instruction_visible(block.coverage, instruction, is_selected) {
+            continue;
+        }
+        count += 1;
+        let row = (position, instruction);
+        if shown.len() < capacity {
+            shown.push(row);
+        }
+        last = Some(row);
+        if is_selected {
+            selected = Some(row);
+        }
     }
-    if instructions.len() > capacity
-        && let Some(last) = instructions.last()
+    if count > capacity
+        && let Some(last) = last
     {
-        lines.push(instruction_preview(last));
+        shown[capacity - 1] = last;
     }
+    if let Some(selected) = selected
+        && !shown.iter().any(|(position, _)| *position == selected.0)
+    {
+        // The last observed operation remains present, while the selected
+        // native PC takes one existing preview slot rather than growing it.
+        let replacement = shown.len().saturating_sub(2);
+        shown[replacement] = selected;
+        shown.sort_by_key(|(position, _)| *position);
+    }
+    lines.extend(
+        shown
+            .iter()
+            .map(|(_, instruction)| instruction_preview(instruction, display)),
+    );
     let mut exit = abbreviate(&exit_text(block, true), SSA_COLUMNS);
-    let hidden = block.phis.len().saturating_sub(1) + instructions.len().saturating_sub(capacity);
-    if hidden > 0 {
-        let suffix = format!(" · +{hidden} rows");
+    let omitted = block.phis.len().saturating_sub(1) + count.saturating_sub(shown.len());
+    let filtered = instructions.len().saturating_sub(count);
+    if omitted > 0 || filtered > 0 {
+        let mut suffix = String::new();
+        if omitted > 0 {
+            suffix.push_str(&format!(" · +{omitted} preview rows"));
+        }
+        if filtered > 0 {
+            suffix.push_str(&format!(" · {filtered} details hidden"));
+        }
         exit = format!(
             "{}{suffix}",
             abbreviate(&exit, SSA_COLUMNS.saturating_sub(suffix.chars().count()))
@@ -140,9 +180,9 @@ fn ssa_preview(block: Option<&SsaBlock>) -> Vec<(String, Color32)> {
     lines.push((exit, palette::MUTED));
     lines
 }
-fn instruction_preview(instruction: &SsaInstruction) -> (String, Color32) {
+fn instruction_preview(instruction: &SsaInstruction, display: SsaDisplay) -> (String, Color32) {
     (
-        instruction_text(instruction, true),
+        instruction_text(instruction, true, display),
         if instruction.fault {
             palette::ERROR
         } else if instruction.progress == InstructionProgress::Completed {
@@ -228,7 +268,7 @@ fn ssa_tooltip(
             block
                 .instructions
                 .iter()
-                .map(|instruction| instruction_text(instruction, false)),
+                .map(|instruction| instruction_text(instruction, false, SsaDisplay::Full)),
         );
     }
     full.push(exit_text(block, false));
@@ -313,7 +353,7 @@ fn exit_text(block: &SsaBlock, preview: bool) -> String {
         frames(&block.exit_frames, preview)
     )
 }
-fn instruction_text(instruction: &SsaInstruction, preview: bool) -> String {
+fn instruction_text(instruction: &SsaInstruction, preview: bool, display: SsaDisplay) -> String {
     let results = if instruction.results.is_empty() {
         String::new()
     } else {
@@ -341,20 +381,25 @@ fn instruction_text(instruction: &SsaInstruction, preview: bool) -> String {
         "{:04x}  {results}{}{immediate}{operands}",
         instruction.pc, instruction.name
     );
-    let phase = if preview && instruction.progress == InstructionProgress::Completed {
-        String::new()
+    let phase =
+        if !display.show_completed() && instruction.progress == InstructionProgress::Completed {
+            String::new()
+        } else {
+            format!(" · {:?}", instruction.progress)
+        };
+    let effect = if display.show_effect(instruction) {
+        format!(
+            " · {}→{}{phase}{}",
+            Symbol::Effect(instruction.effect_input),
+            instruction.effect_result.map_or_else(
+                || "pending".into(),
+                |effect| Symbol::Effect(effect).to_string()
+            ),
+            if instruction.fault { " · fault" } else { "" }
+        )
     } else {
-        format!(" · {:?}", instruction.progress)
+        phase
     };
-    let effect = format!(
-        " · {}→{}{phase}{}",
-        Symbol::Effect(instruction.effect_input),
-        instruction.effect_result.map_or_else(
-            || "pending".into(),
-            |effect| Symbol::Effect(effect).to_string()
-        ),
-        if instruction.fault { " · fault" } else { "" }
-    );
     let body = if preview {
         abbreviate(&body, SSA_COLUMNS.saturating_sub(effect.chars().count()))
     } else {

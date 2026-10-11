@@ -4,6 +4,7 @@
 mod app;
 mod notation;
 mod palette;
+mod ssa_display;
 mod widgets;
 
 mod framework;
