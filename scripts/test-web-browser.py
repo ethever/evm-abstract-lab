@@ -303,48 +303,52 @@ def node_snapshot(page, canvas, output: Path, name: str, region=(4, 123, 1436, 9
     return metrics
 
 
-def flow_pixels(page, screenshot: bytes, region, screenshot_box):
+def flow_pixels(page, screenshot: bytes, regions, screenshot_box):
     """Locate bright moving arrowheads in real PNG pixels, outside node cards."""
-    return page.evaluate("""async ({png, region, box}) => {
+    return page.evaluate("""async ({png, regions, box}) => {
         const image = new Image(); image.src = `data:image/png;base64,${png}`; await image.decode();
         const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height;
         const context=canvas.getContext('2d'); context.drawImage(image,0,0);
         const scale=image.width/(box[2]-box[0]);
-        const [left,top,right,bottom]=region.map((v,axis)=>Math.round((v-box[axis%2])*scale));
-        const width=right-left,height=bottom-top;
-        const pixels=context.getImageData(left,top,width,height).data;
-        const mask=new Uint8Array(width*height), queue=new Int32Array(width*height);
-        for(let at=0;at<mask.length;at++) {
-            const i=at*4;
-            // Blue/green moving heads are brighter than their kind-colored
-            // base line, labels, spatial annotations, and the dark grid.
-            if(pixels[i]>=150 && pixels[i+1]>=185 && pixels[i+2]>=205) mask[at]=1;
-        }
-        const markers=[];
-        for(let start=0;start<mask.length;start++) {
-            if(!mask[start]) continue;
-            let read=0,write=1,sumX=0,sumY=0;
-            queue[0]=start;mask[start]=0;
-            while(read<write) {
-                const at=queue[read++],x=at%width,y=Math.floor(at/width);
-                sumX+=x;sumY+=y;
-                for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) {
-                    const nx=x+dx,ny=y+dy;
-                    if(nx<0 || nx>=width || ny<0 || ny>=height) continue;
-                    const next=ny*width+nx;
-                    if(mask[next]) { mask[next]=0;queue[write++]=next; }
-                }
+        const result={};
+        for(const [name,region] of Object.entries(regions)) {
+            const [left,top,right,bottom]=region.map((v,axis)=>Math.round((v-box[axis%2])*scale));
+            const width=right-left,height=bottom-top;
+            const pixels=context.getImageData(left,top,width,height).data;
+            const mask=new Uint8Array(width*height), queue=new Int32Array(width*height);
+            for(let at=0;at<mask.length;at++) {
+                const i=at*4;
+                // Blue/green moving heads are brighter than their kind-colored
+                // base line, labels, spatial annotations, and the dark grid.
+                if(pixels[i]>=150 && pixels[i+1]>=185 && pixels[i+2]>=205) mask[at]=1;
             }
-            if(write>=3*scale*scale) markers.push({
-                center:[box[0]+(left+sumX/write)/scale,box[1]+(top+sumY/write)/scale],pixels:write});
+            const markers=[];
+            for(let start=0;start<mask.length;start++) {
+                if(!mask[start]) continue;
+                let read=0,write=1,sumX=0,sumY=0;
+                queue[0]=start;mask[start]=0;
+                while(read<write) {
+                    const at=queue[read++],x=at%width,y=Math.floor(at/width);
+                    sumX+=x;sumY+=y;
+                    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) {
+                        const nx=x+dx,ny=y+dy;
+                        if(nx<0 || nx>=width || ny<0 || ny>=height) continue;
+                        const next=ny*width+nx;
+                        if(mask[next]) { mask[next]=0;queue[write++]=next; }
+                    }
+                }
+                if(write>=3*scale*scale) markers.push({
+                    center:[box[0]+(left+sumX/write)/scale,box[1]+(top+sumY/write)/scale],pixels:write});
+            }
+            const digest=await crypto.subtle.digest('SHA-256',pixels);
+            result[name]={markers,bounds:region,hash:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
         }
-        const digest=await crypto.subtle.digest('SHA-256',pixels);
-        return {markers,bounds:region,hash:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
-    }""", {"png":base64.b64encode(screenshot).decode(),"region":region,"box":screenshot_box})
+        return result;
+    }""", {"png":base64.b64encode(screenshot).decode(),"regions":regions,"box":screenshot_box})
 
 
 def flow_frames(page, canvas, output: Path, name: str, regions):
-    frames=[]
+    captures=[]
     # Crop the actual browser capture, rather than downsampling a full PNG.
     # Full SwiftShader screenshots can take half a second: that would alias a
     # periodic moving head and make forward movement look like wraparound.
@@ -354,15 +358,27 @@ def flow_frames(page, canvas, output: Path, name: str, regions):
          math.ceil(max(region[3] for region in regions.values()))]
     canvas.screenshot(path=str(output/f"{name}-scene.png"))
     start=time.monotonic()
-    for index in range(10):
-        page.wait_for_timeout(30)
-        rendered_frame(page)
+    max_interval=min(56,min(region[3]-region[1] for region in regions.values()))/(2*60)
+    valid_pairs=0
+    # Capture consecutive real compositor frames first. PNG decoding, pixel
+    # extraction and browser round trips belong after sampling, otherwise
+    # they can consume the entire conservative half-cycle timing allowance.
+    for index in range(24):
         capture_begin=time.monotonic()-start
         png=page.screenshot(path=str(output/f"{name}-{index:02}.png"),
                             clip={"x":box[0],"y":box[1],"width":box[2]-box[0],"height":box[3]-box[1]})
         capture_end=time.monotonic()-start
-        frames.append({"capture_begin_seconds":capture_begin,"capture_end_seconds":capture_end,"screenshot_box":box,
-                       "regions":{key:flow_pixels(page,png,region,box) for key,region in regions.items()}})
+        if captures and capture_end-captures[-1][0]["capture_begin_seconds"]<max_interval:
+            valid_pairs+=1
+        captures.append(({"capture_begin_seconds":capture_begin,"capture_end_seconds":capture_end,"screenshot_box":box},png))
+        # Six timing-valid pairs provide several opportunities to see a head
+        # fully inside the gap. Direction still requires its own two different
+        # advancing frame pairs below; timing or presence alone cannot pass it.
+        if len(captures)>=10 and valid_pairs>=6: break
+    frames=[]
+    for frame,png in captures:
+        frame["regions"]=flow_pixels(page,png,regions,box)
+        frames.append(frame)
     return frames
 
 
