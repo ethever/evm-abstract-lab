@@ -289,11 +289,10 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
         .unwrap();
     assert!(certified_states > 1);
     let limit = complete.work();
-    let mut interrupted = None;
     // Find an actual interruption inside graph import, without depending on
     // incidental work-unit constants from unrelated opcode implementation.
-    // Work reservations grew with product domains. Locate the first completed
-    // imported node; a coarse numeric stride can skip the entire partial-import window.
+    // Import is atomic: the last budget before any imported state becomes visible
+    // must preserve the complete source input without committing a partial graph.
     let (mut lo, mut hi) = (1, limit);
     while lo < hi {
         let budget = lo + (hi - lo) / 2;
@@ -316,23 +315,30 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
         world,
         entry,
         ExecutionConfig {
-            max_work: lo,
+            max_work: lo - 1,
             ..ExecutionConfig::default()
         },
     )
     .unwrap();
-    if analysis.summary_stats().hits > 0
-        && analysis.summary_stats().imported_states > 0
-        && analysis.summary_stats().imported_states < certified_states
-        && analysis
-            .frontiers()
+    let budget = lo - 1;
+    assert!(analysis.summary_stats().hits > 0);
+    assert_eq!(analysis.summary_stats().imported_states, 0);
+    assert!(
+        analysis
+            .summaries()
             .iter()
-            .any(|f| f.reason == FrontierReason::SummaryWork)
-    {
-        interrupted = Some((lo, analysis));
-    }
-    let (budget, analysis) =
-        interrupted.expect("no budget interruption during selected summary reuse");
+            .all(|record| record.reused_at.is_empty())
+    );
+    let frontier = analysis
+        .frontiers()
+        .iter()
+        .find(|frontier| {
+            frontier.reason == FrontierReason::SummaryWork && frontier.payload.is_some()
+        })
+        .expect("atomic import retains its complete source input");
+    let source = &analysis.states()[frontier.from.unwrap()];
+    assert_eq!(frontier.payload.as_deref(), Some(&source.entry));
+    assert!(source.exit.is_none());
     assert_eq!(analysis.status(), Status::Incomplete);
     assert!(analysis.work() <= budget);
     assert!(ssa::build_world(&analysis).is_err());

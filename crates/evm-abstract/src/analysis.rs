@@ -119,6 +119,9 @@ pub enum DiagnosticKind {
     OpaqueResult,
     /// 可选语义交换达到固定精度上限；结果仍覆盖全部具体可能性。
     FactExchangeLimited(crate::domain::ReductionStatus),
+    /// A value stayed conservative because an optional relational projection
+    /// could not finish; its execution path was still fully propagated.
+    RelationalPrecisionLost(crate::domain::relational::QueryReason),
 }
 
 /// Original opcode evidence from the frame that attempted exceptional execution.

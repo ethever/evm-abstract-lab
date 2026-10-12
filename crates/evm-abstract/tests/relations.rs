@@ -837,6 +837,68 @@ fn native_smt_resource_exhaustion_preserves_both_feasible_branches() {
 }
 
 #[test]
+fn unknown_range_feasibility_retains_both_outcomes_and_its_precision_reason() {
+    use evm_abstract::{analysis::DiagnosticKind, domain::relational::QueryReason};
+    let (world, mut entry) = world("5f345f3e00", "00");
+    entry.environment.value = AbstractValue::top();
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.rlimit = 1;
+    let result = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(
+        result.status(),
+        Status::Converged,
+        "{:?}",
+        result.frontiers()
+    );
+    assert!(result.frontiers().is_empty());
+    for kind in [
+        analysis::OutcomeKind::Return,
+        analysis::OutcomeKind::Failure,
+    ] {
+        assert!(result.outcomes().iter().any(|outcome| outcome.kind == kind));
+    }
+    assert!(result.diagnostics().iter().any(|diagnostic| {
+        diagnostic.pc == 3
+            && diagnostic.kind
+                == DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
+    }));
+}
+
+#[test]
+fn optional_state_read_projection_reports_precision_loss_without_unexpanded_paths() {
+    use evm_abstract::domain::relational::QueryReason;
+    let (world, entry) = world("5f3500", "00");
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.rlimit = 1;
+    let analysis = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(
+        analysis.status(),
+        Status::Converged,
+        "{:?}",
+        analysis.frontiers()
+    );
+    assert!(analysis.frontiers().is_empty());
+    assert!(
+        analysis
+            .states()
+            .iter()
+            .any(|state| state.executed_pcs.contains(&2))
+    );
+    assert!(analysis.diagnostics().iter().any(|diagnostic| {
+        matches!(
+            diagnostic.kind,
+            analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
+        )
+    }));
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == analysis::OutcomeKind::Return)
+    );
+}
+
+#[test]
 fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
     use evm_abstract::domain::relational::{QueryReason, RelationLimits};
     let fixture = one_symbolic_guard();
@@ -899,6 +961,24 @@ fn a_constraint_limit_is_unknown_and_does_not_drop_a_feasible_side() {
         }),
         "the exhausted retained-atom limit must be explicit"
     );
+}
+
+#[test]
+fn uncompared_lazy_hash_reports_precision_loss_while_completing_execution() {
+    use evm_abstract::{analysis::DiagnosticKind, domain::relational::QueryReason};
+    // A partial overwrite of a 128-byte symbolic copy cannot currently be
+    // normalized as a complete content array. Its hash still has a sound value.
+    let result = analysis::analyze_with_environment(
+        Program::from_hex("60805f5f3760ff5f5360805f205000").unwrap(),
+        Config::default(),
+        EvmEnvironment::default(),
+    )
+    .unwrap();
+    complete(&result);
+    assert!(result.execution().diagnostics().iter().any(|diagnostic| {
+        diagnostic.kind
+            == DiagnosticKind::RelationalPrecisionLost(QueryReason::Unsupported(opcode::KECCAK256))
+    }));
 }
 
 #[test]
