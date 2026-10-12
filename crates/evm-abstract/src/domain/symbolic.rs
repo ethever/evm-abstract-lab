@@ -1,7 +1,7 @@
 //! Immutable, scoped EVM expressions. Identity is structural, never a bytecode PC.
 //!
 //! Node counts bound the expanded tree, a conservative upper bound on DAG work.
-//! Runtime leaves are globally fresh; input leaves retain caller-supplied scopes.
+//! Runtime leaves are process-fresh; input leaves retain caller-supplied scopes.
 
 use crate::domain::identity::Symbol;
 use alloy_primitives::U256;
@@ -59,8 +59,8 @@ impl Default for ExprLimits {
 /// One immutable input within its owning environment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct InputAtom {
-    /// Private equality namespace; names alone do not establish equality.
-    #[serde(skip)]
+    /// Caller-owned equality namespace; names alone do not establish equality.
+    /// Native graphs retain this scope within their opaque producer namespace.
     pub scope: u64,
     /// Meaning of the immutable input.
     pub symbol: Symbol,
@@ -131,8 +131,9 @@ struct Node {
 
 /// An immutable expression handle with structural equality and cheap cloning.
 ///
-/// Serialization describes expressions but intentionally omits process-private
-/// namespaces. Equal printed names never prove equality between separate reports.
+/// Serialization exports a bounded flat graph, retaining common leaf bindings
+/// across separate graphs in one report through an opaque producer namespace.
+/// Exported identities do not establish semantic equality across reports.
 #[derive(Clone, Debug)]
 pub struct ExprId(Arc<Node>);
 
