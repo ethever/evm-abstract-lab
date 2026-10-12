@@ -114,6 +114,7 @@ fn uncertain_length_needs_zero_and_stored_byte() {
 
 mod fingerprint;
 mod native;
+mod provenance;
 mod refinement;
 mod state;
 mod widening;
