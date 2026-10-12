@@ -1,6 +1,11 @@
 //! Bounded flat export of mixed word, byte and storage graphs.
-//! Reports assign their own indices; private source/node identities never serve
-//! as cross-report equality evidence. No recursive Arc serialization is used.
+//!
+//! Edges use graph-local indices. Separate graphs in one native report bind
+//! common leaves through an opaque process namespace and the original Fresh
+//! token or input scope/symbol. Source namespaces still distinguish roles.
+//! Different identities do not imply different values, contents or hashes.
+//! These keys are not semantic equality evidence across reports or processes.
+//! No recursive Arc serialization is used.
 
 use super::{
     ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprKind, ExprLimits, InputAtom,
@@ -9,7 +14,26 @@ use super::{
 use crate::domain::NumericValue;
 use alloy_primitives::U256;
 use serde::Serialize;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, hash_map::RandomState},
+    hash::BuildHasher,
+    sync::{Arc, OnceLock},
+};
+
+#[cfg(test)]
+mod tests;
+
+fn identity_scope() -> &'static str {
+    static SCOPE: OnceLock<String> = OnceLock::new();
+    SCOPE.get_or_init(|| {
+        // Randomized std hash seeds separate producer processes whose private
+        // counters restart at one. This is an opaque label, not a global ID.
+        let seed = (std::process::id(), std::time::SystemTime::now());
+        let first = RandomState::new().hash_one(seed);
+        let second = RandomState::new().hash_one(seed);
+        format!("{first:016x}{second:016x}")
+    })
+}
 
 /// Export resource policy, separate from logical byte ranges and solver work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -41,6 +65,8 @@ impl From<ExprLimits> for GraphLimits {
 }
 
 /// A source reference in the same flat graph as its scalar identity token.
+/// Resolve `token` before comparing sources across graphs in one report, then
+/// include `namespace`; graph-local token indices alone cannot identify sources.
 #[derive(Clone, Debug, Serialize)]
 pub struct GraphSource {
     /// Graph-local expression index.
@@ -65,8 +91,9 @@ pub enum SymbolicGraphNode {
     Constant(U256),
     /// A scoped immutable environment input.
     Input(InputAtom),
-    /// A graph-local independent runtime identity.
-    Fresh,
+    /// Original runtime leaf token within the graph's `identity_scope`.
+    /// Different tokens name independent variables, not unequal concrete words.
+    Fresh(u64),
     /// A pure EVM word operation in pop-argument order.
     Operation {
         /// Pure EVM opcode.
@@ -203,8 +230,17 @@ pub enum SymbolicGraphNode {
     },
 }
 /// Flat mixed state/expression graph, suitable for bounded native serialization.
+///
+/// Within one report, match leaves by `(identity_scope, Fresh token)` or
+/// `(identity_scope, Input scope, symbol)`. Every graph exported by this process
+/// shares the same opaque scope, generated once from standard-library randomized
+/// hash seeds and process metadata. It is not a persistent or globally unique
+/// identity, and consumers must not infer semantic equality across reports.
+/// Node/depth and exact byte-payload limits remain local to each graph.
 #[derive(Clone, Debug, Serialize)]
 pub struct SymbolicGraph {
+    /// Opaque producer namespace for leaf bindings inside one native report.
+    pub identity_scope: String,
     /// Graph-local root index.
     pub root: usize,
     /// Nodes in dependency order.
@@ -270,7 +306,7 @@ impl Export {
             Key::Expr(e) => match e.kind() {
                 ExprKind::Constant(v) => SymbolicGraphNode::Constant(*v),
                 ExprKind::Input(i) => SymbolicGraphNode::Input(*i),
-                ExprKind::Fresh(_) => SymbolicGraphNode::Fresh,
+                ExprKind::Fresh(token) => SymbolicGraphNode::Fresh(*token),
                 ExprKind::Operation { opcode, args } => SymbolicGraphNode::Operation {
                     opcode: *opcode,
                     args: args.iter().map(|a| self.e(a)).collect(),
@@ -438,6 +474,7 @@ impl Export {
             self.memo.insert(key, index);
         }
         Ok(SymbolicGraph {
+            identity_scope: identity_scope().to_owned(),
             root: self.child(root),
             nodes: self.nodes,
         })
