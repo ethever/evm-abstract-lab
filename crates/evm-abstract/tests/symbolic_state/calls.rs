@@ -98,12 +98,18 @@ fn all_call_kinds_keep_code_state_caller_value_input_and_private_memory() {
             assert!(!successes.is_empty());
             for outcome in successes {
                 for (index, expected) in expected.iter().enumerate() {
+                    let actual = outcome
+                        .data
+                        .read_word(&word(index as u64 * 32), Domain::default());
                     assert_eq!(
-                        outcome
-                            .data
-                            .read_word(&word(index as u64 * 32), Domain::default())
-                            .singleton(),
-                        Some(*expected)
+                        actual.singleton(),
+                        Some(*expected),
+                        "fork={fork} opcode={op:#x} word={index} numeric={:?} limited={} nodes={} depth={} diagnostics={:?}",
+                        actual.numeric(),
+                        actual.symbolic_limit_reached(),
+                        outcome.data.state_root().nodes(),
+                        outcome.data.state_root().depth(),
+                        analysis.diagnostics()
                     );
                 }
             }
