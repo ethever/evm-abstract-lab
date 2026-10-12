@@ -275,12 +275,70 @@ fn bytecode_branch_join_keeps_the_pointer_paired_with_its_memory() {
 }
 
 #[test]
+fn repeated_two_memory_words_reach_a_whole_machine_fixed_point() {
+    let analysis = fixtures::run("5b60075f5260096020525f56", fixtures::config());
+    assert_eq!(
+        analysis.status(),
+        Status::Converged,
+        "{:?}",
+        analysis.frontiers()
+    );
+    assert!(analysis.transfers() <= 5, "{}", analysis.transfers());
+    assert_eq!(analysis.states().len(), 1);
+    let memory = &analysis.states()[0].exit.as_ref().unwrap().active().memory;
+    for (offset, expected) in [(0, 7), (32, 9)] {
+        assert_eq!(
+            memory
+                .read_word(&fixtures::word(offset), Domain::default())
+                .singleton(),
+            Some(U256::from(expected))
+        );
+    }
+    crate::ssa::build_world(&analysis)
+        .unwrap()
+        .verify(&analysis)
+        .unwrap();
+}
+
+#[test]
+fn repeated_two_storage_slots_reach_a_whole_machine_fixed_point() {
+    let analysis = fixtures::run("5b60075f5560096001555f56", fixtures::config());
+    assert_eq!(
+        analysis.status(),
+        Status::Converged,
+        "{:?}",
+        analysis.frontiers()
+    );
+    assert!(analysis.transfers() <= 5, "{}", analysis.transfers());
+    assert_eq!(analysis.states().len(), 1);
+    let store = &analysis.states()[0].exit.as_ref().unwrap().store;
+    for (slot, expected) in [(0, 7), (1, 9)] {
+        assert_eq!(
+            store
+                .read_checked(
+                    fixtures::address(0x101),
+                    &fixtures::word(slot),
+                    Domain::default()
+                )
+                .unwrap()
+                .singleton(),
+            Some(U256::from(expected))
+        );
+    }
+    crate::ssa::build_world(&analysis)
+        .unwrap()
+        .verify(&analysis)
+        .unwrap();
+}
+
+#[test]
 fn growing_loop_preserves_the_uncovered_incoming_state_at_its_policy_boundary() {
     let mut config = fixtures::config();
     config.analysis.relations.max_constraints = 2;
     config.analysis.relations.enabled = false;
-    // Counter is a stack value; unlike a repeated write its content changes.
-    let analysis = fixtures::run("60015b600101600256", config);
+    // Both the counter and its stored word change. Scalar-only widening cannot
+    // discard the root/counter pairing to close this whole-state loop.
+    let analysis = fixtures::run("60015b805f52600101600256", config);
     assert_eq!(analysis.status(), Status::Incomplete);
     let frontier = analysis
         .frontiers()
@@ -341,4 +399,87 @@ fn new_unknown_source_does_not_match_old_unknown_content() {
         .unwrap();
     first.active_mut().saved_store = Snapshot::from_state(modified);
     assert_ne!(first.active().saved_store, before);
+}
+
+#[test]
+fn scalar_counter_widening_retains_the_unchanged_immutable_input() {
+    let mut config = fixtures::config();
+    config.analysis.relations = crate::domain::relational::RelationLimits::default();
+    config.max_work = crate::analysis::ExecutionConfig::default().max_work;
+    // Original CALLVALUE is below an increasing counter throughout the loop.
+    let (world, mut entry) = fixtures::fixture(&[(0x101, "345f5b600101600256")]);
+    entry.environment.value = AbstractValue::top();
+    let analysis = crate::analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(analysis.status(), Status::Converged);
+    assert!(analysis.transfers() <= 5);
+    let initial = analysis.states()[0].exit.as_ref().unwrap();
+    let header = analysis
+        .states()
+        .iter()
+        .find(|state| state.entry.active().stack.len() == 2)
+        .unwrap();
+    let original = &initial.active().stack[0];
+    let preserved = &header.entry.active().stack[0];
+    assert_eq!(preserved.numeric(), original.numeric());
+    assert_eq!(preserved.expression(), original.expression());
+    assert!(preserved.same_identity(original));
+    assert!(header.entry.active().stack[1].contains(U256::ZERO));
+    assert!(header.entry.active().stack[1].contains(U256::MAX));
+    assert_eq!(
+        header.entry.active().memory.state_root(),
+        initial.active().memory.state_root()
+    );
+    assert_eq!(
+        header.entry.active().saved_store,
+        initial.active().saved_store
+    );
+    crate::ssa::build_world(&analysis)
+        .unwrap()
+        .verify(&analysis)
+        .unwrap();
+}
+
+#[test]
+fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
+    let domain = fixtures::config().domain().unwrap();
+    let policy = domain.spec().relations();
+    let guard = ExprId::fresh().unwrap();
+    let mut old = fixtures::payload(domain);
+    let mut seven = old.active().memory.clone();
+    seven
+        .write_word(&fixtures::word(0), &fixtures::word(7), 4096, domain)
+        .unwrap();
+    let mut nine = old.active().memory.clone();
+    nine.write_word(&fixtures::word(0), &fixtures::word(9), 4096, domain)
+        .unwrap();
+    old.active_mut().memory = seven
+        .join_guarded(&nine, domain, guard.clone(), policy.expressions())
+        .unwrap();
+    let mut incoming = old.clone();
+    incoming.active_mut().memory = seven;
+    assert_eq!(
+        incoming.relations.assume(&guard, false, &policy),
+        CheckResult::Sat
+    );
+    let alternatives = EntryAlternatives::new(&old);
+    let mut budget = WorkBudget::new(10_000_000);
+    let joined = alternatives
+        .join(&old, &incoming, domain, &mut budget)
+        .unwrap()
+        .expect("root leaf membership does not prove complete guarded coverage");
+    let mut path = joined.relations.clone();
+    assert_eq!(path.assume(&guard, false, &policy), CheckResult::Sat);
+    let word = joined
+        .active()
+        .memory
+        .read_word_checked(&fixtures::word(0), domain)
+        .unwrap();
+    assert_eq!(
+        path.can_equal(word.expression().unwrap(), U256::from(7), &policy),
+        CheckResult::Sat
+    );
+    assert_eq!(
+        path.can_equal(word.expression().unwrap(), U256::from(9), &policy),
+        CheckResult::Sat
+    );
 }
