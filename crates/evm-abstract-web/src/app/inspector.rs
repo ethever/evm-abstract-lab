@@ -34,11 +34,12 @@ pub(super) enum Tab {
     Outcomes,
     Acquisition,
     Environment,
+    Timing,
     Diagnostics,
 }
 
 impl Tab {
-    const ALL: [(Self, &'static str); 12] = [
+    const ALL: [(Self, &'static str); 13] = [
         (Self::Frame, "Frame"),
         (Self::Stack, "Stack"),
         (Self::SsaValue, "SSA value"),
@@ -50,6 +51,7 @@ impl Tab {
         (Self::Outcomes, "Outcomes"),
         (Self::Acquisition, "Acquisition"),
         (Self::Environment, "Environment"),
+        (Self::Timing, "Timing"),
         (Self::Diagnostics, "Diagnostics"),
     ];
     fn label(self) -> &'static str {
@@ -79,6 +81,7 @@ pub(super) struct Inspector {
     outcome: usize,
     rollback: bool,
     panel: panel::Panel,
+    pub(super) timings: super::timing::Details,
     #[cfg(not(target_arch = "wasm32"))]
     shortcut: shortcut::Shortcut,
 }
@@ -94,6 +97,7 @@ impl Default for Inspector {
             outcome: 0,
             rollback: false,
             panel: panel::Panel::default(),
+            timings: super::timing::Details::default(),
             #[cfg(not(target_arch = "wasm32"))]
             shortcut: shortcut::Shortcut::default(),
         }
@@ -139,6 +143,9 @@ impl Inspector {
         };
         if self.tab == Tab::SsaValue {
             return format!("{}{mode}", ssa::summary(report, selection));
+        }
+        if self.tab == Tab::Timing {
+            return format!("Inspector: Timing{mode}");
         }
         let machine = self.machine(report, selection);
         let boundary = match self.point {
@@ -294,6 +301,12 @@ impl Inspector {
             ssa::show(ui, report, selection);
             return;
         }
+        if self.tab == Tab::Timing {
+            scroll(ui, "timing_details", |ui| {
+                super::timing::show(ui, report, &self.timings);
+            });
+            return;
+        }
         let has_exit = report
             .states
             .iter()
@@ -414,7 +427,9 @@ impl Inspector {
                 evidence::diagnostics(ui, report, selection)
             }),
             Tab::Outcomes => self.outcomes(ui, report, selection),
-            Tab::SsaValue => unreachable!("SSA values use definition-scoped inspection"),
+            Tab::SsaValue | Tab::Timing => {
+                unreachable!("definition and timing inspection use their own coordinates")
+            }
         }
     }
 

@@ -692,6 +692,7 @@ fn task_progress_and_typed_task_error_keep_the_full_u64_handle() {
         id: api::JobId(u64::MAX),
         state: api::JobState::Running,
         progress: api::AnalysisProgress::default(),
+        timings: api::AnalysisTimings::default(),
     });
     assert!(
         workspace

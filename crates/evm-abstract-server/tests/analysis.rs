@@ -25,6 +25,21 @@ fn diamond_preserves_phi_predecessors_and_structural_json_roundtrip() {
     let report = analyze(request(include_str!("../../../examples/diamond.hex"))).unwrap();
     assert_eq!(report.status, AnalysisStatus::Converged);
     assert!(report.ssa.complete);
+    let timings = &report.metadata.timings;
+    assert_eq!(timings.queue_ns, 0, "direct analyses have no worker queue");
+    assert!(timings.validating_ns > 0);
+    assert!(timings.analyzing_ns > 0);
+    assert!(timings.building_ssa_ns > 0);
+    assert!(timings.projecting_ns > 0);
+    assert_eq!(timings.pinning_ns, 0);
+    assert_eq!(timings.acquiring_ns, 0);
+    assert_eq!(
+        timings.processing_ns,
+        timings.validating_ns
+            + timings.analyzing_ns
+            + timings.building_ssa_ns
+            + timings.projecting_ns
+    );
     assert!(
         report
             .ssa
@@ -47,6 +62,58 @@ fn diamond_preserves_phi_predecessors_and_structural_json_roundtrip() {
     let bytes = serde_json::to_vec(&reply).unwrap();
     let decoded: AnalyzeReply = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(decoded, reply);
+}
+
+#[test]
+fn direct_failures_and_cancellation_freeze_the_control_timing() {
+    use evm_abstract::analysis::{control::Control, progress::Observer};
+    use evm_abstract_server::analyze::analyze_with_control;
+
+    for cancelled in [false, true] {
+        let control = Control::new(Observer::default());
+        if cancelled {
+            control.cancellation().cancel();
+        }
+        let error = analyze_with_control(request("gg"), &control).unwrap_err();
+        assert_eq!(
+            error.code,
+            if cancelled {
+                ApiErrorCode::Cancelled
+            } else {
+                ApiErrorCode::InvalidBytecode
+            }
+        );
+        let frozen = control.observer().timing();
+        assert!(frozen.elapsed_ns > 0);
+        assert_eq!(frozen.elapsed_ns, frozen.phases.validating_ns);
+        assert_eq!(control.observer().timing(), frozen);
+    }
+}
+
+#[test]
+fn reusing_a_frozen_direct_control_starts_a_separate_timing_session() {
+    use evm_abstract::analysis::control::Control;
+    use evm_abstract_server::analyze::analyze_with_control;
+
+    let control = Control::default();
+    let report = analyze_with_control(
+        request(include_str!("../../../examples/diamond.hex")),
+        &control,
+    )
+    .unwrap();
+    let first = control.observer().timing();
+    assert!(first.phases.building_ssa_ns > 0);
+    let error = analyze_with_control(request("gg"), &control).unwrap_err();
+    assert_eq!(error.code, ApiErrorCode::InvalidBytecode);
+    let second = control.observer().timing();
+    assert!(second.started_at > first.started_at);
+    assert!(second.elapsed_ns > 0);
+    assert_eq!(second.elapsed_ns, second.phases.validating_ns);
+    assert_eq!(second.phases.analyzing_ns, 0);
+    assert_eq!(second.phases.building_ssa_ns, 0);
+    assert_eq!(second.phases.projecting_ns, 0);
+    assert_eq!(report.metadata.timings.processing_ns, first.elapsed_ns);
+    assert_eq!(control.observer().timing(), second);
 }
 
 #[test]

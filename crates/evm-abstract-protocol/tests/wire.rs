@@ -83,6 +83,31 @@ fn cumulative_counters_preserve_u64_values_above_wasm_and_javascript_integer_ran
         roundtrip(progress);
     }
 }
+
+#[test]
+fn monotonic_timings_preserve_nanoseconds_without_javascript_integer_rounding() {
+    for count in [9_007_199_254_740_993, u64::MAX] {
+        let timings = AnalysisTimings {
+            queue_ns: count,
+            processing_ns: count,
+            validating_ns: count,
+            pinning_ns: count,
+            acquiring_ns: count,
+            analyzing_ns: count,
+            building_ssa_ns: count,
+            projecting_ns: count,
+        };
+        let encoded = serde_json::to_string(&timings).unwrap();
+        assert!(encoded.contains(&format!("\"processing_ns\":{count}")));
+        assert!(
+            serde_json::from_str::<AnalysisTimings>(
+                &encoded.replace(&format!("\"queue_ns\":{count},"), "")
+            )
+            .is_err()
+        );
+        roundtrip(timings);
+    }
+}
 #[test]
 fn errors_and_job_states_roundtrip_without_invalid_optional_combinations() {
     let error = ApiError {
@@ -109,6 +134,7 @@ fn errors_and_job_states_roundtrip_without_invalid_optional_combinations() {
                 id: JobId(9_007_199_254_740_993),
                 state,
                 progress: AnalysisProgress::default(),
+                timings: AnalysisTimings::default(),
             }),
         });
     }
@@ -230,5 +256,5 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 6);
+    assert_eq!(SCHEMA_VERSION, 7);
 }

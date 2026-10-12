@@ -115,6 +115,25 @@ Web 协议的数值仍受类型可表示范围约束：`smt_rlimit` 为 `u32`，
 
 任务运行期间保留上一份完整结果，并显示新任务的状态与离散进度；新任务成功后才原子替换结果。输入草稿的编辑不会改变正在查看的报告。取消、失败或迟到的旧请求也不会把旧报告冒充新任务结果。
 
+## 分析耗时
+
+状态栏在提交、排队、运行和获取结果时显示 **Elapsed**。这段时间从提交分析开始，直到当前结果的首次视图准备完成；失败或取消确认后也会冻结。窄窗口同样保留耗时显示。完成后的 **Total wait** 是用户实际等待的时间，切换视图、缩放或查看其他状态不会重新计时。点击状态栏的时间按钮可打开检查器的 **Timing** 页，查看完整分解。
+
+后端的 **Backend processing** 从工作线程实际开始处理计到结束，**Queue** 单独记录等待工作线程的时间。阶段时间由后端的单调时钟直接累计，前端轮询延迟或丢弃的进度事件不会改变它。完成结果保留这些时间，开始新任务时，上一份结果继续保留自己的计时记录。
+
+| 时间项 | 范围 |
+| --- | --- |
+| Validation | 后端验证与输入准备 |
+| RPC | 固定链与区块、初始读取、全部补读账户和存储 |
+| Abstract analysis | 全部分析轮次的抽象执行，包含其中的 SMT 求解 |
+| SSA construction | 构建、规范化与验证 SSA |
+| Report projection | 整理原生状态、值和效果，生成结构化展示报告 |
+| Frontend preparation | 获取并解析报告、安装结果以及当前视图的首次准备 |
+
+RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑”。显示的 RPC 和抽象执行时间累计所有轮次，最终图只保留最后一轮也不会丢掉此前耗时。SMT 是抽象执行内部的工作，不重复加入总时间。
+
+前端准备还可查看 **Result transfer**、**JSON parsing** 和 **First view setup**。首次准备只测实际打开的视图；不会为了统计而提前生成其他视图的 CFG 布局。用户总等待也包含提交和状态轮询等往返延迟，不能把后端处理、排队与前端准备当作覆盖全部等待的精确加总。这里统计实际耗时，`work` 仍表示逻辑工作量；区块 `Timestamp` 和 RPC timeout 保留各自原有含义。
+
 - **Workspace / 0** 根据可用宽度切换布局：宽窗口并排显示三个视图，中等窗口将反汇编与 SSA 放入标签组并与 CFG 并排，窄窗口将三个视图放入标签组。中等与窄布局初始打开 **SSA**，标签顺序保持不变，仍可手动选择反汇编；每档布局分别保留活动标签，重分析也保留活动标签。代码面板初始按实际内容定宽，剩余空间给 CFG；长内容受可用空间限制，仍可横向滚动。拖动分隔线后保留该档布局的手动宽度，窗口空间不足时临时夹紧，恢复空间后还原。**1 / 2 / 3** 分别展开反汇编、CFG 和 SSA；文本框获得焦点时数字键仍用于输入。
 - 点击反汇编指令、SSA 指令行、SSA 块标题或状态图节点，在共享的原生状态 ID 与 PC 上联动选择。不同调用帧和上下文保持独立；按实际程序身份切换完整源代码，也能区分根代码委托和 storage 所属账户。基本块总览卡片包含多个实例时，先通过实例列表选择具体 `σᵢ`，再查看对应源码、SSA 和状态检查器。
 - CFG 默认使用 **Blocks** 基本块总览：同一程序、同一基本块的原生状态放进一张卡片，重复连接按端点和边类型聚合并保留原始成员。没有捕获程序代码的状态仍单独显示。它不修改后端报告、分析状态数、预算或完成状态。**States** 切回每个原生状态一张卡片；程序下拉框默认 **All programs**，也可仅查看某个 `Pᵢ` 的代码，筛选不会重新运行分析，也不会改选原生状态；当前所选状态不在可见范围时会显示 **outside view**。
@@ -176,15 +195,17 @@ Web 协议的数值仍受类型可表示范围约束：`smt_rlimit` 为 `u32`，
 | [`evm-abstract-server`](../crates/evm-abstract-server) | 将协议请求转换为引擎输入，验证 SSA，并投影为结构化响应；提供 HTTP 和静态资源 |
 | [`evm-abstract-web`](../crates/evm-abstract-web) | 依赖共享协议和符号库；通过 Web API 获取结果，用 egui Painter 绘制各视图 |
 
-共享协议版本为 6。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+共享协议版本为 7。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 
 | 请求 | 返回 |
 | --- | --- |
 | `GET /api/rpc-providers` | `RpcProvidersReply`：`{"result":{"Ok":[{"id":"mainnet","name":"Ethereum mainnet","endpoint":"https://rpc.example.org/ethereum"}]}}`；无配置时列表为空 |
 | `POST /api/tasks`，body 为 `AnalyzeRequest` | `202` 与 `JobReply`，包含任务 ID |
-| `GET /api/tasks/{id}` | 小型 `JobSnapshot`：状态、阶段和累计计数 |
+| `GET /api/tasks/{id}` | 小型 `JobSnapshot`：状态、阶段、累计计数和实时／冻结的 `timings` |
 | `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
+
+版本 7 为 `JobSnapshot` 和报告的 `metadata` 增加 `AnalysisTimings`。字段均为 `u64` 纳秒：`queue_ns`、`processing_ns`，以及 `validating_ns`、`pinning_ns`、`acquiring_ns`、`analyzing_ns`、`building_ssa_ns`、`projecting_ns`。阶段耗时互不重复，合计为 `processing_ns`；RPC 展示值为 `pinning_ns + acquiring_ns`。直接调用分析服务函数时队列时间为零。成功、失败或取消后，终态快照的计时冻结；成功报告保留同一份后端计时。用户等待与前端准备属于本次浏览器观察，单独保存，不以浏览器与后端的时钟起点相减计算。
 
 版本 6 为 SSA 增加规范化 `operation`、按最终 ValueId 索引的 `values`、带范围的事实和来源关系；原始 opcode、PC、效果与执行阶段仍保留。版本 5 的提供者名单新增展示用的 `endpoint`；RPC 分析输入继续使用 `provider_id`，不接受浏览器在请求中指定 `endpoint`。例如 `AnalyzeRequest.input` 为 `{"Rpc":{"provider_id":"mainnet","address":"0x0000000000000000000000000000000000000101","block":"Latest","accounts":[]}}`；其余 `fork`、`environment`、`limits` 字段仍按共享请求类型提供。后端在任务入队前按 ID 查找配置，未知 ID 返回 `InvalidRequest`。这些变更属于 Web 共享协议，CLI 的显式 `--rpc` 参数保持其原有用法。
 

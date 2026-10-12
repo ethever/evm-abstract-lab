@@ -206,6 +206,8 @@ fn analyze_controlled(
     let mut analysis;
     loop {
         control.checkpoint()?;
+        // Preparation and all reruns belong to execution, not the last RPC batch.
+        control.observer().phase(Phase::Analyzing);
         discovery.rounds += 1;
         session.discovery_round(discovery.rounds);
         // 重跑复制也使用累计账本，不让补入的新初始事实重置预算。
@@ -324,6 +326,7 @@ fn analyze_controlled(
         }
     }
     control.checkpoint()?;
+    control.observer().phase(Phase::Analyzing);
     analysis.work = budget.used();
     let acquisition = discovery.acquisition(session.requests(), counters.states);
     Ok(finish(analysis, acquisition, discovery))
