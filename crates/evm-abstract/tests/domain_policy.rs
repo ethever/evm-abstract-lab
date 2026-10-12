@@ -83,10 +83,19 @@ fn fingerprints_bind_original_open_constraints_across_runtime_profiles() {
     // 每个世界都绑定同一账户、代码和快照；只有开放数值约束不同。
     world = World::offline(Fork::Osaka, "domain-policy:v1", "domain policy test");
     world.insert(entry.address, account).unwrap();
-    assert_ne!(odd_world.fingerprint(), even_world.fingerprint());
-    assert_ne!(odd_world.fingerprint(), world.fingerprint());
-    assert_ne!(even_world.fingerprint(), world.fingerprint());
-    let original_fingerprint = odd_world.fingerprint();
+    assert_ne!(
+        odd_world.fingerprint().unwrap(),
+        even_world.fingerprint().unwrap()
+    );
+    assert_ne!(
+        odd_world.fingerprint().unwrap(),
+        world.fingerprint().unwrap()
+    );
+    assert_ne!(
+        even_world.fingerprint().unwrap(),
+        world.fingerprint().unwrap()
+    );
+    let original_fingerprint = odd_world.fingerprint().unwrap();
     for profile in [Profile::Product, Profile::ConstantsOnly] {
         let graph = analyze_world(
             odd_world.clone(),
@@ -102,7 +111,7 @@ fn fingerprints_bind_original_open_constraints_across_runtime_profiles() {
         )
         .unwrap();
         assert_complete(&graph);
-        assert_eq!(graph.world().fingerprint(), original_fingerprint);
+        assert_eq!(graph.world().fingerprint().unwrap(), original_fingerprint);
         assert_eq!(
             graph.world().accounts()[&entry.address].storage[&U256::ZERO],
             odd
@@ -259,7 +268,10 @@ fn summaries_guard_the_entire_frozen_domain_policy() {
     let input: &SummaryInput = &graph.summaries()[0].input;
     for record in graph.summaries() {
         assert_eq!(record.input.domain_spec, spec);
-        assert_eq!(record.input.world_fingerprint, graph.world().fingerprint());
+        assert_eq!(
+            record.input.world_fingerprint,
+            graph.world().fingerprint().unwrap()
+        );
         let json = serde_json::to_value(&record.input).unwrap();
         assert_eq!(json["domain_spec"]["schema_version"], 2);
         assert_eq!(json["domain_spec"]["cost_version"], 2);

@@ -328,7 +328,10 @@ fn compare(
             slots: BTreeSet::new(),
         }));
     let full_world = rpc::load(&full_input).unwrap();
-    assert_eq!(discovered.world().fingerprint(), full_world.fingerprint());
+    assert_eq!(
+        discovered.world().fingerprint().unwrap(),
+        full_world.fingerprint().unwrap()
+    );
     assert_eq!(discovered.world().identity(), full_world.identity());
     let full = analysis::analyze_world(full_world, entry.clone(), config.clone()).unwrap();
     assert_eq!(relations(&discovered), relations(&full));
@@ -382,7 +385,7 @@ fn compare(
         for summary in result.summaries() {
             assert_eq!(
                 summary.input.world_fingerprint,
-                result.world().fingerprint()
+                result.world().fingerprint().unwrap()
             );
         }
     }
@@ -816,7 +819,7 @@ fn final_snapshot_binds_reused_nested_call_certificates() {
         for summary in result.summaries() {
             assert_eq!(
                 summary.input.world_fingerprint,
-                result.world().fingerprint()
+                result.world().fingerprint().unwrap()
             );
             assert_eq!(&summary.input.snapshot, result.world().identity());
         }
