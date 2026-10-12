@@ -5,6 +5,8 @@ use crate::app::{View, inspector::Tab};
 use egui::{Context, Event, FontId, Id, Modifiers, Pos2, Rect, Vec2};
 use evm_abstract_protocol as api;
 
+mod sizing;
+
 fn separator(context: &Context, transient: bool) -> egui::Response {
     let id = Id::new(("inspector_storage_slot_table", transient))
         .with(egui::IdSalt::new("slots"))
@@ -47,19 +49,85 @@ fn near(actual: f32, expected: f32) {
 }
 
 impl Drawn {
+    fn slot_paint(&self, entry: &api::StorageEntry) -> &(Rect, egui::epaint::TextShape) {
+        let value = self.rect(&entry.value.summary).expect("row value");
+        self.paint
+            .iter()
+            .find(|(_, text)| {
+                let rect = Rect::from_min_size(text.pos, text.galley.size());
+                (rect.center().y - value.center().y).abs() < 1.0
+                    && rect.right() < value.left()
+                    && text
+                        .galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|section| section.format.font_id.family == egui::FontFamily::Monospace)
+            })
+            .unwrap_or_else(|| panic!("missing slot paint for {}: {:?}", entry.slot, self.text))
+    }
+
+    fn slot_glyphs(&self, entry: &api::StorageEntry) -> String {
+        glyphs(&self.slot_paint(entry).1)
+    }
+
     fn assert_columns(&self, entries: &[api::StorageEntry]) {
         let slot_x = self.rect("Slot").unwrap().left();
         let value_x = self.rect("Value").unwrap().left();
         assert!(value_x > slot_x + 50.0);
         for entry in entries {
-            let slot = self.rect(&entry.slot).unwrap();
+            let (clip, painted) = self.slot_paint(entry);
+            let slot = Rect::from_min_size(painted.pos, painted.galley.size());
             let value = self.rect(&entry.value.summary).unwrap();
-            near(slot.left(), slot_x);
+            // Eight points separate native cells; two keep glyph ink inside
+            // the slot cell. Short keys remain unpadded at this same right edge.
+            near(slot.right(), value_x - 10.0);
             near(value.left(), value_x);
             near(slot.center().y, value.center().y);
             assert!(slot.right() < value.left());
+            assert!(
+                clip.contains_rect(slot),
+                "{clip:?} does not contain {slot:?}"
+            );
+            for row in &painted.galley.rows {
+                assert!(
+                    !row.visuals.mesh.vertices.is_empty(),
+                    "slot must paint real glyphs"
+                );
+                let ink = row
+                    .visuals
+                    .mesh_bounds
+                    .translate(painted.pos.to_vec2() + row.pos.to_vec2());
+                assert!(
+                    clip.contains_rect(ink),
+                    "glyph ink {ink:?} escaped {clip:?}"
+                );
+            }
+            assert!(
+                !painted.galley.elided,
+                "suffix fitting must not hide low bits"
+            );
+            let displayed = glyphs(painted);
+            if let Some(suffix) = displayed.strip_prefix('…') {
+                assert!(
+                    !suffix.is_empty() && entry.slot.ends_with(suffix),
+                    "{displayed}"
+                );
+                assert!(displayed.chars().count() < entry.slot.chars().count());
+            } else {
+                assert_eq!(displayed, entry.slot, "short keys must not be zero padded");
+            }
         }
     }
+}
+
+fn glyphs(text: &egui::epaint::TextShape) -> String {
+    text.galley
+        .rows
+        .iter()
+        .flat_map(|row| &row.glyphs)
+        .map(|glyph| glyph.chr)
+        .collect()
 }
 
 #[test]
@@ -68,7 +136,7 @@ fn mixed_key_lengths_align_and_native_drags_shrink_and_grow_the_column() {
     for (entry, (slot, value)) in report.accounts[0].storage.iter_mut().zip([
         ("0x1".into(), "0xa1"),
         ("0x123456".into(), "0xa2"),
-        (format!("0x{}", "ab".repeat(32)), "0xa3"),
+        (format!("0x{}90abcdef", "ab".repeat(28)), "0xa3"),
     ]) {
         entry.slot = slot;
         entry.value = word(value);
@@ -81,55 +149,85 @@ fn mixed_key_lengths_align_and_native_drags_shrink_and_grow_the_column() {
         panel.transient = transient;
         let initial = panel.draw(&context, &mut time, vec![]);
         initial.assert_columns(&report.accounts[0].storage);
+        for entry in &report.accounts[0].storage {
+            assert_eq!(initial.slot_glyphs(entry), entry.slot);
+        }
         let initial_x = initial.rect("Value").unwrap().left();
-        for (delta, expected) in [(-200.0, initial_x - 72.0), (150.0, initial_x + 78.0)] {
+        let slot_x = initial.rect("Slot").unwrap().left();
+        let initial_width = initial_x - slot_x - 8.0;
+        for width in [
+            56.0,
+            67.5,
+            93.25,
+            128.0,
+            initial_width + 120.0,
+            initial_width,
+        ] {
             let response = separator(&context, transient);
             let start = Pos2::new(
                 response.rect.center().x,
                 initial.rect("Slot").unwrap().center().y,
             );
+            let current = panel.draw(&context, &mut time, vec![]);
+            let current_width = current.rect("Value").unwrap().left() - slot_x - 8.0;
             drag(
                 |events| {
                     panel.draw(&context, &mut time, events);
                 },
                 start,
-                start + Vec2::new(delta, 0.0),
+                start + Vec2::new(width - current_width, 0.0),
             );
             let resized = panel.draw(&context, &mut time, vec![]);
             resized.assert_columns(&report.accounts[0].storage);
-            near(resized.rect("Value").unwrap().left(), expected);
-            // A very long key cannot impose its intrinsic width on a clipped column.
-            assert!(resized.rect("Value").unwrap().left() < 300.0);
+            near(resized.rect("Value").unwrap().left(), slot_x + width + 8.0);
+            let long = &report.accounts[0].storage[2];
+            if width < initial_width {
+                assert!(resized.slot_glyphs(long).starts_with('…'));
+                assert!(resized.slot_glyphs(long).ends_with("cdef"));
+            } else {
+                assert_eq!(resized.slot_glyphs(long), long.slot);
+            }
         }
     }
 }
 
 #[test]
-fn long_keys_and_values_paint_ellipses_with_readable_fonts_and_full_hovers() {
+fn narrowed_keys_keep_suffixes_and_values_keep_their_ellipses_and_full_hovers() {
     let mut report = storage_report(1);
     let entry = &mut report.accounts[0].storage[0];
-    entry.slot = format!("0x{}", "ab".repeat(32));
+    entry.slot = format!("0x{}90abcdef", "ab".repeat(28));
     entry.value = word(&format!("0x{}", "cd".repeat(32)));
     let entry = &report.accounts[0].storage[0];
     let panel = panel(&report);
     let context = context();
     let mut time = 0.0;
-    let drawn = panel.draw(&context, &mut time, vec![]);
-    for label in [&entry.slot, &entry.value.summary] {
-        let (clip, painted) = drawn
-            .paint
-            .iter()
-            .find(|(_, text)| text.galley.text() == label)
-            .unwrap();
-        let glyphs: String = painted
-            .galley
-            .rows
-            .iter()
-            .flat_map(|row| &row.glyphs)
-            .map(|glyph| glyph.chr)
-            .collect();
-        assert!(painted.galley.elided && glyphs.ends_with('…'), "{glyphs}");
-        assert!(glyphs.chars().count() < label.chars().count());
+    let initial = panel.draw(&context, &mut time, vec![]);
+    let start = Pos2::new(
+        separator(&context, false).rect.center().x,
+        initial.rect("Slot").unwrap().center().y,
+    );
+    let initial_width =
+        initial.rect("Value").unwrap().left() - initial.rect("Slot").unwrap().left() - 8.0;
+    drag(
+        |events| {
+            panel.draw(&context, &mut time, events);
+        },
+        start,
+        start + Vec2::new(128.0 - initial_width, 0.0),
+    );
+    let size = Vec2::new(520.0, panel.height);
+    let drawn = panel.draw_at(&context, &mut time, vec![], size);
+    let slot = drawn.slot_paint(entry);
+    assert_eq!(glyphs(&slot.1), "…ababab90abcdef");
+    assert!(!slot.1.galley.elided);
+    let value = drawn
+        .paint
+        .iter()
+        .find(|(_, text)| text.galley.text() == entry.value.summary)
+        .unwrap();
+    assert!(value.1.galley.elided && glyphs(&value.1).ends_with('…'));
+    assert!(glyphs(&value.1).chars().count() < entry.value.summary.chars().count());
+    for (clip, painted) in [slot, value] {
         assert!(
             painted
                 .galley
@@ -140,33 +238,35 @@ fn long_keys_and_values_paint_ellipses_with_readable_fonts_and_full_hovers() {
         );
         assert!(clip.contains_rect(Rect::from_min_size(painted.pos, painted.galley.size())));
     }
-    let mut hovered = panel.draw(
+    let mut hovered = panel.draw_at(
         &context,
         &mut time,
         vec![Event::PointerMoved(
-            drawn.rect(&entry.slot).unwrap().center(),
+            Rect::from_min_size(slot.1.pos, slot.1.galley.size()).center(),
         )],
+        size,
     );
     for _ in 0..15 {
-        hovered = panel.draw(&context, &mut time, vec![]);
+        hovered = panel.draw_at(&context, &mut time, vec![], size);
     }
     assert!(
         hovered
             .paint
             .iter()
-            .any(|(_, text)| text.galley.text() == entry.slot && !text.galley.elided),
+            .any(|(_, text)| glyphs(text) == entry.slot && !text.galley.elided),
         "full slot tooltip: {:?}",
         hovered.text
     );
-    panel.draw(
+    panel.draw_at(
         &context,
         &mut time,
         vec![Event::PointerMoved(
             drawn.rect(&entry.value.summary).unwrap().center(),
         )],
+        size,
     );
     for _ in 0..15 {
-        hovered = panel.draw(&context, &mut time, vec![]);
+        hovered = panel.draw_at(&context, &mut time, vec![], size);
     }
     for label in [
         "Constants",
@@ -259,7 +359,8 @@ fn each_account_and_storage_kind_virtualizes_against_the_outer_viewport() {
             assert!(top.rect("Balance").is_some());
             assert_eq!(top.slots(), 0);
             assert!(top.widgets < 100, "{}", top.widgets);
-            let middle = panel.scroll(&context, &mut time, Pos2::new(240.0, 140.0), -50_000.0);
+            let border = Pos2::new(separator(&context, transient).rect.center().x, 140.0);
+            let middle = panel.scroll(&context, &mut time, border, -50_000.0);
             assert!(middle.slots() > 0 && middle.slots() <= 12);
             assert!(middle.widgets < 100, "{}", middle.widgets);
             let offset = egui::scroll_area::State::load(&context, middle.scroll_id)
@@ -323,7 +424,9 @@ fn narrow_short_viewports_reach_the_final_row_without_an_inner_scroll_limit() {
                     Event::PointerMoved(Pos2::new(40.0, 24.0)),
                     Event::MouseWheel {
                         unit: egui::MouseWheelUnit::Point,
-                        delta: Vec2::new(0.0, -100_000.0),
+                        // The default Slot column stays full width. Reach its
+                        // right edge through the same outer horizontal scroll.
+                        delta: Vec2::new(-100_000.0, -100_000.0),
                         modifiers: Modifiers::NONE,
                         phase: egui::TouchPhase::Move,
                     },
