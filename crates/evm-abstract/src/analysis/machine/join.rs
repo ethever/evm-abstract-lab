@@ -16,6 +16,9 @@ use serde::Serialize;
 use std::sync::Arc;
 use thiserror::Error;
 
+mod coverage;
+mod widening;
+
 /// Machine-level policy failures, independently of scalar or array retention.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum JoinBoundary {
@@ -161,7 +164,7 @@ impl MachinePayload {
     /// Comparison-only normalization removes redundant singleton terms and
     /// ephemeral copy labels. It never rewrites a source, byte/slot root, path
     /// guard or historical read. The executable payload keeps its expressions.
-    fn content_form(&self) -> Result<Self, MachineError> {
+    pub(crate) fn content_form(&self) -> Result<Self, MachineError> {
         checkpoint()?;
         let mut content = self.clone();
         let mut normalize = |value: &mut AbstractValue| {
@@ -264,7 +267,11 @@ impl EntryAlternatives {
             return Err(MachineError::work_failure());
         }
         let incoming_content = incoming.content_form()?;
+
         if entry == incoming || entry.content_form()? == incoming_content {
+            return Ok(None);
+        }
+        if coverage::covers(entry, incoming, domain, budget)? {
             return Ok(None);
         }
         for previous in &self.represented {
@@ -278,6 +285,14 @@ impl EntryAlternatives {
             if previous.as_ref() == incoming || previous.content_form()? == incoming_content {
                 return Ok(None);
             }
+            if coverage::covers(previous, incoming, domain, budget)? {
+                return Ok(None);
+            }
+        }
+        if self.represented.len() >= 2
+            && let Some(widened) = widening::stack(entry, incoming, domain)?
+        {
+            return Ok((widened.content_form()? != entry.content_form()?).then_some(widened));
         }
         let limit = domain.spec().relations().max_constraints;
         if self.represented.len() >= limit {
