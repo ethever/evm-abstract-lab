@@ -256,7 +256,7 @@ fn pending(
 ) {
     result.frontiers.push(ExecutionFrontier {
         pc,
-        reason,
+        reason: super::boundary_reason(reason),
         target: Some(payload.key()),
         range: Some(RangeWitness {
             request,

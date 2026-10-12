@@ -160,10 +160,21 @@ fn boundary(result: &mut Execution, pc: usize, reason: FrontierReason) {
     boundary_on(result, pc, reason, result.payload.key());
 }
 
+fn boundary_reason(reason: FrontierReason) -> FrontierReason {
+    // The shared ledger declines both exhausted work and cancellation. Keep
+    // the actual interruption distinct at every transfer frontier, including
+    // callers that return a raw Work error before a frontier is constructed.
+    if reason == FrontierReason::Work && embedded_smt::current_cancellation().is_cancelled() {
+        FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+    } else {
+        reason
+    }
+}
+
 fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target: MachineKey) {
     result.frontiers.push(ExecutionFrontier {
         pc,
-        reason,
+        reason: boundary_reason(reason),
         target: Some(target),
         range: None,
     });
@@ -1157,6 +1168,53 @@ pub(super) fn execute(
 mod tests {
     use super::*;
     use crate::{Fork, world::Account};
+
+    #[test]
+    fn cancelled_transfer_preserves_input_and_differs_from_exhausted_work() {
+        let owner = Address::from([0x11; 20]);
+        let mut world = World::new(Fork::Osaka, "transfer interruption");
+        world
+            .insert(owner, Account::from_hex("60015f5500", Fork::Osaka).unwrap())
+            .unwrap();
+        let entry = Entry::new(owner);
+        let config = ExecutionConfig::default();
+        let domain = config.domain().unwrap();
+        let input = initial(&world, &entry, domain).unwrap();
+        for cancelled in [false, true] {
+            let control = crate::analysis::control::Control::new(Default::default());
+            let result = control.scope(|| {
+                let mut budget = WorkBudget::new(if cancelled { config.max_work } else { 0 });
+                if cancelled {
+                    control.cancellation().cancel();
+                }
+                execute(
+                    &world,
+                    &entry,
+                    input.clone(),
+                    &config,
+                    domain,
+                    &mut budget,
+                    StorageReadPolicy::Abstract,
+                )
+            });
+            assert_eq!(result.payload, input);
+            assert!(result.executed_pcs.is_empty());
+            assert!(result.instruction_progress.is_empty());
+            assert!(result.successors.is_empty());
+            assert!(result.outcomes.is_empty());
+            assert_eq!(result.frontiers.len(), 1);
+            assert_eq!(result.frontiers[0].pc, 0);
+            assert_eq!(result.frontiers[0].target, Some(input.key()));
+            assert_eq!(
+                result.frontiers[0].reason,
+                if cancelled {
+                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+                } else {
+                    FrontierReason::Work
+                }
+            );
+        }
+    }
 
     #[test]
     fn delegation_without_raw_byte_evidence_explains_the_active_source() {
