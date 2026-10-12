@@ -80,7 +80,8 @@ fn workspace_tile_tabs_share_control_geometry_and_keep_library_focus_and_selecti
                 egui::Shape::Rect(rect)
                     if rect.rect == tab.rect
                         && rect.fill == palette::SELECTED
-                        && rect.corner_radius == egui::CornerRadius::same(4)
+                        && rect.corner_radius == egui::CornerRadius::same(2)
+                        && rect.stroke.color != palette::ACCENT
             )));
             let other = tile_for_other_source(&workspace, size.x, pane);
             assert!(!selected(tree, other));
