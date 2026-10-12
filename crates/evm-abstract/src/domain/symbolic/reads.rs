@@ -85,6 +85,15 @@ impl ExprId {
             (index.nodes(), index.depth()),
         ]);
         state::check(nodes, depth, limits.into())?;
+        let state = if let Some(start) = index.as_constant() {
+            state.without_disjoint_writes(start, 1, limits.into())?
+        } else {
+            state
+        };
+        let (nodes, depth) = state::metrics([
+            (state.nodes(), state.depth()),
+            (index.nodes(), index.depth()),
+        ]);
         match state.kind() {
             ByteStateKind::Zero => return Ok(Self::constant(U256::ZERO)),
             ByteStateKind::Exact(bytes) => {
@@ -111,10 +120,25 @@ impl ExprId {
     /// Read 32 big-endian bytes, zero padding past this view's length.
     /// Relative/backing offset addition is checked mathematically in lowering.
     pub fn word_read(view: ByteView, at: Self, limits: ExprLimits) -> Result<Self, ExprError> {
-        let view = view.canonicalize();
+        let mut view = view.canonicalize();
         let (nodes, depth) =
             state::metrics([(view.nodes(), view.depth()), (at.nodes(), at.depth())]);
         state::check(nodes, depth, limits.into())?;
+        if let (Some(offset), Some(relative), Some(length)) = (
+            view.offset.as_constant(),
+            at.as_constant(),
+            view.length.as_constant(),
+        ) && relative
+            .checked_add(U256::from(32))
+            .is_some_and(|end| end <= length)
+            && let Some(start) = offset.checked_add(relative)
+        {
+            view.state = view
+                .state
+                .without_disjoint_writes(start, 32, limits.into())?;
+        }
+        let (nodes, depth) =
+            state::metrics([(view.nodes(), view.depth()), (at.nodes(), at.depth())]);
         if view.length.as_constant() == Some(U256::ZERO)
             || matches!(view.state.kind(), ByteStateKind::Zero)
         {

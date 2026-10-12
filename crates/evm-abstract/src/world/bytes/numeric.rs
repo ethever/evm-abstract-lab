@@ -88,6 +88,7 @@ pub(super) fn read(
     domain: Domain,
 ) -> AbstractValue {
     let domain = numeric_domain(domain);
+    let state = demanded_state(state, index, 1);
     match state.kind() {
         ByteStateKind::Zero => scalar(&ExprId::constant(U256::ZERO), facts, domain),
         ByteStateKind::Exact(bytes) => {
@@ -344,6 +345,7 @@ pub(super) fn word(
     domain: Domain,
 ) -> AbstractValue {
     let domain = numeric_domain(domain);
+    let state = demanded_state(state, offset, 32);
     if let ByteStateKind::WriteWord {
         offset: written,
         value,
@@ -393,6 +395,22 @@ pub(super) fn word(
     }
     out.unwrap_or_else(AbstractValue::top)
 }
+
+// The symbolic constructor has already checked retention/cancellation. Numeric
+// evaluation follows the same concrete proof iteratively, so a long disjoint
+// prefix does not consume the host stack or reconstruct the word byte by byte.
+fn demanded_state<'a>(state: &'a ByteStateId, index: &ExprId, width: usize) -> &'a ByteStateId {
+    let Some(start) = index.as_constant() else {
+        return state;
+    };
+    let end = start.saturating_add(U256::from(width - 1));
+    let mut cursor = state;
+    while let Some(previous) = cursor.prior_to_disjoint_write(start, end) {
+        cursor = previous;
+    }
+    cursor
+}
+
 fn join(out: Option<AbstractValue>, value: AbstractValue, domain: Domain) -> AbstractValue {
     out.map_or_else(|| value.clone(), |old| domain.join(&old, &value))
 }
