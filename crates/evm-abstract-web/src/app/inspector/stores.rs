@@ -7,6 +7,8 @@ use egui_extras::{Column, TableBuilder};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{AccountState, AnalysisReport, StorageEntry, StoreSnapshot, ValueInfo};
 
+mod slots;
+
 pub(super) fn account<'a>(
     store: Option<&'a StoreSnapshot>,
     report: &'a AnalysisReport,
@@ -127,17 +129,24 @@ fn storage_rows(ui: &mut Ui, entries: &[StorageEntry], transient: bool) {
     ui.scope_builder(
         UiBuilder::new().id(egui::Id::new(("inspector_storage_slot_table", transient))),
         |ui| {
-            TableBuilder::new(ui)
+            let table_id = ui.id().with(egui::IdSalt::new("slots"));
+            let default_width = slots::default_width(ui);
+            let reset_default = slots::refresh_default(ui, table_id, default_width);
+            let table = TableBuilder::new(ui)
                 .id_salt("slots")
                 .vscroll(false)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(
-                    Column::initial(128.0)
+                    Column::initial(default_width)
                         .at_least(56.0)
                         .clip(true)
                         .resizable(true),
                 )
-                .column(Column::remainder().at_least(96.0).clip(true))
+                .column(Column::remainder().at_least(96.0).clip(true));
+            if reset_default {
+                table.reset();
+            }
+            table
                 .header(row_height, |mut header| {
                     header.col(|ui| {
                         ui.strong("Slot");
@@ -149,15 +158,11 @@ fn storage_rows(ui: &mut Ui, entries: &[StorageEntry], transient: bool) {
                 .body(|body| {
                     body.rows(row_height, entries.len(), |mut row| {
                         let entry = &entries[row.index()];
-                        row.col(|ui| {
-                            ui.add(
-                                egui::Label::new(RichText::new(&entry.slot).monospace()).truncate(),
-                            )
-                            .on_hover_text(&entry.slot);
-                        });
+                        row.col(|ui| slots::cell(ui, &entry.slot));
                         row.col(|ui| value::cell(ui, &entry.value));
                     });
                 });
+            slots::remember_resize(ui, table_id);
         },
     );
 }
