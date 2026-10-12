@@ -5,6 +5,7 @@
 
 pub(super) mod native;
 pub(super) mod numeric;
+pub(super) mod operands;
 pub(super) mod refinement;
 pub use refinement::GuardRefinementError;
 mod ranges;
@@ -104,6 +105,11 @@ pub(super) fn constant(value: usize) -> AbstractValue {
     AbstractValue::constant(U256::from(value))
 }
 pub(super) fn expr(value: &AbstractValue) -> Result<ExprId, RangeError> {
+    // A numeric proof does not replace the source term of the same value.
+    // Retain that term; its numeric guarantee is paired in operand facts.
+    if let Some(expression) = value.expression() {
+        return Ok(expression.clone());
+    }
     if let Some(expression) = value.symbolic_expression() {
         return Ok(expression);
     }
@@ -310,7 +316,13 @@ impl ByteArray {
         }
         let offset_expr = expr(offset)?;
         let mut facts = self.operands.clone();
-        facts.insert(offset_expr.clone(), offset.clone());
+        operands::remember(
+            &mut facts,
+            offset_expr.clone(),
+            offset,
+            domain,
+            limits(domain),
+        )?;
         let expression = ExprId::byte_read(self.root.clone(), offset_expr.clone(), limits(domain))?;
         let numeric = numeric::read(&self.root, &offset_expr, &facts, domain);
         Ok(numeric::attach(numeric, expression))
@@ -335,7 +347,13 @@ impl ByteArray {
         }
         let offset_expr = expr(offset)?;
         let mut facts = self.operands.clone();
-        facts.insert(offset_expr.clone(), offset.clone());
+        operands::remember(
+            &mut facts,
+            offset_expr.clone(),
+            offset,
+            domain,
+            limits(domain),
+        )?;
         let view = if self.memory {
             ByteView::new(
                 self.root.clone(),
@@ -377,8 +395,20 @@ impl ByteArray {
         let offset_expr = expr(offset)?;
         let size_expr = expr(size)?;
         let mut operands = self.operands.clone();
-        operands.insert(offset_expr.clone(), offset.clone());
-        operands.insert(size_expr.clone(), size.clone());
+        operands::remember(
+            &mut operands,
+            offset_expr.clone(),
+            offset,
+            domain,
+            limits(domain),
+        )?;
+        operands::remember(
+            &mut operands,
+            size_expr.clone(),
+            size,
+            domain,
+            limits(domain),
+        )?;
         let root = self
             .root
             .slice(offset_expr, size_expr.clone(), limits(domain).into())?;
@@ -477,8 +507,22 @@ impl ByteArray {
         out.expand(offset, &constant(width), max_bytes, domain)?;
         let at = expr(offset)?;
         let val = expr(value)?;
-        out.remember(at.clone(), offset);
-        out.remember(val.clone(), value);
+        out.remember(at.clone(), offset, domain)?;
+        out.remember(val.clone(), value, domain)?;
+        // Normalized writes may keep a Zero/Exact root. Preserve the source of
+        // its derived concrete bytes without materializing any logical range.
+        if let Some(singleton) = value.singleton()
+            && value.provenance() != AbstractValue::constant(singleton).provenance()
+        {
+            for index in 0..width {
+                let byte = if width == 1 {
+                    domain.apply(opcode::AND, &[value.clone(), constant(255)])
+                } else {
+                    domain.apply(opcode::BYTE, &[constant(index), value.clone()])
+                };
+                out.remember(expr(&byte)?, &byte, domain)?;
+            }
+        }
         out.root = if width == 32 {
             out.root.write_word(at, val, limits(domain).into())?
         } else {
@@ -537,10 +581,12 @@ impl ByteArray {
         let dst = expr(target_offset)?;
         let at = expr(source_offset)?;
         let len = expr(size)?;
-        out.operands.extend(source.operands.clone());
-        out.remember(dst.clone(), target_offset);
-        out.remember(at.clone(), source_offset);
-        out.remember(len.clone(), size);
+        for (expression, value) in &source.operands {
+            out.remember(expression.clone(), value, domain)?;
+        }
+        out.remember(dst.clone(), target_offset, domain)?;
+        out.remember(at.clone(), source_offset, domain)?;
+        out.remember(len.clone(), size, domain)?;
         let view = ByteView::new(source.root.clone(), at, len.clone());
         out.root = out.root.copy(dst, view, len, limits(domain).into())?;
         // Map existing finite source facts only; logical size adds no entries.
@@ -763,15 +809,19 @@ impl ByteArray {
             },
         )
     }
-    fn remember(&mut self, expression: ExprId, value: &AbstractValue) {
-        if expression.as_constant().is_none() {
-            let mut clean = value.clone();
-            clean.forget_identity();
-            self.operands
-                .entry(expression)
-                .and_modify(|old| *old = Domain::default().join(old, &clean))
-                .or_insert(clean);
-        }
+    fn remember(
+        &mut self,
+        expression: ExprId,
+        value: &AbstractValue,
+        domain: Domain,
+    ) -> Result<(), RangeError> {
+        Ok(operands::remember(
+            &mut self.operands,
+            expression,
+            value,
+            domain,
+            limits(domain),
+        )?)
     }
     fn refresh(&mut self, domain: Domain) {
         let indices = self.bytes.keys().copied().collect::<Vec<_>>();
