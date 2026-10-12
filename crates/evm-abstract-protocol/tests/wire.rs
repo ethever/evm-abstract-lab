@@ -374,11 +374,12 @@ fn invalid_instruction_wire_requires_original_byte_and_typed_cause() {
             "{invalid}"
         );
     }
-    let diagnostic = r#"{"state":123,"pc":0,"kind":"InvalidOpcode","reduction":null,"invalid_opcode":null,"detail":"old category"}"#;
+    let diagnostic = r#"{"state":123,"pc":0,"kind":"InvalidOpcode","reduction":null,"precision":null,"invalid_opcode":null,"detail":"old category"}"#;
+    serde_json::from_str::<Diagnostic>(diagnostic).unwrap();
     assert!(
         serde_json::from_str::<Diagnostic>(&diagnostic.replace("\"invalid_opcode\":null,", ""))
             .is_err(),
-        "schema 7 diagnostics are rejected by the schema 8 decoder"
+        "diagnostics missing typed opcode evidence are rejected"
     );
 }
 
