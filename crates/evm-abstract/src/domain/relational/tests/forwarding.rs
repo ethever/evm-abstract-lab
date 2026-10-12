@@ -323,14 +323,14 @@ fn default_policy_guarded_echo_hashes_keep_empty_data_and_disjoint_copy_relation
             CheckResult::Sat
         );
         assert_eq!(path.assume(&guard, false, &limits), CheckResult::Sat);
-        for hash in [old_hash, new_hash.clone()] {
+        for (label, hash) in [("old_hash", old_hash), ("new_hash", new_hash.clone())] {
             assert_eq!(
                 path.unique_value(
                     &op(opcode::EQ, &[hash, source_hash.clone()], limits),
                     &limits
                 ),
                 ValueQuery::Unique(U256::from(1)),
-                "{provider:?}"
+                "{provider:?}, hash={label}"
             );
         }
         let mut empty = RelationState::default();
