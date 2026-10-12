@@ -5,7 +5,10 @@ use evm_abstract::{
     Fork,
     analysis::{self, Config, ExecutionConfig, FrontierReason, Status},
     bytecode::Program,
-    domain::{AbstractValue, Profile},
+    domain::{
+        AbstractValue, Profile,
+        symbolic::{ByteStateKind, ExprKind},
+    },
     world::{Account, AddressInput, BlobHashes, ByteArray, Entry, EvmEnvironment, GasInput, World},
 };
 
@@ -31,7 +34,7 @@ fn analyze(code: &str, environment: EvmEnvironment, profile: Profile) -> analysi
 fn single_analysis_json_retains_symbolic_defaults_and_explicit_environment_assumptions() {
     let default = analyze("00", EvmEnvironment::default(), Profile::Product);
     let json = serde_json::to_value(&default).unwrap();
-    assert_eq!(json["schema_version"], 5);
+    assert_eq!(json["schema_version"], analysis::SCHEMA_VERSION);
     assert_eq!(
         json["environment"],
         serde_json::to_value(default.environment()).unwrap()
@@ -39,8 +42,99 @@ fn single_analysis_json_retains_symbolic_defaults_and_explicit_environment_assum
     assert_eq!(json["environment"]["to"]["Symbolic"], "To");
     assert_eq!(json["environment"]["caller"]["Symbolic"], "Caller");
     assert!(json["environment"]["origin"].is_null());
-    assert_eq!(json["environment"]["value"], "Top");
-    assert_eq!(json["environment"]["calldata"]["length"], "Top");
+    let unknown = AbstractValue::top();
+    assert_eq!(default.environment().value.numeric(), unknown.numeric());
+    assert_eq!(
+        default.environment().value.provenance(),
+        unknown.provenance()
+    );
+    assert_eq!(
+        json["environment"]["value"],
+        serde_json::to_value(&default.environment().value).unwrap()
+    );
+    let call_value = &default.execution().states()[0]
+        .entry
+        .call_stack
+        .root()
+        .state
+        .call_value;
+    assert_eq!(call_value.numeric(), unknown.numeric());
+    assert_eq!(call_value.provenance(), unknown.provenance());
+    let ExprKind::Input(call_value_input) = call_value.expression().unwrap().kind() else {
+        panic!("the root call value must have a stable scoped input");
+    };
+    assert_eq!(
+        call_value_input.symbol,
+        evm_abstract::domain::identity::Symbol::CallValue
+    );
+    let call_value_json = serde_json::to_value(call_value).unwrap();
+    let max = format!("{:#x}", U256::MAX);
+    for (value, serialized) in [
+        (call_value, &call_value_json),
+        (
+            default.environment().calldata.len(),
+            &json["environment"]["calldata"]["length"],
+        ),
+    ] {
+        assert_eq!(value.numeric(), unknown.numeric());
+        assert_eq!(value.provenance(), unknown.provenance());
+        assert_eq!(
+            serialized["known_bits"],
+            serde_json::json!({"zero": "0x0", "one": "0x0"})
+        );
+        assert_eq!(
+            serialized["interval"],
+            serde_json::json!({
+                "unsigned_lo": "0x0", "unsigned_hi": max,
+                "signed_lo": "0x0", "signed_hi": max,
+            })
+        );
+        assert_eq!(serialized["congruence"], "Top");
+        assert_eq!(serialized["nonzero"], false);
+        assert_eq!(
+            serialized["provenance"],
+            serde_json::to_value(unknown.provenance()).unwrap()
+        );
+        assert!(serialized.get("Constants").is_none());
+        assert!(value.expression().is_some());
+        assert_eq!(
+            serialized["expression"],
+            serde_json::to_value(value.expression().unwrap()).unwrap()
+        );
+    }
+    let calldata = &default.environment().calldata;
+    let ByteStateKind::Input {
+        source,
+        length,
+        bindings,
+    } = calldata.state_root().kind()
+    else {
+        panic!("unknown calldata must retain its source and logical length");
+    };
+    assert!(bindings.is_empty());
+    assert_eq!(source.namespace(), U256::ZERO);
+    assert_eq!(length, calldata.len().expression().unwrap());
+    assert_ne!(source.token(), length);
+    assert_ne!(call_value.expression().unwrap(), length);
+    let root_graph = &json["environment"]["calldata"]["root"];
+    let input = &root_graph["nodes"][root_graph["root"].as_u64().unwrap() as usize]["BytesInput"];
+    assert_eq!(input["bindings"], serde_json::json!([]));
+    assert_eq!(input["source"]["namespace"], "0x0");
+    let length_graph = &json["environment"]["calldata"]["length"]["expression"];
+    let source_graph = serde_json::to_value(source.token()).unwrap();
+    assert_eq!(root_graph["identity_scope"], length_graph["identity_scope"]);
+    assert_eq!(
+        root_graph["identity_scope"],
+        call_value_json["expression"]["identity_scope"]
+    );
+    assert_eq!(
+        root_graph["nodes"][input["length"].as_u64().unwrap() as usize],
+        length_graph["nodes"][length_graph["root"].as_u64().unwrap() as usize]
+    );
+    assert_eq!(
+        root_graph["nodes"][input["source"]["token"].as_u64().unwrap() as usize],
+        source_graph["nodes"][source_graph["root"].as_u64().unwrap() as usize]
+    );
     assert!(json["environment"].get("input_scope").is_none());
     assert!(json.get("execution").is_none());
 
@@ -110,6 +204,23 @@ fn independent_environments_have_distinct_input_namespaces_and_clones_preserve_i
         assert!(left[0].identity().same_identity(left[1].identity()));
         assert!(left[0].identity().same_identity(same[0].identity()));
         assert!(!left[0].identity().same_identity(other[0].identity()));
+        assert_eq!(left[0].expression(), left[1].expression());
+        assert_eq!(left[0].expression(), same[0].expression());
+        assert_ne!(left[0].expression(), other[0].expression());
+        let ExprKind::Input(caller) = left[0].expression().unwrap().kind() else {
+            panic!("CALLER must retain its scoped immutable input");
+        };
+        let ExprKind::Input(independent_caller) = other[0].expression().unwrap().kind() else {
+            panic!("independent CALLER must retain a separate input");
+        };
+        assert_eq!(
+            caller.symbol,
+            evm_abstract::domain::identity::Symbol::Caller
+        );
+        assert_eq!(caller.symbol, independent_caller.symbol);
+        assert_ne!(caller.scope, independent_caller.scope);
+        assert_eq!(left[0].numeric(), other[0].numeric());
+        assert_eq!(left[0].provenance(), other[0].provenance());
         let domain = if profile == Profile::Product {
             evm_abstract::domain::Domain::default()
         } else {
@@ -122,12 +233,57 @@ fn independent_environments_have_distinct_input_namespaces_and_clones_preserve_i
         assert!(comparison.contains(U256::ZERO) && comparison.contains(U256::from(1)));
         assert_eq!(
             serde_json::to_value(first.environment()).unwrap(),
-            serde_json::to_value(independent.environment()).unwrap()
+            serde_json::to_value(cloned.environment()).unwrap()
+        );
+        let first_calldata = &first.environment().calldata;
+        let independent_calldata = &independent.environment().calldata;
+        assert_eq!(
+            first_calldata.len().numeric(),
+            independent_calldata.len().numeric()
+        );
+        assert_eq!(
+            first_calldata.len().provenance(),
+            independent_calldata.len().provenance()
+        );
+        assert_eq!(
+            first_calldata.default_byte(),
+            independent_calldata.default_byte()
+        );
+        assert_ne!(
+            first_calldata.len().expression(),
+            independent_calldata.len().expression()
+        );
+        assert_ne!(
+            first_calldata.state_root(),
+            independent_calldata.state_root()
+        );
+        // All explicit assumptions still agree; only the independently allocated
+        // calldata source/length is substituted after checking its full product.
+        let mut same_assumptions = independent.environment().clone();
+        same_assumptions.calldata = first_calldata.clone();
+        assert_eq!(
+            serde_json::to_value(first.environment()).unwrap(),
+            serde_json::to_value(same_assumptions).unwrap()
         );
         assert_eq!(
             serde_json::to_value(&left[0]).unwrap(),
-            serde_json::to_value(&other[0]).unwrap()
+            serde_json::to_value(&same[0]).unwrap()
         );
+        let caller_json = serde_json::to_value(&left[0]).unwrap();
+        let independent_json = serde_json::to_value(&other[0]).unwrap();
+        assert_eq!(
+            caller_json["expression"]["identity_scope"],
+            independent_json["expression"]["identity_scope"]
+        );
+        assert_eq!(
+            caller_json["expression"]["nodes"][0]["Input"]["scope"],
+            caller.scope
+        );
+        assert_eq!(
+            independent_json["expression"]["nodes"][0]["Input"]["scope"],
+            independent_caller.scope
+        );
+        assert_ne!(caller_json["expression"], independent_json["expression"]);
     }
 }
 
