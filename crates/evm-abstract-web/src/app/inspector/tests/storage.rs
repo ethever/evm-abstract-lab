@@ -5,6 +5,8 @@ use super::{account, frame, rendered_at, store, word};
 use egui::{Context, Event, Id, Pos2, Rect};
 use evm_abstract_protocol as api;
 
+mod table;
+
 struct Panel<'a> {
     report: &'a api::AnalysisReport,
     store: Option<&'a api::StoreSnapshot>,
@@ -15,6 +17,7 @@ struct Panel<'a> {
 
 struct Drawn {
     text: Vec<(String, Rect)>,
+    paint: Vec<(Rect, egui::epaint::TextShape)>,
     scroll_id: Id,
     widgets: usize,
 }
@@ -37,34 +40,55 @@ impl Drawn {
 
 impl Panel<'_> {
     fn draw(&self, context: &Context, time: &mut f64, events: Vec<Event>) -> Drawn {
+        self.draw_at(context, time, events, egui::vec2(520.0, self.height))
+    }
+
+    fn draw_at(
+        &self,
+        context: &Context,
+        time: &mut f64,
+        events: Vec<Event>,
+        size: egui::Vec2,
+    ) -> Drawn {
         let mut scroll_id = Id::NULL;
         let mut widgets = 0;
-        let text = rendered_at(
-            context,
-            time,
-            events,
-            egui::vec2(520.0, self.height),
-            |ui| {
-                scroll_id = ui.make_persistent_id(egui::IdSalt::new((
-                    "storage_slots",
-                    self.transient,
-                    self.address,
-                )));
-                stores::storage(ui, self.report, self.store, self.address, self.transient);
-                // Count actual widget creation, including offscreen widgets. A
-                // paint-only count could miss an accidental full-list loop.
-                widgets = context.viewport(|viewport| {
-                    viewport
-                        .this_pass
-                        .widgets
-                        .layers()
-                        .map(|(_, widgets)| widgets.len())
-                        .sum()
-                });
-            },
-        );
+        let mut paint = Vec::new();
+        let text = rendered_at(context, time, events, size, |ui| {
+            scroll_id = ui.make_persistent_id(egui::IdSalt::new((
+                "storage_slots",
+                self.transient,
+                self.address,
+            )));
+            stores::storage(ui, self.report, self.store, self.address, self.transient);
+            let mut layers = context.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
+            if !layers.contains(&ui.layer_id()) {
+                layers.push(ui.layer_id());
+            }
+            paint = context.graphics(|graphics| {
+                layers
+                    .into_iter()
+                    .filter_map(|layer| graphics.get(layer))
+                    .flat_map(|layer| layer.all_entries())
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) => Some((shape.clip_rect, text.clone())),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            // Count actual widget creation, including offscreen widgets. A
+            // paint-only count could miss an accidental full-list loop.
+            widgets = context.viewport(|viewport| {
+                viewport
+                    .this_pass
+                    .widgets
+                    .layers()
+                    .map(|(_, widgets)| widgets.len())
+                    .sum()
+            });
+        });
         Drawn {
             text,
+            paint,
             scroll_id,
             widgets,
         }

@@ -1648,6 +1648,356 @@ def inspector_controls_interactions(browser, url: str, output: Path):
     return results
 
 
+def storage_table_pixels(page, screenshot: bytes, region):
+    """Find the painted divider, header and cells, without reading egui state."""
+    # White glyphs are distinct from muted labels and the native border.
+    return page.evaluate("""async ({png,region}) => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+        const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
+        const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+        const scale=image.width/innerWidth,data=ctx.getImageData(0,0,c.width,c.height).data;
+        const [left,top,right,bottom]=region.map(n=>Math.round(n*scale));
+        const color=(x,y)=>Array.from(data.subarray((y*c.width+x)*4,(y*c.width+x)*4+3));
+        const border=(x,y)=>{const [r,g,b]=color(x,y);return r>=36&&r<=50&&g>=48&&g<=66&&b>=63&&b<=84;};
+        const ink=(x,y)=>{const [r,g,b]=color(x,y);return r>=128&&b>=g&&g>=r&&b-r<=35;};
+        const lines=[];
+        for(let x=Math.max(left,Math.round(40*scale));x<Math.min(right,Math.round(900*scale));x++) {
+            let begin=top;
+            for(let y=top;y<=bottom;y++) {
+                if(y<bottom&&border(x,y))continue;
+                if(y-begin>=65*scale)lines.push({x,top:begin,bottom:y,length:y-begin});
+                begin=y+1;
+            }
+        }
+        assert(lines.length>0,'missing painted storage column separator');
+        lines.sort((a,b)=>b.length-a.length);
+        const longest=lines[0];
+        const same=lines.filter(n=>Math.abs(n.x-longest.x)<=2*scale&&Math.abs(n.top-longest.top)<=2*scale);
+        const separator=same.reduce((sum,n)=>sum+n.x+0.5,0)/same.length/scale;
+        const tableTop=longest.top,tableBottom=longest.bottom;
+        const bands=[];
+        for(let y=tableTop;y<tableBottom;y++) {
+            let count=0;for(let x=left;x<right;x++)if(ink(x,y))count++;
+            if(count<5*scale)continue;
+            if(bands.length&&y-bands[bands.length-1][1]<=3*scale)bands[bands.length-1][1]=y+1;
+            else bands.push([y,y+1]);
+        }
+        async function cell(x0,x1,y0,y1) {
+            let minX=x1,minY=y1,maxX=-1,maxY=-1,count=0;
+            for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)if(ink(x,y)){
+                minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);count++;
+            }
+            if(!count)return null;
+            const width=maxX-minX+1,height=maxY-minY+1,mask=new Uint8Array(width*height);
+            const rgb=new Uint8Array(width*height*3);
+            for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++)if(ink(x,y))mask[(y-minY)*width+x-minX]=1;
+            for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++)rgb.set(color(x,y),((y-minY)*width+x-minX)*3);
+            const digest=await crypto.subtle.digest('SHA-256',mask);
+            return {bounds:[minX/scale,minY/scale,(maxX+1)/scale,(maxY+1)/scale],pixels:count,
+                mask_size:[width,height],rgb_raster:btoa(String.fromCharCode(...rgb)),
+                mask_sha256:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
+        }
+        const rows=[];
+        for(const [y0,y1] of bands)rows.push({band:[y0/scale,y1/scale],
+            slot:await cell(left,Math.floor(separator*scale)-1,Math.max(tableTop,y0-2*scale),Math.min(tableBottom,y1+2*scale)),
+            value:await cell(Math.ceil(separator*scale)+1,right,Math.max(tableTop,y0-2*scale),Math.min(tableBottom,y1+2*scale))});
+        return {separator,table_bounds:[left/scale,tableTop/scale,right/scale,tableBottom/scale],
+            header:rows[0],rows:rows.slice(1),divider_candidates:lines.length};
+        function assert(ok,message){if(!ok)throw new Error(message);}
+    }""", {"png":base64.b64encode(screenshot).decode(),"region":region})
+
+
+def storage_table_snapshot(page, canvas, output: Path, name: str, tab_bottom: float, count: int):
+    page.mouse.move(2,2)
+    settle_gesture(page)
+    png=canvas.screenshot(path=str(output/f"{name}.png"))
+    size=page.viewport_size
+    table=storage_table_pixels(page,png,(4,tab_bottom+52,size["width"]-24,size["height"]-30))
+    assert table["header"]["slot"] and table["header"]["value"], f"Slot/Value headers are missing: {table}"
+    assert len(table["rows"])==count, f"expected {count} body rows distinct from the header: {table}"
+    assert all(row["slot"] and row["value"] for row in table["rows"]), table
+    origins=[row["value"]["bounds"][0] for row in table["rows"]]
+    assert max(origins)-min(origins)<=1, f"Value origins depend on slot text length: {origins}"
+    assert all(row["slot"]["bounds"][2]<table["separator"] for row in table["rows"]), table
+    assert min(origins)>table["separator"], f"Slot labels invaded Value: {table}"
+    save_png_crop(page,png,table["table_bounds"],output/f"{name}-table.png")
+    return table
+
+
+def drag_storage_separator(page, table, target_x: float):
+    """Drag the separator located in the actual PNG, using browser pointer input."""
+    y=sum(table["header"]["band"])/2
+    page.mouse.move(table["separator"],y)
+    rendered_frame(page)
+    page.mouse.down()
+    page.mouse.move(target_x,y,steps=16)
+    rendered_frame(page)
+    page.mouse.up()
+    settle_gesture(page)
+
+
+def storage_ink_pixels(page, screenshot: bytes, region):
+    """Normalize text placement while retaining the exact reviewed glyph mask."""
+    return page.evaluate("""async ({png,region}) => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+        const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
+        const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+        const data=ctx.getImageData(0,0,c.width,c.height).data,scale=image.width/innerWidth;
+        const [left,top,right,bottom]=region.map(n=>Math.round(n*scale));
+        const ink=(x,y)=>{const i=(y*c.width+x)*4,r=data[i],g=data[i+1],b=data[i+2];
+            return r>=128&&b>=g&&g>=r&&b-r<=35;};
+        let minX=right,minY=bottom,maxX=-1,maxY=-1,count=0;
+        for(let y=top;y<bottom;y++)for(let x=left;x<right;x++)if(ink(x,y)){
+            minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);count++;
+        }
+        if(!count)return null;
+        const width=maxX-minX+1,height=maxY-minY+1,mask=new Uint8Array(width*height);
+        for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++)if(ink(x,y))mask[(y-minY)*width+x-minX]=1;
+        const digest=await crypto.subtle.digest('SHA-256',mask);
+        return {bounds:[minX/scale,minY/scale,(maxX+1)/scale,(maxY+1)/scale],pixels:count,
+            mask_size:[width,height],mask_sha256:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
+    }""", {"png":base64.b64encode(screenshot).decode(),"region":region})
+
+
+def storage_hover_snapshot(page, canvas, output: Path, name: str, cell):
+    left,top,right,bottom=cell["bounds"]
+    page.mouse.move((left+min(right,left+40))/2,(top+bottom)/2)
+    page.wait_for_timeout(1400)
+    rendered_frame(page)
+    png=canvas.screenshot(path=str(output/f"{name}.png"))
+    # Tooltips use the panel fill. Find their real rectangle below the native
+    # titlebar, rather than assuming a fixed placement beside the pointer.
+    bounds=page.evaluate("""async png => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+        const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
+        const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+        const data=ctx.getImageData(0,0,c.width,c.height).data,scale=image.width/innerWidth;
+        const runs=[];
+        for(let y=80*scale;y<c.height-30*scale;y++) {
+            let start=0;
+            for(let x=0;x<=c.width;x++) {
+                const i=(y*c.width+x)*4;
+                if(x<c.width&&data[i]===21&&data[i+1]===29&&data[i+2]===42)continue;
+                if(x-start>200*scale)runs.push([start,y,x,y+1]);
+                start=x+1;
+            }
+        }
+        if(!runs.length)return null;
+        const maxWidth=Math.max(...runs.map(r=>r[2]-r[0]));
+        const wide=runs.filter(r=>r[2]-r[0]>=maxWidth-8*scale);
+        return [Math.min(...wide.map(r=>r[0]))/scale,Math.min(...wide.map(r=>r[1]))/scale,
+            Math.max(...wide.map(r=>r[2]))/scale,Math.max(...wide.map(r=>r[3]))/scale];
+    }""",base64.b64encode(png).decode())
+    assert bounds, f"no rendered hover details for {name}"
+    metrics=text_pixels(page,png,bounds)
+    save_png_crop(page,png,bounds,output/f"{name}-tooltip.png")
+    return {"bounds":bounds,"text":metrics,"ink":storage_ink_pixels(page,png,bounds)}
+
+
+def assert_storage_cell_text(before, after):
+    """Compare every rendered RGB sample, allowing only compositor rounding."""
+    assert before["mask_size"]==after["mask_size"], (before["bounds"],after["bounds"])
+    first,last=base64.b64decode(before["rgb_raster"]),base64.b64decode(after["rgb_raster"])
+    maximum=max(abs(a-b) for a,b in zip(first,last,strict=True))
+    # Reviewed translated full-word PNGs vary by at most two intensity steps;
+    # a changed glyph fails at individual pixels, even at the end of a long word.
+    assert maximum<=2,f"rendered Value text changed: maximum RGB difference {maximum}"
+    return {"rgb_samples":len(first),"maximum_rgb_difference":maximum}
+
+
+def storage_pixel_report(value):
+    if isinstance(value,dict):
+        return {key:storage_pixel_report(item) for key,item in value.items() if key!="rgb_raster"}
+    if isinstance(value,list):
+        return [storage_pixel_report(item) for item in value]
+    return value
+
+
+def storage_separator_offset(table):
+    # Docked/maximized inspector margins differ. Compare the measured span
+    # from the same first monospace '0', instead of its absolute canvas x.
+    return table["separator"]-table["rows"][0]["slot"]["bounds"][0]
+
+
+def assert_storage_preference(table, expected):
+    actual=storage_separator_offset(table)
+    assert abs(actual-expected)<=1,{"expected_span":expected,"actual_span":actual,
+                                  "separator":table["separator"]}
+
+
+def storage_table_interactions(browser, url: str, output: Path):
+    """Real WASM table resizing, clipping, hover details and retained preferences."""
+    page=browser.new_page(viewport={"width":1440,"height":1000})
+    observe_webgpu(page)
+    errors,posts=[],[]
+    page.on("pageerror",lambda error:errors.append(str(error)))
+    page.on("request",lambda request:posts.append(request.url)
+            if request.method=="POST" and request.url.endswith("/api/tasks") else None)
+    page.goto(url,wait_until="networkidle")
+    status=page.locator("#analysis-status")
+    expect(status).to_contain_text("Ready:",timeout=60000)
+    canvas=page.locator("#evm-canvas")
+    slots=[0,0xf,0x1234,int("ab"*32,16)]
+
+    def fixture(revision):
+        expected={kind:{} for kind in ["storage","transient"]}
+        instructions=[]
+        for index,slot in enumerate(slots):
+            key=f"7f{slot:064x}" if index==3 else f"61{slot:04x}"
+            for kind,opcode,base in [("storage","55",0x3100),("transient","5d",0x4200)]:
+                value=int(("cd" if kind=="storage" else "ef")*32,16) if index==3 else base+revision*16+index
+                expected[kind][hex(slot)]=hex(value)
+                push=f"7f{value:064x}" if index==3 else f"61{value:04x}"
+                instructions.append(push+key+opcode)
+        return "".join(instructions)+"00",expected
+
+    def submit_fixture(revision):
+        code,expected=fixture(revision)
+        reply=submit_bytecode(page,canvas,code,output/f"storage-table-input-{revision}.png")
+        assert reply.status==200,reply.json()
+        report=reply.json()["result"]["Ok"]
+        assert report["status"]=="Converged" and len(report["states"])==1
+        machine=report["states"][0]["exit"]
+        account=next(account for account in report["stores"][machine["store"]]["accounts"]
+                     if account["address"]==machine["frames"][0]["storage_address"])
+        for kind in expected:
+            assert {entry["slot"]:entry["value"]["constants"] for entry in account[kind]}=={
+                slot:[value] for slot,value in expected[kind].items()},account[kind]
+        (output/f"storage-table-analysis-{revision}.json").write_text(json.dumps(report,indent=2)+"\n")
+        return expected
+
+    expected=submit_fixture(0)
+    canvas.click(position={"x":720,"y":600})
+    page.keyboard.press("3")
+    tab=inspector_frame_tab(page,canvas)
+    page.mouse.move(720,tab[1]-3)
+    page.mouse.down()
+    page.mouse.move(720,350,steps=16)
+    page.mouse.up()
+    tab=inspector_frame_tab(page,canvas)
+    toolbar_y=sum(tab[1::2])/2
+    results={}
+    preferences={}
+    for title,kind in [("Storage","storage"),("Transient","transient")]:
+        select_inspector_tab(page,canvas,title,toolbar_y)
+        canvas.click(position={"x":145,"y":tab[3]+14})
+        expect(status).to_contain_text("Observed exit")
+        initial=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-initial",tab[3],len(slots))
+        if kind=="transient":
+            assert initial["rows"][0]["value"]["mask_sha256"]!=results["storage"]["initial"]["rows"][0]["value"]["mask_sha256"], "Transient rendered the persistent value"
+        drag_storage_separator(page,initial,initial["separator"]+320)
+        wide=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-wide",tab[3],len(slots))
+        assert wide["separator"]-initial["separator"]>=280, (initial,wide)
+        assert wide["rows"][-1]["slot"]["bounds"][2]-wide["rows"][-1]["slot"]["bounds"][0]>300,wide
+        target=initial["separator"]-50 if kind=="storage" else initial["separator"]-30
+        drag_storage_separator(page,wide,target)
+        narrow=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-narrow",tab[3],len(slots))
+        assert abs(narrow["separator"]-target)<=3,(target,narrow)
+        assert narrow["separator"]<initial["separator"]-20,(initial,narrow)
+        assert wide["rows"][-1]["slot"]["bounds"][2]-narrow["rows"][-1]["slot"]["bounds"][2]>250,(wide,narrow)
+        value_comparisons=[assert_storage_cell_text(first["value"],last["value"])
+            for first,last in zip(initial["rows"],narrow["rows"],strict=True)]
+        preferences[kind]=storage_separator_offset(narrow)
+        slot_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-slot-hover",narrow["rows"][-1]["slot"])
+        # Reviewed full 0x + 32-byte key, naturally wrapped by egui's 500pt
+        # tooltip width. An ellipsis or omitted tail changes this exact mask.
+        assert len(slot_hover["text"]["rows"])==2 and slot_hover["ink"]["mask_sha256"]=="490736e2e9cb98e2e89338078517146ca37799dcd3ec577f9b082f4b2c223ea9",slot_hover
+        page.mouse.move(2,2)
+        settle_gesture(page)
+        value_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-value-hover",narrow["rows"][-1]["value"])
+        assert len(value_hover["text"]["rows"])==8 and value_hover["text"]["muted_pixels"]>100,value_hover
+        select_inspector_tab(page,canvas,"Frame",toolbar_y)
+        frame=inspector_frame_tab(page,canvas)
+        page.mouse.move(720,frame[1]-3)
+        page.mouse.down()
+        page.mouse.move(720,680,steps=16)
+        page.mouse.up()
+        small_tab=inspector_frame_tab(page,canvas)
+        small_toolbar_y=sum(small_tab[1::2])/2
+        select_inspector_tab(page,canvas,title,small_toolbar_y)
+        canvas.click(position={"x":120,"y":small_tab[3]+80})
+        page.mouse.move(80,small_tab[3]+115)
+        page.mouse.wheel(0,600)
+        settle_gesture(page)
+        page.mouse.move(2,2)
+        scrolled_png=canvas.screenshot(path=str(output/f"storage-table-{kind}-scrolled.png"))
+        scrolled=storage_table_pixels(page,scrolled_png,
+            (4,small_tab[3]+52,1416,970))
+        assert_storage_preference(scrolled,preferences[kind])
+        scrolled_value=assert_storage_cell_text(narrow["rows"][-1]["value"],scrolled["rows"][-1]["value"])
+        page.mouse.move(80,small_tab[3]+115)
+        page.mouse.wheel(0,-600)
+        settle_gesture(page)
+        canvas.click(position={"x":120,"y":small_tab[3]+80})
+        select_inspector_tab(page,canvas,"Frame",small_toolbar_y)
+        frame=inspector_frame_tab(page,canvas)
+        page.mouse.move(720,frame[1]-3)
+        page.mouse.down()
+        page.mouse.move(720,350,steps=16)
+        page.mouse.up()
+        tab=inspector_frame_tab(page,canvas)
+        toolbar_y=sum(tab[1::2])/2
+        select_inspector_tab(page,canvas,title,toolbar_y)
+        scroll_returned=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-scroll-return",tab[3],len(slots))
+        assert_storage_preference(scroll_returned,preferences[kind])
+        results[kind]={"expected":expected[kind],"initial":initial,"wide":wide,"narrow":narrow,
+                       "slot_hover":slot_hover,"value_hover":value_hover,"scrolled":scrolled,"scroll_return":scroll_returned}
+        results[kind].update(value_comparisons=value_comparisons,scrolled_value=scrolled_value)
+
+    # Returning from another inspector tab, workspace views, hidden/maximized
+    # inspector and a new report must preserve each independently dragged width.
+    for title,kind in [("Storage","storage"),("Transient","transient")]:
+        select_inspector_tab(page,canvas,"Memory",toolbar_y)
+        select_inspector_tab(page,canvas,title,toolbar_y)
+        returned=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-tab-return",tab[3],len(slots))
+        assert_storage_preference(returned,preferences[kind])
+        for key in ["0","1","2","3"]:
+            page.keyboard.press(key)
+            rendered_frame(page)
+        viewed=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-view-return",tab[3],len(slots))
+        assert_storage_preference(viewed,preferences[kind])
+        page.keyboard.press("Control+j")
+        expect(status).to_contain_text("Inspector hidden")
+        page.keyboard.press("Control+j")
+        expect(status).to_contain_text(f"Inspector: {title}")
+        hidden=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-hidden-return",tab[3],len(slots))
+        assert_storage_preference(hidden,preferences[kind])
+        select_inspector_tab(page,canvas,"Frame",toolbar_y)
+        frame=inspector_frame_tab(page,canvas)
+        inspector_title_action(page,canvas,"Maximize",frame)
+        maximized_tab=inspector_frame_tab(page,canvas)
+        select_inspector_tab(page,canvas,title,sum(maximized_tab[1::2])/2)
+        maximized=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-maximized",maximized_tab[3],len(slots))
+        assert_storage_preference(maximized,preferences[kind])
+        select_inspector_tab(page,canvas,"Frame",sum(maximized_tab[1::2])/2)
+        inspector_title_action(page,canvas,"Restore",inspector_frame_tab(page,canvas))
+        tab=inspector_frame_tab(page,canvas)
+        toolbar_y=sum(tab[1::2])/2
+        select_inspector_tab(page,canvas,title,toolbar_y)
+        restored=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-restored",tab[3],len(slots))
+        assert_storage_preference(restored,preferences[kind])
+        results[kind].update(tab_return=returned,view_return=viewed,hidden_return=hidden,
+                             maximized=maximized,restored=restored)
+    assert len(posts)==2,"table inspection unexpectedly reran analysis"
+    expected_new=submit_fixture(1)
+    select_inspector_tab(page,canvas,"Frame",toolbar_y)
+    tab=inspector_frame_tab(page,canvas)
+    for title,kind in [("Storage","storage"),("Transient","transient")]:
+        select_inspector_tab(page,canvas,title,toolbar_y)
+        canvas.click(position={"x":145,"y":tab[3]+14})
+        expect(status).to_contain_text("Observed exit")
+        updated=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-new-report",tab[3],len(slots))
+        assert_storage_preference(updated,preferences[kind])
+        assert updated["rows"][0]["value"]["mask_sha256"]!=results[kind]["narrow"]["rows"][0]["value"]["mask_sha256"], "new report retained stale values"
+        results[kind].update(new_report=updated,expected_new=expected_new[kind])
+    assert len(posts)==3,"expected startup, fixture and one controlled new report"
+    assert not errors,errors
+    result=storage_pixel_report({"stores":results,"analysis_submissions":len(posts),"renderer":webgpu_evidence(page)})
+    (output/"storage-table-report.json").write_text(json.dumps(result,indent=2)+"\n")
+    page.close()
+    return result
+
+
 def storage_scroll_interactions(browser, url: str, output: Path):
     page = browser.new_page(viewport={"width": 1440, "height": 1000})
     observe_webgpu(page)
@@ -1681,12 +2031,13 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     tab = inspector_frame_tab(page, canvas)
     toolbar_y = (tab[1] + tab[3]) / 2
     evidence = {}
-    # Decoded RGBA hashes of the reviewed 111x20 last-row crops at DPR1.
-    # Packaged monospace glyphs show "0x5f {0x105f}" / "0x5f {0x205f}";
-    # exact pixels catch an off-by-one final slot in the virtualized list.
-    last_row_hashes = {
-        "storage": "ed734a514fdb898c8b90bcbec0861ec87571bddf37e578613d14cab8d94e8f35",
-        "transient": "6aed5416e54b595ad512c579011e8ef7c6bf9a8e51d8eeee75ec7d3124e7a137",
+    # Exact glyph masks from the reviewed DPR1 "0x5f" and "{0x105f}" /
+    # "{0x205f}" crops. Separate cells preserve the old exact-text acceptance
+    # despite the adjustable gap, without allowing an off-by-one final slot.
+    last_cell_hashes = {
+        "slot": "1f94c5cbc9d80be833ac49b7540e5baa49cd503a8144a920697946262ad7e2d8",
+        "storage": "fd1ab3bd3503fbd583c7f1443389c9cd9c436bfc915f8bb5ae4d0b187b5a5f22",
+        "transient": "01a9f16f529282cffa2f49e72b9c1686e9ca3d452e2ce788636eaa5c83592176",
     }
     for title, kind in [("Storage", "storage"), ("Transient", "transient")]:
         select_inspector_tab(page, canvas, title, toolbar_y)
@@ -1695,10 +2046,16 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         page.mouse.move(2, 2)
         settle_gesture(page)
         collapsed = canvas.screenshot(path=str(output / f"{kind}-facts-collapsed.png"))
+        table = storage_table_pixels(page, collapsed,
+            (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
+        assert table["header"]["slot"] and table["header"]["value"],table
         # The original 20-point native baseline gives facts a 23-point stride;
         # include Pending destruction while stopping before Unspecified slots.
         facts_region = (145, tab[3] + 92, 650, tab[3] + 282)
-        collapsed_facts = text_pixels(page, collapsed, facts_region)
+        # Value now occupies the former blank facts crop below the table
+        # header. The collapsed prefix must be empty above that measured table.
+        collapsed_facts_region = (145,tab[3]+92,650,table["table_bounds"][1])
+        collapsed_facts = text_pixels(page, collapsed, collapsed_facts_region)
         assert not collapsed_facts["rows"], "account facts were already expanded before the header click"
         canvas.click(position={"x": 120, "y": tab[3] + 80})
         page.mouse.move(2, 2)
@@ -1720,12 +2077,20 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         scrolled_prefix = text_pixels(page, settled, prefix_region)
         assert prefix["hash"] != scrolled_prefix["hash"], "wheel remained trapped inside facts; account prefix did not move"
         save_png_crop(page, settled, prefix_region, output / f"{kind}-prefix-scrolled.png")
-        last_row_region = (4, page.viewport_size["height"] - 50,
-                           115, page.viewport_size["height"] - 30)
+        scrolled_table = storage_table_pixels(page, settled,
+            (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
+        assert abs(scrolled_table["separator"]-table["separator"])<=1,"scrolling reset the Slot width"
+        final_cells=scrolled_table["rows"][-1]
+        last_row_region = (4,final_cells["band"][0]-3,
+                           scrolled_table["separator"]+100,final_cells["band"][1]+3)
         last_row = text_pixels(page, settled, last_row_region)
         save_png_crop(page, settled, last_row_region, output / f"{kind}-last-row.png")
         assert len(last_row["rows"]) == 1 and last_row["white_pixels"] > 100, "last slot row was clipped or blank"
-        assert last_row["hash"] == last_row_hashes[kind], f"last rendered {title} slot/value changed: {last_row}"
+        for cell,expected_hash in [("slot",last_cell_hashes["slot"]),("value",last_cell_hashes[kind])]:
+            actual=final_cells[cell]
+            assert actual and actual["mask_sha256"]==expected_hash,f"last rendered {title} {cell} changed: {actual}"
+            left,top,right,bottom=actual["bounds"]
+            save_png_crop(page,settled,(left-1,top-1,right+1,bottom+1),output/f"{kind}-last-{cell}.png")
         page.mouse.move(80, tab[3] + 115)
         page.mouse.wheel(0, -6000)
         settle_gesture(page)
@@ -1736,17 +2101,19 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         save_png_crop(page, returned, prefix_region, output / f"{kind}-prefix-returned.png")
         evidence[kind] = {"entries": count, "expected_last_slot": hex(count - 1),
             "expected_last_value": account[kind][-1]["value"]["constants"],
-            "expected_last_row_rgba_sha256": last_row_hashes[kind],
+            "expected_last_cell_mask_sha256": {"slot":last_cell_hashes["slot"],"value":last_cell_hashes[kind]},
             "facts_region": facts_region, "collapsed_facts": collapsed_facts,
+            "collapsed_facts_region":collapsed_facts_region,
             "expanded_facts": expanded_facts, "last_row_region": last_row_region, "last_row": last_row,
+            "table":table,"scrolled_table":scrolled_table,"last_cells":final_cells,
             "prefix_region": prefix_region, "prefix": prefix,
             "scrolled_prefix": scrolled_prefix, "returned_prefix": returned_prefix,
             "expanded_screenshot": f"{kind}-facts-expanded.png",
             "scrolled_screenshot": f"{kind}-last-slots.png"}
     assert len(posts) == 2, "storage inspection reran analysis"
     assert not errors, errors
-    result = {"stores": evidence, "analysis_submissions": len(posts),
-        "renderer": webgpu_evidence(page)}
+    result = storage_pixel_report({"stores": evidence, "analysis_submissions": len(posts),
+        "renderer": webgpu_evidence(page)})
     (output / "storage-scroll-report.json").write_text(json.dumps(result, indent=2) + "\n")
     page.close()
     return result
@@ -3487,7 +3854,7 @@ def main() -> None:
     parser.add_argument("--flow-only",action="store_true",help="Run selected-edge motion and compact-workspace SSA acceptance cases")
     parser.add_argument("--ssa-details-only",action="store_true",help="Run shared SSA reading mode and source-PC reveal acceptance cases")
     parser.add_argument("--ssa-values-only",action="store_true",help="Run normalized SSA and scoped value inspector acceptance")
-    parser.add_argument("--inspector-controls-only",action="store_true",help="Run inspector sizing and platform shortcut acceptance")
+    parser.add_argument("--inspector-controls-only",action="store_true",help="Run inspector controls, resizable storage tables and whole-panel scrolling acceptance")
     parser.add_argument("--termination-only",action="store_true",help="Run semantic ending styles and existing selected-node flow/SSA acceptance")
     parser.add_argument("--timings-only",action="store_true",help="Run queued analysis, phase timing and delayed-result acceptance")
     args = parser.parse_args()
@@ -3501,6 +3868,7 @@ def main() -> None:
                 return
             if args.inspector_controls_only:
                 inspector_controls_interactions(browser,url,args.output)
+                storage_table_interactions(browser,url,args.output)
                 storage_scroll_interactions(browser,url,args.output)
                 browser.close()
                 return
@@ -3647,6 +4015,7 @@ def main() -> None:
             ssa_details = ssa_details_interactions(browser, url, args.output)
             ssa_values = ssa_values_interactions(browser, url, args.output)
             inspector_controls = inspector_controls_interactions(browser, url, args.output)
+            storage_table = storage_table_interactions(browser, url, args.output)
             storage_scroll = storage_scroll_interactions(browser, url, args.output)
             termination = termination_interactions(browser, url, args)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
@@ -3674,6 +4043,7 @@ def main() -> None:
                 "ssa_details": ssa_details,
                 "ssa_values": ssa_values,
                 "inspector_controls": inspector_controls,
+                "storage_table": storage_table,
                 "storage_scroll": storage_scroll,
                 "termination": termination,
                 "block_overview": overview,
