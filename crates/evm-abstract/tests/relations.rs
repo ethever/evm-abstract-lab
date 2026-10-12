@@ -473,34 +473,49 @@ fn a_child_callvalue_is_not_the_parent_callvalue_variable() {
     ));
 }
 
-fn numeric_json(value: &mut Json) {
+fn alpha_json(value: &mut Json, leaves: &mut BTreeMap<(String, u64), u64>) {
     match value {
-        Json::Array(values) => values.iter_mut().for_each(numeric_json),
-        Json::Object(fields) => {
-            // Compare numeric coverage and world effects, not diagnostic source
-            // identities or expression arena numbering from separate analyses.
-            if fields.contains_key("known_bits") || fields.contains_key("Constants") {
-                fields.retain(|name, _| {
-                    matches!(
-                        name.as_str(),
-                        "Constants" | "known_bits" | "interval" | "congruence" | "nonzero"
-                    )
-                });
+        Json::Array(values) => {
+            for value in values {
+                alpha_json(value, leaves);
             }
-            fields.values_mut().for_each(numeric_json);
+        }
+        Json::Object(fields) => {
+            // Preserve every numeric/provenance field and all symbolic structure.
+            // Only process-private Fresh names differ between independent runs.
+            if let Some(scope) = fields
+                .get("identity_scope")
+                .and_then(Json::as_str)
+                .map(str::to_owned)
+            {
+                for node in fields.get_mut("nodes").unwrap().as_array_mut().unwrap() {
+                    if let Some(token) = node.get_mut("Fresh") {
+                        let next = u64::try_from(leaves.len()).unwrap();
+                        let renamed = *leaves
+                            .entry((scope.clone(), token.as_u64().unwrap()))
+                            .or_insert(next);
+                        *token = Json::from(renamed);
+                    }
+                }
+            }
+            for value in fields.values_mut() {
+                alpha_json(value, leaves);
+            }
         }
         _ => {}
     }
 }
 
 fn outcome_relations(result: &WorldAnalysis) -> BTreeSet<String> {
+    // One mapping covers every graph and outcome, preserving shared leaves.
+    let mut leaves = BTreeMap::new();
     result
         .outcomes()
         .iter()
         .map(|outcome| {
             let mut value =
                 serde_json::to_value((outcome.kind, &outcome.data, &outcome.store)).unwrap();
-            numeric_json(&mut value);
+            alpha_json(&mut value, &mut leaves);
             serde_json::to_string(&value).unwrap()
         })
         .collect()
@@ -508,6 +523,62 @@ fn outcome_relations(result: &WorldAnalysis) -> BTreeSet<String> {
 
 #[test]
 fn summary_reuse_preserves_parent_constraints_and_numeric_outcome_parity() {
+    use evm_abstract::domain::symbolic::{ExprId, ExprLimits, SlotStateId, SourceId};
+    let canonical = |mut value: Json| {
+        alpha_json(&mut value, &mut BTreeMap::new());
+        value
+    };
+    let a = ExprId::fresh().unwrap();
+    let b = ExprId::fresh().unwrap();
+    let c = ExprId::fresh().unwrap();
+    let d = ExprId::fresh().unwrap();
+    assert_eq!(
+        canonical(serde_json::to_value([&a, &a, &b]).unwrap()),
+        canonical(serde_json::to_value([&c, &c, &d]).unwrap())
+    );
+    assert_ne!(
+        canonical(serde_json::to_value([&a, &a, &b]).unwrap()),
+        canonical(serde_json::to_value([&c, &d, &d]).unwrap())
+    );
+    let bounded = AbstractValue::unsigned_range(U256::from(1), U256::from(3))
+        .unwrap()
+        .with_expression(a.clone());
+    let expanded = AbstractValue::unsigned_range(U256::from(1), U256::from(4))
+        .unwrap()
+        .with_expression(c.clone());
+    assert_ne!(
+        canonical(serde_json::to_value(&bounded).unwrap()),
+        canonical(serde_json::to_value(&expanded).unwrap())
+    );
+    let sourced = AbstractValue::constant(U256::from(1)).with_expression(a.clone());
+    assert_ne!(
+        canonical(serde_json::to_value(&sourced).unwrap()),
+        canonical(
+            serde_json::to_value(
+                sourced
+                    .clone()
+                    .with_origin(evm_abstract::domain::provenance::Origin::Storage)
+            )
+            .unwrap()
+        )
+    );
+    let caller = evm_abstract::domain::identity::Symbol::Caller;
+    assert_ne!(
+        canonical(serde_json::to_value(ExprId::input(1, caller)).unwrap()),
+        canonical(serde_json::to_value(ExprId::input(2, caller)).unwrap())
+    );
+    let read = |namespace| {
+        ExprId::slot_read(
+            SlotStateId::input(SourceId::scoped(a.clone(), namespace)),
+            ExprId::constant(U256::ZERO),
+            ExprLimits::default(),
+        )
+        .unwrap()
+    };
+    assert_ne!(
+        canonical(serde_json::to_value(read(U256::from(1))).unwrap()),
+        canonical(serde_json::to_value(read(U256::from(2))).unwrap())
+    );
     let mut root = Assembly::default();
     root.op(opcode::CALLER)
         .guard_eq(1, "calls")
@@ -535,6 +606,7 @@ fn summary_reuse_preserves_parent_constraints_and_numeric_outcome_parity() {
     let child = child.finish();
     let (world, entry) = world(&root.code, &child.code);
     let mut outcomes = Vec::new();
+    let mut fixed_inputs = Vec::new();
     for enabled in [true, false] {
         let result = analysis::analyze_world(
             world.clone(),
@@ -573,8 +645,38 @@ fn summary_reuse_preserves_parent_constraints_and_numeric_outcome_parity() {
         } else {
             assert_eq!(result.summary_stats().hits, 0);
         }
+        let initial = &result.states()[0].entry.call_stack.root().state;
+        fixed_inputs.push(
+            serde_json::to_value((
+                &initial.calldata,
+                initial.call_value.expression(),
+                &initial.saved_store,
+            ))
+            .unwrap(),
+        );
+        for state in result.states() {
+            let root = &state.entry.call_stack.root().state;
+            assert_eq!(root.calldata.state_root(), initial.calldata.state_root());
+            assert_eq!(
+                root.calldata.len().expression(),
+                initial.calldata.len().expression()
+            );
+            assert_eq!(
+                root.call_value.expression(),
+                initial.call_value.expression()
+            );
+        }
+        for outcome in result.outcomes() {
+            for owner in world.accounts().keys() {
+                assert_eq!(
+                    outcome.store.slot_root(*owner, false),
+                    initial.saved_store.state().slot_root(*owner, false)
+                );
+            }
+        }
         outcomes.push(outcome_relations(&result));
     }
+    assert_eq!(fixed_inputs[0], fixed_inputs[1]);
     assert_eq!(outcomes[0], outcomes[1]);
 }
 
