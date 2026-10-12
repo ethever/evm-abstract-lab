@@ -17,6 +17,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+mod join;
+
 /// Read-only byte state node. Dependencies always reference earlier snapshots.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum ByteStateKind {
@@ -414,6 +416,12 @@ impl ByteStateId {
             let selected = if value == U256::ZERO { other } else { self };
             state::check(selected.nodes(), selected.depth(), limits)?;
             return Ok(selected.clone());
+        }
+        state::check(self.nodes(), self.depth(), limits)?;
+        state::check(other.nodes(), other.depth(), limits)?;
+        state::check(selector.nodes(), selector.depth(), limits)?;
+        if let Some(joined) = self.join_update(other, selector.clone(), limits)? {
+            return Ok(joined);
         }
         Self::build(
             ByteStateKind::Ite {
