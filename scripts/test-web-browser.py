@@ -2556,8 +2556,30 @@ def timing_interactions(browser, args):
             expect(status).to_contain_text("Inspector: Timing")
             canvas.screenshot(path=str(args.output / "timing-completed.png"))
             page.unroute_all(behavior="wait")
+            rpc.release.clear()
+            rpc.started.clear()
+            rpc.disconnected.clear()
+            cancelled = submit_rpc(page, canvas, rpc, args.output, "timing-cancel", 0, providers)
+            cancelled_id = cancelled.json()["result"]["Ok"]["id"]
+            assert rpc.started.wait(5), "cancelled task never entered its own real RPC read"
+            expect(status).to_contain_text("Elapsed:")
+            with page.expect_response(lambda response: response.request.method == "DELETE"
+                                      and response.url.endswith(f"/api/tasks/{cancelled_id}")):
+                canvas.click(position={"x": 30, "y": 988})
+            expect(status).to_contain_text("Cancelled", timeout=22000)
+            cancellation_wait = visible_seconds(page, "Total wait")
+            cancelled_backend = wait_for_job(page, url, cancelled_id, lambda job: job["state"] == "Cancelled")
+            page.wait_for_timeout(300)
+            assert visible_seconds(page, "Total wait") == cancellation_wait
+            assert wait_for_job(page, url, cancelled_id, lambda job: job["state"] == "Cancelled")["timings"] == cancelled_backend["timings"]
+            assert rpc.disconnected.wait(5), "cancelled acquisition did not close its connection"
+            canvas.screenshot(path=str(args.output / "timing-cancelled.png"))
             # A typed worker failure freezes the new task, while the successful
             # report still retains its original backend timing evidence.
+            open_input(page)
+            canvas.click(position={"x": 400, "y": 386})  # Bytecode source
+            page.keyboard.press("Escape")
+            settle_gesture(page)
             failed = submit_bytecode(page, canvas, "not-bytecode", args.output / "timing-error-input.png")
             assert failed.json()["result"]["Err"]["code"] == "InvalidBytecode"
             failure_wait = visible_seconds(page, "Total wait")
@@ -2570,6 +2592,7 @@ def timing_interactions(browser, args):
                       "running_samples": [running["timings"], running_later["timings"]],
                       "completed": backend, "rpc_rounds": report["acquisition"]["rounds"],
                       "user_total_s": total, "frontend_preparation_s": preparation,
+                      "cancellation_wait_s": cancellation_wait, "cancelled_backend": cancelled_backend["timings"],
                       "failure_wait_s": failure_wait, "renderer": webgpu_evidence(page)}
             (args.output / "timing-acceptance-report.json").write_text(json.dumps(result, indent=2) + "\n")
             page.close()

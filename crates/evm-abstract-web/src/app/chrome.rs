@@ -78,6 +78,7 @@ impl Workspace {
         // shrink after the graph has fitted its first canvas.
         Density::Regular.scope(ui, |ui| {
             ui.horizontal(|ui| {
+                if self.task.cancellable() && controls::action(ui, "Cancel", Density::Regular).clicked() {command=self.task.cancel();}
                 // Reserve elapsed time before truncating status/progress. It
                 // remains visible on narrow screens and during disconnection.
                 if let Some(wait) = self.task.wait.summary(super::timing::now()) {
@@ -92,7 +93,6 @@ impl Workspace {
                     }
                     response.on_hover_text(self.accessible_timing());
                 }
-                if self.task.cancellable() && controls::action(ui, "Cancel", Density::Regular).clicked() {command=self.task.cancel();}
                 if self.task.busy() || self.preparing_current_view() {
                     ui.spinner();
                     ui.add(egui::Label::new(RichText::new(self.task_label()).color(palette::ACCENT)).truncate()).on_hover_text(self.task_label());
