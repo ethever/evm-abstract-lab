@@ -274,7 +274,34 @@ fn calldata_is_one_typed_input_and_empty_bytes_differ_from_omission() {
         };
         let environment = args.evm.environment().unwrap();
         match input {
-            None => assert_eq!(environment.calldata, ByteArray::unknown()),
+            None => {
+                let calldata = environment.calldata;
+                assert_eq!(
+                    calldata.len().numeric(),
+                    ByteArray::unknown().len().numeric()
+                );
+                assert_eq!(
+                    calldata.default_byte().numeric(),
+                    ByteArray::unknown().default_byte().numeric()
+                );
+                assert_eq!(
+                    calldata.len().provenance(),
+                    ByteArray::unknown().len().provenance()
+                );
+                assert_eq!(
+                    calldata.default_byte().provenance(),
+                    ByteArray::unknown().default_byte().provenance()
+                );
+                assert!(calldata.stored_bytes().next().is_none());
+                let clone = calldata.clone();
+                assert_eq!(clone, calldata);
+                assert_eq!(clone.state_root(), calldata.state_root());
+                assert_ne!(
+                    calldata.state_root(),
+                    ByteArray::unknown().state_root(),
+                    "independent unknown input must have its own source"
+                );
+            }
             Some("0x") => assert_eq!(environment.calldata, ByteArray::empty()),
             Some(_) => assert_eq!(environment.calldata, ByteArray::exact(&[42])),
         }

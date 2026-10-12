@@ -504,6 +504,8 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
     other.storage = report.accounts[0].storage.clone();
     report.accounts.push(other);
     report.stores = vec![api::StoreSnapshot {
+        storage_facts: vec![],
+        transient_facts: vec![],
         accounts: report.accounts.clone(),
         ..super::store()
     }];
@@ -511,12 +513,14 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
         .map(|state| api::StateDetails {
             state,
             entry: api::MachineSnapshot {
+                path: evm_abstract_protocol::PathRef { node: 4 },
                 frames: vec![frame(0, 0)],
                 store: 0,
             },
             exit: None,
         })
         .collect();
+    report.validate().unwrap();
     let mut workbench = Workbench {
         context: context(),
         workspace: crate::tests::ready(),
@@ -527,6 +531,10 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
     workbench.workspace.receive(Ok(api::AnalyzeReply {
         result: Ok(report.clone()),
     }));
+    assert!(
+        workbench.workspace.report.is_some(),
+        "valid references must enter the workspace"
+    );
     workbench.workspace.account = Some(report.accounts[0].address.clone());
     workbench.workspace.selection.state = Some(0);
     workbench.workspace.inspector.tab = Tab::Storage;

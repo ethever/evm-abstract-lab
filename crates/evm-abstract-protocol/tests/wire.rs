@@ -165,7 +165,7 @@ fn misspelled_duplicate_missing_unknown_and_multi_variant_inputs_are_rejected() 
 }
 #[test]
 fn nullable_fields_remain_required_and_duplicate_null_is_rejected() {
-    let valid = r#"{"from":null,"pc":null,"kind":"Memory","reason":"Memory","detail":"bounded"}"#;
+    let valid = r#"{"from":null,"pc":null,"kind":"Memory","reason":"Memory","detail":"bounded","range":null,"payload":null}"#;
     let decoded: Frontier = serde_json::from_str(valid).unwrap();
     assert_eq!(decoded.from, None);
     for invalid in [
@@ -199,6 +199,8 @@ fn relational_failures_preserve_fact_coordinates_and_solver_outcomes() {
         }),
     ] {
         roundtrip(Frontier {
+            range: None,
+            payload: None,
             from: Some(12),
             pc: Some(34),
             kind: FrontierKind::Relations,
@@ -256,7 +258,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 8);
+    assert_eq!(SCHEMA_VERSION, 9);
 }
 
 #[test]
@@ -289,6 +291,7 @@ fn invalid_opcode_evidence_roundtrips_instruction_and_delegation_sources() {
         }),
     ] {
         roundtrip(Diagnostic {
+            precision: None,
             state: 123,
             pc: 0,
             kind: DiagnosticKind::InvalidOpcode,
@@ -298,6 +301,7 @@ fn invalid_opcode_evidence_roundtrips_instruction_and_delegation_sources() {
         });
     }
     roundtrip(Diagnostic {
+        precision: None,
         state: 456,
         pc: 1,
         kind: DiagnosticKind::InvalidJump,
@@ -337,4 +341,44 @@ fn invalid_instruction_wire_requires_original_byte_and_typed_cause() {
             .is_err(),
         "schema 7 diagnostics are rejected by the schema 8 decoder"
     );
+}
+
+#[test]
+fn mixed_graph_checks_sorts_and_backward_dependencies() {
+    let graph = SymbolicGraph {
+        nodes: vec![
+            Expression::BytesZero,
+            Expression::Constant("0x0".into()),
+            Expression::View(ByteView {
+                state: ByteStateRef { node: 0 },
+                offset: ExpressionRef { node: 1 },
+                length: ExpressionRef { node: 1 },
+            }),
+            Expression::WordRead(WordRead {
+                view: ByteViewRef { node: 2 },
+                offset: ExpressionRef { node: 1 },
+            }),
+        ],
+    };
+    graph.validate().unwrap();
+    roundtrip(graph.clone());
+    let mut wrong = graph.clone();
+    wrong.nodes[3] = Expression::WordRead(WordRead {
+        view: ByteViewRef { node: 0 },
+        offset: ExpressionRef { node: 1 },
+    });
+    assert_eq!(
+        wrong.validate().unwrap_err().actual,
+        Some(SymbolicSort::Bytes)
+    );
+    wrong.nodes[3] = Expression::WordRead(WordRead {
+        view: ByteViewRef { node: 3 },
+        offset: ExpressionRef { node: 1 },
+    });
+    assert!(wrong.validate().unwrap_err().forward);
+    wrong.nodes[3] = Expression::WordRead(WordRead {
+        view: ByteViewRef { node: usize::MAX },
+        offset: ExpressionRef { node: 1 },
+    });
+    assert_eq!(wrong.validate().unwrap_err().actual, None);
 }

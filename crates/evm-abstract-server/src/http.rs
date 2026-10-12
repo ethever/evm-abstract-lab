@@ -2,6 +2,7 @@
 //! Parsing, framing, keepalive and response transport belong to the framework.
 //! Task admission, origin policy and canonical asset paths are application rules.
 
+mod export;
 mod tasks;
 
 use axum::{
@@ -362,6 +363,7 @@ fn error_status(code: ApiErrorCode) -> u16 {
         ApiErrorCode::QueueFull => 429,
         ApiErrorCode::Cancelled => 410,
         ApiErrorCode::WorkerFailed => 503,
+        ApiErrorCode::Export => 422,
     }
 }
 
@@ -374,8 +376,8 @@ fn error_response(error: ApiError) -> Response {
 }
 
 fn json_response<T: serde::Serialize>(status: u16, value: &T) -> Response {
-    match serde_json::to_vec(value) {
-        Ok(body) => response(status, "application/json; charset=utf-8", body),
+    match evm_abstract::render::json::compact(value) {
+        Ok(body) => response(status, "application/json; charset=utf-8", body.into_bytes()),
         Err(_) => error_response(api_error(
             ApiErrorCode::Internal,
             "typed response encoding failed",

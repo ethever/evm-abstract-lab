@@ -29,22 +29,24 @@ fn omitted_facts_stay_unknown_and_explicit_empty_code_is_known() {
     ));
     assert!(world.account(address(0x300)).is_none());
     let store = Store::new(&world);
-    assert_eq!(
-        store.read(
-            address(0x101),
-            &AbstractValue::constant(U256::ZERO),
-            Domain::default()
-        ),
-        AbstractValue::constant(U256::from(7))
+    let key = AbstractValue::constant(U256::ZERO);
+    let known = store.read(address(0x101), &key, Domain::default());
+    let expected = AbstractValue::constant(U256::from(7));
+    assert_eq!(known.numeric(), expected.numeric());
+    assert_eq!(known.provenance(), expected.provenance());
+    assert_eq!(store.read(address(0x101), &key, Domain::default()), known);
+    assert!(matches!(
+        known.expression().map(|expr| expr.kind()),
+        Some(evm_abstract::domain::symbolic::ExprKind::SlotRead { .. })
+    ));
+    let unknown = store.read(
+        address(0x101),
+        &AbstractValue::constant(U256::ONE),
+        Domain::default(),
     );
-    assert_eq!(
-        store.read(
-            address(0x101),
-            &AbstractValue::constant(U256::from(1)),
-            Domain::default()
-        ),
-        AbstractValue::top()
-    );
+    assert_eq!(unknown.numeric(), AbstractValue::top().numeric());
+    assert_eq!(unknown.provenance(), AbstractValue::top().provenance());
+    assert!(unknown.expression().is_some());
     assert_eq!(store.read_balance(address(0x101)), AbstractValue::top());
     assert_eq!(
         world.account(address(0x101)).unwrap().nonce,

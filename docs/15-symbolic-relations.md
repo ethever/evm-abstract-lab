@@ -112,7 +112,7 @@ jq '.states[] | select(.key.basic_block_index == 2)
 
 `entry_constants` 为 `["0x1"]`。constraints 中的 `Truth` 记录 EQ 的表达式及 `nonzero:true`：opcode 20 即十六进制 `0x14` 的 EQ，两个参数分别是常量 1 与 Input(CallValue)。输入表达式仍表示原来的 v，数值层则已经证明它在这个状态里只能为 1；不会为每条分支伪造一笔新的具体交易。
 
-结果 JSON 的 `schema_version` 为 5；`domain_spec.schema_version` 与 `cost_version` 都为 2。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
+结果 JSON 的 `schema_version` 为 6；`domain_spec.schema_version` 与 `cost_version` 都为 2。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
 
 版本 4 将数值事实错误保留为带参数的 `ScalarFactError`，将求解器绑定错误 `SolverError` 与原生 `SolverUnknown` 分开，后两者都保留求解器身份。原生 UNKNOWN 的自由文本原因仍作为该类型的说明；它不会被当作不可满足。Web 的展示协议独立使用版本 8。
 
@@ -123,8 +123,8 @@ jq '.states[] | select(.key.basic_block_index == 2)
 | 单值数值摘要 | `NumericValue` | 常量集合、已知位、区间、同余和非零性质 |
 | 来源与角色 | `Provenance` | 可能来源类别、代码地址角色；同来源不证明相等 |
 | 有限值身份 | `ValueIdentity` | 可信运行时复制、受环境作用域限定的输入身份 |
-| 符号表达式 | `ExprId` | 常量、固定输入、fresh 运行时值和纯 EVM 运算的不可变 DAG |
-| 跨值约束 | `RelationState` | 当前执行状态中必须成立的条件合取 |
+| 符号表达式 | `ExprId` | 常量、输入、fresh、ITE、byte/word/slot read、Keccak 与纯 EVM 运算 |
+| 跨值约束 | `RelationState` | 继承公式、当前条件合取和 guarded alternatives |
 
 `AbstractValue` 把数值、来源、身份和可选表达式放在一起。完整关系约束属于 `MachinePayload`，因为一个条件可以同时涉及栈、内存、账户状态与调用输入中的多个值。
 
@@ -185,7 +185,7 @@ SAT 不等于一条完整 EVM 轨迹的具体执行见证。内存、storage、�
 
 每条路径内部的条件是合取；两条路径汇合时，所需覆盖的是它们的状态并集。
 
-当前 `RelationState::join` 保留两边结构上共同的保证。例如左边保留 `x=1`、右边保留 `x=2`，join 不能把它们拼成 `x=1 AND x=2`，否则会错误删除两条合法路径。当前实现也不会自动将它们转换成一个精确析取；共同项之外的信息可能丢失。
+普通 `RelationState::join` 仍可保留共同保证；整机 join 另为所有 scalar、byte/slot 根和路径使用同一个 selector，并保存 guarded alternatives。左边 x=1、右边 x=2 不能拼成 x=1 AND x=2；无法完整构造或保留替代时保存 typed frontier 与 incoming payload。
 
 ### 一个合并会丢掉的条件关系
 
@@ -209,12 +209,12 @@ x  ∈ 所有 U256
 | `(1,9)` | 成功类允许 | 允许 |
 | `(0,9)` | 失败类不允许 | 额外允许 |
 
-随后只把 ok 收窄到 0，不能从已经丢掉的关系中自动找回 x=1。保留状态分区，或使用能表达该条件的关系表示，才可能维持这项信息。当前共同项 join 不保证保留任意条件析取；启用 SMT 也不能把没有保存的规则凭空找回来。
+随后只把 ok 收窄到 0，不能从已经丢掉的关系中自动找回 x=1。保留状态分区，或使用能表达该条件的关系表示，才可能维持这项信息。只保留共同项的调用者仍会损失关系；整机 guarded join 保留成对替代，启用 SMT 后使用已保存的公式判断后续读取。
 
 这里首先假设调用效果模型已经给出了这两类出口。它不是当前解释器自动为 UnknownTarget 生成的通用摘要。怎样描述未知调用的副作用，与怎样保留已知出口的关联，是两项不同工作。
 
 
-数值层独立 join 同一槽位的摘要；表达式只有两边相同才保留。widening 对数值使用既有扩大规则，关系侧保守忘记变化的保证。已经证明矛盾的 bottom 不贡献新的可达状态；预算不足、Unknown 或来源类别冲突都不能伪装成 bottom。
+数值投影独立合并候选，完整机器表达式与状态根保留同一 selector。相同完整状态可吸收；机器不会给地址作 numeric widening 后仍保留旧的窄状态根，持续变化按完整 alternatives/节点/工作策略留下边界。已经证明矛盾的 bottom 不贡献新的可达状态；预算不足、Unknown 或来源类别冲突都不能伪装成 bottom。
 
 循环中的值会改变。既不能一直按 pc 复用一个运行时未知值，也不能无限展开新的表达式树而忽略成本。节点、深度、状态和工作预算共同约束增长，达到边界留下 typed frontier。
 
@@ -247,23 +247,13 @@ JSON 省略输入作用域和 fresh 的私有编号。它可以显示表达式�
 
 完整符号指数需要较多编码节点，可能在默认节点预算下成为 `ExpressionLimit`；扩大节点预算也不保证 native solver 能在给定 rlimit 内完成。资源限制保留 Unknown，不能据此猜测 EXP 结果。
 
-MSTORE 拆出的 32 个有序 `BYTE(i,word)`，若都引用同一表达式和作用域，可在 MLOAD 时恢复这个 word 表达式。部分字节、顺序变化、混合来源或无法证明的重组不能强行恢复同一身份。这个规则减少表达式重复增长，不是通用的符号数组或内存别名求解器。
+MSTORE/MSTORE8 的完整 byte/word 更新、WordRead、SlotRead、Copy 和 Keccak 现在属于同一个不可变 EVM 状态模型。标量身份与状态关系一起工作，旧读取捕获旧根。详见[第 17 课](17-symbolic-state.md)。
 
 ### 有值的表达式，不等于有符号索引数组
 
-这两个场景要分开手算：
+Word256 运算本身不决定范围、补零、账户归属或回滚；分析器将这些语义编码到 byte/slot/view 节点。SMT arrays 使用 BV 索引和元素，slot 按 Word256，byte 按相应元素宽度；Keccak 使用 content-bound 函数关系，且没有 injectivity 假设。不同来源不自动证明不同内容或不同哈希。
 
-| 场景 | 当前能保存的联系 | 仍需怎样的存储知识 |
-| --- | --- | --- |
-| `MSTORE(0,x); MLOAD(0)` | 具体位置上的 BYTE 表达式有机会组装回 x | 已知读取的是刚写过的那 32 个字节 |
-| `MSTORE(p,7); MLOAD(p)`，p 未能具体化 | 知道两次 p 是同一输入 | 未知位置写入当前会粗化字节表，没有一般的符号索引写后读规则 |
-| `SSTORE(0,x+1); SLOAD(0)` | 具体 slot 的单元可保存并读回表达式 | 读写必须仍指向同一账户和具体 slot |
-| `SSTORE(k,7); SLOAD(k)`，k 未能具体化 | 知道两次 k 是同一输入 | 弱更新合并“命中/未命中”的值后，未普遍保存位置与值的关联 |
-
-如果路径条件先证明 p=0 或 k=0，操作数精化可以将相应读写变成具体位置的操作。这是“关系帮助寻址”，与直接实现 `select(store(array,k,v),k)=v` 的符号数组模型不同。前者现在已有；后者不能从两个值拥有相同符号身份直接推出。
-
-[第 14 课](14-memory-model.md)逐字节观察第一、二行，[第 16 课](16-storage-model.md)观察第三、四行，以及强更新、弱更新和 RPC 初始值依赖。旧读取产生的 x 是当时的值；后续改写单元不会把 x 重新绑定为新值。
-
+同址写后读、混合写序、overlap 和 branch pairing 要通过真实指令继续传递读取结论；source graph 接口存在并不自动证明全部路径已覆盖。未知代码、具体化需求和求解额度继续使用准确的 typed 边界。
 
 ## 7. 原生后端与确定性资源预算
 
