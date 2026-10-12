@@ -56,6 +56,9 @@ import sys
 import tempfile
 
 root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "scripts"))
+from normalize_identity_scopes import canonical_json
+
 sizes = list(dict.fromkeys(int(size) for size in sys.argv[2].split(",")))
 iterations, repeats = map(int, sys.argv[3:5])
 output_base = Path(sys.argv[5]).resolve()
@@ -127,21 +130,21 @@ for label, arguments, expected in cases:
         result = subprocess.run([str(executable), *arguments], capture_output=True, text=True,
                                 check=False)
         (output / f"{label}-{backend}.stderr").write_text(result.stderr)
+        (output / f"{label}-{backend}.json").write_text(result.stdout)
         if result.returncode != expected:
             sys.exit(f"{label}/{backend}: expected exit {expected}, got {result.returncode}; "
                      f"see {output / f'{label}-{backend}.stderr'}")
         try:
             payload = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
+            canonical[backend] = canonical_json(result.stdout)
+        except ValueError as error:
             sys.exit(f"{label}/{backend}: invalid JSON: {error}")
         if expected == 2:
             if payload.get("status") != "Incomplete" or not any(
                 "MissingCode" in frontier["reason"] for frontier in payload["frontiers"]
             ):
                 sys.exit(f"{label}/{backend}: missing typed MissingCode frontier")
-        # Dict insertion order and array order are both retained: only whitespace is removed.
-        canonical[backend] = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        (output / f"{label}-{backend}.json").write_text(result.stdout)
+        # Whole-report producer renaming retains every other identity and member/array order.
     if canonical["std"] != canonical["imbl"]:
         sys.exit(f"{label}: ordered JSON differs; see {output}")
     parity.append({"case": label, "exit_code": expected,
