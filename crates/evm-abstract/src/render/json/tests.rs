@@ -141,7 +141,7 @@ fn symbolic_balance_analysis(expression: ExprId) -> crate::analysis::WorldAnalys
             address,
             address,
             AbstractValue::constant(U256::ZERO),
-            ByteArray::exact([]),
+            ByteArray::exact(&[]),
         ),
         config,
     )
@@ -152,7 +152,7 @@ fn symbolic_balance_analysis(expression: ExprId) -> crate::analysis::WorldAnalys
 fn cancelled_exact_fingerprint_is_reported_before_native_evidence_output() {
     let analysis = symbolic_balance_analysis(ExprId::fresh().unwrap());
     let fingerprint = analysis.world().fingerprint().unwrap();
-    let control = Control::default();
+    let control = Control::new(Default::default());
     control.cancellation().cancel();
     control.scope(|| {
         assert!(matches!(
