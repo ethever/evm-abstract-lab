@@ -1,18 +1,24 @@
-//! Materialize a certified callee graph under a different suspended caller.
+//! Instantiate every scalar, source and state root before installing any graph.
+//! One map belongs to one replay; certified snapshots are never mutated.
 
-use super::{Certificate, Node};
-use crate::analysis::{CallStack, Continuation, MachinePayload, transfer::WorkBudget};
+use super::{Certificate, Node, Terminal};
 use crate::{
+    analysis::{CallStack, Continuation, MachineError, MachinePayload},
     domain::{
         AbstractValue,
         symbolic::{ExprId, ExprLimits},
     },
-    world::ByteArray,
+    resource::WorkBudget,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+
+pub(in crate::analysis) struct Prepared {
+    pub nodes: Vec<Node>,
+    pub terminals: Vec<Terminal>,
+}
 
 pub(in crate::analysis) struct Replay<'a> {
     certificate: &'a Certificate,
@@ -23,75 +29,65 @@ pub(in crate::analysis) struct Replay<'a> {
     limits: ExprLimits,
 }
 
+fn charge(budget: &mut WorkBudget, cost: usize) -> Result<(), MachineError> {
+    if cost == usize::MAX || !budget.charge(cost) {
+        Err(MachineError::work_failure())
+    } else {
+        Ok(())
+    }
+}
+
 impl<'a> Replay<'a> {
     pub fn new(
         certificate: &'a Certificate,
         payload: &MachinePayload,
         budget: &mut WorkBudget,
         limits: ExprLimits,
-    ) -> Option<Self> {
-        if !budget.charge(payload.work_size()) {
-            return None;
-        }
+    ) -> Result<Self, MachineError> {
+        let input = certificate.nodes.first().ok_or(MachineError::Shape)?;
+        charge(
+            budget,
+            payload.work_size().saturating_add(input.entry.work_size()),
+        )?;
         let mut prefix = payload.call_stack.clone();
-        let child = prefix
-            .pop_child()
-            .expect("summary replay requires a child frame");
-        // Only callee inputs are bound. An older result in a suspended caller
-        // must not prevent this invocation from receiving fresh local symbols.
-        let mut external = payload.relations.fresh_leaves();
-        let mut collect = |value: &AbstractValue| collect_value(value, &mut external);
-        payload.active().visit_values(&mut collect);
-        payload.store.visit_values(&mut collect);
+        let child = prefix.pop_child().ok_or(MachineError::Shape)?;
+        // The certified entry is the binding boundary. Old results in suspended
+        // caller frames are not new callee outputs; source tokens reachable from
+        // the actual callee inputs (including rollback) must remain bound.
+        let external = input.entry.fresh_leaves();
         let mut internal = BTreeSet::new();
         for node in &certificate.nodes {
-            let cost = node.entry.work_size().saturating_add(node.exit.work_size());
-            if !budget.charge(cost) {
-                return None;
-            }
+            charge(budget, node.work_size())?;
             internal.extend(node.entry.fresh_leaves());
             internal.extend(node.exit.fresh_leaves());
             for value in &node.exit_stack {
+                charge(budget, 0)?;
                 collect_value(value, &mut internal);
             }
             for call in &node.completed_calls {
-                if !budget.charge(
-                    call.payload
-                        .work_size()
-                        .saturating_add(call.data.work_size())
-                        .saturating_add(call.output_store.work_size())
-                        .saturating_add(call.output_data.work_size()),
-                ) {
-                    return None;
-                }
+                charge(budget, 0)?;
                 internal.extend(call.payload.fresh_leaves());
-                call.data
-                    .visit_values(&mut |v| collect_value(v, &mut internal));
-                call.output_data
-                    .visit_values(&mut |v| collect_value(v, &mut internal));
-                call.output_store
-                    .visit_values(&mut |v| collect_value(v, &mut internal));
+                internal.extend(call.data.fresh_leaves());
+                internal.extend(call.output_data.fresh_leaves());
+                internal.extend(call.output_store.fresh_leaves());
             }
         }
         for terminal in &certificate.terminals {
-            if !budget.charge(
-                terminal
-                    .payload
-                    .work_size()
-                    .saturating_add(terminal.raw_data.work_size()),
-            ) {
-                return None;
-            }
+            charge(budget, terminal.work_size())?;
             internal.extend(terminal.payload.fresh_leaves());
-            terminal
-                .raw_data
-                .visit_values(&mut |v| collect_value(v, &mut internal));
+            internal.extend(terminal.raw_data.fresh_leaves());
+            internal.extend(terminal.output.data.fresh_leaves());
+            internal.extend(terminal.output.store.fresh_leaves());
         }
         let mut renaming = BTreeMap::new();
         for local in internal.difference(&external) {
-            renaming.insert(local.clone(), ExprId::fresh()?);
+            charge(budget, 1)?;
+            renaming.insert(
+                local.clone(),
+                ExprId::fresh().ok_or(MachineError::IdentityExhausted)?,
+            );
         }
-        Some(Self {
+        Ok(Self {
             certificate,
             prefix,
             continuation: child.continuation,
@@ -101,9 +97,9 @@ impl<'a> Replay<'a> {
         })
     }
 
-    fn payload(&self, relative: &MachinePayload) -> Option<MachinePayload> {
+    fn payload(&self, relative: &MachinePayload) -> Result<MachinePayload, MachineError> {
         let mut relative = relative.clone();
-        relative.rename_fresh(&self.renaming, self.limits).ok()?;
+        relative.rename_fresh(&self.renaming, self.limits)?;
         let mut call_stack = self.prefix.clone();
         call_stack.push_child(
             relative
@@ -116,104 +112,113 @@ impl<'a> Replay<'a> {
             call_stack.push_child(child.clone());
         }
         let mut result = MachinePayload {
-            relations: relative.relations.clone(),
+            relations: relative.relations,
             call_stack,
-            store: relative.store.clone(),
+            store: relative.store,
         };
         result.normalize();
-        Some(result)
+        Ok(result)
     }
 
-    fn value(&self, value: &mut AbstractValue) -> bool {
+    fn value(&self, value: &mut AbstractValue) -> Result<(), MachineError> {
         value.forget_identity();
         if let Some(expression) = value.expression() {
-            let Ok(expression) = expression.rename_fresh(&self.renaming, self.limits) else {
-                return false;
-            };
-            *value = value.clone().with_expression(expression);
+            *value = value
+                .clone()
+                .with_expression(expression.rename_fresh(&self.renaming, self.limits)?);
         }
-        true
+        Ok(())
     }
 
-    fn bytes(&self, bytes: &mut ByteArray) -> bool {
-        let mut valid = true;
-        bytes.update_values(&mut |value| valid &= self.value(value));
-        valid
-    }
-
-    pub fn node(&self, index: usize, budget: &mut WorkBudget) -> Option<Node> {
-        let source = &self.certificate.nodes[index];
-        let cost = source.completed_calls.iter().fold(
-            source
-                .entry
-                .work_size()
-                .saturating_add(source.exit.work_size())
-                .saturating_add(self.prefix_cost.saturating_mul(2))
-                .saturating_add(source.executed_pcs.len()),
-            |cost, call| {
-                cost.saturating_add(call.payload.work_size())
-                    .saturating_add(call.data.work_size())
-                    .saturating_add(call.output_store.work_size())
-                    .saturating_add(call.output_data.work_size())
-                    .saturating_add(self.prefix_cost)
-            },
-        );
-        if !budget.charge(cost) {
-            return None;
-        }
+    fn node(&self, source: &Node, budget: &mut WorkBudget) -> Result<Node, MachineError> {
+        let cost = source
+            .work_size()
+            .saturating_add(
+                self.prefix_cost
+                    .saturating_mul(source.completed_calls.len().saturating_add(2)),
+            )
+            .saturating_mul(4);
+        charge(budget, cost)?;
         let mut exit_stack = source.exit_stack.clone();
         for value in &mut exit_stack {
-            if !self.value(value) {
-                return None;
-            }
+            charge(budget, 0)?;
+            self.value(value)?;
         }
         let mut completed_calls = Vec::new();
         for call in &source.completed_calls {
+            charge(budget, 0)?;
             let mut call = call.clone();
             call.payload = self.payload(&call.payload)?;
-            if !self.bytes(&mut call.data) || !self.bytes(&mut call.output_data) {
-                return None;
-            }
-            let mut valid = true;
+            call.data.rename_fresh(&self.renaming, self.limits)?;
+            call.output_data.rename_fresh(&self.renaming, self.limits)?;
             call.output_store
-                .update_values(&mut |value| valid &= self.value(value));
-            if !valid {
-                return None;
-            }
+                .rename_fresh(&self.renaming, self.limits)?;
             completed_calls.push(call);
         }
-        Some(Node {
+        Ok(Node {
             entry: self.payload(&source.entry)?,
             exit: self.payload(&source.exit)?,
             exit_stack,
             executed_pcs: source.executed_pcs.clone(),
             instruction_progress: source.instruction_progress.clone(),
+            // This receipt stores numeric/provenance projections only.
             instruction_values: Arc::clone(&source.instruction_values),
             diagnostics: source.diagnostics.clone(),
             completed_calls,
         })
     }
 
-    pub fn terminal_payload(
+    fn terminal(
         &self,
-        index: usize,
+        source: &Terminal,
         budget: &mut WorkBudget,
-    ) -> Option<(MachinePayload, ByteArray)> {
-        let terminal = &self.certificate.terminals[index];
-        if !budget.charge(
-            terminal
-                .payload
+    ) -> Result<Terminal, MachineError> {
+        charge(
+            budget,
+            source
                 .work_size()
                 .saturating_add(self.prefix_cost)
-                .saturating_add(terminal.output.data.work_size()),
-        ) {
-            return None;
-        }
-        let mut data = terminal.raw_data.clone();
-        if !self.bytes(&mut data) {
-            return None;
-        }
-        Some((self.payload(&terminal.payload)?, data))
+                .saturating_mul(4),
+        )?;
+        let mut terminal = source.clone();
+        terminal.payload = self.payload(&terminal.payload)?;
+        terminal
+            .raw_data
+            .rename_fresh(&self.renaming, self.limits)?;
+        terminal
+            .output
+            .data
+            .rename_fresh(&self.renaming, self.limits)?;
+        terminal
+            .output
+            .store
+            .rename_fresh(&self.renaming, self.limits)?;
+        Ok(terminal)
+    }
+
+    /// Any renaming or allocation failure drops this entire temporary graph.
+    pub fn prepare(self, budget: &mut WorkBudget) -> Result<Prepared, MachineError> {
+        charge(
+            budget,
+            self.certificate
+                .nodes
+                .len()
+                .saturating_add(self.certificate.terminals.len()),
+        )?;
+        let nodes = self
+            .certificate
+            .nodes
+            .iter()
+            .map(|node| self.node(node, budget))
+            .collect::<Result<_, _>>()?;
+        let terminals = self
+            .certificate
+            .terminals
+            .iter()
+            .map(|terminal| self.terminal(terminal, budget))
+            .collect::<Result<_, _>>()?;
+        charge(budget, 0)?;
+        Ok(Prepared { nodes, terminals })
     }
 }
 
@@ -222,3 +227,6 @@ fn collect_value(value: &AbstractValue, into: &mut BTreeSet<ExprId>) {
         into.extend(expression.fresh_leaves());
     }
 }
+
+#[cfg(test)]
+mod tests;
