@@ -167,6 +167,7 @@ mod tests {
                     id: JobId(17),
                     state: JobState::Running,
                     progress: AnalysisProgress::default(),
+                    timings: evm_abstract_protocol::AnalysisTimings::default(),
                 }),
             }),
         });

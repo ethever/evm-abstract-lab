@@ -15,6 +15,7 @@ fn status(task: &mut Task, operation: JobOperation, state: JobState) {
                 id: JobId(17),
                 state,
                 progress: AnalysisProgress::default(),
+                timings: evm_abstract_protocol::AnalysisTimings::default(),
             }),
         }),
     );
@@ -101,6 +102,7 @@ fn superseded_and_wrong_identity_callbacks_never_replace_the_current_task() {
                 id: JobId(18),
                 state: JobState::Running,
                 progress: AnalysisProgress::default(),
+                timings: evm_abstract_protocol::AnalysisTimings::default(),
             }),
         }),
     );
@@ -112,6 +114,7 @@ fn superseded_and_wrong_identity_callbacks_never_replace_the_current_task() {
                 id: JobId(19),
                 state: JobState::Completed,
                 progress: AnalysisProgress::default(),
+                timings: evm_abstract_protocol::AnalysisTimings::default(),
             }),
         }),
     );

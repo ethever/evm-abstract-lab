@@ -124,6 +124,12 @@ impl Default for Graph {
 }
 
 impl Graph {
+    /// The visible scene has actually been measured and laid out. Hidden graph
+    /// tabs are never built merely to finish the result's timing measurement.
+    pub(crate) fn prepared(&self) -> bool {
+        self.report_stamp.is_some() && !self.layout_pending && self.viewport.is_some()
+    }
+
     pub(crate) fn show(&mut self, ui: &mut Ui, report: &AnalysisReport, selection: &mut Selection) {
         if ui.is_sizing_pass() {
             return;

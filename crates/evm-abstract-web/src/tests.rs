@@ -98,6 +98,7 @@ pub(crate) fn empty_report() -> AnalysisReport {
             deferred_edges: vec![],
         },
         metadata: api::ReportMetadata {
+            timings: api::AnalysisTimings::default(),
             entry_address: "0x0000000000000000000000000000000000000000".into(),
             root_program: None,
             snapshot: None,
@@ -366,7 +367,11 @@ fn report_counters_above_wasm_word_size_decode_and_render_exactly() {
     assert_eq!(decoded, reply);
     let mut workspace = Workspace::default();
     workspace.receive(Ok(decoded));
-    assert!(workspace.accessible_status().starts_with("Ready:"));
+    assert!(
+        workspace
+            .accessible_status()
+            .starts_with("Preparing result view:")
+    );
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
     frame(&ctx, &mut workspace, vec![]);
@@ -505,6 +510,9 @@ fn keyboard_view_switching_uses_real_egui_input() {
 #[test]
 fn reanalysis_retains_previous_snapshot_and_backend_errors_remain_visible() {
     let mut workspace = ready();
+    let context = Context::default();
+    crate::notation::initialize_fonts(&context);
+    frame(&context, &mut workspace, vec![]);
     assert!(workspace.accessible_status().starts_with("Ready:"));
     let crate::Command::Submit { request, .. } = workspace.initial_command() else {
         panic!("expected submit")

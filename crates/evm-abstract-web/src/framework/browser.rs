@@ -16,7 +16,7 @@ use evm_abstract_protocol::{
 use wasm_bindgen::{JsCast, JsValue, closure::Closure, prelude::wasm_bindgen};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
-use crate::app::{Command, JobOperation, Message, TransportError, Workspace};
+use crate::app::{Command, JobOperation, Message, TransportError, Workspace, timing};
 
 /// Start the browser workspace on an existing canvas element.
 #[wasm_bindgen]
@@ -194,11 +194,17 @@ async fn execute(command: Command) -> Message {
             operation: JobOperation::Cancel,
             result: status("DELETE", &format!("{API_PATH}/{id}"), None).await,
         },
-        Command::Result { generation, id } => Message::Result {
-            generation,
-            id,
-            result: Box::new(result(&format!("{API_PATH}/{id}/result")).await),
-        },
+        Command::Result { generation, id } => {
+            let (result, transfer_ns, parsing_ns) =
+                result(&format!("{API_PATH}/{id}/result")).await;
+            Message::Result {
+                generation,
+                id,
+                result: Box::new(result),
+                transfer_ns,
+                parsing_ns,
+            }
+        }
     }
 }
 
@@ -226,14 +232,26 @@ async fn status(
     Ok(reply)
 }
 
-async fn result(path: &str) -> Result<AnalyzeReply, TransportError> {
-    let (status, ok, body) = fetch("GET", path, None).await?;
-    let reply: AnalyzeReply =
-        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
-    if !ok && reply.result.is_ok() {
-        return Err(TransportError::Http { status });
-    }
-    Ok(reply)
+async fn result(path: &str) -> (Result<AnalyzeReply, TransportError>, u64, u64) {
+    let started = timing::now();
+    let fetched = fetch("GET", path, None).await;
+    let parsing_started = timing::now();
+    let transfer_ns = timing::elapsed_ns(started, parsing_started);
+    let (status, ok, body) = match fetched {
+        Ok(response) => response,
+        Err(error) => return (Err(error), transfer_ns, 0),
+    };
+    let decoded: Result<AnalyzeReply, TransportError> =
+        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause });
+    let parsing_ns = timing::elapsed_ns(parsing_started, timing::now());
+    let decoded = decoded.and_then(|reply| {
+        if !ok && reply.result.is_ok() {
+            Err(TransportError::Http { status })
+        } else {
+            Ok(reply)
+        }
+    });
+    (decoded, transfer_ns, parsing_ns)
 }
 
 async fn fetch(

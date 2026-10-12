@@ -7,6 +7,7 @@ mod pools;
 mod report;
 mod rpc;
 mod ssa;
+pub(crate) mod timing;
 mod value;
 use evm_abstract::{
     Address,
@@ -40,8 +41,16 @@ pub fn analyze_with_control_and_providers(
     control: &Control,
     providers: &crate::rpc_providers::Registry,
 ) -> Result<api::AnalysisReport, api::ApiError> {
-    providers.validate_request(&request)?;
-    control.scope(|| run(request, control, providers))
+    let timing = timing::Guard::start(control);
+    let mut result = control.scope(|| {
+        providers.validate_request(&request)?;
+        run(request, control, providers)
+    });
+    drop(timing);
+    if let Ok(report) = &mut result {
+        report.metadata.timings = timing::project(control.observer().timing(), 0);
+    }
+    result
 }
 fn cancelled() -> api::ApiError {
     api::ApiError {

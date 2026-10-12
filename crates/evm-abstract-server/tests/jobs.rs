@@ -139,6 +139,13 @@ fn bounded_workers_run_concurrently_and_queue_rejects_excess_work() {
         assert_eq!(status.state, JobState::Failed(failure()));
         assert_eq!(status.progress.transfers, 7);
         assert_eq!(status.progress.work, 19);
+        assert!(status.timings.processing_ns > 0);
+        assert!(status.timings.analyzing_ns > 0);
+        assert_eq!(
+            pool.status(id).unwrap().timings,
+            status.timings,
+            "failed task durations must be frozen"
+        );
     }
     assert_eq!(executor.active.load(Ordering::SeqCst), 0);
     pool.shutdown().unwrap();
@@ -159,7 +166,17 @@ fn cancelling_waits_for_resource_release_and_queued_cancellation_never_runs() {
     let running = pool.submit(AnalyzeRequest::default()).unwrap();
     entered.recv_timeout(Duration::from_secs(5)).unwrap();
     let queued = pool.submit(AnalyzeRequest::default()).unwrap();
-    assert_eq!(pool.cancel(queued.id).unwrap().state, JobState::Cancelled);
+    let queued_progress = pool.status(queued.id).unwrap();
+    assert!(queued_progress.timings.queue_ns > queued.timings.queue_ns);
+    assert_eq!(queued_progress.timings.processing_ns, 0);
+    let queued_cancelled = pool.cancel(queued.id).unwrap();
+    assert_eq!(queued_cancelled.state, JobState::Cancelled);
+    assert!(queued_cancelled.timings.queue_ns >= queued_progress.timings.queue_ns);
+    assert_eq!(queued_cancelled.timings.processing_ns, 0);
+    assert_eq!(
+        pool.status(queued.id).unwrap().timings,
+        queued_cancelled.timings
+    );
     assert_eq!(pool.cancel(running.id).unwrap().state, JobState::Cancelling);
     assert_eq!(pool.status(running.id).unwrap().state, JobState::Cancelling);
     assert_eq!(
@@ -172,7 +189,11 @@ fn cancelling_waits_for_resource_release_and_queued_cancellation_never_runs() {
         "cancelled queued request entered the executor"
     );
     drop(release);
-    assert_eq!(wait_terminal(&pool, running.id).state, JobState::Cancelled);
+    let cancelled = wait_terminal(&pool, running.id);
+    assert_eq!(cancelled.state, JobState::Cancelled);
+    assert!(cancelled.timings.processing_ns > 0);
+    assert!(cancelled.timings.analyzing_ns > 0);
+    assert_eq!(pool.status(running.id).unwrap().timings, cancelled.timings);
     assert_eq!(executor.active.load(Ordering::SeqCst), 0);
     assert_eq!(
         pool.result(running.id).unwrap_err().code,
@@ -211,7 +232,17 @@ fn panicking_worker_reports_typed_failure_and_is_replaced() {
     )
     .unwrap();
     let first = pool.submit(AnalyzeRequest::default()).unwrap();
-    let JobState::Failed(error) = wait_terminal(&pool, first.id).state else {
+    let first_terminal = wait_terminal(&pool, first.id);
+    assert!(first_terminal.timings.processing_ns > 0);
+    assert_eq!(
+        first_terminal.timings.validating_ns, first_terminal.timings.processing_ns,
+        "executors without phase events still have authoritative elapsed time"
+    );
+    assert_eq!(
+        pool.status(first.id).unwrap().timings,
+        first_terminal.timings
+    );
+    let JobState::Failed(error) = first_terminal.state else {
         panic!("missing panic failure")
     };
     assert!(
@@ -228,6 +259,148 @@ fn panicking_worker_reports_typed_failure_and_is_replaced() {
         pool.status(first.id).unwrap_err().code,
         ApiErrorCode::TaskNotFound
     );
+    pool.shutdown().unwrap();
+}
+
+#[derive(Clone)]
+struct ReportingGate {
+    entered: SyncSender<()>,
+    release: Arc<AtomicBool>,
+}
+
+impl Executor for ReportingGate {
+    fn execute(
+        &self,
+        request: AnalyzeRequest,
+        control: &Control,
+    ) -> Result<AnalysisReport, ApiError> {
+        self.entered.send(()).unwrap();
+        while !self.release.load(Ordering::Acquire) {
+            thread::park_timeout(Duration::from_millis(1));
+        }
+        evm_abstract_server::analyze::analyze_with_control(request, control)
+    }
+}
+
+#[test]
+fn queued_success_keeps_the_same_frozen_timings_in_status_and_report() {
+    let (entered, ready) = mpsc::sync_channel(2);
+    let release = Arc::new(AtomicBool::new(false));
+    let release_guard = Release(Arc::clone(&release));
+    let pool = Pool::with_executor(
+        Config {
+            workers: 1,
+            queue_capacity: 1,
+            retained_jobs: 2,
+        },
+        ReportingGate { entered, release },
+    )
+    .unwrap();
+    let first = pool.submit(AnalyzeRequest::default()).unwrap();
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    let queued = pool.submit(AnalyzeRequest::default()).unwrap();
+    assert_eq!(queued.state, JobState::Queued);
+    let waiting = pool.status(queued.id).unwrap();
+    assert!(waiting.timings.queue_ns > 0);
+    assert_eq!(waiting.timings.processing_ns, 0);
+    drop(release_guard);
+    for id in [first.id, queued.id] {
+        let terminal = wait_terminal(&pool, id);
+        assert_eq!(terminal.state, JobState::Completed);
+        let report = pool.result(id).unwrap();
+        assert_eq!(terminal.timings, report.metadata.timings);
+        assert!(terminal.timings.processing_ns > 0);
+        assert!(terminal.timings.building_ssa_ns > 0);
+        if id == queued.id {
+            assert!(terminal.timings.queue_ns >= waiting.timings.queue_ns);
+        }
+        assert_eq!(pool.status(id).unwrap().timings, terminal.timings);
+    }
+    pool.shutdown().unwrap();
+}
+
+#[derive(Clone)]
+struct RepeatedAnalysisGate {
+    analyzed: SyncSender<()>,
+    release_between: Arc<AtomicBool>,
+    release_after: Arc<AtomicBool>,
+}
+
+impl Executor for RepeatedAnalysisGate {
+    fn execute(
+        &self,
+        request: AnalyzeRequest,
+        control: &Control,
+    ) -> Result<AnalysisReport, ApiError> {
+        drop(evm_abstract_server::analyze::analyze_with_control(
+            request.clone(),
+            control,
+        )?);
+        self.analyzed.send(()).unwrap();
+        while !self.release_between.load(Ordering::Acquire) {
+            thread::park_timeout(Duration::from_millis(1));
+        }
+        let report = evm_abstract_server::analyze::analyze_with_control(request, control)?;
+        self.analyzed.send(()).unwrap();
+        while !self.release_after.load(Ordering::Acquire) {
+            thread::park_timeout(Duration::from_millis(1));
+        }
+        Ok(report)
+    }
+}
+
+#[test]
+fn nested_analysis_calls_never_reset_worker_time_or_freeze_executor_cleanup() {
+    let (analyzed, ready) = mpsc::sync_channel(2);
+    let release_between = Arc::new(AtomicBool::new(false));
+    let release_after = Arc::new(AtomicBool::new(false));
+    let between_guard = Release(Arc::clone(&release_between));
+    let after_guard = Release(Arc::clone(&release_after));
+    let pool = Pool::with_executor(
+        Config {
+            workers: 1,
+            queue_capacity: 0,
+            retained_jobs: 1,
+        },
+        RepeatedAnalysisGate {
+            analyzed,
+            release_between,
+            release_after,
+        },
+    )
+    .unwrap();
+    let job = pool.submit(AnalyzeRequest::default()).unwrap();
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    let first = pool.status(job.id).unwrap();
+    let still_running = pool.status(job.id).unwrap();
+    assert!(
+        still_running.timings.processing_ns > first.timings.processing_ns,
+        "the inner analysis must not freeze the outer executor"
+    );
+    assert_eq!(still_running.timings.queue_ns, first.timings.queue_ns);
+    drop(between_guard);
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    let second = pool.status(job.id).unwrap();
+    assert!(
+        second.timings.processing_ns > still_running.timings.processing_ns,
+        "a second inner call must retain the original worker session"
+    );
+    assert_eq!(second.timings.queue_ns, first.timings.queue_ns);
+    let cleanup = pool.status(job.id).unwrap();
+    assert!(
+        cleanup.timings.processing_ns > second.timings.processing_ns,
+        "processing continues until the executor actually returns"
+    );
+    drop(after_guard);
+    let terminal = wait_terminal(&pool, job.id);
+    assert_eq!(terminal.state, JobState::Completed);
+    assert!(terminal.timings.processing_ns >= cleanup.timings.processing_ns);
+    assert_eq!(terminal.timings.queue_ns, first.timings.queue_ns);
+    assert_eq!(
+        pool.result(job.id).unwrap().metadata.timings,
+        terminal.timings
+    );
+    assert_eq!(pool.status(job.id).unwrap().timings, terminal.timings);
     pool.shutdown().unwrap();
 }
 

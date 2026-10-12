@@ -104,6 +104,20 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
         stop.store(true, Ordering::Release);
         let requests = completed.recv().unwrap();
         let report = result.unwrap();
+        let timings = &report.metadata.timings;
+        assert_eq!(timings.queue_ns, 0);
+        assert!(timings.pinning_ns > 0);
+        assert!(timings.acquiring_ns > 0);
+        assert!(timings.analyzing_ns > 0);
+        assert_eq!(
+            timings.processing_ns,
+            timings.validating_ns
+                + timings.pinning_ns
+                + timings.acquiring_ns
+                + timings.analyzing_ns
+                + timings.building_ssa_ns
+                + timings.projecting_ns,
+        );
         let json = serde_json::to_string(&report).unwrap();
         assert!(!json.contains("secret-path"));
         assert!(!json.contains("secret-token"));

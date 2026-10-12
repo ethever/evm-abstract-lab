@@ -78,10 +78,24 @@ impl Workspace {
         // shrink after the graph has fitted its first canvas.
         Density::Regular.scope(ui, |ui| {
             ui.horizontal(|ui| {
+                // Reserve elapsed time before truncating status/progress. It
+                // remains visible on narrow screens and during disconnection.
+                if let Some(wait) = self.task.wait.summary(super::timing::now()) {
+                    let response = if self.report.is_some() {
+                        controls::action(ui, wait, Density::Regular)
+                    } else {
+                        ui.label(wait)
+                    };
+                    if response.clicked() && self.report.is_some() {
+                        self.inspector.expanded = true;
+                        self.inspector.tab = inspector::Tab::Timing;
+                    }
+                    response.on_hover_text(self.accessible_timing());
+                }
                 if self.task.cancellable() && controls::action(ui, "Cancel", Density::Regular).clicked() {command=self.task.cancel();}
-                if self.task.busy() {
+                if self.task.busy() || self.preparing_current_view() {
                     ui.spinner();
-                    ui.add(egui::Label::new(RichText::new(self.task.label()).color(palette::ACCENT)).truncate()).on_hover_text(self.task.label());
+                    ui.add(egui::Label::new(RichText::new(self.task_label()).color(palette::ACCENT)).truncate()).on_hover_text(self.task_label());
                     if wide && let Some(snapshot)=&self.task.snapshot {
                             ui.label(notation::widget(ui,format!("{} · {:?} · {} accounts · {} slots · {} states · {} transfers",WideSymbol::Task(snapshot.id.0),snapshot.progress.phase,snapshot.progress.accounts,snapshot.progress.slots,snapshot.progress.states,snapshot.progress.transfers)));
                     }
