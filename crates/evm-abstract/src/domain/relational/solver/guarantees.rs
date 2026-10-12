@@ -17,6 +17,11 @@ pub(super) struct Guarantees {
     bounds: BTreeMap<ExprId, (U256, U256)>,
 }
 impl Guarantees {
+    pub(super) fn minimum(&self, expression: &ExprId) -> Option<U256> {
+        expression
+            .as_constant()
+            .or_else(|| self.bounds.get(expression).map(|(lower, _)| *lower))
+    }
     pub(super) fn truth(&self, expression: &ExprId) -> Option<bool> {
         expression
             .as_constant()
