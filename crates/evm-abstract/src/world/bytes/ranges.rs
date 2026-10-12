@@ -5,6 +5,21 @@ use crate::domain::{AbstractValue, Domain, symbolic::ExprId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+/// Check the actual retained terms, including numeric-only operands whose
+/// bounded source expression was synthesized by the caller.
+pub(super) fn check_allocation(
+    allocation: &(ExprId, ExprId),
+    domain: Domain,
+) -> Result<(), RangeError> {
+    for expression in [&allocation.0, &allocation.1] {
+        super::check_value(
+            &AbstractValue::top().with_expression(expression.clone()),
+            limits(domain),
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn validate_size(size: &AbstractValue, cap: usize) -> Result<(), RangeError> {
     if size.constants().is_none() && size.expression().is_none() {
         return Err(RangeError::UnknownSize);
@@ -71,6 +86,16 @@ fn choose(
     Ok(ExprId::ite(condition, yes, no, limits(domain))?)
 }
 
+fn checked_end(offset: U256, size: U256, memory: bool) -> Option<U256> {
+    let end = offset.checked_add(size)?;
+    if memory {
+        end.checked_add(U256::from(31))
+            .map(|v| v / U256::from(32) * U256::from(32))
+    } else {
+        Some(end)
+    }
+}
+
 pub(super) fn expanded(
     old: &AbstractValue,
     offset: &AbstractValue,
@@ -81,6 +106,11 @@ pub(super) fn expanded(
 ) -> Result<AbstractValue, RangeError> {
     if size.singleton() == Some(U256::ZERO) {
         return Ok(old.clone());
+    }
+    // The caller retains the allocation operands even when the length is
+    // unchanged. A numeric shortcut must not bypass their policy or cancel.
+    for value in [old, offset, size] {
+        super::check_value(value, limits(domain))?;
     }
     if let (Some(at), Some(size)) = (offset.singleton(), size.singleton()) {
         let end = at.checked_add(size).ok_or(RangeError::TooLarge {
@@ -105,41 +135,6 @@ pub(super) fn expanded(
             return Ok(AbstractValue::constant(old.max(end)));
         }
     }
-    let size_expr = expr(size)?;
-    let old_expr = expr(old)?;
-    let end = op(opcode::ADD, &[expr(offset)?, size_expr.clone()], domain)?;
-    let end = if memory {
-        op(
-            opcode::AND,
-            &[
-                op(
-                    opcode::ADD,
-                    &[end, ExprId::constant(U256::from(31))],
-                    domain,
-                )?,
-                ExprId::constant(!U256::from(31)),
-            ],
-            domain,
-        )?
-    } else {
-        end
-    };
-    let max = choose(
-        op(opcode::GT, &[end.clone(), old_expr.clone()], domain)?,
-        end,
-        old_expr.clone(),
-        domain,
-    )?;
-    let expression = choose(
-        op(
-            opcode::EQ,
-            &[size_expr, ExprId::constant(U256::ZERO)],
-            domain,
-        )?,
-        old_expr,
-        max,
-        domain,
-    )?;
     let numerical = numeric::numeric_domain(domain);
     let mut finite = None;
     if let (Some(old), Some(offsets), Some(sizes)) =
@@ -175,21 +170,16 @@ pub(super) fn expanded(
     }
     // A public wrapper call may lack scalar proof of the transfer guard.
     // Use operand bounds rather than assuming cap is already a numeric fact.
-    let endpoint_upper = offset
+    let endpoint_upper = checked_end(
+        offset.interval().unsigned_bounds().1,
+        size.interval().unsigned_bounds().1,
+        memory,
+    );
+    let upper = old
         .interval()
         .unsigned_bounds()
         .1
-        .checked_add(size.interval().unsigned_bounds().1)
-        .and_then(|end| {
-            if memory {
-                end.checked_add(U256::from(31))
-                    .map(|v| v / U256::from(32) * U256::from(32))
-            } else {
-                Some(end)
-            }
-        })
-        .unwrap_or(U256::MAX);
-    let upper = old.interval().unsigned_bounds().1.max(endpoint_upper);
+        .max(endpoint_upper.unwrap_or(U256::MAX));
     let numeric = finite.unwrap_or_else(|| {
         AbstractValue::unsigned_range(old.interval().unsigned_bounds().0, upper)
             .unwrap_or_else(AbstractValue::top)
@@ -197,6 +187,64 @@ pub(super) fn expanded(
     if let Some(value) = numeric.singleton() {
         return Ok(AbstractValue::constant(value));
     }
+    // Prove the numeric result before constructing a duplicated max tree.
+    // These bounds concern mathematical, nonwrapping endpoints. An unknown
+    // upper endpoint cannot justify selecting a branch of a wrapped sum.
+    if endpoint_upper.is_some_and(|end| end <= old.interval().unsigned_bounds().0) {
+        return Ok(old.clone());
+    }
+    let endpoint_lower = checked_end(
+        offset.interval().unsigned_bounds().0,
+        size.interval().unsigned_bounds().0,
+        memory,
+    );
+    let size_expr = expr(size)?;
+    let old_expr = expr(old)?;
+    let end = op(opcode::ADD, &[expr(offset)?, size_expr.clone()], domain)?;
+    let end = if memory {
+        op(
+            opcode::AND,
+            &[
+                op(
+                    opcode::ADD,
+                    &[end, ExprId::constant(U256::from(31))],
+                    domain,
+                )?,
+                ExprId::constant(!U256::from(31)),
+            ],
+            domain,
+        )?
+    } else {
+        end
+    };
+    let max = if end == old_expr {
+        old_expr.clone()
+    } else if endpoint_upper.is_some()
+        && endpoint_lower.is_some_and(|end| old.interval().unsigned_bounds().1 <= end)
+    {
+        end
+    } else {
+        choose(
+            op(opcode::GT, &[end.clone(), old_expr.clone()], domain)?,
+            end,
+            old_expr.clone(),
+            domain,
+        )?
+    };
+    let expression = if size.may_be_zero() {
+        choose(
+            op(
+                opcode::EQ,
+                &[size_expr, ExprId::constant(U256::ZERO)],
+                domain,
+            )?,
+            old_expr,
+            max,
+            domain,
+        )?
+    } else {
+        max
+    };
     Ok(numeric::attach(numeric, expression))
 }
 
@@ -227,3 +275,6 @@ pub(super) fn minimum(
     };
     Ok(numeric::attach(numeric, expression))
 }
+
+#[cfg(test)]
+mod tests;
