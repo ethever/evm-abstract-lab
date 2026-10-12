@@ -827,13 +827,61 @@ fn native_smt_resource_exhaustion_preserves_both_feasible_branches() {
             ..RelationLimits::default()
         },
     );
-    retained_unknown_branches(&result, &fixture);
+    complete(&result);
+    assert!(reachable(&result, fixture.labels["true"]));
+    assert!(reachable(&result, fixture.labels["false"]));
     assert!(
-        result.execution().frontiers().iter().any(|frontier| {
-            frontier.reason == FrontierReason::Relations(QueryReason::ResourceLimit)
+        result.execution().diagnostics().iter().any(|diagnostic| {
+            diagnostic.kind
+                == analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
         }),
         "native rlimit exhaustion must remain typed, never UNSAT"
     );
+}
+
+#[test]
+fn initial_symbolic_store_uses_the_configured_policy_and_retains_failure() {
+    use evm_abstract::domain::{Domain, relational::QueryReason};
+    let owner = address(0x101);
+    let mut world = World::new(Fork::Osaka, "initial state construction limit");
+    let mut account = Account::from_hex("00", Fork::Osaka).unwrap();
+    account.storage = (0..65)
+        .map(|i| (U256::from(i), AbstractValue::constant(U256::from(i + 1))))
+        .collect();
+    world.insert(owner, account).unwrap();
+    let entry = Entry::new(owner);
+    let limited =
+        analysis::analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    assert_eq!(limited.status(), Status::Incomplete);
+    assert!(limited.outcomes().is_empty());
+    assert!(limited.frontiers().iter().any(|frontier| {
+        frontier.reason == FrontierReason::Relations(QueryReason::ExpressionLimit)
+    }));
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.max_depth = 128;
+    let domain = Domain::from_spec(
+        Domain::default()
+            .spec()
+            .with_relations(config.analysis.relations),
+    );
+    let result = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(
+        result.status(),
+        Status::Converged,
+        "{:?}",
+        result.frontiers()
+    );
+    assert!(!result.outcomes().is_empty());
+    for outcome in result.outcomes() {
+        assert_eq!(
+            outcome
+                .store
+                .read_checked(owner, &AbstractValue::constant(U256::from(64)), domain)
+                .unwrap()
+                .singleton(),
+            Some(U256::from(65))
+        );
+    }
 }
 
 #[test]
@@ -904,15 +952,31 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
     let fixture = one_symbolic_guard();
     for limits in [
         RelationLimits {
-            max_nodes: 1,
+            // Two nodes retain the initial account-source root; the derived
+            // branch expression still exceeds this limit.
+            max_nodes: 2,
             ..RelationLimits::default()
         },
         RelationLimits {
-            max_depth: 1,
+            max_depth: 2,
             ..RelationLimits::default()
         },
     ] {
-        let result = limited(&fixture, limits);
+        let result = analysis::analyze_with_environment(
+            Program::from_hex(&fixture.code).unwrap(),
+            Config {
+                context_depth: 0,
+                relations: limits,
+                ..Config::default()
+            },
+            EvmEnvironment {
+                // Calldata is unused; keep the initial root within the tiny
+                // policy so the derived CALLVALUE branch is what exhausts it.
+                calldata: evm_abstract::world::ByteArray::empty(),
+                ..EvmEnvironment::default()
+            },
+        )
+        .unwrap();
         retained_unknown_branches(&result, &fixture);
         assert!(
             result.execution().frontiers().iter().any(|frontier| {

@@ -75,14 +75,20 @@ pub(super) fn initial(
     entry: &Entry,
     domain: Domain,
 ) -> Result<MachinePayload, FrontierReason> {
-    let mut store = Store::new(world);
+    let mut store = Store::new_checked(world, domain).map_err(super::errors::store)?;
     store.project(domain);
+    store
+        .check_existing(domain.spec().relations().expressions())
+        .map_err(super::errors::store)?;
     let (code_address, code, program) = resolve(world, &store, entry.address)?;
     let code_hash = captured_hash(&program, &store, code_address, code);
     let mut calldata = entry.environment.calldata.project(domain);
     if let Some(scope) = entry.environment.input_scope.id() {
         calldata.bind_input(scope).map_err(super::errors::bytes)?;
     }
+    calldata
+        .check_existing(domain.spec().relations().expressions())
+        .map_err(super::errors::bytes)?;
     Ok(MachinePayload {
         relations: crate::domain::relational::RelationState::default(),
         call_stack: CallStack::new(RootFrame {
