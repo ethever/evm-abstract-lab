@@ -118,7 +118,7 @@ flowchart TD
 
 σᵖ₃ 收到第二条路径时已经排队，所以不重复加入；等它真正被取出时，会使用最新的 `{1,2}`。若一个汇合状态先执行、后来才收到新值，则必须再次入队并传播。这是为什么“一个节点在队列中最多一份”不等于“一个块只能执行一次”。
 
-join 只扩大入口摘要，已有边只增加。默认组合域还会在同一已知状态多次更新后应用区间 widening，保持覆盖已有输入和新输入；本课 constants-only 没有区间需要扩大。已经处理过某状态，并不能成为忽略新输入的理由。
+join 扩大入口所代表的可能性，已有边只增加。只有操作数栈变化、其余完整载荷不变时，引擎还可用数值 widening 加速重复增长；byte/slot 根也变化时需要另查完整状态替代与边界，见[第 17 课](17-symbolic-state.md#汇合固定点与摘要来源)。已经处理过一个状态，不能成为忽略新输入的理由。
 
 ## 4. 循环的固定点长什么样
 
@@ -130,20 +130,21 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations
 
 这个程序先设 `i=0`，然后重复 `i=i+1`，在 `i<10` 时跳回 pc=`0x02`。具体执行的 i 依次为 0、1、2……，最后到 10 时退出。
 
-抽象分析会在循环入口汇合初始值和回边的值：
+抽象分析先在循环入口汇合初始值和回边值。这个例子不改变 memory、Store、来源或调用继续信息，满足栈 widening 的完整载荷不变条件：
 
 ```text
 入口 {0}        执行后得到 {1}       join → {0,1}
-入口 {0,1}      执行后得到 {1,2}     join → {0,1,2}
-…
-入口 {0,…,7}    新值超过指定容量 8    join → ⊤
+入口 {0,1}      执行后得到 {1,2}     出现重复增长
+栈 widening     覆盖旧值和新值       本例数值扩大为 ⊤
 入口 ⊤          后续摘要仍被 ⊤ 覆盖   不再新增信息
 ```
+
+容量 8 限制有限常量列表；它不要求引擎一定逐个收集到第 9 个值才扩大。widening 可以提前放弃细节，以完成安全的固定点。
 
 关键输出片段为（`domain` 行确认本次使用 ConstantsOnly）：
 
 ```text
-status=Converged fork=osaka states=3 edges=3 transfers=11 context_depth=0
+status=Converged fork=osaka states=3 edges=3 transfers=6 context_depth=0
 domain=ConstantsOnly | domain schema=2 | reduction rounds=16 | fact atoms=4096
 relations=false | SMT=in-process z3 | rlimit=10000000 | resource unit=z3 resource units | expression nodes=16384 | depth=256 | constraints=2048
 σᵖ₁ | B₁ @ 0x0002 | stack height=1 | context=[]
@@ -154,11 +155,11 @@ relations=false | SMT=in-process z3 | rlimit=10000000 | resource unit=z3 resourc
   → σᵖ₂ BranchFalse
 ```
 
-只有 3 个状态，却执行了 11 次块转换：循环节点确实被重访。`σᵖ₁ → σᵖ₁` 是回边；`σᵖ₁ → σᵖ₂` 是可能退出的边。出口的 `⊤` 表示整值为 Top，即本次数值摘要没有保留任何固定位或其他数值约束。
+本次命令有 3 个状态、6 次块转换：循环节点确实被重访。`σᵖ₁ → σᵖ₁` 是回边；`σᵖ₁ → σᵖ₂` 是可能退出的边。出口的 `⊤` 表示整值为 Top，即本次数值摘要没有保留任何固定位或其他数值约束。
 
 本实验显式关闭关系传播，没有在非零分支上给 i 附加 `i<10` 的约束，因此摘要会包含实际循环中不会出现的值。`Converged` 表示已完成当前抽象模型的传播，不表示每个数值都已精确，也不表示合约安全。增大 `--max-constants` 只改变保存常量的容量，不会自动加入分支约束。
 
-去掉 `--domain constants-only` 可观察默认 product。它仍得到 3 个状态、3 条边，最终循环槽位仍没有数值限制；组件交换和区间 widening 改变了中间摘要与工作量，不能期待仍是 11 次 transfer。增加数值组件会改善某些程序，不能保证每个循环的最终答案更精确。
+去掉 `--domain constants-only` 比较默认 product。本例两种 profile 都观察到 3 个状态、3 条边、6 次 transfer，最终循环槽位仍为 Top；变化中的 word 在 scoped widening 中放弃不断增长的细节。这个计数只对应上述命令，不是任意循环的收敛或成本保证。增加数值组件会改善某些程序，不能保证每个循环的最终答案更精确。
 
 ## 5. 数值精度怎样改变候选边
 
@@ -266,7 +267,7 @@ nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relati
 4. 回到 [`Engine::execution`](../crates/evm-abstract/src/analysis/engine.rs) 收集块转换的证据，再读 [`Engine::successor`](../crates/evm-abstract/src/analysis/engine.rs)：按键查找节点，join 输入，决定是否入队并保存边。随后回到 [`run`](../crates/evm-abstract/src/analysis/engine.rs) 看下一次调度。
 5. [`single.rs`](../crates/evm-abstract/src/analysis/single.rs)：把同一世界分析核心投影为本课看到的局部 σᵖᵢ/Bᵢ 视图。
 
-阅读时核对五条规则：不同栈高不合并；同一键的输入通过 join 与固定的区间 widening 策略扩大；扩大后需要重访；旧边不删除；任何未完成展开都保留前沿。相关样例由 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 与 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 核对。
+阅读时核对五条规则：不同栈高不合并；同键 join 覆盖完整输入，widening 遵守完整载荷条件和声明的遗忘规则；入口变化需要重访；旧边不删除；任何未完成展开都保留前沿。相关样例由 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 与 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 核对。
 
 `Engine` 的私有字段分担不同职责，不能把“状态表”与“待处理队列”混为一谈：
 

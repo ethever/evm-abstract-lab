@@ -46,26 +46,26 @@
 
 先补[02 的 join](../02-domain.md#3-join把两条路径的信息合在一起)，再读[15 的关系合并](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)。只考虑左路 `x=1`、右路 `x=2`：汇合要覆盖两路，不能强迫 x 同时等于 1 和 2。
 
-**理论角度：**路径内部的条件合取与路径之间的可能性合并方向不同。当前关系 join 保留共同保证，会忘掉部分条件关联；它不保证生成精确的任意析取。
+**理论角度：**路径内部的条件合取与路径之间的可能性合并方向不同。共同保证是普通 RelationState join 的结果；整机 guarded join 另用一个 selector 保存完整替代。数值投影可能看不到配对，循环 widening 也明确丢弃部分保证，不能将三者混为同一操作。
 
-**实现角度：**阅读 [`RelationState::join`](../../crates/evm-abstract/src/domain/relational.rs)，再找 [`join_covers_both_paths_instead_of_conjoining_their_conditions`](../../crates/evm-abstract/src/domain/relational/tests.rs) 的断言：join 后不是 bottom，x=1 与 x=2 都未被排除。这是一个可直接核对的覆盖要求。
+**实现角度：**先读 [`RelationState::join`](../../crates/evm-abstract/src/domain/relational.rs) 与 [`join_covers_both_paths_instead_of_conjoining_their_conditions`](../../crates/evm-abstract/src/domain/relational/tests.rs)：x=1、x=2 都不能被排除。再到 [`machine/join.rs`](../../crates/evm-abstract/src/analysis/machine/join.rs) 跟踪同一个 selector 如何覆盖栈、byte/slot 根、rollback store 与完整路径公式。循环规则与验证范围见[第 17 课](../17-symbolic-state.md#汇合固定点与摘要来源)。
 
 随后读[作用域与 fresh 身份](../15-symbolic-relations.md#5-作用域与摘要重放)的前半部分。同名 Caller 不证明不同环境的输入相等，不同身份也不证明它们数值不等。源码测试 `distinct_input_scopes_remain_independent_not_disequal` 检查后一个区别。
 
-**观察与停点：**能给出“共同保证丢失”和“身份误关联”各一个错误例子即可。摘要重放的 fresh 重命名等到[快照与复用模块](rpc-summaries.md)再学，不必先掌握调用子图。
+**观察与停点：**能区分独立数值集合、共同保证和完整 guarded alternatives，并给出一个身份误关联的错误例子。摘要重放的 fresh 重命名等到[快照与复用模块](rpc-summaries.md)再学，不必先掌握调用子图。
 
 <a id="limits"></a>
 
-## 可选单元：关系知道什么，数组与预算还缺什么？
+## 可选单元：状态关系怎样进入求解，何时仍会未知？
 
-如果要解释写后读，先完成[内存与 storage 的两个基础单元](memory-storage.md#memory-basics)，再读[15 的符号索引边界](../15-symbolic-relations.md#有值的表达式不等于有符号索引数组)。对同一个 k 写 7 再读，表达式身份只能说明 k 没换；当前数组表示还可能忘掉该位置的更新关系。
+如果要解释写后读，先完成[内存与 storage 的基础单元](memory-storage.md#memory-basics)，再读[15 的状态索引关系](../15-symbolic-relations.md#有值的表达式不等于有符号索引数组)。同一账户的 `SSTORE(k,7); SLOAD(k)` 不需要先枚举 k：SlotStateId 保存写后根，SlotRead 使用同一个键，默认例子得到 7。
 
-**理论角度：**证明 k=0 可以把操作变成具体位置的读写；仅证明两次 k 相同，不能让没有符号数组模型的实现自动使用 `select(store(S,k,7),k)=7`。同样，求解过程没有完成也不等于条件不成立。
+**理论角度：**身份回答“地址是否还是 k”，有序根回答“读的是写入之前还是之后”。两项合起来才可用 `select(store(S,k,7),k)=7`。若随后向 q 写入，还需区分 q=k 与 q≠k；不同来源或不同 hash 输入不能直接证明不等。求解未完成也不等于条件不成立。
 
-**实现角度：**[`relations::refine`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 调用数值投影与唯一值查询；[`relational/scalar.rs`](../../crates/evm-abstract/src/domain/relational/scalar.rs) 处理可直接提取的单值事实，[`relational/solver.rs`](../../crates/evm-abstract/src/domain/relational/solver.rs) 提供定宽编码。它们不会替 [`ByteArray` / `Store`](../../crates/evm-abstract/src/world.rs) 新建通用符号索引数组。
+**实现角度：**[`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs) 与 [`Store`](../../crates/evm-abstract/src/world/store/slots.rs) 建立 EVM 状态根，[`relational/solver/state.rs`](../../crates/evm-abstract/src/domain/relational/solver/state.rs) 解释 byte/slot 数组、view、更新和读取；[`relations::refine`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 再将已证明的后果反馈到数值投影。SMT 使用分析器提供的长度、范围和账户规则，不替机器执行这些操作。
 
 再读[资源预算与后端](../15-symbolic-relations.md#7-原生后端与确定性资源预算)，找到当前报告的 provider、rlimit、status 和 frontiers。rlimit 的单位随求解器而异，不能直接读成秒数或 EVM gas。
 
-**观察与停点：**能把“表达能力不够”“合并忘掉关系”“查询资源不足”分别归因即可；不必为学习本模块切换全部后端或提高所有预算。结果结论的范围可继续读[证据模块](evidence.md)。
+**观察与停点：**能分别解释数值投影较宽、widening 放弃保证、编码支持边界和查询资源不足。可选查询未完成可记录精度诊断，执行覆盖不完整则保留 frontier；不用把所有 Unknown 都读成同一种结果。结论范围继续读[证据模块](evidence.md)。
 
 最终验收：选默认关系模式排除的一条边，写出输入身份、已有假设、新增条件及排除依据；再写出一项该结论没有证明的 EVM 行为。

@@ -184,16 +184,16 @@ flowchart TD
 
 本例安装的 runtime 是 `602a5f5260205ff3`，共 8 字节，hash 为 `0x30962a84ef989ca0f724a5b2ec94f9cbf6a731752ce2c0be5333bf96e460c9fd`。原始 world 中目标仍是 absent；Store 保存执行时安装的新代码，称为**代码覆盖层（code overlay）**。后续 CALL 从当前 Store 解析代码，而不是回到原始快照。
 
-可进一步看 A 最终返回的字节：
+可进一步对照 A 的返回内容根与末 byte 的数值观察：
 
 ```bash
 jq '[.analysis.outcomes[] | select(.kind == "Return")
-     | {length: .data.length,
-        last_byte: (.data.bytes["31"] // .data.default)}] | unique' \
+     | {length: .data.length, root: .data.root,
+        last_byte_projection: (.data.bytes["31"] // .data.default)}] | unique' \
   /tmp/create.json
 ```
 
-`data` 是抽象字节数组：`length` 表示长度的抽象值，`bytes` 列出显式保存的位置，其余位置由 `default` 表示。32 字节用 `0x20` 表示；数值 42 的最后一字节是 `0x2a`。这里可能看到 `{0,42}` 的字节集合，包含 runtime 成功返回与 CALL 失败留下零输出的可能，不能读成所有路径都返回 42。
+`data` 的 `length` 表示抽象长度，`root` 的 flat graph 保存来源、view 与写序；`bytes`/`default` 是数值观察和保守回退，不能据此重建所有 lazy 内容。上面的查询只观察已展开的末 byte，缺少该表项时不能把 default 当作完整根的精确读取。32 字节为 `0x20`，数值 42 的最后一字节为 `0x2a`。数值集合 `{0,42}` 可以包含成功返回和调用失败的选择；对应的完整 root、长度与 guard 才说明这些字节怎样配对，不能读成所有路径都返回 42。
 
 ### CREATE2 和失败路径的前提
 

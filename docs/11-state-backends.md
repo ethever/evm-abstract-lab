@@ -73,7 +73,7 @@ STATE_BACKEND_REPEATS=3 \
 | --- | --- |
 | `checkpoint_drop` | 建立整个 Store 检查点并释放它 |
 | `sparse_write_restore` | 检查点、最多 8 个已存在 slot 的精确写入、读取一个观察值、恢复检查点并释放被替换的状态 |
-| `unknown_alias_write_restore` | 检查点、未知 slot 写入对该账户全部显式 slot 和默认值的弱更新、读取一个观察值、恢复与释放 |
+| `unknown_alias_write_restore` | 检查点、未知 slot 的有序根更新与显式 slot/default 数值弱更新、读取一个观察值、恢复与释放 |
 | `join_drop` | 合并两个 Store、读取一个观察值、释放合并结果 |
 
 计时内使用 `std::hint::black_box` 保留操作和观察结果。计时外检查每项结束后 Store 与原输入相等；另行计算一次写入后或合并后完整 Store 的 checksum，覆盖所有 slot 的效果。完整 Store 序列化、checksum 与输出都在计时外。每次重复交替 std / imbl 的进程启动顺序；它能减少固定顺序带来的偏差，但不消除操作系统调度、频率和缓存变化。

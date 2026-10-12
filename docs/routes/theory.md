@@ -58,7 +58,7 @@
 
 EVM 的跳转目标来自栈，因此“有哪些边”和“栈里有哪些可能值”互相影响：数值分析发现跳转边，新边又带来新的输入。工作表算法把入口发生变化的状态放进队列，重新执行并传播，直到不再产生需要处理的信息。这个稳定状态称为固定点。
 
-循环不应靠“执行过一次”就停止。有限集合会在容量边界扩大为 Top；组合域对反复扩大的区间使用 widening，把继续外移的端点扩大到极值，减少逐个扩大范围的工作。两者都可能损失精度。状态、transfer 与累计工作预算仍可能先耗尽，此时必须保留未完成前沿。
+循环不应靠“执行过一次”就停止。有限常量容量控制一个数值组件；其余完整载荷不变时，栈 widening 可提前扩大持续增长的值，减少逐个迭代。状态根也变化时，整机循环另用有界完整 cases 并显式忘掉旧路径保证，见[第 17 课](../17-symbolic-state.md#汇合固定点与摘要来源)。这些规则都可能降低精度，状态、表达式、cases、transfer 与共享工作预算也可能先耗尽，须保留未完成前沿。
 
 1. 对照[第 03 课的工作表](../03-cfg.md#3-手动走完一次工作表传播)，用 diamond 逐轮写出队列和汇合入口；再运行[循环实验](../03-cfg.md#4-循环的固定点长什么样)的 [`loop.hex`](../../examples/loop.hex)。指出“再次处理这个 σᵖᵢ”的原因，并区分字节码块 Bᵢ 与分析状态 σᵖᵢ。
 2. 阅读[未知跳转的处理](../03-cfg.md#6-跳转目标未知时仍须保留后续行为)，用 [`dynamic-jump.hex`](../../examples/dynamic-jump.hex)检查候选目标为什么仍须来自合法 JUMPDEST。目标值变粗可以增加边；额外边表示抽象可能，不能单凭它声称存在走通整条路径的输入。
@@ -106,15 +106,15 @@ SSA 在静态表示中给每个值定义分配一个唯一名字，让使用者�
 
 栈槽按位置排列，memory 和 storage 则需要额外的地址。memory 按字节寻址，MLOAD/MSTORE 处理连续 32 字节；storage 按“账户、256 位 slot”寻址，每个 slot 保存一个 word。两个地址可能指向同一位置，叫作可能别名。知道写入值为 7，并不能自动知道哪些单元被替换。
 
-唯一位置可以强更新，直接替换旧值；多个候选位置需要覆盖“这次写中了它”和“这次没写它”，即弱更新。若原来 `A[0]=4, A[1]=7`，写入位置可能是 0 或 1，新值是 9，摘要需要保留 `A[0]∈{4,9}`、`A[1]∈{7,9}`。逐位置保存又会丢掉两者必须来自同一选择的关系，这与第二步的逐槽合并是同一个精度问题。
+先只考虑数值投影。唯一位置可强更新，直接替换旧值；多个候选位置需覆盖“写中了它”和“没写它”。若原来 `A[0]=4, A[1]=7`，k∈{0,1}，写入 9 后两处分别允许 `{4,9}`、`{7,9}`。独立集合看不到两者必须来自同一次选择。完整模型另保存 `Store(previous,k,9)`，用同一个 k 决定哪一处更新；不能把投影的信息损失归给完整根。
 
-1. 做[第 14 课写入 42 再读出](../14-memory-model.md#2-第一个实验写入-42再读出来)，画出最后一个字节为何是 `2a`；随后做[有限地址写入实验](../14-memory-model.md#6-地址确定时覆盖地址有几个候选时合并)的 [`memory-write-alias.hex`](../../examples/memory-write-alias.hex)。先列两行具体结果，再列逐字节摘要，指出 MLOAD 重新组合时多出了什么。
-2. 按[第 16 课的 slot 实验](../16-storage-model.md#2-第一个实验替换-slot-0读取-slot-0-和-slot-1)区分初始事实与当前 Store，再手算[两候选 slot 的弱更新](../16-storage-model.md#5-有两个可能的-slot为什么要保留旧值)。同时检查[未列出的 slot](../16-storage-model.md#没列出的-slot-是零还是未知)：是否为零取决于初始 world 的完整性声明。
-3. 比较[同一未知 memory 偏移写后读](../14-memory-model.md#同一个未知偏移写后再读也未必恢复原值)与[同一未知 storage 键写后读](../16-storage-model.md#6-无法列出-slot-候选刚写入再读为什么是-07)。前者的 [`memory-symbolic-offset.hex`](../../examples/memory-symbolic-offset.hex)得到 Top，后者的 [`storage-symbolic-key.json`](../../examples/storage-symbolic-key.json)得到 `{0,7}`。两者都保留了栈上地址的相同身份，却没有普遍保存符号位置的写后读关系；按正文固定输入后再观察强更新。
+1. 做[第 14 课写入 42 再读出](../14-memory-model.md#2-第一个实验写入-42再读出来)，画出最后一个字节为何是 `2a`；随后做[有限地址写入实验](../14-memory-model.md#6-地址确定时覆盖地址有几个候选时合并)。列出两个真实 word，再检查默认 MLOAD 的两个候选。若只看独立 byte 集合，会多出哪些组合？
+2. 按[第 16 课的 slot 实验](../16-storage-model.md#2-第一个实验替换-slot-0读取-slot-0-和-slot-1)区分初始 world 与当前 Store，手算[两候选 slot 的更新](../16-storage-model.md#5-有两个可能的-slot为什么要保留旧值)。同时检查[未列出的 slot](../16-storage-model.md#没列出的-slot-是零还是未知)：是否为零取决于初始完整性声明，不取决于表项数量。
+3. 比较[同一符号 memory 偏移](../14-memory-model.md#同一个未知偏移写后再读也未必恢复原值)与[同一未知 storage 键](../16-storage-model.md#6-无法列出-slot-候选刚写入再读为什么是-07)。正常同址写后读得到 7；无约束 memory 地址还包含超策略输入，原始 [`memory-symbolic-offset.hex`](../../examples/memory-symbolic-offset.hex) 因而保留 frontier。不要用具体 calldata 替代未知输入来掩盖覆盖边界。
 
-源码看 [`ByteArray::write_values` / `read_word`](../../crates/evm-abstract/src/world/bytes.rs) 与 [`Store` 内的 `Plane::write` / `read`](../../crates/evm-abstract/src/world/store.rs)。当前表示以具体索引映射和默认值为基础。未知 memory 写入会粗化字节事实，未知 slot 写入则合并该账户的默认值和显式单元。通用符号数组中的 `select(store(S,k,7),k)=7` 表示“在 k 写后再读 k 得到 7”；这是理解缺失关系的理论记号，不是当前已经具备的通用数组能力。
+源码看 [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs) 的根、view 与读写，以及 [`Store` 的 slot 转换](../../crates/evm-abstract/src/world/store/slots.rs)。`select(store(S,k,7),k)=7` 表达当前有序状态模型利用的同址规则；它无需先求出 k 的数值。EVM 的账户归属、写序、byte 长度、零补和范围仍由分析器定义，求解器不能替代这些语义。
 
-**完成问题：** 既然 DUP 保留了同一个 k，为什么 SSTORE(k,7) 后 SLOAD(k) 仍可能含零？增加单值的常量容量、延迟路径合并、保留符号索引更新关系，分别可能改善哪一步？
+**完成问题：**同一个 k 的写后读为何是 7，改读固定 slot 0 又为何需要别名条件？只看两个 slot 的独立候选与看完整根，分别能证明到哪一步？增大常量容量是否会自动补上未完成的 solver 查询？
 
 下一步检查关系层怎样帮助、又不能自动补回哪些信息；对照[实现路线的 memory/storage 读写](implementation.md#memory-storage)。
 
@@ -130,11 +130,11 @@ SMT 在这里检查已经编码的条件能否同时成立。若同一个 x 已�
 
 1. 做[第 15 课的两次 CALLVALUE 判断](../15-symbolic-relations.md#1-先看同一个输入不能同时等于-1-和-2)，比较关系开启与关闭时 pc=`0x12` 是否出现。写下每条分支新增的条件，解释删除后继用的是“同一个输入”加“当前路径条件”这两项知识。
 2. 读[五层信息](../15-symbolic-relations.md#2-五层信息分别保存什么)和 [`assume` / 数值精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)，给第二步的数值摘要、第四步的 SSA 名字各找位置。再用正文两次计算 `x+1` 的例子区分表达式相等、来源标签相同与数值摘要相同。
-3. 阅读[关系 join](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)、[作用域](../15-symbolic-relations.md#5-作用域与摘要重放)与[符号索引数组边界](../15-symbolic-relations.md#有值的表达式不等于有符号索引数组)。左路 `x=1`、右路 `x=2` 汇合时，不能把两者直接合取；当前实现保留共同保证，也不自动保存任意精确析取。将这个规则带回第五步，说明为什么求解器不能凭空找回数组已经忘记的写入关系。
+3. 阅读[关系 join](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)、[作用域](../15-symbolic-relations.md#5-作用域与摘要重放)与[状态索引关系](../15-symbolic-relations.md#有值的表达式不等于有符号索引数组)。左路 `x=1`、右路 `x=2` 不能直接合取；普通 RelationState join 保留共同项，整机 join 另保存共享 selector 下的完整替代。循环 widening 则明确放弃部分保证，详见第 17 课。将这些表示层次带回第五步，说明为何数值投影宽于完整读取，且求解器不能凭空补上未编码的语义。
 
 源码看 [`domain/symbolic.rs`](../../crates/evm-abstract/src/domain/symbolic.rs) 的 `ExprId`、[`domain/relational.rs`](../../crates/evm-abstract/src/domain/relational.rs) 的 `assume` / `join` / `unique_value`，再接到 [`analysis/transfer/relations.rs`](../../crates/evm-abstract/src/analysis/transfer/relations.rs)。运算遵守 256 位 EVM 规则；表达式节点、深度、关系数量与求解资源都有上限，见[第 15 课资源预算](../15-symbolic-relations.md#7-原生后端与确定性资源预算)。固定输入身份有环境作用域，跨报告同名 Caller 不能直接建立相等关系。
 
-**完成问题：** 关系层证明 k=0 时，怎样帮助现有 storage 映射变精确？若只能证明两次 k 相同，为什么还不能声称具备通用的符号数组写后读规则？
+**完成问题：** 证明 k=0 与只知道两次 k 相同，分别怎样帮助有序 slot 读取？为什么同址规则成立，仍不意味着任意 hash 别名或任意路径公式都可在给定预算下被精确判定？
 
 下一步把这些值和约束放进真实的调用层次；对照[实现路线的表达式与路径条件](implementation.md#relations)。
 

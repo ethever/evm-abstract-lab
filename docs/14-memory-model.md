@@ -4,7 +4,7 @@
 
 `MSTORE` 把栈上的数写进 memory，`MLOAD` 再读出来。写入的是确定的数时，这很直观；如果数或地址都有多种可能，分析器应该保存什么？这就是本课要解释的内存模型。
 
-本课按三步展开：先画出一次真实执行中的字节；再把多次可能执行的结果合在一张表里；最后解释这张合并表保存了什么、忘掉了什么。每个实验都先限定输入，再读抽象结果。不要从一个 `⊤` 或 `Converged` 标签直接跳到结论。
+本课按三步展开：先画出一次真实执行中的字节；再把多次执行投影成逐字节的数值表；最后检查完整状态根怎样保留表中看不到的地址、写序与条件。数值表方便观察，但它不是完整内存模型。每个实验都先限定输入，再读抽象结果；一个 `⊤` 或 `Converged` 标签不能单独回答内容是否精确、执行是否完整。
 
 读过[第 00 课](00-start.md)的栈表即可开始。所有命令在仓库根目录执行，都是离线例子，不需要 RPC、钱包或资金。`nix run . --` 后面是本项目的参数；首次构建可能需要下载依赖。本课使用默认 Osaka。不了解集合或 `⊤` 时，遇到它们再回看[第 02 课](02-domain.md)。
 
@@ -108,7 +108,7 @@ MLOAD(1) 读取 1～32，因此得到 `0x1234`。MLOAD(0) 读取的窗口是 0�
 | --- | --- |
 | `length` | 逻辑字节长度；memory 中按 32 字节扩容 |
 | `root` | 完整来源、写序、复制范围与条件 |
-| `bytes` / `default` | 已展开位置与未列位置的数值近似 |
+| `bytes` / `default` | 显式数值观察与保守回退；需结合 root 解释，不能独立重建 lazy 内容 |
 | `memory` | 是否启用内存扩容语义 |
 
 ### 没有表项，不等于字节未知
@@ -208,9 +208,25 @@ nix run . -- explain --file examples/memory-word-overwrite.hex
 
 具体偏移保留原有数值快路径；符号偏移写入也保存有序状态节点。对 p∈{0,1} 的 `MSTORE8(p,0xaa)`，逐位置数值摘要仍可能把偏移 0 和 1 都表示为 `{0,0xaa}`。这两组候选只是投影，不能据此断言同一具体执行同时选择两个 `0xaa`。
 
-### 合并到底丢失了什么
+### 数值表与完整读取怎样对照
 
-仅观察逐字节候选会忘记“哪一条路径选择哪个位置”。完整机器 guarded join 为地址、值、memory/store 根和路径公式使用同一个 selector，保留两侧的配对。查询时用这些关系解释读取；求解未知时保守保留候选，不能凭 effect 编号或显示相同的 Top 建立别名。
+[`memory-write-alias.hex`](../examples/memory-write-alias.hex) 根据未知 calldata 选择 p=0 或 p=1，向 p 写一个 `aa`，再 MLOAD(0)。先列两次具体执行：
+
+| 选择 | memory 的前两字节 | MLOAD(0) |
+| --- | --- | --- |
+| p=0 | `aa 00` | `0xaa × 2^248` |
+| p=1 | `00 aa` | `0xaa × 2^240` |
+
+```bash
+nix run . -- cfg --file examples/memory-write-alias.hex \
+  --context-depth 0 --format json > /tmp/memory-alias.json
+jq '.states[] | select(.key.basic_block_index == 3)
+    | .exit_stack[0].Constants' /tmp/memory-alias.json
+```
+
+默认关系模式下，这个例子的 MLOAD 只保留表中的两个 word。若把两个 byte 的 `{0,0xaa}` 独立组合，还会得到全零或同时两个 `aa`；这些额外组合属于逐字节投影，不是本例完整读取的结果。WriteByte 保存同一个 p，整机 guarded join 为地址、值、memory/store 根和路径公式使用同一个 selector，保留两侧配对。
+
+这个例子展示已保留关系能改善读取，不保证任意读取都能得到精确候选。value 查询无法完成时仍保守保留数值与精度诊断；effect 编号或显示相同的 Top 不能证明别名。
 
 ## 7. 无法列出地址，与无法列出长度，是两个问题
 
@@ -222,9 +238,27 @@ WordRead 捕获有限 view 和符号地址，保留 32 字节大端读取及零�
 
 WriteByte/WriteWord 保存符号偏移、值和旧根。后续同址或别名读取可以由规范化与 SMT 得到结论；已存的历史读取不会随新写入改变。
 
-### 同一个未知偏移，写后再读也未必恢复原值
+<a id="同一个未知偏移写后再读也未必恢复原值"></a>
 
-这个旧标题保留供课程链接使用。当前模型已经保存 `MSTORE(p,7); MLOAD(p)` 的有序状态关系；正常、合法范围内同址读取可得到 7。范围策略仍先区分合法访问、零长度和未覆盖输入；完全无约束 p 的超策略路径不能删除。关闭关系查询或达到表达式/求解额度会影响精度，必须读取实际诊断。
+### 同一个符号偏移，写后再读
+
+先让未知输入 x 产生 p=`x AND 63`。p 仍有 64 种可能，地址没有具体化；但 32 字节访问所需的内存范围有界。程序保留 p，在同一位置写 7 再读：
+
+```bash
+nix run . -- cfg --hex 5f35603f16600781525100 \
+  --format json > /tmp/memory-same-address.json
+jq '.states[0].exit_stack[0].Constants' /tmp/memory-same-address.json
+```
+
+结果为 `["0x7"]`。WriteWord 保存符号地址 p，WordRead 捕获写后的根与同一个 p，所以无需先枚举 p 的全部候选来恢复 7。原来已读出的 word 仍绑定旧根。
+
+再保留完全无约束的 p，运行原始 [`memory-symbolic-offset.hex`](../examples/memory-symbolic-offset.hex)：
+
+```bash
+nix run . -- cfg --file examples/memory-symbolic-offset.hex --format json
+```
+
+策略内执行的出口也读出 7，同时报告 `Incomplete`、退出码 2，并保留超内存策略的 frontier。问题是还有访问范围未覆盖，不能据此说符号写后读退化成 Top。关闭关系查询、表达式构造超限或 solver 未完成也各有自己的精度与覆盖边界；本例不证明所有地址公式都能被精确求解。
 
 ### 7.3 不知道复制多少字节
 
@@ -232,17 +266,24 @@ WriteByte/WriteWord 保存符号偏移、值和旧根。后续同址或别名读
 
 普通库调用若只提供没有表达式的 Top size，仍会报告 ByteRange::UnknownSize。这不能与带来源和长度表达式的 EVM COPY 混淆。RETURNDATACOPY 的源边界、MCOPY 的重叠和双向内存扩容另外遵守各自指令规则。
 
-## 8. 为什么刚存进去，再读出来会多出候选
+<a id="8-为什么刚存进去再读出来会多出候选"></a>
 
-数值投影可能显示逐字节组合的额外值，完整状态关系另决定哪些组合共同成立。现在应同时查看 WordRead、写序和 guarded roots，不能把旧逐字节快照当作完整内容模型。
+## 8. 逐字节候选与完整 word 的关联
 
-### 有表达式的完整 word 往返可以恢复身份
+设一个 word 只能是 `0x0101` 或 `0x0202`，前 30 字节全零。分别观察最后两个 byte，它们各自都允许 `{01,02}`。独立拼接得到 `0101`、`0102`、`0201`、`0202` 四个组合，其中两个从未出现在原来的 word 中。这个推导说明逐字节表的信息不足，不说明当前 WordRead 必然读出四个值。
 
-完整 WordWrite 后的同址 WordRead可以复用输入关系；部分覆盖则保留未覆盖字节与新字节。`MSTORE(p,x); MSTORE8(p+31,0xaa)` 不能继续宣称整 word 等于 x，但能保留前 31 字节。表示超限、value UNKNOWN 和未完成执行分别报告。
+[`memory-byte-correlation.hex`](../examples/memory-byte-correlation.hex) 根据未知输入选择上述两个 word，在控制流汇合后 MSTORE(0)，再 MLOAD(0)：
 
-### 延后合并能帮助这个例子
+```bash
+nix run . -- cfg --file examples/memory-byte-correlation.hex \
+  --context-depth 0 --format json > /tmp/memory-correlation.json
+jq '.states[] | select(.key.basic_block_index == 3)
+    | .exit_stack[0].Constants' /tmp/memory-correlation.json
+```
 
-上下文分区仍可以改善精度；合并时的共享 selector 则避免把不同分区的地址与状态错误交叉配对。保存表达式并不代替合法范围、预算与原生 solver 的实际证明。
+默认模式输出 `["0x101","0x202"]`。完整 WordWrite/WordRead 保存同一个输入 word 和写序，恢复的是两种完整选择。partial overwrite 则需要逐一解释覆盖范围：`MSTORE(p,x); MSTORE8(p+31,0xaa)` 改变最后一个 byte，不能继续宣称整个 word 等于 x。
+
+上下文分区可以让两条路暂时保持为不同状态；发生整机 join 时，共享 selector 继续保留字段配对。数值投影仍可能宽于关系结果，且更复杂的表达式可能遇到查询或构造边界。阅读时应同时检查 WordRead、历史根、路径条件、诊断与 frontiers，不能把独立 byte 的交叉组合当作已经证明可行。
 
 ## 9. 组合域能保留字节性质，但寻址与关联仍是另一层
 
@@ -346,7 +387,9 @@ B 用 CALLDATALOAD 把一个输入 word 读到自己的栈上；需要可修改�
 
 这里有两组长度：B 实际返回的数据长度，以及 A 在 CALL 中请求的输出区长度。返回数据完整保存为 A 的 `returndata`；向 A memory 复制的只是 `min(请求长度, 实际返回长度)` 个字节。输出区按整个请求范围扩张，未被返回字节覆盖的后缀保留原内容。
 
-例如 A 请求复制 4 字节，B 实际只返回 2 字节，那么前两字节被替换，后两字节保留；不能把后两字节自动清零。`copy_return_data` 的[回归测试](../crates/evm-abstract/tests/world.rs)核对了这个行为。返回长度未知时，当前模型逐字节合并“被复制”和“未被复制”两种可能，同样可能损失位置之间的关联。
+例如 A 请求复制 4 字节，B 实际只返回 2 字节，那么前两字节被替换，后两字节保留。返回长度为符号值 L 时，[`copy_return_data`](../crates/evm-abstract/src/world/bytes.rs) 先按完整请求范围扩容，再保存一次长度为 `min(4,L)` 的 Copy；[`minimum`](../crates/evm-abstract/src/world/bytes/ranges.rs) 用比较和 ITE 保留这个长度关系。Copy 捕获完整 returndata 的 source view，未覆盖后缀仍来自旧 memory。
+
+所有位置共用同一个复制长度。例如 L=0 时一个 byte 都不覆盖；L=1 时只覆盖首 byte；L=2 时才覆盖前两个。独立观察每个 byte 可能同时列出旧值与返回值，但完整根没有将每个位置变成彼此无关的开关。具体前缀保留与符号最小长度由[字节状态回归](../crates/evm-abstract/src/world/bytes/tests/state.rs)检查；这项模型关系也不保证所有复杂返回长度的 solver 查询都能完成。
 
 改变刚才例子的输出大小，其他前提保持不变：
 
@@ -405,7 +448,7 @@ nix develop -c jq '.states[0].exit.call_stack.root.state.memory | {length, root,
 
 CLI/Web 的 `max_memory_bytes` 默认 64 MiB，库 ExecutionConfig 默认 64 KiB。该策略约束 word-rounded **logical footprint**，不要求逐字节复制或巨量分配；也不是主机峰值 RAM。用 `--max-memory-bytes` 调整输入覆盖范围，不提供未知长度的实际值。
 
-范围先保留 size=0 分支，再以非回绕算术检查访问及 MSIZE。策略内继续执行；超策略输入保存 MemoryPolicy condition 和 pre-effect 状态，标记 Incomplete，不能显示成真实 EVM out-of-gas。RETURNDATACOPY 的源越界属于指令异常语义，另与表示失败 ByteRange 区分。
+范围先保留 size=0 分支，再以非回绕算术检查访问及 MSIZE。策略内继续执行；超策略输入保存 MemoryPolicy condition 和 pre-effect 状态，标记 Incomplete，不能显示成真实 EVM out-of-gas。单字节码 `cfg` 的教学投影将这类原因简写为 `Memory`；完整 `analyze --world` 的 `.frontiers[].range` 与 Web 报告另保留范围条件和待处理载荷。RETURNDATACOPY 的源越界属于指令异常语义，另与表示失败 ByteRange 区分。
 
 `OperandsConsumed` 表示参数已弹出，但效果尚未完成；报告与部分 SSA 不伪造结果。Work、Relations、StateJoin、ByteRange 与 Memory 的 typed 原因分别保留。可选 value 查询的 UNKNOWN 是精度损失；条件未保留或覆盖未完成才是 frontier。
 
@@ -434,19 +477,19 @@ CLI/Web 的 `max_memory_bytes` 默认 64 MiB，库 ExecutionConfig 默认 64 KiB
 
 1. 在新 memory 中执行 MSTORE(1, 0x1234)，MSIZE 是 32 还是 64？`12`、`34` 分别在什么偏移？
 2. 对新 memory 执行一次 MSTORE8(p, 0xaa)，其中 p∈{0,1}。合并后两个字节各自有 `{0,0xaa}`，是否证明一次真实执行能同时把两个位置写成 `aa`？
-3. `{0x0101,0x0202}` 写入后读出四个候选，分析器是否漏掉了原先允许的值？为什么仍会显示 Converged？
-4. 未知地址写入后返回 `⊤`，与未知 MCOPY 大小留下 `Incomplete / Memory`，分别丢失了什么？
-5. 同一个未知 p 被 DUP 保留，MSTORE(p,7) 后 MLOAD(p) 仍为 Top，是否说明 DUP 没有保存 p 的身份？
+3. word 只允许 `{0x0101,0x0202}`，为什么独立 byte 候选可拼出四个组合，而第 8 节的完整 MLOAD 只输出两个？Converged 是否要求所有数值都精确？
+4. 有来源与长度表达式的未知 COPY、只有 Top 而没有表达式的 size、超过内存策略的范围，分别应怎样解释？
+5. 同一个符号 p 被保留，MSTORE(p,7) 后 MLOAD(p) 为什么无需枚举地址也能得到 7？完全无约束 p 的例子为什么仍为 Incomplete？
 6. A 的 CALL 请求输出大小为 0，B 成功返回 32 字节，A 的 returndata 是否也为空？A 能直接读取 B 的 memory 吗？
 
 <details>
 <summary>提示与答案</summary>
 
 1. 访问 `[1,33)`，向上取整到 64；高 30 个字节为零，`12` 在偏移 31，`34` 在偏移 32。地址无需按 word 对齐。
-2. 不能。一次真实执行只写一个位置；独立保存的逐字节候选丢失了“两个位置不能同时被写”的关系。
-3. 没有漏掉 `0x0101`、`0x0202`，但额外允许交叉组合。传播已经在当前抽象模型中完成，收敛不要求每个值都精确。
-4. 前者通过更粗的数值/字节摘要继续传播；后者不能展开所需范围，留下未完成的执行区域和原因。零、Top、空数组、没有表项、没有到达的状态也分别有不同含义。
-5. 不是。p 的身份保留了，但当前 ByteArray 没有保存一般的符号索引写入关系。字节事实在未知地址写入时已经粗化，不能仅靠 p=p 找回。
+2. 不能。一次真实执行只写一个位置；独立候选看不到两者的配对，完整 WriteByte 与共同 guard 另保留这项关系。
+3. 独立 byte 候选允许交叉选择；本例完整 WordWrite/WordRead 保留原 word 的关系，所以得到两个候选。Converged 表示在声明模型与策略下完成传播，允许保守的多余候选，不要求每个查询都精确。
+4. 第一种保存 source view、符号长度与一次 Copy，合法策略内无需逐字节展开。第二种无法建立可信范围，表示层可返回 ByteRange::UnknownSize。第三种保留 MemoryPolicy 条件和效果执行前的状态，表示策略下尚未覆盖的输入；不是已证明的 EVM 失败。
+5. WriteWord 与 WordRead 引用同一地址和写后根，保存了符号索引更新关系。无约束 p 还包含超出 logical footprint 策略的访问，必须保留 frontier；策略内读出 7 不能覆盖那些输入。
 6. returndata 仍有完整 32 字节。大小为 0 只关闭这次自动输出复制；A 可以随后 RETURNDATACOPY 到自己的 memory。A 不能直接读取 B 的私有 memory。
 
 </details>
