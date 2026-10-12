@@ -218,7 +218,11 @@ pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> 
         analysis.summary_stats().hits,
         analysis.summary_stats().misses,
         started.elapsed().as_micros(),
-        analysis.frontiers(),
+        analysis
+            .frontiers()
+            .iter()
+            .map(|frontier| (&frontier.reason, frontier.from, frontier.pc))
+            .collect::<Vec<_>>(),
     );
     analysis
 }
