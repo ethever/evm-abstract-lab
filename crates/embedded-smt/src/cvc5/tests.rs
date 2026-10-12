@@ -136,21 +136,22 @@ fn cancellation_during_native_array_check_discards_the_answer_after_native_retur
     let token = Cancellation::new();
     let cancel_token = token.clone();
     let (entered, receiver) = mpsc::channel();
+    let (cancelled, cancellation_time) = mpsc::channel::<Instant>();
     let observer = ObserveCheck {
         inner: Cvc5::new(allowance, true).unwrap(),
         entered,
     };
     std::thread::scope(|scope| {
-        let canceller = scope.spawn(move || {
+        scope.spawn(move || {
             receiver.recv().unwrap();
             std::thread::sleep(Duration::from_millis(20));
             cancel_token.cancel();
-            Instant::now()
+            cancelled.send(Instant::now()).unwrap();
         });
         let outcome = with_cancellation(&token, || {
             backend::execute(&assertions, None, observer, allowance)
         });
-        let cancelled_at = canceller.join().unwrap();
+        let cancelled_at = cancellation_time.recv().unwrap();
         eprintln!(
             "cvc5 active array check: rlimit={allowance}, native=ResourceLimit, public={outcome:?}, cancellation delay={:?}",
             cancelled_at.elapsed()
