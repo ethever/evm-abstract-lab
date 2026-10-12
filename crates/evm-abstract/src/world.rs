@@ -14,7 +14,7 @@ mod store;
 
 pub use bytes::{ByteArray, RangeError};
 pub use snapshot::{SnapshotEnvironment, SnapshotIdentity};
-pub use store::{AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store};
+pub use store::{AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store, StoreError};
 
 use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::AbstractValue};
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -140,6 +140,9 @@ impl Account {
 pub struct World {
     fork: Fork,
     identity: SnapshotIdentity,
+    // Free-form offline labels are descriptions, not source equality identities.
+    // Clone retains this process-private token; independent fixtures get fresh ones.
+    storage_source: crate::domain::symbolic::ExprId,
     #[serde(skip_serializing_if = "Option::is_none")]
     snapshot_environment: Option<SnapshotEnvironment>,
     provenance: String,
@@ -262,6 +265,8 @@ impl World {
             identity: SnapshotIdentity::Offline {
                 label: provenance.clone(),
             },
+            storage_source: crate::domain::symbolic::ExprId::fresh()
+                .expect("snapshot source identity namespace available"),
             snapshot_environment: None,
             provenance,
             accounts: BTreeMap::new(),

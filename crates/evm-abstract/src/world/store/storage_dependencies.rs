@@ -8,6 +8,21 @@ use crate::{
 };
 use std::num::NonZeroUsize;
 
+// Numeric, provenance and persistent identity assertions remain unchanged;
+// reads now additionally carry their immutable state dependency.
+macro_rules! assert_slot_eq {
+    ($actual:expr,$expected:expr $(,)?) => {{
+        let actual = $actual;
+        let mut plain = actual.clone();
+        plain.forget_expression();
+        assert_eq!(plain, $expected);
+        assert!(!actual.symbolic_limit_reached());
+        if actual.singleton().is_none() {
+            assert!(actual.expression().is_some());
+        }
+    }};
+}
+
 fn word(value: u64) -> AbstractValue {
     AbstractValue::constant(U256::from(value))
 }
@@ -85,7 +100,7 @@ fn strong_writes_discard_initial_dependency_even_when_the_new_value_is_top() {
         store.missing_initial_slots(&world, address, &keys(1, 2)),
         vec![U256::from(2)]
     );
-    assert_eq!(
+    assert_slot_eq!(
         store.read(address, &word(1), Domain::default()),
         AbstractValue::top()
     );
@@ -102,8 +117,8 @@ fn finite_weak_writes_preserve_baseline_but_do_not_restore_discarded_dependencie
         store.missing_initial_slots(&world, address, &keys(1, 2)),
         vec![U256::from(2)]
     );
-    assert_eq!(store.read(address, &word(1), domain), keys(3, 7));
-    assert_eq!(store.read(address, &word(2), domain), AbstractValue::top());
+    assert_slot_eq!(store.read(address, &word(1), domain), keys(3, 7));
+    assert_slot_eq!(store.read(address, &word(2), domain), AbstractValue::top());
 
     // Replay with the newly observed baseline still joins the weak SSTORE.
     let mut observed = Account::unknown();
@@ -112,7 +127,7 @@ fn finite_weak_writes_preserve_baseline_but_do_not_restore_discarded_dependencie
     refined.insert(address, observed).unwrap();
     let mut replayed = Store::new(&refined);
     replayed.write(address, &keys(1, 2), &word(7), domain);
-    assert_eq!(replayed.read(address, &word(2), domain), keys(7, 11));
+    assert_slot_eq!(replayed.read(address, &word(2), domain), keys(7, 11));
     assert!(
         replayed
             .missing_initial_slots(&refined, address, &word(2))
@@ -131,9 +146,9 @@ fn unknown_alias_write_remains_weak_after_initial_rpc_refinement() {
         store.missing_initial_slots(&world, address, &keys(1, 2)),
         vec![U256::from(2)]
     );
-    assert_eq!(store.read(address, &word(4), domain), keys(7, 11));
-    assert_eq!(store.read(address, &word(1), domain), keys(3, 7));
-    assert_eq!(store.read(address, &word(2), domain), AbstractValue::top());
+    assert_slot_eq!(store.read(address, &word(4), domain), keys(7, 11));
+    assert_slot_eq!(store.read(address, &word(1), domain), keys(3, 7));
+    assert_slot_eq!(store.read(address, &word(2), domain), AbstractValue::top());
 }
 
 #[test]
@@ -151,7 +166,7 @@ fn havoc_replaces_initial_dependencies_for_exactly_its_scope() {
         store.missing_initial_slots(&world, other, &word(1)),
         vec![U256::from(1)]
     );
-    assert_eq!(
+    assert_slot_eq!(
         store.read(address, &word(4), Domain::default()),
         AbstractValue::top()
     );
@@ -228,9 +243,9 @@ fn creation_storage_and_transient_storage_use_transaction_zero_baselines() {
     let (world, address) = partial_world();
     let domain = Domain::default();
     let mut store = Store::new(&world);
-    assert_eq!(store.read_transient(address, &word(1), domain), word(0));
+    assert_slot_eq!(store.read_transient(address, &word(1), domain), word(0));
     store.write_transient(address, &word(1), &word(9), domain);
-    assert_eq!(store.read_transient(address, &word(1), domain), word(9));
+    assert_slot_eq!(store.read_transient(address, &word(1), domain), word(9));
     assert_eq!(
         store.missing_initial_slots(&world, address, &word(1)),
         vec![U256::from(1)]
@@ -242,8 +257,8 @@ fn creation_storage_and_transient_storage_use_transaction_zero_baselines() {
             .missing_initial_slots(&world, address, &keys(1, 2))
             .is_empty()
     );
-    assert_eq!(store.read(address, &word(1), domain), keys(0, 7));
-    assert_eq!(store.read_transient(address, &word(1), domain), word(0));
+    assert_slot_eq!(store.read(address, &word(1), domain), keys(0, 7));
+    assert_slot_eq!(store.read_transient(address, &word(1), domain), word(0));
 }
 
 #[test]
