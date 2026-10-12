@@ -3,7 +3,7 @@
 use super::Store;
 use crate::{
     Address, Fork, U256,
-    domain::{AbstractValue, Domain},
+    domain::{AbstractValue, Domain, symbolic::ExprId},
     world::{Account, World},
 };
 use std::num::NonZeroUsize;
@@ -262,21 +262,31 @@ fn creation_storage_and_transient_storage_use_transaction_zero_baselines() {
 }
 
 #[test]
-fn widening_and_domain_projection_preserve_the_joined_must_facts() {
+fn guarded_join_and_domain_projection_preserve_the_joined_must_facts() {
     let (world, address) = partial_world();
     let domain = Domain::default();
     let initial = Store::new(&world);
     let mut strong = initial.clone();
     strong.write(address, &word(1), &AbstractValue::top(), domain);
-    strong.widen(&initial, domain);
+    let strong_root = strong.slot_root(address, false).unwrap();
+    strong.project(domain);
+    assert_eq!(strong.slot_root(address, false).unwrap(), strong_root);
     assert!(
         strong
             .missing_initial_slots(&world, address, &word(1))
             .is_empty()
     );
-    let mut joined = strong.join(&initial, domain);
-    joined.widen(&strong, domain);
+    let mut joined = strong
+        .join_guarded(
+            &initial,
+            domain,
+            ExprId::fresh().unwrap(),
+            domain.spec().relations().expressions(),
+        )
+        .unwrap();
+    let joined_root = joined.slot_root(address, false).unwrap();
     joined.project(Domain::new(NonZeroUsize::new(1).unwrap()));
+    assert_eq!(joined.slot_root(address, false).unwrap(), joined_root);
     assert_eq!(
         joined.missing_initial_slots(&world, address, &word(1)),
         vec![U256::from(1)]
