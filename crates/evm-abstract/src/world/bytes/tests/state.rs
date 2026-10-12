@@ -564,3 +564,29 @@ fn copies_at_distinct_addresses_hash_to_the_same_storage_key_under_range_guard()
         ValueQuery::Unique(U256::from(7))
     );
 }
+
+#[test]
+fn failed_state_is_not_healed_by_nonempty_slice_copy_or_hash() {
+    let low = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
+        max_depth: 1,
+        ..RelationLimits::default()
+    }));
+    let failed = ByteArray::exact(&[1]).join(&ByteArray::exact(&[2]), low);
+    let error = failed.failure.clone().expect("tiny depth rejects join");
+    let domain = Domain::default();
+    assert_eq!(failed.slice(&v(0), &v(1), 32, domain), Err(error.clone()));
+    let mut memory = ByteArray::memory();
+    assert_eq!(
+        memory.copy_from(&v(0), &failed, &v(0), &v(1), 32, domain),
+        Err(error.clone())
+    );
+    assert_eq!(failed.keccak(domain, 32), Err(error));
+    assert_eq!(
+        failed.slice(&v(0), &v(0), 32, domain).unwrap(),
+        ByteArray::empty()
+    );
+    memory
+        .copy_from(&v(0), &failed, &v(0), &v(0), 32, domain)
+        .unwrap();
+    assert_eq!(memory, ByteArray::memory());
+}
