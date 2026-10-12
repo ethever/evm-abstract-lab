@@ -88,6 +88,100 @@ fn native_slot_arrays_preserve_aliasing_mixed_write_order_and_history() {
     }
 }
 #[test]
+fn repeated_writes_preserve_intervening_symbolic_aliases_and_snapshots() {
+    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
+        let limits = policy(provider);
+        let k = ExprId::fresh().unwrap();
+        let q = ExprId::fresh().unwrap();
+        let snapshot = SlotStateId::zero()
+            .store(k.clone(), c(7), state_limits())
+            .unwrap()
+            .store(q.clone(), c(9), state_limits())
+            .unwrap();
+        let latest = snapshot.store(k.clone(), c(7), state_limits()).unwrap();
+        assert_ne!(latest, snapshot);
+        let read = ExprId::slot_read(latest, q.clone(), expr_limits()).unwrap();
+        let old = ExprId::slot_read(snapshot, q.clone(), expr_limits()).unwrap();
+        for (alias, expected) in [(true, 7), (false, 9)] {
+            let mut path = RelationState::default();
+            assert_eq!(
+                path.assume(&op(opcode::EQ, &[k.clone(), q.clone()]), alias, &limits),
+                CheckResult::Sat
+            );
+            assert_eq!(
+                path.unique_value(&read, &limits),
+                ValueQuery::Unique(U256::from(expected)),
+                "{provider:?}"
+            );
+            assert_eq!(
+                path.unique_value(&old, &limits),
+                ValueQuery::Unique(U256::from(9))
+            );
+        }
+        let p = ExprId::fresh().unwrap();
+        let snapshot = ByteStateId::zero()
+            .write_word(c(0), c(7), state_limits())
+            .unwrap()
+            .write_word(p.clone(), c(9), state_limits())
+            .unwrap();
+        let latest = snapshot.write_word(c(0), c(7), state_limits()).unwrap();
+        assert_ne!(latest, snapshot);
+        let read = word(latest, p.clone());
+        let old = word(snapshot, p.clone());
+        for (at, expected) in [(0, 7), (32, 9)] {
+            let mut path = RelationState::default();
+            assert_eq!(path.add_equal(&p, &c(at), &limits), CheckResult::Sat);
+            assert_eq!(
+                path.unique_value(&read, &limits),
+                ValueQuery::Unique(U256::from(expected)),
+                "{provider:?}"
+            );
+            assert_eq!(
+                path.unique_value(&old, &limits),
+                ValueQuery::Unique(U256::from(9))
+            );
+        }
+    }
+}
+#[test]
+fn changed_disjoint_writes_preserve_other_cells_and_historical_values() {
+    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
+        let limits = policy(provider);
+        let slots = SlotStateId::zero()
+            .store(c(0), c(7), state_limits())
+            .unwrap()
+            .store(c(1), c(9), state_limits())
+            .unwrap();
+        let changed_slots = slots.store(c(0), c(11), state_limits()).unwrap();
+        let words = ByteStateId::zero()
+            .write_word(c(0), c(7), state_limits())
+            .unwrap()
+            .write_word(c(32), c(9), state_limits())
+            .unwrap();
+        let changed_words = words.write_word(c(0), c(11), state_limits()).unwrap();
+        for (read, expected) in [
+            (ExprId::slot_read(slots, c(0), expr_limits()).unwrap(), 7),
+            (
+                ExprId::slot_read(changed_slots.clone(), c(0), expr_limits()).unwrap(),
+                11,
+            ),
+            (
+                ExprId::slot_read(changed_slots, c(1), expr_limits()).unwrap(),
+                9,
+            ),
+            (word(words, c(0)), 7),
+            (word(changed_words.clone(), c(0)), 11),
+            (word(changed_words, c(32)), 9),
+        ] {
+            assert_eq!(
+                RelationState::default().unique_value(&read, &limits),
+                ValueQuery::Unique(U256::from(expected)),
+                "{provider:?}"
+            );
+        }
+    }
+}
+#[test]
 fn native_byte_reads_keep_big_endian_partial_overlay_and_symbolic_aliases() {
     for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
         let limits = policy(provider);

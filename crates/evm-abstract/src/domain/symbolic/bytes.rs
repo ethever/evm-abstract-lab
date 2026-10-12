@@ -177,8 +177,7 @@ impl ByteStateId {
             } if *offset == at => previous,
             _ => self,
         };
-        if matches!(self.kind(), ByteStateKind::WriteByte { offset, value: old, .. } if *offset == at && *old == value)
-        {
+        if self.unchanged_write(&at, &value, 1, limits)? {
             state::check(self.nodes(), self.depth(), limits)?;
             return Ok(self.clone());
         }
@@ -244,8 +243,7 @@ impl ByteStateId {
                 _ => break,
             }
         }
-        if matches!(self.kind(), ByteStateKind::WriteWord { offset, value: old, .. } if *offset == at && *old == value)
-        {
+        if self.unchanged_write(&at, &value, 32, limits)? {
             state::check(self.nodes(), self.depth(), limits)?;
             return Ok(self.clone());
         }
@@ -267,6 +265,47 @@ impl ByteStateId {
             ],
             limits,
         )
+    }
+    // An identical write remains effective across disjoint writes. Clip the
+    // visible intervals at MAX: address overflow never wraps to low memory.
+    // Checking the retained graph before advancing bounds this iterative search
+    // by the caller's existing nodes/depth policy and observes cancellation.
+    fn unchanged_write(
+        &self,
+        at: &ExprId,
+        value: &ExprId,
+        width: u64,
+        limits: StateLimits,
+    ) -> Result<bool, StateError> {
+        let mut cursor = self;
+        loop {
+            let (previous, offset, old, old_width) = match cursor.kind() {
+                ByteStateKind::WriteByte {
+                    previous,
+                    offset,
+                    value,
+                } => (previous, offset, value, 1),
+                ByteStateKind::WriteWord {
+                    previous,
+                    offset,
+                    value,
+                } => (previous, offset, value, 32),
+                _ => return Ok(false),
+            };
+            if old_width == width && offset == at {
+                return Ok(old == value);
+            }
+            let (Some(start), Some(old_start)) = (at.as_constant(), offset.as_constant()) else {
+                return Ok(false);
+            };
+            let end = start.saturating_add(U256::from(width - 1));
+            let old_end = old_start.saturating_add(U256::from(old_width - 1));
+            if end >= old_start && old_end >= start {
+                return Ok(false);
+            }
+            state::check(self.nodes(), self.depth(), limits)?;
+            cursor = previous;
+        }
     }
     /// Copy an arbitrary logical range without traversing it.
     pub fn copy(

@@ -53,6 +53,196 @@ fn byte_and_slot_updates_intern_and_stabilize_after_an_entry_join() {
     assert_eq!(value, entry.store(k, c(7), limits()).unwrap());
 }
 #[test]
+fn alternating_disjoint_slot_writes_reuse_the_immutable_snapshot() {
+    let initial = SlotStateId::zero();
+    let snapshot = initial
+        .store(c(0), c(7), limits())
+        .unwrap()
+        .store(c(1), c(9), limits())
+        .unwrap();
+    let mut state = snapshot.clone();
+    for _ in 0..8 {
+        state = state
+            .store(c(0), c(7), limits())
+            .unwrap()
+            .store(c(1), c(9), limits())
+            .unwrap();
+        assert_eq!(
+            state, snapshot,
+            "unchanged alternating slots must stabilize"
+        );
+        assert_eq!((state.nodes(), state.depth()), (7, 3));
+    }
+    assert_eq!(initial, SlotStateId::zero());
+}
+#[test]
+fn alternating_disjoint_word_writes_reuse_the_immutable_snapshot() {
+    let initial = ByteStateId::zero();
+    let snapshot = initial
+        .write_word(c(0), c(7), limits())
+        .unwrap()
+        .write_word(c(32), c(9), limits())
+        .unwrap();
+    let mut state = snapshot.clone();
+    for _ in 0..8 {
+        state = state
+            .write_word(c(0), c(7), limits())
+            .unwrap()
+            .write_word(c(32), c(9), limits())
+            .unwrap();
+        assert_eq!(
+            state, snapshot,
+            "unchanged alternating words must stabilize"
+        );
+        assert_eq!((state.nodes(), state.depth()), (7, 3));
+    }
+    assert_eq!(initial, ByteStateId::zero());
+}
+#[test]
+fn disjoint_byte_and_word_writes_stabilize_at_mathematical_address_boundaries() {
+    for (word_at, byte_at) in [
+        (U256::ZERO, U256::from(32)),
+        (U256::from(32), U256::ZERO),
+        (U256::MAX, U256::ZERO),
+        (U256::ZERO, U256::MAX),
+    ] {
+        let word_at = ExprId::constant(word_at);
+        let byte_at = ExprId::constant(byte_at);
+        let word_then_byte = ByteStateId::zero()
+            .write_word(word_at.clone(), c(7), limits())
+            .unwrap()
+            .write_byte(byte_at.clone(), c(0xaa), limits())
+            .unwrap();
+        assert_eq!(
+            word_then_byte,
+            word_then_byte
+                .write_word(word_at.clone(), c(7), limits())
+                .unwrap()
+        );
+        let byte_then_word = ByteStateId::zero()
+            .write_byte(byte_at.clone(), c(0xaa), limits())
+            .unwrap()
+            .write_word(word_at, c(7), limits())
+            .unwrap();
+        assert_eq!(
+            byte_then_word,
+            byte_then_word
+                .write_byte(byte_at, c(0xaa), limits())
+                .unwrap()
+        );
+    }
+}
+#[test]
+fn overlapping_word_and_byte_writes_are_not_skipped_even_at_max_address() {
+    let all_ones = ExprId::constant(U256::MAX);
+    let snapshot = ByteStateId::zero()
+        .write_word(c(0), all_ones.clone(), limits())
+        .unwrap()
+        .write_word(c(31), c(0), limits())
+        .unwrap();
+    let restored = snapshot
+        .write_word(c(0), all_ones.clone(), limits())
+        .unwrap();
+    assert_ne!(snapshot, restored);
+    assert_eq!(
+        ByteView::new(snapshot, c(31), c(1))
+            .known_bytes(ExprLimits::default())
+            .unwrap(),
+        Some(vec![0])
+    );
+    assert_eq!(
+        ByteView::new(restored, c(31), c(1))
+            .known_bytes(ExprLimits::default())
+            .unwrap(),
+        Some(vec![0xff])
+    );
+    let snapshot = ByteStateId::zero()
+        .write_word(all_ones.clone(), all_ones.clone(), limits())
+        .unwrap()
+        .write_byte(all_ones.clone(), c(0xaa), limits())
+        .unwrap();
+    let restored = snapshot
+        .write_word(all_ones.clone(), all_ones.clone(), limits())
+        .unwrap();
+    assert_ne!(snapshot, restored);
+    assert_eq!(
+        ByteView::new(snapshot, all_ones.clone(), c(2))
+            .known_bytes(ExprLimits::default())
+            .unwrap(),
+        Some(vec![0xaa, 0])
+    );
+    assert_eq!(
+        ByteView::new(restored, all_ones, c(2))
+            .known_bytes(ExprLimits::default())
+            .unwrap(),
+        Some(vec![0xff, 0])
+    );
+}
+#[test]
+fn disjoint_write_lookup_preserves_limits_and_cancellation() {
+    let slots = SlotStateId::zero()
+        .store(c(0), c(7), limits())
+        .unwrap()
+        .store(c(1), c(9), limits())
+        .unwrap();
+    let words = ByteStateId::zero()
+        .write_word(c(0), c(7), limits())
+        .unwrap()
+        .write_word(c(32), c(9), limits())
+        .unwrap();
+    let bytes = ByteStateId::zero()
+        .write_byte(c(0), c(0xaa), limits())
+        .unwrap()
+        .write_word(c(32), c(9), limits())
+        .unwrap();
+    let exact_fit = StateLimits {
+        max_nodes: 7,
+        max_depth: 3,
+    };
+    assert_eq!(slots, slots.store(c(0), c(7), exact_fit).unwrap());
+    assert_eq!(words, words.write_word(c(0), c(7), exact_fit).unwrap());
+    assert_eq!(bytes, bytes.write_byte(c(0), c(0xaa), exact_fit).unwrap());
+    for denied in [
+        StateLimits {
+            max_nodes: 6,
+            ..limits()
+        },
+        StateLimits {
+            max_depth: 2,
+            ..limits()
+        },
+    ] {
+        assert!(matches!(
+            slots.store(c(0), c(7), denied),
+            Err(StateError::Limit { .. })
+        ));
+        assert!(matches!(
+            words.write_word(c(0), c(7), denied),
+            Err(StateError::Limit { .. })
+        ));
+        assert!(matches!(
+            bytes.write_byte(c(0), c(0xaa), denied),
+            Err(StateError::Limit { .. })
+        ));
+    }
+    let cancellation = embedded_smt::Cancellation::new();
+    cancellation.cancel();
+    embedded_smt::with_cancellation(&cancellation, || {
+        assert_eq!(
+            slots.store(c(0), c(7), limits()),
+            Err(StateError::Cancelled)
+        );
+        assert_eq!(
+            words.write_word(c(0), c(7), limits()),
+            Err(StateError::Cancelled)
+        );
+        assert_eq!(
+            bytes.write_byte(c(0), c(0xaa), limits()),
+            Err(StateError::Cancelled)
+        );
+    });
+}
+#[test]
 fn very_large_copies_are_one_range_node_and_full_copies_canonicalize() {
     let len = ExprId::constant(U256::MAX);
     let source = ByteStateId::input(SourceId::fresh().unwrap(), len.clone());
