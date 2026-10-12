@@ -197,10 +197,7 @@ impl<'a> Encoder<'a> {
                 self.byte(state, &index)?.zero_ext(248)
             }
             ExprKind::WordRead { view, offset } => self.word_read(view, offset)?,
-            ExprKind::SlotRead { state, key } => {
-                let index = self.expression(key)?;
-                self.slots(state)?.select(&index)
-            }
+            ExprKind::SlotRead { state, key } => self.slot_read(state, key)?,
             ExprKind::Keccak { input } => self.hash(input)?,
         };
         self.memo.insert(expression.clone(), value.clone());
