@@ -2,7 +2,10 @@ use alloy_primitives::{Address, U256, hex};
 use evm_abstract::{
     Fork,
     analysis::{Config, ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
-    domain::{AbstractValue, Domain, relational::RelationLimits},
+    domain::{
+        AbstractValue, Domain,
+        relational::{CheckResult, RelationLimits, RelationState},
+    },
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
 use revm_bytecode::opcode;
@@ -266,6 +269,39 @@ pub(super) fn reachable(analysis: &WorldAnalysis, owner: u64, pc: usize) -> bool
     analysis.states().iter().any(|state| {
         state.active().code_address == address(owner) && state.executed_pcs.contains(&pc)
     })
+}
+
+/// Labels immediately before effects make the actual opcode, not just a nearby
+/// JUMPDEST, part of the execution witness.
+pub(super) fn executed_opcode(
+    analysis: &WorldAnalysis,
+    fixture: &Fixture,
+    label: &str,
+    opcode: u8,
+) -> usize {
+    let pc = fixture.labels[label] + 1;
+    assert_eq!(hex::decode(&fixture.code).unwrap()[pc], opcode);
+    assert!(reachable(analysis, ROOT, pc), "unexecuted {label} at {pc}");
+    pc
+}
+
+/// Numeric coverage alone can overapproximate an infeasible length. Require a
+/// checked SAT witness under the real outlet relation for every boundary sample.
+pub(super) fn possible_lengths(relations: &RelationState, length: &AbstractValue, samples: &[u64]) {
+    assert!(length.singleton().is_none());
+    let expression = length.expression().expect("symbolic input length");
+    for sample in samples {
+        assert!(length.contains(U256::from(*sample)), "missing {sample}");
+        assert_eq!(
+            relations.can_equal(
+                expression,
+                U256::from(*sample),
+                &config().analysis.relations
+            ),
+            CheckResult::Sat,
+            "length {sample} needs a feasible symbolic route"
+        );
+    }
 }
 
 pub(super) fn no_bad_branch(analysis: &WorldAnalysis, fixture: &Fixture, owner: u64) {
