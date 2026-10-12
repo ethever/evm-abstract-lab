@@ -141,6 +141,7 @@ pub(super) fn run_metered(
             target: None,
             pc: None,
             reason: FrontierReason::Budget(Limit::States),
+            range: None,
         });
         result.status = Status::Incomplete;
         result.work = budget.used();
@@ -160,6 +161,7 @@ pub(super) fn run_metered(
             target: None,
             pc: None,
             reason: FrontierReason::Work,
+            range: None,
         });
         result.status = Status::Incomplete;
         result.work = budget.used();
@@ -173,6 +175,7 @@ pub(super) fn run_metered(
                 target: None,
                 pc: None,
                 reason,
+                range: None,
             });
             result.status = Status::Incomplete;
             result.work = budget.used();
@@ -280,6 +283,7 @@ impl Engine<'_> {
             target,
             pc: None,
             reason,
+            range: None,
         });
     }
 
@@ -485,12 +489,19 @@ impl Engine<'_> {
                 kind,
             });
         }
-        for (pc, reason, target) in execution.frontiers {
+        for frontier in execution.frontiers {
+            let super::transfer::ExecutionFrontier {
+                pc,
+                reason,
+                target,
+                range,
+            } = frontier;
             self.result.frontiers.push(MachineFrontier {
                 from: Some(id),
                 target,
                 pc: Some(pc),
                 reason,
+                range,
             });
         }
         for outcome in execution.outcomes {
@@ -722,7 +733,13 @@ impl Engine<'_> {
             );
             let from = ids[terminal.from];
             // 返回处理也消耗同一预算；其中的 Work 属于本次摘要导入，改记 SummaryWork。
-            for (pc, reason, target) in execution.frontiers {
+            for frontier in execution.frontiers {
+                let super::transfer::ExecutionFrontier {
+                    pc,
+                    reason,
+                    target,
+                    range,
+                } = frontier;
                 self.result.frontiers.push(MachineFrontier {
                     from: Some(from),
                     target,
@@ -732,6 +749,7 @@ impl Engine<'_> {
                     } else {
                         reason
                     },
+                    range,
                 });
             }
             for successor in execution.successors {

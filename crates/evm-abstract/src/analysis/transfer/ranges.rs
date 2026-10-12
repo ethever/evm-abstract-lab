@@ -6,6 +6,237 @@
 use crate::domain::{AbstractValue, Domain};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
+use std::sync::Arc;
+
+use super::{Execution, ExecutionFrontier, TransferContext, finish};
+use crate::{
+    analysis::{
+        FrontierReason, MachinePayload, OutcomeKind, RangeKind, RangeRequest, RangeWitness,
+    },
+    domain::relational::{CheckResult, QueryReason},
+    world::ByteArray,
+};
+
+struct Partition {
+    allowed: Option<MachinePayload>,
+    excluded: Option<MachinePayload>,
+}
+
+/// Keep excluded inputs before memory changes. A solver UNKNOWN may retain
+/// both guarded branches; inability to retain the guard stops this instruction.
+pub(super) fn memory(
+    result: &mut Execution,
+    offset: &AbstractValue,
+    size: &AbstractValue,
+    context: &mut TransferContext<'_>,
+    pc: usize,
+) -> bool {
+    let request = RangeRequest {
+        kind: RangeKind::MemoryPolicy,
+        offset: super::relations::identify(
+            offset.clone(),
+            context.config.analysis.relations.enabled,
+        ),
+        size: super::relations::identify(size.clone(), context.config.analysis.relations.enabled),
+        limit: super::constant(context.config.max_memory_bytes),
+    };
+    let condition = memory_condition(
+        &request.offset,
+        &request.size,
+        context.config.max_memory_bytes,
+        context.domain,
+    );
+    if !condition.may_be_zero() {
+        return true;
+    }
+    let Some(partition) = partition(result, &request, &condition, context, pc) else {
+        return false;
+    };
+    if let Some(payload) = partition.excluded {
+        pending(
+            result,
+            pc,
+            FrontierReason::Memory,
+            request,
+            condition,
+            Some(false),
+            payload,
+        );
+    }
+    let Some(payload) = partition.allowed else {
+        return false;
+    };
+    result.payload = payload;
+    true
+}
+
+/// Returndata source overflow is an execution failure, independently of the
+/// destination-memory analysis policy. Empty copies still check the source.
+pub(super) fn returndata(
+    result: &mut Execution,
+    offset: &AbstractValue,
+    size: &AbstractValue,
+    length: &AbstractValue,
+    context: &mut TransferContext<'_>,
+    pc: usize,
+) -> bool {
+    let request = RangeRequest {
+        kind: RangeKind::ReturnData,
+        offset: super::relations::identify(
+            offset.clone(),
+            context.config.analysis.relations.enabled,
+        ),
+        size: super::relations::identify(size.clone(), context.config.analysis.relations.enabled),
+        limit: super::relations::identify(
+            length.clone(),
+            context.config.analysis.relations.enabled,
+        ),
+    };
+    let condition = sequence_condition(
+        &request.offset,
+        &request.size,
+        &request.limit,
+        context.domain,
+    );
+    if !condition.may_be_zero() {
+        return true;
+    }
+    let Some(partition) = partition(result, &request, &condition, context, pc) else {
+        return false;
+    };
+    if let Some(payload) = partition.excluded {
+        finish(
+            result,
+            payload,
+            OutcomeKind::Failure,
+            ByteArray::empty(),
+            context,
+            pc,
+        );
+    }
+    let Some(payload) = partition.allowed else {
+        return false;
+    };
+    result.payload = payload;
+    true
+}
+
+fn partition(
+    result: &mut Execution,
+    request: &RangeRequest,
+    condition: &AbstractValue,
+    context: &mut TransferContext<'_>,
+    pc: usize,
+) -> Option<Partition> {
+    let cost = result
+        .payload
+        .work_size()
+        .saturating_mul(2)
+        .saturating_add(condition.work_size());
+    if !context.budget.charge(cost) {
+        super::boundary(result, pc, FrontierReason::Work);
+        return None;
+    }
+    let mut input = result.payload.clone();
+    let checked = (|| {
+        if condition.may_be_zero() && condition.may_be_nonzero() {
+            let limits = context.config.analysis.relations;
+            for value in [&request.offset, &request.size, &request.limit] {
+                if let Some(expression) = value.expression() {
+                    input
+                        .relations
+                        .observe(expression, value.numeric(), &limits)
+                        .map_err(FrontierReason::Relations)?;
+                }
+            }
+        }
+        let allowed = constrained(&input, condition, true, context)?;
+        let excluded = constrained(&input, condition, false, context)?;
+        Ok::<_, FrontierReason>(Partition { allowed, excluded })
+    })();
+    match checked {
+        Ok(partition) => Some(partition),
+        Err(reason) => {
+            pending(
+                result,
+                pc,
+                reason,
+                request.clone(),
+                condition.clone(),
+                None,
+                input,
+            );
+            None
+        }
+    }
+}
+
+fn constrained(
+    input: &MachinePayload,
+    condition: &AbstractValue,
+    nonzero: bool,
+    context: &mut TransferContext<'_>,
+) -> Result<Option<MachinePayload>, FrontierReason> {
+    if !(if nonzero {
+        condition.may_be_nonzero()
+    } else {
+        condition.may_be_zero()
+    }) {
+        return Ok(None);
+    }
+    let mut payload = input.clone();
+    if condition.singleton().is_some() {
+        return Ok(Some(payload));
+    }
+    let expression = condition
+        .symbolic_expression()
+        .ok_or(FrontierReason::Relations(QueryReason::ExpressionLimit))?;
+    let limits = context.config.analysis.relations;
+    let cost = payload
+        .relations
+        .work_size()
+        .saturating_add(expression.work_size())
+        .saturating_add(limits.rlimit as usize);
+    if !context.budget.charge(cost) {
+        return Err(FrontierReason::Work);
+    }
+    match payload.relations.assume(&expression, nonzero, &limits) {
+        CheckResult::Unsat => Ok(None),
+        CheckResult::Sat => Ok(Some(payload)),
+        CheckResult::Unknown(
+            reason @ (QueryReason::Disabled
+            | QueryReason::Configuration
+            | QueryReason::ConstraintLimit
+            | QueryReason::ExpressionLimit
+            | QueryReason::Cancelled),
+        ) => Err(FrontierReason::Relations(reason)),
+        // These failures occur after retaining the assumption. The two guarded
+        // domains still cover the input without treating UNKNOWN as UNSAT.
+        CheckResult::Unknown(_) => Ok(Some(payload)),
+    }
+}
+
+fn pending(
+    result: &mut Execution,
+    pc: usize,
+    reason: FrontierReason,
+    request: RangeRequest,
+    condition: AbstractValue,
+    nonzero: Option<bool>,
+    payload: MachinePayload,
+) {
+    result.frontiers.push(ExecutionFrontier {
+        pc,
+        reason,
+        target: Some(payload.key()),
+        range: Some(RangeWitness {
+            request,
+            condition,
+            nonzero,
+            payload: Arc::new(payload),
+        }),
+    });
+}
 
 /// A nonempty access must fit the word-rounded logical memory policy. An empty
 /// access never expands memory, even when its offset is not host representable.

@@ -1,8 +1,8 @@
 //! Account-code resolution, frame entry and rollback-aware caller resumption.
 use super::budget::{byte_work, maximum};
 use super::{
-    CompletedCall, Execution, Outcome, Successor, TransferContext, address, boundary, touch_memory,
-    zero,
+    CompletedCall, Execution, Outcome, Successor, TransferContext, address, boundary, boundary_on,
+    touch_memory, zero,
 };
 use crate::{
     analysis::{
@@ -130,7 +130,7 @@ pub(super) fn finish(
     if let Err(reason) =
         super::create::finish_creation(&mut payload, &mut kind, &mut data, context, pc)
     {
-        result.frontiers.push((pc, reason, Some(payload.key())));
+        boundary_on(result, pc, reason, payload.key());
         return;
     }
     if let Some(child) = payload.call_stack.active_child() {
@@ -143,9 +143,7 @@ pub(super) fn finish(
             domain,
         );
         if !context.budget.charge(cost) {
-            result
-                .frontiers
-                .push((pc, FrontierReason::Work, Some(payload.key())));
+            boundary_on(result, pc, FrontierReason::Work, payload.key());
             return;
         }
     }
@@ -192,9 +190,7 @@ pub(super) fn finish(
         )
         .is_err()
     {
-        result
-            .frontiers
-            .push((pc, FrontierReason::Memory, Some(payload.key())));
+        boundary_on(result, pc, FrontierReason::Memory, payload.key());
         return;
     }
     parent.key.basic_block_index = continuation
