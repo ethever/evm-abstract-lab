@@ -111,8 +111,15 @@ entry = "0x0000000000000000000000000000000000000101"
 cases = []
 for fixture in sorted((root / "examples").glob("*.hex")):
     for command in ("disasm", "cfg", "ssa"):
+        # CALLDATALOAD supplies a full-width MSTORE/MLOAD offset in this fixture;
+        # inputs outside the memory policy remain typed incomplete frontiers.
+        memory_policy = fixture.stem == "memory-symbolic-offset" and command != "disasm"
+        expected = 2 if memory_policy else 0
+        arguments = [command, "--file", str(fixture), "--format", "json"]
+        if memory_policy and command == "ssa":
+            arguments.append("--allow-partial-ssa")
         cases.append((f"{fixture.stem}-{command}",
-                      [command, "--file", str(fixture), "--format", "json"], 0))
+                      arguments, expected))
 for fixture in sorted((root / "examples/worlds").glob("*.json")):
     expected = 2 if fixture.stem == "missing-code" else 0
     arguments = ["analyze", "--world", str(fixture), "--evm.to", entry, "--evm.caller", "0x0000000000000000000000000000000000001000", "--evm.value", "0", "--evm.calldata", "0x", "--format", "json"]
@@ -139,11 +146,39 @@ for label, arguments, expected in cases:
             canonical[backend] = canonical_json(result.stdout)
         except ValueError as error:
             sys.exit(f"{label}/{backend}: invalid JSON: {error}")
-        if expected == 2:
+        if expected == 2 and arguments[0] in ("cfg", "ssa"):
+            analysis = payload.get("analysis", {}) if arguments[0] == "ssa" else payload
+            frontiers = analysis.get("frontiers", [])
+            if analysis.get("status") != "Incomplete" or not frontiers or not all(
+                frontier.get("reason") == "Memory" and frontier.get("limit") == "Memory"
+                for frontier in frontiers
+            ):
+                sys.exit(f"{label}/{backend}: missing typed Memory frontier")
+            if arguments[0] == "ssa":
+                machine = payload.get("machine_analysis", {})
+                partial = payload.get("partial_ssa", {})
+                frontiers = machine.get("frontiers", [])
+                if (machine.get("status") != "Incomplete" or not frontiers or not all(
+                    frontier.get("reason") == "Memory" and
+                    (frontier.get("range") or {}).get("request", {}).get("kind") == "MemoryPolicy"
+                    for frontier in frontiers
+                ) or partial.get("status") != "Incomplete" or partial.get("complete") is not False
+                        or partial.get("frontiers") != frontiers or "ssa" in payload):
+                    sys.exit(f"{label}/{backend}: missing typed MemoryPolicy partial SSA")
+        elif expected == 2:
             if payload.get("status") != "Incomplete" or not any(
                 "MissingCode" in frontier["reason"] for frontier in payload["frontiers"]
             ):
                 sys.exit(f"{label}/{backend}: missing typed MissingCode frontier")
+        elif arguments[0] != "disasm":
+            wrapped = arguments[0] == "ssa" or "--ssa" in arguments
+            analysis = payload.get("analysis", {}) if wrapped else payload
+            if analysis.get("status") != "Converged" or analysis.get("frontiers") != []:
+                sys.exit(f"{label}/{backend}: expected converged analysis without frontiers")
+            if wrapped:
+                ir = payload.get("ssa", {})
+                if ir.get("status") != "Converged" or ir.get("complete") is not True:
+                    sys.exit(f"{label}/{backend}: expected complete SSA wrapper")
         # Whole-report producer renaming retains every other identity and member/array order.
     if canonical["std"] != canonical["imbl"]:
         sys.exit(f"{label}: ordered JSON differs; see {output}")
