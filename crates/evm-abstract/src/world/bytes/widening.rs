@@ -10,6 +10,16 @@ use crate::domain::{
 };
 use std::collections::BTreeMap;
 
+/// Constant folding after the caller's registered-selector projection is an
+/// authoritative proof, while nonconstant external/manual symbols stay intact.
+pub(in crate::world) fn refresh_constant(value: &mut AbstractValue) {
+    if let Some(constant) = value.expression().and_then(ExprId::as_constant) {
+        *value = value
+            .clone()
+            .with_numeric(crate::domain::NumericValue::constant(constant));
+    }
+}
+
 /// Retain guarantees consumed by the authoritative graph, including guarantees
 /// referenced by another retained fact. Constants need no duplicate binding.
 pub(in crate::world) fn retained_facts(
@@ -60,7 +70,7 @@ impl ByteArray {
         if let Some(length) = self.length.expression() {
             pending.push(Node::Expression(length.clone()));
         }
-        let out = Self {
+        let mut out = Self {
             length: self.length.clone(),
             bytes: BTreeMap::new(),
             default: AbstractValue::unknown_byte(),
@@ -70,6 +80,7 @@ impl ByteArray {
             operands: retained_facts(pending, &self.operands, limits)?,
             failure: None,
         };
+        refresh_constant(&mut out.length);
         out.check_existing(limits)?;
         Ok(out)
     }

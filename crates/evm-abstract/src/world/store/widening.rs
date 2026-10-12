@@ -6,7 +6,11 @@ use crate::{
         AbstractValue, Domain,
         symbolic::{ExprError, ExprLimits, SlotStateId, SlotStateKind},
     },
-    world::bytes::{numeric, refinement::Node, widening::retained_facts},
+    world::bytes::{
+        numeric,
+        refinement::Node,
+        widening::{refresh_constant, retained_facts},
+    },
 };
 use std::collections::BTreeMap;
 
@@ -121,8 +125,14 @@ impl Store {
         let mut out = self.clone();
         out.persistent = self.persistent.widening_form(&scalars, domain, limits)?;
         out.transient = self.transient.widening_form(&scalars, domain, limits)?;
+        out.balances.update_values(refresh_constant);
+        out.nonces.update_values(refresh_constant);
+        refresh_constant(&mut out.balance_default);
         for key in self.possible_logs.keys() {
             let log = out.possible_logs.get_mut(key).expect("retained event key");
+            for topic in &mut log.topics {
+                refresh_constant(topic);
+            }
             log.data = log.data.widening_form(domain, limits)?;
         }
         out.check_existing(limits)?;
