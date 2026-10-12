@@ -59,6 +59,27 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
         );
         ssa::build_world(&graph).unwrap().verify(&graph).unwrap();
         let zero = AbstractValue::constant(U256::ZERO);
+        let domain = Domain::default();
+        for outcome in graph.outcomes() {
+            assert!(outcome.store.transient_slots().is_empty());
+            for owner in [0x101, 0x201, 0x202, 0x300] {
+                assert_eq!(
+                    outcome
+                        .store
+                        .read_transient_checked(address(owner), &zero, domain)
+                        .unwrap(),
+                    zero
+                );
+                assert!(matches!(
+                    outcome
+                        .store
+                        .slot_root(address(owner), true)
+                        .unwrap()
+                        .kind(),
+                    evm_abstract::domain::symbolic::SlotStateKind::Zero
+                ));
+            }
+        }
         assert!(
             graph
                 .outcomes()
@@ -72,16 +93,31 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                             Domain::default(),
                         );
                         read.constants().is_some() && read.contains(U256::from(*value))
-                    }) && [(0x201, 2), (0x202, 1), (0x300, 0)]
-                        .iter()
-                        .all(|(owner, value)| {
-                            let read = outcome.store.read_transient(
-                                address(*owner),
-                                &zero,
-                                Domain::default(),
-                            );
-                            read.constants().is_some() && read.contains(U256::from(*value))
-                        })
+                    }) && {
+                        // STOP's exit payload precedes transaction finalization.
+                        // It retains the three calls' actual account-local counters.
+                        let terminal = &graph.states()[outcome.state];
+                        assert_eq!(terminal.key.frames.len(), 1);
+                        assert_eq!(terminal.active().address, address(0x101));
+                        assert_eq!(terminal.active().code_address, address(0x101));
+                        assert_eq!(terminal.executed_pcs.last(), Some(&(root.len() / 2 - 1)));
+                        let receipt = terminal.execution_evidence().unwrap();
+                        assert!(receipt.is_current());
+                        assert_eq!(receipt.instructions().len(), terminal.executed_pcs.len());
+                        assert_eq!(
+                            receipt.instructions().last(),
+                            Some(&evm_abstract::analysis::InstructionProgress::Dispatched)
+                        );
+                        let before_finalization = &terminal.exit.as_ref().unwrap().store;
+                        [(0x201, 2), (0x202, 1), (0x300, 0)]
+                            .iter()
+                            .all(|(owner, value)| {
+                                before_finalization
+                                    .read_transient_checked(address(*owner), &zero, domain)
+                                    .unwrap()
+                                    == AbstractValue::constant(U256::from(*value))
+                            })
+                    }
                 }),
             "shared implementation aliased transient owners: {:?}",
             graph.outcomes()

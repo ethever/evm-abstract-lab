@@ -339,12 +339,188 @@ fn invalid_configs_are_rejected_before_execution() {
 fn result_exports_are_deterministic() {
     let first = analyze(&fixture("loop"));
     let second = analyze(&fixture("loop"));
+    assert_eq!(first.status(), Status::Converged);
+    assert_eq!(second.status(), Status::Converged);
+    ssa::build(&first).unwrap();
+    ssa::build(&second).unwrap();
     assert_eq!(
         serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&first).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_string(&second).unwrap(),
         serde_json::to_string(&second).unwrap()
     );
     assert_eq!(
         evm_abstract::render::dot(&first),
         evm_abstract::render::dot(&second)
     );
+    assert!(native_exports_equal_with_fresh_bijection(
+        &serde_json::to_value(&first).unwrap(),
+        &serde_json::to_value(&second).unwrap()
+    ));
+}
+
+// Each distinct private leaf gets a distinct report-wide canonical label. Only
+// RelationState's conjunction set is unordered; all other arrays retain order.
+fn native_exports_equal_with_fresh_bijection(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> bool {
+    fn rename(
+        value: &mut serde_json::Value,
+        leaves: &mut std::collections::BTreeMap<u64, u64>,
+    ) -> bool {
+        match value {
+            serde_json::Value::Object(object) => {
+                if object.len() == 1 && object.contains_key("Fresh") {
+                    let Some(original) = object["Fresh"].as_u64() else {
+                        return false;
+                    };
+                    let next = leaves.len() as u64;
+                    object["Fresh"] = (*leaves.entry(original).or_insert(next)).into();
+                    true
+                } else {
+                    object.values_mut().all(|value| rename(value, leaves))
+                }
+            }
+            serde_json::Value::Array(values) => {
+                values.iter_mut().all(|value| rename(value, leaves))
+            }
+            _ => true,
+        }
+    }
+    fn order_conjunctions(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                for value in object.values_mut() {
+                    order_conjunctions(value);
+                }
+                if object.len() == 3
+                    && object
+                        .get("bottom")
+                        .is_some_and(serde_json::Value::is_boolean)
+                    && object.get("path").is_some_and(serde_json::Value::is_object)
+                    && let Some(atoms) = object
+                        .get_mut("constraints")
+                        .and_then(serde_json::Value::as_array_mut)
+                {
+                    atoms.sort_by_cached_key(|atom| serde_json::to_string(atom).unwrap());
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    order_conjunctions(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut left = left.clone();
+    let mut right = right.clone();
+    if !rename(&mut left, &mut Default::default()) || !rename(&mut right, &mut Default::default()) {
+        return false;
+    }
+    order_conjunctions(&mut left);
+    order_conjunctions(&mut right);
+    left == right
+}
+
+#[test]
+fn result_export_fresh_bijection_preserves_aliasing_and_model_fields() {
+    let first = serde_json::json!({
+        "graph": {"identity_scope": "producer", "root": 1, "nodes": [{"Fresh": 1}, {"Fresh": 2}]},
+        "history": {"identity_scope": "producer", "root": 3, "nodes": [
+            {"Fresh": 1},
+            {"SlotsInput": {"source": {"token": 0, "namespace": "0x101"}, "bindings": []}},
+            {"Constant": "0x4"},
+            {"SlotRead": {"state": 1, "key": 2}}
+        ]},
+        "input": {"Input": {"scope": 7, "symbol": "CallValue"}},
+        "source": {"token": 0, "namespace": "0x101"},
+        "operands": [{
+            "expression": {"identity_scope": "producer", "root": 0, "nodes": [{"Fresh": 2}]},
+            "value": evm_abstract::domain::AbstractValue::constant(U256::from(7))
+        }],
+        "failure": null,
+        "state": {"entry_relations": {
+            "constraints": [
+                {"Truth": {"expression": {"identity_scope": "producer", "root": 0, "nodes": [{"Fresh": 1}]}, "nonzero": true}},
+                {"Range": {"expression": {"identity_scope": "producer", "root": 0, "nodes": [{"Fresh": 2}]}, "lower": "0x3", "upper": "0x5"}}
+            ],
+            "bottom": false,
+            "path": {"root": 0, "nodes": ["True"]}
+        }}
+    });
+    let mut second = first.clone();
+    second["graph"]["nodes"][0]["Fresh"] = 11.into();
+    second["graph"]["nodes"][1]["Fresh"] = 12.into();
+    second["history"]["nodes"][0]["Fresh"] = 11.into();
+    second["operands"][0]["expression"]["nodes"][0]["Fresh"] = 12.into();
+    second["state"]["entry_relations"]["constraints"][0]["Truth"]["expression"]["nodes"][0]["Fresh"] =
+        11.into();
+    second["state"]["entry_relations"]["constraints"][1]["Range"]["expression"]["nodes"][0]["Fresh"] =
+        12.into();
+    second["state"]["entry_relations"]["constraints"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    assert!(native_exports_equal_with_fresh_bijection(&first, &second));
+
+    let mut collapsed = second.clone();
+    collapsed["graph"]["nodes"][1]["Fresh"] = 11.into();
+    assert!(!native_exports_equal_with_fresh_bijection(
+        &first, &collapsed
+    ));
+    let mut split = second.clone();
+    split["history"]["nodes"][0]["Fresh"] = 13.into();
+    assert!(!native_exports_equal_with_fresh_bijection(&first, &split));
+    let mut unchanged_leaf_collision = first.clone();
+    unchanged_leaf_collision["graph"]["nodes"][1]["Fresh"] = 1.into();
+    assert!(!native_exports_equal_with_fresh_bijection(
+        &first,
+        &unchanged_leaf_collision
+    ));
+
+    for (pointer, value) in [
+        (
+            "/graph/identity_scope",
+            serde_json::json!("another producer"),
+        ),
+        ("/graph/root", serde_json::json!(0)),
+        ("/input/Input/scope", serde_json::json!(8)),
+        ("/source/namespace", serde_json::json!("0x102")),
+        ("/history/nodes/2/Constant", serde_json::json!("0x5")),
+        (
+            "/state/entry_relations/constraints/1/Truth/nonzero",
+            serde_json::json!(false),
+        ),
+        (
+            "/operands/0/value",
+            serde_json::json!(evm_abstract::domain::AbstractValue::constant(U256::from(8))),
+        ),
+        ("/failure", serde_json::json!("symbolic retention failed")),
+    ] {
+        let mut changed = second.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert!(!native_exports_equal_with_fresh_bijection(&first, &changed));
+    }
+    let mut missing_constraint = second.clone();
+    missing_constraint["state"]["entry_relations"]["constraints"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert!(!native_exports_equal_with_fresh_bijection(
+        &first,
+        &missing_constraint
+    ));
+    let mut reordered_history = second.clone();
+    reordered_history["history"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .swap(1, 2);
+    assert!(!native_exports_equal_with_fresh_bijection(
+        &first,
+        &reordered_history
+    ));
 }
