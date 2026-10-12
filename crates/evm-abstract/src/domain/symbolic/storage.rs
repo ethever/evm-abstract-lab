@@ -261,11 +261,13 @@ impl Hash for SlotStateId {
 }
 impl fmt::Debug for SlotStateId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SlotStateId")
-            .field("id", &self.id())
-            .field("nodes", &self.nodes())
-            .field("depth", &self.depth())
-            .finish()
+        write!(
+            f,
+            "SlotStateId {{ id: {}, nodes: {}, depth: {} }}",
+            self.id(),
+            self.nodes(),
+            self.depth()
+        )
     }
 }
 impl Serialize for SlotStateId {
