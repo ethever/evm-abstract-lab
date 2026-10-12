@@ -110,6 +110,21 @@ fn anchored_snapshot_validates_block_identity_code_hash_and_fingerprint() {
         parse(&json.to_string()).unwrap().fingerprint().unwrap(),
         world.fingerprint().unwrap()
     );
+    let verified = json.to_string();
+    let control = evm_abstract::analysis::control::Control::new(Default::default());
+    control.cancellation().cancel();
+    control.scope(|| {
+        assert!(matches!(
+            parse(&verified),
+            Err(InputError::FingerprintCalculation(
+                evm_abstract::world::FingerprintError::Cancelled
+            ))
+        ));
+    });
+    assert_eq!(
+        parse(&verified).unwrap().fingerprint().unwrap(),
+        world.fingerprint().unwrap()
+    );
     json["accounts"][0]["nonce"] = serde_json::json!("0x2");
     assert!(matches!(
         parse(&json.to_string()),
