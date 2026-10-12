@@ -9,6 +9,7 @@ mod panel;
 pub(crate) mod shortcut;
 mod ssa;
 mod stores;
+mod symbolic;
 mod value;
 
 use super::Selection;
@@ -358,6 +359,9 @@ impl Inspector {
             Tab::Frame => {
                 if let Some(frame) = frame {
                     scroll(ui, "frame_details", |ui| {
+                        if let Some(machine) = machine {
+                            symbolic::show(ui, report, machine.path.node, "Paired path conditions");
+                        }
                         context::frame(ui, frame);
                         if controls::action(ui, "Inspect rollback store", Density::Regular)
                             .clicked()

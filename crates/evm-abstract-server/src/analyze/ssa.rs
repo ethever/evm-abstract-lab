@@ -1,6 +1,8 @@
 pub(super) mod errors;
 mod values;
+use super::{checkpoint, symbolic::Pool};
 use evm_abstract::{analysis, ssa};
+use evm_abstract_protocol::ApiError;
 use evm_abstract_protocol::{
     BlockCoverage, DeferredEdge, DeferredReason, EffectInput, InstructionProgress, Phi, PhiInput,
     SsaBlock, SsaInstruction, SsaReport, SsaTransition,
@@ -9,20 +11,36 @@ use evm_abstract_protocol::{
 pub(super) fn report(
     graph: &analysis::WorldAnalysis,
     control: &analysis::control::Control,
-) -> Result<SsaReport, ssa::SsaError> {
+    pool: &mut Pool<'_>,
+) -> Result<SsaReport, ApiError> {
     // The builder validates original receipts first, then independently checks
     // value rewrites. Only the final normalized SSA is exported.
-    let ir = ssa::build_normalized_partial_world(graph)?;
+    let ir = ssa::build_normalized_partial_world(graph).map_err(errors::convert)?;
+    pool.charge(
+        ir.blocks()
+            .len()
+            .saturating_add(ir.transitions().len())
+            .saturating_add(ir.deferred_edges().len()),
+    )?;
     Ok(SsaReport {
         complete: ir.complete(),
         value_count: ir.value_count(),
         effect_count: ir.effect_count(),
-        values: values::report(graph, &ir, control)?,
+        values: values::report(graph, &ir, control, pool)?,
         blocks: ir
             .blocks()
             .iter()
             .map(|block| {
-                control.checkpoint().map_err(|_| ssa::SsaError::Cancelled)?;
+                checkpoint(control)?;
+                pool.charge(
+                    block
+                        .phis
+                        .len()
+                        .saturating_add(block.instructions.len())
+                        .saturating_add(block.effect.inputs.len())
+                        .saturating_add(block.open_incoming.len())
+                        .saturating_add(block.exit_frames.iter().map(Vec::len).sum::<usize>()),
+                )?;
                 Ok(SsaBlock {
                     state: block.state,
                     coverage: match block.coverage {
@@ -54,7 +72,14 @@ pub(super) fn report(
                         .iter()
                         .enumerate()
                         .map(|(index, item)| {
-                            control.checkpoint().map_err(|_| ssa::SsaError::Cancelled)?;
+                            checkpoint(control)?;
+                            pool.charge(
+                                item.origin
+                                    .operands
+                                    .len()
+                                    .saturating_add(item.origin.results.len())
+                                    .saturating_add(1),
+                            )?;
                             let source = &item.origin;
                             let name = graph.states()[block.state]
                                 .program()
@@ -95,7 +120,7 @@ pub(super) fn report(
                                 effect_result: item.effect_result,
                             })
                         })
-                        .collect::<Result<_, ssa::SsaError>>()?,
+                        .collect::<Result<_, ApiError>>()?,
                     exit_frames: block.exit_frames.clone(),
                     effect: block.effect.result,
                     effect_inputs: block
@@ -111,20 +136,28 @@ pub(super) fn report(
                     open_incoming: block.open_incoming.clone(),
                 })
             })
-            .collect::<Result<_, ssa::SsaError>>()?,
+            .collect::<Result<_, ApiError>>()?,
         transitions: ir
             .transitions()
             .iter()
-            .map(|item| SsaTransition {
-                edge: item.edge,
-                kind: super::mapping::edge(item.kind),
-                operands: item.operands.clone(),
-                stacks: item.stacks.clone(),
-                effect_input: item.effect_input,
-                effect_result: item.effect_result,
-                result: item.result,
+            .map(|item| {
+                pool.charge(
+                    item.operands
+                        .len()
+                        .saturating_add(item.stacks.iter().map(Vec::len).sum::<usize>())
+                        .saturating_add(1),
+                )?;
+                Ok(SsaTransition {
+                    edge: item.edge,
+                    kind: super::mapping::edge(item.kind),
+                    operands: item.operands.clone(),
+                    stacks: item.stacks.clone(),
+                    effect_input: item.effect_input,
+                    effect_result: item.effect_result,
+                    result: item.result,
+                })
             })
-            .collect(),
+            .collect::<Result<_, ApiError>>()?,
         deferred_edges: ir
             .deferred_edges()
             .iter()

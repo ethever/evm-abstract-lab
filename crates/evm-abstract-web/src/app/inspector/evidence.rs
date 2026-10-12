@@ -96,6 +96,10 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
             if let Some(reason) = &presentation.reason {
                 ui.label(RichText::new(reason).small().color(palette::MUTED));
             }
+            if let Some(reason)=&diagnostic.precision {
+                ui.label(RichText::new("Value precision remains unknown; complete conservative propagation continues.").color(palette::WARNING));
+                errors::fields(ui,|ui|query(ui,reason));
+            }
             if let Some(reduction) = &diagnostic.reduction {
                 ui.label(
                     RichText::new(format!("Reduction: {reduction:?}"))
@@ -128,6 +132,31 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
                 state: frontier.from,
                 pc: frontier.pc,
             };
+        }
+        if let Some(range) = &frontier.range {
+            ui.label(RichText::new(match range.request.kind {
+                api::RangeKind::MemoryPolicy => "Logical memory policy leaves these inputs unexpanded; EVM failure is not established.",
+                api::RangeKind::ReturnData => "Returndata range semantics remain pending for these inputs.",
+            }).color(palette::WARNING));
+            errors::fields(ui, |ui| {
+                value::named(ui, "Requested offset", &range.request.offset);
+                value::named(ui, "Requested size", &range.request.size);
+                value::named(ui, "Range limit", &range.request.limit);
+                value::named(ui, "In-range condition", &range.condition);
+                value::text(
+                    ui,
+                    "Selected condition",
+                    match range.nonzero {
+                        Some(true) => "Nonzero",
+                        Some(false) => "Zero",
+                        None => "Both sides retained",
+                    },
+                );
+            });
+            super::symbolic::pending(ui, report, range.payload);
+        }
+        if let Some(payload) = frontier.payload {
+            super::symbolic::pending(ui, report, payload);
         }
         match &frontier.reason {
             api::FrontierDetails::RpcAcquisition(failure) => errors::rpc(ui, failure),
@@ -231,7 +260,45 @@ fn frontier_reason(ui: &mut Ui, reason: &api::FrontierDetails) {
         R::Work => value::text(ui, "Boundary", "Execution work budget"),
         R::SummaryWork => value::text(ui, "Boundary", "Summary work budget"),
         R::CallDepth => value::text(ui, "Boundary", "External call depth"),
-        R::Memory => value::text(ui, "Boundary", "Modeled memory bound"),
+        R::Memory => value::text(ui, "Boundary", "Logical memory policy; unexpanded inputs"),
+        R::ByteRange(reason) => match reason {
+            api::ByteRangeBoundary::UnknownSize => value::text(
+                ui,
+                "Range representation",
+                "No finite size or trusted symbolic term",
+            ),
+            api::ByteRangeBoundary::OffsetTooLarge(offset) => {
+                value::text(ui, "Offset exceeds host index", offset)
+            }
+            api::ByteRangeBoundary::Overflow(range) => value::text(
+                ui,
+                "Host range overflow",
+                format!("offset {} + size {}", range.offset, range.size),
+            ),
+            api::ByteRangeBoundary::TooLarge(range) => value::text(
+                ui,
+                "Concrete range policy",
+                format!("{} exceeds {} bytes", range.requested, range.limit),
+            ),
+            api::ByteRangeBoundary::InputAlreadyBound => value::text(
+                ui,
+                "Source binding",
+                "Original input identity already established",
+            ),
+        },
+        R::StateJoin(reason) => value::text(
+            ui,
+            "State join boundary",
+            match reason {
+                api::JoinBoundary::Shape => "Frame or continuation shapes disagree".into(),
+                api::JoinBoundary::IdentityExhausted => {
+                    "No branch-selector identity available".into()
+                }
+                api::JoinBoundary::Alternatives(limit) => {
+                    format!("Complete alternative limit {limit}")
+                }
+            },
+        ),
         R::UnknownTarget => value::text(
             ui,
             "Boundary",

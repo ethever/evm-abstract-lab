@@ -372,7 +372,10 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "--format",
             "json",
             "--max-work",
-            "1500",
+            // Checked source/state initialization is charged before opcodes.
+            // 1800 retains three completed/pending instructions; 1500 admits
+            // the state but no instruction prefix (survey in task evidence).
+            "1800",
         ],
     ));
     let instructions = json["partial_ssa"]["blocks"][0]["instructions"]
@@ -518,11 +521,21 @@ fn complete_outputs_are_identical_with_and_without_partial_opt_in() {
     ] {
         let expected = run(&args);
         text(&expected, 0);
+        let json = args.contains(&"json");
         let mut partial = args;
         partial.push("--allow-partial-ssa");
         let actual = run(&partial);
         text(&actual, 0);
-        assert_eq!(actual.stdout, expected.stdout);
+        if json {
+            let actual: Json = serde_json::from_slice(&actual.stdout).unwrap();
+            let expected: Json = serde_json::from_slice(&expected.stdout).unwrap();
+            assert_eq!(
+                super::native::canonical(&actual),
+                super::native::canonical(&expected)
+            );
+        } else {
+            assert_eq!(actual.stdout, expected.stdout);
+        }
         assert_eq!(actual.stderr, expected.stderr);
     }
     let world = WorldCode::new("602a5f5260205ff3");
@@ -534,11 +547,21 @@ fn complete_outputs_are_identical_with_and_without_partial_opt_in() {
     ] {
         let expected = world.run(command, &args);
         text(&expected, 0);
+        let json = args.contains(&"json");
         let mut partial = args;
         partial.push("--allow-partial-ssa");
         let actual = world.run(command, &partial);
         text(&actual, 0);
-        assert_eq!(actual.stdout, expected.stdout);
+        if json {
+            let actual: Json = serde_json::from_slice(&actual.stdout).unwrap();
+            let expected: Json = serde_json::from_slice(&expected.stdout).unwrap();
+            assert_eq!(
+                super::native::canonical(&actual),
+                super::native::canonical(&expected)
+            );
+        } else {
+            assert_eq!(actual.stdout, expected.stdout);
+        }
         assert_eq!(actual.stderr, expected.stderr);
     }
 }

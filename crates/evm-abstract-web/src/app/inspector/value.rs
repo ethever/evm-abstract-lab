@@ -3,7 +3,7 @@
 use crate::{notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::WideSymbol;
-use evm_abstract_protocol::{AddressValue, CongruenceValue, Expression, InputSymbol, ValueInfo};
+use evm_abstract_protocol::{AddressValue, CongruenceValue, InputSymbol, ValueInfo};
 
 pub(super) fn address(value: &AddressValue) -> String {
     match value {
@@ -12,7 +12,7 @@ pub(super) fn address(value: &AddressValue) -> String {
     }
 }
 
-fn symbol(value: &InputSymbol) -> String {
+pub(super) fn symbol(value: &InputSymbol) -> String {
     value.index.as_ref().map_or_else(
         || format!("{:?}", value.kind),
         |index| format!("{:?}[{index}]", value.kind),
@@ -68,6 +68,9 @@ pub(super) fn details(ui: &mut Ui, value: &ValueInfo) {
             );
             text(ui, "Known zero bits", &value.known_zero);
             text(ui, "Known one bits", &value.known_one);
+            if value.nonzero {
+                text(ui, "Nonzero guarantee", "Proved nonzero");
+            }
             text(
                 ui,
                 "Unsigned range",
@@ -121,45 +124,14 @@ pub(super) fn details(ui: &mut Ui, value: &ValueInfo) {
     if value.symbolic_limit {
         ui.colored_label(palette::WARNING, "Symbolic retention limit reached");
     }
-    if let Some(graph) = &value.expression {
+    if let Some(reference) = value.expression {
         ui.separator();
         ui.label(notation::widget(
             ui,
             format!(
-                "Expression root {}",
-                WideSymbol::Expression(graph.root as u64)
+                "Expression root {} · shared report graph",
+                WideSymbol::Expression(reference.node as u64)
             ),
         ));
-        for (index, expression) in graph.nodes.iter().enumerate() {
-            let expression = match expression {
-                Expression::Constant(word) => word.clone(),
-                Expression::Input(input) => {
-                    format!(
-                        "input {} · {}",
-                        WideSymbol::Scope(input.scope),
-                        symbol(&input.symbol)
-                    )
-                }
-                Expression::Fresh(id) => WideSymbol::Fresh(*id).to_string(),
-                Expression::Operation(operation) => format!(
-                    "opcode 0x{:02x}({})",
-                    operation.opcode,
-                    operation
-                        .arguments
-                        .iter()
-                        .map(|id| WideSymbol::Expression(*id as u64).to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            };
-            ui.label(notation::widget(
-                ui,
-                RichText::new(format!(
-                    "{} = {expression}",
-                    WideSymbol::Expression(index as u64)
-                ))
-                .monospace(),
-            ));
-        }
     }
 }

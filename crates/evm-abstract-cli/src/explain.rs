@@ -75,7 +75,7 @@ pub(crate) struct ExplainArgs {
     /// Maximum cumulative execution and domain work.
     #[arg(long, default_value_t = defaults::MAX_WORK)]
     max_work: usize,
-    /// Maximum tracked memory bytes per frame and extracted byte-array range.
+    /// Maximum logical memory footprint per frame; copies retain lazy ranges.
     #[arg(long, default_value_t = defaults::MAX_MEMORY_BYTES)]
     max_memory_bytes: usize,
     /// Constants retained per value; positive usize, without an additional cap.

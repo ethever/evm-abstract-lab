@@ -24,7 +24,14 @@ fn unknown_length_and_default_do_not_erase_known_stored_bytes() {
 
     let output = render(&array);
     assert!(output.contains("length=⊤ (unknown byte count)"), "{output}");
-    assert!(output.contains("kind=data | default=⊤"), "{output}");
+    assert!(
+        output.contains("kind=data | default=u[0x0,0xff]"),
+        "{output}"
+    );
+    assert!(
+        output.contains("bits=0x00000000000000000000000000000000000000000000000000000000000000**"),
+        "{output}"
+    );
     assert!(output.contains("0x0007"), "{output}");
     assert!(output.contains("0xa5"), "{output}");
     assert!(!output.contains("exact hex:"), "{output}");

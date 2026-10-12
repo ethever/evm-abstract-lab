@@ -62,40 +62,6 @@ record! {
     }
 }
 record! {
-    /// A retained pure EVM expression.
-    #[derive(std::hash::Hash)]
-    pub struct ExpressionOperation {
-        /// Raw opcode.
-        pub opcode: u8,
-        /// Indices into the owning ExpressionGraph, in EVM pop order.
-        pub arguments: Vec<usize>,
-    }
-}
-variant! {
-    /// Structural symbolic value, never a guessed concrete word.
-    #[derive(std::hash::Hash)]
-    pub enum Expression {
-        /// Exact word.
-        Constant(String),
-        /// Immutable input.
-        Input(InputIdentity),
-        /// Fresh runtime name within the report.
-        Fresh(u64),
-        /// Pure EVM operation.
-        Operation(ExpressionOperation),
-    }
-}
-record! {
-    /// Flat symbolic DAG. JSON depth is independent of EVM expression depth.
-    #[derive(std::hash::Hash)]
-    pub struct ExpressionGraph {
-        /// Nodes in dependency order; operation operands reference earlier nodes.
-        pub nodes: Vec<Expression>,
-        /// Index of the represented root expression.
-        pub root: usize,
-    }
-}
-record! {
     /// Inclusive word interval endpoints.
     #[derive(std::hash::Hash)]
     pub struct WordBounds {
@@ -171,6 +137,8 @@ record! {
         pub known_zero: String,
         /// Bits guaranteed one.
         pub known_one: String,
+        /// Guaranteed nonzero, including a retained exclusion of zero.
+        pub nonzero: bool,
         /// Unsigned interval.
         pub unsigned: WordBounds,
         /// Signed interval endpoints as two-complement bit patterns.
@@ -184,7 +152,7 @@ record! {
         /// Retained immutable equality identity.
         pub identity: Option<InputIdentity>,
         /// Retained structural expression.
-        pub expression: Option<ExpressionGraph>,
+        pub expression: Option<crate::ExpressionRef>,
         /// Expression retention exceeded its declared bound.
         pub symbolic_limit: bool,
     }
@@ -220,6 +188,10 @@ record! {
         pub values: Vec<ValueInfo>,
         /// True for word-rounded zero-initialized EVM memory.
         pub memory: bool,
+        /// Complete lazy source, range and update graph root.
+        pub symbolic: crate::ByteViewRef,
+        /// State-local complete facts for retained symbolic operands.
+        pub symbolic_facts: Vec<crate::SymbolicFact>,
     }
 }
 choice! {
@@ -299,6 +271,10 @@ record! {
         pub delegation_target: Option<String>,
         /// Default unspecified persistent slot.
         pub storage_default: ValueInfo,
+        /// Complete ordered persistent storage root.
+        pub storage_root: crate::SlotStateRef,
+        /// Complete ordered transient storage root.
+        pub transient_root: crate::SlotStateRef,
         /// Explicit persistent slots.
         pub storage: Vec<StorageEntry>,
         /// Default unspecified transient slot.
@@ -341,6 +317,10 @@ record! {
         pub logs: Vec<LogSnapshot>,
         /// Additional logs may exist.
         pub logs_unknown: bool,
+        /// Persistent operand facts local to this transaction snapshot.
+        pub storage_facts: Vec<crate::SymbolicFact>,
+        /// Transient operand facts local to this transaction snapshot.
+        pub transient_facts: Vec<crate::SymbolicFact>,
     }
 }
 record! {
@@ -404,6 +384,8 @@ record! {
         pub frames: Vec<FrameSnapshot>,
         /// Index in stores.
         pub store: usize,
+        /// Complete path formula paired with this state.
+        pub path: crate::PathRef,
     }
 }
 record! {
@@ -532,5 +514,9 @@ record! {
         pub work: u64,
         /// Frozen processing and queue durations; excluded from world identity.
         pub timings: crate::AnalysisTimings,
+        /// Frozen projection policy, independent of execution limits.
+        pub export_limits: crate::ExportLimits,
+        /// Actual bounded projection work.
+        pub export_usage: crate::ExportUsage,
     }
 }

@@ -665,7 +665,9 @@ fn rpc_account_and_request_caps_stop_discovery_with_explicit_partial_results() {
 }
 
 fn relations(analysis: &Json) -> BTreeSet<String> {
-    analysis["outcomes"]
+    // One bijection spans the entire relation, including cross-outcome aliases.
+    let outcomes = super::native::canonical(&analysis["outcomes"]);
+    outcomes
         .as_array()
         .unwrap()
         .iter()
