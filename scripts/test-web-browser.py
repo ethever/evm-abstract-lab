@@ -1436,6 +1436,11 @@ def inspector_title_action(page, canvas, action: str, frame_tab):
 
 
 def inspect_shortcut_events(page):
+    # Default prevention is recorded in a timer after event propagation. The
+    # DOM status can change first, so await that observation before asserting it.
+    page.wait_for_function("""() => window.__inspectKeyEvents.length > 0 &&
+        window.__inspectKeyEvents.every(event => typeof event.prevented === 'boolean')""",
+        timeout=5000)
     return page.evaluate("window.__inspectKeyEvents")
 
 
