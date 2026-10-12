@@ -18,6 +18,7 @@ use std::{
 pub(in crate::analysis) struct Prepared {
     pub nodes: Vec<Node>,
     pub terminals: Vec<Terminal>,
+    pub renaming: BTreeMap<ExprId, ExprId>,
 }
 
 pub(in crate::analysis) struct Replay<'a> {
@@ -218,7 +219,11 @@ impl<'a> Replay<'a> {
             .map(|terminal| self.terminal(terminal, budget))
             .collect::<Result<_, _>>()?;
         charge(budget, 0)?;
-        Ok(Prepared { nodes, terminals })
+        Ok(Prepared {
+            nodes,
+            terminals,
+            renaming: self.renaming,
+        })
     }
 }
 

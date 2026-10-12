@@ -10,6 +10,7 @@ use crate::{
     world::{ByteArray, Snapshot},
 };
 use alloy_primitives::U256;
+use std::collections::BTreeSet;
 
 fn scalar_guard(value: &AbstractValue) -> ExprId {
     match value.expression().expect("joined scalar expression").kind() {
@@ -378,7 +379,7 @@ fn new_unknown_source_does_not_match_old_unknown_content() {
     first.active_mut().returndata = ByteArray::unknown();
     let mut second = first.clone();
     second.active_mut().returndata = ByteArray::unknown();
-    let alternatives = EntryAlternatives::new(&first);
+    let mut alternatives = EntryAlternatives::new(&first);
     let mut budget = WorkBudget::new(10_000_000);
     assert!(
         alternatives
@@ -461,7 +462,7 @@ fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
         incoming.relations.assume(&guard, false, &policy),
         CheckResult::Sat
     );
-    let alternatives = EntryAlternatives::new(&old);
+    let mut alternatives = EntryAlternatives::new(&old);
     let mut budget = WorkBudget::new(10_000_000);
     let joined = alternatives
         .join(&old, &incoming, domain, &mut budget)
@@ -482,4 +483,148 @@ fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
         path.can_equal(word.expression().unwrap(), U256::from(9), &policy),
         CheckResult::Sat
     );
+}
+
+#[test]
+fn canonical_case_rebuild_keeps_previously_accepted_stack_root_pairs() {
+    let domain = fixtures::config().domain().unwrap();
+    let policy = domain.spec().relations();
+    let mut seven = fixtures::payload(domain);
+    seven.active_mut().stack = vec![fixtures::word(0)];
+    seven
+        .active_mut()
+        .memory
+        .write_word(&fixtures::word(0), &fixtures::word(7), 4096, domain)
+        .unwrap();
+    let mut nine = seven.clone();
+    nine.active_mut()
+        .memory
+        .write_word(&fixtures::word(0), &fixtures::word(9), 4096, domain)
+        .unwrap();
+    let mut budget = WorkBudget::new(100_000_000);
+    let cases =
+        super::cases::prepare(vec![&seven], &nine, &BTreeSet::new(), domain, &mut budget).unwrap();
+    assert_eq!(cases.len(), 2);
+    let mut entry = cases[0].join(&cases[1], domain).unwrap();
+    let mut bound = cases[0].fresh_leaves();
+    bound.extend(cases[1].fresh_leaves());
+    let mut selectors: BTreeSet<_> = entry.fresh_leaves().difference(&bound).cloned().collect();
+    let mut alternatives = EntryAlternatives {
+        represented: cases,
+        cycle_widened: true,
+    };
+    let mut incoming = entry.clone();
+    incoming.active_mut().stack = vec![fixtures::word(1)];
+    let widened = alternatives
+        .join_cyclic(&entry, &incoming, domain, &mut budget, &selectors, true)
+        .unwrap()
+        .unwrap();
+    let mut previous = entry.fresh_leaves();
+    previous.extend(incoming.fresh_leaves());
+    selectors.extend(widened.fresh_leaves().difference(&previous).cloned());
+    entry = widened;
+    let mut last = seven;
+    last.active_mut().stack = vec![fixtures::word(5)];
+    last.active_mut()
+        .memory
+        .write_word(&fixtures::word(0), &fixtures::word(11), 4096, domain)
+        .unwrap();
+    let result = alternatives
+        .join_cyclic(&entry, &last, domain, &mut budget, &selectors, true)
+        .unwrap()
+        .unwrap();
+    let stack = result.active().stack[0].symbolic_expression().unwrap();
+    let memory = result
+        .active()
+        .memory
+        .read_word_checked(&fixtures::word(0), domain)
+        .unwrap()
+        .symbolic_expression()
+        .unwrap();
+    for (counter, word, expected) in [
+        (1, 7, CheckResult::Sat),
+        (1, 9, CheckResult::Sat),
+        (5, 11, CheckResult::Sat),
+        (1, 11, CheckResult::Unsat),
+        (5, 7, CheckResult::Unsat),
+    ] {
+        let a = ExprId::operation(
+            revm_bytecode::opcode::EQ,
+            &[stack.clone(), ExprId::constant(U256::from(counter))],
+            policy.expressions(),
+        )
+        .unwrap();
+        let b = ExprId::operation(
+            revm_bytecode::opcode::EQ,
+            &[memory.clone(), ExprId::constant(U256::from(word))],
+            policy.expressions(),
+        )
+        .unwrap();
+        let both =
+            ExprId::operation(revm_bytecode::opcode::AND, &[a, b], policy.expressions()).unwrap();
+        assert_eq!(
+            result.relations.can_equal(&both, U256::from(1), &policy),
+            expected,
+            "({counter},{word})"
+        );
+    }
+}
+
+#[test]
+fn cycle_projection_never_enumerates_external_sources_or_manual_guards() {
+    let domain = fixtures::config().domain().unwrap();
+    let policy = domain.spec().relations();
+    let manual = ExprId::fresh().unwrap();
+    let observation = ExprId::fresh().unwrap();
+    let gas = AbstractValue::unsigned_range(U256::ZERO, U256::from(u64::MAX))
+        .unwrap()
+        .with_expression(observation.clone());
+    let mut left = fixtures::payload(domain);
+    left.active_mut().calldata = ByteArray::unknown();
+    let input_sources = left.active().calldata.fresh_leaves();
+    let mut seven = left.active().memory.clone();
+    seven
+        .write_word(&fixtures::word(0), &fixtures::word(7), 4096, domain)
+        .unwrap();
+    let mut nine = seven.clone();
+    nine.write_word(&fixtures::word(0), &fixtures::word(9), 4096, domain)
+        .unwrap();
+    left.active_mut().memory = seven
+        .join_guarded(&nine, domain, manual.clone(), policy.expressions())
+        .unwrap();
+    left.active_mut()
+        .memory
+        .write_word(&fixtures::word(32), &gas, 4096, domain)
+        .unwrap();
+    left.active_mut().stack = vec![fixtures::word(0), gas.clone()];
+    let mut right = left.clone();
+    right.active_mut().stack[0] = fixtures::word(1);
+    let joined = left.join(&right, domain).unwrap();
+    let mut inputs = left.fresh_leaves();
+    inputs.extend(right.fresh_leaves());
+    let selectors = joined
+        .fresh_leaves()
+        .difference(&inputs)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(selectors.len(), 1);
+    assert!(!selectors.contains(&manual));
+    assert!(!selectors.contains(&observation));
+    let mut budget = WorkBudget::new(100_000_000);
+    let cases =
+        super::cases::prepare(vec![&joined], &right, &selectors, domain, &mut budget).unwrap();
+    for payload in cases {
+        assert_eq!(payload.active().calldata.fresh_leaves(), input_sources);
+        assert!(payload.fresh_leaves().contains(&manual));
+        assert!(payload.fresh_leaves().contains(&observation));
+        assert_eq!(payload.active().stack[1].numeric(), gas.numeric());
+        assert_eq!(payload.active().stack[1].expression(), Some(&observation));
+        let (_, binding) = payload
+            .active()
+            .memory
+            .symbolic_facts()
+            .find(|(key, _)| *key == &observation)
+            .expect("external GAS binding stays in the model");
+        assert_eq!(binding.numeric(), gas.numeric());
+    }
 }

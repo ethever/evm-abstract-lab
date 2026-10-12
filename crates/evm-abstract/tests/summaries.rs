@@ -9,12 +9,31 @@ use evm_abstract::{
         Config, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status,
         WorldAnalysis, analyze_world,
     },
-    domain::AbstractValue,
+    domain::{
+        AbstractValue, Domain,
+        relational::{CheckResult, RelationState},
+    },
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
 use oracle::address;
 use std::collections::BTreeSet;
+
+/// Compare observable numeric/provenance unions independently of immutable
+/// execution-history graph layout. Snapshot roots and actual read semantics
+/// are checked separately below; this is not complete native-graph equality.
+fn observable(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => items.iter_mut().for_each(observable),
+        serde_json::Value::Object(fields) => {
+            for key in ["expression", "root", "roots", "base", "operands"] {
+                fields.remove(key);
+            }
+            fields.values_mut().for_each(observable);
+        }
+        _ => {}
+    }
+}
 
 fn call(op: u8, target: u16, value: u8, output: u8) -> String {
     let value = if matches!(op, 0xf1 | 0xf2) {
@@ -54,7 +73,10 @@ fn relations(analysis: &WorldAnalysis) -> BTreeSet<String> {
         .outcomes()
         .iter()
         .map(|outcome| {
-            serde_json::to_string(&(outcome.kind, &outcome.data, &outcome.store)).unwrap()
+            let mut row =
+                serde_json::to_value((outcome.kind, &outcome.data, &outcome.store)).unwrap();
+            observable(&mut row);
+            serde_json::to_string(&row).unwrap()
         })
         .collect()
 }
@@ -219,7 +241,55 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
         "{}5060085f5d5f5fa0602a5f5260205ffd",
         call(0xf1, 0x201, 0, 0)
     );
-    let (enabled, _) = compare(&[(0x101, &caller), (0x200, &callee), (0x201, "60095f5500")]);
+    let (enabled, disabled) = compare(&[(0x101, &caller), (0x200, &callee), (0x201, "60095f5500")]);
+    for analysis in [&enabled, &disabled] {
+        let initial = &analysis.states()[0].entry.store;
+        let domain = Domain::from_spec(analysis.domain_spec());
+        // This additional inspection query has its own bounded encoding work.
+        // The analysis above still runs its unchanged default execution policy.
+        let inspection = evm_abstract::domain::relational::RelationLimits {
+            max_nodes: 8192,
+            ..domain.spec().relations()
+        };
+        let zero = AbstractValue::constant(U256::ZERO);
+        for outcome in analysis.outcomes() {
+            // These compare the actual immutable roots, including source IDs
+            // and initial binding graphs. Rollback cannot replace input arrays
+            // by independent fresh sources even when their numeric facts match.
+            for account in [0x101, 0x200, 0x201] {
+                for transient in [false, true] {
+                    assert_eq!(
+                        outcome
+                            .store
+                            .slot_root(address(account), transient)
+                            .unwrap(),
+                        initial.slot_root(address(account), transient).unwrap()
+                    );
+                }
+            }
+            if outcome.kind == OutcomeKind::Return {
+                let word = outcome.data.read_word_checked(&zero, domain).unwrap();
+                let expression = word.symbolic_expression().unwrap();
+                for candidate in word
+                    .constants()
+                    .expect("literal revert result or pre-entry failure")
+                {
+                    assert_eq!(
+                        RelationState::default().can_equal(&expression, *candidate, &inspection),
+                        CheckResult::Sat
+                    );
+                }
+                assert_eq!(
+                    RelationState::default().can_equal(
+                        &expression,
+                        U256::from(0xffff),
+                        &inspection
+                    ),
+                    CheckResult::Unsat
+                );
+            }
+        }
+    }
     assert!(enabled.summary_stats().hits > 0);
     assert!(enabled.summaries().iter().any(|record| {
         record.input.frame.state.key.code_address == address(0x200)
