@@ -174,6 +174,25 @@ impl ExprId {
                 state::check(value.nodes(), value.depth(), limits.into())?;
                 return Ok(value.clone());
             }
+            SlotStateKind::Store {
+                previous,
+                key: stored,
+                ..
+            } if matches!((stored.as_constant(), key.as_constant()), (Some(a), Some(b)) if a != b) =>
+            {
+                // Only unequal concrete keys prove nonaliasing. Keep the
+                // previous immutable snapshot for this demanded fixed slot.
+                return Self::slot_read(previous.clone(), key, limits);
+            }
+            SlotStateKind::Ite {
+                condition,
+                then_state,
+                else_state,
+            } if key.as_constant().is_some() => {
+                let yes = Self::slot_read(then_state.clone(), key.clone(), limits)?;
+                let no = Self::slot_read(else_state.clone(), key, limits)?;
+                return Self::ite(condition.clone(), yes, no, limits);
+            }
             _ => {}
         }
         Self::retained(ExprKind::SlotRead { state, key }, nodes, depth, limits)
