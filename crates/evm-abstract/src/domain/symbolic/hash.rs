@@ -21,8 +21,11 @@ pub enum HashSupport {
     SourceView,
     /// Exact full-content native array plus offset and requested length.
     NativeArray,
-    /// Whole-copy content equality guarded by nonwrapping destination indices.
+    /// Copy equality under range guards: a complete copied view, or an earlier
+    /// view preserved by a disjoint later copy. Overlapping views stay conservative.
     GuardedCopy,
+    /// Hashes of comparable alternatives, paired with the original state guard.
+    GuardedState,
     /// Arbitrary lazy view content comparison is not proved by this encoding.
     /// Its hash stays conservative and stable for the identical immutable view.
     Uncompared,
@@ -37,6 +40,24 @@ impl ByteView {
         {
             return Ok(HashSupport::GuardedCopy);
         }
+        if let ByteStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = view.state.kind()
+        {
+            for (state, nonzero) in [(then_state, true), (else_state, false)] {
+                if view
+                    .branch_view(state.clone(), condition, nonzero)
+                    .0
+                    .hash_support(limits)?
+                    == HashSupport::Uncompared
+                {
+                    return Ok(HashSupport::Uncompared);
+                }
+            }
+            return Ok(HashSupport::GuardedState);
+        }
         if let Some(bytes) = view
             .length
             .as_constant()
@@ -47,6 +68,9 @@ impl ByteView {
         }
         if matches!(view.state.kind(), ByteStateKind::Input { .. }) {
             return Ok(HashSupport::SourceView);
+        }
+        if view.prior_copy_hash_view().is_some() {
+            return Ok(HashSupport::GuardedCopy);
         }
         let mut stack = vec![&view.state];
         let mut seen = BTreeSet::new();
@@ -73,5 +97,67 @@ impl ByteView {
             }
         }
         Ok(HashSupport::NativeArray)
+    }
+
+    /// Select only same-guard top-level ITE operands inside a state alternative.
+    /// The caller retains the outer state selector; this is not a global assumption.
+    /// Returns operand traversal work to charge against the existing query budget.
+    pub(crate) fn branch_view(
+        &self,
+        state: super::ByteStateId,
+        guard: &super::ExprId,
+        nonzero: bool,
+    ) -> (Self, usize) {
+        fn arm<'a>(
+            mut expression: &'a super::ExprId,
+            guard: &super::ExprId,
+            nonzero: bool,
+        ) -> (&'a super::ExprId, usize) {
+            let mut work = 0usize;
+            while let super::ExprKind::Ite {
+                condition,
+                then_value,
+                else_value,
+            } = expression.kind()
+            {
+                if condition != guard {
+                    break;
+                }
+                work = work.saturating_add(1);
+                expression = if nonzero { then_value } else { else_value };
+            }
+            (expression, work)
+        }
+        let (offset, offset_work) = arm(&self.offset, guard, nonzero);
+        let (length, length_work) = arm(&self.length, guard, nonzero);
+        (
+            Self::new(state, offset.clone(), length.clone()),
+            offset_work.saturating_add(length_work),
+        )
+    }
+
+    /// Earlier comparable view and the intervening copy's destination/length.
+    /// Equality still needs a mathematical non-overlap guard. Arbitrary partial
+    /// lazy views have no additional equality claim from this structural lookup.
+    pub(crate) fn prior_copy_hash_view(&self) -> Option<(&super::ExprId, &super::ExprId, Self)> {
+        let ByteStateKind::Copy {
+            previous,
+            destination,
+            length,
+            ..
+        } = self.state.kind()
+        else {
+            return None;
+        };
+        let prior =
+            Self::new(previous.clone(), self.offset.clone(), self.length.clone()).canonicalize();
+        if matches!(prior.state.kind(), ByteStateKind::Input { .. })
+            || matches!(prior.state.kind(), ByteStateKind::Copy { destination, source, length, .. }
+                if prior.offset == *destination && prior.length == *length && *length == source.length)
+        {
+            Some((destination, length, prior))
+        } else {
+            None
+        }
     }
 }
