@@ -13,7 +13,7 @@ pub use environment::{AddressInput, BlobHashes, EvmEnvironment, GasInput, InputS
 mod store;
 
 pub use bytes::{ByteArray, GuardRefinementError, RangeError};
-pub use snapshot::{SnapshotEnvironment, SnapshotIdentity};
+pub use snapshot::{FingerprintError, SnapshotEnvironment, SnapshotIdentity};
 pub use store::{AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store, StoreError};
 
 use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::AbstractValue};
