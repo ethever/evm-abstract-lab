@@ -40,7 +40,7 @@ impl Drawn {
 
 impl Panel<'_> {
     fn draw(&self, context: &Context, time: &mut f64, events: Vec<Event>) -> Drawn {
-        self.draw_at(context, time, events, egui::vec2(520.0, self.height))
+        self.draw_at(context, time, events, egui::vec2(900.0, self.height))
     }
 
     fn draw_at(
