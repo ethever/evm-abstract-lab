@@ -103,9 +103,9 @@ fn serialize_logs<S: Serializer>(
 struct Plane {
     roots: OrderedMap<Address, SlotStateId>,
     base: SlotStateId,
-    #[serde(skip)]
+    #[serde(serialize_with = "super::bytes::native::serialize_facts")]
     operands: BTreeMap<ExprId, AbstractValue>,
-    #[serde(skip)]
+    #[serde(serialize_with = "super::bytes::native::serialize_failure")]
     failure: Option<StoreError>,
     #[serde(serialize_with = "serialize_slots")]
     slots: OrderedMap<(Address, U256), AbstractValue>,
