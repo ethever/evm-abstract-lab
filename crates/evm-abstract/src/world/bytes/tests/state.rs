@@ -590,3 +590,51 @@ fn failed_state_is_not_healed_by_nonempty_slice_copy_or_hash() {
         .unwrap();
     assert_eq!(memory, ByteArray::memory());
 }
+
+#[test]
+fn finite_host_boundary_offsets_keep_uncached_byte_upper_bounds() {
+    let domain = Domain::default();
+    let offset = domain
+        .join(
+            &domain.join(&v(0), &v(usize::MAX)),
+            &AbstractValue::constant(U256::from(usize::MAX) + U256::ONE),
+        )
+        .with_expression(ExprId::fresh().unwrap());
+    let value = AbstractValue::constant(U256::from_be_bytes([0xaa; 32]));
+    let mut memory = ByteArray::memory();
+    // Transfer constrains actual legal branches. An expression-bearing range
+    // must remain representable even when its numeric upper includes nonhost indices.
+    memory.write_word(&offset, &value, 64, domain).unwrap();
+    assert!(memory.default_byte().contains(U256::from(0xaa)));
+    assert!(memory.default_byte().contains(U256::ZERO));
+    assert!(
+        memory
+            .byte_at(usize::MAX, domain)
+            .contains(U256::from(0xaa))
+    );
+    assert!(
+        memory
+            .read_byte(
+                &AbstractValue::constant(U256::from(usize::MAX) + U256::ONE),
+                domain,
+            )
+            .contains(U256::from(0xaa))
+    );
+    let read = memory.read_word(&offset, domain);
+    assert_eq!(read.singleton(), value.singleton());
+    let policy = RelationLimits {
+        max_nodes: 100_000,
+        max_depth: 256,
+        rlimit: 1_000_000,
+        ..RelationLimits::default()
+    };
+    let mut relations = RelationState::default();
+    relations
+        .observe(offset.expression().unwrap(), offset.numeric(), &policy)
+        .unwrap();
+    assert_eq!(
+        relations.unique_value(read.expression().unwrap(), &policy),
+        ValueQuery::Unique(value.singleton().unwrap()),
+    );
+    assert!(memory.work_size() < 2000);
+}
