@@ -428,6 +428,7 @@ impl ByteArray {
         }
         ranges::validate_target(offset, size, max_bytes, self.memory)?;
         let allocation = (expr(offset)?, expr(size)?);
+        ranges::check_allocation(&allocation, domain)?;
         if self.allocations.contains(&allocation) {
             self.check_existing(limits(domain))?;
             return Ok(());
