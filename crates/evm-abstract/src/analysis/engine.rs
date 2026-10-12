@@ -165,7 +165,7 @@ pub(super) fn run_metered(
             from: None,
             target: None,
             pc: None,
-            reason: FrontierReason::Work,
+            reason: MachineError::work_failure().frontier_reason(),
             range: None,
             payload: None,
         });
@@ -194,7 +194,7 @@ pub(super) fn run_metered(
             from: None,
             target: Some(initial.key()),
             pc: None,
-            reason: FrontierReason::Work,
+            reason: MachineError::work_failure().frontier_reason(),
             range: None,
             payload: Some(Arc::new(initial)),
         });
@@ -288,7 +288,7 @@ enum SummaryAttempt {
     /// 已导入认证子图并连接当前 caller；本轮无须再执行这个 callee 入口。
     Hit,
     /// 摘要工作没有完成，已经记录未完成前沿；必须停止，不能当作 Miss 回退。
-    Interrupted,
+    Interrupted(FrontierReason),
 }
 
 impl Engine<'_> {
@@ -377,7 +377,7 @@ impl Engine<'_> {
                 || self.budget.exhausted()
             {
                 let reason = if self.budget.exhausted() {
-                    FrontierReason::Work
+                    MachineError::work_failure().frontier_reason()
                 } else {
                     FrontierReason::Budget(Limit::Transfers)
                 };
@@ -386,7 +386,7 @@ impl Engine<'_> {
             }
             // 先为本轮入口载荷的处理计费；深调用或缓存命中都不能获得新预算。
             if !self.budget.charge(self.result.states[id].entry.work_size()) {
-                self.stop_pending(id, FrontierReason::Work);
+                self.stop_pending(id, MachineError::work_failure().frontier_reason());
                 break;
             }
             // 暂时移出 cache，使它与 &mut self 能同时用于传播和认证。
@@ -397,9 +397,9 @@ impl Engine<'_> {
             } else {
                 SummaryAttempt::Miss
             };
-            if matches!(attempt, SummaryAttempt::Interrupted) {
+            if let SummaryAttempt::Interrupted(reason) = attempt {
                 self.cache = cache;
-                self.stop_queued(FrontierReason::SummaryWork);
+                self.stop_queued(reason);
                 break;
             }
             let reused = matches!(attempt, SummaryAttempt::Hit);
@@ -475,19 +475,24 @@ impl Engine<'_> {
             Ok(Some(input)) => input,
             Ok(None) => return SummaryAttempt::Miss,
             Err(reason) => {
-                self.frontier(Some(id), Some(self.result.states[id].key.clone()), reason);
-                return SummaryAttempt::Interrupted;
+                self.frontier(
+                    Some(id),
+                    Some(self.result.states[id].key.clone()),
+                    reason.clone(),
+                );
+                return SummaryAttempt::Interrupted(reason);
             }
         };
         match cache.lookup(&input, &self.result, self.budget) {
             Ok(Some(index)) => {
                 let certificate = cache.certificate(index);
                 self.result.summary_stats.hits += 1;
-                if self.replay(id, certificate) {
-                    self.result.summaries[certificate.record].reused_at.push(id);
-                    SummaryAttempt::Hit
-                } else {
-                    SummaryAttempt::Interrupted
+                match self.replay(id, certificate) {
+                    Ok(()) => {
+                        self.result.summaries[certificate.record].reused_at.push(id);
+                        SummaryAttempt::Hit
+                    }
+                    Err(reason) => SummaryAttempt::Interrupted(reason),
                 }
             }
             Ok(None) => {
@@ -495,21 +500,23 @@ impl Engine<'_> {
                 if cache.begin(id, input, self.budget) {
                     SummaryAttempt::Miss
                 } else {
+                    let reason = super::summary::summary_boundary();
                     self.frontier(
                         Some(id),
                         Some(self.result.states[id].key.clone()),
-                        FrontierReason::SummaryWork,
+                        reason.clone(),
                     );
-                    SummaryAttempt::Interrupted
+                    SummaryAttempt::Interrupted(reason)
                 }
             }
             Err(()) => {
+                let reason = super::summary::summary_boundary();
                 self.frontier(
                     Some(id),
                     Some(self.result.states[id].key.clone()),
-                    FrontierReason::SummaryWork,
+                    reason.clone(),
                 );
-                SummaryAttempt::Interrupted
+                SummaryAttempt::Interrupted(reason)
             }
         }
     }
@@ -644,7 +651,10 @@ impl Engine<'_> {
             }
             let cost = successor.payload.work_size();
             if cost == usize::MAX || !self.budget.charge(cost) {
-                self.frontier_payload(Some(from), work_reason, successor.payload);
+                let reason = MachineError::check_cancelled()
+                    .err()
+                    .map_or(work_reason, MachineError::frontier_reason);
+                self.frontier_payload(Some(from), reason, successor.payload);
                 return None;
             }
             let alternatives = EntryAlternatives::new(&successor.payload);
@@ -801,43 +811,47 @@ impl Engine<'_> {
         root: usize,
         reason: FrontierReason,
         pending: Arc<MachinePayload>,
-    ) {
+    ) -> FrontierReason {
+        let reason = if reason == FrontierReason::Work {
+            FrontierReason::SummaryWork
+        } else {
+            reason
+        };
         self.result.frontiers.push(MachineFrontier {
             from: Some(root),
             target: Some(self.result.states[root].key.clone()),
             pc: None,
-            reason: if reason == FrontierReason::Work {
-                FrontierReason::SummaryWork
-            } else {
-                reason
-            },
+            reason: reason.clone(),
             range: None,
             payload: Some(pending),
         });
+        reason
     }
 
     /// Rename the complete certificate, then import into a temporary graph. The
     /// shared ledger remains consumed on failure, but no partial graph, stale
     /// receipt replacement or half-renamed state is installed in the analysis.
-    fn replay(&mut self, root: usize, certificate: &Certificate) -> bool {
+    fn replay(&mut self, root: usize, certificate: &Certificate) -> Result<(), FrontierReason> {
         let cost = match self.replay_copy_cost() {
             Ok(cost) => cost,
             Err(error) => {
+                let reason = error.frontier_reason();
                 self.frontier(
                     Some(root),
                     Some(self.result.states[root].key.clone()),
-                    error.frontier_reason(),
+                    reason.clone(),
                 );
-                return false;
+                return Err(reason);
             }
         };
         if cost == usize::MAX || !self.budget.charge(cost) {
+            let reason = super::summary::summary_boundary();
             self.frontier(
                 Some(root),
                 Some(self.result.states[root].key.clone()),
-                FrontierReason::SummaryWork,
+                reason.clone(),
             );
-            return false;
+            return Err(reason);
         }
         let pending = Arc::new(self.result.states[root].entry.clone());
         let prepared = match Replay::new(
@@ -850,8 +864,7 @@ impl Engine<'_> {
         {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.replay_failure(root, error.frontier_reason(), pending);
-                return false;
+                return Err(self.replay_failure(root, error.frontier_reason(), pending));
             }
         };
         let mut counters = Counters {
@@ -887,8 +900,7 @@ impl Engine<'_> {
             // capacity. Only graph contents/receipts are rolled back.
             self.counters.states = staged.counters.states;
             drop(staged);
-            self.replay_failure(root, reason, pending);
-            return false;
+            return Err(self.replay_failure(root, reason, pending));
         }
         self.counters.states = staged.counters.states;
         self.result = staged.result;
@@ -900,7 +912,7 @@ impl Engine<'_> {
         self.edges = staged.edges;
         self.diagnostics = staged.diagnostics;
         self.completed_calls = staged.completed_calls;
-        true
+        Ok(())
     }
 
     /// This method only mutates a temporary Engine owned by replay().
@@ -959,7 +971,7 @@ impl Engine<'_> {
                 }
                 let cost = node.entry.work_size().saturating_mul(2);
                 if cost == usize::MAX || !self.budget.charge(cost) {
-                    return Err(FrontierReason::SummaryWork);
+                    return Err(super::summary::summary_boundary());
                 }
                 let id = self.result.states.len();
                 self.alternatives.push(EntryAlternatives::new(&node.entry));
@@ -989,7 +1001,7 @@ impl Engine<'_> {
         }
         for edge in &certificate.edges {
             if !self.budget.charge(1) {
-                return Err(FrontierReason::SummaryWork);
+                return Err(super::summary::summary_boundary());
             }
             let from = *ids
                 .get(edge.from)
@@ -1034,12 +1046,15 @@ impl Engine<'_> {
                 }
             }
             if self.budget.exhausted() {
-                return Err(FrontierReason::SummaryWork);
+                return Err(super::summary::summary_boundary());
             }
         }
         if !self.budget.charge(0) {
-            return Err(FrontierReason::SummaryWork);
+            return Err(super::summary::summary_boundary());
         }
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
