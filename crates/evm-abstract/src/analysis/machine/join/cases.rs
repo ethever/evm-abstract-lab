@@ -63,7 +63,8 @@ fn form(
 }
 
 pub(super) fn prepare(
-    previous: Vec<&MachinePayload>,
+    previous: &[Arc<MachinePayload>],
+    initial: Option<&MachinePayload>,
     incoming: &MachinePayload,
     selectors: &BTreeSet<ExprId>,
     domain: Domain,
@@ -72,8 +73,11 @@ pub(super) fn prepare(
     let policy = domain.spec().relations();
     let limit = policy.max_constraints;
     let limits = policy.expressions();
-    let mut complete: Vec<Arc<MachinePayload>> = Vec::new();
-    for input in previous.into_iter().chain(std::iter::once(incoming)) {
+    // Stored canonical cases contain no engine selectors. Reusing their Arc
+    // keeps their original inputs and avoids redoing a completed projection.
+    reserve(budget, previous.len())?;
+    let mut complete = previous.to_vec();
+    for input in initial.into_iter().chain(std::iter::once(incoming)) {
         reserve(budget, input.work_size().saturating_mul(4))?;
         let mut initial = input.clone();
         initial.relations.forget();

@@ -361,12 +361,44 @@ impl Engine<'_> {
         }
     }
 
+    /// Finish deeper callees before propagating their callers' pending unions.
+    /// A caller's immediate rejection and later return then meet before that
+    /// caller executes. Same-depth nodes retain their existing FIFO order.
+    fn next_pending(&mut self) -> Result<Option<usize>, MachineError> {
+        if self.queued.is_empty() {
+            return Ok(None);
+        }
+        let cost = self.queue.len().saturating_mul(2).saturating_add(1);
+        if cost == usize::MAX || !self.budget.charge(cost) {
+            return Err(MachineError::work_failure());
+        }
+        let mut choice = None;
+        let mut depth = 0;
+        for (position, id) in self.queue.iter().enumerate() {
+            MachineError::check_cancelled()?;
+            let candidate_depth = self.result.states[*id].entry.call_stack.depth();
+            if self.queued.contains(id) && candidate_depth > depth {
+                choice = Some(position);
+                depth = candidate_depth;
+            }
+        }
+        Ok(choice.and_then(|position| self.queue.remove(position)))
+    }
+
     /// 反复处理入口摘要有新信息的节点，并在结束时整理对外结果。
     ///
     /// 普通执行与摘要复用最终都更新同一状态表。一次完成的 transfer 不代表
     /// 节点永远完成：后续 join 若扩大入口，`successor` 会让它重新参与传播。
     fn run(&mut self) {
-        while let Some(id) = self.queue.pop_front() {
+        loop {
+            let id = match self.next_pending() {
+                Ok(Some(id)) => id,
+                Ok(None) => break,
+                Err(error) => {
+                    self.stop_queued(error.frontier_reason());
+                    break;
+                }
+            };
             self.counters.report(self.budget.used());
             // 回放可能已经用证书满足这个节点，只移除了其 queued 标记。
             // 物理队列里的旧编号仍可存在；没有标记时跳过，不重复执行已满足节点。

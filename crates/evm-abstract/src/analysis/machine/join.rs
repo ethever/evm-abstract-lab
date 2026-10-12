@@ -327,13 +327,21 @@ impl EntryAlternatives {
         {
             return Ok((widened.content_form()? != entry.content_form()?).then_some(widened));
         }
+        let unconstrained = entry.relations.is_empty() && incoming.relations.is_empty();
+        if self.cycle_widened && !cyclic && !unconstrained {
+            let joined = entry.join(incoming, domain)?;
+            checkpoint()?;
+            self.represented = vec![Arc::new(entry.clone())];
+            self.cycle_widened = false;
+            return Ok(Some(joined));
+        }
         if self.cycle_widened || cyclic && self.represented.len() >= 2 {
-            let input = if self.cycle_widened {
-                self.represented.iter().map(Arc::as_ref).collect()
+            let (previous, initial) = if self.cycle_widened {
+                (self.represented.as_slice(), None)
             } else {
-                vec![entry]
+                (&[][..], Some(entry))
             };
-            let prepared = cases::prepare(input, incoming, selectors, domain, budget)?;
+            let prepared = cases::prepare(previous, initial, incoming, selectors, domain, budget)?;
             if self.cycle_widened && prepared == self.represented {
                 return Ok(None);
             }
