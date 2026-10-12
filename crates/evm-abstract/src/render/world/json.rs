@@ -2,23 +2,31 @@
 use super::observation;
 use crate::{
     analysis::{MachineOutcome, WorldAnalysis},
-    world::{Store, World},
+    world::{FingerprintError, Store, World},
 };
+use alloy_primitives::B256;
 use serde::{
     Serialize, Serializer,
     ser::{SerializeMap, SerializeSeq, SerializeStruct},
 };
 
 /// Borrowed native report plus computed account observations and snapshot hashes.
-pub struct JsonEvidence<'a>(&'a WorldAnalysis);
+pub struct JsonEvidence<'a> {
+    analysis: &'a WorldAnalysis,
+    fingerprint: B256,
+}
 /// Capture the same native JSON fields and evidence without allocating a JSON tree.
-pub fn evidence(analysis: &WorldAnalysis) -> JsonEvidence<'_> {
-    JsonEvidence(analysis)
+/// The exact snapshot fingerprint is computed before any report output is emitted.
+pub fn evidence(analysis: &WorldAnalysis) -> Result<JsonEvidence<'_>, FingerprintError> {
+    Ok(JsonEvidence {
+        analysis,
+        fingerprint: analysis.world().fingerprint()?,
+    })
 }
 #[derive(Clone, Copy)]
 enum Extra<'a> {
-    Analysis(&'a WorldAnalysis),
-    World(&'a World),
+    Analysis(&'a WorldAnalysis, B256),
+    World(&'a World, B256),
     Outcome(&'a MachineOutcome),
     Store(&'a Store),
 }
@@ -33,7 +41,7 @@ struct Fields<'a, S> {
 struct Evidence<'a>(Extra<'a>);
 impl Serialize for JsonEvidence<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        Evidence(Extra::Analysis(self.0)).serialize(serializer)
+        Evidence(Extra::Analysis(self.analysis, self.fingerprint)).serialize(serializer)
     }
 }
 impl Serialize for Evidence<'_> {
@@ -43,8 +51,8 @@ impl Serialize for Evidence<'_> {
             extra: self.0,
         };
         match self.0 {
-            Extra::Analysis(v) => v.serialize(serializer),
-            Extra::World(v) => v.serialize(serializer),
+            Extra::Analysis(v, _) => v.serialize(serializer),
+            Extra::World(v, _) => v.serialize(serializer),
             Extra::Outcome(v) => v.serialize(serializer),
             Extra::Store(v) => v.serialize(serializer),
         }
@@ -91,10 +99,10 @@ impl<S: SerializeStruct> SerializeStruct for Fields<'_, S> {
         value: &T,
     ) -> Result<(), Self::Error> {
         match (self.extra, key) {
-            (Extra::Analysis(analysis), "world") => self
+            (Extra::Analysis(analysis, fingerprint), "world") => self
                 .inner
-                .serialize_field(key, &Evidence(Extra::World(analysis.world()))),
-            (Extra::Analysis(analysis), "outcomes") => {
+                .serialize_field(key, &Evidence(Extra::World(analysis.world(), fingerprint))),
+            (Extra::Analysis(analysis, _), "outcomes") => {
                 self.inner.serialize_field(key, &Outcomes(analysis))
             }
             (Extra::Outcome(outcome), "store") => self
@@ -105,16 +113,15 @@ impl<S: SerializeStruct> SerializeStruct for Fields<'_, S> {
     }
     fn end(mut self) -> Result<Self::Ok, Self::Error> {
         match self.extra {
-            Extra::World(world) => {
-                self.inner
-                    .serialize_field("fingerprint", &world.fingerprint())?;
+            Extra::World(world, fingerprint) => {
+                self.inner.serialize_field("fingerprint", &fingerprint)?;
                 self.inner
                     .serialize_field("code_hashes", &CodeHashes(world))?;
             }
             Extra::Store(store) => self
                 .inner
                 .serialize_field("account_observations", &Observations(store))?,
-            Extra::Analysis(_) | Extra::Outcome(_) => {}
+            Extra::Analysis(_, _) | Extra::Outcome(_) => {}
         }
         self.inner.end()
     }
@@ -244,7 +251,7 @@ impl<'a, S: Serializer> Serializer for Augment<'a, S> {
         len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
         let extra = match self.extra {
-            Extra::World(_) => 2,
+            Extra::World(_, _) => 2,
             Extra::Store(_) => 1,
             _ => 0,
         };

@@ -43,6 +43,14 @@ pub enum JsonError {
     /// A native value rejected serialization within its own typed policy.
     #[error("native JSON serialization failed: {0}")]
     Serialization(serde_json::Error),
+    /// Computing the exact initial-state fingerprint failed before rendering.
+    #[error("native JSON fingerprint failed: {0}")]
+    Fingerprint(crate::world::FingerprintError),
+}
+impl From<crate::world::FingerprintError> for JsonError {
+    fn from(error: crate::world::FingerprintError) -> Self {
+        Self::Fingerprint(error)
+    }
 }
 impl From<serde_json::Error> for JsonError {
     fn from(error: serde_json::Error) -> Self {

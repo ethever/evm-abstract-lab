@@ -23,6 +23,10 @@ use table::write_table;
 /// References reduce repeated long addresses/hashes without truncating them.
 /// Outcomes remain separate: equal returned bytes do not imply equal state effects.
 pub fn render(analysis: &WorldAnalysis) -> String {
+    let fingerprint = match analysis.world().fingerprint() {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => return format!("Snapshot fingerprint unavailable: {error}\n"),
+    };
     let refs = References::new(analysis);
     let mut output = String::new();
     output.push_str("Analysis\n");
@@ -75,7 +79,7 @@ pub fn render(analysis: &WorldAnalysis) -> String {
         identity(analysis.world().identity())
     )
     .unwrap();
-    writeln!(output, "  fingerprint={}", analysis.world().fingerprint()).unwrap();
+    writeln!(output, "  fingerprint={fingerprint}").unwrap();
 
     if let Some(acquisition) = analysis.rpc_acquisition() {
         output.push_str("\nRPC acquisition\n");

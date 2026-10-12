@@ -34,6 +34,7 @@ fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
         JsonError::Serialization(_) => {
             return super::api_error(api::ApiErrorCode::Internal, "typed report encoding failed");
         }
+        JsonError::Fingerprint(error) => return crate::analyze::fingerprint_error(error),
     };
     api::ApiError {
         code: if kind == api::ExportFailureKind::Cancelled {

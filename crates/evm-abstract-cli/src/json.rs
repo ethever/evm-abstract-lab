@@ -13,9 +13,10 @@ pub(crate) fn world(
     analysis: &WorldAnalysis,
     ir: Option<&NormalizedSsa>,
 ) -> Result<String, render::json::JsonError> {
+    let analysis = render::world::evidence(analysis)?;
     match ir {
         Some(ir) => render::json::pretty(&WorldEnvelope { analysis, ir }),
-        None => render::json::pretty(&render::world::evidence(analysis)),
+        None => render::json::pretty(&analysis),
     }
 }
 
@@ -27,13 +28,13 @@ pub(crate) fn program(
 }
 
 struct WorldEnvelope<'a> {
-    analysis: &'a WorldAnalysis,
+    analysis: render::world::JsonEvidence<'a>,
     ir: &'a NormalizedSsa,
 }
 impl Serialize for WorldEnvelope<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(2))?;
-        map.serialize_entry("analysis", &render::world::evidence(self.analysis))?;
+        map.serialize_entry("analysis", &self.analysis)?;
         map.serialize_entry(
             if self.ir.complete() {
                 "ssa"

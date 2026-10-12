@@ -65,6 +65,8 @@ Native analysis schema 为 6；域策略自身的版本独立。原生 `expressi
 
 原生 graph 的 `identity_scope` 与来源 namespace 保留同一进程内的 Fresh/输入身份；不能用某份报告的 local root 索引与另一份报告比较。原生 CLI JSON 通过 `render::json` 的流式 writer 输出，整份 UTF-8 输出默认上限为 64 MiB，每次追加前检查预算与取消；应用可用 `JsonLimits` 与 `with_control` 明确选择策略。超过预算返回 `JsonError::Bytes`，包含已写字节、下一次写入所需字节和额度；取消返回 `JsonError::Cancelled`，保留已计算的分析事实。原生 pending Arc 快照仍可能重复其程序和状态，整份 writer 的预算约束这些重复输出；Web 使用下面的共享目录。直接调用第三方 serde 序列化函数不自动获得整份 writer 预算。
 
+世界指纹保留原 v2 编码和全部初始观察；`World::fingerprint` 返回 `Result<B256, FingerprintError>`。取消、值编码失败和长度前缀溢出分别是 `Cancelled`、`Encoding`、`LengthOverflow`，不生成替代 digest。`render::world::evidence` 在报告输出前有界计算该指纹并返回可失败的借用视图，原生 JSON 通过 `JsonError::Fingerprint` 传播；文本和 DOT 明确显示 unavailable 和错误并停止渲染。Server 使用 `ErrorDetails::Fingerprint` 保存类型与编码坐标，取消映射为 Cancelled，其余失败映射为 Export。调用方须在适用的 `Control.scope` 内计算 evidence，随后 writer 仍逐次检查取消与整份输出预算。
+
 Web/server 的单份 `AnalysisReport.symbolic.nodes` 共享所有 scalar、byte、slot、view 和 path。引用按语义分为 `ExpressionRef`、`ByteStateRef`、`SlotStateRef`、`ByteViewRef`、`PathRef`；依赖指向较早节点。`ValueInfo.expression` 是 scalar ref；`ByteArraySnapshot.symbolic` 是 view ref；账户 `storage_root`、`transient_root` 分开。状态局部 `symbolic_facts` / `storage_facts` / `transient_facts` 还保存已被指令消耗的 symbolic operand 数值信息，不能跨快照错误复用。来源 token、namespace、非 singleton 常量集、位、signed/unsigned bounds、nonzero、congruence、provenance 和 equality identity 均保留。
 
 `MachineSnapshot.path` 表达完整状态条件。`Frontier.range` 保留 offset/size/limit、condition 和 nonzero side；其 payload 与一般 join 的 `Frontier.payload` 都引用 `pending_machines`。Program、store、byte source 仍在原共享目录中，不在每个 frontier 递归倾倒完整分析。

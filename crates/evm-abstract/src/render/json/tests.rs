@@ -3,7 +3,10 @@ use crate::{
     Address, Fork, U256,
     analysis::{ExecutionConfig, analyze_world},
     bytecode::Program,
-    domain::AbstractValue,
+    domain::{
+        AbstractValue,
+        symbolic::{ExprId, ExprLimits},
+    },
     world::{Account, ByteArray, Code, Entry, World},
 };
 use serde::ser::SerializeSeq;
@@ -76,9 +79,13 @@ fn real_native_frontier_and_streamed_account_evidence_retain_the_native_shape() 
     )
     .unwrap();
     let native = serde_json::to_value(&analysis).unwrap();
-    let serialized = pretty(&crate::render::world::evidence(&analysis)).unwrap();
+    let serialized = pretty(&crate::render::world::evidence(&analysis).unwrap()).unwrap();
     let mut augmented: serde_json::Value = serde_json::from_str(&serialized).unwrap();
     assert!(augmented["world"].get("fingerprint").is_some());
+    assert_eq!(
+        augmented["world"]["fingerprint"],
+        serde_json::json!(analysis.world().fingerprint().unwrap())
+    );
     assert!(
         augmented["world"]["code_hashes"]
             .as_object()
@@ -118,4 +125,91 @@ fn real_native_frontier_and_streamed_account_evidence_retain_the_native_shape() 
         native,
         "export failure must not alter analysis facts"
     );
+}
+
+fn symbolic_balance_analysis(expression: ExprId) -> crate::analysis::WorldAnalysis {
+    let address = Address::repeat_byte(0x22);
+    let mut world = World::new(Fork::Osaka, "fingerprint export boundary");
+    let mut account = Account::from_hex("00", Fork::Osaka).unwrap();
+    account.balance = AbstractValue::top().with_expression(expression);
+    world.insert(address, account).unwrap();
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.max_depth = 512;
+    analyze_world(
+        world,
+        Entry::concrete(
+            address,
+            address,
+            AbstractValue::constant(U256::ZERO),
+            ByteArray::exact([]),
+        ),
+        config,
+    )
+    .unwrap()
+}
+
+#[test]
+fn cancelled_exact_fingerprint_is_reported_before_native_evidence_output() {
+    let analysis = symbolic_balance_analysis(ExprId::fresh().unwrap());
+    let fingerprint = analysis.world().fingerprint().unwrap();
+    let control = Control::default();
+    control.cancellation().cancel();
+    control.scope(|| {
+        assert!(matches!(
+            crate::render::world::evidence(&analysis),
+            Err(crate::world::FingerprintError::Cancelled)
+        ));
+        assert!(matches!(
+            crate::render::world::json(&analysis),
+            Err(JsonError::Fingerprint(
+                crate::world::FingerprintError::Cancelled
+            ))
+        ));
+        for rendered in [
+            crate::render::world::text(&analysis),
+            crate::render::world::dot(&analysis),
+        ] {
+            assert!(rendered.contains("Snapshot fingerprint unavailable:"));
+            assert!(rendered.contains("cancelled"));
+            assert!(!rendered.contains(&fingerprint.to_string()));
+        }
+    });
+    assert_eq!(analysis.world().fingerprint().unwrap(), fingerprint);
+    assert_eq!(
+        crate::render::world::json(&analysis).unwrap()["world"]["fingerprint"],
+        serde_json::json!(fingerprint)
+    );
+}
+
+#[test]
+fn exact_fingerprint_encoding_boundary_cannot_be_serialized_as_a_digest() {
+    let mut expression = ExprId::fresh().unwrap();
+    for _ in 0..257 {
+        expression = ExprId::operation(
+            revm_bytecode::opcode::ADD,
+            &[expression, ExprId::constant(U256::from(1))],
+            ExprLimits {
+                max_nodes: 65_536,
+                max_depth: 512,
+            },
+        )
+        .unwrap();
+    }
+    let analysis = symbolic_balance_analysis(expression);
+    assert!(matches!(
+        crate::render::world::evidence(&analysis),
+        Err(crate::world::FingerprintError::Encoding(_))
+    ));
+    assert!(matches!(
+        crate::render::world::json(&analysis),
+        Err(JsonError::Fingerprint(
+            crate::world::FingerprintError::Encoding(_)
+        ))
+    ));
+    for rendered in [
+        crate::render::world::text(&analysis),
+        crate::render::world::dot(&analysis),
+    ] {
+        assert!(rendered.contains("Snapshot fingerprint unavailable:"));
+    }
 }
