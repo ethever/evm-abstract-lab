@@ -1,7 +1,7 @@
 //! Client task lifecycle. Generation and job checks keep late poll/result
 //! callbacks from replacing a newer immutable report.
 
-use super::TransportError;
+use super::{TransportError, timing};
 use evm_abstract_notation::WideSymbol;
 use evm_abstract_protocol::{
     AnalyzeReply, AnalyzeRequest, ApiError, JobId, JobReply, JobSnapshot, JobState,
@@ -82,6 +82,10 @@ pub enum Message {
         id: JobId,
         /// Typed report envelope or transport failure.
         result: Box<Result<AnalyzeReply, TransportError>>,
+        /// Network and body-transfer duration of this result attempt.
+        transfer_ns: u64,
+        /// JSON decoding duration of this result attempt.
+        parsing_ns: u64,
     },
 }
 
@@ -138,6 +142,8 @@ pub(super) struct Task {
     cancel_requested: bool,
     cancel_sent: bool,
     next_poll: Option<f64>,
+    pub(super) wait: timing::Wait,
+    pub(super) frontend: timing::Frontend,
 }
 
 impl Task {
@@ -166,6 +172,7 @@ impl Task {
             phase: TaskPhase::Submitting,
             ..Self::default()
         };
+        self.wait.start(timing::now());
         Command::Submit {
             generation,
             request: Box::new(request),
@@ -305,6 +312,9 @@ impl Task {
         };
         self.snapshot = Some(snapshot);
         self.next_poll = None;
+        if matches!(self.phase, TaskPhase::Failed | TaskPhase::Cancelled) {
+            self.wait.finish(timing::now());
+        }
     }
 
     fn request_failed(&mut self, operation: JobOperation, error: TaskError) {
@@ -348,6 +358,8 @@ impl Task {
         self.phase = TaskPhase::Ready;
         self.result_pending = false;
         self.error = None;
+        // The workspace freezes successful waiting only after the actual
+        // current view has completed its first synchronous preparation.
     }
 
     pub(super) fn fail(&mut self, error: TaskError) {
@@ -355,6 +367,11 @@ impl Task {
         self.phase = TaskPhase::Failed;
         self.poll_pending = false;
         self.result_pending = false;
+        self.wait.finish(timing::now());
+    }
+
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub(super) fn label(&self) -> &'static str {

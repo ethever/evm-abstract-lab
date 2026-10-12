@@ -8,6 +8,7 @@ mod job;
 mod layout;
 mod providers;
 mod startup;
+pub(crate) mod timing;
 
 use crate::{palette, widgets};
 use directory::{Directory, Pick};
@@ -109,6 +110,7 @@ pub struct Workspace {
     ssa_focus: Selection,
     ssa_cache: widgets::SsaCache,
     ssa_display: crate::ssa_display::SsaDisplay,
+    report_timing: Option<timing::ReportTiming>,
 }
 
 impl Default for Workspace {
@@ -132,6 +134,7 @@ impl Default for Workspace {
             ssa_focus: Selection::default(),
             ssa_cache: widgets::SsaCache::default(),
             ssa_display: crate::ssa_display::SsaDisplay::default(),
+            report_timing: None,
         }
     }
 }
@@ -177,6 +180,14 @@ impl Workspace {
 
     /// Render the pure UI. The browser adapter executes the returned command.
     pub fn show(&mut self, ui: &mut Ui) -> Option<Command> {
+        let prepare_started = timing::now();
+        let preparing_report = self
+            .report_timing
+            .as_ref()
+            .is_some_and(|timing| timing.pending);
+        let mut view_shown = false;
+        let mut view_ready = true;
+        self.inspector.timings = self.timing_details();
         let mut command = None;
         // Web keyboard ownership is decided synchronously by the DOM bridge,
         // before the browser can open its downloads page. Native input uses
@@ -279,6 +290,7 @@ impl Workspace {
                                 &mut self.selection,
                                 self.account.as_deref(),
                             );
+                            view_shown = !ui.is_sizing_pass();
                             return;
                         }
                         let mut panes = AnalysisPanes {
@@ -290,6 +302,8 @@ impl Workspace {
                             ssa_focus: &mut self.ssa_focus,
                             ssa_cache: &mut self.ssa_cache,
                             ssa_display: self.ssa_display,
+                            view_shown: &mut view_shown,
+                            view_ready: &mut view_ready,
                         };
                         match self.view {
                             View::Split => self.layout.show(ui, &mut panes),
@@ -343,7 +357,28 @@ impl Workspace {
             command = Some(self.start(request));
         }
         self.sync_selection();
-        if self.task.busy() {
+        if preparing_report && let Some(timing) = &mut self.report_timing {
+            let finished = timing::now();
+            let ready = view_shown && view_ready && !ui.ctx().will_discard();
+            timing.record_view(
+                timing::elapsed_ns(prepare_started, finished),
+                ready,
+                finished,
+            );
+            if ready {
+                if timing.generation == self.task.generation() {
+                    self.task.wait.finish(finished);
+                }
+                // This pass painted the live label before view preparation.
+                ui.ctx().request_repaint();
+            }
+        }
+        if self.task.busy()
+            || self
+                .report_timing
+                .as_ref()
+                .is_some_and(|timing| timing.pending)
+        {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
         }
@@ -439,10 +474,16 @@ impl Workspace {
                 generation,
                 id,
                 result,
+                transfer_ns,
+                parsing_ns,
             } => {
                 if !self.task.accepts_result(generation, id) {
                     return;
                 }
+                self.task.frontend.transfer_ns =
+                    self.task.frontend.transfer_ns.saturating_add(transfer_ns);
+                self.task.frontend.parsing_ns =
+                    self.task.frontend.parsing_ns.saturating_add(parsing_ns);
                 match *result {
                     Err(error) => self.task.retry_result(TaskError::Transport(error)),
                     Ok(AnalyzeReply { result: Err(error) })
@@ -463,6 +504,7 @@ impl Workspace {
 
     /// Apply a typed immutable result; schema failures never enter view state.
     pub fn receive(&mut self, result: Result<AnalyzeReply, TransportError>) {
+        let prepare_started = timing::now();
         match result {
             Ok(AnalyzeReply { result: Ok(report) }) if report.schema_version == SCHEMA_VERSION => {
                 self.selection = Selection {
@@ -486,6 +528,14 @@ impl Workspace {
                     report.metadata.snapshot.is_some() || report.programs.len() > 1;
                 self.report = Some(report);
                 self.task.complete();
+                let mut frontend = self.task.frontend.clone();
+                frontend.view_ns = timing::elapsed_ns(prepare_started, timing::now());
+                self.report_timing = Some(timing::ReportTiming {
+                    generation: self.task.generation(),
+                    wait: self.task.wait.clone(),
+                    frontend,
+                    pending: true,
+                });
             }
             Ok(AnalyzeReply { result: Ok(report) }) => self.task.fail(TaskError::Schema {
                 received: report.schema_version,
@@ -497,6 +547,16 @@ impl Workspace {
 
     /// Live status for assistive tools and real browser verification.
     pub fn accessible_status(&self) -> String {
+        let status = self.accessible_task_status();
+        let timing = self.accessible_timing();
+        if timing.is_empty() {
+            status
+        } else {
+            format!("{status}; {timing}")
+        }
+    }
+
+    fn accessible_task_status(&self) -> String {
         if self.startup.loading() {
             return "Loading the initial example…".into();
         }
@@ -509,7 +569,8 @@ impl Workspace {
             && let Some(report) = &self.report
         {
             return format!(
-                "Ready: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}; SSA details: {:?}",
+                "{}: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}; SSA details: {:?}",
+                self.task_label(),
                 report
                     .disassembly
                     .iter()
@@ -556,12 +617,75 @@ impl Workspace {
             .unwrap_or_default();
         format!(
             "{}{progress}{}",
-            self.task.label(),
+            self.task_label(),
             if self.previous_report {
                 " · showing previous result"
             } else {
                 ""
             }
         )
+    }
+
+    fn timing_details(&self) -> timing::Details {
+        timing::Details {
+            task_wait: self.task.wait.summary(timing::now()),
+            task_label: self.task_label(),
+            task_backend: self
+                .task
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.timings.clone()),
+            report: self.report_timing.clone(),
+            previous: self.previous_report,
+        }
+    }
+
+    fn preparing_current_view(&self) -> bool {
+        self.task.phase == TaskPhase::Ready
+            && self
+                .report_timing
+                .as_ref()
+                .is_some_and(|timing| timing.pending && timing.generation == self.task.generation())
+    }
+
+    fn task_label(&self) -> &'static str {
+        if self.preparing_current_view() {
+            "Preparing result view"
+        } else {
+            self.task.label()
+        }
+    }
+
+    fn accessible_timing(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(wait) = self.task.wait.summary(timing::now()) {
+            parts.push(wait);
+        }
+        if self.previous_report {
+            if let Some(snapshot) = &self.task.snapshot {
+                parts.push(format!(
+                    "Current task {}",
+                    timing::backend_summary(&snapshot.timings)
+                ));
+            }
+            parts.push("Previous report timing".into());
+        }
+        if let Some(report) = &self.report {
+            parts.push(timing::backend_summary(&report.metadata.timings));
+            if let Some(timing) = &self.report_timing {
+                if self.previous_report
+                    && let Some(wait) = timing.wait.summary(timing::now())
+                {
+                    parts.push(format!("Previous report {wait}"));
+                }
+                parts.push(timing.frontend.summary());
+                if timing.pending {
+                    parts.push("Preparing the first visible result view".into());
+                }
+            }
+        } else if let Some(snapshot) = &self.task.snapshot {
+            parts.push(timing::backend_summary(&snapshot.timings));
+        }
+        parts.join("; ")
     }
 }

@@ -6,8 +6,9 @@ use evm_abstract::analysis::{
     progress::{Event, Observer, Phase},
 };
 use evm_abstract_protocol::{
-    AnalysisPhase, AnalysisProgress, AnalysisReport, AnalyzeRequest, ApiError, ApiErrorCode,
-    ErrorDetails, JobId, JobSnapshot, JobState, TaskErrorKind, TaskFailure, WorkerErrorKind,
+    AnalysisPhase, AnalysisProgress, AnalysisReport, AnalysisTimings, AnalyzeRequest, ApiError,
+    ApiErrorCode, ErrorDetails, JobId, JobSnapshot, JobState, TaskErrorKind, TaskFailure,
+    WorkerErrorKind,
 };
 use std::{
     collections::{BTreeMap, VecDeque, hash_map::RandomState},
@@ -18,7 +19,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 // One process-wide sequence prevents a replaced pool from answering stale IDs.
@@ -81,6 +82,7 @@ struct Worker {
 
 struct Entry {
     snapshot: JobSnapshot,
+    queued_at: Instant,
     control: Control,
     events: Receiver<Event>,
     request: Option<AnalyzeRequest>,
@@ -155,8 +157,11 @@ impl<E: Executor> Coordinator<E> {
             Command::Status { id, reply } => {
                 let result = self
                     .jobs
-                    .get(&id)
-                    .map(|entry| entry.snapshot.clone())
+                    .get_mut(&id)
+                    .map(|entry| {
+                        refresh_timings(entry);
+                        entry.snapshot.clone()
+                    })
                     .ok_or_else(|| task_error(TaskErrorKind::NotFound, Some(id)));
                 let _ = reply.send(result);
             }
@@ -230,7 +235,9 @@ impl<E: Executor> Coordinator<E> {
                 id,
                 state: JobState::Queued,
                 progress: AnalysisProgress::default(),
+                timings: AnalysisTimings::default(),
             },
+            queued_at: Instant::now(),
             control: Control::new(Observer::new(sender)),
             events,
             request: Some(request),
@@ -239,7 +246,9 @@ impl<E: Executor> Coordinator<E> {
         self.jobs.insert(id, entry);
         self.waiting.push_back(id);
         self.dispatch();
-        Ok(self.jobs[&id].snapshot.clone())
+        let entry = self.jobs.get_mut(&id).expect("submitted job remains owned");
+        refresh_timings(entry);
+        Ok(entry.snapshot.clone())
     }
 
     fn dispatch(&mut self) {
@@ -322,21 +331,26 @@ impl<E: Executor> Coordinator<E> {
             | JobState::Failed(_)
             | JobState::Cancelled => {}
         }
-        Ok(self.jobs[&id].snapshot.clone())
+        let entry = self.jobs.get_mut(&id).expect("cancelled job remains owned");
+        refresh_timings(entry);
+        Ok(entry.snapshot.clone())
     }
 
     fn finish(&mut self, id: JobId, result: Result<AnalysisReport, ApiError>) {
         let Some(entry) = self.jobs.get_mut(&id) else {
             return;
         };
+        entry.control.observer().finish_timing();
         drain_progress(entry);
+        refresh_timings(entry);
         if entry.control.cancellation().is_cancelled() {
             drop(result);
             entry.snapshot.state = JobState::Cancelled;
             entry.snapshot.progress.phase = AnalysisPhase::Cancelled;
         } else {
             match result {
-                Ok(report) => {
+                Ok(mut report) => {
+                    report.metadata.timings = entry.snapshot.timings.clone();
                     entry.snapshot.progress.phase = AnalysisPhase::Complete;
                     entry.snapshot.progress.states =
                         entry.snapshot.progress.states.max(report.cfg.len());
@@ -389,6 +403,7 @@ impl<E: Executor> Coordinator<E> {
             ) {
                 drain_progress(entry);
             }
+            refresh_timings(entry);
         }
     }
 
@@ -418,6 +433,25 @@ impl<E: Executor> Coordinator<E> {
             self.finish(id, Err(task_error(TaskErrorKind::Cancelled, Some(id))));
         }
     }
+}
+
+fn refresh_timings(entry: &mut Entry) {
+    if !matches!(
+        entry.snapshot.state,
+        JobState::Queued | JobState::Running | JobState::Cancelling
+    ) {
+        return;
+    }
+    // Observe the queue clock first: a worker can start immediately after the
+    // timing read, and that race must never make a later queue duration shrink.
+    let observed_at = Instant::now();
+    let snapshot = entry.control.observer().timing();
+    let queue = snapshot
+        .started_at
+        .unwrap_or(observed_at)
+        .saturating_duration_since(entry.queued_at);
+    let queue_ns = u64::try_from(queue.as_nanos()).unwrap_or(u64::MAX);
+    entry.snapshot.timings = crate::analyze::timing::project(snapshot, queue_ns);
 }
 
 fn drain_progress(entry: &mut Entry) {
@@ -520,7 +554,9 @@ fn start_worker<E: Executor>(
                     .name(format!("analysis-{worker}"))
                     .spawn_scoped(scope, move || {
                         while let Ok(work) = receiver.recv() {
+                            let timing = crate::analyze::timing::Guard::start(&work.control);
                             let result = executor.execute(work.request, &work.control);
+                            drop(timing);
                             let id = work.id;
                             drop(work.control);
                             if events

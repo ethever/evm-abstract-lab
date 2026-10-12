@@ -74,6 +74,29 @@ impl Default for AnalysisProgress {
         }
     }
 }
+record! {
+    /// Monotonic wall-clock durations in nanoseconds, frozen at task completion.
+    /// Processing excludes HTTP report serialization, transmission and browser work.
+    #[derive(Default)]
+    pub struct AnalysisTimings {
+        /// Time from queue admission until the worker actually starts; direct analysis has no queue.
+        pub queue_ns: u64,
+        /// Worker processing time, including the currently active phase while running.
+        pub processing_ns: u64,
+        /// Input and configuration validation time.
+        pub validating_ns: u64,
+        /// Chain identity and canonical block resolution time.
+        pub pinning_ns: u64,
+        /// Account and storage acquisition time across all refinement rounds.
+        pub acquiring_ns: u64,
+        /// Abstract execution time across all refinement rounds.
+        pub analyzing_ns: u64,
+        /// SSA construction and verification time.
+        pub building_ssa_ns: u64,
+        /// Typed display-report projection time.
+        pub projecting_ns: u64,
+    }
+}
 variant! {
     /// Task lifecycle. Completed reports are fetched separately, never in polls.
     pub enum JobState {
@@ -100,6 +123,8 @@ record! {
         pub state: JobState,
         /// Last cumulative progress observation.
         pub progress: AnalysisProgress,
+        /// Authoritative cumulative durations, independent of progress-event delivery.
+        pub timings: AnalysisTimings,
     }
 }
 record! {

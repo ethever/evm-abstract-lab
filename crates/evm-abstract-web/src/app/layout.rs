@@ -235,6 +235,8 @@ pub(super) struct AnalysisPanes<'a> {
     pub(super) ssa_focus: &'a mut Selection,
     pub(super) ssa_cache: &'a mut widgets::SsaCache,
     pub(super) ssa_display: crate::ssa_display::SsaDisplay,
+    pub(super) view_shown: &'a mut bool,
+    pub(super) view_ready: &'a mut bool,
 }
 
 impl AnalysisPanes<'_> {
@@ -263,6 +265,12 @@ impl AnalysisPanes<'_> {
                 self.ssa_focus,
                 self.ssa_cache,
             ),
+        }
+        if !ui.is_sizing_pass() {
+            *self.view_shown = true;
+            if pane == Pane::Graph {
+                *self.view_ready &= self.graph.prepared();
+            }
         }
     }
 }

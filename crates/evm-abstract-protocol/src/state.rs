@@ -530,5 +530,7 @@ record! {
         pub limits: crate::AnalysisLimits,
         /// Consumed logical execution work.
         pub work: u64,
+        /// Frozen processing and queue durations; excluded from world identity.
+        pub timings: crate::AnalysisTimings,
     }
 }

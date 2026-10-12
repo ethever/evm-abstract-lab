@@ -227,6 +227,7 @@ pub(super) fn report(
             environment,
             limits: request.limits.clone(),
             work: native.work() as u64,
+            timings: api::AnalysisTimings::default(),
         },
         programs: pools.programs,
         accounts,

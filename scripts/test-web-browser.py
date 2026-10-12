@@ -74,6 +74,21 @@ class AnalysisResponse:
         return self.envelope
 
 
+TIMING_PHASES = ("validating_ns", "pinning_ns", "acquiring_ns", "analyzing_ns",
+                 "building_ssa_ns", "projecting_ns")
+
+
+def measured_backend_timings(report):
+    timing = report["metadata"]["timings"]
+    assert set(timing) == {"queue_ns", "processing_ns", *TIMING_PHASES}, timing
+    assert all(type(value) is int and value >= 0 for value in timing.values()), timing
+    assert sum(timing[field] for field in TIMING_PHASES) == timing["processing_ns"], timing
+    assert timing["processing_ns"] > 0, timing
+    assert timing["analyzing_ns"] > 0 and timing["building_ssa_ns"] > 0, timing
+    assert timing["projecting_ns"] > 0, timing
+    return timing
+
+
 def complete_submission(page, admitted, timeout_seconds: int = 60):
     reply = admitted.json()["result"]
     if "Err" in reply:
@@ -86,8 +101,11 @@ def complete_submission(page, admitted, timeout_seconds: int = 60):
         state = job["state"]
         if state == "Completed":
             result = page.request.get(task_url + "/result")
+            envelope = result.json()
+            timing = measured_backend_timings(envelope["result"]["Ok"])
+            assert timing == job["timings"], "report and completed job disagree on measured time"
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)
-            return AnalysisResponse(admitted, result.json(), result.status)
+            return AnalysisResponse(admitted, envelope, result.status)
         if isinstance(state, dict) and "Failed" in state:
             error = state["Failed"]
             expect(page.locator("#analysis-status")).to_contain_text("Error:", timeout=60000)
@@ -158,7 +176,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 6
+    assert initial_report["schema_version"] == 7
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
         assert initial_report["metadata"]["limits"][field] == value
@@ -191,7 +209,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 6
+    assert report["schema_version"] == 7
     assert report["status"] == "Converged", report["frontiers"]
     expected = {**defaults, **edited}
     for field, value in expected.items():
@@ -1004,7 +1022,7 @@ def ssa_values_interactions(browser, url, output):
     for name,code,completion in cases:
         if 'Inspector hidden' not in status.text_content():hide_inspector(page,canvas)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
-        assert report['schema_version']==6 and report['status']==completion
+        assert report['schema_version']==7 and report['status']==completion
         ssa=report['ssa']
         assert len(ssa['values'])==ssa['value_count']
         assert [value['id'] for value in ssa['values']]==list(range(ssa['value_count']))
@@ -1384,7 +1402,7 @@ def select_inspector_tab(page, canvas, tab: str, y: float = 778):
     positions = {
         "Frame": 30, "Stack": 80, "SSA value": 141, "Memory": 210,
         "Storage": 274, "Transient": 341, "Calldata": 408, "Returndata": 481,
-        "Outcomes": 561, "Acquisition": 640, "Environment": 727, "Diagnostics": 814,
+        "Outcomes": 561, "Acquisition": 640, "Environment": 727, "Timing": 799, "Diagnostics": 866,
     }
     canvas.click(position={"x": positions[tab], "y": y})
     expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: {tab}")
@@ -2421,6 +2439,168 @@ def automatic_rpc_entry(page, url: str, provider, output: Path, name: str):
     return request
 
 
+def wait_for_job(page, url, job_id, predicate, timeout_seconds=15):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        response = page.request.get(f"{url}/api/tasks/{job_id}")
+        assert response.ok, response.text()
+        snapshot = response.json()["result"]["Ok"]
+        if predicate(snapshot):
+            return snapshot
+        page.wait_for_timeout(50)
+    raise AssertionError(f"task did not reach the expected state: {snapshot}")
+
+
+def visible_seconds(page, label):
+    text = page.locator("#analysis-status").text_content()
+    match = re.search(rf"(?:^|; ){re.escape(label)}: ([0-9.]+) (ms|s)(?:;|$)", text)
+    assert match, f"missing {label} in accessible timing: {text}"
+    return float(match[1]) / (1000 if match[2] == "ms" else 1)
+
+
+def timing_interactions(browser, args):
+    """Measure real queued work, delayed result transport and terminal freezing."""
+    with EntryRpcFixture() as rpc, TemporaryDirectory(prefix="web-timings-") as directory:
+        providers = [{"id": "timing-fixture", "name": "Timing fixture", "endpoint": rpc.endpoint}]
+        configuration = Path(directory) / "providers.json"
+        configuration.write_text(json.dumps({"providers": providers}) + "\n")
+        with analysis_server(args, configuration) as url:
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            observe_webgpu(page)
+            baseline = automatic_rpc_entry(page, url, providers[0], args.output, "timing-startup")
+            canvas = page.locator("#evm-canvas")
+            status = page.locator("#analysis-status")
+            # Two real pending RPC reads occupy both workers. The visible task
+            # must queue, rather than estimating queue time from a delayed poll.
+            rpc.block_method = "eth_getCode"
+            request = json.loads(json.dumps(baseline))
+            request["input"]["Rpc"]["address"] = rpc.root_address
+            occupied = []
+            for _ in range(2):
+                response = page.request.post(url + "/api/tasks", data=request)
+                assert response.status == 202, response.text()
+                occupied.append(response.json()["result"]["Ok"]["id"])
+            for job_id in occupied:
+                wait_for_job(page, url, job_id,
+                             lambda job: job["progress"]["phase"] == "Acquiring")
+            admitted = submit_rpc(page, canvas, rpc, args.output, "timing-queued", 0, providers)
+            job_id = admitted.json()["result"]["Ok"]["id"]
+            queued = wait_for_job(page, url, job_id, lambda job: job["state"] == "Queued")
+            expect(status).to_contain_text("Queued")
+            before = visible_seconds(page, "Elapsed")
+            page.wait_for_timeout(400)
+            after = visible_seconds(page, "Elapsed")
+            assert after > before, "queued user wait stopped advancing"
+            queued_later = wait_for_job(page, url, job_id, lambda job: job["state"] == "Queued")
+            assert queued_later["timings"]["queue_ns"] > queued["timings"]["queue_ns"]
+            assert queued_later["timings"]["processing_ns"] == 0
+            canvas.screenshot(path=str(args.output / "timing-queued.png"))
+            page.set_viewport_size({"width": 390, "height": 844})
+            rendered_frame(page)
+            assert visible_seconds(page, "Elapsed") >= after
+            canvas.screenshot(path=str(args.output / "timing-queued-narrow.png"))
+            page.set_viewport_size({"width": 1440, "height": 1000})
+            rendered_frame(page)
+            # Acknowledged cancellation frees one actual worker. The displayed
+            # job then reaches its own pending RPC, with a frozen queue interval.
+            assert page.request.delete(f"{url}/api/tasks/{occupied[0]}").ok
+            wait_for_job(page, url, occupied[0], lambda job: job["state"] == "Cancelled")
+            running = wait_for_job(page, url, job_id,
+                                   lambda job: job["progress"]["phase"] == "Acquiring")
+            expect(status).to_contain_text("Running")
+            page.wait_for_timeout(200)
+            running_later = wait_for_job(page, url, job_id,
+                                         lambda job: job["progress"]["phase"] == "Acquiring")
+            assert running_later["timings"]["queue_ns"] == running["timings"]["queue_ns"]
+            assert running_later["timings"]["acquiring_ns"] > running["timings"]["acquiring_ns"]
+            # Make CFG the current view. Completion must include its first real
+            # layout, while later focus/zoom actions must not restart the timer.
+            page.keyboard.press("2")
+            rendered_frame(page)
+            held_results = []
+            page.route("**/api/tasks/*/result", lambda route: held_results.append(route))
+            rpc.release.set()
+            completed = wait_for_job(page, url, job_id, lambda job: job["state"] == "Completed")
+            deadline = time.monotonic() + 15
+            while not held_results and time.monotonic() < deadline:
+                page.wait_for_timeout(50)
+            assert len(held_results) == 1, "browser did not fetch exactly one result"
+            expect(status).to_contain_text("Loading result")
+            fetch_before = visible_seconds(page, "Elapsed")
+            page.wait_for_timeout(400)
+            fetch_after = visible_seconds(page, "Elapsed")
+            assert fetch_after > fetch_before, "user wait stopped before result transport finished"
+            frozen_backend = wait_for_job(page, url, job_id, lambda job: job["state"] == "Completed")
+            assert frozen_backend["timings"] == completed["timings"]
+            held_results[0].continue_()
+            expect(status).to_contain_text("Ready:", timeout=60000)
+            expect(status).to_contain_text("Frontend preparation:")
+            report = page.request.get(f"{url}/api/tasks/{job_id}/result").json()["result"]["Ok"]
+            backend = measured_backend_timings(report)
+            assert backend == completed["timings"]
+            assert backend["queue_ns"] > 0 and backend["acquiring_ns"] > 0 and backend["pinning_ns"] > 0
+            assert report["acquisition"]["rounds"] > 1, "fixture did not exercise RPC analysis reruns"
+            total = visible_seconds(page, "Total wait")
+            preparation = visible_seconds(page, "Frontend preparation")
+            assert total >= fetch_after, "completed user wait omitted the delayed result"
+            assert preparation >= 0.3, "frontend preparation omitted the held transport"
+            assert visible_seconds(page, "Result transfer") >= 0.3
+            assert visible_seconds(page, "JSON parsing") >= 0
+            assert visible_seconds(page, "First view setup") >= 0
+            page.wait_for_timeout(300)
+            page.keyboard.press("f")
+            rendered_frame(page)
+            assert visible_seconds(page, "Total wait") == total, "completed user wait kept advancing"
+            assert visible_seconds(page, "Frontend preparation") == preparation
+            canvas.click(position={"x": 75, "y": 978})
+            expect(status).to_contain_text("Inspector: Timing")
+            inspector_title_action(page, canvas, "Maximize", (0, 778, 0, 778))
+            expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
+            canvas.screenshot(path=str(args.output / "timing-completed.png"))
+            page.unroute_all(behavior="wait")
+            rpc.release.clear()
+            rpc.started.clear()
+            rpc.disconnected.clear()
+            cancelled = submit_rpc(page, canvas, rpc, args.output, "timing-cancel", 0, providers)
+            cancelled_id = cancelled.json()["result"]["Ok"]["id"]
+            assert rpc.started.wait(5), "cancelled task never entered its own real RPC read"
+            expect(status).to_contain_text("Elapsed:")
+            with page.expect_response(lambda response: response.request.method == "DELETE"
+                                      and response.url.endswith(f"/api/tasks/{cancelled_id}")):
+                canvas.click(position={"x": 30, "y": 988})
+            expect(status).to_contain_text("Cancelled", timeout=22000)
+            cancellation_wait = visible_seconds(page, "Total wait")
+            cancelled_backend = wait_for_job(page, url, cancelled_id, lambda job: job["state"] == "Cancelled")
+            page.wait_for_timeout(300)
+            assert visible_seconds(page, "Total wait") == cancellation_wait
+            assert wait_for_job(page, url, cancelled_id, lambda job: job["state"] == "Cancelled")["timings"] == cancelled_backend["timings"]
+            assert rpc.disconnected.wait(5), "cancelled acquisition did not close its connection"
+            canvas.screenshot(path=str(args.output / "timing-cancelled.png"))
+            # A typed worker failure freezes the new task, while the successful
+            # report still retains its original backend timing evidence.
+            open_input(page)
+            canvas.click(position={"x": 380, "y": 361})  # Bytecode in the taller RPC modal
+            page.keyboard.press("Escape")
+            settle_gesture(page)
+            failed = submit_bytecode(page, canvas, "not-bytecode", args.output / "timing-error-input.png")
+            assert failed.json()["result"]["Err"]["code"] == "InvalidBytecode"
+            failure_wait = visible_seconds(page, "Total wait")
+            page.wait_for_timeout(300)
+            assert visible_seconds(page, "Total wait") == failure_wait
+            frozen_report = page.request.get(f"{url}/api/tasks/{job_id}/result").json()["result"]["Ok"]
+            assert frozen_report["metadata"]["timings"] == backend
+            canvas.screenshot(path=str(args.output / "timing-failed.png"))
+            result = {"queue_samples": [queued["timings"], queued_later["timings"]],
+                      "running_samples": [running["timings"], running_later["timings"]],
+                      "completed": backend, "rpc_rounds": report["acquisition"]["rounds"],
+                      "user_total_s": total, "frontend_preparation_s": preparation,
+                      "cancellation_wait_s": cancellation_wait, "cancelled_backend": cancelled_backend["timings"],
+                      "failure_wait_s": failure_wait, "renderer": webgpu_evidence(page)}
+            (args.output / "timing-acceptance-report.json").write_text(json.dumps(result, indent=2) + "\n")
+            page.close()
+            return result
+
+
 def open_rpc_input(page, canvas, *, from_bytecode=False):
     open_input(page)
     if from_bytecode:
@@ -2624,8 +2804,14 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     history = page.evaluate("window.taskStatusHistory")
     assert any("Cancelling" in text for text in history), history
     assert "showing previous result" in status.text_content()
+    cancelled_wait = visible_seconds(page, "Total wait")
+    cancelled_id = admitted.json()["result"]["Ok"]["id"]
+    frozen_cancelled = wait_for_job(page, url, cancelled_id, lambda job: job["state"] == "Cancelled")
+    page.wait_for_timeout(300)
+    assert visible_seconds(page, "Total wait") == cancelled_wait, "cancelled user wait kept advancing"
+    assert wait_for_job(page, url, cancelled_id, lambda job: job["state"] == "Cancelled")["timings"] == frozen_cancelled["timings"]
     canvas.screenshot(path=str(output / "cancel-acknowledged.png"))
-    results["cancellation"] = {"history": history, "pending_rpc_closed": rpc.disconnected.is_set(), "aborted_http": aborted, "status": status.text_content()}
+    results["cancellation"] = {"history": history, "pending_rpc_closed": rpc.disconnected.is_set(), "aborted_http": aborted, "status": status.text_content(), "total_wait_s": cancelled_wait, "backend_timings": frozen_cancelled["timings"]}
     # Resolve the test harness interception after the application itself
     # proved it aborted/recovered, so Playwright has no pending handler.
     held_polls[0].abort()
@@ -3303,11 +3489,16 @@ def main() -> None:
     parser.add_argument("--ssa-values-only",action="store_true",help="Run normalized SSA and scoped value inspector acceptance")
     parser.add_argument("--inspector-controls-only",action="store_true",help="Run inspector sizing and platform shortcut acceptance")
     parser.add_argument("--termination-only",action="store_true",help="Run semantic ending styles and existing selected-node flow/SSA acceptance")
+    parser.add_argument("--timings-only",action="store_true",help="Run queued analysis, phase timing and delayed-result acceptance")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     with analysis_server(args) as url:
         with sync_playwright() as playwright:
             browser = launch_browser(playwright.chromium, args.browser)
+            if args.timings_only:
+                timing_interactions(browser, args)
+                browser.close()
+                return
             if args.inspector_controls_only:
                 inspector_controls_interactions(browser,url,args.output)
                 storage_scroll_interactions(browser,url,args.output)
@@ -3357,7 +3548,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 6
+            assert analysis["schema_version"] == 7
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
@@ -3445,6 +3636,7 @@ def main() -> None:
             renderer = webgpu_evidence(page)
             unavailable = webgpu_unavailable(browser, url, args.output)
             budgets = budget_interactions(browser, url, args.output)
+            timings = timing_interactions(browser, args)
             rpc_providers = unconfigured_rpc_interactions(browser, url, args.output)
             world = configured_world_interactions(browser, args)
             url_world = url_configured_world_interactions(browser, args)
@@ -3489,6 +3681,7 @@ def main() -> None:
                 "url_configured_world": url_world,
                 "rpc_providers": rpc_providers,
                 "budget_interactions": budgets,
+                "timing_interactions": timings,
                 "platform": "Linux headless Chromium with Xvfb and SwiftShader WebGPU; synthesized browser gestures, not physical macOS hardware",
                 "browser_errors": errors,
                 "hierarchical_cfg": hierarchy,
