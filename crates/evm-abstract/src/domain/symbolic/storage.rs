@@ -130,10 +130,26 @@ impl SlotStateId {
             } if *old == key => previous,
             _ => self,
         };
-        if matches!(self.kind(),SlotStateKind::Store{key:old,value:old_value,..} if *old==key && *old_value==value)
+        // Only unequal concrete keys prove disjointness. Different symbolic
+        // expressions can still alias, so they stop the search and retain order.
+        let mut cursor = self;
+        while let SlotStateKind::Store {
+            previous,
+            key: old,
+            value: old_value,
+        } = cursor.kind()
         {
+            if *old == key && *old_value == value {
+                state::check(self.nodes(), self.depth(), limits)?;
+                return Ok(self.clone());
+            }
+            if !matches!((old.as_constant(), key.as_constant()), (Some(a), Some(b)) if a != b) {
+                break;
+            }
+            // The checked graph bounds the write spine and cancellation remains
+            // observable even when this update ultimately returns the old root.
             state::check(self.nodes(), self.depth(), limits)?;
-            return Ok(self.clone());
+            cursor = previous;
         }
         if matches!(previous.kind(), SlotStateKind::Zero)
             && value.as_constant() == Some(alloy_primitives::U256::ZERO)
