@@ -166,3 +166,77 @@ fn widening_form_refreshes_redundant_slot_cache_and_rejects_errors_atomically() 
     assert_eq!(store.widening_form(domain, limits), Err(failure));
     assert_eq!(store, failed);
 }
+
+#[test]
+fn widening_form_refreshes_projected_account_and_log_scalar_constants() {
+    let domain = Domain::default();
+    let limits = domain.spec().relations().expressions();
+    let world = World::new(Fork::Osaka, "projected scalar leaf");
+    let address = Address::repeat_byte(0x53);
+    let site = LogKey {
+        address,
+        code_address: address,
+        pc: 5,
+    };
+    let mut left = Store::new(&world);
+    let mut right = left.clone();
+    for (store, number) in [(&mut left, 7u64), (&mut right, 9u64)] {
+        store.write_balance(address, value(number));
+        store.write_nonce(address, value(number));
+        store.balance_default = value(number);
+        store
+            .emit_log(
+                site.clone(),
+                AbstractLog {
+                    topics: vec![value(number)],
+                    data: ByteArray::exact(&[1]),
+                },
+                domain,
+            )
+            .unwrap();
+    }
+    let selector = ExprId::fresh().unwrap();
+    let mut projected = left
+        .join_guarded(&right, domain, selector.clone(), limits)
+        .unwrap();
+    projected
+        .rename_fresh(
+            &BTreeMap::from([(selector, ExprId::constant(U256::ZERO))]),
+            limits,
+        )
+        .unwrap();
+    let original = projected.clone();
+    let widened = projected.widening_form(domain, limits).unwrap();
+    let direct = right.widening_form(domain, limits).unwrap();
+    for (actual, expected, before) in [
+        (
+            &widened.balances[&address],
+            &direct.balances[&address],
+            &original.balances[&address],
+        ),
+        (
+            &widened.nonces[&address],
+            &direct.nonces[&address],
+            &original.nonces[&address],
+        ),
+        (
+            &widened.balance_default,
+            &direct.balance_default,
+            &original.balance_default,
+        ),
+        (
+            &widened.possible_logs[&site].topics[0],
+            &direct.possible_logs[&site].topics[0],
+            &original.possible_logs[&site].topics[0],
+        ),
+    ] {
+        assert_eq!(actual.numeric(), expected.numeric());
+        assert_eq!(actual.singleton(), Some(U256::from(9)));
+        assert_eq!(actual.expression(), before.expression());
+        assert_eq!(actual.provenance(), before.provenance());
+    }
+    assert_eq!(widened.persistent.roots, original.persistent.roots);
+    assert_eq!(widened.transient.roots, original.transient.roots);
+    assert_eq!(widened, widened.widening_form(domain, limits).unwrap());
+    assert_eq!(projected, original);
+}
