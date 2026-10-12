@@ -285,32 +285,20 @@ impl RelationState {
                 .fold(n.saturating_add(1), |n, e| n.saturating_add(e.work_size()))
         })
     }
-    fn insert(&mut self, constraint: Constraint, limits: &RelationLimits) -> CheckResult {
+    fn insert(
+        &mut self,
+        constraint: Constraint,
+        limits: &RelationLimits,
+    ) -> Result<CheckResult, QueryReason> {
         if self.bottom {
-            return CheckResult::Unsat;
+            return Ok(CheckResult::Unsat);
         }
-        if !limits.enabled {
-            return CheckResult::Unknown(QueryReason::Disabled);
-        }
-        if !limits.valid() {
-            return CheckResult::Unknown(QueryReason::Configuration);
-        }
-        if constraint
-            .expressions()
-            .iter()
-            .any(|e| e.nodes() > limits.max_nodes || e.depth() > limits.max_depth)
-        {
-            return CheckResult::Unknown(QueryReason::ExpressionLimit);
-        }
-        if !self.constraints.contains(&constraint) && self.len() >= limits.max_constraints {
-            return CheckResult::Unknown(QueryReason::ConstraintLimit);
-        }
-        self.constraints.insert(constraint);
+        self.retain(constraint, limits)?;
         let checked = self.check(limits);
         if checked == CheckResult::Unsat {
             self.bottom = true;
         }
-        checked
+        Ok(checked)
     }
     fn retain(
         &mut self,
@@ -453,12 +441,29 @@ impl RelationState {
     /// Intersect this state with an EVM condition (zero or nonzero).
     /// A solver Unknown retains the new sound assumption; a capacity failure
     /// preserves the prior, weaker state instead of pruning the path.
+    /// Use [`Self::assume_checked`] when coverage depends on retaining the guard.
     pub fn assume(
         &mut self,
         expression: &ExprId,
         nonzero: bool,
         limits: &RelationLimits,
     ) -> CheckResult {
+        self.assume_checked(expression, nonzero, limits)
+            .unwrap_or_else(CheckResult::Unknown)
+    }
+    /// Retain an assumption before checking its feasibility.
+    ///
+    /// `Err` leaves this state unchanged because the assumption did not fit its
+    /// policy. `Ok(Unknown(_))` keeps the complete assumption: encoding or solver
+    /// failure loses pruning precision without losing its guarded input domain.
+    /// Coverage-sensitive callers must preserve this distinction. An already
+    /// contradictory state returns `Ok(Unsat)` without needing another atom.
+    pub fn assume_checked(
+        &mut self,
+        expression: &ExprId,
+        nonzero: bool,
+        limits: &RelationLimits,
+    ) -> Result<CheckResult, QueryReason> {
         self.insert(
             Constraint::Truth {
                 expression: expression.clone(),
@@ -483,6 +488,7 @@ impl RelationState {
             },
             limits,
         )
+        .unwrap_or_else(CheckResult::Unknown)
     }
     /// Add sound bit guarantees; contradictory bits may prove bottom.
     pub fn add_known_bits(
@@ -500,6 +506,7 @@ impl RelationState {
             },
             limits,
         )
+        .unwrap_or_else(CheckResult::Unknown)
     }
     /// Add equality between two value expressions, for state/call substitutions.
     pub fn add_equal(
@@ -515,6 +522,7 @@ impl RelationState {
             },
             limits,
         )
+        .unwrap_or_else(CheckResult::Unknown)
     }
     /// Whether any retained guarantee depends on a variable in this value.
     /// Names alone are insufficient: leaf equality includes private input scope
