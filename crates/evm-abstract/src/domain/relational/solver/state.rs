@@ -12,10 +12,22 @@ use crate::domain::{
 use alloy_primitives::{U256, keccak256};
 use embedded_smt::FunctionArg;
 
+mod word;
+
 fn byte_zero() -> BV {
     BV::from_u64(0, 8)
 }
 fn valid_sum(a: &BV, b: &BV) -> (BV, Bool) {
+    if let (Some(a), Some(b)) = (literal(a), literal(b)) {
+        let (sum, overflow) = a.overflowing_add(b);
+        return (word(sum), Bool::from_bool(!overflow));
+    }
+    if literal(a) == Some(U256::ZERO) {
+        return (b.clone(), Bool::from_bool(true));
+    }
+    if literal(b) == Some(U256::ZERO) {
+        return (a.clone(), Bool::from_bool(true));
+    }
     let sum = a.bvadd(b);
     let valid = sum.bvuge(a);
     (sum, valid)
@@ -133,6 +145,45 @@ impl Encoder<'_> {
         };
         self.slot_arrays.insert(state.clone(), array.clone());
         Ok(array)
+    }
+    pub(super) fn slot_read(
+        &mut self,
+        state: &SlotStateId,
+        key: &ExprId,
+    ) -> Result<BV, QueryReason> {
+        self.charge(1)?;
+        match state.kind() {
+            SlotStateKind::Zero => Ok(word(U256::ZERO)),
+            SlotStateKind::Input { .. } => {
+                let index = self.expression(key)?;
+                Ok(self.slots(state)?.select(&index))
+            }
+            SlotStateKind::Store {
+                previous,
+                key: written,
+                value,
+            } => {
+                if written == key {
+                    return self.expression(value);
+                }
+                let index = self.expression(key)?;
+                let written = self.expression(written)?;
+                let value = self.expression(value)?;
+                let old = self.slot_read(previous, key)?;
+                self.charge(2)?;
+                Ok(index.eq(&written).ite(&value, &old))
+            }
+            SlotStateKind::Ite {
+                condition,
+                then_state,
+                else_state,
+            } => {
+                let guard = self.truth(condition)?;
+                let yes = self.slot_read(then_state, key)?;
+                let no = self.slot_read(else_state, key)?;
+                Ok(guard.ite(&yes, &no))
+            }
+        }
     }
     /// Native full-content arrays are used only where padding/range semantics
     /// can actually be expressed with finite stores and conditional arrays.
@@ -307,6 +358,23 @@ impl Encoder<'_> {
         }
     }
     fn view_byte(&mut self, view: &ByteView, index: &BV) -> Result<BV, QueryReason> {
+        if let ByteStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = view.state.kind()
+        {
+            let guard = self.truth(condition)?;
+            let (yes_view, yes_work) = view.branch_view(then_state.clone(), condition, true);
+            let (no_view, no_work) = view.branch_view(else_state.clone(), condition, false);
+            self.charge(yes_work.saturating_add(no_work))?;
+            let yes_view = yes_view.canonicalize();
+            let no_view = no_view.canonicalize();
+            let yes = self.view_byte(&yes_view, index)?;
+            let no = self.view_byte(&no_view, index)?;
+            self.charge(1)?;
+            return Ok(guard.ite(&yes, &no));
+        }
         if let ByteStateKind::Copy {
             destination,
             source,
@@ -338,21 +406,30 @@ impl Encoder<'_> {
         view: &ByteView,
         offset: &ExprId,
     ) -> Result<BV, QueryReason> {
+        if offset.as_constant() == Some(U256::ZERO)
+            && view
+                .length
+                .as_constant()
+                .is_some_and(|len| len >= U256::from(32))
+            && let Some(value) = self.forwarded_word(&view.state, &view.offset)?
+        {
+            return Ok(value);
+        }
+        if offset.as_constant() == Some(U256::ZERO)
+            && let Some(value) = self.input_word(view)?
+        {
+            return Ok(value);
+        }
         let offset = self.expression(offset)?;
-        let mut result: Option<BV> = None;
+        let mut bytes = Vec::with_capacity(32);
         for j in 0..32 {
             let (index, valid) = valid_sum(&offset, &word(U256::from(j)));
             let byte = self.view_byte(view, &index)?;
             let byte = valid.ite(&byte, &byte_zero());
             self.charge(4)?;
-            result = Some(match result {
-                Some(word) => word
-                    .bvshl(super::word(U256::from(8)))
-                    .bvor(byte.zero_ext(248)),
-                None => byte.zero_ext(248),
-            });
+            bytes.push(byte);
         }
-        Ok(result.expect("32-byte word"))
+        self.word_from_bytes(bytes)
     }
     fn function(&mut self, signature: usize) -> embedded_smt::Function {
         self.hash_functions
@@ -404,16 +481,36 @@ impl Encoder<'_> {
             && *copied == source.length
         {
             let destination = self.expression(destination)?;
-            let valid = Bool::or(&[
-                length.eq(word(U256::ZERO)),
-                length
-                    .bvsub(word(U256::from(1)))
-                    .bvule(word(U256::MAX).bvsub(&destination)),
-            ]);
+            let valid = match literal(&destination) {
+                Some(at) if at == U256::ZERO => Bool::from_bool(true),
+                Some(at) => length.bvule(word(U256::ZERO.wrapping_sub(at))),
+                None => Bool::or(&[
+                    length.eq(word(U256::ZERO)),
+                    length
+                        .bvsub(word(U256::from(1)))
+                        .bvule(word(U256::MAX).bvsub(&destination)),
+                ]),
+            };
             whole_copy = Some((valid, self.hash(source)?));
         }
         let value = if let Some((valid, copied)) = whole_copy {
             valid.ite(&copied, &self.symbols.fresh_bv("evm_hash_uncompared", 256))
+        } else if let ByteStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = input.state.kind()
+        {
+            let guard = self.truth(condition)?;
+            let (yes_view, yes_work) = input.branch_view(then_state.clone(), condition, true);
+            let (no_view, no_work) = input.branch_view(else_state.clone(), condition, false);
+            self.charge(yes_work.saturating_add(no_work))?;
+            // These operand substitutions hold only inside the matching state
+            // guard. Keep the outer selector rather than assuming either path.
+            let yes = self.hash(&yes_view)?;
+            let no = self.hash(&no_view)?;
+            self.charge(1)?;
+            guard.ite(&yes, &no)
         } else if let Some(len) = input
             .length
             .as_constant()
@@ -460,6 +557,49 @@ impl Encoder<'_> {
                 FunctionArg::Bv(&offset),
                 FunctionArg::Bv(&length),
             ])
+        } else if let Some((destination, copied, prior)) = input.prior_copy_hash_view() {
+            // A later disjoint COPY cannot change the requested earlier view.
+            // Widen both ends: these are mathematical ranges, not BV256 sums.
+            let destination = self.expression(destination)?;
+            let copied = self.expression(copied)?;
+            let (before, after) =
+                if let (Some(at), Some(dst)) = (literal(&offset), literal(&destination)) {
+                    (
+                        if at <= dst {
+                            length.bvule(word(dst - at))
+                        } else {
+                            Bool::from_bool(false)
+                        },
+                        if dst <= at {
+                            copied.bvule(word(at - dst))
+                        } else {
+                            Bool::from_bool(false)
+                        },
+                    )
+                } else {
+                    (
+                        offset
+                            .zero_ext(1)
+                            .bvadd(length.zero_ext(1))
+                            .bvule(destination.zero_ext(1)),
+                        destination
+                            .zero_ext(1)
+                            .bvadd(copied.zero_ext(1))
+                            .bvule(offset.zero_ext(1)),
+                    )
+                };
+            let disjoint = Bool::or(&[
+                length.eq(word(U256::ZERO)),
+                copied.eq(word(U256::ZERO)),
+                before,
+                after,
+            ]);
+            let preserved = self.hash(&prior)?;
+            self.charge(7)?;
+            disjoint.ite(
+                &preserved,
+                &self.symbols.fresh_bv("evm_hash_uncompared", 256),
+            )
         } else {
             self.symbols.fresh_bv("evm_hash_uncompared", 256)
         };
