@@ -28,6 +28,19 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
         value::text(ui, "Category", format!("{:?}", error.code))
     });
     match &error.details {
+        api::ErrorDetails::Fingerprint(detail) => fields(ui, |ui| {
+            value::text(
+                ui,
+                "Snapshot fingerprint unavailable",
+                format!("{:?}", detail.kind),
+            );
+            if let Some(line) = detail.line {
+                value::text(ui, "Encoding line", line.to_string());
+            }
+            if let Some(column) = detail.column {
+                value::text(ui, "Encoding column", column.to_string());
+            }
+        }),
         api::ErrorDetails::Report(detail) => fields(ui, |ui| {
             value::text(ui, "Report validation", detail.to_string())
         }),

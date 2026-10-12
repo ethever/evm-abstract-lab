@@ -6,6 +6,40 @@ mod diagnostics;
 mod scroll_bounds;
 mod storage;
 
+#[test]
+fn fingerprint_error_renders_the_typed_cause_without_requiring_message_parsing() {
+    let error = api::ApiError {
+        code: api::ApiErrorCode::Export,
+        message: "Snapshot unavailable".into(),
+        details: api::ErrorDetails::Fingerprint(api::FingerprintFailure {
+            kind: api::FingerprintFailureKind::Encoding,
+            line: Some(0),
+            column: Some(2),
+        }),
+    };
+    let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
+    let mut time = 0.0;
+    let text = rendered_at(
+        &context,
+        &mut time,
+        vec![],
+        egui::vec2(1000.0, 600.0),
+        |ui| api_error_details(ui, &error),
+    );
+    let labels: Vec<_> = text.iter().map(|(text, _)| text.as_str()).collect();
+    for expected in [
+        "Snapshot fingerprint unavailable",
+        "Encoding",
+        "Encoding line",
+        "0",
+        "Encoding column",
+        "2",
+    ] {
+        assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
+    }
+}
+
 fn word(value: &str) -> api::ValueInfo {
     api::ValueInfo {
         nonzero: false,
