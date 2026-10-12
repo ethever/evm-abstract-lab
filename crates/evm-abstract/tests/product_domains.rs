@@ -9,6 +9,7 @@ use evm_abstract::{
         AbstractValue, Domain, DomainSpec, Profile, ReductionStatus,
         facts::{BitConstraints, BitIndex, FactError, UnaryPredicate, WordBounds},
         provenance::Origin,
+        symbolic::{ExprKind, SlotStateKind},
     },
     ssa,
     world::{Account, ByteArray, Entry, Store, World},
@@ -397,14 +398,48 @@ fn sparse_bytes_store_and_rollback_preserve_the_whole_product() {
     let mut store = Store::new(&world);
     store.write(address, &word(0), &initial, domain);
     store.write_transient(address, &word(1), &initial, domain);
+    let persistent = store.read(address, &word(0), domain);
+    let transient = store.read_transient(address, &word(1), domain);
+    // Numeric-only bounded operands acquire a constrained observed cell on write.
+    // Its binding must preserve the entire product, independently of read identity.
+    for observed in [&persistent, &transient] {
+        assert_eq!(observed.numeric(), initial.numeric());
+        assert_eq!(observed.provenance(), initial.provenance());
+        let ExprKind::SlotRead { state, key } = observed.expression().unwrap().kind() else {
+            panic!("bounded numeric operand must retain its observed-cell read");
+        };
+        assert_eq!(key.as_constant(), Some(U256::ZERO));
+        let SlotStateKind::Input { source, bindings } = state.kind() else {
+            panic!("bounded operand must be tied to a fixed observation");
+        };
+        assert!(matches!(source.token().kind(), ExprKind::Fresh(_)));
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].index, U256::ZERO);
+        assert_eq!(&bindings[0].numeric, initial.numeric());
+        assert!(matches!(bindings[0].value.kind(), ExprKind::Fresh(_)));
+    }
+    assert_ne!(persistent.expression(), transient.expression());
+    assert_eq!(store.read(address, &word(0), domain), persistent);
+    assert_eq!(store.read_transient(address, &word(1), domain), transient);
     let saved = store.snapshot();
     let original = store.clone();
     store.write(address, &word(0), &word(2), domain);
     store.write_transient(address, &word(1), &AbstractValue::top(), domain);
+    assert_eq!(store.read(address, &word(0), domain), word(2));
+    assert_eq!(saved.state(), &original);
+    assert_eq!(saved.state().read(address, &word(0), domain), persistent);
+    assert_eq!(
+        saved.state().read_transient(address, &word(1), domain),
+        transient
+    );
     store.restore(saved);
     assert_eq!(store, original);
-    assert_eq!(store.read(address, &word(0), domain), initial);
-    assert_eq!(store.read_transient(address, &word(1), domain), initial);
+    assert_eq!(store.read(address, &word(0), domain), persistent);
+    assert_eq!(store.read_transient(address, &word(1), domain), transient);
+    assert_eq!(persistent.numeric(), initial.numeric());
+    assert_eq!(persistent.provenance(), initial.provenance());
+    assert_eq!(transient.numeric(), initial.numeric());
+    assert_eq!(transient.provenance(), initial.provenance());
 }
 
 #[test]
@@ -446,13 +481,53 @@ fn root_revert_restores_nonfinite_initial_storage_facts() {
             .iter()
             .any(|outcome| outcome.kind == OutcomeKind::Revert)
     );
+    let checkpoint = graph.states()[0]
+        .entry
+        .call_stack
+        .root()
+        .state
+        .saved_store
+        .state();
+    let observed = checkpoint.read(address, &word(0), domain);
+    assert_eq!(observed.numeric(), initial.numeric());
+    assert_eq!(observed.provenance(), initial.provenance());
+    assert_eq!(checkpoint.read(address, &word(0), domain), observed);
+    let ExprKind::SlotRead { state, key } = observed.expression().unwrap().kind() else {
+        panic!("initial nonfinite value must retain a snapshot observation");
+    };
+    assert_eq!(key.as_constant(), Some(U256::ZERO));
+    let SlotStateKind::Input { source, bindings } = state.kind() else {
+        panic!("initial read must bind an observed snapshot cell");
+    };
+    assert_eq!(
+        source.namespace(),
+        U256::from_be_slice(address.as_slice()) << 8
+    );
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].index, U256::ZERO);
+    assert_eq!(&bindings[0].numeric, initial.numeric());
+    assert_eq!(
+        graph.states()[0]
+            .exit
+            .as_ref()
+            .unwrap()
+            .store
+            .read(address, &word(0), domain),
+        word(1)
+    );
     // 保守的入口 gas 失败同样必须恢复完整初始 product。
     for outcome in graph.outcomes() {
         assert!(matches!(
             outcome.kind,
             OutcomeKind::Revert | OutcomeKind::Failure
         ));
-        assert_eq!(outcome.store.read(address, &word(0), domain), initial);
+        assert_eq!(outcome.store.read(address, &word(0), domain), observed);
+        assert_eq!(
+            outcome.store.slot_root(address, false),
+            checkpoint.slot_root(address, false)
+        );
+        assert_eq!(observed.numeric(), initial.numeric());
+        assert_eq!(observed.provenance(), initial.provenance());
     }
     ssa::build_world(&graph).unwrap().verify(&graph).unwrap();
 }
