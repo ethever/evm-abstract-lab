@@ -310,7 +310,7 @@ fn full_identity_legends_and_state_table_keep_proxy_code_and_storage_owners_dist
         }
     }
     assert!(
-        text.contains(&analysis.world().fingerprint().to_string()),
+        text.contains(&analysis.world().fingerprint().unwrap().to_string()),
         "snapshot fingerprint must remain complete"
     );
 }
