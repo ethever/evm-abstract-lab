@@ -279,7 +279,10 @@ pub(super) fn report(
             entry_address: native.entry().address.to_string(),
             root_program,
             snapshot,
-            fingerprint: world.fingerprint().to_string(),
+            fingerprint: world
+                .fingerprint()
+                .map_err(super::errors::fingerprint)?
+                .to_string(),
             environment,
             limits: request.limits.clone(),
             work: native.work() as u64,

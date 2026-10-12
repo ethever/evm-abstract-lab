@@ -1,6 +1,7 @@
 //! Typed request admission and complete immutable world-report projection.
 //! Native state/edge IDs and SSA coverage survive without a local-CFG projection.
 mod errors;
+pub(crate) use errors::fingerprint as fingerprint_error;
 mod input;
 mod mapping;
 mod pools;

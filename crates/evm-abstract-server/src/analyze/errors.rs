@@ -63,3 +63,29 @@ pub(super) fn world(source: evm_abstract::world::WorldError) -> api::ApiError {
         )),
     }
 }
+
+pub(crate) fn fingerprint(source: evm_abstract::world::FingerprintError) -> api::ApiError {
+    use evm_abstract::world::FingerprintError as F;
+    let message = source.to_string();
+    let (kind, line, column) = match source {
+        F::Cancelled => (api::FingerprintFailureKind::Cancelled, None, None),
+        F::Encoding(error) => (
+            api::FingerprintFailureKind::Encoding,
+            Some(error.line()),
+            Some(error.column()),
+        ),
+        F::LengthOverflow => (api::FingerprintFailureKind::LengthOverflow, None, None),
+    };
+    api::ApiError {
+        code: if kind == api::FingerprintFailureKind::Cancelled {
+            api::ApiErrorCode::Cancelled
+        } else {
+            api::ApiErrorCode::Export
+        },
+        message,
+        details: api::ErrorDetails::Fingerprint(api::FingerprintFailure { kind, line, column }),
+    }
+}
+
+#[cfg(test)]
+mod tests;
