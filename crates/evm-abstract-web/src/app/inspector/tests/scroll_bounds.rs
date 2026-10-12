@@ -98,6 +98,8 @@ fn final_rows_remain_fully_reachable_when_the_content_viewport_is_below_64_point
     account.transient = account.storage.clone();
     report.accounts = vec![account];
     report.byte_arrays = vec![api::ByteArraySnapshot {
+        symbolic_facts: vec![],
+        symbolic: evm_abstract_protocol::ByteViewRef { node: 2 },
         length: word("0x60"),
         default: word("0x0"),
         cells: (0..96)

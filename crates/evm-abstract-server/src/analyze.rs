@@ -7,6 +7,7 @@ mod pools;
 mod report;
 mod rpc;
 mod ssa;
+mod symbolic;
 pub(crate) mod timing;
 mod value;
 use evm_abstract::{

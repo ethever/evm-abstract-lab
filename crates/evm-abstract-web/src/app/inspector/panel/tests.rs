@@ -166,6 +166,7 @@ fn long_diagnostics_do_not_grow_the_chosen_docked_height() {
     let height = workbench.rect("world_inspector").height();
     workbench.workspace.report.as_mut().unwrap().diagnostics = (0..100)
         .map(|pc| evm_abstract_protocol::Diagnostic {
+            precision: None,
             state: 0,
             pc,
             kind: evm_abstract_protocol::DiagnosticKind::OpaqueResult,

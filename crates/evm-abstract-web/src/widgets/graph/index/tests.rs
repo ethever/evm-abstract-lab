@@ -16,6 +16,7 @@ fn sparse_ids_resolve_original_records_and_keep_adjacency_positions() {
     report.states = vec![StateDetails {
         state: 7,
         entry: MachineSnapshot {
+            path: evm_abstract_protocol::PathRef { node: 4 },
             frames: vec![],
             store: 0,
         },
@@ -57,6 +58,8 @@ fn sparse_ids_resolve_original_records_and_keep_adjacency_positions() {
     report.frontiers = [Some(7), Some(7), Some(205), None]
         .into_iter()
         .map(|from| Frontier {
+            payload: None,
+            range: None,
             from,
             pc: Some(5),
             kind: FrontierKind::Work,

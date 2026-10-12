@@ -41,7 +41,24 @@ pub(super) fn storage(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.label(RichText::new(address).monospace());
+            if let Some(store) = store {
+                super::symbolic::facts(
+                    ui,
+                    if transient {
+                        &store.transient_facts
+                    } else {
+                        &store.storage_facts
+                    },
+                    "Store-local scalar facts",
+                );
+            }
             if let Some(account) = account {
+                let root = if transient {
+                    account.transient_root
+                } else {
+                    account.storage_root
+                };
+                super::symbolic::show(ui, report, root.node, "Ordered storage state");
                 egui::CollapsingHeader::new("Account facts in this store")
                     .id_salt(("storage_account_facts", address, transient))
                     .show(ui, |ui| {
@@ -99,7 +116,7 @@ pub(super) fn storage(
                 });
             if let Some(default) = default {
                 ui.horizontal(|ui| {
-                    ui.label("Unspecified slots");
+                    ui.label("Base slot default");
                     value::cell(ui, default);
                 });
             }
@@ -112,7 +129,7 @@ pub(super) fn storage(
             });
             let Some(entries) = entries.filter(|entries| !entries.is_empty()) else {
                 ui.label(
-                    "No explicit slots in this snapshot; unspecified slots use the default above.",
+                    "No concrete slot observations. Ordered symbolic writes and source facts remain in the state graph above.",
                 );
                 return;
             };
@@ -214,6 +231,21 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
                         );
                     });
                 for transient in [false, true] {
+                    let root = if transient {
+                        account.transient_root
+                    } else {
+                        account.storage_root
+                    };
+                    super::symbolic::show(
+                        ui,
+                        report,
+                        root.node,
+                        if transient {
+                            "Transient state after"
+                        } else {
+                            "Persistent state after"
+                        },
+                    );
                     let changes = changed_slots(initial, account, transient);
                     let title = if transient {
                         "Transient slots after"
@@ -238,7 +270,7 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
                     ui.label(RichText::new(title).strong());
                     if default_changed {
                         ui.horizontal(|ui| {
-                            ui.label("Unspecified slots after");
+                            ui.label("Base slot default after");
                             value::cell(ui, default);
                         });
                     }

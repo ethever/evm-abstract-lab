@@ -62,6 +62,8 @@ fn changed_reports_accounts_and_stores_keep_untouched_defaults_complete() {
     other.address = format!("0x{}", "22".repeat(20));
     changed.accounts.push(other);
     let snapshot = evm_abstract_protocol::StoreSnapshot {
+        storage_facts: vec![],
+        transient_facts: vec![],
         accounts: changed.accounts.clone(),
         ..super::super::super::store()
     };

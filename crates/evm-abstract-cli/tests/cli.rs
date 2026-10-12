@@ -3,6 +3,9 @@
 use evm_abstract_notation::normalize_subscripts;
 use std::process::Command;
 
+#[path = "support/native.rs"]
+mod native;
+
 #[path = "cli/environment.rs"]
 mod environment;
 

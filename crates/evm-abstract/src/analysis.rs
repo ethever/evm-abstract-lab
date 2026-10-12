@@ -44,9 +44,10 @@ pub use rpc::{
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;
 
-/// Serialized native analysis format. Version 5 retains opcode bytes, defined
-/// mnemonics, reasons and source kinds; the domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 5;
+/// Serialized native analysis format. Version 6 exports flat immutable scalar,
+/// byte/slot and relation-path graphs, preserving opcode and source evidence.
+/// The domain-policy schema is independent.
+pub const SCHEMA_VERSION: u16 = 6;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

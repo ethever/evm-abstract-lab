@@ -507,6 +507,15 @@ impl Workspace {
         let prepare_started = timing::now();
         match result {
             Ok(AnalyzeReply { result: Ok(report) }) if report.schema_version == SCHEMA_VERSION => {
+                if let Err(failure) = report.validate() {
+                    self.task
+                        .fail(TaskError::Api(evm_abstract_protocol::ApiError {
+                            code: evm_abstract_protocol::ApiErrorCode::WorkerFailed,
+                            message: failure.to_string(),
+                            details: evm_abstract_protocol::ErrorDetails::Report(failure),
+                        }));
+                    return;
+                }
                 self.selection = Selection {
                     value: None,
                     state: report.cfg.first().map(|state| state.id),

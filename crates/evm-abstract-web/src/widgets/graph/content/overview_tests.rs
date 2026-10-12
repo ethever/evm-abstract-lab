@@ -60,6 +60,7 @@ fn details(
     api::StateDetails {
         state,
         entry: api::MachineSnapshot {
+            path: evm_abstract_protocol::PathRef { node: 4 },
             frames: vec![frame],
             store: 0,
         },
@@ -121,6 +122,8 @@ fn mixed_receipts_and_call_storage_roles_remain_visible_without_a_fake_current_g
     ];
     report.frontiers = vec![
         api::Frontier {
+            range: None,
+            payload: None,
             from: Some(999),
             pc: Some(10),
             kind: api::FrontierKind::Memory,
