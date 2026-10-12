@@ -89,4 +89,4 @@ MemoryPolicy 前沿在 UI 明确标记“策略下尚未展开”，与 EVM Fail
 
 教程中的同址 memory/storage、有限别名、完整 word 往返、重叠复制与矛盾分支例子，各自核对一项具体关系。完全无约束的 memory 地址及 calldata 长度仍保留策略前沿，退出码为 2。循环 cases 是有界的保守抽象规则，不保证任意循环都达到固定点；历史读取和摘要重放仍须按实际图、输入与分析额度分别检查。库默认 1024 节点与 CLI 默认 16384 节点也不是同一种验证条件，不能由简单例子的通过推断全部默认策略已验证。
 
-协议验收还须从真实 COPY/storage alias 分析经过 typed report、JSON 解析、前端引用校验与 SSA，并覆盖大共享图、range prestate、预算和取消。最终 SHA、fork、输入假设、provider/rlimit、节点/状态/求解成本、内存与耗时由本 issue 的集成证据统一记录；本教程不填入未测量性能数字。
+协议验收还须从真实 COPY/storage alias 分析经过 typed report、JSON 解析、前端引用校验与 SSA，并覆盖大共享图、range prestate、预算和取消。专项源码 SHA、fork、输入假设、provider/rlimit、节点/状态/求解成本、内存与耗时见 [Issue #111 集成验收](issue111-validation.md)；最终提交的完整 Nix 门禁结果另记于实施 PR。
