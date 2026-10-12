@@ -86,7 +86,10 @@ fn invalid_bytes_and_fork_rules_have_distinct_native_payloads() {
         assert_eq!(instruction.invalid_reason(), Some(reason));
         assert!(!instruction.is_valid());
         let json = serde_json::to_value(&view).unwrap();
-        assert_eq!(json["schema_version"], 5);
+        assert_eq!(
+            json["schema_version"],
+            evm_abstract::analysis::SCHEMA_VERSION
+        );
         assert_eq!(
             json["diagnostics"][0]["kind"]["InvalidOpcode"]["Instruction"]["opcode"],
             byte
