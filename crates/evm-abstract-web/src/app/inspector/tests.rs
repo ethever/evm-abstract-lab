@@ -2,6 +2,7 @@
 use super::*;
 use evm_abstract_protocol as api;
 
+mod scroll_bounds;
 mod storage;
 
 fn word(value: &str) -> api::ValueInfo {

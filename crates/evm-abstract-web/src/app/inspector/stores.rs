@@ -33,6 +33,7 @@ pub(super) fn storage(
     let account = account(store, report, address);
     egui::ScrollArea::both()
         .id_salt(("storage_slots", transient, address))
+        .min_scrolled_height(0.0)
         .content_margin(egui::Margin::ZERO)
         .auto_shrink([false, false])
         .show_viewport(ui, |ui, viewport| {

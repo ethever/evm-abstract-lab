@@ -38,6 +38,7 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, id: usize, title: &str)
     }
     egui::ScrollArea::both()
         .id_salt(("byte_cells", title, id))
+        .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show_rows(ui, 21.0, bytes.cells.len(), |ui, range| {
             for index in range {
@@ -62,6 +63,7 @@ pub(super) fn stack(ui: &mut Ui, stack: &[ValueInfo]) {
     );
     egui::ScrollArea::both()
         .id_salt("frame_stack")
+        .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show_rows(ui, 21.0, stack.len(), |ui, range| {
             for top in range {
