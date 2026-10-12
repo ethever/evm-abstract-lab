@@ -13,9 +13,10 @@ use crate::{
     world::{RangeError, StoreError},
 };
 use serde::Serialize;
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 use thiserror::Error;
 
+mod cases;
 mod coverage;
 mod widening;
 
@@ -52,17 +53,33 @@ pub enum MachineError {
     #[error("machine transformation work exhausted")]
     Work,
     /// Scalar expression construction failed before the result was installed.
-    #[error(transparent)]
-    Expression(#[from] ExprError),
+    #[error("machine expression: {0}")]
+    Expression(ExprError),
     /// A byte root, source, length or view could not be retained.
-    #[error(transparent)]
-    Bytes(#[from] RangeError),
+    #[error("machine byte state: {0}")]
+    Bytes(RangeError),
     /// Transaction or rollback state could not be retained.
-    #[error(transparent)]
-    Store(#[from] StoreError),
+    #[error("machine store: {0}")]
+    Store(StoreError),
     /// The complete path disjunction could not be retained.
     #[error("machine path join could not finish: {0:?}")]
     Relations(QueryReason),
+}
+
+impl From<ExprError> for MachineError {
+    fn from(value: ExprError) -> Self {
+        Self::Expression(value)
+    }
+}
+impl From<RangeError> for MachineError {
+    fn from(value: RangeError) -> Self {
+        Self::Bytes(value)
+    }
+}
+impl From<StoreError> for MachineError {
+    fn from(value: StoreError) -> Self {
+        Self::Store(value)
+    }
 }
 
 impl MachineError {
@@ -234,6 +251,7 @@ impl MachinePayload {
 #[derive(Clone)]
 pub(crate) struct EntryAlternatives {
     represented: Vec<Arc<MachinePayload>>,
+    cycle_widened: bool,
 }
 
 impl EntryAlternatives {
@@ -241,6 +259,7 @@ impl EntryAlternatives {
     pub(crate) fn new(payload: &MachinePayload) -> Self {
         Self {
             represented: vec![Arc::new(payload.clone())],
+            cycle_widened: false,
         }
     }
 
@@ -252,12 +271,25 @@ impl EntryAlternatives {
 
     /// None means the whole incoming payload is already covered. Metadata is
     /// committed separately, after every field of the join has succeeded.
+    #[cfg(test)]
     pub(crate) fn join(
-        &self,
+        &mut self,
         entry: &MachinePayload,
         incoming: &MachinePayload,
         domain: Domain,
         budget: &mut WorkBudget,
+    ) -> Result<Option<MachinePayload>, MachineError> {
+        self.join_cyclic(entry, incoming, domain, budget, &BTreeSet::new(), false)
+    }
+
+    pub(crate) fn join_cyclic(
+        &mut self,
+        entry: &MachinePayload,
+        incoming: &MachinePayload,
+        domain: Domain,
+        budget: &mut WorkBudget,
+        selectors: &BTreeSet<ExprId>,
+        cyclic: bool,
     ) -> Result<Option<MachinePayload>, MachineError> {
         let cost = entry
             .work_size()
@@ -289,10 +321,38 @@ impl EntryAlternatives {
                 return Ok(None);
             }
         }
-        if self.represented.len() >= 2
+        if !self.cycle_widened
+            && self.represented.len() >= 2
             && let Some(widened) = widening::stack(entry, incoming, domain)?
         {
             return Ok((widened.content_form()? != entry.content_form()?).then_some(widened));
+        }
+        if self.cycle_widened || cyclic && self.represented.len() >= 2 {
+            let input = if self.cycle_widened {
+                self.represented.iter().map(Arc::as_ref).collect()
+            } else {
+                vec![entry]
+            };
+            let prepared = cases::prepare(input, incoming, selectors, domain, budget)?;
+            if self.cycle_widened && prepared == self.represented {
+                return Ok(None);
+            }
+            let mut iter = prepared.iter();
+            let mut widened = iter.next().ok_or(MachineError::Shape)?.as_ref().clone();
+            for alternative in iter {
+                let cost = widened
+                    .work_size()
+                    .saturating_add(alternative.work_size())
+                    .saturating_mul(4);
+                if cost == usize::MAX || !budget.charge(cost) {
+                    return Err(MachineError::work_failure());
+                }
+                widened = widened.join(alternative, domain)?;
+            }
+            checkpoint()?;
+            self.represented = prepared;
+            self.cycle_widened = true;
+            return Ok(Some(widened));
         }
         let limit = domain.spec().relations().max_constraints;
         if self.represented.len() >= limit {
@@ -311,7 +371,9 @@ impl EntryAlternatives {
     }
 
     pub(crate) fn retain(&mut self, incoming: MachinePayload) {
-        self.represented.push(Arc::new(incoming));
+        if !self.cycle_widened {
+            self.represented.push(Arc::new(incoming));
+        }
     }
 }
 

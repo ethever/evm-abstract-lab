@@ -8,8 +8,8 @@
 //! instruction graph and world SSA retain every call and return boundary.
 
 use super::{
-    CallStack, Diagnostic, InstructionProgress, InstructionValue, MachineEdge, MachinePayload,
-    OutcomeKind, RootFrame, WorldAnalysis,
+    CallStack, Diagnostic, FrontierReason, InstructionProgress, InstructionValue, MachineEdge,
+    MachinePayload, OutcomeKind, RootFrame, WorldAnalysis,
     transfer::{CompletedCall, WorkBudget},
 };
 use crate::{
@@ -28,6 +28,14 @@ pub(super) use replay::{Prepared, Replay};
 
 fn reserve(budget: &mut WorkBudget, cost: usize) -> bool {
     cost != usize::MAX && budget.charge(cost)
+}
+
+pub(super) fn summary_boundary() -> FrontierReason {
+    if embedded_smt::current_cancellation().is_cancelled() {
+        FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+    } else {
+        FrontierReason::SummaryWork
+    }
 }
 
 /// Complete exact preconditions for a reusable callee relation.
@@ -201,6 +209,7 @@ struct Candidate {
 
 pub(super) struct Cache {
     fingerprint: Option<B256>,
+    fingerprint_unavailable: bool,
     pub call_entries: BTreeSet<usize>,
     candidates: Vec<Candidate>,
     certificates: Vec<Certificate>,
@@ -210,6 +219,7 @@ impl Cache {
     pub fn new() -> Self {
         Self {
             fingerprint: None,
+            fingerprint_unavailable: false,
             call_entries: BTreeSet::new(),
             candidates: Vec::new(),
             certificates: Vec::new(),
@@ -221,7 +231,13 @@ impl Cache {
         analysis: &WorldAnalysis,
         state: usize,
         budget: &mut WorkBudget,
-    ) -> Option<SummaryInput> {
+    ) -> Result<Option<SummaryInput>, FrontierReason> {
+        if embedded_smt::current_cancellation().is_cancelled() {
+            return Err(summary_boundary());
+        }
+        if self.fingerprint_unavailable {
+            return Ok(None);
+        }
         let payload = &analysis.states[state].entry;
         let bytes = payload
             .store
@@ -239,7 +255,7 @@ impl Cache {
                 .saturating_add(analysis.entry.environment.work_size())
                 .saturating_add(1),
         ) {
-            return None;
+            return Err(summary_boundary());
         }
         let fingerprint = if let Some(fingerprint) = self.fingerprint {
             fingerprint
@@ -255,11 +271,25 @@ impl Cache {
                 .saturating_add(analysis.world.accounts().len().saturating_mul(64))
                 .saturating_add(analysis.world.provenance().len());
             if !reserve(budget, namespace_cost) {
-                return None;
+                return Err(summary_boundary());
             }
-            // A missing complete cache key disables this reuse attempt. The
-            // engine still observes cancellation through its shared work budget.
-            let fingerprint = analysis.world.fingerprint().ok()?;
+            let fingerprint = match analysis.world.fingerprint() {
+                Ok(fingerprint) => fingerprint,
+                Err(crate::world::FingerprintError::Cancelled) => {
+                    return Err(FrontierReason::Relations(
+                        crate::domain::relational::QueryReason::Cancelled,
+                    ));
+                }
+                Err(
+                    crate::world::FingerprintError::Encoding(_)
+                    | crate::world::FingerprintError::LengthOverflow,
+                ) => {
+                    // Ordinary execution needs no summary namespace. A failed
+                    // optional encoding never supplies a guessed cache key.
+                    self.fingerprint_unavailable = true;
+                    return Ok(None);
+                }
+            };
             self.fingerprint = Some(fingerprint);
             fingerprint
         };
@@ -269,7 +299,7 @@ impl Cache {
             .expect("summary inputs start at child frames")
             .clone()
             .into_root();
-        Some(SummaryInput {
+        Ok(Some(SummaryInput {
             fork: analysis.world.fork(),
             snapshot: analysis.world.identity().clone(),
             world_fingerprint: fingerprint,
@@ -288,9 +318,15 @@ impl Cache {
             max_call_depth: analysis.config.max_call_depth,
             context_depth: analysis.config.analysis.context_depth,
             max_constants: analysis.config.analysis.max_constants,
-            domain_spec: analysis.config.domain().ok()?.spec(),
+            domain_spec: analysis
+                .config
+                .domain()
+                .map_err(|_| {
+                    FrontierReason::Relations(crate::domain::relational::QueryReason::Configuration)
+                })?
+                .spec(),
             max_memory_bytes: analysis.config.max_memory_bytes,
-        })
+        }))
     }
 
     pub fn lookup(
@@ -367,10 +403,17 @@ impl Cache {
         let candidates = std::mem::take(&mut self.candidates);
         let mut iter = candidates.into_iter();
         while let Some(candidate) = iter.next() {
-            let Some(current) = self.input(analysis, candidate.state, budget) else {
-                self.candidates.push(candidate);
-                self.candidates.extend(iter);
-                return false;
+            let current = match self.input(analysis, candidate.state, budget) {
+                Ok(Some(current)) => current,
+                Ok(None) => {
+                    analysis.summary_stats.rejected_incomplete += 1;
+                    continue;
+                }
+                Err(_) => {
+                    self.candidates.push(candidate);
+                    self.candidates.extend(iter);
+                    return false;
+                }
             };
             if !reserve(
                 budget,
