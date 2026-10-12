@@ -166,6 +166,13 @@ impl Encoder<'_> {
                 if written == key {
                     return self.expression(value);
                 }
+                if let Some(equal) = self.guarantees.equality(written, key) {
+                    return if equal {
+                        self.expression(value)
+                    } else {
+                        self.slot_read(previous, key)
+                    };
+                }
                 let index = self.expression(key)?;
                 let written = self.expression(written)?;
                 let value = self.expression(value)?;
@@ -499,7 +506,9 @@ impl Encoder<'_> {
             let destination = self.expression(destination)?;
             let valid = match literal(&destination) {
                 Some(at) if at == U256::ZERO => Bool::from_bool(true),
-                Some(at) => length.bvule(word(U256::ZERO.wrapping_sub(at))),
+                Some(at) => {
+                    self.unsigned_le(&input.length, &length, U256::ZERO.wrapping_sub(at))?
+                }
                 None => Bool::or(&[
                     length.eq(word(U256::ZERO)),
                     length
@@ -518,6 +527,14 @@ impl Encoder<'_> {
         } = input.state.kind()
         {
             let guard = self.truth(condition)?;
+            if let Some(nonzero) = self.guarantees.truth(condition) {
+                let state = if nonzero { then_state } else { else_state };
+                let (view, work) = input.branch_view(state.clone(), condition, nonzero);
+                self.charge(work)?;
+                let value = self.hash(&view)?;
+                self.hashes.insert(input, value.clone());
+                return Ok(value);
+            }
             let (yes_view, yes_work) = input.branch_view(then_state.clone(), condition, true);
             let (no_view, no_work) = input.branch_view(else_state.clone(), condition, false);
             self.charge(yes_work.saturating_add(no_work))?;
@@ -577,17 +594,18 @@ impl Encoder<'_> {
             // A later disjoint COPY cannot change the requested earlier view.
             // Widen both ends: these are mathematical ranges, not BV256 sums.
             let destination = self.expression(destination)?;
-            let copied = self.expression(copied)?;
+            let copied_expression = copied;
+            let copied = self.expression(copied_expression)?;
             let (before, after) =
                 if let (Some(at), Some(dst)) = (literal(&offset), literal(&destination)) {
                     (
                         if at <= dst {
-                            length.bvule(word(dst - at))
+                            self.unsigned_le(&input.length, &length, dst - at)?
                         } else {
                             Bool::from_bool(false)
                         },
                         if dst <= at {
-                            copied.bvule(word(at - dst))
+                            self.unsigned_le(copied_expression, &copied, at - dst)?
                         } else {
                             Bool::from_bool(false)
                         },

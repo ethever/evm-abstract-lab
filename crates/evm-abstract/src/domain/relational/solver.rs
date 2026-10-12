@@ -8,6 +8,7 @@ use embedded_smt::{Array, Bool, Bv as BV, Context, Function, FunctionSort, Outco
 use revm_bytecode::opcode;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod guarantees;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -27,6 +28,7 @@ struct Encoder<'a> {
     hash_functions: BTreeMap<usize, Function>,
     observed_bytes: BTreeSet<ByteStateId>,
     paths: BTreeMap<usize, Bool>,
+    guarantees: guarantees::Guarantees,
 }
 impl<'a> Encoder<'a> {
     fn new(limits: &'a RelationLimits) -> Self {
@@ -45,6 +47,7 @@ impl<'a> Encoder<'a> {
             hash_functions: BTreeMap::new(),
             observed_bytes: BTreeSet::new(),
             paths: BTreeMap::new(),
+            guarantees: guarantees::Guarantees::default(),
         }
     }
     fn charge(&mut self, work: usize) -> Result<(), QueryReason> {
@@ -187,10 +190,14 @@ impl<'a> Encoder<'a> {
                 then_value,
                 else_value,
             } => {
-                let guard = self.truth(condition)?;
-                let yes = self.expression(then_value)?;
-                let no = self.expression(else_value)?;
-                guard.ite(&yes, &no)
+                if let Some(nonzero) = self.guarantees.truth(condition) {
+                    self.expression(if nonzero { then_value } else { else_value })?
+                } else {
+                    let guard = self.truth(condition)?;
+                    let yes = self.expression(then_value)?;
+                    let no = self.expression(else_value)?;
+                    guard.ite(&yes, &no)
+                }
             }
             ExprKind::ByteRead { state, index } => {
                 let index = self.expression(index)?;
@@ -362,6 +369,10 @@ impl<'a> Encoder<'a> {
         {
             return Err(QueryReason::ExpressionLimit);
         }
+        if let Some(nonzero) = self.guarantees.truth(expression) {
+            self.charge(1)?;
+            return Ok(Bool::from_bool(nonzero));
+        }
         if let ExprKind::Operation { opcode: op, args } = expression.kind()
             && matches!(
                 *op,
@@ -517,6 +528,12 @@ fn prepared<'a>(
         return Err(QueryReason::ExpressionLimit);
     }
     assertions.push(encoder.path(&state.path)?);
+    // First encode the original conjunction and path without substitutions.
+    // Subsequent demanded reads may reuse those guarantees, but never erase
+    // their supporting assertions or borrow facts from one guarded alternative.
+    for constraint in &state.constraints {
+        encoder.remember_guarantee(constraint)?;
+    }
     if let Some(extra) = extra {
         assertions.push(encoder.constraint(&extra)?);
     }
