@@ -3,6 +3,7 @@
 //! The root is the content model. Sparse facts and operand summaries provide
 //! numeric upper bounds and bounded presentation; COPY never expands its range.
 
+pub(super) mod native;
 pub(super) mod numeric;
 pub(super) mod refinement;
 pub use refinement::GuardRefinementError;
@@ -38,9 +39,9 @@ pub struct ByteArray {
     // represented path. These normalize repeated symbolic expansion safely.
     #[serde(skip)]
     allocations: BTreeSet<(ExprId, ExprId)>,
-    #[serde(skip)]
+    #[serde(serialize_with = "native::serialize_facts")]
     operands: BTreeMap<ExprId, AbstractValue>,
-    #[serde(skip)]
+    #[serde(serialize_with = "native::serialize_failure")]
     failure: Option<RangeError>,
 }
 
