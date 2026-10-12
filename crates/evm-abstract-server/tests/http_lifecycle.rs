@@ -7,10 +7,10 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
-        Arc, Condvar, Mutex,
         atomic::{AtomicUsize, Ordering},
+        mpsc::{self, Receiver},
     },
-    thread::{self, JoinHandle},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -18,8 +18,7 @@ struct Server {
     child: Child,
     address: SocketAddr,
     assets: PathBuf,
-    logs: Arc<(Mutex<String>, Condvar)>,
-    reader: Option<JoinHandle<()>>,
+    logs: Receiver<String>,
 }
 
 impl Server {
@@ -52,15 +51,13 @@ impl Server {
             .unwrap()
             .parse()
             .unwrap();
-        let logs = Arc::new((Mutex::new(String::new()), Condvar::new()));
-        let destination = Arc::clone(&logs);
+        let (destination, logs) = mpsc::channel();
         let stderr = child.stderr.take().unwrap();
-        let reader = thread::spawn(move || {
+        thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
-                let mut logs = destination.0.lock().unwrap();
-                logs.push_str(&line.unwrap());
-                logs.push('\n');
-                destination.1.notify_all();
+                if destination.send(line.unwrap()).is_err() {
+                    break;
+                }
             }
         });
         Self {
@@ -68,7 +65,6 @@ impl Server {
             address,
             assets,
             logs,
-            reader: Some(reader),
         }
     }
 
@@ -88,28 +84,24 @@ impl Server {
         let marker = format!("HTTP connection from {}:", probe.local_addr().unwrap());
         probe.write_all(b"invalid\r\n\r\n").unwrap();
         probe.read_to_end(&mut Vec::new()).unwrap();
-        let (logs, ready) = &*self.logs;
-        let (logs, _) = ready
-            .wait_timeout_while(logs.lock().unwrap(), Duration::from_secs(5), |logs| {
-                !logs.lines().any(|line| line.starts_with(&marker))
-            })
-            .unwrap();
-        let observed = logs.lines().any(|line| line.starts_with(&marker));
-        let failure_logs = logs.clone();
-        drop(logs);
-        assert!(observed, "{failure_logs}");
+        let mut logs = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let line = self
+                .logs
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("the probe must emit a complete error line");
+            if line.starts_with(&marker) {
+                break;
+            }
+            logs.push(line);
+        }
         let _ = self.child.kill();
         self.child.wait().unwrap();
-        // Drain all emitted stderr before checking absence or presence of errors.
-        self.reader.take().unwrap().join().unwrap();
-        self.logs
-            .0
-            .lock()
-            .unwrap()
-            .lines()
-            .filter(|line| !line.starts_with(&marker))
-            .collect::<Vec<_>>()
-            .join("\n")
+        // The sender is dropped after EOF: disconnection confirms every emitted
+        // stderr line was consumed, without exposing thread panic payload types.
+        logs.extend(self.logs.iter());
+        logs.join("\n")
     }
 }
 
@@ -117,9 +109,6 @@ impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.child.kill();
         self.child.wait().unwrap();
-        if let Some(reader) = self.reader.take() {
-            reader.join().unwrap();
-        }
         fs::remove_dir_all(&self.assets).unwrap();
     }
 }
