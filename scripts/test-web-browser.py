@@ -2999,18 +2999,21 @@ def http_transport_interactions(browser, url: str, output: Path):
     request = initial.value.request.post_data_json
 
     def fetch(path, *, method="GET", body=None, content_type=None, tag=None):
-        return page.evaluate("""async input => {
+        response = page.evaluate("""async input => {
             const headers = {};
             if (input.content_type) headers['Content-Type'] = input.content_type;
             if (input.tag) headers['X-Evm-Http-Case'] = input.tag;
             const response = await fetch(input.path, {method: input.method, headers,
                 ...(input.body === null ? {} : {body: input.body})});
             const text = await response.text();
-            return {status: response.status, headers: Object.fromEntries(response.headers.entries()),
-                text, reply: response.headers.get('content-type')?.startsWith('application/json')
-                    ? JSON.parse(text) : null};
+            return {status: response.status, headers: Object.fromEntries(response.headers.entries()), text};
         }""", {"path": path, "method": method, "body": body,
                  "content_type": content_type, "tag": tag})
+        # Job IDs are u64; JavaScript's JSON.parse would round values above
+        # 2**53 before the next task URL is constructed. Keep the wire text.
+        response["reply"] = json.loads(response["text"]) \
+            if response["headers"].get("content-type", "").startswith("application/json") else None
+        return response
 
     providers = [fetch("/api/rpc-providers", tag=f"keepalive-{index}") for index in range(2)]
     assert all(response["status"] == 200 and response["reply"] == {"result": {"Ok": []}}
