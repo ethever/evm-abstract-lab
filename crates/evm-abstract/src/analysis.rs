@@ -31,10 +31,11 @@ use std::fmt;
 pub use crate::bytecode::InvalidOpcodeReason;
 pub use config::{Config, ConfigError, ValidatedConfig};
 pub use machine::{
-    CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence, FrameCode, FrameKey,
-    FrameState, FrontierReason, InstructionProgress, InstructionValue, MachineEdge,
-    MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome, MachinePayload, MachineState,
-    OutcomeKind, RangeKind, RangeRequest, RangeWitness, RootFrame, WorldAnalysis,
+    ByteRangeBoundary, CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence,
+    FrameCode, FrameKey, FrameState, FrontierReason, InstructionProgress, InstructionValue,
+    JoinBoundary, MachineEdge, MachineEdgeKind, MachineError, MachineFrontier, MachineKey,
+    MachineOutcome, MachinePayload, MachineState, OutcomeKind, RangeKind, RangeRequest,
+    RangeWitness, RootFrame, WorldAnalysis,
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
