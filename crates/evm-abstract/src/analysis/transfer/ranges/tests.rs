@@ -181,4 +181,81 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
     let pending = result.frontiers[0].range.as_ref().unwrap();
     assert_eq!(pending.nonzero, None);
     assert_eq!(*pending.payload, before);
+    assert_eq!(
+        result.frontiers[0].reason,
+        crate::analysis::FrontierReason::Relations(
+            crate::domain::relational::QueryReason::ConstraintLimit
+        )
+    );
+}
+
+#[test]
+fn encoder_limit_keeps_both_guarded_memory_domains() {
+    use crate::{
+        analysis::{ExecutionConfig, FrontierReason},
+        domain::{
+            relational::{Constraint, QueryReason},
+            symbolic::{ByteStateId, ByteView, ExprId, SourceId},
+        },
+    };
+    let mut result = execution();
+    let before = result.payload.active().memory.clone();
+    let mut config = ExecutionConfig {
+        max_memory_bytes: 64,
+        ..ExecutionConfig::default()
+    };
+    config.analysis.relations.max_nodes = 64;
+    let length = ExprId::constant(U256::from(64));
+    let hash = ExprId::keccak(
+        ByteView::new(
+            ByteStateId::input(SourceId::fresh().unwrap(), length.clone()),
+            ExprId::constant(U256::ZERO),
+            length,
+        ),
+        config.analysis.relations.expressions(),
+    )
+    .unwrap();
+    let size = AbstractValue::top().with_expression(hash);
+    let condition = super::memory_condition(&value(U256::ZERO), &size, 64, Domain::default());
+    let expression = condition.symbolic_expression().unwrap();
+    assert!(expression.nodes() <= config.analysis.relations.max_nodes);
+    let mut budget = super::super::WorkBudget::new(10_000_000);
+    let mut context = super::TransferContext {
+        config: &config,
+        domain: Domain::default(),
+        budget: &mut budget,
+        root_address: None,
+        input_scope: None,
+    };
+    assert!(super::memory(
+        &mut result,
+        &value(U256::ZERO),
+        &size,
+        &mut context,
+        7
+    ));
+    assert_eq!(result.payload.active().memory, before);
+    assert_eq!(result.frontiers.len(), 1);
+    assert_eq!(result.frontiers[0].reason, FrontierReason::Memory);
+    let excluded = result.frontiers[0].range.as_ref().unwrap();
+    assert_eq!(excluded.nonzero, Some(false));
+    assert_eq!(excluded.payload.active().memory, before);
+    for (payload, nonzero) in [(&result.payload, true), (excluded.payload.as_ref(), false)] {
+        assert!(payload.relations.constraints().any(|atom| atom
+            == &Constraint::Truth {
+                expression: expression.clone(),
+                nonzero,
+            }));
+    }
+    assert_eq!(
+        result
+            .diagnostics
+            .iter()
+            .filter(|(_, kind)| *kind
+                == crate::analysis::DiagnosticKind::RelationalPrecisionLost(
+                    QueryReason::ExpressionLimit
+                ))
+            .count(),
+        2
+    );
 }
