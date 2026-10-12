@@ -71,15 +71,18 @@ impl Store {
                 plane.defaults.insert(key, value);
             }
             rename(&mut plane.global_default, map, limits)?;
-            plane.operands = plane
-                .operands
-                .iter()
-                .map(|(e, v)| {
-                    let mut v = v.clone();
-                    rename(&mut v, map, limits)?;
-                    Ok((e.rename_fresh(map, limits)?, v))
-                })
-                .collect::<Result<_, StoreError>>()?;
+            let previous = std::mem::take(&mut plane.operands);
+            for (e, v) in previous {
+                let mut v = v;
+                rename(&mut v, map, limits)?;
+                crate::world::bytes::operands::remember(
+                    &mut plane.operands,
+                    e.rename_fresh(map, limits)?,
+                    &v,
+                    crate::domain::Domain::default(),
+                    limits,
+                )?;
+            }
         }
         for (address, value) in out
             .balances

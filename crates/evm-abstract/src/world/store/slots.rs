@@ -5,7 +5,7 @@ use crate::domain::{
     AbstractValue, Domain,
     symbolic::{ExprId, ExprLimits, SlotStateId, SlotStateKind, SourceId, StateBinding},
 };
-use crate::world::bytes::numeric;
+use crate::world::bytes::{numeric, operands};
 use alloy_primitives::{Address, U256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -59,7 +59,7 @@ fn read_numeric(
 ) -> AbstractValue {
     let domain = numeric::numeric_domain(domain);
     match root.kind() {
-        SlotStateKind::Zero => AbstractValue::constant(U256::ZERO),
+        SlotStateKind::Zero => numeric::scalar(&ExprId::constant(U256::ZERO), facts, domain),
         SlotStateKind::Input { bindings, .. } => {
             let key = numeric::scalar(key, facts, domain);
             if let Some(keys) = key.constants() {
@@ -191,8 +191,15 @@ impl Plane {
                         return;
                     }
                 };
-                if value_expr.as_constant().is_none() {
-                    self.operands.insert(value_expr.clone(), value.clone());
+                if let Err(error) = operands::remember(
+                    &mut self.operands,
+                    value_expr.clone(),
+                    value,
+                    Domain::default(),
+                    limits,
+                ) {
+                    self.failure = Some(error.into());
+                    return;
                 }
                 if complete {
                     // A zero baseline still needs actual numeric constraints on
@@ -226,7 +233,16 @@ impl Plane {
                         };
                         match ExprId::slot_read(observed, ExprId::constant(*key), limits) {
                             Ok(expression) => {
-                                self.operands.insert(expression.clone(), value.clone());
+                                if let Err(error) = operands::remember(
+                                    &mut self.operands,
+                                    expression.clone(),
+                                    value,
+                                    Domain::default(),
+                                    limits,
+                                ) {
+                                    self.failure = Some(error.into());
+                                    return;
+                                }
                                 expression
                             }
                             Err(error) => {
@@ -276,7 +292,7 @@ impl Plane {
         let root = self.root_at(address)?;
         let key_expr = expression(key)?;
         let mut facts = self.operands.clone();
-        facts.insert(key_expr.clone(), key.clone());
+        operands::remember(&mut facts, key_expr.clone(), key, domain, limits(domain))?;
         let expr = ExprId::slot_read(root.clone(), key_expr.clone(), limits(domain))?;
         let numeric = read_numeric(&root, &key_expr, &facts, domain);
         Ok(numeric::attach(numeric, expr))
@@ -309,21 +325,11 @@ impl Plane {
             value_expr.clone(),
             limits(domain).into(),
         )?;
-        let mut clean = value.clone();
-        clean.forget_identity();
+        let mut facts = self.operands.clone();
+        operands::remember(&mut facts, key_expr, key, domain, limits(domain))?;
+        operands::remember(&mut facts, value_expr, value, domain, limits(domain))?;
         self.roots.insert(address, root);
-        if key_expr.as_constant().is_none() {
-            self.operands
-                .entry(key_expr)
-                .and_modify(|old| *old = domain.join(old, key))
-                .or_insert_with(|| key.clone());
-        }
-        if value_expr.as_constant().is_none() {
-            self.operands
-                .entry(value_expr)
-                .and_modify(|old| *old = domain.join(old, &clean))
-                .or_insert(clean);
-        }
+        self.operands = facts;
         self.write_numeric_cache(address, key, value, domain);
         Ok(())
     }

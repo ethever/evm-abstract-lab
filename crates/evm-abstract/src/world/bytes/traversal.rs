@@ -114,15 +114,18 @@ impl ByteArray {
         for v in out.bytes.values_mut() {
             rename_value(v, map, limits)?;
         }
-        out.operands = self
-            .operands
-            .iter()
-            .map(|(e, v)| {
-                let mut v = v.clone();
-                rename_value(&mut v, map, limits)?;
-                Ok((e.rename_fresh(map, limits)?, v))
-            })
-            .collect::<Result<_, RangeError>>()?;
+        out.operands.clear();
+        for (e, v) in &self.operands {
+            let mut v = v.clone();
+            rename_value(&mut v, map, limits)?;
+            super::operands::remember(
+                &mut out.operands,
+                e.rename_fresh(map, limits)?,
+                &v,
+                crate::domain::Domain::default(),
+                limits,
+            )?;
+        }
         *self = out;
         Ok(())
     }

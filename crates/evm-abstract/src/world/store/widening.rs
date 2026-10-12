@@ -52,7 +52,11 @@ impl Plane {
         }
         let domain = numeric::numeric_domain(domain);
         let value = match root.kind() {
-            SlotStateKind::Zero => AbstractValue::constant(alloy_primitives::U256::ZERO),
+            SlotStateKind::Zero => numeric::scalar(
+                &crate::domain::symbolic::ExprId::constant(alloy_primitives::U256::ZERO),
+                &self.operands,
+                domain,
+            ),
             SlotStateKind::Input { .. } => AbstractValue::top(),
             SlotStateKind::Store {
                 previous, value, ..

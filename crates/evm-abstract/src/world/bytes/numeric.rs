@@ -19,11 +19,18 @@ pub(in crate::world) fn scalar(
     facts: &Facts,
     domain: Domain,
 ) -> AbstractValue {
+    if let Some(v) = facts.get(expression) {
+        if let Some(constant) = expression.as_constant() {
+            // A constant-key source union is not a unique input occurrence.
+            // Drop its must-alias identity while retaining every possible source.
+            return domain
+                .join(v, &AbstractValue::constant(constant))
+                .with_numeric(crate::domain::NumericValue::constant(constant));
+        }
+        return v.clone();
+    }
     if let Some(v) = expression.as_constant() {
         return AbstractValue::constant(v);
-    }
-    if let Some(v) = facts.get(expression) {
-        return v.clone();
     }
     match expression.kind() {
         ExprKind::Operation { opcode, args } => domain.apply(
@@ -82,7 +89,7 @@ pub(super) fn read(
 ) -> AbstractValue {
     let domain = numeric_domain(domain);
     match state.kind() {
-        ByteStateKind::Zero => zero(),
+        ByteStateKind::Zero => scalar(&ExprId::constant(U256::ZERO), facts, domain),
         ByteStateKind::Exact(bytes) => {
             let index = scalar(index, facts, domain);
             if let Some(indices) = index.constants() {
@@ -91,13 +98,17 @@ pub(super) fn read(
                     .fold(None, |out, i| {
                         Some(join(
                             out,
-                            constant(usize::from(
-                                usize::try_from(*i)
-                                    .ok()
-                                    .and_then(|i| bytes.get(i))
-                                    .copied()
-                                    .unwrap_or(0),
-                            )),
+                            scalar(
+                                &ExprId::constant(U256::from(
+                                    usize::try_from(*i)
+                                        .ok()
+                                        .and_then(|i| bytes.get(i))
+                                        .copied()
+                                        .unwrap_or(0),
+                                )),
+                                facts,
+                                domain,
+                            ),
                             domain,
                         ))
                     })
@@ -347,7 +358,7 @@ pub(super) fn word(
     let offsets = scalar(offset, facts, domain);
     let Some(offsets) = offsets.constants() else {
         return if matches!(state.kind(), ByteStateKind::Zero) {
-            zero()
+            scalar(&ExprId::constant(U256::ZERO), facts, domain)
         } else {
             AbstractValue::top()
         };

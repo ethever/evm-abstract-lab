@@ -6,8 +6,9 @@ use super::{
 };
 use crate::domain::{
     AbstractValue, Domain,
-    symbolic::{ExprError, ExprId, ExprLimits},
+    symbolic::{ByteStateKind, ExprError, ExprId, ExprLimits, SlotStateKind},
 };
+use alloy_primitives::U256;
 use std::collections::BTreeMap;
 
 /// Constant folding after the caller's registered-selector projection is an
@@ -21,7 +22,8 @@ pub(in crate::world) fn refresh_constant(value: &mut AbstractValue) {
 }
 
 /// Retain guarantees consumed by the authoritative graph, including guarantees
-/// referenced by another retained fact. Constants need no duplicate binding.
+/// referenced by another retained fact. Singleton provenance remains essential
+/// even when Zero/Exact normalization removes the original write expression.
 pub(in crate::world) fn retained_facts(
     pending: Vec<Node>,
     facts: &BTreeMap<ExprId, AbstractValue>,
@@ -30,8 +32,50 @@ pub(in crate::world) fn retained_facts(
     let mut retained = BTreeMap::new();
     let mut work = 0usize;
     let nodes = walk(pending, limits, &mut |node, pending| {
+        match node {
+            Node::Bytes(bytes) => match bytes.kind() {
+                ByteStateKind::Zero => pending.push(Node::Expression(ExprId::constant(U256::ZERO))),
+                ByteStateKind::Exact(_) => {
+                    // Only retained metadata is inspected, never payload length.
+                    work = work.saturating_add(facts.len());
+                    pending.extend(
+                        facts
+                            .keys()
+                            .filter(|e| e.as_constant().is_some_and(|n| n <= U256::from(255)))
+                            .cloned()
+                            .map(Node::Expression),
+                    );
+                }
+                ByteStateKind::WriteByte { value, .. } => {
+                    if let Some(value) = value.as_constant() {
+                        pending.push(Node::Expression(ExprId::constant(value & U256::from(255))));
+                    }
+                }
+                ByteStateKind::WriteWord { value, .. } => {
+                    if let Some(value) = value.as_constant() {
+                        pending.extend(
+                            value
+                                .to_be_bytes::<32>()
+                                .into_iter()
+                                .map(|byte| Node::Expression(ExprId::constant(U256::from(byte)))),
+                        );
+                        work = work.saturating_add(32);
+                    }
+                }
+                _ => {}
+            },
+            Node::Slots(slots) if matches!(slots.kind(), SlotStateKind::Zero) => {
+                pending.push(Node::Expression(ExprId::constant(U256::ZERO)));
+            }
+            _ => {}
+        }
+        if work > limits.max_nodes {
+            return Err(ExprError::Limit {
+                nodes: work,
+                depth: 1,
+            });
+        }
         if let Node::Expression(expression) = node
-            && expression.as_constant().is_none()
             && let Some(value) = facts.get(expression)
         {
             work = work
