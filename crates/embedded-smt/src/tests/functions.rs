@@ -317,30 +317,45 @@ fn array_queries_keep_native_resource_unknown_separate_from_unsat() {
 }
 
 #[test]
-fn typed_function_construction_checks_all_widths_arity_and_argument_sorts() {
-    assert!(
-        std::panic::catch_unwind(|| Context::default().fresh_function(
-            "bad",
-            &[FunctionSort::Bv(0)],
-            8
-        ))
-        .is_err()
+#[should_panic(expected = "function argument width must be positive")]
+fn function_rejects_zero_bv_argument_width() {
+    Context::default().fresh_function("bad", &[FunctionSort::Bv(0)], 8);
+}
+
+#[test]
+#[should_panic(expected = "function result width must be positive")]
+fn function_rejects_zero_result_width() {
+    Context::default().fresh_function("bad", &[], 0);
+}
+
+#[test]
+#[should_panic(expected = "function array index width must be positive")]
+fn function_rejects_zero_array_index_width() {
+    Context::default().fresh_function(
+        "bad",
+        &[FunctionSort::Array {
+            index_width: 0,
+            element_width: 8,
+        }],
+        8,
     );
-    assert!(std::panic::catch_unwind(|| Context::default().fresh_function("bad", &[], 0)).is_err());
-    for (index_width, element_width) in [(0, 8), (8, 0)] {
-        assert!(
-            std::panic::catch_unwind(|| Context::default().fresh_function(
-                "bad",
-                &[FunctionSort::Array {
-                    index_width,
-                    element_width
-                }],
-                8
-            ))
-            .is_err()
-        );
-    }
-    let function = Context::default().fresh_function(
+}
+
+#[test]
+#[should_panic(expected = "function array element width must be positive")]
+fn function_rejects_zero_array_element_width() {
+    Context::default().fresh_function(
+        "bad",
+        &[FunctionSort::Array {
+            index_width: 8,
+            element_width: 0,
+        }],
+        8,
+    );
+}
+
+fn mixed_argument_function() -> crate::Function {
+    Context::default().fresh_function(
         "f",
         &[
             FunctionSort::Bv(8),
@@ -350,26 +365,39 @@ fn typed_function_construction_checks_all_widths_arity_and_argument_sorts() {
             },
         ],
         13,
-    );
+    )
+}
+
+#[test]
+#[should_panic(expected = "function argument count must match")]
+fn function_application_rejects_mismatched_arity() {
+    mixed_argument_function().apply(&[]);
+}
+
+#[test]
+#[should_panic(expected = "function argument sorts must match")]
+fn function_application_rejects_bv_in_place_of_array() {
+    let function = mixed_argument_function();
     let bv = Bv::from_u64(0, 8);
+    function.apply(&[FunctionArg::Bv(&bv), FunctionArg::Bv(&bv)]);
+}
+
+#[test]
+#[should_panic(expected = "function argument sorts must match")]
+fn function_application_rejects_mismatched_bv_width() {
+    let function = mixed_argument_function();
     let array = Array::constant(8, &Bv::from_u64(0, 13));
-    assert!(std::panic::catch_unwind(|| function.apply(&[])).is_err());
-    assert!(
-        std::panic::catch_unwind(|| function.apply(&[FunctionArg::Bv(&bv), FunctionArg::Bv(&bv)]))
-            .is_err()
-    );
-    assert!(
-        std::panic::catch_unwind(|| function.apply(&[
-            FunctionArg::Bv(&Bv::from_u64(0, 9)),
-            FunctionArg::Array(&array)
-        ]))
-        .is_err()
-    );
+    function.apply(&[
+        FunctionArg::Bv(&Bv::from_u64(0, 9)),
+        FunctionArg::Array(&array),
+    ]);
+}
+
+#[test]
+#[should_panic(expected = "function argument sorts must match")]
+fn function_application_rejects_mismatched_array_width() {
+    let function = mixed_argument_function();
+    let bv = Bv::from_u64(0, 8);
     let wrong_array = Array::constant(9, &Bv::from_u64(0, 13));
-    assert!(
-        std::panic::catch_unwind(
-            || function.apply(&[FunctionArg::Bv(&bv), FunctionArg::Array(&wrong_array)])
-        )
-        .is_err()
-    );
+    function.apply(&[FunctionArg::Bv(&bv), FunctionArg::Array(&wrong_array)]);
 }
