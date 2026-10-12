@@ -4,7 +4,7 @@ use super::{
     NumericValue,
     identity::{InputIdentity, RuntimeIdentity, Symbol, ValueIdentity},
     provenance::{Origin, Provenance},
-    symbolic::ExprId,
+    symbolic::{ExprError, ExprId, ExprLimits},
 };
 use alloy_primitives::U256;
 use serde::{Serialize, Serializer, ser::SerializeMap};
@@ -97,10 +97,41 @@ impl AbstractValue {
             .map(ExprId::constant)
             .or_else(|| self.expression.clone())
     }
+    /// Numeric join plus a symbolic ITE using the machine's shared branch guard.
+    /// Equal values keep their original representation. Anonymous values retain
+    /// numeric facts while their missing symbolic correlation remains explicit.
+    pub fn join_guarded(
+        &self,
+        other: &Self,
+        domain: super::Domain,
+        selector: ExprId,
+        limits: ExprLimits,
+    ) -> Result<Self, ExprError> {
+        if self == other {
+            super::symbolic::state_check(
+                self.expression.as_ref().map_or(1, ExprId::nodes),
+                self.expression.as_ref().map_or(1, ExprId::depth),
+                limits,
+            )?;
+            return Ok(self.clone());
+        }
+        let mut joined = domain.join(self, other);
+        if let (Some(left), Some(right)) = (self.symbolic_expression(), other.symbolic_expression())
+        {
+            joined.expression = Some(ExprId::ite(selector, left, right, limits)?);
+        }
+        Ok(joined)
+    }
     /// Symbolic construction exceeded a resource bound in this value or a
     /// numeric operation it depends on; numeric facts remain sound.
     pub fn symbolic_limit_reached(&self) -> bool {
         self.symbolic_limit
+    }
+    /// Mark a failed optional symbolic construction, retaining numeric facts
+    /// and any previously valid expression for the same value.
+    pub fn with_symbolic_limit(mut self) -> Self {
+        self.symbolic_limit = true;
+        self
     }
 
     /// Trusted alias test; source categories do not participate.
@@ -164,7 +195,9 @@ impl AbstractValue {
             && let Some(scope) = scope
         {
             self.identity = self.identity.with_input(InputIdentity::new(scope, symbol));
-            self.expression = Some(ExprId::input(scope, symbol));
+            if self.expression.is_none() {
+                self.expression = Some(ExprId::input(scope, symbol));
+            }
         }
         self
     }
