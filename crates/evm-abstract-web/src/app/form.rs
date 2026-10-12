@@ -5,6 +5,7 @@ mod environment;
 mod examples;
 mod limits;
 
+use crate::controls::{self, Density};
 use egui::{Id, RichText, Ui};
 use evm_abstract_protocol::{
     AnalysisInput, AnalysisLimits, AnalyzeRequest, BlockSelector, BytecodeInput, EnvironmentInput,
@@ -129,7 +130,7 @@ impl AnalysisForm {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("New analysis").strong().size(16.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = ui.small_button("Close").clicked();
+                        close = controls::action(ui, "Close", Density::Compact).clicked();
                     });
                 });
                 let budget = (size.y - 128.0).clamp(40.0, 620.0);
@@ -151,16 +152,14 @@ impl AnalysisForm {
                     });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    submit = ui
-                        .add_enabled(
-                            self.can_submit(busy),
-                            egui::Button::new(
-                                RichText::new("Analyze").strong().color(palette::BACKGROUND),
-                            )
-                            .fill(palette::ACCENT),
-                        )
-                        .on_hover_text("Ctrl+Enter")
-                        .clicked();
+                    submit = controls::action_enabled(
+                        ui,
+                        self.can_submit(busy),
+                        RichText::new("Analyze").strong(),
+                        Density::Regular,
+                    )
+                    .on_hover_text("Ctrl+Enter")
+                    .clicked();
                     ui.label(
                         RichText::new(if busy {
                             "A task is still running"
@@ -203,14 +202,32 @@ impl AnalysisForm {
 
     fn input(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.source, Source::Bytecode, "Bytecode");
-            ui.selectable_value(&mut self.source, Source::Rpc, "RPC account");
+            controls::tab_value(
+                ui,
+                &mut self.source,
+                Source::Bytecode,
+                "Bytecode",
+                Density::Regular,
+            );
+            controls::tab_value(
+                ui,
+                &mut self.source,
+                Source::Rpc,
+                "RPC account",
+                Density::Regular,
+            );
             egui::ComboBox::from_id_salt("form_fork")
                 .width(82.0)
                 .selected_text(format!("{:?}", self.fork))
                 .show_ui(ui, |ui| {
                     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
-                        ui.selectable_value(&mut self.fork, fork, format!("{fork:?}"));
+                        controls::tab_value(
+                            ui,
+                            &mut self.fork,
+                            fork,
+                            format!("{fork:?}"),
+                            Density::Regular,
+                        );
                     }
                 });
         });
@@ -218,12 +235,12 @@ impl AnalysisForm {
             Source::Bytecode => {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Runtime bytecode").color(palette::MUTED));
-                    ui.menu_button("Examples", |ui| {
+                    controls::menu_button(ui, "Examples", Density::Regular, |ui| {
                         for (label, code) in [
                             ("Branch and merge", BRANCH_EXAMPLE),
                             ("Arithmetic", "600160020100"),
                         ] {
-                            if ui.button(label).clicked() {
+                            if controls::action(ui, label, Density::Regular).clicked() {
                                 self.bytecode.bytecode = code.into();
                                 ui.close();
                             }
@@ -254,30 +271,33 @@ impl AnalysisForm {
                         .width(80.0)
                         .selected_text(choice)
                         .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(
-                                    matches!(self.rpc.block, BlockSelector::Latest),
-                                    "Latest",
-                                )
-                                .clicked()
+                            if controls::tab(
+                                ui,
+                                matches!(self.rpc.block, BlockSelector::Latest),
+                                "Latest",
+                                Density::Regular,
+                            )
+                            .clicked()
                             {
                                 self.rpc.block = BlockSelector::Latest;
                             }
-                            if ui
-                                .selectable_label(
-                                    matches!(self.rpc.block, BlockSelector::Number(_)),
-                                    "Number",
-                                )
-                                .clicked()
+                            if controls::tab(
+                                ui,
+                                matches!(self.rpc.block, BlockSelector::Number(_)),
+                                "Number",
+                                Density::Regular,
+                            )
+                            .clicked()
                             {
                                 self.rpc.block = BlockSelector::Number(0);
                             }
-                            if ui
-                                .selectable_label(
-                                    matches!(self.rpc.block, BlockSelector::Hash(_)),
-                                    "Hash",
-                                )
-                                .clicked()
+                            if controls::tab(
+                                ui,
+                                matches!(self.rpc.block, BlockSelector::Hash(_)),
+                                "Hash",
+                                Density::Regular,
+                            )
+                            .clicked()
                             {
                                 self.rpc.block = BlockSelector::Hash(String::new());
                             }
@@ -317,7 +337,7 @@ impl AnalysisForm {
                             "Account address",
                             width,
                         );
-                        if ui.small_button("Remove").clicked() {
+                        if controls::action(ui, "Remove", Density::Compact).clicked() {
                             remove = Some(index);
                         }
                     });
@@ -328,7 +348,7 @@ impl AnalysisForm {
                                 ui.label("Slot");
                                 let width = (ui.available_width() - 36.0).max(60.0);
                                 framework::scoped_editor(ui, "slot", slot, "0x…", width);
-                                if ui.small_button("−").clicked() {
+                                if controls::action(ui, "−", Density::Compact).clicked() {
                                     remove_slot = Some(slot_index);
                                 }
                             });
@@ -337,7 +357,7 @@ impl AnalysisForm {
                     if let Some(index) = remove_slot {
                         account.slots.remove(index);
                     }
-                    if ui.small_button("Add slot").clicked() {
+                    if controls::action(ui, "Add slot", Density::Compact).clicked() {
                         account.slots.push("0x0".into());
                     }
                 });
@@ -346,7 +366,7 @@ impl AnalysisForm {
             if let Some(index) = remove {
                 self.rpc.accounts.remove(index);
             }
-            if ui.small_button("Add account").clicked() {
+            if controls::action(ui, "Add account", Density::Compact).clicked() {
                 self.rpc.accounts.push(evm_abstract_protocol::AccountQuery {
                     address: String::new(),
                     slots: vec![],

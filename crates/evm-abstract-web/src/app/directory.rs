@@ -1,5 +1,6 @@
 //! Captured programs and observed accounts share native identities with selection.
 
+use crate::controls::{self, Density};
 use crate::{framework, notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
@@ -32,9 +33,23 @@ impl Directory {
         selected_program: Option<usize>,
         selected_account: Option<&str>,
     ) -> Option<Pick> {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.kind, Kind::Programs, "Programs");
-            ui.selectable_value(&mut self.kind, Kind::Accounts, "Accounts");
+        Density::Compact.scope(ui, |ui| {
+            ui.horizontal(|ui| {
+                controls::tab_value(
+                    ui,
+                    &mut self.kind,
+                    Kind::Programs,
+                    "Programs",
+                    Density::Compact,
+                );
+                controls::tab_value(
+                    ui,
+                    &mut self.kind,
+                    Kind::Accounts,
+                    "Accounts",
+                    Density::Compact,
+                );
+            });
         });
         framework::line_editor(
             ui,

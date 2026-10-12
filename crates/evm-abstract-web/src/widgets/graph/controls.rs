@@ -2,6 +2,7 @@
 //! shared selection always remains an original analysis state ID.
 
 use super::{Graph, NodeView};
+use crate::controls::{self, Density};
 use crate::{app::Selection, palette, widgets::GraphMode};
 use egui::{Context, RichText, Ui};
 use evm_abstract_notation::Symbol;
@@ -20,104 +21,104 @@ impl Graph {
         let selected_visible = selection
             .state
             .is_some_and(|state| self.display.state_to_node.contains_key(&state));
-        ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut content, NodeView::Disassembly, crate::notation::widget(ui, "Disasm"))
-                .on_hover_text(crate::notation::widget(ui, "Decoded source instructions"));
-            ui.selectable_value(&mut content, NodeView::Ssa, crate::notation::widget(ui, "SSA"))
-                .on_hover_text(crate::notation::widget(ui, "Original SSA for individual states; aggregate cards summarize their instances"));
-            if ui
-                .small_button("Fit graph")
-                .on_hover_text(crate::notation::widget(ui, "F / Shift+F: center the existing scene"))
-                .clicked()
-            {
-                self.request_fit(ui, true);
-            }
-            if ui
-                .add_enabled(selected_visible, egui::Button::new("Focus selected").small())
-                .clicked()
-            {
-                self.focus_pending = true;
-            }
-            ui.label(
-                crate::notation::widget(ui, RichText::new(format!(
-                    "{:.0}% · {}",
-                    self.zoom * 100.0,
-                    if self.fitted { "Fit" } else { "Manual" }
-                ))
-                .small()
-                .color(palette::MUTED)),
-            )
-                .on_hover_text(crate::notation::widget(ui, format!("Drag or scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Resizing preserves the scene and camera.\n\n{TERMINATION_LEGEND}")));
-            // Do not create another wrapped toolbar row on a narrow canvas.
-            // The existing zoom label also exposes the full legend on hover.
-            if ui.available_width() >= 70.0 {
-                ui.label(crate::notation::widget(ui, RichText::new("End colors").small().color(palette::MUTED)))
-                    .on_hover_text(crate::notation::widget(ui, TERMINATION_LEGEND));
-            }
+        Density::Compact.scope(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                controls::tab_value(ui, &mut content, NodeView::Disassembly, "Disasm", Density::Compact)
+                    .on_hover_text(crate::notation::widget(ui, "Decoded source instructions"));
+                controls::tab_value(ui, &mut content, NodeView::Ssa, "SSA", Density::Compact)
+                    .on_hover_text(crate::notation::widget(ui, "Original SSA for individual states; aggregate cards summarize their instances"));
+                if controls::action(ui, "Fit graph", Density::Compact)
+                    .on_hover_text(crate::notation::widget(ui, "F / Shift+F: center the existing scene"))
+                    .clicked()
+                {
+                    self.request_fit(ui, true);
+                }
+                if controls::action_enabled(ui, selected_visible, "Focus selected", Density::Compact)
+                    .clicked()
+                {
+                    self.focus_pending = true;
+                }
+                ui.label(
+                    crate::notation::widget(ui, RichText::new(format!(
+                        "{:.0}% · {}",
+                        self.zoom * 100.0,
+                        if self.fitted { "Fit" } else { "Manual" }
+                    ))
+                    .small()
+                    .color(palette::MUTED)),
+                )
+                    .on_hover_text(crate::notation::widget(ui, format!("Drag or scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. Resizing preserves the scene and camera.\n\n{TERMINATION_LEGEND}")));
+                // Do not create another wrapped toolbar row on a narrow canvas.
+                // The existing zoom label also exposes the full legend on hover.
+                if ui.available_width() >= 70.0 {
+                    ui.label(crate::notation::widget(ui, RichText::new("End colors").small().color(palette::MUTED)))
+                        .on_hover_text(crate::notation::widget(ui, TERMINATION_LEGEND));
+                }
+            });
         });
         self.set_content(content, selection.state);
         let mut mode = self.mode;
         let mut scope = self.program_scope;
         let mut hops = self.neighborhood_hops;
-        ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut mode, GraphMode::Blocks, crate::notation::widget(ui, "Blocks"))
-                .on_hover_text(crate::notation::widget(ui, "Each program basic block appears once. Summary paths can combine different instances; choose a state for its actual SSA."));
-            ui.selectable_value(&mut mode, GraphMode::States, crate::notation::widget(ui, "States"))
-                .on_hover_text(crate::notation::widget(ui, "Every original native analysis state and edge"));
-            ui.add_enabled_ui(selection.state.is_some(), |ui| {
-                ui.selectable_value(&mut mode, GraphMode::Local, crate::notation::widget(ui, "Local"))
-                    .on_hover_text(crate::notation::widget(ui, "Recorded predecessors and successors of the selected state, including calls across programs; at most 200 states"));
-            });
-            if mode == GraphMode::Local {
-                ui.label(
-                    crate::notation::widget(ui, RichText::new("Cross-program neighborhood")
+        Density::Compact.scope(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                controls::tab_value(ui, &mut mode, GraphMode::Blocks, "Blocks", Density::Compact)
+                    .on_hover_text(crate::notation::widget(ui, "Each program basic block appears once. Summary paths can combine different instances; choose a state for its actual SSA."));
+                controls::tab_value(ui, &mut mode, GraphMode::States, "States", Density::Compact)
+                    .on_hover_text(crate::notation::widget(ui, "Every original native analysis state and edge"));
+                ui.add_enabled_ui(selection.state.is_some(), |ui| {
+                    controls::tab_value(ui, &mut mode, GraphMode::Local, "Local", Density::Compact)
+                        .on_hover_text(crate::notation::widget(ui, "Recorded predecessors and successors of the selected state, including calls across programs; at most 200 states"));
+                });
+                if mode == GraphMode::Local {
+                    ui.label(
+                        crate::notation::widget(ui, RichText::new("Cross-program neighborhood")
+                            .small()
+                            .color(palette::MUTED)),
+                    );
+                    ui.label(crate::notation::widget(ui, "Hops"));
+                    ui.add(egui::DragValue::new(&mut hops).range(1..=4));
+                } else {
+                    egui::ComboBox::from_id_salt("cfg_program_scope")
+                        .selected_text(crate::notation::widget(ui, scope.map_or("All programs".into(), |id| Symbol::Program(id).to_string())))
+                        .width(104.0)
+                        .show_ui(ui, |ui| {
+                            controls::tab_value(ui, &mut scope, None, "All programs", Density::Compact);
+                            for program in &report.programs {
+                                controls::tab_value(ui,
+                                    &mut scope,
+                                    Some(program.id),
+                                    format!("{} · {:?}", Symbol::Program(program.id), program.kind), Density::Compact)
+                                .on_hover_text(crate::notation::widget(ui, format!(
+                                    "{}\n{}", program.code_address, program.code_hash
+                                )));
+                            }
+                        });
+                }
+                let selected_group = selection
+                    .state
+                    .and_then(|state| self.display.state_to_node.get(&state).copied());
+                let multiple = selected_group
+                    .and_then(|id| self.node_positions.get(&id))
+                    .and_then(|position| self.display.nodes.get(*position))
+                    .is_some_and(|node| node.members.len() > 1);
+                if controls::action_enabled(ui, multiple, "Instances", Density::Compact)
+                    .clicked()
+                {
+                    self.instance_group = selected_group;
+                    self.instance_filter.clear();
+                }
+                if let Some(state) = selection.state {
+                    ui.label(
+                        crate::notation::widget(ui, RichText::new(format!(
+                            "Selected {notation_0}{}",
+                            if selected_visible { "" } else { " · outside view" }
+                        , notation_0 = Symbol::State(state)))
                         .small()
                         .color(palette::MUTED)),
-                );
-                ui.label(crate::notation::widget(ui, "Hops"));
-                ui.add(egui::DragValue::new(&mut hops).range(1..=4));
-            } else {
-                egui::ComboBox::from_id_salt("cfg_program_scope")
-                    .selected_text(crate::notation::widget(ui, scope.map_or("All programs".into(), |id| Symbol::Program(id).to_string())))
-                    .width(104.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut scope, None, crate::notation::widget(ui, "All programs"));
-                        for program in &report.programs {
-                            ui.selectable_value(
-                                &mut scope,
-                                Some(program.id),
-                                crate::notation::widget(ui, format!("{} · {:?}", Symbol::Program(program.id), program.kind)),
-                            )
-                            .on_hover_text(crate::notation::widget(ui, format!(
-                                "{}\n{}", program.code_address, program.code_hash
-                            )));
-                        }
-                    });
-            }
-            let selected_group = selection
-                .state
-                .and_then(|state| self.display.state_to_node.get(&state).copied());
-            let multiple = selected_group
-                .and_then(|id| self.node_positions.get(&id))
-                .and_then(|position| self.display.nodes.get(*position))
-                .is_some_and(|node| node.members.len() > 1);
-            if ui
-                .add_enabled(multiple, egui::Button::new("Instances").small())
-                .clicked()
-            {
-                self.instance_group = selected_group;
-                self.instance_filter.clear();
-            }
-            if let Some(state) = selection.state {
-                ui.label(
-                    crate::notation::widget(ui, RichText::new(format!(
-                        "Selected {notation_0}{}",
-                        if selected_visible { "" } else { " · outside view" }
-                    , notation_0 = Symbol::State(state)))
-                    .small()
-                    .color(palette::MUTED)),
-                );
-            }
+                    );
+                }
+            });
         });
         self.set_mode(mode);
         if scope != self.program_scope {
