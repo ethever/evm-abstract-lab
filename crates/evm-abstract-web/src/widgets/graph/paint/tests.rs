@@ -674,6 +674,8 @@ fn terminal_cards_paint_three_semantic_fills_and_selection_preserves_each_fill()
 fn coverage_and_frontier_warnings_have_independent_dashes_and_selection_outline() {
     let mut report = terminal_report();
     report.frontiers.push(Frontier {
+        range: None,
+        payload: None,
         from: Some(0),
         pc: Some(0),
         kind: FrontierKind::Memory,

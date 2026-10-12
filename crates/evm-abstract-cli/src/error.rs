@@ -30,6 +30,8 @@ pub(crate) enum CliError {
     Ssa(SsaError),
     #[error("{0}")]
     Json(serde_json::Error),
+    #[error("{0}")]
+    Export(evm_abstract::render::json::JsonError),
 }
 
 impl From<std::io::Error> for CliError {
@@ -81,6 +83,12 @@ impl From<SsaError> for CliError {
 impl From<serde_json::Error> for CliError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error)
+    }
+}
+
+impl From<evm_abstract::render::json::JsonError> for CliError {
+    fn from(error: evm_abstract::render::json::JsonError) -> Self {
+        Self::Export(error)
     }
 }
 

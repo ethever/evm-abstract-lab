@@ -1,5 +1,6 @@
 //! 面向学习的文本和图输出。所有顺序稳定，便于 diff 和重复实验。
 
+pub mod json;
 pub mod world;
 
 mod instruction;

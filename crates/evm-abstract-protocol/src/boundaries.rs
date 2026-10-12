@@ -79,6 +79,10 @@ variant! {
         SummaryWork,
         /// CallDepth boundary.
         CallDepth,
+        /// A byte-array representation rejected the original range.
+        ByteRange(ByteRangeBoundary),
+        /// Complete incoming state could not be safely joined.
+        StateJoin(JoinBoundary),
         /// Memory boundary.
         Memory,
         /// Relations boundary.
@@ -99,5 +103,51 @@ variant! {
         Creation(CreationReason),
         /// UnsupportedOpcode boundary.
         UnsupportedOpcode(u8),
+    }
+}
+
+variant! {
+    /// Atomic machine join boundary, not an EVM exceptional halt.
+    pub enum JoinBoundary {
+        /// Frame or continuation shapes disagree.
+        Shape,
+        /// A unique branch selector could not be allocated.
+        IdentityExhausted,
+        /// Retained complete alternatives reached this limit.
+        Alternatives(usize),
+    }
+}
+
+record! {
+    /// Concrete host range arithmetic rejected this access.
+    pub struct ByteRangeOverflow {
+        /// Concrete destination byte offset.
+        pub offset: usize,
+        /// Concrete requested byte count.
+        pub size: usize,
+    }
+}
+record! {
+    /// Concrete logical or materialization policy rejected this range.
+    pub struct ByteRangeLimit {
+        /// Exact Word256 requested count or endpoint.
+        pub requested: String,
+        /// Declared byte cap.
+        pub limit: usize,
+    }
+}
+variant! {
+    /// Byte-state representation failure, distinct from logical memory partitioning.
+    pub enum ByteRangeBoundary {
+        /// No finite size or trusted symbolic term was available.
+        UnknownSize,
+        /// Concrete destination exceeds a host index.
+        OffsetTooLarge(String),
+        /// Host arithmetic overflow.
+        Overflow(ByteRangeOverflow),
+        /// Declared concrete range cap.
+        TooLarge(ByteRangeLimit),
+        /// Source binding requested after input identity was established.
+        InputAlreadyBound,
     }
 }

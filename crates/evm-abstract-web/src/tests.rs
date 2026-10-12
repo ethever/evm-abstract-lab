@@ -56,6 +56,7 @@ pub(crate) fn refresh_operation(instruction: &mut SsaInstruction) {
 // invented for those rendering-only fixtures.
 pub(crate) fn empty_report() -> AnalysisReport {
     let top = api::ValueInfo {
+        nonzero: false,
         summary: "Top".into(),
         constants: None,
         known_zero: "0x0".into(),
@@ -77,6 +78,8 @@ pub(crate) fn empty_report() -> AnalysisReport {
     };
     let address = |kind| api::AddressValue::Symbolic(api::InputSymbol { kind, index: None });
     AnalysisReport {
+        symbolic: crate::tests::symbolic_graph(),
+        pending_machines: vec![],
         schema_version: SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,
@@ -98,6 +101,18 @@ pub(crate) fn empty_report() -> AnalysisReport {
             deferred_edges: vec![],
         },
         metadata: api::ReportMetadata {
+            export_limits: api::ExportLimits {
+                max_nodes: 65536,
+                max_depth: 256,
+                max_exact_bytes: 16777216,
+                max_work: 64000000,
+                max_output_bytes: 64 * 1024 * 1024,
+            },
+            export_usage: api::ExportUsage {
+                nodes: 5,
+                exact_bytes: 0,
+                work: 5,
+            },
             timings: api::AnalysisTimings::default(),
             entry_address: "0x0000000000000000000000000000000000000000".into(),
             root_program: None,
@@ -134,6 +149,8 @@ pub(crate) fn empty_report() -> AnalysisReport {
         outcomes: vec![],
         acquisition: None,
         byte_arrays: vec![api::ByteArraySnapshot {
+            symbolic_facts: vec![],
+            symbolic: evm_abstract_protocol::ByteViewRef { node: 2 },
             length: top.clone(),
             default: top,
             values: vec![],
@@ -230,6 +247,8 @@ pub(crate) fn report() -> AnalysisReport {
         })
         .collect();
     let mut report = AnalysisReport {
+        symbolic: crate::tests::symbolic_graph(),
+        pending_machines: vec![],
         schema_version: SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,
@@ -850,3 +869,20 @@ fn child_without_bytecode_has_no_invented_program_counter() {
 
 #[path = "tests/overview.rs"]
 mod overview;
+
+/// Minimal well-typed directory used by snapshots in UI fixtures.
+pub(crate) fn symbolic_graph() -> api::SymbolicGraph {
+    api::SymbolicGraph {
+        nodes: vec![
+            api::Expression::BytesZero,
+            api::Expression::Constant("0x0".into()),
+            api::Expression::View(api::ByteView {
+                state: api::ByteStateRef { node: 0 },
+                offset: api::ExpressionRef { node: 1 },
+                length: api::ExpressionRef { node: 1 },
+            }),
+            api::Expression::SlotsZero,
+            api::Expression::PathTrue,
+        ],
+    }
+}

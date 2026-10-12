@@ -1,12 +1,8 @@
-//! Lossless typed projection of scalar abstract components and symbolic identity.
+//! Lossless scalar numeric/provenance projection. The symbolic pool attaches
+//! report-local expression references without recursively expanding states.
 use evm_abstract::{
     U256,
-    domain::{
-        AbstractValue,
-        identity::Symbol,
-        provenance::Origin,
-        symbolic::{ExprId, ExprKind},
-    },
+    domain::{AbstractValue, identity::Symbol, provenance::Origin},
     world::AddressInput,
 };
 use evm_abstract_protocol as api;
@@ -42,41 +38,6 @@ pub(super) fn address(source: AddressInput) -> api::AddressValue {
         AddressInput::Concrete(address) => api::AddressValue::Concrete(address.to_string()),
         AddressInput::Symbolic(name) => api::AddressValue::Symbolic(symbol(name)),
     }
-}
-fn expression(source: &ExprId) -> api::ExpressionGraph {
-    fn intern(
-        source: &ExprId,
-        nodes: &mut Vec<api::Expression>,
-        indices: &mut std::collections::BTreeMap<ExprId, usize>,
-    ) -> usize {
-        if let Some(index) = indices.get(source) {
-            return *index;
-        }
-        let node = match source.kind() {
-            ExprKind::Constant(value) => api::Expression::Constant(word(*value)),
-            ExprKind::Input(input) => api::Expression::Input(api::InputIdentity {
-                scope: input.scope,
-                symbol: symbol(input.symbol),
-            }),
-            ExprKind::Fresh(id) => api::Expression::Fresh(*id),
-            ExprKind::Operation { opcode, args } => {
-                api::Expression::Operation(api::ExpressionOperation {
-                    opcode: *opcode,
-                    arguments: args
-                        .iter()
-                        .map(|child| intern(child, nodes, indices))
-                        .collect(),
-                })
-            }
-        };
-        let index = nodes.len();
-        nodes.push(node);
-        indices.insert(source.clone(), index);
-        index
-    }
-    let mut nodes = Vec::new();
-    let root = intern(source, &mut nodes, &mut std::collections::BTreeMap::new());
-    api::ExpressionGraph { nodes, root }
 }
 pub(super) fn origin(source: Origin) -> api::ValueOrigin {
     use api::ValueOrigin as O;
@@ -129,6 +90,7 @@ pub(super) fn info(source: &AbstractValue) -> api::ValueInfo {
             .map(|values| values.iter().copied().map(word).collect()),
         known_zero: word(source.known_bits().zero()),
         known_one: word(source.known_bits().one()),
+        nonzero: !source.may_be_zero(),
         unsigned,
         signed,
         congruence,
@@ -145,7 +107,7 @@ pub(super) fn info(source: &AbstractValue) -> api::ValueInfo {
                 scope: identity.scope(),
                 symbol: symbol(identity.symbol()),
             }),
-        expression: source.expression().map(expression),
+        expression: None,
         symbolic_limit: source.symbolic_limit_reached(),
     }
 }

@@ -139,6 +139,10 @@ variant! {
         Worker(WorkerFailure),
         /// RPC request or snapshot failure.
         Rpc(Box<crate::RpcFailure>),
+        /// A report failed schema, graph-sort or pool-reference validation.
+        Report(crate::ReportValidationFailure),
+        /// Bounded report projection failed without changing analysis results.
+        Export(crate::ExportFailure),
         /// SSA invariant failure.
         Ssa(crate::SsaFailure),
     }

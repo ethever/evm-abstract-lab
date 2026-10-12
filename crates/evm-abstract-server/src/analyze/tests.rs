@@ -322,16 +322,25 @@ fn deepest_admitted_expression_has_a_flat_roundtrippable_typed_graph() {
             ExprId::operation(0x01, &[expression, ExprId::constant(U256::ONE)], limits).unwrap();
     }
     assert_eq!(expression.depth(), 128);
-    let projected = value::info(&AbstractValue::top().with_expression(expression));
-    let encoded = serde_json::to_vec(&projected).unwrap();
-    let decoded: api::ValueInfo = serde_json::from_slice(&encoded).unwrap();
+    let control = Control::default();
+    let mut pool = super::symbolic::Pool::new(&control);
+    let projected = pool
+        .value(&AbstractValue::top().with_expression(expression))
+        .unwrap();
+    let encoded = serde_json::to_vec(&(&projected, &pool.graph)).unwrap();
+    assert!(
+        encoded.len() < 40_000,
+        "a shared depth-128 graph must not recursively expand"
+    );
+    let (decoded, graph): (api::ValueInfo, api::SymbolicGraph) =
+        serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, projected);
-    let graph = decoded.expression.unwrap();
-    assert_eq!(graph.root, graph.nodes.len() - 1);
-    for (index, node) in graph.nodes.iter().enumerate() {
-        if let api::Expression::Operation(operation) = node {
-            assert!(operation.arguments.iter().all(|argument| *argument < index));
-        }
+    assert_eq!(graph, pool.graph);
+    let root = decoded.expression.unwrap();
+    assert_eq!(root.node, pool.graph.nodes.len() - 1);
+    pool.graph.validate().unwrap();
+    for (index, node) in pool.graph.nodes.iter().enumerate() {
+        assert!(node.references().iter().all(|child| child.node < index));
     }
 }
 
@@ -435,3 +444,5 @@ fn relational_frontier_projection_preserves_native_causes_and_provider() {
         );
     }
 }
+
+mod symbolic;

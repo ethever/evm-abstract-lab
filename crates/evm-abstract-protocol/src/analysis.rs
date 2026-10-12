@@ -126,6 +126,8 @@ choice! {
         InvalidOpcode,
         /// Conservative memory, environment or state summary.
         OpaqueResult,
+        /// Optional value query failed; conservative complete propagation continues.
+        RelationalPrecisionLost,
         /// Precision exchange reached its configured bound.
         FactExchangeLimited,
     }
@@ -183,6 +185,8 @@ record! {
         pub kind: DiagnosticKind,
         /// Typed precision exchange reason, when this is a fact-exchange diagnostic.
         pub reduction: Option<crate::ReductionReason>,
+        /// Exact optional relational projection reason, independent of a frontier.
+        pub precision: Option<crate::QueryBoundary>,
         /// Original opcode and typed cause, when the category is InvalidOpcode.
         pub invalid_opcode: Option<InvalidOpcodeDiagnostic>,
         /// Detailed explanation, including engine-specific precision limits.
@@ -220,6 +224,10 @@ choice! {
         Creation,
         /// Unsupported semantics.
         UnsupportedOpcode,
+        /// A byte-range representation rejected the original operands.
+        ByteRange,
+        /// Complete state alternative could not be joined.
+        StateJoin,
         /// Other explicit model boundary.
         Model,
     }
@@ -237,6 +245,10 @@ record! {
         pub reason: crate::FrontierDetails,
         /// Full engine boundary detail, including account/slot when available.
         pub detail: String,
+        /// Conditional range boundary before applying effects.
+        pub range: Option<crate::RangeWitness>,
+        /// Index in pending_machines for an unmerged complete incoming state.
+        pub payload: Option<usize>,
     }
 }
 record! {
@@ -274,6 +286,10 @@ record! {
         pub accounts: Vec<crate::AccountState>,
         /// Entry and retained exit payloads keyed by native state.
         pub states: Vec<crate::StateDetails>,
+        /// Shared dependency-ordered state/expression/path DAG.
+        pub symbolic: crate::SymbolicGraph,
+        /// Shared unexpanded pre-effect or incoming machine states.
+        pub pending_machines: Vec<crate::MachineSnapshot>,
         /// Shared typed byte arrays referenced by frames, logs and outcomes.
         pub byte_arrays: Vec<crate::ByteArraySnapshot>,
         /// Shared transaction and rollback stores.

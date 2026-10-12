@@ -8,7 +8,7 @@ use evm_abstract::{
 };
 use evm_abstract_protocol as api;
 
-use super::super::value;
+use super::super::{checkpoint, symbolic::Pool, value};
 
 fn operand(source: &ssa::ValueOperand) -> api::SsaOperand {
     match source {
@@ -37,18 +37,22 @@ pub(super) fn report(
     graph: &WorldAnalysis,
     ir: &ssa::NormalizedSsa,
     control: &Control,
-) -> Result<Vec<api::SsaValue>, ssa::SsaError> {
+    pool: &mut Pool<'_>,
+) -> Result<Vec<api::SsaValue>, api::ApiError> {
     // Group once: real programs contain many definitions, so filtering every
     // fact for every value would make conversion quadratic.
+    pool.charge(ir.value_count())?;
     let mut facts = vec![Vec::new(); ir.value_count()];
     for source in ir.facts() {
-        control.checkpoint().map_err(|_| ssa::SsaError::Cancelled)?;
-        facts[source.value].push(fact(source));
+        checkpoint(control)?;
+        pool.charge(1)?;
+        facts[source.value].push(fact(source, pool)?);
     }
     ir.mappings()
         .iter()
         .map(|mapping| {
-            control.checkpoint().map_err(|_| ssa::SsaError::Cancelled)?;
+            checkpoint(control)?;
+            pool.charge(mapping.dependencies.len().saturating_add(1))?;
             let origin = match mapping.origin {
                 ssa::ValueOrigin::Phi { state, frame, slot } => {
                     api::SsaValueOrigin::Phi(api::SsaPhiOrigin { state, frame, slot })
@@ -103,19 +107,23 @@ pub(super) fn report(
         .collect()
 }
 
-fn fact(source: &ssa::ValueFact) -> api::SsaValueFacts {
-    let value = source.numeric.as_ref().map(|numeric| {
-        let mut info = value::info(&AbstractValue::from_numeric(numeric.clone()));
-        if let Some(provenance) = &source.provenance {
-            info.origins = provenance
-                .origins()
-                .sources()
-                .map(|origins| origins.iter().copied().map(value::origin).collect());
-            info.code_address_role = provenance.is_code_address();
-        }
-        info
-    });
-    api::SsaValueFacts {
+fn fact(source: &ssa::ValueFact, pool: &mut Pool<'_>) -> Result<api::SsaValueFacts, api::ApiError> {
+    let value = source
+        .numeric
+        .as_ref()
+        .map(|numeric| {
+            let mut info = pool.value(&AbstractValue::from_numeric(numeric.clone()))?;
+            if let Some(provenance) = &source.provenance {
+                info.origins = provenance
+                    .origins()
+                    .sources()
+                    .map(|origins| origins.iter().copied().map(value::origin).collect());
+                info.code_address_role = provenance.is_code_address();
+            }
+            Ok(info)
+        })
+        .transpose()?;
+    Ok(api::SsaValueFacts {
         status: match source.validity {
             ssa::FactValidity::Current => api::SsaFactStatus::Current,
             ssa::FactValidity::Uncollected => api::SsaFactStatus::Uncollected,
@@ -135,5 +143,5 @@ fn fact(source: &ssa::ValueFact) -> api::SsaValueFacts {
         },
         constant: source.constant.map(value::word),
         value,
-    }
+    })
 }

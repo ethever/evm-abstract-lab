@@ -60,7 +60,7 @@ fn invalid_opcode_report_preserves_original_bytes_names_causes_and_closure() {
         let mut input = request(bytecode);
         input.fork = fork;
         let report = analyze(input).unwrap();
-        assert_eq!(report.schema_version, 8);
+        assert_eq!(report.schema_version, 9);
         assert_eq!(report.status, AnalysisStatus::Converged);
         assert!(report.frontiers.is_empty());
         let diagnostics: Vec<_> = report
@@ -387,10 +387,27 @@ fn world_payload_keeps_exact_memory_storage_transient_and_terminal_bytes() {
             .any(|slot| slot.slot == "0x0" && slot.value.constants == Some(vec!["0x2a".into()]))
     );
     assert!(
-        account
-            .transient
+        account.transient.is_empty(),
+        "transaction-finalized transient slots are cleared"
+    );
+    assert!(matches!(
+        report.symbolic.nodes[account.transient_root.node],
+        evm_abstract_protocol::Expression::SlotsZero
+    ));
+    assert!(
+        report
+            .states
             .iter()
-            .any(|slot| slot.slot == "0x0" && slot.value.constants == Some(vec!["0x7".into()]))
+            .filter_map(|state| state.exit.as_ref())
+            .any(|machine| {
+                report.stores[machine.store].accounts.iter().any(|account| {
+                    account.address == root.storage_address
+                        && account.transient.iter().any(|slot| {
+                            slot.slot == "0x0" && slot.value.constants == Some(vec!["0x7".into()])
+                        })
+                })
+            }),
+        "the executed write remains visible before transaction finalization"
     );
     assert!(
         report
@@ -456,7 +473,7 @@ fn source_directory_remains_available_when_work_stops_before_root_state() {
 }
 
 #[test]
-fn dense_byte_arrays_share_complete_values_without_losing_cells() {
+fn dense_input_and_lazy_copy_share_complete_values_without_losing_content() {
     let mut input = request("365f5f37365ff3");
     input.environment.calldata =
         evm_abstract_protocol::CalldataInput::Exact(format!("0x{}", "aa".repeat(1024)));
@@ -467,8 +484,8 @@ fn dense_byte_arrays_share_complete_values_without_losing_cells() {
         .filter(|bytes| bytes.cells.len() == 1024)
         .collect();
     assert!(
-        dense.len() >= 2,
-        "calldata and memory retain separate byte arrays"
+        !dense.is_empty(),
+        "the exact input retains every observed byte cell"
     );
     for bytes in dense {
         assert_eq!(
@@ -483,6 +500,54 @@ fn dense_byte_arrays_share_complete_values_without_losing_cells() {
             assert!(value.origins.is_some());
         }
     }
+    let memory = report
+        .byte_arrays
+        .iter()
+        .find(|bytes| bytes.memory && bytes.length.constants == Some(vec!["0x400".into()]))
+        .unwrap();
+    assert!(
+        memory.cells.len() < 1024,
+        "the concrete fast path is a bounded observation cache, not a full copy expansion"
+    );
+    for cell in &memory.cells {
+        let value = &memory.values[cell.value];
+        assert_eq!(value.constants, Some(vec!["0xaa".into()]));
+        assert!(value.origins.is_some());
+    }
+    let evm_abstract_protocol::Expression::View(view) =
+        &report.symbolic.nodes[memory.symbolic.node]
+    else {
+        panic!("memory has a typed view")
+    };
+    let evm_abstract_protocol::Expression::Copy(copy) = &report.symbolic.nodes[view.state.node]
+    else {
+        panic!("memory captures the copy")
+    };
+    assert_eq!(
+        report.symbolic.nodes[copy.destination.node],
+        evm_abstract_protocol::Expression::Constant("0x0".into())
+    );
+    assert_eq!(
+        report.symbolic.nodes[copy.length.node],
+        evm_abstract_protocol::Expression::Constant("0x400".into())
+    );
+    let evm_abstract_protocol::Expression::View(source) = &report.symbolic.nodes[copy.source.node]
+    else {
+        panic!("copy captures the input view")
+    };
+    assert_eq!(
+        report.symbolic.nodes[source.offset.node],
+        evm_abstract_protocol::Expression::Constant("0x0".into())
+    );
+    assert_eq!(
+        report.symbolic.nodes[source.length.node],
+        evm_abstract_protocol::Expression::Constant("0x400".into())
+    );
+    assert_eq!(
+        report.symbolic.nodes[source.state.node],
+        evm_abstract_protocol::Expression::BytesExact(format!("0x{}", "aa".repeat(1024)))
+    );
+    report.validate().unwrap();
     let encoded = serde_json::to_vec(&report).unwrap();
     assert!(
         encoded.len() < 200_000,

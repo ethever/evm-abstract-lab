@@ -14,11 +14,21 @@ pub(super) fn report(
     control: &Control,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     checkpoint(control)?;
+    let mut pools = Pools::new(control);
+    pools.symbolic.charge(
+        native
+            .states()
+            .len()
+            .saturating_add(native.edges().len())
+            .saturating_add(native.diagnostics().len())
+            .saturating_add(native.frontiers().len())
+            .saturating_add(native.outcomes().len())
+            .saturating_add(native.world().accounts().len()),
+    )?;
     control.observer().phase(Phase::BuildingSsa);
-    let ssa = ssa::report(native, control).map_err(ssa::errors::convert)?;
+    let ssa = ssa::report(native, control, &mut pools.symbolic)?;
     checkpoint(control)?;
     control.observer().phase(Phase::Projecting);
-    let mut pools = Pools::new(control);
     let initial = Store::new(native.world());
     let accounts: Vec<api::AccountState> = native
         .world()
@@ -35,6 +45,16 @@ pub(super) fn report(
         let block = state
             .program()
             .and_then(|program| program.blocks().get(state.active().basic_block_index));
+        pools.symbolic.charge(
+            state
+                .active()
+                .jump_history
+                .len()
+                .saturating_add(state.executed_pcs.len())
+                .saturating_add(state.exit_stack.len())
+                .saturating_add(block.map_or(0, |block| block.instructions.len()))
+                .saturating_add(1),
+        )?;
         cfg.push(api::CfgBlock {
             id: state.id,
             basic_block: state.active().basic_block_index,
@@ -105,7 +125,18 @@ pub(super) fn report(
             })
         });
     let disassembly = root_program
-        .map(|id| pools.programs[id].blocks.clone())
+        .map(|id| {
+            let source = &pools.programs[id];
+            pools.symbolic.charge(
+                source
+                    .blocks
+                    .iter()
+                    .map(|block| block.instructions.len() + 1)
+                    .sum(),
+            )?;
+            Ok(source.blocks.clone())
+        })
+        .transpose()?
         .unwrap_or_default();
     let byte_len = root_program.map_or(0, |id| {
         pools.programs[id].bytecode.len().saturating_sub(2) / 2
@@ -137,6 +168,12 @@ pub(super) fn report(
         }
     };
     let environment = &native.entry().environment;
+    pools.symbolic.charge(
+        environment
+            .block_hashes
+            .len()
+            .saturating_add(environment.blob_hashes.hashes.len()),
+    )?;
     let unknown = AbstractValue::top();
     let hashes =
         |table: &std::collections::BTreeMap<evm_abstract::U256, alloy_primitives::B256>| {
@@ -152,25 +189,27 @@ pub(super) fn report(
         to: value::address(environment.to),
         caller: value::address(environment.caller),
         origin: value::address(environment.resolved_origin()),
-        call_value: value::info(&environment.value),
+        call_value: pools.symbolic.value(&environment.value)?,
         calldata: pools.buffer(&environment.calldata)?,
         is_static: environment.is_static,
         gas_upper_bound: match environment.gas {
             GasInput::Unknown => None,
             GasInput::UpperBound(bound) => Some(value::word(bound)),
         },
-        gas_price: value::info(&environment.gas_price),
+        gas_price: pools.symbolic.value(&environment.gas_price)?,
         coinbase: value::address(environment.coinbase),
-        timestamp: value::info(&environment.timestamp),
-        number: value::info(&environment.number),
-        prevrandao: value::info(&environment.prevrandao),
-        gas_limit: value::info(&environment.gas_limit),
-        chain_id: value::info(environment.chain_id.as_ref().unwrap_or(&unknown)),
-        base_fee: value::info(&environment.base_fee),
-        blob_base_fee: value::info(&environment.blob_base_fee),
+        timestamp: pools.symbolic.value(&environment.timestamp)?,
+        number: pools.symbolic.value(&environment.number)?,
+        prevrandao: pools.symbolic.value(&environment.prevrandao)?,
+        gas_limit: pools.symbolic.value(&environment.gas_limit)?,
+        chain_id: pools
+            .symbolic
+            .value(environment.chain_id.as_ref().unwrap_or(&unknown))?,
+        base_fee: pools.symbolic.value(&environment.base_fee)?,
+        blob_base_fee: pools.symbolic.value(&environment.blob_base_fee)?,
         block_hashes: hashes(&environment.block_hashes),
         blob_hashes: hashes(&environment.blob_hashes.hashes),
-        blob_count: value::info(&environment.blob_hashes.length),
+        blob_count: pools.symbolic.value(&environment.blob_hashes.length)?,
     };
     checkpoint(control)?;
     Ok(api::AnalysisReport {
@@ -205,6 +244,7 @@ pub(super) fn report(
                 pc: item.pc,
                 kind: mapping::diagnostic(&item.kind),
                 reduction: mapping::reduction(&item.kind),
+                precision: mapping::precision(&item.kind),
                 invalid_opcode: mapping::invalid_opcode(&item.kind),
                 detail: match &item.kind {
                     analysis::DiagnosticKind::InvalidOpcode(reason) => reason.to_string(),
@@ -215,14 +255,26 @@ pub(super) fn report(
         frontiers: native
             .frontiers()
             .iter()
-            .map(|item| api::Frontier {
-                from: item.from,
-                pc: item.pc,
-                kind: mapping::frontier(&item.reason),
-                reason: mapping::reason(&item.reason),
-                detail: format!("{:?}", item.reason),
+            .map(|item| {
+                Ok(api::Frontier {
+                    from: item.from,
+                    pc: item.pc,
+                    kind: mapping::frontier(&item.reason),
+                    reason: mapping::reason(&item.reason),
+                    detail: format!("{:?}", item.reason),
+                    range: item
+                        .range
+                        .as_ref()
+                        .map(|witness| pools.range(witness))
+                        .transpose()?,
+                    payload: item
+                        .payload
+                        .as_ref()
+                        .map(|payload| pools.pending(payload))
+                        .transpose()?,
+                })
             })
-            .collect(),
+            .collect::<Result<_, api::ApiError>>()?,
         metadata: api::ReportMetadata {
             entry_address: native.entry().address.to_string(),
             root_program,
@@ -232,7 +284,11 @@ pub(super) fn report(
             limits: request.limits.clone(),
             work: native.work() as u64,
             timings: api::AnalysisTimings::default(),
+            export_limits: pools.symbolic.limits,
+            export_usage: pools.symbolic.usage,
         },
+        symbolic: pools.symbolic.graph,
+        pending_machines: pools.pending,
         programs: pools.programs,
         accounts,
         states,
