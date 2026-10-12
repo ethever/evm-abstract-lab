@@ -7,6 +7,7 @@ use std::sync::Arc;
 use egui::{
     Align2, Color32, CornerRadius, FontId, Id, Response, Sense, Stroke, StrokeKind, Style,
     TextStyle, TextWrapMode, Ui, Vec2, WidgetInfo, WidgetText, WidgetType, vec2,
+    widget_style::{Classes, WidgetState},
 };
 
 use crate::{notation, palette};
@@ -18,27 +19,27 @@ mod tests;
 pub(crate) enum Density {
     Regular,
     Compact,
+    Inline,
 }
 
 impl Density {
     pub(crate) fn height(self) -> f32 {
         match self {
-            Self::Regular => 24.0,
+            Self::Regular => 20.0,
             Self::Compact => 18.0,
+            Self::Inline => 15.0,
         }
     }
 
     fn font(self) -> FontId {
-        FontId::proportional(match self {
-            Self::Regular => 14.0,
-            Self::Compact => 12.0,
-        })
+        FontId::proportional(13.0)
     }
 
     fn padding(self) -> Vec2 {
         match self {
-            Self::Regular => vec2(7.0, 3.0),
-            Self::Compact => vec2(6.0, 2.0),
+            Self::Regular => vec2(6.0, 2.0),
+            Self::Compact => vec2(6.0, 1.0),
+            Self::Inline => vec2(6.0, 0.0),
         }
     }
 
@@ -60,52 +61,16 @@ impl Density {
     }
 }
 
-const CORNER_RADIUS: CornerRadius = CornerRadius::same(4);
 const FOCUS_STROKE: Stroke = Stroke {
     width: 2.0,
     color: palette::BLUE,
 };
 
-/// Native controls inherit the workbench's compact baseline. Navigation and
-/// form action rows opt into regular density without enlarging every panel.
+/// Preserve the native baseline; compact and inline rows opt into tighter
+/// padding without reducing the text size of their controls or neighbors.
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn configure(style: &mut Style) {
-    Density::Compact.apply(style);
-    let visuals = &mut style.visuals;
-    for (widget, fill, border) in [
-        (
-            &mut visuals.widgets.noninteractive,
-            palette::PANEL,
-            palette::BORDER,
-        ),
-        (
-            &mut visuals.widgets.inactive,
-            palette::RAISED,
-            palette::BORDER,
-        ),
-        (
-            &mut visuals.widgets.hovered,
-            palette::CONTROL_HOVER,
-            palette::MUTED,
-        ),
-        (
-            &mut visuals.widgets.active,
-            palette::CONTROL_PRESSED,
-            palette::ACCENT,
-        ),
-        (
-            &mut visuals.widgets.open,
-            palette::SELECTED,
-            palette::ACCENT,
-        ),
-    ] {
-        widget.bg_fill = fill;
-        widget.weak_bg_fill = fill;
-        widget.bg_stroke = Stroke::new(1.0, border);
-        widget.fg_stroke = Stroke::new(1.0, palette::TEXT);
-        widget.corner_radius = CORNER_RADIUS;
-        widget.expansion = 0.0;
-    }
+    Density::Regular.apply(style);
 }
 
 pub(crate) fn action(ui: &mut Ui, label: impl Into<WidgetText>, density: Density) -> Response {
@@ -128,8 +93,7 @@ pub(crate) fn menu_button(
     density: Density,
     contents: impl FnOnce(&mut Ui),
 ) -> Response {
-    let open = egui::Popup::is_id_open(ui.ctx(), ui.next_auto_id().with("popup"));
-    let response = show(ui, None, Kind::Menu(open), label.into(), density);
+    let response = show(ui, None, Kind::Menu, label.into(), density);
     let _ = egui::Popup::menu(&response).show(contents);
     response
 }
@@ -187,22 +151,19 @@ pub(crate) fn tile_tab(
 #[derive(Clone, Copy)]
 enum Kind {
     Action,
-    Menu(bool),
+    Menu,
     Toggle(bool),
     Tab(bool),
 }
 
 impl Kind {
     fn selected(self) -> bool {
-        matches!(
-            self,
-            Self::Menu(true) | Self::Toggle(true) | Self::Tab(true)
-        )
+        matches!(self, Self::Toggle(true) | Self::Tab(true))
     }
 
     fn info(self, enabled: bool, label: &str) -> WidgetInfo {
         match self {
-            Self::Action | Self::Menu(_) => WidgetInfo::labeled(WidgetType::Button, enabled, label),
+            Self::Action | Self::Menu => WidgetInfo::labeled(WidgetType::Button, enabled, label),
             Self::Toggle(selected) => {
                 WidgetInfo::selected(WidgetType::Button, enabled, selected, label)
             }
@@ -217,47 +178,31 @@ struct Appearance {
     fill: Color32,
     border: Stroke,
     text: Color32,
+    corner_radius: CornerRadius,
 }
 
-fn appearance(response: &Response, selected: bool) -> Appearance {
-    if !response.enabled() {
-        return Appearance {
-            fill: palette::PANEL,
-            border: Stroke::new(1.0, palette::BORDER),
-            text: palette::MUTED,
-        };
-    }
-    let pressed = response.is_pointer_button_down_on();
-    let hovered = response.hovered() || response.highlighted();
+fn appearance(ui: &Ui, response: &Response, kind: Kind) -> Appearance {
+    let state = response.widget_state();
+    let native = ui.style().button_style(&Classes::default(), state);
+    let framed =
+        !matches!(kind, Kind::Toggle(false) | Kind::Tab(false)) || state != WidgetState::Inactive;
     Appearance {
-        fill: if pressed {
-            palette::CONTROL_PRESSED
-        } else if hovered {
-            if selected {
-                palette::SELECTED_HOVER
-            } else {
-                palette::CONTROL_HOVER
-            }
-        } else if selected {
-            palette::SELECTED
+        // Selection changes only the fill. Native text and interaction strokes
+        // stay independent of the separate keyboard focus ring.
+        fill: if kind.selected() {
+            ui.visuals().selection.bg_fill
+        } else if framed {
+            native.frame.fill
         } else {
-            palette::RAISED
+            Color32::TRANSPARENT
         },
-        border: Stroke::new(
-            1.0,
-            if selected || pressed {
-                palette::ACCENT
-            } else if hovered {
-                palette::MUTED
-            } else {
-                palette::BORDER
-            },
-        ),
-        text: if selected {
-            palette::ACCENT
+        border: if framed {
+            native.frame.stroke
         } else {
-            palette::TEXT
+            Stroke::NONE
         },
+        text: native.text_style.color,
+        corner_radius: native.frame.corner_radius,
     }
 }
 
@@ -278,10 +223,10 @@ fn show(ui: &mut Ui, id: Option<Id>, kind: Kind, label: WidgetText, density: Den
     let response = ui.interact(rect, id.unwrap_or(auto_id), Sense::click());
     response.widget_info(|| kind.info(ui.is_enabled(), galley.text()));
     if ui.is_rect_visible(rect) {
-        let appearance = appearance(&response, kind.selected());
+        let appearance = appearance(ui, &response, kind);
         ui.painter().rect(
             rect,
-            CORNER_RADIUS,
+            appearance.corner_radius,
             appearance.fill,
             appearance.border,
             StrokeKind::Inside,
@@ -291,7 +236,7 @@ fn show(ui: &mut Ui, id: Option<Id>, kind: Kind, label: WidgetText, density: Den
             // so it remains visible even when the tab bar clips its edges.
             ui.painter().rect_stroke(
                 rect.shrink(2.0),
-                CORNER_RADIUS,
+                appearance.corner_radius,
                 FOCUS_STROKE,
                 StrokeKind::Inside,
             );

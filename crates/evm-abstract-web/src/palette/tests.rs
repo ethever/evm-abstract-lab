@@ -1,13 +1,40 @@
-use egui::{Context, FontDefinitions, FontFamily, FontId, Pos2, RawInput, Vec2};
+use egui::{
+    Context, FontDefinitions, FontFamily, FontId, Pos2, RawInput, Stroke, TextStyle, Vec2, Visuals,
+};
 
 use super::{
-    ACCENT, MUTED, PANEL, TERMINAL_EXCEPTION, TERMINAL_NORMAL, TERMINAL_REVERT, TEXT, WARNING,
-    configure,
+    ACCENT, BORDER, MUTED, PANEL, RAISED, SELECTED, TERMINAL_EXCEPTION, TERMINAL_NORMAL,
+    TERMINAL_REVERT, TEXT, WARNING, configure,
 };
 
 fn initialize(ctx: &Context) {
     let mut output = ctx.run_ui(RawInput::default(), |_| {});
     output.textures_delta.clear();
+}
+
+#[test]
+fn native_widgets_keep_dark_defaults_except_the_original_palette_overrides() {
+    let ctx = Context::default();
+    let original_text_styles = ctx.global_style().text_styles.clone();
+    configure(&ctx);
+    let style = ctx.global_style();
+    let mut expected = Visuals::dark().widgets;
+    expected.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
+    expected.inactive.weak_bg_fill = RAISED;
+    expected.hovered.weak_bg_fill = SELECTED;
+    assert_eq!(style.visuals.widgets, expected);
+    assert_eq!(style.spacing.interact_size.y, 20.0);
+    assert_eq!(style.spacing.button_padding, egui::vec2(6.0, 2.0));
+    assert_eq!(
+        style.text_styles[&TextStyle::Button],
+        FontId::proportional(13.0)
+    );
+    for text_style in [TextStyle::Body, TextStyle::Monospace, TextStyle::Small] {
+        assert_eq!(
+            style.text_styles[&text_style],
+            original_text_styles[&text_style]
+        );
+    }
 }
 
 #[test]
