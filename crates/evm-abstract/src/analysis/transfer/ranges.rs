@@ -22,6 +22,20 @@ struct Partition {
     excluded: Option<MachinePayload>,
 }
 
+struct Constrained {
+    payload: Option<MachinePayload>,
+    precision_loss: Option<QueryReason>,
+}
+
+impl Constrained {
+    fn exact(payload: Option<MachinePayload>) -> Self {
+        Self {
+            payload,
+            precision_loss: None,
+        }
+    }
+}
+
 /// Keep excluded inputs before memory changes. A solver UNKNOWN may retain
 /// both guarded branches; inability to retain the guard stops this instruction.
 pub(super) fn memory(
@@ -152,7 +166,19 @@ fn partition(
         }
         let allowed = constrained(&input, condition, true, context)?;
         let excluded = constrained(&input, condition, false, context)?;
-        Ok::<_, FrontierReason>(Partition { allowed, excluded })
+        for reason in [allowed.precision_loss, excluded.precision_loss]
+            .into_iter()
+            .flatten()
+        {
+            result.diagnostics.push((
+                pc,
+                crate::analysis::DiagnosticKind::RelationalPrecisionLost(reason),
+            ));
+        }
+        Ok::<_, FrontierReason>(Partition {
+            allowed: allowed.payload,
+            excluded: excluded.payload,
+        })
     })();
     match checked {
         Ok(partition) => Some(partition),
@@ -176,17 +202,17 @@ fn constrained(
     condition: &AbstractValue,
     nonzero: bool,
     context: &mut TransferContext<'_>,
-) -> Result<Option<MachinePayload>, FrontierReason> {
+) -> Result<Constrained, FrontierReason> {
     if !(if nonzero {
         condition.may_be_nonzero()
     } else {
         condition.may_be_zero()
     }) {
-        return Ok(None);
+        return Ok(Constrained::exact(None));
     }
     let mut payload = input.clone();
     if condition.singleton().is_some() {
-        return Ok(Some(payload));
+        return Ok(Constrained::exact(Some(payload)));
     }
     let expression = condition
         .symbolic_expression()
@@ -201,8 +227,8 @@ fn constrained(
         return Err(FrontierReason::Work);
     }
     match payload.relations.assume(&expression, nonzero, &limits) {
-        CheckResult::Unsat => Ok(None),
-        CheckResult::Sat => Ok(Some(payload)),
+        CheckResult::Unsat => Ok(Constrained::exact(None)),
+        CheckResult::Sat => Ok(Constrained::exact(Some(payload))),
         CheckResult::Unknown(
             reason @ (QueryReason::Disabled
             | QueryReason::Configuration
@@ -212,7 +238,10 @@ fn constrained(
         ) => Err(FrontierReason::Relations(reason)),
         // These failures occur after retaining the assumption. The two guarded
         // domains still cover the input without treating UNKNOWN as UNSAT.
-        CheckResult::Unknown(_) => Ok(Some(payload)),
+        CheckResult::Unknown(reason) => Ok(Constrained {
+            payload: Some(payload),
+            precision_loss: Some(reason),
+        }),
     }
 }
 
