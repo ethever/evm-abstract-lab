@@ -813,7 +813,7 @@ def details_graph_snapshot(page, canvas, output, name):
 
 
 def ssa_details_toggle(page, canvas, mode):
-    canvas.click(position={"x":page.viewport_size["width"]-45,"y":40})
+    canvas.click(position={"x":page.viewport_size["width"]-45,"y":32})
     page.mouse.move(2,2);settle_gesture(page)
     expect(page.locator("#analysis-status")).to_contain_text(f"SSA details: {mode}")
 
@@ -1382,9 +1382,9 @@ def select_inspector_tab(page, canvas, tab: str, y: float = 778):
     # Compact shared controls, measured in the packaged 1440x1000 WASM app.
     # Callers that resize the inspector pass its measured toolbar center.
     positions = {
-        "Frame": 29, "Stack": 78, "SSA value": 134, "Memory": 199,
-        "Storage": 259, "Transient": 322, "Calldata": 384, "Returndata": 454,
-        "Outcomes": 530, "Acquisition": 605, "Environment": 685, "Diagnostics": 767,
+        "Frame": 30, "Stack": 80, "SSA value": 141, "Memory": 210,
+        "Storage": 274, "Transient": 341, "Calldata": 408, "Returndata": 481,
+        "Outcomes": 561, "Acquisition": 640, "Environment": 727, "Diagnostics": 814,
     }
     canvas.click(position={"x": positions[tab], "y": y})
     expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: {tab}")
@@ -2420,12 +2420,12 @@ def open_rpc_input(page, canvas, *, from_bytecode=False):
 
 
 def select_rpc_provider(page, canvas, index: int, output: Path, name: str):
-    # Real packaged 1440x1000 RPC modal: the regular shared controls make
-    # popup rows 24 points high with a 27-point stride.
-    canvas.click(position={"x": 600, "y": 410})
+    # Real packaged 1440x1000 RPC modal: regular controls retain the
+    # original 20-point rows and 23-point stride.
+    canvas.click(position={"x": 600, "y": 402})
     rendered_frame(page)
     canvas.screenshot(path=str(output / f"{name}-providers.png"))
-    canvas.click(position={"x": 460, "y": 437 + index * 27})
+    canvas.click(position={"x": 460, "y": 428 + index * 23})
     settle_gesture(page)
 
 
@@ -2438,7 +2438,7 @@ def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, 
     provider = providers[provider_index]
     expect(page.locator("#analysis-status")).to_contain_text(
         f"RPC provider: {provider['name']} ({provider['endpoint']})")
-    canvas.click(position={"x": 600, "y": 453})
+    canvas.click(position={"x": 600, "y": 448})
     page.keyboard.press("Control+A")
     page.keyboard.type(rpc.root_address, delay=3)
     rendered_frame(page)
@@ -2635,14 +2635,14 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     page.on("request", lambda request: submitted.append(request.post_data_json)
             if request.method == "POST" and request.url.endswith("/api/tasks") else None)
     results = {"automatic_entry": baseline["input"], "selected_addresses": [], "snapshot_pins": {}}
-    for ordinal, (label, address, menu_y) in enumerate([("weth", WETH_ENTRY, 498), ("usdt", USDT_ENTRY, 525), ("usdc", USDC_ENTRY, 472)]):
+    for ordinal, (label, address, menu_y) in enumerate([("weth", WETH_ENTRY, 487), ("usdt", USDT_ENTRY, 510), ("usdc", USDC_ENTRY, 464)]):
         open_rpc_input(page, canvas)
         if ordinal == 0:
             # The entry choice must preserve an independently chosen provider.
             select_rpc_provider(page, canvas, 1, output, "entry-weth")
             expect(page.locator("#analysis-status")).to_contain_text(
                 f"RPC provider: {providers[1]['name']} ({providers[1]['endpoint']})")
-        canvas.click(position={"x": 454, "y": 431})
+        canvas.click(position={"x": 454, "y": 425})
         rendered_frame(page)
         canvas.screenshot(path=str(output / f"entry-{label}-options.png"))
         canvas.click(position={"x": 460, "y": menu_y})
@@ -2665,7 +2665,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
         assert reply.json()["result"]["Ok"]["metadata"]["entry_address"].lower() == address.lower()
         results["selected_addresses"].append(address)
     open_rpc_input(page, canvas)
-    canvas.click(position={"x": 600, "y": 453})
+    canvas.click(position={"x": 600, "y": 448})
     page.keyboard.press("Control+A")
     page.keyboard.type(CUSTOM_ENTRY, delay=3)
     rendered_frame(page)

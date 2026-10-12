@@ -436,11 +436,12 @@ fn modal_editor_is_visible_and_bounded_with_shared_control_fonts() {
         }
     }
     assert_eq!(ctx.zoom_factor(), 1.0);
-    let mut expected = egui::Style::default().text_styles;
-    // Only the shared button font changes; editor, body and heading fonts
-    // retain the desktop defaults instead of scaling the entire interface.
-    expected.insert(egui::TextStyle::Button, egui::FontId::proportional(12.0));
-    assert_eq!(ctx.global_style().text_styles, expected);
+    // Compact controls reduce padding, preserving the original desktop fonts
+    // in both the editor and the surrounding workbench.
+    assert_eq!(
+        ctx.global_style().text_styles,
+        egui::Style::default().text_styles
+    );
 }
 
 #[test]
