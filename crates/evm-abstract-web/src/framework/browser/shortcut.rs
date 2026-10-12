@@ -1,39 +1,84 @@
-//! Synchronous ownership of one canvas shortcut. eframe 0.36.2 does not cancel
-//! Ctrl+J's downloads action. Capturing it here cancels that action before DOM
-//! dispatch returns; accepted presses are delivered once to the workspace.
+//! Synchronous shortcut ownership on the canvas and its exact eframe text agent.
+//! eframe 0.36.2 does not cancel Ctrl+J's downloads action. Capturing the chord
+//! cancels that action before DOM dispatch returns and delivers each press once.
 
-use std::{cell::Cell, rc::Rc};
+mod state;
+
+use std::rc::Rc;
 
 use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
-use web_sys::{Event, HtmlCanvasElement, KeyboardEvent};
+use web_sys::{Element, Event, HtmlCanvasElement, HtmlInputElement, KeyboardEvent};
 
 use crate::app::{inspector_chord, inspector_shortcut_allowed};
 
-/// The browser app owns these listeners and removes them before dropping their
-/// Rust closures. No listener owns the app or survives its destruction.
+use state::{State, Target};
+
+/// The app owns both listener sets; neither closures nor delivery state own the
+/// app. Dropping either set removes every callback before releasing its closure.
 pub(super) struct ShortcutBridge {
-    canvas: HtmlCanvasElement,
-    enabled: Rc<Cell<bool>>,
-    pending: Rc<Cell<usize>>,
+    state: Rc<State>,
+    ctx: egui::Context,
+    _canvas: Listeners,
+    text_agent: Option<Listeners>,
+}
+
+impl ShortcutBridge {
+    pub(super) fn install(canvas: HtmlCanvasElement, ctx: egui::Context) -> Result<Self, JsValue> {
+        let state = Rc::new(State::default());
+        let listeners = Listeners::install(
+            canvas.into(),
+            Target::Canvas,
+            ctx.clone(),
+            Rc::clone(&state),
+        )?;
+        Ok(Self {
+            state,
+            ctx,
+            _canvas: listeners,
+            text_agent: None,
+        })
+    }
+
+    pub(super) fn attach_text_agent(&mut self, agent: HtmlInputElement) -> Result<(), JsValue> {
+        self.text_agent = Some(Listeners::install(
+            agent.into(),
+            Target::TextAgent,
+            self.ctx.clone(),
+            Rc::clone(&self.state),
+        )?);
+        Ok(())
+    }
+
+    pub(super) fn set_available(&self, available: bool) {
+        self.state.set_available(available);
+    }
+
+    pub(super) fn take_presses(&self) -> usize {
+        self.state.take_presses()
+    }
+}
+
+struct Listeners {
+    element: Element,
     keydown: Closure<dyn FnMut(KeyboardEvent)>,
     composition_start: Closure<dyn FnMut(Event)>,
     composition_end: Closure<dyn FnMut(Event)>,
     blur: Closure<dyn FnMut(Event)>,
 }
 
-impl ShortcutBridge {
-    pub(super) fn install(canvas: HtmlCanvasElement, ctx: egui::Context) -> Result<Self, JsValue> {
-        let document = canvas
+impl Listeners {
+    fn install(
+        element: Element,
+        target: Target,
+        ctx: egui::Context,
+        state: Rc<State>,
+    ) -> Result<Self, JsValue> {
+        let document = element
             .owner_document()
             .ok_or_else(|| JsValue::from_str("The workspace document is unavailable"))?;
-        let enabled = Rc::new(Cell::new(false));
-        let pending = Rc::new(Cell::new(0_usize));
-        let composing = Rc::new(Cell::new(false));
         let keydown = {
-            let enabled = Rc::clone(&enabled);
-            let pending = Rc::clone(&pending);
-            let composing = Rc::clone(&composing);
-            let canvas = canvas.clone();
+            let element = element.clone();
+            let state = Rc::clone(&state);
             Closure::new(move |event: KeyboardEvent| {
                 let modifiers = egui::Modifiers {
                     ctrl: event.ctrl_key(),
@@ -48,103 +93,95 @@ impl ShortcutBridge {
                 };
                 if !event.key().eq_ignore_ascii_case("j")
                     || !inspector_chord(modifiers, ctx.os().is_mac())
-                    || event.is_composing()
-                    || composing.get()
                     || event.default_prevented()
-                    || document.hidden()
-                    || !document
-                        .active_element()
-                        .is_some_and(|active| active == **canvas)
-                    || !inspector_shortcut_allowed(&ctx, enabled.get())
+                    || !inspector_shortcut_allowed(&ctx, true)
                 {
                     return;
                 }
+                let focused = !document.hidden()
+                    && document
+                        .active_element()
+                        .is_some_and(|active| active == element);
+                if !state.keydown(target, focused, event.is_composing(), event.repeat()) {
+                    return;
+                }
                 event.prevent_default();
-                // eframe would otherwise queue the same key too. Only this
-                // owned chord is stopped; editing and unrelated keys proceed.
+                // Both owned targets use capture; stopping here keeps eframe's
+                // bubble listener from delivering the same chord a second time.
                 event.stop_immediate_propagation();
                 if !event.repeat() {
-                    pending.set(pending.get().saturating_add(1));
                     ctx.request_repaint();
                 }
             })
         };
         let composition_start = {
-            let composing = Rc::clone(&composing);
-            Closure::new(move |_: Event| composing.set(true))
+            let state = Rc::clone(&state);
+            Closure::new(move |_: Event| state.composition(target, true))
         };
         let composition_end = {
-            let composing = Rc::clone(&composing);
-            Closure::new(move |_: Event| composing.set(false))
+            let state = Rc::clone(&state);
+            Closure::new(move |_: Event| state.composition(target, false))
         };
-        let blur = {
-            let pending = Rc::clone(&pending);
-            Closure::new(move |_: Event| {
-                composing.set(false);
-                pending.set(0);
-            })
-        };
-        let bridge = Self {
-            canvas,
-            enabled,
-            pending,
+        let blur = Closure::new(move |_: Event| state.blur(target));
+        let listeners = Self {
+            element,
             keydown,
             composition_start,
             composition_end,
             blur,
         };
-        // Construct the owner before registering. Drop also cleans up a
-        // partially installed bridge if a later registration fails.
-        bridge.canvas.add_event_listener_with_callback_and_bool(
-            "keydown",
-            bridge.keydown.as_ref().unchecked_ref(),
-            true,
-        )?;
-        bridge.canvas.add_event_listener_with_callback_and_bool(
-            "compositionstart",
-            bridge.composition_start.as_ref().unchecked_ref(),
-            true,
-        )?;
-        bridge.canvas.add_event_listener_with_callback_and_bool(
-            "compositionend",
-            bridge.composition_end.as_ref().unchecked_ref(),
-            true,
-        )?;
-        bridge.canvas.add_event_listener_with_callback_and_bool(
-            "blur",
-            bridge.blur.as_ref().unchecked_ref(),
-            true,
-        )?;
-        Ok(bridge)
-    }
-
-    pub(super) fn set_available(&self, available: bool) {
-        self.enabled.set(available);
-    }
-
-    pub(super) fn take_presses(&self) -> usize {
-        self.pending.replace(0)
+        // The owner exists before registration, so Drop also removes callbacks
+        // already registered when any later registration fails.
+        listeners
+            .element
+            .add_event_listener_with_callback_and_bool(
+                "keydown",
+                listeners.keydown.as_ref().unchecked_ref(),
+                true,
+            )?;
+        listeners
+            .element
+            .add_event_listener_with_callback_and_bool(
+                "compositionstart",
+                listeners.composition_start.as_ref().unchecked_ref(),
+                true,
+            )?;
+        listeners
+            .element
+            .add_event_listener_with_callback_and_bool(
+                "compositionend",
+                listeners.composition_end.as_ref().unchecked_ref(),
+                true,
+            )?;
+        listeners
+            .element
+            .add_event_listener_with_callback_and_bool(
+                "blur",
+                listeners.blur.as_ref().unchecked_ref(),
+                true,
+            )?;
+        Ok(listeners)
     }
 }
 
-impl Drop for ShortcutBridge {
+impl Drop for Listeners {
     fn drop(&mut self) {
-        let _ = self.canvas.remove_event_listener_with_callback_and_bool(
+        let _ = self.element.remove_event_listener_with_callback_and_bool(
             "keydown",
             self.keydown.as_ref().unchecked_ref(),
             true,
         );
-        let _ = self.canvas.remove_event_listener_with_callback_and_bool(
+        let _ = self.element.remove_event_listener_with_callback_and_bool(
             "compositionstart",
             self.composition_start.as_ref().unchecked_ref(),
             true,
         );
-        let _ = self.canvas.remove_event_listener_with_callback_and_bool(
+        let _ = self.element.remove_event_listener_with_callback_and_bool(
             "compositionend",
             self.composition_end.as_ref().unchecked_ref(),
             true,
         );
-        let _ = self.canvas.remove_event_listener_with_callback_and_bool(
+        let _ = self.element.remove_event_listener_with_callback_and_bool(
             "blur",
             self.blur.as_ref().unchecked_ref(),
             true,

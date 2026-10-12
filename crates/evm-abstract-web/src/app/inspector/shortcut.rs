@@ -1,5 +1,6 @@
 //! Exact Inspect chord ownership shared by native egui input and the browser
-//! event bridge. Text editing, popups, modals and IME retain keyboard priority.
+//! event bridge. Ordinary text edits share the workbench chord; popups, modals
+//! and IME retain keyboard priority.
 
 use egui::{Context, Modifiers};
 #[cfg(not(target_arch = "wasm32"))]
@@ -20,7 +21,6 @@ pub(crate) fn matches(modifiers: Modifiers, mac: bool) -> bool {
 
 pub(crate) fn allowed(ctx: &Context, available: bool) -> bool {
     available
-        && !ctx.text_edit_focused()
         && !egui::Popup::is_any_open(ctx)
         && ctx.memory(|memory| memory.top_modal_layer().is_none())
 }
