@@ -2,6 +2,8 @@
 //! futures necessarily use dynamic dispatch here; the workspace and painter
 //! widgets remain statically dispatched and contain no transport logic.
 
+mod shortcut;
+
 use std::{
     cell::Cell,
     rc::Rc,
@@ -47,11 +49,15 @@ pub async fn start(canvas_id: &str) -> Result<(), JsValue> {
     };
     eframe::WebRunner::new()
         .start(
-            canvas,
+            canvas.clone(),
             options,
-            Box::new(|creation| {
+            Box::new(move |creation| {
                 crate::palette::configure(&creation.egui_ctx);
-                Ok(Box::new(BrowserApp::new()))
+                let shortcuts =
+                    shortcut::ShortcutBridge::install(canvas, creation.egui_ctx.clone()).map_err(
+                        |error| std::io::Error::other(format!("Shortcut setup failed: {error:?}")),
+                    )?;
+                Ok(Box::new(BrowserApp::new(shortcuts)))
             }),
         )
         .await
@@ -63,10 +69,11 @@ struct BrowserApp {
     sender: Sender<Message>,
     initial_request: bool,
     last_status: String,
+    shortcuts: shortcut::ShortcutBridge,
 }
 
 impl BrowserApp {
-    fn new() -> Self {
+    fn new(shortcuts: shortcut::ShortcutBridge) -> Self {
         let (sender, results) = mpsc::channel();
         Self {
             workspace: Workspace::default(),
@@ -74,6 +81,7 @@ impl BrowserApp {
             sender,
             initial_request: true,
             last_status: String::new(),
+            shortcuts,
         }
     }
 }
@@ -87,7 +95,12 @@ impl eframe::App for BrowserApp {
         while let Ok(result) = self.results.try_recv() {
             self.workspace.receive_message(result);
         }
+        if self.shortcuts.take_presses() % 2 == 1 {
+            self.workspace.toggle_inspector();
+        }
         let mut request = self.workspace.show(ui);
+        self.shortcuts
+            .set_available(self.workspace.inspector_shortcut_available());
         if self.initial_request {
             self.initial_request = false;
             request = request.or_else(|| self.workspace.startup_command());

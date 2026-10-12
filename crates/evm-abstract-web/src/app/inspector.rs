@@ -1,10 +1,12 @@
-//! Bounded world inspector. Entry, historical exit and finalized outcomes are
+//! Resizable world inspector. Entry, historical exit and finalized outcomes are
 //! explicit distinct observations, never an invented per-instruction trace.
 
 mod buffers;
 mod context;
 mod errors;
 mod evidence;
+mod panel;
+pub(crate) mod shortcut;
 mod ssa;
 mod stores;
 mod value;
@@ -65,6 +67,8 @@ enum Point {
 }
 
 pub(super) struct Inspector {
+    // Visibility is orthogonal to docked/maximized presentation so reopening
+    // restores the last mode. Chrome may toggle it without resetting content.
     pub(super) expanded: bool,
     pub(super) tab: Tab,
     point: Point,
@@ -73,6 +77,9 @@ pub(super) struct Inspector {
     last_value: Option<usize>,
     outcome: usize,
     rollback: bool,
+    panel: panel::Panel,
+    #[cfg(not(target_arch = "wasm32"))]
+    shortcut: shortcut::Shortcut,
 }
 impl Default for Inspector {
     fn default() -> Self {
@@ -85,11 +92,37 @@ impl Default for Inspector {
             last_value: None,
             outcome: 0,
             rollback: false,
+            panel: panel::Panel::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            shortcut: shortcut::Shortcut::default(),
         }
     }
 }
 
 impl Inspector {
+    pub(super) fn maximized(&self) -> bool {
+        self.expanded && self.panel.maximized()
+    }
+
+    pub(super) fn docked_panel(&self, ui: &Ui, workspace_height: f32) -> egui::Panel {
+        self.panel.docked(ui, workspace_height)
+    }
+
+    pub(super) fn remember_resize(&mut self, ui: &Ui, rect: egui::Rect) {
+        self.panel.remember_resize(ui, rect);
+    }
+
+    pub(super) fn visibility_hint(&self, ctx: &egui::Context) -> &'static str {
+        shortcut::hint(ctx)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn handle_shortcut(&mut self, ctx: &egui::Context, available: bool) {
+        if self.shortcut.consume(ctx, available) % 2 == 1 {
+            self.expanded = !self.expanded;
+        }
+    }
+
     pub(super) fn accessible_summary(
         &self,
         report: &AnalysisReport,
@@ -98,8 +131,13 @@ impl Inspector {
         if !self.expanded {
             return format!("Inspector hidden · {}", self.tab.label());
         }
+        let mode = if self.panel.maximized() {
+            " · Maximized"
+        } else {
+            ""
+        };
         if self.tab == Tab::SsaValue {
-            return ssa::summary(report, selection);
+            return format!("{}{mode}", ssa::summary(report, selection));
         }
         let machine = self.machine(report, selection);
         let boundary = match self.point {
@@ -125,7 +163,7 @@ impl Inspector {
             ""
         };
         format!(
-            "Inspector: {} · {boundary} · {frame}{store}",
+            "Inspector: {} · {boundary} · {frame}{store}{mode}",
             self.tab.label()
         )
     }
@@ -172,6 +210,27 @@ impl Inspector {
         selection: &mut Selection,
         account: Option<&str>,
     ) {
+        // A single inspector moves between the dock and the result workspace.
+        // Give its tabs, choosers and scroll areas the same identity in both.
+        let rect = ui.available_rect_before_wrap();
+        let mut contents = ui.new_child(
+            egui::UiBuilder::new()
+                .id(egui::Id::new("inspector_contents"))
+                .max_rect(rect),
+        );
+        contents.set_clip_rect(contents.clip_rect().intersect(rect));
+        self.contents(&mut contents, report, selection, account);
+        // Content minimums must not enlarge the user's chosen panel height.
+        ui.advance_cursor_after_rect(rect);
+    }
+
+    fn contents(
+        &mut self,
+        ui: &mut Ui,
+        report: &AnalysisReport,
+        selection: &mut Selection,
+        account: Option<&str>,
+    ) {
         if self.last_state != selection.state {
             self.frame = None;
             self.point = Point::Entry;
@@ -195,8 +254,28 @@ impl Inspector {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("Hide").clicked() {
+                if ui
+                    .small_button("Hide")
+                    .on_hover_text(self.visibility_hint(ui.ctx()))
+                    .clicked()
+                {
                     self.expanded = false;
+                }
+                if ui
+                    .small_button(if self.panel.maximized() {
+                        "Restore"
+                    } else {
+                        "Maximize"
+                    })
+                    .on_hover_text(if self.panel.maximized() {
+                        "Restore the previous Inspect height"
+                    } else {
+                        "Use the result workspace for Inspect"
+                    })
+                    .clicked()
+                {
+                    self.panel.toggle_maximized();
+                    ui.ctx().request_repaint();
                 }
             });
         });
@@ -388,6 +467,7 @@ impl Inspector {
 fn scroll(ui: &mut Ui, id: &str, contents: impl FnOnce(&mut Ui)) {
     egui::ScrollArea::both()
         .id_salt(id)
+        .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show(ui, contents);
 }
