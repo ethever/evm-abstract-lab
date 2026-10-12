@@ -27,6 +27,19 @@ pub enum SnapshotIdentity {
 }
 
 impl World {
+    /// Source identity survives acquisition of additional cells in this snapshot.
+    pub(crate) fn storage_source_token(&self) -> crate::domain::symbolic::ExprId {
+        if matches!(self.identity, SnapshotIdentity::Offline { .. }) {
+            return self.storage_source.clone();
+        }
+        let mut bytes = b"evm-abstract-storage-source-v1".to_vec();
+        bytes.extend(
+            serde_json::to_vec(&(self.fork, &self.identity))
+                .expect("typed snapshot identity serializes"),
+        );
+        crate::domain::symbolic::ExprId::constant(U256::from_be_bytes(keccak256(bytes).0))
+    }
+
     /// Block observations acquired atomically with this RPC snapshot.
     pub fn snapshot_environment(&self) -> Option<&SnapshotEnvironment> {
         self.snapshot_environment.as_ref()
@@ -63,6 +76,7 @@ impl World {
             chain_id,
             block_hash,
         };
+        world.storage_source = world.storage_source_token();
         world
     }
 

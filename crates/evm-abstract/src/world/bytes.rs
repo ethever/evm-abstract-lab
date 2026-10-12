@@ -1,358 +1,345 @@
-//! Sparse abstract byte sequences. Missing bytes and missing length are separate.
+//! EVM byte sequences backed by immutable symbolic states.
+//!
+//! The root is the content model. Sparse facts and operand summaries provide
+//! numeric upper bounds and bounded presentation; COPY never expands its range.
 
-use crate::domain::{AbstractValue, Domain};
-use alloy_primitives::U256;
+pub(super) mod numeric;
+mod ranges;
+#[cfg(test)]
+mod tests;
+mod traversal;
+
+use crate::domain::{
+    AbstractValue, Domain,
+    symbolic::{
+        ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprLimits, SourceId, StateError,
+    },
+};
+use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use thiserror::Error;
 
-/// Sparse bytes plus an abstract length. Reads beyond a possible length are zero.
-///
-/// Memory starts with zero bytes and rounds expansion to 32-byte words. Calldata
-/// and returndata carry their actual byte lengths. Every allocating operation
-/// checks its explicit bound before iterating or allocating a range.
+/// A finite input/view or zero-initialized memory with a separate logical MSIZE.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ByteArray {
     length: AbstractValue,
     bytes: BTreeMap<usize, AbstractValue>,
     default: AbstractValue,
     memory: bool,
+    root: ByteStateId,
+    // Must facts: each range was already included in this allocation on every
+    // represented path. These normalize repeated symbolic expansion safely.
+    #[serde(skip)]
+    allocations: BTreeSet<(ExprId, ExprId)>,
+    #[serde(skip)]
+    operands: BTreeMap<ExprId, AbstractValue>,
+    #[serde(skip)]
+    failure: Option<RangeError>,
 }
 
-/// A byte range whose concrete footprint cannot fit the caller's model budget.
+/// A logical range or state operation cannot be represented within its policy.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum RangeError {
-    /// An unbounded length cannot be expanded into an allocated range.
-    #[error("byte range has unknown size")]
+    /// The caller supplied neither a finite size nor a symbolic size expression.
+    #[error("byte range has unknown size without an expression")]
     UnknownSize,
-    /// A 256-bit byte offset does not fit the host index representation.
+    /// A concrete target offset cannot be represented as a host range.
     #[error("byte offset {0} does not fit a host index")]
     OffsetTooLarge(U256),
-    /// Offset plus size overflowed the host representation.
+    /// Concrete target range overflow.
     #[error("byte range at {offset} of size {size} overflows")]
     Overflow {
-        /// Host-representable start offset.
+        /// Concrete host start offset.
         offset: usize,
-        /// Host-representable requested size.
+        /// Concrete requested byte count.
         size: usize,
     },
-    /// The allocated output or expanded memory would exceed its explicit cap.
+    /// Concrete logical range exceeds the caller's range policy.
     #[error("byte range requires {requested} bytes, exceeding limit {limit}")]
     TooLarge {
-        /// Required footprint, or the offending 256-bit size.
+        /// Required logical allocation or offending requested length.
         requested: U256,
-        /// Maximum allowed footprint.
+        /// Caller-selected logical byte cap.
         limit: usize,
     },
+    /// Scalar expression retention failed.
+    #[error(transparent)]
+    Expression(#[from] ExprError),
+    /// Immutable state retention failed.
+    #[error(transparent)]
+    State(#[from] StateError),
+}
+
+// This limits duplicate presentation facts, not symbolic semantics or logical bytes.
+const COPY_FACT_LIMIT: usize = 256;
+
+pub(super) fn limits(domain: Domain) -> ExprLimits {
+    domain.spec().relations().expressions()
+}
+pub(super) fn zero() -> AbstractValue {
+    constant(0)
+}
+pub(super) fn constant(value: usize) -> AbstractValue {
+    AbstractValue::constant(U256::from(value))
+}
+pub(super) fn expr(value: &AbstractValue) -> Result<ExprId, RangeError> {
+    if let Some(expression) = value.symbolic_expression() {
+        return Ok(expression);
+    }
+    let fresh = ExprId::fresh().ok_or(StateError::IdentityExhausted)?;
+    if value.numeric().is_top() {
+        return Ok(fresh);
+    }
+    // A numeric-only finite/bounded operand needs its own semantic constraint,
+    // not an unconstrained Fresh which could contradict a precise numeric read.
+    let observed = crate::domain::symbolic::SlotStateId::observed(
+        SourceId::fresh()?,
+        vec![crate::domain::symbolic::StateBinding {
+            index: U256::ZERO,
+            value: fresh,
+            numeric: value.numeric().clone(),
+        }],
+        ExprLimits::default().into(),
+    )?;
+    Ok(ExprId::slot_read(
+        observed,
+        ExprId::constant(U256::ZERO),
+        ExprLimits::default(),
+    )?)
+}
+
+pub(in crate::world) fn check_value(
+    value: &AbstractValue,
+    limits: ExprLimits,
+) -> Result<(), ExprError> {
+    if embedded_smt::current_cancellation().is_cancelled() {
+        return Err(ExprError::Cancelled);
+    }
+    if value.symbolic_limit_reached() {
+        return Err(ExprError::Limit {
+            nodes: usize::MAX,
+            depth: usize::MAX,
+        });
+    }
+    if let Some(expression) = value.expression()
+        && (expression.nodes() > limits.max_nodes || expression.depth() > limits.max_depth)
+    {
+        return Err(ExprError::Limit {
+            nodes: expression.nodes(),
+            depth: expression.depth(),
+        });
+    }
+    Ok(())
 }
 
 impl ByteArray {
-    /// Some retained byte/length lost an expression to the symbolic budget.
-    pub(crate) fn symbolic_limit_reached(&self) -> bool {
-        self.bytes
-            .values()
-            .chain([&self.length, &self.default])
-            .any(AbstractValue::symbolic_limit_reached)
-    }
-    /// Visit explicit values without interpreting unknown/default bytes as one identity.
-    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&AbstractValue)) {
-        visit(&self.length);
-        visit(&self.default);
-        for value in self.bytes.values() {
-            visit(value);
-        }
-    }
-    /// Capture-avoiding transformations preserve sparse byte positions and lengths.
-    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut AbstractValue)) {
-        update(&mut self.length);
-        update(&mut self.default);
-        for value in self.bytes.values_mut() {
-            update(value);
-        }
-    }
-    // 完整小集合组装 word 时走有限枚举快路径；开放字节才预留通用交换。
-    pub(crate) fn word_numeric_work(&self, offset: &AbstractValue, domain: Domain) -> usize {
-        let Some(offsets) = offset.constants() else {
-            return 1;
-        };
-        offsets.iter().fold(0usize, |work, offset| {
-            let Some(start) = usize::try_from(*offset).ok() else {
-                return work.saturating_add(1);
-            };
-            let combinations = (0..32).try_fold(1usize, |n, i| {
-                let index = start.checked_add(i)?;
-                let byte = self.byte_at(index, domain);
-                let size = byte.constants()?.len();
-                let next = n.saturating_mul(size);
-                (next <= domain.capacity()).then_some(next)
-            });
-            let operation = combinations.map_or_else(
-                || domain.operation_work(&[]),
-                |n| n.saturating_mul(256).saturating_add(32),
-            );
-            let symbolic = if domain.spec().relations().enabled {
-                // Mirror the balanced assembly's shape using cached sizes;
-                // reserve traversal work before creating any expression nodes.
-                let mut parts = (0..32)
-                    .map(|i| {
-                        start
-                            .checked_add(i)
-                            .map_or(1, |index| {
-                                let value = self.byte_at(index, domain);
-                                if value.singleton().is_some() {
-                                    1
-                                } else {
-                                    value
-                                        .expression()
-                                        .map_or(1, |expression| expression.nodes())
-                                }
-                            })
-                            .saturating_add(2)
-                    })
-                    .collect::<Vec<_>>();
-                let mut nodes = parts.iter().copied().fold(0usize, usize::saturating_add);
-                while parts.len() > 1 {
-                    parts = parts
-                        .chunks(2)
-                        .map(|pair| {
-                            let size = pair.iter().copied().fold(1usize, usize::saturating_add);
-                            nodes = nodes.saturating_add(size);
-                            size
-                        })
-                        .collect();
-                }
-                nodes.saturating_mul(256)
-            } else {
-                0
-            };
-            work.saturating_add(operation.saturating_mul(64))
-                .saturating_add(symbolic)
-        })
-    }
-    pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
-        self.length = domain.widen(&old.length, &self.length);
-        self.default = domain.widen(&old.default, &self.default);
-        for (offset, value) in &mut self.bytes {
-            *value = domain.widen(old.bytes.get(offset).unwrap_or(&old.default), value);
-        }
-    }
-    pub(crate) fn project(&self, domain: Domain) -> Self {
-        let mut out = self.clone();
-        out.length = domain.project(&out.length);
-        let byte = |value: &AbstractValue| {
-            if value == &AbstractValue::top() {
-                domain.project(&AbstractValue::unknown_byte())
-            } else {
-                domain.project(value)
-            }
-        };
-        out.default = byte(&out.default);
-        for value in out.bytes.values_mut() {
-            *value = byte(value);
-        }
-        out
-    }
-    /// 覆盖投影时由开放字节生成的候选，不先执行投影来估算。
-    pub(crate) fn projection_work(&self, domain: Domain) -> usize {
-        self.bytes.values().chain([&self.default]).fold(
-            domain.projection_work(&self.length),
-            |work, value| {
-                let projected = if value == &AbstractValue::top() {
-                    domain.projection_work(&AbstractValue::unknown_byte())
-                } else {
-                    domain.projection_work(value)
-                };
-                work.saturating_add(projected)
-            },
-        )
-    }
-    /// A known empty calldata/returndata sequence.
+    /// Empty finite input.
     pub fn empty() -> Self {
         Self::exact(&[])
     }
-
-    /// A fully observed byte sequence. Out-of-range reads still produce zero.
+    /// Observed finite input, zero-padded beyond its length.
     pub fn exact(input: &[u8]) -> Self {
         Self {
-            length: AbstractValue::constant(U256::from(input.len())),
+            length: constant(input.len()),
             bytes: input
                 .iter()
                 .enumerate()
                 .filter(|(_, byte)| **byte != 0)
-                .map(|(index, byte)| (index, AbstractValue::constant(U256::from(*byte))))
+                .map(|(i, byte)| (i, constant(usize::from(*byte))))
                 .collect(),
             default: zero(),
             memory: false,
+            root: ByteStateId::exact(Arc::from(input)),
+            allocations: BTreeSet::new(),
+            operands: BTreeMap::new(),
+            failure: None,
         }
     }
-
-    /// Unobserved bytes with unobserved length.
+    /// Independent unobserved finite input. Length is not inferred from storage.
     pub fn unknown() -> Self {
-        Self {
-            length: AbstractValue::top(),
-            bytes: BTreeMap::new(),
-            default: AbstractValue::top(),
-            memory: false,
-        }
+        Self::unknown_checked().expect("process-private input identities available")
     }
-
-    /// Fresh EVM memory: all bytes zero, current allocation zero.
+    /// Fallible construction for callers tracking identity exhaustion.
+    pub fn unknown_checked() -> Result<Self, RangeError> {
+        let length = AbstractValue::top().with_expression(expr(&AbstractValue::top())?);
+        Ok(Self {
+            root: ByteStateId::input(
+                SourceId::fresh()?,
+                length.symbolic_expression().expect("bound length"),
+            ),
+            length,
+            bytes: BTreeMap::new(),
+            default: AbstractValue::unknown_byte(),
+            memory: false,
+            allocations: BTreeSet::new(),
+            operands: BTreeMap::new(),
+            failure: None,
+        })
+    }
+    /// Fresh unbounded zero content with zero logical allocation.
     pub fn memory() -> Self {
         Self {
             memory: true,
+            root: ByteStateId::zero(),
             ..Self::empty()
         }
     }
-
-    /// Possible byte lengths; memory lengths are word-aligned when finite.
+    /// Bind a fresh root calldata input once; existing inputs/views keep identity.
+    pub fn bind_input(&mut self, scope: u64) -> Result<(), RangeError> {
+        use crate::domain::identity::Symbol;
+        if self.memory {
+            return Ok(());
+        }
+        match self.root.kind() {
+            ByteStateKind::Exact(_) => return Ok(()),
+            ByteStateKind::Input { source, .. } => {
+                if matches!(
+                    source.token().kind(),
+                    crate::domain::symbolic::ExprKind::Input(_)
+                ) {
+                    return Ok(());
+                }
+            }
+            _ => return Ok(()),
+        }
+        let length = self
+            .length
+            .clone()
+            .with_expression(ExprId::input(scope, Symbol::CalldataLength));
+        let bindings = match self.root.kind() {
+            ByteStateKind::Input { bindings, .. } => bindings.clone(),
+            _ => unreachable!(),
+        };
+        self.root = ByteStateId::observed(
+            SourceId::input(scope, Symbol::CalldataLength),
+            length.expression().expect("input length").clone(),
+            bindings,
+            ExprLimits::default().into(),
+        )?;
+        self.length = length;
+        Ok(())
+    }
+    /// Full immutable root, including all ordered writes and source bindings.
+    pub fn state_root(&self) -> &ByteStateId {
+        &self.root
+    }
+    /// Full finite view. Memory consumers may capture narrower views for MLOAD.
+    pub fn view(&self) -> ByteView {
+        ByteView::new(
+            self.root.clone(),
+            ExprId::constant(U256::ZERO),
+            self.length
+                .symbolic_expression()
+                .expect("every byte length has an expression or singleton"),
+        )
+    }
+    /// Logical input length or memory MSIZE, including its immutable expression.
     pub fn len(&self) -> &AbstractValue {
         &self.length
     }
-
-    /// Explicit sparse byte facts, in offset order, without padding or joining.
-    /// Rendering these facts must not change them through [`Self::byte_at`].
+    /// Explicit current numeric upper bounds. The root also covers unlisted bytes.
     pub fn stored_bytes(&self) -> impl Iterator<Item = (usize, &AbstractValue)> {
-        self.bytes.iter().map(|(offset, value)| (*offset, value))
+        self.bytes.iter().map(|(i, v)| (*i, v))
     }
-
-    /// Value used at offsets without an explicit sparse fact.
+    /// Numeric upper bound on every unlisted byte; identities live in the root.
     pub fn default_byte(&self) -> &AbstractValue {
         &self.default
     }
-
-    /// Whether expansion follows EVM memory's 32-byte allocation rule.
+    /// Whether logical allocation uses EVM word rounding.
     pub fn is_memory(&self) -> bool {
         self.memory
     }
-
-    /// Cost estimate covering explicit byte values, length, and default joins.
-    /// Saturation makes very large inputs exceed a finite work budget safely.
+    /// Retained metadata and scalar work, independent of logical COPY lengths.
     pub fn work_size(&self) -> usize {
         self.bytes
             .values()
+            .chain(self.operands.values())
             .chain([&self.length, &self.default])
-            .fold(0_usize, |work, value| {
-                work.saturating_add(value.work_size())
-            })
+            .fold(
+                self.root
+                    .work_size()
+                    .saturating_add(traversal::exact_work(&self.root))
+                    .saturating_add(self.allocations.iter().fold(0usize, |n, (at, size)| {
+                        n.saturating_add(at.nodes()).saturating_add(size.nodes())
+                    })),
+                |n, v| n.saturating_add(v.work_size()),
+            )
     }
-
-    /// One byte with zero padding beyond every possible sequence length.
+    pub(crate) fn symbolic_limit_reached(&self) -> bool {
+        self.failure.is_some()
+            || self
+                .bytes
+                .values()
+                .chain(self.operands.values())
+                .chain([&self.length, &self.default])
+                .any(AbstractValue::symbolic_limit_reached)
+    }
+    /// Byte read from this immutable state, with finite input zero padding.
+    pub fn read_byte_checked(
+        &self,
+        offset: &AbstractValue,
+        domain: Domain,
+    ) -> Result<AbstractValue, RangeError> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        let offset_expr = expr(offset)?;
+        let mut facts = self.operands.clone();
+        facts.insert(offset_expr.clone(), offset.clone());
+        let expression = ExprId::byte_read(self.root.clone(), offset_expr.clone(), limits(domain))?;
+        let numeric = numeric::read(&self.root, &offset_expr, &facts, domain);
+        Ok(numeric::attach(numeric, expression))
+    }
+    /// Read one byte; retention failure is marked for the analysis boundary.
+    pub fn read_byte(&self, offset: &AbstractValue, domain: Domain) -> AbstractValue {
+        self.read_byte_checked(offset, domain)
+            .unwrap_or_else(|_| AbstractValue::unknown_byte().with_symbolic_limit())
+    }
+    /// Read a concrete byte index, preserving the current state dependency.
     pub fn byte_at(&self, index: usize, domain: Domain) -> AbstractValue {
-        let byte = self.bytes.get(&index).unwrap_or(&self.default);
-        match self.length.constants() {
-            Some(lengths) => {
-                let position = U256::from(index);
-                let in_range = lengths.iter().any(|length| position < *length);
-                let out_of_range = lengths.iter().any(|length| position >= *length);
-                match (in_range, out_of_range) {
-                    (false, _) => zero(),
-                    (true, false) => byte.clone(),
-                    (true, true) => domain.join(byte, &zero()),
-                }
-            }
-            // With unknown length, a known stored byte is still possibly beyond
-            // one of the paths' lengths. Retain zero as well.
-            None => domain.join(byte, &zero()),
-        }
+        self.read_byte(&constant(index), domain)
     }
-
-    /// Read a big-endian 32-byte EVM word at finite possible offsets.
-    pub fn read_word(&self, offset: &AbstractValue, domain: Domain) -> AbstractValue {
-        let Some(offsets) = offset.constants() else {
-            return if self.bytes.is_empty() && self.default == zero() {
-                zero()
-            } else {
-                AbstractValue::top()
-            };
+    /// A big-endian word, retaining a single state-aware expression.
+    pub fn read_word_checked(
+        &self,
+        offset: &AbstractValue,
+        domain: Domain,
+    ) -> Result<AbstractValue, RangeError> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        let offset_expr = expr(offset)?;
+        let mut facts = self.operands.clone();
+        facts.insert(offset_expr.clone(), offset.clone());
+        let view = if self.memory {
+            ByteView::new(
+                self.root.clone(),
+                offset_expr.clone(),
+                ExprId::constant(U256::from(32)),
+            )
+        } else {
+            // Preserve the full input boundary independently of the word offset.
+            self.view().slice(
+                offset_expr.clone(),
+                ExprId::constant(U256::from(32)),
+                limits(domain).into(),
+            )?
         };
-        let mut result = None;
-        for offset in offsets {
-            if self
-                .length
-                .constants()
-                .is_some_and(|lengths| lengths.iter().all(|length| *length <= *offset))
-            {
-                result = Some(join_optional(result, zero(), domain));
-                continue;
-            }
-            let Some(offset) = host_index(*offset) else {
-                // Every finite sequence is shorter than an unrepresentable
-                // index, but an unknown-length sequence can contain bytes here.
-                let word = if self
-                    .length
-                    .constants()
-                    .is_some_and(|lengths| lengths.iter().all(|length| *length <= *offset))
-                {
-                    zero()
-                } else {
-                    AbstractValue::top()
-                };
-                result = Some(join_optional(result, word, domain));
-                continue;
-            };
-            // A balanced concatenation keeps symbolic depth logarithmic in
-            // word width. Left-folding SHL/OR adds two levels for every byte
-            // and loses the word's expression at an ordinary branch afterward.
-            let bytes = (0..32)
-                .map(|index| {
-                    offset
-                        .checked_add(index)
-                        .map_or_else(AbstractValue::top, |index| self.byte_at(index, domain))
-                })
-                .collect::<Vec<_>>();
-            let reconstructed = if domain.spec().relations().enabled
-                && bytes.iter().all(|value| !value.symbolic_limit_reached())
-            {
-                bytes
-                    .iter()
-                    .map(AbstractValue::symbolic_expression)
-                    .collect::<Option<Vec<_>>>()
-                    .and_then(|bytes| crate::domain::symbolic::ExprId::reassemble_word(&bytes))
-            } else {
-                None
-            };
-            // Reconstruct the numeric summary as before, but do not expand a
-            // large symbolic tree when exact byte extraction proves the word.
-            let assembly_domain = if reconstructed.is_some() {
-                Domain::from_spec(domain.spec().with_relations(
-                    crate::domain::relational::RelationLimits {
-                        enabled: false,
-                        ..domain.spec().relations()
-                    },
-                ))
-            } else {
-                domain
-            };
-            let mut parts = Vec::with_capacity(32);
-            for (index, byte) in bytes.into_iter().enumerate() {
-                parts.push(assembly_domain.apply(opcode::SHL, &[constant((31 - index) * 8), byte]));
-            }
-            while parts.len() > 1 {
-                parts = parts
-                    .chunks(2)
-                    .map(|pair| {
-                        if pair.len() == 2 {
-                            assembly_domain.apply(opcode::OR, pair)
-                        } else {
-                            pair[0].clone()
-                        }
-                    })
-                    .collect();
-            }
-            let mut word = parts.pop().expect("a word contains 32 bytes");
-            if let Some(expression) = reconstructed {
-                word = word.with_expression(expression);
-            }
-            result = Some(join_optional(result, word, domain));
-        }
-        result.expect("AbstractValue constants are nonempty")
+        let expression = ExprId::word_read(view, ExprId::constant(U256::ZERO), limits(domain))?;
+        let numeric = numeric::word(&self.root, &offset_expr, &facts, domain);
+        Ok(numeric::attach(numeric, expression))
     }
-
-    /// Extract a zero-padded range, bounded by its output size.
-    ///
-    /// An unknown source offset yields unknown bytes of the requested length;
-    /// no unbounded allocation is attempted.
+    /// Read one word; retention failure is marked for the analysis boundary.
+    pub fn read_word(&self, offset: &AbstractValue, domain: Domain) -> AbstractValue {
+        self.read_word_checked(offset, domain)
+            .unwrap_or_else(|_| AbstractValue::top().with_symbolic_limit())
+    }
+    /// Lazy zero-padded slice. The cap bounds requested length, never source offset.
     pub fn slice(
         &self,
         offset: &AbstractValue,
@@ -360,28 +347,49 @@ impl ByteArray {
         max_bytes: usize,
         domain: Domain,
     ) -> Result<Self, RangeError> {
-        let sizes = bounded_sizes(size, max_bytes)?;
-        let mut result = None;
-        for size in sizes {
-            let mut sliced = Self {
-                length: constant(size),
-                bytes: BTreeMap::new(),
-                default: zero(),
-                memory: false,
-            };
-            for index in 0..size {
-                let byte = self.read_offset_byte(offset, index, domain)?;
-                if byte != zero() {
-                    sliced.bytes.insert(index, byte);
+        ranges::validate_size(size, max_bytes)?;
+        if size.singleton() == Some(U256::ZERO) {
+            return Ok(Self::empty());
+        }
+        let offset_expr = expr(offset)?;
+        let size_expr = expr(size)?;
+        let mut operands = self.operands.clone();
+        operands.insert(offset_expr.clone(), offset.clone());
+        operands.insert(size_expr.clone(), size.clone());
+        let root = self
+            .root
+            .slice(offset_expr, size_expr.clone(), limits(domain).into())?;
+        let mut out = Self {
+            length: size.clone().with_expression(size_expr),
+            root,
+            allocations: BTreeSet::new(),
+            operands,
+            bytes: BTreeMap::new(),
+            default: if offset.singleton().is_some() && self.bytes.len() <= COPY_FACT_LIMIT {
+                self.default.clone()
+            } else {
+                self.byte_upper(domain)
+            },
+            memory: false,
+            failure: None,
+        };
+        // Retain only already materialized source facts; do not walk the range.
+        if let Some(start) = offset.singleton().and_then(|v| usize::try_from(v).ok()) {
+            for index in self
+                .bytes
+                .keys()
+                .copied()
+                .filter_map(|i| i.checked_sub(start))
+                .take(COPY_FACT_LIMIT)
+            {
+                if size.interval().unsigned_bounds().1 > U256::from(index) {
+                    out.bytes.insert(index, out.byte_at(index, domain));
                 }
             }
-            result = Some(join_array_optional(result, sliced, domain));
         }
-        Ok(result.expect("AbstractValue constants are nonempty"))
+        Ok(out)
     }
-
-    /// Expand memory for an access, or sequence length for a write.
-    /// Unknown offsets conservatively make allocation length unknown.
+    /// Expand logical memory after transfer has constrained symbolic ranges.
     pub fn expand(
         &mut self,
         offset: &AbstractValue,
@@ -389,45 +397,28 @@ impl ByteArray {
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
-        let sizes = bounded_sizes(size, max_bytes)?;
-        if sizes.iter().all(|size| *size == 0) {
+        if size.singleton() == Some(U256::ZERO) {
             return Ok(());
         }
-        let Some(offsets) = offset.constants() else {
-            self.length = AbstractValue::top();
+        ranges::validate_target(offset, size, max_bytes, self.memory)?;
+        let allocation = (expr(offset)?, expr(size)?);
+        if self.allocations.contains(&allocation) {
+            self.check_existing(limits(domain))?;
             return Ok(());
-        };
-        let mut end = None;
-        for offset in offsets {
-            for size in &sizes {
-                if *size == 0 {
-                    end = Some(join_optional(end, self.length.clone(), domain));
-                    continue;
-                }
-                let offset = host_index(*offset).ok_or(RangeError::OffsetTooLarge(*offset))?;
-                let required = bounded_end(offset, *size, max_bytes, self.memory)?;
-                let candidate = match self.length.constants() {
-                    Some(lengths) => lengths.iter().fold(None, |candidate, length| {
-                        Some(join_optional(
-                            candidate,
-                            AbstractValue::constant((*length).max(U256::from(required))),
-                            domain,
-                        ))
-                    }),
-                    None => Some(AbstractValue::top()),
-                };
-                end = Some(join_optional(
-                    end,
-                    candidate.expect("AbstractValue constants are nonempty"),
-                    domain,
-                ));
+        }
+        let length = ranges::expanded(&self.length, offset, size, max_bytes, self.memory, domain)?;
+        if self.allocations.len().saturating_add(1) > limits(domain).max_nodes {
+            return Err(StateError::Limit {
+                nodes: self.allocations.len().saturating_add(1),
+                depth: 1,
             }
+            .into());
         }
-        self.length = end.expect("AbstractValue constants are nonempty");
+        self.length = length;
+        self.allocations.insert(allocation);
         Ok(())
     }
-
-    /// Store an EVM word, preserving its byte order and bounding memory growth.
+    /// Append a big-endian 32-byte write atomically after range validation.
     pub fn write_word(
         &mut self,
         offset: &AbstractValue,
@@ -435,13 +426,9 @@ impl ByteArray {
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
-        let bytes: Vec<_> = (0..32)
-            .map(|index| domain.apply(opcode::BYTE, &[constant(index), value.clone()]))
-            .collect();
-        self.write_values(offset, &bytes, max_bytes, domain)
+        self.write(offset, value, 32, max_bytes, domain)
     }
-
-    /// Store the low byte of an EVM word.
+    /// Append a low-byte write atomically after range validation.
     pub fn write_byte(
         &mut self,
         offset: &AbstractValue,
@@ -449,12 +436,56 @@ impl ByteArray {
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
-        let byte = domain.apply(opcode::AND, &[value.clone(), constant(255)]);
-        self.write_values(offset, &[byte], max_bytes, domain)
+        self.write(offset, value, 1, max_bytes, domain)
     }
-
-    /// Copy exactly `size` zero-padded source bytes, including overlapping memory.
-    /// The caller supplies a source snapshot for MCOPY's memmove semantics.
+    fn write(
+        &mut self,
+        offset: &AbstractValue,
+        value: &AbstractValue,
+        width: usize,
+        max_bytes: usize,
+        domain: Domain,
+    ) -> Result<(), RangeError> {
+        let mut out = self.clone();
+        out.expand(offset, &constant(width), max_bytes, domain)?;
+        let at = expr(offset)?;
+        let val = expr(value)?;
+        out.remember(at.clone(), offset);
+        out.remember(val.clone(), value);
+        out.root = if width == 32 {
+            out.root.write_word(at, val, limits(domain).into())?
+        } else {
+            out.root.write_byte(at, val, limits(domain).into())?
+        };
+        let starts = offset
+            .constants()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| usize::try_from(*v).ok())
+            .collect::<Vec<_>>();
+        for start in starts {
+            for i in 0..width {
+                out.bytes.entry(start + i).or_insert_with(zero);
+            }
+        }
+        if offset.constants().is_none() {
+            let upper = if width == 1 {
+                domain.apply(opcode::AND, &[value.clone(), constant(255)])
+            } else {
+                (0..32).fold(zero(), |upper, index| {
+                    domain.join(
+                        &upper,
+                        &domain.apply(opcode::BYTE, &[constant(index), value.clone()]),
+                    )
+                })
+            };
+            out.default = domain.join(&out.default, &upper);
+        }
+        out.refresh(domain);
+        *self = out;
+        Ok(())
+    }
+    /// One range node, capturing source before destination mutation (MCOPY).
     pub fn copy_from(
         &mut self,
         target_offset: &AbstractValue,
@@ -464,23 +495,56 @@ impl ByteArray {
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
-        let sizes = bounded_sizes(size, max_bytes)?;
-        let original = self.clone();
-        let mut result = None;
-        for size in sizes {
-            let bytes = (0..size)
-                .map(|index| source.read_offset_byte(source_offset, index, domain))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut branch = original.clone();
-            branch.write_values(target_offset, &bytes, max_bytes, domain)?;
-            result = Some(join_array_optional(result, branch, domain));
+        if size.singleton() == Some(U256::ZERO) {
+            return Ok(());
         }
-        *self = result.expect("AbstractValue constants are nonempty");
+        let mut out = self.clone();
+        out.expand(target_offset, size, max_bytes, domain)?;
+        let dst = expr(target_offset)?;
+        let at = expr(source_offset)?;
+        let len = expr(size)?;
+        out.operands.extend(source.operands.clone());
+        out.remember(dst.clone(), target_offset);
+        out.remember(at.clone(), source_offset);
+        out.remember(len.clone(), size);
+        let view = ByteView::new(source.root.clone(), at, len.clone());
+        out.root = out.root.copy(dst, view, len, limits(domain).into())?;
+        // Map existing finite source facts only; logical size adds no entries.
+        if let (Some(dst), Some(src)) = (
+            target_offset
+                .singleton()
+                .and_then(|v| usize::try_from(v).ok()),
+            source_offset
+                .singleton()
+                .and_then(|v| usize::try_from(v).ok()),
+        ) {
+            let remaining = COPY_FACT_LIMIT.saturating_sub(out.bytes.len());
+            for delta in source
+                .bytes
+                .keys()
+                .filter_map(|i| i.checked_sub(src))
+                .take(remaining)
+            {
+                if U256::from(delta) < size.interval().unsigned_bounds().1
+                    && let Some(index) = dst.checked_add(delta)
+                {
+                    out.bytes.entry(index).or_insert_with(zero);
+                }
+            }
+        }
+        out.default = if target_offset.singleton().is_some()
+            && source_offset.singleton().is_some()
+            && source.bytes.len() <= COPY_FACT_LIMIT.saturating_sub(self.bytes.len())
+        {
+            domain.join(&self.default, &source.default)
+        } else {
+            domain.join(&self.default, &source.byte_upper(domain))
+        };
+        out.refresh(domain);
+        *self = out;
         Ok(())
     }
-
-    /// CALL output copying: only `min(requested, returndata.len)` bytes change.
-    /// Memory expands for the full requested range; the uncopied suffix remains.
+    /// CALL output updates only min(requested,actual), while MSIZE uses requested.
     pub fn copy_return_data(
         &mut self,
         target_offset: &AbstractValue,
@@ -489,94 +553,156 @@ impl ByteArray {
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
-        let requests = bounded_sizes(requested, max_bytes)?;
-        let original = self.clone();
-        let mut result = None;
-        for requested in requests {
-            let mut expanded = original.clone();
-            expanded.expand(target_offset, &constant(requested), max_bytes, domain)?;
-            if let Some(lengths) = returndata.length.constants() {
-                for length in lengths {
-                    let copy_size = (*length).min(U256::from(requested)).to::<usize>();
-                    let bytes: Vec<_> = (0..copy_size)
-                        .map(|index| returndata.byte_at(index, domain))
-                        .collect();
-                    let mut branch = expanded.clone();
-                    branch.write_values(target_offset, &bytes, max_bytes, domain)?;
-                    result = Some(join_array_optional(result, branch, domain));
-                }
-            } else {
-                // Each byte may be outside an unknown returndata length, so
-                // join the copied and unchanged possibilities independently.
-                let mut copied = expanded.clone();
-                let bytes: Vec<_> = (0..requested)
-                    .map(|index| returndata.byte_at(index, domain))
-                    .collect();
-                copied.write_values(target_offset, &bytes, max_bytes, domain)?;
-                result = Some(join_array_optional(
-                    result,
-                    expanded.join(&copied, domain),
-                    domain,
-                ));
-            }
-        }
-        *self = result.expect("AbstractValue constants are nonempty");
+        let mut out = self.clone();
+        out.expand(target_offset, requested, max_bytes, domain)?;
+        let copied = ranges::minimum(requested, returndata.len(), domain)?;
+        out.copy_from(
+            target_offset,
+            returndata,
+            &zero(),
+            &copied,
+            max_bytes,
+            domain,
+        )?;
+        *self = out;
         Ok(())
     }
-
-    /// Join both sequences, including defaults at keys missing on one path.
-    pub fn join(&self, other: &Self, domain: Domain) -> Self {
-        let keys: BTreeSet<_> = self
-            .bytes
-            .keys()
-            .chain(other.bytes.keys())
-            .copied()
-            .collect();
-        Self {
-            length: domain.join(&self.length, &other.length),
-            bytes: keys
-                .into_iter()
-                .map(|index| {
-                    (
-                        index,
-                        domain.join(&self.byte_at(index, domain), &other.byte_at(index, domain)),
-                    )
-                })
-                .collect(),
+    pub(super) fn check_existing(&self, limits: ExprLimits) -> Result<(), RangeError> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        self.root
+            .join_guarded(&self.root, ExprId::constant(U256::ZERO), limits.into())?;
+        let mut result = Ok(());
+        self.visit_values(&mut |value| {
+            if result.is_ok() {
+                result = check_value(value, limits).map_err(Into::into);
+            }
+        });
+        result
+    }
+    /// Guarded merge paired with the selector used for stack values and relations.
+    pub fn join_guarded(
+        &self,
+        other: &Self,
+        domain: Domain,
+        selector: ExprId,
+        expression_limits: ExprLimits,
+    ) -> Result<Self, RangeError> {
+        self.check_existing(expression_limits)?;
+        other.check_existing(expression_limits)?;
+        if self == other {
+            return Ok(self.clone());
+        }
+        let mut out = Self {
+            length: self.length.join_guarded(
+                &other.length,
+                domain,
+                selector.clone(),
+                expression_limits,
+            )?,
+            bytes: BTreeMap::new(),
             default: domain.join(&self.default, &other.default),
             memory: self.memory && other.memory,
+            allocations: self
+                .allocations
+                .intersection(&other.allocations)
+                .cloned()
+                .collect(),
+            root: self
+                .root
+                .join_guarded(&other.root, selector, expression_limits.into())?,
+            operands: self.operands.clone(),
+            failure: self.failure.clone().or_else(|| other.failure.clone()),
+        };
+        for (key, value) in &other.operands {
+            out.operands
+                .entry(key.clone())
+                .and_modify(|old| *old = domain.join(old, value))
+                .or_insert_with(|| value.clone());
         }
+        for index in self.bytes.keys().chain(other.bytes.keys()) {
+            out.bytes.entry(*index).or_insert_with(zero);
+        }
+        out.refresh(domain);
+        Ok(out)
     }
-
-    /// Recover bytes only when length and every byte are exact.
+    /// Sound union. Identical wrappers retain the existing root and guard.
+    /// Nonidentical states require a selector independent of their old guards.
+    pub fn join(&self, other: &Self, domain: Domain) -> Self {
+        if self == other {
+            return self.clone();
+        }
+        let result = expr(&AbstractValue::top())
+            .and_then(|selector| self.join_guarded(other, domain, selector, limits(domain)));
+        result.unwrap_or_else(|error| {
+            let mut out = Self::unknown();
+            out.memory = self.memory && other.memory;
+            out.failure = Some(error);
+            out.length = domain.join(&self.length, &other.length);
+            if out.length.symbolic_expression().is_none() {
+                out.length = out.length.clone().with_expression(
+                    expr(&AbstractValue::top()).expect("join fallback source identity"),
+                );
+            }
+            out.root = ByteStateId::input(
+                SourceId::fresh().expect("join fallback source identity"),
+                out.length.symbolic_expression().expect("retained length"),
+            );
+            out
+        })
+    }
+    /// Real Keccak for bounded exact data, otherwise a canonical content hash term.
+    pub fn keccak(
+        &self,
+        domain: Domain,
+        materialize_limit: usize,
+    ) -> Result<AbstractValue, RangeError> {
+        let expression = ExprId::keccak(self.view(), limits(domain))?;
+        if let Some(bytes) = self.exact_bytes_bounded(materialize_limit) {
+            return Ok(
+                AbstractValue::constant(U256::from_be_bytes(keccak256(bytes).0))
+                    .with_expression(expression),
+            );
+        }
+        Ok(AbstractValue::top().with_expression(expression))
+    }
+    /// Recover a completely known input under the default 1 MiB allocation cap.
     pub fn exact_bytes(&self) -> Option<Vec<u8>> {
-        // Keep this convenience extraction bounded even when a library caller
-        // deliberately supplies an enormous memory cap to sparse writes.
         self.exact_bytes_bounded(1024 * 1024)
     }
-
-    /// Recover exact bytes while respecting a caller-supplied allocation cap.
+    /// Materialization is a separate explicitly bounded operation.
     pub fn exact_bytes_bounded(&self, max_bytes: usize) -> Option<Vec<u8>> {
-        let lengths = self.length.constants()?;
-        if lengths.len() != 1 {
+        if self.failure.is_some() {
             return None;
         }
-        let length = host_index(*lengths.first()?)?;
+        let length = usize::try_from(self.length.singleton()?).ok()?;
         if length > max_bytes {
             return None;
         }
+        let materialize_work = length.saturating_mul(self.root.nodes().saturating_add(2));
+        let materialize_limits = ExprLimits {
+            max_nodes: materialize_work.max(self.view().nodes()),
+            max_depth: self.root.depth().saturating_add(2),
+        };
+        match self.view().known_bytes(materialize_limits) {
+            Ok(Some(bytes)) => return Some(bytes),
+            Err(_) => return None,
+            Ok(None) => {}
+        }
         let mut output = Vec::new();
         output.try_reserve_exact(length).ok()?;
-        for index in 0..length {
-            let byte = self
-                .bytes
-                .get(&index)
-                .unwrap_or(&self.default)
-                .constants()?;
-            if byte.len() != 1 {
+        for i in 0..length {
+            if i % 256 == 0 && embedded_smt::current_cancellation().is_cancelled() {
                 return None;
             }
-            let byte = *byte.first()?;
+            let byte = numeric::read(
+                &self.root,
+                &ExprId::constant(U256::from(i)),
+                &self.operands,
+                Domain::default(),
+            )
+            .singleton()?;
             if byte > U256::from(255) {
                 return None;
             }
@@ -584,151 +710,76 @@ impl ByteArray {
         }
         Some(output)
     }
-
-    fn read_offset_byte(
-        &self,
-        offset: &AbstractValue,
-        increment: usize,
-        domain: Domain,
-    ) -> Result<AbstractValue, RangeError> {
-        let Some(offsets) = offset.constants() else {
-            return Ok(if self.bytes.is_empty() && self.default == zero() {
-                zero()
-            } else {
-                AbstractValue::top()
-            });
+    fn byte_upper(&self, domain: Domain) -> AbstractValue {
+        if self.bytes.len() > COPY_FACT_LIMIT {
+            return AbstractValue::unknown_byte();
+        }
+        self.bytes.values().fold(
+            AbstractValue::from_numeric(self.default.numeric().clone()),
+            |upper, value| {
+                domain.join(
+                    &upper,
+                    &AbstractValue::from_numeric(value.numeric().clone()),
+                )
+            },
+        )
+    }
+    fn remember(&mut self, expression: ExprId, value: &AbstractValue) {
+        if expression.as_constant().is_none() {
+            let mut clean = value.clone();
+            clean.forget_identity();
+            self.operands
+                .entry(expression)
+                .and_modify(|old| *old = Domain::default().join(old, &clean))
+                .or_insert(clean);
+        }
+    }
+    fn refresh(&mut self, domain: Domain) {
+        let indices = self.bytes.keys().copied().collect::<Vec<_>>();
+        for i in indices {
+            self.bytes.insert(i, self.byte_at(i, domain));
+        }
+    }
+    pub(crate) fn word_numeric_work(&self, _offset: &AbstractValue, _domain: Domain) -> usize {
+        self.root
+            .work_size()
+            .saturating_mul(32)
+            .saturating_add(256 * 32)
+    }
+    pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
+        let length_expression = self.length.symbolic_expression();
+        self.length = domain.widen(&old.length, &self.length);
+        if let Some(expression) = length_expression {
+            self.length = self.length.clone().with_expression(expression);
+        }
+        self.default = domain.widen(&old.default, &self.default);
+        for (i, value) in &mut self.bytes {
+            *value = domain.widen(old.bytes.get(i).unwrap_or(&old.default), value);
+        }
+    }
+    pub(crate) fn project(&self, domain: Domain) -> Self {
+        let mut out = self.clone();
+        let project = |value: &mut AbstractValue| {
+            let expression = value.expression().cloned();
+            *value = domain.project(value);
+            if let Some(expression) = expression {
+                *value = value.clone().with_expression(expression);
+            }
         };
-        let mut result = None;
-        for offset in offsets {
-            if self
-                .length
-                .constants()
-                .is_some_and(|lengths| lengths.iter().all(|length| *length <= *offset))
-            {
-                result = Some(join_optional(result, zero(), domain));
-                continue;
-            }
-            let Some(base) = host_index(*offset) else {
-                let byte = if self
-                    .length
-                    .constants()
-                    .is_some_and(|lengths| lengths.iter().all(|length| *length <= *offset))
-                {
-                    zero()
-                } else {
-                    AbstractValue::top()
-                };
-                result = Some(join_optional(result, byte, domain));
-                continue;
-            };
-            let index = base.checked_add(increment).ok_or(RangeError::Overflow {
-                offset: base,
-                size: increment,
-            })?;
-            result = Some(join_optional(result, self.byte_at(index, domain), domain));
+        project(&mut out.length);
+        project(&mut out.default);
+        for value in out.bytes.values_mut().chain(out.operands.values_mut()) {
+            project(value);
         }
-        Ok(result.expect("AbstractValue constants are nonempty"))
+        out
     }
-
-    fn write_values(
-        &mut self,
-        offset: &AbstractValue,
-        bytes: &[AbstractValue],
-        max_bytes: usize,
-        domain: Domain,
-    ) -> Result<(), RangeError> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        // Validate every branch before changing this state.
-        let mut expanded = self.clone();
-        expanded.expand(offset, &constant(bytes.len()), max_bytes, domain)?;
-        let Some(offsets) = offset.constants() else {
-            expanded.bytes.clear();
-            expanded.default = AbstractValue::top();
-            *self = expanded;
-            return Ok(());
-        };
-        let mut result = None;
-        for offset in offsets {
-            let base = host_index(*offset).ok_or(RangeError::OffsetTooLarge(*offset))?;
-            let mut branch = expanded.clone();
-            for (index, byte) in bytes.iter().enumerate() {
-                // expand verified this sum for every offset before mutation.
-                branch.bytes.insert(base + index, byte.clone());
-            }
-            result = Some(join_array_optional(result, branch, domain));
-        }
-        *self = result.expect("AbstractValue constants are nonempty");
-        Ok(())
+    pub(crate) fn projection_work(&self, domain: Domain) -> usize {
+        self.bytes
+            .values()
+            .chain(self.operands.values())
+            .chain([&self.length, &self.default])
+            .fold(self.root.work_size(), |n, v| {
+                n.saturating_add(domain.projection_work(v))
+            })
     }
 }
-
-fn zero() -> AbstractValue {
-    AbstractValue::constant(U256::ZERO)
-}
-
-fn constant(value: usize) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
-}
-
-fn host_index(value: U256) -> Option<usize> {
-    (value <= U256::from(usize::MAX)).then(|| value.to::<usize>())
-}
-
-fn bounded_sizes(size: &AbstractValue, max_bytes: usize) -> Result<Vec<usize>, RangeError> {
-    size.constants()
-        .ok_or(RangeError::UnknownSize)?
-        .iter()
-        .map(|size| {
-            if *size > U256::from(max_bytes) {
-                Err(RangeError::TooLarge {
-                    requested: *size,
-                    limit: max_bytes,
-                })
-            } else {
-                Ok(size.to::<usize>())
-            }
-        })
-        .collect()
-}
-
-fn bounded_end(
-    offset: usize,
-    size: usize,
-    max_bytes: usize,
-    memory: bool,
-) -> Result<usize, RangeError> {
-    let mut end = offset
-        .checked_add(size)
-        .ok_or(RangeError::Overflow { offset, size })?;
-    if memory {
-        end = end
-            .checked_add(31)
-            .ok_or(RangeError::Overflow { offset, size })?
-            / 32
-            * 32;
-    }
-    if end > max_bytes {
-        return Err(RangeError::TooLarge {
-            requested: U256::from(end),
-            limit: max_bytes,
-        });
-    }
-    Ok(end)
-}
-
-fn join_optional(
-    current: Option<AbstractValue>,
-    value: AbstractValue,
-    domain: Domain,
-) -> AbstractValue {
-    current.map_or(value.clone(), |current| domain.join(&current, &value))
-}
-
-fn join_array_optional(current: Option<ByteArray>, value: ByteArray, domain: Domain) -> ByteArray {
-    current.map_or_else(|| value.clone(), |current| current.join(&value, domain))
-}
-
-#[cfg(test)]
-mod tests;
