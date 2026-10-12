@@ -124,21 +124,27 @@ fn default_observer_does_not_implicitly_start_timing() {
 fn concurrent_observer_clones_grant_session_ownership_to_exactly_one_caller() {
     let observer = Observer::default();
     let ready = std::sync::Barrier::new(3);
+    let owners = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
         let first = observer.clone();
         let second = observer.clone();
         let ready = &ready;
-        let first = scope.spawn(move || {
+        let owners = &owners;
+        scope.spawn(move || {
             ready.wait();
-            first.start_timing()
+            if first.start_timing() {
+                owners.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
         });
-        let second = scope.spawn(move || {
+        scope.spawn(move || {
             ready.wait();
-            second.start_timing()
+            if second.start_timing() {
+                owners.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
         });
         ready.wait();
-        assert_ne!(first.join().unwrap(), second.join().unwrap());
     });
+    assert_eq!(owners.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(observer.timing().started_at.is_some());
     assert!(!observer.start_timing());
     observer.finish_timing();
