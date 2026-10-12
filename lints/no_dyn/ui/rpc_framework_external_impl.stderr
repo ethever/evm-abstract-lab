@@ -1,0 +1,54 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_external_impl.rs:15:45
+   |
+LL |                 fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+   |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_external_impl.rs:15:57
+   |
+LL |                 fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+   |                                                         ^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_external_impl.rs:15:76
+   |
+LL |                   fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+   |  ____________________________________________________________________________^
+LL | |                     Some(self)
+LL | |                 }
+   | |_________________^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_external_impl.rs:16:21
+   |
+LL |                     Some(self)
+   |                     ^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_external_impl.rs:16:21
+   |
+LL |                     Some(self)
+   |                     ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_external_impl.rs:16:26
+   |
+LL |                     Some(self)
+   |                          ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 6 previous errors
+

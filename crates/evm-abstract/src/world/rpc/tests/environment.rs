@@ -20,7 +20,7 @@ use std::{sync::mpsc, thread};
 fn block_reply(request: &Json) -> Json {
     if request["method"] == "eth_feeHistory" {
         assert_eq!(request["params"], json!(["0x1", "0x2a", []]));
-        return json!({"jsonrpc":"2.0", "id":request["id"], "result": {"oldestBlock":"0x2a", "baseFeePerBlobGas":["0x123", "0x456"]}});
+        return json!({"jsonrpc":"2.0", "id":request["id"], "result": {"oldestBlock":"0x2a", "baseFeePerBlobGas":["0x123", "0x456"], "gasUsedRatio":[0.0]}});
     }
     let mut reply = healthy(request);
     if request["method"] == "eth_getBlockByHash" || request["method"] == "eth_getBlockByNumber" {
@@ -131,6 +131,7 @@ fn explicit_environment_overrides_survive_rpc_defaults_and_snapshot_stays_observ
 fn missing_optional_fees_stay_unknown_and_required_headers_fail_before_accounts() {
     thread::scope(|scope| {
         for missing in [
+            "hash",
             "parentHash",
             "number",
             "timestamp",
@@ -174,12 +175,56 @@ fn missing_optional_fees_stay_unknown_and_required_headers_fail_before_accounts(
 }
 
 #[test]
+fn null_required_header_fields_fail_and_null_optional_fees_stay_unknown() {
+    thread::scope(|scope| {
+        for field in [
+            "hash",
+            "parentHash",
+            "number",
+            "timestamp",
+            "miner",
+            "mixHash",
+            "gasLimit",
+        ] {
+            let server = Server::new(scope, move |request| {
+                let mut reply = healthy(request);
+                if request["method"] == "eth_getBlockByHash" {
+                    reply["result"][field] = Json::Null;
+                }
+                Reply::Json(reply)
+            });
+            let error = rpc::load(&server.input()).unwrap_err();
+            assert!(matches!(error, RpcError::Response { .. }));
+            assert_eq!(error.context().method, "eth_getBlockByHash");
+            assert_eq!(server.requests().len(), 2);
+        }
+        let server = Server::new(scope, |request| {
+            let mut reply = healthy(request);
+            if request["method"] == "eth_getBlockByHash" {
+                for field in ["baseFeePerGas", "excessBlobGas", "blobGasUsed"] {
+                    reply["result"][field] = Json::Null;
+                }
+            }
+            Reply::Json(reply)
+        });
+        let world = rpc::load(&server.input()).unwrap();
+        let environment = world.snapshot_environment().unwrap();
+        assert_eq!(environment.base_fee, None);
+        assert_eq!(environment.blob_base_fee, None);
+        assert_eq!(environment.excess_blob_gas, None);
+        assert_eq!(environment.blob_gas_used, None);
+    });
+}
+
+#[test]
 fn inconsistent_fee_or_header_observations_never_publish_a_snapshot() {
     thread::scope(|scope| {
         for failure in [
             "header",
             "reorg",
             "oldest",
+            "missing-oldest",
+            "missing-fees",
             "fees",
             "unavailable",
             "one-blob-field",
@@ -196,6 +241,18 @@ fn inconsistent_fee_or_header_observations_never_publish_a_snapshot() {
                     }
                     "oldest" if request["method"] == "eth_feeHistory" => {
                         reply["result"]["oldestBlock"] = json!("0x29")
+                    }
+                    "missing-oldest" if request["method"] == "eth_feeHistory" => {
+                        reply["result"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("oldestBlock");
+                    }
+                    "missing-fees" if request["method"] == "eth_feeHistory" => {
+                        reply["result"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("baseFeePerBlobGas");
                     }
                     "fees" if request["method"] == "eth_feeHistory" => {
                         reply["result"]["baseFeePerBlobGas"] = json!(["0x1"])
@@ -219,6 +276,11 @@ fn inconsistent_fee_or_header_observations_never_publish_a_snapshot() {
             }
             if failure == "unavailable" {
                 assert_eq!(error.failure().rpc_code, Some(-32601));
+            }
+            if failure.starts_with("missing-") {
+                assert!(matches!(error, RpcError::Response { .. }));
+                assert!(error.failure().json_line.is_some());
+                assert_eq!(error.context().method, "eth_feeHistory");
             }
             assert!(
                 !server

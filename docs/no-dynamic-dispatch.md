@@ -1,6 +1,11 @@
 # 禁止 Rust 动态派发
 
-应用 workspace 禁止 trait object（`dyn Trait`）和函数指针（`fn(...)`），包括库、CLI、示例和测试。使用具体类型、泛型、`impl Trait` 或枚举表达分支；闭包和函数项保持具体类型时允许。唯一的应用层例外是 [`evm_abstract_web::framework`](../crates/evm-abstract-web/src/framework.rs)：egui 的 `TextBuffer` 编辑接口、egui_tiles 的 `Behavior` 布局回调、eframe 的应用回调和 wasm-bindgen 的 JavaScript 回调需要类型擦除，因此在这个框架接入模块内允许动态派发。自绘控件、前端状态、协议和后端仍遵循禁用规则。
+应用 workspace 默认禁止 trait object（`dyn Trait`）和函数指针（`fn(...)`），包括库、CLI、示例和测试。使用具体类型、泛型、`impl Trait` 或枚举表达分支；闭包和函数项保持具体类型时允许。框架接入有两个精确的模块例外：
+
+- [`evm_abstract_web::framework`](../crates/evm-abstract-web/src/framework.rs) 接入 egui 的 `TextBuffer`、egui_tiles 的 `Behavior`、eframe 应用回调和 wasm-bindgen JavaScript 回调。
+- [`evm_abstract::world::rpc::framework`](../crates/evm-abstract/src/world/rpc/framework.rs) 接入 Alloy 的 RPC client 和 transport。Alloy 的 `RpcCall` 默认响应映射使用函数指针，transport 接口返回装箱的异步对象；适配模块承接这些 SDK 类型，并保留项目的有界传输和具体错误。
+
+例外只用于框架接入。自绘控件、前端状态、共享协议、HTTP 服务、抽象分析、SSA，以及 RPC 的快照和按需采集逻辑继续遵循禁用规则。Alloy 接口依据见 [`RpcCall`](https://docs.rs/alloy-rpc-client/2.5.0/alloy_rpc_client/struct.RpcCall.html) 和 [`Transport`](https://docs.rs/alloy-transport/2.5.0/alloy_transport/trait.Transport.html)。
 
 ## 运行
 
@@ -34,7 +39,7 @@ lint 库有独立的 [`rust-toolchain.toml`](../lints/no_dyn/rust-toolchain.toml
 
 [`no_dyn`](../lints/no_dyn/src/lib.rs) 实现 `LateLintPass`，检查 rustc 完成类型检查后的类型和隐式转换。除了显式 `dyn` 和函数指针，它还检查类型别名、关联类型、嵌套泛型、推断出的值、函数签名，以及转换为 trait object 或函数指针的表达式。宏展开后的代码也检查，不能用本地宏或外部宏隐藏违规代码。
 
-lint 的默认级别为 `forbid`，`#[allow(no_dyn)]` 不能降低级别。浏览器接入例外同时检查 crate 身份和 rustc 的真实定义父链：只匹配 `evm_abstract_web` crate 顶层的 `framework` 模块及其词法子项，包括模块内的 trait impl 方法。判断不依赖 Self 类型或格式化符号路径；`framework` 类型在模块外的 impl、其他 crate 的同名模块、前端控件及其嵌套的同名模块均不适用。UI 回归验证模块内的外部 trait 实现、动态返回值与转换、Drop 回调清理，以及上述拒绝范围。
+lint 的默认级别为 `forbid`，`#[allow(no_dyn)]` 不能降低级别。框架接入例外同时检查 crate 身份和 rustc 的真实定义父链：只匹配 `evm_abstract_web::framework` 和 `evm_abstract::world::rpc::framework` 的精确模块位置及其词法子项，包括模块内的 trait impl 方法。判断不依赖 Self 类型或格式化符号路径；框架类型在模块外的 impl、其他 crate 的同名模块、控件或采集模块内嵌套的同名模块均不适用。调用接入模块也不会豁免调用方：带有函数指针默认泛型参数的 RPC call、装箱 future 等动态类型必须在适配模块内消化，再向采集逻辑返回具体结果。UI 回归验证模块内的外部 trait 实现、动态返回值与转换、Drop 回调清理、依赖默认泛型和别名，以及上述拒绝范围。
 
 编译器支持代码另外排除 builtin `Debug` 派生中的格式化支持、builtin `#[test]` / `#[bench]` 回调和测试 / proc-macro 入口框架。通过编译器的 builtin 标记识别来源，用户自定义同名宏不能绕过；原始字段类型、测试函数和嵌入的用户表达式继续检查。rustc 对静态闭包和异步闭包使用的内部函数指针表示不会被误认为用户创建的函数指针。
 

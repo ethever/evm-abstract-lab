@@ -7,6 +7,9 @@
 //! The caller fully trusts the endpoint; account facts use ordinary state RPC.
 
 mod failure;
+/// The bounded Alloy client/transport framework adapter. Analysis and snapshot
+/// policies stay in the ordinary RPC loader and session modules.
+pub mod framework;
 mod loader;
 pub use failure::{
     CodeFailure, ConfigurationReason, DelegationFailure, FailureCause, HeaderField, HeaderValue,
@@ -27,7 +30,6 @@ use crate::{
 };
 use alloy_primitives::{Address, B256, U256};
 use loader::Loader;
-use reqwest::Client;
 use serde::Serialize;
 use std::{collections::BTreeSet, fmt, time::Duration};
 
@@ -544,33 +546,16 @@ fn configured_loader_with_control(input: &RpcInput, control: &Control) -> Result
             reason: ConfigurationReason::InitialAccounts,
         });
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|source| RpcError::Runtime {
-            context: Box::new(client_context.clone()),
-            source,
-        })?;
-    let client = Client::builder()
-        .timeout(input.timeout)
-        .connect_timeout(input.timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|source| RpcError::Transport {
-            context: Box::new(client_context),
-            source: source.without_url(),
-        })?;
+    let client = framework::Client::new(input, control)?;
     Ok(Loader {
         input: input.clone(),
         client,
-        runtime: Some(runtime),
         control: control.clone(),
         header: None,
         environment: None,
         round: 0,
         acquired_accounts: 0,
         acquired_slots: 0,
-        next_id: 0,
         chain_id: None,
         block_hash: None,
         block_number: None,

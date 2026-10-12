@@ -951,7 +951,12 @@ fn rpc_result(request: &Json, fixture: RpcFixture) -> Json {
         "eth_chainId" => json!("0x1"),
         "eth_getBlockByHash" => {
             assert_eq!(request["params"], json!([BLOCK, false]));
-            json!({"hash":BLOCK,"number":"0x10", "parentHash":BLOCK, "timestamp":"0x1234", "miner":"0x0000000000000000000000000000000000000033", "mixHash":BLOCK, "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7"})
+            json!({"hash":BLOCK,"number":"0x10", "parentHash":BLOCK, "timestamp":"0x1234", "miner":"0x0000000000000000000000000000000000000033", "mixHash":BLOCK, "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7",
+                "sha3Uncles":"0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                "stateRoot":BLOCK, "transactionsRoot":BLOCK, "receiptsRoot":BLOCK,
+                "logsBloom":format!("0x{}", "00".repeat(256)),
+                "difficulty":"0x0", "gasUsed":"0x0", "extraData":"0x",
+                "nonce":"0x0000000000000000"})
         }
         "eth_getCode" => json!(format!("0x{code}")),
         "eth_getBalance" => json!("0x1000000"),

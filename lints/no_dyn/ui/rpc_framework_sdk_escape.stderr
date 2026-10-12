@@ -1,0 +1,43 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_sdk_escape.rs:24:28
+   |
+LL |                 let call = framework::request();
+   |                            ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_sdk_escape.rs:24:21
+   |
+LL |                 let call = framework::request();
+   |                     ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_sdk_escape.rs:25:25
+   |
+LL |                 let _ = call.resolve();
+   |                         ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_sdk_escape.rs:26:32
+   |
+LL |                 let _pending = framework::transport();
+   |                                ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_sdk_escape.rs:26:21
+   |
+LL |                 let _pending = framework::transport();
+   |                     ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 5 previous errors
+

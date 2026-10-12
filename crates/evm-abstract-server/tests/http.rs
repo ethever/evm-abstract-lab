@@ -4,13 +4,13 @@ use evm_abstract_protocol::{
     AnalysisInput, AnalyzeReply, AnalyzeRequest, ApiErrorCode, BlockSelector, ErrorDetails,
     JobReply, JobState, RpcInput, RpcProvidersReply,
 };
-use evm_abstract_server::http::serve_connection;
+use evm_abstract_server::http::{router, serve_with_shutdown};
 use evm_abstract_server::jobs::{Config, Pool};
 use evm_abstract_server::rpc_providers::Registry;
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
-    net::{Shutdown, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
     sync::mpsc,
@@ -57,25 +57,60 @@ fn pool() -> Pool {
 }
 
 fn exchange_with_pool(bytes: &[u8], assets: &Path, pool: &Pool) -> Vec<u8> {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let assets = assets.to_owned();
-    thread::scope(|scope| {
-        // Scope joins and propagates server panics without exposing std's
-        // dynamically typed panic payload at this crate's typed boundary.
-        scope.spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            serve_connection(stream, &assets, pool).unwrap();
-        });
+    // This single-exchange helper explicitly requests closure; keepalive has a
+    // separate test that sends a second request on the same real connection.
+    let boundary = bytes
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap();
+    let mut request = bytes[..boundary].to_vec();
+    request.extend_from_slice(b"\r\nConnection: close\r\n\r\n");
+    request.extend_from_slice(&bytes[boundary + 4..]);
+    with_server(assets, pool, |address| {
         let mut client = TcpStream::connect(address).unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(15)))
             .unwrap();
-        client.write_all(bytes).unwrap();
-        client.shutdown(Shutdown::Write).unwrap();
+        client.write_all(&request).unwrap();
         let mut response = Vec::new();
         client.read_to_end(&mut response).unwrap();
         response
+    })
+}
+
+struct Stop(Option<tokio::sync::oneshot::Sender<()>>);
+impl Drop for Stop {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
+fn with_server<T>(assets: &Path, pool: &Pool, interact: impl FnOnce(SocketAddr) -> T) -> T {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let assets = assets.to_owned();
+    let pool = pool.clone();
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
+    thread::scope(|scope| {
+        scope.spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                serve_with_shutdown(listener, router(assets, pool), async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+            });
+        });
+        let _stop = Stop(Some(shutdown));
+        interact(address)
     })
 }
 
@@ -293,12 +328,12 @@ fn framing_errors_and_limits_return_typed_envelopes() {
             "413",
         ),
         (
-            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n",
+            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n",
             ApiErrorCode::InvalidRequest,
             "400",
         ),
         (
-            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nOrigin: http://localhost\r\nContent-Length: 0\r\n\r\n",
             ApiErrorCode::InvalidRequest,
             "400",
         ),
@@ -308,7 +343,7 @@ fn framing_errors_and_limits_return_typed_envelopes() {
             "400",
         ),
         (
-            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n{}",
+            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n",
             ApiErrorCode::InvalidRequest,
             "400",
         ),
@@ -333,6 +368,204 @@ fn framing_errors_and_limits_return_typed_envelopes() {
 }
 
 #[test]
+fn origin_server_rejects_proxy_targets_and_ambiguous_paths() {
+    let assets = Assets::new();
+    for target in [
+        "http://other.example/api/rpc-providers",
+        "http://localhost/api/rpc-providers",
+        "//api/rpc-providers",
+    ] {
+        let request =
+            format!("GET {target} HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\n\r\n");
+        let (headers, reply) = decode_job(&exchange(request.as_bytes(), &assets.0));
+        assert!(headers.starts_with("HTTP/1.1 400"), "{headers}");
+        assert_eq!(reply.result.unwrap_err().code, ApiErrorCode::InvalidRequest);
+    }
+}
+
+fn chunked(body: &[u8]) -> Vec<u8> {
+    let mut request = b"POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+    for chunk in body.chunks(4096) {
+        request.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+        request.extend_from_slice(chunk);
+        request.extend_from_slice(b"\r\n");
+    }
+    request.extend_from_slice(b"0\r\n\r\n");
+    request
+}
+
+#[test]
+fn hyper_accepts_chunked_json_and_bounds_the_actual_streamed_body() {
+    let assets = Assets::new();
+    let pool = pool();
+    let body = serde_json::to_vec(&AnalyzeRequest::default()).unwrap();
+    let (headers, reply) = decode_job(&exchange_with_pool(&chunked(&body), &assets.0, &pool));
+    assert!(headers.starts_with("HTTP/1.1 202"));
+    assert!(reply.result.is_ok());
+    let oversized = vec![b' '; evm_abstract_protocol::MAX_REQUEST_BYTES + 1];
+    let (headers, reply) = decode_job(&exchange_with_pool(&chunked(&oversized), &assets.0, &pool));
+    assert!(headers.starts_with("HTTP/1.1 413"));
+    assert_eq!(
+        reply.result.unwrap_err().code,
+        ApiErrorCode::RequestTooLarge
+    );
+    pool.shutdown().unwrap();
+}
+
+fn read_response(reader: &mut BufReader<TcpStream>) -> (String, Vec<u8>) {
+    let mut header = String::new();
+    let mut length = None;
+    loop {
+        let mut line = String::new();
+        assert!(reader.read_line(&mut line).unwrap() > 0);
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = Some(value.trim().parse::<usize>().unwrap());
+        }
+        header.push_str(&line);
+        if line == "\r\n" {
+            break;
+        }
+    }
+    let mut body = vec![0; length.expect("framework exposes a known body length")];
+    reader.read_exact(&mut body).unwrap();
+    (header, body)
+}
+
+#[test]
+fn hyper_reuses_one_tcp_connection_for_a_second_request() {
+    let assets = Assets::new();
+    let pool = pool();
+    with_server(&assets.0, &pool, |address| {
+        let client = TcpStream::connect(address).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(client);
+        reader
+            .get_mut()
+            .write_all(b"GET /api/rpc-providers HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let (header, body) = read_response(&mut reader);
+        assert!(header.starts_with("HTTP/1.1 200"));
+        assert!(!header.to_ascii_lowercase().contains("connection: close"));
+        assert!(
+            serde_json::from_slice::<RpcProvidersReply>(&body)
+                .unwrap()
+                .result
+                .unwrap()
+                .is_empty()
+        );
+        reader
+            .get_mut()
+            .write_all(b"GET /app.wasm HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let (header, body) = read_response(&mut reader);
+        assert_eq!(body, b"\0asm");
+        let header = header.to_ascii_lowercase();
+        assert!(header.contains("content-type: application/wasm"));
+        assert!(header.contains("cache-control: no-store"));
+        assert!(header.contains("x-content-type-options: nosniff"));
+    });
+    pool.shutdown().unwrap();
+}
+
+#[test]
+fn connection_capacity_includes_clients_still_sending_headers() {
+    let assets = Assets::new();
+    let pool = pool();
+    with_server(&assets.0, &pool, |address| {
+        let mut occupied = Vec::new();
+        for _ in 0..32 {
+            let mut client = TcpStream::connect(address).unwrap();
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
+                .unwrap();
+            occupied.push(client);
+        }
+        let mut waiting = TcpStream::connect(address).unwrap();
+        waiting
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        waiting
+            .write_all(
+                b"GET /api/rpc-providers HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        let mut byte = [0];
+        let blocked = waiting.read(&mut byte).unwrap_err();
+        assert!(matches!(
+            blocked.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+
+        // The admitted connection releases its permit when its transport
+        // finishes, so the next client can enter without waiting for deadlines.
+        let mut finished = occupied.remove(0);
+        finished
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        finished.write_all(b"Connection: close\r\n\r\n").unwrap();
+        let mut first_reply = Vec::new();
+        finished.read_to_end(&mut first_reply).unwrap();
+        assert!(first_reply.starts_with(b"HTTP/1.1 200"));
+        waiting
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reply = Vec::new();
+        waiting.read_to_end(&mut reply).unwrap();
+        assert!(reply.starts_with(b"HTTP/1.1 200"));
+    });
+    pool.shutdown().unwrap();
+}
+
+#[test]
+fn malformed_http_is_rejected_by_hyper_before_application_json() {
+    let assets = Assets::new();
+    for request in [
+        b"POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+        b"GET / HTTP/1.1\r\nHost: localhost\r\nHost: localhost\r\n\r\n".to_vec(),
+        format!("GET / HTTP/1.1\r\nHost: localhost\r\nX-Fill: {}\r\n\r\n", "a".repeat(9000)).into_bytes(),
+    ] {
+        let response = exchange(&request, &assets.0);
+        let header = String::from_utf8_lossy(&response);
+        assert!(header.starts_with("HTTP/1.1 400") || header.starts_with("HTTP/1.1 431"), "{header}");
+    }
+}
+
+#[test]
+fn request_body_deadline_is_total_even_when_the_declared_body_is_incomplete() {
+    let assets = Assets::new();
+    let started = Instant::now();
+    let (header, reply) = decode_job(&exchange(b"POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n{}", &assets.0));
+    assert!(header.starts_with("HTTP/1.1 400"));
+    assert_eq!(reply.result.unwrap_err().code, ApiErrorCode::InvalidRequest);
+    assert!(started.elapsed() >= Duration::from_secs(9));
+}
+
+#[test]
+fn header_deadline_releases_a_client_that_never_finishes_headers() {
+    let assets = Assets::new();
+    let pool = pool();
+    with_server(&assets.0, &pool, |address| {
+        let mut client = TcpStream::connect(address).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
+            .unwrap();
+        let started = Instant::now();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(9));
+        assert!(response.is_empty() || response.starts_with(b"HTTP/1.1 408"));
+    });
+    pool.shutdown().unwrap();
+}
+
+#[test]
 fn static_host_has_wasm_mime_and_rejects_traversal_and_missing_paths() {
     let assets = Assets::new();
     let response = exchange(
@@ -342,7 +575,8 @@ fn static_host_has_wasm_mime_and_rejects_traversal_and_missing_paths() {
     assert!(
         std::str::from_utf8(&response)
             .unwrap()
-            .contains("Content-Type: application/wasm")
+            .to_ascii_lowercase()
+            .contains("content-type: application/wasm")
     );
     let response = exchange(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", &assets.0);
     assert!(

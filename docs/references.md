@@ -60,6 +60,8 @@ execution-specs 的默认分支会更新。以上 Cancun 链接用于相应规�
 | opcode 名称与栈 I/O 元数据 | [revm-bytecode 43.0.0](https://docs.rs/revm-bytecode/43.0.0/revm_bytecode/) | 复用元数据，再按所选 fork 检查启用；PUSH 宽度与立即数由 [`bytecode.rs`](../crates/evm-abstract/src/bytecode.rs) 解码 |
 | 原生预编译计算 | [revm-precompile 43.0.3](https://docs.rs/revm-precompile/43.0.3/revm_precompile/) | 选 fork 注册表；分析器另负责输入资格、返回流及累计工作预算 |
 | 256 bit 数与模运算 | [alloy-primitives 1.7.3](https://docs.rs/alloy-primitives/1.7.3/alloy_primitives/) | 使用 U256 与库算法；测试和 revm 对照 |
+| 浏览器请求如何进入分析服务 | [Axum 0.8.9](https://docs.rs/axum/0.8.9/axum/)、[Hyper HTTP/1 server](https://docs.rs/hyper/1.11.1/hyper/server/conn/http1/struct.Builder.html) | 复用路由、HTTP 解析与响应传输；服务另负责同源、资源上限、任务调度和静态路径规则 |
+| 标准 Ethereum RPC 与区块选择 | [Alloy RPC client 2.5.0](https://docs.rs/alloy-rpc-client/2.5.0/alloy_rpc_client/)、[Ethereum RPC types](https://docs.rs/alloy-rpc-types-eth/2.5.0/alloy_rpc_types_eth/) | 复用 SDK 请求流程和数据类型；分析器保留固定快照、按需采集与累计预算 |
 | 固定的 Rust 工具链 | [Rust 1.99.0 发行记录](https://github.com/rust-lang/rust/releases/tag/1.99.0) | [`rust-toolchain.toml`](../rust-toolchain.toml) 指定版本；不表示永远是最新稳定版 |
 | Nix 怎样读取同一份 Rust 版本文件 | [rust-overlay 的 fromRustupToolchainFile](https://github.com/oxalica/rust-overlay#cheat-sheet-common-usage-of-rust-bin) | Nix 与 rustup 共用工具链配置 |
 | Rust 的 Nix 构建与依赖缓存 | [crane 官方文档](https://crane.dev/) | 构建、Clippy 和 Rustdoc 使用同一套锁定工具链 |

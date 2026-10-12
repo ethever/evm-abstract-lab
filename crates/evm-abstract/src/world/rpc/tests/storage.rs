@@ -139,13 +139,13 @@ fn incremental_storage_failures_retain_slot_provenance_without_partial_installat
                     }
                     "http" => Reply::Http(503),
                     "json" => Reply::Bytes(b"not json".to_vec()),
-                    "limit" => Reply::Bytes(vec![b' '; 1025]),
+                    "limit" => Reply::Bytes(vec![b' '; 4097]),
                     "timeout" => Reply::Delay(request_timeout.saturating_mul(2)),
                     _ => unreachable!(),
                 }
             });
             let mut input = server.input();
-            input.max_response_bytes = 1024;
+            input.max_response_bytes = 4096;
             if case == "timeout" {
                 input.timeout = request_timeout;
             }

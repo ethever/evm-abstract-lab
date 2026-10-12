@@ -25,6 +25,28 @@ license      = "MIT"
 repository   = "https://github.com/ethever/evm-abstract-lab"
 
 [workspace.dependencies]
+axum = { version = "=0.8.9", default-features = false, features = [
+    "http1",
+    "json",
+    "tokio",
+] }
+hyper = { version = "=1.11.1", features = ["http1", "server"] }
+hyper-util = { version = "=0.1.21", features = [
+    "tokio",
+    "service",
+    "server-graceful",
+    "http1",
+] }
+tower = { version = "=0.5.3", default-features = false }
+tokio-io-timeout = "=1.2.1"
+alloy = { version = "=2.5.0", default-features = false, features = [
+    "std",
+    "rpc-client",
+    "rpc-types",
+    "json-rpc",
+    "reqwest",
+    "reqwest-rustls-tls",
+] }
 alloy-primitives = { version = "=1.7.3", features = ["serde"] }
 revm-bytecode = "=43.0.0"
 petgraph = "=0.8.3"

@@ -1,0 +1,35 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_other_crate.rs:8:38
+   |
+LL |                 let callback: fn() = || {};
+   |                                      ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_other_crate.rs:8:21
+   |
+LL |                 let callback: fn() = || {};
+   |                     ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_other_crate.rs:8:31
+   |
+LL |                 let callback: fn() = || {};
+   |                               ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_other_crate.rs:9:17
+   |
+LL |                 callback();
+   |                 ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 4 previous errors
+
