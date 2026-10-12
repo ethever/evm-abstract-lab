@@ -203,11 +203,12 @@ fn result_observations_preserve_small_work_budget_receipts() {
             assert!(execution.outcomes.is_empty());
             assert_eq!(
                 execution.frontiers,
-                vec![(
-                    if maximum == 0 { 0 } else { 2 },
-                    FrontierReason::Work,
-                    Some(execution.payload.key()),
-                )]
+                vec![crate::analysis::transfer::ExecutionFrontier {
+                    pc: if maximum == 0 { 0 } else { 2 },
+                    reason: FrontierReason::Work,
+                    target: Some(execution.payload.key()),
+                    range: None,
+                }]
             );
         } else {
             assert!(execution.frontiers.is_empty());
@@ -249,7 +250,12 @@ fn result_observations_preserve_small_work_budget_receipts() {
             assert!(execution.successors.is_empty());
             assert_eq!(
                 execution.frontiers,
-                vec![(2, FrontierReason::Work, Some(execution.payload.key()),)]
+                vec![crate::analysis::transfer::ExecutionFrontier {
+                    pc: 2,
+                    reason: FrontierReason::Work,
+                    target: Some(execution.payload.key()),
+                    range: None,
+                }]
             );
         } else {
             assert!(execution.frontiers.is_empty());

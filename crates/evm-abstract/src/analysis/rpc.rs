@@ -400,6 +400,7 @@ fn resource_frontier(analysis: &mut WorldAnalysis, reason: FrontierReason) {
         target: None,
         pc: None,
         reason,
+        range: None,
     });
 }
 

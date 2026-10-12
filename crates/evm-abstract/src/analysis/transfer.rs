@@ -75,9 +75,17 @@ pub(super) struct Execution {
     pub instruction_values: Vec<InstructionValue>,
     pub successors: Vec<Successor>,
     pub diagnostics: Vec<(usize, DiagnosticKind)>,
-    pub frontiers: Vec<(usize, FrontierReason, Option<MachineKey>)>,
+    pub frontiers: Vec<ExecutionFrontier>,
     pub outcomes: Vec<Outcome>,
     pub completed_calls: Vec<CompletedCall>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ExecutionFrontier {
+    pub pc: usize,
+    pub reason: FrontierReason,
+    pub target: Option<MachineKey>,
+    pub range: Option<super::RangeWitness>,
 }
 
 impl Execution {
@@ -147,9 +155,16 @@ fn zero() -> AbstractValue {
     AbstractValue::constant(U256::ZERO)
 }
 fn boundary(result: &mut Execution, pc: usize, reason: FrontierReason) {
-    result
-        .frontiers
-        .push((pc, reason, Some(result.payload.key())));
+    boundary_on(result, pc, reason, result.payload.key());
+}
+
+fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target: MachineKey) {
+    result.frontiers.push(ExecutionFrontier {
+        pc,
+        reason,
+        target: Some(target),
+        range: None,
+    });
 }
 
 fn successor(
@@ -173,6 +188,9 @@ fn touch_memory(
     context: &mut TransferContext<'_>,
     pc: usize,
 ) -> bool {
+    if !ranges::memory(result, offset, size, context, pc) {
+        return false;
+    }
     let config = context.config;
     let domain = context.domain;
     if !context.budget.charge(byte_work(
@@ -690,6 +708,10 @@ pub(super) fn execute(
                 }
             }
             opcode::MSTORE | opcode::MSTORE8 => {
+                let size = constant(if op == opcode::MSTORE { 32 } else { 1 });
+                if !touch_memory(&mut result, &args[0], &size, context, pc) {
+                    return result;
+                }
                 let memory = &mut result.payload.active_mut().memory;
                 let write = if op == opcode::MSTORE {
                     memory.write_word(&args[0], &args[1], config.max_memory_bytes, domain)
@@ -717,19 +739,25 @@ pub(super) fn execute(
                     opcode::RETURNDATACOPY => result.payload.active().returndata.clone(),
                     _ => result.payload.active().memory.clone(),
                 };
-                if op == opcode::RETURNDATACOPY {
-                    let (valid, invalid) = return_copy_bounds(&args[1], &args[2], source.len());
-                    if invalid {
-                        failure(&mut result, context, pc);
-                    }
-                    if !valid {
-                        result.mark_instruction(InstructionProgress::Dispatched);
-                        return result;
-                    }
+                if op == opcode::RETURNDATACOPY
+                    && !ranges::returndata(
+                        &mut result,
+                        &args[1],
+                        &args[2],
+                        source.len(),
+                        context,
+                        pc,
+                    )
+                {
+                    result.mark_instruction(InstructionProgress::Dispatched);
+                    return result;
                 }
                 if op == opcode::MCOPY
                     && !touch_memory(&mut result, &args[1], &args[2], context, pc)
                 {
+                    return result;
+                }
+                if !touch_memory(&mut result, &args[0], &args[2], context, pc) {
                     return result;
                 }
                 if result
@@ -751,6 +779,9 @@ pub(super) fn execute(
                 }
             }
             opcode::EXTCODECOPY => {
+                if !touch_memory(&mut result, &args[1], &args[3], context, pc) {
+                    return result;
+                }
                 let symbolic_owner = entry.environment.to.as_concrete().is_none();
                 let exact_self = symbolic_owner
                     && args[0].identity().same_identity(
@@ -1094,30 +1125,6 @@ pub(super) fn execute(
         );
     }
     result
-}
-
-fn return_copy_bounds(
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    length: &AbstractValue,
-) -> (bool, bool) {
-    let (Some(offsets), Some(sizes), Some(lengths)) =
-        (offset.constants(), size.constants(), length.constants())
-    else {
-        return (true, true);
-    };
-    let mut valid = false;
-    let mut invalid = false;
-    for offset in offsets {
-        for size in sizes {
-            for length in lengths {
-                let fits = offset.checked_add(*size).is_some_and(|end| end <= *length);
-                valid |= fits;
-                invalid |= !fits;
-            }
-        }
-    }
-    (valid, invalid)
 }
 
 #[cfg(test)]

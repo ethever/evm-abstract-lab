@@ -34,7 +34,7 @@ pub use machine::{
     CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence, FrameCode, FrameKey,
     FrameState, FrontierReason, InstructionProgress, InstructionValue, MachineEdge,
     MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome, MachinePayload, MachineState,
-    OutcomeKind, RootFrame, WorldAnalysis,
+    OutcomeKind, RangeKind, RangeRequest, RangeWitness, RootFrame, WorldAnalysis,
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,

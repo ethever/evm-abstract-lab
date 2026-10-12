@@ -12,11 +12,13 @@ use serde::Serialize;
 
 mod evidence;
 mod frame;
+mod range;
 mod stack;
 mod symbolic;
 
 pub use evidence::{ExecutionEvidence, InstructionProgress, InstructionValue};
 pub use frame::{ChildFrame, FrameState, RootFrame};
+pub use range::{RangeKind, RangeRequest, RangeWitness};
 pub use stack::CallStack;
 
 /// One shared budget covers the root and every callee.
@@ -293,7 +295,7 @@ pub enum FrontierReason {
     SummaryWork,
     /// Another frame would exceed the external-call depth budget.
     CallDepth,
-    /// A modeled byte range exceeds the cap or has unbounded size.
+    /// A modeled byte range exceeds the declared memory or representation policy.
     Memory,
     /// A relational query could not finish within the declared symbolic/SMT policy.
     Relations(crate::domain::relational::QueryReason),
@@ -336,6 +338,8 @@ pub struct MachineFrontier {
     pub pc: Option<usize>,
     /// Typed explanation for incomplete coverage.
     pub reason: FrontierReason,
+    /// Conditional pre-effect evidence for a range boundary, when applicable.
+    pub range: Option<RangeWitness>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
