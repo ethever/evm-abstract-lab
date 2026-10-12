@@ -29,6 +29,7 @@ mod budget;
 mod calls;
 pub(super) mod create;
 mod precompile;
+mod ranges;
 mod relations;
 
 pub(super) use crate::resource::WorkBudget;
