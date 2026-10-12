@@ -59,6 +59,34 @@ fn call(op: u8, target: u16, value: u8, input: u8, output: u8) -> String {
 }
 
 #[test]
+fn static_value_call_faults_before_an_unrepresentable_memory_access() {
+    let code = format!("5f5f60017f{}60016102005af100", "ff".repeat(32));
+    let world = world(&[(0x101, &code), (0x200, "00")]);
+    let mut entry = entry();
+    entry.environment.is_static = true;
+    let analysis = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    assert_eq!(
+        analysis.status(),
+        Status::Converged,
+        "{:?}",
+        analysis.frontiers()
+    );
+    assert!(analysis.frontiers().is_empty());
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .all(|outcome| outcome.kind == OutcomeKind::Failure)
+    );
+    assert!(
+        analysis
+            .edges()
+            .iter()
+            .all(|edge| edge.kind != MachineEdgeKind::Call)
+    );
+}
+
+#[test]
 fn call_context_is_intrinsic_and_retained_across_each_call_kind() {
     for op in [0xf1, 0xf2, 0xf4, 0xfa] {
         let caller = format!("{}00", call(op, 0x200, 9, 0, 0));
