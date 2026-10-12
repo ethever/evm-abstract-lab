@@ -1492,7 +1492,7 @@ def inspector_controls_interactions(browser, url: str, output: Path):
             assert not inspect_shortcut_events(page)[-1]["prevented"]
 
         page.evaluate("""() => {
-            const outside=document.createElement('button');outside.id='outside-workbench';
+            const outside=document.createElement('input');outside.id='outside-workbench';outside.type='text';
             outside.style.position='fixed';outside.style.left='-1000px';
             document.body.append(outside);outside.focus();
         }""")
@@ -1528,7 +1528,8 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
         assert inspector_frame_tab(page, canvas) == maximized
         canvas.click(position={"x": 1350, "y": (maximized[1] + maximized[3]) / 2})
-        expect(status).to_contain_text(re.compile("docked", re.IGNORECASE))
+        expect(status).not_to_contain_text(re.compile("maximized", re.IGNORECASE))
+        expect(status).to_contain_text("Inspector: Frame")
         restored = inspector_frame_tab(page, canvas)
         assert abs(restored[1] - dragged[1]) <= 2, (dragged, restored)
         resize_view(page, 1440, 450)
@@ -1537,6 +1538,23 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         returned = inspector_frame_tab(page, canvas)
         assert abs(returned[1] - dragged[1]) <= 2, (dragged, returned)
         expect(status).to_contain_text(original_selection)
+
+        select_inspector_tab(page, canvas, "SSA value", (returned[1] + returned[3]) / 2)
+        canvas.dblclick(position={"x": 85, "y": returned[3] + 16})
+        settle_gesture(page)
+        assert page.evaluate("document.activeElement.tagName") == "INPUT", "SSA value editor did not own text focus"
+        page.keyboard.press("Control+A")
+        page.keyboard.insert_text("1")
+        settle_gesture(page)
+        expect(status).to_contain_text("Inspector: SSA value %1")
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text("Inspector hidden")
+        assert inspect_shortcut_events(page)[-1]["prevented"], "text-agent shortcut leaked to the browser"
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text("Inspector: SSA value %1")
+        expect(status).to_contain_text(original_selection)
+        assert len(context.pages) == 1 and page.url.startswith(url)
+        canvas.screenshot(path=str(output / f"inspect-{platform}-text-focus-restored.png"))
         assert len(posts) == 1, "panel operations reran the analysis"
         assert not errors, errors
         results[platform] = {"initial": initial, "dragged": dragged, "maximized": maximized,
@@ -1588,6 +1606,9 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         page.mouse.move(2, 2)
         settle_gesture(page)
         expanded = canvas.screenshot(path=str(output / f"{kind}-facts-expanded.png"))
+        prefix_region = (6, tab[3] + 55, 600, tab[3] + 80)
+        prefix = text_pixels(page, expanded, prefix_region)
+        assert prefix["rows"], "account address/facts heading was not painted"
         # The wheel starts over the facts prefix. One shared scroll must carry
         # it all the way through the slot list, rather than trap it in 80 points.
         page.mouse.move(80, tab[3] + 115)
@@ -1595,14 +1616,19 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         settle_gesture(page)
         page.mouse.move(2, 2)
         settled = canvas.screenshot(path=str(output / f"{kind}-last-slots.png"))
-        assert expanded != settled, "facts/slot content did not scroll"
+        scrolled_prefix = text_pixels(page, settled, prefix_region)
+        assert prefix["hash"] != scrolled_prefix["hash"], "wheel remained trapped inside facts; account prefix did not move"
         page.mouse.move(80, tab[3] + 115)
         page.mouse.wheel(0, -6000)
         settle_gesture(page)
         page.mouse.move(2, 2)
-        canvas.screenshot(path=str(output / f"{kind}-facts-returned.png"))
-        evidence[kind] = {"entries": count, "last_slot": hex(count - 1),
-            "last_value": account[kind][-1]["value"]["constants"],
+        returned = canvas.screenshot(path=str(output / f"{kind}-facts-returned.png"))
+        returned_prefix = text_pixels(page, returned, prefix_region)
+        assert prefix["hash"] == returned_prefix["hash"], "returning to the top did not restore account facts"
+        evidence[kind] = {"entries": count, "expected_last_slot": hex(count - 1),
+            "expected_last_value": account[kind][-1]["value"]["constants"],
+            "prefix_region": prefix_region, "prefix": prefix,
+            "scrolled_prefix": scrolled_prefix, "returned_prefix": returned_prefix,
             "expanded_screenshot": f"{kind}-facts-expanded.png",
             "scrolled_screenshot": f"{kind}-last-slots.png"}
     assert len(posts) == 2, "storage inspection reran analysis"
