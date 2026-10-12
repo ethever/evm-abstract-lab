@@ -2554,6 +2554,8 @@ def timing_interactions(browser, args):
             assert visible_seconds(page, "Frontend preparation") == preparation
             canvas.click(position={"x": 75, "y": 978})
             expect(status).to_contain_text("Inspector: Timing")
+            inspector_title_action(page, canvas, "Maximize", (0, 778, 0, 778))
+            expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
             canvas.screenshot(path=str(args.output / "timing-completed.png"))
             page.unroute_all(behavior="wait")
             rpc.release.clear()
@@ -2577,7 +2579,7 @@ def timing_interactions(browser, args):
             # A typed worker failure freezes the new task, while the successful
             # report still retains its original backend timing evidence.
             open_input(page)
-            canvas.click(position={"x": 400, "y": 386})  # Bytecode source
+            canvas.click(position={"x": 380, "y": 361})  # Bytecode in the taller RPC modal
             page.keyboard.press("Escape")
             settle_gesture(page)
             failed = submit_bytecode(page, canvas, "not-bytecode", args.output / "timing-error-input.png")
