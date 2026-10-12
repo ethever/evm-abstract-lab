@@ -211,25 +211,37 @@ fn symbolic_export_limits_and_cancellation_are_typed_without_changing_native_val
     let mut pool = super::super::symbolic::Pool::new(&control);
     pool.limits.max_nodes = 0;
     let failure = pool.value(&source).unwrap_err();
+    let api::ErrorDetails::Export(detail) = failure.details else {
+        panic!("expected an export failure");
+    };
     assert!(matches!(
-        failure.details,
-        api::ErrorDetails::Export(api::ExportFailure {
+        *detail,
+        api::ExportFailure {
             kind: api::ExportFailureKind::Nodes,
             ..
-        })
+        }
     ));
+    assert_eq!(detail.limits, pool.limits);
+    assert_eq!(detail.usage, pool.usage);
+    assert_eq!(detail.written, None);
     assert_eq!(source, retained);
     let control = Control::new(Default::default());
     control.cancellation().cancel();
     let mut pool = super::super::symbolic::Pool::new(&control);
     let failure = pool.value(&source).unwrap_err();
     assert_eq!(failure.code, api::ApiErrorCode::Cancelled);
+    let api::ErrorDetails::Export(detail) = failure.details else {
+        panic!("expected an export failure");
+    };
     assert!(matches!(
-        failure.details,
-        api::ErrorDetails::Export(api::ExportFailure {
+        *detail,
+        api::ExportFailure {
             kind: api::ExportFailureKind::Cancelled,
             ..
-        })
+        }
     ));
+    assert_eq!(detail.limits, pool.limits);
+    assert_eq!(detail.usage, pool.usage);
+    assert_eq!(detail.written, None);
     assert_eq!(source, retained);
 }

@@ -202,13 +202,13 @@ impl<'a> Pool<'a> {
                 api::ApiErrorCode::Export
             },
             message: format!("report export {kind:?} boundary (required {required})"),
-            details: api::ErrorDetails::Export(api::ExportFailure {
+            details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
                 kind,
                 required,
                 limits: self.limits,
                 usage: self.usage,
                 written: None,
-            }),
+            })),
         }
     }
     pub fn charge(&mut self, work: usize) -> Result<(), api::ApiError> {
