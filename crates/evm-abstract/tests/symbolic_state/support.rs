@@ -166,6 +166,7 @@ pub(super) fn entry(calldata: ByteArray) -> Entry {
 }
 
 pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> WorldAnalysis {
+    let policy = config.clone();
     let started = Instant::now();
     let analysis = analyze_world(world, entry, config).unwrap();
     let max_memory_work = analysis
@@ -205,7 +206,7 @@ pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> 
         .max()
         .unwrap_or(0);
     eprintln!(
-        "issue111 evidence: fork={} status={:?} states={} transfers={} work={} max_memory_work={} max_stack_expr_nodes={} max_relation_work={} max_store_work={} summary_hits={} summary_misses={} elapsed_us={} frontiers={:?}",
+        "issue111 evidence: fork={} status={:?} states={} transfers={} work={} max_memory_work={} max_stack_expr_nodes={} max_relation_work={} max_store_work={} summary_hits={} summary_misses={} elapsed_us={} provider={:?} rlimit={} node_limit={} depth_limit={} constraint_limit={} memory_limit={} work_limit={} state_limit={} transfer_limit={} summaries={} frontiers={:?}",
         analysis.world().fork(),
         analysis.status(),
         analysis.states().len(),
@@ -218,6 +219,16 @@ pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> 
         analysis.summary_stats().hits,
         analysis.summary_stats().misses,
         started.elapsed().as_micros(),
+        policy.analysis.relations.provider,
+        policy.analysis.relations.rlimit,
+        policy.analysis.relations.max_nodes,
+        policy.analysis.relations.max_depth,
+        policy.analysis.relations.max_constraints,
+        policy.max_memory_bytes,
+        policy.max_work,
+        policy.analysis.max_states,
+        policy.analysis.max_transfers,
+        policy.use_summaries,
         analysis
             .frontiers()
             .iter()
