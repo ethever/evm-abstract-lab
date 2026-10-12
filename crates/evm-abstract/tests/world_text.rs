@@ -7,7 +7,10 @@ use evm_abstract::{
     analysis::{
         ExecutionConfig, FrontierReason, OutcomeKind, Status, WorldAnalysis, analyze_world,
     },
-    domain::AbstractValue,
+    domain::{
+        AbstractValue, Domain,
+        relational::{CheckResult, ValueQuery},
+    },
     render,
     world::{Account, ByteArray, Entry, Existence, World},
 };
@@ -162,13 +165,37 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
             .iter()
             .any(|outcome| outcome.kind == OutcomeKind::Failure)
     );
+    let returned: Vec<_> = analysis
+        .outcomes()
+        .iter()
+        .filter(|outcome| outcome.kind == OutcomeKind::Return)
+        .collect();
     assert!(
-        analysis
-            .outcomes()
-            .iter()
-            .any(|outcome| outcome.kind == OutcomeKind::Return
-                && outcome.data.exact_bytes() == Some([vec![0; 31], vec![1]].concat()))
+        !returned.is_empty(),
+        "the successful copy must reach RETURN"
     );
+    let domain = Domain::from_spec(analysis.domain_spec());
+    for outcome in returned {
+        assert_eq!(outcome.data.len().singleton(), Some(U256::from(32)));
+        let value = outcome
+            .data
+            .read_word_checked(&AbstractValue::constant(U256::ZERO), domain)
+            .unwrap();
+        // The caller entry joins failed and successful CALL results. The
+        // RETURNDATACOPY range condition excludes the empty-data alternative;
+        // the retained symbolic bytes and exit path together must still prove 1.
+        let relations = &analysis.states()[outcome.state]
+            .exit
+            .as_ref()
+            .expect("RETURN retains its completed payload")
+            .relations;
+        let limits = &analysis.config().analysis.relations;
+        assert_eq!(relations.check(limits), CheckResult::Sat);
+        assert_eq!(
+            relations.unique_value(&value.symbolic_expression().unwrap(), limits),
+            ValueQuery::Unique(U256::from(1))
+        );
+    }
     let text = render::world::text(&analysis);
     for title in [
         "Analysis",
@@ -213,6 +240,18 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
                 "missing full returned bytes:\n{report}"
             );
             assert!(report.contains("0x001f") && report.contains("01"));
+        }
+        for (offset, value) in outcome.data.stored_bytes() {
+            if value.singleton().is_none() {
+                assert!(
+                    report.lines().any(|line| {
+                        let row = cells(line);
+                        row.contains(&format!("0x{offset:04x}").as_str())
+                            && row.contains(&value.to_string().as_str())
+                    }),
+                    "missing abstract returned byte at {offset}:\n{report}"
+                );
+            }
         }
         for ((owner, slot), value) in outcome.store.slots() {
             let owner = alias(&text, "Addresses", "Hashes", &owner.to_string());

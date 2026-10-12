@@ -129,11 +129,7 @@ fn divergent_checkpoints_merge_pre_call_states_without_aliasing_live_versions() 
     let product = domain.join(&word(3), &word(5));
     assert_eq!(joined_read.numeric(), product.numeric());
     assert_eq!(joined_read.provenance(), product.provenance());
-    let ExprKind::SlotRead { state, key } = joined_read.expression().unwrap().kind() else {
-        panic!("joined read must retain the two checkpoint histories");
-    };
-    assert_eq!(key.as_constant(), Some(U256::ZERO));
-    assert_eq!(*state, expected.slot_root(caller, false).unwrap());
+    let state = expected.slot_root(caller, false).unwrap();
     let SlotStateKind::Ite {
         condition,
         then_state,
@@ -145,6 +141,17 @@ fn divergent_checkpoints_merge_pre_call_states_without_aliasing_live_versions() 
     assert!(matches!(condition.kind(), ExprKind::Fresh(_)));
     assert_eq!(*then_state, left_before.slot_root(caller, false).unwrap());
     assert_eq!(*else_state, right_before.slot_root(caller, false).unwrap());
+    let ExprKind::Ite {
+        condition: read_condition,
+        then_value,
+        else_value,
+    } = joined_read.expression().unwrap().kind()
+    else {
+        panic!("normalized checkpoint read must retain the storage join guard");
+    };
+    assert_eq!(read_condition, condition);
+    assert_eq!(then_value.as_constant(), Some(U256::from(3)));
+    assert_eq!(else_value.as_constant(), Some(U256::from(5)));
     assert!(joined_read.contains(U256::from(3)));
     assert!(joined_read.contains(U256::from(5)));
     assert_eq!(expected.read(caller, &word(0), domain), joined_read);
