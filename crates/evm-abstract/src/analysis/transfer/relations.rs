@@ -3,6 +3,8 @@
 //! Every native query reserves work from the transaction ledger. A resource or
 //! encoding limit retains the path and records why relational precision stopped.
 
+mod state;
+
 use super::{Execution, TransferContext, boundary};
 use crate::{
     analysis::{FrontierReason, MachinePayload},
@@ -242,6 +244,21 @@ pub(super) fn branch(
         }
     }
     match refine(&mut payload.active_mut().call_value, &relations, context) {
+        Ok(false) => return None,
+        Ok(true) => {}
+        Err(reason) => {
+            if refinement_failure(result, pc, reason) {
+                return None;
+            }
+        }
+    }
+    match state::refine(
+        &mut payload,
+        &relations,
+        context,
+        &mut result.diagnostics,
+        pc,
+    ) {
         Ok(false) => return None,
         Ok(true) => {}
         Err(reason) => {
