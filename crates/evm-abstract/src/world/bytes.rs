@@ -351,6 +351,9 @@ impl ByteArray {
         if size.singleton() == Some(U256::ZERO) {
             return Ok(Self::empty());
         }
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
         let offset_expr = expr(offset)?;
         let size_expr = expr(size)?;
         let mut operands = self.operands.clone();
@@ -399,6 +402,9 @@ impl ByteArray {
     ) -> Result<(), RangeError> {
         if size.singleton() == Some(U256::ZERO) {
             return Ok(());
+        }
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
         }
         ranges::validate_target(offset, size, max_bytes, self.memory)?;
         let allocation = (expr(offset)?, expr(size)?);
@@ -498,6 +504,9 @@ impl ByteArray {
         if size.singleton() == Some(U256::ZERO) {
             return Ok(());
         }
+        if let Some(error) = self.failure.as_ref().or(source.failure.as_ref()) {
+            return Err(error.clone());
+        }
         let mut out = self.clone();
         out.expand(target_offset, size, max_bytes, domain)?;
         let dst = expr(target_offset)?;
@@ -567,7 +576,7 @@ impl ByteArray {
         *self = out;
         Ok(())
     }
-    pub(super) fn check_existing(&self, limits: ExprLimits) -> Result<(), RangeError> {
+    pub(crate) fn check_existing(&self, limits: ExprLimits) -> Result<(), RangeError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -658,6 +667,11 @@ impl ByteArray {
         domain: Domain,
         materialize_limit: usize,
     ) -> Result<AbstractValue, RangeError> {
+        if self.length.singleton() != Some(U256::ZERO)
+            && let Some(error) = &self.failure
+        {
+            return Err(error.clone());
+        }
         let expression = ExprId::keccak(self.view(), limits(domain))?;
         if let Some(bytes) = self.exact_bytes_bounded(materialize_limit) {
             return Ok(
