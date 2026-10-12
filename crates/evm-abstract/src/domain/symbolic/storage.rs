@@ -191,6 +191,42 @@ impl SlotStateId {
             state::check(s.nodes(), s.depth(), limits)?;
             return Ok(s.clone());
         }
+        state::check(self.nodes(), self.depth(), limits)?;
+        state::check(other.nodes(), other.depth(), limits)?;
+        state::check(selector.nodes(), selector.depth(), limits)?;
+        if let (
+            SlotStateKind::Store {
+                previous: yes,
+                key,
+                value,
+            },
+            SlotStateKind::Store {
+                previous: no,
+                key: other_key,
+                value: other_value,
+            },
+        ) = (self.kind(), other.kind())
+            && key == other_key
+            && value == other_value
+        {
+            // An identical ordered update does not depend on this selector.
+            // Keep it once above the selected previous snapshots, rather than
+            // duplicating its captured value history in both alternatives.
+            let previous = yes.join_guarded(no, selector, limits)?;
+            return Self::build(
+                SlotStateKind::Store {
+                    previous: previous.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                [
+                    (previous.nodes(), previous.depth()),
+                    (key.nodes(), key.depth()),
+                    (value.nodes(), value.depth()),
+                ],
+                limits,
+            );
+        }
         Self::build(
             SlotStateKind::Ite {
                 condition: selector.clone(),

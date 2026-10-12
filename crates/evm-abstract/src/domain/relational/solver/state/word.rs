@@ -138,6 +138,12 @@ impl Encoder<'_> {
         self.charge(1)?;
         match state.kind() {
             ByteStateKind::Zero => Ok(Some(word(U256::ZERO))),
+            ByteStateKind::Ite { .. } => {
+                // A factored byte update can sit above the selected previous
+                // word. Lift that old read once, retaining the same guard,
+                // rather than revisiting both states separately for 32 bytes.
+                self.previous_word(state, start)
+            }
             ByteStateKind::WriteWord { offset, value, .. } if offset == start => {
                 let at = self.expression(start)?;
                 let value = self.expression(value)?;

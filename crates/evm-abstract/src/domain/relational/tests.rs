@@ -1,5 +1,6 @@
 mod forwarding;
 mod history;
+mod retention;
 mod state;
 
 use super::{CheckResult, RelationLimits, RelationState, ValueQuery};
