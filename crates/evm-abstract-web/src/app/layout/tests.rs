@@ -368,11 +368,36 @@ fn long_input_and_diagnostics_stay_bounded_in_a_short_viewport() {
             }),
             "expanded diagnostics are allocated but not visible at {size:?}"
         );
+        let inspector = egui::PanelState::load(&ctx, egui::Id::new("world_inspector"))
+            .unwrap()
+            .outer_rect;
+        let context = egui::PanelState::load(&ctx, egui::Id::new("result_context"))
+            .unwrap()
+            .outer_rect;
+        let status = egui::PanelState::load(&ctx, egui::Id::new("workspace_status"))
+            .unwrap()
+            .outer_rect;
+        // The dock shares the result workspace with analysis panes. A global
+        // viewport fraction used to pass even when minimum content sizes
+        // pushed the inspector ten pixels over the bottom status panel.
+        assert!(inspector.top() >= context.bottom());
+        assert_eq!(inspector.bottom(), status.top());
+        assert!(
+            output.shapes.iter().any(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().starts_with("verified complete") => {
+                    shape
+                        .clip_rect
+                        .intersect(Rect::from_min_size(text.pos, text.galley.size()))
+                        .height()
+                        >= text.galley.size().y
+                }
+                _ => false,
+            }),
+            "SSA context must remain readable beside default diagnostics at {size:?}"
+        );
         for (_, rect) in pane_rects(active_tree(&workspace, size.x)) {
-            assert!(
-                rect.height() > size.y * 0.28,
-                "input/details overflowed: {size:?}: {rect:?}"
-            );
+            assert!(rect.top() >= context.bottom());
+            assert!(rect.bottom() <= inspector.top());
             assert!(Rect::from_min_size(Pos2::ZERO, size).contains_rect(rect));
         }
     }
