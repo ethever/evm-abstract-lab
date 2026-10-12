@@ -246,6 +246,10 @@ impl ByteArray {
     pub fn stored_bytes(&self) -> impl Iterator<Item = (usize, &AbstractValue)> {
         self.bytes.iter().map(|(i, v)| (*i, v))
     }
+    /// Numeric operand guarantees paired with their immutable expression identity.
+    pub fn symbolic_facts(&self) -> impl Iterator<Item = (&ExprId, &AbstractValue)> {
+        self.operands.iter()
+    }
     /// Numeric upper bound on every unlisted byte; identities live in the root.
     pub fn default_byte(&self) -> &AbstractValue {
         &self.default
