@@ -4,6 +4,8 @@
 //! encoding limit retains the path and records why relational precision stopped.
 
 mod state;
+#[cfg(test)]
+mod tests;
 
 use super::{Execution, TransferContext, boundary};
 use crate::{
@@ -203,10 +205,13 @@ pub(super) fn branch(
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
-    match payload.relations.assume(&expression, nonzero, &limits) {
-        CheckResult::Unsat => return None,
-        CheckResult::Sat => {}
-        CheckResult::Unknown(QueryReason::Cancelled) => {
+    match payload
+        .relations
+        .assume_checked(&expression, nonzero, &limits)
+    {
+        Ok(CheckResult::Unsat) => return None,
+        Ok(CheckResult::Sat) => {}
+        Ok(CheckResult::Unknown(QueryReason::Cancelled)) | Err(QueryReason::Cancelled) => {
             boundary(
                 result,
                 pc,
@@ -214,15 +219,10 @@ pub(super) fn branch(
             );
             return None;
         }
-        CheckResult::Unknown(
-            reason @ (QueryReason::Disabled
-            | QueryReason::Configuration
-            | QueryReason::ConstraintLimit
-            | QueryReason::ExpressionLimit),
-        ) => {
+        Err(reason) => {
             boundary(result, pc, FrontierReason::Relations(reason));
         }
-        CheckResult::Unknown(reason) => {
+        Ok(CheckResult::Unknown(reason)) => {
             // The assumption is already retained. A failed feasibility check
             // loses optional pruning precision while both guarded edges survive.
             result.diagnostics.push((

@@ -226,19 +226,18 @@ fn constrained(
     if !context.budget.charge(cost) {
         return Err(FrontierReason::Work);
     }
-    match payload.relations.assume(&expression, nonzero, &limits) {
-        CheckResult::Unsat => Ok(Constrained::exact(None)),
-        CheckResult::Sat => Ok(Constrained::exact(Some(payload))),
-        CheckResult::Unknown(
-            reason @ (QueryReason::Disabled
-            | QueryReason::Configuration
-            | QueryReason::ConstraintLimit
-            | QueryReason::ExpressionLimit
-            | QueryReason::Cancelled),
-        ) => Err(FrontierReason::Relations(reason)),
+    match payload
+        .relations
+        .assume_checked(&expression, nonzero, &limits)
+    {
+        Ok(CheckResult::Unsat) => Ok(Constrained::exact(None)),
+        Ok(CheckResult::Sat) => Ok(Constrained::exact(Some(payload))),
+        Err(reason) | Ok(CheckResult::Unknown(reason @ QueryReason::Cancelled)) => {
+            Err(FrontierReason::Relations(reason))
+        }
         // These failures occur after retaining the assumption. The two guarded
         // domains still cover the input without treating UNKNOWN as UNSAT.
-        CheckResult::Unknown(reason) => Ok(Constrained {
+        Ok(CheckResult::Unknown(reason)) => Ok(Constrained {
             payload: Some(payload),
             precision_loss: Some(reason),
         }),
