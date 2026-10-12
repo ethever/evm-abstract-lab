@@ -32,6 +32,54 @@ fn natural(ctx: &Context, workspace: &Workspace) -> [f32; 2] {
 }
 
 #[test]
+fn navigation_and_metadata_preserve_the_original_analysis_height_budget() {
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let mut workspace = ready();
+    for size in [
+        Vec2::new(1440.0, 900.0),
+        Vec2::new(844.0, 390.0),
+        Vec2::new(390.0, 844.0),
+        Vec2::new(320.0, 480.0),
+    ] {
+        for display in [
+            crate::ssa_display::SsaDisplay::Compact,
+            crate::ssa_display::SsaDisplay::Full,
+        ] {
+            workspace.ssa_display = display;
+            let output = settled(&ctx, &mut workspace, size);
+            let header = egui::PanelState::load(&ctx, egui::Id::new("workspace_header"))
+                .unwrap()
+                .outer_rect;
+            let metadata = egui::PanelState::load(&ctx, egui::Id::new("result_context"))
+                .unwrap()
+                .outer_rect;
+            // The original 20-point navigation row plus padding and separator
+            // occupied 25 points; the metadata strip occupied 20. A styling change must not take analysis space.
+            assert!(
+                header.height() <= 25.0,
+                "navigation grew at {size:?}: {header:?}"
+            );
+            assert!(
+                metadata.height() <= 20.0,
+                "metadata grew at {size:?}: {metadata:?}"
+            );
+            assert!(metadata.top() >= header.bottom());
+            let details = texts(&output)
+                .into_iter()
+                .find(|(text, _)| text == "SSA details")
+                .expect("the details toggle must remain visible")
+                .1;
+            assert!(metadata.contains_rect(details));
+            assert!(
+                details.height() >= 13.0,
+                "compactness must retain readable control text"
+            );
+        }
+    }
+}
+
+#[test]
 fn first_frame_sizes_short_code_from_its_tables_and_gives_growth_to_cfg() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);

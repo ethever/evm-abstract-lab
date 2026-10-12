@@ -12,11 +12,7 @@ use evm_abstract_protocol::{AnalysisReport, AnalysisStatus};
 impl Workspace {
     pub(super) fn header(&mut self, ui: &mut Ui) {
         let compact = ui.available_width() < 800.0;
-        let density = if compact {
-            Density::Compact
-        } else {
-            Density::Regular
-        };
+        let density = Density::Regular;
         density.scope(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -78,9 +74,11 @@ impl Workspace {
     pub(super) fn status(&mut self, ui: &mut Ui) -> Option<Command> {
         let mut command = None;
         let wide = ui.available_width() > 780.0;
-        Density::Compact.scope(ui, |ui| {
+        // Match the native initial row height so this bottom panel does not
+        // shrink after the graph has fitted its first canvas.
+        Density::Regular.scope(ui, |ui| {
             ui.horizontal(|ui| {
-                if self.task.cancellable() && controls::action(ui, "Cancel", Density::Compact).clicked() {command=self.task.cancel();}
+                if self.task.cancellable() && controls::action(ui, "Cancel", Density::Regular).clicked() {command=self.task.cancel();}
                 if self.task.busy() {
                     ui.spinner();
                     ui.add(egui::Label::new(RichText::new(self.task.label()).color(palette::ACCENT)).truncate()).on_hover_text(self.task.label());
@@ -91,7 +89,7 @@ impl Workspace {
                         ui.colored_label(palette::WARNING,"Connection interrupted").on_hover_text(notation::widget(ui, format!("{error}\nTask status is retained; polling will retry. Cancel can be retried.")));
                     }
                 } else if let Some(error)=&self.task.error {
-                    if controls::action(ui, "Edit inputs", Density::Compact).clicked() {self.form.open=true;self.form.error=Some(error.to_string());}
+                    if controls::action(ui, "Edit inputs", Density::Regular).clicked() {self.form.open=true;self.form.error=Some(error.to_string());}
                     ui.add(egui::Label::new(notation::widget(ui,RichText::new(error.to_string()).color(palette::ERROR))).truncate()).on_hover_ui(|ui| {
                         if let super::job::TaskError::Api(error)=error { inspector::api_error_details(ui,error); }
                         else { ui.label(notation::widget(ui,error.to_string())); }
@@ -103,7 +101,7 @@ impl Workspace {
                     let label=if complete{"Model converged"}else{"Incomplete / partial SSA"};
                     ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
                     if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),report.metadata.work));}
-                    if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Compact).clicked() {
+                    if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Regular).clicked() {
                         self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Diagnostics;
                     }
                 } else if self.startup.loading() {
@@ -157,11 +155,13 @@ pub(super) fn result_context(
         program_label,
         report.fork
     );
-    Density::Compact.scope(ui, |ui| {
+    // Metadata retains the original small-button height rather than reserving
+    // a toolbar row above the analysis panes.
+    Density::Inline.scope(ui, |ui| {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut full = *display == crate::ssa_display::SsaDisplay::Full;
-                if controls::toggle(ui, &mut full, "SSA details", Density::Compact)
+                if controls::toggle(ui, &mut full, "SSA details", Density::Inline)
                     .on_hover_text("Show completed stack operations, effect chains and completion annotations in SSA views")
                     .changed()
                 {
