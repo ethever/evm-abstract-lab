@@ -529,6 +529,18 @@ impl Store {
     }
     /// Build transaction state without modifying the fixed input snapshot.
     pub fn new(world: &World) -> Self {
+        Self::new_with_limits(world, crate::domain::symbolic::ExprLimits::default())
+    }
+
+    /// Initialize every account root under the actual execution domain policy.
+    pub fn new_checked(world: &World, domain: Domain) -> Result<Self, StoreError> {
+        let limits = domain.spec().relations().expressions();
+        let store = Self::new_with_limits(world, limits);
+        store.check_existing(limits)?;
+        Ok(store)
+    }
+
+    fn new_with_limits(world: &World, limits: crate::domain::symbolic::ExprLimits) -> Self {
         let mut persistent = Plane::new(AbstractValue::top(), false);
         persistent.base =
             SlotStateId::input(SourceId::scoped(world.storage_source_token(), U256::ZERO));
@@ -556,7 +568,7 @@ impl Store {
             nonces.insert(*address, account.nonce.clone());
             existence.insert(*address, account.existence);
         }
-        persistent.initialize_roots();
+        persistent.initialize_roots(limits);
         Self {
             persistent,
             transient: Plane::new(AbstractValue::constant(U256::ZERO), true),

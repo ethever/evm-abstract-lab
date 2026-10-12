@@ -165,8 +165,7 @@ impl Plane {
             .cloned()
             .map_or_else(|| account_base(&self.base, address), Ok)
     }
-    pub(super) fn initialize_roots(&mut self) {
-        let limits = ExprLimits::default();
+    pub(super) fn initialize_roots(&mut self, limits: ExprLimits) {
         for address in self.defaults.keys().copied().collect::<Vec<_>>() {
             let complete = self.default_at(address).singleton() == Some(U256::ZERO);
             let mut root = if complete {
@@ -440,7 +439,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         self.transient.write_checked(address, key, value, domain)
     }
-    fn check_existing(&self, limits: ExprLimits) -> Result<(), StoreError> {
+    pub(crate) fn check_existing(&self, limits: ExprLimits) -> Result<(), StoreError> {
         self.persistent.check_existing(limits)?;
         self.transient.check_existing(limits)?;
         let mut result: Result<(), StoreError> = Ok(());

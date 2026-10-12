@@ -517,3 +517,32 @@ fn numeric_only_slot_aliases_constrain_native_reads() {
         ValueQuery::Unique(U256::ZERO)
     );
 }
+
+#[test]
+fn initialization_uses_the_callers_state_policy_and_reports_failure() {
+    let (mut world, address) = world(true);
+    for i in 0..65u64 {
+        world
+            .accounts
+            .get_mut(&address)
+            .unwrap()
+            .storage
+            .insert(U256::from(i), v(i + 1));
+    }
+    let default = Domain::default();
+    assert!(matches!(
+        Store::new_checked(&world, default),
+        Err(StoreError::State(StateError::Limit { .. }))
+    ));
+    assert!(Store::new(&world).symbolic_limit_reached());
+    let bigger = Domain::from_spec(default.spec().with_relations(RelationLimits {
+        max_depth: 128,
+        ..RelationLimits::default()
+    }));
+    let store = Store::new_checked(&world, bigger).unwrap();
+    assert!(!store.symbolic_limit_reached());
+    assert_eq!(
+        store.read(address, &v(64), bigger).singleton(),
+        Some(U256::from(65))
+    );
+}
