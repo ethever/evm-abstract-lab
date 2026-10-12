@@ -257,7 +257,9 @@ impl Cache {
             if !reserve(budget, namespace_cost) {
                 return None;
             }
-            let fingerprint = analysis.world.fingerprint();
+            // A missing complete cache key disables this reuse attempt. The
+            // engine still observes cancellation through its shared work budget.
+            let fingerprint = analysis.world.fingerprint().ok()?;
             self.fingerprint = Some(fingerprint);
             fingerprint
         };
