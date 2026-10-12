@@ -16,6 +16,9 @@ use crate::{
 use alloy_primitives::{Address, B256, U256, keccak256};
 use revm_bytecode::opcode;
 
+#[cfg(test)]
+mod tests;
+
 fn precompile(world: &World, address: Address) -> bool {
     super::precompile::contains(world.fork(), address)
 }
@@ -444,7 +447,10 @@ pub(super) fn call(
         let saved_store = result.payload.store.snapshot();
         let code_hash = captured_hash(&program, &result.payload.store, code_address, code);
         let mut payload = result.payload.clone();
-        if op == opcode::CALL && target != caller_address {
+        // A proven zero transfer leaves both balances and their input identities
+        // unchanged. Rebuilding them with ADD/SUB would add arithmetic metadata
+        // and make otherwise identical rollback preconditions look different.
+        if op == opcode::CALL && target != caller_address && value.singleton() != Some(U256::ZERO) {
             let recipient = payload.store.read_balance(target);
             if !context.budget.charge(
                 domain
