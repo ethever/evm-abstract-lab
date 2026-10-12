@@ -27,17 +27,21 @@
 use super::{
     ConfigError, Diagnostic, Limit, Status, SummaryStats,
     machine::{
-        ExecutionConfig, ExecutionEvidence, FrontierReason, MachineEdge, MachineEdgeKind,
-        MachineFrontier, MachineOutcome, MachineState, OutcomeKind, WorldAnalysis,
+        EntryAlternatives, ExecutionConfig, ExecutionEvidence, FrontierReason, MachineEdge,
+        MachineEdgeKind, MachineError, MachineFrontier, MachineOutcome, MachinePayload,
+        MachineState, OutcomeKind, WorldAnalysis,
     },
-    summary::{Cache, Certificate, Replay},
+    summary::{Cache, Certificate, Prepared, Replay},
     transfer::{self, CompletedCall, Successor, WorkBudget},
 };
 use crate::{
     domain::Domain,
     world::{Entry, World},
 };
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+};
 
 /// 从固定世界、入口上下文和执行策略建立初始机器，并运行同一事务的工作表。
 ///
@@ -142,6 +146,7 @@ pub(super) fn run_metered(
             pc: None,
             reason: FrontierReason::Budget(Limit::States),
             range: None,
+            payload: None,
         });
         result.status = Status::Incomplete;
         result.work = budget.used();
@@ -162,6 +167,7 @@ pub(super) fn run_metered(
             pc: None,
             reason: FrontierReason::Work,
             range: None,
+            payload: None,
         });
         result.status = Status::Incomplete;
         result.work = budget.used();
@@ -176,12 +182,27 @@ pub(super) fn run_metered(
                 pc: None,
                 reason,
                 range: None,
+                payload: None,
             });
             result.status = Status::Incomplete;
             result.work = budget.used();
             return Ok(result);
         }
     };
+    if !budget.charge(initial.work_size()) {
+        result.frontiers.push(MachineFrontier {
+            from: None,
+            target: Some(initial.key()),
+            pc: None,
+            reason: FrontierReason::Work,
+            range: None,
+            payload: Some(Arc::new(initial)),
+        });
+        result.status = Status::Incomplete;
+        result.work = budget.used();
+        return Ok(result);
+    }
+    let alternatives = EntryAlternatives::new(&initial);
     // 本模型不精确跟踪剩余 gas，先保留入口即失败、Store 不变的保守可能。
     // 这条 outcome 不是 transfer 已执行指令后报告的异常，也不是未完成前沿。
     result.outcomes.push(MachineOutcome {
@@ -216,7 +237,7 @@ pub(super) fn run_metered(
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new()],
         cache,
-        updates: vec![0],
+        alternatives: vec![alternatives],
     };
     engine.run();
     engine.counters.report(engine.budget.used());
@@ -238,8 +259,8 @@ struct Engine<'a> {
     counters: &'a mut Counters,
     /// 是否在 RPC refinement 中把缺失的初始槽观测记录为请求边界。
     storage_reads: transfer::StorageReadPolicy,
-    /// 每个结构状态的严格入口更新次数；动态发现的环也采用同一 widening 策略。
-    updates: Vec<usize>,
+    /// 完整 payload 备选的覆盖证据；独立字段的数值 widening 不证明状态覆盖。
+    alternatives: Vec<EntryAlternatives>,
     /// 结构键 -> `result.states` 的索引；键相同才允许汇合抽象输入。
     ids: BTreeMap<super::MachineKey, usize>,
     /// FIFO 调度记录；摘要回放可能满足已排队节点，因此这里允许残留失效项。
@@ -284,7 +305,35 @@ impl Engine<'_> {
             pc: None,
             reason,
             range: None,
+            payload: None,
         });
+    }
+
+    fn frontier_payload(
+        &mut self,
+        from: Option<usize>,
+        reason: FrontierReason,
+        payload: MachinePayload,
+    ) {
+        self.result.frontiers.push(MachineFrontier {
+            from,
+            target: Some(payload.key()),
+            pc: None,
+            reason,
+            range: None,
+            payload: Some(Arc::new(payload)),
+        });
+    }
+
+    fn stop_queued(&mut self, reason: FrontierReason) {
+        let pending: Vec<_> = self.queued.iter().copied().collect();
+        for id in pending {
+            self.frontier(
+                None,
+                Some(self.result.states[id].key.clone()),
+                reason.clone(),
+            );
+        }
     }
 
     /// 全局预算耗尽时，留下本轮节点和其余有效待处理节点的未完成证据。
@@ -347,6 +396,7 @@ impl Engine<'_> {
             };
             if matches!(attempt, SummaryAttempt::Interrupted) {
                 self.cache = cache;
+                self.stop_queued(FrontierReason::SummaryWork);
                 break;
             }
             let reused = matches!(attempt, SummaryAttempt::Hit);
@@ -384,6 +434,7 @@ impl Engine<'_> {
                     .as_ref()
                     .and_then(|cache| cache.pending_target(&self.result));
                 self.frontier(Some(id), target, FrontierReason::SummaryWork);
+                self.stop_queued(FrontierReason::SummaryWork);
                 break;
             }
         }
@@ -501,6 +552,8 @@ impl Engine<'_> {
                 target,
                 pc: Some(pc),
                 reason,
+                // RangeWitness already owns the conditional pre-effect input.
+                payload: None,
                 range,
             });
         }
@@ -537,25 +590,25 @@ impl Engine<'_> {
         successor.payload.normalize();
         let key = successor.payload.key();
         let to = if let Some(existing) = self.ids.get(&key).copied() {
-            let cost = successor
-                .payload
-                .work_size()
-                .saturating_add(self.result.states[existing].entry.work_size());
-            if !self.budget.charge(cost) {
-                self.frontier(Some(from), Some(key), work_reason);
-                return None;
-            }
-            let mut joined = self.result.states[existing]
-                .entry
-                .join(&successor.payload, self.domain);
-            if joined != self.result.states[existing].entry {
-                self.updates[existing] = self.updates[existing].saturating_add(1);
-                if self.updates[existing] >= self.domain.spec().widening_after_updates() {
-                    joined.widen(&self.result.states[existing].entry, self.domain);
+            let joined = match self.alternatives[existing].join(
+                &self.result.states[existing].entry,
+                &successor.payload,
+                self.domain,
+                self.budget,
+            ) {
+                Ok(joined) => joined,
+                Err(error) => {
+                    let reason = if error == MachineError::Work {
+                        work_reason
+                    } else {
+                        error.frontier_reason()
+                    };
+                    self.frontier_payload(Some(from), reason, successor.payload);
+                    return None;
                 }
-            }
-            // 有节点不等于有固定点；只有比较 join 前后的入口，才知道要不要重访。
-            if joined != self.result.states[existing].entry {
+            };
+            if let Some(joined) = joined {
+                self.alternatives[existing].retain(successor.payload);
                 self.result.states[existing].entry = joined;
                 self.result.states[existing].invalidate_execution();
                 if self.queued.insert(existing) {
@@ -565,9 +618,19 @@ impl Engine<'_> {
             existing
         } else {
             if self.counters.states >= self.result.config.analysis.max_states {
-                self.frontier(Some(from), Some(key), FrontierReason::Budget(Limit::States));
+                self.frontier_payload(
+                    Some(from),
+                    FrontierReason::Budget(Limit::States),
+                    successor.payload,
+                );
                 return None;
             }
+            let cost = successor.payload.work_size();
+            if cost == usize::MAX || !self.budget.charge(cost) {
+                self.frontier_payload(Some(from), work_reason, successor.payload);
+                return None;
+            }
+            let alternatives = EntryAlternatives::new(&successor.payload);
             // states 与 completed_calls 同时追加，保证后者始终可用同一节点编号索引。
             let id = self.result.states.len();
             self.ids.insert(key.clone(), id);
@@ -582,7 +645,7 @@ impl Engine<'_> {
             });
             self.counters.states += 1;
             self.completed_calls.push(Vec::new());
-            self.updates.push(0);
+            self.alternatives.push(alternatives);
             self.queue.push_back(id);
             self.queued.insert(id);
             id
@@ -606,57 +669,217 @@ impl Engine<'_> {
         }
     }
 
-    /// 在当前 caller 下实例化认证 callee 子图，并重新生成其返回 caller 的转移。
-    ///
-    /// `root` 是当前世界图中的 callee 入口编号，不是事务的 RootFrame。证书编号
-    /// 是局部编号，导入时需要映射到当前状态表；同键节点仍须遵守普通 join 规则。
-    /// 返回 `false` 表示导入未完成：已加入的节点/边不会整体撤销，而是通过前沿
-    /// 标明结果不完整，禁止把这个部分图当作完整分析或用于构建 SSA。
+    /// Clone cost for a temporary import transaction, including retained graph
+    /// metadata, certificate records and every state that might be compared.
+    fn replay_copy_cost(&self) -> Result<usize, MachineError> {
+        MachineError::check_cancelled()?;
+        let mut cost = self
+            .result
+            .world
+            .work_size()
+            .saturating_add(self.result.entry.environment.work_size())
+            .saturating_add(self.ids.len())
+            .saturating_add(self.queue.len())
+            .saturating_add(self.queued.len())
+            .saturating_add(self.edges.len())
+            .saturating_add(self.diagnostics.len())
+            .saturating_add(self.result.edges.len())
+            .saturating_add(self.result.diagnostics.len())
+            .saturating_add(self.result.frontiers.len());
+        for state in &self.result.states {
+            MachineError::check_cancelled()?;
+            cost = cost
+                .saturating_add(state.entry.work_size())
+                .saturating_add(state.exit.as_ref().map_or(0, MachinePayload::work_size))
+                .saturating_add(state.executed_pcs.len())
+                .saturating_add(state.key.frames.iter().fold(0usize, |cost, frame| {
+                    cost.saturating_add(frame.jump_history.len().saturating_add(1))
+                }))
+                .saturating_add(
+                    state
+                        .exit_stack
+                        .iter()
+                        .fold(0usize, |cost, value| cost.saturating_add(value.work_size())),
+                )
+                .saturating_add(state.execution_evidence.as_ref().map_or(0, |evidence| {
+                    evidence
+                        .instructions
+                        .len()
+                        .saturating_add(evidence.successors.len())
+                }));
+        }
+        for alternatives in &self.alternatives {
+            MachineError::check_cancelled()?;
+            cost = cost.saturating_add(alternatives.work_size());
+        }
+        for calls in &self.completed_calls {
+            for call in calls {
+                MachineError::check_cancelled()?;
+                cost = cost.saturating_add(super::summary::call_work(call));
+            }
+        }
+        for outcome in &self.result.outcomes {
+            MachineError::check_cancelled()?;
+            cost = cost
+                .saturating_add(outcome.data.work_size())
+                .saturating_add(outcome.store.work_size());
+        }
+        for record in &self.result.summaries {
+            MachineError::check_cancelled()?;
+            cost = cost
+                .saturating_add(record.input.work_size())
+                .saturating_add(record.reused_at.len());
+            for output in &record.outputs {
+                cost = cost
+                    .saturating_add(output.data.work_size())
+                    .saturating_add(output.store.work_size());
+            }
+        }
+        for frontier in &self.result.frontiers {
+            MachineError::check_cancelled()?;
+            if let Some(key) = &frontier.target {
+                cost = cost.saturating_add(key.frames.iter().fold(0usize, |cost, frame| {
+                    cost.saturating_add(frame.jump_history.len().saturating_add(1))
+                }));
+            }
+            if let Some(range) = &frontier.range {
+                cost = cost
+                    .saturating_add(range.request.offset.work_size())
+                    .saturating_add(range.request.size.work_size())
+                    .saturating_add(range.request.limit.work_size())
+                    .saturating_add(range.condition.work_size());
+            }
+        }
+        MachineError::check_cancelled()?;
+        Ok(cost.saturating_mul(4))
+    }
+
+    fn replay_failure(
+        &mut self,
+        root: usize,
+        reason: FrontierReason,
+        pending: Arc<MachinePayload>,
+    ) {
+        self.result.frontiers.push(MachineFrontier {
+            from: Some(root),
+            target: Some(self.result.states[root].key.clone()),
+            pc: None,
+            reason: if reason == FrontierReason::Work {
+                FrontierReason::SummaryWork
+            } else {
+                reason
+            },
+            range: None,
+            payload: Some(pending),
+        });
+    }
+
+    /// Rename the complete certificate, then import into a temporary graph. The
+    /// shared ledger remains consumed on failure, but no partial graph, stale
+    /// receipt replacement or half-renamed state is installed in the analysis.
     fn replay(&mut self, root: usize, certificate: &Certificate) -> bool {
-        let Some(replay) = Replay::new(
-            certificate,
-            &self.result.states[root].entry,
-            self.budget,
-            self.result.config.analysis.relations.expressions(),
-        ) else {
+        let cost = match self.replay_copy_cost() {
+            Ok(cost) => cost,
+            Err(error) => {
+                self.frontier(
+                    Some(root),
+                    Some(self.result.states[root].key.clone()),
+                    error.frontier_reason(),
+                );
+                return false;
+            }
+        };
+        if cost == usize::MAX || !self.budget.charge(cost) {
             self.frontier(
                 Some(root),
                 Some(self.result.states[root].key.clone()),
                 FrontierReason::SummaryWork,
             );
             return false;
-        };
-        // 证书局部节点编号 -> 当前世界节点编号。它与 self.ids 的“结构键索引”不同。
-        let mut ids = Vec::new();
-        for index in 0..certificate.nodes.len() {
-            let Some(node) = replay.node(index, self.budget) else {
-                self.frontier(
-                    Some(root),
-                    Some(self.result.states[root].key.clone()),
-                    FrontierReason::SummaryWork,
-                );
+        }
+        let pending = Arc::new(self.result.states[root].entry.clone());
+        let prepared = match Replay::new(
+            certificate,
+            &self.result.states[root].entry,
+            self.budget,
+            self.result.config.analysis.relations.expressions(),
+        )
+        .and_then(|replay| replay.prepare(self.budget))
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.replay_failure(root, error.frontier_reason(), pending);
                 return false;
-            };
+            }
+        };
+        let mut counters = Counters {
+            states: self.counters.states,
+            transfers: self.counters.transfers,
+            observer: self.counters.observer.clone(),
+        };
+        let mut staged = Engine {
+            result: self.result.clone(),
+            domain: self.domain,
+            budget: self.budget,
+            counters: &mut counters,
+            storage_reads: self.storage_reads,
+            alternatives: self.alternatives.clone(),
+            ids: self.ids.clone(),
+            queue: self.queue.clone(),
+            queued: self.queued.clone(),
+            edges: self.edges.clone(),
+            diagnostics: self.diagnostics.clone(),
+            completed_calls: self.completed_calls.clone(),
+            cache: None,
+        };
+        if let Err(reason) = staged.install_replay(certificate, prepared) {
+            // The temporary import is dropped; the original callee input still
+            // describes all paths whose certificate could not be imported.
+            // RPC re-execution cannot regain even failed temporary allocation
+            // capacity. Only graph contents/receipts are rolled back.
+            self.counters.states = staged.counters.states;
+            drop(staged);
+            self.replay_failure(root, reason, pending);
+            return false;
+        }
+        self.counters.states = staged.counters.states;
+        self.result = staged.result;
+        self.alternatives = staged.alternatives;
+        self.ids = staged.ids;
+        self.queue = staged.queue;
+        self.queued = staged.queued;
+        self.edges = staged.edges;
+        self.diagnostics = staged.diagnostics;
+        self.completed_calls = staged.completed_calls;
+        true
+    }
+
+    /// This method only mutates a temporary Engine owned by replay().
+    fn install_replay(
+        &mut self,
+        certificate: &Certificate,
+        prepared: Prepared,
+    ) -> Result<(), FrontierReason> {
+        let mut ids = Vec::new();
+        for node in prepared.nodes {
             let key = node.entry.key();
             let id = if let Some(existing) = self.ids.get(&key).copied() {
-                if !self.budget.charge(
-                    node.entry
-                        .work_size()
-                        .saturating_add(self.result.states[existing].entry.work_size()),
-                ) {
-                    self.frontier(Some(root), Some(key), FrontierReason::SummaryWork);
-                    return false;
-                }
-                let joined = self.result.states[existing]
-                    .entry
-                    .join(&node.entry, self.domain);
-                // join 没有超出证书入口，说明认证出口覆盖现有输入，可以取消调度。
-                // 若旧输入带来证书没有覆盖的新值，不能安装其出口，须重访汇合入口。
-                let compatible = joined == node.entry;
-                if joined != self.result.states[existing].entry {
+                let joined = self.alternatives[existing]
+                    .join(
+                        &self.result.states[existing].entry,
+                        &node.entry,
+                        self.domain,
+                        self.budget,
+                    )
+                    .map_err(MachineError::frontier_reason)?;
+                // Equality is a coverage proof. A whole-state join containing
+                // other alternatives cannot use this certificate's exit alone.
+                let compatible = self.result.states[existing].entry == node.entry;
+                if let Some(joined) = joined {
+                    self.alternatives[existing].retain(node.entry.clone());
+                    self.result.states[existing].entry = joined;
                     self.result.states[existing].invalidate_execution();
                 }
-                self.result.states[existing].entry = joined;
                 if compatible {
                     self.queued.remove(&existing);
                     self.result.states[existing].exit = Some(node.exit);
@@ -673,11 +896,14 @@ impl Engine<'_> {
                 existing
             } else {
                 if self.counters.states >= self.result.config.analysis.max_states {
-                    self.frontier(Some(root), Some(key), FrontierReason::Budget(Limit::States));
-                    return false;
+                    return Err(FrontierReason::Budget(Limit::States));
                 }
-                // 证书已提供这个新节点的入口与出口证据，直接安装，不再排队重复执行。
+                let cost = node.entry.work_size().saturating_mul(2);
+                if cost == usize::MAX || !self.budget.charge(cost) {
+                    return Err(FrontierReason::SummaryWork);
+                }
                 let id = self.result.states.len();
+                self.alternatives.push(EntryAlternatives::new(&node.entry));
                 self.ids.insert(key.clone(), id);
                 self.result.states.push(MachineState {
                     id,
@@ -693,7 +919,6 @@ impl Engine<'_> {
                 });
                 self.counters.states += 1;
                 self.completed_calls.push(node.completed_calls);
-                self.updates.push(0);
                 id
             };
             for mut diagnostic in node.diagnostics {
@@ -703,67 +928,59 @@ impl Engine<'_> {
             self.result.summary_stats.imported_states += 1;
             ids.push(id);
         }
-        // 内部边两端先通过上述编号映射连接；不复制旧 caller 的节点编号。
         for edge in &certificate.edges {
             if !self.budget.charge(1) {
-                self.frontier(Some(root), None, FrontierReason::SummaryWork);
-                return false;
+                return Err(FrontierReason::SummaryWork);
             }
+            let from = *ids
+                .get(edge.from)
+                .ok_or(FrontierReason::StateJoin(super::JoinBoundary::Shape))?;
+            let to = *ids
+                .get(edge.to)
+                .ok_or(FrontierReason::StateJoin(super::JoinBoundary::Shape))?;
             self.edges.insert(MachineEdge {
-                from: ids[edge.from],
-                to: ids[edge.to],
+                from,
+                to,
                 kind: edge.kind,
             });
-            self.record_successor(ids[edge.from], ids[edge.to], edge.kind);
+            self.record_successor(from, to, edge.kind);
         }
-        // 证书终结保留的是 callee 原始结果。返回成功位、returndata、输出复制、
-        // 回滚与返回位置必须通过当前 caller 的 continuation 重新应用。
-        for (index, terminal) in certificate.terminals.iter().enumerate() {
-            let Some((payload, raw_data)) = replay.terminal_payload(index, self.budget) else {
-                self.frontier(Some(root), None, FrontierReason::SummaryWork);
-                return false;
-            };
+        for terminal in prepared.terminals {
+            let from = *ids
+                .get(terminal.from)
+                .ok_or(FrontierReason::StateJoin(super::JoinBoundary::Shape))?;
             let execution = transfer::resume_summary(
-                payload,
+                terminal.payload,
                 terminal.raw_kind,
-                raw_data,
+                terminal.raw_data,
                 &self.result.config,
                 self.domain,
                 self.budget,
             );
-            let from = ids[terminal.from];
-            // 返回处理也消耗同一预算；其中的 Work 属于本次摘要导入，改记 SummaryWork。
-            for frontier in execution.frontiers {
-                let super::transfer::ExecutionFrontier {
-                    pc,
-                    reason,
-                    target,
-                    range,
-                } = frontier;
-                self.result.frontiers.push(MachineFrontier {
-                    from: Some(from),
-                    target,
-                    pc: Some(pc),
-                    reason: if reason == FrontierReason::Work {
-                        FrontierReason::SummaryWork
-                    } else {
-                        reason
-                    },
-                    range,
-                });
+            if let Some(frontier) = execution.frontiers.into_iter().next() {
+                return Err(frontier.reason);
             }
             for successor in execution.successors {
                 if self
                     .successor(from, successor, FrontierReason::SummaryWork)
                     .is_none()
                 {
-                    return false;
+                    return Err(self
+                        .result
+                        .frontiers
+                        .last()
+                        .expect("failed successor retains frontier")
+                        .reason
+                        .clone());
                 }
             }
             if self.budget.exhausted() {
-                return false;
+                return Err(FrontierReason::SummaryWork);
             }
         }
-        true
+        if !self.budget.charge(0) {
+            return Err(FrontierReason::SummaryWork);
+        }
+        Ok(())
     }
 }

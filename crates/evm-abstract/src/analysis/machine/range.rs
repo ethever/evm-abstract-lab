@@ -2,8 +2,35 @@
 
 use super::MachinePayload;
 use crate::domain::AbstractValue;
+use alloy_primitives::U256;
 use serde::Serialize;
 use std::sync::Arc;
+
+/// A byte-array representation rejected a concrete or unbound range. Logical
+/// memory-policy partitions remain Memory with their guarded RangeWitness.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum ByteRangeBoundary {
+    /// No finite size or trusted symbolic size term was supplied.
+    UnknownSize,
+    /// A concrete destination is larger than a host index.
+    OffsetTooLarge(U256),
+    /// Host range arithmetic overflowed.
+    Overflow {
+        /// Concrete byte destination.
+        offset: usize,
+        /// Concrete requested byte count.
+        size: usize,
+    },
+    /// A concrete logical or materialization range exceeds its declared cap.
+    TooLarge {
+        /// Requested byte count or endpoint.
+        requested: U256,
+        /// Declared byte limit.
+        limit: usize,
+    },
+    /// Input binding was requested after its original source was established.
+    InputAlreadyBound,
+}
 
 /// Which mathematical bound partitions this instruction's inputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
