@@ -2,6 +2,11 @@ use egui::{Context, Event, Id, ImeEvent, Key, Modifiers, RawInput, os::Operating
 
 use super::Shortcut;
 
+// Exercise the browser's production delivery state on the host as well. DOM
+// identity and event cancellation are covered by the browser acceptance checks.
+#[path = "../../../framework/browser/shortcut/state.rs"]
+mod browser_state;
+
 fn key(pressed: bool, modifiers: Modifiers) -> Event {
     Event::Key {
         key: Key::J,
@@ -165,18 +170,73 @@ fn composition_owns_keys_until_commit_and_unfocused_workspaces_leave_input_alone
 }
 
 #[test]
-fn text_edit_popup_and_modal_keep_their_keyboard_events() {
-    let ctx = Context::default();
-    let mut shortcut = Shortcut::default();
-    let mut text = String::new();
-    run(&ctx, raw(vec![]), |ui| {
-        crate::framework::line_editor(ui, "shortcut_editor", &mut text, "Editor").request_focus();
-    });
-    assert!(ctx.text_edit_focused());
+fn ordinary_text_edit_accepts_the_chord_and_preserves_draft_and_cursor_selection() {
+    use egui::{
+        text::{CCursor, CCursorRange},
+        text_edit::TextEditState,
+    };
+
+    for os in [
+        OperatingSystem::Windows,
+        OperatingSystem::Nix,
+        OperatingSystem::Mac,
+    ] {
+        let ctx = Context::default();
+        ctx.set_os(os);
+        let modifiers = if os.is_mac() {
+            Modifiers::MAC_CMD | Modifiers::COMMAND
+        } else {
+            Modifiers::CTRL
+        };
+        let mut shortcut = Shortcut::default();
+        let id = Id::new("shortcut_editor");
+        let mut draft = "17".to_owned();
+        run(&ctx, raw(vec![]), |ui| {
+            crate::framework::line_editor(ui, "shortcut_editor", &mut draft, "Value ID")
+                .request_focus();
+        });
+        assert!(ctx.text_edit_focused());
+        let selection = CCursorRange::two(CCursor::new(1), CCursor::new(2));
+        let mut state = TextEditState::load(&ctx, id).unwrap();
+        state.cursor.set_char_range(Some(selection));
+        state.store(&ctx, id);
+
+        let release = key(false, modifiers);
+        run(
+            &ctx,
+            raw(vec![key(true, modifiers), release.clone()]),
+            |ui| {
+                assert_eq!(shortcut.consume(ui.ctx(), true), 1, "{os:?}");
+                // Consumption happens before the focused editor sees the frame.
+                assert_eq!(
+                    ui.input(|input| input.events.clone()),
+                    vec![release.clone()]
+                );
+                crate::framework::line_editor(ui, "shortcut_editor", &mut draft, "Value ID");
+            },
+        );
+        assert_eq!(draft, "17");
+        assert_eq!(
+            TextEditState::load(&ctx, id).unwrap().cursor.char_range(),
+            Some(selection)
+        );
+        assert!(ctx.text_edit_focused());
+
+        run(&ctx, raw(vec![Event::Text("3".into())]), |ui| {
+            assert_eq!(shortcut.consume(ui.ctx(), true), 0);
+            crate::framework::line_editor(ui, "shortcut_editor", &mut draft, "Value ID");
+        });
+        assert_eq!(
+            draft, "13",
+            "ordinary editing still replaces the selected digit"
+        );
+    }
+}
+
+#[test]
+fn popup_modal_and_text_edit_composition_keep_their_keyboard_events() {
     let events = vec![key(true, Modifiers::CTRL), key(false, Modifiers::CTRL)];
-    let (presses, remaining) = consume(&ctx, &mut shortcut, raw(events.clone()));
-    assert_eq!(presses, 0);
-    assert_eq!(remaining, events);
+    let mut shortcut = Shortcut::default();
 
     let ctx = Context::default();
     egui::Popup::open_id(&ctx, Id::new("shortcut_popup"));
@@ -185,14 +245,87 @@ fn text_edit_popup_and_modal_keep_their_keyboard_events() {
     assert_eq!(remaining, events);
 
     let ctx = Context::default();
+    let mut draft = "17".to_owned();
     run(&ctx, raw(vec![]), |ui| {
         egui::Modal::new(Id::new("shortcut_modal")).show(ui.ctx(), |ui| {
-            ui.label("Modal keyboard owner");
+            crate::framework::line_editor(ui, "shortcut_modal_editor", &mut draft, "Value ID")
+                .request_focus();
         });
     });
+    assert!(ctx.text_edit_focused());
     let (presses, remaining) = consume(&ctx, &mut shortcut, raw(events.clone()));
     assert_eq!(presses, 0);
     assert_eq!(remaining, events);
+
+    let ctx = Context::default();
+    run(&ctx, raw(vec![]), |ui| {
+        crate::framework::line_editor(ui, "shortcut_ime_editor", &mut draft, "Value ID")
+            .request_focus();
+    });
+    assert!(ctx.text_edit_focused());
+    let mut composing_events = vec![Event::Ime(ImeEvent::Preedit {
+        text: "候选".into(),
+        active_range_chars: None,
+    })];
+    composing_events.extend(events);
+    let (presses, remaining) = consume(&ctx, &mut shortcut, raw(composing_events.clone()));
+    assert_eq!(presses, 0);
+    assert_eq!(remaining, composing_events);
+}
+
+#[test]
+fn browser_delivery_survives_canvas_text_agent_focus_transitions_and_suppresses_repeats() {
+    use browser_state::{State, Target};
+
+    let state = State::default();
+    assert!(!state.keydown(Target::Canvas, true, false, false));
+    state.set_available(true);
+    assert!(state.keydown(Target::Canvas, true, false, false));
+    // The click/repaint focus transition must not erase an accepted press.
+    state.blur(Target::Canvas);
+    assert!(state.keydown(Target::TextAgent, true, false, true));
+    assert_eq!(state.take_presses(), 1);
+    assert_eq!(state.take_presses(), 0);
+
+    assert!(state.keydown(Target::TextAgent, true, false, false));
+    state.blur(Target::TextAgent);
+    assert!(state.keydown(Target::Canvas, true, false, true));
+    assert_eq!(state.take_presses(), 1);
+
+    // A stale egui text focus cannot authorize a different DOM target.
+    for target in [Target::Canvas, Target::TextAgent] {
+        assert!(!state.keydown(target, false, false, false));
+        assert!(state.keydown(target, true, false, true));
+    }
+    assert_eq!(state.take_presses(), 0);
+}
+
+#[test]
+fn browser_composition_and_availability_are_scoped_to_owned_targets() {
+    use browser_state::{State, Target};
+
+    let state = State::default();
+    state.set_available(true);
+    for target in [Target::Canvas, Target::TextAgent] {
+        state.composition(target, true);
+        assert!(!state.keydown(target, true, false, false));
+        assert!(!state.keydown(target, true, false, true));
+        state.composition(target, false);
+        assert!(!state.keydown(target, true, true, false));
+        assert!(state.keydown(target, true, false, false));
+        state.blur(target);
+    }
+    assert_eq!(state.take_presses(), 2);
+
+    state.composition(Target::Canvas, true);
+    assert!(state.keydown(Target::TextAgent, true, false, false));
+    assert!(!state.keydown(Target::Canvas, true, false, false));
+    state.blur(Target::Canvas);
+    assert!(state.keydown(Target::Canvas, true, false, false));
+    state.set_available(false); // analysis form/modal
+    assert!(!state.keydown(Target::Canvas, true, false, false));
+    assert!(!state.keydown(Target::TextAgent, true, false, true));
+    assert_eq!(state.take_presses(), 2);
 }
 
 #[test]
@@ -200,10 +333,19 @@ fn workbench_shortcut_toggles_once_and_analysis_form_keeps_priority() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = crate::tests::ready();
+    let mut draft = "17".to_owned();
+    run(&ctx, raw(vec![]), |ui| {
+        crate::framework::line_editor(ui, "workbench_value_editor", &mut draft, "Value ID")
+            .request_focus();
+    });
+    assert!(ctx.text_edit_focused());
+    let selection = workspace.selection;
     run(&ctx, raw(vec![key(true, Modifiers::CTRL)]), |ui| {
         assert!(workspace.show(ui).is_none());
     });
     assert!(!workspace.inspector.expanded);
+    assert_eq!(workspace.selection, selection);
+    assert_eq!(draft, "17");
     run(&ctx, raw(vec![key(true, Modifiers::CTRL)]), |ui| {
         workspace.show(ui);
     });
@@ -220,6 +362,7 @@ fn workbench_shortcut_toggles_once_and_analysis_form_keeps_priority() {
         },
     );
     assert!(workspace.inspector.expanded);
+    assert_eq!(workspace.selection, selection);
     workspace.form.open = true;
     run(
         &ctx,
