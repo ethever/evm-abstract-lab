@@ -8,7 +8,7 @@ use crate::{
     analysis::{FrontierReason, MachinePayload},
     domain::{
         AbstractValue, NumericValue,
-        relational::{CheckResult, RelationState, ScalarQuery, ValueQuery},
+        relational::{CheckResult, QueryReason, RelationState, ScalarQuery, ValueQuery},
         symbolic::ExprId,
     },
 };
@@ -28,6 +28,36 @@ fn charge(
     )
 }
 
+/// Failure of an optional value projection does not leave an execution path
+/// unexpanded. Cancellation and the shared ledger still stop real work.
+pub(super) fn refinement_failure(
+    result: &mut Execution,
+    pc: usize,
+    reason: FrontierReason,
+) -> bool {
+    match reason {
+        FrontierReason::Relations(QueryReason::Cancelled) => {
+            boundary(
+                result,
+                pc,
+                FrontierReason::Relations(QueryReason::Cancelled),
+            );
+            true
+        }
+        FrontierReason::Relations(reason) => {
+            result.diagnostics.push((
+                pc,
+                crate::analysis::DiagnosticKind::RelationalPrecisionLost(reason),
+            ));
+            false
+        }
+        reason => {
+            boundary(result, pc, reason);
+            true
+        }
+    }
+}
+
 /// Project only proven consequences; the expression and its scope survive.
 pub(super) fn refine(
     value: &mut AbstractValue,
@@ -35,12 +65,16 @@ pub(super) fn refine(
     context: &mut TransferContext<'_>,
 ) -> Result<bool, FrontierReason> {
     let limits = context.config.analysis.relations;
-    if !limits.enabled || relations.is_empty() || value.singleton().is_some() {
+    if !limits.enabled || value.singleton().is_some() {
         return Ok(!relations.is_bottom());
     }
     let Some(expression) = value.expression().cloned() else {
         return Ok(true);
     };
+    let has_state_semantics = expression.has_state_semantics();
+    if relations.is_empty() && !has_state_semantics {
+        return Ok(true);
+    }
     // Constraints on another independent input cannot make this value unique.
     if !context
         .budget
@@ -48,7 +82,7 @@ pub(super) fn refine(
     {
         return Err(FrontierReason::Work);
     }
-    if !relations.relevant(&expression) {
+    if !has_state_semantics && !relations.relevant(&expression) {
         return Ok(true);
     }
     if !context
@@ -178,9 +212,7 @@ pub(super) fn branch(
             Ok(false) => return None,
             Ok(true) => {}
             Err(reason) => {
-                let stop = reason == FrontierReason::Work;
-                boundary(result, pc, reason);
-                if stop {
+                if refinement_failure(result, pc, reason) {
                     return None;
                 }
             }
@@ -190,9 +222,7 @@ pub(super) fn branch(
         Ok(false) => return None,
         Ok(true) => {}
         Err(reason) => {
-            let stop = reason == FrontierReason::Work;
-            boundary(result, pc, reason);
-            if stop {
+            if refinement_failure(result, pc, reason) {
                 return None;
             }
         }

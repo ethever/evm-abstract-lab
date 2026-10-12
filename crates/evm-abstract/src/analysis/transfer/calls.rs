@@ -1,5 +1,5 @@
 //! Account-code resolution, frame entry and rollback-aware caller resumption.
-use super::budget::{byte_work, maximum};
+use super::budget::byte_work;
 use super::{
     CompletedCall, Execution, Outcome, Successor, TransferContext, address, boundary, boundary_on,
     touch_memory, zero,
@@ -79,6 +79,10 @@ pub(super) fn initial(
     store.project(domain);
     let (code_address, code, program) = resolve(world, &store, entry.address)?;
     let code_hash = captured_hash(&program, &store, code_address, code);
+    let mut calldata = entry.environment.calldata.project(domain);
+    if let Some(scope) = entry.environment.input_scope.id() {
+        calldata.bind_input(scope).map_err(super::errors::bytes)?;
+    }
     Ok(MachinePayload {
         relations: crate::domain::relational::RelationState::default(),
         call_stack: CallStack::new(RootFrame {
@@ -99,7 +103,7 @@ pub(super) fn initial(
                 program,
                 stack: Vec::new(),
                 memory: ByteArray::memory(),
-                calldata: entry.environment.calldata.project(domain),
+                calldata,
                 environment_calldata: true,
                 returndata: ByteArray::empty(),
                 call_value: domain.project(&entry.environment.value.clone().with_symbol(
@@ -138,7 +142,7 @@ pub(super) fn finish(
         let parent = payload.call_stack.parent().expect("a child has a parent");
         let cost = byte_work(
             &[&continuation.output_offset, &continuation.output_size],
-            maximum(&continuation.output_size),
+            0,
             parent.memory.work_size().saturating_add(data.work_size()),
             domain,
         );
@@ -179,18 +183,14 @@ pub(super) fn finish(
         U256::ZERO
     };
     parent.stack.push(AbstractValue::constant(result_value));
-    if parent
-        .memory
-        .copy_return_data(
-            &continuation.output_offset,
-            &parent.returndata,
-            &continuation.output_size,
-            config.max_memory_bytes,
-            domain,
-        )
-        .is_err()
-    {
-        boundary_on(result, pc, FrontierReason::Memory, payload.key());
+    if let Err(error) = parent.memory.copy_return_data(
+        &continuation.output_offset,
+        &parent.returndata,
+        &continuation.output_size,
+        config.max_memory_bytes,
+        domain,
+    ) {
+        boundary_on(result, pc, super::errors::bytes(error), payload.key());
         return;
     }
     parent.key.basic_block_index = continuation
@@ -257,6 +257,29 @@ pub(super) fn call(
     } else {
         (zero(), 2, 4)
     };
+    // A static CALL with nonzero value faults before any memory access. Retain
+    // the value condition on each possible outcome when it is symbolic.
+    if result.payload.active().key.is_static && op == opcode::CALL {
+        if value.may_be_nonzero()
+            && let Some(payload) = super::relations::branch(result, &value, true, context, pc)
+        {
+            finish(
+                result,
+                payload,
+                OutcomeKind::Failure,
+                ByteArray::empty(),
+                context,
+                pc,
+            );
+        }
+        if !value.may_be_zero() {
+            return;
+        }
+        let Some(payload) = super::relations::branch(result, &value, false, context, pc) else {
+            return;
+        };
+        result.payload = payload;
+    }
     if !touch_memory(result, &args[input], &args[input + 1], context, pc)
         || !touch_memory(result, &args[output], &args[output + 1], context, pc)
     {
@@ -266,12 +289,6 @@ pub(super) fn call(
     // The decoder splits after every CALL. An end-of-code continuation is a
     // synthetic empty block, making each return pop exactly one frame.
     debug_assert!(next <= program.blocks().len());
-    if result.payload.active().key.is_static && op == opcode::CALL && value.may_be_nonzero() {
-        failure(result, context, pc);
-        if !value.may_be_zero() {
-            return;
-        }
-    }
     // Gas and (possibly abstract) balance can reject the call before entry.
     // This failure preserves all caller writes and clears returndata.
     immediate_call_failure(result, result.payload.clone(), next);
@@ -287,7 +304,7 @@ pub(super) fn call(
     };
     if !context.budget.charge(byte_work(
         &[&args[input], &args[input + 1]],
-        maximum(&args[input + 1]),
+        0,
         result.payload.active().memory.work_size(),
         domain,
     )) {
@@ -378,8 +395,8 @@ pub(super) fn call(
             domain,
         ) {
             Ok(data) => data,
-            Err(_) => {
-                boundary(result, pc, FrontierReason::Memory);
+            Err(error) => {
+                boundary(result, pc, super::errors::bytes(error));
                 continue;
             }
         };

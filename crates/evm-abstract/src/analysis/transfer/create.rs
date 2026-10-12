@@ -183,8 +183,8 @@ pub(super) fn create(
                         continue;
                     }
                 },
-                Err(_) => {
-                    boundary(result, pc, FrontierReason::Memory);
+                Err(error) => {
+                    boundary(result, pc, super::errors::bytes(error));
                     continue;
                 }
             };
