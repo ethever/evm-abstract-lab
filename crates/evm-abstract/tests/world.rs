@@ -2,7 +2,12 @@
 
 use evm_abstract::{
     Address, Fork, U256,
-    domain::{AbstractValue, Domain, provenance::Origin},
+    domain::{
+        AbstractValue, Domain,
+        provenance::Origin,
+        relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
+        symbolic::ExprId,
+    },
     world::{
         AbstractLog, Account, ByteArray, Code, LogError, LogKey, RangeError, Store, World,
         WorldError,
@@ -25,6 +30,26 @@ fn assert_numeric_eq(actual: &AbstractValue, expected: &AbstractValue) {
     assert_eq!(actual.congruence(), expected.congruence());
     assert_eq!(actual.may_be_zero(), expected.may_be_zero());
     assert_eq!(actual.may_be_nonzero(), expected.may_be_nonzero());
+}
+
+// State reads add a historical expression; retain every pre-existing value fact.
+fn assert_state_value_eq(actual: &AbstractValue, expected: &AbstractValue) {
+    let mut projected = actual.clone();
+    projected.forget_expression();
+    assert_eq!(&projected, expected);
+    assert!(!actual.symbolic_limit_reached());
+    if actual.singleton().is_none() {
+        assert!(actual.expression().is_some());
+    }
+}
+
+fn solver_policy() -> RelationLimits {
+    RelationLimits {
+        max_nodes: 100_000,
+        max_depth: 256,
+        rlimit: 1_000_000,
+        ..RelationLimits::default()
+    }
 }
 
 #[test]
@@ -74,12 +99,17 @@ fn storage_defaults_and_account_ownership_are_explicit() {
     world.insert(address(2), Account::unknown()).unwrap();
     let mut store = Store::new(&world);
     assert_eq!(store.read(address(1), &v(7), domain), v(0));
-    assert_eq!(store.read(address(2), &v(7), domain), AbstractValue::top());
-    assert_eq!(store.read(address(3), &v(7), domain), AbstractValue::top());
+    let account_two = store.read(address(2), &v(7), domain);
+    let missing = store.read(address(3), &v(7), domain);
+    assert_state_value_eq(&account_two, &AbstractValue::top());
+    assert_state_value_eq(&missing, &AbstractValue::top());
+    assert_ne!(account_two.expression(), missing.expression());
     assert_eq!(store.read_transient(address(3), &v(7), domain), v(0));
     store.write(address(1), &v(7), &v(42), domain);
     assert_eq!(store.read(address(1), &v(7), domain), v(42));
-    assert_eq!(store.read(address(2), &v(7), domain), AbstractValue::top());
+    let unchanged = store.read(address(2), &v(7), domain);
+    assert_state_value_eq(&unchanged, &AbstractValue::top());
+    assert_eq!(unchanged.expression(), account_two.expression());
 }
 
 #[test]
@@ -93,16 +123,55 @@ fn store_join_includes_missing_slots_defaults_and_balances() {
     changed.write_transient(address(1), &v(8), &v(19), domain);
     changed.write_balance(address(1), v(10));
     let joined = original.join(&changed, domain);
-    assert_eq!(
-        joined.read(address(1), &v(7), domain),
-        domain.join(&v(0), &v(42))
+    assert_state_value_eq(
+        &joined.read(address(1), &v(7), domain),
+        &domain.join(&v(0), &v(42)),
     );
-    assert_eq!(
-        joined.read_transient(address(1), &v(8), domain),
-        domain.join(&v(0), &v(19))
+    assert_state_value_eq(
+        &joined.read_transient(address(1), &v(8), domain),
+        &domain.join(&v(0), &v(19)),
     );
-    assert_eq!(joined.read_balance(address(1)), domain.join(&v(0), &v(10)));
-    assert_eq!(joined, changed.join(&original, domain));
+    assert_state_value_eq(
+        &joined.read_balance(address(1)),
+        &domain.join(&v(0), &v(10)),
+    );
+    let reversed = changed.join(&original, domain);
+    assert_eq!(joined.addresses(), reversed.addresses());
+    assert_eq!(joined.slots(), reversed.slots());
+    assert_eq!(joined.transient_slots(), reversed.transient_slots());
+    // Independent union selectors need not be syntactically equal. Both orders
+    // must have the same complete alternatives, with one selector across planes.
+    for candidate in [&joined, &reversed] {
+        let persistent = candidate.read(address(1), &v(7), domain);
+        let transient = candidate.read_transient(address(1), &v(8), domain);
+        let balance = candidate.read_balance(address(1));
+        assert_state_value_eq(&persistent, &domain.join(&v(0), &v(42)));
+        assert_state_value_eq(&transient, &domain.join(&v(0), &v(19)));
+        assert_state_value_eq(&balance, &domain.join(&v(0), &v(10)));
+        assert_state_value_eq(&candidate.read(address(1), &v(99), domain), &v(0));
+        assert_eq!(candidate.code(address(1)), original.code(address(1)));
+        assert_eq!(
+            candidate.existence(address(1)),
+            original.existence(address(1))
+        );
+        assert_eq!(candidate.nonce(address(1)), original.nonce(address(1)));
+        for (slot, expected_transient, expected_balance) in [(0, 0, 0), (42, 19, 10)] {
+            let policy = solver_policy();
+            let mut relations = RelationState::default();
+            relations
+                .observe(persistent.expression().unwrap(), v(slot).numeric(), &policy)
+                .unwrap();
+            assert_eq!(relations.check(&policy), CheckResult::Sat);
+            assert_eq!(
+                relations.unique_value(transient.expression().unwrap(), &policy),
+                ValueQuery::Unique(U256::from(expected_transient)),
+            );
+            assert_eq!(
+                relations.unique_value(balance.expression().unwrap(), &policy),
+                ValueQuery::Unique(U256::from(expected_balance)),
+            );
+        }
+    }
 }
 
 #[test]
@@ -113,13 +182,13 @@ fn unknown_slot_write_weakly_updates_all_aliases_and_defaults() {
     let mut store = Store::new(&world);
     store.write(address(1), &v(7), &v(42), domain);
     store.write(address(1), &AbstractValue::top(), &v(9), domain);
-    assert_eq!(
-        store.read(address(1), &v(7), domain),
-        domain.join(&v(42), &v(9))
+    assert_state_value_eq(
+        &store.read(address(1), &v(7), domain),
+        &domain.join(&v(42), &v(9)),
     );
-    assert_eq!(
-        store.read(address(1), &v(99), domain),
-        domain.join(&v(0), &v(9))
+    assert_state_value_eq(
+        &store.read(address(1), &v(99), domain),
+        &domain.join(&v(0), &v(9)),
     );
     let finite_alias = domain.join(&v(7), &v(8));
     store.write(address(1), &finite_alias, &v(1), domain);
@@ -202,9 +271,9 @@ fn words_are_big_endian_and_calldata_is_zero_padded() {
         bytes.slice(&v(1), &v(3), 64, domain).unwrap().exact_bytes(),
         Some(vec![0x34, 0, 0])
     );
-    assert_eq!(
-        ByteArray::unknown().read_word(&v(0), domain),
-        AbstractValue::top()
+    assert_state_value_eq(
+        &ByteArray::unknown().read_word(&v(0), domain),
+        &AbstractValue::top(),
     );
 }
 
@@ -235,7 +304,7 @@ fn byte_join_includes_zero_from_missing_keys() {
     let zero = ByteArray::exact(&[0]);
     let nonzero = ByteArray::exact(&[42]);
     let joined = zero.join(&nonzero, domain);
-    assert_eq!(joined.byte_at(0, domain), domain.join(&v(0), &v(42)));
+    assert_state_value_eq(&joined.byte_at(0, domain), &domain.join(&v(0), &v(42)));
     assert_eq!(joined.len(), &v(1));
     let short = ByteArray::empty();
     let variable_length = short.join(&nonzero, domain);
@@ -345,11 +414,39 @@ fn range_limits_are_typed_atomic_and_allow_zero_size_at_any_offset() {
 fn unknown_memory_offset_is_conservative_without_allocating_a_range() {
     let domain = Domain::default();
     let mut memory = ByteArray::memory();
-    memory
-        .write_byte(&AbstractValue::top(), &v(42), 32, domain)
-        .unwrap();
-    assert_eq!(memory.len(), &AbstractValue::top());
-    assert_eq!(memory.read_word(&v(0), domain), AbstractValue::top());
+    let offset = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    memory.write_byte(&offset, &v(42), 32, domain).unwrap();
+    assert_state_value_eq(memory.len(), &AbstractValue::top());
+    let word = memory.read_word(&v(0), domain);
+    assert!(word.expression().is_some());
+    assert!(!word.symbolic_limit_reached());
+    assert!(word.contains(U256::ZERO));
+    for shift in 0..32 {
+        assert!(word.contains(U256::from(42) << (shift * 8)));
+    }
+    assert!(!word.contains(U256::ONE));
+    assert_eq!(word.known_bits().zero(), !U256::from_be_bytes([42; 32]),);
+    let policy = solver_policy();
+    for (at, expected) in [
+        (0, U256::from(42) << 248),
+        (31, U256::from(42)),
+        (32, U256::ZERO),
+    ] {
+        let mut relations = RelationState::default();
+        relations
+            .observe(offset.expression().unwrap(), v(at).numeric(), &policy)
+            .unwrap();
+        assert_eq!(
+            relations.unique_value(word.expression().unwrap(), &policy),
+            ValueQuery::Unique(expected),
+        );
+    }
+    assert_eq!(
+        RelationState::default().can_equal(word.expression().unwrap(), U256::from(0x2a2a), &policy),
+        CheckResult::Unsat,
+    );
+    assert!(memory.stored_bytes().next().is_none());
+    assert!(memory.work_size() < 1000);
 }
 
 fn log_key() -> LogKey {
@@ -389,7 +486,7 @@ fn event_summary_joins_site_visits_and_retains_possibility_on_missing_path() {
     let joined = original.join(&emitted, domain);
     let event = &joined.possible_logs()[&log_key()];
     assert_eq!(event.topics, vec![domain.join(&v(7), &v(9))]);
-    assert_eq!(event.data.byte_at(0, domain), domain.join(&v(1), &v(3)));
+    assert_state_value_eq(&event.data.byte_at(0, domain), &domain.join(&v(1), &v(3)));
     assert_eq!(joined, emitted.join(&original, domain));
     assert_eq!(joined, joined.join(&joined, domain));
     assert!(joined.work_size() > original.work_size());
