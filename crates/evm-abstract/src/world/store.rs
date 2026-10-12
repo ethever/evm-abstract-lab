@@ -1093,6 +1093,17 @@ impl Store {
     pub fn transient_slots(&self) -> &OrderedMap<(Address, U256), AbstractValue> {
         &self.transient.slots
     }
+    /// Symbolic operand guarantees for one independent account storage plane.
+    pub fn symbolic_facts(
+        &self,
+        transient: bool,
+    ) -> impl Iterator<Item = (&ExprId, &AbstractValue)> {
+        if transient {
+            self.transient.operands.iter()
+        } else {
+            self.persistent.operands.iter()
+        }
+    }
 
     /// Default current value for unspecified persistent slots of this account.
     pub fn storage_default(&self, address: Address) -> &AbstractValue {
