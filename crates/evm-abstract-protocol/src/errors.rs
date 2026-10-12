@@ -143,7 +143,32 @@ variant! {
         Report(crate::ReportValidationFailure),
         /// Bounded report projection failed without changing analysis results.
         Export(crate::ExportFailure),
+        /// Snapshot identity computation failed explicitly.
+        Fingerprint(FingerprintFailure),
         /// SSA invariant failure.
         Ssa(crate::SsaFailure),
+    }
+}
+
+choice! {
+    /// Native snapshot fingerprint computation boundary.
+    pub enum FingerprintFailureKind {
+        /// Cancellation during exact fingerprint encoding.
+        Cancelled,
+        /// A symbolic or numeric value rejected bounded serialization.
+        Encoding,
+        /// A legacy length prefix cannot represent the exact length.
+        LengthOverflow,
+    }
+}
+record! {
+    /// Original fingerprint failure classification and encoding coordinates.
+    pub struct FingerprintFailure {
+        /// Exact failure category; no digest was supplied.
+        pub kind: FingerprintFailureKind,
+        /// Native serializer line, when available.
+        pub line: Option<usize>,
+        /// Native serializer column, when available.
+        pub column: Option<usize>,
     }
 }

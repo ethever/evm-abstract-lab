@@ -86,6 +86,15 @@ pub fn normalized_ssa_verbose(analysis: &WorldAnalysis, ir: &crate::ssa::Normali
 
 /// DOT graph preserving call/return/revert/failure edge labels and frontiers.
 pub fn dot(analysis: &WorldAnalysis) -> String {
+    let fingerprint = match analysis.world().fingerprint() {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            return format!(
+                "digraph world {{\n  label={:?};\n}}\n",
+                format!("Snapshot fingerprint unavailable: {error}")
+            );
+        }
+    };
     let mut output = String::from("digraph world {\n  rankdir=LR;\n");
     writeln!(
         output,
@@ -95,7 +104,7 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
             analysis.world().fork(),
             analysis.status(),
             identity(analysis.world().identity()),
-            analysis.world().fingerprint(),
+            fingerprint,
             environment::summary(&analysis.entry().environment, Some(analysis.world().identity())),
             analysis.summary_stats().hits,
             analysis.summary_stats().misses,
@@ -220,7 +229,7 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
 
 /// JSON evidence retains the analysis schema and adds computed snapshot/account facts.
 pub fn json(analysis: &WorldAnalysis) -> Result<serde_json::Value, crate::render::json::JsonError> {
-    let encoded = crate::render::json::compact(&evidence(analysis))?;
+    let encoded = crate::render::json::compact(&evidence(analysis)?)?;
     Ok(serde_json::from_str(&encoded)?)
 }
 

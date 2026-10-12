@@ -105,10 +105,10 @@ fn anchored_snapshot_validates_block_identity_code_hash_and_fingerprint() {
         AbstractValue::constant(U256::from(1))
     );
     let mut json: serde_json::Value = serde_json::from_str(&input).unwrap();
-    json["fingerprint"] = serde_json::json!(world.fingerprint());
+    json["fingerprint"] = serde_json::json!(world.fingerprint().unwrap());
     assert_eq!(
-        parse(&json.to_string()).unwrap().fingerprint(),
-        world.fingerprint()
+        parse(&json.to_string()).unwrap().fingerprint().unwrap(),
+        world.fingerprint().unwrap()
     );
     json["accounts"][0]["nonce"] = serde_json::json!("0x2");
     assert!(matches!(
@@ -297,7 +297,10 @@ fn null_optional_fields_match_omitted_unknown_facts() {
     }"#,
     )
     .unwrap();
-    assert_eq!(omitted.fingerprint(), explicit_null.fingerprint());
+    assert_eq!(
+        omitted.fingerprint().unwrap(),
+        explicit_null.fingerprint().unwrap()
+    );
     let account = explicit_null.account(address(0x101)).unwrap();
     assert!(account.storage.is_empty());
     assert!(account.storage_unknown);
@@ -385,7 +388,7 @@ fn duplicate_fields_are_rejected_even_when_the_first_value_is_null() {
 fn identity_tag_can_follow_variant_fields_and_rejects_unknown_kinds() {
     let before = parse(r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"offline","label":"example"}}"#).unwrap();
     let after = parse(r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"label":"example","kind":"offline"}}"#).unwrap();
-    assert_eq!(before.fingerprint(), after.fingerprint());
+    assert_eq!(before.fingerprint().unwrap(), after.fingerprint().unwrap());
 
     let block_hash = alloy_primitives::B256::repeat_byte(0x11);
     let chain = format!(
@@ -419,7 +422,7 @@ fn sequence_inputs_preserve_the_existing_snapshot_format() {
     ]"#,
     )
     .unwrap();
-    assert_eq!(map.fingerprint(), sequence.fingerprint());
+    assert_eq!(map.fingerprint().unwrap(), sequence.fingerprint().unwrap());
 
     assert!(json_error(r#"["osaka","test",null,null]"#).contains("invalid length 4"));
     assert!(json_error(r#"["osaka","test",[],null,[]]"#).contains("missing field `kind`"));

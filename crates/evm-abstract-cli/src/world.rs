@@ -11,7 +11,7 @@ use evm_abstract::{
     bytecode::DecodeError,
     domain::AbstractValue,
     fork::ParseForkError,
-    world::{Account, Existence, World, WorldError},
+    world::{Account, Existence, FingerprintError, World, WorldError},
 };
 use std::{fs, path::Path};
 use thiserror::Error;
@@ -60,6 +60,8 @@ pub(crate) enum InputError {
     MissingCodeHash(Address),
     #[error("snapshot fingerprint mismatch: expected {expected}, observed {observed}")]
     Fingerprint { expected: B256, observed: B256 },
+    #[error("cannot compute snapshot fingerprint: {0}")]
+    FingerprintCalculation(FingerprintError),
     #[error("{0}")]
     World(WorldError),
 }
@@ -79,6 +81,11 @@ impl From<ParseForkError> for InputError {
 impl From<WorldError> for InputError {
     fn from(error: WorldError) -> Self {
         Self::World(error)
+    }
+}
+impl From<FingerprintError> for InputError {
+    fn from(error: FingerprintError) -> Self {
+        Self::FingerprintCalculation(error)
     }
 }
 
@@ -215,7 +222,7 @@ fn parse(text: &str) -> Result<World, InputError> {
     }
     if let Some(expected) = snapshot.fingerprint {
         let expected = hash(&expected, "fingerprint")?;
-        let observed = world.fingerprint();
+        let observed = world.fingerprint()?;
         if expected != observed {
             return Err(InputError::Fingerprint { expected, observed });
         }
