@@ -12,6 +12,8 @@ mod calls;
 mod convergence;
 #[path = "symbolic_state/creation.rs"]
 mod creation;
+#[path = "symbolic_state/logs.rs"]
+mod logs;
 #[path = "symbolic_state/memory.rs"]
 mod memory;
 #[path = "symbolic_state/oracle.rs"]
