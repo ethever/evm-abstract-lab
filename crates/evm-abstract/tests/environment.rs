@@ -568,8 +568,18 @@ fn child_independent_callvalue_never_aliases_unknown_root_callvalue() {
 
 #[test]
 fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_root() {
-    let call = "6020602060205f6102006207a120fa";
-    let code = format!("5f355f545f52{call}50{call}506020511400");
+    use evm_abstract::domain::{
+        Domain,
+        relational::{CheckResult, RelationLimits},
+        symbolic::ExprId,
+    };
+    use revm_bytecode::opcode;
+
+    // Keep the same memory snapshot as both calls' input. Copying an earlier
+    // output would change the complete backing state of the next calldata view.
+    let call = "5f5f60205f6102006207a120fa";
+    let code = format!("5f355f545f52{call}50{call}503d5f60203e6020511400");
+    let mut previous = None;
     for summaries in [true, false] {
         let mut world = World::new(Fork::Osaka, "independent arrays in summaries");
         let mut root = Account::from_hex(&code, Fork::Osaka).unwrap();
@@ -596,6 +606,10 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
             "{:?}",
             result.frontiers()
         );
+        evm_abstract::ssa::build_world(&result)
+            .unwrap()
+            .verify(&result)
+            .unwrap();
         let comparison_pc = code.len() / 2 - 2;
         let compared = result
             .states()
@@ -608,12 +622,116 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
         let comparison = &compared.exit_stack[0];
         assert!(comparison.contains(U256::ZERO));
         assert!(comparison.contains(U256::from(1)));
+        let observable = (
+            comparison.numeric().clone(),
+            comparison.provenance().clone(),
+        );
+        if let Some(before) = &previous {
+            assert_eq!(&observable, before);
+        }
+        previous = Some(observable);
         for summary in result.summaries() {
             assert!(!summary.input.frame.state.environment_calldata);
         }
         if summaries {
             assert!(result.summary_stats().hits > 0);
+            assert!(
+                result
+                    .summaries()
+                    .iter()
+                    .any(|record| !record.reused_at.is_empty())
+            );
+        } else {
+            assert_eq!(result.summary_stats().hits, 0);
         }
+        let domain = Domain::from_spec(result.domain_spec());
+        // This supplemental joint-source inspection expands two byte-array
+        // reads. Runtime analysis retains its default 1024-node/20m policy;
+        // the finite 8192-node inspection policy is also used by machine tests.
+        let inspection = RelationLimits {
+            max_nodes: 8192,
+            max_depth: 128,
+            ..result.domain_spec().relations()
+        };
+        let exit = compared.exit.as_ref().unwrap();
+        let root_input = result.states()[0].exit_stack[0].clone();
+        let returned = exit
+            .active()
+            .returndata
+            .read_word_checked(&word(0), domain)
+            .unwrap();
+        let input = result
+            .states()
+            .iter()
+            .find(|state| state.key.frames.len() == 2)
+            .unwrap()
+            .entry
+            .active()
+            .calldata
+            .read_word_checked(&word(0), domain)
+            .unwrap();
+        let equal = |value: &AbstractValue, constant: u64| {
+            ExprId::operation(
+                opcode::EQ,
+                &[
+                    value.symbolic_expression().unwrap(),
+                    ExprId::constant(U256::from(constant)),
+                ],
+                inspection.expressions(),
+            )
+            .unwrap()
+        };
+        let and = |left, right| {
+            ExprId::operation(opcode::AND, &[left, right], inspection.expressions()).unwrap()
+        };
+        let continuations: Vec<_> = result
+            .states()
+            .iter()
+            .filter(|state| state.key.frames.len() == 1 && state.active().basic_block_index >= 1)
+            .collect();
+        assert_eq!(continuations.len(), 2);
+        let call_success =
+            continuations
+                .iter()
+                .fold(ExprId::constant(U256::from(1)), |combined, state| {
+                    and(
+                        combined,
+                        equal(state.entry.active().stack.last().unwrap(), 1),
+                    )
+                });
+        assert_eq!(
+            exit.relations
+                .can_equal(&call_success, U256::from(1), &inspection),
+            CheckResult::Sat
+        );
+        for right in [1, 2] {
+            let pair = and(
+                call_success.clone(),
+                and(
+                    equal(&root_input, 1),
+                    and(equal(&input, right), equal(&returned, right)),
+                ),
+            );
+            assert_eq!(
+                exit.relations.can_equal(&pair, U256::from(1), &inspection),
+                CheckResult::Sat
+            );
+        }
+        let same = ExprId::operation(
+            opcode::EQ,
+            &[
+                input.symbolic_expression().unwrap(),
+                returned.symbolic_expression().unwrap(),
+            ],
+            inspection.expressions(),
+        )
+        .unwrap();
+        let wrong = ExprId::operation(opcode::ISZERO, &[same], inspection.expressions()).unwrap();
+        let wrong = and(call_success, wrong);
+        assert_eq!(
+            exit.relations.can_equal(&wrong, U256::from(1), &inspection),
+            CheckResult::Unsat
+        );
     }
 }
 
