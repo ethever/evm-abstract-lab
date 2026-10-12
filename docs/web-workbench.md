@@ -134,6 +134,14 @@ Web 协议的数值仍受类型可表示范围约束：`smt_rlimit` 为 `u32`，
 - 底部检查器按所选状态、entry/exit 和调用帧显示上下文、stack、memory、storage、transient storage、calldata、returndata。稀疏字节与槽位保留默认值、未知信息和精度，不把未观察位置一律画成零。
 - Outcomes 保留每个返回／回滚结果的字节和事务状态；Acquisition 显示固定快照、采集轮次、账户／槽位与类型化失败证据。诊断和未展开前沿仍可跳转到对应状态与指令。
 
+导航、工作区标签、检查器标签和工具按钮使用统一的高度、间距及交互状态。普通按钮执行动作，开关按钮保留开启状态，标签在同组中选择一个视图；悬停、选中、禁用和键盘焦点都有相应反馈。
+
+**Inspect** 可以通过顶部按钮显示或隐藏，也支持 Windows/Linux 的 **Ctrl+J** 和 macOS 的 **⌘J**。快捷键在工作台获得焦点时生效，弹窗及输入法组合输入优先；长按不会反复开关面板。页面接管该快捷键时会阻止对应浏览器默认动作，触屏用户仍可使用按钮。
+
+拖动检查器上边缘可给详情分配更多空间。标题栏的 **Maximize** 让检查器占满结果工作区，**Restore** 恢复之前的普通高度，**Hide** 暂时隐藏它。隐藏再打开保留活动标签、观察位置和面板模式；窗口暂时变小时只收紧实际高度，重新变大后继续使用原高度偏好。调整面板不会重新分析，也不重置原有 CFG 场景或代码阅读位置。
+
+**Storage / Transient** 中的账户地址、可展开的 **Account facts in this store**、未指定槽的默认值和显式槽列表属于同一个主要滚动区域。展开账户详情后可自然阅读完整内容，再向下滚动查看槽位；状态、调用帧和 current/rollback store 选择仍位于内容区上方。长槽列表只绘制当前可见行。
+
 分栏、分隔线和标签由 [`egui_tiles`](https://docs.rs/egui_tiles/0.17.1/egui_tiles/) 管理；反汇编与 SSA 使用 [`egui_extras::TableBuilder`](https://docs.rs/egui_extras/0.36.2/egui_extras/struct.TableBuilder.html) 管理列、滚动和可见行。字节码编辑、按钮和菜单使用 egui 通用控件，语义着色及 CFG 节点和边保留专用绘制。
 
 ## 布局与空间审查

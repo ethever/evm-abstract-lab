@@ -1365,7 +1365,7 @@ def hide_inspector(page, canvas):
     settle_gesture(page)
 
 
-def select_inspector_tab(page, canvas, tab: str):
+def select_inspector_tab(page, canvas, tab: str, y: float = 778):
     # Measured on the 1440x1000 native inspector toolbar. SSA value follows
     # Stack, so every later tab is shifted by its rendered width and spacing.
     positions = {
@@ -1373,8 +1373,245 @@ def select_inspector_tab(page, canvas, tab: str):
         "Storage": 274, "Transient": 341, "Calldata": 408, "Returndata": 481,
         "Outcomes": 561, "Acquisition": 640, "Environment": 727, "Diagnostics": 814,
     }
-    canvas.click(position={"x": positions[tab], "y": 778})
+    canvas.click(position={"x": positions[tab], "y": y})
     expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: {tab}")
+
+
+def inspector_frame_tab(page, canvas):
+    """Measure the selected Frame tab from its painted fill, including after drag."""
+    page.mouse.move(2, 2)
+    settle_gesture(page)
+    png = canvas.screenshot()
+    candidates = page.evaluate("""async png => {
+        const image = new Image(); image.src = `data:image/png;base64,${png}`;
+        await image.decode();
+        const c = document.createElement('canvas'); c.width=image.width; c.height=image.height;
+        const ctx=c.getContext('2d'); ctx.drawImage(image,0,0);
+        const pixels=ctx.getImageData(0,0,c.width,c.height).data;
+        const visited=new Uint8Array(c.width*c.height), scale=c.width/innerWidth, result=[];
+        const selected=i=>pixels[i*4]===33 && pixels[i*4+1]===65 && pixels[i*4+2]===75;
+        for (let y=Math.ceil(25*scale);y<c.height;y++) for(let x=0;x<c.width;x++) {
+            const start=y*c.width+x;
+            if(visited[start] || !selected(start))continue;
+            const queue=[start];visited[start]=1;let left=x,right=x,top=y,bottom=y,count=0;
+            for(let at=0;at<queue.length;at++) {
+                const i=queue[at],px=i%c.width,py=Math.floor(i/c.width);count++;
+                left=Math.min(left,px);right=Math.max(right,px);top=Math.min(top,py);bottom=Math.max(bottom,py);
+                for(const next of [px>0?i-1:-1,px+1<c.width?i+1:-1,py>0?i-c.width:-1,py+1<c.height?i+c.width:-1]) {
+                    if(next>=0 && !visited[next] && selected(next)){visited[next]=1;queue.push(next);}
+                }
+            }
+            const w=(right-left+1)/scale,h=(bottom-top+1)/scale;
+            if(left/scale<100 && w>=24 && w<=140 && h>=10 && h<=30 && count>120*scale*scale)
+                result.push([left/scale,top/scale,(right+1)/scale,(bottom+1)/scale]);
+        }
+        return result.sort((a,b)=>a[1]-b[1]);
+    }""", base64.b64encode(png).decode())
+    assert candidates, "selected Frame tab was not painted"
+    return candidates[0]
+
+
+def inspect_shortcut_events(page):
+    return page.evaluate("window.__inspectKeyEvents")
+
+
+def synthetic_inspect_key(page, **changes):
+    page.evaluate("""changes => {
+        const target=document.activeElement;
+        target.dispatchEvent(new KeyboardEvent('keydown', {
+            key:'j',code:'KeyJ',bubbles:true,cancelable:true,...changes
+        }));
+        target.dispatchEvent(new KeyboardEvent('keyup', {
+            key:'j',code:'KeyJ',bubbles:true,cancelable:true,...changes,repeat:false
+        }));
+    }""", changes)
+    settle_gesture(page)
+
+
+def inspector_controls_interactions(browser, url: str, output: Path):
+    """Exercise panel state and the DOM shortcut boundary on the packaged app."""
+    results = {}
+    for platform in ["linux", "mac-simulated"]:
+        options = {"viewport": {"width": 1440, "height": 1000}}
+        if platform == "mac-simulated":
+            options["user_agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+        context = browser.new_context(**options)
+        page = context.new_page()
+        observe_webgpu(page)
+        if platform == "mac-simulated":
+            page.add_init_script("Object.defineProperty(navigator,'platform',{get:()=> 'MacIntel'});")
+        page.add_init_script("""window.__inspectKeyEvents=[];
+            window.addEventListener('keydown',event=>{
+                if(event.key.toLowerCase()!=='j')return;
+                const record={ctrl:event.ctrlKey,meta:event.metaKey,shift:event.shiftKey,
+                    alt:event.altKey,repeat:event.repeat,composing:event.isComposing};
+                window.__inspectKeyEvents.push(record);
+                setTimeout(()=>record.prevented=event.defaultPrevented,0);
+            },true);""")
+        errors, posts = [], []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("request", lambda request: posts.append(request.url)
+                if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+        page.goto(url, wait_until="networkidle")
+        status = page.locator("#analysis-status")
+        expect(status).to_contain_text("Ready:", timeout=60000)
+        canvas = page.locator("#evm-canvas")
+        canvas.click(position={"x": 720, "y": 600})
+        page.keyboard.press("3")
+        settle_gesture(page)
+        expect(status).to_contain_text("Inspector: Frame")
+        original_selection = re.search(r"Selected ([^;]+); source ([^;]+);", status.text_content()).group(0)
+        initial = inspector_frame_tab(page, canvas)
+        modifier = "Meta" if platform == "mac-simulated" else "Control"
+        accepted = {"metaKey": True} if platform == "mac-simulated" else {"ctrlKey": True}
+
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text("Inspector hidden")
+        assert inspect_shortcut_events(page)[-1]["prevented"], "browser default action was not suppressed"
+        assert len(context.pages) == 1 and page.url.startswith(url), "shortcut opened a browser page"
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text("Inspector: Frame")
+        assert inspector_frame_tab(page, canvas) == initial
+
+        page.keyboard.down(modifier)
+        page.keyboard.down("j")
+        expect(status).to_contain_text("Inspector hidden")
+        page.keyboard.down("j")
+        settle_gesture(page)
+        expect(status).to_contain_text("Inspector hidden")
+        assert inspect_shortcut_events(page)[-1]["repeat"]
+        assert inspect_shortcut_events(page)[-1]["prevented"]
+        page.keyboard.up("j")
+        page.keyboard.up(modifier)
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text("Inspector: Frame")
+
+        for extra in [{"shiftKey": True}, {"altKey": True}, {"isComposing": True}]:
+            synthetic_inspect_key(page, **accepted, **extra)
+            expect(status).to_contain_text("Inspector: Frame")
+            assert not inspect_shortcut_events(page)[-1]["prevented"]
+
+        page.evaluate("""() => {
+            const outside=document.createElement('button');outside.id='outside-workbench';
+            outside.style.position='fixed';outside.style.left='-1000px';
+            document.body.append(outside);outside.focus();
+        }""")
+        synthetic_inspect_key(page, **accepted)
+        expect(status).to_contain_text("Inspector: Frame")
+        assert not inspect_shortcut_events(page)[-1]["prevented"]
+        page.evaluate("document.getElementById('outside-workbench').remove()")
+        canvas.click(position={"x": 720, "y": 600})
+        open_input(page)
+        synthetic_inspect_key(page, **accepted)
+        assert not inspect_shortcut_events(page)[-1]["prevented"]
+        page.keyboard.press("Escape")
+        settle_gesture(page)
+        expect(status).to_contain_text("Inspector: Frame")
+
+        before_drag = inspector_frame_tab(page, canvas)
+        page.mouse.move(720, before_drag[1] - 3)
+        page.mouse.down()
+        page.mouse.move(720, 150, steps=16)
+        page.mouse.up()
+        dragged = inspector_frame_tab(page, canvas)
+        assert dragged[1] < 350, f"inspector is still capped near 38%: {dragged}"
+        canvas.screenshot(path=str(output / f"inspect-{platform}-dragged.png"))
+
+        canvas.click(position={"x": 1350, "y": (dragged[1] + dragged[3]) / 2})
+        expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
+        maximized = inspector_frame_tab(page, canvas)
+        assert maximized[1] < 100, maximized
+        canvas.screenshot(path=str(output / f"inspect-{platform}-maximized.png"))
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text("Inspector hidden")
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
+        assert inspector_frame_tab(page, canvas) == maximized
+        canvas.click(position={"x": 1350, "y": (maximized[1] + maximized[3]) / 2})
+        expect(status).to_contain_text(re.compile("docked", re.IGNORECASE))
+        restored = inspector_frame_tab(page, canvas)
+        assert abs(restored[1] - dragged[1]) <= 2, (dragged, restored)
+        resize_view(page, 1440, 450)
+        canvas.screenshot(path=str(output / f"inspect-{platform}-short.png"))
+        resize_view(page, 1440, 1000)
+        returned = inspector_frame_tab(page, canvas)
+        assert abs(returned[1] - dragged[1]) <= 2, (dragged, returned)
+        expect(status).to_contain_text(original_selection)
+        assert len(posts) == 1, "panel operations reran the analysis"
+        assert not errors, errors
+        results[platform] = {"initial": initial, "dragged": dragged, "maximized": maximized,
+            "restored": restored, "returned": returned, "analysis_submissions": len(posts),
+            "key_events": inspect_shortcut_events(page), "renderer": webgpu_evidence(page)}
+        context.close()
+    (output / "inspector-controls-report.json").write_text(json.dumps(results, indent=2) + "\n")
+    return results
+
+
+def storage_scroll_interactions(browser, url: str, output: Path):
+    page = browser.new_page(viewport={"width": 1440, "height": 1000})
+    observe_webgpu(page)
+    errors, posts = [], []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.on("request", lambda request: posts.append(request.url)
+            if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+    page.goto(url, wait_until="networkidle")
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("Ready:", timeout=60000)
+    canvas = page.locator("#evm-canvas")
+    count = 96
+    code = "".join(f"61{0x1000+i:04x}61{i:04x}5561{0x2000+i:04x}61{i:04x}5d"
+                   for i in range(count)) + "00"
+    reply = submit_bytecode(page, canvas, code, output / "storage-scroll-input.png")
+    report = reply.json()["result"]["Ok"]
+    assert report["status"] == "Converged" and len(report["states"]) == 1
+    machine = report["states"][0]["exit"]
+    account = next(account for account in report["stores"][machine["store"]]["accounts"]
+                   if account["address"] == machine["frames"][0]["storage_address"])
+    for kind, value_base in [("storage", 0x1000), ("transient", 0x2000)]:
+        assert len(account[kind]) == count
+        last = next(entry for entry in account[kind] if int(entry["slot"], 16) == count - 1)
+        assert last["value"]["constants"] == [hex(value_base + count - 1)]
+    (output / "storage-scroll-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
+    canvas.click(position={"x": 720, "y": 600})
+    page.keyboard.press("3")
+    tab = inspector_frame_tab(page, canvas)
+    canvas.click(position={"x": 1350, "y": (tab[1] + tab[3]) / 2})
+    expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
+    tab = inspector_frame_tab(page, canvas)
+    toolbar_y = (tab[1] + tab[3]) / 2
+    evidence = {}
+    for title, kind in [("Storage", "storage"), ("Transient", "transient")]:
+        select_inspector_tab(page, canvas, title, toolbar_y)
+        canvas.click(position={"x": 145, "y": tab[3] + 14})
+        expect(status).to_contain_text("Observed exit")
+        canvas.click(position={"x": 120, "y": tab[3] + 80})
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        expanded = canvas.screenshot(path=str(output / f"{kind}-facts-expanded.png"))
+        # The wheel starts over the facts prefix. One shared scroll must carry
+        # it all the way through the slot list, rather than trap it in 80 points.
+        page.mouse.move(80, tab[3] + 115)
+        page.mouse.wheel(0, 6000)
+        settle_gesture(page)
+        page.mouse.move(2, 2)
+        settled = canvas.screenshot(path=str(output / f"{kind}-last-slots.png"))
+        assert expanded != settled, "facts/slot content did not scroll"
+        page.mouse.move(80, tab[3] + 115)
+        page.mouse.wheel(0, -6000)
+        settle_gesture(page)
+        page.mouse.move(2, 2)
+        canvas.screenshot(path=str(output / f"{kind}-facts-returned.png"))
+        evidence[kind] = {"entries": count, "last_slot": hex(count - 1),
+            "last_value": account[kind][-1]["value"]["constants"],
+            "expanded_screenshot": f"{kind}-facts-expanded.png",
+            "scrolled_screenshot": f"{kind}-last-slots.png"}
+    assert len(posts) == 2, "storage inspection reran analysis"
+    assert not errors, errors
+    result = {"stores": evidence, "analysis_submissions": len(posts),
+        "renderer": webgpu_evidence(page)}
+    (output / "storage-scroll-report.json").write_text(json.dumps(result, indent=2) + "\n")
+    page.close()
+    return result
 
 
 def pane_interactions(browser, url: str, output: Path):
@@ -2935,12 +3172,18 @@ def main() -> None:
     parser.add_argument("--flow-only",action="store_true",help="Run selected-edge motion and compact-workspace SSA acceptance cases")
     parser.add_argument("--ssa-details-only",action="store_true",help="Run shared SSA reading mode and source-PC reveal acceptance cases")
     parser.add_argument("--ssa-values-only",action="store_true",help="Run normalized SSA and scoped value inspector acceptance")
+    parser.add_argument("--inspector-controls-only",action="store_true",help="Run inspector sizing and platform shortcut acceptance")
     parser.add_argument("--termination-only",action="store_true",help="Run semantic ending styles and existing selected-node flow/SSA acceptance")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     with analysis_server(args) as url:
         with sync_playwright() as playwright:
             browser = launch_browser(playwright.chromium, args.browser)
+            if args.inspector_controls_only:
+                inspector_controls_interactions(browser,url,args.output)
+                storage_scroll_interactions(browser,url,args.output)
+                browser.close()
+                return
             if args.ssa_values_only:
                 ssa_values_interactions(browser,url,args.output)
                 browser.close()
@@ -3082,6 +3325,8 @@ def main() -> None:
             compact_ssa = compact_ssa_interactions(browser, url, args.output)
             ssa_details = ssa_details_interactions(browser, url, args.output)
             ssa_values = ssa_values_interactions(browser, url, args.output)
+            inspector_controls = inspector_controls_interactions(browser, url, args.output)
+            storage_scroll = storage_scroll_interactions(browser, url, args.output)
             termination = termination_interactions(browser, url, args)
             gestures = graph_interactions(playwright.chromium, args.browser, url, args.output)
             hierarchy = hierarchy_interactions(browser,url,args)
@@ -3107,6 +3352,8 @@ def main() -> None:
                 "compact_ssa": compact_ssa,
                 "ssa_details": ssa_details,
                 "ssa_values": ssa_values,
+                "inspector_controls": inspector_controls,
+                "storage_scroll": storage_scroll,
                 "termination": termination,
                 "block_overview": overview,
                 "world_interactions": world,
