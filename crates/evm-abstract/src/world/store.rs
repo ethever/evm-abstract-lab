@@ -11,6 +11,7 @@ use serde::{Serialize, Serializer};
 use snapshot_state::Checkpoint;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod refinement;
 mod slots;
 #[cfg(test)]
 mod tests;
@@ -471,44 +472,6 @@ impl Store {
                 update(value);
             }
             log.data.update_values(update);
-        });
-    }
-    pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
-        // The caller has already joined its paths. Numeric widening cannot
-        // reintroduce dependencies discarded by a definite transaction write.
-        for (plane, old) in [
-            (&mut self.persistent, &old.persistent),
-            (&mut self.transient, &old.transient),
-        ] {
-            plane.slots.retain(|key, value| {
-                *value = domain.widen(old.slots.get(key).unwrap_or(&old.global_default), value);
-                true
-            });
-            plane.defaults.retain(|key, value| {
-                *value = domain.widen(old.defaults.get(key).unwrap_or(&old.global_default), value);
-                true
-            });
-            plane.global_default = domain.widen(&old.global_default, &plane.global_default);
-        }
-        self.balances.retain(|key, value| {
-            *value = domain.widen(old.balances.get(key).unwrap_or(&old.balance_default), value);
-            true
-        });
-        self.nonces.retain(|key, value| {
-            if let Some(old) = old.nonces.get(key) {
-                *value = domain.widen(old, value);
-            }
-            true
-        });
-        self.balance_default = domain.widen(&old.balance_default, &self.balance_default);
-        self.possible_logs.retain(|key, log| {
-            if let Some(old) = old.possible_logs.get(key) {
-                for (value, old) in log.topics.iter_mut().zip(&old.topics) {
-                    *value = domain.widen(old, value);
-                }
-                log.data.widen(&old.data, domain);
-            }
-            true
         });
     }
     pub(crate) fn project(&mut self, domain: Domain) {
