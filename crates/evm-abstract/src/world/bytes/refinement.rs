@@ -49,11 +49,41 @@ pub(in crate::world) enum Node {
 /// Visit distinct graph metadata only. Exact payloads and logical COPY lengths
 /// contribute no per-byte work to conditional fact projection.
 pub(in crate::world) fn guards(
-    mut pending: Vec<Node>,
+    pending: Vec<Node>,
     limits: ExprLimits,
 ) -> Result<BTreeSet<ExprId>, ExprError> {
-    let mut seen = BTreeSet::new();
     let mut out = BTreeSet::new();
+    walk(pending, limits, &mut |node, _| {
+        match node {
+            Node::Expression(e) => {
+                if let ExprKind::Ite { condition, .. } = e.kind() {
+                    out.insert(condition.clone());
+                }
+            }
+            Node::Bytes(b) => {
+                if let ByteStateKind::Ite { condition, .. } = b.kind() {
+                    out.insert(condition.clone());
+                }
+            }
+            Node::Slots(s) => {
+                if let SlotStateKind::Ite { condition, .. } = s.kind() {
+                    out.insert(condition.clone());
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Shared bounded traversal for guard projection and explicit cycle widening.
+/// A visitor may enqueue the expression of a retained numeric guarantee.
+pub(in crate::world) fn walk(
+    mut pending: Vec<Node>,
+    limits: ExprLimits,
+    visit: &mut impl FnMut(&Node, &mut Vec<Node>) -> Result<(), ExprError>,
+) -> Result<usize, ExprError> {
+    let mut seen = BTreeSet::new();
     while let Some(node) = pending.pop() {
         if embedded_smt::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled);
@@ -72,6 +102,7 @@ pub(in crate::world) fn guards(
                 depth,
             });
         }
+        visit(&node, &mut pending)?;
         match node {
             Node::Expression(e) => match e.kind() {
                 ExprKind::Constant(_) | ExprKind::Input(_) | ExprKind::Fresh(_) => {}
@@ -83,7 +114,6 @@ pub(in crate::world) fn guards(
                     then_value,
                     else_value,
                 } => {
-                    out.insert(condition.clone());
                     pending.extend(
                         [condition, then_value, else_value].map(|e| Node::Expression(e.clone())),
                     );
@@ -148,7 +178,6 @@ pub(in crate::world) fn guards(
                     then_state,
                     else_state,
                 } => {
-                    out.insert(condition.clone());
                     pending.extend([
                         Node::Expression(condition.clone()),
                         Node::Bytes(then_state.clone()),
@@ -178,7 +207,6 @@ pub(in crate::world) fn guards(
                     then_state,
                     else_state,
                 } => {
-                    out.insert(condition.clone());
                     pending.extend([
                         Node::Expression(condition.clone()),
                         Node::Slots(then_state.clone()),
@@ -188,7 +216,7 @@ pub(in crate::world) fn guards(
             },
         }
     }
-    Ok(out)
+    Ok(seen.len())
 }
 
 fn view_nodes(view: &crate::domain::symbolic::ByteView) -> [Node; 3] {
