@@ -27,7 +27,7 @@ fn roundtrip(error: &api::ApiError) {
 fn cancelled_real_fingerprint_stays_cancelled_in_the_protocol_error() {
     let world = world(ExprId::fresh().unwrap());
     let previous = world.fingerprint().unwrap();
-    let control = Control::default();
+    let control = Control::new(Default::default());
     control.cancellation().cancel();
     let error = control.scope(|| fingerprint(world.fingerprint().unwrap_err()));
     assert_eq!(error.code, api::ApiErrorCode::Cancelled);
