@@ -1,6 +1,6 @@
 [package]
 name                   = "embedded-smt"
-description            = "Typed Boolean and bit-vector queries over in-process SMT providers"
+description            = "Typed Boolean, bit-vector and array queries over in-process SMT providers"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
