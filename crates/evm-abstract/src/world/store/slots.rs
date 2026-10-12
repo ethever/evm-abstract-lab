@@ -264,7 +264,7 @@ impl Plane {
             self.roots.insert(address, root);
         }
     }
-    fn read_checked(
+    pub(super) fn read_checked(
         &self,
         address: Address,
         key: &AbstractValue,

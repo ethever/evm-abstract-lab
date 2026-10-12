@@ -4,6 +4,8 @@
 //! numeric upper bounds and bounded presentation; COPY never expands its range.
 
 pub(super) mod numeric;
+pub(super) mod refinement;
+pub use refinement::GuardRefinementError;
 mod ranges;
 #[cfg(test)]
 mod tests;
@@ -767,17 +769,6 @@ impl ByteArray {
             .work_size()
             .saturating_mul(32)
             .saturating_add(256 * 32)
-    }
-    pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
-        let length_expression = self.length.symbolic_expression();
-        self.length = domain.widen(&old.length, &self.length);
-        if let Some(expression) = length_expression {
-            self.length = self.length.clone().with_expression(expression);
-        }
-        self.default = domain.widen(&old.default, &self.default);
-        for (i, value) in &mut self.bytes {
-            *value = domain.widen(old.bytes.get(i).unwrap_or(&old.default), value);
-        }
     }
     pub(crate) fn project(&self, domain: Domain) -> Self {
         let mut out = self.clone();

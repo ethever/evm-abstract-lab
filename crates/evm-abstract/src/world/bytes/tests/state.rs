@@ -306,20 +306,26 @@ fn materialization_policy_is_separate_from_logical_copy_size() {
     );
 }
 #[test]
-fn project_widen_keep_length_view_and_hash() {
+fn project_guarded_join_keep_length_source_view_and_hash() {
     let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
         enabled: false,
         ..RelationLimits::default()
     }));
     let old = ByteArray::unknown();
-    let mut array = old
+    let array = old
         .slice(&v(0), &symbolic(1, 33), 64, Domain::default())
         .unwrap();
-    array.widen(&old, domain);
-    let projected = array.project(domain);
-    assert!(projected.len().expression().is_some());
-    let _ = projected.view();
-    assert!(projected.keccak(domain, 1).is_ok());
+    let joined = old
+        .join_guarded(&array, domain, ExprId::fresh().unwrap(), limits(domain))
+        .unwrap();
+    let projected = joined.project(domain);
+    assert_eq!(projected.len().expression(), joined.len().expression());
+    assert_eq!(projected.view(), joined.view());
+    assert_eq!(projected.fresh_leaves(), joined.fresh_leaves());
+    assert_eq!(
+        projected.keccak(domain, 1).unwrap().expression(),
+        joined.keccak(domain, 1).unwrap().expression(),
+    );
     assert!(projected.slice(&v(0), &v(1), 64, domain).is_ok());
 }
 #[test]
