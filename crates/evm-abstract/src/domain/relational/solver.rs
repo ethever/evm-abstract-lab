@@ -521,19 +521,35 @@ fn prepared<'a>(
     let mut assertions = Vec::new();
     let mut encoder = Encoder::new(limits);
     encoder.bind_observed_constants(state, &mut assertions)?;
-    for constraint in &state.constraints {
-        assertions.push(encoder.constraint(constraint)?);
+    // Encode scalar premises before state observations that can depend on them.
+    // Both groups retain every original atom; only their conjunction order changes.
+    encoder.charge(state.constraints.len())?;
+    for reads_state in [false, true] {
+        for constraint in &state.constraints {
+            if constraint
+                .expressions()
+                .iter()
+                .any(|expression| expression.has_state_semantics())
+                != reads_state
+            {
+                continue;
+            }
+            assertions.push(encoder.constraint(constraint)?);
+            // Reuse a fact only after its supporting assertion exists.
+            encoder.remember_guarantee(constraint)?;
+        }
     }
     if state.path.nodes() > limits.max_nodes || state.path.depth() > limits.max_depth {
         return Err(QueryReason::ExpressionLimit);
     }
     assertions.push(encoder.path(&state.path)?);
-    // First encode the original conjunction and path without substitutions.
-    // Subsequent demanded reads may reuse those guarantees, but never erase
-    // their supporting assertions or borrow facts from one guarded alternative.
-    for constraint in &state.constraints {
-        encoder.remember_guarantee(constraint)?;
-    }
+    // Derived read encodings may precede a later equality/guard. Recompute them
+    // with the complete conjunction, retaining every leaf and source binding.
+    // In particular, an uncompared immutable hash must keep its original value.
+    encoder.charge(encoder.memo.len())?;
+    encoder.memo.retain(|expression, _| {
+        !expression.has_state_semantics() || matches!(expression.kind(), ExprKind::Keccak { .. })
+    });
     if let Some(extra) = extra {
         assertions.push(encoder.constraint(&extra)?);
     }

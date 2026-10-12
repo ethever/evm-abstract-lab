@@ -3,7 +3,8 @@
 use super::super::{
     CheckResult, Constraint, RelationLimits, RelationState, SmtProvider, ValueQuery,
 };
-use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId};
+use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId, StateBinding};
+use crate::domain::{AbstractValue, Domain, NumericValue};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::sync::Arc;
@@ -63,6 +64,130 @@ fn default_fuel_conjunction_aliases_keep_their_asserted_predicates() {
                 );
                 assert_eq!(path.assume(&equality, !equal, &limits), CheckResult::Unsat);
             }
+        }
+    }
+}
+
+#[test]
+fn delayed_input_key_aliases_refine_a_read_with_earlier_numeric_observations() {
+    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
+        let limits = policy(provider);
+        let length = ExprId::fresh().unwrap();
+        let input = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
+        let k = ExprId::word_read(
+            ByteView::new(input.clone(), c(0), c(32)),
+            c(0),
+            limits.expressions(),
+        )
+        .unwrap();
+        let q = ExprId::word_read(
+            ByteView::new(input, c(32), c(32)),
+            c(0),
+            limits.expressions(),
+        )
+        .unwrap();
+        let storage = SlotStateId::zero()
+            .store(k.clone(), c(7), limits.expressions().into())
+            .unwrap()
+            .store(q.clone(), c(9), limits.expressions().into())
+            .unwrap();
+        let read = ExprId::slot_read(storage, k.clone(), limits.expressions()).unwrap();
+        let equality = op(opcode::EQ, &[k.clone(), q.clone()], limits);
+        for equal in [false, true] {
+            let mut path = RelationState::default();
+            assert_eq!(
+                path.add_unsigned_bounds(&length, U256::from(64), U256::from(1024), &limits),
+                CheckResult::Sat
+            );
+            path.observe(
+                &read,
+                Domain::default()
+                    .join(
+                        &AbstractValue::constant(U256::from(7)),
+                        &AbstractValue::constant(U256::from(9)),
+                    )
+                    .numeric(),
+                &limits,
+            )
+            .unwrap();
+            let assumption = if equal {
+                path.add_equal(&k, &q, &limits)
+            } else {
+                path.assume(&equality, false, &limits)
+            };
+            assert_eq!(assumption, CheckResult::Sat, "{provider:?}");
+            assert_eq!(
+                path.unique_value(&read, &limits),
+                ValueQuery::Unique(U256::from(if equal { 9 } else { 7 })),
+                "{provider:?}, equal={equal}"
+            );
+            assert_eq!(
+                path.can_equal(&read, U256::from(if equal { 7 } else { 9 }), &limits),
+                CheckResult::Unsat,
+                "{provider:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn asserted_input_length_bounds_preserve_the_last_byte_padding_boundary() {
+    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
+        let limits = policy(provider);
+        for start in [0, 32] {
+            let length = ExprId::fresh().unwrap();
+            let input = ByteStateId::observed(
+                SourceId::fresh().unwrap(),
+                length.clone(),
+                (start..start + 32)
+                    .map(|index| StateBinding {
+                        index: U256::from(index),
+                        value: c(1),
+                        numeric: NumericValue::constant(U256::from(1)),
+                    })
+                    .collect(),
+                limits.expressions().into(),
+            )
+            .unwrap();
+            let word = ExprId::word_read(
+                ByteView::new(input, c(start), c(32)),
+                c(0),
+                limits.expressions(),
+            )
+            .unwrap();
+            let mut path = RelationState::default();
+            assert_eq!(
+                path.add_unsigned_bounds(
+                    &length,
+                    U256::from(start + 31),
+                    U256::from(start + 32),
+                    &limits
+                ),
+                CheckResult::Sat
+            );
+            let full = U256::from_be_bytes([1; 32]);
+            for expected in [full, full - U256::from(1)] {
+                assert_eq!(
+                    path.can_equal(&word, expected, &limits),
+                    CheckResult::Sat,
+                    "{provider:?}, start={start}"
+                );
+            }
+            let mut covered = RelationState::default();
+            assert_eq!(
+                covered.add_unsigned_bounds(
+                    &length,
+                    U256::from(start + 32),
+                    U256::from(start + 64),
+                    &limits
+                ),
+                CheckResult::Sat
+            );
+            assert_eq!(
+                covered.unique_value(&word, &limits),
+                ValueQuery::Unique(full),
+                "{provider:?}, start={start}"
+            );
         }
     }
 }

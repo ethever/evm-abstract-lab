@@ -116,6 +116,16 @@ impl Encoder<'_> {
             bytes.push(array.select(&word(start + U256::from(j))));
         }
         let raw = self.word_from_bytes(bytes)?;
+        self.charge(1)?;
+        if self
+            .guarantees
+            .minimum(length)
+            .is_some_and(|lower| lower > start + U256::from(31))
+        {
+            // The already asserted source bound covers every byte, including
+            // the strict source-length boundary. No padding shift is needed.
+            return Ok(Some(raw));
+        }
         let length = self.expression(length)?;
         let available = length.bvsub(word(start));
         // Below 32, six bits suffice for 32-available (including 32 at zero).
