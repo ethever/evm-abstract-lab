@@ -775,6 +775,19 @@ def text_pixels(page, screenshot: bytes, region):
     }""", {"png":base64.b64encode(screenshot).decode(),"region":region})
 
 
+def save_png_crop(page, screenshot: bytes, region, path: Path):
+    """Save the same screenshot crop used by the pixel assertions for review."""
+    encoded = page.evaluate("""async ({png,region}) => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+        const scale=image.width/innerWidth;
+        const [left,top,right,bottom]=region.map(value=>Math.round(value*scale));
+        const crop=document.createElement('canvas');crop.width=right-left;crop.height=bottom-top;
+        crop.getContext('2d').drawImage(image,left,top,crop.width,crop.height,0,0,crop.width,crop.height);
+        return crop.toDataURL('image/png').split(',')[1];
+    }""", {"png":base64.b64encode(screenshot).decode(),"region":region})
+    path.write_bytes(base64.b64decode(encoded))
+
+
 def ssa_text_snapshot(page, canvas, output, name):
     page.mouse.move(2,2);page.wait_for_timeout(800);rendered_frame(page)
     png=canvas.screenshot(path=str(output/f"{name}.png"))
@@ -800,7 +813,7 @@ def details_graph_snapshot(page, canvas, output, name):
 
 
 def ssa_details_toggle(page, canvas, mode):
-    canvas.click(position={"x":page.viewport_size["width"]-45,"y":32})
+    canvas.click(position={"x":page.viewport_size["width"]-45,"y":40})
     page.mouse.move(2,2);settle_gesture(page)
     expect(page.locator("#analysis-status")).to_contain_text(f"SSA details: {mode}")
 
@@ -1366,12 +1379,12 @@ def hide_inspector(page, canvas):
 
 
 def select_inspector_tab(page, canvas, tab: str, y: float = 778):
-    # Measured on the 1440x1000 native inspector toolbar. SSA value follows
-    # Stack, so every later tab is shifted by its rendered width and spacing.
+    # Compact shared controls, measured in the packaged 1440x1000 WASM app.
+    # Callers that resize the inspector pass its measured toolbar center.
     positions = {
-        "Frame": 30, "Stack": 80, "SSA value": 141, "Memory": 210,
-        "Storage": 274, "Transient": 341, "Calldata": 408, "Returndata": 481,
-        "Outcomes": 561, "Acquisition": 640, "Environment": 727, "Diagnostics": 814,
+        "Frame": 29, "Stack": 78, "SSA value": 134, "Memory": 199,
+        "Storage": 259, "Transient": 322, "Calldata": 384, "Returndata": 454,
+        "Outcomes": 530, "Acquisition": 605, "Environment": 685, "Diagnostics": 767,
     }
     canvas.click(position={"x": positions[tab], "y": y})
     expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: {tab}")
@@ -1379,6 +1392,7 @@ def select_inspector_tab(page, canvas, tab: str, y: float = 778):
 
 def inspector_frame_tab(page, canvas):
     """Measure the selected Frame tab from its painted fill, including after drag."""
+    expect(page.locator("#analysis-status")).to_contain_text("Inspector: Frame")
     page.mouse.move(2, 2)
     settle_gesture(page)
     png = canvas.screenshot()
@@ -1402,13 +1416,23 @@ def inspector_frame_tab(page, canvas):
                 }
             }
             const w=(right-left+1)/scale,h=(bottom-top+1)/scale;
-            if(left/scale<100 && w>=24 && w<=140 && h>=10 && h<=30 && count>120*scale*scale)
+            // Frame is the first compact tab, not a selected SSA row or the
+            // similarly colored Block entry observation control beneath it.
+            if(left/scale>=4 && left/scale<=10 && w>=40 && w<=50 && h>=14 && h<=20 && count>120*scale*scale)
                 result.push([left/scale,top/scale,(right+1)/scale,(bottom+1)/scale]);
         }
         return result.sort((a,b)=>a[1]-b[1]);
     }""", base64.b64encode(png).decode())
-    assert candidates, "selected Frame tab was not painted"
+    assert len(candidates) == 1, f"expected one selected Frame tab, got {candidates}"
     return candidates[0]
+
+
+def inspector_title_action(page, canvas, action: str, frame_tab):
+    """Use the real right-aligned titlebar at its painted vertical position."""
+    inset = {"Maximize": 79, "Restore": 73, "Hide": 24}[action]
+    canvas.click(position={"x": page.viewport_size["width"] - inset,
+                           "y": (frame_tab[1] + frame_tab[3]) / 2})
+    settle_gesture(page)
 
 
 def inspect_shortcut_events(page):
@@ -1456,7 +1480,7 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         status = page.locator("#analysis-status")
         expect(status).to_contain_text("Ready:", timeout=60000)
         canvas = page.locator("#evm-canvas")
-        canvas.click(position={"x": 720, "y": 600})
+        canvas.click(position={"x": 720, "y": 12})
         page.keyboard.press("3")
         settle_gesture(page)
         expect(status).to_contain_text("Inspector: Frame")
@@ -1486,10 +1510,25 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         page.keyboard.press(f"{modifier}+j")
         expect(status).to_contain_text("Inspector: Frame")
 
-        for extra in [{"shiftKey": True}, {"altKey": True}, {"isComposing": True}]:
+        opposite = {"ctrlKey": True} if platform == "mac-simulated" else {"metaKey": True}
+        synthetic_inspect_key(page, **opposite)
+        expect(status).to_contain_text("Inspector: Frame")
+        assert not inspect_shortcut_events(page)[-1]["prevented"]
+        for extra in [{"shiftKey": True}, {"altKey": True}, opposite, {"isComposing": True}]:
             synthetic_inspect_key(page, **accepted, **extra)
             expect(status).to_contain_text("Inspector: Frame")
             assert not inspect_shortcut_events(page)[-1]["prevented"]
+
+        page.evaluate("document.activeElement.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}))")
+        synthetic_inspect_key(page, **accepted)
+        expect(status).to_contain_text("Inspector: Frame")
+        assert not inspect_shortcut_events(page)[-1]["prevented"]
+        page.evaluate("document.activeElement.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}))")
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text("Inspector hidden")
+        assert inspect_shortcut_events(page)[-1]["prevented"]
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text("Inspector: Frame")
 
         page.evaluate("""() => {
             const outside=document.createElement('input');outside.id='outside-workbench';outside.type='text';
@@ -1500,7 +1539,7 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         expect(status).to_contain_text("Inspector: Frame")
         assert not inspect_shortcut_events(page)[-1]["prevented"]
         page.evaluate("document.getElementById('outside-workbench').remove()")
-        canvas.click(position={"x": 720, "y": 600})
+        canvas.click(position={"x": 720, "y": 12})
         open_input(page)
         synthetic_inspect_key(page, **accepted)
         assert not inspect_shortcut_events(page)[-1]["prevented"]
@@ -1517,7 +1556,7 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         assert dragged[1] < 350, f"inspector is still capped near 38%: {dragged}"
         canvas.screenshot(path=str(output / f"inspect-{platform}-dragged.png"))
 
-        canvas.click(position={"x": 1350, "y": (dragged[1] + dragged[3]) / 2})
+        inspector_title_action(page, canvas, "Maximize", dragged)
         expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
         maximized = inspector_frame_tab(page, canvas)
         assert maximized[1] < 100, maximized
@@ -1527,7 +1566,7 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         page.keyboard.press(f"{modifier}+j")
         expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
         assert inspector_frame_tab(page, canvas) == maximized
-        canvas.click(position={"x": 1350, "y": (maximized[1] + maximized[3]) / 2})
+        inspector_title_action(page, canvas, "Restore", maximized)
         expect(status).not_to_contain_text(re.compile("maximized", re.IGNORECASE))
         expect(status).to_contain_text("Inspector: Frame")
         restored = inspector_frame_tab(page, canvas)
@@ -1537,15 +1576,36 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         resize_view(page, 1440, 1000)
         returned = inspector_frame_tab(page, canvas)
         assert abs(returned[1] - dragged[1]) <= 2, (dragged, returned)
+        inspector_title_action(page, canvas, "Hide", returned)
+        expect(status).to_contain_text("Inspector hidden")
+        page.keyboard.press(f"{modifier}+j")
+        expect(status).to_contain_text("Inspector: Frame")
+        assert inspector_frame_tab(page, canvas) == returned
         expect(status).to_contain_text(original_selection)
 
         select_inspector_tab(page, canvas, "SSA value", (returned[1] + returned[3]) / 2)
         canvas.dblclick(position={"x": 85, "y": returned[3] + 16})
         settle_gesture(page)
         assert page.evaluate("document.activeElement.tagName") == "INPUT", "SSA value editor did not own text focus"
-        page.keyboard.press("Control+A")
+        page.keyboard.press(f"{modifier}+a")
         page.keyboard.insert_text("1")
         settle_gesture(page)
+        expect(status).to_contain_text("Inspector: SSA value %1")
+        canvas.screenshot(path=str(output / f"inspect-{platform}-text-focused.png"))
+        # An external HTML input must remain outside shortcut ownership even
+        # immediately after a real egui editor held the hidden text agent.
+        page.evaluate("""() => {
+            const outside=document.createElement('input');outside.id='outside-value-editor';outside.type='text';
+            outside.style.position='fixed';outside.style.left='-1000px';
+            document.body.append(outside);outside.focus();
+        }""")
+        synthetic_inspect_key(page, **accepted)
+        expect(status).to_contain_text("Inspector: SSA value %1")
+        assert not inspect_shortcut_events(page)[-1]["prevented"]
+        page.evaluate("document.getElementById('outside-value-editor').remove()")
+        canvas.dblclick(position={"x": 85, "y": returned[3] + 16})
+        settle_gesture(page)
+        assert page.evaluate("document.activeElement.tagName") == "INPUT", "SSA value editor did not recover text focus"
         expect(status).to_contain_text("Inspector: SSA value %1")
         page.keyboard.press(f"{modifier}+j")
         expect(status).to_contain_text("Inspector hidden")
@@ -1593,22 +1653,38 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     canvas.click(position={"x": 720, "y": 600})
     page.keyboard.press("3")
     tab = inspector_frame_tab(page, canvas)
-    canvas.click(position={"x": 1350, "y": (tab[1] + tab[3]) / 2})
+    inspector_title_action(page, canvas, "Maximize", tab)
     expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
     tab = inspector_frame_tab(page, canvas)
     toolbar_y = (tab[1] + tab[3]) / 2
     evidence = {}
+    # Decoded RGBA hashes of the reviewed 111x20 last-row crops at DPR1.
+    # Packaged monospace glyphs show "0x5f {0x105f}" / "0x5f {0x205f}";
+    # exact pixels catch an off-by-one final slot in the virtualized list.
+    last_row_hashes = {
+        "storage": "cfa6df6a0c40fd99b75323679861e850710fda21f7ec0d1dd7c3bcbc3fc54bfb",
+        "transient": "c78758ff2205cc99f3d7edaf40f9e6293d7bdc2a112ac8290ed9910c7a7aa198",
+    }
     for title, kind in [("Storage", "storage"), ("Transient", "transient")]:
         select_inspector_tab(page, canvas, title, toolbar_y)
         canvas.click(position={"x": 145, "y": tab[3] + 14})
         expect(status).to_contain_text("Observed exit")
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        collapsed = canvas.screenshot(path=str(output / f"{kind}-facts-collapsed.png"))
+        facts_region = (145, tab[3] + 92, 650, tab[3] + 262)
+        collapsed_facts = text_pixels(page, collapsed, facts_region)
+        assert not collapsed_facts["rows"], "account facts were already expanded before the header click"
         canvas.click(position={"x": 120, "y": tab[3] + 80})
         page.mouse.move(2, 2)
         settle_gesture(page)
         expanded = canvas.screenshot(path=str(output / f"{kind}-facts-expanded.png"))
-        prefix_region = (6, tab[3] + 55, 600, tab[3] + 80)
+        expanded_facts = text_pixels(page, expanded, facts_region)
+        assert len(expanded_facts["rows"]) == 8, "header click did not reveal all eight account facts"
+        prefix_region = (4, tab[3] + 55, 600, tab[3] + 92)
         prefix = text_pixels(page, expanded, prefix_region)
-        assert prefix["rows"], "account address/facts heading was not painted"
+        assert len(prefix["rows"]) == 2, "account address and full facts heading were not painted"
+        save_png_crop(page, expanded, prefix_region, output / f"{kind}-prefix-expanded.png")
         # The wheel starts over the facts prefix. One shared scroll must carry
         # it all the way through the slot list, rather than trap it in 80 points.
         page.mouse.move(80, tab[3] + 115)
@@ -1618,6 +1694,13 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         settled = canvas.screenshot(path=str(output / f"{kind}-last-slots.png"))
         scrolled_prefix = text_pixels(page, settled, prefix_region)
         assert prefix["hash"] != scrolled_prefix["hash"], "wheel remained trapped inside facts; account prefix did not move"
+        save_png_crop(page, settled, prefix_region, output / f"{kind}-prefix-scrolled.png")
+        last_row_region = (4, page.viewport_size["height"] - 50,
+                           115, page.viewport_size["height"] - 30)
+        last_row = text_pixels(page, settled, last_row_region)
+        assert len(last_row["rows"]) == 1 and last_row["white_pixels"] > 100, "last slot row was clipped or blank"
+        assert last_row["hash"] == last_row_hashes[kind], f"last rendered {title} slot/value changed: {last_row}"
+        save_png_crop(page, settled, last_row_region, output / f"{kind}-last-row.png")
         page.mouse.move(80, tab[3] + 115)
         page.mouse.wheel(0, -6000)
         settle_gesture(page)
@@ -1625,8 +1708,12 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         returned = canvas.screenshot(path=str(output / f"{kind}-facts-returned.png"))
         returned_prefix = text_pixels(page, returned, prefix_region)
         assert prefix["hash"] == returned_prefix["hash"], "returning to the top did not restore account facts"
+        save_png_crop(page, returned, prefix_region, output / f"{kind}-prefix-returned.png")
         evidence[kind] = {"entries": count, "expected_last_slot": hex(count - 1),
             "expected_last_value": account[kind][-1]["value"]["constants"],
+            "expected_last_row_rgba_sha256": last_row_hashes[kind],
+            "facts_region": facts_region, "collapsed_facts": collapsed_facts,
+            "expanded_facts": expanded_facts, "last_row_region": last_row_region, "last_row": last_row,
             "prefix_region": prefix_region, "prefix": prefix,
             "scrolled_prefix": scrolled_prefix, "returned_prefix": returned_prefix,
             "expanded_screenshot": f"{kind}-facts-expanded.png",
@@ -2332,19 +2419,26 @@ def open_rpc_input(page, canvas, *, from_bytecode=False):
         settle_gesture(page)
 
 
+def select_rpc_provider(page, canvas, index: int, output: Path, name: str):
+    # Real packaged 1440x1000 RPC modal: the regular shared controls make
+    # popup rows 24 points high with a 27-point stride.
+    canvas.click(position={"x": 600, "y": 410})
+    rendered_frame(page)
+    canvas.screenshot(path=str(output / f"{name}-providers.png"))
+    canvas.click(position={"x": 460, "y": 437 + index * 27})
+    settle_gesture(page)
+
+
 def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, providers):
     expect(page.locator("#analysis-status")).to_contain_text(
         f"RPC provider: {providers[0]['name']} ({providers[0]['endpoint']})")
     open_rpc_input(page, canvas)
     if provider_index:
-        canvas.click(position={"x": 600, "y": 402})
-        rendered_frame(page)
-        canvas.screenshot(path=str(output / f"{name}-providers.png"))
-        canvas.click(position={"x": 460, "y": 428 + provider_index * 23})
+        select_rpc_provider(page, canvas, provider_index, output, name)
     provider = providers[provider_index]
     expect(page.locator("#analysis-status")).to_contain_text(
         f"RPC provider: {provider['name']} ({provider['endpoint']})")
-    canvas.click(position={"x": 600, "y": 448})
+    canvas.click(position={"x": 600, "y": 453})
     page.keyboard.press("Control+A")
     page.keyboard.type(rpc.root_address, delay=3)
     rendered_frame(page)
@@ -2541,16 +2635,14 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     page.on("request", lambda request: submitted.append(request.post_data_json)
             if request.method == "POST" and request.url.endswith("/api/tasks") else None)
     results = {"automatic_entry": baseline["input"], "selected_addresses": [], "snapshot_pins": {}}
-    for ordinal, (label, address, menu_y) in enumerate([("weth", WETH_ENTRY, 487), ("usdt", USDT_ENTRY, 510), ("usdc", USDC_ENTRY, 464)]):
+    for ordinal, (label, address, menu_y) in enumerate([("weth", WETH_ENTRY, 498), ("usdt", USDT_ENTRY, 525), ("usdc", USDC_ENTRY, 472)]):
         open_rpc_input(page, canvas)
         if ordinal == 0:
             # The entry choice must preserve an independently chosen provider.
-            canvas.click(position={"x": 600, "y": 402})
-            rendered_frame(page)
-            canvas.click(position={"x": 460, "y": 451})
+            select_rpc_provider(page, canvas, 1, output, "entry-weth")
             expect(page.locator("#analysis-status")).to_contain_text(
                 f"RPC provider: {providers[1]['name']} ({providers[1]['endpoint']})")
-        canvas.click(position={"x": 454, "y": 425})
+        canvas.click(position={"x": 454, "y": 431})
         rendered_frame(page)
         canvas.screenshot(path=str(output / f"entry-{label}-options.png"))
         canvas.click(position={"x": 460, "y": menu_y})
@@ -2573,7 +2665,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
         assert reply.json()["result"]["Ok"]["metadata"]["entry_address"].lower() == address.lower()
         results["selected_addresses"].append(address)
     open_rpc_input(page, canvas)
-    canvas.click(position={"x": 600, "y": 448})
+    canvas.click(position={"x": 600, "y": 453})
     page.keyboard.press("Control+A")
     page.keyboard.type(CUSTOM_ENTRY, delay=3)
     rendered_frame(page)
@@ -2795,16 +2887,16 @@ def layout_entry_form(page, canvas, entry):
     rendered_frame(page)
     if "chain_id" in entry:
         modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+100, "y": modal[1]+443+root_offset})
+        canvas.click(position={"x": modal[0]+100, "y": modal[1]+427+root_offset})
         settle_gesture(page)
         page.mouse.move(800, 660)
         page.mouse.wheel(0, 240)
         settle_gesture(page)
         modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+36, "y": modal[1]+466})
+        canvas.click(position={"x": modal[0]+36, "y": modal[1]+478})
         settle_gesture(page)
         modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+250, "y": modal[1]+488})
+        canvas.click(position={"x": modal[0]+250, "y": modal[1]+500})
         page.keyboard.insert_text(entry["chain_id"])
         rendered_frame(page)
 
