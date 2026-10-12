@@ -3,7 +3,10 @@
 
 use std::sync::Arc;
 
-use egui::{Color32, FontId, Id, TextStyle, Ui, epaint::Galley};
+use egui::{
+    Color32, FontId, Id, Sense, Stroke, TextStyle, Ui, epaint::Galley,
+    text_selection::LabelSelectionState,
+};
 
 // Leave room for glyph ink outside its logical advance, within the cell clip.
 const TEXT_MARGIN: f32 = 2.0;
@@ -77,7 +80,24 @@ pub(super) fn cell(ui: &mut Ui, slot: &str) {
     let font = TextStyle::Monospace.resolve(ui.style());
     let color = ui.visuals().text_color();
     let galley = suffix(ui, slot, content.width().max(0.0), font, color);
-    let (_, response) = ui.allocate_exact_size(cell.size(), egui::Sense::hover());
+    let selectable = ui.style().interaction.selectable_labels;
+    let mut sense = if ui.memory(|memory| memory.options.screen_reader) {
+        Sense::focusable_noninteractive()
+    } else {
+        Sense::hover()
+    };
+    if selectable {
+        // Match native Label: touch drags belong to the enclosing ScrollArea,
+        // and selecting text must not add labels to keyboard tab navigation.
+        let mut selection_sense = if ui.input(|input| input.has_touch_screen()) {
+            Sense::click()
+        } else {
+            Sense::click_and_drag()
+        };
+        selection_sense -= Sense::FOCUSABLE;
+        sense |= selection_sense;
+    }
+    let (_, response) = ui.allocate_exact_size(cell.size(), sense);
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), slot));
     if ui.is_rect_visible(cell) {
@@ -85,7 +105,19 @@ pub(super) fn cell(ui: &mut Ui, slot: &str) {
             content.right() - galley.size().x,
             cell.center().y - galley.size().y * 0.5,
         );
-        ui.painter().galley(pos, galley, color);
+        let underline = if response.has_focus() || response.highlighted() {
+            Stroke::new(1.0, color)
+        } else {
+            Stroke::NONE
+        };
+        if selectable {
+            // The native API paints and selects this fitted galley without an
+            // extra widget/container per row. Copy returns the displayed text.
+            LabelSelectionState::label_text_selection(ui, &response, pos, galley, color, underline);
+        } else {
+            ui.painter()
+                .add(egui::epaint::TextShape::new(pos, galley, color).with_underline(underline));
+        }
     }
     // Hover the full cell, including when no glyph fits. The original key is
     // independent of the fitted display string and remains available in full.
