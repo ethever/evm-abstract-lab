@@ -19,6 +19,9 @@ pub const PURPLE: Color32 = Color32::from_rgb(201, 165, 255);
 pub const WARNING: Color32 = Color32::from_rgb(245, 193, 117);
 pub const ERROR: Color32 = Color32::from_rgb(249, 130, 142);
 pub const SELECTED: Color32 = Color32::from_rgb(33, 65, 75);
+pub(crate) const CONTROL_HOVER: Color32 = Color32::from_rgb(38, 54, 73);
+pub(crate) const CONTROL_PRESSED: Color32 = Color32::from_rgb(24, 53, 61);
+pub(crate) const SELECTED_HOVER: Color32 = Color32::from_rgb(42, 78, 88);
 /// CFG fills describe observed termination; selection uses a separate outline.
 pub const TERMINAL_NORMAL: Color32 = Color32::from_rgb(20, 52, 42);
 pub const TERMINAL_REVERT: Color32 = Color32::from_rgb(48, 30, 62);
@@ -49,16 +52,12 @@ pub fn configure(ctx: &Context) {
     visuals.override_text_color = Some(TEXT);
     visuals.selection.bg_fill = SELECTED;
     visuals.selection.stroke = Stroke::new(1.0, ACCENT);
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
-    visuals.widgets.inactive.weak_bg_fill = RAISED;
-    visuals.widgets.hovered.weak_bg_fill = SELECTED;
     ctx.set_visuals(visuals);
     ctx.global_style_mut(|style| {
+        crate::controls::configure(style);
         style.spacing.item_spacing = egui::vec2(5.0, 3.0);
-        style.spacing.button_padding = egui::vec2(6.0, 2.0);
-        style.spacing.interact_size.y = 20.0;
         style.spacing.menu_margin = egui::Margin::same(5);
-        // Compact spacing, with the ordinary desktop text sizes preserved.
+        // Tight panel spacing is independent of the shared control densities.
         style.spacing.window_margin = egui::Margin::same(6);
     });
 }

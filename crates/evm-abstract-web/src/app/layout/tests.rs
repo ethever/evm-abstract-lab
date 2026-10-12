@@ -379,7 +379,7 @@ fn long_input_and_diagnostics_stay_bounded_in_a_short_viewport() {
 }
 
 #[test]
-fn modal_editor_is_visible_and_bounded_without_global_font_scaling() {
+fn modal_editor_is_visible_and_bounded_with_shared_control_fonts() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
@@ -411,10 +411,11 @@ fn modal_editor_is_visible_and_bounded_without_global_font_scaling() {
         }
     }
     assert_eq!(ctx.zoom_factor(), 1.0);
-    assert_eq!(
-        ctx.global_style().text_styles,
-        egui::Style::default().text_styles
-    );
+    let mut expected = egui::Style::default().text_styles;
+    // Only the shared button font changes; editor, body and heading fonts
+    // retain the desktop defaults instead of scaling the entire interface.
+    expected.insert(egui::TextStyle::Button, egui::FontId::proportional(12.0));
+    assert_eq!(ctx.global_style().text_styles, expected);
 }
 
 #[test]

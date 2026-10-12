@@ -11,7 +11,10 @@ use egui_tiles::{
 use evm_abstract_protocol::AnalysisReport;
 
 use super::Selection;
-use crate::{palette, widgets};
+use crate::{
+    controls::{self, Density},
+    palette, widgets,
+};
 
 const PANE_MIN: f32 = 180.0;
 const GRAPH_AUTO_MIN: f32 = 320.0;
@@ -279,6 +282,23 @@ impl Behavior<Pane> for AnalysisPanes<'_> {
         .into()
     }
 
+    fn tab_ui(
+        &mut self,
+        tiles: &mut Tiles<Pane>,
+        ui: &mut Ui,
+        id: egui::Id,
+        tile_id: TileId,
+        state: &egui_tiles::TabState,
+    ) -> egui::Response {
+        let title = self.tab_title_for_tile(tiles, tile_id);
+        let response = controls::tile_tab(ui, id, state.active, title, Density::Regular);
+        self.on_tab_button(tiles, tile_id, response)
+    }
+
+    fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
+        Density::Regular.height()
+    }
+
     fn gap_width(&self, _style: &egui::Style) -> f32 {
         GAP
     }
@@ -311,6 +331,8 @@ impl Behavior<Pane> for AnalysisPanes<'_> {
     }
 }
 
+#[cfg(test)]
+mod controls_tests;
 #[cfg(test)]
 mod details_tests;
 #[cfg(test)]

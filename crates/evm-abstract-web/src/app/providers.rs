@@ -1,5 +1,6 @@
 //! RPC catalog state is independent of analysis admission, polling and results.
 
+use crate::controls::{self, Density};
 use egui::{RichText, Ui};
 use evm_abstract_protocol::{RpcProvider, RpcProvidersReply};
 
@@ -102,8 +103,14 @@ impl RpcProviders {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         for provider in providers {
                             let label = provider_label(provider);
-                            ui.selectable_value(selected, provider.id.clone(), &label)
-                                .on_hover_text(label);
+                            controls::tab_value(
+                                ui,
+                                selected,
+                                provider.id.clone(),
+                                &label,
+                                Density::Regular,
+                            )
+                            .on_hover_text(label);
                         }
                     })
                     .response
@@ -117,7 +124,7 @@ impl RpcProviders {
             }
             State::Ready(_) | State::Failed(_) => {
                 ui.colored_label(palette::WARNING, self.status(selected));
-                if ui.small_button("Retry").clicked() {
+                if controls::action(ui, "Retry", Density::Compact).clicked() {
                     self.state = State::Unrequested;
                 }
             }

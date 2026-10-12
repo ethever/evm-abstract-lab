@@ -10,6 +10,7 @@ mod stores;
 mod value;
 
 use super::Selection;
+use crate::controls::{self, Density};
 use crate::{notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
@@ -179,25 +180,33 @@ impl Inspector {
             self.rollback = false;
         }
         let narrow = ui.available_width() < 1120.0;
-        ui.horizontal(|ui| {
-            if narrow {
-                egui::ComboBox::from_id_salt("inspector_tab")
-                    .width(122.0)
-                    .selected_text(self.tab.label())
-                    .show_ui(ui, |ui| {
-                        for (tab, label) in Tab::ALL {
-                            ui.selectable_value(&mut self.tab, tab, label);
-                        }
-                    });
-            } else {
-                for (tab, label) in Tab::ALL {
-                    ui.selectable_value(&mut self.tab, tab, label);
+        Density::Compact.scope(ui, |ui| {
+            ui.horizontal(|ui| {
+                if narrow {
+                    egui::ComboBox::from_id_salt("inspector_tab")
+                        .width(122.0)
+                        .selected_text(self.tab.label())
+                        .show_ui(ui, |ui| {
+                            for (tab, label) in Tab::ALL {
+                                controls::tab_value(
+                                    ui,
+                                    &mut self.tab,
+                                    tab,
+                                    label,
+                                    Density::Compact,
+                                );
+                            }
+                        });
+                } else {
+                    for (tab, label) in Tab::ALL {
+                        controls::tab_value(ui, &mut self.tab, tab, label, Density::Compact);
+                    }
                 }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("Hide").clicked() {
-                    self.expanded = false;
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if controls::action(ui, "Hide", Density::Compact).clicked() {
+                        self.expanded = false;
+                    }
+                });
             });
         });
         if self.tab == Tab::SsaValue {
@@ -212,24 +221,26 @@ impl Inspector {
         let coverage = selection
             .state
             .map(|state| crate::widgets::coverage(report, state));
-        ui.horizontal_wrapped(|ui| {
-            ui.label(notation::widget(ui, RichText::new(selection.state.map_or("No state selected".into(), |state| Symbol::State(state).to_string())).strong()));
-            ui.selectable_value(&mut self.point,Point::Entry,"Block entry");
-            ui.add_enabled_ui(has_exit, |ui| {
-                ui.selectable_value(&mut self.point,Point::Exit,if coverage==Some(BlockCoverage::Current) {"Observed exit"} else {"Historical exit"});
-            });
-            if let Some(machine)=self.machine(report,*selection) {
-                let selected=selected_frame(machine,self.frame).map_or(0,|frame|frame.index);
-                egui::ComboBox::from_id_salt("inspector_frame").width(85.0).selected_text(notation::widget(ui, format!("Frame {}", Symbol::Frame(selected)))).show_ui(ui,|ui| {
-                    for frame in &machine.frames {
-                        ui.selectable_value(&mut self.frame,Some(frame.index),notation::widget(ui, format!("Frame {}{}", Symbol::Frame(frame.index), if frame.index+1==machine.frames.len(){" · active"}else{" · suspended"})));
-                    }
+        Density::Compact.scope(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(notation::widget(ui, RichText::new(selection.state.map_or("No state selected".into(), |state| Symbol::State(state).to_string())).strong()));
+                controls::tab_value(ui, &mut self.point,Point::Entry,"Block entry", Density::Compact);
+                ui.add_enabled_ui(has_exit, |ui| {
+                    controls::tab_value(ui, &mut self.point,Point::Exit,if coverage==Some(BlockCoverage::Current) {"Observed exit"} else {"Historical exit"}, Density::Compact);
                 });
-            }
-            if let Some(pc)=selection.pc {
-                ui.label(RichText::new(format!("PC 0x{pc:x}")).small().color(palette::MUTED))
-                    .on_hover_text("Instruction selection links the views. Inspection shows a block boundary, not a per-instruction memory trace.");
-            }
+                if let Some(machine)=self.machine(report,*selection) {
+                    let selected=selected_frame(machine,self.frame).map_or(0,|frame|frame.index);
+                    egui::ComboBox::from_id_salt("inspector_frame").width(85.0).selected_text(notation::widget(ui, format!("Frame {}", Symbol::Frame(selected)))).show_ui(ui,|ui| {
+                        for frame in &machine.frames {
+                            controls::tab_value(ui, &mut self.frame,Some(frame.index),format!("Frame {}{}", Symbol::Frame(frame.index), if frame.index+1==machine.frames.len(){" · active"}else{" · suspended"}), Density::Compact);
+                        }
+                    });
+                }
+                if let Some(pc)=selection.pc {
+                    ui.label(RichText::new(format!("PC 0x{pc:x}")).small().color(palette::MUTED))
+                        .on_hover_text("Instruction selection links the views. Inspection shows a block boundary, not a per-instruction memory trace.");
+                }
+            });
         });
         if self.point == Point::Exit && coverage != Some(BlockCoverage::Current) {
             ui.colored_label(palette::WARNING,"Historical receipt: current entry facts have changed. This is not a current exit snapshot.");
@@ -242,7 +253,9 @@ impl Inspector {
                 if let Some(frame) = frame {
                     scroll(ui, "frame_details", |ui| {
                         context::frame(ui, frame);
-                        if ui.button("Inspect rollback store").clicked() {
+                        if controls::action(ui, "Inspect rollback store", Density::Regular)
+                            .clicked()
+                        {
                             self.rollback = true;
                             self.tab = Tab::Storage;
                         }
@@ -273,8 +286,20 @@ impl Inspector {
             Tab::Storage | Tab::Transient => {
                 if frame.is_some() {
                     ui.horizontal_wrapped(|ui| {
-                        ui.selectable_value(&mut self.rollback, false, "Current store");
-                        ui.selectable_value(&mut self.rollback, true, "Frame rollback store");
+                        controls::tab_value(
+                            ui,
+                            &mut self.rollback,
+                            false,
+                            "Current store",
+                            Density::Compact,
+                        );
+                        controls::tab_value(
+                            ui,
+                            &mut self.rollback,
+                            true,
+                            "Frame rollback store",
+                            Density::Compact,
+                        );
                     });
                     if self.rollback {
                         ui.label(
@@ -333,21 +358,19 @@ impl Inspector {
             ))
             .show_ui(ui, |ui| {
                 for (index, outcome) in report.outcomes.iter().enumerate() {
-                    if ui
-                        .selectable_value(
-                            &mut self.outcome,
-                            index,
-                            notation::widget(
-                                ui,
-                                format!(
-                                    "Outcome {} · {} · {:?}",
-                                    Symbol::Outcome(index),
-                                    Symbol::State(outcome.state),
-                                    outcome.kind
-                                ),
-                            ),
-                        )
-                        .clicked()
+                    if controls::tab_value(
+                        ui,
+                        &mut self.outcome,
+                        index,
+                        format!(
+                            "Outcome {} · {} · {:?}",
+                            Symbol::Outcome(index),
+                            Symbol::State(outcome.state),
+                            outcome.kind
+                        ),
+                        Density::Compact,
+                    )
+                    .clicked()
                     {
                         *selection = Selection {
                             value: None,

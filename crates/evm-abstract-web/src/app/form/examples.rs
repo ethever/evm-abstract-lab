@@ -1,6 +1,7 @@
 //! Mainnet entry examples are address edits, independent of RPC configuration.
 //! Selection is derived from the draft so manual edits remain authoritative.
 
+use crate::controls::{self, Density};
 use egui::{Id, RichText, Ui};
 
 use crate::{framework, palette};
@@ -49,17 +50,21 @@ pub(super) fn root_account(ui: &mut Ui, address: &mut String) {
                         .color(palette::MUTED),
                 );
                 for example in Example::ALL {
-                    if ui
-                        .selectable_label(selected == Some(example), example.label())
-                        .on_hover_text(example.address())
-                        .clicked()
+                    if controls::tab(
+                        ui,
+                        selected == Some(example),
+                        example.label(),
+                        Density::Regular,
+                    )
+                    .on_hover_text(example.address())
+                    .clicked()
                     {
                         *address = example.address().into();
                         ui.close();
                     }
                 }
                 ui.separator();
-                if ui.selectable_label(selected.is_none(), "Custom").clicked() {
+                if controls::tab(ui, selected.is_none(), "Custom", Density::Regular).clicked() {
                     if selected.is_some() {
                         address.clear();
                     }

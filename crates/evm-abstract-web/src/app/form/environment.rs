@@ -1,5 +1,6 @@
 //! Structured transaction inputs and opt-in block-environment overrides.
 
+use crate::controls::{self, Density};
 use egui::{RichText, Ui};
 use evm_abstract_protocol::{AddressSetting, CalldataInput, IndexedHash, WordInput};
 
@@ -46,10 +47,10 @@ impl AnalysisForm {
             ui.horizontal(|ui| {
                 ui.label("Calldata");
                 let exact = matches!(self.environment.calldata, CalldataInput::Exact(_));
-                if ui.selectable_label(!exact, "Unknown").clicked() {
+                if controls::tab(ui, !exact, "Unknown", Density::Compact).clicked() {
                     self.environment.calldata = CalldataInput::Unknown;
                 }
-                if ui.selectable_label(exact, "Exact").clicked() && !exact {
+                if controls::tab(ui, exact, "Exact", Density::Compact).clicked() && !exact {
                     self.environment.calldata = CalldataInput::Exact(String::new());
                 }
             });
@@ -116,10 +117,10 @@ fn address(ui: &mut Ui, label: &str, id: &str, value: &mut AddressSetting) {
     ui.horizontal(|ui| {
         ui.label(label);
         let known = matches!(value, AddressSetting::Concrete(_));
-        if ui.selectable_label(!known, "Unknown").clicked() {
+        if controls::tab(ui, !known, "Unknown", Density::Compact).clicked() {
             *value = AddressSetting::Unknown;
         }
-        if ui.selectable_label(known, "Address").clicked() && !known {
+        if controls::tab(ui, known, "Address", Density::Compact).clicked() && !known {
             *value = AddressSetting::Concrete(String::new());
         }
     });
@@ -132,10 +133,10 @@ fn word(ui: &mut Ui, label: &str, id: &str, value: &mut WordInput) {
     ui.horizontal(|ui| {
         ui.label(label);
         let known = matches!(value, WordInput::Concrete(_));
-        if ui.selectable_label(!known, "Unknown").clicked() {
+        if controls::tab(ui, !known, "Unknown", Density::Compact).clicked() {
             *value = WordInput::Unknown;
         }
-        if ui.selectable_label(known, "Exact").clicked() && !known {
+        if controls::tab(ui, known, "Exact", Density::Compact).clicked() && !known {
             *value = WordInput::Concrete(String::new());
         }
     });
@@ -154,7 +155,7 @@ fn hash_rows(ui: &mut Ui, id: &str, title: &str, values: &mut Vec<IndexedHash>) 
                     ui.label("Index");
                     let width = (ui.available_width() - 72.0).max(60.0);
                     framework::scoped_editor(ui, "index", &mut value.index, "0x…", width);
-                    if ui.small_button("Remove").clicked() {
+                    if controls::action(ui, "Remove", Density::Compact).clicked() {
                         remove = Some(index);
                     }
                 });
@@ -165,7 +166,7 @@ fn hash_rows(ui: &mut Ui, id: &str, title: &str, values: &mut Vec<IndexedHash>) 
         if let Some(index) = remove {
             values.remove(index);
         }
-        if ui.small_button("Add hash").clicked() {
+        if controls::action(ui, "Add hash", Density::Compact).clicked() {
             values.push(IndexedHash {
                 index: "0x0".into(),
                 hash: String::new(),
