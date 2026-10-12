@@ -26,17 +26,29 @@ use thiserror::Error;
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum GuardRefinementError<E> {
     /// Existing byte state, cancellation, or metadata traversal policy failed.
-    #[error(transparent)]
-    Bytes(#[from] RangeError),
+    #[error("{0}")]
+    Bytes(RangeError),
     /// Existing account state failed its retention policy.
-    #[error(transparent)]
-    Store(#[from] StoreError),
+    #[error("{0}")]
+    Store(StoreError),
     /// Local scalar intersection could not retain a proved guard.
     #[error("guard fact projection failed: {0:?}")]
     Facts(QueryReason),
     /// The caller did not complete its budgeted proof.
     #[error("guard proof failed: {0:?}")]
     Proof(E),
+}
+
+impl<E> From<RangeError> for GuardRefinementError<E> {
+    fn from(error: RangeError) -> Self {
+        Self::Bytes(error)
+    }
+}
+
+impl<E> From<StoreError> for GuardRefinementError<E> {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
