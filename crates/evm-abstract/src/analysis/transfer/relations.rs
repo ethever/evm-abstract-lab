@@ -204,7 +204,30 @@ pub(super) fn branch(
     match payload.relations.assume(&expression, nonzero, &limits) {
         CheckResult::Unsat => return None,
         CheckResult::Sat => {}
-        CheckResult::Unknown(reason) => boundary(result, pc, FrontierReason::Relations(reason)),
+        CheckResult::Unknown(QueryReason::Cancelled) => {
+            boundary(
+                result,
+                pc,
+                FrontierReason::Relations(QueryReason::Cancelled),
+            );
+            return None;
+        }
+        CheckResult::Unknown(
+            reason @ (QueryReason::Disabled
+            | QueryReason::Configuration
+            | QueryReason::ConstraintLimit
+            | QueryReason::ExpressionLimit),
+        ) => {
+            boundary(result, pc, FrontierReason::Relations(reason));
+        }
+        CheckResult::Unknown(reason) => {
+            // The assumption is already retained. A failed feasibility check
+            // loses optional pruning precision while both guarded edges survive.
+            result.diagnostics.push((
+                pc,
+                crate::analysis::DiagnosticKind::RelationalPrecisionLost(reason),
+            ));
+        }
     }
     let relations = payload.relations.clone();
     for value in &mut payload.active_mut().stack {
