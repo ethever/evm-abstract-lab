@@ -7,7 +7,7 @@ use crate::domain::{
     symbolic::{ExprError, ExprId, SlotStateId, SourceId, StateError},
 };
 use alloy_primitives::{Address, B256, U256, keccak256};
-use serde::{Serialize, Serializer};
+use serde::{Serialize, Serializer, ser::SerializeSeq};
 use snapshot_state::Checkpoint;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -94,10 +94,16 @@ fn serialize_logs<S: Serializer>(
         #[serde(flatten)]
         payload: &'a AbstractLog,
     }
-    logs.iter()
-        .map(|(source, payload)| Log { source, payload })
-        .collect::<Vec<_>>()
-        .serialize(serializer)
+    let mut sequence = serializer.serialize_seq(Some(logs.len()))?;
+    for (source, payload) in logs {
+        if embedded_smt::current_cancellation().is_cancelled() {
+            return Err(serde::ser::Error::custom(
+                "world log serialization cancelled",
+            ));
+        }
+        sequence.serialize_element(&Log { source, payload })?;
+    }
+    sequence.end()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -223,15 +229,20 @@ fn serialize_slots<S: Serializer>(
         slot: U256,
         value: &'a AbstractValue,
     }
-    slots
-        .iter()
-        .map(|((address, slot), value)| Slot {
+    let mut sequence = serializer.serialize_seq(Some(slots.len()))?;
+    for ((address, slot), value) in slots {
+        if embedded_smt::current_cancellation().is_cancelled() {
+            return Err(serde::ser::Error::custom(
+                "world slot serialization cancelled",
+            ));
+        }
+        sequence.serialize_element(&Slot {
             address: *address,
             slot: *slot,
             value,
-        })
-        .collect::<Vec<_>>()
-        .serialize(serializer)
+        })?;
+    }
+    sequence.end()
 }
 
 impl Plane {
@@ -391,14 +402,32 @@ impl Plane {
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum StoreError {
     /// Scalar expression retention or cancellation failure.
-    #[error(transparent)]
-    Expression(#[from] ExprError),
+    #[error("{0}")]
+    Expression(ExprError),
     /// Complete immutable slot state retention failed.
-    #[error(transparent)]
-    State(#[from] StateError),
+    #[error("{0}")]
+    State(StateError),
     /// An event byte view could not be retained or renamed.
-    #[error(transparent)]
-    Bytes(#[from] super::RangeError),
+    #[error("{0}")]
+    Bytes(super::RangeError),
+}
+
+impl From<ExprError> for StoreError {
+    fn from(error: ExprError) -> Self {
+        Self::Expression(error)
+    }
+}
+
+impl From<StateError> for StoreError {
+    fn from(error: StateError) -> Self {
+        Self::State(error)
+    }
+}
+
+impl From<super::RangeError> for StoreError {
+    fn from(error: super::RangeError) -> Self {
+        Self::Bytes(error)
+    }
 }
 
 /// Mutable transaction state, shared by nested frames and cloned at call entry.

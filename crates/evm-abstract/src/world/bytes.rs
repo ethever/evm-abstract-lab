@@ -72,11 +72,23 @@ pub enum RangeError {
         limit: usize,
     },
     /// Scalar expression retention failed.
-    #[error(transparent)]
-    Expression(#[from] ExprError),
+    #[error("{0}")]
+    Expression(ExprError),
     /// Immutable state retention failed.
-    #[error(transparent)]
-    State(#[from] StateError),
+    #[error("{0}")]
+    State(StateError),
+}
+
+impl From<ExprError> for RangeError {
+    fn from(error: ExprError) -> Self {
+        Self::Expression(error)
+    }
+}
+
+impl From<StateError> for RangeError {
+    fn from(error: StateError) -> Self {
+        Self::State(error)
+    }
 }
 
 // This limits duplicate presentation facts, not symbolic semantics or logical bytes.
