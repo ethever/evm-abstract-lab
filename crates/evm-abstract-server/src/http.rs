@@ -1,36 +1,48 @@
-//! Small HTTP/1.1 host for a local, same-origin workbench.
-//!
-//! Each connection carries one bounded request and is closed after its response.
-//! Content-Length framing is mandatory for JSON; chunked requests, duplicate
-//! framing headers and ambiguous paths are rejected. Static paths are checked
-//! after canonicalization, including symlink resolution. No ambient RPC is used.
+//! Axum application and bounded Hyper transport for the same-origin workbench.
+//! Parsing, framing, keepalive and response transport belong to the framework.
+//! Task admission, origin policy and canonical asset paths are application rules.
 
-mod connections;
-mod request;
 mod tasks;
 
+use axum::{
+    Router,
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, FromRequest, Request, State},
+    http::{Method, StatusCode, Uri, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
 use evm_abstract_protocol::{
-    API_PATH, ApiError, ApiErrorCode, ErrorDetails, JobReply, RPC_PROVIDERS_PATH,
-    RpcProvidersReply, TransportErrorKind, TransportFailure,
+    API_PATH, ApiError, ApiErrorCode, ErrorDetails, JobReply, MAX_REQUEST_BYTES,
+    RPC_PROVIDERS_PATH, RpcProvidersReply, TransportErrorKind, TransportFailure,
+};
+use hyper::server::conn::http1;
+use hyper_util::{
+    rt::{TokioIo, TokioTimer},
+    server::graceful::GracefulShutdown,
+    service::TowerToHyperService,
 };
 use std::{
-    fs,
-    io::{self, Write},
-    net::{TcpListener, TcpStream},
-    path::{Component, Path},
+    future::Future,
+    io::{self, Read},
+    path::{Component, Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
+use tokio::{net::TcpListener, sync::Semaphore};
 
-/// Failure of the local host itself, distinct from a typed client error reply.
+const MAX_CONNECTIONS: usize = 32;
+const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Failure to start or run the host, distinct from a typed client error reply.
 #[derive(Debug, Error)]
 pub enum ServerError {
-    /// Socket or file I/O failed.
+    /// Socket or runtime I/O failed.
     #[error("web host I/O: {0}")]
     Io(io::Error),
-    /// A typed response could not be encoded.
-    #[error("response encoding: {0}")]
-    Json(serde_json::Error),
     /// Analysis worker pool could not be constructed.
     #[error("analysis pool: {0}")]
     Pool(crate::jobs::PoolError),
@@ -44,23 +56,34 @@ impl From<io::Error> for ServerError {
         Self::Io(error)
     }
 }
-impl From<serde_json::Error> for ServerError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Json(error)
-    }
+
+#[derive(Clone)]
+struct Application {
+    assets: PathBuf,
+    jobs: crate::jobs::Pool,
 }
 
-/// Serve bounded HTTP connections independently of the CPU analysis pool.
-///
-/// Individual client disconnects do not stop the listener. The application owns
-/// binding and prints the selected address before entering this loop.
-pub fn serve(listener: &TcpListener, assets: &Path) -> Result<(), ServerError> {
-    serve_with_config(listener, assets, crate::jobs::Config::default())
+/// Build the framework router around an existing analysis pool.
+pub fn router(assets: PathBuf, jobs: crate::jobs::Pool) -> Router {
+    Router::new()
+        .route(RPC_PROVIDERS_PATH, get(providers))
+        .route(API_PATH, post(tasks::submit))
+        .route("/api/tasks/{id}", get(tasks::status).delete(tasks::cancel))
+        .route("/api/tasks/{id}/result", get(tasks::result))
+        .fallback(asset)
+        .method_not_allowed_fallback(method_not_allowed)
+        .layer(middleware::from_fn(request_policy))
+        .with_state(Application { assets, jobs })
+}
+
+/// Serve the application with default analysis scheduling bounds.
+pub async fn serve(listener: TcpListener, assets: &Path) -> Result<(), ServerError> {
+    serve_with_config(listener, assets, crate::jobs::Config::default()).await
 }
 
 /// Serve with explicit CPU worker, queue and retained-result limits.
-pub fn serve_with_config(
-    listener: &TcpListener,
+pub async fn serve_with_config(
+    listener: TcpListener,
     assets: &Path,
     config: crate::jobs::Config,
 ) -> Result<(), ServerError> {
@@ -70,112 +93,228 @@ pub fn serve_with_config(
         config,
         crate::rpc_providers::Registry::default(),
     )
+    .await
 }
 
 /// Serve with a backend-owned RPC registry shared by admission and workers.
-pub fn serve_with_providers(
-    listener: &TcpListener,
+pub async fn serve_with_providers(
+    listener: TcpListener,
     assets: &Path,
     config: crate::jobs::Config,
     providers: crate::rpc_providers::Registry,
 ) -> Result<(), ServerError> {
     let jobs = crate::jobs::Pool::with_providers(config, providers).map_err(ServerError::Pool)?;
-    let mut connections = connections::Pool::new(assets, jobs)?;
-    for stream in listener.incoming() {
-        let stream = stream?;
-        connections.accept(stream)?;
+    serve_with_shutdown(
+        listener,
+        router(assets.to_owned(), jobs),
+        std::future::pending(),
+    )
+    .await
+}
+
+/// Run the real Hyper server until shutdown, then drain accepted connections.
+/// At most 32 connections are active, including clients still sending headers.
+pub async fn serve_with_shutdown(
+    listener: TcpListener,
+    app: Router,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), ServerError> {
+    let capacity = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let graceful = GracefulShutdown::new();
+    tokio::pin!(shutdown);
+    loop {
+        let permit = tokio::select! {
+            _ = &mut shutdown => break,
+            permit = Arc::clone(&capacity).acquire_owned() => permit.expect("host owns the semaphore"),
+        };
+        let stream = tokio::select! {
+            _ = &mut shutdown => break,
+            accepted = listener.accept() => accepted?.0,
+        };
+        let service = TowerToHyperService::new(app.clone());
+        let mut stream = tokio_io_timeout::TimeoutStream::new(stream);
+        stream.set_write_timeout(Some(REQUEST_TIMEOUT));
+        let mut transport = http1::Builder::new();
+        transport
+            .timer(TokioTimer::new())
+            .header_read_timeout(REQUEST_TIMEOUT)
+            .max_buf_size(8192);
+        let connection = transport.serve_connection(TokioIo::new(Box::pin(stream)), service);
+        let watcher = graceful.watcher();
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(error) = watcher.watch(connection).await {
+                eprintln!("HTTP connection: {error}");
+            }
+        });
     }
+    graceful.shutdown().await;
     Ok(())
 }
 
-/// Serve one accepted connection; exposed for real transport integration tests.
-pub fn serve_connection(
-    mut stream: TcpStream,
-    assets: &Path,
-    jobs: &crate::jobs::Pool,
-) -> Result<(), ServerError> {
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let request = match request::read(&mut stream) {
-        Ok(request) => request,
-        Err(error) => return error_reply(&mut stream, error),
-    };
-    if request.path == RPC_PROVIDERS_PATH {
-        let result = if request.method == "GET" {
-            Ok(jobs.rpc_providers())
-        } else {
-            Err(api_error(
-                ApiErrorCode::MethodNotAllowed,
-                "RPC providers accept GET",
-            ))
-        };
-        let status = result
-            .as_ref()
-            .err()
-            .map_or(200, |error| error_status(error.code));
-        let body = serde_json::to_vec(&RpcProvidersReply { result })?;
-        return respond(
-            &mut stream,
-            status,
-            "application/json; charset=utf-8",
-            &body,
-        );
+async fn request_policy(mut request: Request, next: Next) -> Response {
+    // This is a local origin server, rather than an HTTP forward proxy. Keep
+    // routing and origin checks on one unambiguous target authority.
+    if request.uri().scheme().is_some()
+        || request.uri().authority().is_some()
+        || !request.uri().path().starts_with('/')
+        || request.uri().path().starts_with("//")
+    {
+        return error_response(api_error(
+            ApiErrorCode::InvalidRequest,
+            "request target must be an origin-form path",
+        ));
     }
-    if request.path == API_PATH || request.path.starts_with(&format!("{API_PATH}/")) {
-        return tasks::serve(&mut stream, request, jobs);
+    for name in [header::HOST, header::ORIGIN, header::CONTENT_TYPE] {
+        if request.headers().get_all(&name).iter().count() > 1 {
+            return error_response(api_error(
+                ApiErrorCode::InvalidRequest,
+                "duplicate request policy header",
+            ));
+        }
     }
-    if request.method != "GET" {
-        return error_reply(
-            &mut stream,
-            api_error(ApiErrorCode::MethodNotAllowed, "static assets accept GET"),
-        );
+    if request.version() == axum::http::Version::HTTP_11
+        && request
+            .headers()
+            .get(header::HOST)
+            .is_none_or(|host| host.as_bytes().is_empty())
+    {
+        return error_response(api_error(
+            ApiErrorCode::InvalidRequest,
+            "HTTP/1.1 requires Host",
+        ));
     }
-    let path = request.path.split('?').next().unwrap_or(&request.path);
+    if let Some(origin) = request.headers().get(header::ORIGIN) {
+        let same_origin = request
+            .headers()
+            .get(header::HOST)
+            .and_then(|host| host.to_str().ok())
+            .is_some_and(|host| origin.as_bytes() == format!("http://{host}").as_bytes());
+        if !same_origin {
+            return error_response(api_error(
+                ApiErrorCode::InvalidRequest,
+                "analysis host only accepts same-origin requests",
+            ));
+        }
+    }
+    if request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|length| length.to_str().ok())
+        .and_then(|length| length.parse::<u64>().ok())
+        .is_some_and(|length| length > MAX_REQUEST_BYTES as u64)
+    {
+        return error_response(api_error(
+            ApiErrorCode::RequestTooLarge,
+            "request body exceeds 262144 bytes",
+        ));
+    }
+    DefaultBodyLimit::max(MAX_REQUEST_BYTES).apply(&mut request);
+    let (parts, body) = request.into_parts();
+    let body = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        Bytes::from_request(Request::from_parts(parts.clone(), body), &()),
+    )
+    .await;
+    match body {
+        Ok(Ok(body)) => next.run(Request::from_parts(parts, Body::from(body))).await,
+        Ok(Err(error)) => error_response(api_error(
+            if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                ApiErrorCode::RequestTooLarge
+            } else {
+                ApiErrorCode::InvalidRequest
+            },
+            "could not read bounded request body",
+        )),
+        Err(_) => error_response(api_error(
+            ApiErrorCode::InvalidRequest,
+            "request body read timed out",
+        )),
+    }
+}
+
+async fn providers(State(state): State<Application>) -> Response {
+    json_response(
+        200,
+        &RpcProvidersReply {
+            result: Ok(state.jobs.rpc_providers()),
+        },
+    )
+}
+
+async fn method_not_allowed() -> Response {
+    error_response(api_error(
+        ApiErrorCode::MethodNotAllowed,
+        "unsupported method for this route",
+    ))
+}
+
+async fn asset(State(state): State<Application>, method: Method, uri: Uri) -> Response {
+    if !matches!(method, Method::GET | Method::HEAD) {
+        return method_not_allowed().await;
+    }
+    if uri.path().starts_with("/api/") {
+        return error_response(api_error(ApiErrorCode::NotFound, "API route not found"));
+    }
+    let path = uri.path().to_owned();
+    match tokio::task::spawn_blocking(move || load_asset(&state.assets, &path)).await {
+        Ok(Ok((mime, body))) => response(200, mime, body),
+        Ok(Err(error)) => error_response(error),
+        Err(_) => error_response(api_error(ApiErrorCode::Internal, "asset worker failed")),
+    }
+}
+
+fn load_asset(assets: &Path, path: &str) -> Result<(&'static str, Vec<u8>), ApiError> {
     let relative = if path == "/" {
         "index.html"
     } else {
         path.trim_start_matches('/')
     };
-    if relative.is_empty()
+    if path.starts_with("//")
+        || relative.is_empty()
         || relative.contains(['%', '\\', ':', '\0'])
         || Path::new(relative)
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
     {
-        return error_reply(
-            &mut stream,
-            api_error(ApiErrorCode::NotFound, "asset not found"),
-        );
+        return Err(api_error(ApiErrorCode::NotFound, "asset not found"));
     }
-    let root = match assets.canonicalize() {
-        Ok(root) => root,
-        Err(_) => {
-            return error_reply(
-                &mut stream,
-                api_error(
-                    ApiErrorCode::NotFound,
-                    "web assets are unavailable; build the web frontend first",
-                ),
-            );
-        }
-    };
-    let asset = match root.join(relative).canonicalize() {
-        Ok(asset) if asset.starts_with(&root) && asset.is_file() => asset,
-        _ => {
-            return error_reply(
-                &mut stream,
-                api_error(ApiErrorCode::NotFound, "asset not found"),
-            );
-        }
-    };
-    let metadata = asset.metadata()?;
-    if metadata.len() > 64 * 1024 * 1024 {
-        return error_reply(
-            &mut stream,
-            api_error(ApiErrorCode::NotFound, "asset exceeds host size bound"),
-        );
+    let root = assets.canonicalize().map_err(|_| {
+        api_error(
+            ApiErrorCode::NotFound,
+            "web assets are unavailable; build the web frontend first",
+        )
+    })?;
+    let asset = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|_| api_error(ApiErrorCode::NotFound, "asset not found"))?;
+    if !asset.starts_with(&root) || !asset.is_file() {
+        return Err(api_error(ApiErrorCode::NotFound, "asset not found"));
     }
-    let body = fs::read(&asset)?;
+    let file = std::fs::File::open(&asset)
+        .map_err(|_| api_error(ApiErrorCode::NotFound, "asset not found"))?;
+    if file
+        .metadata()
+        .map_err(|_| api_error(ApiErrorCode::NotFound, "asset not found"))?
+        .len()
+        > MAX_ASSET_BYTES
+    {
+        return Err(api_error(
+            ApiErrorCode::NotFound,
+            "asset exceeds host size bound",
+        ));
+    }
+    let mut body = Vec::new();
+    file.take(MAX_ASSET_BYTES + 1)
+        .read_to_end(&mut body)
+        .map_err(|_| api_error(ApiErrorCode::Internal, "asset read failed"))?;
+    if body.len() as u64 > MAX_ASSET_BYTES {
+        return Err(api_error(
+            ApiErrorCode::NotFound,
+            "asset exceeds host size bound",
+        ));
+    }
     let mime = match asset.extension().and_then(|value| value.to_str()) {
         Some("html") => "text/html; charset=utf-8",
         Some("js") => "text/javascript; charset=utf-8",
@@ -187,7 +326,7 @@ pub fn serve_connection(
         Some("ico") => "image/x-icon",
         _ => "application/octet-stream",
     };
-    respond(&mut stream, 200, mime, &body)
+    Ok((mime, body))
 }
 
 fn api_error(code: ApiErrorCode, message: impl Into<String>) -> ApiError {
@@ -216,50 +355,55 @@ fn error_status(code: ApiErrorCode) -> u16 {
         | ApiErrorCode::InvalidLimits => 400,
         ApiErrorCode::RequestTooLarge => 413,
         ApiErrorCode::Internal => 500,
-        ApiErrorCode::NotFound => 404,
+        ApiErrorCode::NotFound | ApiErrorCode::TaskNotFound => 404,
         ApiErrorCode::MethodNotAllowed => 405,
-        ApiErrorCode::Rpc => 502,
-        ApiErrorCode::TaskNotFound => 404,
+        ApiErrorCode::Rpc | ApiErrorCode::Transport => 502,
         ApiErrorCode::TaskNotReady => 409,
         ApiErrorCode::QueueFull => 429,
         ApiErrorCode::Cancelled => 410,
         ApiErrorCode::WorkerFailed => 503,
-        ApiErrorCode::Transport => 502,
     }
 }
 
-fn error_reply(stream: &mut TcpStream, error: ApiError) -> Result<(), ServerError> {
-    let status = error_status(error.code);
-    let body = serde_json::to_vec(&JobReply { result: Err(error) })?;
-    respond(stream, status, "application/json; charset=utf-8", &body)
+fn error_response(error: ApiError) -> Response {
+    let status =
+        StatusCode::from_u16(error_status(error.code)).expect("constant status codes are valid");
+    let mut response = (status, axum::Json(JobReply { result: Err(error) })).into_response();
+    policy_headers(&mut response);
+    response
 }
 
-fn respond(
-    stream: &mut TcpStream,
-    status: u16,
-    mime: &str,
-    body: &[u8],
-) -> Result<(), ServerError> {
-    let reason = match status {
-        200 => "OK",
-        202 => "Accepted",
-        400 => "Bad Request",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        409 => "Conflict",
-        410 => "Gone",
-        413 => "Content Too Large",
-        429 => "Too Many Requests",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        _ => "Internal Server Error",
-    };
-    write!(
-        stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",
-        body.len()
-    )?;
-    stream.write_all(body)?;
-    stream.flush()?;
-    Ok(())
+fn json_response<T: serde::Serialize>(status: u16, value: &T) -> Response {
+    match serde_json::to_vec(value) {
+        Ok(body) => response(status, "application/json; charset=utf-8", body),
+        Err(_) => error_response(api_error(
+            ApiErrorCode::Internal,
+            "typed response encoding failed",
+        )),
+    }
+}
+
+fn response(status: u16, mime: &'static str, body: Vec<u8>) -> Response {
+    let mut response = (
+        StatusCode::from_u16(status).expect("constant status codes are valid"),
+        body,
+    )
+        .into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static(mime),
+    );
+    policy_headers(&mut response);
+    response
+}
+
+fn policy_headers(response: &mut Response) {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
 }

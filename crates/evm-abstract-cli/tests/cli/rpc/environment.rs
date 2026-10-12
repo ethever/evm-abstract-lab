@@ -14,7 +14,7 @@ fn rpc_header_environment_reaches_discovery_and_preloaded_cli_execution() {
                     if request["method"] == "eth_feeHistory" {
                         assert_eq!(request["params"], json!(["0x1", "0x10", []]));
                         return Reply::Json(
-                            json!({"jsonrpc":"2.0","id":request["id"],"result":{"oldestBlock":"0x10","baseFeePerBlobGas":["0x123","0x124"]}}),
+                            json!({"jsonrpc":"2.0","id":request["id"],"result":{"oldestBlock":"0x10","baseFeePerBlobGas":["0x123","0x124"],"gasUsedRatio":[0.0]}}),
                         );
                     }
                     let Reply::Json(mut reply) = fixture.reply(request) else {

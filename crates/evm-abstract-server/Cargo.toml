@@ -9,6 +9,11 @@ repository.workspace   = true
 
 [dependencies]
 alloy-primitives.workspace = true
+axum.workspace             = true
+hyper.workspace            = true
+hyper-util.workspace       = true
+tokio                      = { workspace = true, features = ["fs", "io-util", "sync"] }
+tokio-io-timeout.workspace = true
 evm-abstract               = { path = "../evm-abstract" }
 evm-abstract-protocol      = { path = "../evm-abstract-protocol" }
 serde_json.workspace       = true

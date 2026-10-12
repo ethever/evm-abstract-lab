@@ -68,7 +68,12 @@ impl Fixture {
         let result = match method {
             "eth_chainId" => json!("0x1"),
             "eth_getBlockByHash" | "eth_getBlockByNumber" => {
-                json!({"hash":BLOCK,"number":"0x10", "parentHash":BLOCK, "timestamp":"0x1234", "miner":"0x0000000000000000000000000000000000000033", "mixHash":BLOCK, "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7"})
+                json!({"hash":BLOCK,"number":"0x10", "parentHash":BLOCK, "timestamp":"0x1234", "miner":"0x0000000000000000000000000000000000000033", "mixHash":BLOCK, "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7",
+                "sha3Uncles":"0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                "stateRoot":BLOCK, "transactionsRoot":BLOCK, "receiptsRoot":BLOCK,
+                "logsBloom":format!("0x{}", "00".repeat(256)),
+                "difficulty":"0x0", "gasUsed":"0x0", "extraData":"0x",
+                "nonce":"0x0000000000000000"})
             }
             _ => {
                 let address = request["params"][0].as_str().unwrap();

@@ -28,6 +28,7 @@ use std::{
 enum Reply {
     Json(Json),
     Bytes(Vec<u8>),
+    ChunkedBytes(Vec<Vec<u8>>),
     Trickle(Json),
     Http(u16),
     Delay(Duration),
@@ -91,6 +92,19 @@ impl Server {
                 let (status, bytes, trickle) = match handler(&request) {
                     Reply::Json(value) => (200, serde_json::to_vec(&value).unwrap(), false),
                     Reply::Bytes(bytes) => (200, bytes, false),
+                    Reply::ChunkedBytes(chunks) => {
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").unwrap();
+                        for chunk in chunks {
+                            if write!(stream, "{:x}\r\n", chunk.len()).is_err()
+                                || stream.write_all(&chunk).is_err()
+                                || stream.write_all(b"\r\n").is_err()
+                            {
+                                break;
+                            }
+                        }
+                        let _ = stream.write_all(b"0\r\n\r\n");
+                        continue;
+                    }
                     Reply::Trickle(value) => (200, serde_json::to_vec(&value).unwrap(), true),
                     Reply::Http(status) => (status, Vec::new(), false),
                     Reply::Hold { started, closed, body } => {
@@ -157,7 +171,17 @@ fn healthy(request: &Json) -> Json {
     let result = match request["method"].as_str().unwrap() {
         "eth_chainId" => json!("0x1"),
         "eth_getBlockByHash" | "eth_getBlockByNumber" => {
-            json!({"hash": B256::repeat_byte(0x11), "number":"0x2a", "parentHash": B256::repeat_byte(0x10), "timestamp":"0x1234", "miner": Address::repeat_byte(0x33), "mixHash": B256::repeat_byte(0x44), "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7"})
+            json!({
+                "hash": B256::repeat_byte(0x11),
+                "number":"0x2a", "parentHash": B256::repeat_byte(0x10),
+                "timestamp":"0x1234", "miner": Address::repeat_byte(0x33),
+                "mixHash": B256::repeat_byte(0x44), "gasLimit":"0x1c9c380",
+                "baseFeePerGas":"0x7", "sha3Uncles": B256::ZERO,
+                "stateRoot": B256::ZERO, "transactionsRoot": B256::ZERO,
+                "receiptsRoot": B256::ZERO, "logsBloom": format!("0x{}", "00".repeat(256)),
+                "difficulty":"0x0", "gasUsed":"0x0", "extraData":"0x",
+                "nonce":"0x0000000000000000"
+            })
         }
         "eth_getCode" => json!("0x00"),
         "eth_getBalance" => json!("0x9"),
@@ -209,6 +233,48 @@ fn rpc_world_pins_every_fact_and_keeps_unrequested_facts_unknown() {
                 ),
             }
             assert!(!request.to_string().contains("latest"));
+        }
+    });
+}
+
+#[test]
+fn sdk_header_keeps_unconsumed_extension_data_out_of_snapshot_policy() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| {
+            let mut response = healthy(request);
+            if request["method"] == "eth_getBlockByHash" {
+                response["result"]["oldestBlock"] = json!({"any":[null,true,42]});
+                response["result"]["extension"] = json!({"arbitrary":"data"});
+            }
+            Reply::Json(response)
+        });
+        let world = load(&server.input()).unwrap();
+        assert_eq!(world.snapshot_environment().unwrap().number, U256::from(42));
+    });
+}
+
+#[test]
+fn alloy_header_aliases_cannot_replace_required_canonical_fields() {
+    thread::scope(|scope| {
+        for prefixed in [true, false] {
+            let server = Server::new(scope, move |request| {
+                let mut response = healthy(request);
+                if request["method"] == "eth_getBlockByHash" {
+                    let header = response["result"].as_object_mut().unwrap();
+                    let address = header.remove("miner").unwrap();
+                    let beneficiary = if prefixed {
+                        address
+                    } else {
+                        json!(address.as_str().unwrap().trim_start_matches("0x"))
+                    };
+                    header.insert("beneficiary".into(), beneficiary);
+                }
+                Reply::Json(response)
+            });
+            let error = load(&server.input()).unwrap_err();
+            assert!(matches!(error, RpcError::Response { .. }));
+            assert_eq!(error.context().method, "eth_getBlockByHash");
+            assert_eq!(server.requests().len(), 2);
         }
     });
 }
@@ -540,13 +606,13 @@ fn state_failures_never_retry_at_latest_or_manufacture_empty_code() {
                     }
                     "http" => Reply::Http(503),
                     "json" => Reply::Bytes(b"not json".to_vec()),
-                    "limit" => Reply::Bytes(vec![b' '; 1025]),
+                    "limit" => Reply::Bytes(vec![b' '; 4097]),
                     "timeout" => Reply::Delay(request_timeout.saturating_mul(2)),
                     _ => unreachable!(),
                 }
             });
             let mut input = server.input();
-            input.max_response_bytes = 1024;
+            input.max_response_bytes = 4096;
             if case == "timeout" {
                 input.timeout = request_timeout;
             }
@@ -603,6 +669,36 @@ fn malformed_ordinary_state_is_rejected_without_partial_account() {
             assert_eq!(error.context().account, Some(Address::repeat_byte(0x22)));
             assert!(matches!(error, RpcError::Response { .. }));
         }
+    });
+}
+
+#[test]
+fn alloy_bytes_and_error_defaults_cannot_weaken_acquisition_schema() {
+    thread::scope(|scope| {
+        for malformed in [json!("00"), json!("0x0"), json!([0]), json!("0X00")] {
+            let server = Server::new(scope, move |request| {
+                let mut response = healthy(request);
+                if request["method"] == "eth_getCode" {
+                    response["result"] = malformed.clone();
+                }
+                Reply::Json(response)
+            });
+            let error = load(&server.input()).unwrap_err();
+            assert!(matches!(error, RpcError::Response { .. }));
+            assert_eq!(error.context().method, "eth_getCode");
+            assert_eq!(server.requests().len(), 3);
+        }
+        let server = Server::new(scope, |request| {
+            if request["method"] == "eth_getCode" {
+                return Reply::Json(json!({"jsonrpc":"2.0", "id":request["id"],
+                    "error":{"code":-32000}}));
+            }
+            Reply::Json(healthy(request))
+        });
+        let error = load(&server.input()).unwrap_err();
+        assert!(matches!(error, RpcError::Response { .. }));
+        assert_eq!(error.context().method, "eth_getCode");
+        assert_eq!(server.requests().len(), 3);
     });
 }
 
@@ -821,13 +917,13 @@ fn incremental_timeout_and_response_limit_remain_typed_without_partial_cache() {
                         // only this incremental request must exceed its deadline.
                         Reply::Delay(request_timeout.saturating_mul(2))
                     } else {
-                        Reply::Bytes(vec![b' '; 1025])
+                        Reply::Bytes(vec![b' '; 4097])
                     };
                 }
                 Reply::Json(incremental_healthy(request))
             });
             let mut input = server.input();
-            input.max_response_bytes = 1024;
+            input.max_response_bytes = 4096;
             if delayed {
                 input.timeout = request_timeout;
             }
@@ -841,7 +937,7 @@ fn incremental_timeout_and_response_limit_remain_typed_without_partial_cache() {
                     other => panic!("expected incremental request timeout, got {other}"),
                 }
             } else {
-                assert!(matches!(error, RpcError::ResponseLimit { limit: 1024, .. }));
+                assert!(matches!(error, RpcError::ResponseLimit { limit: 4096, .. }));
             }
             assert_eq!(error.context().method, "eth_getCode");
             assert_eq!(error.context().account, Some(Address::repeat_byte(0x44)));
@@ -853,6 +949,45 @@ fn incremental_timeout_and_response_limit_remain_typed_without_partial_cache() {
             );
             assert_eq!(session.requests(), 11);
         }
+    });
+}
+
+#[test]
+fn streamed_response_limit_without_content_length_consumes_attempt_and_preserves_cache() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| {
+            if request["method"] == "eth_getCode"
+                && request["params"][0] == json!(Address::repeat_byte(0x44))
+            {
+                return Reply::ChunkedBytes(vec![vec![b' '; 2048], vec![b' '; 2049]]);
+            }
+            Reply::Json(healthy(request))
+        });
+        let mut input = server.input();
+        input.max_response_bytes = 4096;
+        let mut session = Session::load(&input).unwrap();
+        let before = session
+            .world()
+            .account(Address::repeat_byte(0x22))
+            .unwrap()
+            .clone();
+        let error = session
+            .fetch_account(Address::repeat_byte(0x44))
+            .unwrap_err();
+        assert!(matches!(error, RpcError::ResponseLimit { limit: 4096, .. }));
+        assert_eq!(error.context().method, "eth_getCode");
+        assert_eq!(session.requests(), 11);
+        assert_eq!(server.requests().len(), 11);
+        assert_eq!(
+            session.world().account(Address::repeat_byte(0x22)),
+            Some(&before)
+        );
+        assert!(
+            session
+                .world()
+                .account(Address::repeat_byte(0x44))
+                .is_none()
+        );
     });
 }
 

@@ -130,7 +130,7 @@ fn compiler_support(cx: &LateContext<'_>, span: Span) -> bool {
 }
 
 fn report(cx: &LateContext<'_>, span: Span) {
-    if compiler_support(cx, span) || web_framework_boundary(cx) {
+    if compiler_support(cx, span) || framework_boundary(cx) {
         return;
     }
     cx.emit_span_lint(
@@ -143,26 +143,41 @@ fn report(cx: &LateContext<'_>, span: Span) {
     );
 }
 
-// egui's TextBuffer, eframe's AppCreator and wasm-bindgen's JS callbacks require
-// dynamic adapters.
-// Keep that exception in one named browser adapter, not in widgets, the protocol,
-// or the analysis backend. `forbid` remains in force everywhere else, including
-// identically named modules in other crates and user-written macros.
-fn web_framework_boundary(cx: &LateContext<'_>) -> bool {
-    if cx.tcx.crate_name(LOCAL_CRATE).as_str() != "evm_abstract_web" {
-        return false;
-    }
+// The browser APIs and Alloy's RPC call / transport APIs expose erased callbacks
+// and futures. Keep those adapters inside exact lexical module paths; widgets,
+// analysis, SSA and snapshot acquisition policy retain `forbid`.
+fn framework_boundary(cx: &LateContext<'_>) -> bool {
+    let path: &[&str] = match cx.tcx.crate_name(LOCAL_CRATE).as_str() {
+        "evm_abstract_web" => &["framework"],
+        "evm_abstract" => &["world", "rpc", "framework"],
+        _ => return false,
+    };
     // Definition parents follow lexical scope. Formatted trait impl paths
     // describe Self and the trait instead, so they cannot identify this boundary.
     let mut owner = cx.last_node_with_lint_attrs.owner.def_id;
-    while let Some(parent) = cx.tcx.opt_local_parent(owner) {
-        if parent == CRATE_DEF_ID {
-            return cx.tcx.def_kind(owner) == DefKind::Mod
-                && cx.tcx.item_name(owner).as_str() == "framework";
+    loop {
+        let mut candidate = owner;
+        let matches = path.iter().rev().all(|name| {
+            if candidate == CRATE_DEF_ID
+                || cx.tcx.def_kind(candidate) != DefKind::Mod
+                || cx.tcx.item_name(candidate).as_str() != *name
+            {
+                return false;
+            }
+            let Some(parent) = cx.tcx.opt_local_parent(candidate) else {
+                return false;
+            };
+            candidate = parent;
+            true
+        });
+        if matches && candidate == CRATE_DEF_ID {
+            return true;
         }
+        let Some(parent) = cx.tcx.opt_local_parent(owner) else {
+            return false;
+        };
         owner = parent;
     }
-    false
 }
 
 impl<'tcx> LateLintPass<'tcx> for NoDyn {

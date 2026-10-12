@@ -1,12 +1,7 @@
 //! Command-line ownership of the loopback web host.
 
 use clap::Parser;
-use std::{
-    ffi::OsString,
-    net::{SocketAddr, TcpListener},
-    path::PathBuf,
-    process::ExitCode,
-};
+use std::{ffi::OsString, net::SocketAddr, path::PathBuf, process::ExitCode};
 
 #[derive(Parser)]
 #[command(
@@ -49,6 +44,13 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args) -> Result<(), evm_abstract_server::http::ServerError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(run_async(args))
+}
+
+async fn run_async(args: Args) -> Result<(), evm_abstract_server::http::ServerError> {
     let mut config = evm_abstract_server::jobs::Config::default();
     if let Some(workers) = args.workers {
         config.workers = workers;
@@ -64,11 +66,11 @@ fn run(args: Args) -> Result<(), evm_abstract_server::http::ServerError> {
         .transpose()
         .map_err(evm_abstract_server::http::ServerError::RpcConfig)?
         .unwrap_or_default();
-    let listener = TcpListener::bind(args.bind)?;
+    let listener = tokio::net::TcpListener::bind(args.bind).await?;
     println!(
         "EVM workbench: http://{} ({} analysis workers)",
         listener.local_addr()?,
         config.workers
     );
-    evm_abstract_server::http::serve_with_providers(&listener, &args.assets, config, providers)
+    evm_abstract_server::http::serve_with_providers(listener, &args.assets, config, providers).await
 }

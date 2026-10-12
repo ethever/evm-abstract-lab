@@ -2,10 +2,8 @@
 //! a cancelled request/body future closes that operation before acquisition
 //! can install its observations; no detached per-request worker is created.
 
-use super::{
-    AccountRequest, RpcBlock, RpcContext, RpcError, RpcInput, context, invalid,
-    wire::{Data, FeeHistory, Header, Method, Params, Quantity, Selector},
-};
+use super::framework::Client;
+use super::{AccountRequest, RpcBlock, RpcContext, RpcError, RpcInput, context, invalid};
 use super::{HeaderField, HeaderValue, ResponseReason};
 use crate::{
     Address, U256,
@@ -16,17 +14,18 @@ use crate::{
     domain::AbstractValue,
     world::{Account, Existence, SnapshotEnvironment, World},
 };
+use alloy::{
+    primitives::Bytes,
+    rpc::types::{BlockId, BlockNumberOrTag, FeeHistory, Header},
+};
 use alloy_primitives::{B256, hex};
-use reqwest::Client;
 mod transport;
 
 #[derive(Debug)]
 pub(super) struct Loader {
     pub input: RpcInput,
     pub client: Client,
-    pub runtime: Option<tokio::runtime::Runtime>,
     pub control: Control,
-    pub next_id: usize,
     pub chain_id: Option<U256>,
     pub block_hash: Option<B256>,
     pub block_number: Option<U256>,
@@ -50,11 +49,8 @@ impl Loader {
         context
     }
 
-    fn selector(&self) -> Selector {
-        Selector {
-            block_hash: self.block_hash.expect("pinning precedes state requests"),
-            require_canonical: true,
-        }
+    fn selector(&self) -> BlockId {
+        BlockId::hash_canonical(self.block_hash.expect("pinning precedes state requests"))
     }
 
     pub(super) fn world(&self) -> World {
@@ -83,39 +79,42 @@ impl Loader {
             round: self.round,
             accounts: self.acquired_accounts,
             slots: self.acquired_slots,
-            requests: self.next_id,
+            requests: self.client.requests(),
         });
     }
 
     pub(super) fn pin(&mut self) -> Result<(), RpcError> {
         self.control.observer().phase(Phase::Pinning);
         self.check_chain()?;
-        let (method, params) = match self.input.block {
-            RpcBlock::Latest => (Method::BlockByNumber, Params::Latest("latest", false)),
-            RpcBlock::Number(number) => (
-                Method::BlockByNumber,
-                Params::Number(Quantity(U256::from(number)), false),
-            ),
-            RpcBlock::Hash(hash) => (Method::BlockByHash, Params::Hash(hash, false)),
+        let method = if matches!(self.input.block, RpcBlock::Hash(_)) {
+            "eth_getBlockByHash"
+        } else {
+            "eth_getBlockByNumber"
         };
-        let context = self.context(method.name(), None, None);
-        let header: Header = self.call(&context, method, params)?;
+        let context = self.context(method, None, None);
+        let header: Header = match self.input.block {
+            RpcBlock::Latest => self.call(&context, (BlockNumberOrTag::Latest, false))?,
+            RpcBlock::Number(number) => {
+                self.call(&context, (BlockNumberOrTag::Number(number), false))?
+            }
+            RpcBlock::Hash(hash) => self.call(&context, (hash, false))?,
+        };
         if let RpcBlock::Hash(expected) = self.input.block
-            && header.hash.0 != expected
+            && header.hash != expected
         {
             return Err(RpcError::BlockMismatch {
                 context: Box::new(context),
-                observed: header.hash.0,
+                observed: header.hash,
             });
         }
         if let RpcBlock::Number(expected) = self.input.block
-            && header.number.0 != U256::from(expected)
+            && U256::from(header.number) != U256::from(expected)
         {
             return Err(invalid(
                 &context,
                 ResponseReason::BlockNumber {
                     expected: U256::from(expected),
-                    observed: header.number.0,
+                    observed: U256::from(header.number),
                 },
             ));
         }
@@ -128,25 +127,25 @@ impl Loader {
                 },
             ));
         }
-        self.block_hash = Some(header.hash.0);
-        self.block_number = Some(header.number.0);
+        self.block_hash = Some(header.hash);
+        self.block_number = Some(U256::from(header.number));
         self.header = Some(header.clone());
         let blob_base_fee = if header.excess_blob_gas.is_some() {
-            Some(self.blob_fee(header.number.0)?)
+            Some(self.blob_fee(U256::from(header.number))?)
         } else {
             None
         };
         self.environment = Some(SnapshotEnvironment {
-            number: header.number.0,
-            parent_hash: header.parent_hash.0,
-            timestamp: header.timestamp.0,
-            coinbase: header.miner.0,
-            prevrandao: header.mix_hash.0,
-            gas_limit: header.gas_limit.0,
-            base_fee: header.base_fee.map(|value| value.0),
+            number: U256::from(header.number),
+            parent_hash: header.parent_hash,
+            timestamp: U256::from(header.timestamp),
+            coinbase: header.beneficiary,
+            prevrandao: header.mix_hash,
+            gas_limit: U256::from(header.gas_limit),
+            base_fee: header.base_fee_per_gas.map(U256::from),
             blob_base_fee,
-            excess_blob_gas: header.excess_blob_gas.map(|value| value.0),
-            blob_gas_used: header.blob_gas_used.map(|value| value.0),
+            excess_blob_gas: header.excess_blob_gas.map(U256::from),
+            blob_gas_used: header.blob_gas_used.map(U256::from),
         });
         Ok(())
     }
@@ -158,48 +157,53 @@ impl Loader {
         // BPO update fraction from the VM fork name alone.
         self.check_chain()?;
         self.check_storage_block(number)?;
-        let context = self.context(Method::FeeHistory.name(), None, None);
+        let context = self.context("eth_feeHistory", None, None);
         let history: FeeHistory = self.call(
             &context,
-            Method::FeeHistory,
-            Params::FeeHistory(Quantity(U256::from(1)), Quantity(number), []),
+            (
+                U256::from(1),
+                BlockNumberOrTag::Number(u64::try_from(number).expect("SDK block height is u64")),
+                [0.0_f64; 0],
+            ),
         )?;
-        if history.oldest_block.0 != number || history.base_fee_per_blob_gas.len() != 2 {
+        if U256::from(history.oldest_block) != number || history.base_fee_per_blob_gas.len() != 2 {
             return Err(invalid(
                 &context,
                 ResponseReason::FeeHistory {
                     expected: number,
-                    observed: history.oldest_block.0,
+                    observed: U256::from(history.oldest_block),
                     fees: history.base_fee_per_blob_gas.len(),
                 },
             ));
         }
         self.check_chain()?;
         self.check_storage_block(number)?;
-        Ok(history.base_fee_per_blob_gas[0].0)
+        Ok(U256::from(history.base_fee_per_blob_gas[0]))
     }
 
     pub(super) fn check_chain(&mut self) -> Result<(), RpcError> {
-        let context = self.context(Method::ChainId.name(), None, None);
-        let observed: Quantity = self.call(&context, Method::ChainId, Params::Empty([]))?;
+        let context = self.context("eth_chainId", None, None);
+        // Alloy omits zero-sized params. Keep an explicit empty positional
+        // array for the endpoint-facing acquisition contract.
+        let observed: U256 = self.call(&context, Vec::<()>::new())?;
         if let Some(expected) = self.chain_id {
-            if observed.0 != expected {
+            if observed != expected {
                 return Err(RpcError::ChainMismatch {
                     context: Box::new(context),
-                    observed: observed.0,
+                    observed,
                 });
             }
         } else {
-            self.chain_id = Some(observed.0);
+            self.chain_id = Some(observed);
         }
         Ok(())
     }
 
     fn verify_header(&self, context: &RpcContext, header: &Header) -> Result<(), RpcError> {
-        if Some(header.hash.0) != self.block_hash {
+        if Some(header.hash) != self.block_hash {
             return Err(RpcError::BlockMismatch {
                 context: Box::new(context.clone()),
-                observed: header.hash.0,
+                observed: header.hash,
             });
         }
         if let Some(initial) = &self.header
@@ -212,34 +216,36 @@ impl Loader {
 
     pub(super) fn check_block(&mut self) -> Result<(), RpcError> {
         let hash = self.block_hash.expect("block checks follow pinning");
-        let context = self.context(Method::BlockByHash.name(), None, None);
-        let header: Header = self.call(&context, Method::BlockByHash, Params::Hash(hash, false))?;
+        let context = self.context("eth_getBlockByHash", None, None);
+        let header: Header = self.call(&context, (hash, false))?;
         self.verify_header(&context, &header)
     }
 
     pub(super) fn storage_block_number(&self) -> Result<U256, RpcError> {
         self.block_number.ok_or_else(|| {
             invalid(
-                &self.context(Method::BlockByHash.name(), None, None),
+                &self.context("eth_getBlockByHash", None, None),
                 ResponseReason::MissingBlockNumber,
             )
         })
     }
 
     pub(super) fn check_storage_block(&mut self, number: U256) -> Result<(), RpcError> {
-        let context = self.context(Method::BlockByNumber.name(), None, None);
+        let context = self.context("eth_getBlockByNumber", None, None);
         let header: Header = self.call(
             &context,
-            Method::BlockByNumber,
-            Params::Number(Quantity(number), false),
+            (
+                BlockNumberOrTag::Number(u64::try_from(number).expect("SDK block height is u64")),
+                false,
+            ),
         )?;
         self.verify_header(&context, &header)?;
-        if header.number.0 != number {
+        if U256::from(header.number) != number {
             return Err(invalid(
                 &context,
                 ResponseReason::BlockNumber {
                     expected: number,
-                    observed: header.number.0,
+                    observed: U256::from(header.number),
                 },
             ));
         }
@@ -252,37 +258,25 @@ impl Loader {
         request: &AccountRequest,
     ) -> Result<(), RpcError> {
         let address = request.address;
-        let code_context = self.context(Method::Code.name(), Some(address), None);
-        let code: Data = self.call(
-            &code_context,
-            Method::Code,
-            Params::Account(address, self.selector()),
-        )?;
+        let code_context = self.context("eth_getCode", Some(address), None);
+        let code: Bytes = self.call(&code_context, (address, self.selector()))?;
         let mut account =
-            Account::from_hex(&hex::encode(code.0), self.input.fork).map_err(|source| {
+            Account::from_hex(&hex::encode(code), self.input.fork).map_err(|source| {
                 RpcError::Code {
                     context: Box::new(code_context.clone()),
                     source,
                 }
             })?;
         account.storage_unknown = true;
-        let context = self.context(Method::Balance.name(), Some(address), None);
-        let balance: Quantity = self.call(
-            &context,
-            Method::Balance,
-            Params::Account(address, self.selector()),
-        )?;
-        account.balance = AbstractValue::constant(balance.0);
-        let context = self.context(Method::Nonce.name(), Some(address), None);
-        let nonce: Quantity = self.call(
-            &context,
-            Method::Nonce,
-            Params::Account(address, self.selector()),
-        )?;
-        account.nonce = AbstractValue::constant(nonce.0);
+        let context = self.context("eth_getBalance", Some(address), None);
+        let balance: U256 = self.call(&context, (address, self.selector()))?;
+        account.balance = AbstractValue::constant(balance);
+        let context = self.context("eth_getTransactionCount", Some(address), None);
+        let nonce: U256 = self.call(&context, (address, self.selector()))?;
+        account.nonce = AbstractValue::constant(nonce);
         account.existence = if account.code != crate::world::Code::Empty
-            || balance.0 != U256::ZERO
-            || nonce.0 != U256::ZERO
+            || balance != U256::ZERO
+            || nonce != U256::ZERO
         {
             Existence::Present
         } else {
@@ -307,64 +301,62 @@ impl Loader {
     }
 
     pub(super) fn storage(&mut self, address: Address, key: U256) -> Result<U256, RpcError> {
-        let context = self.context(Method::Storage.name(), Some(address), Some(key));
-        let data: Data = self.call(
-            &context,
-            Method::Storage,
-            Params::Storage(address, Quantity(key), self.selector()),
-        )?;
-        if data.0.len() != 32 {
+        let context = self.context("eth_getStorageAt", Some(address), Some(key));
+        let data: Bytes = self.call(&context, (address, key, self.selector()))?;
+        if data.len() != 32 {
             return Err(invalid(
                 &context,
                 ResponseReason::StorageLength {
                     expected: 32,
-                    observed: data.0.len(),
+                    observed: data.len(),
                 },
             ));
         }
-        Ok(U256::from_be_slice(&data.0))
+        Ok(U256::from_be_slice(&data))
     }
 }
 
 fn header_change(initial: &Header, observed: &Header) -> Option<ResponseReason> {
-    let optional = |quantity: Option<Quantity>| {
-        quantity.map_or(HeaderValue::Absent, |value| HeaderValue::Quantity(value.0))
+    let optional = |quantity: Option<u64>| {
+        quantity.map_or(HeaderValue::Absent, |value| {
+            HeaderValue::Quantity(U256::from(value))
+        })
     };
     for (field, expected, observed) in [
         (
             HeaderField::ParentHash,
-            HeaderValue::Hash(initial.parent_hash.0),
-            HeaderValue::Hash(observed.parent_hash.0),
+            HeaderValue::Hash(initial.parent_hash),
+            HeaderValue::Hash(observed.parent_hash),
         ),
         (
             HeaderField::Number,
-            HeaderValue::Quantity(initial.number.0),
-            HeaderValue::Quantity(observed.number.0),
+            HeaderValue::Quantity(U256::from(initial.number)),
+            HeaderValue::Quantity(U256::from(observed.number)),
         ),
         (
             HeaderField::Timestamp,
-            HeaderValue::Quantity(initial.timestamp.0),
-            HeaderValue::Quantity(observed.timestamp.0),
+            HeaderValue::Quantity(U256::from(initial.timestamp)),
+            HeaderValue::Quantity(U256::from(observed.timestamp)),
         ),
         (
             HeaderField::Miner,
-            HeaderValue::Address(initial.miner.0),
-            HeaderValue::Address(observed.miner.0),
+            HeaderValue::Address(initial.beneficiary),
+            HeaderValue::Address(observed.beneficiary),
         ),
         (
             HeaderField::MixHash,
-            HeaderValue::Hash(initial.mix_hash.0),
-            HeaderValue::Hash(observed.mix_hash.0),
+            HeaderValue::Hash(initial.mix_hash),
+            HeaderValue::Hash(observed.mix_hash),
         ),
         (
             HeaderField::GasLimit,
-            HeaderValue::Quantity(initial.gas_limit.0),
-            HeaderValue::Quantity(observed.gas_limit.0),
+            HeaderValue::Quantity(U256::from(initial.gas_limit)),
+            HeaderValue::Quantity(U256::from(observed.gas_limit)),
         ),
         (
             HeaderField::BaseFee,
-            optional(initial.base_fee),
-            optional(observed.base_fee),
+            optional(initial.base_fee_per_gas),
+            optional(observed.base_fee_per_gas),
         ),
         (
             HeaderField::ExcessBlobGas,

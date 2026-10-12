@@ -198,7 +198,12 @@ fn response(accounts: &BTreeMap<Address, Account>, request: &Json) -> Json {
     let result = match method {
         "eth_chainId" => json!("0x1"),
         "eth_getBlockByHash" | "eth_getBlockByNumber" => {
-            json!({"hash":B256::repeat_byte(0x11), "number":"0x2a", "parentHash": B256::repeat_byte(0x10), "timestamp":"0x1234", "miner": Address::repeat_byte(0x33), "mixHash": B256::repeat_byte(0x44), "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7"})
+            json!({"hash":B256::repeat_byte(0x11), "number":"0x2a", "parentHash": B256::repeat_byte(0x10), "timestamp":"0x1234", "miner": Address::repeat_byte(0x33), "mixHash": B256::repeat_byte(0x44), "gasLimit":"0x1c9c380", "baseFeePerGas":"0x7",
+                "sha3Uncles":"0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                "stateRoot":B256::repeat_byte(0x11), "transactionsRoot":B256::repeat_byte(0x11), "receiptsRoot":B256::repeat_byte(0x11),
+                "logsBloom":format!("0x{}", "00".repeat(256)),
+                "difficulty":"0x0", "gasUsed":"0x0", "extraData":"0x",
+                "nonce":"0x0000000000000000"})
         }
         _ => {
             let owner: Address = request["params"][0].as_str().unwrap().parse().unwrap();

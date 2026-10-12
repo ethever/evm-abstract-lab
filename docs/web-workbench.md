@@ -49,7 +49,7 @@ nix run .#web -- --rpc-config /absolute/path/to/rpc-providers.json
 
 若 RPC 报错显示 `eth_chainId` 收到 HTTP `502`，表示后端在取得链 ID 时收到了网关错误，此时尚未开始 CFG 或合约分析。先检查配置的 endpoint 服务及后端网络、代理连接；公网 RPC 的这类错误不需要通过修改前端地址输入来修复，也不能仅凭 `502` 判断一定是代理导致。
 
-后端的 reqwest 客户端继承服务进程的环境代理设置。访问本地或内网 RPC 时，将对应主机加入 `NO_PROXY` / `no_proxy`；下面的 loopback 例子合并并保留两个变量原有的名单：
+后端的 Alloy RPC client 通过有界 `reqwest` 传输适配访问节点，并继承服务进程的环境代理设置。访问本地或内网 RPC 时，将对应主机加入 `NO_PROXY` / `no_proxy`；下面的 loopback 例子合并并保留两个变量原有的名单：
 
 ```bash
 rpc_no_proxy="127.0.0.1,localhost,::1${NO_PROXY:+,$NO_PROXY}${no_proxy:+,$no_proxy}"
@@ -231,7 +231,13 @@ CLI 的 world/RPC SSA 与 Web 共享核心 `ssa::build_world` 和 `ssa::build_pa
 
 ## 任务执行与取消
 
-CPU 分析由通道调度到有限原生线程池，每项分析在一个工作线程上完成。默认工作线程数为 `max(1, available_parallelism / 2)`；`--workers` 可覆盖，`--queue-capacity` 控制额外排队任务，`--retained-jobs` 控制保留多少终态结果。HTTP 使用独立的有界 I/O 线程，状态查询和静态资源不等待分析结束。Tokio 的单线程 reactor 只负责 RPC 网络等待，CPU 分析不会提交给 Tokio executor。
+CPU 分析由通道调度到有限原生线程池，每项分析在一个工作线程上完成。默认工作线程数为 `max(1, available_parallelism / 2)`；`--workers` 可覆盖，`--queue-capacity` 控制额外排队任务，`--retained-jobs` 控制保留多少终态结果。HTTP 接口使用 Axum 路由，由 Hyper 解析请求和生成响应，Tokio 调度网络等待。状态查询和静态资源不等待分析结束，大报告序列化在独立阻塞任务中执行。CPU 分析仍由原生线程池执行，每份 RPC 采集会话保留自己的单线程 reactor。
+
+服务最多同时处理 32 条连接，未完成请求头的客户端也占用连接名额。Hyper 的请求头读取期限为 10 秒；进入应用层后，完整请求体另有 10 秒总期限，慢速分段发送不会延长期限。请求头缓冲上限为 8 KiB，请求体上限为 256 KiB，静态文件上限为 64 MiB；每次等待 socket 写入的上限为 10 秒。
+
+服务支持合法的 HTTP/1.1 chunked 请求与 keep-alive，不要求每次请求关闭连接。损坏的 HTTP 报文由 Hyper 拒绝，可能只有 HTTP 错误状态；进入应用层后的参数、大小、任务和分析错误继续使用共享的类型化 JSON 协议。静态资源保留规范路径和符号链接边界检查。
+
+节点访问使用 Alloy RPC client、Ethereum RPC 类型和区块选择类型；有界传输适配继续约束实际 HTTP 请求次数、响应字节数和超时，取消时释放当前请求及其网络驱动。快照采集仍只在启动时解析一次区块，后续代码、余额、nonce 和存储查询使用固定区块身份；客户端不启用自动重试或批量请求，累计预算记录实际发起的 HTTP 请求。
 
 状态为 `Queued → Running → Completed/Failed`。取消排队任务会直接释放其请求；运行中的任务先进入 `Cancelling`，然后停止后续工作并丢弃结果，确认工作线程释放任务资源后才进入 `Cancelled`。RPC 请求／响应 future 会被丢弃并关闭 reactor；Z3 与 Bitwuzla 接入原生中断，执行预算检查点、SSA 构建和报告投影也检查取消。cvc5、预编译或系统 DNS 等无法主动中断的当前调用可能需要先返回，这段时间仍显示 `Cancelling`，不声称固定毫秒内停止。每个工作线程由只等待退出的监督线程持有，panic 和停机都在 join 完成、线程本地原生上下文析构之后确认；监视原生中断的辅助线程也只等待信号，不执行第二份分析。
 
@@ -255,7 +261,7 @@ cargo run --locked -p evm-abstract-server -- --assets dist
 
 本地开发服务同样支持直接传入 URL：`cargo run --locked -p evm-abstract-server -- --assets dist --rpc-config http://127.0.0.1:8545`，也可将 URL 换成 JSON 配置文件路径。
 
-完整验证仍运行[本地门禁](local-ci.md)。原有 native workspace 检查保留，另对 Wasm 目标执行构建、Clippy 和 Dylint。动态派发仅对 `evm_abstract_web::framework` 中的 egui 文本编辑、egui_tiles 布局行为与 JavaScript 适配开放，控件、共享协议和原生分析服务继续受 `no_dyn` 约束，见[检查规则](no-dynamic-dispatch.md)。
+完整验证仍运行[本地门禁](local-ci.md)。原有 native workspace 检查保留，另对 Wasm 目标执行构建、Clippy 和 Dylint。动态派发只在浏览器框架与 Alloy RPC 的精确接入模块内开放；控件、共享协议、HTTP 服务、抽象分析和快照采集策略继续受 `no_dyn` 约束，见[检查规则](no-dynamic-dispatch.md)。
 
 浏览器回归使用 Chromium 的 SwiftShader 软件 WebGPU 适配器，检查实际 WebGPU 上下文及绘制调用，同时覆盖页面分析、DPR 1/2 和图交互。软件适配器验证渲染路径，不代表硬件 GPU 加速性能。
 

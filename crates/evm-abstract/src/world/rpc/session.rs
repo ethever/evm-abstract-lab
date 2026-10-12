@@ -175,7 +175,7 @@ impl Session {
 
     /// Number of HTTP requests attempted, including checks and failures.
     pub fn requests(&self) -> usize {
-        self.loader.next_id
+        self.loader.client.requests()
     }
 
     /// Finish acquisition, retaining the observations without the RPC client.

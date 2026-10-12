@@ -1,0 +1,131 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:6:30
+   |
+LL |         let callback: fn() = || {};
+   |                              ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:6:13
+   |
+LL |         let callback: fn() = || {};
+   |             ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:6:23
+   |
+LL |         let callback: fn() = || {};
+   |                       ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:7:9
+   |
+LL |         callback();
+   |         ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:15:38
+   |
+LL |                 let callback: fn() = || {};
+   |                                      ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:15:21
+   |
+LL |                 let callback: fn() = || {};
+   |                     ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:15:31
+   |
+LL |                 let callback: fn() = || {};
+   |                               ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:16:17
+   |
+LL |                 callback();
+   |                 ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:23:42
+   |
+LL |                     let callback: fn() = || {};
+   |                                          ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:23:25
+   |
+LL |                     let callback: fn() = || {};
+   |                         ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:23:35
+   |
+LL |                     let callback: fn() = || {};
+   |                                   ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:24:21
+   |
+LL |                     callback();
+   |                     ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:36:42
+   |
+LL |                     let callback: fn() = || {};
+   |                                          ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:36:25
+   |
+LL |                     let callback: fn() = || {};
+   |                         ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:36:35
+   |
+LL |                     let callback: fn() = || {};
+   |                                   ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/rpc_framework_lookalikes.rs:37:21
+   |
+LL |                     callback();
+   |                     ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 16 previous errors
+

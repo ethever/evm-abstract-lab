@@ -77,7 +77,17 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
                 let mut body=vec![0;length];stream.read_exact(&mut body).unwrap();let request:Request=serde_json::from_slice(&body).unwrap();
                 let result=match request.method.as_str() {
                     "eth_chainId"=>"\"0x1\"".into(),
-                    "eth_getBlockByNumber"|"eth_getBlockByHash"=>format!(r#"{{"hash":"0x{}","parentHash":"0x{}","number":"0x2a","timestamp":"0x1234","miner":"0x{}","mixHash":"0x{}","gasLimit":"0x1c9c380","baseFeePerGas":"0x7"}}"#,"11".repeat(32),"10".repeat(32),"33".repeat(20),"44".repeat(32)),
+                    "eth_getBlockByNumber"|"eth_getBlockByHash"=>format!(r#"{{
+                        "hash":"0x{}","parentHash":"0x{}","number":"0x2a",
+                        "timestamp":"0x1234","miner":"0x{}","mixHash":"0x{}",
+                        "gasLimit":"0x1c9c380","baseFeePerGas":"0x7",
+                        "sha3Uncles":"0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                        "stateRoot":"0x{}","transactionsRoot":"0x{}","receiptsRoot":"0x{}",
+                        "logsBloom":"0x{}","difficulty":"0x0","gasUsed":"0x0",
+                        "extraData":"0x","nonce":"0x0000000000000000",
+                        "transactions":[],"uncles":[]
+                    }}"#,"11".repeat(32),"10".repeat(32),"33".repeat(20),"44".repeat(32),
+                    "00".repeat(32),"00".repeat(32),"00".repeat(32),"00".repeat(256)),
                     "eth_getCode"|"eth_getBalance"|"eth_getTransactionCount"=>{
                         let body=std::str::from_utf8(&body).unwrap();assert!(body.contains("\"requireCanonical\":true"));assert!(body.contains(&"11".repeat(32)));
                         if request.method=="eth_getCode" {"\"0x43424600\"".into()}else{"\"0x0\"".into()}

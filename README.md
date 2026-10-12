@@ -212,7 +212,7 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 原生分析服务与静态资源 | [`evm-abstract-server`](crates/evm-abstract-server) |
 | egui 自绘控件与 Web 适配 | [`evm-abstract-web`](crates/evm-abstract-web) |
 
-本仓库实现抽象 transfer（指令怎样更新抽象状态）、工作表与栈到 SSA 的转换；通用部分复用 `revm-bytecode` 的指令元数据、`alloy-primitives` 的 U256、`petgraph` 的图算法、`revm-precompile` 的原生计算、`reqwest` 的 RPC 传输及 Z3、Bitwuzla、cvc5 的位向量查询。这三个求解器都是原生链接依赖，Nix 开发环境和完整门禁提供其库；运行时通过进程内接口调用，不启动外部求解进程。测试使用 revm 具体执行和 proptest 性质检查；依赖资料见[参考页](docs/references.md)。
+本仓库实现抽象 transfer（指令怎样更新抽象状态）、工作表与栈到 SSA 的转换；通用部分复用 `revm-bytecode` 的指令元数据、`alloy-primitives` 的 U256、`petgraph` 的图算法、`revm-precompile` 的原生计算、Axum / Hyper 的 HTTP 服务、Alloy 的 RPC client 与 Ethereum 类型，以及 Z3、Bitwuzla、cvc5 的位向量查询。RPC 的有界传输适配使用 `reqwest`，固定快照和按需采集策略由分析器管理。这三个求解器都是原生链接依赖，Nix 开发环境和完整门禁提供其库；运行时通过进程内接口调用，不启动外部求解进程。测试使用 revm 具体执行和 proptest 性质检查；依赖资料见[参考页](docs/references.md)。
 
 ## 验证与源码导航
 

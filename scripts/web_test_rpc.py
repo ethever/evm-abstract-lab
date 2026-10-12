@@ -148,6 +148,20 @@ class RpcFixture:
                 "miner": self.miner,
                 "mixHash": self.prevrandao,
                 "gasLimit": "0x1c9c380",
+                # Complete the standard RPC header consumed by Alloy's typed
+                # Ethereum block response. These synthetic auxiliary fields
+                # do not change the execution inputs asserted by the workflow.
+                "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                "stateRoot": "0x" + "00" * 32,
+                "transactionsRoot": "0x" + "00" * 32,
+                "receiptsRoot": "0x" + "00" * 32,
+                "logsBloom": "0x" + "00" * 256,
+                "difficulty": "0x0",
+                "gasUsed": "0x0",
+                "extraData": "0x",
+                "nonce": "0x0000000000000000",
+                "transactions": [],
+                "uncles": [],
                 "baseFeePerGas": "0x7",
                 # Omitted blob accounting is explicitly unknown, not zero.
             }

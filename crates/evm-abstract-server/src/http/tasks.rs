@@ -1,129 +1,130 @@
-//! Typed task routes; analysis is always delegated to the native worker pool.
+//! Axum task handlers delegate analysis operations to the existing worker pool.
 
-use super::{ServerError, api_error, error_reply, error_status, request::Request, respond};
-use crate::jobs::Pool;
-use evm_abstract_protocol::{
-    API_PATH, AnalysisReport, AnalyzeRequest, ApiError, ApiErrorCode, ErrorDetails, JobId,
-    JobReply, ValidationErrorKind, ValidationFailure,
+use super::{Application, api_error, error_response, error_status, json_response, response};
+use axum::{
+    Json,
+    extract::{
+        Path, State,
+        rejection::{JsonRejection, PathRejection},
+    },
+    response::Response,
 };
-use std::net::TcpStream;
+use evm_abstract_protocol::{
+    AnalysisReport, AnalyzeRequest, ApiError, ApiErrorCode, ErrorDetails, JobId, JobReply,
+    ValidationErrorKind, ValidationFailure,
+};
 
-enum Route {
-    Submit,
-    Status(JobId),
-    Result(JobId),
+pub(super) async fn submit(
+    State(state): State<Application>,
+    input: Result<Json<AnalyzeRequest>, JsonRejection>,
+) -> Response {
+    let input = match input {
+        Ok(Json(input)) => input,
+        Err(_) => {
+            return error_response(ApiError {
+                code: ApiErrorCode::InvalidRequest,
+                message: "invalid analysis JSON or Content-Type".into(),
+                details: ErrorDetails::Validation(ValidationFailure {
+                    kind: ValidationErrorKind::Json,
+                    field: None,
+                    value: None,
+                }),
+            });
+        }
+    };
+    job_reply(
+        tokio::task::spawn_blocking(move || state.jobs.submit(input)).await,
+        202,
+    )
 }
 
-fn route(path: &str) -> Result<Route, ApiError> {
-    if path == API_PATH {
-        return Ok(Route::Submit);
-    }
-    let Some(suffix) = path.strip_prefix(&format!("{API_PATH}/")) else {
-        return Err(api_error(ApiErrorCode::NotFound, "task route not found"));
+pub(super) async fn status(
+    State(state): State<Application>,
+    path: Result<Path<String>, PathRejection>,
+) -> Response {
+    let id = match id(path) {
+        Ok(id) => id,
+        Err(error) => return error_response(error),
     };
-    let mut parts = suffix.split('/');
-    let id = parts.next().unwrap_or_default();
-    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+    job_reply(
+        tokio::task::spawn_blocking(move || state.jobs.status(id)).await,
+        200,
+    )
+}
+
+pub(super) async fn cancel(
+    State(state): State<Application>,
+    path: Result<Path<String>, PathRejection>,
+) -> Response {
+    let id = match id(path) {
+        Ok(id) => id,
+        Err(error) => return error_response(error),
+    };
+    job_reply(
+        tokio::task::spawn_blocking(move || state.jobs.cancel(id)).await,
+        200,
+    )
+}
+
+pub(super) async fn result(
+    State(state): State<Application>,
+    path: Result<Path<String>, PathRejection>,
+) -> Response {
+    let id = match id(path) {
+        Ok(id) => id,
+        Err(error) => return error_response(error),
+    };
+    match tokio::task::spawn_blocking(move || {
+        state.jobs.result(id).and_then(|report| {
+            serde_json::to_vec(&ReportReply {
+                result: Ok(&report),
+            })
+            .map_err(|_| api_error(ApiErrorCode::Internal, "typed report encoding failed"))
+        })
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(200, "application/json; charset=utf-8", body),
+        Ok(Err(error)) => error_response(error),
+        Err(_) => error_response(api_error(ApiErrorCode::Internal, "result worker failed")),
+    }
+}
+
+fn id(path: Result<Path<String>, PathRejection>) -> Result<JobId, ApiError> {
+    let Path(value) =
+        path.map_err(|_| api_error(ApiErrorCode::InvalidRequest, "invalid task path"))?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(api_error(
             ApiErrorCode::InvalidRequest,
             "task ID must be an unsigned integer",
         ));
     }
-    let id = JobId(
-        id.parse()
-            .map_err(|_| api_error(ApiErrorCode::InvalidRequest, "task ID exceeds its range"))?,
-    );
-    match (parts.next(), parts.next()) {
-        (None, None) => Ok(Route::Status(id)),
-        (Some("result"), None) => Ok(Route::Result(id)),
-        _ => Err(api_error(ApiErrorCode::NotFound, "task route not found")),
-    }
+    value
+        .parse()
+        .map(JobId)
+        .map_err(|_| api_error(ApiErrorCode::InvalidRequest, "task ID exceeds its range"))
 }
 
-pub(super) fn serve(
-    stream: &mut TcpStream,
-    request: Request,
-    jobs: &Pool,
-) -> Result<(), ServerError> {
-    let route = match route(&request.path) {
-        Ok(route) => route,
-        Err(error) => return error_reply(stream, error),
-    };
-    match (request.method.as_str(), route) {
-        ("POST", Route::Submit) => {
-            let input: AnalyzeRequest = match serde_json::from_slice(&request.body) {
-                Ok(input) => input,
-                Err(error) => {
-                    return error_reply(
-                        stream,
-                        ApiError {
-                            code: ApiErrorCode::InvalidRequest,
-                            message: format!("invalid analysis JSON: {error}"),
-                            details: ErrorDetails::Validation(ValidationFailure {
-                                kind: ValidationErrorKind::Json,
-                                field: None,
-                                value: None,
-                            }),
-                        },
-                    );
-                }
-            };
-            let result = jobs.submit(input);
+fn job_reply(
+    result: Result<Result<evm_abstract_protocol::JobSnapshot, ApiError>, tokio::task::JoinError>,
+    success: u16,
+) -> Response {
+    match result {
+        Ok(result) => {
             let status = result
                 .as_ref()
                 .err()
-                .map_or(202, |error| error_status(error.code));
-            json(stream, status, &JobReply { result })
+                .map_or(success, |error| error_status(error.code));
+            json_response(status, &JobReply { result })
         }
-        ("GET", Route::Status(id)) => {
-            let result = jobs.status(id);
-            let status = result
-                .as_ref()
-                .err()
-                .map_or(200, |error| error_status(error.code));
-            json(stream, status, &JobReply { result })
-        }
-        ("DELETE", Route::Status(id)) => {
-            let result = jobs.cancel(id);
-            let status = result
-                .as_ref()
-                .err()
-                .map_or(200, |error| error_status(error.code));
-            json(stream, status, &JobReply { result })
-        }
-        ("GET", Route::Result(id)) => {
-            let report = match jobs.result(id) {
-                Ok(report) => report,
-                Err(error) => return error_reply(stream, error),
-            };
-            json(
-                stream,
-                200,
-                &ReportReply {
-                    result: Ok(&report),
-                },
-            )
-        }
-        _ => error_reply(
-            stream,
-            api_error(
-                ApiErrorCode::MethodNotAllowed,
-                "unsupported method for this task route",
-            ),
-        ),
+        Err(_) => error_response(api_error(
+            ApiErrorCode::Internal,
+            "task transport worker failed",
+        )),
     }
 }
 
 #[derive(serde::Serialize)]
 struct ReportReply<'a> {
     result: Result<&'a AnalysisReport, &'a ApiError>,
-}
-
-fn json<T: serde::Serialize>(
-    stream: &mut TcpStream,
-    status: u16,
-    reply: &T,
-) -> Result<(), ServerError> {
-    let body = serde_json::to_vec(reply)?;
-    respond(stream, status, "application/json; charset=utf-8", &body)
 }
