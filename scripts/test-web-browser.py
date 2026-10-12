@@ -1662,8 +1662,8 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     # Packaged monospace glyphs show "0x5f {0x105f}" / "0x5f {0x205f}";
     # exact pixels catch an off-by-one final slot in the virtualized list.
     last_row_hashes = {
-        "storage": "cfa6df6a0c40fd99b75323679861e850710fda21f7ec0d1dd7c3bcbc3fc54bfb",
-        "transient": "c78758ff2205cc99f3d7edaf40f9e6293d7bdc2a112ac8290ed9910c7a7aa198",
+        "storage": "ed734a514fdb898c8b90bcbec0861ec87571bddf37e578613d14cab8d94e8f35",
+        "transient": "6aed5416e54b595ad512c579011e8ef7c6bf9a8e51d8eeee75ec7d3124e7a137",
     }
     for title, kind in [("Storage", "storage"), ("Transient", "transient")]:
         select_inspector_tab(page, canvas, title, toolbar_y)
@@ -1672,7 +1672,9 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         page.mouse.move(2, 2)
         settle_gesture(page)
         collapsed = canvas.screenshot(path=str(output / f"{kind}-facts-collapsed.png"))
-        facts_region = (145, tab[3] + 92, 650, tab[3] + 262)
+        # The original 20-point native baseline gives facts a 23-point stride;
+        # include Pending destruction while stopping before Unspecified slots.
+        facts_region = (145, tab[3] + 92, 650, tab[3] + 282)
         collapsed_facts = text_pixels(page, collapsed, facts_region)
         assert not collapsed_facts["rows"], "account facts were already expanded before the header click"
         canvas.click(position={"x": 120, "y": tab[3] + 80})
@@ -1698,9 +1700,9 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         last_row_region = (4, page.viewport_size["height"] - 50,
                            115, page.viewport_size["height"] - 30)
         last_row = text_pixels(page, settled, last_row_region)
+        save_png_crop(page, settled, last_row_region, output / f"{kind}-last-row.png")
         assert len(last_row["rows"]) == 1 and last_row["white_pixels"] > 100, "last slot row was clipped or blank"
         assert last_row["hash"] == last_row_hashes[kind], f"last rendered {title} slot/value changed: {last_row}"
-        save_png_crop(page, settled, last_row_region, output / f"{kind}-last-row.png")
         page.mouse.move(80, tab[3] + 115)
         page.mouse.wheel(0, -6000)
         settle_gesture(page)
@@ -2212,7 +2214,9 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path):
             page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
             canvas.click(position={"x": 143, "y": 86})
             settle_gesture(page)
-            region = (4, 123, 1436, height - 30)
+            # The restored compact toolbar ends at y=115. Include the short
+            # viewport root's real outline at y=122 after the fresh upward pan.
+            region = (4, 119, 1436, height - 30)
             fitted = node_snapshot(page, canvas, output, f"{prefix}-edges-{layout_name}-fit", region, True)
             require_selected_complete(fitted)
             if scene_reference is None:
@@ -2886,17 +2890,18 @@ def layout_entry_form(page, canvas, entry):
     page.keyboard.insert_text(entry["calldata"])
     rendered_frame(page)
     if "chain_id" in entry:
+        # Original 20-point native rows, measured before and after modal scroll.
         modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+100, "y": modal[1]+427+root_offset})
+        canvas.click(position={"x": modal[0]+100, "y": modal[1]+439+root_offset})
         settle_gesture(page)
         page.mouse.move(800, 660)
         page.mouse.wheel(0, 240)
         settle_gesture(page)
         modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+36, "y": modal[1]+478})
+        canvas.click(position={"x": modal[0]+36, "y": modal[1]+466})
         settle_gesture(page)
         modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+250, "y": modal[1]+500})
+        canvas.click(position={"x": modal[0]+250, "y": modal[1]+489})
         page.keyboard.insert_text(entry["chain_id"])
         rendered_frame(page)
 
