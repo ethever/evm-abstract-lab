@@ -195,7 +195,7 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 | [`evm-abstract-server`](../crates/evm-abstract-server) | 将协议请求转换为引擎输入，验证 SSA，并投影为结构化响应；提供 HTTP 和静态资源 |
 | [`evm-abstract-web`](../crates/evm-abstract-web) | 依赖共享协议和符号库；通过 Web API 获取结果，用 egui Painter 绘制各视图 |
 
-共享协议版本为 7。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+共享协议版本为 8。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 
 | 请求 | 返回 |
 | --- | --- |
@@ -204,6 +204,8 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 | `GET /api/tasks/{id}` | 小型 `JobSnapshot`：状态、阶段、累计计数和实时／冻结的 `timings` |
 | `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
+
+版本 8 为 `Diagnostic` 增加类型化的 `invalid_opcode` 证据。普通指令保留实际 `opcode`、可选 `mnemonic` 与无效原因，区分 `0xfe (INVALID)`、未定义的 `0xef` 和当前 fork 未启用的 `0x1e (CLZ)`；字节来自诊断状态的当前捕获程序。委托入口单独表示为 `DelegationEntry`，无法核验字节时说明缺失原因，不跳到根程序的合成 PC 0。Diagnostics 保留同 PC 不同抽象状态的每条记录及其跳转；记录数不是不同指令数或失败交易次数。原生 CLI 分析格式独立使用版本 5，字段路径见[第 08 课](08-forks.md#从诊断区分原始操作码)。
 
 版本 7 为 `JobSnapshot` 和报告的 `metadata` 增加 `AnalysisTimings`。字段均为 `u64` 纳秒：`queue_ns`、`processing_ns`，以及 `validating_ns`、`pinning_ns`、`acquiring_ns`、`analyzing_ns`、`building_ssa_ns`、`projecting_ns`。阶段耗时互不重复，合计为 `processing_ns`；RPC 展示值为 `pinning_ns + acquiring_ns`。直接调用分析服务函数时队列时间为零。成功、失败或取消后，终态快照的计时冻结；成功报告保留同一份后端计时。用户等待与前端准备属于本次浏览器观察，单独保存，不以浏览器与后端的时钟起点相减计算。
 
