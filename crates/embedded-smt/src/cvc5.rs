@@ -2,17 +2,44 @@
 //!
 //! Each request owns a fresh term manager and solver. The native per-query
 //! resource limit bounds solving; native handles never leave `solve`.
+//! Encoding is cancellable, but the pinned native API exposes no interrupt.
+//! During `check_sat`, cancellation is observed after the native call returns;
+//! its resource counter is not a latency bound. Native errors remain errors.
 
 use crate::{
     Bool, Bv, Error, Outcome, Provider, Unknown,
-    backend::{self, Backend, Status},
+    backend::{self, Backend, Failure, Status},
     term::{Node, Op, Sort},
 };
 use ::cvc5::{Kind, Solver, Term, TermManager, UnknownExplanation};
+use std::sync::Arc;
+
+mod arrays;
+
+#[derive(Clone)]
+enum Native {
+    Term(Term),
+    Bits(Arc<[Term]>),
+}
+impl Native {
+    fn term(&self) -> &Term {
+        let Self::Term(term) = self else {
+            unreachable!("scalar or whole-array term")
+        };
+        term
+    }
+    fn bits(&self) -> &[Term] {
+        let Self::Bits(bits) = self else {
+            unreachable!("bit-decomposed array")
+        };
+        bits
+    }
+}
 
 struct Cvc5 {
     terms: TermManager,
     solver: Solver,
+    bit_arrays: Option<arrays::BitArrays>,
 }
 
 fn native_error(error: ::cvc5::Error) -> Error {
@@ -30,10 +57,15 @@ fn adapter_error(message: &str) -> Error {
 }
 
 impl Cvc5 {
-    fn new(rlimit: u32) -> Result<Self, Error> {
+    fn new(rlimit: u32, split_arrays: bool) -> Result<Self, Error> {
         let terms = TermManager::new();
         let mut solver = Solver::new(&terms);
-        solver.set_logic("QF_BV").map_err(native_error)?;
+        solver.set_logic("QF_ABV").map_err(native_error)?;
+        // Native constant arrays over finite BV index domains require this
+        // theory configuration; otherwise cvc5 rejects STORE_ALL at check time.
+        solver
+            .set_option("arrays-exp", "true")
+            .map_err(native_error)?;
         solver
             .set_option("produce-models", "true")
             .map_err(native_error)?;
@@ -59,19 +91,18 @@ impl Cvc5 {
         solver
             .set_option("rlimit-per", &rlimit.to_string())
             .map_err(native_error)?;
-        Ok(Self { terms, solver })
+        Ok(Self {
+            terms,
+            solver,
+            bit_arrays: split_arrays.then(|| arrays::BitArrays::new(rlimit)),
+        })
     }
 
     fn indexed(&mut self, kind: Kind, indices: &[u32], args: &[Term]) -> Result<Term, Error> {
         let op = self.terms.mk_op(kind, indices).map_err(native_error)?;
         self.terms.mk_term_from_op(op, args).map_err(native_error)
     }
-}
-
-impl Backend for Cvc5 {
-    type Term = Term;
-
-    fn make(&mut self, node: &Node, args: &[Term]) -> Result<Term, Error> {
+    fn make_whole(&mut self, node: &Node, args: &[Term]) -> Result<Term, Error> {
         let kind = match &node.op {
             Op::Bool(value) => return Ok(self.terms.mk_boolean(*value)),
             Op::Literal(hex) => {
@@ -90,8 +121,44 @@ impl Backend for Cvc5 {
                 let sort = match node.sort {
                     Sort::Bool => self.terms.boolean_sort(),
                     Sort::Bv(width) => self.terms.mk_bv_sort(width).map_err(native_error)?,
+                    Sort::Array {
+                        index_width,
+                        element_width,
+                    } => {
+                        let index = self.terms.mk_bv_sort(index_width).map_err(native_error)?;
+                        let element = self.terms.mk_bv_sort(element_width).map_err(native_error)?;
+                        self.terms
+                            .mk_array_sort(index, element)
+                            .map_err(native_error)?
+                    }
                 };
                 return self.terms.mk_const(sort, name).map_err(native_error);
+            }
+            Op::ConstantArray => {
+                let Sort::Array {
+                    index_width,
+                    element_width,
+                } = node.sort
+                else {
+                    return Err(adapter_error("constant array has a non-array sort"));
+                };
+                let index = self.terms.mk_bv_sort(index_width).map_err(native_error)?;
+                let element = self.terms.mk_bv_sort(element_width).map_err(native_error)?;
+                let sort = self
+                    .terms
+                    .mk_array_sort(index, element)
+                    .map_err(native_error)?;
+                return self
+                    .terms
+                    .mk_const_array(sort, args[0].clone())
+                    .map_err(native_error);
+            }
+            Op::Select => Kind::Select,
+            Op::Store => Kind::Store,
+            Op::Apply(_) => {
+                return Err(adapter_error(
+                    "function application bypassed congruence lowering",
+                ));
             }
             Op::Eq => Kind::Equal,
             Op::Not => Kind::Not,
@@ -129,10 +196,24 @@ impl Backend for Cvc5 {
         };
         self.terms.mk_term(kind, args).map_err(native_error)
     }
+}
 
-    fn assert(&mut self, term: &Term) -> Result<(), Error> {
+impl Backend for Cvc5 {
+    type Term = Native;
+
+    fn make(&mut self, node: &Node, args: &[Native]) -> Result<Native, Failure> {
+        if let Some(native) = self.make_bits(node, args)? {
+            return Ok(native);
+        }
+        let args: Vec<_> = args.iter().map(|arg| arg.term().clone()).collect();
+        self.make_whole(node, &args)
+            .map(Native::Term)
+            .map_err(Failure::from)
+    }
+
+    fn assert(&mut self, term: &Native) -> Result<(), Error> {
         self.solver
-            .assert_formula(term.clone())
+            .assert_formula(term.term().clone())
             .map_err(native_error)
     }
 
@@ -151,8 +232,11 @@ impl Backend for Cvc5 {
         })
     }
 
-    fn model(&mut self, term: &Term) -> Result<String, Error> {
-        let value = self.solver.get_value(term.clone()).map_err(native_error)?;
+    fn model(&mut self, term: &Native) -> Result<String, Error> {
+        let value = self
+            .solver
+            .get_value(term.term().clone())
+            .map_err(native_error)?;
         if !value.is_bv_value() {
             return Err(adapter_error("model projection is not a bit-vector value"));
         }
@@ -163,8 +247,12 @@ impl Backend for Cvc5 {
 }
 
 pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Outcome {
-    match Cvc5::new(rlimit) {
-        Ok(backend) => backend::execute(assertions, value, backend),
+    let split_arrays = match arrays::needs_bits(assertions, value) {
+        Ok(split_arrays) => split_arrays,
+        Err(_) => return Outcome::Unknown(Unknown::Cancelled),
+    };
+    match Cvc5::new(rlimit, split_arrays) {
+        Ok(backend) => backend::execute(assertions, value, backend, rlimit),
         Err(error) => Outcome::Error(error),
     }
 }

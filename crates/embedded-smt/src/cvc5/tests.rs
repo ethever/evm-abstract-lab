@@ -1,4 +1,7 @@
-use crate::{Bv, Context, DEFAULT_RLIMIT, Outcome, Provider, Unknown, check};
+use crate::{
+    Array, Bv, Cancellation, Context, DEFAULT_RLIMIT, Outcome, Provider, Unknown, check,
+    with_cancellation,
+};
 use num_bigint::BigUint;
 
 #[test]
@@ -83,4 +86,84 @@ fn auxiliary_definitions_and_root_guards_still_constrain_models() {
             "width={width}",
         );
     }
+}
+
+#[test]
+fn cancellation_during_native_array_check_discards_the_answer_after_native_return() {
+    use super::{Backend, Cvc5, Error, Failure, Native, Node, Status, backend};
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    // Only this test observer sends the entry signal. All native work still
+    // runs on this thread, using the production adapter and encoding.
+    struct ObserveCheck {
+        inner: Cvc5,
+        entered: mpsc::Sender<()>,
+    }
+    impl Backend for ObserveCheck {
+        type Term = Native;
+        fn make(&mut self, node: &Node, args: &[Native]) -> Result<Native, Failure> {
+            self.inner.make(node, args)
+        }
+        fn assert(&mut self, term: &Native) -> Result<(), Error> {
+            self.inner.assert(term)
+        }
+        fn check(&mut self) -> Result<Status, Error> {
+            self.entered.send(()).unwrap();
+            let result = self.inner.check();
+            assert!(matches!(
+                &result,
+                Ok(Status::Unknown(Unknown::ResourceLimit))
+            ));
+            result
+        }
+        fn model(&mut self, term: &Native) -> Result<String, Error> {
+            self.inner.model(term)
+        }
+    }
+
+    let context = Context::default();
+    let default = context.fresh_bv("default", 13);
+    let array = context.fresh_array("array", 256, 13);
+    let index = context.fresh_bv("index", 256);
+    let assertions = [
+        Array::constant(256, &default).eq(&array),
+        array.select(&index).eq(&default).not(),
+    ];
+    let allowance = 1_000_000;
+    let token = Cancellation::new();
+    let cancel_token = token.clone();
+    let (entered, receiver) = mpsc::channel();
+    let observer = ObserveCheck {
+        inner: Cvc5::new(allowance, true).unwrap(),
+        entered,
+    };
+    std::thread::scope(|scope| {
+        let canceller = scope.spawn(move || {
+            receiver.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            cancel_token.cancel();
+            Instant::now()
+        });
+        let outcome = with_cancellation(&token, || {
+            backend::execute(&assertions, None, observer, allowance)
+        });
+        let cancelled_at = canceller.join().unwrap();
+        eprintln!(
+            "cvc5 active array check: rlimit={allowance}, native=ResourceLimit, public={outcome:?}, cancellation delay={:?}",
+            cancelled_at.elapsed()
+        );
+        assert_eq!(outcome, Outcome::Unknown(Unknown::Cancelled));
+    });
+    assert_eq!(
+        check(
+            &[],
+            Some(&Bv::from_u64(7, 13)),
+            Provider::Cvc5,
+            DEFAULT_RLIMIT
+        ),
+        Outcome::Sat(Some("#b0000000000111".into()))
+    );
 }

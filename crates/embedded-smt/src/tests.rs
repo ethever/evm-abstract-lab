@@ -2,6 +2,9 @@ use super::{Bool, Bv, Context, DEFAULT_RLIMIT, Outcome, Provider, Unknown, check
 use num_bigint::BigUint;
 use num_traits::ToPrimitive;
 
+mod arrays;
+mod functions;
+
 const PROVIDERS: [Provider; 3] = [Provider::Z3, Provider::Bitwuzla, Provider::Cvc5];
 
 fn number(outcome: Outcome) -> u64 {
