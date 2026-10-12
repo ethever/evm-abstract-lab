@@ -1648,6 +1648,9 @@ def inspector_controls_interactions(browser, url: str, output: Path):
     return results
 
 
+STORAGE_SLOT_WORD = "0x1234567890abcdef234567890abcdef134567890abcdef124567890190abcdef"
+
+
 def storage_table_pixels(page, screenshot: bytes, region):
     """Find the painted divider, header and cells, without reading egui state."""
     # White glyphs are distinct from muted labels and the native border.
@@ -1857,50 +1860,41 @@ def storage_glyph_cells(cell):
     return [storage_crop_cell(cell,left,0,right,height) for left,right in runs]
 
 
-def assert_storage_word_glyphs(reference, actual, label: str):
-    before,after=storage_glyph_cells(reference),storage_glyph_cells(actual)
-    assert len(before)==len(after),f"{label} changed its glyph count: {len(before)} -> {len(after)}"
-    comparisons=[assert_storage_cell_text(first,last,f"{label} glyph {index}")
-                 for index,(first,last) in enumerate(zip(before,after,strict=True))]
-    return {"glyphs":len(before),"maximum_rgb_difference":max(item["maximum_rgb_difference"] for item in comparisons)}
+def assert_storage_literal_pixels(cell, text: str):
+    """Require a reviewed exact DPR1 raster of the complete literal.
+
+    Epaint bins glyphs at four subpixel positions within each galley. Adding
+    braces or an ellipsis can therefore change a digit's bitmap, even when the
+    font is unchanged. Use independent complete-text masks, as in the final-row
+    checks, rather than comparing different glyph contexts with a wider tolerance.
+    """
+    reviewed = {
+        "0x0": ([22,9], "70dcbd48818467183033b408aeb867e1b1385300a64ace6d0a1dfcd02fcb5c33"),
+        "0xf": ([21,10], "c15143a43ec1f811109009d82060c7230250bd467072ccf11b0a976465cd9b26"),
+        "0x1234": ([46,9], "f526234bce81a61b6813593d5fc81d4bcc29fffe717d2ab644219bfc06d42e6a"),
+        STORAGE_SLOT_WORD: ([514,10], "7f1ebe5c7ae6c51205b1c0ab84b5f70a7f2d6e0c00c2254e8bfb973e378fb7b0"),
+        "{"+STORAGE_SLOT_WORD+"}": ([531,12], "441542c8fa375969f42f890a0240ae01222ff506ba5da7a71cfbee95695caa2e"),
+        "…abcdef": ([54,10], "f3f2b65c34ee7f1d1bd1851b0aeaa7f509d1ccc515cff792b2b718de558c5805"),
+        "…7890190abcdef": ([108,10], "8b9dc9c7c872399ea7f0c8aa2c1be3e03610fcb1bd7224af9ffa8b13b9a6dda9"),
+        "…90abcdef": ([69,10], "400ff596c148f1a88017f63a1ccc0cc31cd655306ba58e6c52950f79415e81b2"),
+        "…90190abcdef": ([93,10], "ff5b7b798e75e4de049ff8445836b31c155ad8d3a08f07e3625c8450b46767cd"),
+    }
+    size,expected=reviewed[text]
+    assert cell["mask_size"]==size and cell["mask_sha256"]==expected, f"rendered {text} changed: {cell}"
+    return {"expected_text":text,"mask_size":size,"mask_sha256":expected}
 
 
-def storage_full_word_reference(table, word: str):
-    """Read the full key from the unchanged Value renderer, removing braces."""
-    short=table["rows"][1]["slot"]
-    short_value=table["rows"][1]["value"]
-    glyphs=storage_glyph_cells(short_value)
-    assert len(glyphs)==5,"{0xf} reference was clipped or padded"
-    bounds=(glyphs[1]["bounds"][0],glyphs[-2]["bounds"][2])
-    width,height=short_value["mask_size"]
-    scale=width/(short_value["bounds"][2]-short_value["bounds"][0])
-    reference=storage_crop_cell(short_value,round((bounds[0]-short_value["bounds"][0])*scale),0,
-                               round((bounds[1]-short_value["bounds"][0])*scale),height)
-    assert_storage_word_glyphs(reference,short,"un-padded 0xf")
-    assert len(storage_glyph_cells(short))==3,"short key gained leading zeroes"
-    full=table["rows"][2]["value"]
-    glyphs=storage_glyph_cells(full)
-    assert len(glyphs)==len(word)+2,"full Value reference was clipped"
-    width,height=full["mask_size"]
-    scale=width/(full["bounds"][2]-full["bounds"][0])
-    return storage_crop_cell(full,round((glyphs[1]["bounds"][0]-full["bounds"][0])*scale),0,
-                             round((glyphs[-2]["bounds"][2]-full["bounds"][0])*scale),height)
-
-
-def assert_storage_suffix(full, narrowed, word: str, retained: int):
+def assert_storage_suffix(narrowed, word: str, retained: int):
     """Require exactly a leading ellipsis plus the requested real tail glyphs."""
-    expected=storage_glyph_cells(full)[-retained:]
+    literal=assert_storage_literal_pixels(narrowed,"…"+word[-retained:])
     actual=storage_glyph_cells(narrowed)
     assert len(actual)==retained+3,f"expected …{word[-retained:]}, got {len(actual)} ink runs"
     dots=actual[:3]
     assert all(dot["mask_size"][1]<=3 for dot in dots),"omission marker is not three dots"
     assert max(dot["bounds"][3] for dot in dots)-min(dot["bounds"][1] for dot in dots)<=3,"ellipsis dots have different baselines"
     assert min(dot["bounds"][1] for dot in dots)>=narrowed["bounds"][3]-4,"omission marker is not a leading baseline ellipsis"
-    comparisons=[assert_storage_cell_text(first,last,f"retained {word[-retained:]} glyph {index}")
-                 for index,(first,last) in enumerate(zip(expected,actual[3:],strict=True))]
-    return {"expected_text":"…"+word[-retained:],"retained_characters":retained,
-            "tail_glyph_mask_sha256":[glyph["mask_sha256"] for glyph in expected],
-            "maximum_rgb_difference":max(item["maximum_rgb_difference"] for item in comparisons),
+    return {**literal,"retained_characters":retained,
+            "tail_glyph_mask_sha256":[glyph["mask_sha256"] for glyph in actual[3:]],
             "leading_ellipsis_components":[dot["bounds"] for dot in dots]}
 
 
@@ -1936,7 +1930,7 @@ def storage_table_interactions(browser, url: str, output: Path):
     status=page.locator("#analysis-status")
     expect(status).to_contain_text("Ready:",timeout=60000)
     canvas=page.locator("#evm-canvas")
-    word="0x1234567890abcdef234567890abcdef134567890abcdef124567890190abcdef"
+    word=STORAGE_SLOT_WORD
     assert len(word)==66
     slots=[0,0xf,0x1234,int(word,16)]
 
@@ -1999,12 +1993,17 @@ def storage_table_interactions(browser, url: str, output: Path):
         expect(status).to_contain_text("Observed exit")
         initial=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-initial",tab[3],len(slots))
         for slot,row in zip(slots[:3],initial["rows"][:3],strict=True):
+            assert_storage_literal_pixels(row["slot"],hex(slot))
             assert len(storage_glyph_cells(row["slot"]))==len(hex(slot)),f"short Slot {hex(slot)} was padded or clipped"
-        full=storage_full_word_reference(initial,word)
-        full_comparison=assert_storage_word_glyphs(full,initial["rows"][-1]["slot"],"complete default Slot")
+        full=initial["rows"][-1]["slot"]
+        full_comparison=assert_storage_literal_pixels(full,word)
+        full_value_comparison=assert_storage_literal_pixels(initial["rows"][2]["value"],"{"+word+"}")
         assert full["bounds"][2]-full["bounds"][0]>500,full
         full_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-full-slot-hover",initial["rows"][-1]["slot"])
-        assert len(full_hover["text"]["rows"])==2,full_hover
+        # This varied literal fits one proportional-font tooltip line. Require
+        # its complete reviewed raster, including the original 0x prefix.
+        assert (len(full_hover["text"]["rows"])==1 and full_hover["ink"]["mask_size"]==[465,10]
+                and full_hover["ink"]["mask_sha256"]=="c24455921e771f31c4dff3e171ab62b12271f5c29b07f653f4492e6b0092488a"),full_hover
         if kind=="transient":
             assert initial["rows"][0]["value"]["mask_sha256"]!=results["storage"]["initial"]["rows"][0]["value"]["mask_sha256"], "Transient rendered the persistent value"
         drag_storage_separator(page,initial,initial["separator"]+320)
@@ -2016,14 +2015,15 @@ def storage_table_interactions(browser, url: str, output: Path):
         current=wide
         suffixes=[]
         for retained,fraction in [(6,0.25),(13,0.625),(8 if kind=="storage" else 11,0.375)]:
-            # The native divider is half the 5pt inter-column gap beyond the
-            # column's logical end. Fractional targets exercise pixel fitting.
-            target=current["header"]["slot"]["bounds"][0]+(retained+1)*advance+2.5+fraction
+            # Include both 2pt cell margins and half the 5pt column gap.
+            # Aim inside the one-glyph fitting interval so divider raster
+            # rounding cannot push a fractional drag below its intended width.
+            target=current["header"]["slot"]["bounds"][0]+(retained+1.5)*advance+4+2.5+fraction
             drag_storage_separator(page,current,target)
             narrow=storage_table_snapshot(page,canvas,output,
                 f"storage-table-{kind}-suffix-{retained}",tab[3],len(slots))
             assert abs(narrow["separator"]-target)<=3,(target,narrow)
-            suffix=assert_storage_suffix(full,narrow["rows"][-1]["slot"],word,retained)
+            suffix=assert_storage_suffix(narrow["rows"][-1]["slot"],word,retained)
             suffix.update(target_separator=target,table=narrow)
             suffixes.append(suffix)
             for first,last in zip(initial["rows"][:3],narrow["rows"][:3],strict=True):
@@ -2036,8 +2036,8 @@ def storage_table_interactions(browser, url: str, output: Path):
         preferences[kind]=storage_separator_offset(narrow)
         slot_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-slot-hover",narrow["rows"][-1]["slot"])
         # Full original text remains identical to the untruncated initial
-        # key's hover, including both wrapped lines and every rendered glyph.
-        assert len(slot_hover["text"]["rows"])==2 and slot_hover["ink"]["mask_sha256"]==full_hover["ink"]["mask_sha256"],slot_hover
+        # key's hover, including every glyph of the original single line.
+        assert len(slot_hover["text"]["rows"])==1 and slot_hover["ink"]["mask_sha256"]==full_hover["ink"]["mask_sha256"],slot_hover
         page.mouse.move(2,2)
         settle_gesture(page)
         value_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-value-hover",narrow["rows"][-1]["value"])
@@ -2077,7 +2077,7 @@ def storage_table_interactions(browser, url: str, output: Path):
         scroll_returned=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-scroll-return",tab[3],len(slots))
         assert_storage_preference(scroll_returned,preferences[kind])
         results[kind]={"expected":expected[kind],"short_default":short_defaults[kind],
-                       "full_word_reference":full,"full_slot_comparison":full_comparison,
+                       "full_slot_raster":full,"full_slot_comparison":full_comparison,"full_value_comparison":full_value_comparison,
                        "full_slot_hover":full_hover,"suffixes":suffixes,"initial":initial,"wide":wide,"narrow":narrow,
                        "slot_hover":slot_hover,"value_hover":value_hover,"scrolled":scrolled,"scroll_return":scroll_returned}
         results[kind].update(value_comparisons=value_comparisons,scrolled_value=scrolled_value)
@@ -2183,9 +2183,21 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         expect(status).to_contain_text("Observed exit")
         page.mouse.move(2, 2)
         settle_gesture(page)
+        default_png = canvas.screenshot(path=str(output / f"{kind}-facts-default-width.png"))
+        default_table = storage_table_pixels(page, default_png,
+            (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
+        assert default_table["header"]["slot"] and default_table["header"]["value"],default_table
+        # Preserve the reviewed final-row hashes at their original Value x=138.
+        # The larger default moves Value to x=531, where one unchanged glyph
+        # sample rounds from 127 to 128 and crosses the exact ink-mask threshold.
+        # A real native drag also lets this scroll case retain an explicit width.
+        drag_storage_separator(page,default_table,134.5)
+        page.mouse.move(2,2)
+        settle_gesture(page)
         collapsed = canvas.screenshot(path=str(output / f"{kind}-facts-collapsed.png"))
         table = storage_table_pixels(page, collapsed,
             (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
+        assert abs(table["separator"]-134.5)<=1,table
         assert table["header"]["slot"] and table["header"]["value"],table
         # The original 20-point native baseline gives facts a 23-point stride;
         # include Pending destruction while stopping before Unspecified slots.
@@ -2243,7 +2255,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
             "facts_region": facts_region, "collapsed_facts": collapsed_facts,
             "collapsed_facts_region":collapsed_facts_region,
             "expanded_facts": expanded_facts, "last_row_region": last_row_region, "last_row": last_row,
-            "table":table,"scrolled_table":scrolled_table,"last_cells":final_cells,
+            "default_table":default_table,"table":table,"scrolled_table":scrolled_table,"last_cells":final_cells,
             "prefix_region": prefix_region, "prefix": prefix,
             "scrolled_prefix": scrolled_prefix, "returned_prefix": returned_prefix,
             "expanded_screenshot": f"{kind}-facts-expanded.png",
