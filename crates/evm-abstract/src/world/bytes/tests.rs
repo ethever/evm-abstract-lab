@@ -112,6 +112,7 @@ fn uncertain_length_needs_zero_and_stored_byte() {
     }
 }
 
+mod concrete;
 mod fingerprint;
 mod native;
 mod provenance;
