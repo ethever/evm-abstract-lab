@@ -140,6 +140,45 @@ fn errors_and_job_states_roundtrip_without_invalid_optional_combinations() {
     }
 }
 #[test]
+fn fingerprint_failures_keep_typed_causes_and_required_encoding_coordinates() {
+    for (kind, code, line, column) in [
+        (
+            FingerprintFailureKind::Cancelled,
+            ApiErrorCode::Cancelled,
+            None,
+            None,
+        ),
+        (
+            FingerprintFailureKind::Encoding,
+            ApiErrorCode::Export,
+            Some(0),
+            Some(0),
+        ),
+        (
+            FingerprintFailureKind::LengthOverflow,
+            ApiErrorCode::Export,
+            None,
+            None,
+        ),
+    ] {
+        let error = ApiError {
+            code,
+            message: "snapshot fingerprint unavailable".into(),
+            details: ErrorDetails::Fingerprint(FingerprintFailure { kind, line, column }),
+        };
+        let encoded = serde_json::to_string(&error).unwrap();
+        for missing in ["line", "column"] {
+            let mut invalid: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            invalid["details"]["Fingerprint"]
+                .as_object_mut()
+                .unwrap()
+                .remove(missing);
+            assert!(serde_json::from_value::<ApiError>(invalid).is_err());
+        }
+        roundtrip(AnalyzeReply { result: Err(error) });
+    }
+}
+#[test]
 fn misspelled_duplicate_missing_unknown_and_multi_variant_inputs_are_rejected() {
     let valid = serde_json::to_string(&AnalyzeRequest::default()).unwrap();
     for invalid in [
