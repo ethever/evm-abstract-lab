@@ -463,18 +463,22 @@ impl ByteArray {
         } else {
             out.root.write_byte(at, val, limits(domain).into())?
         };
-        let starts = offset
-            .constants()
-            .into_iter()
-            .flatten()
-            .filter_map(|v| usize::try_from(*v).ok())
-            .collect::<Vec<_>>();
-        for start in starts {
+        let mut cached_all_offsets = offset.constants().is_some();
+        for start in offset.constants().into_iter().flatten() {
+            let Ok(start) = usize::try_from(*start) else {
+                cached_all_offsets = false;
+                continue;
+            };
             for i in 0..width {
-                out.bytes.entry(start + i).or_insert_with(zero);
+                if let Some(index) = start.checked_add(i) {
+                    out.bytes.entry(index).or_insert_with(zero);
+                } else {
+                    cached_all_offsets = false;
+                    break;
+                }
             }
         }
-        if offset.constants().is_none() {
+        if !cached_all_offsets {
             let upper = if width == 1 {
                 domain.apply(opcode::AND, &[value.clone(), constant(255)])
             } else {
