@@ -368,6 +368,13 @@ impl Workbench {
             .1
     }
 
+    fn graph_titles(&mut self) -> Vec<(String, Rect)> {
+        self.draw(vec![])
+            .into_iter()
+            .filter(|(text, _)| text.starts_with('σ') && text.contains("  ·  B"))
+            .collect()
+    }
+
     fn click(&mut self, label: &str) {
         let position = self.rect(label).center();
         for pressed in [true, false] {
@@ -430,7 +437,10 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
             .unwrap()
             .outer_rect
     });
-    let camera = workbench.workspace.graph.accessible_summary();
+    let graph_summary = workbench.workspace.graph.accessible_summary();
+    let zoom = workbench.workspace.graph.zoom;
+    let graph_titles = workbench.graph_titles();
+    assert!(!graph_titles.is_empty(), "compare actual visible CFG nodes");
     let selected = workbench.workspace.selection;
     let response = separator(&workbench.context, false);
     let start = Pos2::new(response.rect.center().x, workbench.rect("Slot").center().y);
@@ -444,7 +454,16 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
     let expected = workbench.rect("0xcafe").left();
     near(expected, before.left() + 70.0);
     assert_eq!(workbench.workspace.selection, selected);
-    assert_eq!(workbench.workspace.graph.accessible_summary(), camera);
+    assert_eq!(
+        workbench.workspace.graph.accessible_summary(),
+        graph_summary
+    );
+    assert_eq!(workbench.workspace.graph.zoom, zoom);
+    assert_eq!(
+        workbench.graph_titles(),
+        graph_titles,
+        "column drag moved the CFG"
+    );
     for (name, before) in ["world_inspector", "world_directory"]
         .into_iter()
         .zip(panels)
