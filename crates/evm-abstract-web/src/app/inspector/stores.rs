@@ -2,7 +2,8 @@
 
 use super::value;
 use crate::palette;
-use egui::{Rect, RichText, Ui, UiBuilder};
+use egui::{RichText, Ui, UiBuilder};
+use egui_extras::{Column, TableBuilder};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{AccountState, AnalysisReport, StorageEntry, StoreSnapshot, ValueInfo};
 
@@ -36,7 +37,7 @@ pub(super) fn storage(
         .min_scrolled_height(0.0)
         .content_margin(egui::Margin::ZERO)
         .auto_shrink([false, false])
-        .show_viewport(ui, |ui, viewport| {
+        .show(ui, |ui| {
             ui.label(RichText::new(address).monospace());
             if let Some(account) = account {
                 egui::CollapsingHeader::new("Account facts in this store")
@@ -113,49 +114,50 @@ pub(super) fn storage(
                 );
                 return;
             };
-            storage_rows(ui, viewport, entries);
+            storage_rows(ui, entries, transient);
         });
 }
 
-/// Reserve the whole list, but create rows only where the shared viewport
-/// intersects it. The measured prefix includes the facts' animated height.
-fn storage_rows(ui: &mut Ui, viewport: Rect, entries: &[StorageEntry]) {
+/// Table widths are presentation preferences per storage kind, independent of
+/// the account or selected observation. Rows use the outer scroll area's clip.
+fn storage_rows(ui: &mut Ui, entries: &[StorageEntry], transient: bool) {
     let row_height = 21.0_f32
         .max(ui.text_style_height(&egui::TextStyle::Monospace))
         .max(ui.spacing().interact_size.y);
-    let spacing = ui.spacing().item_spacing.y;
-    let stride = row_height + spacing;
-    let (_, list_rect) = ui.allocate_space(egui::vec2(
-        ui.available_width(),
-        stride * entries.len() as f32 - spacing,
-    ));
-    let top = list_rect.top();
-    let prefix = top - ui.max_rect().top();
-
-    let first = (((viewport.min.y - prefix).max(0.0) / stride).floor() as usize).min(entries.len());
-    let end = (((viewport.max.y - prefix).max(0.0) / stride).ceil() as usize).min(entries.len());
-    if first >= end {
-        return;
-    }
-
-    let rect = Rect::from_x_y_ranges(
-        list_rect.x_range(),
-        top + first as f32 * stride..=top + end as f32 * stride - spacing,
-    );
     ui.scope_builder(
-        UiBuilder::new()
-            .id_salt("storage_visible_slots")
-            .max_rect(rect),
+        UiBuilder::new().id(egui::Id::new(("inspector_storage_slot_table", transient))),
         |ui| {
-            ui.skip_ahead_auto_ids(first);
-            for entry in &entries[first..end] {
-                ui.horizontal(|ui| {
-                    ui.set_min_height(row_height);
-                    ui.add(egui::Label::new(RichText::new(&entry.slot).monospace()).truncate())
-                        .on_hover_text(&entry.slot);
-                    value::cell(ui, &entry.value);
+            TableBuilder::new(ui)
+                .id_salt("slots")
+                .vscroll(false)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(
+                    Column::initial(128.0)
+                        .at_least(56.0)
+                        .clip(true)
+                        .resizable(true),
+                )
+                .column(Column::remainder().at_least(96.0).clip(true))
+                .header(row_height, |mut header| {
+                    header.col(|ui| {
+                        ui.strong("Slot");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Value");
+                    });
+                })
+                .body(|body| {
+                    body.rows(row_height, entries.len(), |mut row| {
+                        let entry = &entries[row.index()];
+                        row.col(|ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(&entry.slot).monospace()).truncate(),
+                            )
+                            .on_hover_text(&entry.slot);
+                        });
+                        row.col(|ui| value::cell(ui, &entry.value));
+                    });
                 });
-            }
         },
     );
 }
