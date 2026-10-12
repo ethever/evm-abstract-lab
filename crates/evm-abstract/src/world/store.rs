@@ -2,11 +2,19 @@
 
 use super::{ByteArray, Code, Existence, World};
 use crate::bytecode::Program;
-use crate::domain::{AbstractValue, Domain};
+use crate::domain::{
+    AbstractValue, Domain,
+    symbolic::{ExprError, ExprId, SlotStateId, SourceId, StateError},
+};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use serde::{Serialize, Serializer};
 use snapshot_state::Checkpoint;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+mod slots;
+#[cfg(test)]
+mod tests;
+mod traversal;
 use thiserror::Error;
 
 /// Ordered state observations with the selected snapshot storage backend.
@@ -92,6 +100,12 @@ fn serialize_logs<S: Serializer>(
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Plane {
+    roots: OrderedMap<Address, SlotStateId>,
+    base: SlotStateId,
+    #[serde(skip)]
+    operands: BTreeMap<ExprId, AbstractValue>,
+    #[serde(skip)]
+    failure: Option<StoreError>,
     #[serde(serialize_with = "serialize_slots")]
     slots: OrderedMap<(Address, U256), AbstractValue>,
     defaults: OrderedMap<Address, AbstractValue>,
@@ -221,6 +235,14 @@ fn serialize_slots<S: Serializer>(
 impl Plane {
     fn new(global_default: AbstractValue, initial_independent: bool) -> Self {
         Self {
+            roots: OrderedMap::new(),
+            base: if global_default.singleton() == Some(U256::ZERO) {
+                SlotStateId::zero()
+            } else {
+                SlotStateId::input(SourceId::fresh().expect("storage source identities available"))
+            },
+            operands: BTreeMap::new(),
+            failure: None,
             slots: OrderedMap::new(),
             defaults: OrderedMap::new(),
             global_default,
@@ -238,7 +260,12 @@ impl Plane {
             .unwrap_or_else(|| self.default_at(address))
     }
 
-    fn read(&self, address: Address, slot: &AbstractValue, domain: Domain) -> AbstractValue {
+    fn read_numeric_cache(
+        &self,
+        address: Address,
+        slot: &AbstractValue,
+        domain: Domain,
+    ) -> AbstractValue {
         if let Some(slot) = slot.singleton() {
             return self.at(address, slot).clone();
         }
@@ -260,7 +287,7 @@ impl Plane {
         values.fold(first, |value, stored| domain.join(&value, stored))
     }
 
-    fn write(
+    fn write_numeric_cache(
         &mut self,
         address: Address,
         slot: &AbstractValue,
@@ -293,12 +320,19 @@ impl Plane {
     }
 
     fn havoc_account(&mut self, address: Address) {
+        self.roots.insert(
+            address,
+            SlotStateId::input(
+                SourceId::fresh().expect("storage havoc source identities available"),
+            ),
+        );
         self.slots.retain(|(owner, _), _| *owner != address);
         self.defaults.insert(address, AbstractValue::top());
         self.initial_independence.replace_account(address);
     }
 
     fn reset_account(&mut self, address: Address) {
+        self.roots.insert(address, SlotStateId::zero());
         self.slots.retain(|(owner, _), _| *owner != address);
         self.defaults
             .insert(address, AbstractValue::constant(U256::ZERO));
@@ -306,17 +340,22 @@ impl Plane {
     }
 
     fn havoc_all(&mut self) {
+        self.roots.clear();
+        self.operands.clear();
+        self.base = SlotStateId::input(
+            SourceId::fresh().expect("storage havoc source identities available"),
+        );
         self.slots.clear();
         self.defaults.clear();
         self.global_default = AbstractValue::top();
         self.initial_independence.replace_all();
     }
 
-    fn join(&self, other: &Self, domain: Domain) -> Self {
-        let mut joined = Self::new(
-            domain.join(&self.global_default, &other.global_default),
-            false,
-        );
+    fn join_numeric_cache(&self, other: &Self, domain: Domain) -> Self {
+        let mut joined = self.clone();
+        joined.slots.clear();
+        joined.defaults.clear();
+        joined.global_default = domain.join(&self.global_default, &other.global_default);
         joined.initial_independence = self.initial_independence.join(&other.initial_independence);
         let addresses: BTreeSet<_> = self
             .defaults
@@ -344,6 +383,20 @@ impl Plane {
         }
         joined
     }
+}
+
+/// Complete symbolic transaction state could not be retained.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum StoreError {
+    /// Scalar expression retention or cancellation failure.
+    #[error(transparent)]
+    Expression(#[from] ExprError),
+    /// Complete immutable slot state retention failed.
+    #[error(transparent)]
+    State(#[from] StateError),
+    /// An event byte view could not be retained or renamed.
+    #[error(transparent)]
+    Bytes(#[from] super::RangeError),
 }
 
 /// Mutable transaction state, shared by nested frames and cloned at call entry.
@@ -377,6 +430,18 @@ impl Store {
                 visit(value);
             }
             visit(&plane.global_default);
+            if plane.failure.is_some() {
+                visit(&AbstractValue::top().with_symbolic_limit());
+            }
+            for value in plane.operands.values() {
+                visit(value);
+            }
+            for expression in slots::expressions(&plane.base)
+                .into_iter()
+                .chain(plane.roots.values().flat_map(slots::expressions))
+            {
+                visit(&AbstractValue::top().with_expression(expression));
+            }
         }
         for value in self.balances.values().chain(self.nonces.values()) {
             visit(value);
@@ -394,6 +459,9 @@ impl Store {
             plane.slots.update_values(&mut *update);
             plane.defaults.update_values(&mut *update);
             update(&mut plane.global_default);
+            for value in plane.operands.values_mut() {
+                update(value);
+            }
         }
         self.balances.update_values(&mut *update);
         self.nonces.update_values(&mut *update);
@@ -451,6 +519,9 @@ impl Store {
             plane.slots.update_values(project);
             plane.defaults.update_values(project);
             project(&mut plane.global_default);
+            for value in plane.operands.values_mut() {
+                project(value);
+            }
         }
         self.balances.update_values(project);
         self.nonces.update_values(project);
@@ -459,6 +530,8 @@ impl Store {
     /// Build transaction state without modifying the fixed input snapshot.
     pub fn new(world: &World) -> Self {
         let mut persistent = Plane::new(AbstractValue::top(), false);
+        persistent.base =
+            SlotStateId::input(SourceId::scoped(world.storage_source_token(), U256::ZERO));
         let mut balances = OrderedMap::new();
         let mut codes = OrderedMap::new();
         let mut nonces = OrderedMap::new();
@@ -483,6 +556,7 @@ impl Store {
             nonces.insert(*address, account.nonce.clone());
             existence.insert(*address, account.existence);
         }
+        persistent.initialize_roots();
         Self {
             persistent,
             transient: Plane::new(AbstractValue::constant(U256::ZERO), true),
@@ -531,7 +605,8 @@ impl Store {
         })
     }
 
-    /// Strongly update one slot; weakly update finite or unknown aliases.
+    /// Append an ordered slot write; numeric aliases remain conservative.
+    /// Checked callers use write_checked to receive a typed retention failure.
     pub fn write(
         &mut self,
         address: Address,
@@ -539,7 +614,9 @@ impl Store {
         value: &AbstractValue,
         domain: Domain,
     ) {
-        self.persistent.write(address, slot, value, domain);
+        if let Err(error) = self.write_checked(address, slot, value, domain) {
+            self.persistent.failure = Some(error);
+        }
     }
 
     /// Read transaction-scoped transient storage.
@@ -560,7 +637,9 @@ impl Store {
         value: &AbstractValue,
         domain: Domain,
     ) {
-        self.transient.write(address, slot, value, domain);
+        if let Err(error) = self.write_transient_checked(address, slot, value, domain) {
+            self.transient.failure = Some(error);
+        }
     }
 
     /// Current balance of an explicit or unknown account.
@@ -781,6 +860,7 @@ impl Store {
         }
         // These flags describe an active transaction, never the next transaction.
         self.created.clear();
+        self.transient = Plane::new(AbstractValue::constant(U256::ZERO), true);
     }
 
     /// Forget storage, balance, code, nonce and lifecycle facts at an account.
@@ -817,7 +897,7 @@ impl Store {
     /// Join complete transaction states, treating missing keys as defaults.
     /// Disagreeing code observations become unknown; the machine's structural
     /// code identity keeps finite executable versions separate during execution.
-    pub fn join(&self, other: &Self, domain: Domain) -> Self {
+    fn join_numeric_cache(&self, other: &Self, domain: Domain) -> Self {
         let addresses: BTreeSet<_> = self
             .balances
             .keys()
@@ -855,8 +935,10 @@ impl Store {
             }
         }
         Self {
-            persistent: self.persistent.join(&other.persistent, domain),
-            transient: self.transient.join(&other.transient, domain),
+            persistent: self
+                .persistent
+                .join_numeric_cache(&other.persistent, domain),
+            transient: self.transient.join_numeric_cache(&other.transient, domain),
             balances: addresses
                 .iter()
                 .copied()
@@ -1043,6 +1125,8 @@ impl Store {
             .chain(self.pending_destruction.keys())
             .chain(self.persistent.defaults.keys())
             .chain(self.transient.defaults.keys())
+            .chain(self.persistent.roots.keys())
+            .chain(self.transient.roots.keys())
             .copied()
             .chain(self.persistent.slots.keys().map(|(address, _)| *address))
             .chain(self.transient.slots.keys().map(|(address, _)| *address))
@@ -1073,6 +1157,23 @@ impl Store {
             .fold(0_usize, |work, value| {
                 work.saturating_add(value.work_size())
             });
+        let storage_work =
+            [&self.persistent, &self.transient]
+                .iter()
+                .fold(storage_work, |n, plane| {
+                    plane
+                        .roots
+                        .values()
+                        .fold(n.saturating_add(plane.base.work_size()), |n, root| {
+                            n.saturating_add(root.work_size())
+                        })
+                        .saturating_add(
+                            plane
+                                .operands
+                                .values()
+                                .fold(0usize, |n, value| n.saturating_add(value.work_size())),
+                        )
+                });
         let lifecycle_work = self
             .codes
             .values()
