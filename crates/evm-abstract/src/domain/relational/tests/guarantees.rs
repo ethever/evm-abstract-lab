@@ -1,6 +1,8 @@
 //! Native checks for conjunction reduction and its guarded/overlap boundaries.
 
-use super::super::{CheckResult, RelationLimits, RelationState, SmtProvider, ValueQuery};
+use super::super::{
+    CheckResult, Constraint, RelationLimits, RelationState, SmtProvider, ValueQuery,
+};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -62,6 +64,82 @@ fn default_fuel_conjunction_aliases_keep_their_asserted_predicates() {
                 assert_eq!(path.assume(&equality, !equal, &limits), CheckResult::Unsat);
             }
         }
+    }
+}
+
+#[test]
+fn retained_inconsistent_equalities_and_ranges_cannot_produce_a_folded_value() {
+    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
+        let limits = policy(provider);
+        let k = ExprId::fresh().unwrap();
+        let q = ExprId::fresh().unwrap();
+        let storage = SlotStateId::zero()
+            .store(k.clone(), c(7), limits.expressions().into())
+            .unwrap()
+            .store(q.clone(), c(9), limits.expressions().into())
+            .unwrap();
+        let read = ExprId::slot_read(storage, k.clone(), limits.expressions()).unwrap();
+        // Retained constraints can await checking after imports or joins.
+        // Exercise the native assertions without eager insertion setting bottom.
+        let equal = RelationState {
+            constraints: [
+                Constraint::Equal {
+                    left: k.clone(),
+                    right: q.clone(),
+                },
+                Constraint::Truth {
+                    expression: op(opcode::EQ, &[k, q], limits),
+                    nonzero: false,
+                },
+            ]
+            .into_iter()
+            .collect(),
+            ..RelationState::default()
+        };
+        assert!(!equal.bottom);
+        assert_eq!(
+            equal.unique_value(&read, &limits),
+            ValueQuery::Infeasible,
+            "{provider:?}"
+        );
+
+        let length = ExprId::fresh().unwrap();
+        let source = ByteView::new(
+            ByteStateId::input(SourceId::fresh().unwrap(), length.clone()),
+            c(0),
+            length.clone(),
+        );
+        let at = ExprId::constant(U256::MAX - U256::from(31));
+        let memory = ByteStateId::zero()
+            .copy(
+                at.clone(),
+                source,
+                length.clone(),
+                limits.expressions().into(),
+            )
+            .unwrap();
+        let hash = ExprId::keccak(
+            ByteView::new(memory, at, length.clone()),
+            limits.expressions(),
+        )
+        .unwrap();
+        let range = RelationState {
+            constraints: [(1, 16), (33, 64)]
+                .map(|(lower, upper)| Constraint::Range {
+                    expression: length.clone(),
+                    lower: U256::from(lower),
+                    upper: U256::from(upper),
+                })
+                .into_iter()
+                .collect(),
+            ..RelationState::default()
+        };
+        assert!(!range.bottom);
+        assert_eq!(
+            range.unique_value(&hash, &limits),
+            ValueQuery::Infeasible,
+            "{provider:?}"
+        );
     }
 }
 
