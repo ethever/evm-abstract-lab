@@ -35,7 +35,7 @@ use super::{
     transfer::{self, CompletedCall, Successor, WorkBudget},
 };
 use crate::{
-    domain::Domain,
+    domain::{Domain, symbolic::ExprId},
     world::{Entry, World},
 };
 use std::{
@@ -238,6 +238,7 @@ pub(super) fn run_metered(
         completed_calls: vec![Vec::new()],
         cache,
         alternatives: vec![alternatives],
+        selectors: BTreeSet::new(),
     };
     engine.run();
     engine.counters.report(engine.budget.used());
@@ -261,6 +262,8 @@ struct Engine<'a> {
     storage_reads: transfer::StorageReadPolicy,
     /// 完整 payload 备选的覆盖证据；独立字段的数值 widening 不证明状态覆盖。
     alternatives: Vec<EntryAlternatives>,
+    /// Only selectors allocated by a machine join, never source/observation IDs.
+    selectors: BTreeSet<ExprId>,
     /// 结构键 -> `result.states` 的索引；键相同才允许汇合抽象输入。
     ids: BTreeMap<super::MachineKey, usize>,
     /// FIFO 调度记录；摘要回放可能满足已排队节点，因此这里允许残留失效项。
@@ -433,8 +436,9 @@ impl Engine<'_> {
                     .cache
                     .as_ref()
                     .and_then(|cache| cache.pending_target(&self.result));
-                self.frontier(Some(id), target, FrontierReason::SummaryWork);
-                self.stop_queued(FrontierReason::SummaryWork);
+                let reason = super::summary::summary_boundary();
+                self.frontier(Some(id), target, reason.clone());
+                self.stop_queued(reason);
                 break;
             }
         }
@@ -467,13 +471,13 @@ impl Engine<'_> {
         {
             return SummaryAttempt::Miss;
         }
-        let Some(input) = cache.input(&self.result, id, self.budget) else {
-            self.frontier(
-                Some(id),
-                Some(self.result.states[id].key.clone()),
-                FrontierReason::SummaryWork,
-            );
-            return SummaryAttempt::Interrupted;
+        let input = match cache.input(&self.result, id, self.budget) {
+            Ok(Some(input)) => input,
+            Ok(None) => return SummaryAttempt::Miss,
+            Err(reason) => {
+                self.frontier(Some(id), Some(self.result.states[id].key.clone()), reason);
+                return SummaryAttempt::Interrupted;
+            }
         };
         match cache.lookup(&input, &self.result, self.budget) {
             Ok(Some(index)) => {
@@ -590,11 +594,20 @@ impl Engine<'_> {
         successor.payload.normalize();
         let key = successor.payload.key();
         let to = if let Some(existing) = self.ids.get(&key).copied() {
-            let joined = match self.alternatives[existing].join(
+            let cyclic = match self.joins_cycle(existing, from) {
+                Ok(cyclic) => cyclic,
+                Err(error) => {
+                    self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
+                    return None;
+                }
+            };
+            let joined = match self.alternatives[existing].join_cyclic(
                 &self.result.states[existing].entry,
                 &successor.payload,
                 self.domain,
                 self.budget,
+                &self.selectors,
+                cyclic,
             ) {
                 Ok(joined) => joined,
                 Err(error) => {
@@ -608,6 +621,10 @@ impl Engine<'_> {
                 }
             };
             if let Some(joined) = joined {
+                let mut previous = self.result.states[existing].entry.fresh_leaves();
+                previous.extend(successor.payload.fresh_leaves());
+                self.selectors
+                    .extend(joined.fresh_leaves().difference(&previous).cloned());
                 self.alternatives[existing].retain(successor.payload);
                 self.result.states[existing].entry = joined;
                 self.result.states[existing].invalidate_execution();
@@ -660,6 +677,30 @@ impl Engine<'_> {
         Some(to)
     }
 
+    fn joins_cycle(&mut self, target: usize, from: usize) -> Result<bool, MachineError> {
+        let mut pending = vec![target];
+        let mut seen = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            MachineError::check_cancelled()?;
+            if id == from {
+                return Ok(true);
+            }
+            if !seen.insert(id) {
+                continue;
+            }
+            if !self.budget.charge(self.edges.len().saturating_add(1)) {
+                return Err(MachineError::work_failure());
+            }
+            pending.extend(
+                self.edges
+                    .iter()
+                    .filter(|edge| edge.from == id)
+                    .map(|edge| edge.to),
+            );
+        }
+        Ok(false)
+    }
+
     fn record_successor(&mut self, from: usize, to: usize, kind: MachineEdgeKind) {
         if let Some(evidence) = &mut self.result.states[from].execution_evidence {
             let successor = (to, kind);
@@ -686,6 +727,7 @@ impl Engine<'_> {
             .saturating_add(self.result.edges.len())
             .saturating_add(self.result.diagnostics.len())
             .saturating_add(self.result.frontiers.len());
+        cost = cost.saturating_add(self.selectors.len());
         for state in &self.result.states {
             MachineError::check_cancelled()?;
             cost = cost
@@ -824,6 +866,7 @@ impl Engine<'_> {
             counters: &mut counters,
             storage_reads: self.storage_reads,
             alternatives: self.alternatives.clone(),
+            selectors: self.selectors.clone(),
             ids: self.ids.clone(),
             queue: self.queue.clone(),
             queued: self.queued.clone(),
@@ -832,6 +875,11 @@ impl Engine<'_> {
             completed_calls: self.completed_calls.clone(),
             cache: None,
         };
+        for (old, new) in &prepared.renaming {
+            if staged.selectors.contains(old) {
+                staged.selectors.insert(new.clone());
+            }
+        }
         if let Err(reason) = staged.install_replay(certificate, prepared) {
             // The temporary import is dropped; the original callee input still
             // describes all paths whose certificate could not be imported.
@@ -845,6 +893,7 @@ impl Engine<'_> {
         self.counters.states = staged.counters.states;
         self.result = staged.result;
         self.alternatives = staged.alternatives;
+        self.selectors = staged.selectors;
         self.ids = staged.ids;
         self.queue = staged.queue;
         self.queued = staged.queued;
@@ -865,11 +914,13 @@ impl Engine<'_> {
             let key = node.entry.key();
             let id = if let Some(existing) = self.ids.get(&key).copied() {
                 let joined = self.alternatives[existing]
-                    .join(
+                    .join_cyclic(
                         &self.result.states[existing].entry,
                         &node.entry,
                         self.domain,
                         self.budget,
+                        &self.selectors,
+                        false,
                     )
                     .map_err(MachineError::frontier_reason)?;
                 // Equality is a coverage proof. A whole-state join containing
@@ -880,6 +931,10 @@ impl Engine<'_> {
                     .and_then(|entry| Ok(entry == node.entry.content_form()?))
                     .map_err(MachineError::frontier_reason)?;
                 if let Some(joined) = joined {
+                    let mut previous = self.result.states[existing].entry.fresh_leaves();
+                    previous.extend(node.entry.fresh_leaves());
+                    self.selectors
+                        .extend(joined.fresh_leaves().difference(&previous).cloned());
                     self.alternatives[existing].retain(node.entry.clone());
                     self.result.states[existing].entry = joined;
                     self.result.states[existing].invalidate_execution();

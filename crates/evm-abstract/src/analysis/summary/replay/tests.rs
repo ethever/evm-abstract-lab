@@ -394,3 +394,43 @@ fn budget_interrupted_import_is_atomic_and_keeps_all_input_paths_recoverable() {
     partial.verify(&interrupted).unwrap();
     assert_eq!(partial.status(), Status::Incomplete);
 }
+
+#[test]
+fn rejected_world_fingerprint_runs_without_a_summary_or_a_guessed_key() {
+    use crate::domain::symbolic::{ByteStateId, ByteView, ExprLimits, GraphLimits};
+    let caller = format!("{}50{}5000", call(0), call(0));
+    let (_, entry) = fixtures::fixture(&[(0x101, &caller), (0x200, "00")]);
+    let mut world = crate::world::World::new(crate::Fork::Osaka, "uncacheable symbolic world");
+    let size = GraphLimits::default().max_exact_bytes + 1;
+    let input = ByteView::new(
+        ByteStateId::exact(Arc::from(vec![0u8; size])),
+        ExprId::constant(alloy_primitives::U256::ZERO),
+        ExprId::constant(alloy_primitives::U256::from(size)),
+    );
+    let hash = ExprId::keccak(input, ExprLimits::default()).unwrap();
+    let mut account = crate::world::Account::from_hex(&caller, world.fork()).unwrap();
+    account.balance = fixtures::word(1_000_000);
+    account.storage.insert(
+        alloy_primitives::U256::ZERO,
+        AbstractValue::top().with_expression(hash),
+    );
+    world.insert(fixtures::address(0x101), account).unwrap();
+    let mut callee = crate::world::Account::from_hex("00", world.fork()).unwrap();
+    callee.balance = fixtures::word(1_000_000);
+    world.insert(fixtures::address(0x200), callee).unwrap();
+    assert!(matches!(
+        world.fingerprint(),
+        Err(crate::world::FingerprintError::Encoding(_))
+    ));
+    let mut config = fixtures::config();
+    config.max_work = 1_000_000_000;
+    config.use_summaries = true;
+    let result = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(result.status(), Status::Converged);
+    assert_eq!(result.summary_stats().hits, 0);
+    assert!(result.summaries().is_empty());
+    crate::ssa::build_world(&result)
+        .unwrap()
+        .verify(&result)
+        .unwrap();
+}
