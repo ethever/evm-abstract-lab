@@ -485,11 +485,13 @@ impl Hash for ByteStateId {
 }
 impl fmt::Debug for ByteStateId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ByteStateId")
-            .field("id", &self.id())
-            .field("nodes", &self.nodes())
-            .field("depth", &self.depth())
-            .finish()
+        write!(
+            f,
+            "ByteStateId {{ id: {}, nodes: {}, depth: {} }}",
+            self.id(),
+            self.nodes(),
+            self.depth()
+        )
     }
 }
 impl Serialize for ByteStateId {

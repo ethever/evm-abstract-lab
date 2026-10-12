@@ -2,14 +2,60 @@
 //!
 //! Forwarding avoids 32 variable byte shifts when the captured write and read
 //! start at the same expression. Partial byte updates retain their alias guards;
-//! unrelated word writes still use the general demanded-byte encoder.
+//! Checked disjoint concrete words leave earlier observations intact. Possible
+//! aliases and overlapping word writes use the general demanded-byte encoder.
 
 use super::{BV, Bool, ByteStateId, ByteStateKind, Encoder, ExprId, QueryReason, word};
 use crate::domain::symbolic::ExprKind;
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+fn disjoint_word(start: &ExprId, destination: &ExprId, length: U256) -> bool {
+    if length == U256::ZERO {
+        return true;
+    }
+    let (Some(read), Some(written)) = (start.as_constant(), destination.as_constant()) else {
+        return false;
+    };
+    let (Some(read_end), Some(written_end)) = (
+        read.checked_add(U256::from(31)),
+        written.checked_add(length - U256::from(1)),
+    ) else {
+        return false;
+    };
+    read_end < written || written_end < read
+}
+
 impl Encoder<'_> {
+    fn pad_written_word(&mut self, at: BV, value: BV) -> Result<BV, QueryReason> {
+        // Near MAX only the leading bytes have mathematical addresses. Keep
+        // them and zero the suffix, without assuming caller range validity.
+        let missing = word(U256::from(31)).bvsub(word(U256::MAX).bvsub(&at));
+        let mask = word(U256::MAX).bvshl(missing.bvmul(word(U256::from(8))));
+        self.charge(7)?;
+        Ok(at
+            .bvule(word(U256::MAX - U256::from(31)))
+            .ite(&value, &value.bvand(mask)))
+    }
+
+    fn previous_word(
+        &mut self,
+        state: &ByteStateId,
+        start: &ExprId,
+    ) -> Result<Option<BV>, QueryReason> {
+        // The checked disjoint update leaves the whole read intact, including
+        // any earlier ITE/source boundary. Read it with the existing encoder.
+        self.word_read(
+            &super::ByteView::new(
+                state.clone(),
+                start.clone(),
+                ExprId::constant(U256::from(32)),
+            ),
+            &ExprId::constant(U256::ZERO),
+        )
+        .map(Some)
+    }
+
     pub(super) fn word_from_bytes(&mut self, mut bytes: Vec<BV>) -> Result<BV, QueryReason> {
         // Build 16/32/64/128/256-bit pairs rather than 32 full-width shifts.
         // Zero extension followed by a constant shift is exact concatenation.
@@ -91,19 +137,42 @@ impl Encoder<'_> {
     ) -> Result<Option<BV>, QueryReason> {
         self.charge(1)?;
         match state.kind() {
+            ByteStateKind::Zero => Ok(Some(word(U256::ZERO))),
             ByteStateKind::WriteWord { offset, value, .. } if offset == start => {
                 let at = self.expression(start)?;
                 let value = self.expression(value)?;
-                // Near MAX only the leading bytes have mathematical addresses.
-                // Keep those bytes and zero the overflowing suffix, without
-                // assuming the caller has already proved a valid memory range.
-                let missing = word(U256::from(31)).bvsub(word(U256::MAX).bvsub(&at));
-                let mask = word(U256::MAX).bvshl(missing.bvmul(word(U256::from(8))));
-                self.charge(7)?;
-                Ok(Some(
-                    at.bvule(word(U256::MAX - U256::from(31)))
-                        .ite(&value, &value.bvand(mask)),
-                ))
+                self.pad_written_word(at, value).map(Some)
+            }
+            ByteStateKind::WriteWord {
+                previous, offset, ..
+            } => {
+                if disjoint_word(start, offset, U256::from(32)) {
+                    // No byte in these mathematical intervals can alias. Do
+                    // not use wrapping ends or symbolic expression inequality.
+                    return self.previous_word(previous, start);
+                }
+                Ok(None)
+            }
+            ByteStateKind::Copy {
+                previous,
+                destination,
+                source,
+                length,
+            } => {
+                if let Some(copied) = length.as_constant() {
+                    if copied >= U256::from(32) && destination == start {
+                        // A complete word comes from the captured source view;
+                        // its own padding and the destination overflow both hold.
+                        let at = self.expression(start)?;
+                        let value =
+                            self.word_read(&source.canonicalize(), &ExprId::constant(U256::ZERO))?;
+                        return self.pad_written_word(at, value).map(Some);
+                    }
+                    if disjoint_word(start, destination, copied) {
+                        return self.previous_word(previous, start);
+                    }
+                }
+                Ok(None)
             }
             ByteStateKind::WriteByte {
                 previous,

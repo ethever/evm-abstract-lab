@@ -406,6 +406,22 @@ impl Encoder<'_> {
         view: &ByteView,
         offset: &ExprId,
     ) -> Result<BV, QueryReason> {
+        if let ByteStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = view.state.kind()
+        {
+            // Lift the read through the state selector once per word, instead
+            // of traversing both alternatives separately for every byte.
+            let guard = self.truth(condition)?;
+            let (yes_view, yes_work) = view.branch_view(then_state.clone(), condition, true);
+            let (no_view, no_work) = view.branch_view(else_state.clone(), condition, false);
+            self.charge(1usize.saturating_add(yes_work).saturating_add(no_work))?;
+            let yes = self.word_read(&yes_view.canonicalize(), offset)?;
+            let no = self.word_read(&no_view.canonicalize(), offset)?;
+            return Ok(guard.ite(&yes, &no));
+        }
         if offset.as_constant() == Some(U256::ZERO)
             && view
                 .length
