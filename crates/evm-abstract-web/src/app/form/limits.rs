@@ -1,5 +1,7 @@
 //! Typed execution, precision and acquisition controls use protocol defaults.
 
+use crate::controls::{self, Density};
+
 use super::AnalysisForm;
 use egui::Ui;
 use evm_abstract_protocol::{DomainProfile, SmtProvider};
@@ -82,15 +84,19 @@ impl AnalysisForm {
                 egui::ComboBox::from_id_salt("numeric_domain")
                     .selected_text(format!("{:?}", self.limits.domain_profile))
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(
+                        controls::tab_value(
+                            ui,
                             &mut self.limits.domain_profile,
                             DomainProfile::Product,
                             "Product",
+                            Density::Regular,
                         );
-                        ui.selectable_value(
+                        controls::tab_value(
+                            ui,
                             &mut self.limits.domain_profile,
                             DomainProfile::ConstantsOnly,
                             "Constants only",
+                            Density::Regular,
                         );
                     });
             });
@@ -120,10 +126,12 @@ impl AnalysisForm {
                     .show_ui(ui, |ui| {
                         for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5]
                         {
-                            ui.selectable_value(
+                            controls::tab_value(
+                                ui,
                                 &mut self.limits.smt_provider,
                                 provider,
                                 format!("{provider:?}"),
+                                Density::Regular,
                             );
                         }
                     });

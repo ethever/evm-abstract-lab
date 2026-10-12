@@ -1,7 +1,10 @@
 //! Compact global navigation and task status; configuration lives in a modal.
 
 use super::{Command, View, Workspace, directory, inspector};
-use crate::{notation, palette};
+use crate::{
+    controls::{self, Density},
+    notation, palette,
+};
 use egui::{RichText, Ui};
 use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol::{AnalysisReport, AnalysisStatus};
@@ -9,57 +12,65 @@ use evm_abstract_protocol::{AnalysisReport, AnalysisStatus};
 impl Workspace {
     pub(super) fn header(&mut self, ui: &mut Ui) {
         let compact = ui.available_width() < 800.0;
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(if compact {
-                    "EVM LAB"
-                } else {
-                    "EVM ABSTRACT LAB"
-                })
-                .strong()
-                .color(palette::ACCENT),
-            );
-            let views = [
-                (View::Split, "Workspace"),
-                (View::Disassembly, "Code"),
-                (View::Graph, "CFG"),
-                (View::Ssa, "SSA"),
-            ];
-            if compact {
-                let title = views
-                    .iter()
-                    .find(|(view, _)| *view == self.view)
-                    .map_or("Workspace", |(_, title)| *title);
-                egui::ComboBox::from_id_salt("workspace_view")
-                    .width(94.0)
-                    .selected_text(title)
-                    .show_ui(ui, |ui| {
-                        for (view, title) in views {
-                            ui.selectable_value(&mut self.view, view, title);
-                        }
-                    });
-            } else {
-                for (index, (view, title)) in views.into_iter().enumerate() {
-                    ui.selectable_value(&mut self.view, view, title)
-                        .on_hover_text(format!("Shortcut {index}"));
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .button(if compact { "Input" } else { "New analysis" })
-                    .clicked()
-                {
-                    self.form.open = true;
-                }
+        let density = if compact {
+            Density::Compact
+        } else {
+            Density::Regular
+        };
+        density.scope(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(if compact {
+                        "EVM LAB"
+                    } else {
+                        "EVM ABSTRACT LAB"
+                    })
+                    .strong()
+                    .color(palette::ACCENT),
+                );
+                let views = [
+                    (View::Split, "Workspace"),
+                    (View::Disassembly, "Code"),
+                    (View::Graph, "CFG"),
+                    (View::Ssa, "SSA"),
+                ];
                 if compact {
-                    ui.menu_button("Panels", |ui| {
-                        ui.checkbox(&mut self.directory.open, "Programs / accounts");
-                        ui.checkbox(&mut self.inspector.expanded, "State inspector");
-                    });
+                    let title = views
+                        .iter()
+                        .find(|(view, _)| *view == self.view)
+                        .map_or("Workspace", |(_, title)| *title);
+                    egui::ComboBox::from_id_salt("workspace_view")
+                        .width(94.0)
+                        .selected_text(title)
+                        .show_ui(ui, |ui| {
+                            for (view, title) in views {
+                                controls::tab_value(ui, &mut self.view, view, title, density);
+                            }
+                        });
                 } else {
-                    ui.toggle_value(&mut self.inspector.expanded, "Inspect");
-                    ui.toggle_value(&mut self.directory.open, "World");
+                    for (index, (view, title)) in views.into_iter().enumerate() {
+                        controls::tab_value(ui, &mut self.view, view, title, density)
+                            .on_hover_text(format!("Shortcut {index}"));
+                    }
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if controls::action(ui, if compact { "Input" } else { "New analysis" }, density)
+                        .clicked()
+                    {
+                        self.form.open = true;
+                    }
+                    if compact {
+                        controls::menu_button(ui, "Panels", density, |ui| {
+                            ui.checkbox(&mut self.directory.open, "Programs / accounts");
+                            ui.checkbox(&mut self.inspector.expanded, "State inspector")
+                                .on_hover_text(self.inspector.visibility_hint(ui.ctx()));
+                        });
+                    } else {
+                        controls::toggle(ui, &mut self.inspector.expanded, "Inspect", density)
+                            .on_hover_text(self.inspector.visibility_hint(ui.ctx()));
+                        controls::toggle(ui, &mut self.directory.open, "World", density);
+                    }
+                });
             });
         });
     }
@@ -67,42 +78,44 @@ impl Workspace {
     pub(super) fn status(&mut self, ui: &mut Ui) -> Option<Command> {
         let mut command = None;
         let wide = ui.available_width() > 780.0;
-        ui.horizontal(|ui| {
-            if self.task.cancellable() && ui.button("Cancel").clicked() {command=self.task.cancel();}
-            if self.task.busy() {
-                ui.spinner();
-                ui.add(egui::Label::new(RichText::new(self.task.label()).color(palette::ACCENT)).truncate()).on_hover_text(self.task.label());
-                if wide && let Some(snapshot)=&self.task.snapshot {
-                        ui.label(notation::widget(ui,format!("{} · {:?} · {} accounts · {} slots · {} states · {} transfers",WideSymbol::Task(snapshot.id.0),snapshot.progress.phase,snapshot.progress.accounts,snapshot.progress.slots,snapshot.progress.states,snapshot.progress.transfers)));
+        Density::Compact.scope(ui, |ui| {
+            ui.horizontal(|ui| {
+                if self.task.cancellable() && controls::action(ui, "Cancel", Density::Compact).clicked() {command=self.task.cancel();}
+                if self.task.busy() {
+                    ui.spinner();
+                    ui.add(egui::Label::new(RichText::new(self.task.label()).color(palette::ACCENT)).truncate()).on_hover_text(self.task.label());
+                    if wide && let Some(snapshot)=&self.task.snapshot {
+                            ui.label(notation::widget(ui,format!("{} · {:?} · {} accounts · {} slots · {} states · {} transfers",WideSymbol::Task(snapshot.id.0),snapshot.progress.phase,snapshot.progress.accounts,snapshot.progress.slots,snapshot.progress.states,snapshot.progress.transfers)));
+                    }
+                    if let Some(error)=&self.task.error {
+                        ui.colored_label(palette::WARNING,"Connection interrupted").on_hover_text(notation::widget(ui, format!("{error}\nTask status is retained; polling will retry. Cancel can be retried.")));
+                    }
+                } else if let Some(error)=&self.task.error {
+                    if controls::action(ui, "Edit inputs", Density::Compact).clicked() {self.form.open=true;self.form.error=Some(error.to_string());}
+                    ui.add(egui::Label::new(notation::widget(ui,RichText::new(error.to_string()).color(palette::ERROR))).truncate()).on_hover_ui(|ui| {
+                        if let super::job::TaskError::Api(error)=error { inspector::api_error_details(ui,error); }
+                        else { ui.label(notation::widget(ui,error.to_string())); }
+                    });
+                } else if self.task.phase==super::job::TaskPhase::Cancelled {
+                    ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
+                } else if let Some(report)=&self.report {
+                    let complete=report.status==AnalysisStatus::Converged&&report.ssa.complete;
+                    let label=if complete{"Model converged"}else{"Incomplete / partial SSA"};
+                    ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
+                    if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),report.metadata.work));}
+                    if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Compact).clicked() {
+                        self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Diagnostics;
+                    }
+                } else if self.startup.loading() {
+                    ui.spinner();
+                    ui.label(RichText::new("Loading the initial example…").color(palette::MUTED));
+                } else {
+                    ui.label(RichText::new(self.task.label()).color(palette::MUTED));
                 }
-                if let Some(error)=&self.task.error {
-                    ui.colored_label(palette::WARNING,"Connection interrupted").on_hover_text(notation::widget(ui, format!("{error}\nTask status is retained; polling will retry. Cancel can be retried.")));
+                if self.previous_report {
+                    ui.label(RichText::new("Previous result").small().color(palette::WARNING)).on_hover_text("The visible report belongs to the previous completed task.");
                 }
-            } else if let Some(error)=&self.task.error {
-                if ui.button("Edit inputs").clicked() {self.form.open=true;self.form.error=Some(error.to_string());}
-                ui.add(egui::Label::new(notation::widget(ui,RichText::new(error.to_string()).color(palette::ERROR))).truncate()).on_hover_ui(|ui| {
-                    if let super::job::TaskError::Api(error)=error { inspector::api_error_details(ui,error); }
-                    else { ui.label(notation::widget(ui,error.to_string())); }
-                });
-            } else if self.task.phase==super::job::TaskPhase::Cancelled {
-                ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
-            } else if let Some(report)=&self.report {
-                let complete=report.status==AnalysisStatus::Converged&&report.ssa.complete;
-                let label=if complete{"Model converged"}else{"Incomplete / partial SSA"};
-                ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
-                if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),report.metadata.work));}
-                if ui.button(format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len())).clicked() {
-                    self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Diagnostics;
-                }
-            } else if self.startup.loading() {
-                ui.spinner();
-                ui.label(RichText::new("Loading the initial example…").color(palette::MUTED));
-            } else {
-                ui.label(RichText::new(self.task.label()).color(palette::MUTED));
-            }
-            if self.previous_report {
-                ui.label(RichText::new("Previous result").small().color(palette::WARNING)).on_hover_text("The visible report belongs to the previous completed task.");
-            }
+            });
         });
         command
     }
@@ -144,48 +157,43 @@ pub(super) fn result_context(
         program_label,
         report.fork
     );
-    ui.scope(|ui| {
-        // Keep this metadata strip at its existing small-text height so the
-        // details toggle does not consume the analysis area in short windows.
-        ui.spacing_mut().interact_size.y = ui.text_style_height(&egui::TextStyle::Small);
-        ui.spacing_mut().button_padding.y = 0.0;
+    Density::Compact.scope(ui, |ui| {
         ui.horizontal(|ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let full = *display == crate::ssa_display::SsaDisplay::Full;
-            if ui
-                .add(egui::Button::new("SSA details").small().selected(full))
-                .on_hover_text("Show completed stack operations, effect chains and completion annotations in SSA views")
-                .clicked()
-            {
-                *display = if full {
-                    crate::ssa_display::SsaDisplay::Compact
-                } else {
-                    crate::ssa_display::SsaDisplay::Full
-                };
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.add(
-                    egui::Label::new(notation::widget(
-                        ui,
-                        RichText::new(label).small().color(palette::MUTED),
-                    ))
-                    .truncate(),
-                )
-                .on_hover_ui(|ui| {
-                    if let Some(program) = source {
-                        ui.monospace(&program.code_address);
-                        ui.monospace(&program.code_hash);
-                    }
-                    if let Some(snapshot) = &report.metadata.snapshot {
-                        ui.monospace(&snapshot.block_hash);
-                        if ui.small_button("Copy block hash").clicked() {
-                            ui.ctx().copy_text(snapshot.block_hash.clone());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut full = *display == crate::ssa_display::SsaDisplay::Full;
+                if controls::toggle(ui, &mut full, "SSA details", Density::Compact)
+                    .on_hover_text("Show completed stack operations, effect chains and completion annotations in SSA views")
+                    .changed()
+                {
+                    *display = if full {
+                        crate::ssa_display::SsaDisplay::Full
+                    } else {
+                        crate::ssa_display::SsaDisplay::Compact
+                    };
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(notation::widget(
+                            ui,
+                            RichText::new(label).small().color(palette::MUTED),
+                        ))
+                        .truncate(),
+                    )
+                    .on_hover_ui(|ui| {
+                        if let Some(program) = source {
+                            ui.monospace(&program.code_address);
+                            ui.monospace(&program.code_hash);
                         }
-                    }
-                    ui.monospace(&report.metadata.fingerprint);
+                        if let Some(snapshot) = &report.metadata.snapshot {
+                            ui.monospace(&snapshot.block_hash);
+                            if controls::action(ui, "Copy block hash", Density::Compact).clicked() {
+                                ui.ctx().copy_text(snapshot.block_hash.clone());
+                            }
+                        }
+                        ui.monospace(&report.metadata.fingerprint);
+                    });
                 });
             });
-        });
         });
     });
 }

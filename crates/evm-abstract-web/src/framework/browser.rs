@@ -2,6 +2,8 @@
 //! futures necessarily use dynamic dispatch here; the workspace and painter
 //! widgets remain statically dispatched and contain no transport logic.
 
+mod shortcut;
+
 use std::{
     cell::Cell,
     rc::Rc,
@@ -45,16 +47,50 @@ pub async fn start(canvas_id: &str) -> Result<(), JsValue> {
         },
         ..eframe::WebOptions::default()
     };
-    eframe::WebRunner::new()
+    let previous_neighbor = canvas.next_sibling();
+    let app_canvas = canvas.clone();
+    let runner = eframe::WebRunner::new();
+    let started = runner
         .start(
-            canvas,
+            canvas.clone(),
             options,
-            Box::new(|creation| {
+            Box::new(move |creation| {
                 crate::palette::configure(&creation.egui_ctx);
-                Ok(Box::new(BrowserApp::new()))
+                let shortcuts =
+                    shortcut::ShortcutBridge::install(app_canvas, creation.egui_ctx.clone())
+                        .map_err(|error| {
+                            std::io::Error::other(format!("Shortcut setup failed: {error:?}"))
+                        })?;
+                Ok(Box::new(BrowserApp::new(shortcuts)))
             }),
         )
-        .await
+        .await;
+    if let Err(error) = started {
+        runner.destroy();
+        return Err(error);
+    }
+    let attached = (|| {
+        // eframe 0.36.2 inserts its newly created text agent immediately after
+        // the canvas. Require exactly that insertion, including the old next
+        // sibling, instead of searching for unrelated document inputs.
+        let agent = canvas
+            .next_sibling()
+            .filter(|node| {
+                Some(node) != previous_neighbor.as_ref() && node.next_sibling() == previous_neighbor
+            })
+            .ok_or_else(|| JsValue::from_str("The workspace text agent was not inserted"))?
+            .dyn_into::<web_sys::HtmlInputElement>()?;
+        let mut app = runner
+            .app_mut::<BrowserApp>()
+            .ok_or_else(|| JsValue::from_str("The workspace app is unavailable"))?;
+        app.shortcuts.attach_text_agent(agent)
+    })();
+    if attached.is_err() {
+        // Drop the app (and any partially attached listeners) after releasing
+        // app_mut's borrow. A failed start must not leave a running workspace.
+        runner.destroy();
+    }
+    attached
 }
 
 struct BrowserApp {
@@ -63,10 +99,11 @@ struct BrowserApp {
     sender: Sender<Message>,
     initial_request: bool,
     last_status: String,
+    shortcuts: shortcut::ShortcutBridge,
 }
 
 impl BrowserApp {
-    fn new() -> Self {
+    fn new(shortcuts: shortcut::ShortcutBridge) -> Self {
         let (sender, results) = mpsc::channel();
         Self {
             workspace: Workspace::default(),
@@ -74,11 +111,16 @@ impl BrowserApp {
             sender,
             initial_request: true,
             last_status: String::new(),
+            shortcuts,
         }
     }
 }
 
 impl eframe::App for BrowserApp {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
         self.workspace.prepare_input(input);
     }
@@ -87,7 +129,12 @@ impl eframe::App for BrowserApp {
         while let Ok(result) = self.results.try_recv() {
             self.workspace.receive_message(result);
         }
+        if self.shortcuts.take_presses() % 2 == 1 {
+            self.workspace.toggle_inspector();
+        }
         let mut request = self.workspace.show(ui);
+        self.shortcuts
+            .set_available(self.workspace.inspector_shortcut_available());
         if self.initial_request {
             self.initial_request = false;
             request = request.or_else(|| self.workspace.startup_command());

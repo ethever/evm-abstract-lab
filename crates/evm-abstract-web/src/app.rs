@@ -16,6 +16,10 @@ use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol::{AnalysisReport, AnalyzeReply, AnalyzeRequest, SCHEMA_VERSION};
 use form::AnalysisForm;
 use inspector::Inspector;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use inspector::shortcut::{
+    allowed as inspector_shortcut_allowed, matches as inspector_chord,
+};
 pub use job::{Command, JobOperation, Message};
 use job::{Task, TaskError, TaskPhase};
 use layout::{AnalysisPanes, Pane, PaneLayout};
@@ -133,6 +137,16 @@ impl Default for Workspace {
 }
 
 impl Workspace {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn inspector_shortcut_available(&self) -> bool {
+        self.report.is_some() && !self.form.open
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn toggle_inspector(&mut self) {
+        self.inspector.expanded = !self.inspector.expanded;
+    }
+
     /// End a graph wheel gesture cancelled by Fit before new events are applied.
     pub fn prepare_input(&mut self, input: &mut egui::RawInput) {
         if !self.form.open {
@@ -164,6 +178,14 @@ impl Workspace {
     /// Render the pure UI. The browser adapter executes the returned command.
     pub fn show(&mut self, ui: &mut Ui) -> Option<Command> {
         let mut command = None;
+        // Web keyboard ownership is decided synchronously by the DOM bridge,
+        // before the browser can open its downloads page. Native input uses
+        // the same exact chord and focus guards directly in egui.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.inspector.handle_shortcut(
+            ui.ctx(),
+            self.report.is_some() && !self.form.open && ui.is_enabled(),
+        );
         if !self.form.open && !ui.ctx().text_edit_focused() && !egui::Popup::is_any_open(ui.ctx()) {
             for (key, view) in [
                 (Key::Num0, View::Split),
@@ -191,6 +213,9 @@ impl Workspace {
                     command = self.status(ui);
                 });
             self.sync_selection();
+            // Freeze this frame's presentation: a title action takes effect on
+            // the next frame, keeping the inspector's widget IDs unique.
+            let inspector_maximized = self.report.is_some() && self.inspector.maximized();
             if let Some(report) = &self.report {
                 egui::Panel::top("result_context")
                     .frame(palette::chrome_frame())
@@ -203,29 +228,24 @@ impl Workspace {
                             &mut self.ssa_display,
                         );
                     });
-                if self.inspector.expanded {
-                    let maximum = (viewport.y * 0.38).max(80.0);
-                    egui::Panel::bottom("world_inspector")
-                        .resizable(true)
-                        .default_size(210.0)
-                        .min_size(80.0)
-                        .max_size(maximum)
-                        .frame(palette::chrome_frame())
-                        .show(ui, |ui| {
-                            // Reserve the chosen panel height even for an empty snapshot;
-                            // otherwise egui shrinks it after the graph's initial fit.
-                            ui.set_min_height(ui.available_height());
-                            self.inspector.show(
-                                ui,
-                                report,
-                                &mut self.selection,
-                                self.account.as_deref(),
-                            );
-                        });
+                if self.inspector.expanded && !inspector_maximized {
+                    let response = self.inspector.docked_panel(ui, viewport.y).show(ui, |ui| {
+                        // Reserve the chosen panel height even for an empty snapshot;
+                        // otherwise egui shrinks it after the graph's initial fit.
+                        ui.set_min_height(ui.available_height());
+                        self.inspector.show(
+                            ui,
+                            report,
+                            &mut self.selection,
+                            self.account.as_deref(),
+                        );
+                    });
+                    self.inspector.remember_resize(ui, response.response.rect);
                 }
             }
             let mut pick = None;
             if self.directory.open
+                && !inspector_maximized
                 && viewport.x >= 1050.0
                 && let Some(report) = &self.report
             {
@@ -252,6 +272,15 @@ impl Workspace {
                 )
                 .show(ui, |ui| {
                     if let Some(report) = &self.report {
+                        if inspector_maximized {
+                            self.inspector.show(
+                                ui,
+                                report,
+                                &mut self.selection,
+                                self.account.as_deref(),
+                            );
+                            return;
+                        }
                         let mut panes = AnalysisPanes {
                             report,
                             selection: &mut self.selection,
@@ -282,7 +311,11 @@ impl Workspace {
                     }
                 });
         });
-        if self.directory.open && viewport.x < 1050.0 && !self.form.open {
+        if self.directory.open
+            && viewport.x < 1050.0
+            && !self.form.open
+            && !self.inspector.maximized()
+        {
             let mut open = true;
             let mut pick = None;
             if let Some(report) = &self.report {

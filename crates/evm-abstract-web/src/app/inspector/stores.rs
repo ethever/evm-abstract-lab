@@ -2,9 +2,9 @@
 
 use super::value;
 use crate::palette;
-use egui::{RichText, Ui};
+use egui::{Rect, RichText, Ui, UiBuilder};
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::{AccountState, AnalysisReport, StoreSnapshot, ValueInfo};
+use evm_abstract_protocol::{AccountState, AnalysisReport, StorageEntry, StoreSnapshot, ValueInfo};
 
 pub(super) fn account<'a>(
     store: Option<&'a StoreSnapshot>,
@@ -30,96 +30,134 @@ pub(super) fn storage(
     address: &str,
     transient: bool,
 ) {
-    ui.label(RichText::new(address).monospace());
     let account = account(store, report, address);
-    if let Some(account) = account {
-        let facts_height = (ui.available_height() * 0.45).clamp(0.0, 80.0);
-        ui.collapsing("Account facts in this store", |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt(("storage_account_facts_scroll", address, transient))
-                .max_height(facts_height)
-                .min_scrolled_height(0.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    egui::Grid::new(("storage_account_facts", address, transient))
-                        .num_columns(2)
-                        .show(ui, |ui| {
-                            value::text(ui, "Existence", format!("{:?}", account.existence));
-                            value::named(ui, "Balance", &account.balance);
-                            value::named(ui, "Nonce", &account.nonce);
-                            value::text(ui, "Code", format!("{:?}", account.code_kind));
-                            value::text(
-                                ui,
-                                "Code hash",
-                                account.code_hash.as_deref().unwrap_or("Unknown"),
-                            );
-                            if let Some(target) = &account.delegation_target {
-                                value::text(ui, "Delegation implementation", target);
-                            }
-                            if let Some(program) = account.program {
-                                value::text(
-                                    ui,
-                                    "Captured program",
-                                    Symbol::Program(program).to_string(),
-                                );
-                            }
-                            value::text(ui, "Created in transaction", certainty(account.created));
-                            value::text(
-                                ui,
-                                "Pending destruction",
-                                certainty(account.pending_destruction),
-                            );
-                        });
-                });
-        });
-    }
-    let default = account
-        .map(|account| {
-            if transient {
-                &account.transient_default
-            } else {
-                &account.storage_default
-            }
-        })
-        .or_else(|| {
-            store.map(|store| {
-                if transient {
-                    &store.transient_default
-                } else {
-                    &store.storage_default
-                }
-            })
-        });
-    if let Some(default) = default {
-        ui.horizontal(|ui| {
-            ui.label("Unspecified slots");
-            value::cell(ui, default);
-        });
-    }
-    let entries = account.map(|account| {
-        if transient {
-            &account.transient
-        } else {
-            &account.storage
-        }
-    });
-    let Some(entries) = entries.filter(|entries| !entries.is_empty()) else {
-        ui.label("No explicit slots in this snapshot; unspecified slots use the default above.");
-        return;
-    };
     egui::ScrollArea::both()
         .id_salt(("storage_slots", transient, address))
+        .min_scrolled_height(0.0)
+        .content_margin(egui::Margin::ZERO)
         .auto_shrink([false, false])
-        .show_rows(ui, 21.0, entries.len(), |ui, range| {
-            for index in range {
-                let entry = &entries[index];
+        .show_viewport(ui, |ui, viewport| {
+            ui.label(RichText::new(address).monospace());
+            if let Some(account) = account {
+                egui::CollapsingHeader::new("Account facts in this store")
+                    .id_salt(("storage_account_facts", address, transient))
+                    .show(ui, |ui| {
+                        egui::Grid::new(("storage_account_facts_grid", address, transient))
+                            .num_columns(2)
+                            .show(ui, |ui| {
+                                value::text(ui, "Existence", format!("{:?}", account.existence));
+                                value::named(ui, "Balance", &account.balance);
+                                value::named(ui, "Nonce", &account.nonce);
+                                value::text(ui, "Code", format!("{:?}", account.code_kind));
+                                value::text(
+                                    ui,
+                                    "Code hash",
+                                    account.code_hash.as_deref().unwrap_or("Unknown"),
+                                );
+                                if let Some(target) = &account.delegation_target {
+                                    value::text(ui, "Delegation implementation", target);
+                                }
+                                if let Some(program) = account.program {
+                                    value::text(
+                                        ui,
+                                        "Captured program",
+                                        Symbol::Program(program).to_string(),
+                                    );
+                                }
+                                value::text(
+                                    ui,
+                                    "Created in transaction",
+                                    certainty(account.created),
+                                );
+                                value::text(
+                                    ui,
+                                    "Pending destruction",
+                                    certainty(account.pending_destruction),
+                                );
+                            });
+                    });
+            }
+            let default = account
+                .map(|account| {
+                    if transient {
+                        &account.transient_default
+                    } else {
+                        &account.storage_default
+                    }
+                })
+                .or_else(|| {
+                    store.map(|store| {
+                        if transient {
+                            &store.transient_default
+                        } else {
+                            &store.storage_default
+                        }
+                    })
+                });
+            if let Some(default) = default {
                 ui.horizontal(|ui| {
+                    ui.label("Unspecified slots");
+                    value::cell(ui, default);
+                });
+            }
+            let entries = account.map(|account| {
+                if transient {
+                    &account.transient
+                } else {
+                    &account.storage
+                }
+            });
+            let Some(entries) = entries.filter(|entries| !entries.is_empty()) else {
+                ui.label(
+                    "No explicit slots in this snapshot; unspecified slots use the default above.",
+                );
+                return;
+            };
+            storage_rows(ui, viewport, entries);
+        });
+}
+
+/// Reserve the whole list, but create rows only where the shared viewport
+/// intersects it. The measured prefix includes the facts' animated height.
+fn storage_rows(ui: &mut Ui, viewport: Rect, entries: &[StorageEntry]) {
+    let row_height = 21.0_f32
+        .max(ui.text_style_height(&egui::TextStyle::Monospace))
+        .max(ui.spacing().interact_size.y);
+    let spacing = ui.spacing().item_spacing.y;
+    let stride = row_height + spacing;
+    let (_, list_rect) = ui.allocate_space(egui::vec2(
+        ui.available_width(),
+        stride * entries.len() as f32 - spacing,
+    ));
+    let top = list_rect.top();
+    let prefix = top - ui.max_rect().top();
+
+    let first = (((viewport.min.y - prefix).max(0.0) / stride).floor() as usize).min(entries.len());
+    let end = (((viewport.max.y - prefix).max(0.0) / stride).ceil() as usize).min(entries.len());
+    if first >= end {
+        return;
+    }
+
+    let rect = Rect::from_x_y_ranges(
+        list_rect.x_range(),
+        top + first as f32 * stride..=top + end as f32 * stride - spacing,
+    );
+    ui.scope_builder(
+        UiBuilder::new()
+            .id_salt("storage_visible_slots")
+            .max_rect(rect),
+        |ui| {
+            ui.skip_ahead_auto_ids(first);
+            for entry in &entries[first..end] {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(row_height);
                     ui.add(egui::Label::new(RichText::new(&entry.slot).monospace()).truncate())
                         .on_hover_text(&entry.slot);
                     value::cell(ui, &entry.value);
                 });
             }
-        });
+        },
+    );
 }
 
 pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapshot) {

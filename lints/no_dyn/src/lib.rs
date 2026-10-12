@@ -10,7 +10,8 @@ extern crate rustc_session;
 extern crate rustc_span;
 
 use rustc_errors::DiagDecorator;
-use rustc_hir::def_id::{LOCAL_CRATE, LocalDefId};
+use rustc_hir::def::DefKind;
+use rustc_hir::def_id::{CRATE_DEF_ID, LOCAL_CRATE, LocalDefId};
 use rustc_hir::{AmbigArg, Body, Expr, FnDecl, Pat, Ty as HirTy, TyKind, intravisit::FnKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::ty::{self, Ty, TypeVisitableExt, Unnormalized};
@@ -151,9 +152,17 @@ fn web_framework_boundary(cx: &LateContext<'_>) -> bool {
     if cx.tcx.crate_name(LOCAL_CRATE).as_str() != "evm_abstract_web" {
         return false;
     }
-    let owner = cx.tcx.hir_get_parent_item(cx.last_node_with_lint_attrs);
-    let path = cx.tcx.def_path_str(owner.to_def_id());
-    path == "framework" || path.starts_with("framework::")
+    // Definition parents follow lexical scope. Formatted trait impl paths
+    // describe Self and the trait instead, so they cannot identify this boundary.
+    let mut owner = cx.last_node_with_lint_attrs.owner.def_id;
+    while let Some(parent) = cx.tcx.opt_local_parent(owner) {
+        if parent == CRATE_DEF_ID {
+            return cx.tcx.def_kind(owner) == DefKind::Mod
+                && cx.tcx.item_name(owner).as_str() == "framework";
+        }
+        owner = parent;
+    }
+    false
 }
 
 impl<'tcx> LateLintPass<'tcx> for NoDyn {

@@ -2,6 +2,9 @@
 use super::*;
 use evm_abstract_protocol as api;
 
+mod scroll_bounds;
+mod storage;
+
 fn word(value: &str) -> api::ValueInfo {
     api::ValueInfo {
         summary: value.into(),
@@ -396,45 +399,6 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
         "show the selected outcome's bytes, independent of active state"
     );
 }
-#[test]
-fn expanded_account_facts_leave_storage_cells_visible_in_a_short_area() {
-    let mut report = crate::tests::report();
-    let mut initial = account();
-    initial.storage = (0..32)
-        .map(|index| api::StorageEntry {
-            slot: format!("0x{:x}", 0x100 + index),
-            value: word("0xcafe"),
-        })
-        .collect();
-    let address = initial.address.clone();
-    report.accounts = vec![initial];
-    let context = egui::Context::default();
-    crate::notation::initialize_fonts(&context);
-    context.global_style_mut(|style| style.animation_time = 0.0);
-    let mut time = 0.0;
-    let text = rendered(&context, &mut time, vec![], |ui| {
-        ui.set_max_height(180.0);
-        stores::storage(ui, &report, None, &address, false);
-    });
-    let position = text
-        .iter()
-        .find(|(text, _)| text == "Account facts in this store")
-        .unwrap()
-        .1
-        .center();
-    let expanded = click(&context, &mut time, position, |ui| {
-        ui.set_max_height(180.0);
-        stores::storage(ui, &report, None, &address, false);
-    });
-    assert!(expanded.iter().any(|(text, _)| text == "Balance"));
-    assert!(
-        expanded
-            .iter()
-            .any(|(text, rect)| text == "0x100" && rect.bottom() <= 180.0),
-        "slot list stays reachable below bounded facts: {expanded:?}"
-    );
-}
-
 #[test]
 fn relational_frontier_details_show_fact_arity_and_distinguish_solver_failure() {
     let mut report = crate::tests::report();

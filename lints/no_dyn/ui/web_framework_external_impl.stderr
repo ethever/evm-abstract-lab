@@ -1,0 +1,70 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_external_impl.rs:25:37
+   |
+LL |         fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_external_impl.rs:25:49
+   |
+LL |         fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+   |                                                 ^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_external_impl.rs:25:68
+   |
+LL |           fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+   |  ____________________________________________________________________^
+LL | |             Some(self)
+LL | |         }
+   | |_________^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_external_impl.rs:26:13
+   |
+LL |             Some(self)
+   |             ^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_external_impl.rs:26:13
+   |
+LL |             Some(self)
+   |             ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_external_impl.rs:26:18
+   |
+LL |             Some(self)
+   |                  ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_external_impl.rs:34:40
+   |
+LL |         framework_api::remove_callback(self.callback.as_ref());
+   |                                        ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_external_impl.rs:34:40
+   |
+LL |         framework_api::remove_callback(self.callback.as_ref());
+   |                                        ^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 8 previous errors
+

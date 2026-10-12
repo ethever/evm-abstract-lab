@@ -34,7 +34,7 @@ lint 库有独立的 [`rust-toolchain.toml`](../lints/no_dyn/rust-toolchain.toml
 
 [`no_dyn`](../lints/no_dyn/src/lib.rs) 实现 `LateLintPass`，检查 rustc 完成类型检查后的类型和隐式转换。除了显式 `dyn` 和函数指针，它还检查类型别名、关联类型、嵌套泛型、推断出的值、函数签名，以及转换为 trait object 或函数指针的表达式。宏展开后的代码也检查，不能用本地宏或外部宏隐藏违规代码。
 
-lint 的默认级别为 `forbid`，`#[allow(no_dyn)]` 不能降低级别。浏览器接入例外同时检查 crate 身份和模块路径：只匹配 `evm_abstract_web` crate 的 `framework` 模块及其子项，其他 crate 的同名模块和前端控件不适用。UI 回归例子分别验证这三种情况。
+lint 的默认级别为 `forbid`，`#[allow(no_dyn)]` 不能降低级别。浏览器接入例外同时检查 crate 身份和 rustc 的真实定义父链：只匹配 `evm_abstract_web` crate 顶层的 `framework` 模块及其词法子项，包括模块内的 trait impl 方法。判断不依赖 Self 类型或格式化符号路径；`framework` 类型在模块外的 impl、其他 crate 的同名模块、前端控件及其嵌套的同名模块均不适用。UI 回归验证模块内的外部 trait 实现、动态返回值与转换、Drop 回调清理，以及上述拒绝范围。
 
 编译器支持代码另外排除 builtin `Debug` 派生中的格式化支持、builtin `#[test]` / `#[bench]` 回调和测试 / proc-macro 入口框架。通过编译器的 builtin 标记识别来源，用户自定义同名宏不能绕过；原始字段类型、测试函数和嵌入的用户表达式继续检查。rustc 对静态闭包和异步闭包使用的内部函数指针表示不会被误认为用户创建的函数指针。
 

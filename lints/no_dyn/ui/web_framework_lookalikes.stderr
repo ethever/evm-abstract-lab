@@ -1,0 +1,67 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_lookalikes.rs:8:34
+   |
+LL |             let callback: fn() = || {};
+   |                                  ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_lookalikes.rs:8:17
+   |
+LL |             let callback: fn() = || {};
+   |                 ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_lookalikes.rs:8:27
+   |
+LL |             let callback: fn() = || {};
+   |                           ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_lookalikes.rs:9:13
+   |
+LL |             callback();
+   |             ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_lookalikes.rs:16:30
+   |
+LL |         let callback: fn() = || {};
+   |                              ^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_lookalikes.rs:16:13
+   |
+LL |         let callback: fn() = || {};
+   |             ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_lookalikes.rs:16:23
+   |
+LL |         let callback: fn() = || {};
+   |                       ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/web_framework_lookalikes.rs:17:9
+   |
+LL |         callback();
+   |         ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 8 previous errors
+

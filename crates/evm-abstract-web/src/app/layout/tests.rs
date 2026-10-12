@@ -368,18 +368,43 @@ fn long_input_and_diagnostics_stay_bounded_in_a_short_viewport() {
             }),
             "expanded diagnostics are allocated but not visible at {size:?}"
         );
+        let inspector = egui::PanelState::load(&ctx, egui::Id::new("world_inspector"))
+            .unwrap()
+            .outer_rect;
+        let context = egui::PanelState::load(&ctx, egui::Id::new("result_context"))
+            .unwrap()
+            .outer_rect;
+        let status = egui::PanelState::load(&ctx, egui::Id::new("workspace_status"))
+            .unwrap()
+            .outer_rect;
+        // The dock shares the result workspace with analysis panes. A global
+        // viewport fraction used to pass even when minimum content sizes
+        // pushed the inspector ten pixels over the bottom status panel.
+        assert!(inspector.top() >= context.bottom());
+        assert_eq!(inspector.bottom(), status.top());
+        assert!(
+            output.shapes.iter().any(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().starts_with("verified complete") => {
+                    shape
+                        .clip_rect
+                        .intersect(Rect::from_min_size(text.pos, text.galley.size()))
+                        .height()
+                        >= text.galley.size().y
+                }
+                _ => false,
+            }),
+            "SSA context must remain readable beside default diagnostics at {size:?}"
+        );
         for (_, rect) in pane_rects(active_tree(&workspace, size.x)) {
-            assert!(
-                rect.height() > size.y * 0.28,
-                "input/details overflowed: {size:?}: {rect:?}"
-            );
+            assert!(rect.top() >= context.bottom());
+            assert!(rect.bottom() <= inspector.top());
             assert!(Rect::from_min_size(Pos2::ZERO, size).contains_rect(rect));
         }
     }
 }
 
 #[test]
-fn modal_editor_is_visible_and_bounded_without_global_font_scaling() {
+fn modal_editor_is_visible_and_bounded_with_shared_control_fonts() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
@@ -411,10 +436,11 @@ fn modal_editor_is_visible_and_bounded_without_global_font_scaling() {
         }
     }
     assert_eq!(ctx.zoom_factor(), 1.0);
-    assert_eq!(
-        ctx.global_style().text_styles,
-        egui::Style::default().text_styles
-    );
+    let mut expected = egui::Style::default().text_styles;
+    // Only the shared button font changes; editor, body and heading fonts
+    // retain the desktop defaults instead of scaling the entire interface.
+    expected.insert(egui::TextStyle::Button, egui::FontId::proportional(12.0));
+    assert_eq!(ctx.global_style().text_styles, expected);
 }
 
 #[test]

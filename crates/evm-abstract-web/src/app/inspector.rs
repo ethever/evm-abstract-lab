@@ -1,15 +1,18 @@
-//! Bounded world inspector. Entry, historical exit and finalized outcomes are
+//! Resizable world inspector. Entry, historical exit and finalized outcomes are
 //! explicit distinct observations, never an invented per-instruction trace.
 
 mod buffers;
 mod context;
 mod errors;
 mod evidence;
+mod panel;
+pub(crate) mod shortcut;
 mod ssa;
 mod stores;
 mod value;
 
 use super::Selection;
+use crate::controls::{self, Density};
 use crate::{notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
@@ -65,6 +68,8 @@ enum Point {
 }
 
 pub(super) struct Inspector {
+    // Visibility is orthogonal to docked/maximized presentation so reopening
+    // restores the last mode. Chrome may toggle it without resetting content.
     pub(super) expanded: bool,
     pub(super) tab: Tab,
     point: Point,
@@ -73,6 +78,9 @@ pub(super) struct Inspector {
     last_value: Option<usize>,
     outcome: usize,
     rollback: bool,
+    panel: panel::Panel,
+    #[cfg(not(target_arch = "wasm32"))]
+    shortcut: shortcut::Shortcut,
 }
 impl Default for Inspector {
     fn default() -> Self {
@@ -85,11 +93,37 @@ impl Default for Inspector {
             last_value: None,
             outcome: 0,
             rollback: false,
+            panel: panel::Panel::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            shortcut: shortcut::Shortcut::default(),
         }
     }
 }
 
 impl Inspector {
+    pub(super) fn maximized(&self) -> bool {
+        self.expanded && self.panel.maximized()
+    }
+
+    pub(super) fn docked_panel(&self, ui: &Ui, workspace_height: f32) -> egui::Panel {
+        self.panel.docked(ui, workspace_height)
+    }
+
+    pub(super) fn remember_resize(&mut self, ui: &Ui, rect: egui::Rect) {
+        self.panel.remember_resize(ui, rect);
+    }
+
+    pub(super) fn visibility_hint(&self, ctx: &egui::Context) -> &'static str {
+        shortcut::hint(ctx)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn handle_shortcut(&mut self, ctx: &egui::Context, available: bool) {
+        if self.shortcut.consume(ctx, available) % 2 == 1 {
+            self.expanded = !self.expanded;
+        }
+    }
+
     pub(super) fn accessible_summary(
         &self,
         report: &AnalysisReport,
@@ -98,8 +132,13 @@ impl Inspector {
         if !self.expanded {
             return format!("Inspector hidden · {}", self.tab.label());
         }
+        let mode = if self.panel.maximized() {
+            " · Maximized"
+        } else {
+            ""
+        };
         if self.tab == Tab::SsaValue {
-            return ssa::summary(report, selection);
+            return format!("{}{mode}", ssa::summary(report, selection));
         }
         let machine = self.machine(report, selection);
         let boundary = match self.point {
@@ -125,7 +164,7 @@ impl Inspector {
             ""
         };
         format!(
-            "Inspector: {} · {boundary} · {frame}{store}",
+            "Inspector: {} · {boundary} · {frame}{store}{mode}",
             self.tab.label()
         )
     }
@@ -172,6 +211,27 @@ impl Inspector {
         selection: &mut Selection,
         account: Option<&str>,
     ) {
+        // A single inspector moves between the dock and the result workspace.
+        // Give its tabs, choosers and scroll areas the same identity in both.
+        let rect = ui.available_rect_before_wrap();
+        let mut contents = ui.new_child(
+            egui::UiBuilder::new()
+                .id(egui::Id::new("inspector_contents"))
+                .max_rect(rect),
+        );
+        contents.set_clip_rect(contents.clip_rect().intersect(rect));
+        self.contents(&mut contents, report, selection, account);
+        // Content minimums must not enlarge the user's chosen panel height.
+        ui.advance_cursor_after_rect(rect);
+    }
+
+    fn contents(
+        &mut self,
+        ui: &mut Ui,
+        report: &AnalysisReport,
+        selection: &mut Selection,
+        account: Option<&str>,
+    ) {
         if self.last_state != selection.state {
             self.frame = None;
             self.point = Point::Entry;
@@ -179,25 +239,55 @@ impl Inspector {
             self.rollback = false;
         }
         let narrow = ui.available_width() < 1120.0;
-        ui.horizontal(|ui| {
-            if narrow {
-                egui::ComboBox::from_id_salt("inspector_tab")
-                    .width(122.0)
-                    .selected_text(self.tab.label())
-                    .show_ui(ui, |ui| {
-                        for (tab, label) in Tab::ALL {
-                            ui.selectable_value(&mut self.tab, tab, label);
-                        }
-                    });
-            } else {
-                for (tab, label) in Tab::ALL {
-                    ui.selectable_value(&mut self.tab, tab, label);
+        Density::Compact.scope(ui, |ui| {
+            ui.horizontal(|ui| {
+                if narrow {
+                    egui::ComboBox::from_id_salt("inspector_tab")
+                        .width(122.0)
+                        .selected_text(self.tab.label())
+                        .show_ui(ui, |ui| {
+                            for (tab, label) in Tab::ALL {
+                                controls::tab_value(
+                                    ui,
+                                    &mut self.tab,
+                                    tab,
+                                    label,
+                                    Density::Compact,
+                                );
+                            }
+                        });
+                } else {
+                    for (tab, label) in Tab::ALL {
+                        controls::tab_value(ui, &mut self.tab, tab, label, Density::Compact);
+                    }
                 }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("Hide").clicked() {
-                    self.expanded = false;
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if controls::action(ui, "Hide", Density::Compact)
+                        .on_hover_text(self.visibility_hint(ui.ctx()))
+                        .clicked()
+                    {
+                        self.expanded = false;
+                    }
+                    if controls::action(
+                        ui,
+                        if self.panel.maximized() {
+                            "Restore"
+                        } else {
+                            "Maximize"
+                        },
+                        Density::Compact,
+                    )
+                    .on_hover_text(if self.panel.maximized() {
+                        "Restore the previous Inspect height"
+                    } else {
+                        "Use the result workspace for Inspect"
+                    })
+                    .clicked()
+                    {
+                        self.panel.toggle_maximized();
+                        ui.ctx().request_repaint();
+                    }
+                });
             });
         });
         if self.tab == Tab::SsaValue {
@@ -212,24 +302,26 @@ impl Inspector {
         let coverage = selection
             .state
             .map(|state| crate::widgets::coverage(report, state));
-        ui.horizontal_wrapped(|ui| {
-            ui.label(notation::widget(ui, RichText::new(selection.state.map_or("No state selected".into(), |state| Symbol::State(state).to_string())).strong()));
-            ui.selectable_value(&mut self.point,Point::Entry,"Block entry");
-            ui.add_enabled_ui(has_exit, |ui| {
-                ui.selectable_value(&mut self.point,Point::Exit,if coverage==Some(BlockCoverage::Current) {"Observed exit"} else {"Historical exit"});
-            });
-            if let Some(machine)=self.machine(report,*selection) {
-                let selected=selected_frame(machine,self.frame).map_or(0,|frame|frame.index);
-                egui::ComboBox::from_id_salt("inspector_frame").width(85.0).selected_text(notation::widget(ui, format!("Frame {}", Symbol::Frame(selected)))).show_ui(ui,|ui| {
-                    for frame in &machine.frames {
-                        ui.selectable_value(&mut self.frame,Some(frame.index),notation::widget(ui, format!("Frame {}{}", Symbol::Frame(frame.index), if frame.index+1==machine.frames.len(){" · active"}else{" · suspended"})));
-                    }
+        Density::Compact.scope(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(notation::widget(ui, RichText::new(selection.state.map_or("No state selected".into(), |state| Symbol::State(state).to_string())).strong()));
+                controls::tab_value(ui, &mut self.point,Point::Entry,"Block entry", Density::Compact);
+                ui.add_enabled_ui(has_exit, |ui| {
+                    controls::tab_value(ui, &mut self.point,Point::Exit,if coverage==Some(BlockCoverage::Current) {"Observed exit"} else {"Historical exit"}, Density::Compact);
                 });
-            }
-            if let Some(pc)=selection.pc {
-                ui.label(RichText::new(format!("PC 0x{pc:x}")).small().color(palette::MUTED))
-                    .on_hover_text("Instruction selection links the views. Inspection shows a block boundary, not a per-instruction memory trace.");
-            }
+                if let Some(machine)=self.machine(report,*selection) {
+                    let selected=selected_frame(machine,self.frame).map_or(0,|frame|frame.index);
+                    egui::ComboBox::from_id_salt("inspector_frame").width(85.0).selected_text(notation::widget(ui, format!("Frame {}", Symbol::Frame(selected)))).show_ui(ui,|ui| {
+                        for frame in &machine.frames {
+                            controls::tab_value(ui, &mut self.frame,Some(frame.index),format!("Frame {}{}", Symbol::Frame(frame.index), if frame.index+1==machine.frames.len(){" · active"}else{" · suspended"}), Density::Compact);
+                        }
+                    });
+                }
+                if let Some(pc)=selection.pc {
+                    ui.label(RichText::new(format!("PC 0x{pc:x}")).small().color(palette::MUTED))
+                        .on_hover_text("Instruction selection links the views. Inspection shows a block boundary, not a per-instruction memory trace.");
+                }
+            });
         });
         if self.point == Point::Exit && coverage != Some(BlockCoverage::Current) {
             ui.colored_label(palette::WARNING,"Historical receipt: current entry facts have changed. This is not a current exit snapshot.");
@@ -242,7 +334,9 @@ impl Inspector {
                 if let Some(frame) = frame {
                     scroll(ui, "frame_details", |ui| {
                         context::frame(ui, frame);
-                        if ui.button("Inspect rollback store").clicked() {
+                        if controls::action(ui, "Inspect rollback store", Density::Regular)
+                            .clicked()
+                        {
                             self.rollback = true;
                             self.tab = Tab::Storage;
                         }
@@ -273,8 +367,20 @@ impl Inspector {
             Tab::Storage | Tab::Transient => {
                 if frame.is_some() {
                     ui.horizontal_wrapped(|ui| {
-                        ui.selectable_value(&mut self.rollback, false, "Current store");
-                        ui.selectable_value(&mut self.rollback, true, "Frame rollback store");
+                        controls::tab_value(
+                            ui,
+                            &mut self.rollback,
+                            false,
+                            "Current store",
+                            Density::Compact,
+                        );
+                        controls::tab_value(
+                            ui,
+                            &mut self.rollback,
+                            true,
+                            "Frame rollback store",
+                            Density::Compact,
+                        );
                     });
                     if self.rollback {
                         ui.label(
@@ -333,21 +439,19 @@ impl Inspector {
             ))
             .show_ui(ui, |ui| {
                 for (index, outcome) in report.outcomes.iter().enumerate() {
-                    if ui
-                        .selectable_value(
-                            &mut self.outcome,
-                            index,
-                            notation::widget(
-                                ui,
-                                format!(
-                                    "Outcome {} · {} · {:?}",
-                                    Symbol::Outcome(index),
-                                    Symbol::State(outcome.state),
-                                    outcome.kind
-                                ),
-                            ),
-                        )
-                        .clicked()
+                    if controls::tab_value(
+                        ui,
+                        &mut self.outcome,
+                        index,
+                        format!(
+                            "Outcome {} · {} · {:?}",
+                            Symbol::Outcome(index),
+                            Symbol::State(outcome.state),
+                            outcome.kind
+                        ),
+                        Density::Compact,
+                    )
+                    .clicked()
                     {
                         *selection = Selection {
                             value: None,
@@ -388,6 +492,7 @@ impl Inspector {
 fn scroll(ui: &mut Ui, id: &str, contents: impl FnOnce(&mut Ui)) {
     egui::ScrollArea::both()
         .id_salt(id)
+        .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show(ui, contents);
 }

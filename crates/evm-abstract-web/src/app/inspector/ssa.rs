@@ -67,7 +67,8 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selection: &mut Selecti
 fn details(ui: &mut Ui, report: &AnalysisReport, selected: &SsaValue, selection: &mut Selection) {
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(format!("Value %{}", selected.id)).strong());
-        if ui.button("Go to source").clicked() {
+        if crate::controls::action(ui, "Go to source", crate::controls::Density::Compact).clicked()
+        {
             *selection = source_selection(&selected.origin, selected.id);
         }
     });
