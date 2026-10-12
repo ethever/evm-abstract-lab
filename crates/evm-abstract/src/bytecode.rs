@@ -12,7 +12,7 @@ use revm_bytecode::{
     opcode::{self, OpCode},
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 use thiserror::Error;
 
 /// 一条指令。`pc` 是字节偏移，不是第几条指令。
@@ -31,19 +31,58 @@ pub struct Instruction {
     pub size: usize,
 }
 
+/// Why a decoded opcode exceptionally halts under the program's fork.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum InvalidOpcodeReason {
+    /// The defined `0xfe INVALID` instruction deliberately halts exceptionally.
+    ExplicitInvalid,
+    /// The opcode has no instruction definition in ordinary EVM bytecode.
+    UndefinedOpcode,
+    /// The instruction is defined upstream but is not enabled in this fork.
+    UnavailableInFork(Fork),
+}
+
+impl fmt::Display for InvalidOpcodeReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExplicitInvalid => f.write_str("explicit exceptional-halt instruction"),
+            Self::UndefinedOpcode => f.write_str("undefined ordinary-bytecode opcode"),
+            Self::UnavailableInFork(fork) => write!(f, "instruction unavailable in fork {fork}"),
+        }
+    }
+}
+
 impl Instruction {
     /// 使用上游定义的名称显示指令。
     pub fn name(&self) -> &'static str {
         OpCode::name_by_op(self.opcode)
     }
 
+    /// A defined mnemonic, excluding the upstream placeholder for unknown bytes.
+    pub fn mnemonic(&self) -> Option<&'static str> {
+        OpCode::new(self.opcode).map(|_| self.name())
+    }
+
+    /// The same fork-specific rule used by validity checks and execution faults.
+    pub fn invalid_reason(&self) -> Option<InvalidOpcodeReason> {
+        if self.opcode == opcode::INVALID {
+            Some(InvalidOpcodeReason::ExplicitInvalid)
+        } else if OpCode::new(self.opcode).is_none() {
+            Some(InvalidOpcodeReason::UndefinedOpcode)
+        } else if !(self.opcode <= 0x4a
+            || (0x50..=0xa4).contains(&self.opcode)
+            || matches!(self.opcode, 0xf0..=0xf5 | 0xfa | 0xfd | 0xff))
+            || (self.opcode == opcode::CLZ && !self.fork.supports_clz())
+        {
+            Some(InvalidOpcodeReason::UnavailableInFork(self.fork))
+        } else {
+            None
+        }
+    }
+
     /// 使用解码时选择的 fork。上游包含未来指令，不等于它们已在主网启用。
     pub fn is_valid(&self) -> bool {
-        OpCode::new(self.opcode).is_some()
-            && (self.opcode <= 0x4a
-                || (0x50..=0xa4).contains(&self.opcode)
-                || matches!(self.opcode, 0xf0..=0xf5 | 0xfa | 0xfd | 0xff))
-            && (self.opcode != opcode::CLZ || self.fork.supports_clz())
+        self.invalid_reason().is_none()
     }
 
     /// 正常控制流在这里结束，或必须分叉。

@@ -21,6 +21,119 @@ fn request(bytecode: &str) -> AnalyzeRequest {
 }
 
 #[test]
+fn invalid_opcode_report_preserves_original_bytes_names_causes_and_closure() {
+    use evm_abstract_protocol::{
+        DiagnosticKind, Fork, InvalidInstruction, InvalidOpcodeDiagnostic, InvalidOpcodeReason,
+    };
+    for (bytecode, fork, pc, evidence) in [
+        (
+            "fe",
+            Fork::Osaka,
+            0,
+            InvalidInstruction {
+                opcode: 0xfe,
+                mnemonic: Some("INVALID".into()),
+                reason: InvalidOpcodeReason::ExplicitInvalid,
+            },
+        ),
+        (
+            "ef",
+            Fork::Osaka,
+            0,
+            InvalidInstruction {
+                opcode: 0xef,
+                mnemonic: None,
+                reason: InvalidOpcodeReason::UndefinedOpcode,
+            },
+        ),
+        (
+            "5f1e00",
+            Fork::Cancun,
+            1,
+            InvalidInstruction {
+                opcode: 0x1e,
+                mnemonic: Some("CLZ".into()),
+                reason: InvalidOpcodeReason::UnavailableInFork(Fork::Cancun),
+            },
+        ),
+    ] {
+        let mut input = request(bytecode);
+        input.fork = fork;
+        let report = analyze(input).unwrap();
+        assert_eq!(report.schema_version, 8);
+        assert_eq!(report.status, AnalysisStatus::Converged);
+        assert!(report.frontiers.is_empty());
+        let diagnostics: Vec<_> = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.kind == DiagnosticKind::InvalidOpcode)
+            .collect();
+        assert_eq!(diagnostics.len(), 1);
+        let diagnostic = diagnostics[0];
+        assert_eq!(diagnostic.pc, pc);
+        assert_eq!(
+            diagnostic.invalid_opcode,
+            Some(InvalidOpcodeDiagnostic::Instruction(evidence.clone()))
+        );
+        assert!(
+            diagnostic
+                .detail
+                .contains(&format!("0x{:02x}", evidence.opcode))
+        );
+        let state = &report.states[diagnostic.state];
+        let source = &report.programs[state.entry.frames.last().unwrap().program.unwrap()];
+        let bytes = alloy_primitives::hex::decode(&source.bytecode).unwrap();
+        assert_eq!(bytes[diagnostic.pc], evidence.opcode);
+        assert_eq!(
+            serde_json::from_slice::<evm_abstract_protocol::AnalysisReport>(
+                &serde_json::to_vec(&report).unwrap()
+            )
+            .unwrap(),
+            report
+        );
+    }
+    let mut input = request("5f1e00");
+    input.fork = Fork::Osaka;
+    let report = analyze(input).unwrap();
+    assert_eq!(report.status, AnalysisStatus::Converged);
+    assert!(report.frontiers.is_empty());
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.kind != DiagnosticKind::InvalidOpcode)
+    );
+}
+
+#[test]
+fn unreachable_invalid_bytes_are_only_static_source_and_other_halts_keep_categories() {
+    use evm_abstract_protocol::DiagnosticKind;
+    let report = analyze(request("00feef")).unwrap();
+    assert!(report.diagnostics.is_empty());
+    assert!(
+        report
+            .disassembly
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instruction| instruction.opcode == 0xfe && !instruction.valid)
+    );
+    for (bytecode, kind) in [
+        ("5f56", DiagnosticKind::InvalidJump),
+        ("01", DiagnosticKind::StackUnderflow),
+    ] {
+        let report = analyze(request(bytecode)).unwrap();
+        assert_eq!(report.status, AnalysisStatus::Converged);
+        assert!(report.frontiers.is_empty());
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.kind == kind && diagnostic.invalid_opcode.is_none())
+        );
+    }
+}
+
+#[test]
 fn diamond_preserves_phi_predecessors_and_structural_json_roundtrip() {
     let report = analyze(request(include_str!("../../../examples/diamond.hex"))).unwrap();
     assert_eq!(report.status, AnalysisStatus::Converged);

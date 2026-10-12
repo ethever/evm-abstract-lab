@@ -71,6 +71,32 @@ nix run . -- explain --file examples/osaka-clz.hex --fork prague
 
 旧 fork 的结果也可以 `Converged`：分析已经把无效指令导致的终止算完。这再次说明“分析完成”不等于“程序成功执行”。
 
+### 从诊断区分原始操作码
+
+CLI 与 Web 的 Diagnostics 保留触发位置的原始字节、已定义的指令名和原因。例如：
+
+| 输入与规则 | 诊断中的指令 | 原因 |
+| --- | --- | --- |
+| `fe`，Osaka | `0xfe (INVALID)` | 显式异常终止指令 |
+| `ef`，Osaka | `0xef`，无指令名 | 未定义的普通字节码操作码 |
+| `5f1e00`，Cancun | PC 1，`0x1e (CLZ)` | 当前 fork 未启用 |
+| `5f1e00`，Osaka | 无 InvalidOpcode 诊断 | CLZ 正常执行 |
+
+```bash
+nix run . -- cfg --hex fe --fork osaka --context-depth 0 --format json
+nix run . -- cfg --hex ef --fork osaka --context-depth 0 --format json
+nix run . -- cfg --hex 5f1e00 --fork cancun --context-depth 0 --format json
+nix run . -- cfg --hex 5f1e00 --fork osaka --context-depth 0 --format json
+```
+
+原生分析 JSON 的版本是 `schema_version=5`。普通无效指令的类型化证据位于 `.diagnostics[].kind.InvalidOpcode.Instruction`，包含 `opcode`（数值 `u8`）、`mnemonic`（未定义字节为 `null`）和 `reason`：`ExplicitInvalid`、`UndefinedOpcode` 或 `{"UnavailableInFork":"cancun"}`。Web API 的独立协议版本是 8，保留 `kind="InvalidOpcode"`，同一证据在 `.diagnostics[].invalid_opcode.Instruction`；API 的 fork 枚举使用 `Cancun`、`Prague`、`Osaka`，例如 `{"UnavailableInFork":"Cancun"}`；非 InvalidOpcode 诊断的 `invalid_opcode` 为 `null`。
+
+证据在抽象执行尝试该指令时生成，取自当前帧捕获的 runtime 或 initcode。同一 PC 在不同合约中可能对应不同字节，不能用入口程序的反汇编回填。`00fe` 的反汇编仍包含 PC 1 的 INVALID，但 STOP 后的字节没有被执行，不产生相应诊断。
+
+每条诊断保留抽象状态编号与位置。同一 PC 在多个状态中出现时，记录数表示这些抽象状态中的诊断，不是不同指令数或失败交易次数；Web 的跳转仍定位到各条记录对应的状态和指令。
+
+嵌套委托入口使用 `DelegationEntry` 证据，位置显示为委托入口（合成 PC 0），不生成普通指令执行记录。`detail` 说明嵌套委托不能执行；若无法核验原始字节，`opcode` 为 `null`，`byte_unavailable` 说明缺失来源和原因。Web 选择该入口的状态，不把它跳转到根程序的 PC 0。
+
 ## 3. 输入未知时，CLZ 仍要保守表示
 
 输入是有限集合时，分析逐个计算，再合并。例如 `{0,1}` 的结果是 `{256,255}`。

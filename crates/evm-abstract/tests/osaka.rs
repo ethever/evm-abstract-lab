@@ -23,7 +23,7 @@ fn default_mainnet_recovers_a_clz_computed_jump() {
     );
     assert!(!analysis.diagnostics().iter().any(|d| matches!(
         d.kind,
-        DiagnosticKind::UnknownJump | DiagnosticKind::InvalidOpcode
+        DiagnosticKind::UnknownJump | DiagnosticKind::InvalidOpcode(_)
     )));
     assert!(target.exit_stack[0].contains(U256::from(42)));
     let ir = ssa::build(&analysis).unwrap();
@@ -70,7 +70,7 @@ fn delegation_designator_is_not_an_executable_runtime() {
     assert!(
         old.diagnostics()
             .iter()
-            .any(|d| d.pc == 0 && d.kind == DiagnosticKind::InvalidOpcode)
+            .any(|d| d.pc == 0 && matches!(d.kind, DiagnosticKind::InvalidOpcode(_)))
     );
 }
 
@@ -86,7 +86,7 @@ fn clz_is_disabled_before_osaka_and_is_a_fault_in_ssa() {
             analysis
                 .diagnostics()
                 .iter()
-                .any(|d| d.pc == 2 && d.kind == DiagnosticKind::InvalidOpcode)
+                .any(|d| d.pc == 2 && matches!(d.kind, DiagnosticKind::InvalidOpcode(_)))
         );
         let ir = ssa::build(&analysis).unwrap();
         assert!(ir.blocks()[0].instructions[1].fault);
@@ -107,7 +107,7 @@ fn future_instructions_remain_invalid_on_all_supported_forks() {
                 analysis
                     .diagnostics()
                     .iter()
-                    .any(|d| d.kind == DiagnosticKind::InvalidOpcode)
+                    .any(|d| matches!(d.kind, DiagnosticKind::InvalidOpcode(_)))
             );
         }
     }

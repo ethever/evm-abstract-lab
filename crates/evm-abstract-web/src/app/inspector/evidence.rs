@@ -75,36 +75,35 @@ pub(super) fn acquisition(ui: &mut Ui, report: &AnalysisReport) {
 pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut Selection) {
     if report.diagnostics.is_empty() && report.frontiers.is_empty() {
         ui.label("No diagnostics or unexpanded frontiers reported.");
+    } else {
+        ui.label(RichText::new(diagnostic_counts(report)).small().color(palette::MUTED))
+            .on_hover_text("Each diagnostic retains its abstract state. Repeated PCs can describe different states; these counts are not distinct instruction counts or failed transaction counts.");
     }
-    for diagnostic in &report.diagnostics {
-        if ui
-            .selectable_label(
-                false,
-                notation::widget(
-                    ui,
-                    format!(
-                        "{} · 0x{:04x} · {:?}",
-                        Symbol::State(diagnostic.state),
-                        diagnostic.pc,
-                        diagnostic.kind
-                    ),
-                ),
-            )
-            .clicked()
-        {
-            *selection = Selection {
-                value: None,
-                state: Some(diagnostic.state),
-                pc: Some(diagnostic.pc),
-            };
-        }
-        if let Some(reduction) = &diagnostic.reduction {
-            ui.label(
-                RichText::new(format!("Reduction: {reduction:?}"))
-                    .small()
-                    .color(palette::MUTED),
-            );
-        }
+    for (index, diagnostic) in report.diagnostics.iter().enumerate() {
+        let presentation = diagnostic_presentation(diagnostic);
+        // State identity and receipt index keep repeated PCs independently clickable.
+        ui.push_id(("diagnostic", index, diagnostic.state), |ui| {
+            if ui
+                .selectable_label(false, notation::widget(ui, &presentation.label))
+                .clicked()
+            {
+                *selection = Selection {
+                    value: None,
+                    state: Some(diagnostic.state),
+                    pc: presentation.instruction_pc,
+                };
+            }
+            if let Some(reason) = &presentation.reason {
+                ui.label(RichText::new(reason).small().color(palette::MUTED));
+            }
+            if let Some(reduction) = &diagnostic.reduction {
+                ui.label(
+                    RichText::new(format!("Reduction: {reduction:?}"))
+                        .small()
+                        .color(palette::MUTED),
+                );
+            }
+        });
     }
     for frontier in &report.frontiers {
         let location = match (frontier.from, frontier.pc) {
@@ -135,6 +134,95 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
             reason => errors::fields(ui, |ui| frontier_reason(ui, reason)),
         }
     }
+}
+
+fn diagnostic_counts(report: &AnalysisReport) -> String {
+    format!(
+        "{} abstract-state diagnostic entries · {} unexpanded frontiers",
+        report.diagnostics.len(),
+        report.frontiers.len()
+    )
+}
+
+struct DiagnosticPresentation {
+    label: String,
+    reason: Option<String>,
+    instruction_pc: Option<usize>,
+}
+
+fn diagnostic_presentation(diagnostic: &api::Diagnostic) -> DiagnosticPresentation {
+    let mut presentation = DiagnosticPresentation {
+        label: format!(
+            "{} · PC 0x{:04x} · {:?}",
+            Symbol::State(diagnostic.state),
+            diagnostic.pc,
+            diagnostic.kind
+        ),
+        reason: None,
+        instruction_pc: Some(diagnostic.pc),
+    };
+    match &diagnostic.invalid_opcode {
+        Some(api::InvalidOpcodeDiagnostic::Instruction(instruction)) => {
+            presentation
+                .label
+                .push_str(&format!(" · 0x{:02x}", instruction.opcode));
+            if let Some(mnemonic) = &instruction.mnemonic {
+                presentation.label.push_str(&format!(" ({mnemonic})"));
+            }
+            let reason = match instruction.reason {
+                api::InvalidOpcodeReason::ExplicitInvalid => {
+                    "Explicit exceptional halt instruction".into()
+                }
+                api::InvalidOpcodeReason::UndefinedOpcode => {
+                    "Undefined ordinary bytecode opcode".into()
+                }
+                api::InvalidOpcodeReason::UnavailableInFork(fork) => {
+                    format!("Instruction is not enabled in fork {fork:?}")
+                }
+            };
+            presentation.reason = Some(format!(
+                "{reason}; this abstract path attempted this instruction."
+            ));
+        }
+        Some(api::InvalidOpcodeDiagnostic::DelegationEntry(entry)) => {
+            presentation.label = format!(
+                "{} · Delegation entry (synthetic PC {}) · {:?}",
+                Symbol::State(diagnostic.state),
+                diagnostic.pc,
+                diagnostic.kind
+            );
+            if let Some(opcode) = entry.opcode {
+                presentation
+                    .label
+                    .push_str(&format!(" · captured first byte 0x{opcode:02x}"));
+            }
+            let mut reason = format!("{}; no ordinary instruction was decoded.", entry.detail);
+            if let Some(unavailable) = &entry.byte_unavailable {
+                reason.push_str(&format!(" Opcode byte unavailable: {unavailable}."));
+            }
+            presentation.reason = Some(reason);
+            // Synthetic entry PC is not a source-code jump target.
+            presentation.instruction_pc = None;
+        }
+        None => {}
+    }
+    presentation
+}
+
+/// The canvas and assistive live region share the typed diagnostic evidence.
+pub(super) fn diagnostic_summary(report: &AnalysisReport) -> String {
+    let mut summary = format!(
+        "{}; counts are abstract-state entries, not instructions or transactions",
+        diagnostic_counts(report)
+    );
+    for diagnostic in &report.diagnostics {
+        let presentation = diagnostic_presentation(diagnostic);
+        summary.push_str(&format!("; {}", presentation.label));
+        if let Some(reason) = presentation.reason {
+            summary.push_str(&format!("; {reason}"));
+        }
+    }
+    summary
 }
 fn frontier_reason(ui: &mut Ui, reason: &api::FrontierDetails) {
     use api::FrontierDetails as R;

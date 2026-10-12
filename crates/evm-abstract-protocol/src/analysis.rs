@@ -130,6 +130,48 @@ choice! {
         FactExchangeLimited,
     }
 }
+variant! {
+    /// Why an ordinary instruction is invalid under the selected execution rules.
+    pub enum InvalidOpcodeReason {
+        /// The explicit INVALID instruction exceptionally halts execution.
+        ExplicitInvalid,
+        /// No ordinary bytecode instruction is defined for this byte.
+        UndefinedOpcode,
+        /// The instruction has not been enabled in the recorded fork.
+        UnavailableInFork(crate::Fork),
+    }
+}
+record! {
+    /// An invalid instruction actually attempted by an abstract execution path.
+    pub struct InvalidInstruction {
+        /// Original byte from the state's active executable program.
+        pub opcode: u8,
+        /// Defined instruction name, absent for undefined opcode bytes.
+        pub mnemonic: Option<String>,
+        /// Validity reason from the same rules used by execution.
+        pub reason: InvalidOpcodeReason,
+    }
+}
+record! {
+    /// Exceptional delegation entry, which has no ordinary decoded instruction.
+    pub struct InvalidDelegationEntry {
+        /// First captured code byte, when it can be obtained from the active account.
+        pub opcode: Option<u8>,
+        /// Why delegation resolution rejected this entry.
+        pub detail: String,
+        /// Why a code byte is unavailable, present whenever opcode is absent.
+        pub byte_unavailable: Option<String>,
+    }
+}
+variant! {
+    /// Invalid-opcode evidence distinguishes real instructions from delegation entry.
+    pub enum InvalidOpcodeDiagnostic {
+        /// Real instruction in the state's active captured program.
+        Instruction(InvalidInstruction),
+        /// Invalid delegation resolution at a synthetic entry location.
+        DelegationEntry(InvalidDelegationEntry),
+    }
+}
 record! {
     /// Diagnostic with a stable graph location.
     pub struct Diagnostic {
@@ -141,6 +183,8 @@ record! {
         pub kind: DiagnosticKind,
         /// Typed precision exchange reason, when this is a fact-exchange diagnostic.
         pub reduction: Option<crate::ReductionReason>,
+        /// Original opcode and typed cause, when the category is InvalidOpcode.
+        pub invalid_opcode: Option<InvalidOpcodeDiagnostic>,
         /// Detailed explanation, including engine-specific precision limits.
         pub detail: String,
     }

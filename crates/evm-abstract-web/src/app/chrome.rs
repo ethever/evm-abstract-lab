@@ -115,7 +115,8 @@ impl Workspace {
                     let label=if complete{"Model converged"}else{"Incomplete / partial SSA"};
                     ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
                     if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),report.metadata.work));}
-                    if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Regular).clicked() {
+                    if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Regular)
+                        .on_hover_text(format!("{} abstract-state diagnostic entries and {} unexpanded frontiers. Repeated PCs retain separate state evidence; counts are not instructions or failed transactions.",report.diagnostics.len(),report.frontiers.len())).clicked() {
                         self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Diagnostics;
                     }
                 } else if self.startup.loading() {

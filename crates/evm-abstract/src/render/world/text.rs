@@ -304,6 +304,9 @@ pub fn render(analysis: &WorldAnalysis) -> String {
     }
 
     output.push_str("\nDiagnostics\n");
+    if !analysis.diagnostics().is_empty() {
+        output.push_str(crate::render::DIAGNOSTIC_RECORDS);
+    }
     write_table(
         &mut output,
         "  ",
@@ -314,8 +317,8 @@ pub fn render(analysis: &WorldAnalysis) -> String {
             .map(|diagnostic| {
                 vec![
                     format!("{}", Symbol::State(diagnostic.state)),
-                    format!("0x{:x}", diagnostic.pc),
-                    format!("{:?}", diagnostic.kind),
+                    crate::render::diagnostic_location(diagnostic),
+                    crate::render::diagnostic_kind(&diagnostic.kind),
                 ]
             })
             .collect::<Vec<_>>(),

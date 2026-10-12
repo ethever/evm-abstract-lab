@@ -170,6 +170,7 @@ fn long_diagnostics_do_not_grow_the_chosen_docked_height() {
             pc,
             kind: evm_abstract_protocol::DiagnosticKind::OpaqueResult,
             reduction: None,
+            invalid_opcode: None,
             detail: "A detailed diagnostic must remain independently scrollable. ".repeat(20),
         })
         .collect();

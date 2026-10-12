@@ -10,7 +10,7 @@ use std::{fmt, str::FromStr};
 use thiserror::Error;
 
 /// 本实验支持的已发布主网执行层规则；默认值在代码中固定，不随网络漂移。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Fork {
     /// Dencun 的执行层，2024-03-13 激活；CLZ 尚未启用。

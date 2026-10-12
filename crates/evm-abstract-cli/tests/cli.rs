@@ -22,6 +22,8 @@ mod teaching;
 mod capacity;
 #[path = "cli/defaults.rs"]
 mod defaults;
+#[path = "cli/diagnostics.rs"]
+mod diagnostics;
 #[path = "cli/domains.rs"]
 mod domains;
 #[path = "cli/known_bits.rs"]

@@ -5,6 +5,180 @@ use evm_abstract::{
     world::{AddressInput, EvmEnvironment},
 };
 
+fn project_world(world: World, address: Address) -> api::AnalysisReport {
+    let graph = analysis::analyze_world(
+        world,
+        Entry {
+            address,
+            environment: EvmEnvironment {
+                to: AddressInput::Concrete(address),
+                value: evm_abstract::domain::AbstractValue::constant(evm_abstract::U256::ZERO),
+                ..EvmEnvironment::default()
+            },
+        },
+        analysis::ExecutionConfig::default(),
+    )
+    .unwrap();
+    report::report(
+        &graph,
+        &api::AnalyzeRequest::default(),
+        api::AnalysisScope::RpcWorld,
+        &Control::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn invalid_opcodes_at_the_same_pc_use_each_childs_captured_program() {
+    let root = Address::repeat_byte(0x11);
+    let first = Address::repeat_byte(0x22);
+    let second = Address::repeat_byte(0x33);
+    let call = |target: Address| {
+        format!(
+            "5f5f5f5f5f73{}5af150",
+            alloy_primitives::hex::encode(target)
+        )
+    };
+    let code = format!("{}{}00", call(first), call(second));
+    let mut world = World::new(Fork::Osaka, "invalid opcode child source fixture");
+    world
+        .insert(root, Account::from_hex(&code, Fork::Osaka).unwrap())
+        .unwrap();
+    world
+        .insert(first, Account::from_hex("fe", Fork::Osaka).unwrap())
+        .unwrap();
+    world
+        .insert(second, Account::from_hex("ef", Fork::Osaka).unwrap())
+        .unwrap();
+    let report = project_world(world, root);
+    assert_eq!(report.status, api::AnalysisStatus::Converged);
+    assert!(report.frontiers.is_empty());
+    let mut captured = Vec::new();
+    for diagnostic in &report.diagnostics {
+        let Some(api::InvalidOpcodeDiagnostic::Instruction(instruction)) =
+            &diagnostic.invalid_opcode
+        else {
+            continue;
+        };
+        assert_eq!(diagnostic.pc, 0);
+        let frame = report.states[diagnostic.state].entry.frames.last().unwrap();
+        assert_ne!(frame.code_address, root.to_string());
+        let source = &report.programs[frame.program.unwrap()];
+        assert_eq!(source.code_address, frame.code_address);
+        let bytes = alloy_primitives::hex::decode(&source.bytecode).unwrap();
+        assert_eq!(instruction.opcode, bytes[diagnostic.pc]);
+        captured.push((frame.code_address.clone(), instruction.opcode));
+    }
+    captured.sort();
+    assert_eq!(
+        captured,
+        vec![(first.to_string(), 0xfe), (second.to_string(), 0xef)]
+    );
+}
+
+#[test]
+fn invalid_initcode_opcode_uses_creation_program_at_pc_zero() {
+    let creator = Address::repeat_byte(0x11);
+    let mut world = World::new(Fork::Osaka, "invalid opcode initcode source fixture");
+    // Write FE into memory, then execute that byte as a separate CREATE frame.
+    world
+        .insert(
+            creator,
+            Account::from_hex("60fe5f5360015f5ff000", Fork::Osaka).unwrap(),
+        )
+        .unwrap();
+    world.insert(creator.create(0), Account::absent()).unwrap();
+    let report = project_world(world, creator);
+    assert_eq!(report.status, api::AnalysisStatus::Converged);
+    assert!(report.frontiers.is_empty());
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.kind == api::DiagnosticKind::InvalidOpcode)
+        .unwrap();
+    assert_eq!(diagnostic.pc, 0);
+    assert_eq!(
+        diagnostic.invalid_opcode,
+        Some(api::InvalidOpcodeDiagnostic::Instruction(
+            api::InvalidInstruction {
+                opcode: 0xfe,
+                mnemonic: Some("INVALID".into()),
+                reason: api::InvalidOpcodeReason::ExplicitInvalid,
+            }
+        ))
+    );
+    let frame = report.states[diagnostic.state].entry.frames.last().unwrap();
+    let source = &report.programs[frame.program.unwrap()];
+    assert_eq!(frame.kind, api::CodeKind::Initcode);
+    assert_eq!(source.bytecode, "0xfe");
+    assert_ne!(Some(source.id), report.metadata.root_program);
+}
+
+#[test]
+fn nested_delegation_has_captured_entry_byte_without_instruction_receipt() {
+    let authority = Address::repeat_byte(0x11);
+    let target = Address::repeat_byte(0x22);
+    let implementation = Address::repeat_byte(0x33);
+    let mut world = World::new(Fork::Osaka, "invalid nested delegation fixture");
+    let mut account = Account::empty();
+    account.code = Code::Delegation(target);
+    world.insert(authority, account).unwrap();
+    let mut account = Account::empty();
+    account.code = Code::Delegation(implementation);
+    world.insert(target, account).unwrap();
+    world
+        .insert(
+            implementation,
+            Account::from_hex("fe", Fork::Osaka).unwrap(),
+        )
+        .unwrap();
+    let report = project_world(world, authority);
+    assert_eq!(report.status, api::AnalysisStatus::Converged);
+    assert!(report.frontiers.is_empty());
+    assert_eq!(report.diagnostics.len(), 1);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.kind, api::DiagnosticKind::InvalidOpcode);
+    let Some(api::InvalidOpcodeDiagnostic::DelegationEntry(entry)) = &diagnostic.invalid_opcode
+    else {
+        panic!("delegation entry must keep its distinct source");
+    };
+    assert_eq!(entry.opcode, Some(0xef));
+    assert_eq!(entry.byte_unavailable, None);
+    assert!(entry.detail.contains("nested delegation"));
+    let state = &report.states[diagnostic.state];
+    assert!(state.entry.frames.last().unwrap().program.is_none());
+    let cfg = &report.cfg[diagnostic.state];
+    assert!(cfg.instructions.is_empty());
+    assert!(cfg.executed_pcs.is_empty());
+    assert!(report.ssa.blocks[diagnostic.state].instructions.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<api::AnalysisReport>(&serde_json::to_vec(&report).unwrap())
+            .unwrap(),
+        report
+    );
+}
+
+#[test]
+fn delegation_projection_retains_why_original_byte_is_unavailable() {
+    let reason = analysis::DiagnosticKind::InvalidOpcode(
+        analysis::InvalidOpcodeDiagnostic::DelegationEntry {
+            opcode: None,
+            detail: "nested delegation indicator cannot be executed".into(),
+            byte_unavailable: Some("active code account's raw bytes are unavailable".into()),
+        },
+    );
+    assert_eq!(
+        mapping::invalid_opcode(&reason),
+        Some(api::InvalidOpcodeDiagnostic::DelegationEntry(
+            api::InvalidDelegationEntry {
+                opcode: None,
+                detail: "nested delegation indicator cannot be executed".into(),
+                byte_unavailable: Some("active code account's raw bytes are unavailable".into()),
+            }
+        ))
+    );
+}
+
 #[test]
 fn delegated_root_source_uses_code_program_and_retains_authority_storage() {
     let authority = Address::repeat_byte(0x11);

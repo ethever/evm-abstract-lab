@@ -2,7 +2,7 @@
 //! returns resume it with the same transaction store and an explicit result.
 
 use super::{
-    DiagnosticKind, EdgeKind,
+    DiagnosticKind, EdgeKind, InvalidOpcodeDiagnostic,
     machine::{
         ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, MachineKey, MachinePayload,
         OutcomeKind,
@@ -278,7 +278,28 @@ pub(super) fn execute(
         return result;
     }
     if code == FrameCode::InvalidDelegation {
-        result.diagnostics.push((0, DiagnosticKind::InvalidOpcode));
+        let code_address = result.payload.active().key.code_address;
+        let (opcode, byte_unavailable) = match result.payload.store.raw_account_code(code_address) {
+            Some(bytes) => match bytes.first().copied() {
+                Some(opcode) => (Some(opcode), None),
+                None => (
+                    None,
+                    Some("active code account has no captured byte at entry".to_owned()),
+                ),
+            },
+            None => (
+                None,
+                Some("active code account's raw bytes are unavailable".to_owned()),
+            ),
+        };
+        result.diagnostics.push((
+            0,
+            DiagnosticKind::InvalidOpcode(InvalidOpcodeDiagnostic::DelegationEntry {
+                opcode,
+                detail: "nested delegation indicator cannot be executed".to_owned(),
+                byte_unavailable,
+            }),
+        ));
         failure(&mut result, context, 0);
         return result;
     }
@@ -325,9 +346,16 @@ pub(super) fn execute(
         result
             .instruction_progress
             .push(InstructionProgress::Started);
-        if !instruction.is_valid() {
+        if let Some(reason) = instruction.invalid_reason() {
             result.mark_instruction(InstructionProgress::Faulted);
-            result.diagnostics.push((pc, DiagnosticKind::InvalidOpcode));
+            result.diagnostics.push((
+                pc,
+                DiagnosticKind::InvalidOpcode(InvalidOpcodeDiagnostic::Instruction {
+                    opcode: instruction.opcode,
+                    mnemonic: instruction.mnemonic().map(str::to_owned),
+                    reason,
+                }),
+            ));
             failure(&mut result, context, pc);
             return result;
         }
@@ -1089,4 +1117,54 @@ fn return_copy_bounds(
         }
     }
     (valid, invalid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Fork, world::Account};
+
+    #[test]
+    fn delegation_without_raw_byte_evidence_explains_the_active_source() {
+        let owner = Address::from([0x11; 20]);
+        let missing_code = Address::from([0x22; 20]);
+        let mut world = World::new(Fork::Osaka, "missing delegation byte evidence");
+        world.insert(owner, Account::empty()).unwrap();
+        let entry = Entry::new(owner);
+        let config = ExecutionConfig::default();
+        let domain = config.domain().unwrap();
+        let mut payload = initial(&world, &entry, domain).unwrap();
+        // Exercise the defensive evidence boundary directly: ordinary validated
+        // delegation facts normally provide the marker bytes at resolution.
+        let frame = payload.active_mut();
+        frame.code = FrameCode::InvalidDelegation;
+        frame.key.mode = FrameCode::InvalidDelegation;
+        frame.key.code_address = missing_code;
+        let result = execute(
+            &world,
+            &entry,
+            payload,
+            &config,
+            domain,
+            &mut WorkBudget::new(config.max_work),
+            StorageReadPolicy::Abstract,
+        );
+        assert_eq!(
+            result.diagnostics,
+            vec![(
+                0,
+                DiagnosticKind::InvalidOpcode(InvalidOpcodeDiagnostic::DelegationEntry {
+                    opcode: None,
+                    detail: "nested delegation indicator cannot be executed".to_owned(),
+                    byte_unavailable: Some(
+                        "active code account's raw bytes are unavailable".to_owned()
+                    ),
+                },)
+            )]
+        );
+        assert!(result.executed_pcs.is_empty());
+        assert!(result.instruction_progress.is_empty());
+        assert!(result.instruction_values.is_empty());
+        assert_eq!(result.outcomes[0].kind, OutcomeKind::Failure);
+    }
 }

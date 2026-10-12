@@ -263,7 +263,13 @@ fn converged_unknown_jump_and_fact_caps_remain_visible() {
     ]);
     let output = render(&analysis).unwrap();
     let diagnostics = section(&output, "Diagnostics", "Frontiers");
-    assert_eq!(diagnostics.lines().count(), analysis.diagnostics().len());
+    assert_eq!(
+        diagnostics
+            .lines()
+            .filter(|line| line.trim_start().starts_with('σ'))
+            .count(),
+        analysis.diagnostics().len()
+    );
     for diagnostic in analysis.diagnostics() {
         assert!(diagnostics.contains(&format!(
             "{} @ 0x{:04x}: {:?}",

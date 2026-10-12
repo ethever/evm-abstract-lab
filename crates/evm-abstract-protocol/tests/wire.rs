@@ -256,5 +256,85 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 7);
+    assert_eq!(SCHEMA_VERSION, 8);
+}
+
+#[test]
+fn invalid_opcode_evidence_roundtrips_instruction_and_delegation_sources() {
+    for evidence in [
+        InvalidOpcodeDiagnostic::Instruction(InvalidInstruction {
+            opcode: 0xfe,
+            mnemonic: Some("INVALID".into()),
+            reason: InvalidOpcodeReason::ExplicitInvalid,
+        }),
+        InvalidOpcodeDiagnostic::Instruction(InvalidInstruction {
+            opcode: 0xef,
+            mnemonic: None,
+            reason: InvalidOpcodeReason::UndefinedOpcode,
+        }),
+        InvalidOpcodeDiagnostic::Instruction(InvalidInstruction {
+            opcode: 0x1e,
+            mnemonic: Some("CLZ".into()),
+            reason: InvalidOpcodeReason::UnavailableInFork(Fork::Cancun),
+        }),
+        InvalidOpcodeDiagnostic::DelegationEntry(InvalidDelegationEntry {
+            opcode: Some(0xef),
+            detail: "nested delegation indicator cannot be executed".into(),
+            byte_unavailable: None,
+        }),
+        InvalidOpcodeDiagnostic::DelegationEntry(InvalidDelegationEntry {
+            opcode: None,
+            detail: "delegation entry rejected".into(),
+            byte_unavailable: Some("active account code is unavailable".into()),
+        }),
+    ] {
+        roundtrip(Diagnostic {
+            state: 123,
+            pc: 0,
+            kind: DiagnosticKind::InvalidOpcode,
+            reduction: None,
+            invalid_opcode: Some(evidence),
+            detail: "exceptional halt".into(),
+        });
+    }
+    roundtrip(Diagnostic {
+        state: 456,
+        pc: 1,
+        kind: DiagnosticKind::InvalidJump,
+        reduction: None,
+        invalid_opcode: None,
+        detail: "InvalidJump".into(),
+    });
+}
+
+#[test]
+fn invalid_instruction_wire_requires_original_byte_and_typed_cause() {
+    let valid = r#"{"Instruction":{"opcode":239,"mnemonic":null,"reason":"UndefinedOpcode"}}"#;
+    assert_eq!(
+        serde_json::from_str::<InvalidOpcodeDiagnostic>(valid).unwrap(),
+        InvalidOpcodeDiagnostic::Instruction(InvalidInstruction {
+            opcode: 0xef,
+            mnemonic: None,
+            reason: InvalidOpcodeReason::UndefinedOpcode,
+        })
+    );
+    for invalid in [
+        valid.replace("\"opcode\":239,", ""),
+        valid.replace("\"opcode\":239", "\"opcode\":null"),
+        valid.replace("\"opcode\":239", "\"opcode\":256"),
+        valid.replace("UndefinedOpcode", "UnknownReason"),
+        valid.replace("\"mnemonic\":null,", ""),
+        valid.replace("\"opcode\":239,", "\"opcode\":239,\"opcode\":254,"),
+    ] {
+        assert!(
+            serde_json::from_str::<InvalidOpcodeDiagnostic>(&invalid).is_err(),
+            "{invalid}"
+        );
+    }
+    let diagnostic = r#"{"state":123,"pc":0,"kind":"InvalidOpcode","reduction":null,"invalid_opcode":null,"detail":"old category"}"#;
+    assert!(
+        serde_json::from_str::<Diagnostic>(&diagnostic.replace("\"invalid_opcode\":null,", ""))
+            .is_err(),
+        "schema 7 diagnostics are rejected by the schema 8 decoder"
+    );
 }
