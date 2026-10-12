@@ -263,7 +263,10 @@ fn assert_clz_json(value: &Json) {
     // Numeric keys retain their meaning; the independent expression layer
     // records the CLZ relation instead of changing the numeric mask shape.
     assert_eq!(value.as_object().unwrap().len(), 6);
-    assert_eq!(value["expression"]["kind"]["Operation"]["opcode"], 0x1e);
+    assert_eq!(
+        super::native::root(&value["expression"])["Operation"]["opcode"],
+        0x1e
+    );
 }
 
 #[test]
@@ -315,10 +318,20 @@ fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
     assert!(value["Constants"].is_null());
     assert_eq!(value["known_bits"]["zero"], "0x0");
     assert_eq!(value["known_bits"]["one"], "0x0");
+    let graph = &value["expression"];
+    let read = &super::native::root(graph)["WordRead"];
+    let nodes = graph["nodes"].as_array().unwrap();
     assert_eq!(
-        value["identity"]["input"]["name"],
-        serde_json::json!({"CalldataWord":"0x0"})
+        nodes[read["offset"].as_u64().unwrap() as usize]["Constant"],
+        "0x0"
     );
+    let view = &nodes[read["view"].as_u64().unwrap() as usize]["View"];
+    let source = &nodes[view["state"].as_u64().unwrap() as usize]["BytesInput"];
+    let token = &nodes[source["source"]["token"].as_u64().unwrap() as usize]["Input"];
+    assert_eq!(token["symbol"], "CalldataLength");
+    assert!(token["scope"].is_u64());
+    assert_eq!(source["length"], source["source"]["token"]);
+    assert_eq!(source["source"]["namespace"], "0x0");
     let uncorrelated = text(run_concrete(&[
         "cfg",
         "--hex",

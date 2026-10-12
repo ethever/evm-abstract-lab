@@ -48,7 +48,10 @@ fn decimal_entry_value_matches_hex_and_reaches_execution() {
             decimal_json["entry"]["environment"]["value"]["Constants"],
             serde_json::json!([hexadecimal])
         );
-        assert_eq!(decimal_json, hexadecimal_json);
+        assert_eq!(
+            super::native::canonical(&decimal_json),
+            super::native::canonical(&hexadecimal_json)
+        );
     }
 }
 
@@ -143,7 +146,10 @@ fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
                 );
                 results.push(result);
             }
-            assert_eq!(results[0], results[1]);
+            assert_eq!(
+                super::native::canonical(&results[0]),
+                super::native::canonical(&results[1])
+            );
             let requests = server.finish();
             assert!(
                 requests

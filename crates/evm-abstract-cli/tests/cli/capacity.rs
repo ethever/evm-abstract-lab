@@ -68,7 +68,10 @@ fn constants_only_clz_keeps_the_complete_set_at_capacity_257() {
             );
             assert_eq!(result["congruence"], "Top");
             assert_eq!(result["nonzero"], false);
-            assert_eq!(result["expression"]["kind"]["Operation"]["opcode"], 0x1e);
+            assert_eq!(
+                super::native::root(&result["expression"])["Operation"]["opcode"],
+                0x1e
+            );
         } else {
             let candidates = result["Constants"].as_array().unwrap();
             assert_eq!(candidates.len(), 257);

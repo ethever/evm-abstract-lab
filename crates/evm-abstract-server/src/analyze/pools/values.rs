@@ -11,11 +11,29 @@ pub(super) struct Dictionary {
     buckets: HashMap<u64, Vec<usize>>,
 }
 impl Dictionary {
-    pub(super) fn intern(&mut self, value: ValueInfo) -> usize {
+    pub(super) fn intern_checked(
+        &mut self,
+        value: ValueInfo,
+        export: &mut super::symbolic::Pool<'_>,
+    ) -> Result<usize, evm_abstract_protocol::ApiError> {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
-        self.insert(hasher.finish(), value)
+        let hash = hasher.finish();
+        if let Some(bucket) = self.buckets.get(&hash) {
+            for index in bucket {
+                export.charge(1)?;
+                if self.values[*index] == value {
+                    return Ok(*index);
+                }
+            }
+        }
+        export.charge(1)?;
+        let index = self.values.len();
+        self.values.push(value);
+        self.buckets.entry(hash).or_default().push(index);
+        Ok(index)
     }
+    #[cfg(test)]
     fn insert(&mut self, hash: u64, value: ValueInfo) -> usize {
         let bucket = self.buckets.entry(hash).or_default();
         // The digest only selects candidates. Every retained component must

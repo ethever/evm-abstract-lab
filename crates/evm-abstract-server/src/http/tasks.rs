@@ -10,8 +10,8 @@ use axum::{
     response::Response,
 };
 use evm_abstract_protocol::{
-    AnalysisReport, AnalyzeRequest, ApiError, ApiErrorCode, ErrorDetails, JobId, JobReply,
-    ValidationErrorKind, ValidationFailure,
+    AnalyzeRequest, ApiError, ApiErrorCode, ErrorDetails, JobId, JobReply, ValidationErrorKind,
+    ValidationFailure,
 };
 
 pub(super) async fn submit(
@@ -76,10 +76,10 @@ pub(super) async fn result(
     };
     match tokio::task::spawn_blocking(move || {
         state.jobs.result(id).and_then(|report| {
-            serde_json::to_vec(&ReportReply {
-                result: Ok(&report),
-            })
-            .map_err(|_| api_error(ApiErrorCode::Internal, "typed report encoding failed"))
+            super::export::report(
+                &report,
+                &evm_abstract::analysis::control::Control::default(),
+            )
         })
     })
     .await
@@ -122,9 +122,4 @@ fn job_reply(
             "task transport worker failed",
         )),
     }
-}
-
-#[derive(serde::Serialize)]
-struct ReportReply<'a> {
-    result: Result<&'a AnalysisReport, &'a ApiError>,
 }

@@ -402,7 +402,11 @@ fn analyze_json_and_full_ssa_keep_the_same_semantic_analysis() {
     ] {
         let report = json(&world("analyze", name, &["--format", "json"]));
         let with_ssa = json(&world("analyze", name, &["--ssa", "--format", "json"]));
-        assert_eq!(with_ssa["analysis"], report, "{name}");
+        assert_eq!(
+            super::native::canonical(&with_ssa["analysis"]),
+            super::native::canonical(&report),
+            "{name}"
+        );
         assert_eq!(report["status"], "Converged");
         assert!(report["world"]["fingerprint"].is_string());
         assert!(

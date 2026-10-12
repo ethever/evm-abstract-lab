@@ -181,6 +181,8 @@ fn report() -> AnalysisReport {
         })
         .collect::<Vec<_>>();
     let mut report = AnalysisReport {
+        symbolic: crate::tests::symbolic_graph(),
+        pending_machines: vec![],
         schema_version: evm_abstract_protocol::SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,

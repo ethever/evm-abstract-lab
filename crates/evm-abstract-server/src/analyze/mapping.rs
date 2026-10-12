@@ -38,6 +38,9 @@ pub(super) fn diagnostic(source: &analysis::DiagnosticKind) -> DiagnosticKind {
         analysis::DiagnosticKind::StackOverflow => DiagnosticKind::StackOverflow,
         analysis::DiagnosticKind::InvalidOpcode(_) => DiagnosticKind::InvalidOpcode,
         analysis::DiagnosticKind::OpaqueResult => DiagnosticKind::OpaqueResult,
+        analysis::DiagnosticKind::RelationalPrecisionLost(_) => {
+            DiagnosticKind::RelationalPrecisionLost
+        }
         analysis::DiagnosticKind::FactExchangeLimited(_) => DiagnosticKind::FactExchangeLimited,
     }
 }
@@ -102,6 +105,8 @@ pub(super) fn frontier(source: &analysis::FrontierReason) -> FrontierKind {
         }
         analysis::FrontierReason::CallDepth => FrontierKind::CallDepth,
         analysis::FrontierReason::Memory => FrontierKind::Memory,
+        analysis::FrontierReason::ByteRange(_) => FrontierKind::ByteRange,
+        analysis::FrontierReason::StateJoin(_) => FrontierKind::StateJoin,
         analysis::FrontierReason::Relations(_) => FrontierKind::Relations,
         analysis::FrontierReason::UnknownTarget => FrontierKind::UnknownTarget,
         analysis::FrontierReason::MissingCode(_) => FrontierKind::MissingCode,
@@ -133,14 +138,51 @@ pub(super) fn reduction(
 }
 pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol::FrontierDetails {
     use evm_abstract::analysis::{CreationBoundary as NC, FrontierReason as N};
-    use evm_abstract::domain::relational::QueryReason as NQ;
-    use evm_abstract_protocol::{CreationReason as C, FrontierDetails as P, QueryBoundary as Q};
+    use evm_abstract_protocol::{CreationReason as C, FrontierDetails as P};
     match source {
         N::Budget(bound) => P::Budget(limit(*bound)),
         N::Work => P::Work,
         N::SummaryWork => P::SummaryWork,
         N::CallDepth => P::CallDepth,
         N::Memory => P::Memory,
+        N::ByteRange(reason) => P::ByteRange(match reason {
+            analysis::ByteRangeBoundary::UnknownSize => {
+                evm_abstract_protocol::ByteRangeBoundary::UnknownSize
+            }
+            analysis::ByteRangeBoundary::OffsetTooLarge(offset) => {
+                evm_abstract_protocol::ByteRangeBoundary::OffsetTooLarge(super::value::word(
+                    *offset,
+                ))
+            }
+            analysis::ByteRangeBoundary::Overflow { offset, size } => {
+                evm_abstract_protocol::ByteRangeBoundary::Overflow(
+                    evm_abstract_protocol::ByteRangeOverflow {
+                        offset: *offset,
+                        size: *size,
+                    },
+                )
+            }
+            analysis::ByteRangeBoundary::TooLarge { requested, limit } => {
+                evm_abstract_protocol::ByteRangeBoundary::TooLarge(
+                    evm_abstract_protocol::ByteRangeLimit {
+                        requested: super::value::word(*requested),
+                        limit: *limit,
+                    },
+                )
+            }
+            analysis::ByteRangeBoundary::InputAlreadyBound => {
+                evm_abstract_protocol::ByteRangeBoundary::InputAlreadyBound
+            }
+        }),
+        N::StateJoin(reason) => P::StateJoin(match reason {
+            analysis::JoinBoundary::Shape => evm_abstract_protocol::JoinBoundary::Shape,
+            analysis::JoinBoundary::IdentityExhausted => {
+                evm_abstract_protocol::JoinBoundary::IdentityExhausted
+            }
+            analysis::JoinBoundary::Alternatives { limit } => {
+                evm_abstract_protocol::JoinBoundary::Alternatives(*limit)
+            }
+        }),
         N::UnknownTarget => P::UnknownTarget,
         N::MissingCode(address) => P::MissingCode(address.to_string()),
         N::MissingStorage { address, slot } => {
@@ -157,28 +199,7 @@ pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol
         N::Precompile(address) => P::Precompile(address.to_string()),
         N::PrecompileInput(address) => P::PrecompileInput(address.to_string()),
         N::UnsupportedOpcode(op) => P::UnsupportedOpcode(*op),
-        N::Relations(reason) => P::Relations(match reason {
-            NQ::Cancelled => Q::Cancelled,
-            NQ::Disabled => Q::Disabled,
-            NQ::Configuration => Q::Configuration,
-            NQ::ConstraintLimit => Q::ConstraintLimit,
-            NQ::ScalarFactLimit => Q::ScalarFactLimit,
-            NQ::ScalarFactError(error) => Q::ScalarFactError(fact_failure(error)),
-            NQ::ExpressionLimit => Q::ExpressionLimit,
-            NQ::Unsupported(op) => Q::Unsupported(*op),
-            NQ::ResourceLimit => Q::ResourceLimit,
-            NQ::SolverUnknown { provider, reason } => {
-                Q::SolverUnknown(evm_abstract_protocol::SolverUnknown {
-                    provider: solver_provider(*provider),
-                    reason: reason.clone(),
-                })
-            }
-            NQ::SolverError(error) => Q::SolverError(evm_abstract_protocol::SolverFailure {
-                provider: solver_provider(error.provider),
-                message: error.message.clone(),
-            }),
-            NQ::ModelUnavailable => Q::ModelUnavailable,
-        }),
+        N::Relations(reason) => P::Relations(query(reason)),
         N::Creation(reason) => P::Creation(match reason {
             NC::UnknownCreator => C::UnknownCreator,
             NC::UnknownNonce(address) => C::UnknownNonce(address.to_string()),
@@ -234,5 +255,43 @@ fn fact_failure(
             max_atoms: *max_atoms,
             required: *required,
         }),
+    }
+}
+
+pub(super) fn precision(
+    source: &analysis::DiagnosticKind,
+) -> Option<evm_abstract_protocol::QueryBoundary> {
+    if let analysis::DiagnosticKind::RelationalPrecisionLost(reason) = source {
+        Some(query(reason))
+    } else {
+        None
+    }
+}
+pub(super) fn query(
+    reason: &evm_abstract::domain::relational::QueryReason,
+) -> evm_abstract_protocol::QueryBoundary {
+    use evm_abstract::domain::relational::QueryReason as NQ;
+    use evm_abstract_protocol::QueryBoundary as Q;
+    match reason {
+        NQ::Cancelled => Q::Cancelled,
+        NQ::Disabled => Q::Disabled,
+        NQ::Configuration => Q::Configuration,
+        NQ::ConstraintLimit => Q::ConstraintLimit,
+        NQ::ScalarFactLimit => Q::ScalarFactLimit,
+        NQ::ScalarFactError(error) => Q::ScalarFactError(fact_failure(error)),
+        NQ::ExpressionLimit => Q::ExpressionLimit,
+        NQ::Unsupported(op) => Q::Unsupported(*op),
+        NQ::ResourceLimit => Q::ResourceLimit,
+        NQ::SolverUnknown { provider, reason } => {
+            Q::SolverUnknown(evm_abstract_protocol::SolverUnknown {
+                provider: solver_provider(*provider),
+                reason: reason.clone(),
+            })
+        }
+        NQ::SolverError(error) => Q::SolverError(evm_abstract_protocol::SolverFailure {
+            provider: solver_provider(error.provider),
+            message: error.message.clone(),
+        }),
+        NQ::ModelUnavailable => Q::ModelUnavailable,
     }
 }

@@ -9,6 +9,7 @@ fn instruction(
     reason: api::InvalidOpcodeReason,
 ) -> api::Diagnostic {
     api::Diagnostic {
+        precision: None,
         state,
         pc,
         kind: api::DiagnosticKind::InvalidOpcode,
@@ -151,6 +152,7 @@ fn delegation_entry_shows_byte_source_and_missing_reason_without_instruction_jum
     let mut report = crate::tests::report();
     report.frontiers.clear();
     report.diagnostics = vec![api::Diagnostic {
+        precision: None,
         state: 42,
         pc: 0,
         kind: api::DiagnosticKind::InvalidOpcode,

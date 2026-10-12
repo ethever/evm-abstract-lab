@@ -4,6 +4,7 @@ mod defaults;
 mod error;
 mod evm;
 mod explain;
+mod json;
 mod number;
 mod symbolic;
 mod world;
@@ -155,7 +156,7 @@ struct WorldArgs {
     /// Maximum cumulative execution and domain work.
     #[arg(long, default_value_t = defaults::MAX_WORK)]
     max_work: usize,
-    /// Maximum tracked memory bytes per frame.
+    /// Maximum logical memory footprint per frame; copies retain lazy ranges.
     #[arg(long, default_value_t = defaults::MAX_MEMORY_BYTES)]
     max_memory_bytes: usize,
     /// Constants retained per value; positive usize, without an additional cap.
@@ -219,7 +220,7 @@ struct AnalysisArgs {
     /// Maximum live frames, including the entry frame.
     #[arg(long, default_value_t = defaults::MAX_CALL_DEPTH)]
     max_call_depth: usize,
-    /// Maximum tracked memory bytes per frame and extracted byte-array range.
+    /// Maximum logical memory footprint per frame; copies retain lazy ranges.
     #[arg(long, default_value_t = defaults::MAX_MEMORY_BYTES)]
     max_memory_bytes: usize,
     #[command(flatten)]
@@ -431,16 +432,7 @@ fn run() -> Result<ExitCode, CliError> {
                         }
                         output
                     }
-                    CfgFormat::Json => match ir {
-                        Some(ir) if complete => serde_json::to_string_pretty(
-                            &serde_json::json!({"analysis": render::world::json(&analysis)?, "ssa": ir}),
-                        )?,
-                        Some(ir) => serde_json::to_string_pretty(&serde_json::json!({
-                            "analysis": render::world::json(&analysis)?,
-                            "partial_ssa": ir,
-                        }))?,
-                        None => serde_json::to_string_pretty(&render::world::json(&analysis)?)?,
-                    },
+                    CfgFormat::Json => json::world(&analysis, ir.as_ref())?,
                     CfgFormat::Dot => render::world::dot(&analysis),
                 },
                 complete,
@@ -451,7 +443,7 @@ fn run() -> Result<ExitCode, CliError> {
             (
                 match format {
                     TextFormat::Text => render::disassembly(&program),
-                    TextFormat::Json => serde_json::to_string_pretty(&program)?,
+                    TextFormat::Json => render::json::pretty(&program)?,
                 },
                 true,
             )
@@ -461,7 +453,7 @@ fn run() -> Result<ExitCode, CliError> {
             (
                 match format {
                     CfgFormat::Text => render::cfg(&analysis),
-                    CfgFormat::Json => serde_json::to_string_pretty(&analysis)?,
+                    CfgFormat::Json => render::json::pretty(&analysis)?,
                     CfgFormat::Dot => render::dot(&analysis),
                 },
                 analysis.status() == Status::Converged,
@@ -485,9 +477,7 @@ fn run() -> Result<ExitCode, CliError> {
                 (
                     match format {
                         TextFormat::Text => render::normalized_ssa(&analysis, &ir),
-                        TextFormat::Json => {
-                            serde_json::to_string_pretty(&normalized_program_json(&analysis, &ir))?
-                        }
+                        TextFormat::Json => json::program(&analysis, &ir)?,
                     },
                     false,
                 )
@@ -496,9 +486,7 @@ fn run() -> Result<ExitCode, CliError> {
                 (
                     match format {
                         TextFormat::Text => render::normalized_ssa(&analysis, &ssa),
-                        TextFormat::Json => {
-                            serde_json::to_string_pretty(&normalized_program_json(&analysis, &ssa))?
-                        }
+                        TextFormat::Json => json::program(&analysis, &ssa)?,
                     },
                     true,
                 )
@@ -517,31 +505,6 @@ fn run() -> Result<ExitCode, CliError> {
     } else {
         ExitCode::from(2)
     })
-}
-
-fn normalized_program_json(
-    analysis: &analysis::Analysis,
-    ir: &ssa::NormalizedSsa,
-) -> serde_json::Value {
-    let state_mapping: Vec<_> = analysis
-        .states()
-        .iter()
-        .map(|state| {
-            serde_json::json!({
-                "local_state": state.id,
-                "machine_state": analysis.execution_state_id(state.id)
-                    .expect("each projected state retains its machine identity"),
-            })
-        })
-        .collect();
-    let mut output = serde_json::json!({
-        "analysis": analysis,
-        "machine_analysis": analysis.execution(),
-        "state_mapping": state_mapping,
-    });
-    output[if ir.complete() { "ssa" } else { "partial_ssa" }] = serde_json::to_value(ir)
-        .expect("the normalized artifact serializes without fallible map keys");
-    output
 }
 
 fn main() -> ExitCode {
