@@ -11,6 +11,7 @@ mod ranges;
 #[cfg(test)]
 mod tests;
 mod traversal;
+pub(super) mod widening;
 
 use crate::domain::{
     AbstractValue, Domain,

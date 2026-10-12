@@ -16,6 +16,7 @@ mod slots;
 #[cfg(test)]
 mod tests;
 mod traversal;
+mod widening;
 use thiserror::Error;
 
 /// Ordered state observations with the selected snapshot storage backend.
