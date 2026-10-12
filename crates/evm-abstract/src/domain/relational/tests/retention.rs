@@ -403,3 +403,118 @@ fn shared_updates_bound_history_and_preserve_rename_max_padding_and_cancellation
         );
     }
 }
+
+#[test]
+fn fixed_slot_reads_keep_guarded_history_initial_facts_and_symbolic_aliases() {
+    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
+        let limits = policy(provider);
+        let states = limits.expressions().into();
+        let high_key = ExprId::constant(U256::from(1) << 255);
+        let full_word = ExprId::constant(U256::MAX - U256::from(17));
+        let wide = SlotStateId::zero()
+            .store(c(0), full_word.clone(), states)
+            .unwrap()
+            .store(high_key.clone(), c(13), states)
+            .unwrap();
+        let read = ExprId::slot_read(wide, c(0), limits.expressions()).unwrap();
+        assert_eq!(read, full_word);
+        assert_eq!(
+            RelationState::default().unique_value(&read, &limits),
+            ValueQuery::Unique(U256::MAX - U256::from(17))
+        );
+        let wide = SlotStateId::zero()
+            .store(high_key.clone(), full_word.clone(), states)
+            .unwrap()
+            .store(c(0), c(13), states)
+            .unwrap();
+        assert_eq!(
+            ExprId::slot_read(wide, high_key, limits.expressions()).unwrap(),
+            full_word
+        );
+        let x = ExprId::fresh().unwrap();
+        let y = ExprId::fresh().unwrap();
+        let guard = ExprId::fresh().unwrap();
+        let left = SlotStateId::zero()
+            .store(c(0), x.clone(), states)
+            .unwrap()
+            .store(c(1), c(32), states)
+            .unwrap();
+        let right = SlotStateId::zero()
+            .store(c(0), y.clone(), states)
+            .unwrap()
+            .store(c(1), c(64), states)
+            .unwrap();
+        let selected = left.join_guarded(&right, guard.clone(), states).unwrap();
+        let old = ExprId::slot_read(selected.clone(), c(0), limits.expressions()).unwrap();
+        let expected =
+            ExprId::ite(guard.clone(), x.clone(), y.clone(), limits.expressions()).unwrap();
+        assert_eq!(old, expected);
+        let key = ExprId::fresh().unwrap();
+        let updated = selected.store(key.clone(), c(13), states).unwrap();
+        let latest = ExprId::slot_read(updated, c(0), limits.expressions()).unwrap();
+        for alias in [0, 1] {
+            let mut path = RelationState::default();
+            for (input, value) in [(&x, 7), (&y, 9), (&key, alias)] {
+                assert_eq!(path.add_equal(input, &c(value), &limits), CheckResult::Sat);
+            }
+            let expected = if alias == 0 { c(13) } else { old.clone() };
+            assert_eq!(
+                path.unique_value(
+                    &op(opcode::EQ, &[latest.clone(), expected], &limits),
+                    &limits
+                ),
+                ValueQuery::Unique(U256::from(1)),
+                "{provider:?}: fixed read alias {alias}"
+            );
+        }
+        let initial = SlotStateId::observed(
+            SourceId::fresh().unwrap(),
+            vec![StateBinding {
+                index: U256::ZERO,
+                value: x,
+                numeric: NumericValue::constant(U256::from(7)),
+            }],
+            states,
+        )
+        .unwrap()
+        .store(c(1), c(99), states)
+        .unwrap();
+        assert_eq!(
+            RelationState::default().unique_value(
+                &ExprId::slot_read(initial, c(0), limits.expressions()).unwrap(),
+                &limits,
+            ),
+            ValueQuery::Unique(U256::from(7)),
+            "{provider:?}: initial observed slot after a disjoint write"
+        );
+        let renamed = selected
+            .rename_fresh(&BTreeMap::from([(y, c(11))]), limits.expressions())
+            .unwrap();
+        let read = ExprId::slot_read(renamed, c(0), limits.expressions()).unwrap();
+        let mut path = RelationState::default();
+        assert_eq!(path.add_equal(&guard, &c(0), &limits), CheckResult::Sat);
+        assert_eq!(
+            path.unique_value(&read, &limits),
+            ValueQuery::Unique(U256::from(11))
+        );
+        assert!(
+            ExprId::slot_read(
+                selected.clone(),
+                c(0),
+                crate::domain::symbolic::ExprLimits {
+                    max_nodes: selected.nodes(),
+                    ..limits.expressions()
+                },
+            )
+            .is_err()
+        );
+        let token = embedded_smt::Cancellation::new();
+        token.cancel();
+        embedded_smt::with_cancellation(&token, || {
+            assert_eq!(
+                ExprId::slot_read(selected.clone(), c(0), limits.expressions()),
+                Err(crate::domain::symbolic::ExprError::Cancelled)
+            );
+        });
+    }
+}
