@@ -12,7 +12,7 @@ mod snapshot;
 pub use environment::{AddressInput, BlobHashes, EvmEnvironment, GasInput, InputScope, Symbol};
 mod store;
 
-pub use bytes::{ByteArray, RangeError};
+pub use bytes::{ByteArray, GuardRefinementError, RangeError};
 pub use snapshot::{SnapshotEnvironment, SnapshotIdentity};
 pub use store::{AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store, StoreError};
 
