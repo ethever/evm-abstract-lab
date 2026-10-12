@@ -105,3 +105,37 @@ fn widening_form_preserves_original_on_failure_cancel_and_low_policy() {
     assert_eq!(memory.widening_form(domain, limits(domain)), Err(failure));
     assert_eq!(memory, failed);
 }
+
+#[test]
+fn widening_form_refreshes_projected_length_from_the_authoritative_constant() {
+    let domain = Domain::default();
+    let limits = limits(domain);
+    let left = ByteArray::memory();
+    let mut right = left.clone();
+    right
+        .expand(&constant(0), &constant(32), 64, domain)
+        .unwrap();
+    let selector = ExprId::fresh().unwrap();
+    let joined = left
+        .join_guarded(&right, domain, selector.clone(), limits)
+        .unwrap();
+    let mut projected = joined.clone();
+    projected
+        .rename_fresh(
+            &BTreeMap::from([(selector, ExprId::constant(U256::ZERO))]),
+            limits,
+        )
+        .unwrap();
+    assert!(projected.len().contains(U256::ZERO));
+    assert!(projected.len().contains(U256::from(32)));
+    let expression = projected.len().expression().cloned();
+    let widened = projected.widening_form(domain, limits).unwrap();
+    let direct = right.widening_form(domain, limits).unwrap();
+    assert_eq!(widened.root, direct.root);
+    assert_eq!(widened.len().numeric(), direct.len().numeric());
+    assert_eq!(widened.len().singleton(), Some(U256::from(32)));
+    assert_eq!(widened.len().expression().cloned(), expression);
+    assert_eq!(widened.len().provenance(), projected.len().provenance());
+    assert_eq!(widened, widened.widening_form(domain, limits).unwrap());
+    assert_eq!(joined.len().singleton(), None);
+}
