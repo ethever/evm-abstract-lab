@@ -43,13 +43,13 @@ fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
             api::ApiErrorCode::Export
         },
         message,
-        details: api::ErrorDetails::Export(api::ExportFailure {
+        details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
             kind,
             required,
             limits: report.metadata.export_limits,
             usage: report.metadata.export_usage,
             written: Some(written),
-        }),
+        })),
     }
 }
 

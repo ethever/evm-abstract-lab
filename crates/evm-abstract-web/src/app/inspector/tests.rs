@@ -7,6 +7,48 @@ mod scroll_bounds;
 mod storage;
 
 #[test]
+fn export_error_decodes_the_old_reply_and_renders_each_typed_resource_field() {
+    let reply: api::AnalyzeReply = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../evm-abstract-protocol/tests/fixtures/api-errors/export-analyze-reply.json"
+    )))
+    .unwrap();
+    let error = reply.result.unwrap_err();
+    let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
+    let mut time = 0.0;
+    let text = rendered_at(
+        &context,
+        &mut time,
+        vec![],
+        egui::vec2(1200.0, 900.0),
+        |ui| api_error_details(ui, &error),
+    );
+    let labels: Vec<_> = text.iter().map(|(text, _)| text.as_str()).collect();
+    for expected in [
+        "Export boundary",
+        "OutputBytes",
+        "Required",
+        "8193",
+        "Encoded bytes retained",
+        "8192",
+        "Actual graph nodes",
+        "7",
+        "Exact byte payload",
+        "31",
+        "Projection work",
+        "127",
+        "Complete JSON byte limit",
+        "Node/depth limits",
+        "64 / 16",
+        "Payload/work limits",
+        "4096 / 16384",
+    ] {
+        assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
+    }
+}
+
+#[test]
 fn fingerprint_error_renders_the_typed_cause_without_requiring_message_parsing() {
     let error = api::ApiError {
         code: api::ApiErrorCode::Export,

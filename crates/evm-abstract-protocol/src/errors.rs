@@ -142,7 +142,7 @@ variant! {
         /// A report failed schema, graph-sort or pool-reference validation.
         Report(crate::ReportValidationFailure),
         /// Bounded report projection failed without changing analysis results.
-        Export(crate::ExportFailure),
+        Export(Box<crate::ExportFailure>),
         /// Snapshot identity computation failed explicitly.
         Fingerprint(FingerprintFailure),
         /// SSA invariant failure.
