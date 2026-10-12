@@ -25,7 +25,7 @@
 
 **理论角度：**word 的数值和它占用的字节位置是两项信息。偏移 1 表示向后移动一个字节，不能把它当成下一个独立 word。新帧的 memory 读零，写入和访问范围又会改变后续观察。
 
-**实现角度：**打开 [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs)，只追 `memory`、`write_word`、`read_word`、`expand`；结构中的默认字节解释了为什么没有显式表项也能读零。然后用[覆盖一个字节的实验](../14-memory-model.md#在一个已写入的-word-中覆盖一个字节)理解 `write_byte`。
+**实现角度：**打开 [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs)，只追 `memory`、`write_word`、`read_word`、`expand`；先看新 memory 的 Zero 内容根，再看 default 数值事实；两者解释初始读零，lazy Copy 后则不能只靠 default 判断内容。然后用[覆盖一个字节的实验](../14-memory-model.md#在一个已写入的-word-中覆盖一个字节)理解 `write_byte`。
 
 **观察与停点：**第一个实验的 `stack out` 为 `[{0x2a}, {0x20}]`，分别是读取结果与 MSIZE。能解释“值是 42，内存规模是 32 字节”，即可进入 storage；COPY、未知长度和跨帧复制可留到需要时。
 
@@ -39,7 +39,7 @@
 
 **理论角度：**指令按执行顺序改变当前状态。已知唯一 slot 的写入替换旧值，称为强更新；读取 slot 1 不受这次写 slot 0 影响。初始 world 是输入事实，当前 Store 是执行到此处的状态。
 
-**实现角度：**沿 [`Store::new` → `write` → `read`](../../crates/evm-abstract/src/world/store.rs)，找到 `Plane` 的显式项、账户默认值、全局默认值；结合[三层查找](../16-storage-model.md#当前-store-的三层查找)阅读。再做[未列出 slot 的对照](../16-storage-model.md#没列出的-slot-是零还是未知)：`storage_unknown:false` 是输入的完整性声明。
+**实现角度：**沿 [`Store::new` → `write` → `read`](../../crates/evm-abstract/src/world/store.rs)，找到 `Plane` 的账户根与显式项、账户默认值、全局默认值；结合[三层查找](../16-storage-model.md#当前-store-的三层查找)阅读。再做[未列出 slot 的对照](../16-storage-model.md#没列出的-slot-是零还是未知)：`storage_unknown:false` 是输入的完整性声明。
 
 **观察与停点：**基础实验的栈是 `[42,7]`；完整零默认与未知默认的对照分别是 `[5,0,0]` 和 `[5,⊤,⊤]`。这些离线实验都可以 `Converged`，未知值本身不表示分析未完成。到这里已完成本模块的基础目标。
 
@@ -59,9 +59,9 @@
 
 随后只选一个未知索引实验：[相同 memory 偏移写后读](../14-memory-model.md#同一个未知偏移写后再读也未必恢复原值)或[相同 storage 键写后读](../16-storage-model.md#6-无法列出-slot-候选刚写入再读为什么是-07)。当前模型保留同址写后读关系；读取合法范围、求解与保守投影仍需分别检查。
 
-**观察与停点：**能在输出中定位弱更新保留的旧值，并解释一个多出的组合即可。完整 word 的表达式往返、字节间关联和延后合并，可再查[14 的相关性实验](../14-memory-model.md#8-为什么刚存进去再读出来会多出候选)。
+**观察与停点：**能在数值输出中定位弱更新保留的旧值，说明独立集合会多允许哪个组合，并指出完整根保存的共同选择。再用[14 的 word 往返](../14-memory-model.md#8-为什么刚存进去再读出来会多出候选)核对为什么读取只保留两个原 word。
 
-**自检：**把两个候选 slot 都直接改成 9，会漏掉哪种具体结果？只知道两次 k 相同，是否足以让当前实现证明 SLOAD(k)=7？
+**自检：**把两个候选 slot 都改成 9，会漏掉哪些结果？同一账户的写后根为何能使 SLOAD(k)=7，随后对 q 的写入又引入哪项别名条件？
 
 <a id="ownership"></a>
 

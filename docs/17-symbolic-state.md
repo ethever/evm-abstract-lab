@@ -55,15 +55,23 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 整机 guarded join 为栈值、地址、byte/slot 根、continuation、rollback store 和完整路径公式使用同一个 selector。这样可以表示“p=0x80 时对应那份 memory，p=0xc0 时对应另一份”，避免逐字段交叉配对。路径公式保留 inherited formula 与当前 constraints，二者都属于完整状态。
 
-与自身或已表示的完整替代合并可以被吸收。重复相同覆盖应通过规范化达到稳定根；不能仅因内部版本号增加就判定内容改变。持续增长的真实状态仍受 alternatives、节点、深度和共享工作策略约束。无法完成的 join 保存完整 incoming payload，`StateJoin` frontier 不构成不可达证明。
+与自身或已表示的完整替代合并可以吸收。覆盖判断核对完整载荷，必要时用有界查询检查标量和路径保证；UNKNOWN 不能证明覆盖。重复相同覆盖通过规范化减少根的增长，不能仅因内部版本号增加就判定内容改变。
+
+循环处理分两种情况。若除操作数栈与路径外，所有帧内容、byte/slot 根、source、view、rollback checkpoint 和 continuation 都保持相同，栈 widening 可以扩大改变的 word 的数值范围。持续改变的 word 保留扩大的无符号区间，放弃会继续增长的有限集、位和同余细节；未改变的 word 保留原数值事实。结果只保留共同路径保证，不能把已丢失的标量关联仍显示为精确析取。状态根也随迭代改变时，这个方法不适用。
+
+整机循环 widening 另用一组有界的**完整 cases**扩大状态。引擎登记自己在 join 时产生的 selector；循环归一化只将这些 selector 分别代入 0/1，同一张替换表作用于栈、地址、byte/slot 根、返回 view、continuation 和 rollback store。输入 source、GAS 及手工 guard 永不作为内部选择枚举；它们继续是固定或独立的符号变量，不能随意选一个模型值代替。
+
+这一步是显式 widening：先忘掉旧路径公式和条件保证，并清理已失效的显示缓存、临时复制身份及必须成立的初始独立性等元数据，再按完整载荷去重。不可变根的有序效果、历史读取、来源身份和仍可达的初始观察保留。旧路径保证的丢失可以扩大输入集合；它没有声称无限循环后仍保存原来的精确路径公式。重新组合 cases 时使用同一个新 selector 配对所有字段；只有完整 case 集稳定，才可据此吸收新的输入。
+
+完整和待处理 cases 共用 `max_constraints` 的数量上限，另受表达式节点、深度、共享 work 和取消控制。真实 source 或状态效果持续变化可能产生新 case。达到边界保存 incoming payload 与对应 typed frontier：case 数量为 `StateJoin`，表达式限制为 `Relations`，共享工作耗尽为 `Work`。循环判断来自实际图中的回路，不能只因同一个 pc 再次出现就枚举变量或宣告固定点。
 
 摘要重放共享一张 rename map，遍历隐藏在 state source、view、rollback 和返回数据中的 fresh token。固定输入身份保持绑定，调用中新产生的未知来源每次重放使用新身份。重命名和导入按完整变换提交，失败不能安装一半状态。
 
 ## 原生 JSON 6 与 Web 协议 9
 
-Native analysis schema 为 6；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。原始 graph 序列化默认节点工作 65,536、深度 256、exact payload 16 MiB；payload 与表达式节点预算分开，因此正常 24 KiB 代码不会被隐含的 1024-byte 上限截断。
+Native analysis schema 为 6；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或求解编码超限。
 
-原生 graph 的 `identity_scope` 与来源 namespace 保留同一进程内的 Fresh/输入身份；不能用某份报告的 local root 索引与另一份报告比较。原生 CLI JSON 通过 `render::json` 的流式 writer 输出，整份 UTF-8 输出默认上限为 64 MiB，每次追加前检查预算与取消；应用可用 `JsonLimits` 与 `with_control` 明确选择策略。超过预算返回 `JsonError::Bytes`，包含已写字节、下一次写入所需字节和额度；取消返回 `JsonError::Cancelled`，保留已计算的分析事实。原生 pending Arc 快照仍可能重复其程序和状态，整份 writer 的预算约束这些重复输出；Web 使用下面的共享目录。直接调用第三方 serde 序列化函数不自动获得整份 writer 预算。
+原生 graph 的 `identity_scope`、Fresh 编号及 Input scope/symbol 保留同一进程中的身份。source 的 `token` 是本图中的表达式引用，须先解析它指向的身份，再结合 namespace 判断来源；不能直接比较两个图的 token 或 root 索引，也不能用同名打印叶跨报告绑定输入。原生 CLI JSON 通过 `render::json` 的流式 writer 输出，整份 UTF-8 输出默认上限为 64 MiB，每次追加前检查预算与取消；应用可用 `JsonLimits` 与 `with_control` 明确选择策略。超过预算返回 `JsonError::Bytes`，包含已写字节、下一次写入所需字节和额度；取消返回 `JsonError::Cancelled`，保留已计算的分析事实。原生 pending Arc 快照仍可能重复其程序和状态，整份 writer 的预算约束这些重复输出；Web 使用下面的共享目录。直接调用第三方 serde 序列化函数不自动获得整份 writer 预算。
 
 世界指纹保留原 v2 编码和全部初始观察；`World::fingerprint` 返回 `Result<B256, FingerprintError>`。取消、值编码失败和长度前缀溢出分别是 `Cancelled`、`Encoding`、`LengthOverflow`，不生成替代 digest。`render::world::evidence` 在报告输出前有界计算该指纹并返回可失败的借用视图，原生 JSON 通过 `JsonError::Fingerprint` 传播；文本和 DOT 明确显示 unavailable 和错误并停止渲染。Server 使用 `ErrorDetails::Fingerprint` 保存类型与编码坐标，取消映射为 Cancelled，其余失败映射为 Export。调用方须在适用的 `Control.scope` 内计算 evidence，随后 writer 仍逐次检查取消与整份输出预算。
 
@@ -79,4 +87,6 @@ MemoryPolicy 前沿在 UI 明确标记“策略下尚未展开”，与 EVM Fail
 
 三个 native provider 的 Array/UF 基础接口、原生 resource/cancellation 及 malformed input 边界由 `embedded-smt`、`bitwuzla-native` 的测试覆盖。基础接口通过不自动证明所有 EVM 路径通过；实际 opcode、上下文、rollback、summary、收敛与 revm 对照需要独立验收。
 
-协议回归应从真实 COPY/storage alias 分析开始，经过 typed report、JSON 解析、前端引用校验与 SSA，另测大共享图、range prestate、预算和取消。最终 SHA、fork、输入假设、provider/rlimit、节点/状态/求解成本、内存与耗时由本 issue 的集成证据统一记录；本教程不填入未测量性能数字。
+教程中的同址 memory/storage、有限别名、完整 word 往返、重叠复制与矛盾分支例子，各自核对一项具体关系。完全无约束的 memory 地址及 calldata 长度仍保留策略前沿，退出码为 2。循环 cases 是有界的保守抽象规则，不保证任意循环都达到固定点；历史读取和摘要重放仍须按实际图、输入与分析额度分别检查。库默认 1024 节点与 CLI 默认 16384 节点也不是同一种验证条件，不能由简单例子的通过推断全部默认策略已验证。
+
+协议验收还须从真实 COPY/storage alias 分析经过 typed report、JSON 解析、前端引用校验与 SSA，并覆盖大共享图、range prestate、预算和取消。最终 SHA、fork、输入假设、provider/rlimit、节点/状态/求解成本、内存与耗时由本 issue 的集成证据统一记录；本教程不填入未测量性能数字。
