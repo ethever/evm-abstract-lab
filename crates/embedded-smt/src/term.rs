@@ -11,10 +11,20 @@ use std::{
     },
 };
 
+mod array;
+mod function;
+pub use array::Array;
+use function::FunctionDecl;
+pub use function::{Function, FunctionArg, FunctionSort};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sort {
     Bool,
     Bv(u32),
+    Array {
+        index_width: u32,
+        element_width: u32,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -22,6 +32,10 @@ pub(crate) enum Op {
     Bool(bool),
     Literal(String),
     Variable(String),
+    ConstantArray,
+    Select,
+    Store,
+    Apply(Arc<FunctionDecl>),
     Eq,
     Not,
     And,
@@ -99,16 +113,20 @@ impl Default for Context {
     }
 }
 impl Context {
-    /// Allocate a fresh bit-vector symbol; width must be positive.
-    pub fn fresh_bv(&self, prefix: &str, width: u32) -> Bv {
-        assert!(width > 0, "bit-vector width must be positive");
+    fn fresh_name(&self, prefix: &str) -> String {
         let next = self.next.get();
         self.next.set(
             next.checked_add(1)
                 .expect("query-local symbol space exhausted"),
         );
+        format!("{prefix}!{}!{next}", self.scope)
+    }
+
+    /// Allocate a fresh bit-vector symbol; width must be positive.
+    pub fn fresh_bv(&self, prefix: &str, width: u32) -> Bv {
+        assert!(width > 0, "bit-vector width must be positive");
         Bv(Term::new(
-            Op::Variable(format!("{prefix}!{}!{next}", self.scope)),
+            Op::Variable(self.fresh_name(prefix)),
             Sort::Bv(width),
             vec![],
         ))
@@ -136,7 +154,7 @@ impl Bv {
     pub fn width(&self) -> u32 {
         match self.0.0.sort {
             Sort::Bv(width) => width,
-            Sort::Bool => unreachable!("typed bit-vector"),
+            _ => unreachable!("typed bit-vector"),
         }
     }
     /// Read a syntactic literal when it fits a machine integer.

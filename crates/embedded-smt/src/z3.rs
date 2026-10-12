@@ -2,12 +2,12 @@
 
 use crate::{
     Bool, Bv, Error, Outcome, Provider, Unknown,
-    backend::{self, Backend, Status},
+    backend::{self, Backend, Failure, Status},
     term::{Node, Op, Sort},
 };
 use ::z3::{
-    Config, Params, SatResult, Solver, StatisticsValue,
-    ast::{BV, Bool as NativeBool},
+    Config, Params, SatResult, Solver, Sort as NativeSort, StatisticsValue,
+    ast::{Array as NativeArray, BV, Bool as NativeBool},
 };
 use num_bigint::BigUint;
 
@@ -15,6 +15,7 @@ use num_bigint::BigUint;
 enum Native {
     Bool(NativeBool),
     Bv(BV),
+    Array(NativeArray),
 }
 impl Native {
     fn bool(&self) -> &NativeBool {
@@ -27,6 +28,12 @@ impl Native {
         match self {
             Self::Bv(value) => value,
             _ => unreachable!("typed bit-vector"),
+        }
+    }
+    fn array(&self) -> &NativeArray {
+        match self {
+            Self::Array(value) => value,
+            _ => unreachable!("typed array"),
         }
     }
 }
@@ -46,9 +53,8 @@ fn resources(solver: &Solver) -> Option<u32> {
         _ => None,
     }
 }
-impl Backend for Z3 {
-    type Term = Native;
-    fn make(&mut self, node: &Node, args: &[Native]) -> Result<Native, Error> {
+impl Z3 {
+    fn make_primitive(&mut self, node: &Node, args: &[Native]) -> Result<Native, Error> {
         Ok(match &node.op {
             Op::Bool(value) => Native::Bool(NativeBool::from_bool(*value)),
             Op::Literal(hex) => {
@@ -70,9 +76,39 @@ impl Backend for Z3 {
                 match node.sort {
                     Sort::Bool => Native::Bool(NativeBool::new_const(name.as_str())),
                     Sort::Bv(width) => Native::Bv(BV::new_const(name.as_str(), width)),
+                    Sort::Array {
+                        index_width,
+                        element_width,
+                    } => Native::Array(NativeArray::new_const(
+                        name.as_str(),
+                        &NativeSort::bitvector(index_width),
+                        &NativeSort::bitvector(element_width),
+                    )),
                 }
             }
-            Op::Eq => Native::Bool(args[0].bv().eq(args[1].bv())),
+            Op::ConstantArray => {
+                let Sort::Array { index_width, .. } = node.sort else {
+                    return Err(error("constant array has a non-array sort"));
+                };
+                Native::Array(NativeArray::const_array(
+                    &NativeSort::bitvector(index_width),
+                    args[0].bv(),
+                ))
+            }
+            Op::Select => Native::Bv(
+                args[0]
+                    .array()
+                    .select(args[1].bv())
+                    .as_bv()
+                    .ok_or_else(|| error("array selection is not a bit-vector"))?,
+            ),
+            Op::Store => Native::Array(args[0].array().store(args[1].bv(), args[2].bv())),
+            Op::Apply(_) => return Err(error("function application bypassed congruence lowering")),
+            Op::Eq => Native::Bool(match &args[0] {
+                Native::Bool(value) => value.eq(args[1].bool()),
+                Native::Bv(value) => value.eq(args[1].bv()),
+                Native::Array(value) => value.eq(args[1].array()),
+            }),
             Op::Not => Native::Bool(args[0].bool().not()),
             Op::And => Native::Bool(NativeBool::and(
                 &args.iter().map(Native::bool).collect::<Vec<_>>(),
@@ -80,7 +116,13 @@ impl Backend for Z3 {
             Op::Or => Native::Bool(NativeBool::or(
                 &args.iter().map(Native::bool).collect::<Vec<_>>(),
             )),
-            Op::Ite => Native::Bv(args[0].bool().ite(args[1].bv(), args[2].bv())),
+            Op::Ite => match node.sort {
+                Sort::Bool => Native::Bool(args[0].bool().ite(args[1].bool(), args[2].bool())),
+                Sort::Bv(_) => Native::Bv(args[0].bool().ite(args[1].bv(), args[2].bv())),
+                Sort::Array { .. } => {
+                    Native::Array(args[0].bool().ite(args[1].array(), args[2].array()))
+                }
+            },
             Op::BvNot => Native::Bv(args[0].bv().bvnot()),
             Op::ZeroExtend(extra) => Native::Bv(args[0].bv().zero_ext(*extra)),
             Op::Extract(high, low) => Native::Bv(args[0].bv().extract(*high, *low)),
@@ -106,6 +148,12 @@ impl Backend for Z3 {
             Op::Sgt => Native::Bool(args[0].bv().bvsgt(args[1].bv())),
             Op::Sge => Native::Bool(args[0].bv().bvsge(args[1].bv())),
         })
+    }
+}
+impl Backend for Z3 {
+    type Term = Native;
+    fn make(&mut self, node: &Node, args: &[Native]) -> Result<Native, Failure> {
+        self.make_primitive(node, args).map_err(Failure::from)
     }
     fn assert(&mut self, term: &Native) -> Result<(), Error> {
         self.solver.assert(term.bool());
@@ -146,7 +194,7 @@ impl Backend for Z3 {
 
 pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Outcome {
     ::z3::with_z3_config(&Config::new(), || {
-        let solver = Solver::new_for_logic("QF_BV").expect("Z3 supports QF_BV");
+        let solver = Solver::new_for_logic("QF_ABV").expect("Z3 supports QF_ABV");
         let mut params = Params::new();
         params.set_u32("rlimit", rlimit);
         solver.set_params(&params);
@@ -156,7 +204,7 @@ pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Out
         crate::cancellation::interruptible(
             &cancellation,
             move || handle.interrupt(),
-            || backend::execute(assertions, value, Z3 { solver, rlimit }),
+            || backend::execute(assertions, value, Z3 { solver, rlimit }, rlimit),
         )
     })
 }

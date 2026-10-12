@@ -252,6 +252,16 @@ bitwuzla::Term apply(Session& session, std::uint32_t kind,
         throw std::invalid_argument("invalid bit extraction indices");
       }
       return session.manager.mk_term(bitwuzla::Kind::BV_EXTRACT, args, indices);
+    case 29:
+    case 30:
+      arity(args, kind == 29 ? 2 : 3);
+      if (!args[0].sort().is_array() ||
+          args[0].sort().array_index() != args[1].sort() ||
+          (kind == 30 && args[0].sort().array_element() != args[2].sort())) {
+        throw std::invalid_argument("array index or element sorts differ");
+      }
+      return session.manager.mk_term(
+          kind == 29 ? bitwuzla::Kind::ARRAY_SELECT : bitwuzla::Kind::ARRAY_STORE, args);
     default:
       arity(args, 2);
       bit_vectors(args);
@@ -329,6 +339,33 @@ int evmbw_variable(void* opaque, std::uint32_t width, const char* name,
   });
 }
 
+int evmbw_array_variable(void* opaque, std::uint32_t index_width,
+                         std::uint32_t element_width, const char* name,
+                         std::uint64_t* out) noexcept {
+  return guarded(static_cast<Session*>(opaque), [&](Session& session) {
+    if (out == nullptr || name == nullptr || index_width == 0 || element_width == 0) {
+      throw std::invalid_argument("invalid array variable input or output");
+    }
+    const auto sort = session.manager.mk_array_sort(
+        session.manager.mk_bv_sort(index_width), session.manager.mk_bv_sort(element_width));
+    *out = session.store(session.manager.mk_const(sort, std::string(name)));
+  });
+}
+
+int evmbw_constant_array(void* opaque, std::uint32_t index_width,
+                         TermRef value, std::uint64_t* out) noexcept {
+  return guarded(static_cast<Session*>(opaque), [&](Session& session) {
+    if (out == nullptr || index_width == 0) {
+      throw std::invalid_argument("invalid constant array index width or output");
+    }
+    const auto& term = session.term(value);
+    if (!term.sort().is_bv()) throw std::invalid_argument("constant array default must be a bit-vector");
+    const auto sort = session.manager.mk_array_sort(session.manager.mk_bv_sort(index_width), term.sort());
+    // Construct before storing: vector growth must not invalidate the borrowed default.
+    *out = session.store(session.manager.mk_const_array(sort, term));
+  });
+}
+
 int evmbw_apply(void* opaque, std::uint32_t kind, const TermRef* args,
                 std::size_t argc, const std::uint32_t* indices,
                 std::size_t indexc, std::uint64_t* out) noexcept {
@@ -383,6 +420,9 @@ int evmbw_model(void* opaque, TermRef ref, const char** out) noexcept {
     if (out == nullptr) throw std::invalid_argument("null model output");
     const auto& term = session.term(ref);
     if (!session.had_sat) throw std::invalid_argument("model requires the latest check to be SAT");
+    if (!term.sort().is_bool() && !term.sort().is_bv()) {
+      throw std::invalid_argument("model projection requires a Boolean or bit-vector term");
+    }
     const auto value = session.solver.get_value(term);
     if (!value.is_value()) throw std::runtime_error("native model value is not concrete");
     if (value.sort().is_bool()) {
