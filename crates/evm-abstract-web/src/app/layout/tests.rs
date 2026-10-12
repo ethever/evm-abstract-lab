@@ -350,6 +350,7 @@ fn long_input_and_diagnostics_stay_bounded_in_a_short_viewport() {
             pc: index,
             kind: DiagnosticKind::OpaqueResult,
             reduction: None,
+            invalid_opcode: None,
             detail: "A detailed diagnostic must remain independently scrollable. ".repeat(20),
         })
         .collect();

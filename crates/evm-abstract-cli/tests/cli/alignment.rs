@@ -274,11 +274,9 @@ fn fork_invalid_opcode_annotation_survives_instruction_alignment() {
             0,
         );
         let directory = if command == "explain" {
-            assert!(
-                output
-                    .lines()
-                    .any(|line| line == "diagnostic σᵖ₀ @ 0x0002: InvalidOpcode")
-            );
+            assert!(output.lines().any(|line| {
+                line.starts_with("diagnostic σᵖ₀ @ 0x0002: InvalidOpcode · 0x1e (CLZ)")
+            }));
             program_directory(&output)
         } else {
             &output

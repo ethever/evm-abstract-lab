@@ -85,7 +85,7 @@ fn unsupported_and_invalid_inputs_are_distinct() {
         assert!(
             a.diagnostics()
                 .iter()
-                .any(|d| d.kind == DiagnosticKind::InvalidOpcode)
+                .any(|d| matches!(d.kind, DiagnosticKind::InvalidOpcode(_)))
         );
         ssa::build(&a).unwrap();
     }

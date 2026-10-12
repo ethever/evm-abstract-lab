@@ -50,6 +50,61 @@ fn text_center(output: &FullOutput, label: &str) -> Pos2 {
         .unwrap_or_else(|| panic!("missing text: {label}"))
 }
 
+#[test]
+fn selected_fork_controls_the_submitted_execution_rules() {
+    let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
+    ctx.global_style_mut(|style| style.animation_time = 0.0);
+    let mut form = AnalysisForm {
+        open: true,
+        ..AnalysisForm::default()
+    };
+    let size = Vec2::new(1440.0, 1000.0);
+    for _ in 0..3 {
+        paint_sized(&ctx, &mut form, vec![], size);
+    }
+    for fork in [Fork::Cancun, Fork::Osaka] {
+        let output = paint_sized(&ctx, &mut form, vec![], size).1;
+        let selector = text_center(&output, &format!("{:?}", form.fork));
+        for pressed in [true, false] {
+            paint_sized(
+                &ctx,
+                &mut form,
+                vec![
+                    Event::PointerMoved(selector),
+                    Event::PointerButton {
+                        pos: selector,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    },
+                ],
+                size,
+            );
+        }
+        let menu = paint_sized(&ctx, &mut form, vec![], size).1;
+        let target = text_center(&menu, &format!("{fork:?}"));
+        for pressed in [true, false] {
+            paint_sized(
+                &ctx,
+                &mut form,
+                vec![
+                    Event::PointerMoved(target),
+                    Event::PointerButton {
+                        pos: target,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    },
+                ],
+                size,
+            );
+        }
+        assert_eq!(form.fork, fork);
+        assert_eq!(form.request().fork, fork);
+    }
+}
+
 fn click(ctx: &Context, form: &mut AnalysisForm, pos: Pos2) -> Option<AnalyzeRequest> {
     let mut request = None;
     for pressed in [true, false] {

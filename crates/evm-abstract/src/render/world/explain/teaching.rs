@@ -476,14 +476,16 @@ fn write_diagnostics(output: &mut String, analysis: &WorldAnalysis) {
     output.push_str("\nDiagnostics\n");
     if analysis.diagnostics().is_empty() {
         output.push_str("  (none)\n");
+    } else {
+        output.push_str(crate::render::DIAGNOSTIC_RECORDS);
     }
     for diagnostic in analysis.diagnostics() {
         writeln!(
             output,
-            "  {} @ 0x{:04x}: {:?}",
+            "  {} @ {}: {}",
             Symbol::State(diagnostic.state),
-            diagnostic.pc,
-            diagnostic.kind
+            crate::render::diagnostic_location(diagnostic),
+            crate::render::diagnostic_kind(&diagnostic.kind)
         )
         .unwrap();
     }

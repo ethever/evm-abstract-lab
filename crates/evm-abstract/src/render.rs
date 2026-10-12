@@ -17,6 +17,28 @@ use instruction::{InstructionLayout, write_ssa_body};
 use petgraph::{dot::Dot, graph::DiGraph};
 use std::fmt::Write;
 
+fn diagnostic_kind(kind: &DiagnosticKind) -> String {
+    match kind {
+        DiagnosticKind::InvalidOpcode(detail) => format!("InvalidOpcode · {detail}"),
+        _ => format!("{kind:?}"),
+    }
+}
+
+fn diagnostic_location(diagnostic: &crate::analysis::Diagnostic) -> String {
+    if matches!(
+        diagnostic.kind,
+        DiagnosticKind::InvalidOpcode(
+            crate::analysis::InvalidOpcodeDiagnostic::DelegationEntry { .. }
+        )
+    ) {
+        "delegation entry (synthetic PC 0)".to_owned()
+    } else {
+        format!("0x{:04x}", diagnostic.pc)
+    }
+}
+
+const DIAGNOSTIC_RECORDS: &str = "  Records belong to abstract states; repeated PCs do not count distinct instructions or failed transactions.\n";
+
 fn stack(values: &[AbstractValue]) -> String {
     format!(
         "[{}]",
@@ -113,13 +135,16 @@ pub fn cfg(analysis: &Analysis) -> String {
             .unwrap();
         }
     }
+    if !analysis.diagnostics().is_empty() {
+        output.push_str(DIAGNOSTIC_RECORDS);
+    }
     for diagnostic in analysis.diagnostics() {
         writeln!(
             output,
-            "diagnostic {} @ 0x{:04x}: {:?}",
+            "diagnostic {} @ {}: {}",
             Symbol::ProjectedState(diagnostic.state),
-            diagnostic.pc,
-            diagnostic.kind
+            diagnostic_location(diagnostic),
+            diagnostic_kind(&diagnostic.kind)
         )
         .unwrap();
     }

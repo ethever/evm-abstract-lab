@@ -26,7 +26,9 @@ mod transfer;
 
 use crate::{bytecode::Program, domain::AbstractValue};
 use serde::{Serialize, Serializer, ser::SerializeMap};
+use std::fmt;
 
+pub use crate::bytecode::InvalidOpcodeReason;
 pub use config::{Config, ConfigError, ValidatedConfig};
 pub use machine::{
     CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence, FrameCode, FrameKey,
@@ -41,9 +43,9 @@ pub use rpc::{
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;
 
-/// Serialized native analysis format. Version 4 retains typed scalar-fact and
-/// SMT provider failures in frontiers; the domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 4;
+/// Serialized native analysis format. Version 5 retains opcode bytes, defined
+/// mnemonics, reasons and source kinds; the domain-policy schema is independent.
+pub const SCHEMA_VERSION: u16 = 5;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -111,11 +113,67 @@ pub enum DiagnosticKind {
     /// 栈超过 EVM 的 1024 槽上限，当前路径异常终止。
     StackOverflow,
     /// 在程序所选 fork 下无效的 opcode，当前路径异常终止。
-    InvalidOpcode,
+    InvalidOpcode(InvalidOpcodeDiagnostic),
     /// 内存、状态或环境值仅用保守摘要表示。
     OpaqueResult,
     /// 可选语义交换达到固定精度上限；结果仍覆盖全部具体可能性。
     FactExchangeLimited(crate::domain::ReductionStatus),
+}
+
+/// Original opcode evidence from the frame that attempted exceptional execution.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum InvalidOpcodeDiagnostic {
+    /// An instruction in the active frame's captured runtime or initcode program.
+    Instruction {
+        /// The actual byte at the instruction's PC.
+        opcode: u8,
+        /// Present only when the opcode has an upstream instruction definition.
+        mnemonic: Option<String>,
+        /// Fork-specific validity failure from the decoded instruction.
+        reason: InvalidOpcodeReason,
+    },
+    /// A nested delegation entry has no decoded executable program or receipt.
+    DelegationEntry {
+        /// First byte from the active code account, when it can be verified.
+        opcode: Option<u8>,
+        /// Explains the account-entry failure independently of ordinary instructions.
+        detail: String,
+        /// Explains missing byte evidence; present whenever `opcode` is absent.
+        byte_unavailable: Option<String>,
+    },
+}
+
+impl fmt::Display for InvalidOpcodeDiagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Instruction {
+                opcode,
+                mnemonic,
+                reason,
+            } => {
+                write!(f, "0x{opcode:02x}")?;
+                if let Some(mnemonic) = mnemonic {
+                    write!(f, " ({mnemonic})")?;
+                }
+                write!(f, " — {reason}")
+            }
+            Self::DelegationEntry {
+                opcode,
+                detail,
+                byte_unavailable,
+            } => {
+                f.write_str("delegation entry")?;
+                if let Some(opcode) = opcode {
+                    write!(f, " 0x{opcode:02x}")?;
+                }
+                write!(f, " — {detail}")?;
+                if let Some(reason) = byte_unavailable {
+                    write!(f, "; opcode byte unavailable: {reason}")?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// 稳定、可导出的诊断位置。

@@ -205,7 +205,11 @@ pub(super) fn report(
                 pc: item.pc,
                 kind: mapping::diagnostic(&item.kind),
                 reduction: mapping::reduction(&item.kind),
-                detail: format!("{:?}", item.kind),
+                invalid_opcode: mapping::invalid_opcode(&item.kind),
+                detail: match &item.kind {
+                    analysis::DiagnosticKind::InvalidOpcode(reason) => reason.to_string(),
+                    other => format!("{other:?}"),
+                },
             })
             .collect(),
         frontiers: native

@@ -36,10 +36,51 @@ pub(super) fn diagnostic(source: &analysis::DiagnosticKind) -> DiagnosticKind {
         analysis::DiagnosticKind::InvalidJump => DiagnosticKind::InvalidJump,
         analysis::DiagnosticKind::StackUnderflow => DiagnosticKind::StackUnderflow,
         analysis::DiagnosticKind::StackOverflow => DiagnosticKind::StackOverflow,
-        analysis::DiagnosticKind::InvalidOpcode => DiagnosticKind::InvalidOpcode,
+        analysis::DiagnosticKind::InvalidOpcode(_) => DiagnosticKind::InvalidOpcode,
         analysis::DiagnosticKind::OpaqueResult => DiagnosticKind::OpaqueResult,
         analysis::DiagnosticKind::FactExchangeLimited(_) => DiagnosticKind::FactExchangeLimited,
     }
+}
+
+pub(super) fn invalid_opcode(
+    source: &analysis::DiagnosticKind,
+) -> Option<evm_abstract_protocol::InvalidOpcodeDiagnostic> {
+    use analysis::{InvalidOpcodeDiagnostic as N, InvalidOpcodeReason as NR};
+    use evm_abstract_protocol::{
+        InvalidDelegationEntry, InvalidInstruction, InvalidOpcodeDiagnostic as P,
+        InvalidOpcodeReason as PR,
+    };
+    let analysis::DiagnosticKind::InvalidOpcode(source) = source else {
+        return None;
+    };
+    Some(match source {
+        N::Instruction {
+            opcode,
+            mnemonic,
+            reason,
+        } => P::Instruction(InvalidInstruction {
+            opcode: *opcode,
+            mnemonic: mnemonic.clone(),
+            reason: match reason {
+                NR::ExplicitInvalid => PR::ExplicitInvalid,
+                NR::UndefinedOpcode => PR::UndefinedOpcode,
+                NR::UnavailableInFork(fork) => PR::UnavailableInFork(match fork {
+                    evm_abstract::Fork::Cancun => evm_abstract_protocol::Fork::Cancun,
+                    evm_abstract::Fork::Prague => evm_abstract_protocol::Fork::Prague,
+                    evm_abstract::Fork::Osaka => evm_abstract_protocol::Fork::Osaka,
+                }),
+            },
+        }),
+        N::DelegationEntry {
+            opcode,
+            detail,
+            byte_unavailable,
+        } => P::DelegationEntry(InvalidDelegationEntry {
+            opcode: *opcode,
+            detail: detail.clone(),
+            byte_unavailable: byte_unavailable.clone(),
+        }),
+    })
 }
 
 fn limit(source: analysis::Limit) -> FrontierKind {

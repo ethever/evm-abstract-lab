@@ -147,6 +147,12 @@ impl Inspector {
         if self.tab == Tab::Timing {
             return format!("Inspector: Timing{mode}");
         }
+        if self.tab == Tab::Diagnostics {
+            return format!(
+                "Inspector: Diagnostics{mode} · {}",
+                evidence::diagnostic_summary(report)
+            );
+        }
         let machine = self.machine(report, selection);
         let boundary = match self.point {
             Point::Entry => "Block entry",
@@ -307,6 +313,12 @@ impl Inspector {
             });
             return;
         }
+        if self.tab == Tab::Diagnostics {
+            scroll(ui, "diagnostic_details", |ui| {
+                evidence::diagnostics(ui, report, selection)
+            });
+            return;
+        }
         let has_exit = report
             .states
             .iter()
@@ -423,12 +435,9 @@ impl Inspector {
             Tab::Acquisition => scroll(ui, "acquisition_details", |ui| {
                 evidence::acquisition(ui, report)
             }),
-            Tab::Diagnostics => scroll(ui, "diagnostic_details", |ui| {
-                evidence::diagnostics(ui, report, selection)
-            }),
             Tab::Outcomes => self.outcomes(ui, report, selection),
-            Tab::SsaValue | Tab::Timing => {
-                unreachable!("definition and timing inspection use their own coordinates")
+            Tab::SsaValue | Tab::Timing | Tab::Diagnostics => {
+                unreachable!("definition, timing and evidence inspection use their own coordinates")
             }
         }
     }

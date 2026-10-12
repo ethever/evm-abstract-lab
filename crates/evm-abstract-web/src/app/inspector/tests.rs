@@ -2,6 +2,7 @@
 use super::*;
 use evm_abstract_protocol as api;
 
+mod diagnostics;
 mod scroll_bounds;
 mod storage;
 
