@@ -91,6 +91,24 @@ impl Assembly {
             .jump("bad", true)
     }
 
+    pub(super) fn call(
+        &mut self,
+        op: u8,
+        target: u16,
+        value: u16,
+        input: (u16, u16),
+        output: (u16, u16),
+    ) -> &mut Self {
+        self.push(output.1)
+            .push(output.0)
+            .push(input.1)
+            .push(input.0);
+        if matches!(op, opcode::CALL | opcode::CALLCODE) {
+            self.push(value);
+        }
+        self.push(target).push_word(U256::from(1_000_000)).op(op)
+    }
+
     pub(super) fn finish(mut self) -> Fixture {
         for (offset, label) in self.fixups {
             let pc = u16::try_from(self.labels[&label]).unwrap();
@@ -150,13 +168,55 @@ pub(super) fn entry(calldata: ByteArray) -> Entry {
 pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> WorldAnalysis {
     let started = Instant::now();
     let analysis = analyze_world(world, entry, config).unwrap();
+    let max_memory_work = analysis
+        .states()
+        .iter()
+        .flat_map(|state| std::iter::once(&state.entry).chain(state.exit.iter()))
+        .map(|payload| payload.active().memory.work_size())
+        .max()
+        .unwrap_or(0);
+    let max_expression_nodes = analysis
+        .states()
+        .iter()
+        .flat_map(|state| {
+            state
+                .entry
+                .active()
+                .stack
+                .iter()
+                .chain(state.exit_stack.iter())
+        })
+        .filter_map(AbstractValue::expression)
+        .map(|expression| expression.nodes())
+        .max()
+        .unwrap_or(0);
+    let max_relation_work = analysis
+        .states()
+        .iter()
+        .flat_map(|state| std::iter::once(&state.entry).chain(state.exit.iter()))
+        .map(|payload| payload.relations.work_size())
+        .max()
+        .unwrap_or(0);
+    let max_store_work = analysis
+        .states()
+        .iter()
+        .flat_map(|state| std::iter::once(&state.entry).chain(state.exit.iter()))
+        .map(|payload| payload.store.work_size())
+        .max()
+        .unwrap_or(0);
     eprintln!(
-        "issue111 evidence: fork={} status={:?} states={} transfers={} work={} elapsed_us={} frontiers={:?}",
+        "issue111 evidence: fork={} status={:?} states={} transfers={} work={} max_memory_work={} max_stack_expr_nodes={} max_relation_work={} max_store_work={} summary_hits={} summary_misses={} elapsed_us={} frontiers={:?}",
         analysis.world().fork(),
         analysis.status(),
         analysis.states().len(),
         analysis.transfers(),
         analysis.work(),
+        max_memory_work,
+        max_expression_nodes,
+        max_relation_work,
+        max_store_work,
+        analysis.summary_stats().hits,
+        analysis.summary_stats().misses,
         started.elapsed().as_micros(),
         analysis.frontiers(),
     );
@@ -213,10 +273,11 @@ pub(super) fn return_words(analysis: &WorldAnalysis, expected: &[u64]) {
         assert_eq!(outcome.data.len().singleton(), Some(U256::from(32)));
         let value = outcome.data.read_word(&word(0), Domain::default());
         assert!(
-            value
-                .singleton()
-                .is_some_and(|value| expected.iter().any(|n| value == U256::from(*n))),
-            "successful return must establish one of {expected:?}; got {value:?}",
+            value.constants().is_some_and(|values| !values.is_empty()
+                && values
+                    .iter()
+                    .all(|value| { expected.iter().any(|n| *value == U256::from(*n)) })),
+            "successful return must contain only {expected:?}; got {value:?}",
         );
     }
 }
