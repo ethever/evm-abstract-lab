@@ -101,7 +101,9 @@ fn fixture(fork: Fork, anchored: bool) -> World {
         .insert(U256::from(3), AbstractValue::constant(U256::from(7)));
     world.insert(Address::repeat_byte(0x11), account).unwrap();
     let mut delegated = Account::empty();
-    delegated.code = Code::Delegation(Address::repeat_byte(0x22));
+    if matches!(fork, Fork::Prague | Fork::Osaka) {
+        delegated.code = Code::Delegation(Address::repeat_byte(0x22));
+    }
     world.insert(Address::repeat_byte(0x12), delegated).unwrap();
     world
         .insert(Address::repeat_byte(0x13), Account::unknown())
