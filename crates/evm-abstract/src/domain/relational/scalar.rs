@@ -124,6 +124,21 @@ fn direct(constraint: &Constraint, target: &ExprId) -> Result<Option<Fact>, Fact
         } if expression == target => unary(UnaryPredicate::UnsignedBounds(WordBounds::new(
             *lower, *upper,
         )?)),
+        Constraint::SignedRange {
+            expression,
+            lower,
+            upper,
+        } if expression == target => unary(UnaryPredicate::SignedBounds(WordBounds::new(
+            *lower, *upper,
+        )?)),
+        Constraint::Modulo {
+            expression,
+            modulus,
+            residue,
+        } if expression == target => unary(UnaryPredicate::Congruent(
+            super::super::congruence::Congruence::new(*modulus, *residue)
+                .expect("observed nonzero modulus"),
+        )),
         Constraint::Bits {
             expression,
             zero,
@@ -206,8 +221,10 @@ impl RelationState {
             }
         }
         let mut found = false;
-        let mut complete = true;
-        let mut work = expression.nodes();
+        let mut complete = !expression.has_state_semantics()
+            && !matches!(expression.kind(), ExprKind::Ite { .. })
+            && matches!(self.path.kind(), super::RelationPathKind::True);
+        let mut work = expression.nodes().saturating_add(self.path.nodes());
         for constraint in &self.constraints {
             work = constraint
                 .expressions()

@@ -1,3 +1,5 @@
+mod state;
+
 use super::{CheckResult, RelationLimits, RelationState, ValueQuery};
 use crate::domain::{
     identity::Symbol,
@@ -438,6 +440,7 @@ fn direct_guard_state(expression: ExprId, truth: bool) -> RelationState {
         .into_iter()
         .collect(),
         bottom: false,
+        path: Default::default(),
     }
 }
 #[test]
