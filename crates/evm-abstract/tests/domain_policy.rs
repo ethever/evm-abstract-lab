@@ -139,7 +139,10 @@ fn json_distinguishes_a_top_component_from_the_whole_product() {
     let (world, entry) = fixture("00");
     let graph = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
     let json = serde_json::to_value(&graph).unwrap();
-    assert_eq!(json["schema_version"], 5);
+    assert_eq!(
+        json["schema_version"],
+        evm_abstract::analysis::SCHEMA_VERSION
+    );
     assert_eq!(
         json["domain_spec"],
         serde_json::to_value(graph.domain_spec()).unwrap()
