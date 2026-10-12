@@ -485,13 +485,25 @@ fn zero_account_keeps_presence_and_unrequested_storage_unknown() {
             AbstractValue::constant(U256::ZERO)
         );
         assert!(!account.storage.contains_key(&U256::from(1)));
+        let store = Store::new(&world);
+        let read = store.read(
+            Address::repeat_byte(0x22),
+            &AbstractValue::constant(U256::from(1)),
+            Domain::default(),
+        );
+        let mut plain = read.clone();
+        plain.forget_expression();
+        assert_eq!(plain, AbstractValue::top());
+        assert!(read.expression().is_some());
         assert_eq!(
-            Store::new(&world).read(
-                Address::repeat_byte(0x22),
-                &AbstractValue::constant(U256::from(1)),
-                Domain::default(),
-            ),
-            AbstractValue::top()
+            read.expression(),
+            store
+                .read(
+                    Address::repeat_byte(0x22),
+                    &AbstractValue::constant(U256::from(1)),
+                    Domain::default()
+                )
+                .expression()
         );
     });
 }
