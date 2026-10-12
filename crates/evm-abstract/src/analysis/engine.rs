@@ -874,7 +874,11 @@ impl Engine<'_> {
                     .map_err(MachineError::frontier_reason)?;
                 // Equality is a coverage proof. A whole-state join containing
                 // other alternatives cannot use this certificate's exit alone.
-                let compatible = self.result.states[existing].entry == node.entry;
+                let compatible = self.result.states[existing]
+                    .entry
+                    .content_form()
+                    .and_then(|entry| Ok(entry == node.entry.content_form()?))
+                    .map_err(MachineError::frontier_reason)?;
                 if let Some(joined) = joined {
                     self.alternatives[existing].retain(node.entry.clone());
                     self.result.states[existing].entry = joined;
