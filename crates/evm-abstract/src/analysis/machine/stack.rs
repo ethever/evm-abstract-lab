@@ -1,7 +1,10 @@
 //! A nonempty call stack with exactly one root and typed child continuations.
 
-use super::{ChildFrame, FrameState, RootFrame};
-use crate::domain::Domain;
+use super::{ChildFrame, FrameState, MachineError, RootFrame, join};
+use crate::domain::{
+    Domain,
+    symbolic::{ExprId, ExprLimits},
+};
 use serde::Serialize;
 
 /// Root and nested execution frames, ordered from oldest caller to active frame.
@@ -45,6 +48,10 @@ impl CallStack {
     /// Nested frames from oldest child to active child.
     pub fn children(&self) -> &[ChildFrame] {
         &self.children
+    }
+
+    pub(super) fn children_mut(&mut self) -> &mut [ChildFrame] {
+        &mut self.children
     }
 
     /// Number of frames, including the root; always at least one.
@@ -113,54 +120,48 @@ impl CallStack {
             .chain(self.children.iter_mut().map(|child| &mut child.state))
     }
 
-    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&crate::domain::AbstractValue)) {
-        for frame in self.iter() {
-            frame.visit_values(visit);
+    pub(super) fn join_guarded(
+        &self,
+        incoming: &Self,
+        domain: Domain,
+        selector: ExprId,
+        limits: ExprLimits,
+    ) -> Result<Self, MachineError> {
+        if self.depth() != incoming.depth() {
+            return Err(MachineError::Shape);
         }
-        for child in &self.children {
-            visit(&child.continuation.output_offset);
-            visit(&child.continuation.output_size);
-        }
-    }
-
-    pub(crate) fn update_values(
-        &mut self,
-        update: &mut impl FnMut(&mut crate::domain::AbstractValue),
-    ) {
-        for frame in self.iter_mut() {
-            frame.update_values(update);
-        }
-        for child in &mut self.children {
-            update(&mut child.continuation.output_offset);
-            update(&mut child.continuation.output_size);
-        }
-    }
-
-    pub(super) fn widen(&mut self, old: &Self, domain: Domain) {
-        self.root.state.widen(&old.root.state, domain);
-        for (child, old) in self.children.iter_mut().zip(&old.children) {
-            child.state.widen(&old.state, domain);
-            child.continuation.output_offset = domain.widen(
-                &old.continuation.output_offset,
-                &child.continuation.output_offset,
-            );
-            child.continuation.output_size = domain.widen(
-                &old.continuation.output_size,
-                &child.continuation.output_size,
-            );
-        }
-    }
-    pub(super) fn join(&mut self, incoming: &Self, domain: Domain) {
-        debug_assert_eq!(self.depth(), incoming.depth());
-        self.root.state.join(&incoming.root.state, domain);
-        for (old, incoming) in self.children.iter_mut().zip(&incoming.children) {
-            old.state.join(&incoming.state, domain);
-            let old = &mut old.continuation;
+        let mut out = self.clone();
+        out.root.state =
+            self.root
+                .state
+                .join_guarded(&incoming.root.state, domain, selector.clone(), limits)?;
+        for (child, incoming) in out.children.iter_mut().zip(&incoming.children) {
+            if child.continuation.return_block != incoming.continuation.return_block
+                || child.continuation.creation != incoming.continuation.creation
+            {
+                return Err(MachineError::Shape);
+            }
+            child.state =
+                child
+                    .state
+                    .join_guarded(&incoming.state, domain, selector.clone(), limits)?;
+            let old = &mut child.continuation;
             let incoming = &incoming.continuation;
-            debug_assert_eq!(old.return_block, incoming.return_block);
-            debug_assert_eq!(old.creation, incoming.creation);
-            old.output_offset = domain.join(&old.output_offset, &incoming.output_offset);
-            old.output_size = domain.join(&old.output_size, &incoming.output_size);
+            old.output_offset = join::join_value(
+                &old.output_offset,
+                &incoming.output_offset,
+                domain,
+                &selector,
+                limits,
+            )?;
+            old.output_size = join::join_value(
+                &old.output_size,
+                &incoming.output_size,
+                domain,
+                &selector,
+                limits,
+            )?;
         }
+        Ok(out)
     }
 }

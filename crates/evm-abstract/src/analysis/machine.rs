@@ -11,14 +11,19 @@ use alloy_primitives::{Address, B256, U256};
 use serde::Serialize;
 
 mod evidence;
+#[cfg(test)]
+pub(in crate::analysis) mod fixtures;
 mod frame;
+mod join;
 mod range;
 mod stack;
 mod symbolic;
 
 pub use evidence::{ExecutionEvidence, InstructionProgress, InstructionValue};
 pub use frame::{ChildFrame, FrameState, RootFrame};
-pub use range::{RangeKind, RangeRequest, RangeWitness};
+pub(crate) use join::EntryAlternatives;
+pub use join::{JoinBoundary, MachineError};
+pub use range::{ByteRangeBoundary, RangeKind, RangeRequest, RangeWitness};
 pub use stack::CallStack;
 
 /// One shared budget covers the root and every callee.
@@ -163,52 +168,16 @@ impl MachinePayload {
     }
 
     pub(crate) fn work_size(&self) -> usize {
-        self.call_stack.iter().fold(
+        let cost = self.call_stack.iter().fold(
             self.store
                 .work_size()
                 .saturating_add(self.relations.work_size()),
-            |cost, frame| {
-                let slots = frame
-                    .stack
-                    .iter()
-                    .fold(0usize, |cost, value| cost.saturating_add(value.work_size()));
-                cost.saturating_add(slots)
-                    // 估算载荷复制/比较的工作量时，也计入实际保留的跳转历史。
-                    .saturating_add(frame.key.jump_history.len())
-                    .saturating_add(frame.program.as_ref().map_or(0, |p| {
-                        p.byte_len().saturating_add(
-                            p.blocks()
-                                .iter()
-                                .map(|b| b.instructions.len())
-                                .sum::<usize>(),
-                        )
-                    }))
-                    .saturating_add(frame.memory.work_size())
-                    .saturating_add(frame.calldata.work_size())
-                    .saturating_add(frame.returndata.work_size())
-                    .saturating_add(frame.saved_store.state().work_size())
-                    .saturating_add(frame.call_value.work_size())
-                    .saturating_add(3)
-            },
-        )
-    }
-
-    pub(crate) fn widen(&mut self, old: &Self, domain: Domain) {
-        self.store.widen(&old.store, domain);
-        self.call_stack.widen(&old.call_stack, domain);
-        self.relations = self.relations.join(&old.relations);
-    }
-    pub(crate) fn join(&self, other: &Self, domain: Domain) -> Self {
-        assert_eq!(
-            self.key(),
-            other.key(),
-            "payload join requires equal structural keys"
+            |cost, frame| cost.saturating_add(frame.work_size()),
         );
-        let mut result = self.clone();
-        result.store = self.store.join(&other.store, domain);
-        result.call_stack.join(&other.call_stack, domain);
-        result.relations = self.relations.join(&other.relations);
-        result
+        self.call_stack.children().iter().fold(cost, |cost, child| {
+            cost.saturating_add(child.continuation.output_offset.work_size())
+                .saturating_add(child.continuation.output_size.work_size())
+        })
     }
 }
 
@@ -297,8 +266,12 @@ pub enum FrontierReason {
     CallDepth,
     /// A modeled byte range exceeds the declared memory or representation policy.
     Memory,
+    /// A checked byte-array range cannot be retained in its declared representation.
+    ByteRange(ByteRangeBoundary),
     /// A relational query could not finish within the declared symbolic/SMT policy.
     Relations(crate::domain::relational::QueryReason),
+    /// A complete incoming machine alternative could not be merged safely.
+    StateJoin(JoinBoundary),
     /// Top call target includes addresses beyond the supplied world.
     UnknownTarget,
     /// The fixed world does not establish this account's executable code.
@@ -340,6 +313,10 @@ pub struct MachineFrontier {
     pub reason: FrontierReason,
     /// Conditional pre-effect evidence for a range boundary, when applicable.
     pub range: Option<RangeWitness>,
+    /// Complete incoming state left outside an entry join. Its immutable roots
+    /// keep values, path conditions and rollback snapshots paired.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<std::sync::Arc<MachinePayload>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
