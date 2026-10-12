@@ -3,7 +3,10 @@
 use evm_abstract::{
     Address, Fork, U256,
     bytecode::Program,
-    domain::{AbstractValue, Domain},
+    domain::{
+        AbstractValue, Domain,
+        symbolic::{ExprKind, SlotStateKind},
+    },
     world::{AbstractLog, Account, ByteArray, LogKey, Snapshot, Store, World},
 };
 
@@ -99,9 +102,17 @@ fn divergent_checkpoints_merge_pre_call_states_without_aliasing_live_versions() 
     right.write(caller, &word(0), &word(5), domain);
     let left_checkpoint = left.snapshot();
     let right_checkpoint = right.snapshot();
+    let left_before = left.clone();
+    let right_before = right.clone();
+    let left_read = left.read(caller, &word(0), domain);
+    let right_read = right.read(caller, &word(0), domain);
+    assert_eq!(left_read, word(3));
+    assert_eq!(right_read, word(5));
 
     left.write(caller, &AbstractValue::top(), &word(7), domain);
     right.havoc_all();
+    assert_eq!(left_checkpoint.state(), &left_before);
+    assert_eq!(right_checkpoint.state(), &right_before);
     assert_eq!(
         left_checkpoint.state().read(caller, &word(0), domain),
         word(3)
@@ -114,17 +125,42 @@ fn divergent_checkpoints_merge_pre_call_states_without_aliasing_live_versions() 
     let expected = left_checkpoint
         .state()
         .join(right_checkpoint.state(), domain);
+    let joined_read = expected.read(caller, &word(0), domain);
+    let product = domain.join(&word(3), &word(5));
+    assert_eq!(joined_read.numeric(), product.numeric());
+    assert_eq!(joined_read.provenance(), product.provenance());
+    let ExprKind::SlotRead { state, key } = joined_read.expression().unwrap().kind() else {
+        panic!("joined read must retain the two checkpoint histories");
+    };
+    assert_eq!(key.as_constant(), Some(U256::ZERO));
+    assert_eq!(*state, expected.slot_root(caller, false).unwrap());
+    let SlotStateKind::Ite {
+        condition,
+        then_state,
+        else_state,
+    } = state.kind()
+    else {
+        panic!("joined storage must cover both pre-call alternatives");
+    };
+    assert!(matches!(condition.kind(), ExprKind::Fresh(_)));
+    assert_eq!(*then_state, left_before.slot_root(caller, false).unwrap());
+    assert_eq!(*else_state, right_before.slot_root(caller, false).unwrap());
+    assert!(joined_read.contains(U256::from(3)));
+    assert!(joined_read.contains(U256::from(5)));
+    assert_eq!(expected.read(caller, &word(0), domain), joined_read);
     let merged = Snapshot::from_state(expected.clone());
     left.restore(merged);
     assert_eq!(left, expected);
-    assert_eq!(
-        left.read(caller, &word(0), domain),
-        domain.join(&word(3), &word(5))
-    );
+    assert_eq!(left.read(caller, &word(0), domain), joined_read);
 
     // Independent versions can be restored after another branch has been joined.
     left.restore(right_checkpoint);
-    assert_eq!(left.read(caller, &word(0), domain), word(5));
+    assert_eq!(left, right_before);
+    assert_eq!(left.read(caller, &word(0), domain), right_read);
     right.restore(left_checkpoint);
-    assert_eq!(right.read(caller, &word(0), domain), word(3));
+    assert_eq!(right, left_before);
+    assert_eq!(right.read(caller, &word(0), domain), left_read);
+    assert_eq!(expected.read(caller, &word(0), domain), joined_read);
+    assert_eq!(joined_read.numeric(), product.numeric());
+    assert_eq!(joined_read.provenance(), product.provenance());
 }
