@@ -502,8 +502,15 @@ fn canonical_case_rebuild_keeps_previously_accepted_stack_root_pairs() {
         .write_word(&fixtures::word(0), &fixtures::word(9), 4096, domain)
         .unwrap();
     let mut budget = WorkBudget::new(100_000_000);
-    let cases =
-        super::cases::prepare(vec![&seven], &nine, &BTreeSet::new(), domain, &mut budget).unwrap();
+    let cases = super::cases::prepare(
+        &[],
+        Some(&seven),
+        &nine,
+        &BTreeSet::new(),
+        domain,
+        &mut budget,
+    )
+    .unwrap();
     assert_eq!(cases.len(), 2);
     let mut entry = cases[0].join(&cases[1], domain).unwrap();
     let mut bound = cases[0].fresh_leaves();
@@ -612,7 +619,7 @@ fn cycle_projection_never_enumerates_external_sources_or_manual_guards() {
     assert!(!selectors.contains(&observation));
     let mut budget = WorkBudget::new(100_000_000);
     let cases =
-        super::cases::prepare(vec![&joined], &right, &selectors, domain, &mut budget).unwrap();
+        super::cases::prepare(&[], Some(&joined), &right, &selectors, domain, &mut budget).unwrap();
     for payload in cases {
         assert_eq!(payload.active().calldata.fresh_leaves(), input_sources);
         assert!(payload.fresh_leaves().contains(&manual));
@@ -626,5 +633,93 @@ fn cycle_projection_never_enumerates_external_sources_or_manual_guards() {
             .find(|(key, _)| *key == &observation)
             .expect("external GAS binding stays in the model");
         assert_eq!(binding.numeric(), gas.numeric());
+    }
+}
+
+#[test]
+fn a_constrained_entry_from_outside_a_cycle_keeps_its_actual_guard() {
+    let domain = fixtures::config().domain().unwrap();
+    let policy = domain.spec().relations();
+    let mut seven = fixtures::payload(domain);
+    seven.active_mut().stack = vec![fixtures::word(0)];
+    seven
+        .active_mut()
+        .memory
+        .write_word(&fixtures::word(0), &fixtures::word(7), 4096, domain)
+        .unwrap();
+    let mut nine = seven.clone();
+    nine.active_mut()
+        .memory
+        .write_word(&fixtures::word(0), &fixtures::word(9), 4096, domain)
+        .unwrap();
+    let mut alternatives = EntryAlternatives::new(&seven);
+    let mut entry = seven.join(&nine, domain).unwrap();
+    let mut original = seven.fresh_leaves();
+    original.extend(nine.fresh_leaves());
+    let mut selectors: BTreeSet<_> = entry
+        .fresh_leaves()
+        .difference(&original)
+        .cloned()
+        .collect();
+    alternatives.retain(nine);
+    let mut incoming = seven.clone();
+    incoming.active_mut().stack[0] = fixtures::word(1);
+    let mut budget = WorkBudget::new(100_000_000);
+    let canonical = alternatives
+        .join_cyclic(&entry, &incoming, domain, &mut budget, &selectors, true)
+        .unwrap()
+        .unwrap();
+    assert!(alternatives.cycle_widened);
+    original = entry.fresh_leaves();
+    original.extend(incoming.fresh_leaves());
+    selectors.extend(canonical.fresh_leaves().difference(&original).cloned());
+    entry = canonical;
+    let guard = ExprId::fresh().unwrap();
+    let mut guarded = seven;
+    guarded.active_mut().stack[0] = fixtures::word(5);
+    guarded
+        .active_mut()
+        .memory
+        .write_word(&fixtures::word(0), &fixtures::word(11), 4096, domain)
+        .unwrap();
+    assert_eq!(
+        guarded.relations.assume(&guard, true, &policy),
+        CheckResult::Sat
+    );
+    let result = alternatives
+        .join_cyclic(&entry, &guarded, domain, &mut budget, &selectors, false)
+        .unwrap()
+        .unwrap();
+    assert!(!alternatives.cycle_widened);
+    alternatives.retain(guarded.clone());
+    assert_eq!(alternatives.represented[0].as_ref(), &entry);
+    assert_eq!(alternatives.represented[1].as_ref(), &guarded);
+    let stack = result.active().stack[0].symbolic_expression().unwrap();
+    let memory = result
+        .active()
+        .memory
+        .read_word_checked(&fixtures::word(0), domain)
+        .unwrap()
+        .symbolic_expression()
+        .unwrap();
+    for (truth, counter, word, expected) in [
+        (true, 5, 11, CheckResult::Sat),
+        (false, 5, 11, CheckResult::Unsat),
+        (false, 1, 7, CheckResult::Sat),
+        (true, 5, 7, CheckResult::Unsat),
+    ] {
+        let mut path = result.relations.clone();
+        assert_eq!(path.assume(&guard, truth, &policy), CheckResult::Sat);
+        let equals = [(stack.clone(), counter), (memory.clone(), word)].map(|(value, constant)| {
+            ExprId::operation(
+                revm_bytecode::opcode::EQ,
+                &[value, ExprId::constant(U256::from(constant))],
+                policy.expressions(),
+            )
+            .unwrap()
+        });
+        let both =
+            ExprId::operation(revm_bytecode::opcode::AND, &equals, policy.expressions()).unwrap();
+        assert_eq!(path.can_equal(&both, U256::from(1), &policy), expected);
     }
 }

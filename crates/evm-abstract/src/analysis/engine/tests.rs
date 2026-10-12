@@ -168,3 +168,69 @@ fn initial_lift_distinguishes_cancellation_from_real_work_exhaustion() {
     assert_eq!(exhausted.status(), Status::Incomplete);
     assert_eq!(exhausted.frontiers[0].reason, FrontierReason::Work);
 }
+
+#[test]
+fn pending_frames_prefer_deeper_calls_and_keep_fifo_within_a_depth() {
+    let (result, child) = interrupted_fixture();
+    let shallow: Vec<_> = (0..result.states.len()).filter(|id| *id != child).collect();
+    let mut budget = WorkBudget::new(100_000_000);
+    let mut counters = Counters::default();
+    let mut engine = engine(result, child, &mut budget, &mut counters);
+    engine.queue.push_back(child);
+    engine.queued.insert(child);
+    assert_eq!(engine.next_pending().unwrap(), Some(child));
+    engine.queued.remove(&child);
+    for id in shallow {
+        assert_eq!(engine.next_pending().unwrap(), Some(id));
+        engine.queued.remove(&id);
+    }
+    assert_eq!(engine.next_pending().unwrap(), None);
+    assert!(engine.budget.used() > 0);
+}
+
+#[test]
+fn interrupted_queue_scan_retains_every_input_and_its_exact_cause() {
+    for cancelled in [false, true] {
+        let (result, child) = interrupted_fixture();
+        let token = embedded_smt::Cancellation::new();
+        embedded_smt::with_cancellation(&token, || {
+            let mut budget = WorkBudget::new(if cancelled { 100_000_000 } else { 0 });
+            let mut counters = Counters::default();
+            let mut engine = engine(result, child, &mut budget, &mut counters);
+            engine.queue.push_back(child);
+            engine.queued.insert(child);
+            let queue = engine.queue.clone();
+            let queued = engine.queued.clone();
+            let entries: Vec<_> = engine
+                .result
+                .states
+                .iter()
+                .map(|s| s.entry.clone())
+                .collect();
+            if cancelled {
+                token.cancel();
+            }
+            engine.run();
+            assert_eq!(engine.result.status(), Status::Incomplete);
+            assert_eq!(engine.queue, queue);
+            assert_eq!(engine.queued, queued);
+            assert_eq!(engine.result.frontiers.len(), entries.len());
+            let expected = if cancelled {
+                FrontierReason::Relations(QueryReason::Cancelled)
+            } else {
+                FrontierReason::Work
+            };
+            for (state, entry) in engine.result.states.iter().zip(entries) {
+                assert_eq!(state.entry, entry);
+                assert!(
+                    engine
+                        .result
+                        .frontiers
+                        .iter()
+                        .any(|f| { f.target.as_ref() == Some(&state.key) && f.reason == expected })
+                );
+            }
+            assert_eq!(engine.result.summary_stats.imported_states, 0);
+        });
+    }
+}

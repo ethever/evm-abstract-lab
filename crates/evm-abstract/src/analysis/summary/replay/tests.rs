@@ -7,10 +7,15 @@ use crate::{
         summary::{Certificate, Node, SummaryOutput, Terminal},
         transfer::CompletedCall,
     },
-    domain::{AbstractValue, Domain, relational::QueryReason, symbolic::ExprId},
+    domain::{
+        AbstractValue, Domain,
+        relational::{CheckResult, QueryReason, RelationState},
+        symbolic::ExprId,
+    },
     resource::WorkBudget,
     world::ByteArray,
 };
+use revm_bytecode::opcode;
 use std::{collections::BTreeSet, sync::Arc};
 
 fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload, ByteArray) {
@@ -292,7 +297,14 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
             .outcomes()
             .iter()
             .find(|outcome| {
-                outcome.kind == OutcomeKind::Return && outcome.data.fresh_leaves().len() >= 2
+                outcome.kind == OutcomeKind::Return
+                    && outcome.data.fresh_leaves().len() >= 2
+                    && [0, 32].into_iter().all(|offset| {
+                        outcome
+                            .data
+                            .read_word(&fixtures::word(offset), Domain::default())
+                            .contains(alloy_primitives::U256::from(1))
+                    })
             })
             .unwrap();
         assert_eq!(
@@ -311,6 +323,50 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
         // Independent leaves may have equal concrete valuations. This test
         // checks identity, not an unsupported inequality assumption.
         assert!(returned.data.fresh_leaves().len() >= 2);
+        let policy = fixtures::config().analysis.relations;
+        let mut models = Vec::new();
+        for outcome in result
+            .outcomes()
+            .iter()
+            .filter(|outcome| outcome.kind == OutcomeKind::Return)
+        {
+            let words = [0, 32].map(|offset| {
+                outcome
+                    .data
+                    .read_word_checked(&fixtures::word(offset), Domain::default())
+                    .unwrap()
+            });
+            let cases = [(1u64, 2u64), (1, 1)].map(|(left, right)| {
+                let equal = |value: &AbstractValue, constant: u64| {
+                    ExprId::operation(
+                        opcode::EQ,
+                        &[
+                            value.symbolic_expression().unwrap(),
+                            ExprId::constant(alloy_primitives::U256::from(constant)),
+                        ],
+                        policy.expressions(),
+                    )
+                    .unwrap()
+                };
+                let pair = ExprId::operation(
+                    opcode::AND,
+                    &[equal(&words[0], left), equal(&words[1], right)],
+                    policy.expressions(),
+                )
+                .unwrap();
+                RelationState::default().can_equal(&pair, alloy_primitives::U256::from(1), &policy)
+            });
+            models.push((outcome.state, cases));
+        }
+        // A successful two-call path permits both independent and coincident
+        // valuations. Other return artifacts can describe a rejected call.
+        assert!(
+            models
+                .iter()
+                .any(|(_, cases)| cases == &[CheckResult::Sat, CheckResult::Sat]),
+            "actual output witnesses (hits={}): {models:?}",
+            result.summary_stats().hits
+        );
     }
     assert!(
         cached.summary_stats().hits > 0,
