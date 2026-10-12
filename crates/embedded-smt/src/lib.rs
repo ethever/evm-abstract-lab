@@ -38,7 +38,7 @@ use std::fmt;
 pub use term::{Array, Bool, Bv, Context, Function, FunctionArg, FunctionSort};
 
 /// Available embedded SMT engines. Selection never silently falls back.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     /// Z3, using its native per-check resource counter.
@@ -86,7 +86,7 @@ pub enum Unknown {
 }
 
 /// A native or encoding error, distinct from a satisfiability answer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, thiserror::Error)]
 #[error("{provider}: {message}")]
 pub struct Error {
     /// Provider that could not execute the request.
