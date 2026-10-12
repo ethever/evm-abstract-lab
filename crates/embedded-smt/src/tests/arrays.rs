@@ -434,21 +434,65 @@ fn finite_index_complete_overwrite_preserves_reads_and_reports_native_equality_b
 }
 
 #[test]
-fn typed_array_construction_rejects_invalid_widths() {
-    assert!(std::panic::catch_unwind(|| Context::default().fresh_array("bad", 0, 8)).is_err());
-    assert!(std::panic::catch_unwind(|| Context::default().fresh_array("bad", 8, 0)).is_err());
-    assert!(std::panic::catch_unwind(|| Array::constant(0, &Bv::from_u64(0, 8))).is_err());
+#[should_panic(expected = "array index width must be positive")]
+fn fresh_array_rejects_zero_index_width() {
+    Context::default().fresh_array("bad", 0, 8);
+}
+
+#[test]
+#[should_panic(expected = "array element width must be positive")]
+fn fresh_array_rejects_zero_element_width() {
+    Context::default().fresh_array("bad", 8, 0);
+}
+
+#[test]
+#[should_panic(expected = "array index width must be positive")]
+fn constant_array_rejects_zero_index_width() {
+    Array::constant(0, &Bv::from_u64(0, 8));
+}
+
+#[test]
+#[should_panic(expected = "array index widths must match")]
+fn array_select_rejects_mismatched_index_width() {
     let array = Array::constant(8, &Bv::from_u64(0, 13));
-    assert!(std::panic::catch_unwind(|| array.select(&Bv::from_u64(0, 9))).is_err());
-    assert!(
-        std::panic::catch_unwind(|| array.store(&Bv::from_u64(0, 8), &Bv::from_u64(0, 8))).is_err()
-    );
+    array.select(&Bv::from_u64(0, 9));
+}
+
+#[test]
+#[should_panic(expected = "array element widths must match")]
+fn array_store_rejects_mismatched_element_width() {
+    let array = Array::constant(8, &Bv::from_u64(0, 13));
+    array.store(&Bv::from_u64(0, 8), &Bv::from_u64(0, 8));
+}
+
+#[test]
+#[should_panic(expected = "array sorts must match")]
+fn array_equality_rejects_mismatched_index_width() {
+    let array = Array::constant(8, &Bv::from_u64(0, 13));
     let other_index = Array::constant(9, &Bv::from_u64(0, 13));
+    array.eq(&other_index);
+}
+
+#[test]
+#[should_panic(expected = "array sorts must match")]
+fn array_equality_rejects_mismatched_element_width() {
+    let array = Array::constant(8, &Bv::from_u64(0, 13));
     let other_element = Array::constant(8, &Bv::from_u64(0, 8));
-    for other in [other_index, other_element] {
-        assert!(std::panic::catch_unwind(|| array.eq(&other)).is_err());
-        assert!(
-            std::panic::catch_unwind(|| Bool::from_bool(true).ite_array(&array, &other)).is_err()
-        );
-    }
+    array.eq(&other_element);
+}
+
+#[test]
+#[should_panic(expected = "conditional array sorts must match")]
+fn array_ite_rejects_mismatched_index_width() {
+    let array = Array::constant(8, &Bv::from_u64(0, 13));
+    let other_index = Array::constant(9, &Bv::from_u64(0, 13));
+    Bool::from_bool(true).ite_array(&array, &other_index);
+}
+
+#[test]
+#[should_panic(expected = "conditional array sorts must match")]
+fn array_ite_rejects_mismatched_element_width() {
+    let array = Array::constant(8, &Bv::from_u64(0, 13));
+    let other_element = Array::constant(8, &Bv::from_u64(0, 8));
+    Bool::from_bool(true).ite_array(&array, &other_element);
 }
