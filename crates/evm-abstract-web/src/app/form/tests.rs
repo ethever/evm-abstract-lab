@@ -419,6 +419,7 @@ fn retry_after_empty_or_failed_catalog_recovers_and_ignores_old_callbacks() {
 
 const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const WETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+const USDT: &str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 
 fn settle_sized(ctx: &Context, form: &mut AnalysisForm, size: Vec2) -> FullOutput {
     paint_sized(ctx, form, vec![], size);
@@ -512,7 +513,11 @@ fn ethereum_entry_examples_submit_the_chosen_address_and_preserve_every_other_in
         "default entry must be the reviewed mainnet USDC address"
     );
     let size = Vec2::new(900.0, 700.0);
-    for (current, next, address) in [("USDC", "WETH", WETH), ("WETH", "USDC", USDC)] {
+    for (current, next, address) in [
+        ("USDC", "WETH", WETH),
+        ("WETH", "USDT", USDT),
+        ("USDT", "USDC", USDC),
+    ] {
         form.open = true;
         let output = settle_sized(&ctx, &mut form, size);
         click(&ctx, &mut form, text_center(&output, current));
