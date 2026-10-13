@@ -185,5 +185,8 @@ fn edge_kind_key(kind: EdgeKind) -> u8 {
         EdgeKind::Return => 5,
         EdgeKind::Failure => 6,
         EdgeKind::Revert => 7,
+        EdgeKind::SummaryReturn => 8,
+        EdgeKind::SummaryRevert => 9,
+        EdgeKind::SummaryFailure => 10,
     }
 }

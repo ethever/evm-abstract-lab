@@ -52,6 +52,9 @@ pub enum MachineError {
     /// The shared cumulative work reservation was rejected.
     #[error("machine transformation work exhausted")]
     Work,
+    /// Relative procedure allocation exceeded the shared state capacity.
+    #[error("machine state budget exhausted")]
+    States,
     /// Scalar expression construction failed before the result was installed.
     #[error("machine expression: {0}")]
     Expression(ExprError),
@@ -107,6 +110,7 @@ impl MachineError {
                 FrontierReason::StateJoin(JoinBoundary::Alternatives { limit })
             }
             Self::Work => FrontierReason::Work,
+            Self::States => FrontierReason::Budget(crate::analysis::Limit::States),
             Self::Expression(error) => expression_reason(error),
             Self::Bytes(error) => bytes_reason(error),
             Self::Store(error) => store_reason(error),
@@ -196,6 +200,12 @@ impl MachinePayload {
                 normalize(value);
             }
             normalize(&mut frame.call_value);
+            for value in [&mut frame.address_operand, &mut frame.caller_operand]
+                .into_iter()
+                .flatten()
+            {
+                normalize(value);
+            }
             frame.memory.update_values(&mut normalize);
             frame.calldata.update_values(&mut normalize);
             frame.returndata.update_values(&mut normalize);

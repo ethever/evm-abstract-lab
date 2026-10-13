@@ -11,6 +11,8 @@ pub(super) mod refinement;
 pub use refinement::GuardRefinementError;
 mod ranges;
 mod reads;
+pub(in crate::world) mod summary;
+pub use summary::ByteArraySummary;
 #[cfg(test)]
 mod tests;
 mod traversal;

@@ -84,14 +84,16 @@ fn algebraic_copy_keeps_a_definition_and_a_real_equivalence_target() {
 }
 
 #[test]
-fn local_constant_proofs_survive_an_unrelated_unknown_call_frontier() {
-    let report = analyze(request("60026003015f5f5f5f5f5f355af100")).unwrap();
+fn local_constant_proofs_survive_an_unrelated_call_depth_frontier() {
+    let mut input = request("60026003015f5f5f5f5f5f355af100");
+    input.limits.max_call_depth = 1;
+    let report = analyze(input).unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(
         report
             .frontiers
             .iter()
-            .any(|frontier| frontier.kind == api::FrontierKind::UnknownTarget)
+            .any(|frontier| frontier.kind == api::FrontierKind::CallDepth)
     );
     let add = instruction(&report, 0x01);
     assert_eq!(add.operation, api::SsaOperation::Constant("0x5".into()));

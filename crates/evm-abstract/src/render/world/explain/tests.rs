@@ -174,13 +174,25 @@ fn empty_code_and_missing_entry_remain_distinct_without_fake_disassembly() {
         owner,
         ByteArray::empty(),
     );
-    assert_eq!(missing.status(), Status::Incomplete);
-    assert!(missing.states().is_empty());
+    assert_eq!(missing.status(), Status::Converged);
+    assert!(missing.frontiers().is_empty());
+    assert!(!missing.unknown_summaries().is_empty());
+    assert!(
+        missing
+            .unknown_summaries()
+            .iter()
+            .all(|record| record.closed)
+    );
     let missing_output = render(&missing).unwrap();
-    assert!(code_section(&missing_output).contains("No executable frame was captured"));
+    assert!(code_section(&missing_output).contains("Abstract environment"));
     assert!(!code_section(&missing_output).contains("B₀ @"));
-    assert!(missing_output.contains("MissingCode"));
-    assert!(missing_output.ends_with("SSA unavailable: cross-contract frontiers remain\n"));
+    assert!(!code_section(&missing_output).contains("Captured instruction list"));
+    assert!(!missing_output.contains("SSA unavailable"));
+    let dot = crate::render::world::dot(&missing);
+    assert!(dot.contains("abstract environment"));
+    assert!(dot.contains("code_hash=unobserved"));
+    assert!(dot.contains("summary coverage"));
+    assert!(!dot.contains("B₀"));
 }
 
 #[test]

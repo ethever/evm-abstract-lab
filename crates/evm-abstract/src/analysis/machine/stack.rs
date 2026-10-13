@@ -50,7 +50,7 @@ impl CallStack {
         &self.children
     }
 
-    pub(super) fn children_mut(&mut self) -> &mut [ChildFrame] {
+    pub(crate) fn children_mut(&mut self) -> &mut [ChildFrame] {
         &mut self.children
     }
 
@@ -108,6 +108,12 @@ impl CallStack {
                 value.forget_identity();
             }
             frame.call_value.forget_identity();
+            for value in [&mut frame.address_operand, &mut frame.caller_operand]
+                .into_iter()
+                .flatten()
+            {
+                value.forget_identity();
+            }
         }
         for child in &mut self.children {
             child.continuation.output_offset.forget_identity();

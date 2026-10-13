@@ -186,7 +186,10 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
                 stacks.push(Vec::new());
                 None
             }
-            MachineEdgeKind::Return | MachineEdgeKind::Revert | MachineEdgeKind::Failure => {
+            MachineEdgeKind::Return
+            | MachineEdgeKind::Revert
+            | MachineEdgeKind::Failure
+            | MachineEdgeKind::Summary(_) => {
                 if stacks.len() > destination.entry.call_stack.depth() {
                     stacks.truncate(destination.entry.call_stack.depth());
                 }

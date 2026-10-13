@@ -406,7 +406,10 @@ fn world_ssa_verifies_complete_calls_and_is_not_built_for_frontiers() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["analysis"]["status"], "Converged");
     assert!(json["ssa"].is_object());
-    let incomplete = analyze("missing-code", &["--format", "json", "--ssa"]);
+    let incomplete = analyze(
+        "missing-code",
+        &["--format", "json", "--ssa", "--max-call-depth", "1"],
+    );
     assert_eq!(incomplete.status.code(), Some(2));
     let json: serde_json::Value = serde_json::from_slice(&incomplete.stdout).unwrap();
     assert_eq!(json["status"], "Incomplete");
@@ -415,9 +418,13 @@ fn world_ssa_verifies_complete_calls_and_is_not_built_for_frontiers() {
 }
 
 #[test]
-fn missing_code_and_shared_budgets_keep_typed_frontiers_and_exit_two() {
+fn shared_budgets_keep_typed_frontiers_and_exit_two() {
     for (name, args, reason) in [
-        ("missing-code", vec!["--format", "json"], "MissingCode"),
+        (
+            "missing-code",
+            vec!["--format", "json", "--max-call-depth", "1"],
+            "CallDepth",
+        ),
         (
             "reentry",
             vec!["--format", "json", "--max-call-depth", "2"],
@@ -547,13 +554,38 @@ fn requested_world_text_is_readable_and_format_switches_keep_complete_evidence()
             outcome["state"].as_u64().unwrap()
         )));
     }
-    let incomplete = analyze("missing-code", &[]);
+    let incomplete = analyze("missing-code", &["--max-call-depth", "1"]);
     assert_eq!(incomplete.status.code(), Some(2));
     let incomplete = String::from_utf8(incomplete.stdout).unwrap();
     assert!(
         incomplete.contains("Incomplete")
             && incomplete.contains("Frontiers")
-            && incomplete.contains("MissingCode")
+            && incomplete.contains("CallDepth")
+    );
+}
+
+#[test]
+fn unknown_code_world_converges_with_closed_summary_evidence_and_verified_ssa() {
+    let output = analyze("missing-code", &["--format", "json", "--ssa"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let analysis = &json["analysis"];
+    assert_eq!(analysis["status"], "Converged");
+    assert!(analysis["frontiers"].as_array().unwrap().is_empty());
+    let summaries = analysis["unknown_summaries"].as_array().unwrap();
+    assert!(!summaries.is_empty());
+    assert!(summaries.iter().all(|summary| summary["closed"] == true));
+    assert!(json["ssa"].is_object());
+    assert!(
+        analysis["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["kind"].get("Summary").is_some())
     );
 }
 

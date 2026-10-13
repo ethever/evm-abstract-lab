@@ -45,6 +45,8 @@ fn details(
         storage_address: storage.into(),
         address_value: api::AddressValue::Concrete(storage.into()),
         caller: api::AddressValue::Concrete(caller.into()),
+        address_operand: None,
+        caller_operand: None,
         call_value: report.metadata.environment.call_value.clone(),
         is_static,
         kind: api::CodeKind::Runtime,

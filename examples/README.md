@@ -145,9 +145,15 @@ A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获�
 | 静态限制：[static-write.json](worlds/static-write.json) | 静态子帧执行 SSTORE 会怎样？ | 调用成功位 0，B slot 0 保留 4 |
 | 重入：[reentry.json](worlds/reentry.json) | 再次进入 A 时能否看到刚才的写入？ | A slot 0=2，slot 1=1 |
 | 日志：[log-rollback.json](worlds/log-rollback.json) | REVERT 是否撤销子帧的日志？ | 保留 A 的事件，撤销 B 的事件 |
-| 缺失事实：[missing-code.json](worlds/missing-code.json) | 缺少 B 的代码能否当作空代码？ | `Incomplete`、`MissingCode`、退出 2 |
+| 缺失事实：[missing-code.json](worlds/missing-code.json) | 缺少 B 的代码能否当作空代码？ | 未知过程与保守交互摘要；保留可能的状态效果 |
 
 这些实验的帧、状态和 JSON 字段解读见[第 09 课](../docs/09-cross-contract.md)。`storage_unknown:false` 表示合成输入明确假设所有未列出的初始 slot 都为零；省略它时，未列出的 slot 是未知。空代码与缺失代码也不同。
+
+## 未知世界与重复交互
+
+[第 18 课](../docs/18-unknown-world.md)使用 [busy-x.json](unknown-world/busy-x.json)、[嵌套版本](unknown-world/busy-x-nested.json)、[外部状态变化](unknown-world/external-change.json)、[禁止写入的对照](unknown-world/external-guard.json)和[外层回滚](unknown-world/outer-revert.json)。入口均为 `0x101`，caller 明确为 `0x900`，value 为 0，calldata 为空；未知交互中的回调输入仍为符号值。
+
+[static-reuse.json](unknown-world/static-reuse.json) 连续四次静态调用未知目标，最后返回精确的 42，用于相同覆盖和精度下的摘要复用对照。
 
 ## 进阶：复用分析与改变代码
 

@@ -11,13 +11,17 @@ use serde::{Serialize, Serializer, ser::SerializeSeq};
 use snapshot_state::SharedCheckpoint;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod effects;
 mod refinement;
 mod slots;
+mod summary;
 #[cfg(test)]
 mod tests;
 mod traversal;
 mod widening;
 use thiserror::Error;
+
+pub use summary::StoreSummary;
 
 /// Ordered state observations with the selected snapshot storage backend.
 pub use snapshot_state::OrderedMap;
@@ -445,7 +449,9 @@ pub struct Store {
     nonces: OrderedMap<Address, AbstractValue>,
     existence: OrderedMap<Address, Existence>,
     created: OrderedMap<Address, Option<bool>>,
+    created_default: Option<bool>,
     pending_destruction: OrderedMap<Address, Option<bool>>,
+    pending_destruction_default: Option<bool>,
     #[serde(serialize_with = "serialize_logs")]
     possible_logs: OrderedMap<LogKey, AbstractLog>,
     logs_unknown: bool,
@@ -572,7 +578,9 @@ impl Store {
             nonces,
             existence,
             created: OrderedMap::new(),
+            created_default: Some(false),
             pending_destruction: OrderedMap::new(),
+            pending_destruction_default: Some(false),
             possible_logs: OrderedMap::new(),
             logs_unknown: false,
         }
@@ -691,6 +699,13 @@ impl Store {
             .copied()
             .collect();
         let mut bytes = Vec::new();
+        for flag in [self.created_default, self.pending_destruction_default] {
+            bytes.push(match flag {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            });
+        }
         for address in addresses {
             bytes.extend(address.as_slice());
             match self.code(address) {
@@ -794,7 +809,10 @@ impl Store {
     /// Whether this account was created in this transaction; `None` represents
     /// a join between created and preexisting lifecycles.
     pub fn created_in_transaction(&self, address: Address) -> Option<bool> {
-        self.created.get(&address).copied().unwrap_or(Some(false))
+        self.created
+            .get(&address)
+            .copied()
+            .unwrap_or(self.created_default)
     }
 
     /// Whether [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) schedules this account for deletion at transaction end.
@@ -803,7 +821,7 @@ impl Store {
         self.pending_destruction
             .get(&address)
             .copied()
-            .unwrap_or(Some(false))
+            .unwrap_or(self.pending_destruction_default)
     }
 
     /// [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) balance movement and deferred deletion for all supported forks.
@@ -842,7 +860,13 @@ impl Store {
     /// Commit deferred [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) deletion only at outermost completion. A joined
     /// optional deletion conservatively joins the retained and deleted accounts.
     pub fn finalize_transaction(&mut self, domain: Domain) {
-        let pending = std::mem::take(&mut self.pending_destruction);
+        let pending = self
+            .addresses()
+            .into_iter()
+            .map(|address| (address, self.pending_destruction(address)))
+            .collect::<Vec<_>>();
+        self.pending_destruction.clear();
+        self.pending_destruction_default = Some(false);
         for (address, pending) in pending {
             if pending == Some(false) {
                 continue;
@@ -866,6 +890,7 @@ impl Store {
         }
         // These flags describe an active transaction, never the next transaction.
         self.created.clear();
+        self.created_default = Some(false);
         self.transient = Plane::new(AbstractValue::constant(U256::ZERO), true);
     }
 
@@ -898,6 +923,8 @@ impl Store {
             self.pending_destruction.insert(*address, None);
         }
         self.logs_unknown = true;
+        self.created_default = None;
+        self.pending_destruction_default = None;
     }
 
     /// Join complete transaction states, treating missing keys as defaults.
@@ -1004,10 +1031,13 @@ impl Store {
                         },
                     )
                 })
-                // Missing lifecycle entries already mean definitely false.
-                // Keep a canonical representation for exact summary inputs.
-                .filter(|(_, value)| *value != Some(false))
+                // Omitted entries inherit the joined lifecycle default, which
+                // can be unknown after unobserved creations or deletions.
+                .filter(|(_, value)| {
+                    *value != summary::join_flag(self.created_default, other.created_default)
+                })
                 .collect(),
+            created_default: summary::join_flag(self.created_default, other.created_default),
             pending_destruction: addresses
                 .iter()
                 .map(|address| {
@@ -1021,8 +1051,18 @@ impl Store {
                         },
                     )
                 })
-                .filter(|(_, value)| *value != Some(false))
+                .filter(|(_, value)| {
+                    *value
+                        != summary::join_flag(
+                            self.pending_destruction_default,
+                            other.pending_destruction_default,
+                        )
+                })
                 .collect(),
+            pending_destruction_default: summary::join_flag(
+                self.pending_destruction_default,
+                other.pending_destruction_default,
+            ),
             possible_logs,
             logs_unknown,
         }
@@ -1202,7 +1242,8 @@ impl Store {
             })
             .saturating_add(self.existence.len())
             .saturating_add(self.created.len())
-            .saturating_add(self.pending_destruction.len());
+            .saturating_add(self.pending_destruction.len())
+            .saturating_add(2);
         self.possible_logs.values().fold(
             lifecycle_work
                 .saturating_add(self.persistent.initial_independence.work_size())

@@ -91,6 +91,8 @@ fn symbolic_policy_partition_retains_both_domains_and_pre_effect_state() {
         root_address: None,
         input_scope: None,
         query_cache: Default::default(),
+        procedure: false,
+        discover_code: false,
     };
     let source = ExprId::fresh().unwrap();
     let size = AbstractValue::top().with_expression(source.clone());
@@ -170,6 +172,8 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
         root_address: None,
         input_scope: None,
         query_cache: Default::default(),
+        procedure: false,
+        discover_code: false,
     };
     assert!(!super::memory(
         &mut result,
@@ -229,6 +233,8 @@ fn encoder_limit_keeps_both_guarded_memory_domains() {
         root_address: None,
         input_scope: None,
         query_cache: Default::default(),
+        procedure: false,
+        discover_code: false,
     };
     assert!(super::memory(
         &mut result,

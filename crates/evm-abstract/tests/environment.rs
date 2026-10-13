@@ -767,21 +767,28 @@ fn bytecode_without_a_concrete_creator_retains_a_creation_frontier() {
 }
 
 #[test]
-fn symbolic_call_targets_and_unknown_calldata_copy_sizes_keep_typed_frontiers() {
+fn symbolic_targets_are_modeled_while_uncovered_copy_sizes_keep_typed_frontiers() {
     for (code, expected_target) in [("5f5f5f5f5f5f356207a120f100", true), ("365f5f3700", false)] {
         let result = analyze(code, EvmEnvironment::default(), Profile::Product);
         assert_eq!(result.status(), Status::Incomplete);
-        assert!(
-            result
-                .execution()
-                .frontiers()
-                .iter()
-                .any(|frontier| if expected_target {
-                    matches!(frontier.reason, FrontierReason::UnknownTarget)
-                } else {
-                    matches!(frontier.reason, FrontierReason::Memory)
-                })
-        );
+        if expected_target {
+            assert!(!result.execution().frontiers().is_empty());
+            assert!(
+                result
+                    .execution()
+                    .frontiers()
+                    .iter()
+                    .all(|frontier| frontier.reason != FrontierReason::UnknownTarget)
+            );
+        } else {
+            assert!(
+                result
+                    .execution()
+                    .frontiers()
+                    .iter()
+                    .any(|frontier| frontier.reason == FrontierReason::Memory)
+            );
+        }
     }
 }
 
@@ -846,9 +853,15 @@ fn raw_internal_owner_does_not_supply_code_for_an_unrelated_literal_address() {
     let call = format!("5f5f5f5f5f{literal}6207a120f100");
     let result = analyze(&call, EvmEnvironment::default(), Profile::Product);
     assert_eq!(result.status(), Status::Incomplete);
-    assert!(result.execution().frontiers().iter().any(
-        |frontier| matches!(frontier.reason,FrontierReason::MissingCode(target) if target==anchor)
-    ));
+    assert!(
+        result.execution().states().iter().any(|state| {
+            let active = state.active();
+            active.code_address == anchor
+                && active.mode == analysis::FrameCode::Unknown
+                && state.program().is_none()
+        }),
+        "the literal target has an unknown-code alternative, distinct from root To"
+    );
 }
 
 #[test]

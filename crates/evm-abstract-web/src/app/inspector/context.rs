@@ -10,10 +10,36 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
     egui::Grid::new("frame_context")
         .num_columns(2)
         .show(ui, |ui| {
-            value::text(ui, "Code account", &frame.code_address);
-            value::text(ui, "Storage owner", &frame.storage_address);
-            value::text(ui, "Logical ADDRESS", value::address(&frame.address_value));
-            value::text(ui, "CALLER", value::address(&frame.caller));
+            let abstract_environment =
+                frame.kind == evm_abstract_protocol::CodeKind::AbstractEnvironment;
+            value::text(
+                ui,
+                if abstract_environment {
+                    "Code namespace"
+                } else {
+                    "Code account"
+                },
+                &frame.code_address,
+            );
+            value::text(
+                ui,
+                if frame.address_operand.is_some() {
+                    "Storage namespace"
+                } else {
+                    "Storage owner"
+                },
+                &frame.storage_address,
+            );
+            if let Some(address) = &frame.address_operand {
+                value::named(ui, "Logical ADDRESS", address);
+            } else {
+                value::text(ui, "Logical ADDRESS", value::address(&frame.address_value));
+            }
+            if let Some(caller) = &frame.caller_operand {
+                value::named(ui, "CALLER", caller);
+            } else {
+                value::text(ui, "CALLER", value::address(&frame.caller));
+            }
             value::named(ui, "CALLVALUE", &frame.call_value);
             value::text(
                 ui,
@@ -24,11 +50,23 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                     if frame.is_static { " · static" } else { "" }
                 ),
             );
-            value::text(ui, "Code hash", &frame.code_hash);
+            value::text(
+                ui,
+                "Code hash",
+                if abstract_environment {
+                    "Not observed"
+                } else {
+                    &frame.code_hash
+                },
+            );
             value::text(
                 ui,
                 "Block / context",
-                format!("{} · {:?}", Symbol::Block(frame.basic_block), frame.context),
+                if abstract_environment {
+                    "Abstract environment".into()
+                } else {
+                    format!("{} · {:?}", Symbol::Block(frame.basic_block), frame.context)
+                },
             );
             value::text(
                 ui,

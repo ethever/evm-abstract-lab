@@ -5,6 +5,10 @@ let
     let
       args = variant.common // {
         inherit (variant) cargoArtifacts;
+        # Keep the test harness within the caller's Nix build-core allowance.
+        preCheck = ''
+          export RUST_TEST_THREADS="$NIX_BUILD_CORES"
+        '';
       };
     in
     {

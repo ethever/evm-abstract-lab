@@ -54,6 +54,10 @@
 
 实现按所选题分别看 [`create.rs`](../../crates/evm-abstract/src/analysis/transfer/create.rs)、[`Store::selfdestruct` / `finalize_transaction`](../../crates/evm-abstract/src/world/store.rs)、[`precompile.rs`](../../crates/evm-abstract/src/analysis/transfer/precompile.rs)。理论上要检查代码身份、生命周期或执行模式有没有进入当前判断的前提，不能仅凭账户地址复用旧结论。
 
+## 未知部分与已知代码共同迭代
+
+[第 18 课](../18-unknown-world.md)连接另一个问题：没有完整代码事实时，怎样建立保守交互关系并继续父调用。先运行 busy/x 的多次回调例子，再比较 C 允许写入与禁止写入的 old/new 结果；最后查看摘要依赖、闭合状态与尚未处理的前沿。区分完整图证书复用与数值过程摘要，两者有不同精度边界。
+
 ## 怎样判断整个模块已经完成
 
 给一份报告标出四项：初始事实的身份、当前 Store 的修改、摘要的输入前提、仍未补齐的前沿。再指出一个由本地测试支持的重跑规则和一个摘要开关实验的观测结果；将样本证据与普遍保证分开。

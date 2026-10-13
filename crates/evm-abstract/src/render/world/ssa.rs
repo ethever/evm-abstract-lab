@@ -212,6 +212,7 @@ fn write_frame(
                 }
                 FrameCode::Precompile(_) => "native precompile".to_owned(),
                 FrameCode::Empty => "empty executable code".to_owned(),
+                FrameCode::Unknown => "abstract environment; summarized interactions".to_owned(),
                 FrameCode::Runtime | FrameCode::InitCode => {
                     "synthetic end-of-code continuation".to_owned()
                 }
@@ -333,6 +334,15 @@ fn write_transition(
         MachineEdgeKind::Call => "suspend caller; enter child with a rollback checkpoint",
         MachineEdgeKind::Return => "resume caller; commit child effects",
         MachineEdgeKind::Revert => "resume caller; restore saved checkpoint; retain revert data",
+        MachineEdgeKind::Summary(crate::analysis::OutcomeKind::Return) => {
+            "resume caller with summarized child effects"
+        }
+        MachineEdgeKind::Summary(crate::analysis::OutcomeKind::Revert) => {
+            "resume caller from summary; restore saved checkpoint; retain revert data"
+        }
+        MachineEdgeKind::Summary(crate::analysis::OutcomeKind::Failure) => {
+            "resume caller from summary; restore saved checkpoint; empty returndata"
+        }
         MachineEdgeKind::Failure => {
             "reject call or restore child checkpoint; resume caller with empty returndata"
         }
@@ -375,6 +385,7 @@ fn empty_instruction_reason(state: &MachineState) -> &'static str {
         FrameCode::InvalidDelegation => "invalid nested delegation; exceptional halt",
         FrameCode::Precompile(_) => "native execution; no bytecode instructions",
         FrameCode::Empty => "empty executable code; implicit completion",
+        FrameCode::Unknown => "abstract environment; no captured bytecode instructions",
         FrameCode::Runtime | FrameCode::InitCode => {
             "synthetic end-of-code continuation or no executed bytecode instruction"
         }

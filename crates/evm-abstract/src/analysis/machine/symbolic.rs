@@ -39,6 +39,12 @@ impl FrameState {
         leaves.extend(self.calldata.fresh_leaves());
         leaves.extend(self.returndata.fresh_leaves());
         collect_value(&self.call_value, &mut leaves);
+        for value in [&self.address_operand, &self.caller_operand]
+            .into_iter()
+            .flatten()
+        {
+            collect_value(value, &mut leaves);
+        }
         for value in &self.stack {
             collect_value(value, &mut leaves);
         }
@@ -55,6 +61,12 @@ impl FrameState {
             rename_value(value, map, limits)?;
         }
         rename_value(&mut self.call_value, map, limits)?;
+        for value in [&mut self.address_operand, &mut self.caller_operand]
+            .into_iter()
+            .flatten()
+        {
+            rename_value(value, map, limits)?;
+        }
         self.memory.rename_fresh(map, limits)?;
         self.calldata.rename_fresh(map, limits)?;
         self.returndata.rename_fresh(map, limits)?;

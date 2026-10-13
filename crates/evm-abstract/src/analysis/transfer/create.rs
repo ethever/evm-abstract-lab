@@ -125,7 +125,14 @@ pub(super) fn create(
         boundary(result, pc, FrontierReason::CallDepth);
         return;
     }
-    let Some(caller_address) = result.payload.active().key.address_value.as_concrete() else {
+    // Abstract execution can carry an address expression beyond the fixed
+    // environment vocabulary. Its storage namespace is not a concrete creator.
+    let frame = result.payload.active();
+    let caller_address = match &frame.address_operand {
+        Some(value) => value.singleton().map(super::address),
+        None => frame.key.address_value.as_concrete(),
+    };
+    let Some(caller_address) = caller_address else {
         incomplete(result, pc, CreationBoundary::UnknownCreator);
         return;
     };
@@ -352,6 +359,8 @@ pub(super) fn create(
                                         memory: ByteArray::memory(),
                                         calldata: ByteArray::empty(),
                                         environment_calldata: false,
+                                        address_operand: None,
+                                        caller_operand: None,
                                         returndata: ByteArray::empty(),
                                         call_value: AbstractValue::constant(*value),
                                         saved_store: saved_store.clone(),

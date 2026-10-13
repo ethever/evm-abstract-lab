@@ -1,4 +1,5 @@
 //! Project the complete world machine while preserving native graph namespaces.
+mod summaries;
 use super::{checkpoint, mapping, pools::Pools, rpc, ssa, value};
 use evm_abstract::{
     analysis::{self, control::Control, progress::Phase},
@@ -212,6 +213,7 @@ pub(super) fn report(
         blob_count: pools.symbolic.value(&environment.blob_hashes.length)?,
     };
     checkpoint(control)?;
+    let abstract_summaries = summaries::project(native, control, &mut pools.symbolic)?;
     Ok(api::AnalysisReport {
         schema_version: api::SCHEMA_VERSION,
         scope,
@@ -298,6 +300,7 @@ pub(super) fn report(
         byte_arrays: pools.buffers_dto,
         stores: pools.stores,
         outcomes,
+        abstract_summaries,
         acquisition: native.rpc_acquisition().map(rpc::acquisition),
     })
 }

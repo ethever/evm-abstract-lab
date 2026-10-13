@@ -33,6 +33,10 @@ pub struct FrameState {
     pub returndata: ByteArray,
     /// CALLVALUE for this context; DELEGATECALL preserves its parent value.
     pub call_value: AbstractValue,
+    /// Runtime ADDRESS expression for an abstract owner outside the fixed input vocabulary.
+    pub address_operand: Option<AbstractValue>,
+    /// Runtime CALLER expression; independent callbacks do not alias the root caller.
+    pub caller_operand: Option<AbstractValue>,
     /// State immediately before entry, including persistent and transient effects.
     /// Root failure also restores this checkpoint.
     pub saved_store: Snapshot,
@@ -46,6 +50,16 @@ impl FrameState {
                 .saturating_add(self.calldata.work_size())
                 .saturating_add(self.returndata.work_size())
                 .saturating_add(self.call_value.work_size())
+                .saturating_add(
+                    self.address_operand
+                        .as_ref()
+                        .map_or(0, AbstractValue::work_size),
+                )
+                .saturating_add(
+                    self.caller_operand
+                        .as_ref()
+                        .map_or(0, AbstractValue::work_size),
+                )
                 .saturating_add(self.saved_store.state().work_size())
                 .saturating_add(self.key.jump_history.len())
                 .saturating_add(self.program.as_ref().map_or(0, |program| {
@@ -89,6 +103,26 @@ impl FrameState {
             &selector,
             limits,
         )?;
+        for (output, left, right) in [
+            (
+                &mut out.address_operand,
+                &self.address_operand,
+                &incoming.address_operand,
+            ),
+            (
+                &mut out.caller_operand,
+                &self.caller_operand,
+                &incoming.caller_operand,
+            ),
+        ] {
+            *output = match (left, right) {
+                (None, None) => None,
+                (Some(left), Some(right)) => {
+                    Some(join::join_value(left, right, domain, &selector, limits)?)
+                }
+                _ => return Err(MachineError::Shape),
+            };
+        }
         out.memory =
             self.memory
                 .join_guarded(&incoming.memory, domain, selector.clone(), limits)?;

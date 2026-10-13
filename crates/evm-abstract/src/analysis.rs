@@ -47,7 +47,7 @@ pub use transfer::create::CreationBoundary;
 /// Serialized native analysis format. Version 6 exports flat immutable scalar,
 /// byte/slot and relation-path graphs, preserving opcode and source evidence.
 /// The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 6;
+pub const SCHEMA_VERSION: u16 = 7;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

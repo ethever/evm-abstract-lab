@@ -360,7 +360,10 @@ fn verify_transition(
             }
             expected.push(Vec::new());
         }
-        MachineEdgeKind::Return | MachineEdgeKind::Revert | MachineEdgeKind::Failure => {
+        MachineEdgeKind::Return
+        | MachineEdgeKind::Revert
+        | MachineEdgeKind::Failure
+        | MachineEdgeKind::Summary(_) => {
             if target_depth != source_depth && target_depth + 1 != source_depth {
                 return Err(invariant(Kind::PartialReturnDepth));
             }

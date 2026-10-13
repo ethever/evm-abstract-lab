@@ -96,6 +96,12 @@ choice! {
         Failure,
         /// Child revert and caller resumption.
         Revert,
+        /// Successful caller resumption established by an abstract summary.
+        SummaryReturn,
+        /// Reverting caller resumption established by an abstract summary.
+        SummaryRevert,
+        /// Exceptional caller resumption established by an abstract summary.
+        SummaryFailure,
     }
 }
 record! {
@@ -296,6 +302,8 @@ record! {
         pub stores: Vec<crate::StoreSnapshot>,
         /// Terminal root results and state changes.
         pub outcomes: Vec<crate::Outcome>,
+        /// Recursive known/unknown execution evidence, separate from CFG traces.
+        pub abstract_summaries: Vec<crate::AbstractSummary>,
         /// Fixed-snapshot account/storage acquisition evidence.
         pub acquisition: Option<crate::AcquisitionReport>,
     }

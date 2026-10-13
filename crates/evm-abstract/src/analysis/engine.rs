@@ -89,7 +89,7 @@ impl Counters {
         }
     }
 
-    fn report(&self, work: usize) {
+    pub(super) fn report(&self, work: usize) {
         self.observer.emit(super::progress::Event::Execution {
             states: self.states,
             transfers: self.transfers,
@@ -137,6 +137,7 @@ pub(super) fn run_metered(
         rpc_acquisition: None,
         summary_stats: SummaryStats::default(),
         summaries: Vec::new(),
+        unknown_summaries: Vec::new(),
     };
     // 输入 lift、Store 与回滚点复制也使用根账本，不让初始化获得免费工作。
     if counters.states >= result.config.analysis.max_states {
@@ -203,6 +204,21 @@ pub(super) fn run_metered(
         return Ok(result);
     }
     let alternatives = EntryAlternatives::new(&initial);
+    if storage_reads == transfer::StorageReadPolicy::Discover
+        && initial.active().code == super::FrameCode::Unknown
+    {
+        result.frontiers.push(MachineFrontier {
+            from: None,
+            target: Some(initial.key()),
+            pc: Some(0),
+            reason: FrontierReason::MissingCode(initial.active().key.code_address),
+            range: None,
+            payload: Some(Arc::new(initial)),
+        });
+        result.status = Status::Incomplete;
+        result.work = budget.used();
+        return Ok(result);
+    }
     // 本模型不精确跟踪剩余 gas，先保留入口即失败、Store 不变的保守可能。
     // 这条 outcome 不是 transfer 已执行指令后报告的异常，也不是未完成前沿。
     result.outcomes.push(MachineOutcome {
@@ -239,6 +255,7 @@ pub(super) fn run_metered(
         cache,
         alternatives: vec![alternatives],
         selectors: BTreeSet::new(),
+        unknown: transfer::unknown::Table::default(),
     };
     engine.run();
     engine.counters.report(engine.budget.used());
@@ -279,6 +296,8 @@ struct Engine<'a> {
     completed_calls: Vec<Vec<CompletedCall>>,
     /// 可选的完整 callee 图证书缓存；关闭摘要时普通工作表路径仍然成立。
     cache: Option<Cache>,
+    /// Known/unknown procedure inputs, outputs and retained return continuations.
+    unknown: transfer::unknown::Table,
 }
 
 /// 当前节点尝试使用摘要后的调度决定，而非子调用的 Return/Revert/Failure。
@@ -424,7 +443,9 @@ impl Engine<'_> {
             // 暂时移出 cache，使它与 &mut self 能同时用于传播和认证。
             // 每条继续/中断路径都放回同一缓存；take 不是清空或重置分析结果。
             let mut cache = self.cache.take();
-            let attempt = if let Some(cache) = &mut cache {
+            let is_unknown =
+                self.result.states[id].entry.active().code == super::FrameCode::Unknown;
+            let attempt = if !is_unknown && let Some(cache) = &mut cache {
                 self.try_summary(id, cache)
             } else {
                 SummaryAttempt::Miss
@@ -436,17 +457,34 @@ impl Engine<'_> {
             }
             let reused = matches!(attempt, SummaryAttempt::Hit);
             if !reused {
-                self.result.transfers += 1;
-                self.counters.transfers += 1;
-                let execution = transfer::execute(
-                    &self.result.world,
-                    &self.result.entry,
-                    self.result.states[id].entry.clone(),
-                    &self.result.config,
-                    self.domain,
-                    self.budget,
-                    self.storage_reads,
-                );
+                let execution = if is_unknown {
+                    let (execution, evidence) = self.unknown.execute(
+                        id,
+                        &self.result.world,
+                        &self.result.entry,
+                        self.result.states[id].entry.clone(),
+                        &self.result.config,
+                        self.domain,
+                        self.budget,
+                        self.counters,
+                        self.storage_reads,
+                    );
+                    self.result.transfers = self.counters.transfers;
+                    self.result.unknown_summaries.push(evidence);
+                    execution
+                } else {
+                    self.result.transfers += 1;
+                    self.counters.transfers += 1;
+                    transfer::execute(
+                        &self.result.world,
+                        &self.result.entry,
+                        self.result.states[id].entry.clone(),
+                        &self.result.config,
+                        self.domain,
+                        self.budget,
+                        self.storage_reads,
+                    )
+                };
                 self.execution(id, execution, cache.as_mut());
             }
             // 本轮传播后再检查候选子图是否闭合。候选 callee 入口若与登记时不同，
@@ -589,6 +627,7 @@ impl Engine<'_> {
                 reason,
                 target,
                 range,
+                payload,
             } = frontier;
             self.result.frontiers.push(MachineFrontier {
                 from: Some(id),
@@ -596,7 +635,7 @@ impl Engine<'_> {
                 pc: Some(pc),
                 reason,
                 // RangeWitness already owns the conditional pre-effect input.
-                payload: None,
+                payload,
                 range,
             });
         }
@@ -919,6 +958,7 @@ impl Engine<'_> {
             diagnostics: self.diagnostics.clone(),
             completed_calls: self.completed_calls.clone(),
             cache: None,
+            unknown: transfer::unknown::Table::default(),
         };
         for (old, new) in &prepared.renaming {
             if staged.selectors.contains(old) {

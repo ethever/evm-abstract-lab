@@ -49,6 +49,12 @@ fn form(
             scalar(value);
         }
         scalar(&mut frame.call_value);
+        for value in [&mut frame.address_operand, &mut frame.caller_operand]
+            .into_iter()
+            .flatten()
+        {
+            scalar(value);
+        }
         frame.memory = frame.memory.widening_form(domain, limits)?;
         frame.calldata = frame.calldata.widening_form(domain, limits)?;
         frame.returndata = frame.returndata.widening_form(domain, limits)?;

@@ -73,6 +73,9 @@ fn frame_endings_require_exactly_one_child_frame_pop_and_deduplicate_edges() {
         (EdgeKind::Return, OutcomeKind::Return),
         (EdgeKind::Revert, OutcomeKind::Revert),
         (EdgeKind::Failure, OutcomeKind::Failure),
+        (EdgeKind::SummaryReturn, OutcomeKind::Return),
+        (EdgeKind::SummaryRevert, OutcomeKind::Revert),
+        (EdgeKind::SummaryFailure, OutcomeKind::Failure),
     ] {
         let mut report = report();
         report.cfg[1].frame_depth = 3;

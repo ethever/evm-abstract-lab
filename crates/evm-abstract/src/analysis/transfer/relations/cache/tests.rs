@@ -220,6 +220,8 @@ fn repeated_refinement_reuses_native_unique_and_multiple_proofs_for_every_provid
                 root_address: None,
                 input_scope: None,
                 query_cache: Default::default(),
+                procedure: false,
+                discover_code: false,
             };
             let mut first = AbstractValue::top().with_expression(expression.clone());
             assert_eq!(
@@ -267,6 +269,8 @@ fn cached_multiple_still_filters_changed_finite_candidates_for_every_provider() 
             root_address: None,
             input_scope: None,
             query_cache: Default::default(),
+            procedure: false,
+            discover_code: false,
         };
         let mut first = AbstractValue::top().with_expression(expression.clone());
         assert_eq!(
@@ -317,6 +321,8 @@ fn a_cached_proof_cannot_bypass_cancelled_or_exhausted_work() {
                 root_address: None,
                 input_scope: None,
                 query_cache: cache,
+                procedure: false,
+                discover_code: false,
             };
             let mut value = AbstractValue::top().with_expression(expression);
             let before = value.clone();

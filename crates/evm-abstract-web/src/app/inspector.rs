@@ -9,6 +9,7 @@ mod panel;
 pub(crate) mod shortcut;
 mod ssa;
 mod stores;
+mod summaries;
 mod symbolic;
 mod value;
 
@@ -177,8 +178,20 @@ impl Inspector {
         } else {
             ""
         };
+        let mut interactions = "";
+        if self.tab == Tab::Frame {
+            for summary in &report.abstract_summaries {
+                if Some(summary.source_state) == selection.state {
+                    interactions = " · Abstract interactions · closed";
+                    if !summary.closed {
+                        interactions = " · Abstract interactions · open";
+                        break;
+                    }
+                }
+            }
+        }
         format!(
-            "Inspector: {} · {boundary} · {frame}{store}{mode}",
+            "Inspector: {} · {boundary} · {frame}{store}{interactions}{mode}",
             self.tab.label()
         )
     }
@@ -363,6 +376,7 @@ impl Inspector {
                             symbolic::show(ui, report, machine.path.node, "Paired path conditions");
                         }
                         context::frame(ui, frame);
+                        summaries::show(ui, report, selection.state);
                         if controls::action(ui, "Inspect rollback store", Density::Regular)
                             .clicked()
                         {

@@ -257,6 +257,7 @@ fn pending(
         pc,
         reason: super::boundary_reason(reason),
         target: Some(payload.key()),
+        payload: None,
         range: Some(RangeWitness {
             request,
             condition,

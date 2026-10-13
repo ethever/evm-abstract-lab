@@ -89,6 +89,7 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
     write_outcomes(&mut output, analysis, &refs);
     write_diagnostics(&mut output, analysis);
     write_frontiers(&mut output, analysis, &refs);
+    super::super::text::unknown_summaries::write(&mut output, analysis);
     output.push('\n');
     if analysis.status() == Status::Converged {
         output.push_str(&super::super::normalized_ssa(
@@ -219,6 +220,9 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis, refs: &References) 
             (FrameCode::Empty, _) => output.push_str(
                 "    Empty executable code: implicit successful halt; no bytecode instruction list.\n",
             ),
+            (FrameCode::Unknown, _) => output.push_str(
+                "    Abstract environment: interactions represented by summary effects; no captured bytecode instruction list.\n",
+            ),
             (FrameCode::InvalidDelegation, _) => output.push_str(
                 "    Invalid nested delegation: exceptional halt at the second marker; no bytecode instruction list.\n",
             ),
@@ -284,6 +288,7 @@ fn location(state: &MachineState) -> String {
         }
         FrameCode::Precompile(_) => "native precompile (no bytecode block)".to_owned(),
         FrameCode::Empty => "empty code (implicit halt)".to_owned(),
+        FrameCode::Unknown => "abstract environment (summary effects)".to_owned(),
         FrameCode::InvalidDelegation => "invalid nested delegation (exceptional halt)".to_owned(),
     }
 }

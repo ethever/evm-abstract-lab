@@ -56,6 +56,7 @@ fn engine<'a>(
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new(); count],
         cache: None,
+        unknown: super::transfer::unknown::Table::default(),
     }
 }
 

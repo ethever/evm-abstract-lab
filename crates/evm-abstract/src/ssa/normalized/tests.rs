@@ -498,6 +498,12 @@ fn unknown_call_preserves_every_supported_dispatch_deferred_edge_and_frontier() 
     let mut world = World::new(Fork::Osaka, "normalized unknown call");
     world
         .insert(
+            Address::repeat_byte(0x44),
+            Account::from_hex("365f5ff000", Fork::Osaka).unwrap(),
+        )
+        .unwrap();
+    world
+        .insert(
             root,
             Account::from_hex("5f5f5f5f5f345af100", Fork::Osaka).unwrap(),
         )

@@ -1,0 +1,17 @@
+{
+  "fork": "osaka",
+  "provenance": "offline:unknown-world:static-reuse:v1",
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000101",
+      "code": "0x336109001415610046575f5f5f5f610201620f4240fa505f5f5f5f610201620f4240fa505f5f5f5f610201620f4240fa505f5f5f5f610201620f4240fa505f545f5260205ff35b00",
+      "storage": {
+        "0x0": "0x2a"
+      },
+      "storage_unknown": false,
+      "balance": "0x1000000",
+      "nonce": "0x1",
+      "existence": "present"
+    }
+  ]
+}

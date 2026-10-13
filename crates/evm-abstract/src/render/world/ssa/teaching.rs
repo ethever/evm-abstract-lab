@@ -212,6 +212,19 @@ fn write_transition(
             "    {} continues; invocation rejected; empty returndata",
             Symbol::Frame(destination_depth - 1)
         ),
+        MachineEdgeKind::Summary(kind) => writeln!(
+            output,
+            "    resume {} from {:?} summary; {}",
+            Symbol::Frame(destination_depth - 1),
+            kind,
+            match kind {
+                crate::analysis::OutcomeKind::Return => "apply summarized child effects",
+                crate::analysis::OutcomeKind::Revert =>
+                    "rollback to saved checkpoint; retain revert data",
+                crate::analysis::OutcomeKind::Failure =>
+                    "rollback to saved checkpoint; empty returndata",
+            }
+        ),
         MachineEdgeKind::Intraprocedural(_) => unreachable!(),
     }
     .unwrap();
@@ -240,14 +253,22 @@ fn write_transition(
                 })
         };
         if creation {
-            let value = if transition.kind == MachineEdgeKind::Return {
+            let value = if matches!(
+                transition.kind,
+                MachineEdgeKind::Return
+                    | MachineEdgeKind::Summary(crate::analysis::OutcomeKind::Return)
+            ) {
                 "created address"
             } else {
                 "0"
             };
             writeln!(output, "    CREATE address %{result} = {value}").unwrap();
         } else {
-            let value = usize::from(transition.kind == MachineEdgeKind::Return);
+            let value = usize::from(matches!(
+                transition.kind,
+                MachineEdgeKind::Return
+                    | MachineEdgeKind::Summary(crate::analysis::OutcomeKind::Return)
+            ));
             writeln!(output, "    CALL result %{result} = {value}").unwrap();
         }
     }

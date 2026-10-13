@@ -93,7 +93,7 @@ fn verifier_rejects_wrong_caller_arguments_results_and_effects() {
 
 #[test]
 fn native_ssa_refuses_an_unresolved_world() {
-    let mut world = World::new(Fork::Osaka, "missing entry");
+    let mut world = World::new(Fork::Osaka, "unknown entry without enough work");
     world.insert(Address::ZERO, Account::unknown()).unwrap();
     let analysis = analysis::analyze_world(
         world,
@@ -108,7 +108,10 @@ fn native_ssa_refuses_an_unresolved_world() {
                 ..crate::world::EvmEnvironment::default()
             },
         },
-        ExecutionConfig::default(),
+        ExecutionConfig {
+            max_work: 1,
+            ..ExecutionConfig::default()
+        },
     )
     .unwrap();
     assert!(matches!(

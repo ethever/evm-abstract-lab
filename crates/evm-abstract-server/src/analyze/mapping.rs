@@ -27,6 +27,15 @@ pub(super) fn edge(source: analysis::MachineEdgeKind) -> EdgeKind {
         analysis::MachineEdgeKind::Return => EdgeKind::Return,
         analysis::MachineEdgeKind::Failure => EdgeKind::Failure,
         analysis::MachineEdgeKind::Revert => EdgeKind::Revert,
+        analysis::MachineEdgeKind::Summary(analysis::OutcomeKind::Return) => {
+            EdgeKind::SummaryReturn
+        }
+        analysis::MachineEdgeKind::Summary(analysis::OutcomeKind::Revert) => {
+            EdgeKind::SummaryRevert
+        }
+        analysis::MachineEdgeKind::Summary(analysis::OutcomeKind::Failure) => {
+            EdgeKind::SummaryFailure
+        }
     }
 }
 

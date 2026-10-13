@@ -161,9 +161,9 @@ impl Terminations {
             };
             let evidence = states.get_mut(&edge.from).expect("indexed native source");
             let kind = match edge.kind {
-                EdgeKind::Return => Some(OutcomeKind::Return),
-                EdgeKind::Revert => Some(OutcomeKind::Revert),
-                EdgeKind::Failure => Some(OutcomeKind::Failure),
+                EdgeKind::Return | EdgeKind::SummaryReturn => Some(OutcomeKind::Return),
+                EdgeKind::Revert | EdgeKind::SummaryRevert => Some(OutcomeKind::Revert),
+                EdgeKind::Failure | EdgeKind::SummaryFailure => Some(OutcomeKind::Failure),
                 EdgeKind::Fallthrough
                 | EdgeKind::Jump
                 | EdgeKind::BranchTrue

@@ -177,7 +177,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 9
+    assert initial_report["schema_version"] == 10
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
         assert initial_report["metadata"]["limits"][field] == value
@@ -210,7 +210,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 9
+    assert report["schema_version"] == 10
     assert report["status"] == "Converged", report["frontiers"]
     expected = {**defaults, **edited}
     for field, value in expected.items():
@@ -804,7 +804,7 @@ def diagnostics_interactions(browser, url: str, args):
         assert request["fork"] == fork and posted_bytecode(reply) == code, request
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 9 and report["status"] == "Converged", report
+        assert report["schema_version"] == 10 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report
 
@@ -1174,11 +1174,11 @@ def ssa_values_interactions(browser, url, output):
     results={}
     cases=[('fold','600260030100','Converged'),
            ('copy','345f0100','Converged'),
-           ('partial','60026003015f5f5f5f5f5f355af100','Incomplete')]
+           ('partial','60026003015a5f5ff0','Incomplete')]
     for name,code,completion in cases:
         if 'Inspector hidden' not in status.text_content():hide_inspector(page,canvas)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
-        assert report['schema_version']==9 and report['status']==completion
+        assert report['schema_version']==10 and report['status']==completion
         ssa=report['ssa']
         assert len(ssa['values'])==ssa['value_count']
         assert [value['id'] for value in ssa['values']]==list(range(ssa['value_count']))
@@ -1197,7 +1197,7 @@ def ssa_values_interactions(browser, url, output):
             assert any(fact['scope']=='Definition' and fact['constant']=='0x5' for fact in value['facts'])
         if name=='partial':
             assert any(fact['scope']=={'State':block['state']} for fact in value['facts'])
-            assert any(frontier['kind']=='UnknownTarget' for frontier in report['frontiers'])
+            assert any(frontier['kind']=='Creation' and 'UnknownInitCode' in frontier['detail'] for frontier in report['frontiers'])
         page.keyboard.press('3');settle_gesture(page);page.mouse.move(2,2)
         png=canvas.screenshot(path=str(output/f'ssa-values-{name}-table.png'))
         selected=screenshot_metrics(page,png,(4,75,1436,970))
@@ -1254,6 +1254,76 @@ def ssa_values_interactions(browser, url, output):
     (output/'ssa-values-report.json').write_text(json.dumps(results,indent=2)+'\n')
     page.close()
     return results
+
+
+def unknown_world_interactions(browser, url, output):
+    """Run an actual closed unknown relation through the form, SSA and inspector."""
+    page, canvas, errors = layout_page(browser, url)
+    posts = []
+    page.on("request", lambda request: posts.append(request.url)
+            if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+    code = "602a5f555f5f5f5f6102015afa505f545f5260205ff3"
+    entry = {"address": "0x0000000000000000000000000000000000000101",
+             "caller": "0x0000000000000000000000000000000000000900",
+             "call_value": "0x0", "calldata": "0x"}
+    report = layout_submission(page, canvas, code, output, "unknown-world", entry=entry,
+                               source_height_offset=-62)
+    assert report["schema_version"] == 10 and report["status"] == "Converged"
+    assert report["frontiers"] == [] and report["ssa"]["complete"]
+    summaries = report["abstract_summaries"]
+    assert summaries and all(summary["closed"] and summary["procedures"] for summary in summaries)
+    assert any(edge["kind"] == "SummaryReturn" for edge in report["edges"])
+    unknown = [state for state in report["states"]
+               if state["entry"]["frames"][-1]["kind"] == "AbstractEnvironment"]
+    assert unknown
+    for state in unknown:
+        frame = state["entry"]["frames"][-1]
+        block = next(block for block in report["cfg"] if block["id"] == state["state"])
+        assert frame["program"] is None
+        assert block["instructions"] == [] and block["executed_pcs"] == []
+    returns = [outcome for outcome in report["outcomes"] if outcome["kind"] == "Return"]
+    assert returns
+    for outcome in returns:
+        data = report["byte_arrays"][outcome["data"]]
+        assert data["length"]["constants"] == ["0x20"]
+        cells = {cell["offset"]: data["values"][cell["value"]] for cell in data["cells"]}
+        for offset in range(32):
+            assert cells[offset]["constants"] == ["0x2a" if offset == 31 else "0x0"]
+    graph_mode(page, canvas, "States")
+    page.keyboard.press("f")
+    settle_gesture(page)
+    scene = node_snapshot(page, canvas, output, "unknown-world-summary-graph", measure_nodes=True)
+    source = summaries[0]["source_state"]
+    status = page.locator("#analysis-status")
+    for record in scene["node_records"]:
+        left, top, right, bottom = record["bounds"]
+        canvas.click(position={"x": (left + right) / 2, "y": (top + bottom) / 2})
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        if f"Selected {symbol('σ', source)};" in status.text_content():
+            break
+    expect(status).to_contain_text(f"Selected {symbol('σ', source)};")
+    hide_inspector(page, canvas)
+    expect(status).to_contain_text("Inspector: Frame")
+    expect(status).to_contain_text("Abstract interactions")
+    expect(status).to_contain_text("closed")
+    tab = inspector_frame_tab(page, canvas)
+    inspector_title_action(page, canvas, "Maximize", tab)
+    page.mouse.move(2, 2)
+    settle_gesture(page)
+    png = canvas.screenshot(path=str(output / "unknown-world-summary-inspector.png"))
+    pixels = text_pixels(page, png, (8, 80, 1410, 970))
+    assert len(pixels["rows"]) >= 10 and pixels["white_pixels"] > 100, pixels
+    assert len(posts) == 1, "summary selection or inspection reran analysis"
+    assert not errors, errors
+    result = {"status": report["status"], "ssa_complete": report["ssa"]["complete"],
+              "summaries": summaries, "unknown_states": [state["state"] for state in unknown],
+              "source_state": source, "inspector": status.text_content(),
+              "painted": pixels, "analysis_submissions": len(posts),
+              "renderer": webgpu_evidence(page)}
+    (output / "unknown-world-report.json").write_text(json.dumps(result, indent=2) + "\n")
+    page.close()
+    return result
 
 
 def warning_pixels(page, png, card):
@@ -3951,25 +4021,44 @@ def layout_modal(page, canvas):
     return max(boxes, key=lambda rect: (rect[2]-rect[0])*(rect[3]-rect[1]))
 
 
-def layout_entry_form(page, canvas, entry):
+def layout_entry_form(page, canvas, entry, source_height_offset=0):
     """Edit actual egui controls; the typed POST below verifies every choice."""
-    root_offset = 10 if "address" in entry else 0
+    root_offset = source_height_offset + (10 if "address" in entry else 0)
     if "address" in entry:
         modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+18, "y": modal[1]+173})
+        canvas.click(position={"x": modal[0]+18, "y": modal[1]+173+source_height_offset})
         settle_gesture(page)
         modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+250, "y": modal[1]+198})
+        canvas.click(position={"x": modal[0]+250, "y": modal[1]+198+source_height_offset})
         page.keyboard.insert_text(entry["address"])
         rendered_frame(page)
     modal = layout_modal(page, canvas)
     canvas.click(position={"x": modal[0]+100, "y": modal[1]+209+root_offset})
     settle_gesture(page)
+    extra_rows = 0
+    if "caller" in entry:
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0]+175, "y": modal[1]+237+root_offset})
+        settle_gesture(page)
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0]+250, "y": modal[1]+258+root_offset})
+        page.keyboard.insert_text(entry["caller"])
+        rendered_frame(page)
+        extra_rows += 24
+    if "call_value" in entry:
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0]+175, "y": modal[1]+293+root_offset+extra_rows})
+        settle_gesture(page)
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0]+250, "y": modal[1]+314+root_offset+extra_rows})
+        page.keyboard.insert_text(entry["call_value"])
+        rendered_frame(page)
+        extra_rows += 24
     modal = layout_modal(page, canvas)
-    canvas.click(position={"x": modal[0]+175, "y": modal[1]+337+root_offset})
+    canvas.click(position={"x": modal[0]+175, "y": modal[1]+337+root_offset+extra_rows})
     settle_gesture(page)
     modal = layout_modal(page, canvas)
-    canvas.click(position={"x": modal[0]+250, "y": modal[1]+358+root_offset})
+    canvas.click(position={"x": modal[0]+250, "y": modal[1]+358+root_offset+extra_rows})
     page.keyboard.insert_text(entry["calldata"])
     rendered_frame(page)
     if "chain_id" in entry:
@@ -3989,7 +4078,8 @@ def layout_entry_form(page, canvas, entry):
         rendered_frame(page)
 
 
-def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_seconds=60, entry=None):
+def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_seconds=60, entry=None,
+                      source_height_offset=0):
     # Exercise the real multiline editor as a paste. Typing every byte with a
     # delay would add minutes unrelated to analysis or layout for real runtimes.
     open_input(page)
@@ -3997,7 +4087,7 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
     page.keyboard.insert_text(code)
     rendered_frame(page)
     if entry is not None:
-        layout_entry_form(page, canvas, entry)
+        layout_entry_form(page, canvas, entry, source_height_offset)
     canvas.screenshot(path=str(output / f"{name}-input.png"))
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as response:
@@ -4007,6 +4097,10 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
     request = admitted.request.post_data_json
     if entry is not None:
         assert request["environment"]["calldata"] == {"Exact": entry["calldata"]}, request
+        if "caller" in entry:
+            assert request["environment"]["caller"] == {"Concrete": entry["caller"]}, request
+        if "call_value" in entry:
+            assert request["environment"]["call_value"] == {"Concrete": entry["call_value"]}, request
         if "address" in entry:
             assert request["input"]["Bytecode"]["address"] == entry["address"], request
         if "chain_id" in entry:
@@ -4029,6 +4123,10 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
             assert [int(word,16) for word in value["constants"]] == [byte], (offset,value,byte)
         if "address" in entry:
             assert environment["to"]["Concrete"].lower() == entry["address"].lower()
+        if "caller" in entry:
+            assert environment["caller"]["Concrete"].lower() == entry["caller"].lower()
+        if "call_value" in entry:
+            assert [int(value,16) for value in environment["call_value"]["constants"]] == [int(entry["call_value"],16)]
         if "chain_id" in entry:
             assert [int(value,16) for value in environment["chain_id"]["constants"]] == [int(entry["chain_id"],16)]
     (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -4397,7 +4495,7 @@ def hierarchy_call_interactions(browser,args):
 
 
 def layout_pending_machines(report, entry):
-    assert report["schema_version"] == 9
+    assert report["schema_version"] == 10
     pending = report["pending_machines"]
     assert len(pending) == entry["expected_pending_machines"]
     assert {frontier["payload"] for frontier in report["frontiers"]} == set(range(len(pending)))
@@ -4560,6 +4658,7 @@ def main() -> None:
     parser.add_argument("--flow-only",action="store_true",help="Run selected-edge motion and compact-workspace SSA acceptance cases")
     parser.add_argument("--ssa-details-only",action="store_true",help="Run shared SSA reading mode and source-PC reveal acceptance cases")
     parser.add_argument("--ssa-values-only",action="store_true",help="Run normalized SSA and scoped value inspector acceptance")
+    parser.add_argument("--unknown-world-only", action="store_true", help="Run closed unknown interaction and summary inspector acceptance")
     parser.add_argument("--inspector-controls-only",action="store_true",help="Run inspector controls, resizable storage tables and whole-panel scrolling acceptance")
     parser.add_argument("--termination-only",action="store_true",help="Run semantic ending styles and existing selected-node flow/SSA acceptance")
     parser.add_argument("--timings-only",action="store_true",help="Run queued analysis, phase timing and delayed-result acceptance")
@@ -4570,6 +4669,10 @@ def main() -> None:
     with analysis_server(args) as url:
         with sync_playwright() as playwright:
             browser = launch_browser(playwright.chromium, args.browser)
+            if args.unknown_world_only:
+                unknown_world_interactions(browser, url, args.output)
+                browser.close()
+                return
             if args.diagnostics_only:
                 diagnostics_interactions(browser, url, args)
                 browser.close()
@@ -4632,7 +4735,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 9
+            assert analysis["schema_version"] == 10
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
@@ -4694,12 +4797,12 @@ def main() -> None:
             expect(status).to_contain_text("Ready:")
             expect(status).to_contain_text("Converged")
 
-            partial = submit_bytecode(page, canvas, "5f5f5f5f5f5f355af100", args.output / "unknown-call-input.png")
+            partial = submit_bytecode(page, canvas, "5a5f5ff0", args.output / "uncovered-creation-input.png")
             assert partial.status == 200
             partial_reply = partial.json()
             incomplete = partial_reply["result"]["Ok"]
             assert incomplete["status"] == "Incomplete"
-            assert any(frontier["kind"] == "UnknownTarget" for frontier in incomplete["frontiers"])
+            assert any(frontier["kind"] == "Creation" and "UnknownInitCode" in frontier["detail"] for frontier in incomplete["frontiers"])
             assert not incomplete["ssa"]["complete"]
             expect(status).to_contain_text("Incomplete")
             expect(status).to_contain_text("SSA partial")
@@ -4731,6 +4834,7 @@ def main() -> None:
             compact_ssa = compact_ssa_interactions(browser, url, args.output)
             ssa_details = ssa_details_interactions(browser, url, args.output)
             ssa_values = ssa_values_interactions(browser, url, args.output)
+            unknown_world = unknown_world_interactions(browser, url, args.output)
             inspector_controls = inspector_controls_interactions(browser, url, args.output)
             storage_table = storage_table_interactions(browser, url, args.output)
             storage_scroll = storage_scroll_interactions(browser, url, args.output)
@@ -4749,7 +4853,7 @@ def main() -> None:
                     "branch": analysis["status"],
                     "invalid_bytecode": invalid.json()["result"]["Err"]["code"],
                     "arithmetic": arithmetic.json()["result"]["Ok"]["status"],
-                    "unknown_call": incomplete["status"],
+                    "uncovered_creation": incomplete["status"],
                 },
                 "screenshots": screenshots,
                 "viewport_screenshots": viewport_screenshots,
@@ -4760,6 +4864,7 @@ def main() -> None:
                 "compact_ssa": compact_ssa,
                 "ssa_details": ssa_details,
                 "ssa_values": ssa_values,
+                "unknown_world": unknown_world,
                 "inspector_controls": inspector_controls,
                 "storage_table": storage_table,
                 "storage_scroll": storage_scroll,

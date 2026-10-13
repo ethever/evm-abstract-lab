@@ -7,6 +7,56 @@ mod scroll_bounds;
 mod storage;
 
 #[test]
+fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
+    let mut report = crate::tests::report();
+    let mut inspector = Inspector::default();
+    let selection = Selection {
+        state: Some(0),
+        ..Selection::default()
+    };
+    report.abstract_summaries.push(api::AbstractSummary {
+        source_state: 0,
+        closed: true,
+        procedures: vec![],
+        state_count: 1,
+        transfers: 1,
+        propagations: 0,
+        reused: 0,
+    });
+    assert!(
+        inspector
+            .accessible_summary(&report, selection)
+            .contains("Abstract interactions · closed")
+    );
+    report.abstract_summaries[0].closed = false;
+    assert!(
+        inspector
+            .accessible_summary(&report, selection)
+            .contains("Abstract interactions · open")
+    );
+    report.abstract_summaries[0].source_state = 1;
+    assert!(
+        !inspector
+            .accessible_summary(&report, selection)
+            .contains("Abstract interactions")
+    );
+    report.abstract_summaries[0].source_state = 0;
+    inspector.tab = Tab::Stack;
+    assert!(
+        !inspector
+            .accessible_summary(&report, selection)
+            .contains("Abstract interactions")
+    );
+    inspector.tab = Tab::Frame;
+    inspector.expanded = false;
+    assert!(
+        !inspector
+            .accessible_summary(&report, selection)
+            .contains("Abstract interactions")
+    );
+}
+
+#[test]
 fn export_error_decodes_the_old_reply_and_renders_each_typed_resource_field() {
     let reply: api::AnalyzeReply = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -147,6 +197,8 @@ fn frame(index: usize, rollback_store: usize) -> api::FrameSnapshot {
         storage_address: owner.clone(),
         address_value: api::AddressValue::Concrete(owner.clone()),
         caller: api::AddressValue::Concrete(owner),
+        address_operand: None,
+        caller_operand: None,
         call_value: word("0x0"),
         is_static: false,
         kind: api::CodeKind::Runtime,

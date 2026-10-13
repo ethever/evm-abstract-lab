@@ -33,6 +33,7 @@ mod hash;
 mod precompile;
 mod ranges;
 mod relations;
+pub(super) mod unknown;
 
 pub(super) use crate::resource::WorkBudget;
 use budget::{byte_work, operation_work};
@@ -45,10 +46,14 @@ struct TransferContext<'a> {
     root_address: Option<(Address, AddressInput)>,
     input_scope: Option<u64>,
     query_cache: relations::QueryCache,
+    /// Relative procedures finish without committing transaction lifecycle effects.
+    procedure: bool,
+    /// RPC discovery leaves concrete missing code for acquisition before abstraction.
+    discover_code: bool,
 }
 
 /// RPC 发现先补初始事实；普通离线分析继续对缺失事实做保守传播。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum StorageReadPolicy {
     Abstract,
     Discover,
@@ -83,12 +88,28 @@ pub(super) struct Execution {
     pub completed_calls: Vec<CompletedCall>,
 }
 
+fn empty_execution(payload: MachinePayload) -> Execution {
+    Execution {
+        payload,
+        executed_pcs: Vec::new(),
+        instruction_progress: Vec::new(),
+        instruction_values: Vec::new(),
+        successors: Vec::new(),
+        diagnostics: Vec::new(),
+        frontiers: Vec::new(),
+        outcomes: Vec::new(),
+        completed_calls: Vec::new(),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ExecutionFrontier {
     pub pc: usize,
     pub reason: FrontierReason,
     pub target: Option<MachineKey>,
     pub range: Option<super::RangeWitness>,
+    /// Relative procedure state left unexpanded, when a folded execution stops.
+    pub payload: Option<std::sync::Arc<MachinePayload>>,
 }
 
 impl Execution {
@@ -119,6 +140,18 @@ pub(super) fn resume_summary(
     domain: Domain,
     budget: &mut WorkBudget,
 ) -> Execution {
+    resume_summary_inner(payload, kind, data, config, domain, budget, false)
+}
+
+fn resume_summary_inner(
+    payload: MachinePayload,
+    kind: OutcomeKind,
+    data: ByteArray,
+    config: &ExecutionConfig,
+    domain: Domain,
+    budget: &mut WorkBudget,
+    procedure: bool,
+) -> Execution {
     let mut result = Execution {
         payload: payload.clone(),
         executed_pcs: Vec::new(),
@@ -137,6 +170,8 @@ pub(super) fn resume_summary(
         root_address: None,
         input_scope: None,
         query_cache: Default::default(),
+        procedure,
+        discover_code: false,
     };
     let pc = payload
         .active()
@@ -179,6 +214,7 @@ fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target
         reason: boundary_reason(reason),
         target: Some(target),
         range: None,
+        payload: None,
     });
 }
 
@@ -277,6 +313,32 @@ pub(super) fn execute(
     budget: &mut WorkBudget,
     storage_reads: StorageReadPolicy,
 ) -> Execution {
+    execute_inner(
+        world,
+        entry,
+        payload,
+        config,
+        domain,
+        budget,
+        storage_reads,
+        false,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared metered transfer inputs and relative-frame mode"
+)]
+fn execute_inner(
+    world: &World,
+    entry: &Entry,
+    payload: MachinePayload,
+    config: &ExecutionConfig,
+    domain: Domain,
+    budget: &mut WorkBudget,
+    storage_reads: StorageReadPolicy,
+    procedure: bool,
+) -> Execution {
     let mut transfer_context = TransferContext {
         config,
         domain,
@@ -284,6 +346,8 @@ pub(super) fn execute(
         root_address: Some((entry.address, entry.environment.to)),
         input_scope: entry.environment.input_scope.id(),
         query_cache: Default::default(),
+        procedure,
+        discover_code: storage_reads == StorageReadPolicy::Discover,
     };
     let context = &mut transfer_context;
     let mut result = Execution {
@@ -457,7 +521,12 @@ pub(super) fn execute(
         if op == opcode::SLOAD && matches!(storage_reads, StorageReadPolicy::Discover) {
             let owner = result.payload.active().key.address;
             // 不用抽象环境的内部占位地址向链上查询。
-            if result.payload.active().key.address_value.as_concrete() == Some(owner) {
+            let frame = result.payload.active();
+            let observed_owner = frame.address_operand.as_ref().map_or_else(
+                || frame.key.address_value.as_concrete(),
+                |value| value.singleton().map(address),
+            );
+            if observed_owner == Some(owner) {
                 let scan = args[0]
                     .work_size()
                     .saturating_add(result.payload.store.work_size());
@@ -900,8 +969,13 @@ pub(super) fn execute(
             _ if outputs > 0 => {
                 let frame = result.payload.active();
                 let mut value = match op {
-                    opcode::ADDRESS => entry.environment.address_value(frame.key.address_value),
-                    opcode::CALLER => entry.environment.address_value(frame.key.caller),
+                    opcode::ADDRESS => frame.address_operand.clone().unwrap_or_else(|| {
+                        entry.environment.address_value(frame.key.address_value)
+                    }),
+                    opcode::CALLER => frame
+                        .caller_operand
+                        .clone()
+                        .unwrap_or_else(|| entry.environment.address_value(frame.key.caller)),
                     opcode::ORIGIN => entry
                         .environment
                         .address_value(entry.environment.resolved_origin()),

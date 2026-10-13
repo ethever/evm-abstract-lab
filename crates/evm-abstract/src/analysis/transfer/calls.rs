@@ -16,8 +16,11 @@ use crate::{
 use alloy_primitives::{Address, B256, U256, keccak256};
 use revm_bytecode::opcode;
 
+mod dispatch;
 #[cfg(test)]
 mod tests;
+
+use dispatch::target_guard;
 
 fn precompile(world: &World, address: Address) -> bool {
     super::precompile::contains(world.fork(), address)
@@ -25,7 +28,7 @@ fn precompile(world: &World, address: Address) -> bool {
 
 /// 7702 follows exactly one pointer. The second marker is invalid executable
 /// EF code; a delegated precompile target executes as empty code.
-fn resolve(
+pub(super) fn resolve(
     world: &World,
     store: &Store,
     target: Address,
@@ -48,10 +51,10 @@ fn resolve(
                 Some(Code::Delegation(_)) => {
                     Ok((*implementation, FrameCode::InvalidDelegation, None))
                 }
-                _ => Err(FrontierReason::MissingCode(*implementation)),
+                _ => Ok((*implementation, FrameCode::Unknown, None)),
             }
         }
-        _ => Err(FrontierReason::MissingCode(target)),
+        _ => Ok((target, FrameCode::Unknown, None)),
     }
 }
 
@@ -119,6 +122,8 @@ pub(super) fn initial(
                     crate::world::Symbol::CallValue,
                     entry.environment.input_scope.id(),
                 )),
+                address_operand: None,
+                caller_operand: None,
                 saved_store: store.snapshot(),
             },
         }),
@@ -166,7 +171,9 @@ pub(super) fn finish(
                 .store
                 .restore(payload.call_stack.root().state.saved_store.clone());
         }
-        payload.store.finalize_transaction(domain);
+        if !context.procedure {
+            payload.store.finalize_transaction(domain);
+        }
         result.outcomes.push(Outcome {
             kind,
             data,
@@ -331,33 +338,81 @@ pub(super) fn call(
         boundary(result, pc, FrontierReason::Work);
         return;
     }
-    let logical_address = result.payload.active().key.address_value;
-    let exact_symbolic_self = logical_address.as_concrete().is_none()
-        && args[1]
-            .identity()
-            .same_identity(logical_address.scoped_value(context.input_scope).identity());
-    let projected = domain.address_projection(&args[1]);
-    let mut targets = if exact_symbolic_self {
-        vec![result.payload.active().key.address]
-    } else if let Some(values) = projected.constants() {
+    let target_value =
+        super::relations::identify(args[1].clone(), config.analysis.relations.enabled);
+    let projected = domain.address_projection(&target_value);
+    let finite = projected.constants().is_some();
+    let mut targets = if let Some(values) = projected.constants() {
         values.iter().map(|v| address(*v)).collect::<Vec<_>>()
     } else {
-        boundary(result, pc, FrontierReason::UnknownTarget);
-        if !context.budget.charge(world.accounts().len()) {
+        if !context.budget.charge(
+            world
+                .accounts()
+                .len()
+                .saturating_add(result.payload.store.addresses().len())
+                .saturating_add(18),
+        ) {
             boundary(result, pc, FrontierReason::Work);
             return;
         }
-        // 开放 world 仍有外部候选，保留 UnknownTarget；只排除明确不符合投影的账户。
-        world
-            .accounts()
-            .keys()
-            .copied()
+        let mut addresses = result.payload.store.addresses();
+        addresses.extend(world.accounts().keys().copied());
+        // All native addresses in the pinned post-Merge fork tables. Native
+        // resolution takes precedence over observed account code.
+        addresses.extend(
+            (1u64..=17)
+                .chain([0x100])
+                .map(|number| Address::from_word(U256::from(number).into()))
+                .filter(|target| precompile(world, *target)),
+        );
+        addresses
+            .into_iter()
             .filter(|target| projected.contains(U256::from_be_slice(target.as_slice())))
-            .collect::<Vec<_>>()
+            .collect()
     };
     targets.sort();
     targets.dedup();
+    let mut remaining = Some(result.payload.clone());
+    let mut branches = Vec::new();
+    // A bytecode-only root may have a symbolic logical address. Its physical
+    // owner namespace is not an observed twenty-byte destination.
+    if let Some((owner, logical)) = context
+        .root_address
+        .filter(|(_, logical)| logical.as_concrete().is_none())
+    {
+        let candidate = logical.scoped_value(context.input_scope);
+        if let Some(input) = remaining.take() {
+            if let Some(payload) =
+                target_guard(result, &input, &projected, &candidate, true, context, pc)
+            {
+                branches.push((owner, logical, None, payload));
+            }
+            remaining = target_guard(result, &input, &projected, &candidate, false, context, pc);
+        }
+        if !finite {
+            targets.retain(|target| *target != owner);
+        }
+    }
     for target in targets {
+        let Some(input) = remaining.take() else { break };
+        let candidate = AbstractValue::constant(U256::from_be_slice(target.as_slice()));
+        if let Some(payload) =
+            target_guard(result, &input, &projected, &candidate, true, context, pc)
+        {
+            branches.push((target, AddressInput::Concrete(target), None, payload));
+        }
+        remaining = target_guard(result, &input, &projected, &candidate, false, context, pc);
+    }
+    if !finite && let Some(payload) = remaining {
+        let namespace = super::unknown::owner_namespace(world, &payload.store);
+        branches.push((
+            namespace,
+            AddressInput::Concrete(namespace),
+            Some(projected.clone()),
+            payload,
+        ));
+    }
+    for (target, logical_target, target_operand, input_payload) in branches {
         if !context.budget.charge(
             result
                 .payload
@@ -369,19 +424,13 @@ pub(super) fn call(
             break;
         }
         // Do not request callee facts for a child that cannot be entered.
-        if result.payload.call_stack.depth() >= config.max_call_depth {
+        if !context.procedure && result.payload.call_stack.depth() >= config.max_call_depth {
             boundary(result, pc, FrontierReason::CallDepth);
             continue;
         }
-        if context.root_address.is_some_and(|(owner, logical)| {
-            logical.as_concrete().is_none() && owner == target && !exact_symbolic_self
-        }) {
-            boundary(result, pc, FrontierReason::MissingCode(target));
-            continue;
-        }
-        let caller = result.payload.active();
+        let caller = input_payload.active();
         let caller_address = caller.key.address;
-        let balance = result.payload.store.read_balance(caller_address);
+        let balance = input_payload.store.read_balance(caller_address);
         if with_value
             && let (Some(balances), Some(values)) = (balance.constants(), value.constants())
             && balances
@@ -390,13 +439,31 @@ pub(super) fn call(
         {
             continue;
         }
-        let (code_address, code, program) = match resolve(world, &result.payload.store, target) {
+        let (code_address, code, program) = match if target_operand.is_some()
+            || context.root_address.is_some_and(|(owner, logical)| {
+                owner == target
+                    && logical.as_concrete().is_none()
+                    && logical_target.as_concrete().is_some()
+            }) {
+            Ok((target, FrameCode::Unknown, None))
+        } else {
+            resolve(world, &input_payload.store, target)
+        } {
             Ok(resolution) => resolution,
             Err(reason) => {
                 boundary(result, pc, reason);
                 continue;
             }
         };
+        if code == FrameCode::Unknown && context.discover_code && target_operand.is_none() {
+            boundary_on(
+                result,
+                pc,
+                FrontierReason::MissingCode(code_address),
+                input_payload.key(),
+            );
+            continue;
+        }
         let calldata = match caller.memory.slice(
             &args[input],
             &args[input + 1],
@@ -412,24 +479,11 @@ pub(super) fn call(
         let (state_address, address_value, frame_caller, call_value) = match op {
             opcode::CALL => (
                 target,
-                if exact_symbolic_self {
-                    logical_address
-                } else {
-                    AddressInput::Concrete(target)
-                },
+                logical_target,
                 caller.key.address_value,
                 value.clone(),
             ),
-            opcode::STATICCALL => (
-                target,
-                if exact_symbolic_self {
-                    logical_address
-                } else {
-                    AddressInput::Concrete(target)
-                },
-                caller.key.address_value,
-                zero(),
-            ),
+            opcode::STATICCALL => (target, logical_target, caller.key.address_value, zero()),
             opcode::CALLCODE => (
                 caller_address,
                 caller.key.address_value,
@@ -444,9 +498,19 @@ pub(super) fn call(
             ),
             _ => unreachable!(),
         };
-        let saved_store = result.payload.store.snapshot();
-        let code_hash = captured_hash(&program, &result.payload.store, code_address, code);
-        let mut payload = result.payload.clone();
+        let address_operand = if matches!(op, opcode::CALL | opcode::STATICCALL) {
+            target_operand
+        } else {
+            caller.address_operand.clone()
+        };
+        let caller_operand = if op == opcode::DELEGATECALL {
+            caller.caller_operand.clone()
+        } else {
+            caller.address_operand.clone()
+        };
+        let saved_store = input_payload.store.snapshot();
+        let code_hash = captured_hash(&program, &input_payload.store, code_address, code);
+        let mut payload = input_payload.clone();
         // A proven zero transfer leaves both balances and their input identities
         // unchanged. Rebuilding them with ADD/SUB would add arithmetic metadata
         // and make otherwise identical rollback preconditions look different.
@@ -491,6 +555,8 @@ pub(super) fn call(
                 environment_calldata: false,
                 returndata: ByteArray::empty(),
                 call_value,
+                address_operand,
+                caller_operand,
                 saved_store,
             },
             continuation: Continuation {

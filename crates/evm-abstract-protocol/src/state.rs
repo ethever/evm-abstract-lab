@@ -207,6 +207,8 @@ choice! {
         Empty,
         /// Code is unobserved.
         Unknown,
+        /// A conservative abstract process covering unknown-world execution.
+        AbstractEnvironment,
         /// Native precompile.
         Precompile,
         /// Unsupported nested delegation.
@@ -353,6 +355,10 @@ record! {
         pub address_value: AddressValue,
         /// CALLER identity.
         pub caller: AddressValue,
+        /// Execution-derived logical ADDRESS when no named input captures it.
+        pub address_operand: Option<ValueInfo>,
+        /// Execution-derived CALLER when no named input captures it.
+        pub caller_operand: Option<ValueInfo>,
         /// CALLVALUE in this frame.
         pub call_value: ValueInfo,
         /// Whether writes are prohibited.

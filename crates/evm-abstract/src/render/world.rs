@@ -115,14 +115,22 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
     .unwrap();
     for state in analysis.states() {
         let frame = state.active();
+        let (location, code_hash) = if frame.mode == crate::analysis::FrameCode::Unknown {
+            ("abstract environment".to_owned(), "unobserved".to_owned())
+        } else {
+            (
+                Symbol::Block(frame.basic_block_index).to_string(),
+                frame.code_hash.to_string(),
+            )
+        };
         let label = format!(
             "{} depth={} {} mode={:?}\ncode={}\ncode_hash={}\naddress={}\ncaller={} static={}",
             Symbol::State(state.id),
             state.key.frames.len(),
-            Symbol::Block(frame.basic_block_index),
+            location,
             frame.mode,
             environment::owner(analysis, frame.code_address),
-            frame.code_hash,
+            code_hash,
             frame.address_value,
             frame.caller,
             frame.is_static
@@ -136,6 +144,19 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
             edge.from,
             edge.to,
             format!("{:?}", edge.kind)
+        )
+        .unwrap();
+    }
+    for (index, record) in analysis.unknown_summaries().iter().enumerate() {
+        writeln!(output, "  U{index} [label={:?}, shape=note, color=blue];", format!(
+            "Abstract interaction relation {index}\nclosed={} procedures={} states={}\ntransfers={} propagations={} reused={}",
+            record.closed, record.procedures.len(), record.state_count,
+            record.transfers, record.propagations, record.reused,
+        )).unwrap();
+        writeln!(
+            output,
+            "  S{} -> U{index} [style=dotted, color=blue, label=\"summary coverage\"];",
+            record.source_state
         )
         .unwrap();
     }
