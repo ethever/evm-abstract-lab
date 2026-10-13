@@ -2,6 +2,7 @@
 //! Parsing, framing, keepalive and response transport belong to the framework.
 //! Task admission, origin policy and canonical asset paths are application rules.
 
+mod connection;
 mod export;
 mod tasks;
 
@@ -18,12 +19,6 @@ use evm_abstract_protocol::{
     API_PATH, ApiError, ApiErrorCode, ErrorDetails, JobReply, MAX_REQUEST_BYTES,
     RPC_PROVIDERS_PATH, RpcProvidersReply, TransportErrorKind, TransportFailure,
 };
-use hyper::server::conn::http1;
-use hyper_util::{
-    rt::{TokioIo, TokioTimer},
-    server::graceful::GracefulShutdown,
-    service::TowerToHyperService,
-};
 use std::{
     future::Future,
     io::{self, Read},
@@ -32,7 +27,11 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tokio::{net::TcpListener, sync::Semaphore};
+use tokio::{
+    net::TcpListener,
+    sync::{Semaphore, watch},
+    task::JoinSet,
+};
 
 const MAX_CONNECTIONS: usize = 32;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
@@ -121,36 +120,46 @@ pub async fn serve_with_shutdown(
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServerError> {
     let capacity = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-    let graceful = GracefulShutdown::new();
+    let (stopping, _) = watch::channel(());
+    let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
-    loop {
+    let result = loop {
+        // Reap completed tasks while accepting so their handles stay bounded.
+        while let Some(result) = connections.try_join_next() {
+            report_connection_task(result);
+        }
         let permit = tokio::select! {
-            _ = &mut shutdown => break,
+            _ = &mut shutdown => break Ok(()),
             permit = Arc::clone(&capacity).acquire_owned() => permit.expect("host owns the semaphore"),
         };
-        let stream = tokio::select! {
-            _ = &mut shutdown => break,
-            accepted = listener.accept() => accepted?.0,
+        let (stream, peer) = tokio::select! {
+            _ = &mut shutdown => break Ok(()),
+            accepted = listener.accept() => match accepted {
+                Ok(accepted) => accepted,
+                Err(error) => break Err(ServerError::Io(error)),
+            },
         };
-        let service = TowerToHyperService::new(app.clone());
-        let mut stream = tokio_io_timeout::TimeoutStream::new(stream);
-        stream.set_write_timeout(Some(REQUEST_TIMEOUT));
-        let mut transport = http1::Builder::new();
-        transport
-            .timer(TokioTimer::new())
-            .header_read_timeout(REQUEST_TIMEOUT)
-            .max_buf_size(8192);
-        let connection = transport.serve_connection(TokioIo::new(Box::pin(stream)), service);
-        let watcher = graceful.watcher();
-        tokio::spawn(async move {
+        // Subscribe before spawning: shutdown can arrive before the task's first poll.
+        let stopping = stopping.subscribe();
+        let app = app.clone();
+        connections.spawn(async move {
             let _permit = permit;
-            if let Err(error) = watcher.watch(connection).await {
-                eprintln!("HTTP connection: {error}");
+            if let Err(error) = connection::serve(stream, app, stopping).await {
+                eprintln!("HTTP connection from {peer}: {error}");
             }
         });
+    };
+    let _ = stopping.send(());
+    while let Some(result) = connections.join_next().await {
+        report_connection_task(result);
     }
-    graceful.shutdown().await;
-    Ok(())
+    result
+}
+
+fn report_connection_task(result: Result<(), tokio::task::JoinError>) {
+    if let Err(error) = result {
+        eprintln!("HTTP connection task: {error}");
+    }
 }
 
 async fn request_policy(mut request: Request, next: Next) -> Response {
