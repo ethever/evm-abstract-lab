@@ -79,3 +79,15 @@ python3 scripts/measure-symbolic-state.py \
 逻辑 memory 策略不等于物理分配；超策略输入保留条件前沿。未知目标、未知代码、需要具体化的 initcode/runtime 或预编译输入继续保留准确边界。任意符号创建地址的完整账户生命周期和任意 lazy hash 视图的内容比较没有被本记录宣称为已支持。来源不同不能证明内容或哈希不同，UNKNOWN/超时/错误不能当作 UNSAT。
 
 循环 cases 按有界 widening 策略扩大集合；持续变化的效果可能停止于明确前沿。摘要仍按完整输入匹配，数值同为 Top 不会抹掉新 storage 根或复制视图来强行命中。原生 schema 6、Web 协议 9、导出预算、路径与来源身份的语义见 [符号状态教程](17-symbolic-state.md)。
+
+## 独立原生投影压力与真实 Multicall 前沿
+
+独立的 `long-linear-chain-600` fixture 使用 `bytes.fromhex("5b600160020150") * 600 + b"\x00"`，共 4201 字节。在原生源码 `6a95223b12248b0e615c2fd7e49cfcfd7f969373` 上，实际 Chromium 验证了 600 个原生状态、600 个 Source/SSA 块和 599 条 Fallthrough 边，报告为 Converged、SSA complete、无 frontier。浏览器在 Blocks、States 和 Source SSA 预览间切换，检查全部 600 状态、无隐藏/边界、原生选择与 SSA 指令、缩放和没有新增分析请求。原 128 块用例仍保留。此压力由独立 fixture 提供，不依赖真实合约的共享上下文数量。
+
+原 Multicall3 字节码、1604 字节 aggregate3 calldata、八个输入 item、具体 root 地址和 CHAINID=1、全部默认预算、历史 eth_call 的 1344 字节 ABI 返回见证均保持原样。当前抽象执行的完整机器上下文共享和资源计费会影响捕获图的规模。root 已复核的 6a952 原生基线是 267 状态、286 transfers、56 个唯一 Source 块，停止于三条 Relations / ExpressionLimit 前沿；250 原生状态最低线来自此实际独立测量，Source 最低线继续为 50。本次定向 Chromium 请求取得的真实 API 为 267 原生状态、274 边、286 transfers、56 个 Source 块和 267 个 Current SSA 块；图仍为 Incomplete、SSA partial。三条前沿来自状态 244、248、266，pc 与 range 为空，各引用完整 incoming payload 0、1、2。三份完整 pending payload 的数值/来源、typed DAG、byte view 和 store 引用校验已对同一原始结果实际通过。
+
+这些前沿保留尚未并入图的完整 incoming machine、frames、stack 的完整 U256 数值与来源、path、memory/calldata/returndata 和 transaction/rollback store 引用；SSA 保持 incomplete，不把 pending incoming 当作已完成指令。States 投影的节点和 native edges 必须分别等于实际 CFG 和 edges，原 Source 投影、聚焦、选择、SSA 预览及无额外 POST 检查继续执行。
+
+历史 main 报告的 704 状态、1194 transfers、66 个 Source 块、8 条 Memory 前沿和 25 个 root return 记录，并未覆盖 1344 字节目标返回 ABI。历史返回记录可能包括 widening 路径，不能据此把当前无 root return 认定为业务语义回归，也不能把图由 704 变成 267 宣称为通用性能提升。七条唯一 Call 边不等于七次动态调用；本次不声称原生分析完成八项成功返回。
+
+独立 600 定向浏览器真实退出 0。原 Multicall 首次正常浏览器执行取得完整真实 API 结果后，由新增 consumer 的 View 类型读取错误退出 1；错误已修正并对同一份未改动报告离线通过完整 typed payload 校验。第二次正常浏览器重试曾启动，随后被终止，实际退出 1；外部 page.route transport replay 首次也在进入 Multicall UI 前退出 1。root 核对终止原因后，明确授权一次仅 UI 的外部 HTTP transport replay；该次真实 Chromium 和前后来源复核均退出 0，完整首次 API 结果的原始字节及 SHA-256 未变，零分析 POST 转发到原生 server。Source 56 节点、States 267 节点 / 274 native edges、原生选择与实际 SSA 指令预览、无额外分析请求和真实 WebGPU 均通过。以上失败记录仍保留；transport replay 不代表正常的 fresh-native/browser E2E 已通过。后续 diagnostics、完整浏览器及最终 37 项 Nix 门禁仍待 root 在最终冻结提交运行，局部验证不替代最终门禁。
