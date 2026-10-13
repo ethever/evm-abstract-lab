@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=1120">
+<title>自然数循环：widening 使分析收敛</title>
+<link rel="stylesheet" href="diagrams.css">
+<main class="canvas" aria-label="自然数循环的区间 join、widening 与包含检查">
+  <div class="eyebrow">01 · 自然数上的循环</div>
+  <h1>循环没停，分析可以收敛</h1>
+  <p class="subtitle">用一个覆盖后续状态的区间，替代不断增长的有限上界。</p>
+
+  <section class="panel blue code-example">
+    <pre>x = 0
+while true:
+    x = x + 1</pre>
+    <div>
+      <span class="pill blue">教学数域：x ∈ ℕ</span>
+      <p class="small" style="margin-top:10px">这里用自然数，不考虑机器字回绕。<br>循环每次把 x 增加 1。</p>
+    </div>
+  </section>
+
+  <section class="interval-chain space" aria-label="区间从初始值经过两次join再widen">
+    <div class="panel interval-node">
+      <p class="step">初始 I₀</p>
+      <p class="math mono">[0, 0]</p>
+      <p class="small muted">只有 x = 0</p>
+    </div>
+    <div class="arrow">→</div>
+    <div class="panel interval-node">
+      <p class="step">第 1 次 join · I₁</p>
+      <p class="math mono">[0, 1]</p>
+      <p class="small muted">加入下一步的 1</p>
+    </div>
+    <div class="arrow">→</div>
+    <div class="panel interval-node">
+      <p class="step">第 2 次 join · I₂</p>
+      <p class="math mono">[0, 2]</p>
+      <p class="small muted">上界继续增加</p>
+    </div>
+    <div class="arrow">→</div>
+    <div class="panel interval-node green">
+      <p class="step">widening</p>
+      <p class="math mono">[0, +∞)</p>
+      <p class="small" style="color:var(--green)">覆盖之后的增长</p>
+    </div>
+  </section>
+
+  <section class="panel amber space">
+    <p class="formula-row"><span class="pill amber">下一轮 join 将得到 [0, 3]</span><span class="math">I₂ ▽ [0, 3] = [0, +∞)</span></p>
+    <p class="small center" style="margin-top:8px">▽ 表示 widening：把从 2 继续增长到 3 的上界推广为 +∞。</p>
+  </section>
+
+  <section class="panel green space">
+    <h2>再执行一次 x + 1，结果仍被覆盖</h2>
+    <p class="math center">image(x + 1, [0, +∞)) = [1, +∞)</p>
+    <p class="math center" style="color:var(--green); margin-top:6px">[1, +∞) ⊆ [0, +∞)</p>
+    <p class="small center" style="margin-top:9px">入口 0 和后续状态都在区间内，分析结果可以保持不变。</p>
+  </section>
+
+  <section class="panel space">
+    <p><strong>分析收敛：</strong>抽象结果不再需要扩大。</p>
+    <p style="margin-top:5px"><strong>程序行为：</strong><code>while true</code> 仍继续执行。</p>
+  </section>
+  <footer class="footer"><strong>教学示意。</strong>+∞ 表示没有有限上界，不是运行时值；<br>本图的 widening 时机和自然数域仅用于教学。</footer>
+</main>
+</html>

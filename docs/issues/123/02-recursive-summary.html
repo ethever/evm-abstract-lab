@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=1120">
+<title>递归摘要与保留的调用上下文</title>
+<link rel="stylesheet" href="diagrams.css">
+<main class="canvas" aria-label="当前完整调用栈key与候选共享递归摘要的比较">
+  <div class="eyebrow">02 · 状态身份与递归摘要</div>
+  <h1>共享摘要，仍保留调用上下文</h1>
+  <p class="subtitle">同一个 PC，可以对应不同的完整调用栈；图中 key 仅展示栈部分。</p>
+
+  <div class="two-columns">
+    <section class="panel">
+      <div class="panel-title"><span class="pill blue">当前</span><h2>同 PC，不同全栈 key</h2></div>
+      <div class="pc-key">
+        <p class="pc-label">PC = ℓ</p>
+        <p class="key mono">[root, P]</p>
+      </div>
+      <div class="pc-key">
+        <p class="pc-label">PC = ℓ</p>
+        <p class="key mono">[root, P, P]</p>
+      </div>
+      <div class="pc-key">
+        <p class="pc-label">PC = ℓ</p>
+        <p class="key mono">[root, P, P, P]</p>
+      </div>
+      <p class="small muted" style="margin-top:16px">P 表示同一个递归区域。<br>栈不同，不能直接视为同一个状态。</p>
+    </section>
+
+    <section class="panel blue">
+      <div class="panel-title"><span class="pill blue">候选</span><h2>复用输入 / 输出关系</h2></div>
+      <div class="call-sites">
+        <div class="call-site">调用点 A<p class="small">↓ 输入 / ↑ 返回</p></div>
+        <div class="call-site">调用点 B<p class="small">↓ 输入 / ↑ 返回</p></div>
+      </div>
+      <div class="io-arrows"><span>各自接收返回结果（含失败）</span></div>
+      <div class="summary-model">
+        <p class="math">共享递归摘要 S<sub>P</sub></p>
+        <p style="font-size:25px; margin-top:10px">输入关系 → 输出 / 失败关系</p>
+      </div>
+      <p class="small" style="margin-top:18px">多个调用点复用可共享的关系，<br>各自保留返回位置与调用检查点。</p>
+      <div class="panel purple" style="margin-top:15px; padding:13px 15px">
+        <p class="small"><strong>摘要要保持参数与结果的关联。</strong><br>仅知道“可能返回某个值”还不够。</p>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel purple space">
+    <h2>这些上下文仍须保留</h2>
+    <div class="three-columns">
+      <div class="context-card"><h2>返回到哪里</h2><p>对应调用点的<br>continuation / 返回位置</p></div>
+      <div class="context-card"><h2>哪一层回滚</h2><p>调用检查点与<br>父帧 / 子树边界</p></div>
+      <div class="context-card"><h2>输入怎样影响输出</h2><p>参数、结果和<br>状态效果的关系</p></div>
+    </div>
+  </section>
+
+  <section class="panel amber space">
+    <p><strong>不能简单删除调用栈。</strong></p>
+    <p class="small" style="margin-top:6px">共享摘要需要有定义的输入 / 输出语义，并正确恢复返回与回滚上下文。</p>
+  </section>
+  <footer class="footer"><strong>候选设计示意。</strong>省略了与本图无关的 key 和摘要字段；<br>不代表当前引擎已完整实现这种递归摘要。</footer>
+</main>
+</html>

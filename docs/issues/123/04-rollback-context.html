@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=1120">
+<title>USDC示意路径中的父帧与子树回滚边界</title>
+<link rel="stylesheet" href="diagrams.css">
+<main class="canvas" aria-label="父帧写入和日志、内调用失败、父帧随后REVERT的三个阶段">
+  <div class="eyebrow">04 · USDC 示意路径与回滚边界</div>
+  <h1>回滚边界沿调用帧分层</h1>
+  <p class="subtitle">本图选取“内调用失败，父帧随后 REVERT”的路径，只展示 impl 与本次日志。</p>
+
+  <section class="panel checkpoint">
+    <p><strong>父帧入口快照 S₀：</strong><code>impl = old</code>，尚无本次 upgrade log。</p>
+  </section>
+
+  <section class="panel blue stage space">
+    <div class="stage-number">1</div>
+    <div>
+      <h2>父帧：写入 impl = proxy，发出 upgrade log</h2>
+      <p class="small">随后发起内调用；子调用入口快照 S₁ 已包含这两项父帧效果。</p>
+      <div class="state-strip">
+        <div class="state-cell"><p class="small muted">当前 impl</p><p class="math mono">proxy</p></div>
+        <div class="state-cell"><p class="small muted">本次父帧日志</p><p class="math">upgrade log 已发出</p></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="flow-arrow"><span>↓</span>内调用发生失败</div>
+
+  <section class="panel amber stage">
+    <div class="stage-number" style="background:var(--amber)">2</div>
+    <div>
+      <h2>内调用失败：仅撤销内调用子树的效果</h2>
+      <p class="small">回到子调用入口快照 S₁；父帧在内调用之前的写入和日志仍在。</p>
+      <div class="state-strip">
+        <div class="state-cell"><p class="small muted">父帧写入仍在</p><p class="math mono">impl = proxy</p></div>
+        <div class="state-cell"><p class="small muted">父帧日志仍在</p><p class="math">本次 upgrade log 保留</p></div>
+      </div>
+      <p class="small" style="margin-top:11px; color:var(--amber)"><strong>此时父帧还没有 REVERT。</strong></p>
+    </div>
+  </section>
+
+  <div class="flow-arrow"><span>↓</span>父帧随后执行 REVERT</div>
+
+  <section class="panel purple stage">
+    <div class="stage-number" style="background:var(--purple)">3</div>
+    <div>
+      <h2>父帧 REVERT：恢复父帧入口快照 S₀</h2>
+      <p class="small">这时才撤销父帧本次调用的写入和日志。</p>
+      <div class="state-strip">
+        <div class="state-cell"><p class="small muted">impl 还原</p><p class="math mono">old</p></div>
+        <div class="state-cell"><p class="small muted">本次父帧日志撤销</p><p class="math">移除本次 upgrade log</p></div>
+      </div>
+    </div>
+  </section>
+  <footer class="footer"><strong>教学路径示意。</strong>不是对所有 USDC 输入的结论，<br>也不代表当前引擎已完整实现这里所需的递归摘要与回滚关联。</footer>
+</main>
+</html>

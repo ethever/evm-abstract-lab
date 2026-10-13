@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=1120">
+<title>自然数递归的逐层返回与关系摘要</title>
+<link rel="stylesheet" href="diagrams.css">
+<main class="canvas" aria-label="f3,10递归到f0,13逐层返回13及r等于x加d的归纳">
+  <div class="eyebrow">03 · 自然数上的递归</div>
+  <h1>逐层返回，也可以用关系描述</h1>
+  <p class="subtitle">f(3, 10) 调用到 f(0, 13)，返回值沿每一层保持为 13。</p>
+
+  <div class="recursion-top">
+    <section class="panel blue">
+      <pre>f(d, x):
+    if d == 0: return x
+    else:
+        return f(d - 1, x + 1)</pre>
+    </section>
+    <section class="panel green">
+      <span class="pill green">教学数域：d, x ∈ ℕ</span>
+      <p style="margin-top:10px">d 每次减 1，最终到 0。</p>
+      <p class="math" style="margin-top:10px; color:var(--green)">关系摘要：r = x + d</p>
+    </section>
+  </div>
+
+  <section class="panel call-return space" aria-label="向下调用和向上返回两条路径">
+    <div class="row">
+      <p class="lane-label">向下调用：d − 1，x + 1</p><div></div>
+      <p class="lane-label">向上返回：结果保持为 13</p>
+    </div>
+    <div class="row"><div class="node call mono">f(3, 10)</div><div></div><div class="node ret mono">return 13</div></div>
+    <div class="row"><div class="between down">↓</div><div></div><div class="between up">↑</div></div>
+    <div class="row"><div class="node call mono">f(2, 11)</div><div></div><div class="node ret mono">return 13</div></div>
+    <div class="row"><div class="between down">↓</div><div></div><div class="between up">↑</div></div>
+    <div class="row"><div class="node call mono">f(1, 12)</div><div></div><div class="node ret mono">return 13</div></div>
+    <div class="row"><div class="between down">↓</div><div></div><div class="between up">↑</div></div>
+    <div class="row"><div class="node call mono">f(0, 13)</div><div class="base-arrow">→</div><div class="node ret mono">return 13</div></div>
+    <p class="small center" style="margin-top:9px; color:var(--green)">Base：d = 0，直接返回 x = 13。</p>
+  </section>
+
+  <section class="panel green space">
+    <h2>用 base / step 说明本例的摘要</h2>
+    <div class="proof">
+      <p class="label">Base · d = 0</p><p class="math">r = x = x + 0</p>
+      <p class="label">Step · d &gt; 0</p><p class="small">若子调用满足摘要，父调用返回同一个 r：</p>
+      <div></div><p class="math">r = (x + 1) + (d − 1) = x + d</p>
+    </div>
+    <p class="math center" style="margin-top:12px; color:var(--green)">f(3, 10) ⇒ r = 10 + 3 = 13</p>
+  </section>
+  <footer class="footer"><strong>教学示例。</strong>本例在自然数上成立；这不是对任意 EVM 递归的证明，<br>也不代表当前引擎已完整实现关系式递归摘要。</footer>
+</main>
+</html>
