@@ -4532,10 +4532,12 @@ def layout_pending_machines(report, entry):
         pool(machine["store"],report["stores"]);stores.add(machine["store"])
         for index,frame in enumerate(machine["frames"]):
             assert set(frame) == {"index","program","code_address","code_hash","storage_address","address_value",
-                                  "caller","call_value","is_static","kind","basic_block","context","stack",
+                                  "caller","address_operand","caller_operand","call_value","is_static","kind","basic_block","context","stack",
                                   "memory","calldata","returndata","rollback_store","continuation"}
             assert frame["index"] == index and frame["program"] in programs
             facts(frame["call_value"])
+            for name in ["address_operand","caller_operand"]:
+                if frame[name] is not None: facts(frame[name])
             for value in frame["stack"]:facts(value)
             for name in ["memory","calldata","returndata"]:
                 pool(frame[name],report["byte_arrays"]);buffers.add(frame[name])
