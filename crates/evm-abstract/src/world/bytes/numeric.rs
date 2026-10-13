@@ -346,6 +346,27 @@ pub(super) fn word(
 ) -> AbstractValue {
     let domain = numeric_domain(domain);
     let state = demanded_state(state, offset, 32);
+    if offset.as_constant().is_some()
+        && let ByteStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = state.kind()
+    {
+        // Joining bytes separately mixes alternatives from different snapshots.
+        // The same selector chooses every byte of this concrete word demand.
+        let condition = scalar(condition, facts, domain);
+        if !condition.may_be_zero() {
+            return word(then_state, offset, facts, domain);
+        }
+        if !condition.may_be_nonzero() {
+            return word(else_state, offset, facts, domain);
+        }
+        return domain.join(
+            &word(then_state, offset, facts, domain),
+            &word(else_state, offset, facts, domain),
+        );
+    }
     if let ByteStateKind::WriteWord {
         offset: written,
         value,

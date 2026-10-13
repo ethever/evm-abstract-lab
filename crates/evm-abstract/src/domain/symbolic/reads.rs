@@ -178,6 +178,28 @@ impl ExprId {
             state::check(value.nodes(), value.depth(), limits.into())?;
             return Ok(value.clone());
         }
+        if view.offset.as_constant().is_some()
+            && view.length.as_constant().is_some()
+            && at.as_constant().is_some()
+            && let ByteStateKind::Ite {
+                condition,
+                then_state,
+                else_state,
+            } = view.state.kind()
+        {
+            // One guard selects the whole snapshot, including every demanded
+            // byte. Keep that guard while dropping unrelated branch history.
+            let read = |state: &ByteStateId| {
+                Self::word_read(
+                    ByteView::new(state.clone(), view.offset.clone(), view.length.clone()),
+                    at.clone(),
+                    limits,
+                )
+            };
+            let yes = read(then_state)?;
+            let no = read(else_state)?;
+            return Self::ite(condition.clone(), yes, no, limits);
+        }
         Self::retained(
             ExprKind::WordRead { view, offset: at },
             nodes,

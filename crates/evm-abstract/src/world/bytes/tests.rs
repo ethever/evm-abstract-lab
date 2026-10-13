@@ -113,7 +113,9 @@ fn uncertain_length_needs_zero_and_stored_byte() {
 }
 
 mod concrete;
+mod copies;
 mod fingerprint;
+mod guarded;
 mod native;
 mod provenance;
 mod refinement;
