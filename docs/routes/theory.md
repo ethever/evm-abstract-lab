@@ -152,7 +152,9 @@ SMT 在这里检查已经编码的条件能否同时成立。若同一个 x 已�
 2. 读[代理实验](../09-cross-contract.md#4-代理实验读谁的代码写谁的-storage)和[重入实验](../09-cross-contract.md#6-重入新帧读到当前状态)，分别回答“执行谁的代码、使用谁的状态”和“重入读初始快照还是当前写入”。再用[第 16 课的回调后回滚](../16-storage-model.md#9-revert-恢复的是调用入口检查点不是固定初始快照)，手算 `(A[0],B[0])` 怎样从 `(1,4)` 变为 `(9,7)`，又恢复到 `(1,4)`。
 3. 最后读[第 11 课的状态后端](../11-state-backends.md#从同一份-store-切换底层实现)。按[先核对语义再观察时间](../11-state-backends.md#先核对语义再观察时间)理解 std 与 imbl 的对照方式：检查点、恢复与 join 的含义固定，复制和共享数据的成本可以不同。先阅读比较的输入与结果合同；需要测性能时再运行正文的测量脚本。
 
-源码沿 [`analysis/machine/frame.rs`](../../crates/evm-abstract/src/analysis/machine/frame.rs) 的帧数据进入 [`analysis/transfer/calls.rs`](../../crates/evm-abstract/src/analysis/transfer/calls.rs)，查看调用建立保存点、结束时恢复或保留 Store 的位置，再读 [`snapshot-state`](../../crates/snapshot-state/src/lib.rs) 与 [`Checkpoint`](../../crates/snapshot-state/src/checkpoint.rs)。当前模型仍可能保留调用失败分支；未知目标、缺失代码和调用深度限制须按[第 09 课的前沿](../09-cross-contract.md#7-输入缺失和预算停止也要读出来)阅读，不能由一个已知成功结果代替未覆盖行为。
+源码沿 [`analysis/machine/frame.rs`](../../crates/evm-abstract/src/analysis/machine/frame.rs) 的帧数据进入 [`analysis/transfer/calls.rs`](../../crates/evm-abstract/src/analysis/transfer/calls.rs)，查看调用建立保存点、结束时恢复或保留 Store 的位置，再读 [`snapshot-state`](../../crates/snapshot-state/src/lib.rs) 与 Store 使用的 [`SharedCheckpoint<Store>`](../../crates/snapshot-state/src/shared_checkpoint.rs)。`capture` 克隆一次 Store，复制检查点只共享不可变旧版本；唯一持有者恢复时移动状态，共享版本恢复时先克隆，隔离恢复后的修改。原有 [`Checkpoint<T>`](../../crates/snapshot-state/src/checkpoint.rs) 仍允许非 Clone 状态的 `from_state` 和移动恢复；std/imbl 的容器复制差异继续影响 `capture`、共享恢复与后续修改的成本。
+
+当前模型仍可能保留调用失败分支；未知目标、缺失代码和调用深度限制须按[第 09 课的前沿](../09-cross-contract.md#7-输入缺失和预算停止也要读出来)阅读，不能由一个已知成功结果代替未覆盖行为。
 
 **完成问题：** 回调 A 已成功写入 9，随后 B REVERT，为什么 A 仍应恢复成进入 B 前的 1？如果只给 B 保存它自己账户的 storage，哪一步会错？
 

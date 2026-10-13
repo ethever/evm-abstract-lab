@@ -10,7 +10,9 @@
 
 `OrderedMap<K, V>` 是仓库拥有的有序映射包装。默认使用标准库 `BTreeMap`；启用 Cargo feature `imbl` 后使用 `imbl::OrdMap`。两种实现暴露同一组读取、插入、范围更新、遍历与序列化操作。键保持排序，因此更换底层不会改变分析输出的顺序。
 
-`Checkpoint<T>` 保存一个不透明的旧版本。`Store::snapshot()` 创建覆盖整个事务状态的检查点，`Store::restore(snapshot)` 消费检查点并替换当前状态。覆盖范围包括 persistent/transient storage、余额、代码、nonce、账户存在性、创建与待删除标记，以及日志。容器不决定调用是否成功，也不负责抽象值的 `join`。
+`Store::snapshot()` 返回 [`SharedCheckpoint<Store>`](../crates/snapshot-state/src/shared_checkpoint.rs)，覆盖整个事务状态，包括 persistent/transient storage、余额、代码、nonce、账户存在性、创建与待删除标记，以及日志。`capture` 调用一次 `Store::clone` 保存旧版本；随后复制检查点句柄只共享这份不可变状态。`Store::restore(snapshot)` 消费检查点：唯一持有者直接移出旧 Store；还有其他检查点共享它时，先克隆 Store，再替换当前状态，让恢复后的写入与其他检查点隔离。容器不决定调用是否成功，也不负责抽象值的 `join`。
+
+原有 [`Checkpoint<T>`](../crates/snapshot-state/src/checkpoint.rs) 仍保存独占的泛型状态；`from_state` 与消费式 `restore` 不要求 `T: Clone`，恢复时直接移动状态。它与 Store 使用的共享检查点是两个不同的类型。
 
 ```rust,ignore
 let before_b = store.snapshot();
@@ -23,7 +25,7 @@ if b_failed {
 
 A 在调用 B 前保存自己的事务状态版本，B 在调用 C 前再保存一份。C 成功后，其效果留在当前版本；如果 B 随后失败，恢复 B 的入口检查点会一起撤销 C 的效果。REVERT 的返回字节单独传给 caller，不属于被恢复的 Store。[第 09 课](09-cross-contract.md)解释调用帧与返回边。
 
-标准库实现复制映射中的键和值。`imbl` 实现共享未修改的树节点；保留旧版本时，后续修改复制需要变化的部分，见 [`OrdMap` 官方 API 文档](https://docs.rs/imbl/7.0.0/imbl/struct.GenericOrdMap.html)。具体成本还取决于键和值、修改范围、旧版本的存活时间和释放成本；两者的语义相同不意味着性能相同。
+容器后端的差异仍体现在 `capture`、共享检查点恢复时的 Store 克隆，以及后续修改的成本。标准库实现克隆映射时复制键和值；`imbl` 实现共享未修改的树节点，后续修改复制需要变化的部分，见 [`OrdMap` 官方 API 文档](https://docs.rs/imbl/7.0.0/imbl/struct.GenericOrdMap.html)。具体成本还取决于键和值、修改范围、旧版本的存活时间和释放成本；两者的语义相同不意味着性能相同。
 
 在仓库根目录进入开发环境后，可以分别运行同一个实际分析输入：
 

@@ -125,7 +125,9 @@ flowchart TD
 
 返回时沿 [`calls::finish`](../../crates/evm-abstract/src/analysis/transfer/calls.rs#L116) 阅读。成功、REVERT 和异常终止决定是否恢复子帧入口的 Store 检查点；随后恢复 caller，把返回字节放入 caller 的 returndata，按请求范围复制到 memory，并在调用结果位置压入结果。REVERT 的字节可以交回 caller，同时它的状态效果被撤销；这两件事并不矛盾。
 
-现在运行[嵌套回滚实验](../16-storage-model.md#9-revert-恢复的是调用入口检查点不是固定初始快照)，观察 [`storage-callback-revert.json`](../../examples/storage-callback-revert.json)。沿 [`Store::snapshot` / `restore`](../../crates/evm-abstract/src/world/store.rs#L984) 进入 [`Checkpoint`](../../crates/snapshot-state/src/checkpoint.rs)，再按[第 11 课的后端比较](../11-state-backends.md#先核对语义再观察时间)阅读 [`OrderedMap`](../../crates/snapshot-state/src/ordered_map.rs)。std 与 imbl 改变保留旧版本的实现成本；何时回滚、如何 join 仍由执行器与 Store 决定。
+现在运行[嵌套回滚实验](../16-storage-model.md#9-revert-恢复的是调用入口检查点不是固定初始快照)，观察 [`storage-callback-revert.json`](../../examples/storage-callback-revert.json)。沿 [`Store::snapshot` / `restore`](../../crates/evm-abstract/src/world/store.rs) 进入 [`SharedCheckpoint<Store>`](../../crates/snapshot-state/src/shared_checkpoint.rs)：`capture` 克隆一次 Store，后续检查点 `clone` 共享不可变旧版本；唯一持有者恢复时移动 Store，共享版本恢复时先克隆，保证各版本后续写入隔离。原有 [`Checkpoint<T>`](../../crates/snapshot-state/src/checkpoint.rs) 仍支持非 Clone 状态的 `from_state` 与移动恢复。
+
+再按[第 11 课的后端比较](../11-state-backends.md#先核对语义再观察时间)阅读 [`OrderedMap`](../../crates/snapshot-state/src/ordered_map.rs)。std 与 imbl 的复制与共享差异仍影响 `capture`、共享恢复的 Store 克隆和后续修改；何时回滚、如何 join 仍由执行器与 Store 决定。
 
 这一站的理论检验是“回到正确的调用入口状态”。B 内部成功的 C 会影响当前 Store；若 B 随后失败，恢复 B 的检查点必须连同 C 的效果一起撤销，同时保留 A 在调用 B 前的修改。用[重入实验](../09-cross-contract.md#6-重入新帧读到当前状态)检查新帧读的是当前 Store，而不是固定 world 的旧值。
 
