@@ -54,7 +54,7 @@ fn unknown_output_copy_preserves_parent_memory_outside_requested_prefix() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
     let analysis = run(world.clone(), entry(ByteArray::empty()));
-    complete(&analysis);
+    complete_unknown(&analysis);
     let outcomes = returns(&analysis);
     assert!(
         outcomes
@@ -85,7 +85,7 @@ fn one_byte_unknown_return_or_revert_keeps_the_uncopied_requested_suffix() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
     let analysis = run(world.clone(), entry(ByteArray::empty()));
-    complete(&analysis);
+    complete_unknown(&analysis);
     let outcomes = returns(&analysis);
     for outcome in outcomes {
         only(&output_word(outcome, 96), &[1]);

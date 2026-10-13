@@ -37,15 +37,52 @@ def word(data, offset, allowed):
     return values
 
 
+def slot(store, owner, key, allowed):
+    address = f"0x{owner:040x}"
+    plane = store["persistent"]
+    for entry in plane["slots"]:
+        if entry["address"] == address and int(entry["slot"], 0) == key:
+            values = constants(entry["value"])
+            break
+    else:
+        # Missing cache entries need an actual root proof, not the default
+        # value of a potentially modified symbolic array.
+        graph = plane["roots"][address]
+        index = graph["root"]
+        while True:
+            node = graph["nodes"][index]
+            if node == "SlotsZero":
+                values = {0}
+                break
+            assert isinstance(node, dict) and "Store" in node, node
+            write = node["Store"]
+            stored_key = graph["nodes"][write["key"]]
+            assert isinstance(stored_key, dict) and "Constant" in stored_key
+            if int(stored_key["Constant"], 0) == key:
+                value = graph["nodes"][write["value"]]
+                assert isinstance(value, dict) and "Constant" in value
+                values = {int(value["Constant"], 0)}
+                break
+            index = write["previous"]
+    assert values and values <= allowed, (address, key, values, allowed)
+    return values
+
+
 def precision(report, case):
     assert report["status"] == "Converged" and not report["frontiers"]
     summaries = report["unknown_summaries"]
     assert summaries and all(item["closed"] and item["procedures"] for item in summaries)
     returns = [item for item in report["outcomes"] if item["kind"] == "Return"]
     assert returns
+    slots = ([(0x101, 0, {42})] if case == "static-reuse" else
+             [(0x101, 0, {0}), (0x101, 1, {0, 1, 2})] if case.startswith("busy-x") else
+             [(0x301, 0, {5, 9}), (0x301, 1, {1})])
+    store_values = {f"{owner:#x}:{key}": set() for owner, key, _ in slots}
     first, second = set(), set()
     for outcome in returns:
         data = outcome["data"]
+        for owner, key, allowed in slots:
+            store_values[f"{owner:#x}:{key}"] |= slot(outcome["store"], owner, key, allowed)
         if case == "static-reuse":
             assert constants(data["length"]) == {32}
             first |= word(data, 0, {42})
@@ -61,7 +98,10 @@ def precision(report, case):
         ({0, 1, 2}, {1}) if case.startswith("busy-x") else ({5}, {5, 9})
     )
     assert (first, second) == expected, (case, first, second)
-    return {"return_word_0": sorted(first), "return_word_1": sorted(second)}
+    for owner, key, expected in slots:
+        assert store_values[f"{owner:#x}:{key}"] == expected
+    return {"return_word_0": sorted(first), "return_word_1": sorted(second),
+            "storage": {key: sorted(values) for key, values in store_values.items()}}
 
 
 def graph_sizes(report):
@@ -179,7 +219,7 @@ def main():
         "platform": platform.platform(), "logical_cpus": os.cpu_count(),
         "binary_sha256": binary_sha256,
         "command_template": "analyze --world CASE --evm.to 0x101 --evm.caller 0x900 --evm.value 0 --evm.calldata 0x --format json --max-work LIMIT [--no-summaries]",
-        "scope": "CLI analysis and JSON export; alternating order; same numeric precision and closed coverage; no claim of full relational equivalence",
+        "scope": "CLI analysis and JSON export; alternating order; same specified return-word and key-storage numeric precision, and closed coverage; no claim of full relational equivalence",
         "samples": records, "aggregates": aggregates,
     }
     (args.output / "measurements.json").write_text(json.dumps(evidence, indent=2) + "\n")

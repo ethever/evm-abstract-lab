@@ -211,6 +211,21 @@ pub(super) fn complete(analysis: &WorldAnalysis) {
     );
 }
 
+pub(super) fn complete_unknown(analysis: &WorldAnalysis) {
+    complete(analysis);
+    assert!(
+        !analysis.unknown_summaries().is_empty(),
+        "complete unknown execution has no coverage records"
+    );
+    for summary in analysis.unknown_summaries() {
+        assert!(
+            summary.closed,
+            "unknown relation at source {} remains open",
+            summary.source_state
+        );
+    }
+}
+
 pub(super) fn returns(analysis: &WorldAnalysis) -> Vec<&MachineOutcome> {
     let values: Vec<_> = analysis
         .outcomes()

@@ -99,6 +99,7 @@ fn world(outer_revert: bool) -> World {
 fn failed_callback_can_be_handled_by_unknown_u_that_later_succeeds() {
     let world = world(false);
     let analysis = run(world.clone(), entry(ByteArray::empty()));
+    complete_unknown(&analysis);
     for (selectors, expected) in [(vec![2], 3), (vec![1, 2], 11)] {
         // Validate the concrete fixture before asking the abstract graph to
         // cover it: a failing callback must not become a whole-U failure.
@@ -126,6 +127,7 @@ fn failed_callback_can_be_handled_by_unknown_u_that_later_succeeds() {
 fn successful_callback_is_rolled_back_when_unknown_u_reverts_without_losing_parent_write() {
     let world = world(false);
     let analysis = run(world.clone(), entry(ByteArray::empty()));
+    complete_unknown(&analysis);
     let concrete = oracle::concrete_unknown(&world, U, &fixtures::callback_sequence(&[1], true));
     let observation = oracle::execute(&concrete, &entry(ByteArray::empty()));
     assert_eq!(observation.output_word(0), U256::ZERO);
@@ -226,6 +228,7 @@ fn successful_callback_is_rolled_back_when_unknown_u_reverts_without_losing_pare
 fn exceptional_unknown_u_failure_also_restores_only_its_own_subtree() {
     let world = world(false);
     let analysis = run(world.clone(), entry(ByteArray::empty()));
+    complete_unknown(&analysis);
     let mut u = fixtures::callback_sequence(&[1], false);
     *u.bytes.last_mut().unwrap() = opcode::INVALID;
     let concrete = oracle::concrete_unknown(&world, U, &u);
@@ -240,6 +243,7 @@ fn exceptional_unknown_u_failure_also_restores_only_its_own_subtree() {
 fn successful_unknown_u_effects_remain_inside_outer_a_rollback_scope() {
     let world = world(true);
     let analysis = run(world.clone(), entry(ByteArray::empty()));
+    complete_unknown(&analysis);
     let concrete = oracle::concrete_unknown(&world, U, &fixtures::callback_sequence(&[1], false));
     let observation = oracle::execute(&concrete, &entry(ByteArray::empty()));
     assert_eq!(observation.kind, OutcomeKind::Revert);

@@ -12,6 +12,7 @@ fn finite_zero_one_multiple_callbacks_are_included_and_two_obeys_its_guard() {
     insert(&mut world, A, &a, &[(0, 0), (1, 0)]);
     let input = entry(calldata(0));
     let analysis = run(world.clone(), input.clone());
+    complete_unknown(&analysis);
     for (selectors, expected) in [
         (vec![], 0),
         (vec![2], 0),
@@ -45,6 +46,7 @@ fn actual_nested_and_indirect_unknown_callbacks_are_included() {
     insert(&mut world, A, &a, &[(0, 0), (1, 0)]);
     let input = entry(calldata(0));
     let analysis = run(world.clone(), input.clone());
+    complete_unknown(&analysis);
     let mut concrete =
         oracle::concrete_unknown(&world, U, &fixtures::callback_sequence(&[3, 2], false));
     insert(
@@ -87,6 +89,7 @@ fn actual_unknown_to_known_c_write_and_readonly_guard_match_revm() {
         insert(&mut world, C, &c, &[(0, 5), (1, enabled)]);
         let input = entry(ByteArray::empty());
         let analysis = run(world.clone(), input.clone());
+        complete_unknown(&analysis);
         let concrete = oracle::concrete_unknown(&world, U, &u);
         let observed = oracle::execute(&concrete, &input);
         assert_eq!(observed.output_word(0), U256::from(5));
@@ -157,11 +160,11 @@ fn unknown_delegating_known_code_still_covers_its_guarded_cross_owner_call() {
         && step.caller == address(U)
         && step.pc == a.labels["allowed"]));
     let analysis = run(world, input);
+    complete_unknown(&analysis);
     observed.covers(&analysis);
     for outcome in returns(&analysis) {
         only(&output_word(outcome, 0), &[5, 9]);
         only(&read(&outcome.store, C, 0), &[3, 77]);
     }
     assert!(reachable(&analysis, A, a.labels["allowed"]));
-    complete(&analysis);
 }

@@ -119,8 +119,17 @@ in
             assert possible == {0, 1, 2}, (name, possible)
         elif name == "outer-revert":
             assert outcomes and all(outcome["kind"] != "Return" for outcome in outcomes)
+            reverted_values = set()
             for outcome in outcomes:
                 allowed_values(slot_value(outcome["store"], owner_c, 0), [5])
+                if outcome["kind"] == "Revert":
+                    lengths = allowed_values(outcome["data"]["length"], [0, 64])
+                    if lengths == {0}:
+                        continue
+                    assert lengths == {64}, (name, "ambiguous revert length", lengths)
+                    word_values(outcome["data"], 0, [5])
+                    reverted_values |= word_values(outcome["data"], 32, [5, 9])
+            assert reverted_values == {5, 9}, (name, "missing old/new revert data", reverted_values)
         elif name == "static-reuse":
             returns = [outcome for outcome in outcomes if outcome["kind"] == "Return"]
             assert returns, name

@@ -9,6 +9,7 @@ fn unknown_callee_can_succeed_and_continue_parent_without_direct_storage_havoc()
     let mut world = new_world();
     insert(&mut world, A, &code, &[]);
     let analysis = run(world, entry(ByteArray::empty()));
+    complete_unknown(&analysis);
     let returns = returns(&analysis);
     assert!(
         returns
@@ -32,7 +33,7 @@ fn check_busy_x(nested: bool, use_summaries: bool) {
         ..Default::default()
     };
     let analysis = run_config(world, entry(calldata(0)), config);
-    complete(&analysis);
+    complete_unknown(&analysis);
     assert!(!analysis.unknown_summaries().is_empty());
     assert!(
         analysis
@@ -101,6 +102,7 @@ fn unknown_can_call_nonparent_c_and_new_reads_do_not_refresh_old_stack_value() {
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[(0, 5), (1, 1)]);
     let analysis = run(world, entry(ByteArray::empty()));
+    complete_unknown(&analysis);
     let returns = returns(&analysis);
     assert!(
         returns
@@ -125,6 +127,7 @@ fn actual_c_entry_guard_prevents_unknown_interaction_from_writing_nine() {
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[(0, 5), (1, 0)]);
     let analysis = run(world, entry(ByteArray::empty()));
+    complete_unknown(&analysis);
     for outcome in returns(&analysis) {
         only(&output_word(outcome, 0), &[5]);
         only(&output_word(outcome, 32), &[5]);

@@ -18,6 +18,7 @@ fn check_direct_storage(op: u8) {
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
     let analysis = run(world, entry(ByteArray::empty()));
+    complete_unknown(&analysis);
     let outcomes = returns(&analysis);
     for sample in [0, 9, 42, 256, 65535] {
         assert!(
@@ -54,6 +55,7 @@ fn unknown_staticcall_preserves_known_storage_even_across_callbacks() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[(0, 42)]);
     let analysis = run(world, entry(ByteArray::empty()));
+    complete_unknown(&analysis);
     assert!(
         returns(&analysis)
             .iter()
@@ -74,6 +76,7 @@ fn static_restriction_is_inherited_by_unknown_delegatecall_and_callcode() {
         let mut input = entry(ByteArray::empty());
         input.environment.is_static = true;
         let analysis = run(world, input);
+        complete_unknown(&analysis);
         assert!(
             returns(&analysis)
                 .iter()
@@ -114,10 +117,10 @@ fn check_static_read_identity(op: u8) {
     let mut input = entry(ByteArray::empty());
     input.environment.is_static = op != opcode::STATICCALL;
     let analysis = run(world, input);
+    complete_unknown(&analysis);
     for outcome in returns(&analysis) {
         only(&output_word(outcome, 0), &[1]);
     }
-    complete(&analysis);
 }
 
 #[test]
@@ -168,6 +171,7 @@ fn unknown_delegatecall_entering_known_c_keeps_c_address_in_normal_call() {
         step.code == address(C) && step.owner == address(C) && step.caller == address(A)
     }));
     let analysis = run(world, input);
+    complete_unknown(&analysis);
     observed.covers(&analysis);
     let normal_c: Vec<_> = analysis
         .unknown_summaries()
@@ -197,7 +201,6 @@ fn unknown_delegatecall_entering_known_c_keeps_c_address_in_normal_call() {
             );
         }
     }
-    complete(&analysis);
 }
 
 #[test]
@@ -263,6 +266,7 @@ fn actual_unknown_code_contexts_match_call_delegatecall_callcode_and_staticcall_
             && step.caller == address(caller)
             && step.is_static == (op == opcode::STATICCALL)));
         let analysis = run(world, input);
+        complete_unknown(&analysis);
         observed.covers(&analysis);
     }
 }
