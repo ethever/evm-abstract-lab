@@ -56,6 +56,7 @@ fn rejected_guard_keeps_the_original_coverage_frontier() {
         budget: &mut budget,
         root_address: None,
         input_scope: None,
+        query_cache: Default::default(),
     };
     let successor = super::branch(&mut result, &condition, true, &mut context, 7).unwrap();
     assert_eq!(successor.relations, before);
@@ -80,6 +81,7 @@ fn shared_work_exhaustion_stops_before_guard_retention() {
         budget: &mut budget,
         root_address: None,
         input_scope: None,
+        query_cache: Default::default(),
     };
     assert!(super::branch(&mut result, &condition, true, &mut context, 7).is_none());
     assert_eq!(result.payload, before);
@@ -128,6 +130,7 @@ fn boolean_state_reads_need_only_the_two_uniqueness_checks() {
                 budget: &mut budget,
                 root_address: None,
                 input_scope: None,
+                query_cache: Default::default(),
             };
             assert_eq!(
                 super::refine(&mut value, &RelationState::default(), &mut context),
@@ -174,6 +177,7 @@ fn multiple_nonboolean_models_still_filter_all_numeric_candidates() {
         budget: &mut budget,
         root_address: None,
         input_scope: None,
+        query_cache: Default::default(),
     };
     assert_eq!(
         super::refine(&mut value, &relations, &mut context),

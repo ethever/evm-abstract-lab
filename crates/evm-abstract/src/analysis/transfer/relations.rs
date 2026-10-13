@@ -3,6 +3,7 @@
 //! Every native query reserves work from the transaction ledger. A resource or
 //! encoding limit retains the path and records why relational precision stopped.
 
+mod cache;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -18,6 +19,8 @@ use crate::{
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
+
+pub(super) use cache::QueryCache;
 
 fn charge(
     state: &RelationState,
@@ -109,10 +112,23 @@ pub(super) fn refine(
         ScalarQuery::Unknown(crate::domain::relational::QueryReason::ScalarFactLimit) => {}
         ScalarQuery::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
     }
-    if !charge(relations, &expression, 2, context) {
+    let cache_work = context.query_cache.work(relations, &expression);
+    if cache_work == usize::MAX || !context.budget.charge(cache_work) {
         return Err(FrontierReason::Work);
     }
-    match relations.unique_value(&expression, &limits) {
+    let answer = if let Some(answer) = context.query_cache.get(relations, &expression, &limits) {
+        answer
+    } else {
+        if !charge(relations, &expression, 2, context) {
+            return Err(FrontierReason::Work);
+        }
+        let answer = relations.unique_value(&expression, &limits);
+        context
+            .query_cache
+            .remember(relations, &expression, &limits, &answer);
+        answer
+    };
+    match answer {
         ValueQuery::Unique(exact) => {
             if value.contains(exact) {
                 *value = value.clone().with_numeric(NumericValue::constant(exact));

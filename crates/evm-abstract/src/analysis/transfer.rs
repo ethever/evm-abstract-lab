@@ -44,6 +44,7 @@ struct TransferContext<'a> {
     budget: &'a mut WorkBudget,
     root_address: Option<(Address, AddressInput)>,
     input_scope: Option<u64>,
+    query_cache: relations::QueryCache,
 }
 
 /// RPC 发现先补初始事实；普通离线分析继续对缺失事实做保守传播。
@@ -135,6 +136,7 @@ pub(super) fn resume_summary(
         budget,
         root_address: None,
         input_scope: None,
+        query_cache: Default::default(),
     };
     let pc = payload
         .active()
@@ -281,6 +283,7 @@ pub(super) fn execute(
         budget,
         root_address: Some((entry.address, entry.environment.to)),
         input_scope: entry.environment.input_scope.id(),
+        query_cache: Default::default(),
     };
     let context = &mut transfer_context;
     let mut result = Execution {
