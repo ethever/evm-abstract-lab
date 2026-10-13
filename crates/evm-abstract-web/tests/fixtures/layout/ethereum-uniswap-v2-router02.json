@@ -26,11 +26,25 @@
       ]
     ],
     "calldata": "0xd06ca61f00000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000003000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000006b175474e89094c44da98b954eedeac495271d0f",
-    "scope": "One exact ABI entry in standalone bytecode; external pair code is unavailable and its frontier must remain visible. This does not cover all router entrypoints.",
+    "scope": "One exact calldata input in standalone bytecode with symbolic ADDRESS, caller and CALLVALUE. Missing external pair code is covered by closed static unknown envelopes; retained Memory and Relations(ExpressionLimit) frontiers in the router continuation keep the overall graph incomplete. This does not cover all router entrypoints.",
     "expected_status": "Incomplete",
     "minimum_native_states": 40,
     "minimum_source_blocks": 35,
-    "expected_frontiers": 1,
-    "expected_frontier_reason": "MissingCode"
+    "expected_frontiers": 7,
+    "expected_frontiers_by_kind": {
+      "Memory": {
+        "count": 5,
+        "reason": "Memory",
+        "detail": "Memory"
+      },
+      "Relations": {
+        "count": 2,
+        "reason": {
+          "Relations": "ExpressionLimit"
+        },
+        "detail": "Relations(ExpressionLimit)"
+      }
+    },
+    "expected_closed_unknown_summaries": 3
   }
 }

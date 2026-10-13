@@ -50,6 +50,7 @@ pub(super) fn mode(code: FrameCode) -> api::CodeKind {
         FrameCode::Empty => api::CodeKind::Empty,
         FrameCode::Precompile(_) => api::CodeKind::Precompile,
         FrameCode::InvalidDelegation => api::CodeKind::InvalidDelegation,
+        FrameCode::Unknown => api::CodeKind::AbstractEnvironment,
     }
 }
 impl<'a> Pools<'a> {
@@ -344,6 +345,16 @@ impl<'a> Pools<'a> {
                     storage_address: key.address.to_string(),
                     address_value: value::address(key.address_value),
                     caller: value::address(key.caller),
+                    address_operand: frame
+                        .address_operand
+                        .as_ref()
+                        .map(|value| self.symbolic.value(value))
+                        .transpose()?,
+                    caller_operand: frame
+                        .caller_operand
+                        .as_ref()
+                        .map(|value| self.symbolic.value(value))
+                        .transpose()?,
                     call_value: self.symbolic.value(&frame.call_value)?,
                     is_static: key.is_static,
                     kind: mode(frame.code),

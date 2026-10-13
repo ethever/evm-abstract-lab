@@ -155,7 +155,7 @@ fn world_explain_disassembles_captured_initcode_and_created_runtime() {
 #[test]
 fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
     for (name, extra, frontier) in [
-        ("missing-code", vec![], "MissingCode"),
+        ("missing-code", vec!["--max-call-depth", "1"], "CallDepth"),
         ("call-return-branch", vec!["--max-work", "1"], "Work"),
         (
             "call-return-branch",
@@ -742,22 +742,24 @@ fn rpc_explain_discovers_missing_callee_snapshot_code_with_default_and_explicit_
 }
 
 #[test]
-fn rpc_explain_discovery_off_keeps_missing_code_partial_graph_without_verified_ssa() {
+fn rpc_explain_discovery_off_uses_closed_unknown_code_summary_without_fetching_callee() {
     thread::scope(|scope| {
         let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
         let output = rpc_command(&server, &["--no-rpc-discovery"]);
-        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(output.status.code(), Some(0));
         let explanation = text(&output);
-        assert!(explanation.contains("Incomplete") && explanation.contains("MissingCode"));
-        assert!(explanation.contains("Frontiers") && explanation.contains("SSA unavailable"));
-        assert!(!explanation.contains(VERIFIED));
+        assert!(
+            explanation.contains("Converged")
+                && explanation.contains("Abstract interaction summaries")
+        );
+        assert!(explanation.contains("Frontiers") && explanation.contains(VERIFIED));
         let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
         assert!(disassembly.contains("CALL") && !disassembly.contains("MSTORE"));
         let requests = server.finish();
         assert_eq!(requests_for(&requests, "eth_getCode", ENTRY), 1);
         assert_eq!(requests_for(&requests, "eth_getCode", CALLEE), 0);
         assert_pinned(&requests);
-        assert_rpc_report(scope, &explanation, &["--no-rpc-discovery"], 2);
+        assert_rpc_report(scope, &explanation, &["--no-rpc-discovery"], 0);
     });
 }
 
@@ -854,7 +856,7 @@ const RPC_CALLEE_CODE: &str = "602a5f5260205ff3";
 pub(super) enum RpcFixture {
     Observations,
     CallReturn,
-    UnknownTarget,
+    UnknownInitCode,
 }
 
 pub(super) struct RpcServer {
@@ -943,7 +945,7 @@ impl Drop for RpcServer {
 fn rpc_result(request: &Json, fixture: RpcFixture) -> Json {
     let code = match fixture {
         RpcFixture::Observations => "3460105400",
-        RpcFixture::UnknownTarget => "5f5f5f5f5f33600f1660f0175af1",
+        RpcFixture::UnknownInitCode => "6003565b5a5f5ff0",
         RpcFixture::CallReturn if request["params"][0] == ENTRY => RPC_ROOT_CODE,
         RpcFixture::CallReturn => RPC_CALLEE_CODE,
     };

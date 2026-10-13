@@ -246,7 +246,10 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
         match edge.kind {
             MachineEdgeKind::Intraprocedural(_) => {}
             MachineEdgeKind::Call => stacks.push(Vec::new()),
-            MachineEdgeKind::Return | MachineEdgeKind::Revert | MachineEdgeKind::Failure => {
+            MachineEdgeKind::Return
+            | MachineEdgeKind::Revert
+            | MachineEdgeKind::Failure
+            | MachineEdgeKind::Summary(_) => {
                 if stacks.len() > destination.entry.call_stack.depth() {
                     stacks.truncate(destination.entry.call_stack.depth());
                 }

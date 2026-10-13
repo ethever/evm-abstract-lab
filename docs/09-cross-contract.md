@@ -142,7 +142,7 @@ nix run . -- explain \
   --verbose
 ```
 
-完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=6`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=7`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 完整 SSA 继续逐帧列出 active/suspended、代码地址、storage owner、代码 hash、mode、caller、static、跳转历史和栈高，不会因为活动帧采用共用指令布局而省略暂停帧。`bytecode instructions` 与 `instruction effects` 共享当前 Bᵢ 标题和不带 `0x` 的 pc 列，效果行不重复打印 Bᵢ 标题；指令正文显示归一化计算，并保留逐指令效果编号与故障注释。JSON 的 `opcode`、`immediate`、`operands`、`results`、`fault` 继续记录原始指令证据，`operation` 记录最终计算，`facts` 与 `mappings` 分别记录事实和来源、等价、依赖。教学视图与完整视图使用同一份归一化 SSA，完整视图展开帧和效果链。
 
@@ -152,7 +152,7 @@ nix run . -- explain \
 
 如果缺少代码或预算耗尽，默认 `explain` 保留代码观察、部分 CFG、各 outcome、全部诊断和前沿，显示 `Incomplete` / `Frontiers` 和 `SSA unavailable`，退出码为 `2`；不会输出 `Verified cross-contract SSA:`。`--verbose` 可查看同一部分分析的完整报告。初始工作预算太小、尚未捕获执行代码时，`Input code observations (not execution evidence)` 展示输入快照中的代码并明确其观察来源。输入或初始 RPC 获取失败退出 `1`，没有分析结果；开始分析后的 callee 补查失败或预算限制保留 `RpcAcquisition` 部分图，退出 `2` 并省略 SSA。参数语法错误也退出 `2`，但没有分析结果。
 
-需要阅读已到达指令的值流时，可以加 `--allow-partial-ssa`，或在 `analyze` 中同时加 `--ssa --allow-partial-ssa`。未完成报告增加 `Partial SSA (machine state IDs)`，继续保留原有 `UnknownTarget`、`MissingCode`、预算等全部前沿与退出码 2；JSON 此时为 `{"analysis":...,"partial_ssa":...}`。部分 SSA 默认突出指令与值流，仍标出 Started/OperandsConsumed/Faulted、Stale/Unexecuted、未覆盖边和全部前沿；Completed/Dispatched 的常见注释与效果链在 world/RPC 的 `explain --verbose` 或 JSON 中展开。块的覆盖状态、指令阶段、部分 φ 和延后的历史边有各自含义，见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。有已知候选继续边，不代表未知调用也已完成；不能据此给它编造成功位、空返回数据或无副作用的结果。已收敛分析输出经过验证的完整归一化 SSA，`--verbose` 只改变报告详略。
+需要阅读已到达指令的值流时，可以加 `--allow-partial-ssa`，或在 `analyze` 中同时加 `--ssa --allow-partial-ssa`。未完成报告增加 `Partial SSA (machine state IDs)`，继续保留原有采集、状态、预算等全部前沿与退出码 2；JSON 此时为 `{"analysis":...,"partial_ssa":...}`。部分 SSA 默认突出指令与值流，仍标出 Started/OperandsConsumed/Faulted、Stale/Unexecuted、未覆盖边和全部前沿；Completed/Dispatched 的常见注释与效果链在 world/RPC 的 `explain --verbose` 或 JSON 中展开。块的覆盖状态、指令阶段、部分 φ 和延后的历史边有各自含义，见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。有已知候选继续边，不代表未知调用也已完成；不能据此给它编造成功位、空返回数据或无副作用的结果。已收敛分析输出经过验证的完整归一化 SSA，`--verbose` 只改变报告详略。
 
 `Aᵢ` 是具体地址引用，完整地址在 `Addresses` 中列出；未知地址直接显示为 `symbolic(Caller)` 等名字，不用具体地址占位。`Cᵢ` 是代码目录编号，`Bᵢ` 是某段代码内的基本块编号，`fᵢ` 是帧编号，`σᵢ` 是分析状态，`Oᵢ` 是入口结果，`Uᵢ` 是尚未展开的前沿。默认代码目录每个代码身份保留一次完整 hash；完整报告另用 `H₀` 等引用 hash，并在图例中保留其完整值，完整报告的前沿也使用 `Uᵢ` 编号。这些引用与符号名字用于连接同一份报告；跨报告出现同名符号不证明数值相等。编号不是链上身份；教程中的 A、B 是合约名字。
 
@@ -354,13 +354,15 @@ nix run . -- analyze \
   --max-call-depth 2
 ```
 
-两条分析命令都退出 `2`，表示 `Incomplete`。第一条的 `MissingCode` 指向 B；第二条在需要 `[A, B, A]` 三帧时留下 `CallDepth`。**前沿（frontier）**就是尚未完成的区域，保存停止位置和原因。它不是一次正常返回，也不是“没有副作用”。
+第一条通过未知交互摘要覆盖 B，并在报告中区分摘要效果与实际展开的 A 指令；第二条在需要 `[A, B, A]` 三帧时留下 `CallDepth`，退出 `2`、表示 `Incomplete`。**前沿（frontier）**就是尚未完成的区域，保存停止位置和原因。它不是一次正常返回，也不是“没有副作用”。
 
-第一条使用离线 `--world`，所以补齐 B 的代码需要修改输入。切换到显式 `--rpc` 后，提供 `--evm.to` 即可开始分析，未指定的调用字段仍为符号输入：分析器遇到具体 B 地址但缺少代码时，会在同一固定区块补查 B，再从 A 的入口重新分析；B 调用 C 时也可继续发现 C。SLOAD 的槽键能够完整枚举时，缺少的初始槽值也会按需补查。DELEGATECALL 按代理的状态账户读取，与实现代码地址分别记录。`--no-rpc-discovery` 同时关闭账户和槽的补查，保留只用预选事实的对照实验。未知调用地址仍留下 `UnknownTarget`；无法完整枚举的槽键和其他未观察槽保留未知值。固定 hash、采集错误和实际命令见[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
+第一条使用离线 `--world`，用当前已知事实建立保守覆盖；若要以 B 的实际代码进一步细化结果，需要补充输入。切换到显式 `--rpc` 后，提供 `--evm.to` 即可开始分析，未指定的调用字段仍为符号输入：分析器遇到具体 B 地址但缺少代码时，会在同一固定区块补查 B，再从 A 的入口重新分析；B 调用 C 时也可继续发现 C。SLOAD 的槽键能够完整枚举时，缺少的初始槽值也会按需补查。DELEGATECALL 按代理的状态账户读取，与实现代码地址分别记录。`--no-rpc-discovery` 同时关闭账户和槽的补查，保留只用预选事实的对照实验。未知调用地址的未覆盖部分进入交互摘要；无法完整枚举的槽键和其他未观察槽保留未知值。固定 hash、采集错误和实际命令见[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
 
-`--max-work` 限制全执行累计工作，`--max-states` 与 `--max-transfers` 覆盖所有账户，`--max-memory-bytes` 限制每帧追踪的内存。未知目标、缺少创建事实、未知预编译输入也可能留下相应前沿；[第 10 课](10-snapshots-summaries-creation.md)会继续解释创建、预编译和摘要预算。
+`--max-work` 限制全执行累计工作，`--max-states` 与 `--max-transfers` 覆盖所有账户，`--max-memory-bytes` 限制每帧追踪的内存。摘要尚未闭合、缺少创建事实、未知预编译输入也可能留下相应前沿；[第 10 课](10-snapshots-summaries-creation.md)会继续解释创建、预编译和摘要预算。
 
 RPC 补查后的各轮也共用这些执行预算，已经分析过的工作仍计费。迟发查询失败或采集额度耗尽会留下 `RpcAcquisition`，结果为 `Incomplete`、退出 `2`；单个已知分支的成功 outcome 不能替代这个前沿。
+
+重复回调、非父合约 C 的状态变化和嵌套闭合，见[第 18 课](18-unknown-world.md)。
 
 ## 8. 怎样准备自己的 world
 

@@ -158,6 +158,14 @@ impl ByteArray {
             update(v);
         }
     }
+    /// Refine retained numeric guarantees against their original source terms.
+    /// Operand values deliberately forget source identity; the map key keeps
+    /// the expression needed to refine copy offsets, lengths, and selectors.
+    pub(crate) fn refine_operands(&mut self, update: &mut impl FnMut(&ExprId, &mut AbstractValue)) {
+        for (expression, value) in &mut self.operands {
+            update(expression, value);
+        }
+    }
 }
 
 /// Charge retained concrete payloads once per shared state, independently of

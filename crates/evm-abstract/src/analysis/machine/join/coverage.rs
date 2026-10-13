@@ -41,6 +41,12 @@ fn shape(payload: &MachinePayload) -> Result<(MachinePayload, Vec<Option<ExprId>
             erase(value);
         }
         erase(&mut frame.call_value);
+        for value in [&mut frame.address_operand, &mut frame.caller_operand]
+            .into_iter()
+            .flatten()
+        {
+            erase(value);
+        }
         frame.memory.update_values(&mut erase);
         frame.calldata.update_values(&mut erase);
         frame.returndata.update_values(&mut erase);

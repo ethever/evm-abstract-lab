@@ -102,3 +102,51 @@ fn positive_and_uncertain_call_values_still_move_balances() {
         domain.join(&word(50), &word(53)).constants()
     );
 }
+
+#[test]
+fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query() {
+    let (world, entry) = crate::analysis::machine::fixtures::fixture(&[(0x101, "00")]);
+    let config = ExecutionConfig::default();
+    let domain = config.domain().unwrap();
+    let payload = initial(&world, &entry, domain).unwrap();
+    let expression = ExprId::fresh().unwrap();
+    let projected = AbstractValue::unknown_address().with_expression(expression.clone());
+    let candidate = word(0x301);
+    let mut result = super::super::empty_execution(payload.clone());
+    let mut budget = WorkBudget::new(config.analysis.relations.rlimit as usize - 1);
+    let mut context = TransferContext {
+        config: &config,
+        domain,
+        budget: &mut budget,
+        root_address: None,
+        input_scope: None,
+        query_cache: Default::default(),
+        procedure: false,
+        discover_code: false,
+    };
+    let remainder = target_guard(
+        &mut result,
+        &payload,
+        &projected,
+        &candidate,
+        false,
+        &mut context,
+        7,
+    )
+    .expect("bounded retention needs no native feasibility query");
+    assert!(result.frontiers.is_empty());
+    assert_eq!(remainder.call_stack, payload.call_stack);
+    assert_eq!(remainder.store, payload.store);
+    assert_eq!(
+        remainder
+            .relations
+            .can_equal(&expression, U256::from(0x301), &config.analysis.relations),
+        crate::domain::relational::CheckResult::Unsat
+    );
+    assert_eq!(
+        remainder
+            .relations
+            .can_equal(&expression, U256::from(0x302), &config.analysis.relations),
+        crate::domain::relational::CheckResult::Sat
+    );
+}

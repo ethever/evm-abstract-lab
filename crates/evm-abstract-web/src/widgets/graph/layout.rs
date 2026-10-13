@@ -144,9 +144,9 @@ fn kind(kind: EdgeKind) -> geometry::EdgeKind {
         EdgeKind::BranchTrue => geometry::EdgeKind::BranchTrue,
         EdgeKind::BranchFalse => geometry::EdgeKind::BranchFalse,
         EdgeKind::Call => geometry::EdgeKind::Call,
-        EdgeKind::Return => geometry::EdgeKind::Return,
-        EdgeKind::Failure => geometry::EdgeKind::Failure,
-        EdgeKind::Revert => geometry::EdgeKind::Revert,
+        EdgeKind::Return | EdgeKind::SummaryReturn => geometry::EdgeKind::Return,
+        EdgeKind::Failure | EdgeKind::SummaryFailure => geometry::EdgeKind::Failure,
+        EdgeKind::Revert | EdgeKind::SummaryRevert => geometry::EdgeKind::Revert,
     }
 }
 

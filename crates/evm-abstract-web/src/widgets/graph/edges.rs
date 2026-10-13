@@ -25,6 +25,9 @@ pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
             EdgeKind::Return => "return",
             EdgeKind::Failure => "failure",
             EdgeKind::Revert => "revert",
+            EdgeKind::SummaryReturn => "summary return",
+            EdgeKind::SummaryRevert => "summary revert",
+            EdgeKind::SummaryFailure => "summary failure",
         },
         notation_0 = Symbol::Edge(id)
     )
@@ -63,8 +66,11 @@ pub(super) fn paint_edge_text(
     let color = match kind {
         EdgeKind::BranchTrue | EdgeKind::Jump => palette::ACCENT,
         EdgeKind::BranchFalse => palette::WARNING,
-        EdgeKind::Call | EdgeKind::Return => palette::PURPLE,
-        EdgeKind::Failure | EdgeKind::Revert => palette::ERROR,
+        EdgeKind::Call | EdgeKind::Return | EdgeKind::SummaryReturn => palette::PURPLE,
+        EdgeKind::Failure
+        | EdgeKind::Revert
+        | EdgeKind::SummaryFailure
+        | EdgeKind::SummaryRevert => palette::ERROR,
         EdgeKind::Fallthrough => palette::BLUE,
     };
     let stroke = Stroke::new(

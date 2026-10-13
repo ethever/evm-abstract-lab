@@ -475,7 +475,7 @@ fn callbacks_observe_parent_writes_before_call_entry() {
 }
 
 #[test]
-fn unknown_target_keeps_known_candidates_and_explicit_frontier() {
+fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
     let caller = "5f5f5f5f5f345af100";
     let mut entry = entry();
     entry.environment.value = AbstractValue::top();
@@ -493,8 +493,9 @@ fn unknown_target_keeps_known_candidates_and_explicit_frontier() {
         analysis
             .frontiers()
             .iter()
-            .any(|f| f.reason == FrontierReason::UnknownTarget)
+            .all(|f| f.reason != FrontierReason::UnknownTarget)
     );
+    assert!(!analysis.unknown_summaries().is_empty());
     assert!(
         analysis
             .states()
@@ -504,22 +505,37 @@ fn unknown_target_keeps_known_candidates_and_explicit_frontier() {
 }
 
 #[test]
-fn missing_code_is_a_model_frontier_not_an_empty_success() {
+fn missing_code_uses_a_closed_interaction_summary_not_an_empty_success() {
     let target = 0x300;
     let caller = format!("{}00", call(0xf1, target, 0, 0, 0));
     let analysis = run(&[(0x101, &caller)]);
-    assert_eq!(analysis.status(), Status::Incomplete);
+    assert_eq!(analysis.status(), Status::Converged);
+    assert!(analysis.frontiers().is_empty());
     assert!(
-        !analysis
+        analysis
             .edges()
             .iter()
             .any(|e| e.kind == MachineEdgeKind::Call)
     );
     assert!(
         analysis
-            .frontiers()
+            .states()
             .iter()
-            .any(|f| matches!(f.reason, FrontierReason::MissingCode(_)))
+            .any(|state| state.active().code_address == addr(target.into())
+                && state.active().mode == evm_abstract::analysis::FrameCode::Unknown)
+    );
+    assert!(
+        analysis
+            .edges()
+            .iter()
+            .any(|edge| matches!(edge.kind, MachineEdgeKind::Summary(OutcomeKind::Return)))
+    );
+    assert!(!analysis.unknown_summaries().is_empty());
+    assert!(
+        analysis
+            .unknown_summaries()
+            .iter()
+            .all(|summary| summary.closed)
     );
 }
 

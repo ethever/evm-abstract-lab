@@ -60,7 +60,7 @@ fn invalid_opcode_report_preserves_original_bytes_names_causes_and_closure() {
         let mut input = request(bytecode);
         input.fork = fork;
         let report = analyze(input).unwrap();
-        assert_eq!(report.schema_version, 9);
+        assert_eq!(report.schema_version, 10);
         assert_eq!(report.status, AnalysisStatus::Converged);
         assert!(report.frontiers.is_empty());
         let diagnostics: Vec<_> = report
@@ -274,14 +274,16 @@ fn truncated_graph_keeps_unexecuted_blocks_and_open_coverage() {
 }
 
 #[test]
-fn unknown_call_retains_pending_phase_and_no_fabricated_result() {
-    let report = analyze(request("5f5f5f5f5f5f355af100")).unwrap();
+fn bounded_call_retains_pending_phase_and_no_fabricated_result() {
+    let mut input = request("5f5f5f5f5f5f355af100");
+    input.limits.max_call_depth = 1;
+    let report = analyze(input).unwrap();
     assert_eq!(report.status, AnalysisStatus::Incomplete);
     assert!(
         report
             .frontiers
             .iter()
-            .any(|frontier| frontier.kind == FrontierKind::UnknownTarget)
+            .any(|frontier| frontier.kind == FrontierKind::CallDepth)
     );
     let call = report
         .ssa
@@ -290,8 +292,8 @@ fn unknown_call_retains_pending_phase_and_no_fabricated_result() {
         .flat_map(|block| &block.instructions)
         .find(|instruction| instruction.opcode == 0xf1)
         .unwrap();
-    // Unknown target still allows observed immediate failure paths; dispatch
-    // does not mean all possible callees or a successful result were covered.
+    // Immediate failure remains possible; dispatch does not claim a completed
+    // callee when the configured frame limit prevents its entry.
     assert_eq!(call.progress, InstructionProgress::Dispatched);
     assert!(call.results.is_empty());
     assert!(!report.ssa.complete);

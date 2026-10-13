@@ -200,6 +200,7 @@ fn call_result_definitions_belong_to_resume_transitions() {
             }
             MachineEdgeKind::Intraprocedural(_) => {}
             MachineEdgeKind::Revert => panic!("fixture has no revert"),
+            MachineEdgeKind::Summary(_) => panic!("fixture has no abstract environment"),
         }
     }
     assert!(

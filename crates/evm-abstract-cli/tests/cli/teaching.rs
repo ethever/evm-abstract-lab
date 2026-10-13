@@ -295,7 +295,7 @@ fn empty_code_and_unstarted_analysis_never_fabricate_captured_instructions() {
 #[test]
 fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
     for (name, extra) in [
-        ("missing-code", vec![]),
+        ("missing-code", vec!["--max-call-depth", "1"]),
         ("call-return-branch", vec!["--max-work", "1"]),
         ("call-return-branch", vec!["--max-memory-bytes", "1"]),
         ("reentry", vec!["--max-call-depth", "2"]),

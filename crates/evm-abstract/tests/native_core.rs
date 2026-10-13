@@ -3,7 +3,7 @@
 
 use evm_abstract::{
     U256,
-    analysis::{self, Config, EdgeKind, FrontierReason, Status},
+    analysis::{self, Config, EdgeKind, FrameCode, Status},
     bytecode::Program,
     ssa,
 };
@@ -50,19 +50,34 @@ fn bytecode_only_inputs_do_not_assume_a_concrete_entry_environment() {
 }
 
 #[test]
-fn external_code_omitted_by_single_program_input_remains_incomplete() {
-    let view = analysis::analyze(
+fn external_code_omitted_by_single_program_input_uses_native_interaction_summaries() {
+    let view = analysis::analyze_with_environment(
         Program::from_hex("5f5f5f5f5f61123461fffff100").unwrap(),
         Config::default(),
+        evm_abstract::world::EvmEnvironment {
+            // Distinguish omitted external code from a symbolic To alias that
+            // can instead call the known root recursively.
+            to: alloy_primitives::Address::repeat_byte(0x11).into(),
+            ..evm_abstract::world::EvmEnvironment::default()
+        },
     )
     .unwrap();
-    assert_eq!(view.status(), Status::Incomplete);
+    assert_eq!(view.status(), Status::Converged);
     assert!(
         view.execution()
-            .frontiers()
+            .states()
             .iter()
-            .any(|f| matches!(f.reason, FrontierReason::MissingCode(_)))
+            .any(|state| state.active().mode == FrameCode::Unknown)
     );
-    assert!(ssa::build(&view).is_err());
-    assert!(ssa::build_world(view.execution()).is_err());
+    assert!(!view.execution().unknown_summaries().is_empty());
+    assert!(
+        view.execution()
+            .unknown_summaries()
+            .iter()
+            .all(|summary| summary.closed)
+    );
+    ssa::build_world(view.execution())
+        .unwrap()
+        .verify(view.execution())
+        .unwrap();
 }

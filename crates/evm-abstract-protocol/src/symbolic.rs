@@ -542,6 +542,10 @@ choice! {
         Program,
         /// Pending pre-effect or incoming machines.
         PendingMachine,
+        /// Native machine-state identity.
+        MachineState,
+        /// A recursive relation in its containing abstract summary.
+        AbstractProcedure,
     }
 }
 record! {

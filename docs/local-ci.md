@@ -19,7 +19,7 @@ git rev-parse HEAD origin/main
 nix flake check --print-build-logs --no-update-lock-file
 ```
 
-需要启用 `nix-command` 和 `flakes` 的 Nix。仓库不设置并发上限或 CPU 预留，构建并发由宿主 Nix 配置决定；调用者可以通过 `max-jobs` 和 `cores` 自行调整。`--no-update-lock-file` 防止检查时修改依赖锁。
+需要启用 `nix-command` 和 `flakes` 的 Nix。仓库不设置固定并发上限或 CPU 预留，构建并发由宿主 Nix 配置决定；调用者可以通过 `max-jobs` 和 `cores` 自行调整。Rust 检查的测试线程数跟随 `NIX_BUILD_CORES`，使 `cores` 同时约束编译与测试。`--no-update-lock-file` 防止检查时修改依赖锁。
 
 等待命令结束，确认 **Nix 自身的退出码为 0**。检查范围以 [`nix/system.nix` 汇总的 `checks`](../nix/system.nix) 为准，可以列出实际检查项：
 

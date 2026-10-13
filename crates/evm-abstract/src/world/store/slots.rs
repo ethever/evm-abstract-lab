@@ -51,7 +51,7 @@ fn key_disjoint(a: &AbstractValue, b: &AbstractValue) -> bool {
             _ => false,
         }
 }
-fn read_numeric(
+pub(super) fn read_numeric(
     root: &SlotStateId,
     key: &ExprId,
     facts: &BTreeMap<ExprId, AbstractValue>,

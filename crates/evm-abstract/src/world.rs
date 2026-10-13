@@ -12,9 +12,11 @@ mod snapshot;
 pub use environment::{AddressInput, BlobHashes, EvmEnvironment, GasInput, InputScope, Symbol};
 mod store;
 
-pub use bytes::{ByteArray, GuardRefinementError, RangeError};
+pub use bytes::{ByteArray, ByteArraySummary, GuardRefinementError, RangeError};
 pub use snapshot::{FingerprintError, SnapshotEnvironment, SnapshotIdentity};
-pub use store::{AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store, StoreError};
+pub use store::{
+    AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store, StoreError, StoreSummary,
+};
 
 use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::AbstractValue};
 use alloy_primitives::{Address, B256, U256, keccak256};

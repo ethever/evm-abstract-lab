@@ -37,7 +37,8 @@ pub struct ExecutionConfig {
     pub max_call_depth: usize,
     /// Maximum modeled memory footprint and extracted byte-array length.
     pub max_memory_bytes: usize,
-    /// Reuse only complete input-qualified callee graph certificates.
+    /// Reuse complete callee graph certificates and unknown relations between
+    /// outer entries. Recursive unknown closure remains enabled either way.
     pub use_summaries: bool,
 }
 
@@ -124,6 +125,8 @@ pub enum FrameCode {
     Empty,
     /// A second [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) marker executes its invalid EF opcode.
     InvalidDelegation,
+    /// A conservative process for code or a target remainder not established by observations.
+    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -239,6 +242,8 @@ pub enum MachineEdgeKind {
     Failure,
     /// Child REVERT and caller resumption with result zero and revert data.
     Revert,
+    /// A procedure relation resumes the parent with this termination category.
+    Summary(OutcomeKind),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -319,7 +324,7 @@ pub struct MachineFrontier {
     pub payload: Option<std::sync::Arc<MachinePayload>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 /// How the outermost execution can terminate.
 pub enum OutcomeKind {
     /// STOP, RETURN or reaching the end of code commits this frame.
@@ -343,6 +348,56 @@ pub struct MachineOutcome {
     pub store: Store,
 }
 
+/// One numerical output of a caller-independent procedure relation.
+/// Templates are instantiated with independent SMT roots before execution.
+#[derive(Clone, Debug, Serialize)]
+pub struct UnknownSummaryOutput {
+    /// Relative frame termination; failure effects are rolled back at each caller.
+    pub kind: OutcomeKind,
+    /// Bound on full return or revert data.
+    pub data: ByteArray,
+    /// Bound on transaction effects at completion.
+    pub store: Store,
+}
+
+/// A procedure participating in the joint known/unknown fixed point.
+#[derive(Clone, Debug, Serialize)]
+pub struct UnknownProcedureSummary {
+    /// Executable and context shape, independent of suspended caller stacks.
+    pub frame: FrameKey,
+    /// Whole-store numerical input invariant, including transient and lifecycle state.
+    pub input: Store,
+    /// Growing output alternatives by termination category.
+    pub outputs: Vec<UnknownSummaryOutput>,
+    /// Procedures whose output growth replays retained return continuations.
+    pub dependencies: Vec<usize>,
+    /// Number of strict input expansions.
+    pub input_updates: usize,
+    /// Number of strict output expansions.
+    pub output_updates: usize,
+    /// Captured-program block indexes actually analyzed, never invented unknown PCs.
+    pub covered_blocks: Vec<usize>,
+}
+
+/// Coverage evidence for an unknown entry and its recursive procedure system.
+#[derive(Clone, Debug, Serialize)]
+pub struct UnknownSummaryRecord {
+    /// Main machine node whose unknown execution requested this relation.
+    pub source_state: usize,
+    /// Every whole-payload invariant and dependency has stabilized, without a frontier.
+    pub closed: bool,
+    /// Known bytecode and unknown procedures solved together.
+    pub procedures: Vec<UnknownProcedureSummary>,
+    /// Relative block states retained by the shared worklist.
+    pub state_count: usize,
+    /// Metered block/environment transfers performed for this request.
+    pub transfers: usize,
+    /// Output-to-caller propagations, including local failures that resume the environment.
+    pub propagations: usize,
+    /// Existing procedure relations used by a retained caller continuation.
+    pub reused: usize,
+}
+
 #[derive(Clone, Debug, Serialize)]
 /// Read-only transaction-wide graph, effects, diagnostics and incomplete frontiers.
 pub struct WorldAnalysis {
@@ -363,6 +418,7 @@ pub struct WorldAnalysis {
     pub(crate) rpc_acquisition: Option<super::RpcAcquisition>,
     pub(crate) summary_stats: super::summary::SummaryStats,
     pub(crate) summaries: Vec<super::summary::SummaryRecord>,
+    pub(crate) unknown_summaries: Vec<UnknownSummaryRecord>,
 }
 
 impl WorldAnalysis {
@@ -382,6 +438,10 @@ impl WorldAnalysis {
     /// Complete callee certificates and observed reuse sites.
     pub fn summaries(&self) -> &[super::summary::SummaryRecord] {
         &self.summaries
+    }
+    /// Whole-state closure evidence for the unknown/known procedure worklist.
+    pub fn unknown_summaries(&self) -> &[UnknownSummaryRecord] {
+        &self.unknown_summaries
     }
     /// Fixed input world, including fork and snapshot provenance.
     pub fn world(&self) -> &World {

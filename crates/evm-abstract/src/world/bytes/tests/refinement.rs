@@ -2,7 +2,7 @@
 
 use super::super::*;
 use crate::domain::relational::{
-    CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery,
+    CheckResult, QueryReason, RelationLimits, RelationState, ScalarQuery, ValueQuery,
 };
 
 fn v(n: usize) -> AbstractValue {
@@ -105,6 +105,80 @@ fn native_success_and_failure_guard_refine_call_output_without_rewriting_history
         assert!(before.singleton().is_none());
         assert_eq!(joined.read_word(&v(0x400), domain), before);
     }
+}
+
+#[test]
+fn retained_operand_keys_refine_short_return_copy_and_preserve_its_suffix() {
+    let domain = Domain::default();
+    let returndata = ByteArray::unknown()
+        .summary_projection(domain)
+        .unwrap()
+        .instantiate(domain)
+        .unwrap();
+    let length = returndata.len().expression().unwrap().clone();
+    let mut memory = ByteArray::memory();
+    let mut prior = vec![0xaa; 32];
+    prior.extend([0xbb; 32]);
+    memory
+        .copy_from(
+            &v(32),
+            &ByteArray::exact(&prior),
+            &v(0),
+            &v(64),
+            128,
+            domain,
+        )
+        .unwrap();
+    memory
+        .copy_return_data(&v(32), &returndata, &v(16), 128, domain)
+        .unwrap();
+    let root = memory.state_root().clone();
+    assert!(memory.byte_at(33, domain).singleton().is_none());
+    // Optional value expressions may be dropped by a numerical projection;
+    // retained operand keys still identify exactly the same source terms.
+    memory.refine_operands(&mut |_, value| value.forget_expression());
+    assert!(memory.operands.get(&length).unwrap().expression().is_none());
+    let equal = ExprId::operation(
+        opcode::EQ,
+        &[length, ExprId::constant(U256::ONE)],
+        policy().expressions(),
+    )
+    .unwrap();
+    let mut relations = RelationState::default();
+    assert_eq!(relations.assume(&equal, true, &policy()), CheckResult::Sat);
+    memory.refine_operands(&mut |expression, value| match relations.refine_numeric(
+        expression,
+        value.numeric(),
+        domain,
+        &policy(),
+    ) {
+        ScalarQuery::Refined { numeric, .. } => {
+            *value = value.clone().with_numeric(*numeric);
+        }
+        ScalarQuery::Unchanged => {}
+        result => panic!("reachable operand refinement expected: {result:?}"),
+    });
+    assert!(
+        memory
+            .refine_guards(domain, policy().expressions(), &mut |condition| prove(
+                &relations, condition
+            ))
+            .unwrap()
+    );
+    assert_eq!(memory.state_root(), &root);
+    for index in 33..64 {
+        assert_eq!(
+            memory.byte_at(index, domain).singleton(),
+            Some(U256::from(0xaa))
+        );
+    }
+    for index in 64..96 {
+        assert_eq!(
+            memory.byte_at(index, domain).singleton(),
+            Some(U256::from(0xbb))
+        );
+    }
+    assert_eq!(memory.len().singleton(), Some(U256::from(96)));
 }
 
 #[test]

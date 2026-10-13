@@ -25,10 +25,19 @@ pub(super) fn preview(
     let ssa = index.ssa(report, block.id);
     let coverage = ssa.map_or(BlockCoverage::Unexecuted, |ssa| ssa.coverage);
     let frontier = index.has_frontier(block.id);
+    let abstract_environment = index
+        .details(report, block.id)
+        .and_then(|state| state.entry.frames.last())
+        .is_some_and(|frame| frame.kind == evm_abstract_protocol::CodeKind::AbstractEnvironment);
+    let location = if abstract_environment {
+        "Abstract environment".into()
+    } else {
+        Symbol::Block(block.basic_block).to_string()
+    };
     let title = format!(
         "{}  ·  {}{}",
         Symbol::State(block.id),
-        Symbol::Block(block.basic_block),
+        location,
         if coverage == BlockCoverage::Current {
             String::new()
         } else {
@@ -37,13 +46,19 @@ pub(super) fn preview(
     );
     let mut detail = format!(
         "{} · depth {}{}",
-        block
-            .start_pc
-            .map_or_else(|| "no bytecode".into(), |pc| format!("0x{pc:04x}")),
+        block.start_pc.map_or_else(
+            || if abstract_environment {
+                "abstract environment"
+            } else {
+                "no bytecode"
+            }
+            .into(),
+            |pc| format!("0x{pc:04x}")
+        ),
         block.frame_depth,
         if frontier { " · !" } else { "" }
     );
-    let lines = match view {
+    let mut lines = match view {
         NodeView::Disassembly => disassembly_preview(block, coverage),
         NodeView::Ssa => {
             detail.push_str(if ssa.is_some_and(|ssa| ssa.incoming_complete) {
@@ -54,10 +69,14 @@ pub(super) fn preview(
             ssa_preview(ssa, display, selected_pc)
         }
     };
-    NodeText::new(title, detail, lines, coverage, frontier).with_identity(vec![
-        Symbol::State(block.id).to_string(),
-        Symbol::Block(block.basic_block).to_string(),
-    ])
+    if abstract_environment {
+        lines.insert(
+            0,
+            ("Conservative interaction summaries".into(), palette::PURPLE),
+        );
+    }
+    NodeText::new(title, detail, lines, coverage, frontier)
+        .with_identity(vec![Symbol::State(block.id).to_string(), location])
 }
 
 pub(super) fn source_instruction(instruction: &DisasmInstruction) -> String {

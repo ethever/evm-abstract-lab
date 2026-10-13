@@ -909,8 +909,14 @@ fn failed_and_acquired_accounts_remain_paired_when_the_next_round_stops_early() 
             BTreeSet::from([address(0x200)]),
         );
         let input = server.input();
-        let initial = rpc::load(&input).unwrap();
-        let first_round = analysis::analyze_world(initial, entry(), config()).unwrap();
+        // Measure the discovery-mode first round, keeping acquisition disabled
+        // by its own account cap. Offline execution now covers missing code
+        // through abstract interactions and is a different execution policy.
+        let mut first_input = input.clone();
+        first_input.max_accounts = 1;
+        let first_round = analysis::analyze_rpc(&first_input, entry(), config())
+            .unwrap()
+            .into_analysis();
         assert_eq!(first_round.status(), Status::Incomplete);
         for limit in [Limit::States, Limit::Work] {
             let mut bounded = config();

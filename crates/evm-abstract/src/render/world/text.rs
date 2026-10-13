@@ -13,6 +13,7 @@ use std::fmt::{Display, Write};
 pub(super) mod bytes;
 mod references;
 mod table;
+pub(super) mod unknown_summaries;
 
 use bytes::write_bytes;
 use references::References;
@@ -187,6 +188,20 @@ pub fn render(analysis: &WorldAnalysis) -> String {
                     super::super::stack(&state.exit_stack),
                 ],
                 vec!["call value".to_owned(), frame.call_value.to_string()],
+                vec![
+                    "logical ADDRESS".to_owned(),
+                    frame.address_operand.as_ref().map_or_else(
+                        || refs.address_input(frame.key.address_value),
+                        ToString::to_string,
+                    ),
+                ],
+                vec![
+                    "CALLER".to_owned(),
+                    frame
+                        .caller_operand
+                        .as_ref()
+                        .map_or_else(|| refs.address_input(frame.key.caller), ToString::to_string),
+                ],
                 vec!["calldata length".to_owned(), length(frame.calldata.len())],
                 vec!["memory length".to_owned(), length(frame.memory.len())],
                 vec![
@@ -307,6 +322,7 @@ pub fn render(analysis: &WorldAnalysis) -> String {
         );
     }
 
+    unknown_summaries::write(&mut output, analysis);
     output.push_str("\nDiagnostics\n");
     if !analysis.diagnostics().is_empty() {
         output.push_str(crate::render::DIAGNOSTIC_RECORDS);
@@ -400,7 +416,11 @@ fn frame_cells(frame: &FrameKey, refs: &References) -> Vec<String> {
             FrameCode::Precompile(address) => format!("Precompile({})", refs.address(address)),
             mode => format!("{mode:?}"),
         },
-        refs.hash(frame.code_hash).to_owned(),
+        if frame.mode == FrameCode::Unknown {
+            "unobserved".to_owned()
+        } else {
+            refs.hash(frame.code_hash).to_owned()
+        },
     ]
 }
 

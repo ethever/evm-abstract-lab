@@ -190,6 +190,9 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis) {
             (FrameCode::Empty, _) => {
                 output.push_str("    Empty executable code: implicit successful halt; no bytecode instruction list.\n");
             }
+            (FrameCode::Unknown, _) => {
+                output.push_str("    Abstract environment: interactions represented by summary effects; no captured bytecode instruction list.\n");
+            }
             (FrameCode::InvalidDelegation, _) => {
                 output.push_str("    Invalid nested delegation: exceptional halt at the second marker; no captured bytecode instruction list.\n");
             }

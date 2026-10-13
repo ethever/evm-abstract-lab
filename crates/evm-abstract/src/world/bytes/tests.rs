@@ -121,4 +121,5 @@ mod provenance;
 mod refinement;
 mod scoped;
 mod state;
+mod summary;
 mod widening;

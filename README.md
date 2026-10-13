@@ -53,6 +53,8 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 如果你正在读 `recorded prefix stack`、`partial φ` 或 `OperandsConsumed`，直接进入 [04：部分 SSA 的逐步实验](docs/04-ssa.md#7-未完成时按需查看部分-ssa)，观察同一程序在内存上限不足与足够时的栈、指令结果和覆盖差异，再回到所选路线。
 
+未知目标、重复回调与共享状态的完整例子见 [18：世界未知部分的抽象执行](docs/18-unknown-world.md)。它连接符号状态、已知代码执行、交互摘要和可见的覆盖报告。
+
 ## 从单段代码到多个合约
 
 单段 `.hex` 适合学习局部计算。跨合约的 `explain` 和 `analyze` 入口使用**世界文件**（world JSON）：把多个账户的代码、初始存储和其他已知事实放在一起，通过 `--evm.to` 指定 root frame 的目标。下面显式固定 caller、value 和 calldata 来重放教学场景；省略它们时使用符号输入。
@@ -119,7 +121,7 @@ RPC 分析默认从同一固定快照填入 NUMBER、TIMESTAMP、COINBASE、PREV
 
 `--account` 仍可预先选择账户，`--slot ADDRESS:SLOT` 预先采集初始存储槽。默认发现也会为 SLOAD 补查可完整枚举的有限槽键，按状态所属账户读取；DELEGATECALL 读取代理的槽。同一地址和槽只采集一次，零值同样缓存；无限或无法完整枚举的槽键保持保守未知。RPC 使用 `{blockHash,requireCanonical:true}` 采集 code、balance、nonce 和所需 slot，完全信任选定提供者，不请求 `eth_getProof`。代码为空且其余已查询字段全零时，存在性仍为未知；非空代码或任一非零数值则表明账户存在。重组或查询错误不会使分析改用新的区块。
 
-加 `--no-rpc-discovery` 可只使用预先选择的账户和槽：缺代码留下 `MissingCode`，未观察的槽保留未知值。CLI 默认最多采集 4096 个账户、尝试 1000000 次请求，分别由 `--max-rpc-accounts`、`--max-rpc-requests` 设置。单次响应默认最多 64 MiB、请求超时默认 120 秒，分别由 `--max-rpc-response-bytes`、`--rpc-timeout-ms` 调整。补查成功后会从入口重新分析，各轮共用 work、transfer 和状态分配预算；JSON 的 `rpc_acquisition` 记录累计账户、槽和失败证据。完整实验与错误解读见[第 10 课](docs/10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
+加 `--no-rpc-discovery` 可只使用预先选择的账户和槽：缺代码与未覆盖目标进入保守的未知交互模型，未观察的槽保留未知值；尚未建立覆盖的效果或耗尽的预算仍留下前沿。CLI 默认最多采集 4096 个账户、尝试 1000000 次请求，分别由 `--max-rpc-accounts`、`--max-rpc-requests` 设置。单次响应默认最多 64 MiB、请求超时默认 120 秒，分别由 `--max-rpc-response-bytes`、`--rpc-timeout-ms` 调整。补查成功后会从入口重新分析，各轮共用 work、transfer 和状态分配预算；JSON 的 `rpc_acquisition` 记录累计账户、槽和失败证据。完整实验与错误解读见[第 10 课](docs/10-snapshots-summaries-creation.md#可选实验从固定区块采集)。
 
 需要可视化实际分析结果时，先导出 DOT（Graphviz 的图描述格式），再转成 SVG：
 
@@ -150,7 +152,7 @@ nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 | `Incomplete` | 缺少事实、遇到模型无法处理的输入或耗尽预算；输出保留原因与停止位置 | `2` |
 | 输入错误 | JSON、参数或初始 RPC 采集失败，未得到有效分析结果 | `1`；参数语法错误由 clap 报告并退出 `2` |
 
-`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 6，`domain_spec.schema_version` 是 2。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
+`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 7，`domain_spec.schema_version` 是 2。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
 
 RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留下 `RpcAcquisition` 前沿，结果为 `Incomplete`、退出 `2`。采集失败的类型与来源另外保存在累计记录中，后续预算中断也不会丢失。输出中的已完成分支不能替代尚未展开的调用。
 
@@ -263,4 +265,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 [MIT license](LICENSE)。
 
-符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并通过 SMT 使用地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制 logical footprint。Native schema 6 与 Web schema 9 使用 flat typed graphs，导出有独立节点、exact payload、work 与取消边界。模型、guarded join、账户/plane、hash 和 provider 支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
+符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并通过 SMT 使用地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制 logical footprint。Native schema 7 与 Web schema 10 使用 flat typed graphs，导出有独立节点、exact payload、work 与取消边界。模型、guarded join、账户/plane、hash 和 provider 支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。

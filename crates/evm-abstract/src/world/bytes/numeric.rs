@@ -27,6 +27,31 @@ pub(in crate::world) fn scalar(
                 .join(v, &AbstractValue::constant(constant))
                 .with_numeric(crate::domain::NumericValue::constant(constant));
         }
+        if let ExprKind::Ite {
+            condition,
+            then_value,
+            else_value,
+        } = expression.kind()
+        {
+            // A retained minimum/copy-length bound can precede a later proof
+            // selecting this ITE. Keep its sources, but do not let the older
+            // bound hide a now-exact selected value of the same expression.
+            let condition = scalar(condition, facts, domain);
+            let selected = if !condition.may_be_nonzero() {
+                Some(else_value)
+            } else if !condition.may_be_zero() {
+                Some(then_value)
+            } else {
+                None
+            };
+            if let Some(exact) = selected.and_then(|value| scalar(value, facts, domain).singleton())
+                && v.contains(exact)
+            {
+                return v
+                    .clone()
+                    .with_numeric(crate::domain::NumericValue::constant(exact));
+            }
+        }
         return v.clone();
     }
     if let Some(v) = expression.as_constant() {

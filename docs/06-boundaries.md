@@ -84,7 +84,7 @@ jq '{status, schema_version, calldata: .environment.calldata.length,
 
 两次都退出 0、得到 `Converged`。符号长度保留 `BranchTrue` 和 `BranchFalse`；明确空 calldata 只保留 `BranchTrue`。提高 `--context-depth` 或 `--max-facts` 不会撤销用户给出的空输入约束，也不会自动把一次具体调用扩大成任意调用。
 
-JSON 的分析 `schema_version` 为 6；文本里的 `domain ... domain schema=2` 对应域策略 `domain_spec.schema_version`，两者不是同一个版本字段。单程序 `cfg --format json` 在 `.environment` 记录输入，`ssa --format json` 在 `.analysis.environment` 记录输入。world/RPC 的 `analyze --format json` 在 `.entry.environment` 记录输入，追加 `--ssa` 后则在 `.analysis.entry.environment`。读取环境和帧的具体路径见[第 10 课](10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
+JSON 的分析 `schema_version` 为 7；文本里的 `domain ... domain schema=2` 对应域策略 `domain_spec.schema_version`，两者不是同一个版本字段。单程序 `cfg --format json` 在 `.environment` 记录输入，`ssa --format json` 在 `.analysis.environment` 记录输入。world/RPC 的 `analyze --format json` 在 `.entry.environment` 记录输入，追加 `--ssa` 后则在 `.analysis.entry.environment`。读取环境和帧的具体路径见[第 10 课](10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
 
 ## 2. 诊断、程序失败和分析前沿分别看
 
@@ -94,7 +94,7 @@ JSON 的分析 `schema_version` 为 6；文本里的 `domain ... domain schema=2
 | 程序异常诊断 | `InvalidJump`、`InvalidOpcode`、栈下溢/溢出 | 某条模型内执行路径异常终止；不是分析器没算完 |
 | 分析前沿 | `MissingCode`、`RpcAcquisition`、`UnknownTarget`、`Work`、`CallDepth`、`Memory`、`Creation` 等 | 尚有区域无法展开；整体结果为 `Incomplete` |
 
-例如，Top 跳转可以枚举所有真正的 JUMPDEST，同时保留可能异常终止的情况，因此有 `UnknownJump` 的图仍可 `Converged`。但是不知道外部 CALL 要去哪些账户，无法枚举整个世界，就会留下 `UnknownTarget` 前沿。
+例如，Top 跳转可以枚举所有真正的 JUMPDEST，同时保留可能异常终止的情况，因此有 `UnknownJump` 的图仍可 `Converged`。未知 CALL target 则按已知候选及其余目标建立交互摘要；摘要可靠闭合后，也可以继续执行并得到 `Converged`。无法覆盖的行为或耗尽的预算仍保留具体前沿。
 
 再运行缺少 callee 代码的世界：
 
@@ -102,19 +102,19 @@ JSON 的分析 `schema_version` 为 6；文本里的 `domain ... domain schema=2
 nix run . -- analyze --world examples/worlds/missing-code.json --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x
 ```
 
-结果为 `Incomplete`，前沿说明 `pc=13` 的调用缺少账户 `0x...0200` 的代码事实。输出可能同时保留已知的调用失败分支和部分完成的 outcome（最外层可能结果）；它们不能替代缺失的调用分支。
+这个离线例子用未知过程覆盖账户 `0x...0200` 的行为，报告包含抽象交互摘要与返回效果。它不会把缺少代码猜成空代码。若缩小预算使摘要无法闭合，则报告 `Incomplete` 和对应前沿；已发现的成功 outcome 不能代替未完成部分。
 
-`--world` 始终按离线事实分析。显式 `--rpc` 则默认补查这种已确定地址的 callee，再从入口重新分析。目标本身无法确定时仍保留 `UnknownTarget`；代码查询失败时保留带错误来源的 `RpcAcquisition`。这三种前沿分别表示离线事实缺失、目标无法穷举、已知账户的采集未完成，不能统称为调用失败。RPC 的初始采集错误退出 `1`；分析已开始后的补查错误保留 `Incomplete` 结果并退出 `2`。
+`--world` 始终按离线事实分析。显式 `--rpc` 则默认补查这种已确定地址的 callee，再从入口重新分析。目标本身无法确定时使用保守交互模型；已经请求的代码查询失败时保留带错误来源的 `RpcAcquisition`。摘要中的程序失败与分析器的采集／覆盖缺口有不同含义。RPC 的初始采集错误退出 `1`；分析已开始后的补查错误保留 `Incomplete` 结果并退出 `2`。
 
 根状态初始化成功后，分析器还加入入口立即失败、Store 不变的 `Failure` 可能，因为模型没有精确跟踪剩余 gas。这不是已证实发生的链上失败，也不是分析前沿；`Failure` 与 `Return` 同时出现仍可 `Converged`。实现见 [`analysis/engine.rs`](../crates/evm-abstract/src/analysis/engine.rs)。
 
-**已知空代码**可以作为无代码执行完成；**没有提供代码事实**则需要留下前沿。把缺少事实猜成空代码，会错误删掉可能的副作用。
+**已知空代码**可以作为无代码执行完成；**没有提供代码事实**则进入保守未知交互模型，或在覆盖未完成时留下前沿。把缺少事实猜成空代码，会错误删掉可能的副作用。
 
 ## 3. 三种结论需要三种证据
 
 | 想说的结论 | 需要什么证据 | 本仓库提供到哪一步 |
 | --- | --- | --- |
-| “本次分析完成了” | 所有工作表输入已传播，无未展开前沿 | `Converged`，限定在当前模型和输入假设内 |
+| “本次分析完成了” | 所有工作表输入与摘要依赖已传播，相关交互闭合，无未展开前沿 | `Converged`，限定在当前模型和输入假设内 |
 | “这个具体执行样本被覆盖” | 独立执行实际走过的指令、边和效果都能对应到抽象结果 | revm 轨迹对照测试 |
 | “真实合约不会出现某种行为” | 明确性质、实际状态范围及完整规则上的证明 | 本仓库没有给出这种普遍性证明 |
 

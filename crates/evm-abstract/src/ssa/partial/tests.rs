@@ -58,6 +58,14 @@ fn unknown_call() -> WorldAnalysis {
         .unwrap();
     world.insert(address(0x200), Account::empty()).unwrap();
     world.insert(address(4), Account::empty()).unwrap();
+    // Keep a genuine uncovered effect: this target can attempt creation with
+    // unresolved destination facts. Unknown targets themselves are summarized.
+    world
+        .insert(
+            address(0x300),
+            Account::from_hex("365f5ff000", Fork::Osaka).unwrap(),
+        )
+        .unwrap();
     let mut config = config();
     config.max_call_depth = 3;
     analysis::analyze_world(
@@ -85,7 +93,7 @@ fn unknown_call_keeps_frontiers_known_candidates_and_deferred_results() {
         analysis
             .frontiers()
             .iter()
-            .any(|f| f.reason == FrontierReason::UnknownTarget)
+            .any(|f| matches!(f.reason, FrontierReason::Creation(_)))
     );
     let ir = build_partial_world(&analysis).unwrap();
     assert_eq!(ir.status(), Status::Incomplete);

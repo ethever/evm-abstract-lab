@@ -93,6 +93,12 @@ impl Validation<'_> {
                 self.buffer(id)?;
             }
             self.value(&frame.call_value)?;
+            for value in [&frame.address_operand, &frame.caller_operand]
+                .into_iter()
+                .flatten()
+            {
+                self.value(value)?;
+            }
             for value in &frame.stack {
                 self.value(value)?;
             }
@@ -192,6 +198,29 @@ impl Validation<'_> {
         for outcome in &self.report.outcomes {
             self.buffer(outcome.data)?;
             self.store(outcome.store)?;
+        }
+        for summary in &self.report.abstract_summaries {
+            if !self
+                .report
+                .states
+                .iter()
+                .any(|state| state.state == summary.source_state)
+            {
+                return Err(ReportValidationFailure::Pool(PoolReferenceFailure {
+                    kind: PoolReferenceKind::MachineState,
+                    index: summary.source_state,
+                    length: self.report.states.len(),
+                }));
+            }
+            for procedure in &summary.procedures {
+                for dependency in &procedure.dependencies {
+                    self.pool(
+                        PoolReferenceKind::AbstractProcedure,
+                        *dependency,
+                        summary.procedures.len(),
+                    )?;
+                }
+            }
         }
         for value in &self.report.ssa.values {
             for fact in &value.facts {

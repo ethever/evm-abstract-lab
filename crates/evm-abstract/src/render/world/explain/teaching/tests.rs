@@ -283,7 +283,7 @@ fn converged_unknown_jump_and_fact_caps_remain_visible() {
 }
 
 #[test]
-fn partial_native_and_missing_code_have_every_frontier_without_fake_ssa() {
+fn native_boundaries_and_closed_unknown_code_keep_their_distinct_coverage() {
     let native = run(
         World::new(Fork::Osaka, "native boundary"),
         address(4),
@@ -294,7 +294,7 @@ fn partial_native_and_missing_code_have_every_frontier_without_fake_ssa() {
         address(0x101),
         ByteArray::empty(),
     );
-    for analysis in [&native, &missing] {
+    for analysis in [&native] {
         assert_eq!(analysis.status(), Status::Incomplete);
         let output = render(analysis).unwrap();
         assert!(output.contains("\nCFG\n"));
@@ -319,6 +319,19 @@ fn partial_native_and_missing_code_have_every_frontier_without_fake_ssa() {
     assert!(native_output.contains("Native precompile"));
     assert!(!native_output.contains("Captured instruction list"));
     assert!(!native_output.contains("B₀ @"));
+    assert_eq!(missing.status(), Status::Converged);
+    assert!(missing.frontiers().is_empty());
+    assert!(!missing.unknown_summaries().is_empty());
+    assert!(
+        missing
+            .unknown_summaries()
+            .iter()
+            .all(|record| record.closed)
+    );
+    let missing_output = render(&missing).unwrap();
+    assert!(missing_output.contains("Abstract environment"));
+    assert!(!missing_output.contains("Captured instruction list"));
+    assert!(missing_output.contains("Verified cross-contract SSA:"));
 }
 
 #[test]
@@ -354,7 +367,14 @@ fn partial_runtime_keeps_code_and_cfg_without_a_successful_call_guess() {
     let output = render(&analysis).unwrap();
     assert!(output.contains("Captured instruction list"));
     assert!(output.contains("σ₀ | B₀ @ 0x0000"));
-    assert!(output.contains("reason=UnknownTarget"));
+    assert!(!analysis.frontiers().is_empty());
+    for frontier in analysis.frontiers() {
+        assert!(output.contains(&format!("reason={:?}", frontier.reason)));
+        assert_ne!(
+            frontier.reason,
+            crate::analysis::FrontierReason::UnknownTarget
+        );
+    }
     assert!(output.contains("SSA unavailable"));
 }
 

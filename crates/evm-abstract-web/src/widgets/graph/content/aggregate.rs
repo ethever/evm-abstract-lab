@@ -92,8 +92,10 @@ impl Summary {
             }
             match (first_frame, active_frame(report, index, state)) {
                 (Some(first), Some(frame)) => {
-                    summary.caller_varies |= first.caller != frame.caller;
-                    summary.address_varies |= first.address_value != frame.address_value;
+                    summary.caller_varies |= first.caller != frame.caller
+                        || first.caller_operand != frame.caller_operand;
+                    summary.address_varies |= first.address_value != frame.address_value
+                        || first.address_operand != frame.address_operand;
                     summary.mode_varies |= first.kind != frame.kind;
                     summary.static_varies |= first.is_static != frame.is_static;
                 }

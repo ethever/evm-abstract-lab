@@ -357,7 +357,13 @@ fn full_identity_legends_and_state_table_keep_proxy_code_and_storage_owners_dist
 #[test]
 fn incomplete_reports_preserve_all_frontiers_and_every_target_frame() {
     for (name, config) in [
-        ("missing-code", ExecutionConfig::default()),
+        (
+            "missing-code",
+            ExecutionConfig {
+                max_call_depth: 1,
+                ..ExecutionConfig::default()
+            },
+        ),
         (
             "call-return-branch",
             ExecutionConfig {

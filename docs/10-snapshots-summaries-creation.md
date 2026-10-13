@@ -6,7 +6,7 @@
 
 [摘要](#1-调用摘要复用完整结果关系)、[创建](#2-create先执行构造代码再安装运行时代码)、[销毁](#3-selfdestruct转账和删除发生在不同时间)、[预编译](#4-预编译没有普通字节码也有调用帧)四个实验均使用离线合成事实，根帧地址为 A=`0x...0101`，命令明确给出 caller、零 value 和空 calldata，默认预算可完成。省略这些参数会得到符号输入，不等同于这组具体约束。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
-直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 6 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 7 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 所有反汇编与 SSA 基本块指令列表共用顶格的 `Bᵢ @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 Bᵢ 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 Bᵢ 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用归一化后的赋值式指令正文；世界视图保留 Cᵢ、fᵢ、state owner、context，以及按 Tᵢ 标记并带 fᵢ/slot 的 φ。完整视图展开所有帧元数据和原始效果链，字节码行与效果行也使用这套布局；原始指令字段、最终计算与值依赖保留在 JSON 中。编号与证据的读法见[第 04 课](04-ssa.md)、[第 09 课](09-cross-contract.md#默认文本怎样读)和[SSA 值归一化](ssa-normalization.md)。
 
@@ -113,11 +113,11 @@ jq '{schema_version,
                | {environment, relations, frame: .frame.state.key})}' /tmp/summary-on.json
 ```
 
-分析 `schema_version` 为 6。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
+分析 `schema_version` 为 7。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
 
 本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中，入口关系在 `.summaries[].input.relations`。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
 
-单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 6 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
+单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 7 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
 
 环境类型与输入作用域见 [`world/environment.rs`](../crates/evm-abstract/src/world/environment.rs)，JSON 边界见 [`analysis.rs`](../crates/evm-abstract/src/analysis.rs)，帧结构见 [`machine/frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)。
 
@@ -371,7 +371,7 @@ esac
 
 SLOAD 的槽键有完整有限候选集合时，缺少初始值会触发 `MissingStorage {address,slot}`。分析器在轮次之间用 `eth_getStorageAt` 补查这些槽，然后从入口重跑；例如代理从具体 slot 0 读取实现地址，获得槽值后可继续发现实现代码。读取按当前帧的状态账户定位；DELEGATECALL 或 CALLCODE 的实现代码仍读取代理的槽，[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 委托执行也保留委托账户的状态身份。
 
-只加载入口不保证 `Converged`；符号 calldata/value 可能使更多路径可达，未知范围、调用目标或累计资源都可能留下前沿。无限或无法完整枚举的槽键保持保守未知，不会尝试穷举 256 位槽空间；由这样的值形成的调用目标仍可能留下 `UnknownTarget`。动态获取账户会观察其 code、balance 和 nonce；其余未观察且尚未被有限 SLOAD 请求的初始槽仍未知。
+只加载入口不保证 `Converged`；符号 calldata/value 可能使更多路径可达，未知范围、调用目标或累计资源都可能留下前沿。无限或无法完整枚举的槽键保持保守未知，不会尝试穷举 256 位槽空间；由这样的值形成的调用目标进入候选分支与其余世界的保守交互模型，未完成的效果仍会留下前沿。动态获取账户会观察其 code、balance 和 nonce；其余未观察且尚未被有限 SLOAD 请求的初始槽仍未知。
 
 **第二步，跟着 A→B→C 理解补查后的重跑。** 假设 A、B 代码中的调用地址具体，预算足够，并且 RPC 能返回全部所需账户：
 
@@ -422,7 +422,7 @@ case "$LAB_SELECTED_STATUS" in
 esac
 ```
 
-`--no-rpc-discovery` 同时关闭动态账户和槽采集。未预选的槽按未知值分析，不产生按需补查请求；这可能使后续调用目标未知。如果入口调用了尚未选择的普通代码账户，这次会留下 `MissingCode`、退出 `2`，与[第 9 课的离线缺代码实验](09-cross-contract.md#7-输入缺失和预算停止也要读出来)有相同边界。若入口没有这类调用，也可能直接完成；不能预设任意入口都缺代码。
+`--no-rpc-discovery` 同时关闭动态账户和槽采集。未预选的槽按未知值分析，不产生按需补查请求；这可能使后续调用目标未知。如果入口调用了尚未选择的普通代码账户，使用[第 18 课的未知交互模型](18-unknown-world.md)继续覆盖可能行为。摘要闭合可以正常完成；覆盖或预算不足仍退出 `2`，不能把关闭采集解释成已知空执行。
 
 你仍可用 `--account` 选择分析前获取的账户，用 `--slot` 选择初始存储槽。假设已确定一个被调用账户，将其地址设为 `LAB_CALLEE`，可以在上面的命令中增加：
 

@@ -208,6 +208,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
                     reason: FrontierReason::Work,
                     target: Some(execution.payload.key()),
                     range: None,
+                    payload: None,
                 }]
             );
         } else {
@@ -255,6 +256,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
                     reason: FrontierReason::Work,
                     target: Some(execution.payload.key()),
                     range: None,
+                    payload: None,
                 }]
             );
         } else {

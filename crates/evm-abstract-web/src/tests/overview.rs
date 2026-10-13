@@ -209,6 +209,8 @@ fn attach_snapshots(report: &mut AnalysisReport) {
                     storage_address: block.storage_address.clone(),
                     address_value: api::AddressValue::Concrete(block.storage_address.clone()),
                     caller: report.metadata.environment.caller.clone(),
+                    address_operand: None,
+                    caller_operand: None,
                     call_value: report.metadata.environment.call_value.clone(),
                     is_static: false,
                     kind: program.kind,
