@@ -119,5 +119,6 @@ mod guarded;
 mod native;
 mod provenance;
 mod refinement;
+mod scoped;
 mod state;
 mod widening;
