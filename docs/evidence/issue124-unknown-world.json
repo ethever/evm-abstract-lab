@@ -1,0 +1,4162 @@
+{
+  "schema": "issue124-unknown-world-validation-v1",
+  "issue": "https://github.com/ethever/evm-abstract-lab/issues/124",
+  "provenance": {
+    "formal_measurement_source_commit": "dd069018c282e9e85e790e3d2f819aadf92f14dc",
+    "engine_build_source_commit": "b25bf2d35477018dd7e156daab8fb96cfe4226fd",
+    "main_baseline_commit": "a14843430ed975fc71593d52c73fae316a21c385",
+    "shared_changed_binary_sha256": "2bd2e8210af788c0b91942f240c39b7c00c4ee904119de508ec679378a99a837",
+    "changed_paths_between_engine_build_and_formal_measurement": [
+      "crates/evm-abstract/tests/unknown_world/concrete.rs",
+      "crates/evm-abstract/tests/unknown_world/contexts.rs",
+      "crates/evm-abstract/tests/unknown_world/interactions.rs",
+      "crates/evm-abstract/tests/unknown_world/rollback.rs",
+      "crates/evm-abstract/tests/unknown_world/support.rs",
+      "crates/evm-abstract/tests/unknown_world/transport.rs",
+      "nix/checks/examples.nix",
+      "scripts/benchmark-unknown-world.py"
+    ],
+    "engine_source_unchanged_between_these_commits": true,
+    "original_artifacts": [
+      {
+        "path": "/tmp/evm-issue124-agents/benchmark-final-closed/measurements.json",
+        "sha256": "ba914490fe739efb2f9b74a448c4de21ad1110735f9a0122edfd6c30369ed215"
+      },
+      {
+        "path": "/tmp/evm-issue124-agents/ordinary-benchmark/measurements.json",
+        "sha256": "b9bd1af4fc1b47708254c95582d8c42a34d8bd62611d935582447fa5732e1eac"
+      },
+      {
+        "path": "/tmp/evm-issue124-agents/native-z3-cost-b25bf2d-review.json",
+        "sha256": "c4cd851acf1131978887418958aa7eb87d1c24cf291478390152cd5f9268aa8d"
+      }
+    ],
+    "final_full_nix_gate": "not claimed here; final clean SHA, actual command and exit code are recorded separately in the PR"
+  },
+  "policies": {
+    "default_library": {
+      "max_work": 20000000,
+      "max_constants": 8,
+      "relations": {
+        "provider": "z3",
+        "rlimit": 100000,
+        "max_nodes": 1024,
+        "max_constraints": 128,
+        "max_depth": 64
+      },
+      "scope": "basic/nested callback, C change/guard, rollback, static identity and short returndata tests; deliberately incomplete regressions are separate"
+    },
+    "wide_symbolic_target_tests": {
+      "max_work": 1000000000,
+      "relations": {
+        "max_constraints": 2048,
+        "max_nodes": 65536,
+        "max_depth": 512
+      },
+      "other_limits": "library defaults",
+      "legal_open_boundary": "independent symbols may alias; all remaining native input gaps exactly targets 1..17 and 256; dependent unknown relations stay open"
+    },
+    "formal_unknown_cli": {
+      "analysis": {
+        "domain_profile": "product",
+        "reduction_rounds": 16,
+        "max_facts": 4096,
+        "relations": {
+          "enabled": true,
+          "max_constraints": 2048,
+          "max_nodes": 16384,
+          "max_depth": 256,
+          "provider": "z3",
+          "rlimit": 10000000
+        },
+        "max_constants": 512,
+        "context_depth": 128,
+        "max_states": 100000,
+        "max_transfers": 10000000
+      },
+      "max_work": 3000000000,
+      "max_call_depth": 1025,
+      "max_memory_bytes": 67108864,
+      "use_summaries": true
+    },
+    "ordinary_cli": {
+      "analysis": {
+        "domain_profile": "product",
+        "reduction_rounds": 16,
+        "max_facts": 4096,
+        "relations": {
+          "enabled": true,
+          "max_constraints": 2048,
+          "max_nodes": 16384,
+          "max_depth": 256,
+          "provider": "z3",
+          "rlimit": 10000000
+        },
+        "max_constants": 512,
+        "context_depth": 128,
+        "max_states": 100000,
+        "max_transfers": 10000000
+      },
+      "max_work": 1000000000000,
+      "max_call_depth": 1025,
+      "max_memory_bytes": 67108864,
+      "use_summaries": true
+    }
+  },
+  "development_checks": [
+    {
+      "name": "unknown_world",
+      "command": "cargo test -p evm-abstract --test unknown_world -j8",
+      "environment": {
+        "CARGO_BUILD_JOBS": 8,
+        "RUST_TEST_THREADS": 8
+      },
+      "passed": 42,
+      "result_lines": [
+        "test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.02s"
+      ],
+      "original_log": "/tmp/evm-issue124-agents/tests-unknown-world-closed-final.log",
+      "log_sha256": "2e59e100ef9ff1a703585c9822f8ca46aed4a974acbd75008940be79f2933e52"
+    },
+    {
+      "name": "core_lib",
+      "command": "cargo test -p evm-abstract --lib -j8",
+      "environment": {
+        "CARGO_BUILD_JOBS": 8,
+        "RUST_TEST_THREADS": 8
+      },
+      "passed": 581,
+      "result_lines": [
+        "test result: ok. 581 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 101.04s"
+      ],
+      "original_log": "/tmp/evm-issue124-agents/core-takeover-native-unit-final-rerun.log",
+      "log_sha256": "483f14384c8ba0afcd8a3d936b1fcd966113a5a487559c681c9b57741a6589d8"
+    },
+    {
+      "name": "cli",
+      "command": "cargo test -p evm-abstract-cli --test cli -j8",
+      "environment": {
+        "CARGO_BUILD_JOBS": 8,
+        "RUST_TEST_THREADS": 8
+      },
+      "passed": 148,
+      "result_lines": [
+        "test result: ok. 148 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.75s"
+      ],
+      "original_log": "/tmp/evm-issue124-agents/tests-cli-final.log",
+      "log_sha256": "024eee3eec3cf50484bf3602660fa79928e720f2b37b2a8a4c9af532d40ac3a1"
+    },
+    {
+      "name": "relations_and_symbolic_state",
+      "command": "cargo test -p evm-abstract --test relations --test symbolic_state -j8 -- --nocapture",
+      "environment": {
+        "CARGO_BUILD_JOBS": 8,
+        "RUST_TEST_THREADS": 8
+      },
+      "passed": 68,
+      "result_lines": [
+        "test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s",
+        "test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.06s"
+      ],
+      "original_log": "/tmp/evm-issue124-agents/core-takeover-relations-symbolic-state.log",
+      "log_sha256": "f0ff0b91313b6b2282dc2526d31f2d4427607f4c4db49a2479dcacf0a89c9bca"
+    }
+  ],
+  "unknown_world_test_names": [
+    "contexts::initially_unknown_slot_retains_old_new_identity_across_unknown_staticcall",
+    "contexts::initially_unknown_slot_retains_identity_across_inherited_static_callcode",
+    "contexts::initially_unknown_slot_retains_identity_across_inherited_static_delegatecall",
+    "contexts::static_restriction_is_inherited_by_unknown_delegatecall_and_callcode",
+    "concrete::unknown_delegating_known_code_still_covers_its_guarded_cross_owner_call",
+    "contexts::unknown_staticcall_preserves_known_storage_even_across_callbacks",
+    "contexts::unknown_delegatecall_entering_known_c_keeps_c_address_in_normal_call",
+    "contexts::unknown_callcode_can_write_current_storage_without_callback",
+    "contexts::unknown_delegatecall_can_write_current_storage_without_callback",
+    "contexts::actual_unknown_code_contexts_match_call_delegatecall_callcode_and_staticcall_in_revm",
+    "concrete::actual_nested_and_indirect_unknown_callbacks_are_included",
+    "interactions::unknown_callee_can_succeed_and_continue_parent_without_direct_storage_havoc",
+    "interactions::nested_busy_x_keeps_the_same_precision_and_closure_without_summary_cache",
+    "interactions::busy_x_closes_repeated_callbacks_at_zero_one_two_and_preserves_busy",
+    "reporting::closed_static_unknown_summary_has_evidence_and_feeds_later_storage_reads",
+    "concrete::finite_zero_one_multiple_callbacks_are_included_and_two_obeys_its_guard",
+    "lifecycle::created_owner_unknown_delegate_selfdestruct_is_covered_or_has_explicit_creation_gap",
+    "reporting::missing_known_callback_effect_coverage_remains_incomplete",
+    "reporting::default_work_budget_retains_an_explicit_frontier_for_large_static_workload",
+    "reporting::resource_budgets_leave_real_frontiers_and_do_not_claim_convergence",
+    "reporting::native_solver_unknown_is_reported_without_erasing_possible_unknown_interactions",
+    "interactions::busy_x_keeps_precision_with_nested_unknown_known_unknown_interactions",
+    "reporting::repeated_static_unknown_calls_scale_under_shared_counters_without_time_thresholds",
+    "reporting::disabling_summary_cache_preserves_the_same_repeated_static_unknown_coverage",
+    "interactions::actual_c_entry_guard_prevents_unknown_interaction_from_writing_nine",
+    "targets::evm_address_projection_keeps_high_word_bits_in_parent_and_calls_known_c",
+    "targets::existing_target_path_condition_excludes_known_c_candidate",
+    "targets::explicitly_empty_code_preserves_storage_and_returns_success_with_empty_data",
+    "interactions::unknown_can_call_nonparent_c_and_new_reads_do_not_refresh_old_stack_value",
+    "targets::full_symbolic_target_default_budget_retains_explicit_typed_frontiers",
+    "targets::no_external_execution_retains_original_concrete_result",
+    "targets::native_identity_precompile_remains_a_concrete_call",
+    "concrete::actual_unknown_to_known_c_write_and_readonly_guard_match_revm",
+    "rollback::failed_callback_can_be_handled_by_unknown_u_that_later_succeeds",
+    "transport::one_byte_unknown_return_or_revert_keeps_the_uncopied_requested_suffix",
+    "rollback::successful_callback_is_rolled_back_when_unknown_u_reverts_without_losing_parent_write",
+    "transport::unknown_output_copy_preserves_parent_memory_outside_requested_prefix",
+    "targets::symbolic_target_covers_current_owner_other_known_and_remaining_addresses_with_guards",
+    "rollback::successful_unknown_u_effects_remain_inside_outer_a_rollback_scope",
+    "rollback::exceptional_unknown_u_failure_also_restores_only_its_own_subtree",
+    "targets::repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards",
+    "targets::different_symbolic_targets_can_alias_the_same_known_storage_owner"
+  ],
+  "six_examples": {
+    "original_log_sha256": "c493db7b1f08a750c43194d34bd0673bd6895e919f91844a331ded770e85cb5e",
+    "results": [
+      "busy-x-nested CLI exit0, Converged/allclosed/verifiedSSA/numeric checker exit0",
+      "busy-x CLI exit0, Converged/allclosed/verifiedSSA/numeric checker exit0",
+      "external-change CLI exit0, Converged/allclosed/verifiedSSA/numeric checker exit0",
+      "external-guard CLI exit0, Converged/allclosed/verifiedSSA/numeric checker exit0",
+      "outer-revert CLI exit0, Converged/allclosed/verifiedSSA/numeric checker exit0",
+      "static-reuse CLI exit0, Converged/allclosed/verifiedSSA/numeric checker exit0",
+      "negative gate: remove all Revert64, preserve Failure/emptyRevert/C5 -> correctly rejected",
+      "6/6 real fixtures PASS; negative missing-data case rejected"
+    ],
+    "metrics": [
+      {
+        "case": "busy-x-nested",
+        "status": "Converged",
+        "frontiers": 0,
+        "ssa_complete": true,
+        "unknown_witnesses": 1,
+        "all_unknown_closed": true,
+        "report_sha256": "f1ef2d0b39b92cd00999b0a2ad58172f148eb2df3f1ea25ea2e7ad991af6addb"
+      },
+      {
+        "case": "busy-x",
+        "status": "Converged",
+        "frontiers": 0,
+        "ssa_complete": true,
+        "unknown_witnesses": 1,
+        "all_unknown_closed": true,
+        "report_sha256": "8a99fdfdbdd5fda5752e79731f48b78a1edfa2fe501d25d03f38304cdf901343"
+      },
+      {
+        "case": "external-change",
+        "status": "Converged",
+        "frontiers": 0,
+        "ssa_complete": true,
+        "unknown_witnesses": 1,
+        "all_unknown_closed": true,
+        "report_sha256": "dc097f6a027ae5f46c1834fc2c0325ae7a9aa253b14d6eb5b42cc547b096b0c3"
+      },
+      {
+        "case": "external-guard",
+        "status": "Converged",
+        "frontiers": 0,
+        "ssa_complete": true,
+        "unknown_witnesses": 1,
+        "all_unknown_closed": true,
+        "report_sha256": "e442278adce7853c13e9922ef17e5e53629457755b6c49918ed2a4b1b63a6ad4"
+      },
+      {
+        "case": "outer-revert",
+        "status": "Converged",
+        "frontiers": 0,
+        "ssa_complete": true,
+        "unknown_witnesses": 1,
+        "all_unknown_closed": true,
+        "report_sha256": "eedf63bddd2680a65063b4345af946bfc44a1eae427ade8d08af2b9a83152ea9"
+      },
+      {
+        "case": "static-reuse",
+        "status": "Converged",
+        "frontiers": 0,
+        "ssa_complete": true,
+        "unknown_witnesses": 4,
+        "all_unknown_closed": true,
+        "report_sha256": "2660761fdf69c8272a0e75227851d6f85968f2b62b1544a6d433b28bbd262780"
+      }
+    ],
+    "checker_source": {
+      "source_location": "nix/checks/examples.nix",
+      "sha256": "1de8e9239cda4b8e18b274c349ef2e41aea7f3d257e710a385678450fefb803c",
+      "content": "import json, sys\nname, path = sys.argv[1:]\nanalysis = json.load(open(path))[\"analysis\"]\n\ndef number(value):\n    return int(value, 0) if isinstance(value, str) else value\n\ndef allowed_values(value, allowed):\n    constants = value.get(\"Constants\")\n    if constants is not None:\n        values = {number(item) for item in constants}\n    else:\n        interval = value[\"interval\"]\n        lo, hi = number(interval[\"unsigned_lo\"]), number(interval[\"unsigned_hi\"])\n        assert 0 <= hi - lo <= 256, (name, \"unbounded numerical result\", value)\n        bits = value[\"known_bits\"]\n        zero, one = number(bits[\"zero\"]), number(bits[\"one\"])\n        values = {item for item in range(lo, hi + 1)\n                  if item & zero == 0 and item & one == one}\n        congruence = value[\"congruence\"]\n        if isinstance(congruence, dict) and \"Exact\" in congruence:\n            values &= {number(congruence[\"Exact\"])}\n        elif isinstance(congruence, dict) and \"Modulo\" in congruence:\n            relation = congruence[\"Modulo\"]\n            values = {item for item in values\n                      if item % number(relation[\"modulus\"]) == number(relation[\"residue\"])}\n    assert values and values <= set(allowed), (name, values, allowed)\n    return values\n\ndef word_values(data, offset, allowed):\n    for index in range(offset, offset + 31):\n        allowed_values(data[\"bytes\"][str(index)], [0])\n    return allowed_values(data[\"bytes\"][str(offset + 31)], allowed)\n\ndef slot_value(store, owner, slot):\n    plane = store[\"persistent\"]\n    for item in plane[\"slots\"]:\n        if item[\"address\"] == owner and number(item[\"slot\"]) == slot:\n            return item[\"value\"]\n    # An unchanged zero slot can be absent from the numerical cache.\n    # Read its actual root; unsupported symbolic nodes fail the gate.\n    root = plane[\"roots\"][owner]\n    nodes = root[\"nodes\"]\n    def read_node(index):\n        node = nodes[index]\n        if node == \"SlotsZero\":\n            return 0\n        assert isinstance(node, dict) and \"Store\" in node, (name, \"unsupported slot root\", node)\n        write = node[\"Store\"]\n        key = nodes[write[\"key\"]]\n        assert isinstance(key, dict) and \"Constant\" in key, (name, \"symbolic slot key\", key)\n        if number(key[\"Constant\"]) != slot:\n            return read_node(write[\"previous\"])\n        value = nodes[write[\"value\"]]\n        assert isinstance(value, dict) and \"Constant\" in value, (name, \"symbolic stored value\", value)\n        return number(value[\"Constant\"])\n    return {\"Constants\": [hex(read_node(root[\"root\"]))]}\n\noutcomes = analysis[\"outcomes\"]\nowner_a = \"0x0000000000000000000000000000000000000101\"\nowner_c = \"0x0000000000000000000000000000000000000301\"\nif name.startswith(\"busy-x\"):\n    returns = [outcome for outcome in outcomes if outcome[\"kind\"] == \"Return\"]\n    assert returns, name\n    possible = set()\n    for outcome in returns:\n        possible |= word_values(outcome[\"data\"], 0, [0, 1, 2])\n        word_values(outcome[\"data\"], 32, [1])\n        allowed_values(slot_value(outcome[\"store\"], owner_a, 0), [0])\n    assert possible == {0, 1, 2}, (name, possible)\nelif name == \"outer-revert\":\n    assert outcomes and all(outcome[\"kind\"] != \"Return\" for outcome in outcomes)\n    reverted_values = set()\n    for outcome in outcomes:\n        allowed_values(slot_value(outcome[\"store\"], owner_c, 0), [5])\n        if outcome[\"kind\"] == \"Revert\":\n            lengths = allowed_values(outcome[\"data\"][\"length\"], [0, 64])\n            if lengths == {0}:\n                continue\n            assert lengths == {64}, (name, \"ambiguous revert length\", lengths)\n            word_values(outcome[\"data\"], 0, [5])\n            reverted_values |= word_values(outcome[\"data\"], 32, [5, 9])\n    assert reverted_values == {5, 9}, (name, \"missing old/new revert data\", reverted_values)\nelif name == \"static-reuse\":\n    returns = [outcome for outcome in outcomes if outcome[\"kind\"] == \"Return\"]\n    assert returns, name\n    for outcome in returns:\n        word_values(outcome[\"data\"], 0, [42])\nelif name in {\"external-guard\", \"external-change\"}:\n    returns = [outcome for outcome in outcomes if outcome[\"kind\"] == \"Return\"]\n    assert returns, name\n    possible = set()\n    for outcome in returns:\n        word_values(outcome[\"data\"], 0, [5])\n        possible |= word_values(outcome[\"data\"], 32, [5] if name == \"external-guard\" else [5, 9])\n        allowed_values(slot_value(outcome[\"store\"], owner_c, 1), [0] if name == \"external-guard\" else [1])\n    assert possible == ({5} if name == \"external-guard\" else {5, 9}), (name, possible)\nelse:\n    raise AssertionError((name, \"missing unknown-world numerical checks\"))"
+    },
+    "scope": "current CLI and extracted installed-example checker, including nonempty 64-byte Revert data negative gate; does not claim the final installed Nix gate",
+    "rejected_negative_samples": [
+      {
+        "case": "outer-revert-missing-data",
+        "status": "Converged",
+        "frontiers": 0,
+        "ssa_complete": true,
+        "unknown_witnesses": 1,
+        "all_unknown_closed": true,
+        "report_sha256": "8b46866ba468078302900a6ce03f7ae2ee01ed5ded4c6f41613dea3f21846004",
+        "expected_checker_result": "rejected",
+        "actual_checker_result": "rejected",
+        "origin": "Deliberately modified outer-revert output: all 64-byte Revert outcomes removed, remaining outcomes preserved."
+      }
+    ]
+  },
+  "browser_smoke": {
+    "scope": "matching freshly built debug Wasm/server with Chromium, not the final frozen Nix browser gate",
+    "summary": {
+      "status": "Converged",
+      "ssa_complete": true,
+      "summaries": [
+        {
+          "source_state": 2,
+          "closed": true,
+          "procedures": [
+            {
+              "code_address": "0x0000000000000000000000000000000000000201",
+              "code_hash": null,
+              "storage_address": "0x0000000000000000000000000000000000000201",
+              "kind": "AbstractEnvironment",
+              "is_static": true,
+              "covered_blocks": [],
+              "outcomes": [
+                "Return",
+                "Revert",
+                "Failure"
+              ],
+              "dependencies": [
+                1
+              ],
+              "input_updates": 0,
+              "output_updates": 3
+            },
+            {
+              "code_address": "0x0000000000000000000000000000000000000101",
+              "code_hash": "0xc2fdcd5326fe70d5636a2788c39d5665c9690a135c60fca8a5b497f2084e0a72",
+              "storage_address": "0x0000000000000000000000000000000000000101",
+              "kind": "Runtime",
+              "is_static": true,
+              "covered_blocks": [
+                0
+              ],
+              "outcomes": [
+                "Failure"
+              ],
+              "dependencies": [],
+              "input_updates": 0,
+              "output_updates": 1
+            }
+          ],
+          "state_count": 2,
+          "transfers": 2,
+          "propagations": 1,
+          "reused": 0
+        }
+      ],
+      "unknown_states": [
+        2
+      ],
+      "source_state": 2,
+      "inspector": "Ready: 18 instructions, 3 CFG states, 3 SSA blocks, 18 SSA values; Converged; SSA complete; CFG nodes: SSA; 1 programs, 1 accounts, 2 outcomes; Selected σ₂; source none; Inspector: Frame · Block entry · Frame f₁ · Abstract interactions · closed · Maximized; CFG view: States; 3 shown nodes; 3/3 states; 5 shown edges; 5 native edges; 0 hidden states; 0 boundary edges; All programs; 0 groups; CFG detail: SSA preview; CFG zoom: 100.000%; CFG endings: root return 1, revert 0, failure 1; frame return 1, revert 1, failure 1; continuing 1, unresolved 0, unobserved 0; Selected CFG ending: mixed / possible ending; 1 native members; root normal 0, REVERT 0, exception 0; frame normal 1, REVERT 1, exception 1; continuing 0, unresolved 0, non-current 0, unobserved 0; SSA details: Compact; Total wait: 0.59 s; Backend processing: 0.02 s; Queue: 0.07 ms; RPC: 0.00 s; Abstract analysis: 0.02 s; SSA construction: 0.65 ms; Report projection: 5.59 ms; Input validation: 0.23 ms; Frontend preparation: 0.21 s; Result transfer: 0.05 s; JSON parsing: 0.01 s; First view setup: 0.15 s; No RPC providers are configured on the server.",
+      "analysis_submissions": 1
+    },
+    "build_artifact_hashes": {
+      "/home/ethever/projects/evm-abstract-lab-worktrees/unknown-world-execution-20261013/target/wasm32-unknown-unknown/debug/evm_abstract_web.wasm": "a51fa64f7547a56f25063841d619702fa51ddbbebee664e7e64e5d0f5ed1bece",
+      "/home/ethever/projects/evm-abstract-lab-worktrees/unknown-world-execution-20261013/target/debug/evm-abstract-server": "ff89e752f6d8050b3d031827225539c0089e919cea86946283288797f7325799",
+      "/tmp/evm-issue124-agents/browser-assets/evm_abstract_web_bg.wasm": "5b33303aeb6900968987e352bd6e64e76e62ad50170b68f039150aa41c431a82",
+      "/tmp/evm-issue124-agents/browser-assets/evm_abstract_web.js": "9d25c1457290f45c909bdf27ac594b651582575d9a4d310956bef7c6317238f3"
+    },
+    "request": {
+      "input": {
+        "Bytecode": {
+          "bytecode": "602a5f555f5f5f5f6102015afa505f545f5260205ff3",
+          "address": "0x0000000000000000000000000000000000000101"
+        }
+      },
+      "fork": "Osaka",
+      "environment": {
+        "caller": {
+          "Concrete": "0x0000000000000000000000000000000000000900"
+        },
+        "origin": null,
+        "call_value": {
+          "Concrete": "0x0"
+        },
+        "calldata": {
+          "Exact": "0x"
+        },
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": null,
+        "timestamp": null,
+        "number": null,
+        "prevrandao": null,
+        "gas_limit": null,
+        "chain_id": null,
+        "base_fee": null,
+        "blob_base_fee": null,
+        "block_hashes": [],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "limits": {
+        "max_states": 100000,
+        "max_transfers": 10000000,
+        "context_depth": 128,
+        "max_constants": 512,
+        "max_work": 1000000000000,
+        "max_call_depth": 1025,
+        "max_memory_bytes": 67108864,
+        "use_summaries": true,
+        "domain_profile": "Product",
+        "reduction_rounds": 16,
+        "max_facts": 4096,
+        "relations_enabled": true,
+        "max_constraints": 2048,
+        "max_expression_nodes": 16384,
+        "max_expression_depth": 256,
+        "smt_provider": "Z3",
+        "smt_rlimit": 10000000,
+        "rpc_max_accounts": 4096,
+        "rpc_max_requests": 1000000,
+        "rpc_max_response_bytes": 67108864,
+        "rpc_timeout_ms": 120000
+      }
+    }
+  },
+  "formal_unknown_world_benchmark": {
+    "source_commit": "dd069018c282e9e85e790e3d2f819aadf92f14dc",
+    "source_tree": "3be1d860745e98ab32c21073223657503427d4fe",
+    "started_at": "2026-10-13T15:04:39.087680+00:00",
+    "finished_at": "2026-10-13T15:05:15.912377+00:00",
+    "platform": "Linux-6.12.96+deb13-amd64-x86_64-with-glibc2.41",
+    "logical_cpus": 64,
+    "binary_sha256": "2bd2e8210af788c0b91942f240c39b7c00c4ee904119de508ec679378a99a837",
+    "command_template": "analyze --world CASE --evm.to 0x101 --evm.caller 0x900 --evm.value 0 --evm.calldata 0x --format json --max-work LIMIT [--no-summaries]",
+    "scope": "CLI analysis and JSON export; alternating order; same specified return-word and key-storage numeric precision, and closed coverage; no claim of full relational equivalence",
+    "samples": [
+      {
+        "case": "static-reuse",
+        "reuse": true,
+        "repetition": 0,
+        "wall_seconds": 0.05228522699326277,
+        "user_seconds": 0.019823,
+        "system_seconds": 0.031716999999999995,
+        "peak_rss_kib": 61992,
+        "report_bytes": 2475977,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 10,
+        "transfers": 14,
+        "work": 45548063,
+        "summary_requests": 4,
+        "relation_states": 32,
+        "propagations": 14,
+        "reused": 7,
+        "checked_precision": {
+          "return_word_0": [
+            42
+          ],
+          "return_word_1": [],
+          "storage": {
+            "0x101:0": [
+              42
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 520,
+          "serialized_nodes": 1484,
+          "largest_serialized_graph": 15
+        },
+        "fixture_sha256": "f5f3ce323ffd869b664a2ba2236171025867fa7d361193551a13b4c6e7a18bba"
+      },
+      {
+        "case": "static-reuse",
+        "reuse": false,
+        "repetition": 0,
+        "wall_seconds": 0.0692009418271482,
+        "user_seconds": 0.036529,
+        "system_seconds": 0.03247,
+        "peak_rss_kib": 70712,
+        "report_bytes": 2475982,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 10,
+        "transfers": 38,
+        "work": 154716074,
+        "summary_requests": 4,
+        "relation_states": 32,
+        "propagations": 56,
+        "reused": 16,
+        "checked_precision": {
+          "return_word_0": [
+            42
+          ],
+          "return_word_1": [],
+          "storage": {
+            "0x101:0": [
+              42
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 520,
+          "serialized_nodes": 1484,
+          "largest_serialized_graph": 15
+        },
+        "fixture_sha256": "f5f3ce323ffd869b664a2ba2236171025867fa7d361193551a13b4c6e7a18bba"
+      },
+      {
+        "case": "static-reuse",
+        "reuse": false,
+        "repetition": 1,
+        "wall_seconds": 0.06186766270548105,
+        "user_seconds": 0.032899,
+        "system_seconds": 0.028786,
+        "peak_rss_kib": 69980,
+        "report_bytes": 2475982,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 10,
+        "transfers": 38,
+        "work": 154716074,
+        "summary_requests": 4,
+        "relation_states": 32,
+        "propagations": 56,
+        "reused": 16,
+        "checked_precision": {
+          "return_word_0": [
+            42
+          ],
+          "return_word_1": [],
+          "storage": {
+            "0x101:0": [
+              42
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 520,
+          "serialized_nodes": 1484,
+          "largest_serialized_graph": 15
+        },
+        "fixture_sha256": "f5f3ce323ffd869b664a2ba2236171025867fa7d361193551a13b4c6e7a18bba"
+      },
+      {
+        "case": "static-reuse",
+        "reuse": true,
+        "repetition": 1,
+        "wall_seconds": 0.0472294888459146,
+        "user_seconds": 0.019576,
+        "system_seconds": 0.027406999999999997,
+        "peak_rss_kib": 62016,
+        "report_bytes": 2475977,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 10,
+        "transfers": 14,
+        "work": 45548063,
+        "summary_requests": 4,
+        "relation_states": 32,
+        "propagations": 14,
+        "reused": 7,
+        "checked_precision": {
+          "return_word_0": [
+            42
+          ],
+          "return_word_1": [],
+          "storage": {
+            "0x101:0": [
+              42
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 520,
+          "serialized_nodes": 1484,
+          "largest_serialized_graph": 15
+        },
+        "fixture_sha256": "f5f3ce323ffd869b664a2ba2236171025867fa7d361193551a13b4c6e7a18bba"
+      },
+      {
+        "case": "static-reuse",
+        "reuse": true,
+        "repetition": 2,
+        "wall_seconds": 0.052338045090436935,
+        "user_seconds": 0.024052,
+        "system_seconds": 0.028059999999999998,
+        "peak_rss_kib": 62192,
+        "report_bytes": 2475977,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 10,
+        "transfers": 14,
+        "work": 45548063,
+        "summary_requests": 4,
+        "relation_states": 32,
+        "propagations": 14,
+        "reused": 7,
+        "checked_precision": {
+          "return_word_0": [
+            42
+          ],
+          "return_word_1": [],
+          "storage": {
+            "0x101:0": [
+              42
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 520,
+          "serialized_nodes": 1484,
+          "largest_serialized_graph": 15
+        },
+        "fixture_sha256": "f5f3ce323ffd869b664a2ba2236171025867fa7d361193551a13b4c6e7a18bba"
+      },
+      {
+        "case": "static-reuse",
+        "reuse": false,
+        "repetition": 2,
+        "wall_seconds": 0.06632267916575074,
+        "user_seconds": 0.035032,
+        "system_seconds": 0.031139999999999998,
+        "peak_rss_kib": 70072,
+        "report_bytes": 2475982,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 10,
+        "transfers": 38,
+        "work": 154716074,
+        "summary_requests": 4,
+        "relation_states": 32,
+        "propagations": 56,
+        "reused": 16,
+        "checked_precision": {
+          "return_word_0": [
+            42
+          ],
+          "return_word_1": [],
+          "storage": {
+            "0x101:0": [
+              42
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 520,
+          "serialized_nodes": 1484,
+          "largest_serialized_graph": 15
+        },
+        "fixture_sha256": "f5f3ce323ffd869b664a2ba2236171025867fa7d361193551a13b4c6e7a18bba"
+      },
+      {
+        "case": "busy-x",
+        "reuse": true,
+        "repetition": 0,
+        "wall_seconds": 0.3704373361542821,
+        "user_seconds": 0.27863699999999997,
+        "system_seconds": 0.091552,
+        "peak_rss_kib": 81756,
+        "report_bytes": 2755314,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 40,
+        "work": 964878643,
+        "summary_requests": 1,
+        "relation_states": 11,
+        "propagations": 10,
+        "reused": 2,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 557,
+          "serialized_nodes": 3486,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "b503fb969d409c9ef511e69641e7850cc1f7fbeed5aba4c075735efeb1247de8"
+      },
+      {
+        "case": "busy-x",
+        "reuse": false,
+        "repetition": 0,
+        "wall_seconds": 0.3917000168003142,
+        "user_seconds": 0.29146,
+        "system_seconds": 0.099815,
+        "peak_rss_kib": 81620,
+        "report_bytes": 2755315,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 40,
+        "work": 964878643,
+        "summary_requests": 1,
+        "relation_states": 11,
+        "propagations": 10,
+        "reused": 2,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 557,
+          "serialized_nodes": 3486,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "b503fb969d409c9ef511e69641e7850cc1f7fbeed5aba4c075735efeb1247de8"
+      },
+      {
+        "case": "busy-x",
+        "reuse": false,
+        "repetition": 1,
+        "wall_seconds": 0.37309322925284505,
+        "user_seconds": 0.264465,
+        "system_seconds": 0.10819,
+        "peak_rss_kib": 81624,
+        "report_bytes": 2755315,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 40,
+        "work": 964878643,
+        "summary_requests": 1,
+        "relation_states": 11,
+        "propagations": 10,
+        "reused": 2,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 557,
+          "serialized_nodes": 3486,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "b503fb969d409c9ef511e69641e7850cc1f7fbeed5aba4c075735efeb1247de8"
+      },
+      {
+        "case": "busy-x",
+        "reuse": true,
+        "repetition": 1,
+        "wall_seconds": 0.3976584281772375,
+        "user_seconds": 0.282074,
+        "system_seconds": 0.115213,
+        "peak_rss_kib": 81236,
+        "report_bytes": 2755314,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 40,
+        "work": 964878643,
+        "summary_requests": 1,
+        "relation_states": 11,
+        "propagations": 10,
+        "reused": 2,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 557,
+          "serialized_nodes": 3486,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "b503fb969d409c9ef511e69641e7850cc1f7fbeed5aba4c075735efeb1247de8"
+      },
+      {
+        "case": "busy-x",
+        "reuse": true,
+        "repetition": 2,
+        "wall_seconds": 0.3623838028870523,
+        "user_seconds": 0.286414,
+        "system_seconds": 0.075581,
+        "peak_rss_kib": 81976,
+        "report_bytes": 2755314,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 40,
+        "work": 964878643,
+        "summary_requests": 1,
+        "relation_states": 11,
+        "propagations": 10,
+        "reused": 2,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 557,
+          "serialized_nodes": 3486,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "b503fb969d409c9ef511e69641e7850cc1f7fbeed5aba4c075735efeb1247de8"
+      },
+      {
+        "case": "busy-x",
+        "reuse": false,
+        "repetition": 2,
+        "wall_seconds": 0.36909625213593245,
+        "user_seconds": 0.308552,
+        "system_seconds": 0.060107,
+        "peak_rss_kib": 81924,
+        "report_bytes": 2755315,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 40,
+        "work": 964878643,
+        "summary_requests": 1,
+        "relation_states": 11,
+        "propagations": 10,
+        "reused": 2,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 557,
+          "serialized_nodes": 3486,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "b503fb969d409c9ef511e69641e7850cc1f7fbeed5aba4c075735efeb1247de8"
+      },
+      {
+        "case": "busy-x-nested",
+        "reuse": true,
+        "repetition": 0,
+        "wall_seconds": 0.3931113430298865,
+        "user_seconds": 0.296547,
+        "system_seconds": 0.096177,
+        "peak_rss_kib": 81576,
+        "report_bytes": 3199233,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 56,
+        "work": 1049690588,
+        "summary_requests": 1,
+        "relation_states": 15,
+        "propagations": 36,
+        "reused": 8,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 597,
+          "serialized_nodes": 3614,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "8881b4db9522f51d617b6c51b58f28de4b9c5c711a18196a36b570c7dd0e08a4"
+      },
+      {
+        "case": "busy-x-nested",
+        "reuse": false,
+        "repetition": 0,
+        "wall_seconds": 0.38717119581997395,
+        "user_seconds": 0.28604999999999997,
+        "system_seconds": 0.10072199999999999,
+        "peak_rss_kib": 81624,
+        "report_bytes": 3199234,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 56,
+        "work": 1049690588,
+        "summary_requests": 1,
+        "relation_states": 15,
+        "propagations": 36,
+        "reused": 8,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 597,
+          "serialized_nodes": 3614,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "8881b4db9522f51d617b6c51b58f28de4b9c5c711a18196a36b570c7dd0e08a4"
+      },
+      {
+        "case": "busy-x-nested",
+        "reuse": false,
+        "repetition": 1,
+        "wall_seconds": 0.4005737821571529,
+        "user_seconds": 0.288076,
+        "system_seconds": 0.11202899999999999,
+        "peak_rss_kib": 81788,
+        "report_bytes": 3199234,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 56,
+        "work": 1049690588,
+        "summary_requests": 1,
+        "relation_states": 15,
+        "propagations": 36,
+        "reused": 8,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 597,
+          "serialized_nodes": 3614,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "8881b4db9522f51d617b6c51b58f28de4b9c5c711a18196a36b570c7dd0e08a4"
+      },
+      {
+        "case": "busy-x-nested",
+        "reuse": true,
+        "repetition": 1,
+        "wall_seconds": 0.39226338220760226,
+        "user_seconds": 0.319868,
+        "system_seconds": 0.07196999999999999,
+        "peak_rss_kib": 81892,
+        "report_bytes": 3199233,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 56,
+        "work": 1049690588,
+        "summary_requests": 1,
+        "relation_states": 15,
+        "propagations": 36,
+        "reused": 8,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 597,
+          "serialized_nodes": 3614,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "8881b4db9522f51d617b6c51b58f28de4b9c5c711a18196a36b570c7dd0e08a4"
+      },
+      {
+        "case": "busy-x-nested",
+        "reuse": true,
+        "repetition": 2,
+        "wall_seconds": 0.39694770285859704,
+        "user_seconds": 0.292407,
+        "system_seconds": 0.104145,
+        "peak_rss_kib": 81952,
+        "report_bytes": 3199233,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 56,
+        "work": 1049690588,
+        "summary_requests": 1,
+        "relation_states": 15,
+        "propagations": 36,
+        "reused": 8,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 597,
+          "serialized_nodes": 3614,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "8881b4db9522f51d617b6c51b58f28de4b9c5c711a18196a36b570c7dd0e08a4"
+      },
+      {
+        "case": "busy-x-nested",
+        "reuse": false,
+        "repetition": 2,
+        "wall_seconds": 0.3790322351269424,
+        "user_seconds": 0.306834,
+        "system_seconds": 0.071727,
+        "peak_rss_kib": 81788,
+        "report_bytes": 3199234,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 8,
+        "transfers": 56,
+        "work": 1049690588,
+        "summary_requests": 1,
+        "relation_states": 15,
+        "propagations": 36,
+        "reused": 8,
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 597,
+          "serialized_nodes": 3614,
+          "largest_serialized_graph": 16
+        },
+        "fixture_sha256": "8881b4db9522f51d617b6c51b58f28de4b9c5c711a18196a36b570c7dd0e08a4"
+      },
+      {
+        "case": "external-change",
+        "reuse": true,
+        "repetition": 0,
+        "wall_seconds": 5.0440742168575525,
+        "user_seconds": 3.534112,
+        "system_seconds": 1.507194,
+        "peak_rss_kib": 896164,
+        "report_bytes": 16807800,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 22,
+        "transfers": 75,
+        "work": 1318342766,
+        "summary_requests": 1,
+        "relation_states": 19,
+        "propagations": 38,
+        "reused": 15,
+        "checked_precision": {
+          "return_word_0": [
+            5
+          ],
+          "return_word_1": [
+            5,
+            9
+          ],
+          "storage": {
+            "0x301:0": [
+              5,
+              9
+            ],
+            "0x301:1": [
+              1
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 3745,
+          "serialized_nodes": 37662,
+          "largest_serialized_graph": 26
+        },
+        "fixture_sha256": "bb81c4e3bc88493b290a64006fc946771b2844eedf858b366cd2f79f63eef705"
+      },
+      {
+        "case": "external-change",
+        "reuse": false,
+        "repetition": 0,
+        "wall_seconds": 5.145063667092472,
+        "user_seconds": 3.63971,
+        "system_seconds": 1.50388,
+        "peak_rss_kib": 896264,
+        "report_bytes": 16096443,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 22,
+        "transfers": 75,
+        "work": 1318152695,
+        "summary_requests": 1,
+        "relation_states": 19,
+        "propagations": 38,
+        "reused": 15,
+        "checked_precision": {
+          "return_word_0": [
+            5
+          ],
+          "return_word_1": [
+            5,
+            9
+          ],
+          "storage": {
+            "0x301:0": [
+              5,
+              9
+            ],
+            "0x301:1": [
+              1
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 3569,
+          "serialized_nodes": 36456,
+          "largest_serialized_graph": 26
+        },
+        "fixture_sha256": "bb81c4e3bc88493b290a64006fc946771b2844eedf858b366cd2f79f63eef705"
+      },
+      {
+        "case": "external-change",
+        "reuse": false,
+        "repetition": 1,
+        "wall_seconds": 4.9988200617954135,
+        "user_seconds": 3.465566,
+        "system_seconds": 1.5309249999999999,
+        "peak_rss_kib": 896148,
+        "report_bytes": 16096443,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 22,
+        "transfers": 75,
+        "work": 1318152695,
+        "summary_requests": 1,
+        "relation_states": 19,
+        "propagations": 38,
+        "reused": 15,
+        "checked_precision": {
+          "return_word_0": [
+            5
+          ],
+          "return_word_1": [
+            5,
+            9
+          ],
+          "storage": {
+            "0x301:0": [
+              5,
+              9
+            ],
+            "0x301:1": [
+              1
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 3569,
+          "serialized_nodes": 36456,
+          "largest_serialized_graph": 26
+        },
+        "fixture_sha256": "bb81c4e3bc88493b290a64006fc946771b2844eedf858b366cd2f79f63eef705"
+      },
+      {
+        "case": "external-change",
+        "reuse": true,
+        "repetition": 1,
+        "wall_seconds": 5.189289916306734,
+        "user_seconds": 3.635787,
+        "system_seconds": 1.551909,
+        "peak_rss_kib": 896244,
+        "report_bytes": 16807800,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 22,
+        "transfers": 75,
+        "work": 1318342766,
+        "summary_requests": 1,
+        "relation_states": 19,
+        "propagations": 38,
+        "reused": 15,
+        "checked_precision": {
+          "return_word_0": [
+            5
+          ],
+          "return_word_1": [
+            5,
+            9
+          ],
+          "storage": {
+            "0x301:0": [
+              5,
+              9
+            ],
+            "0x301:1": [
+              1
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 3745,
+          "serialized_nodes": 37662,
+          "largest_serialized_graph": 26
+        },
+        "fixture_sha256": "bb81c4e3bc88493b290a64006fc946771b2844eedf858b366cd2f79f63eef705"
+      },
+      {
+        "case": "external-change",
+        "reuse": true,
+        "repetition": 2,
+        "wall_seconds": 5.046599863562733,
+        "user_seconds": 3.537788,
+        "system_seconds": 1.507057,
+        "peak_rss_kib": 902092,
+        "report_bytes": 16807800,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 22,
+        "transfers": 75,
+        "work": 1318342766,
+        "summary_requests": 1,
+        "relation_states": 19,
+        "propagations": 38,
+        "reused": 15,
+        "checked_precision": {
+          "return_word_0": [
+            5
+          ],
+          "return_word_1": [
+            5,
+            9
+          ],
+          "storage": {
+            "0x301:0": [
+              5,
+              9
+            ],
+            "0x301:1": [
+              1
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        },
+        "graph_sizes": {
+          "serialized_roots": 3745,
+          "serialized_nodes": 37662,
+          "largest_serialized_graph": 26
+        },
+        "fixture_sha256": "bb81c4e3bc88493b290a64006fc946771b2844eedf858b366cd2f79f63eef705"
+      },
+      {
+        "case": "external-change",
+        "reuse": false,
+        "repetition": 2,
+        "wall_seconds": 5.1836620811372995,
+        "user_seconds": 3.55789,
+        "system_seconds": 1.623037,
+        "peak_rss_kib": 901388,
+        "report_bytes": 16096443,
+        "status": "Converged",
+        "frontiers": 0,
+        "states": 22,
+        "transfers": 75,
+        "work": 1318152695,
+        "summary_requests": 1,
+        "relation_states": 19,
+        "propagations": 38,
+        "reused": 15,
+        "checked_precision": {
+          "return_word_0": [
+            5
+          ],
+          "return_word_1": [
+            5,
+            9
+          ],
+          "storage": {
+            "0x301:0": [
+              5,
+              9
+            ],
+            "0x301:1": [
+              1
+            ]
+          }
+        },
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 3000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": false
+        },
+        "graph_sizes": {
+          "serialized_roots": 3569,
+          "serialized_nodes": 36456,
+          "largest_serialized_graph": 26
+        },
+        "fixture_sha256": "bb81c4e3bc88493b290a64006fc946771b2844eedf858b366cd2f79f63eef705"
+      }
+    ],
+    "aggregates": [
+      {
+        "case": "static-reuse",
+        "reuse": true,
+        "median_seconds": 0.05228522699326277,
+        "median_peak_rss_kib": 62016,
+        "work": [
+          45548063
+        ],
+        "checked_precision": {
+          "return_word_0": [
+            42
+          ],
+          "return_word_1": [],
+          "storage": {
+            "0x101:0": [
+              42
+            ]
+          }
+        }
+      },
+      {
+        "case": "static-reuse",
+        "reuse": false,
+        "median_seconds": 0.06632267916575074,
+        "median_peak_rss_kib": 70072,
+        "work": [
+          154716074
+        ],
+        "checked_precision": {
+          "return_word_0": [
+            42
+          ],
+          "return_word_1": [],
+          "storage": {
+            "0x101:0": [
+              42
+            ]
+          }
+        }
+      },
+      {
+        "case": "busy-x",
+        "reuse": true,
+        "median_seconds": 0.3704373361542821,
+        "median_peak_rss_kib": 81756,
+        "work": [
+          964878643
+        ],
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "case": "busy-x",
+        "reuse": false,
+        "median_seconds": 0.37309322925284505,
+        "median_peak_rss_kib": 81624,
+        "work": [
+          964878643
+        ],
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "case": "busy-x-nested",
+        "reuse": true,
+        "median_seconds": 0.3931113430298865,
+        "median_peak_rss_kib": 81892,
+        "work": [
+          1049690588
+        ],
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "case": "busy-x-nested",
+        "reuse": false,
+        "median_seconds": 0.38717119581997395,
+        "median_peak_rss_kib": 81788,
+        "work": [
+          1049690588
+        ],
+        "checked_precision": {
+          "return_word_0": [
+            0,
+            1,
+            2
+          ],
+          "return_word_1": [
+            1
+          ],
+          "storage": {
+            "0x101:0": [
+              0
+            ],
+            "0x101:1": [
+              0,
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "case": "external-change",
+        "reuse": true,
+        "median_seconds": 5.046599863562733,
+        "median_peak_rss_kib": 896244,
+        "work": [
+          1318342766
+        ],
+        "checked_precision": {
+          "return_word_0": [
+            5
+          ],
+          "return_word_1": [
+            5,
+            9
+          ],
+          "storage": {
+            "0x301:0": [
+              5,
+              9
+            ],
+            "0x301:1": [
+              1
+            ]
+          }
+        }
+      },
+      {
+        "case": "external-change",
+        "reuse": false,
+        "median_seconds": 5.145063667092472,
+        "median_peak_rss_kib": 896264,
+        "work": [
+          1318152695
+        ],
+        "checked_precision": {
+          "return_word_0": [
+            5
+          ],
+          "return_word_1": [
+            5,
+            9
+          ],
+          "storage": {
+            "0x301:0": [
+              5,
+              9
+            ],
+            "0x301:1": [
+              1
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "formal_unknown_world_derived_medians": [
+    {
+      "case": "static-reuse",
+      "reuse": true,
+      "samples": 3,
+      "median_wall_seconds": 0.05228522699326277,
+      "median_user_seconds": 0.019823,
+      "median_system_seconds": 0.028059999999999998,
+      "median_peak_rss_kib": 62016,
+      "median_work": 45548063,
+      "median_states": 10,
+      "median_transfers": 14,
+      "median_report_bytes": 2475977,
+      "median_summary_requests": 4,
+      "median_relation_states": 32,
+      "median_propagations": 14,
+      "median_reused": 7,
+      "median_process_cpu_seconds": 0.051539999999999996,
+      "graph_sizes": {
+        "serialized_roots": 520,
+        "serialized_nodes": 1484,
+        "largest_serialized_graph": 15
+      },
+      "checked_precision": {
+        "return_word_0": [
+          42
+        ],
+        "return_word_1": [],
+        "storage": {
+          "0x101:0": [
+            42
+          ]
+        }
+      }
+    },
+    {
+      "case": "static-reuse",
+      "reuse": false,
+      "samples": 3,
+      "median_wall_seconds": 0.06632267916575074,
+      "median_user_seconds": 0.035032,
+      "median_system_seconds": 0.031139999999999998,
+      "median_peak_rss_kib": 70072,
+      "median_work": 154716074,
+      "median_states": 10,
+      "median_transfers": 38,
+      "median_report_bytes": 2475982,
+      "median_summary_requests": 4,
+      "median_relation_states": 32,
+      "median_propagations": 56,
+      "median_reused": 16,
+      "median_process_cpu_seconds": 0.066172,
+      "graph_sizes": {
+        "serialized_roots": 520,
+        "serialized_nodes": 1484,
+        "largest_serialized_graph": 15
+      },
+      "checked_precision": {
+        "return_word_0": [
+          42
+        ],
+        "return_word_1": [],
+        "storage": {
+          "0x101:0": [
+            42
+          ]
+        }
+      }
+    },
+    {
+      "case": "busy-x",
+      "reuse": true,
+      "samples": 3,
+      "median_wall_seconds": 0.3704373361542821,
+      "median_user_seconds": 0.282074,
+      "median_system_seconds": 0.091552,
+      "median_peak_rss_kib": 81756,
+      "median_work": 964878643,
+      "median_states": 8,
+      "median_transfers": 40,
+      "median_report_bytes": 2755314,
+      "median_summary_requests": 1,
+      "median_relation_states": 11,
+      "median_propagations": 10,
+      "median_reused": 2,
+      "median_process_cpu_seconds": 0.370189,
+      "graph_sizes": {
+        "serialized_roots": 557,
+        "serialized_nodes": 3486,
+        "largest_serialized_graph": 16
+      },
+      "checked_precision": {
+        "return_word_0": [
+          0,
+          1,
+          2
+        ],
+        "return_word_1": [
+          1
+        ],
+        "storage": {
+          "0x101:0": [
+            0
+          ],
+          "0x101:1": [
+            0,
+            1,
+            2
+          ]
+        }
+      }
+    },
+    {
+      "case": "busy-x",
+      "reuse": false,
+      "samples": 3,
+      "median_wall_seconds": 0.37309322925284505,
+      "median_user_seconds": 0.29146,
+      "median_system_seconds": 0.099815,
+      "median_peak_rss_kib": 81624,
+      "median_work": 964878643,
+      "median_states": 8,
+      "median_transfers": 40,
+      "median_report_bytes": 2755315,
+      "median_summary_requests": 1,
+      "median_relation_states": 11,
+      "median_propagations": 10,
+      "median_reused": 2,
+      "median_process_cpu_seconds": 0.372655,
+      "graph_sizes": {
+        "serialized_roots": 557,
+        "serialized_nodes": 3486,
+        "largest_serialized_graph": 16
+      },
+      "checked_precision": {
+        "return_word_0": [
+          0,
+          1,
+          2
+        ],
+        "return_word_1": [
+          1
+        ],
+        "storage": {
+          "0x101:0": [
+            0
+          ],
+          "0x101:1": [
+            0,
+            1,
+            2
+          ]
+        }
+      }
+    },
+    {
+      "case": "busy-x-nested",
+      "reuse": true,
+      "samples": 3,
+      "median_wall_seconds": 0.3931113430298865,
+      "median_user_seconds": 0.296547,
+      "median_system_seconds": 0.096177,
+      "median_peak_rss_kib": 81892,
+      "median_work": 1049690588,
+      "median_states": 8,
+      "median_transfers": 56,
+      "median_report_bytes": 3199233,
+      "median_summary_requests": 1,
+      "median_relation_states": 15,
+      "median_propagations": 36,
+      "median_reused": 8,
+      "median_process_cpu_seconds": 0.392724,
+      "graph_sizes": {
+        "serialized_roots": 597,
+        "serialized_nodes": 3614,
+        "largest_serialized_graph": 16
+      },
+      "checked_precision": {
+        "return_word_0": [
+          0,
+          1,
+          2
+        ],
+        "return_word_1": [
+          1
+        ],
+        "storage": {
+          "0x101:0": [
+            0
+          ],
+          "0x101:1": [
+            0,
+            1,
+            2
+          ]
+        }
+      }
+    },
+    {
+      "case": "busy-x-nested",
+      "reuse": false,
+      "samples": 3,
+      "median_wall_seconds": 0.38717119581997395,
+      "median_user_seconds": 0.288076,
+      "median_system_seconds": 0.10072199999999999,
+      "median_peak_rss_kib": 81788,
+      "median_work": 1049690588,
+      "median_states": 8,
+      "median_transfers": 56,
+      "median_report_bytes": 3199234,
+      "median_summary_requests": 1,
+      "median_relation_states": 15,
+      "median_propagations": 36,
+      "median_reused": 8,
+      "median_process_cpu_seconds": 0.38677199999999995,
+      "graph_sizes": {
+        "serialized_roots": 597,
+        "serialized_nodes": 3614,
+        "largest_serialized_graph": 16
+      },
+      "checked_precision": {
+        "return_word_0": [
+          0,
+          1,
+          2
+        ],
+        "return_word_1": [
+          1
+        ],
+        "storage": {
+          "0x101:0": [
+            0
+          ],
+          "0x101:1": [
+            0,
+            1,
+            2
+          ]
+        }
+      }
+    },
+    {
+      "case": "external-change",
+      "reuse": true,
+      "samples": 3,
+      "median_wall_seconds": 5.046599863562733,
+      "median_user_seconds": 3.537788,
+      "median_system_seconds": 1.507194,
+      "median_peak_rss_kib": 896244,
+      "median_work": 1318342766,
+      "median_states": 22,
+      "median_transfers": 75,
+      "median_report_bytes": 16807800,
+      "median_summary_requests": 1,
+      "median_relation_states": 19,
+      "median_propagations": 38,
+      "median_reused": 15,
+      "median_process_cpu_seconds": 5.0448450000000005,
+      "graph_sizes": {
+        "serialized_roots": 3745,
+        "serialized_nodes": 37662,
+        "largest_serialized_graph": 26
+      },
+      "checked_precision": {
+        "return_word_0": [
+          5
+        ],
+        "return_word_1": [
+          5,
+          9
+        ],
+        "storage": {
+          "0x301:0": [
+            5,
+            9
+          ],
+          "0x301:1": [
+            1
+          ]
+        }
+      }
+    },
+    {
+      "case": "external-change",
+      "reuse": false,
+      "samples": 3,
+      "median_wall_seconds": 5.145063667092472,
+      "median_user_seconds": 3.55789,
+      "median_system_seconds": 1.5309249999999999,
+      "median_peak_rss_kib": 896264,
+      "median_work": 1318152695,
+      "median_states": 22,
+      "median_transfers": 75,
+      "median_report_bytes": 16096443,
+      "median_summary_requests": 1,
+      "median_relation_states": 19,
+      "median_propagations": 38,
+      "median_reused": 15,
+      "median_process_cpu_seconds": 5.14359,
+      "graph_sizes": {
+        "serialized_roots": 3569,
+        "serialized_nodes": 36456,
+        "largest_serialized_graph": 26
+      },
+      "checked_precision": {
+        "return_word_0": [
+          5
+        ],
+        "return_word_1": [
+          5,
+          9
+        ],
+        "storage": {
+          "0x301:0": [
+            5,
+            9
+          ],
+          "0x301:1": [
+            1
+          ]
+        }
+      }
+    }
+  ],
+  "ordinary_known_world_benchmark": {
+    "main_commit": "a14843430ed975fc71593d52c73fae316a21c385",
+    "binary_sha256": {
+      "main": "21756cf335a63185c4c86bce8e094c72bc14563a47724d0216b3eb50d5d307be",
+      "changed": "2bd2e8210af788c0b91942f240c39b7c00c4ee904119de508ec679378a99a837"
+    },
+    "scope": "Three ordinary known-code worlds, identical CLI defaults and complete normalized outcome graphs; no claim about other workloads",
+    "normalization": "identity scopes alpha-renamed; explicit false created/pending-destruction defaults match previously implicit false",
+    "samples": [
+      {
+        "case": "call-return-branch",
+        "variant": "main",
+        "repetition": 0,
+        "wall_seconds": 0.06687143770977855,
+        "peak_rss_kib": 62704,
+        "report_bytes": 2028681,
+        "states": 5,
+        "transfers": 5,
+        "work": 82116738,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "changed",
+        "repetition": 0,
+        "wall_seconds": 0.061509578954428434,
+        "peak_rss_kib": 62872,
+        "report_bytes": 2032217,
+        "states": 5,
+        "transfers": 5,
+        "work": 87082368,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "changed",
+        "repetition": 1,
+        "wall_seconds": 0.06609177310019732,
+        "peak_rss_kib": 63004,
+        "report_bytes": 2032217,
+        "states": 5,
+        "transfers": 5,
+        "work": 87082368,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "main",
+        "repetition": 1,
+        "wall_seconds": 0.06965910596773028,
+        "peak_rss_kib": 62800,
+        "report_bytes": 2028681,
+        "states": 5,
+        "transfers": 5,
+        "work": 82116738,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "main",
+        "repetition": 2,
+        "wall_seconds": 0.06253757607191801,
+        "peak_rss_kib": 62764,
+        "report_bytes": 2028681,
+        "states": 5,
+        "transfers": 5,
+        "work": 82116738,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "changed",
+        "repetition": 2,
+        "wall_seconds": 0.06908329809084535,
+        "peak_rss_kib": 62860,
+        "report_bytes": 2032217,
+        "states": 5,
+        "transfers": 5,
+        "work": 87082368,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "changed",
+        "repetition": 3,
+        "wall_seconds": 0.0678554829210043,
+        "peak_rss_kib": 62940,
+        "report_bytes": 2032217,
+        "states": 5,
+        "transfers": 5,
+        "work": 87082368,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "main",
+        "repetition": 3,
+        "wall_seconds": 0.05714983819052577,
+        "peak_rss_kib": 62768,
+        "report_bytes": 2028681,
+        "states": 5,
+        "transfers": 5,
+        "work": 82116738,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "main",
+        "repetition": 4,
+        "wall_seconds": 0.06613058503717184,
+        "peak_rss_kib": 62960,
+        "report_bytes": 2028681,
+        "states": 5,
+        "transfers": 5,
+        "work": 82116738,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "changed",
+        "repetition": 4,
+        "wall_seconds": 0.06332447426393628,
+        "peak_rss_kib": 62840,
+        "report_bytes": 2032217,
+        "states": 5,
+        "transfers": 5,
+        "work": 87082368,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "changed",
+        "repetition": 5,
+        "wall_seconds": 0.06667358195409179,
+        "peak_rss_kib": 62856,
+        "report_bytes": 2032217,
+        "states": 5,
+        "transfers": 5,
+        "work": 87082368,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "main",
+        "repetition": 5,
+        "wall_seconds": 0.0627425848506391,
+        "peak_rss_kib": 62296,
+        "report_bytes": 2028681,
+        "states": 5,
+        "transfers": 5,
+        "work": 82116738,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "main",
+        "repetition": 6,
+        "wall_seconds": 0.07388068083673716,
+        "peak_rss_kib": 62464,
+        "report_bytes": 2028681,
+        "states": 5,
+        "transfers": 5,
+        "work": 82116738,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "call-return-branch",
+        "variant": "changed",
+        "repetition": 6,
+        "wall_seconds": 0.06931699207052588,
+        "peak_rss_kib": 62860,
+        "report_bytes": 2032217,
+        "states": 5,
+        "transfers": 5,
+        "work": 87082368,
+        "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff",
+        "fixture_sha256": "d22d187e70990921115c0e569e3b49e27a7b21348b5777301fc2d23c7e89dd88",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "main",
+        "repetition": 0,
+        "wall_seconds": 0.06126635894179344,
+        "peak_rss_kib": 30644,
+        "report_bytes": 7094169,
+        "states": 16,
+        "transfers": 16,
+        "work": 29460596,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "changed",
+        "repetition": 0,
+        "wall_seconds": 0.06389128416776657,
+        "peak_rss_kib": 40660,
+        "report_bytes": 7109186,
+        "states": 16,
+        "transfers": 16,
+        "work": 29497861,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "changed",
+        "repetition": 1,
+        "wall_seconds": 0.04881471674889326,
+        "peak_rss_kib": 49484,
+        "report_bytes": 7109186,
+        "states": 16,
+        "transfers": 16,
+        "work": 29497861,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "main",
+        "repetition": 1,
+        "wall_seconds": 0.0629777810536325,
+        "peak_rss_kib": 56048,
+        "report_bytes": 7094169,
+        "states": 16,
+        "transfers": 16,
+        "work": 29460596,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "main",
+        "repetition": 2,
+        "wall_seconds": 0.05260163685306907,
+        "peak_rss_kib": 56628,
+        "report_bytes": 7094169,
+        "states": 16,
+        "transfers": 16,
+        "work": 29460596,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "changed",
+        "repetition": 2,
+        "wall_seconds": 0.06298312125727534,
+        "peak_rss_kib": 56628,
+        "report_bytes": 7109186,
+        "states": 16,
+        "transfers": 16,
+        "work": 29497861,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "changed",
+        "repetition": 3,
+        "wall_seconds": 0.06367335096001625,
+        "peak_rss_kib": 56628,
+        "report_bytes": 7109186,
+        "states": 16,
+        "transfers": 16,
+        "work": 29497861,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "main",
+        "repetition": 3,
+        "wall_seconds": 0.061217927839607,
+        "peak_rss_kib": 56640,
+        "report_bytes": 7094169,
+        "states": 16,
+        "transfers": 16,
+        "work": 29460596,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "main",
+        "repetition": 4,
+        "wall_seconds": 0.061277498956769705,
+        "peak_rss_kib": 56888,
+        "report_bytes": 7094169,
+        "states": 16,
+        "transfers": 16,
+        "work": 29460596,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "changed",
+        "repetition": 4,
+        "wall_seconds": 0.062015716917812824,
+        "peak_rss_kib": 56888,
+        "report_bytes": 7109186,
+        "states": 16,
+        "transfers": 16,
+        "work": 29497861,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "changed",
+        "repetition": 5,
+        "wall_seconds": 0.057245164178311825,
+        "peak_rss_kib": 56888,
+        "report_bytes": 7109186,
+        "states": 16,
+        "transfers": 16,
+        "work": 29497861,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "main",
+        "repetition": 5,
+        "wall_seconds": 0.05192791810259223,
+        "peak_rss_kib": 56888,
+        "report_bytes": 7094169,
+        "states": 16,
+        "transfers": 16,
+        "work": 29460596,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "main",
+        "repetition": 6,
+        "wall_seconds": 0.06249355338513851,
+        "peak_rss_kib": 56888,
+        "report_bytes": 7094169,
+        "states": 16,
+        "transfers": 16,
+        "work": 29460596,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "proxy-storage",
+        "variant": "changed",
+        "repetition": 6,
+        "wall_seconds": 0.06257471395656466,
+        "peak_rss_kib": 56888,
+        "report_bytes": 7109186,
+        "states": 16,
+        "transfers": 16,
+        "work": 29497861,
+        "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455",
+        "fixture_sha256": "0ab55fb7fabaaf08509a2e691a428d7990bcac982678b1fe9f6af75547d0b74a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "main",
+        "repetition": 0,
+        "wall_seconds": 0.03292254824191332,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1646276,
+        "states": 5,
+        "transfers": 4,
+        "work": 8830935,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "changed",
+        "repetition": 0,
+        "wall_seconds": 0.030276942998170853,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1650094,
+        "states": 5,
+        "transfers": 4,
+        "work": 8838399,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "changed",
+        "repetition": 1,
+        "wall_seconds": 0.0303862770088017,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1650094,
+        "states": 5,
+        "transfers": 4,
+        "work": 8838399,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "main",
+        "repetition": 1,
+        "wall_seconds": 0.028216895181685686,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1646276,
+        "states": 5,
+        "transfers": 4,
+        "work": 8830935,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "main",
+        "repetition": 2,
+        "wall_seconds": 0.027985425665974617,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1646276,
+        "states": 5,
+        "transfers": 4,
+        "work": 8830935,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "changed",
+        "repetition": 2,
+        "wall_seconds": 0.033633416052907705,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1650094,
+        "states": 5,
+        "transfers": 4,
+        "work": 8838399,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "changed",
+        "repetition": 3,
+        "wall_seconds": 0.027790524996817112,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1650094,
+        "states": 5,
+        "transfers": 4,
+        "work": 8838399,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "main",
+        "repetition": 3,
+        "wall_seconds": 0.025779867079108953,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1646276,
+        "states": 5,
+        "transfers": 4,
+        "work": 8830935,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "main",
+        "repetition": 4,
+        "wall_seconds": 0.028152095153927803,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1646276,
+        "states": 5,
+        "transfers": 4,
+        "work": 8830935,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "changed",
+        "repetition": 4,
+        "wall_seconds": 0.017762867268174887,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1650094,
+        "states": 5,
+        "transfers": 4,
+        "work": 8838399,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "changed",
+        "repetition": 5,
+        "wall_seconds": 0.017572314012795687,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1650094,
+        "states": 5,
+        "transfers": 4,
+        "work": 8838399,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "main",
+        "repetition": 5,
+        "wall_seconds": 0.017707935068756342,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1646276,
+        "states": 5,
+        "transfers": 4,
+        "work": 8830935,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "main",
+        "repetition": 6,
+        "wall_seconds": 0.028371712192893028,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1646276,
+        "states": 5,
+        "transfers": 4,
+        "work": 8830935,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      },
+      {
+        "case": "summary-reuse",
+        "variant": "changed",
+        "repetition": 6,
+        "wall_seconds": 0.01796779688447714,
+        "peak_rss_kib": 56888,
+        "report_bytes": 1650094,
+        "states": 5,
+        "transfers": 4,
+        "work": 8838399,
+        "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc",
+        "fixture_sha256": "3f56b777472bf2a10f205ce1a1113066c242458ebfd3ba0b98987ecb036e966a",
+        "config": {
+          "analysis": {
+            "domain_profile": "product",
+            "reduction_rounds": 16,
+            "max_facts": 4096,
+            "relations": {
+              "enabled": true,
+              "max_constraints": 2048,
+              "max_nodes": 16384,
+              "max_depth": 256,
+              "provider": "z3",
+              "rlimit": 10000000
+            },
+            "max_constants": 512,
+            "context_depth": 128,
+            "max_states": 100000,
+            "max_transfers": 10000000
+          },
+          "max_work": 1000000000000,
+          "max_call_depth": 1025,
+          "max_memory_bytes": 67108864,
+          "use_summaries": true
+        }
+      }
+    ]
+  },
+  "ordinary_known_world_derived_medians": [
+    {
+      "case": "call-return-branch",
+      "variant": "main",
+      "samples": 7,
+      "median_wall_seconds": 0.06613058503717184,
+      "median_peak_rss_kib": 62764,
+      "median_work": 82116738,
+      "median_states": 5,
+      "median_transfers": 5,
+      "median_report_bytes": 2028681,
+      "process_cpu_seconds": null,
+      "process_cpu_missing_reason": "user/system CPU was not retained by the original wait4 recorder; no inferred values or rerun",
+      "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff"
+    },
+    {
+      "case": "call-return-branch",
+      "variant": "changed",
+      "samples": 7,
+      "median_wall_seconds": 0.06667358195409179,
+      "median_peak_rss_kib": 62860,
+      "median_work": 87082368,
+      "median_states": 5,
+      "median_transfers": 5,
+      "median_report_bytes": 2032217,
+      "process_cpu_seconds": null,
+      "process_cpu_missing_reason": "user/system CPU was not retained by the original wait4 recorder; no inferred values or rerun",
+      "outcome_graph_sha256": "77717432eeac34e7f8d4117def431f6cd577b47f03398004099929a29ebfc3ff"
+    },
+    {
+      "case": "proxy-storage",
+      "variant": "main",
+      "samples": 7,
+      "median_wall_seconds": 0.06126635894179344,
+      "median_peak_rss_kib": 56640,
+      "median_work": 29460596,
+      "median_states": 16,
+      "median_transfers": 16,
+      "median_report_bytes": 7094169,
+      "process_cpu_seconds": null,
+      "process_cpu_missing_reason": "user/system CPU was not retained by the original wait4 recorder; no inferred values or rerun",
+      "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455"
+    },
+    {
+      "case": "proxy-storage",
+      "variant": "changed",
+      "samples": 7,
+      "median_wall_seconds": 0.06257471395656466,
+      "median_peak_rss_kib": 56628,
+      "median_work": 29497861,
+      "median_states": 16,
+      "median_transfers": 16,
+      "median_report_bytes": 7109186,
+      "process_cpu_seconds": null,
+      "process_cpu_missing_reason": "user/system CPU was not retained by the original wait4 recorder; no inferred values or rerun",
+      "outcome_graph_sha256": "9f3f537f07de7b626cd0e811a602ba8b3e19a96f26e8b7d8d2fc16bcc714e455"
+    },
+    {
+      "case": "summary-reuse",
+      "variant": "main",
+      "samples": 7,
+      "median_wall_seconds": 0.028152095153927803,
+      "median_peak_rss_kib": 56888,
+      "median_work": 8830935,
+      "median_states": 5,
+      "median_transfers": 4,
+      "median_report_bytes": 1646276,
+      "process_cpu_seconds": null,
+      "process_cpu_missing_reason": "user/system CPU was not retained by the original wait4 recorder; no inferred values or rerun",
+      "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc"
+    },
+    {
+      "case": "summary-reuse",
+      "variant": "changed",
+      "samples": 7,
+      "median_wall_seconds": 0.027790524996817112,
+      "median_peak_rss_kib": 56888,
+      "median_work": 8838399,
+      "median_states": 5,
+      "median_transfers": 4,
+      "median_report_bytes": 1650094,
+      "process_cpu_seconds": null,
+      "process_cpu_missing_reason": "user/system CPU was not retained by the original wait4 recorder; no inferred values or rerun",
+      "outcome_graph_sha256": "a8fa0172974448128b78981662687f9c69ae2a854b0547a103568d08e7f610dc"
+    }
+  ],
+  "ordinary_reproduction": {
+    "command_template": "BINARY analyze --world examples/worlds/CASE.json --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000000900 --evm.value 0 --evm.calldata 0x --format json",
+    "source": {
+      "original_path": "/tmp/evm-issue124-agents/benchmark-ordinary.py",
+      "sha256": "da309f0bfe0e7042c10b9bd66d4852208d5e75ae04496c9ea94429b4ca97c4ff",
+      "content": "import hashlib\nimport json\nimport os\nfrom pathlib import Path\nimport statistics\nimport subprocess\nimport sys\nimport time\n\nroot = Path('/home/ethever/projects/evm-abstract-lab-worktrees/unknown-world-execution-20261013')\nsys.dont_write_bytecode = True\nsys.path.insert(0, str(root / 'scripts'))\nfrom normalize_identity_scopes import canonical_json\n\noutput = Path('/tmp/evm-issue124-agents/ordinary-benchmark')\noutput.mkdir(exist_ok=True)\nbinaries = {\n    'main': Path('/nix/store/cv7z6cqzar231k61lf1zxcdvcny868kd-evm-abstract-0.4.0/bin/evm-abstract'),\n    'changed': root / 'target/release/evm-abstract',\n}\n\ndef clean(value):\n    if isinstance(value, dict):\n        return {key: clean(v) for key, v in value.items() if not (\n            key in ('created_default', 'pending_destruction_default') and v is False\n        )}\n    if isinstance(value, list):\n        return [clean(v) for v in value]\n    return value\n\nrecords = []\nfor case in ['call-return-branch', 'proxy-storage', 'summary-reuse']:\n    signature = None\n    config = None\n    for repetition in range(7):\n        for variant in (['main', 'changed'] if repetition % 2 == 0 else ['changed', 'main']):\n            binary = binaries[variant]\n            fixture = root / 'examples/worlds' / (case + '.json')\n            command = [str(binary), 'analyze', '--world', str(fixture),\n                '--evm.to', '0x0000000000000000000000000000000000000101',\n                '--evm.caller', '0x0000000000000000000000000000000000000900',\n                '--evm.value', '0', '--evm.calldata', '0x', '--format', 'json']\n            path = output / f'{case}-{variant}-{repetition}.json'\n            started = time.monotonic()\n            with path.open('wb') as stdout:\n                process = subprocess.Popen(command, cwd=root, stdout=stdout, stderr=subprocess.DEVNULL)\n                _, status, usage = os.wait4(process.pid, 0)\n                process.returncode = os.waitstatus_to_exitcode(status)\n            elapsed = time.monotonic() - started\n            assert process.returncode == 0, (case, variant, process.returncode)\n            report = json.loads(path.read_text())\n            assert report['status'] == 'Converged' and not report['frontiers']\n            normalized = canonical_json(json.dumps(clean({\n                'outcomes': report['outcomes'], 'frontiers': report['frontiers'],\n                'status': report['status'],\n            })))\n            if signature is None:\n                signature, config = normalized, report['config']\n            assert normalized == signature, (case, variant, 'different complete output graphs')\n            assert report['config'] == config\n            records.append({\n                'case': case, 'variant': variant, 'repetition': repetition,\n                'wall_seconds': elapsed, 'peak_rss_kib': usage.ru_maxrss,\n                'report_bytes': path.stat().st_size, 'states': len(report['states']),\n                'transfers': report['transfers'], 'work': report['work'],\n                'outcome_graph_sha256': hashlib.sha256(normalized.encode()).hexdigest(),\n                'fixture_sha256': hashlib.sha256(fixture.read_bytes()).hexdigest(),\n                'config': report['config'],\n            })\n    for variant in binaries:\n        group = [v for v in records if v['case'] == case and v['variant'] == variant]\n        print(case, variant, statistics.median(v['wall_seconds'] for v in group),\n            statistics.median(v['peak_rss_kib'] for v in group), group[0]['work'], flush=True)\n\n(output / 'measurements.json').write_text(json.dumps({\n    'main_commit': 'a14843430ed975fc71593d52c73fae316a21c385',\n    'binary_sha256': {k: hashlib.sha256(v.read_bytes()).hexdigest() for k, v in binaries.items()},\n    'scope': 'Three ordinary known-code worlds, identical CLI defaults and complete normalized outcome graphs; no claim about other workloads',\n    'normalization': 'identity scopes alpha-renamed; explicit false created/pending-destruction defaults match previously implicit false',\n    'samples': records,\n}, indent=2) + '\\n')\n"
+    }
+  },
+  "native_z3_profile": {
+    "evidence_file": "native-z3-cost-b25bf2d-review.json",
+    "evidence_sha256": "c4cd851acf1131978887418958aa7eb87d1c24cf291478390152cd5f9268aa8d",
+    "source_commit": "b25bf2d35477018dd7e156daab8fb96cfe4226fd",
+    "binary_sha256": "2bd2e8210af788c0b91942f240c39b7c00c4ee904119de508ec679378a99a837",
+    "scope": "outermost Z3_solver_check and Z3_solver_check_assumptions C API calls",
+    "warning": "use only CPU/wall denominators from the same instrumented batch; independent from the uninstrumented formal benchmark",
+    "review_contents": "All 24 raw native samples, medians, process/native CPU boundaries, perf summaries and complete probe/runner sources are in the adjacent evidence_file."
+  }
+}

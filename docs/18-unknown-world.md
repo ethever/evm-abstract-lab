@@ -151,4 +151,6 @@ A 的 SLOAD 不能直接读取 C.storage；两次读取均由 C 执行。固定�
 
 [`benchmark-unknown-world.py`](../scripts/benchmark-unknown-world.py) 在干净提交上交替开启／关闭复用，验证完整覆盖和返回值精度后才记录成功样本。测量包含 CLI 分析和 JSON 导出；要求传入由该提交新构建的 release 二进制，并使用新的输出目录。库测试和 CLI 的求解预算不同，不能直接比较两者的计费 work；work 也不等于求解器实际步数或毫秒。
 
+本次 42 个测试、六份示例、同精度 release 对照和独立原生 SMT 成本记录见 [Issue #124 验收与性能](issue124-validation.md)。其中明确区分库默认预算、CLI 测量策略，以及保留 open 的原生输入和创建边界。
+
 返回[课程导航](../README.md#验证与源码导航)，或继续阅读[符号与关系域](15-symbolic-relations.md)。

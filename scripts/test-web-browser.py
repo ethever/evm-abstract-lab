@@ -1417,8 +1417,9 @@ def termination_interactions(browser, url, args):
     assert mixed['selected_kind']=='ordinary',mixed
     results['mixed_aggregation']={'members':sorted(members),'summary':summary,'pixels':mixed}
 
-    partial=layout_submission(page,canvas,'5f5f5f5f5f5f355af100',output,'termination-frontier')
+    partial=layout_submission(page,canvas,'5a5f5ff0',output,'termination-frontier')
     assert partial['status']=='Incomplete' and partial['frontiers']
+    assert any(frontier['kind']=='Creation' and 'UnknownInitCode' in frontier['detail'] for frontier in partial['frontiers'])
     graph_mode(page,canvas,'States');page.keyboard.press('f');settle_gesture(page)
     frontier=node_snapshot(page,canvas,output,'termination-frontier-selected',measure_nodes=True)
     summary=selected_ending(page)
