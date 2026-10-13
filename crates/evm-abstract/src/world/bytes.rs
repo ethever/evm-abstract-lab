@@ -9,6 +9,7 @@ pub(super) mod operands;
 pub(super) mod refinement;
 pub use refinement::GuardRefinementError;
 mod ranges;
+mod reads;
 #[cfg(test)]
 mod tests;
 mod traversal;
@@ -314,6 +315,7 @@ impl ByteArray {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
+        crate::domain::symbolic::state_check(self.root.nodes(), self.root.depth(), limits(domain))?;
         let offset_expr = expr(offset)?;
         let mut facts = self.operands.clone();
         operands::remember(
@@ -323,7 +325,12 @@ impl ByteArray {
             domain,
             limits(domain),
         )?;
-        let expression = ExprId::byte_read(self.root.clone(), offset_expr.clone(), limits(domain))?;
+        let expression = ExprId::byte_read_with_write_bound(
+            self.root.clone(),
+            offset_expr.clone(),
+            limits(domain),
+            &|destination| reads::write_lower_bound(destination, &facts),
+        )?;
         let numeric = numeric::read(&self.root, &offset_expr, &facts, domain);
         Ok(numeric::attach(numeric, expression))
     }
@@ -345,6 +352,7 @@ impl ByteArray {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
+        crate::domain::symbolic::state_check(self.root.nodes(), self.root.depth(), limits(domain))?;
         let offset_expr = expr(offset)?;
         let mut facts = self.operands.clone();
         operands::remember(
@@ -368,7 +376,12 @@ impl ByteArray {
                 limits(domain).into(),
             )?
         };
-        let expression = ExprId::word_read(view, ExprId::constant(U256::ZERO), limits(domain))?;
+        let expression = ExprId::word_read_with_write_bound(
+            view,
+            ExprId::constant(U256::ZERO),
+            limits(domain),
+            &|destination| reads::write_lower_bound(destination, &facts),
+        )?;
         let numeric = numeric::word(&self.root, &offset_expr, &facts, domain);
         Ok(numeric::attach(numeric, expression))
     }

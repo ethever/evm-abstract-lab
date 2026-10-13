@@ -1,26 +1,58 @@
 //! Demand-local normalization leaves the original snapshot and its sources intact.
 
-use super::{ByteStateId, ByteStateKind, StateError, StateLimits, state};
+use super::{ByteStateId, ByteStateKind, ExprId, StateError, StateLimits, state};
 use alloy_primitives::U256;
 
 impl ByteStateId {
-    /// Skip only writes whose concrete mathematical ranges cannot affect this
-    /// read. Unproved ranges and other state operations keep their dependency.
+    /// Skip only effects proved disjoint from this fixed demand. A caller may
+    /// supply complete destination bounds; unproved effects keep their history.
     pub(in crate::domain::symbolic) fn without_disjoint_writes(
         &self,
         start: U256,
         width: usize,
         limits: StateLimits,
+        write_lower_bound: &impl Fn(&ExprId) -> Option<U256>,
     ) -> Result<Self, StateError> {
         let end = start.saturating_add(U256::from(width - 1));
         let mut cursor = self;
         loop {
             state::check(cursor.nodes(), cursor.depth(), limits)?;
-            let Some(previous) = cursor.prior_to_disjoint_write(start, end) else {
+            let Some(previous) =
+                cursor.prior_to_disjoint_write_with_bound(start, end, write_lower_bound)
+            else {
                 return Ok(cursor.clone());
             };
             cursor = previous;
         }
+    }
+
+    /// The supplied bound must cover every destination represented by this
+    /// caller's immutable snapshot. It is a read proof, not a root rewrite.
+    pub(crate) fn prior_to_disjoint_write_with_bound(
+        &self,
+        start: U256,
+        end: U256,
+        write_lower_bound: &impl Fn(&ExprId) -> Option<U256>,
+    ) -> Option<&Self> {
+        self.prior_to_disjoint_write(start, end).or_else(|| {
+            let (previous, destination) = match self.kind() {
+                ByteStateKind::WriteByte {
+                    previous, offset, ..
+                }
+                | ByteStateKind::WriteWord {
+                    previous, offset, ..
+                }
+                | ByteStateKind::Copy {
+                    previous,
+                    destination: offset,
+                    ..
+                } => (previous, offset),
+                _ => return None,
+            };
+            write_lower_bound(destination)
+                .is_some_and(|lower| end < lower)
+                .then_some(previous)
+        })
     }
 
     /// Shared concrete range proof for symbolic reads and numeric upper bounds.

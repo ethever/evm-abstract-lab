@@ -80,13 +80,23 @@ impl ExprId {
         index: Self,
         limits: ExprLimits,
     ) -> Result<Self, ExprError> {
+        Self::byte_read_with_write_bound(state, index, limits, &|_| None)
+    }
+
+    /// Snapshot-local complete bounds may justify a new read's smaller dependency.
+    pub(crate) fn byte_read_with_write_bound(
+        state: ByteStateId,
+        index: Self,
+        limits: ExprLimits,
+        write_lower_bound: &impl Fn(&ExprId) -> Option<U256>,
+    ) -> Result<Self, ExprError> {
         let (nodes, depth) = state::metrics([
             (state.nodes(), state.depth()),
             (index.nodes(), index.depth()),
         ]);
         state::check(nodes, depth, limits.into())?;
         let state = if let Some(start) = index.as_constant() {
-            state.without_disjoint_writes(start, 1, limits.into())?
+            state.without_disjoint_writes(start, 1, limits.into(), write_lower_bound)?
         } else {
             state
         };
@@ -120,6 +130,15 @@ impl ExprId {
     /// Read 32 big-endian bytes, zero padding past this view's length.
     /// Relative/backing offset addition is checked mathematically in lowering.
     pub fn word_read(view: ByteView, at: Self, limits: ExprLimits) -> Result<Self, ExprError> {
+        Self::word_read_with_write_bound(view, at, limits, &|_| None)
+    }
+
+    pub(crate) fn word_read_with_write_bound(
+        view: ByteView,
+        at: Self,
+        limits: ExprLimits,
+        write_lower_bound: &impl Fn(&ExprId) -> Option<U256>,
+    ) -> Result<Self, ExprError> {
         let mut view = view.canonicalize();
         let (nodes, depth) =
             state::metrics([(view.nodes(), view.depth()), (at.nodes(), at.depth())]);
@@ -133,9 +152,9 @@ impl ExprId {
             .is_some_and(|end| end <= length)
             && let Some(start) = offset.checked_add(relative)
         {
-            view.state = view
-                .state
-                .without_disjoint_writes(start, 32, limits.into())?;
+            view.state =
+                view.state
+                    .without_disjoint_writes(start, 32, limits.into(), write_lower_bound)?;
         }
         let (nodes, depth) =
             state::metrics([(view.nodes(), view.depth()), (at.nodes(), at.depth())]);
@@ -190,10 +209,11 @@ impl ExprId {
             // One guard selects the whole snapshot, including every demanded
             // byte. Keep that guard while dropping unrelated branch history.
             let read = |state: &ByteStateId| {
-                Self::word_read(
+                Self::word_read_with_write_bound(
                     ByteView::new(state.clone(), view.offset.clone(), view.length.clone()),
                     at.clone(),
                     limits,
+                    write_lower_bound,
                 )
             };
             let yes = read(then_state)?;
