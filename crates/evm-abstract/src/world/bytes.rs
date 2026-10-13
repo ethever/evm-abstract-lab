@@ -3,6 +3,7 @@
 //! The root is the content model. Sparse facts and operand summaries provide
 //! numeric upper bounds and bounded presentation; COPY never expands its range.
 
+mod metadata;
 pub(super) mod native;
 pub(super) mod numeric;
 pub(super) mod operands;
@@ -265,11 +266,11 @@ impl ByteArray {
         &self.length
     }
     /// Explicit current numeric upper bounds. The root also covers unlisted bytes.
-    pub fn stored_bytes(&self) -> impl Iterator<Item = (usize, &AbstractValue)> {
+    pub fn stored_bytes(&self) -> impl ExactSizeIterator<Item = (usize, &AbstractValue)> {
         self.bytes.iter().map(|(i, v)| (*i, v))
     }
     /// Numeric operand guarantees paired with their immutable expression identity.
-    pub fn symbolic_facts(&self) -> impl Iterator<Item = (&ExprId, &AbstractValue)> {
+    pub fn symbolic_facts(&self) -> impl ExactSizeIterator<Item = (&ExprId, &AbstractValue)> {
         self.operands.iter()
     }
     /// Numeric upper bound on every unlisted byte; identities live in the root.
