@@ -2,7 +2,7 @@
 
 use crate::{
     Bool, Bv, Error, Outcome, Provider, Unknown,
-    backend::{self, Backend, Status},
+    backend::{self, Backend, Failure, Status},
     term::{Node, Op, Sort},
 };
 use bitwuzla_native::{Kind, Solver, Term};
@@ -14,9 +14,8 @@ fn error(error: bitwuzla_native::Error) -> Error {
         message: error.to_string(),
     }
 }
-impl Backend for Bitwuzla {
-    type Term = Term;
-    fn make(&mut self, node: &Node, args: &[Term]) -> Result<Term, Error> {
+impl Bitwuzla {
+    fn make_primitive(&mut self, node: &Node, args: &[Term]) -> Result<Term, Error> {
         let kind = match &node.op {
             Op::Bool(value) => return self.0.bool(*value).map_err(error),
             Op::Literal(hex) => {
@@ -29,8 +28,31 @@ impl Backend for Bitwuzla {
                 let width = match node.sort {
                     Sort::Bool => None,
                     Sort::Bv(width) => Some(width),
+                    Sort::Array {
+                        index_width,
+                        element_width,
+                    } => {
+                        return self
+                            .0
+                            .array_variable(index_width, element_width, name)
+                            .map_err(error);
+                    }
                 };
                 return self.0.variable(width, name).map_err(error);
+            }
+            Op::ConstantArray => {
+                let Sort::Array { index_width, .. } = node.sort else {
+                    unreachable!("typed constant array")
+                };
+                return self.0.constant_array(index_width, &args[0]).map_err(error);
+            }
+            Op::Select => Kind::Select,
+            Op::Store => Kind::Store,
+            Op::Apply(_) => {
+                return Err(Error {
+                    provider: Provider::Bitwuzla,
+                    message: "function application bypassed congruence lowering".into(),
+                });
             }
             Op::ZeroExtend(extra) => {
                 return self
@@ -74,6 +96,12 @@ impl Backend for Bitwuzla {
         };
         self.0.apply(kind, args, &[]).map_err(error)
     }
+}
+impl Backend for Bitwuzla {
+    type Term = Term;
+    fn make(&mut self, node: &Node, args: &[Term]) -> Result<Term, Failure> {
+        self.make_primitive(node, args).map_err(Failure::from)
+    }
     fn assert(&mut self, term: &Term) -> Result<(), Error> {
         self.0.assert(term).map_err(error)
     }
@@ -99,7 +127,7 @@ pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Out
         Ok(solver) => {
             let cancellation = crate::current_cancellation();
             if !cancellation.is_enabled() {
-                return backend::execute(assertions, value, Bitwuzla(solver));
+                return backend::execute(assertions, value, Bitwuzla(solver), rlimit);
             }
             let interrupt = match solver.interrupt_handle() {
                 Ok(interrupt) => interrupt,
@@ -108,7 +136,7 @@ pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Out
             crate::cancellation::interruptible(
                 &cancellation,
                 move || interrupt.interrupt(),
-                || backend::execute(assertions, value, Bitwuzla(solver)),
+                || backend::execute(assertions, value, Bitwuzla(solver), rlimit),
             )
         }
         Err(reason) => Outcome::Error(error(reason)),

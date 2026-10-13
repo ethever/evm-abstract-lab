@@ -3,11 +3,17 @@
 use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     Fork,
-    analysis::{self, ExecutionConfig, FrontierReason, Limit, OutcomeKind, Status, WorldAnalysis},
-    domain::{AbstractValue, Domain},
+    analysis::{
+        self, ExecutionConfig, FrontierReason, Limit, MachineEdgeKind, OutcomeKind, Status,
+        WorldAnalysis,
+    },
+    domain::{
+        AbstractValue, Domain,
+        symbolic::{ExprKind, SlotStateKind},
+    },
     ssa,
     world::{
-        Account, ByteArray, Entry,
+        Account, ByteArray, Entry, SnapshotIdentity,
         rpc::{self, AccountRequest, RpcBlock, RpcError, RpcFailureKind, RpcInput},
     },
 };
@@ -250,11 +256,48 @@ fn response(accounts: &BTreeMap<Address, Account>, request: &Json) -> Json {
 }
 
 fn relations(analysis: &WorldAnalysis) -> BTreeSet<String> {
+    // Independent executions allocate new private join selectors. Rename only
+    // Fresh leaves, using one bijection across the complete outcome relation.
+    // Preserve all graph edges, Input scopes, source namespaces and products.
+    fn bind_fresh(value: &mut Json, leaves: &mut BTreeMap<(String, u64), u64>) {
+        match value {
+            Json::Array(values) => {
+                for value in values {
+                    bind_fresh(value, leaves);
+                }
+            }
+            Json::Object(fields) => {
+                if let Some(scope) = fields
+                    .get("identity_scope")
+                    .and_then(Json::as_str)
+                    .map(str::to_owned)
+                {
+                    for node in fields.get_mut("nodes").unwrap().as_array_mut().unwrap() {
+                        if let Some(token) = node.get_mut("Fresh") {
+                            let next = u64::try_from(leaves.len()).unwrap();
+                            let renamed = *leaves
+                                .entry((scope.clone(), token.as_u64().unwrap()))
+                                .or_insert(next);
+                            *token = Json::from(renamed);
+                        }
+                    }
+                }
+                for value in fields.values_mut() {
+                    bind_fresh(value, leaves);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut leaves = BTreeMap::new();
     analysis
         .outcomes()
         .iter()
         .map(|outcome| {
-            serde_json::to_string(&(outcome.kind, &outcome.data, &outcome.store)).unwrap()
+            let mut value =
+                serde_json::to_value((outcome.kind, &outcome.data, &outcome.store)).unwrap();
+            bind_fresh(&mut value, &mut leaves);
+            serde_json::to_string(&value).unwrap()
         })
         .collect()
 }
@@ -285,7 +328,11 @@ fn compare(
             slots: BTreeSet::new(),
         }));
     let full_world = rpc::load(&full_input).unwrap();
-    assert_eq!(discovered.world().fingerprint(), full_world.fingerprint());
+    assert_eq!(
+        discovered.world().fingerprint().unwrap(),
+        full_world.fingerprint().unwrap()
+    );
+    assert_eq!(discovered.world().identity(), full_world.identity());
     let full = analysis::analyze_world(full_world, entry.clone(), config.clone()).unwrap();
     assert_eq!(relations(&discovered), relations(&full));
     let uncached = analysis::analyze_world(
@@ -306,10 +353,39 @@ fn compare(
             result.frontiers()
         );
         ssa::build_world(result).unwrap().verify(result).unwrap();
+        let checkpoint = result.states()[0]
+            .entry
+            .call_stack
+            .root()
+            .state
+            .saved_store
+            .state();
+        // Fixed chain observations must keep their exact identity across outcomes,
+        // regardless of the private selectors renamed by the relation comparison.
+        for owner in result.world().accounts().keys() {
+            let root = checkpoint.slot_root(*owner, false).unwrap();
+            assert_eq!(
+                root,
+                discovered.states()[0]
+                    .entry
+                    .call_stack
+                    .root()
+                    .state
+                    .saved_store
+                    .state()
+                    .slot_root(*owner, false)
+                    .unwrap()
+            );
+            for outcome in result.outcomes() {
+                if matches!(outcome.kind, OutcomeKind::Failure | OutcomeKind::Revert) {
+                    assert_eq!(outcome.store.slot_root(*owner, false).unwrap(), root);
+                }
+            }
+        }
         for summary in result.summaries() {
             assert_eq!(
                 summary.input.world_fingerprint,
-                result.world().fingerprint()
+                result.world().fingerprint().unwrap()
             );
         }
     }
@@ -408,6 +484,120 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                 &[address(0x200), address(0x300)],
             );
             assert_eq!(result.rpc_acquisition().unwrap().rounds, 3);
+            assert_eq!(
+                result.world().identity(),
+                &SnapshotIdentity::Chain {
+                    chain_id: U256::from(1),
+                    block_hash: B256::repeat_byte(0x11),
+                }
+            );
+            let domain = Domain::default();
+            let checkpoint = result.states()[0]
+                .entry
+                .call_stack
+                .root()
+                .state
+                .saved_store
+                .state();
+            let initial_read = checkpoint.read(address(0x101), &word(0), domain);
+            assert_eq!(initial_read.numeric(), word(7).numeric());
+            assert_eq!(initial_read.provenance(), word(7).provenance());
+            assert_eq!(
+                checkpoint.read(address(0x101), &word(0), domain),
+                initial_read
+            );
+            let ExprKind::SlotRead { state, key } = initial_read.expression().unwrap().kind()
+            else {
+                panic!("RPC initial slot must be tied to its fixed snapshot");
+            };
+            assert_eq!(key.as_constant(), Some(U256::ZERO));
+            assert_eq!(*state, checkpoint.slot_root(address(0x101), false).unwrap());
+            let SlotStateKind::Input { source, bindings } = state.kind() else {
+                panic!("RPC initial read must retain chain observations");
+            };
+            assert!(source.token().as_constant().is_some());
+            assert_eq!(source.namespace(), U256::from(0x101) << 8);
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].index, U256::ZERO);
+            assert_eq!(bindings[0].value.as_constant(), Some(U256::from(7)));
+            assert_eq!(&bindings[0].numeric, word(7).numeric());
+            let reverts: Vec<_> = result
+                .edges()
+                .iter()
+                .filter(|edge| {
+                    edge.kind == MachineEdgeKind::Revert
+                        && result.states()[edge.from].key.frames.len() == 2
+                        && result.states()[edge.to].key.frames.len() == 1
+                })
+                .collect();
+            assert!(!reverts.is_empty());
+            for edge in reverts {
+                let child = &result.states()[edge.from];
+                let saved = child.entry.active().saved_store.state();
+                let resumed = &result.states()[edge.to].entry;
+                assert_eq!(&resumed.store, saved);
+                assert_eq!(
+                    resumed.store.read(address(0x101), &word(0), domain),
+                    word(3)
+                );
+                assert_eq!(
+                    resumed
+                        .store
+                        .read_transient(address(0x101), &word(0), domain),
+                    word(9)
+                );
+                for owner in [address(0x200), address(0x300)] {
+                    assert_eq!(
+                        resumed.store.slot_root(owner, false),
+                        checkpoint.slot_root(owner, false)
+                    );
+                    assert_eq!(
+                        resumed.store.read_transient(owner, &word(0), domain),
+                        word(0)
+                    );
+                    assert_eq!(resumed.store.read_balance(owner), word(100));
+                }
+                assert_eq!(resumed.active().stack.last().unwrap(), &word(0));
+                let receipt = child.execution_evidence().unwrap();
+                assert!(receipt.is_current());
+                assert!(
+                    receipt
+                        .successors()
+                        .contains(&(edge.to, MachineEdgeKind::Revert))
+                );
+            }
+            let deeper_returns: Vec<_> = result
+                .edges()
+                .iter()
+                .filter(|edge| {
+                    edge.kind == MachineEdgeKind::Return
+                        && result.states()[edge.from].key.frames.len() == 3
+                        && result.states()[edge.to].key.frames.len() == 2
+                })
+                .collect();
+            assert!(!deeper_returns.is_empty());
+            for edge in deeper_returns {
+                let grandchild = &result.states()[edge.from];
+                let saved = grandchild.entry.active().saved_store.state();
+                assert_eq!(saved.read(address(0x200), &word(0), domain), word(4));
+                assert_eq!(
+                    saved.read_transient(address(0x200), &word(0), domain),
+                    word(8)
+                );
+                assert_eq!(
+                    saved.read_transient(address(0x101), &word(0), domain),
+                    word(9)
+                );
+                assert_eq!(
+                    grandchild
+                        .exit
+                        .as_ref()
+                        .unwrap()
+                        .store
+                        .read(address(0x300), &word(0), domain),
+                    word(5)
+                );
+            }
             let expected_kind = if root_reverts {
                 OutcomeKind::Revert
             } else {
@@ -423,18 +613,28 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                 assert_eq!(outcome.store.read_balance(address(0x101)), word(100));
                 assert_eq!(outcome.store.read_balance(address(0x200)), word(100));
                 assert_eq!(outcome.store.read_balance(address(0x300)), word(100));
-                assert!(
-                    outcome
-                        .store
-                        .read(address(0x101), &word(0), Domain::default())
-                        .contains(U256::from(if root_reverts { 7 } else { 3 }))
-                );
+                let actual = outcome.store.read(address(0x101), &word(0), domain);
+                let expected = if root_reverts {
+                    &initial_read
+                } else {
+                    &word(3)
+                };
+                assert_eq!(actual.numeric(), expected.numeric());
+                assert_eq!(actual.provenance(), expected.provenance());
+                assert_eq!(&actual, expected);
                 assert_eq!(
                     outcome
                         .store
                         .read_transient(address(0x200), &word(0), Domain::default()),
                     word(0)
                 );
+                assert!(outcome.store.transient_slots().is_empty());
+                for owner in [address(0x200), address(0x300)] {
+                    assert_eq!(
+                        outcome.store.slot_root(owner, false),
+                        checkpoint.slot_root(owner, false)
+                    );
+                }
             }
             let checkpoint = result.states()[0]
                 .entry
@@ -445,8 +645,8 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                 .state();
             assert_eq!(checkpoint.read_balance(address(0x300)), word(100));
             assert_eq!(
-                checkpoint.read(address(0x101), &word(0), Domain::default()),
-                word(7)
+                checkpoint.read(address(0x101), &word(0), domain),
+                initial_read
             );
         }
     });
@@ -619,7 +819,7 @@ fn final_snapshot_binds_reused_nested_call_certificates() {
         for summary in result.summaries() {
             assert_eq!(
                 summary.input.world_fingerprint,
-                result.world().fingerprint()
+                result.world().fingerprint().unwrap()
             );
             assert_eq!(&summary.input.snapshot, result.world().identity());
         }

@@ -110,11 +110,11 @@ jq '.states[] | select(.key.basic_block_index == 2)
        constraints: .entry_relations.constraints}' /tmp/relations.json
 ```
 
-`entry_constants` 为 `["0x1"]`。constraints 中的 `Truth` 记录 EQ 的表达式及 `nonzero:true`：opcode 20 即十六进制 `0x14` 的 EQ，两个参数分别是常量 1 与 Input(CallValue)。输入表达式仍表示原来的 v，数值层则已经证明它在这个状态里只能为 1；不会为每条分支伪造一笔新的具体交易。
+`entry_constants` 为 `["0x1"]`。constraints 中的 `Truth` 保存 `nonzero:true` 和一份 flat expression graph：`root` 指向 `nodes` 中的 Operation，opcode 20 即 EQ，`args` 是常量 1 与 Input(CallValue) 的本图索引。Input 还带 scope，图带 identity_scope。输入表达式仍表示原来的 v，数值层证明它在这个状态里只能为 1；不能把不同图中的同一个索引当成同一节点，也不会为每条分支伪造新交易。
 
-结果 JSON 的 `schema_version` 为 5；`domain_spec.schema_version` 与 `cost_version` 都为 2。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
+结果 JSON 的 `schema_version` 为 6；`domain_spec.schema_version` 与 `cost_version` 都为 2。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
 
-版本 4 将数值事实错误保留为带参数的 `ScalarFactError`，将求解器绑定错误 `SolverError` 与原生 `SolverUnknown` 分开，后两者都保留求解器身份。原生 UNKNOWN 的自由文本原因仍作为该类型的说明；它不会被当作不可满足。Web 的展示协议独立使用版本 8。
+版本 4 将数值事实错误保留为带参数的 `ScalarFactError`，将求解器绑定错误 `SolverError` 与原生 `SolverUnknown` 分开，后两者都保留求解器身份。原生 UNKNOWN 的自由文本原因仍作为该类型的说明；它不会被当作不可满足。Web 的展示协议独立使用版本 9。
 
 ## 2. 五层信息分别保存什么
 
@@ -123,8 +123,8 @@ jq '.states[] | select(.key.basic_block_index == 2)
 | 单值数值摘要 | `NumericValue` | 常量集合、已知位、区间、同余和非零性质 |
 | 来源与角色 | `Provenance` | 可能来源类别、代码地址角色；同来源不证明相等 |
 | 有限值身份 | `ValueIdentity` | 可信运行时复制、受环境作用域限定的输入身份 |
-| 符号表达式 | `ExprId` | 常量、固定输入、fresh 运行时值和纯 EVM 运算的不可变 DAG |
-| 跨值约束 | `RelationState` | 当前执行状态中必须成立的条件合取 |
+| 符号表达式 | `ExprId` | 常量、输入、fresh、ITE、byte/word/slot read、Keccak 与纯 EVM 运算 |
+| 跨值约束 | `RelationState` | 继承公式、当前条件合取和 guarded alternatives |
 
 `AbstractValue` 把数值、来源、身份和可选表达式放在一起。完整关系约束属于 `MachinePayload`，因为一个条件可以同时涉及栈、内存、账户状态与调用输入中的多个值。
 
@@ -185,9 +185,9 @@ SAT 不等于一条完整 EVM 轨迹的具体执行见证。内存、storage、�
 
 每条路径内部的条件是合取；两条路径汇合时，所需覆盖的是它们的状态并集。
 
-当前 `RelationState::join` 保留两边结构上共同的保证。例如左边保留 `x=1`、右边保留 `x=2`，join 不能把它们拼成 `x=1 AND x=2`，否则会错误删除两条合法路径。当前实现也不会自动将它们转换成一个精确析取；共同项之外的信息可能丢失。
+普通 `RelationState::join` 仍可保留共同保证；整机 join 另为所有 scalar、byte/slot 根和路径使用同一个 selector，并保存 guarded alternatives。左边 x=1、右边 x=2 不能拼成 x=1 AND x=2；无法完整构造或保留替代时保存 typed frontier 与 incoming payload。
 
-### 一个合并会丢掉的条件关系
+### 仅作数值投影会丢掉什么
 
 假设某个已给定的调用效果模型有两类出口，x 是调用后读取的 slot 值：
 
@@ -209,14 +209,14 @@ x  ∈ 所有 U256
 | `(1,9)` | 成功类允许 | 允许 |
 | `(0,9)` | 失败类不允许 | 额外允许 |
 
-随后只把 ok 收窄到 0，不能从已经丢掉的关系中自动找回 x=1。保留状态分区，或使用能表达该条件的关系表示，才可能维持这项信息。当前共同项 join 不保证保留任意条件析取；启用 SMT 也不能把没有保存的规则凭空找回来。
+若只保存上述两个独立数值集合，随后把 ok 收窄到 0，也不能自动找回 x=1。当前整机 guarded join 则用同一个 selector 保存两类完整出口及其路径公式，启用关系查询后可利用这个配对检查读取。两种表示层次要分开：`RelationState::join` 的共同项不是整机 join 的全部结果，表中的额外组合也不构成完整模型的可行性证明。
 
 这里首先假设调用效果模型已经给出了这两类出口。它不是当前解释器自动为 UnknownTarget 生成的通用摘要。怎样描述未知调用的副作用，与怎样保留已知出口的关联，是两项不同工作。
 
 
-数值层独立 join 同一槽位的摘要；表达式只有两边相同才保留。widening 对数值使用既有扩大规则，关系侧保守忘记变化的保证。已经证明矛盾的 bottom 不贡献新的可达状态；预算不足、Unknown 或来源类别冲突都不能伪装成 bottom。
+数值投影独立合并候选，普通整机 join 则保持共享 selector。相同完整状态或已证明覆盖的输入可吸收；预算不足和 Unknown 不能充当覆盖证明，也不能伪装成不可达的 bottom。
 
-循环中的值会改变。既不能一直按 pc 复用一个运行时未知值，也不能无限展开新的表达式树而忽略成本。节点、深度、状态和工作预算共同约束增长，达到边界留下 typed frontier。
+循环还需要明确的 widening。栈数值 widening 只适用于其余完整载荷不变的情况，改变的 word 被数值上界替代，路径只留共同保证；不能扩大地址却保留一份仍依赖旧窄地址的状态根。整机循环 widening 另将已登记的内部 join 选择拆为有限完整 cases，并明确忘掉旧路径保证后重新组合。外部输入、GAS 与手工 guard 不参与枚举。具体规则与这次文档核对的验证范围见[第 17 课](17-symbolic-state.md#汇合固定点与摘要来源)。节点、深度、case 数与共享 work 都有上限，无法完整处理时保留 typed frontier。
 
 ## 5. 作用域与摘要重放
 
@@ -224,16 +224,16 @@ x  ∈ 所有 U256
 
 fresh 叶表示新产生的未知运行时值，不按字节码 pc 命名。DUP 复制一个已经存在的表达式；下一次独立执行则不能复用前一次未绑定的 fresh 值。
 
-JSON 省略输入作用域和 fresh 的私有编号。它可以显示表达式结构与保存的条件，但两个叶都显示 `Fresh`，或两个输入显示相同名称，不足以在报告中证明它们是同一个变量；真实相等判断使用内部的作用域与身份。导出的结构不能直接当成无损的求解器状态重新加载。
+原生 JSON 的 flat graph 保留 `identity_scope`、Fresh 编号、Input 的 scope/symbol，以及数组来源的 token/namespace。它们让同一报告内的共享和独立身份可核对；节点 root/args/state 等索引仍只属于各自的图。Web 协议另用单份报告共享节点池和 typed refs。只比较打印名、数值 Top 或两个图的相同 root 索引，都不足以证明身份相同。
 
 调用摘要还需要两项约定：
 
 1. 复用资格保留输入帧、完整 Store、环境、关系约束、快照与分析策略。
 2. 重放时，绑定真实输入，给被保存子调用的内部 fresh 叶重命名；悬停 caller 中的旧值、已经存在的 Store 值和外部输入不能被误改。
 
-重命名覆盖值表达式及其关系约束，包括帧数据、返回字节和状态效果。仅重命名出栈、保留旧约束中的变量，或按字符串名称绑定不同调用，都可能造成错误关联。
+重放使用同一张 rename map，覆盖值、路径约束、byte/slot source、view、返回数据、暂停 caller、continuation 和 rollback store 中需要改名的内部 fresh；真实输入和调用前已有身份保持绑定。变换成功后才整体安装，不能只重命名返回栈却留下旧根或旧条件。
 
-表达式 JSON 隐藏私有输入作用域及 fresh 编号，只用于解释当前报告中的表达式结构。它不是可反序列化、可跨报告直接复用的证明证书；同名的打印叶不能证明不同分析的输入相同。
+导出的身份作用域不是跨分析的输入绑定协议，flat graph 也不是可直接重新加载的原生求解器状态。比较独立报告须核对其输入和来源绑定；不能因同名 Caller 或同编号 Fresh 就建立相等关系。
 
 ## 6. Word256 编码与字节往返
 
@@ -247,23 +247,15 @@ JSON 省略输入作用域和 fresh 的私有编号。它可以显示表达式�
 
 完整符号指数需要较多编码节点，可能在默认节点预算下成为 `ExpressionLimit`；扩大节点预算也不保证 native solver 能在给定 rlimit 内完成。资源限制保留 Unknown，不能据此猜测 EXP 结果。
 
-MSTORE 拆出的 32 个有序 `BYTE(i,word)`，若都引用同一表达式和作用域，可在 MLOAD 时恢复这个 word 表达式。部分字节、顺序变化、混合来源或无法证明的重组不能强行恢复同一身份。这个规则减少表达式重复增长，不是通用的符号数组或内存别名求解器。
+MSTORE/MSTORE8 的完整 byte/word 更新、WordRead、SlotRead、Copy 和 Keccak 现在属于同一个不可变 EVM 状态模型。标量身份与状态关系一起工作，旧读取捕获旧根。详见[第 17 课](17-symbolic-state.md)。
 
-### 有值的表达式，不等于有符号索引数组
+<a id="有值的表达式不等于有符号索引数组"></a>
 
-这两个场景要分开手算：
+### 标量表达式与有序状态模型怎样配合
 
-| 场景 | 当前能保存的联系 | 仍需怎样的存储知识 |
-| --- | --- | --- |
-| `MSTORE(0,x); MLOAD(0)` | 具体位置上的 BYTE 表达式有机会组装回 x | 已知读取的是刚写过的那 32 个字节 |
-| `MSTORE(p,7); MLOAD(p)`，p 未能具体化 | 知道两次 p 是同一输入 | 未知位置写入当前会粗化字节表，没有一般的符号索引写后读规则 |
-| `SSTORE(0,x+1); SLOAD(0)` | 具体 slot 的单元可保存并读回表达式 | 读写必须仍指向同一账户和具体 slot |
-| `SSTORE(k,7); SLOAD(k)`，k 未能具体化 | 知道两次 k 是同一输入 | 弱更新合并“命中/未命中”的值后，未普遍保存位置与值的关联 |
+单个 Word256 运算描述值怎样计算；ByteStateId、SlotStateId 和 view 描述值读自哪份有序状态。当前分析器将符号地址、长度、零补、账户归属和回滚关系一起保留，再编码给 SMT。数组使用 BV 索引和元素：slot 值为 Word256，byte 元素为 8 位；32 字节按 EVM 大端顺序组成 word。Keccak 使用绑定完整内容的函数关系，没有 injectivity 假设；不同来源不证明不同内容或不同哈希。
 
-如果路径条件先证明 p=0 或 k=0，操作数精化可以将相应读写变成具体位置的操作。这是“关系帮助寻址”，与直接实现 `select(store(array,k,v),k)=v` 的符号数组模型不同。前者现在已有；后者不能从两个值拥有相同符号身份直接推出。
-
-[第 14 课](14-memory-model.md)逐字节观察第一、二行，[第 16 课](16-storage-model.md)观察第三、四行，以及强更新、弱更新和 RPC 初始值依赖。旧读取产生的 x 是当时的值；后续改写单元不会把 x 重新绑定为新值。
-
+同址写后读、混合写序、overlap 和 branch pairing 要通过真实指令继续传递读取结论；source graph 接口存在并不自动证明全部路径已覆盖。未知代码、具体化需求和求解额度继续使用准确的 typed 边界。
 
 ## 7. 原生后端与确定性资源预算
 
@@ -294,21 +286,21 @@ Bitwuzla 的限制是协作式的：它在预处理的循环边界和单线程 C
 
 | 参数 | CLI / Web 默认值 | 限制什么 |
 | --- | --- | --- |
-| `--no-relations` | 默认启用关系分析 | 关闭表达式传播和关系查询，保留数值及可信复制/输入身份 |
+| `--no-relations` | 默认启用关系分析 | 关闭纯标量派生表达式传播与分支/数值关系查询；数值、可信身份和 byte/slot 内容根仍保留 |
 | `--max-symbolic-nodes` | 16384 | 保留表达式及单次编码遍历的节点工作量 |
 | `--max-symbolic-depth` | 256 | 表达式嵌套深度 |
 | `--max-relations` | 2048 | 当前关系合取的原子数 |
 | `--smt.provider` | `z3` | 进程内后端，可选 `z3`、`bitwuzla`、`cvc5` |
 | `--smt.rlimit` | 10000000 | 单次求解检查的资源额度，单位由所选后端决定 |
 
-节点数按展开树计，是共享 DAG 工作量的保守上界；不能因为子节点共享就把深度或数值溢出当作已经完成。构造超过限制或计数溢出时显式拒绝，不保留被低估的大小。
+保留表达式的大小指标按展开树计，是共享 DAG 的保守上界；求解编码还单独计入实际遍历和构造工作。导出 flat graph 则按实际 DAG 节点和 exact payload 计量，不能用序列化额度替代分析额度。共享节点不消除深度或计数溢出边界，COPY 的逻辑字节长度也不等于逐字节执行工作。构造超过限制或计数溢出时显式拒绝，不保留被低估的大小。
 
 `--max-facts` 仍控制数值域内一次临时事实交换的容量；它不是持久关系状态的容量。`--context-depth` 仍保留跳转来源历史，也不是路径条件表。增大这些参数不能代替缺少的语义，或让预算中断的图变成完整证明。
 
 ## 源码与验证入口
 
 - [`symbolic.rs`](../crates/evm-abstract/src/domain/symbolic.rs)：作用域、结构表达式、fresh 叶、规范化和节点边界。
-- [`relational.rs`](../crates/evm-abstract/src/domain/relational.rs)：保证导入、assume、join/widening、相关性与查询结果。
+- [`relational.rs`](../crates/evm-abstract/src/domain/relational.rs)：保证导入、assume、共同保证 join、相关性与查询结果；整机 join/widening 另在 machine 层。
 - [`relational/solver.rs`](../crates/evm-abstract/src/domain/relational/solver.rs)：共享的 EVM 定宽位向量编码、关系查询和结果解释。
 - [`embedded-smt`](../crates/embedded-smt/src/lib.rs)：与 EVM 无关的求解接口、三个进程内后端及各自的资源计数。
 - [`transfer/relations.rs`](../crates/evm-abstract/src/analysis/transfer/relations.rs)：分支假设与回写数值。

@@ -28,7 +28,10 @@ fn identity_scope() -> Option<u64> {
 mod budget;
 mod calls;
 pub(super) mod create;
+mod errors;
+mod hash;
 mod precompile;
+mod ranges;
 mod relations;
 
 pub(super) use crate::resource::WorkBudget;
@@ -74,9 +77,17 @@ pub(super) struct Execution {
     pub instruction_values: Vec<InstructionValue>,
     pub successors: Vec<Successor>,
     pub diagnostics: Vec<(usize, DiagnosticKind)>,
-    pub frontiers: Vec<(usize, FrontierReason, Option<MachineKey>)>,
+    pub frontiers: Vec<ExecutionFrontier>,
     pub outcomes: Vec<Outcome>,
     pub completed_calls: Vec<CompletedCall>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ExecutionFrontier {
+    pub pc: usize,
+    pub reason: FrontierReason,
+    pub target: Option<MachineKey>,
+    pub range: Option<super::RangeWitness>,
 }
 
 impl Execution {
@@ -146,9 +157,27 @@ fn zero() -> AbstractValue {
     AbstractValue::constant(U256::ZERO)
 }
 fn boundary(result: &mut Execution, pc: usize, reason: FrontierReason) {
-    result
-        .frontiers
-        .push((pc, reason, Some(result.payload.key())));
+    boundary_on(result, pc, reason, result.payload.key());
+}
+
+fn boundary_reason(reason: FrontierReason) -> FrontierReason {
+    // The shared ledger declines both exhausted work and cancellation. Keep
+    // the actual interruption distinct at every transfer frontier, including
+    // callers that return a raw Work error before a frontier is constructed.
+    if reason == FrontierReason::Work && embedded_smt::current_cancellation().is_cancelled() {
+        FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+    } else {
+        reason
+    }
+}
+
+fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target: MachineKey) {
+    result.frontiers.push(ExecutionFrontier {
+        pc,
+        reason: boundary_reason(reason),
+        target: Some(target),
+        range: None,
+    });
 }
 
 fn successor(
@@ -172,6 +201,9 @@ fn touch_memory(
     context: &mut TransferContext<'_>,
     pc: usize,
 ) -> bool {
+    if !ranges::memory(result, offset, size, context, pc) {
+        return false;
+    }
     let config = context.config;
     let domain = context.domain;
     if !context.budget.charge(byte_work(
@@ -183,14 +215,14 @@ fn touch_memory(
         boundary(result, pc, FrontierReason::Work);
         return false;
     }
-    if result
-        .payload
-        .active_mut()
-        .memory
-        .expand(offset, size, config.max_memory_bytes, domain)
-        .is_err()
+    if let Err(error) =
+        result
+            .payload
+            .active_mut()
+            .memory
+            .expand(offset, size, config.max_memory_bytes, domain)
     {
-        boundary(result, pc, FrontierReason::Memory);
+        boundary(result, pc, errors::bytes(error));
         return false;
     }
     true
@@ -413,9 +445,7 @@ pub(super) fn execute(
                 Ok(false) => return result,
                 Ok(true) => {}
                 Err(reason) => {
-                    let stop = reason == FrontierReason::Work;
-                    boundary(&mut result, pc, reason);
-                    if stop {
+                    if relations::refinement_failure(&mut result, pc, reason) {
                         return result;
                     }
                 }
@@ -610,8 +640,8 @@ pub(super) fn execute(
                     domain,
                 ) {
                     Ok(data) => data,
-                    Err(_) => {
-                        boundary(&mut result, pc, FrontierReason::Memory);
+                    Err(error) => {
+                        boundary(&mut result, pc, errors::bytes(error));
                         return result;
                     }
                 };
@@ -676,27 +706,37 @@ pub(super) fn execute(
             }
             opcode::SSTORE | opcode::TSTORE => {
                 let state_address = result.payload.active().key.address;
-                if op == opcode::SSTORE {
+                let write = if op == opcode::SSTORE {
                     result
                         .payload
                         .store
-                        .write(state_address, &args[0], &args[1], domain);
+                        .write_checked(state_address, &args[0], &args[1], domain)
                 } else {
-                    result
-                        .payload
-                        .store
-                        .write_transient(state_address, &args[0], &args[1], domain);
+                    result.payload.store.write_transient_checked(
+                        state_address,
+                        &args[0],
+                        &args[1],
+                        domain,
+                    )
+                };
+                if let Err(error) = write {
+                    boundary(&mut result, pc, errors::store(error));
+                    return result;
                 }
             }
             opcode::MSTORE | opcode::MSTORE8 => {
+                let size = constant(if op == opcode::MSTORE { 32 } else { 1 });
+                if !touch_memory(&mut result, &args[0], &size, context, pc) {
+                    return result;
+                }
                 let memory = &mut result.payload.active_mut().memory;
                 let write = if op == opcode::MSTORE {
                     memory.write_word(&args[0], &args[1], config.max_memory_bytes, domain)
                 } else {
                     memory.write_byte(&args[0], &args[1], config.max_memory_bytes, domain)
                 };
-                if write.is_err() {
-                    boundary(&mut result, pc, FrontierReason::Memory);
+                if let Err(error) = write {
+                    boundary(&mut result, pc, errors::bytes(error));
                     return result;
                 }
                 if memory.symbolic_limit_reached() {
@@ -716,40 +756,43 @@ pub(super) fn execute(
                     opcode::RETURNDATACOPY => result.payload.active().returndata.clone(),
                     _ => result.payload.active().memory.clone(),
                 };
-                if op == opcode::RETURNDATACOPY {
-                    let (valid, invalid) = return_copy_bounds(&args[1], &args[2], source.len());
-                    if invalid {
-                        failure(&mut result, context, pc);
-                    }
-                    if !valid {
-                        result.mark_instruction(InstructionProgress::Dispatched);
-                        return result;
-                    }
+                if op == opcode::RETURNDATACOPY
+                    && !ranges::returndata(
+                        &mut result,
+                        &args[1],
+                        &args[2],
+                        source.len(),
+                        context,
+                        pc,
+                    )
+                {
+                    result.mark_instruction(InstructionProgress::Dispatched);
+                    return result;
                 }
                 if op == opcode::MCOPY
                     && !touch_memory(&mut result, &args[1], &args[2], context, pc)
                 {
                     return result;
                 }
-                if result
-                    .payload
-                    .active_mut()
-                    .memory
-                    .copy_from(
-                        &args[0],
-                        &source,
-                        &args[1],
-                        &args[2],
-                        config.max_memory_bytes,
-                        domain,
-                    )
-                    .is_err()
-                {
-                    boundary(&mut result, pc, FrontierReason::Memory);
+                if !touch_memory(&mut result, &args[0], &args[2], context, pc) {
+                    return result;
+                }
+                if let Err(error) = result.payload.active_mut().memory.copy_from(
+                    &args[0],
+                    &source,
+                    &args[1],
+                    &args[2],
+                    config.max_memory_bytes,
+                    domain,
+                ) {
+                    boundary(&mut result, pc, errors::bytes(error));
                     return result;
                 }
             }
             opcode::EXTCODECOPY => {
+                if !touch_memory(&mut result, &args[1], &args[3], context, pc) {
+                    return result;
+                }
                 let symbolic_owner = entry.environment.to.as_concrete().is_none();
                 let exact_self = symbolic_owner
                     && args[0].identity().same_identity(
@@ -764,9 +807,8 @@ pub(super) fn execute(
                         .unwrap_or_else(ByteArray::unknown)
                 } else {
                     match args[0].constants() {
-                        Some(targets) => targets
-                            .iter()
-                            .map(|target| {
+                        Some(targets) => {
+                            let mut sources = targets.iter().map(|target| {
                                 let target = address(*target);
                                 if symbolic_owner && target == entry.address {
                                     ByteArray::unknown()
@@ -775,27 +817,41 @@ pub(super) fn execute(
                                         .map(|bytes| ByteArray::exact(&bytes))
                                         .unwrap_or_else(ByteArray::unknown)
                                 }
-                            })
-                            .reduce(|a, b| a.join(&b, domain))
-                            .expect("nonempty value"),
+                            });
+                            let first = sources.next().expect("nonempty value");
+                            let joined = sources.try_fold(first, |left, right| {
+                                let selector = crate::domain::symbolic::ExprId::fresh().ok_or(
+                                    crate::world::RangeError::State(
+                                        crate::domain::symbolic::StateError::IdentityExhausted,
+                                    ),
+                                )?;
+                                left.join_guarded(
+                                    &right,
+                                    domain,
+                                    selector,
+                                    config.analysis.relations.expressions(),
+                                )
+                            });
+                            match joined {
+                                Ok(source) => source,
+                                Err(error) => {
+                                    boundary(&mut result, pc, errors::bytes(error));
+                                    return result;
+                                }
+                            }
+                        }
                         None => ByteArray::unknown(),
                     }
                 };
-                if result
-                    .payload
-                    .active_mut()
-                    .memory
-                    .copy_from(
-                        &args[1],
-                        &source,
-                        &args[2],
-                        &args[3],
-                        config.max_memory_bytes,
-                        domain,
-                    )
-                    .is_err()
-                {
-                    boundary(&mut result, pc, FrontierReason::Memory);
+                if let Err(error) = result.payload.active_mut().memory.copy_from(
+                    &args[1],
+                    &source,
+                    &args[2],
+                    &args[3],
+                    config.max_memory_bytes,
+                    domain,
+                ) {
+                    boundary(&mut result, pc, errors::bytes(error));
                     return result;
                 }
             }
@@ -810,8 +866,8 @@ pub(super) fn execute(
                     domain,
                 ) {
                     Ok(data) => data,
-                    Err(_) => {
-                        boundary(&mut result, pc, FrontierReason::Memory);
+                    Err(error) => {
+                        boundary(&mut result, pc, errors::bytes(error));
                         return result;
                     }
                 };
@@ -893,41 +949,38 @@ pub(super) fn execute(
                     opcode::GAS => entry.environment.gas.value(),
                     opcode::PC => constant(pc),
                     opcode::CODESIZE => constant(program.byte_len()),
-                    opcode::CALLDATASIZE => {
-                        let value = frame.calldata.len().clone();
-                        if frame.environment_calldata {
-                            value.with_symbol(
-                                Symbol::CalldataLength,
-                                entry.environment.input_scope.id(),
-                            )
-                        } else {
-                            value
-                        }
-                    }
+                    opcode::CALLDATASIZE => frame.calldata.len().clone(),
                     opcode::RETURNDATASIZE => frame.returndata.len().clone(),
                     opcode::MSIZE => frame.memory.len().clone(),
                     opcode::CALLDATALOAD => {
-                        let value = frame.calldata.read_word(&args[0], domain);
-                        if frame.environment_calldata {
-                            args[0].singleton().map_or(value.clone(), |offset| {
-                                value.with_symbol(
-                                    Symbol::CalldataWord(offset),
-                                    entry.environment.input_scope.id(),
-                                )
-                            })
-                        } else {
-                            value
+                        match frame.calldata.read_word_checked(&args[0], domain) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                boundary(&mut result, pc, errors::bytes(error));
+                                return result;
+                            }
                         }
                     }
-                    opcode::SLOAD => result
-                        .payload
-                        .store
-                        .read(frame.key.address, &args[0], domain),
-                    opcode::TLOAD => {
-                        result
-                            .payload
-                            .store
-                            .read_transient(frame.key.address, &args[0], domain)
+                    opcode::SLOAD | opcode::TLOAD => {
+                        let read = if op == opcode::SLOAD {
+                            result
+                                .payload
+                                .store
+                                .read_checked(frame.key.address, &args[0], domain)
+                        } else {
+                            result.payload.store.read_transient_checked(
+                                frame.key.address,
+                                &args[0],
+                                domain,
+                            )
+                        };
+                        match read {
+                            Ok(value) => value,
+                            Err(error) => {
+                                boundary(&mut result, pc, errors::store(error));
+                                return result;
+                            }
+                        }
                     }
                     opcode::SELFBALANCE => result.payload.store.read_balance(frame.key.address),
                     opcode::BALANCE => environment_targets(&args[0], domain, entry, |address| {
@@ -968,7 +1021,18 @@ pub(super) fn execute(
                         if !touch_memory(&mut result, &args[0], &constant(32), context, pc) {
                             return result;
                         }
-                        result.payload.active().memory.read_word(&args[0], domain)
+                        match result
+                            .payload
+                            .active()
+                            .memory
+                            .read_word_checked(&args[0], domain)
+                        {
+                            Ok(value) => value,
+                            Err(error) => {
+                                boundary(&mut result, pc, errors::bytes(error));
+                                return result;
+                            }
+                        }
                     }
                     opcode::KECCAK256 => {
                         if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
@@ -980,16 +1044,12 @@ pub(super) fn execute(
                             config.max_memory_bytes,
                             domain,
                         ) {
-                            Ok(bytes) => bytes
-                                .exact_bytes_bounded(config.max_memory_bytes)
-                                .map(|bytes| {
-                                    AbstractValue::constant(U256::from_be_slice(
-                                        keccak256(bytes).as_slice(),
-                                    ))
-                                })
-                                .unwrap_or_else(AbstractValue::top),
-                            Err(_) => {
-                                boundary(&mut result, pc, FrontierReason::Memory);
+                            Ok(bytes) => match hash::evaluate(&bytes, &mut result, context, pc) {
+                                Some(value) => value,
+                                None => return result,
+                            },
+                            Err(error) => {
+                                boundary(&mut result, pc, errors::bytes(error));
                                 return result;
                             }
                         }
@@ -1035,6 +1095,15 @@ pub(super) fn execute(
                     );
                 }
                 value = relations::identify(value, config.analysis.relations.enabled);
+                match relations::refine(&mut value, &result.payload.relations, context) {
+                    Ok(false) => return result,
+                    Ok(true) => {}
+                    Err(reason) => {
+                        if relations::refinement_failure(&mut result, pc, reason) {
+                            return result;
+                        }
+                    }
+                }
                 {
                     let origin = match op {
                         opcode::ADDRESS | opcode::CALLER | opcode::ORIGIN => Some(Origin::Address),
@@ -1095,34 +1164,57 @@ pub(super) fn execute(
     result
 }
 
-fn return_copy_bounds(
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    length: &AbstractValue,
-) -> (bool, bool) {
-    let (Some(offsets), Some(sizes), Some(lengths)) =
-        (offset.constants(), size.constants(), length.constants())
-    else {
-        return (true, true);
-    };
-    let mut valid = false;
-    let mut invalid = false;
-    for offset in offsets {
-        for size in sizes {
-            for length in lengths {
-                let fits = offset.checked_add(*size).is_some_and(|end| end <= *length);
-                valid |= fits;
-                invalid |= !fits;
-            }
-        }
-    }
-    (valid, invalid)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Fork, world::Account};
+
+    #[test]
+    fn cancelled_transfer_preserves_input_and_differs_from_exhausted_work() {
+        let owner = Address::from([0x11; 20]);
+        let mut world = World::new(Fork::Osaka, "transfer interruption");
+        world
+            .insert(owner, Account::from_hex("60015f5500", Fork::Osaka).unwrap())
+            .unwrap();
+        let entry = Entry::new(owner);
+        let config = ExecutionConfig::default();
+        let domain = config.domain().unwrap();
+        let input = initial(&world, &entry, domain).unwrap();
+        for cancelled in [false, true] {
+            let control = crate::analysis::control::Control::new(Default::default());
+            let result = control.scope(|| {
+                let mut budget = WorkBudget::new(if cancelled { config.max_work } else { 0 });
+                if cancelled {
+                    control.cancellation().cancel();
+                }
+                execute(
+                    &world,
+                    &entry,
+                    input.clone(),
+                    &config,
+                    domain,
+                    &mut budget,
+                    StorageReadPolicy::Abstract,
+                )
+            });
+            assert_eq!(result.payload, input);
+            assert!(result.executed_pcs.is_empty());
+            assert!(result.instruction_progress.is_empty());
+            assert!(result.successors.is_empty());
+            assert!(result.outcomes.is_empty());
+            assert_eq!(result.frontiers.len(), 1);
+            assert_eq!(result.frontiers[0].pc, 0);
+            assert_eq!(result.frontiers[0].target, Some(input.key()));
+            assert_eq!(
+                result.frontiers[0].reason,
+                if cancelled {
+                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+                } else {
+                    FrontierReason::Work
+                }
+            );
+        }
+    }
 
     #[test]
     fn delegation_without_raw_byte_evidence_explains_the_active_source() {

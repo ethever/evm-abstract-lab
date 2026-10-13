@@ -142,7 +142,7 @@ nix run . -- explain \
   --verbose
 ```
 
-完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=5`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=6`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 完整 SSA 继续逐帧列出 active/suspended、代码地址、storage owner、代码 hash、mode、caller、static、跳转历史和栈高，不会因为活动帧采用共用指令布局而省略暂停帧。`bytecode instructions` 与 `instruction effects` 共享当前 Bᵢ 标题和不带 `0x` 的 pc 列，效果行不重复打印 Bᵢ 标题；指令正文显示归一化计算，并保留逐指令效果编号与故障注释。JSON 的 `opcode`、`immediate`、`operands`、`results`、`fault` 继续记录原始指令证据，`operation` 记录最终计算，`facts` 与 `mappings` 分别记录事实和来源、等价、依赖。教学视图与完整视图使用同一份归一化 SSA，完整视图展开帧和效果链。
 
@@ -409,7 +409,7 @@ nix run . -- analyze \
 
 分析器的工作表保存整台机器。状态键区分全部帧的代码地址/hash/模式、状态账户、逻辑 ADDRESS、caller、static、基本块、栈高和帧内跳转历史，还区分 Store 中的代码与生命周期身份。只有键相同的状态值才能 join。这样同一实现的两个代理、同一合约的内外重入帧都能保持各自身份。
 
-这也是引擎保持结构约束的原因：活跃帧始终存在，每个子帧有返回契约，不同栈高不能逐槽合并，正在执行的代码与基本块必须属于该帧。数值 join 只扩大这些相同结构位置上的可能值。未知 slot 的写入使用弱更新，不能把可能被覆盖的旧常量继续当成确定值；组合域也没有消除这种别名边界。
+这也是引擎保持结构约束的原因：活跃帧始终存在，每个子帧有返回契约，不同栈高不能逐槽合并，代码与基本块必须属于该帧。数值 join 扩大对应位置的候选；整机 guarded join 另以同一个 selector 配对帧、byte/slot 根、continuation、rollback store 与路径公式。未知 slot 写入保存有序符号更新，数值表可弱更新；同址读取能利用根，其他别名须检查条件，不能用一个旧常量或来源标签代替这项判断。
 
 对应源码是 [`world.rs`](../crates/evm-abstract/src/world.rs) 的初始事实、[`store.rs`](../crates/evm-abstract/src/world/store.rs) 的共享状态、[`machine.rs`](../crates/evm-abstract/src/analysis/machine.rs) 的帧和图。加 `--ssa` 可构建跨合约 SSA：调用和返回显式传递帧与状态效果；验证器先要求分析完整，再核对状态、指令和边。JSON 此时变成 `{"analysis":...,"ssa":...}`，以上查询需要加 `.analysis` 前缀。
 

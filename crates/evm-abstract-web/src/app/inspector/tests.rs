@@ -6,8 +6,85 @@ mod diagnostics;
 mod scroll_bounds;
 mod storage;
 
+#[test]
+fn export_error_decodes_the_old_reply_and_renders_each_typed_resource_field() {
+    let reply: api::AnalyzeReply = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../evm-abstract-protocol/tests/fixtures/api-errors/export-analyze-reply.json"
+    )))
+    .unwrap();
+    let error = reply.result.unwrap_err();
+    let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
+    let mut time = 0.0;
+    let text = rendered_at(
+        &context,
+        &mut time,
+        vec![],
+        egui::vec2(1200.0, 900.0),
+        |ui| api_error_details(ui, &error),
+    );
+    let labels: Vec<_> = text.iter().map(|(text, _)| text.as_str()).collect();
+    for expected in [
+        "Export boundary",
+        "OutputBytes",
+        "Required",
+        "8193",
+        "Encoded bytes retained",
+        "8192",
+        "Actual graph nodes",
+        "7",
+        "Exact byte payload",
+        "31",
+        "Projection work",
+        "127",
+        "Complete JSON byte limit",
+        "Node/depth limits",
+        "64 / 16",
+        "Payload/work limits",
+        "4096 / 16384",
+    ] {
+        assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
+    }
+}
+
+#[test]
+fn fingerprint_error_renders_the_typed_cause_without_requiring_message_parsing() {
+    let error = api::ApiError {
+        code: api::ApiErrorCode::Export,
+        message: "Snapshot unavailable".into(),
+        details: api::ErrorDetails::Fingerprint(api::FingerprintFailure {
+            kind: api::FingerprintFailureKind::Encoding,
+            line: Some(0),
+            column: Some(2),
+        }),
+    };
+    let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
+    let mut time = 0.0;
+    let text = rendered_at(
+        &context,
+        &mut time,
+        vec![],
+        egui::vec2(1000.0, 600.0),
+        |ui| api_error_details(ui, &error),
+    );
+    let labels: Vec<_> = text.iter().map(|(text, _)| text.as_str()).collect();
+    for expected in [
+        "Snapshot fingerprint unavailable",
+        "Encoding",
+        "Encoding line",
+        "0",
+        "Encoding column",
+        "2",
+    ] {
+        assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
+    }
+}
+
 fn word(value: &str) -> api::ValueInfo {
     api::ValueInfo {
+        nonzero: false,
         summary: value.into(),
         constants: Some(vec![value.into()]),
         known_zero: "0x0".into(),
@@ -30,6 +107,8 @@ fn word(value: &str) -> api::ValueInfo {
 }
 fn account() -> api::AccountState {
     api::AccountState {
+        storage_root: evm_abstract_protocol::SlotStateRef { node: 3 },
+        transient_root: evm_abstract_protocol::SlotStateRef { node: 3 },
         address: "0x1111111111111111111111111111111111111111".into(),
         existence: api::AccountExistence::Present,
         balance: word("0x0"),
@@ -48,6 +127,8 @@ fn account() -> api::AccountState {
 }
 fn store() -> api::StoreSnapshot {
     api::StoreSnapshot {
+        storage_facts: vec![],
+        transient_facts: vec![],
         storage_default: word("0x0"),
         transient_default: word("0x0"),
         balance_default: word("0x0"),
@@ -86,6 +167,7 @@ fn rollback_uses_the_selected_suspended_frame_checkpoint_without_changing_machin
         store.accounts[0].balance = word(&index.to_string());
     }
     let machine = api::MachineSnapshot {
+        path: evm_abstract_protocol::PathRef { node: 4 },
         frames: vec![frame(0, 1), frame(1, 2)],
         store: 0,
     };
@@ -121,9 +203,11 @@ fn rollback_uses_the_selected_suspended_frame_checkpoint_without_changing_machin
 fn a_new_report_reusing_s0_cannot_keep_a_historical_exit_or_outcome_selection() {
     let mut workspace = crate::Workspace::default();
     let mut report = crate::tests::report();
+    report.stores = vec![store()];
     report.states = vec![api::StateDetails {
         state: 0,
         entry: api::MachineSnapshot {
+            path: evm_abstract_protocol::PathRef { node: 4 },
             frames: vec![frame(0, 0)],
             store: 0,
         },
@@ -319,6 +403,8 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
     report.stores = vec![store()];
     report.byte_arrays = (0..64)
         .map(|index| api::ByteArraySnapshot {
+            symbolic_facts: vec![],
+            symbolic: evm_abstract_protocol::ByteViewRef { node: 2 },
             length: word(&format!("0x{index:x}")),
             default: word("0x0"),
             cells: vec![],
@@ -405,6 +491,8 @@ fn relational_frontier_details_show_fact_arity_and_distinguish_solver_failure() 
     let mut report = crate::tests::report();
     report.diagnostics.clear();
     report.frontiers = vec![api::Frontier {
+        range: None,
+        payload: None,
         from: Some(0),
         pc: Some(4),
         kind: api::FrontierKind::Relations,
@@ -533,7 +621,11 @@ fn native_state_and_frame_symbols_match_accessibility_without_renumbering() {
         .collect();
     report.states = vec![api::StateDetails {
         state: 425,
-        entry: api::MachineSnapshot { frames, store: 0 },
+        entry: api::MachineSnapshot {
+            frames,
+            store: 0,
+            path: api::PathRef { node: 4 },
+        },
         exit: None,
     }];
     workspace.receive(Ok(api::AnalyzeReply { result: Ok(report) }));
@@ -566,6 +658,8 @@ fn frontier_symbol_click_retains_original_state_and_instruction_coordinates() {
     let mut report = crate::tests::report();
     report.diagnostics.clear();
     report.frontiers = vec![api::Frontier {
+        range: None,
+        payload: None,
         from: Some(425),
         pc: Some(0x42),
         kind: api::FrontierKind::Work,
@@ -641,17 +735,18 @@ fn expression_references_and_u64_names_are_typeset_without_changing_values() {
         },
     };
     observed.identity = Some(input.clone());
-    observed.expression = Some(api::ExpressionGraph {
-        nodes: vec![
-            api::Expression::Input(input),
-            api::Expression::Fresh(u64::MAX),
-            api::Expression::Operation(api::ExpressionOperation {
-                opcode: 0x01,
-                arguments: vec![0, 1],
-            }),
-        ],
-        root: 2,
-    });
+    observed.expression = Some(api::ExpressionRef { node: 2 });
+    let nodes = [
+        api::Expression::Input(input),
+        api::Expression::Fresh(u64::MAX),
+        api::Expression::Operation(api::ExpressionOperation {
+            opcode: 0x01,
+            arguments: vec![
+                api::ExpressionRef { node: 0 },
+                api::ExpressionRef { node: 1 },
+            ],
+        }),
+    ];
     let context = egui::Context::default();
     crate::palette::configure(&context);
     let mut time = 0.0;
@@ -660,11 +755,19 @@ fn expression_references_and_u64_names_are_typeset_without_changing_values() {
         &mut time,
         vec![],
         egui::vec2(1200.0, 900.0),
-        |ui| value::details(ui, &observed),
+        |ui| {
+            value::details(ui, &observed);
+            for (index, node) in nodes.iter().enumerate() {
+                ui.label(crate::notation::widget(
+                    ui,
+                    format!("expr{index} = {}", super::symbolic::label(node)),
+                ));
+            }
+        },
     );
     for expected in [
         format!("scope{} · To", u64::MAX),
-        "Expression root expr2".into(),
+        "Expression root expr2 · shared report graph".into(),
         format!("expr0 = input scope{} · To", u64::MAX),
         format!("expr1 = fresh{}", u64::MAX),
         "expr2 = opcode 0x01(expr0, expr1)".into(),
@@ -676,10 +779,7 @@ fn expression_references_and_u64_names_are_typeset_without_changing_values() {
         );
     }
     assert_eq!(observed.identity.unwrap().scope, u64::MAX);
-    assert_eq!(
-        observed.expression.unwrap().nodes[1],
-        api::Expression::Fresh(u64::MAX)
-    );
+    assert_eq!(nodes[1], api::Expression::Fresh(u64::MAX));
 }
 
 #[test]

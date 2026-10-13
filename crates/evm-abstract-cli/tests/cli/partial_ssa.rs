@@ -265,13 +265,90 @@ fn raw_unknown_target_partial_ssa_uses_native_ids_and_retains_exit_two() {
         2,
     );
     assert_concise(&rendered);
+    assert_partial(&rendered, "UnknownTarget");
+    assert_eq!(json["partial_ssa"]["frontiers"], machine["frontiers"]);
+    // Completing the deeper precompile before its caller leaves current
+    // receipts for every observed edge. Unknown execution is a frontier;
+    // it does not by itself imply an obsolete edge or open phi input.
     assert!(
-        !json["partial_ssa"]["deferred_edges"]
+        json["partial_ssa"]["deferred_edges"]
             .as_array()
             .unwrap()
             .is_empty()
     );
+    assert!(
+        json["partial_ssa"]["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|block| block["coverage"] == "Current" && block["open_incoming"] == json!([]))
+    );
+    assert!(!partial_body(&rendered).contains("Deferred edges"));
+    assert!(!partial_body(&rendered).contains("open incoming=["));
+}
+
+#[test]
+fn budgeted_loop_partial_ssa_keeps_stale_edges_and_open_incoming() {
+    // The second transfer grows the loop entry after executing its old body.
+    // Stopping there deliberately leaves a stale receipt, independent of how
+    // ready calls at different depths are scheduled.
+    let args = [
+        "ssa",
+        "--hex",
+        "5f5b600101600156",
+        "--context-depth",
+        "0",
+        "--max-transfers",
+        "2",
+        "--allow-partial-ssa",
+    ];
+    let json = report(&run(&[args.as_slice(), &["--format", "json"]].concat()));
+    let machine = &json["machine_analysis"];
+    let partial = &json["partial_ssa"];
+    assert_eq!(partial["frontiers"], machine["frontiers"]);
+    assert!(
+        partial["frontiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|frontier| frontier["reason"] == json!({"Budget": "Transfers"}))
+    );
+    let deferred = partial["deferred_edges"].as_array().unwrap();
+    assert!(!deferred.is_empty());
+    for deferred in deferred {
+        let edge = deferred["edge"].as_u64().unwrap() as usize;
+        let source = &machine["edges"][edge];
+        assert_eq!(source["from"], deferred["from"]);
+        assert_eq!(source["to"], deferred["to"]);
+        assert_eq!(source["kind"], deferred["kind"]);
+        assert_eq!(deferred["reason"], "SourceStale");
+        let block = partial["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["state"] == deferred["from"])
+            .unwrap();
+        assert_eq!(block["coverage"], "Stale");
+        assert_eq!(block["instructions"], json!([]));
+        assert!(
+            block["open_incoming"]
+                .as_array()
+                .unwrap()
+                .contains(&deferred["edge"])
+        );
+        assert!(
+            !partial["transitions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|transition| transition["edge"] == deferred["edge"])
+        );
+    }
+    let rendered = text(&run(&args), 2);
+    assert_partial(&rendered, "Transfers");
+    assert_concise(&rendered);
     assert!(partial_body(&rendered).contains("Deferred edges"));
+    assert!(partial_body(&rendered).contains("coverage=Stale"));
     assert!(partial_body(&rendered).contains("open incoming=["));
 }
 
@@ -372,7 +449,10 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "--format",
             "json",
             "--max-work",
-            "1500",
+            // Checked source/state initialization is charged before opcodes.
+            // 1800 retains three completed/pending instructions; 1500 admits
+            // the state but no instruction prefix (survey in task evidence).
+            "1800",
         ],
     ));
     let instructions = json["partial_ssa"]["blocks"][0]["instructions"]
@@ -518,11 +598,21 @@ fn complete_outputs_are_identical_with_and_without_partial_opt_in() {
     ] {
         let expected = run(&args);
         text(&expected, 0);
+        let json = args.contains(&"json");
         let mut partial = args;
         partial.push("--allow-partial-ssa");
         let actual = run(&partial);
         text(&actual, 0);
-        assert_eq!(actual.stdout, expected.stdout);
+        if json {
+            let actual: Json = serde_json::from_slice(&actual.stdout).unwrap();
+            let expected: Json = serde_json::from_slice(&expected.stdout).unwrap();
+            assert_eq!(
+                super::native::canonical(&actual),
+                super::native::canonical(&expected)
+            );
+        } else {
+            assert_eq!(actual.stdout, expected.stdout);
+        }
         assert_eq!(actual.stderr, expected.stderr);
     }
     let world = WorldCode::new("602a5f5260205ff3");
@@ -534,11 +624,21 @@ fn complete_outputs_are_identical_with_and_without_partial_opt_in() {
     ] {
         let expected = world.run(command, &args);
         text(&expected, 0);
+        let json = args.contains(&"json");
         let mut partial = args;
         partial.push("--allow-partial-ssa");
         let actual = world.run(command, &partial);
         text(&actual, 0);
-        assert_eq!(actual.stdout, expected.stdout);
+        if json {
+            let actual: Json = serde_json::from_slice(&actual.stdout).unwrap();
+            let expected: Json = serde_json::from_slice(&expected.stdout).unwrap();
+            assert_eq!(
+                super::native::canonical(&actual),
+                super::native::canonical(&expected)
+            );
+        } else {
+            assert_eq!(actual.stdout, expected.stdout);
+        }
         assert_eq!(actual.stderr, expected.stderr);
     }
 }

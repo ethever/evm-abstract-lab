@@ -83,10 +83,19 @@ fn fingerprints_bind_original_open_constraints_across_runtime_profiles() {
     // 每个世界都绑定同一账户、代码和快照；只有开放数值约束不同。
     world = World::offline(Fork::Osaka, "domain-policy:v1", "domain policy test");
     world.insert(entry.address, account).unwrap();
-    assert_ne!(odd_world.fingerprint(), even_world.fingerprint());
-    assert_ne!(odd_world.fingerprint(), world.fingerprint());
-    assert_ne!(even_world.fingerprint(), world.fingerprint());
-    let original_fingerprint = odd_world.fingerprint();
+    assert_ne!(
+        odd_world.fingerprint().unwrap(),
+        even_world.fingerprint().unwrap()
+    );
+    assert_ne!(
+        odd_world.fingerprint().unwrap(),
+        world.fingerprint().unwrap()
+    );
+    assert_ne!(
+        even_world.fingerprint().unwrap(),
+        world.fingerprint().unwrap()
+    );
+    let original_fingerprint = odd_world.fingerprint().unwrap();
     for profile in [Profile::Product, Profile::ConstantsOnly] {
         let graph = analyze_world(
             odd_world.clone(),
@@ -102,7 +111,7 @@ fn fingerprints_bind_original_open_constraints_across_runtime_profiles() {
         )
         .unwrap();
         assert_complete(&graph);
-        assert_eq!(graph.world().fingerprint(), original_fingerprint);
+        assert_eq!(graph.world().fingerprint().unwrap(), original_fingerprint);
         assert_eq!(
             graph.world().accounts()[&entry.address].storage[&U256::ZERO],
             odd
@@ -139,7 +148,10 @@ fn json_distinguishes_a_top_component_from_the_whole_product() {
     let (world, entry) = fixture("00");
     let graph = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
     let json = serde_json::to_value(&graph).unwrap();
-    assert_eq!(json["schema_version"], 5);
+    assert_eq!(
+        json["schema_version"],
+        evm_abstract::analysis::SCHEMA_VERSION
+    );
     assert_eq!(
         json["domain_spec"],
         serde_json::to_value(graph.domain_spec()).unwrap()
@@ -259,7 +271,10 @@ fn summaries_guard_the_entire_frozen_domain_policy() {
     let input: &SummaryInput = &graph.summaries()[0].input;
     for record in graph.summaries() {
         assert_eq!(record.input.domain_spec, spec);
-        assert_eq!(record.input.world_fingerprint, graph.world().fingerprint());
+        assert_eq!(
+            record.input.world_fingerprint,
+            graph.world().fingerprint().unwrap()
+        );
         let json = serde_json::to_value(&record.input).unwrap();
         assert_eq!(json["domain_spec"]["schema_version"], 2);
         assert_eq!(json["domain_spec"]["cost_version"], 2);
@@ -349,48 +364,158 @@ fn a_counter_loop_reaches_a_stored_postfixpoint_and_verifies_ssa() {
 
 #[test]
 fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
+    use evm_abstract::domain::{relational::CheckResult, symbolic::ExprId};
+
     let call = |offset: u8| format!("602060{offset:02x}5f5f5f6102006207a120f1");
-    let caller = format!("{}50{}50{}506020516040511800", call(0), call(32), call(64));
-    let (mut world, entry) = fixture(&caller);
-    // 读取旧计数器、写入旧值+1、返回旧值。第二与第三次调用有相同的开放
-    // abstract Store guard，但具体返回值可以不同，不能复用证书内的复制身份。
-    let mut callee = Account::from_hex("5f54806001015f555f5260205ff3", world.fork()).unwrap();
-    callee.storage_unknown = true;
-    world.insert(address(0x200), callee).unwrap();
-    for use_summaries in [false, true] {
-        let graph = analyze_world(
-            world.clone(),
-            entry.clone(),
-            ExecutionConfig {
-                use_summaries,
-                max_work: usize::MAX,
-                ..ExecutionConfig::default()
-            },
-        )
-        .unwrap();
-        assert_complete(&graph);
-        if use_summaries {
-            assert!(
-                graph.summary_stats().hits > 0,
-                "{:?}",
-                graph.summary_stats()
-            );
-        }
-        let final_state = graph
-            .states()
-            .iter()
-            .find(|state| {
-                state.active().code_address == entry.address
-                    && state
-                        .executed_pcs
-                        .contains(&(state.program().unwrap().byte_len() - 1))
-            })
+    let counter_caller = format!("{}50{}50{}506020516040511800", call(0), call(32), call(64));
+    // The counter changes the ordered symbolic store on each call even though
+    // its numeric projection remains Top. Those exact preconditions must miss.
+    // GAS produces a new unknown output without changing any input. A warm-up
+    // with no output copy lets both compared calls replay the same certificate.
+    let readonly_caller = format!(
+        "5f5f5f5f5f6102006207a120f150{}50{}505f516020511800",
+        call(0),
+        call(32)
+    );
+    for (caller, callee_code, reusable) in [
+        (counter_caller, "5f54806001015f555f5260205ff3", false),
+        (readonly_caller, "5a5f5260205ff3", true),
+    ] {
+        let (mut world, entry) = fixture(&caller);
+        let mut callee = Account::from_hex(callee_code, world.fork()).unwrap();
+        callee.storage_unknown = true;
+        world.insert(address(0x200), callee).unwrap();
+        let mut previous = None;
+        for use_summaries in [false, true] {
+            let graph = analyze_world(
+                world.clone(),
+                entry.clone(),
+                ExecutionConfig {
+                    use_summaries,
+                    ..ExecutionConfig::default()
+                },
+            )
             .unwrap();
-        let result = &final_state.exit_stack[0];
-        assert_eq!(result.singleton(), None);
-        assert!(result.contains(U256::ZERO));
-        assert!(result.contains(U256::from(1)));
-        assert!(result.contains(U256::MAX));
+            assert_complete(&graph);
+            if use_summaries && reusable {
+                assert!(
+                    graph.summary_stats().hits >= 2,
+                    "{:?}",
+                    graph.summary_stats()
+                );
+                assert!(
+                    graph
+                        .summaries()
+                        .iter()
+                        .any(|record| record.reused_at.len() >= 2)
+                );
+            } else {
+                assert_eq!(graph.summary_stats().hits, 0);
+            }
+            if use_summaries && !reusable {
+                assert_eq!(graph.summaries().len(), 3);
+                for pair in graph.summaries().windows(2) {
+                    assert_ne!(pair[0].input.store, pair[1].input.store);
+                    assert_ne!(
+                        pair[0].input.frame.state.saved_store,
+                        pair[1].input.frame.state.saved_store
+                    );
+                    assert_ne!(
+                        pair[0]
+                            .input
+                            .store
+                            .slot_root(address(0x200), false)
+                            .unwrap(),
+                        pair[1]
+                            .input
+                            .store
+                            .slot_root(address(0x200), false)
+                            .unwrap()
+                    );
+                }
+            }
+            let final_state = graph
+                .states()
+                .iter()
+                .find(|state| {
+                    state.active().code_address == entry.address
+                        && state
+                            .executed_pcs
+                            .contains(&(state.program().unwrap().byte_len() - 1))
+                })
+                .unwrap();
+            let result = &final_state.exit_stack[0];
+            assert_eq!(result.singleton(), None);
+            assert!(result.contains(U256::ZERO));
+            assert!(result.contains(U256::from(1)));
+            assert!(result.contains(U256::MAX));
+            let observable = (result.numeric().clone(), result.provenance().clone());
+            if let Some(before) = &previous {
+                assert_eq!(&observable, before);
+            }
+            previous = Some(observable);
+
+            if reusable {
+                let domain = Domain::from_spec(graph.domain_spec());
+                let limits = graph.domain_spec().relations();
+                let terminal = final_state.exit.as_ref().unwrap();
+                let words = [0, 32].map(|offset| {
+                    terminal
+                        .active()
+                        .memory
+                        .read_word_checked(&word(offset), domain)
+                        .unwrap()
+                });
+                assert!(!words[0].identity().same_identity(words[1].identity()));
+                let equal = |value: &AbstractValue, constant: u64| {
+                    ExprId::operation(
+                        opcode::EQ,
+                        &[
+                            value.symbolic_expression().unwrap(),
+                            ExprId::constant(U256::from(constant)),
+                        ],
+                        limits.expressions(),
+                    )
+                    .unwrap()
+                };
+                let and = |left, right| {
+                    ExprId::operation(opcode::AND, &[left, right], limits.expressions()).unwrap()
+                };
+                let continuations: Vec<_> = graph
+                    .states()
+                    .iter()
+                    .filter(|state| {
+                        state.key.frames.len() == 1 && state.active().basic_block_index >= 2
+                    })
+                    .collect();
+                assert_eq!(continuations.len(), 2);
+                let call_success = continuations.iter().fold(
+                    ExprId::constant(U256::from(1)),
+                    |combined, state| {
+                        and(
+                            combined,
+                            equal(state.entry.active().stack.last().unwrap(), 1),
+                        )
+                    },
+                );
+                assert_eq!(
+                    terminal
+                        .relations
+                        .can_equal(&call_success, U256::from(1), &limits),
+                    CheckResult::Sat
+                );
+                for right in [1, 2] {
+                    let pair = and(
+                        call_success.clone(),
+                        and(equal(&words[0], 1), equal(&words[1], right)),
+                    );
+                    assert_eq!(
+                        terminal.relations.can_equal(&pair, U256::from(1), &limits),
+                        CheckResult::Sat
+                    );
+                }
+            }
+        }
     }
 }
 

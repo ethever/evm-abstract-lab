@@ -115,31 +115,19 @@ pub(super) fn operation_work(
                 AbstractValue::constant(crate::U256::from(255)),
             ])),
         opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY => {
-            byte_work(
-                &args.iter().collect::<Vec<_>>(),
-                range_size(2),
-                array_size,
-                domain,
+            byte_work(&args.iter().collect::<Vec<_>>(), 0, array_size, domain).saturating_add(
+                if op == opcode::CODECOPY {
+                    program.byte_len()
+                } else {
+                    0
+                },
             )
-            .saturating_add(if op == opcode::CODECOPY {
-                program.byte_len()
-            } else {
-                0
-            })
         }
-        opcode::EXTCODECOPY => byte_work(
-            &args.iter().collect::<Vec<_>>(),
-            range_size(3),
-            array_size,
-            domain,
-        )
-        .saturating_add(external_code_work(
-            &result.payload.store,
-            &args[0],
-            domain,
-            true,
-            entry,
-        )),
+        opcode::EXTCODECOPY => {
+            byte_work(&args.iter().collect::<Vec<_>>(), 0, array_size, domain).saturating_add(
+                external_code_work(&result.payload.store, &args[0], domain, true, entry),
+            )
+        }
         opcode::EXTCODEHASH => {
             external_code_work(&result.payload.store, &args[0], domain, false, entry)
         }
@@ -150,8 +138,11 @@ pub(super) fn operation_work(
             .saturating_add(1),
         opcode::CALLDATALOAD => byte_work(&[&args[0]], 32, array_size, domain)
             .saturating_add(frame.calldata.word_numeric_work(&args[0], domain)),
-        opcode::KECCAK256 | opcode::RETURN | opcode::REVERT | opcode::LOG0..=opcode::LOG4 => {
-            byte_work(&[&args[0], &args[1]], range_size(1), array_size, domain)
+        opcode::KECCAK256 => byte_work(&[&args[0], &args[1]], range_size(1), array_size, domain),
+        opcode::RETURN | opcode::REVERT | opcode::LOG0..=opcode::LOG4 => {
+            // These consumers retain a view; logical bytes are charged only
+            // when a concrete consumer actually materializes them.
+            byte_work(&[&args[0], &args[1]], 0, array_size, domain)
         }
         opcode::SLOAD | opcode::SSTORE | opcode::TLOAD | opcode::TSTORE => result
             .payload

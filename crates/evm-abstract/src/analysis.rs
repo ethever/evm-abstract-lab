@@ -31,10 +31,11 @@ use std::fmt;
 pub use crate::bytecode::InvalidOpcodeReason;
 pub use config::{Config, ConfigError, ValidatedConfig};
 pub use machine::{
-    CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence, FrameCode, FrameKey,
-    FrameState, FrontierReason, InstructionProgress, InstructionValue, MachineEdge,
-    MachineEdgeKind, MachineFrontier, MachineKey, MachineOutcome, MachinePayload, MachineState,
-    OutcomeKind, RootFrame, WorldAnalysis,
+    ByteRangeBoundary, CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence,
+    FrameCode, FrameKey, FrameState, FrontierReason, InstructionProgress, InstructionValue,
+    JoinBoundary, MachineEdge, MachineEdgeKind, MachineError, MachineFrontier, MachineKey,
+    MachineOutcome, MachinePayload, MachineState, OutcomeKind, RangeKind, RangeRequest,
+    RangeWitness, RootFrame, WorldAnalysis,
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
@@ -43,9 +44,10 @@ pub use rpc::{
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;
 
-/// Serialized native analysis format. Version 5 retains opcode bytes, defined
-/// mnemonics, reasons and source kinds; the domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 5;
+/// Serialized native analysis format. Version 6 exports flat immutable scalar,
+/// byte/slot and relation-path graphs, preserving opcode and source evidence.
+/// The domain-policy schema is independent.
+pub const SCHEMA_VERSION: u16 = 6;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -118,6 +120,9 @@ pub enum DiagnosticKind {
     OpaqueResult,
     /// 可选语义交换达到固定精度上限；结果仍覆盖全部具体可能性。
     FactExchangeLimited(crate::domain::ReductionStatus),
+    /// A value stayed conservative because an optional relational projection
+    /// could not finish; its execution path was still fully propagated.
+    RelationalPrecisionLost(crate::domain::relational::QueryReason),
 }
 
 /// Original opcode evidence from the frame that attempted exceptional execution.

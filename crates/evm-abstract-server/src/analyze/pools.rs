@@ -1,7 +1,8 @@
 //! Intern complete immutable buffers, stores and code; references are report-local.
+mod budget;
 mod values;
 
-use super::{checkpoint, mapping, value};
+use super::{checkpoint, mapping, symbolic, value};
 use alloy_primitives::{Address, B256, hex, keccak256};
 use evm_abstract::analysis::control::Control;
 use evm_abstract::{
@@ -10,15 +11,23 @@ use evm_abstract::{
     world::{ByteArray, Code, Existence, Store},
 };
 use evm_abstract_protocol as api;
+use std::collections::BTreeMap;
 
 pub(super) struct Pools<'a> {
     control: &'a Control,
     buffers: Vec<ByteArray>,
+    buffer_roots: BTreeMap<evm_abstract::domain::symbolic::ByteStateId, Vec<usize>>,
     stores_native: Vec<Store>,
     pub buffers_dto: Vec<api::ByteArraySnapshot>,
     pub stores: Vec<api::StoreSnapshot>,
     pub programs: Vec<api::ProgramInfo>,
+    pub symbolic: symbolic::Pool<'a>,
+    pending_native: Vec<std::sync::Arc<MachinePayload>>,
+    pub pending: Vec<api::MachineSnapshot>,
 }
+
+#[cfg(test)]
+mod tests;
 pub(super) fn blocks(program: &Program) -> Vec<api::DisasmBlock> {
     program
         .blocks()
@@ -48,10 +57,14 @@ impl<'a> Pools<'a> {
         Self {
             control,
             buffers: Vec::new(),
+            buffer_roots: BTreeMap::new(),
             stores_native: Vec::new(),
             buffers_dto: Vec::new(),
             stores: Vec::new(),
             programs: Vec::new(),
+            symbolic: symbolic::Pool::new(control),
+            pending_native: Vec::new(),
+            pending: Vec::new(),
         }
     }
     pub fn program(
@@ -60,14 +73,25 @@ impl<'a> Pools<'a> {
         hash: B256,
         kind: api::CodeKind,
         program: &Program,
-    ) -> usize {
+    ) -> Result<usize, api::ApiError> {
+        self.symbolic.charge(1)?;
         let address = address.to_string();
         let hash = hash.to_string();
-        if let Some(existing) = self.programs.iter().find(|item| {
-            item.code_address == address && item.code_hash == hash && item.kind == kind
-        }) {
-            return existing.id;
+        for id in 0..self.programs.len() {
+            self.symbolic.charge(1)?;
+            let item = &self.programs[id];
+            if item.code_address == address && item.code_hash == hash && item.kind == kind {
+                return Ok(item.id);
+            }
         }
+        self.symbolic.payload(program.bytes().len())?;
+        self.symbolic.charge(
+            program
+                .blocks()
+                .iter()
+                .map(|block| block.instructions.len() + 1)
+                .sum(),
+        )?;
         let id = self.programs.len();
         self.programs.push(api::ProgramInfo {
             id,
@@ -77,15 +101,34 @@ impl<'a> Pools<'a> {
             bytecode: hex::encode_prefixed(program.bytes()),
             blocks: blocks(program),
         });
-        id
+        Ok(id)
     }
     pub fn buffer(&mut self, source: &ByteArray) -> Result<usize, api::ApiError> {
-        checkpoint(self.control)?;
-        if let Some(id) = self.buffers.iter().position(|item| item == source) {
-            return Ok(id);
+        self.symbolic.charge(1)?;
+        let work = budget::BufferWork::new(source, &mut self.symbolic)?;
+        if let Some(candidates) = self.buffer_roots.get(source.state_root()) {
+            for &id in candidates {
+                self.symbolic.charge(1)?;
+                if !work.comparison(source, &self.buffers[id], &mut self.symbolic)? {
+                    continue;
+                }
+                let equal = self.buffers[id] == *source;
+                // A cancellation arriving during a prepaid native comparison
+                // must not become a successful cache hit.
+                self.symbolic.charge(0)?;
+                if equal {
+                    return Ok(id);
+                }
+            }
         }
         let id = self.buffers.len();
+        work.copy(&mut self.symbolic)?;
         self.buffers.push(source.clone());
+        self.symbolic.charge(1)?;
+        self.buffer_roots
+            .entry(source.state_root().clone())
+            .or_default()
+            .push(id);
         let mut values = values::Dictionary::default();
         let cells = source
             .stored_bytes()
@@ -93,16 +136,29 @@ impl<'a> Pools<'a> {
                 checkpoint(self.control)?;
                 Ok(api::ByteCell {
                     offset,
-                    value: values.intern(value::info(byte)),
+                    value: {
+                        let info = self.symbolic.value(byte)?;
+                        values.intern_checked(info, &mut self.symbolic)?
+                    },
                 })
             })
             .collect::<Result<_, api::ApiError>>()?;
         self.buffers_dto.push(api::ByteArraySnapshot {
-            length: value::info(source.len()),
-            default: value::info(source.default_byte()),
+            length: self.symbolic.value(source.len())?,
+            default: self.symbolic.value(source.default_byte())?,
             cells,
             values: values.into_values(),
             memory: source.is_memory(),
+            symbolic: self.symbolic.view(&source.view())?,
+            symbolic_facts: source
+                .symbolic_facts()
+                .map(|(expression, value)| {
+                    Ok(api::SymbolicFact {
+                        expression: self.symbolic.expression(expression)?,
+                        value: self.symbolic.value(value)?,
+                    })
+                })
+                .collect::<Result<_, api::ApiError>>()?,
         });
         Ok(id)
     }
@@ -126,7 +182,7 @@ impl<'a> Pools<'a> {
                     keccak256(program.bytes()),
                     api::CodeKind::Runtime,
                     program,
-                )),
+                )?),
                 None,
             ),
             Some(Code::Delegation(target)) => {
@@ -142,13 +198,15 @@ impl<'a> Pools<'a> {
                 Existence::Present => api::AccountExistence::Present,
                 Existence::Absent => api::AccountExistence::Absent,
             },
-            balance: value::info(&source.read_balance(address)),
-            nonce: value::info(&source.nonce(address)),
+            balance: self.symbolic.value(&source.read_balance(address))?,
+            nonce: self.symbolic.value(&source.nonce(address))?,
             code_kind: kind,
             code_hash: hash.map(|hash| hash.to_string()),
             program,
             delegation_target: target,
-            storage_default: value::info(source.storage_default(address)),
+            storage_default: self.symbolic.value(source.storage_default(address))?,
+            storage_root: self.slot_root(source, address, false)?,
+            transient_root: self.slot_root(source, address, true)?,
             storage: source
                 .slots()
                 .iter()
@@ -157,11 +215,11 @@ impl<'a> Pools<'a> {
                     checkpoint(self.control)?;
                     Ok(api::StorageEntry {
                         slot: value::word(*slot),
-                        value: value::info(stored),
+                        value: self.symbolic.value(stored)?,
                     })
                 })
                 .collect::<Result<_, api::ApiError>>()?,
-            transient_default: value::info(source.transient_default(address)),
+            transient_default: self.symbolic.value(source.transient_default(address))?,
             transient: source
                 .transient_slots()
                 .iter()
@@ -170,7 +228,7 @@ impl<'a> Pools<'a> {
                     checkpoint(self.control)?;
                     Ok(api::StorageEntry {
                         slot: value::word(*slot),
-                        value: value::info(stored),
+                        value: self.symbolic.value(stored)?,
                     })
                 })
                 .collect::<Result<_, api::ApiError>>()?,
@@ -180,10 +238,15 @@ impl<'a> Pools<'a> {
     }
     pub fn store(&mut self, source: &Store) -> Result<usize, api::ApiError> {
         checkpoint(self.control)?;
-        if let Some(id) = self.stores_native.iter().position(|item| item == source) {
-            return Ok(id);
+        for id in 0..self.stores_native.len() {
+            self.symbolic.charge(1)?;
+            self.symbolic.charge(source.work_size())?;
+            if self.stores_native[id] == *source {
+                return Ok(id);
+            }
         }
         let id = self.stores_native.len();
+        self.symbolic.charge(source.work_size())?;
         self.stores_native.push(source.clone());
         let accounts = source
             .addresses()
@@ -198,18 +261,40 @@ impl<'a> Pools<'a> {
                     address: key.address.to_string(),
                     code_address: key.code_address.to_string(),
                     pc: key.pc,
-                    topics: log.topics.iter().map(value::info).collect(),
+                    topics: log
+                        .topics
+                        .iter()
+                        .map(|v| self.symbolic.value(v))
+                        .collect::<Result<_, _>>()?,
                     data: self.buffer(&log.data)?,
                 })
             })
             .collect::<Result<_, api::ApiError>>()?;
         self.stores.push(api::StoreSnapshot {
-            storage_default: value::info(source.global_storage_default()),
-            transient_default: value::info(source.global_transient_default()),
-            balance_default: value::info(source.balance_default()),
+            storage_default: self.symbolic.value(source.global_storage_default())?,
+            transient_default: self.symbolic.value(source.global_transient_default())?,
+            balance_default: self.symbolic.value(source.balance_default())?,
             accounts,
             logs,
             logs_unknown: source.logs_unknown(),
+            storage_facts: source
+                .symbolic_facts(false)
+                .map(|(expression, value)| {
+                    Ok(api::SymbolicFact {
+                        expression: self.symbolic.expression(expression)?,
+                        value: self.symbolic.value(value)?,
+                    })
+                })
+                .collect::<Result<_, api::ApiError>>()?,
+            transient_facts: source
+                .symbolic_facts(true)
+                .map(|(expression, value)| {
+                    Ok(api::SymbolicFact {
+                        expression: self.symbolic.expression(expression)?,
+                        value: self.symbolic.value(value)?,
+                    })
+                })
+                .collect::<Result<_, api::ApiError>>()?,
         });
         Ok(id)
     }
@@ -225,21 +310,32 @@ impl<'a> Pools<'a> {
             .map(|(index, frame)| {
                 checkpoint(self.control)?;
                 let key = &frame.key;
-                let program = frame.program.as_ref().map(|program| {
-                    self.program(key.code_address, key.code_hash, mode(frame.code), program)
-                });
+                self.symbolic.charge(
+                    key.jump_history
+                        .len()
+                        .saturating_add(frame.stack.len())
+                        .saturating_add(1),
+                )?;
+                let program = frame
+                    .program
+                    .as_ref()
+                    .map(|program| {
+                        self.program(key.code_address, key.code_hash, mode(frame.code), program)
+                    })
+                    .transpose()?;
                 let continuation = index
                     .checked_sub(1)
                     .and_then(|child| source.call_stack.children().get(child))
                     .map(|child| {
                         let next = &child.continuation;
-                        api::ContinuationSnapshot {
+                        Ok(api::ContinuationSnapshot {
                             return_block: next.return_block,
-                            output_offset: value::info(&next.output_offset),
-                            output_size: value::info(&next.output_size),
+                            output_offset: self.symbolic.value(&next.output_offset)?,
+                            output_size: self.symbolic.value(&next.output_size)?,
                             creation: next.creation.map(|address| address.to_string()),
-                        }
-                    });
+                        })
+                    })
+                    .transpose()?;
                 Ok(api::FrameSnapshot {
                     index,
                     program,
@@ -248,12 +344,16 @@ impl<'a> Pools<'a> {
                     storage_address: key.address.to_string(),
                     address_value: value::address(key.address_value),
                     caller: value::address(key.caller),
-                    call_value: value::info(&frame.call_value),
+                    call_value: self.symbolic.value(&frame.call_value)?,
                     is_static: key.is_static,
                     kind: mode(frame.code),
                     basic_block: key.basic_block_index,
                     context: key.jump_history.clone(),
-                    stack: frame.stack.iter().map(value::info).collect(),
+                    stack: frame
+                        .stack
+                        .iter()
+                        .map(|v| self.symbolic.value(v))
+                        .collect::<Result<_, _>>()?,
                     memory: self.buffer(&frame.memory)?,
                     calldata: self.buffer(&frame.calldata)?,
                     returndata: self.buffer(&frame.returndata)?,
@@ -262,6 +362,63 @@ impl<'a> Pools<'a> {
                 })
             })
             .collect::<Result<_, api::ApiError>>()?;
-        Ok(api::MachineSnapshot { frames, store })
+        Ok(api::MachineSnapshot {
+            frames,
+            store,
+            path: self.symbolic.relations(&source.relations)?,
+        })
+    }
+    fn slot_root(
+        &mut self,
+        store: &Store,
+        address: Address,
+        transient: bool,
+    ) -> Result<api::SlotStateRef, api::ApiError> {
+        let root = store.slot_root(address, transient).map_err(|error| {
+            if self.control.cancellation().is_cancelled() {
+                return self.symbolic.failure(api::ExportFailureKind::Cancelled, 0);
+            }
+            let mut report = self.symbolic.failure(api::ExportFailureKind::StateRoot, 0);
+            report.message = format!("storage root export failed: {error}");
+            report
+        })?;
+        self.symbolic.slots(&root)
+    }
+    pub fn pending(
+        &mut self,
+        source: &std::sync::Arc<MachinePayload>,
+    ) -> Result<usize, api::ApiError> {
+        for id in 0..self.pending_native.len() {
+            self.symbolic.charge(1)?;
+            if std::sync::Arc::ptr_eq(&self.pending_native[id], source) {
+                return Ok(id);
+            }
+        }
+        self.symbolic.charge(1)?;
+        let snapshot = self.machine(source)?;
+        let id = self.pending.len();
+        self.pending_native.push(std::sync::Arc::clone(source));
+        self.pending.push(snapshot);
+        Ok(id)
+    }
+    pub fn range(
+        &mut self,
+        witness: &evm_abstract::analysis::RangeWitness,
+    ) -> Result<api::RangeWitness, api::ApiError> {
+        let request = &witness.request;
+        Ok(api::RangeWitness {
+            request: api::RangeRequest {
+                kind: match request.kind {
+                    evm_abstract::analysis::RangeKind::MemoryPolicy => api::RangeKind::MemoryPolicy,
+                    evm_abstract::analysis::RangeKind::ReturnData => api::RangeKind::ReturnData,
+                },
+                offset: self.symbolic.value(&request.offset)?,
+                size: self.symbolic.value(&request.size)?,
+                limit: self.symbolic.value(&request.limit)?,
+            },
+            condition: self.symbolic.value(&witness.condition)?,
+            nonzero: witness.nonzero,
+            payload: self.pending(&witness.payload)?,
+        })
     }
 }

@@ -10,6 +10,8 @@ use crate::{app::Selection, ssa_display::SsaDisplay};
 
 fn report() -> AnalysisReport {
     let mut report = AnalysisReport {
+        symbolic: crate::tests::symbolic_graph(),
+        pending_machines: vec![],
         schema_version: SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,

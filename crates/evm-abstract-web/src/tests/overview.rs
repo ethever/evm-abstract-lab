@@ -144,6 +144,7 @@ fn grouped_report(count: usize) -> AnalysisReport {
 fn scalar(value: usize) -> api::ValueInfo {
     let text = format!("0x{value:x}");
     api::ValueInfo {
+        nonzero: false,
         summary: format!("{{{text}}}"),
         constants: Some(vec![text.clone()]),
         known_zero: "0x0".into(),
@@ -168,6 +169,8 @@ fn scalar(value: usize) -> api::ValueInfo {
 fn attach_snapshots(report: &mut AnalysisReport) {
     let top = report.metadata.environment.call_value.clone();
     report.stores = vec![api::StoreSnapshot {
+        storage_facts: vec![],
+        transient_facts: vec![],
         storage_default: top.clone(),
         transient_default: scalar(0),
         balance_default: top,
@@ -178,6 +181,8 @@ fn attach_snapshots(report: &mut AnalysisReport) {
     report.byte_arrays.truncate(1);
     for memory in [true, false] {
         report.byte_arrays.push(api::ByteArraySnapshot {
+            symbolic_facts: vec![],
+            symbolic: evm_abstract_protocol::ByteViewRef { node: 2 },
             length: scalar(0),
             default: scalar(0),
             values: vec![],
@@ -195,6 +200,7 @@ fn attach_snapshots(report: &mut AnalysisReport) {
                 .find(|program| Some(program.id) == block.program)
                 .unwrap();
             let entry = api::MachineSnapshot {
+                path: evm_abstract_protocol::PathRef { node: 4 },
                 frames: vec![api::FrameSnapshot {
                     index: 0,
                     program: block.program,

@@ -31,6 +31,19 @@ unsafe extern "C" {
     fn evmbw_bool(session: *mut c_void, value: u8, out: *mut u64) -> i32;
     fn evmbw_bv(session: *mut c_void, width: u32, hex: *const c_char, out: *mut u64) -> i32;
     fn evmbw_variable(session: *mut c_void, width: u32, name: *const c_char, out: *mut u64) -> i32;
+    fn evmbw_array_variable(
+        session: *mut c_void,
+        index_width: u32,
+        element_width: u32,
+        name: *const c_char,
+        out: *mut u64,
+    ) -> i32;
+    fn evmbw_constant_array(
+        session: *mut c_void,
+        index_width: u32,
+        value: TermRef,
+        out: *mut u64,
+    ) -> i32;
     fn evmbw_apply(
         session: *mut c_void,
         kind: u32,
@@ -131,6 +144,43 @@ impl Session {
         // copies the label, and does not retain the provided string pointer.
         let result =
             unsafe { evmbw_variable(self.pointer.as_ptr(), width, name.as_ptr(), &mut out) };
+        self.succeeded(result)?;
+        Ok(out)
+    }
+
+    pub(super) fn array_variable(
+        &mut self,
+        index_width: u32,
+        element_width: u32,
+        name: &str,
+    ) -> Result<u64, Error> {
+        let name = string(name)?;
+        let mut out = 0;
+        // SAFETY: Session, copied C string and writable output live through
+        // this synchronous call; both widths are validated again by the shim.
+        let result = unsafe {
+            evmbw_array_variable(
+                self.pointer.as_ptr(),
+                index_width,
+                element_width,
+                name.as_ptr(),
+                &mut out,
+            )
+        };
+        self.succeeded(result)?;
+        Ok(out)
+    }
+
+    pub(super) fn constant_array(
+        &mut self,
+        index_width: u32,
+        value: TermRef,
+    ) -> Result<u64, Error> {
+        let mut out = 0;
+        // SAFETY: Session and output remain live; the shim checks the owner,
+        // term ID, BV default sort and positive index width before constructing.
+        let result =
+            unsafe { evmbw_constant_array(self.pointer.as_ptr(), index_width, value, &mut out) };
         self.succeeded(result)?;
         Ok(out)
     }

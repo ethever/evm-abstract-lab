@@ -1,4 +1,4 @@
-//! Session-owned native Bitwuzla Boolean and bit-vector terms.
+//! Session-owned native Bitwuzla Boolean, bit-vector and array terms.
 //!
 //! Native objects never escape the solver. Terms are immutable, owner-tagged
 //! IDs, so terms surviving their solver cannot be dereferenced or reused by
@@ -7,6 +7,11 @@
 //! The resource limit counts cooperative termination polls, including polls
 //! forwarded to CaDiCaL. It is not a wall-clock timeout or a bound on primitive
 //! work inside each preprocessing pass, bit-blast or model computation.
+//!
+//! Arrays use native BV index and element sorts. Bitwuzla 0.9.1 can return
+//! UNKNOWN for some equalities over constant arrays, including complete
+//! overwrites of a finite index domain. Such results have `exhausted: false`
+//! unless the actual poll allowance was consumed; they do not establish UNSAT.
 
 #[allow(unsafe_code)]
 mod ffi;
@@ -40,7 +45,7 @@ pub struct Term {
     id: u64,
 }
 
-/// Primitive Boolean or fixed-width bit-vector operation.
+/// Primitive Boolean, fixed-width bit-vector or array operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Kind {
@@ -102,6 +107,10 @@ pub enum Kind {
     ZeroExtend = 27,
     /// Inclusive bit extraction; indices are `[high, low]`.
     Extract = 28,
+    /// Read a BV-valued array at a BV index of its declared index width.
+    Select = 29,
+    /// Write a BV-valued array at a matching BV index and element width.
+    Store = 30,
 }
 
 /// Result of the latest satisfiability check.
@@ -203,6 +212,34 @@ impl Solver {
         Ok(self.term(id))
     }
 
+    /// Create a fresh unconstrained BV-indexed, BV-valued array.
+    /// Both widths must be positive. The label is not an interning key.
+    pub fn array_variable(
+        &mut self,
+        index_width: u32,
+        element_width: u32,
+        name: &str,
+    ) -> Result<Term, Error> {
+        if index_width == 0 || element_width == 0 {
+            return Err(Error::InvalidInput("array widths must be positive"));
+        }
+        let id = self
+            .native
+            .array_variable(index_width, element_width, name)?;
+        Ok(self.term(id))
+    }
+
+    /// Create a constant array with a positive BV index width and BV default.
+    /// The default term must belong to this session.
+    pub fn constant_array(&mut self, index_width: u32, value: &Term) -> Result<Term, Error> {
+        if index_width == 0 {
+            return Err(Error::InvalidInput("array index width must be positive"));
+        }
+        let value = self.reference(value)?;
+        let id = self.native.constant_array(index_width, value)?;
+        Ok(self.term(id))
+    }
+
     /// Apply a primitive operation after validating all term owners.
     ///
     /// Native validation also checks arity, sorts, widths and indexed bounds.
@@ -229,7 +266,8 @@ impl Solver {
     /// Read a model value after SAT, as `#b` or `#x` digits.
     ///
     /// Boolean values are returned as `#b0` or `#b1`. Adding an assertion or a
-    /// non-SAT check makes the previous model unavailable.
+    /// non-SAT check makes the previous model unavailable. Array model
+    /// enumeration is unsupported; project a BV-valued select instead.
     pub fn model(&mut self, term: &Term) -> Result<String, Error> {
         let term = self.reference(term)?;
         self.native.model(term)

@@ -6,7 +6,7 @@ use egui::{Context, Modifiers};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::{Event, ImeEvent, Key};
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
 pub(crate) fn matches(modifiers: Modifiers, mac: bool) -> bool {

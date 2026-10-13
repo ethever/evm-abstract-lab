@@ -2,7 +2,10 @@
 
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, Status, analyze_world},
+    analysis::{
+        ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, OutcomeKind, Status,
+        analyze_world,
+    },
     domain::{AbstractValue, Domain},
     ssa,
     world::{Account, ByteArray, Entry, World},
@@ -210,6 +213,146 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
         assert_eq!(logs.len(), 2);
         assert!(logs.iter().all(|log| log.address == address(0x101)));
         let domain = Domain::default();
+        let zero = AbstractValue::constant(U256::ZERO);
+        let grandchild_returns: Vec<_> = analysis
+            .edges()
+            .iter()
+            .filter(|edge| {
+                edge.kind == MachineEdgeKind::Return
+                    && analysis.states()[edge.from].key.frames.len() == 3
+                    && analysis.states()[edge.to].key.frames.len() == 2
+            })
+            .collect();
+        assert!(!grandchild_returns.is_empty());
+        for edge in grandchild_returns {
+            let child_state = &analysis.states()[edge.from];
+            let effects = &child_state.exit.as_ref().unwrap().store;
+            assert_eq!(
+                effects.read(address(0x300), &zero, domain),
+                AbstractValue::constant(U256::from(9))
+            );
+            assert_eq!(
+                effects.read_transient(address(0x300), &zero, domain),
+                AbstractValue::constant(U256::from(10))
+            );
+            assert!(
+                effects
+                    .possible_logs()
+                    .keys()
+                    .any(|key| key.address == address(0x300))
+            );
+            let receipt = child_state.execution_evidence().unwrap();
+            assert!(receipt.is_current());
+            assert!(
+                receipt
+                    .successors()
+                    .contains(&(edge.to, MachineEdgeKind::Return))
+            );
+            // The child committed on this edge, within a still-revertible outer call.
+            let resumed_middle = &analysis.states()[edge.to].entry;
+            let before_child = child_state.entry.active().saved_store.state();
+            let persistent = resumed_middle.store.read(address(0x300), &zero, domain);
+            let expected_persistent = domain.join(
+                &before_child.read(address(0x300), &zero, domain),
+                &AbstractValue::constant(U256::from(9)),
+            );
+            assert_eq!(persistent.numeric(), expected_persistent.numeric());
+            assert_eq!(persistent.provenance(), expected_persistent.provenance());
+            let transient = resumed_middle
+                .store
+                .read_transient(address(0x300), &zero, domain);
+            let expected_transient = domain.join(&zero, &AbstractValue::constant(U256::from(10)));
+            assert_eq!(transient.numeric(), expected_transient.numeric());
+            assert_eq!(transient.provenance(), expected_transient.provenance());
+            assert!(
+                resumed_middle
+                    .store
+                    .possible_logs()
+                    .keys()
+                    .any(|key| key.address == address(0x300))
+            );
+        }
+        let middle_reverts: Vec<_> = analysis
+            .edges()
+            .iter()
+            .filter(|edge| {
+                edge.kind == MachineEdgeKind::Revert
+                    && analysis.states()[edge.from].key.frames.len() == 2
+                    && analysis.states()[edge.to].key.frames.len() == 1
+            })
+            .collect();
+        assert!(!middle_reverts.is_empty());
+        for edge in middle_reverts {
+            let middle_state = &analysis.states()[edge.from];
+            let checkpoint = middle_state.entry.active().saved_store.state();
+            let effects = &middle_state.exit.as_ref().unwrap().store;
+            assert_eq!(
+                effects.read(address(0x200), &zero, domain),
+                AbstractValue::constant(U256::from(7))
+            );
+            assert_eq!(
+                effects.read_transient(address(0x200), &zero, domain),
+                AbstractValue::constant(U256::from(8))
+            );
+            assert!(
+                effects
+                    .possible_logs()
+                    .keys()
+                    .any(|key| key.address == address(0x200))
+            );
+            let receipt = middle_state.execution_evidence().unwrap();
+            assert!(receipt.is_current());
+            assert!(
+                receipt
+                    .successors()
+                    .contains(&(edge.to, MachineEdgeKind::Revert))
+            );
+            let resumed = &analysis.states()[edge.to].entry;
+            assert_eq!(&resumed.store, checkpoint);
+            assert_eq!(
+                resumed.store.read_transient(address(0x101), &zero, domain),
+                AbstractValue::constant(U256::from(17))
+            );
+            for (owner, expected_slot, expected_balance) in
+                [(0x101, 3, 1_000_000), (0x200, 2, 100), (0x300, 4, 10)]
+            {
+                assert_eq!(
+                    resumed.store.read(address(owner), &zero, domain),
+                    AbstractValue::constant(U256::from(expected_slot))
+                );
+                assert_eq!(
+                    resumed.store.read_balance(address(owner)),
+                    AbstractValue::constant(U256::from(expected_balance))
+                );
+                if owner != 0x101 {
+                    assert_eq!(
+                        resumed.store.read_transient(address(owner), &zero, domain),
+                        zero
+                    );
+                }
+                assert_eq!(
+                    resumed.store.code(address(owner)),
+                    checkpoint.code(address(owner))
+                );
+                assert_eq!(
+                    resumed.store.nonce(address(owner)),
+                    checkpoint.nonce(address(owner))
+                );
+                assert_eq!(
+                    resumed.store.existence(address(owner)),
+                    checkpoint.existence(address(owner))
+                );
+            }
+            assert_eq!(resumed.active().stack.last().unwrap(), &zero);
+            assert_eq!(resumed.store.possible_logs().len(), 1);
+            assert!(
+                resumed
+                    .store
+                    .possible_logs()
+                    .keys()
+                    .all(|key| key.address == address(0x101))
+            );
+        }
         let returns: Vec<_> = analysis
             .outcomes()
             .iter()
@@ -229,8 +372,9 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
                     &AbstractValue::constant(U256::ZERO),
                     domain
                 ),
-                AbstractValue::constant(U256::from(17))
+                zero
             );
+            assert!(outcome.store.transient_slots().is_empty());
             assert_eq!(
                 outcome
                     .store

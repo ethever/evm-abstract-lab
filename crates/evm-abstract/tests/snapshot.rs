@@ -18,21 +18,21 @@ fn fingerprint_is_order_independent_and_binds_snapshot_and_nonce() {
     let mut right = World::anchored(Fork::Osaka, U256::from(1), B256::repeat_byte(3), "export-b");
     right.insert(right_address, Account::empty()).unwrap();
     right.insert(left_address, account.clone()).unwrap();
-    assert_eq!(left.fingerprint(), right.fingerprint());
+    assert_eq!(left.fingerprint().unwrap(), right.fingerprint().unwrap());
     let mut changed = World::anchored(Fork::Osaka, U256::from(2), B256::repeat_byte(3), "export-a");
     changed.insert(left_address, account.clone()).unwrap();
     changed.insert(right_address, Account::empty()).unwrap();
-    assert_ne!(left.fingerprint(), changed.fingerprint());
+    assert_ne!(left.fingerprint().unwrap(), changed.fingerprint().unwrap());
     let mut changed = World::anchored(Fork::Osaka, U256::from(1), B256::repeat_byte(4), "export-a");
     changed.insert(left_address, account.clone()).unwrap();
     changed.insert(right_address, Account::empty()).unwrap();
-    assert_ne!(left.fingerprint(), changed.fingerprint());
+    assert_ne!(left.fingerprint().unwrap(), changed.fingerprint().unwrap());
     let mut changed = World::anchored(Fork::Osaka, U256::from(1), B256::repeat_byte(3), "export-a");
     let mut account = account;
     account.nonce = AbstractValue::constant(U256::from(7));
     changed.insert(left_address, account).unwrap();
     changed.insert(right_address, Account::empty()).unwrap();
-    assert_ne!(left.fingerprint(), changed.fingerprint());
+    assert_ne!(left.fingerprint().unwrap(), changed.fingerprint().unwrap());
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn conflicting_or_mismatched_facts_are_rejected_without_mutation() {
     world
         .insert_with_code_hash(address, account.clone(), keccak256([0]))
         .unwrap();
-    let original = world.fingerprint();
+    let original = world.fingerprint().unwrap();
     assert!(world.insert(address, account).unwrap().is_some());
     assert!(matches!(
         world.insert(address, Account::empty()),
@@ -53,7 +53,7 @@ fn conflicting_or_mismatched_facts_are_rejected_without_mutation() {
         world.insert_with_code_hash(Address::repeat_byte(2), Account::empty(), B256::ZERO),
         Err(WorldError::CodeHash { .. })
     ));
-    assert_eq!(world.fingerprint(), original);
+    assert_eq!(world.fingerprint().unwrap(), original);
 }
 
 #[test]

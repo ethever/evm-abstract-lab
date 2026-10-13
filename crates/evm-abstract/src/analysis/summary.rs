@@ -8,8 +8,8 @@
 //! instruction graph and world SSA retain every call and return boundary.
 
 use super::{
-    CallStack, Diagnostic, InstructionProgress, InstructionValue, MachineEdge, MachinePayload,
-    OutcomeKind, RootFrame, WorldAnalysis,
+    CallStack, Diagnostic, FrontierReason, InstructionProgress, InstructionValue, MachineEdge,
+    MachinePayload, OutcomeKind, RootFrame, WorldAnalysis,
     transfer::{CompletedCall, WorkBudget},
 };
 use crate::{
@@ -24,7 +24,19 @@ use std::{
 };
 
 mod replay;
-pub(super) use replay::Replay;
+pub(super) use replay::{Prepared, Replay};
+
+fn reserve(budget: &mut WorkBudget, cost: usize) -> bool {
+    cost != usize::MAX && budget.charge(cost)
+}
+
+pub(super) fn summary_boundary() -> FrontierReason {
+    if embedded_smt::current_cancellation().is_cancelled() {
+        FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+    } else {
+        FrontierReason::SummaryWork
+    }
+}
 
 /// Complete exact preconditions for a reusable callee relation.
 ///
@@ -65,29 +77,14 @@ pub struct SummaryInput {
 }
 
 impl SummaryInput {
-    fn work_size(&self) -> usize {
-        let frame = &self.frame.state;
-        frame.stack.iter().fold(
-            self.store
-                .work_size()
-                .saturating_add(frame.memory.work_size())
-                .saturating_add(frame.calldata.work_size())
-                .saturating_add(frame.returndata.work_size())
-                .saturating_add(frame.saved_store.state().work_size())
-                // 精确输入比较和认证也必须计入实际跳转历史，使用同一工作账本。
-                .saturating_add(frame.key.jump_history.len())
-                .saturating_add(
-                    frame
-                        .program
-                        .as_ref()
-                        .map_or(0, crate::bytecode::Program::byte_len),
-                )
-                .saturating_add(frame.call_value.work_size())
-                .saturating_add(self.environment.work_size())
-                .saturating_add(self.relations.work_size())
-                .saturating_add(1),
-            |cost, value| cost.saturating_add(value.work_size()),
-        )
+    pub(super) fn work_size(&self) -> usize {
+        self.frame
+            .state
+            .work_size()
+            .saturating_add(self.store.work_size())
+            .saturating_add(self.environment.work_size())
+            .saturating_add(self.relations.work_size())
+            .saturating_add(1)
     }
 }
 
@@ -146,6 +143,37 @@ pub(super) struct Node {
     pub completed_calls: Vec<CompletedCall>,
 }
 
+impl Node {
+    pub fn work_size(&self) -> usize {
+        let cost = self
+            .entry
+            .work_size()
+            .saturating_add(self.exit.work_size())
+            .saturating_add(self.executed_pcs.len())
+            .saturating_add(self.instruction_progress.len())
+            .saturating_add(self.diagnostics.len());
+        let cost = self
+            .exit_stack
+            .iter()
+            .fold(cost, |cost, value| cost.saturating_add(value.work_size()));
+        let cost = self.instruction_values.iter().fold(cost, |cost, value| {
+            cost.saturating_add(value.numeric().work_size())
+                .saturating_add(value.provenance().origins().work_size())
+        });
+        self.completed_calls
+            .iter()
+            .fold(cost, |cost, call| cost.saturating_add(call_work(call)))
+    }
+}
+
+pub(super) fn call_work(call: &CompletedCall) -> usize {
+    call.payload
+        .work_size()
+        .saturating_add(call.data.work_size())
+        .saturating_add(call.output_data.work_size())
+        .saturating_add(call.output_store.work_size())
+}
+
 #[derive(Clone)]
 pub(super) struct Terminal {
     pub from: usize,
@@ -153,6 +181,17 @@ pub(super) struct Terminal {
     pub payload: MachinePayload,
     pub raw_kind: OutcomeKind,
     pub raw_data: ByteArray,
+}
+
+impl Terminal {
+    pub fn work_size(&self) -> usize {
+        self.payload
+            .work_size()
+            .saturating_add(self.raw_data.work_size())
+            .saturating_add(self.output.data.work_size())
+            .saturating_add(self.output.store.work_size())
+            .saturating_add(1)
+    }
 }
 
 #[derive(Clone)]
@@ -170,6 +209,7 @@ struct Candidate {
 
 pub(super) struct Cache {
     fingerprint: Option<B256>,
+    fingerprint_unavailable: bool,
     pub call_entries: BTreeSet<usize>,
     candidates: Vec<Candidate>,
     certificates: Vec<Certificate>,
@@ -179,6 +219,7 @@ impl Cache {
     pub fn new() -> Self {
         Self {
             fingerprint: None,
+            fingerprint_unavailable: false,
             call_entries: BTreeSet::new(),
             candidates: Vec::new(),
             certificates: Vec::new(),
@@ -190,7 +231,13 @@ impl Cache {
         analysis: &WorldAnalysis,
         state: usize,
         budget: &mut WorkBudget,
-    ) -> Option<SummaryInput> {
+    ) -> Result<Option<SummaryInput>, FrontierReason> {
+        if embedded_smt::current_cancellation().is_cancelled() {
+            return Err(summary_boundary());
+        }
+        if self.fingerprint_unavailable {
+            return Ok(None);
+        }
         let payload = &analysis.states[state].entry;
         let bytes = payload
             .store
@@ -200,14 +247,15 @@ impl Cache {
                 crate::world::Code::Delegation(_) => 23,
                 _ => 0,
             });
-        if !budget.charge(
+        if !reserve(
+            budget,
             payload
                 .work_size()
                 .saturating_add(bytes)
                 .saturating_add(analysis.entry.environment.work_size())
                 .saturating_add(1),
         ) {
-            return None;
+            return Err(summary_boundary());
         }
         let fingerprint = if let Some(fingerprint) = self.fingerprint {
             fingerprint
@@ -222,10 +270,26 @@ impl Cache {
                 .saturating_mul(32)
                 .saturating_add(analysis.world.accounts().len().saturating_mul(64))
                 .saturating_add(analysis.world.provenance().len());
-            if !budget.charge(namespace_cost) {
-                return None;
+            if !reserve(budget, namespace_cost) {
+                return Err(summary_boundary());
             }
-            let fingerprint = analysis.world.fingerprint();
+            let fingerprint = match analysis.world.fingerprint() {
+                Ok(fingerprint) => fingerprint,
+                Err(crate::world::FingerprintError::Cancelled) => {
+                    return Err(FrontierReason::Relations(
+                        crate::domain::relational::QueryReason::Cancelled,
+                    ));
+                }
+                Err(
+                    crate::world::FingerprintError::Encoding(_)
+                    | crate::world::FingerprintError::LengthOverflow,
+                ) => {
+                    // Ordinary execution needs no summary namespace. A failed
+                    // optional encoding never supplies a guessed cache key.
+                    self.fingerprint_unavailable = true;
+                    return Ok(None);
+                }
+            };
             self.fingerprint = Some(fingerprint);
             fingerprint
         };
@@ -235,7 +299,7 @@ impl Cache {
             .expect("summary inputs start at child frames")
             .clone()
             .into_root();
-        Some(SummaryInput {
+        Ok(Some(SummaryInput {
             fork: analysis.world.fork(),
             snapshot: analysis.world.identity().clone(),
             world_fingerprint: fingerprint,
@@ -254,9 +318,15 @@ impl Cache {
             max_call_depth: analysis.config.max_call_depth,
             context_depth: analysis.config.analysis.context_depth,
             max_constants: analysis.config.analysis.max_constants,
-            domain_spec: analysis.config.domain().ok()?.spec(),
+            domain_spec: analysis
+                .config
+                .domain()
+                .map_err(|_| {
+                    FrontierReason::Relations(crate::domain::relational::QueryReason::Configuration)
+                })?
+                .spec(),
             max_memory_bytes: analysis.config.max_memory_bytes,
-        })
+        }))
     }
 
     pub fn lookup(
@@ -269,7 +339,10 @@ impl Cache {
             let record = &analysis.summaries[certificate.record];
             // Charge equality comparisons too: scanning an exact-input cache
             // must not hide unbounded domain/store work outside the ledger.
-            if !budget.charge(input.work_size().saturating_add(record.input.work_size())) {
+            if !reserve(
+                budget,
+                input.work_size().saturating_add(record.input.work_size()),
+            ) {
                 return Err(());
             }
             if input == &record.input {
@@ -280,16 +353,29 @@ impl Cache {
     }
 
     pub fn begin(&mut self, state: usize, input: SummaryInput, budget: &mut WorkBudget) -> bool {
-        if !budget.charge(self.candidates.len().saturating_add(input.work_size())) {
+        if !reserve(budget, input.work_size()) {
             return false;
         }
-        if !self
-            .candidates
-            .iter()
-            .any(|candidate| candidate.state == state && candidate.input == input)
-        {
-            self.candidates.push(Candidate { state, input });
+        for candidate in &self.candidates {
+            if !reserve(budget, 1) {
+                return false;
+            }
+            if candidate.state == state {
+                if !reserve(
+                    budget,
+                    candidate
+                        .input
+                        .work_size()
+                        .saturating_add(input.work_size()),
+                ) {
+                    return false;
+                }
+                if candidate.input == input {
+                    return true;
+                }
+            }
         }
+        self.candidates.push(Candidate { state, input });
         true
     }
 
@@ -317,11 +403,28 @@ impl Cache {
         let candidates = std::mem::take(&mut self.candidates);
         let mut iter = candidates.into_iter();
         while let Some(candidate) = iter.next() {
-            let Some(current) = self.input(analysis, candidate.state, budget) else {
+            let current = match self.input(analysis, candidate.state, budget) {
+                Ok(Some(current)) => current,
+                Ok(None) => {
+                    analysis.summary_stats.rejected_incomplete += 1;
+                    continue;
+                }
+                Err(_) => {
+                    self.candidates.push(candidate);
+                    self.candidates.extend(iter);
+                    return false;
+                }
+            };
+            if !reserve(
+                budget,
+                current
+                    .work_size()
+                    .saturating_add(candidate.input.work_size()),
+            ) {
                 self.candidates.push(candidate);
                 self.candidates.extend(iter);
                 return false;
-            };
+            }
             if current != candidate.input {
                 analysis.summary_stats.rejected_incomplete += 1;
                 continue;
@@ -344,21 +447,36 @@ impl Cache {
                 Capture::Complete(mut certificate) => {
                     // Another call may have closed the same exact relation.
                     // Keep one immutable certificate and avoid widening outputs.
-                    let comparison_cost = analysis.summaries.iter().fold(1usize, |cost, record| {
-                        cost.saturating_add(record.input.work_size())
-                            .saturating_add(candidate.input.work_size())
-                    });
-                    if !budget.charge(comparison_cost) {
+                    let mut duplicate = false;
+                    for record in &analysis.summaries {
+                        if !reserve(
+                            budget,
+                            record
+                                .input
+                                .work_size()
+                                .saturating_add(candidate.input.work_size()),
+                        ) {
+                            self.candidates.push(candidate);
+                            self.candidates.extend(iter);
+                            return false;
+                        }
+                        if record.input == candidate.input {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if duplicate {
+                        continue;
+                    }
+                    let outputs_work =
+                        certificate.terminals.iter().fold(1usize, |cost, terminal| {
+                            cost.saturating_add(terminal.output.data.work_size())
+                                .saturating_add(terminal.output.store.work_size())
+                        });
+                    if !reserve(budget, outputs_work) {
                         self.candidates.push(candidate);
                         self.candidates.extend(iter);
                         return false;
-                    }
-                    if analysis
-                        .summaries
-                        .iter()
-                        .any(|record| record.input == candidate.input)
-                    {
-                        continue;
                     }
                     let record = analysis.summaries.len();
                     analysis.summaries.push(SummaryRecord {
@@ -427,7 +545,8 @@ fn capture(
         if !reached.insert(id) {
             continue;
         }
-        if !budget.charge(
+        if !reserve(
+            budget,
             edges
                 .len()
                 .saturating_add(analysis.frontiers.len())
@@ -437,6 +556,9 @@ fn capture(
         }
         if queued.contains(&id)
             || analysis.states[id].exit.is_none()
+            || analysis.states[id]
+                .execution_evidence()
+                .is_none_or(|evidence| !evidence.is_current())
             || analysis
                 .frontiers
                 .iter()
@@ -469,15 +591,30 @@ fn capture(
             let cost = cost
                 .saturating_add(state.entry.work_size())
                 .saturating_add(state.exit.as_ref().map_or(0, MachinePayload::work_size))
-                .saturating_add(state.executed_pcs.len());
+                .saturating_add(state.executed_pcs.len())
+                .saturating_add(diagnostics.len())
+                .saturating_add(
+                    state
+                        .exit_stack
+                        .iter()
+                        .fold(0usize, |cost, value| cost.saturating_add(value.work_size())),
+                )
+                .saturating_add(state.execution_evidence().map_or(0, |evidence| {
+                    evidence.instructions().len().saturating_add(
+                        evidence.instruction_values().map_or(0, |values| {
+                            values.iter().fold(0usize, |cost, value| {
+                                cost.saturating_add(value.numeric().work_size())
+                                    .saturating_add(value.provenance().origins().work_size())
+                            })
+                        }),
+                    )
+                }));
             completed_calls[*id].iter().fold(cost, |cost, call| {
-                cost.saturating_add(call.payload.work_size())
-                    .saturating_add(call.data.work_size().saturating_mul(3))
-                    .saturating_add(call.output_store.work_size().saturating_mul(3))
+                cost.saturating_add(call_work(call).saturating_mul(4))
             })
         },
     );
-    if !budget.charge(cost) {
+    if !reserve(budget, cost) {
         return Capture::Work;
     }
     let nodes = ordered

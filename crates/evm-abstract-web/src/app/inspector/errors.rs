@@ -28,6 +28,54 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
         value::text(ui, "Category", format!("{:?}", error.code))
     });
     match &error.details {
+        api::ErrorDetails::Fingerprint(detail) => fields(ui, |ui| {
+            value::text(
+                ui,
+                "Snapshot fingerprint unavailable",
+                format!("{:?}", detail.kind),
+            );
+            if let Some(line) = detail.line {
+                value::text(ui, "Encoding line", line.to_string());
+            }
+            if let Some(column) = detail.column {
+                value::text(ui, "Encoding column", column.to_string());
+            }
+        }),
+        api::ErrorDetails::Report(detail) => fields(ui, |ui| {
+            value::text(ui, "Report validation", detail.to_string())
+        }),
+        api::ErrorDetails::Export(detail) => fields(ui, |ui| {
+            value::text(ui, "Export boundary", format!("{:?}", detail.kind));
+            value::text(ui, "Required", detail.required.to_string());
+            if let Some(written) = detail.written {
+                value::text(ui, "Encoded bytes retained", written.to_string());
+            }
+            value::text(ui, "Actual graph nodes", detail.usage.nodes.to_string());
+            value::text(
+                ui,
+                "Exact byte payload",
+                detail.usage.exact_bytes.to_string(),
+            );
+            value::text(ui, "Projection work", detail.usage.work.to_string());
+            value::text(
+                ui,
+                "Complete JSON byte limit",
+                detail.limits.max_output_bytes.to_string(),
+            );
+            value::text(
+                ui,
+                "Node/depth limits",
+                format!("{} / {}", detail.limits.max_nodes, detail.limits.max_depth),
+            );
+            value::text(
+                ui,
+                "Payload/work limits",
+                format!(
+                    "{} / {}",
+                    detail.limits.max_exact_bytes, detail.limits.max_work
+                ),
+            );
+        }),
         api::ErrorDetails::Validation(detail) => fields(ui, |ui| {
             value::text(ui, "Validation", format!("{:?}", detail.kind));
             if let Some(field) = &detail.field {

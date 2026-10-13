@@ -9,11 +9,28 @@ let
   imblPackage = build.imblRelease.package;
 in
 {
+  state-backend-normalization =
+    pkgs.runCommand "evm-abstract-state-backend-normalization" { nativeBuildInputs = [ pkgs.python3 ]; }
+      ''
+        python3 ${sourceRoot}/scripts/test_normalize_identity_scopes.py
+        touch $out
+      '';
   state-backend-parity =
-    pkgs.runCommand "evm-abstract-state-backend-parity" { nativeBuildInputs = [ pkgs.jq ]; }
+    pkgs.runCommand "evm-abstract-state-backend-parity"
+      {
+        nativeBuildInputs = [
+          pkgs.jq
+          pkgs.python3
+        ];
+      }
       ''
         set -euo pipefail
-        mkdir std imbl
+        mkdir -p std imbl normalized/std normalized/imbl
+        compare_reports() {
+          python3 ${sourceRoot}/scripts/normalize_identity_scopes.py < "std/$1.json" > "normalized/std/$1.json"
+          python3 ${sourceRoot}/scripts/normalize_identity_scopes.py < "imbl/$1.json" > "normalized/imbl/$1.json"
+          cmp "normalized/std/$1.json" "normalized/imbl/$1.json"
+        }
         for world in ${sourceRoot}/examples/worlds/*.json; do
           name="$(basename "$world" .json)"
           std_status=0
@@ -26,7 +43,7 @@ in
             --format json > "imbl/$name.json" || imbl_status=$?
           test "$std_status" -eq "$imbl_status"
           case "$std_status" in 0|2) ;; *) exit 1 ;; esac
-          cmp "std/$name.json" "imbl/$name.json"
+          compare_reports "$name"
           if test "$std_status" -eq 0; then
             ${package}/bin/evm-abstract analyze --world "$world" \
               --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
@@ -34,13 +51,13 @@ in
             ${imblPackage}/bin/evm-abstract analyze --world "$world" \
               --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
               --format json --ssa > "imbl/$name-ssa.json"
-            cmp "std/$name-ssa.json" "imbl/$name-ssa.json"
+            compare_reports "$name-ssa"
           else
             jq -e '.status == "Incomplete"' "std/$name.json" > /dev/null
           fi
         done
         mkdir $out
-        cp -r std imbl $out/
+        cp -r std imbl normalized $out/
       '';
   smt-providers =
     pkgs.runCommand "evm-abstract-installed-smt-providers" { nativeBuildInputs = [ pkgs.jq ]; }

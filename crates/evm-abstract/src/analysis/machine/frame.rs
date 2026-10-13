@@ -1,9 +1,12 @@
 //! Execution data shared by frames whose role is relative to one call stack.
 
-use super::{Continuation, FrameCode, FrameKey};
+use super::{Continuation, FrameCode, FrameKey, MachineError, join};
 use crate::{
     bytecode::Program,
-    domain::{AbstractValue, Domain},
+    domain::{
+        AbstractValue, Domain,
+        symbolic::{ExprId, ExprLimits},
+    },
     world::{ByteArray, Snapshot},
 };
 use serde::Serialize;
@@ -36,53 +39,72 @@ pub struct FrameState {
 }
 
 impl FrameState {
-    pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&AbstractValue)) {
-        for value in &self.stack {
-            visit(value);
-        }
-        self.memory.visit_values(visit);
-        self.calldata.visit_values(visit);
-        self.returndata.visit_values(visit);
-        visit(&self.call_value);
-        self.saved_store.state().visit_values(visit);
+    pub(crate) fn work_size(&self) -> usize {
+        self.stack.iter().fold(
+            self.memory
+                .work_size()
+                .saturating_add(self.calldata.work_size())
+                .saturating_add(self.returndata.work_size())
+                .saturating_add(self.call_value.work_size())
+                .saturating_add(self.saved_store.state().work_size())
+                .saturating_add(self.key.jump_history.len())
+                .saturating_add(self.program.as_ref().map_or(0, |program| {
+                    program.byte_len().saturating_add(
+                        program.blocks().iter().fold(0usize, |cost, block| {
+                            cost.saturating_add(block.instructions.len())
+                        }),
+                    )
+                }))
+                .saturating_add(3),
+            |cost, value| cost.saturating_add(value.work_size()),
+        )
     }
-    pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut AbstractValue)) {
-        for value in &mut self.stack {
-            update(value);
+
+    pub(super) fn join_guarded(
+        &self,
+        incoming: &Self,
+        domain: Domain,
+        selector: ExprId,
+        limits: ExprLimits,
+    ) -> Result<Self, MachineError> {
+        if self.key != incoming.key
+            || self.code != incoming.code
+            || self.program != incoming.program
+            || self.environment_calldata != incoming.environment_calldata
+            || self.stack.len() != incoming.stack.len()
+        {
+            return Err(MachineError::Shape);
         }
-        self.memory.update_values(update);
-        self.calldata.update_values(update);
-        self.returndata.update_values(update);
-        update(&mut self.call_value);
-        let mut saved = self.saved_store.state().clone();
-        saved.update_values(update);
-        self.saved_store = Snapshot::from_state(saved);
-    }
-    pub(super) fn widen(&mut self, old: &Self, domain: Domain) {
-        for (value, old) in self.stack.iter_mut().zip(&old.stack) {
-            *value = domain.widen(old, value);
-        }
-        self.memory.widen(&old.memory, domain);
-        self.calldata.widen(&old.calldata, domain);
-        self.returndata.widen(&old.returndata, domain);
-        self.call_value = domain.widen(&old.call_value, &self.call_value);
-        let mut saved = self.saved_store.state().clone();
-        saved.widen(old.saved_store.state(), domain);
-        self.saved_store = Snapshot::from_state(saved);
-    }
-    pub(super) fn join(&mut self, incoming: &Self, domain: Domain) {
-        for (slot, value) in self.stack.iter_mut().zip(&incoming.stack) {
-            *slot = domain.join(slot, value);
-        }
-        self.memory = self.memory.join(&incoming.memory, domain);
-        self.calldata = self.calldata.join(&incoming.calldata, domain);
-        self.returndata = self.returndata.join(&incoming.returndata, domain);
-        self.call_value = domain.join(&self.call_value, &incoming.call_value);
-        self.saved_store = Snapshot::from_state(
-            self.saved_store
-                .state()
-                .join(incoming.saved_store.state(), domain),
-        );
+        let mut out = self.clone();
+        out.stack = self
+            .stack
+            .iter()
+            .zip(&incoming.stack)
+            .map(|(left, right)| join::join_value(left, right, domain, &selector, limits))
+            .collect::<Result<_, _>>()?;
+        out.call_value = join::join_value(
+            &self.call_value,
+            &incoming.call_value,
+            domain,
+            &selector,
+            limits,
+        )?;
+        out.memory =
+            self.memory
+                .join_guarded(&incoming.memory, domain, selector.clone(), limits)?;
+        out.calldata =
+            self.calldata
+                .join_guarded(&incoming.calldata, domain, selector.clone(), limits)?;
+        out.returndata =
+            self.returndata
+                .join_guarded(&incoming.returndata, domain, selector.clone(), limits)?;
+        out.saved_store = Snapshot::from_state(self.saved_store.state().join_guarded(
+            incoming.saved_store.state(),
+            domain,
+            selector,
+            limits,
+        )?);
+        Ok(out)
     }
 }
 
