@@ -1,6 +1,6 @@
 //! Native equivalence proofs against the original complete word encoding.
 
-use super::{CheckResult, Encoder, ExprId, QueryReason, RelationLimits, checked, word};
+use super::super::{CheckResult, Encoder, ExprId, QueryReason, RelationLimits, checked, word};
 use crate::domain::{
     NumericValue,
     relational::SmtProvider,
@@ -39,7 +39,7 @@ fn equivalent(view: ByteView, offset: ExprId, limits: RelationLimits) {
         let mut encoder = Encoder::new(&limits);
         let prefix = encoder.expression(&expression).unwrap();
         assert_eq!(prefix.width(), 256);
-        if matches!(read.kind(), super::ExprKind::WordRead { .. }) {
+        if matches!(read.kind(), super::super::ExprKind::WordRead { .. }) {
             assert!(
                 !encoder.memo.contains_key(&read),
                 "a selector must not memoize a truncated value as its full word"

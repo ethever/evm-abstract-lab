@@ -55,6 +55,8 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 整机 guarded join 为栈值、地址、byte/slot 根、continuation、rollback store 和完整路径公式使用同一个 selector。这样可以表示“p=0x80 时对应那份 memory，p=0xc0 时对应另一份”，避免逐字段交叉配对。路径公式保留 inherited formula 与当前 constraints，二者都属于完整状态。
 
+两边完全相同的无条件约束只保留一份，剩余约束仍由同一个 selector 选择。例如 `ite(s, C AND L, C AND R)` 编码为 `C AND ite(s, L, R)`；只在某个分支成立的条件不能提到 selector 外面。这减少重复编码，并让读取编码继续使用两边共同成立的范围保证。
+
 与自身或已表示的完整替代合并可以吸收。覆盖判断核对完整载荷，必要时用有界查询检查标量和路径保证；UNKNOWN 不能证明覆盖。重复相同覆盖通过规范化减少根的增长，不能仅因内部版本号增加就判定内容改变。
 
 循环处理分两种情况。若除操作数栈与路径外，所有帧内容、byte/slot 根、source、view、rollback checkpoint 和 continuation 都保持相同，栈 widening 可以扩大改变的 word 的数值范围。持续改变的 word 保留扩大的无符号区间，放弃会继续增长的有限集、位和同余细节；未改变的 word 保留原数值事实。结果只保留共同路径保证，不能把已丢失的标量关联仍显示为精确析取。状态根也随迭代改变时，这个方法不适用。

@@ -10,6 +10,9 @@ use crate::domain::symbolic::ExprKind;
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+#[cfg(test)]
+mod tests;
+
 fn disjoint_word(start: &ExprId, destination: &ExprId, length: U256) -> bool {
     if length == U256::ZERO {
         return true;
@@ -115,13 +118,6 @@ impl Encoder<'_> {
         else {
             return Ok(None);
         };
-        let Some(start) = view
-            .offset
-            .as_constant()
-            .filter(|at| *at <= U256::MAX - U256::from(31))
-        else {
-            return Ok(None);
-        };
         if view.length != *length
             && !view
                 .length
@@ -130,6 +126,11 @@ impl Encoder<'_> {
         {
             return Ok(None);
         }
+        let constant_start = view.offset.as_constant();
+        let start = match constant_start {
+            Some(at) => word(at),
+            None => self.expression(&view.offset)?,
+        };
         self.charge(1)?;
         let array = self
             .byte_sources
@@ -141,29 +142,39 @@ impl Encoder<'_> {
         }
         let mut bytes = Vec::with_capacity(32);
         for j in 0..32 {
-            self.charge(2)?;
-            bytes.push(array.select(&word(start + U256::from(j))));
+            self.charge(if constant_start.is_some() { 2 } else { 3 })?;
+            let index = match constant_start {
+                Some(at) => word(at.wrapping_add(U256::from(j))),
+                None => start.bvadd(word(U256::from(j))),
+            };
+            bytes.push(array.select(&index));
         }
         let raw = self.word_from_bytes(bytes)?;
         self.charge(1)?;
-        if self
-            .guarantees
-            .minimum(length)
-            .is_some_and(|lower| lower > start + U256::from(31))
+        if constant_start
+            .filter(|at| *at <= U256::MAX - U256::from(31))
+            .is_some_and(|at| {
+                self.guarantees
+                    .minimum(length)
+                    .is_some_and(|lower| lower > at + U256::from(31))
+            })
         {
             // The already asserted source bound covers every byte, including
             // the strict source-length boundary. No padding shift is needed.
             return Ok(Some(raw));
         }
         let length = self.expression(length)?;
-        let available = length.bvsub(word(start));
+        // A retained byte has mathematical start+j < source length <= MAX,
+        // so it cannot overflow. Wrapped raw suffix reads are discarded by the
+        // same prefix mask that enforces the source's strict length boundary.
+        let available = length.bvsub(&start);
         // Below 32, six bits suffice for 32-available (including 32 at zero).
         // This avoids a full-width variable subtraction/multiply for padding.
         let missing = BV::from_u64(32, 6).bvsub(available.extract(5, 0));
         let shift = missing.zero_ext(250).bvshl(word(U256::from(3)));
         let prefix = raw.bvand(word(U256::MAX).bvshl(shift));
         self.charge(12)?;
-        Ok(Some(length.bvugt(word(start)).ite(
+        Ok(Some(length.bvugt(&start).ite(
             &available.bvuge(word(U256::from(32))).ite(&raw, &prefix),
             &word(U256::ZERO),
         )))

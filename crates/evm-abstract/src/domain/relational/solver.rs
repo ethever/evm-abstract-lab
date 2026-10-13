@@ -9,8 +9,6 @@ use revm_bytecode::opcode;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod guarantees;
-#[cfg(test)]
-mod prefix_tests;
 mod state;
 #[cfg(test)]
 mod tests;
