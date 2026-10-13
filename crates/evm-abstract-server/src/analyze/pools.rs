@@ -1,4 +1,5 @@
 //! Intern complete immutable buffers, stores and code; references are report-local.
+mod budget;
 mod values;
 
 use super::{checkpoint, mapping, symbolic, value};
@@ -10,10 +11,12 @@ use evm_abstract::{
     world::{ByteArray, Code, Existence, Store},
 };
 use evm_abstract_protocol as api;
+use std::collections::BTreeMap;
 
 pub(super) struct Pools<'a> {
     control: &'a Control,
     buffers: Vec<ByteArray>,
+    buffer_roots: BTreeMap<evm_abstract::domain::symbolic::ByteStateId, Vec<usize>>,
     stores_native: Vec<Store>,
     pub buffers_dto: Vec<api::ByteArraySnapshot>,
     pub stores: Vec<api::StoreSnapshot>,
@@ -22,6 +25,9 @@ pub(super) struct Pools<'a> {
     pending_native: Vec<std::sync::Arc<MachinePayload>>,
     pub pending: Vec<api::MachineSnapshot>,
 }
+
+#[cfg(test)]
+mod tests;
 pub(super) fn blocks(program: &Program) -> Vec<api::DisasmBlock> {
     program
         .blocks()
@@ -51,6 +57,7 @@ impl<'a> Pools<'a> {
         Self {
             control,
             buffers: Vec::new(),
+            buffer_roots: BTreeMap::new(),
             stores_native: Vec::new(),
             buffers_dto: Vec::new(),
             stores: Vec::new(),
@@ -97,20 +104,31 @@ impl<'a> Pools<'a> {
         Ok(id)
     }
     pub fn buffer(&mut self, source: &ByteArray) -> Result<usize, api::ApiError> {
-        checkpoint(self.control)?;
-        for id in 0..self.buffers.len() {
-            self.symbolic.charge(1)?;
-            if self.buffers[id].state_root() != source.state_root() {
-                continue;
-            }
-            self.symbolic.charge(source.work_size())?;
-            if self.buffers[id] == *source {
-                return Ok(id);
+        self.symbolic.charge(1)?;
+        let work = budget::BufferWork::new(source, &mut self.symbolic)?;
+        if let Some(candidates) = self.buffer_roots.get(source.state_root()) {
+            for &id in candidates {
+                self.symbolic.charge(1)?;
+                if !work.comparison(source, &self.buffers[id], &mut self.symbolic)? {
+                    continue;
+                }
+                let equal = self.buffers[id] == *source;
+                // A cancellation arriving during a prepaid native comparison
+                // must not become a successful cache hit.
+                self.symbolic.charge(0)?;
+                if equal {
+                    return Ok(id);
+                }
             }
         }
         let id = self.buffers.len();
-        self.symbolic.charge(source.work_size())?;
+        work.copy(&mut self.symbolic)?;
         self.buffers.push(source.clone());
+        self.symbolic.charge(1)?;
+        self.buffer_roots
+            .entry(source.state_root().clone())
+            .or_default()
+            .push(id);
         let mut values = values::Dictionary::default();
         let cells = source
             .stored_bytes()
