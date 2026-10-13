@@ -15,6 +15,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import time
+import zlib
 
 from playwright.sync_api import expect, sync_playwright
 sys.dont_write_bytecode = True
@@ -176,7 +177,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 8
+    assert initial_report["schema_version"] == 9
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
         assert initial_report["metadata"]["limits"][field] == value
@@ -209,7 +210,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 8
+    assert report["schema_version"] == 9
     assert report["status"] == "Converged", report["frontiers"]
     expected = {**defaults, **edited}
     for field, value in expected.items():
@@ -513,18 +514,28 @@ def flow_frames(page, canvas, output: Path, name: str, regions):
     # Capture consecutive real compositor frames first. PNG decoding, pixel
     # extraction and browser round trips belong after sampling, otherwise
     # they can consume the entire conservative half-cycle timing allowance.
-    for index in range(24):
-        capture_begin=time.monotonic()-start
-        png=page.screenshot(path=str(output/f"{name}-{index:02}.png"),
-                            clip={"x":box[0],"y":box[1],"width":box[2]-box[0],"height":box[3]-box[1]})
-        capture_end=time.monotonic()-start
-        if captures and capture_end-captures[-1][0]["capture_begin_seconds"]<max_interval:
-            valid_pairs+=1
-        captures.append(({"capture_begin_seconds":capture_begin,"capture_end_seconds":capture_end,"screenshot_box":box},png))
-        # Six timing-valid pairs provide several opportunities to see a head
-        # fully inside the gap. Direction still requires its own two different
-        # advancing frame pairs below; timing or presence alone cannot pass it.
-        if len(captures)>=10 and valid_pairs>=6: break
+    # Capture the real Chromium surface directly. Playwright's screenshot
+    # preparation can otherwise spend the half-cycle allowance on frame waits.
+    # Retain the same conservative wall-clock bounds and lossless PNG evidence.
+    cdp=page.context.new_cdp_session(page)
+    try:
+        for index in range(24):
+            capture_begin=time.monotonic()-start
+            captured=cdp.send("Page.captureScreenshot",{
+                "format":"png","fromSurface":True,"captureBeyondViewport":False,
+                "clip":{"x":box[0],"y":box[1],"width":box[2]-box[0],"height":box[3]-box[1],"scale":1}})
+            capture_end=time.monotonic()-start
+            png=base64.b64decode(captured["data"])
+            (output/f"{name}-{index:02}.png").write_bytes(png)
+            if captures and capture_end-captures[-1][0]["capture_begin_seconds"]<max_interval:
+                valid_pairs+=1
+            captures.append(({"capture_begin_seconds":capture_begin,"capture_end_seconds":capture_end,"screenshot_box":box},png))
+            # Six timing-valid pairs provide several opportunities to see a head
+            # fully inside the gap. Direction still requires its own two different
+            # advancing frame pairs below; timing or presence alone cannot pass it.
+            if len(captures)>=10 and valid_pairs>=6: break
+    finally:
+        cdp.detach()
     frames=[]
     for frame,png in captures:
         frame["regions"]=flow_pixels(page,png,regions,box)
@@ -793,7 +804,7 @@ def diagnostics_interactions(browser, url: str, args):
         assert request["fork"] == fork and posted_bytecode(reply) == code, request
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 8 and report["status"] == "Converged", report
+        assert report["schema_version"] == 9 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report
 
@@ -1167,7 +1178,7 @@ def ssa_values_interactions(browser, url, output):
     for name,code,completion in cases:
         if 'Inspector hidden' not in status.text_content():hide_inspector(page,canvas)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
-        assert report['schema_version']==8 and report['status']==completion
+        assert report['schema_version']==9 and report['status']==completion
         ssa=report['ssa']
         assert len(ssa['values'])==ssa['value_count']
         assert [value['id'] for value in ssa['values']]==list(range(ssa['value_count']))
@@ -1861,17 +1872,17 @@ def storage_table_snapshot(page, canvas, output: Path, name: str, tab_bottom: fl
     png=canvas.screenshot(path=str(output/f"{name}.png"))
     size=page.viewport_size
     table=storage_table_pixels(page,png,(4,tab_bottom+52,size["width"]-24,size["height"]-30))
-    assert table["header"]["slot"] and table["header"]["value"], f"Slot/Value headers are missing: {table}"
-    assert len(table["rows"])==count, f"expected {count} body rows distinct from the header: {table}"
-    assert all(row["slot"] and row["value"] for row in table["rows"]), table
+    assert table["header"]["slot"] and table["header"]["value"], f"Slot/Value headers are missing: {storage_pixel_report(table)}"
+    assert len(table["rows"])==count, f"expected {count} body rows distinct from the header: {storage_pixel_report(table)}"
+    assert all(row["slot"] and row["value"] for row in table["rows"]), storage_pixel_report(table)
     origins=[row["value"]["bounds"][0] for row in table["rows"]]
     assert max(origins)-min(origins)<=1, f"Value origins depend on slot text length: {origins}"
     ends=[row["slot"]["bounds"][2] for row in table["rows"]]
     # Different glyphs have slightly different ink bearings inside their
     # monospace cells; their low-order character positions must still agree.
     assert max(ends)-min(ends)<=2, f"Slot low-order ends are not right aligned: {ends}"
-    assert all(row["slot"]["bounds"][2]<table["separator"] for row in table["rows"]), table
-    assert min(origins)>table["separator"], f"Slot labels invaded Value: {table}"
+    assert all(row["slot"]["bounds"][2]<table["separator"] for row in table["rows"]), storage_pixel_report(table)
+    assert min(origins)>table["separator"], f"Slot labels invaded Value: {storage_pixel_report(table)}"
     save_png_crop(page,png,table["table_bounds"],output/f"{name}-table.png")
     return table
 
@@ -1889,7 +1900,7 @@ def drag_storage_separator(page, table, target_x: float):
 
 
 def storage_ink_pixels(page, screenshot: bytes, region):
-    """Normalize text placement while retaining the exact reviewed glyph mask."""
+    """Retain the glyph mask and every RGB sample of the text and its region."""
     return page.evaluate("""async ({png,region}) => {
         const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
         const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
@@ -1904,10 +1915,21 @@ def storage_ink_pixels(page, screenshot: bytes, region):
         }
         if(!count)return null;
         const width=maxX-minX+1,height=maxY-minY+1,mask=new Uint8Array(width*height);
+        const rgb=(x0,y0,x1,y1)=>{
+            const samples=[];
+            for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){
+                const i=(y*c.width+x)*4;samples.push(data[i],data[i+1],data[i+2]);
+            }
+            let binary='';
+            for(let i=0;i<samples.length;i+=16384)binary+=String.fromCharCode(...samples.slice(i,i+16384));
+            return btoa(binary);
+        };
         for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++)if(ink(x,y))mask[(y-minY)*width+x-minX]=1;
         const digest=await crypto.subtle.digest('SHA-256',mask);
         return {bounds:[minX/scale,minY/scale,(maxX+1)/scale,(maxY+1)/scale],pixels:count,
-            mask_size:[width,height],mask_sha256:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
+            mask_size:[width,height],mask_sha256:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join(''),
+            rgb_raster:rgb(minX,minY,maxX+1,maxY+1),
+            region:{bounds:region,mask_size:[right-left,bottom-top],rgb_raster:rgb(left,top,right,bottom)}};
     }""", {"png":base64.b64encode(screenshot).decode(),"region":region})
 
 
@@ -1943,7 +1965,8 @@ def storage_hover_snapshot(page, canvas, output: Path, name: str, cell):
     assert bounds, f"no rendered hover details for {name}"
     metrics=text_pixels(page,png,bounds)
     save_png_crop(page,png,bounds,output/f"{name}-tooltip.png")
-    return {"bounds":bounds,"text":metrics,"ink":storage_ink_pixels(page,png,bounds)}
+    ink=storage_ink_pixels(page,png,bounds)
+    return {"bounds":bounds,"text":metrics,"raster":ink.pop("region"),"ink":ink}
 
 
 def assert_storage_cell_text(before, after, label="Value"):
@@ -1955,6 +1978,29 @@ def assert_storage_cell_text(before, after, label="Value"):
     # a changed glyph fails at individual pixels, even at the end of a long word.
     assert maximum<=2,f"rendered {label} text changed: maximum RGB difference {maximum}"
     return {"rgb_samples":len(first),"maximum_rgb_difference":maximum}
+
+
+def storage_reviewed_raster(key, text, size, mask_sha256):
+    """Load independent historical RGB pixels and verify their reviewed mask."""
+    fixture=json.loads(Path(__file__).with_name("web_test_storage_literals.json").read_text())["literals"][key]
+    assert fixture["text"]==text and fixture["mask_size"]==size, key
+    raster=zlib.decompress(base64.b64decode(fixture["rgb_zlib_base64"],validate=True))
+    assert len(raster)==size[0]*size[1]*3, key
+    assert hashlib.sha256(raster).hexdigest()==fixture["rgb_sha256"], key
+    left,top,right,bottom=fixture["ink_bounds"]
+    mask=bytearray()
+    for y in range(top,bottom):
+        for x in range(left,right):
+            r,g,b=raster[(y*size[0]+x)*3:(y*size[0]+x+1)*3]
+            mask.append(int(r>=128 and b>=g>=r and b-r<=35))
+    assert fixture["mask_sha256"]==mask_sha256==hashlib.sha256(mask).hexdigest(), key
+    return {"bounds":[0,0,*size],"mask_size":size,"rgb_raster":base64.b64encode(raster).decode()}
+
+
+def assert_storage_reviewed_pixels(cell, key, text, size, mask_sha256):
+    reference=storage_reviewed_raster(key,text,size,mask_sha256)
+    return {"expected_text":text,"mask_size":size,"reviewed_mask_sha256":mask_sha256,
+            **assert_storage_cell_text(reference,cell,text)}
 
 
 def storage_crop_cell(cell, left: int, top: int, right: int, bottom: int):
@@ -2006,13 +2052,7 @@ def storage_glyph_cells(cell):
 
 
 def assert_storage_literal_pixels(cell, text: str):
-    """Require a reviewed exact DPR1 raster of the complete literal.
-
-    Epaint bins glyphs at four subpixel positions within each galley. Adding
-    braces or an ellipsis can therefore change a digit's bitmap, even when the
-    font is unchanged. Use independent complete-text masks, as in the final-row
-    checks, rather than comparing different glyph contexts with a wider tolerance.
-    """
+    """Require independent reviewed DPR1 pixels of the complete literal."""
     reviewed = {
         "0x0": ([22,9], "70dcbd48818467183033b408aeb867e1b1385300a64ace6d0a1dfcd02fcb5c33"),
         "0xf": ([21,10], "c15143a43ec1f811109009d82060c7230250bd467072ccf11b0a976465cd9b26"),
@@ -2025,7 +2065,11 @@ def assert_storage_literal_pixels(cell, text: str):
         "…90190abcdef": ([93,10], "ff5b7b798e75e4de049ff8445836b31c155ad8d3a08f07e3625c8450b46767cd"),
     }
     size,expected=reviewed[text]
-    assert cell["mask_size"]==size and cell["mask_sha256"]==expected, f"rendered {text} changed: {cell}"
+    if text=="{"+STORAGE_SLOT_WORD+"}":
+        # One historical red127 sample rounds to128 in current Chromium.
+        # Compare the complete independent raster with the existing <=2 bound.
+        return assert_storage_reviewed_pixels(cell,"full_value",text,size,expected)
+    assert cell["mask_size"]==size and cell["mask_sha256"]==expected, f"rendered {text} changed: {storage_pixel_report(cell)}"
     return {"expected_text":text,"mask_size":size,"mask_sha256":expected}
 
 
@@ -2046,7 +2090,7 @@ def assert_storage_suffix(narrowed, word: str, retained: int):
 def storage_pixel_report(value):
     if isinstance(value,dict):
         return {key:storage_pixel_report(item) for key,item in value.items() if key!="rgb_raster"}
-    if isinstance(value,list):
+    if isinstance(value,(list,tuple)):
         return [storage_pixel_report(item) for item in value]
     return value
 
@@ -2079,24 +2123,25 @@ def storage_table_interactions(browser, url: str, output: Path):
     assert len(word)==66
     slots=[0,0xf,0x1234,int(word,16)]
 
-    def fixture(revision, long_slots=True):
+    def fixture(revision, long_slots=True, literal_word=word):
         expected={kind:{} for kind in ["storage","transient"]}
         instructions=[]
-        for index,slot in enumerate(slots if long_slots else slots[:3]):
+        fixture_slots=[*slots[:3],int(literal_word,16)] if long_slots else slots[:3]
+        for index,slot in enumerate(fixture_slots):
             key=f"7f{slot:064x}" if slot>0xffff else f"61{slot:04x}"
             for kind,opcode,base in [("storage","55",0x3100),("transient","5d",0x4200)]:
                 value=int(("cd" if kind=="storage" else "ef")*32,16) if index==3 else base+revision*16+index
                 if index==1:
                     value=0xf
                 elif index==2 and long_slots:
-                    value=int(word,16)
+                    value=int(literal_word,16)
                 expected[kind][hex(slot)]=hex(value)
                 push=f"7f{value:064x}" if value>0xffff else f"61{value:04x}"
                 instructions.append(push+key+opcode)
         return "".join(instructions)+"00",expected
 
-    def submit_fixture(revision, long_slots=True):
-        code,expected=fixture(revision,long_slots)
+    def submit_fixture(revision, long_slots=True, literal_word=word):
+        code,expected=fixture(revision,long_slots,literal_word)
         reply=submit_bytecode(page,canvas,code,output/f"storage-table-input-{revision}.png")
         assert reply.status==200,reply.json()
         report=reply.json()["result"]["Ok"]
@@ -2107,6 +2152,16 @@ def storage_table_interactions(browser, url: str, output: Path):
         for kind in expected:
             assert {entry["slot"]:entry["value"]["constants"] for entry in account[kind]}=={
                 slot:[value] for slot,value in expected[kind].items()},account[kind]
+            for entry in account[kind]:
+                literal=expected[kind][entry["slot"]]
+                number=int(literal,16)
+                assert entry["value"]=={
+                    "summary":"{"+literal+"}","constants":[literal],
+                    "known_zero":hex(((1<<256)-1)^number),"known_one":literal,
+                    "nonzero":number!=0,"unsigned":{"lower":literal,"upper":literal},
+                    "signed":{"lower":literal,"upper":literal},"congruence":{"Exact":literal},
+                    "origins":["Constant"],"code_address_role":False,"identity":None,
+                    "expression":None,"symbolic_limit":False},entry
         (output/f"storage-table-analysis-{revision}.json").write_text(json.dumps(report,indent=2)+"\n")
         return expected
 
@@ -2143,18 +2198,19 @@ def storage_table_interactions(browser, url: str, output: Path):
         full=initial["rows"][-1]["slot"]
         full_comparison=assert_storage_literal_pixels(full,word)
         full_value_comparison=assert_storage_literal_pixels(initial["rows"][2]["value"],"{"+word+"}")
-        assert full["bounds"][2]-full["bounds"][0]>500,full
+        assert full["bounds"][2]-full["bounds"][0]>500,storage_pixel_report(full)
         full_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-full-slot-hover",initial["rows"][-1]["slot"])
         # This varied literal fits one proportional-font tooltip line. Require
         # its complete reviewed raster, including the original 0x prefix.
-        assert (len(full_hover["text"]["rows"])==1 and full_hover["ink"]["mask_size"]==[465,10]
-                and full_hover["ink"]["mask_sha256"]=="c24455921e771f31c4dff3e171ab62b12271f5c29b07f653f4492e6b0092488a"),full_hover
+        assert len(full_hover["text"]["rows"])==1 and full_hover["ink"]["mask_size"]==[465,10],storage_pixel_report(full_hover)
+        full_hover_comparison=assert_storage_reviewed_pixels(full_hover["raster"],"slot_hover",word,[476,23],
+            "c24455921e771f31c4dff3e171ab62b12271f5c29b07f653f4492e6b0092488a")
         if kind=="transient":
             assert initial["rows"][0]["value"]["mask_sha256"]!=results["storage"]["initial"]["rows"][0]["value"]["mask_sha256"], "Transient rendered the persistent value"
         drag_storage_separator(page,initial,initial["separator"]+320)
         wide=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-wide",tab[3],len(slots))
-        assert wide["separator"]-initial["separator"]>=280, (initial,wide)
-        assert wide["rows"][-1]["slot"]["bounds"][2]-wide["rows"][-1]["slot"]["bounds"][0]>300,wide
+        assert wide["separator"]-initial["separator"]>=280, storage_pixel_report((initial,wide))
+        assert wide["rows"][-1]["slot"]["bounds"][2]-wide["rows"][-1]["slot"]["bounds"][0]>300,storage_pixel_report(wide)
         advance=(full["bounds"][2]-full["bounds"][0]
                  -(initial["rows"][1]["slot"]["bounds"][2]-initial["rows"][1]["slot"]["bounds"][0]))/(len(word)-3)
         current=wide
@@ -2167,14 +2223,14 @@ def storage_table_interactions(browser, url: str, output: Path):
             drag_storage_separator(page,current,target)
             narrow=storage_table_snapshot(page,canvas,output,
                 f"storage-table-{kind}-suffix-{retained}",tab[3],len(slots))
-            assert abs(narrow["separator"]-target)<=3,(target,narrow)
+            assert abs(narrow["separator"]-target)<=3,(target,storage_pixel_report(narrow))
             suffix=assert_storage_suffix(narrow["rows"][-1]["slot"],word,retained)
             suffix.update(target_separator=target,table=narrow)
             suffixes.append(suffix)
             for first,last in zip(initial["rows"][:3],narrow["rows"][:3],strict=True):
                 assert_storage_cell_text(first["slot"],last["slot"],"un-padded short Slot")
             current=narrow
-        assert narrow["separator"]<initial["separator"]-20,(initial,narrow)
+        assert narrow["separator"]<initial["separator"]-20,storage_pixel_report((initial,narrow))
         assert_storage_cell_text(initial["rows"][-1]["slot"],wide["rows"][-1]["slot"],"complete widened Slot")
         value_comparisons=[assert_storage_cell_text(first["value"],last["value"])
             for first,last in zip(initial["rows"],narrow["rows"],strict=True)]
@@ -2182,11 +2238,14 @@ def storage_table_interactions(browser, url: str, output: Path):
         slot_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-slot-hover",narrow["rows"][-1]["slot"])
         # Full original text remains identical to the untruncated initial
         # key's hover, including every glyph of the original single line.
-        assert len(slot_hover["text"]["rows"])==1 and slot_hover["ink"]["mask_sha256"]==full_hover["ink"]["mask_sha256"],slot_hover
+        assert len(slot_hover["text"]["rows"])==1 and slot_hover["ink"]["mask_sha256"]==full_hover["ink"]["mask_sha256"],storage_pixel_report(slot_hover)
         page.mouse.move(2,2)
         settle_gesture(page)
         value_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-value-hover",narrow["rows"][-1]["value"])
-        assert len(value_hover["text"]["rows"])==8 and value_hover["text"]["muted_pixels"]>100,value_hover
+        # Retain the eight original numeric/provenance rows, plus the new
+        # proved-nonzero row. Its wire fact was checked against the full U256.
+        nonzero_rows=int(int(expected[kind][hex(slots[-1])],16)!=0)
+        assert len(value_hover["text"]["rows"])==8+nonzero_rows and value_hover["text"]["muted_pixels"]>100,storage_pixel_report(value_hover)
         select_inspector_tab(page,canvas,"Frame",toolbar_y)
         frame=inspector_frame_tab(page,canvas)
         page.mouse.move(720,frame[1]-3)
@@ -2223,7 +2282,8 @@ def storage_table_interactions(browser, url: str, output: Path):
         assert_storage_preference(scroll_returned,preferences[kind])
         results[kind]={"expected":expected[kind],"short_default":short_defaults[kind],
                        "full_slot_raster":full,"full_slot_comparison":full_comparison,"full_value_comparison":full_value_comparison,
-                       "full_slot_hover":full_hover,"suffixes":suffixes,"initial":initial,"wide":wide,"narrow":narrow,
+                       "full_slot_hover":full_hover,"full_hover_comparison":full_hover_comparison,
+                       "suffixes":suffixes,"initial":initial,"wide":wide,"narrow":narrow,
                        "slot_hover":slot_hover,"value_hover":value_hover,"scrolled":scrolled,"scroll_return":scroll_returned}
         results[kind].update(value_comparisons=value_comparisons,scrolled_value=scrolled_value)
 
@@ -2274,8 +2334,36 @@ def storage_table_interactions(browser, url: str, output: Path):
         assert updated["rows"][0]["value"]["mask_sha256"]!=results[kind]["narrow"]["rows"][0]["value"]["mask_sha256"], "new report retained stale values"
         results[kind].update(new_report=updated,expected_new=expected_new[kind])
     assert len(posts)==4,"expected startup, short fixture, long fixture and one controlled new report"
+    # Submit a real incorrect last digit, after the complete original matrix.
+    # Its Value has the same dimensions; the RGB oracle must reject its tail.
+    wrong_word=word[:-1]+"e"
+    assert wrong_word[:-1]==word[:-1] and wrong_word[-1]!=word[-1]
+    submit_fixture(2,literal_word=wrong_word)
+    select_inspector_tab(page,canvas,"Storage",toolbar_y)
+    canvas.click(position={"x":145,"y":tab[3]+14})
+    expect(status).to_contain_text("Observed exit")
+    wrong=storage_table_snapshot(page,canvas,output,"storage-table-wrong-last-glyph",tab[3],len(slots))
+    wrong_value=wrong["rows"][2]["value"]
+    reference=storage_reviewed_raster("full_value","{"+word+"}",[531,12],
+        "441542c8fa375969f42f890a0240ae01222ff506ba5da7a71cfbee95695caa2e")
+    assert wrong_value["mask_size"]==reference["mask_size"],storage_pixel_report(wrong_value)
+    first,last=base64.b64decode(reference["rgb_raster"]),base64.b64decode(wrong_value["rgb_raster"])
+    differences=[abs(a-b) for a,b in zip(first,last,strict=True)]
+    changed=[(i//3)%531 for i,difference in enumerate(differences) if difference>2]
+    assert changed and min(changed)>=531-30,"negative fixture changed more than its final glyph"
+    try:
+        assert_storage_literal_pixels(wrong_value,"{"+word+"}")
+    except AssertionError as error:
+        assert "maximum RGB difference" in str(error),str(error)
+        negative={"actual_text":"{"+wrong_word+"}","expected_text":"{"+word+"}",
+                  "mask_size":wrong_value["mask_size"],"maximum_rgb_difference":max(differences),
+                  "changed_tail_columns":[min(changed),max(changed)],"rejection":str(error)}
+    else:
+        raise AssertionError("reviewed complete Value accepted an incorrect last glyph")
+    assert len(posts)==5,"expected exactly one additional real negative analysis"
     assert not errors,errors
-    result=storage_pixel_report({"stores":results,"analysis_submissions":len(posts),"renderer":webgpu_evidence(page)})
+    result=storage_pixel_report({"stores":results,"wrong_last_glyph":negative,
+        "analysis_submissions":len(posts),"renderer":webgpu_evidence(page)})
     (output/"storage-table-report.json").write_text(json.dumps(result,indent=2)+"\n")
     page.close()
     return result
@@ -2301,10 +2389,39 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     machine = report["states"][0]["exit"]
     account = next(account for account in report["stores"][machine["store"]]["accounts"]
                    if account["address"] == machine["frames"][0]["storage_address"])
+    store=report["stores"][machine["store"]]
+    graph=report["symbolic"]["nodes"]
+    ordered_roots={}
     for kind, value_base in [("storage", 0x1000), ("transient", 0x2000)]:
         assert len(account[kind]) == count
         last = next(entry for entry in account[kind] if int(entry["slot"], 16) == count - 1)
         assert last["value"]["constants"] == [hex(value_base + count - 1)]
+        # The new prefix describes this shared ordered DAG, independently of
+        # sparse observations. Preserve every update and the unknown/zero base.
+        node=account[kind+"_root"]["node"]
+        for slot in reversed(range(count)):
+            update=graph[node]["Store"]
+            assert graph[update["key"]["node"]]=={"Constant":hex(slot)},update
+            assert graph[update["value"]["node"]]=={"Constant":hex(value_base+slot)},update
+            node=update["previous"]["node"]
+        base=graph[node]
+        default=account[kind+"_default"]
+        if kind=="storage":
+            source=base["SlotsInput"]
+            assert source["bindings"]==[] and "Fresh" in graph[source["source"]["token"]["node"]],source
+            assert int(source["source"]["namespace"],16)==int(account["address"],16)<<8,source
+            assert default["constants"] is None and default["known_zero"]==default["known_one"]=="0x0",default
+            assert default["unsigned"]=={"lower":"0x0","upper":hex((1<<256)-1)},default
+            assert default["signed"]=={"lower":hex(1<<255),"upper":hex((1<<255)-1)},default
+            assert default["congruence"]=="Any" and default["origins"] is None and not default["nonzero"],default
+        else:
+            assert base=="SlotsZero" and default["constants"]==["0x0"],(base,default)
+            assert default["known_zero"]==hex((1<<256)-1) and default["known_one"]=="0x0",default
+            assert default["unsigned"]==default["signed"]=={"lower":"0x0","upper":"0x0"},default
+            assert default["congruence"]=={"Exact":"0x0"} and default["origins"]==["Constant"] and not default["nonzero"],default
+        assert not default["code_address_role"] and default["identity"] is None and default["expression"] is None and not default["symbolic_limit"],default
+        assert store[kind+"_facts"]==[],store[kind+"_facts"]
+        ordered_roots[kind]={"root":account[kind+"_root"],"writes":count,"base_node":node,"base":base,"default":default}
     (output / "storage-scroll-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
     canvas.click(position={"x": 720, "y": 600})
     page.keyboard.press("3")
@@ -2331,7 +2448,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         default_png = canvas.screenshot(path=str(output / f"{kind}-facts-default-width.png"))
         default_table = storage_table_pixels(page, default_png,
             (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
-        assert default_table["header"]["slot"] and default_table["header"]["value"],default_table
+        assert default_table["header"]["slot"] and default_table["header"]["value"],storage_pixel_report(default_table)
         # Preserve the reviewed final-row hashes at their original Value x=138.
         # The larger default moves Value to x=531, where one unchanged glyph
         # sample rounds from 127 to 128 and crosses the exact ink-mask threshold.
@@ -2342,29 +2459,37 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         collapsed = canvas.screenshot(path=str(output / f"{kind}-facts-collapsed.png"))
         table = storage_table_pixels(page, collapsed,
             (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
-        assert abs(table["separator"]-134.5)<=1,table
-        assert table["header"]["slot"] and table["header"]["value"],table
-        # The original 20-point native baseline gives facts a 23-point stride;
-        # include Pending destruction while stopping before Unspecified slots.
-        facts_region = (145, tab[3] + 92, 650, tab[3] + 282)
-        # Value now occupies the former blank facts crop below the table
-        # header. The collapsed prefix must be empty above that measured table.
-        collapsed_facts_region = (145,tab[3]+92,650,table["table_bounds"][1])
+        assert abs(table["separator"]-134.5)<=1,storage_pixel_report(table)
+        assert table["header"]["slot"] and table["header"]["value"],storage_pixel_report(table)
+        # Address, ordered-state root, closed account header and base default
+        # precede the measured table. The new DAG row shifts the old click/crop.
+        collapsed_prefix_region=(4,tab[3]+55,600,table["table_bounds"][1])
+        collapsed_prefix=text_pixels(page,collapsed,collapsed_prefix_region)
+        assert len(collapsed_prefix["rows"])==4,"account facts were already expanded or the ordered-state prefix is missing"
+        address_band,root_band,account_band,default_band=collapsed_prefix["rows"]
+        collapsed_facts_region=(145,account_band[1]+1,650,default_band[0])
         collapsed_facts = text_pixels(page, collapsed, collapsed_facts_region)
         assert not collapsed_facts["rows"], "account facts were already expanded before the header click"
-        canvas.click(position={"x": 120, "y": tab[3] + 80})
+        canvas.click(position={"x":120,"y":sum(account_band)/2})
         page.mouse.move(2, 2)
         settle_gesture(page)
         expanded = canvas.screenshot(path=str(output / f"{kind}-facts-expanded.png"))
+        expanded_table=storage_table_pixels(page,expanded,
+            (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
+        expanded_prefix=text_pixels(page,expanded,(4,tab[3]+55,600,expanded_table["table_bounds"][1]))
+        assert len(expanded_prefix["rows"])==4+8,"header click did not preserve the prefix and reveal all eight account facts"
+        assert expanded_prefix["rows"][:3]==collapsed_prefix["rows"][:3],(collapsed_prefix,expanded_prefix)
+        facts_region=(145,account_band[1]+1,650,expanded_prefix["rows"][-1][0])
         expanded_facts = text_pixels(page, expanded, facts_region)
         assert len(expanded_facts["rows"]) == 8, "header click did not reveal all eight account facts"
-        prefix_region = (4, tab[3] + 55, 600, tab[3] + 92)
+        prefix_region=(4,address_band[0]-1,600,account_band[1]+1)
         prefix = text_pixels(page, expanded, prefix_region)
-        assert len(prefix["rows"]) == 2, "account address and full facts heading were not painted"
+        assert len(prefix["rows"])==3,"account address, ordered-state root and full facts heading were not painted"
         save_png_crop(page, expanded, prefix_region, output / f"{kind}-prefix-expanded.png")
         # The wheel starts over the facts prefix. One shared scroll must carry
         # it all the way through the slot list, rather than trap it in 80 points.
-        page.mouse.move(80, tab[3] + 115)
+        wheel_y=sum(expanded_facts["rows"][0])/2
+        page.mouse.move(80,wheel_y)
         page.mouse.wheel(0, 6000)
         settle_gesture(page)
         page.mouse.move(2, 2)
@@ -2383,10 +2508,10 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         assert len(last_row["rows"]) == 1 and last_row["white_pixels"] > 100, "last slot row was clipped or blank"
         for cell,expected_hash in [("slot",last_cell_hashes["slot"]),("value",last_cell_hashes[kind])]:
             actual=final_cells[cell]
-            assert actual and actual["mask_sha256"]==expected_hash,f"last rendered {title} {cell} changed: {actual}"
+            assert actual and actual["mask_sha256"]==expected_hash,f"last rendered {title} {cell} changed: {storage_pixel_report(actual)}"
             left,top,right,bottom=actual["bounds"]
             save_png_crop(page,settled,(left-1,top-1,right+1,bottom+1),output/f"{kind}-last-{cell}.png")
-        page.mouse.move(80, tab[3] + 115)
+        page.mouse.move(80,wheel_y)
         page.mouse.wheel(0, -6000)
         settle_gesture(page)
         page.mouse.move(2, 2)
@@ -2399,6 +2524,8 @@ def storage_scroll_interactions(browser, url: str, output: Path):
             "expected_last_cell_mask_sha256": {"slot":last_cell_hashes["slot"],"value":last_cell_hashes[kind]},
             "facts_region": facts_region, "collapsed_facts": collapsed_facts,
             "collapsed_facts_region":collapsed_facts_region,
+            "collapsed_prefix":collapsed_prefix,"expanded_prefix":expanded_prefix,
+            "account_header_band":account_band,"ordered_header_band":root_band,"ordered_state":ordered_roots[kind],
             "expanded_facts": expanded_facts, "last_row_region": last_row_region, "last_row": last_row,
             "default_table":default_table,"table":table,"scrolled_table":scrolled_table,"last_cells":final_cells,
             "prefix_region": prefix_region, "prefix": prefix,
@@ -4324,7 +4451,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 8
+            assert analysis["schema_version"] == 9
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
