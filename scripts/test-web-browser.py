@@ -4396,9 +4396,96 @@ def hierarchy_call_interactions(browser,args):
             return {"scene":scene,"pixels":pixels,"programs":len(report["programs"]),"renderer":webgpu_evidence(page)}
 
 
-def hierarchy_real_runtime_interactions(browser,url,args):
+def layout_pending_machines(report, entry):
+    assert report["schema_version"] == 9
+    pending = report["pending_machines"]
+    assert len(pending) == entry["expected_pending_machines"]
+    assert {frontier["payload"] for frontier in report["frontiers"]} == set(range(len(pending)))
+    nodes = {node["id"]:node for node in report["cfg"]}
+    programs = {program["id"] for program in report["programs"]}
+    graph = report["symbolic"]["nodes"]
+    word_kinds = {"Constant","Input","Fresh","Operation","Ite","ByteRead","WordRead","SlotRead","Keccak"}
+    byte_kinds = {"BytesZero","BytesInput","BytesExact","WriteByte","WriteWord","Copy","Slice","BytesIte"}
+    slot_kinds = {"SlotsZero","SlotsInput","Store","SlotsIte"}
+    path_kinds = {"PathTrue","PathFalse","PathAtoms","PathAnd","PathIte"}
+    def reference(value, kinds):
+        index = value["node"]
+        assert type(index) is int and 0 <= index < len(graph)
+        node = graph[index]
+        assert (node if isinstance(node,str) else next(iter(node))) in kinds
+    def facts(value):
+        assert set(value) == {"summary","constants","known_zero","known_one","nonzero","unsigned","signed",
+                              "congruence","origins","code_address_role","identity","expression","symbolic_limit"}
+        words = [value["known_zero"],value["known_one"],*value["unsigned"].values(),*value["signed"].values()]
+        words.extend(value["constants"] or [])
+        assert all(isinstance(word,str) and word.startswith("0x") and 0 <= int(word,16) < 2**256 for word in words)
+        if value["expression"] is not None:reference(value["expression"],word_kinds)
+    def pool(index, values):
+        assert type(index) is int and 0 <= index < len(values)
+        return values[index]
+    buffers = set(); stores = set()
+    for frontier in report["frontiers"]:
+        assert frontier["from"] in nodes and frontier["pc"] is None and frontier["range"] is None
+        assert frontier["reason"] == entry["expected_frontier_details"]
+        machine = pool(frontier["payload"],pending)
+        assert set(machine) == {"frames","store","path"} and machine["frames"]
+        reference(machine["path"],path_kinds)
+        pool(machine["store"],report["stores"]);stores.add(machine["store"])
+        for index,frame in enumerate(machine["frames"]):
+            assert set(frame) == {"index","program","code_address","code_hash","storage_address","address_value",
+                                  "caller","call_value","is_static","kind","basic_block","context","stack",
+                                  "memory","calldata","returndata","rollback_store","continuation"}
+            assert frame["index"] == index and frame["program"] in programs
+            facts(frame["call_value"])
+            for value in frame["stack"]:facts(value)
+            for name in ["memory","calldata","returndata"]:
+                pool(frame[name],report["byte_arrays"]);buffers.add(frame[name])
+            pool(frame["rollback_store"],report["stores"]);stores.add(frame["rollback_store"])
+            if frame["continuation"] is not None:
+                facts(frame["continuation"]["output_offset"]);facts(frame["continuation"]["output_size"])
+        active = machine["frames"][-1]
+        assert any(node["program"] == active["program"] and node["basic_block"] == active["basic_block"]
+                   and node["frame_depth"] == len(machine["frames"]) for node in nodes.values())
+    for index in stores:
+        store = report["stores"][index]
+        assert set(store) == {"storage_default","transient_default","balance_default","accounts","logs",
+                              "logs_unknown","storage_facts","transient_facts"}
+        for name in ["storage_default","transient_default","balance_default"]:facts(store[name])
+        for account in store["accounts"]:
+            assert set(account) == {"address","existence","balance","nonce","code_kind","code_hash","program",
+                                    "delegation_target","storage_default","storage_root","transient_root","storage",
+                                    "transient_default","transient","created","pending_destruction"}
+            assert account["program"] is None or account["program"] in programs
+            for name in ["balance","nonce","storage_default","transient_default"]:facts(account[name])
+            for name in ["storage_root","transient_root"]:reference(account[name],slot_kinds)
+            for slot in account["storage"]+account["transient"]:
+                assert slot["slot"].startswith("0x") and 0 <= int(slot["slot"],16) < 2**256
+                facts(slot["value"])
+        for binding in store["storage_facts"]+store["transient_facts"]:
+            reference(binding["expression"],word_kinds);facts(binding["value"])
+        for log in store["logs"]:
+            pool(log["data"],report["byte_arrays"]);buffers.add(log["data"])
+            for value in log["topics"]:facts(value)
+    for index in buffers:
+        buffer = report["byte_arrays"][index]
+        reference(buffer["symbolic"],{"View"})
+        view = graph[buffer["symbolic"]["node"]]["View"]
+        reference(view["state"],byte_kinds)
+        reference(view["offset"],word_kinds);reference(view["length"],word_kinds)
+        for value in [buffer["length"],buffer["default"],*buffer["values"]]:facts(value)
+        for cell in buffer["cells"]:pool(cell["value"],buffer["values"])
+        for binding in buffer["symbolic_facts"]:
+            reference(binding["expression"],word_kinds);facts(binding["value"])
+    assert not report["ssa"]["complete"]
+    assert {block["state"] for block in report["ssa"]["blocks"]} == set(nodes)
+    assert all(not block["incoming_complete"] for block in report["ssa"]["blocks"])
+    return {"pending_machines":len(pending),"byte_arrays":sorted(buffers),"stores":sorted(stores),
+            "typed_reasons":[frontier["reason"] for frontier in report["frontiers"]]}
+
+
+def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereum-weth9","ethereum-uniswap-v2-router02","ethereum-multicall3")):
     results={}
-    for name in ["ethereum-weth9","ethereum-uniswap-v2-router02","ethereum-multicall3"]:
+    for name in fixture_names:
         page,canvas,errors=layout_page(browser,url)
         code,metadata=layout_fixture(name)
         assert metadata["chain_id"]==1 and metadata["requireCanonical"]
@@ -4410,6 +4497,7 @@ def hierarchy_real_runtime_interactions(browser,url,args):
         assert len(report["frontiers"]) == entry["expected_frontiers"]
         if "expected_frontier_reason" in entry:
             assert all(frontier["kind"] == entry["expected_frontier_reason"] for frontier in report["frontiers"])
+        pending = layout_pending_machines(report,entry) if "expected_pending_machines" in entry else None
         scene=layout_counts(page,report)
         assert scene["nodes"] >= entry["minimum_source_blocks"]
         if report["status"]=="Incomplete":
@@ -4430,7 +4518,7 @@ def hierarchy_real_runtime_interactions(browser,url,args):
             graph_mode(page,canvas,"States")
             page.keyboard.press("f");settle_gesture(page)
             native_scene = layout_counts(page,report,mode="States")
-            assert native_scene["nodes"] >= 600 and native_scene["nodes"] == len(report["cfg"])
+            assert native_scene["nodes"] >= entry["minimum_native_states"] and native_scene["nodes"] == len(report["cfg"])
             assert native_scene["native_edges"] == len(report["edges"])
             canvas.screenshot(path=str(args.output/f"hierarchy-{name}-states-overview.png"))
             canvas.click(position={"x":225,"y":83});settle_gesture(page)
@@ -4438,10 +4526,16 @@ def hierarchy_real_runtime_interactions(browser,url,args):
             native_focus = node_snapshot(page,canvas,args.output,f"hierarchy-{name}-states-focused")
             selected = re.search(r"Selected (σ[^;]+);",page.locator("#analysis-status").text_content())[1]
             assert selected in [symbol("σ",node["id"]) for node in report["cfg"]]
+            selected_node = next(node for node in report["cfg"] if symbol("σ",node["id"]) == selected)
+            selected_ssa = next(block for block in report["ssa"]["blocks"] if block["state"] == selected_node["id"])
+            assert selected_ssa["instructions"] and not selected_ssa["incoming_complete"]
+            ink = layout_ink(page,canvas.screenshot(),native_focus["bounds"])
+            assert ink["preview_pixels"] > 0, "real-runtime native focus did not paint SSA instructions"
             assert not requests, "native projection/focus triggered another real-runtime analysis"
-            native_scene.update(focused=native_focus,selected_native_state=selected)
+            native_scene.update(focused=native_focus,selected_native_state=selected,ssa_instructions=len(selected_ssa["instructions"]),
+                                ssa_ink=ink,unexpected_task_posts=requests)
         assert not errors,errors
-        results[name]={"provenance":metadata,"status":report["status"],"scene":scene,"native_scene":native_scene,"focused":focused,"frontiers":len(report["frontiers"]),"renderer":webgpu_evidence(page)}
+        results[name]={"provenance":metadata,"status":report["status"],"scene":scene,"native_scene":native_scene,"focused":focused,"frontiers":len(report["frontiers"]),"pending":pending,"renderer":webgpu_evidence(page)}
         page.close()
     return results
 
