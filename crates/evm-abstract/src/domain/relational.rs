@@ -629,25 +629,45 @@ impl RelationState {
             {
                 return Err(QueryReason::ExpressionLimit);
             }
-            Ok(state.clone())
+            Ok(())
         };
         if self == other {
-            return checked(self);
+            checked(self)?;
+            return Ok(self.clone());
         }
         if let Some(value) = selector.as_constant() {
-            return checked(if value == U256::ZERO { other } else { self });
+            let selected = if value == U256::ZERO { other } else { self };
+            checked(selected)?;
+            return Ok(selected.clone());
         }
+        // These exact atoms hold on either alternative. Keep them once outside
+        // the selector: ite(s, C && L, C && R) = C && ite(s, L, R).
+        // Conditional atoms already in a path remain under their original guards.
+        let common: BTreeSet<_> = self
+            .constraints
+            .intersection(&other.constraints)
+            .cloned()
+            .collect();
+        let residual = |state: &Self| Self {
+            constraints: state.constraints.difference(&common).cloned().collect(),
+            bottom: state.bottom,
+            path: state.path.clone(),
+        };
         let path = RelationPath::guarded(
-            RelationPath::from_state(self),
-            RelationPath::from_state(other),
+            RelationPath::from_state(&residual(self)),
+            RelationPath::from_state(&residual(other)),
             selector,
             limits,
         )?;
-        Ok(Self {
-            constraints: BTreeSet::new(),
+        let joined = Self {
+            constraints: common,
             bottom: self.bottom && other.bottom,
             path,
-        })
+        };
+        // The residual path's bound excludes the factored atoms. Apply the
+        // complete-state policy before publishing either part of the result.
+        checked(&joined)?;
+        Ok(joined)
     }
     /// Complete immutable branch formula for read-only solver/report traversal.
     pub fn path(&self) -> &RelationPath {

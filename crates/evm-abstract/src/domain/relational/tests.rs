@@ -1,6 +1,7 @@
 mod assumptions;
 mod forwarding;
 mod guarantees;
+mod guarded_join;
 mod history;
 mod retention;
 mod state;

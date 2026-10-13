@@ -13,9 +13,11 @@ use crate::{
     domain::{
         AbstractValue, NumericValue,
         relational::{CheckResult, QueryReason, RelationState, ScalarQuery, ValueQuery},
-        symbolic::ExprId,
+        symbolic::{ExprId, ExprKind},
     },
 };
+use alloy_primitives::U256;
+use revm_bytecode::opcode;
 
 fn charge(
     state: &RelationState,
@@ -119,6 +121,24 @@ pub(super) fn refine(
             }
         }
         ValueQuery::Multiple => {
+            // A comparison has only two possible results. Two distinct models
+            // already witness both; checking each candidate repeats that proof.
+            if matches!(
+                expression.kind(),
+                ExprKind::Operation {
+                    opcode: opcode::EQ
+                        | opcode::LT
+                        | opcode::GT
+                        | opcode::SLT
+                        | opcode::SGT
+                        | opcode::ISZERO,
+                    ..
+                }
+            ) && value.constants().is_some_and(|values| {
+                values.len() == 2 && values.contains(&U256::ZERO) && values.contains(&U256::ONE)
+            }) {
+                return Ok(true);
+            }
             if let Some(candidates) = value.constants().cloned() {
                 let mut retained = Vec::new();
                 for candidate in candidates {
