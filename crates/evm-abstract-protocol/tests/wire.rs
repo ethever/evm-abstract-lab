@@ -140,6 +140,45 @@ fn errors_and_job_states_roundtrip_without_invalid_optional_combinations() {
     }
 }
 #[test]
+fn fingerprint_failures_keep_typed_causes_and_required_encoding_coordinates() {
+    for (kind, code, line, column) in [
+        (
+            FingerprintFailureKind::Cancelled,
+            ApiErrorCode::Cancelled,
+            None,
+            None,
+        ),
+        (
+            FingerprintFailureKind::Encoding,
+            ApiErrorCode::Export,
+            Some(0),
+            Some(0),
+        ),
+        (
+            FingerprintFailureKind::LengthOverflow,
+            ApiErrorCode::Export,
+            None,
+            None,
+        ),
+    ] {
+        let error = ApiError {
+            code,
+            message: "snapshot fingerprint unavailable".into(),
+            details: ErrorDetails::Fingerprint(FingerprintFailure { kind, line, column }),
+        };
+        let encoded = serde_json::to_string(&error).unwrap();
+        for missing in ["line", "column"] {
+            let mut invalid: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            invalid["details"]["Fingerprint"]
+                .as_object_mut()
+                .unwrap()
+                .remove(missing);
+            assert!(serde_json::from_value::<ApiError>(invalid).is_err());
+        }
+        roundtrip(AnalyzeReply { result: Err(error) });
+    }
+}
+#[test]
 fn misspelled_duplicate_missing_unknown_and_multi_variant_inputs_are_rejected() {
     let valid = serde_json::to_string(&AnalyzeRequest::default()).unwrap();
     for invalid in [
@@ -165,7 +204,7 @@ fn misspelled_duplicate_missing_unknown_and_multi_variant_inputs_are_rejected() 
 }
 #[test]
 fn nullable_fields_remain_required_and_duplicate_null_is_rejected() {
-    let valid = r#"{"from":null,"pc":null,"kind":"Memory","reason":"Memory","detail":"bounded"}"#;
+    let valid = r#"{"from":null,"pc":null,"kind":"Memory","reason":"Memory","detail":"bounded","range":null,"payload":null}"#;
     let decoded: Frontier = serde_json::from_str(valid).unwrap();
     assert_eq!(decoded.from, None);
     for invalid in [
@@ -199,6 +238,8 @@ fn relational_failures_preserve_fact_coordinates_and_solver_outcomes() {
         }),
     ] {
         roundtrip(Frontier {
+            range: None,
+            payload: None,
             from: Some(12),
             pc: Some(34),
             kind: FrontierKind::Relations,
@@ -256,7 +297,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 8);
+    assert_eq!(SCHEMA_VERSION, 9);
 }
 
 #[test]
@@ -289,6 +330,7 @@ fn invalid_opcode_evidence_roundtrips_instruction_and_delegation_sources() {
         }),
     ] {
         roundtrip(Diagnostic {
+            precision: None,
             state: 123,
             pc: 0,
             kind: DiagnosticKind::InvalidOpcode,
@@ -298,6 +340,7 @@ fn invalid_opcode_evidence_roundtrips_instruction_and_delegation_sources() {
         });
     }
     roundtrip(Diagnostic {
+        precision: None,
         state: 456,
         pc: 1,
         kind: DiagnosticKind::InvalidJump,
@@ -331,10 +374,51 @@ fn invalid_instruction_wire_requires_original_byte_and_typed_cause() {
             "{invalid}"
         );
     }
-    let diagnostic = r#"{"state":123,"pc":0,"kind":"InvalidOpcode","reduction":null,"invalid_opcode":null,"detail":"old category"}"#;
+    let diagnostic = r#"{"state":123,"pc":0,"kind":"InvalidOpcode","reduction":null,"precision":null,"invalid_opcode":null,"detail":"old category"}"#;
+    serde_json::from_str::<Diagnostic>(diagnostic).unwrap();
     assert!(
         serde_json::from_str::<Diagnostic>(&diagnostic.replace("\"invalid_opcode\":null,", ""))
             .is_err(),
-        "schema 7 diagnostics are rejected by the schema 8 decoder"
+        "diagnostics missing typed opcode evidence are rejected"
     );
+}
+
+#[test]
+fn mixed_graph_checks_sorts_and_backward_dependencies() {
+    let graph = SymbolicGraph {
+        nodes: vec![
+            Expression::BytesZero,
+            Expression::Constant("0x0".into()),
+            Expression::View(ByteView {
+                state: ByteStateRef { node: 0 },
+                offset: ExpressionRef { node: 1 },
+                length: ExpressionRef { node: 1 },
+            }),
+            Expression::WordRead(WordRead {
+                view: ByteViewRef { node: 2 },
+                offset: ExpressionRef { node: 1 },
+            }),
+        ],
+    };
+    graph.validate().unwrap();
+    roundtrip(graph.clone());
+    let mut wrong = graph.clone();
+    wrong.nodes[3] = Expression::WordRead(WordRead {
+        view: ByteViewRef { node: 0 },
+        offset: ExpressionRef { node: 1 },
+    });
+    assert_eq!(
+        wrong.validate().unwrap_err().actual,
+        Some(SymbolicSort::Bytes)
+    );
+    wrong.nodes[3] = Expression::WordRead(WordRead {
+        view: ByteViewRef { node: 3 },
+        offset: ExpressionRef { node: 1 },
+    });
+    assert!(wrong.validate().unwrap_err().forward);
+    wrong.nodes[3] = Expression::WordRead(WordRead {
+        view: ByteViewRef { node: usize::MAX },
+        offset: ExpressionRef { node: 1 },
+    });
+    assert_eq!(wrong.validate().unwrap_err().actual, None);
 }

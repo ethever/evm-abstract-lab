@@ -59,6 +59,34 @@ fn call(op: u8, target: u16, value: u8, input: u8, output: u8) -> String {
 }
 
 #[test]
+fn static_value_call_faults_before_an_unrepresentable_memory_access() {
+    let code = format!("5f5f60017f{}60016102005af100", "ff".repeat(32));
+    let world = world(&[(0x101, &code), (0x200, "00")]);
+    let mut entry = entry();
+    entry.environment.is_static = true;
+    let analysis = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    assert_eq!(
+        analysis.status(),
+        Status::Converged,
+        "{:?}",
+        analysis.frontiers()
+    );
+    assert!(analysis.frontiers().is_empty());
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .all(|outcome| outcome.kind == OutcomeKind::Failure)
+    );
+    assert!(
+        analysis
+            .edges()
+            .iter()
+            .all(|edge| edge.kind != MachineEdgeKind::Call)
+    );
+}
+
+#[test]
 fn call_context_is_intrinsic_and_retained_across_each_call_kind() {
     for op in [0xf1, 0xf2, 0xf4, 0xfa] {
         let caller = format!("{}00", call(op, 0x200, 9, 0, 0));
@@ -235,20 +263,109 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
             .iter()
             .any(|e| e.kind == MachineEdgeKind::Revert)
     );
-    for outcome in analysis
+    let domain = Domain::default();
+    let zero = AbstractValue::constant(U256::ZERO);
+    let revert_edges: Vec<_> = analysis
+        .edges()
+        .iter()
+        .filter(|edge| {
+            edge.kind == MachineEdgeKind::Revert
+                && analysis.states()[edge.from].key.frames.len() == 2
+                && analysis.states()[edge.to].key.frames.len() == 1
+        })
+        .collect();
+    assert!(!revert_edges.is_empty());
+    for edge in revert_edges {
+        let child = &analysis.states()[edge.from];
+        let checkpoint = child.entry.active().saved_store.state();
+        let effects = &child.exit.as_ref().unwrap().store;
+        assert_eq!(
+            effects.read(addr(0x200), &zero, domain),
+            AbstractValue::constant(U256::from(7))
+        );
+        assert_eq!(
+            effects.read_transient(addr(0x200), &zero, domain),
+            AbstractValue::constant(U256::from(8))
+        );
+        assert_eq!(effects.possible_logs().len(), 1);
+        let receipt = child.execution_evidence().unwrap();
+        assert!(receipt.is_current());
+        assert!(
+            receipt
+                .successors()
+                .contains(&(edge.to, MachineEdgeKind::Revert))
+        );
+
+        let resumed = &analysis.states()[edge.to].entry;
+        // Compare the complete state before transaction finalization clears TSTORE.
+        assert_eq!(&resumed.store, checkpoint);
+        assert_eq!(
+            resumed.store.read(addr(0x101), &zero, domain),
+            AbstractValue::constant(U256::from(3))
+        );
+        assert_eq!(
+            resumed.store.read_transient(addr(0x101), &zero, domain),
+            AbstractValue::constant(U256::from(9))
+        );
+        assert_eq!(resumed.store.read(addr(0x200), &zero, domain), zero);
+        assert_eq!(
+            resumed.store.read_transient(addr(0x200), &zero, domain),
+            zero
+        );
+        assert_eq!(resumed.active().stack.last().unwrap(), &zero);
+        // The same resumption also receives exceptional CALL failures with an
+        // empty buffer. Preserve the exact joined product for both alternatives.
+        let length = domain.join(&zero, &AbstractValue::constant(U256::from(32)));
+        assert_eq!(
+            resumed.active().returndata.len().numeric(),
+            length.numeric()
+        );
+        assert_eq!(
+            resumed.active().returndata.len().provenance(),
+            length.provenance()
+        );
+        assert_eq!(
+            child
+                .exit
+                .as_ref()
+                .unwrap()
+                .active()
+                .memory
+                .read_word(&zero, domain),
+            AbstractValue::constant(U256::from(42))
+        );
+        let copied = resumed.active().memory.read_word(&zero, domain);
+        let expected_copy = domain
+            .join(&zero, &AbstractValue::constant(U256::from(42)))
+            .with_origin(Origin::Arithmetic);
+        assert_eq!(copied.numeric(), expected_copy.numeric());
+        assert_eq!(copied.provenance(), expected_copy.provenance());
+        assert!(copied.expression().is_some());
+        assert_eq!(resumed.active().memory.read_word(&zero, domain), copied);
+        assert_eq!(
+            resumed.store.read_balance(addr(0x101)),
+            AbstractValue::constant(U256::from(1_000_000))
+        );
+        assert_eq!(
+            resumed.store.read_balance(addr(0x200)),
+            AbstractValue::constant(U256::from(1_000_000))
+        );
+        assert!(resumed.store.possible_logs().is_empty());
+    }
+    let returns: Vec<_> = analysis
         .outcomes()
         .iter()
         .filter(|o| o.kind == OutcomeKind::Return)
-    {
-        assert!(
-            outcome
-                .store
-                .read(
-                    addr(0x101),
-                    &AbstractValue::constant(U256::ZERO),
-                    Domain::default()
-                )
-                .contains(U256::from(3))
+        .collect();
+    assert!(!returns.is_empty());
+    for outcome in returns {
+        assert_eq!(
+            outcome.store.read(
+                addr(0x101),
+                &AbstractValue::constant(U256::ZERO),
+                Domain::default()
+            ),
+            AbstractValue::constant(U256::from(3))
         );
         assert_eq!(
             outcome.store.read(
@@ -266,18 +383,21 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
             ),
             AbstractValue::constant(U256::ZERO)
         );
-        assert!(
-            outcome
-                .store
-                .read_transient(
-                    addr(0x101),
-                    &AbstractValue::constant(U256::ZERO),
-                    Domain::default()
-                )
-                .contains(U256::from(9))
+        assert_eq!(
+            outcome.store.read_transient(
+                addr(0x101),
+                &AbstractValue::constant(U256::ZERO),
+                Domain::default()
+            ),
+            zero
         );
+        assert!(outcome.store.transient_slots().is_empty());
         assert_eq!(
             outcome.store.read_balance(addr(0x101)),
+            AbstractValue::constant(U256::from(1_000_000))
+        );
+        assert_eq!(
+            outcome.store.read_balance(addr(0x200)),
             AbstractValue::constant(U256::from(1_000_000))
         );
         assert!(outcome.store.possible_logs().is_empty());

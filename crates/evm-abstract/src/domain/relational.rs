@@ -12,9 +12,11 @@ use alloy_primitives::U256;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod path;
 mod scalar;
 mod solver;
 pub use embedded_smt::{Error as SmtError, Provider as SmtProvider};
+pub use path::{RelationPath, RelationPathKind};
 pub use scalar::ScalarQuery;
 #[cfg(test)]
 mod tests;
@@ -62,7 +64,7 @@ impl RelationLimits {
 }
 
 /// A query did not prove either satisfiability or contradiction.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum QueryReason {
     /// Explicit caller cancellation; the enclosing controlled analysis stops.
     Cancelled,
@@ -119,28 +121,64 @@ pub enum ValueQuery {
     Unknown(QueryReason),
 }
 
+/// A retained guarantee over scoped Word256 expressions.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub(crate) enum Constraint {
+pub enum Constraint {
+    /// The word is zero or nonzero.
     Truth {
+        /// Word expression constrained by this atom.
         expression: ExprId,
+        /// True requires a nonzero word; false requires zero.
         nonzero: bool,
     },
+    /// Inclusive unsigned word bounds.
     Range {
+        /// Word expression constrained by this atom.
         expression: ExprId,
+        /// Inclusive lower endpoint in the declared ordering.
         lower: U256,
+        /// Inclusive upper endpoint in the declared ordering.
         upper: U256,
     },
-    Bits {
+    /// Inclusive signed-order bounds, encoded after XOR with the sign bit.
+    SignedRange {
+        /// Word expression constrained by this atom.
         expression: ExprId,
+        /// Inclusive lower endpoint in the declared ordering.
+        lower: U256,
+        /// Inclusive upper endpoint in the declared ordering.
+        upper: U256,
+    },
+    /// Unsigned word congruence.
+    Modulo {
+        /// Word expression constrained by this atom.
+        expression: ExprId,
+        /// Positive modulus for the unsigned word.
+        modulus: U256,
+        /// Normalized residue modulo the modulus.
+        residue: U256,
+    },
+    /// Guaranteed zero and one bits.
+    Bits {
+        /// Word expression constrained by this atom.
+        expression: ExprId,
+        /// Bits which must be zero.
         zero: U256,
+        /// Bits which must be one.
         one: U256,
     },
+    /// Equality of two word expressions.
     Equal {
+        /// First word in an equality constraint.
         left: ExprId,
+        /// Second word in an equality constraint.
         right: ExprId,
     },
+    /// Membership in a complete finite set.
     Members {
+        /// Word expression constrained by this atom.
         expression: ExprId,
+        /// Complete set of allowed word values.
         values: BTreeSet<U256>,
     },
 }
@@ -149,6 +187,8 @@ impl Constraint {
         match self {
             Self::Truth { expression, .. }
             | Self::Range { expression, .. }
+            | Self::SignedRange { expression, .. }
+            | Self::Modulo { expression, .. }
             | Self::Bits { expression, .. }
             | Self::Members { expression, .. } => vec![expression],
             Self::Equal { left, right } => vec![left, right],
@@ -176,6 +216,24 @@ impl Constraint {
                 lower: *lower,
                 upper: *upper,
             },
+            Self::SignedRange {
+                expression,
+                lower,
+                upper,
+            } => Self::SignedRange {
+                expression: expression.rename_fresh(map, limits)?,
+                lower: *lower,
+                upper: *upper,
+            },
+            Self::Modulo {
+                expression,
+                modulus,
+                residue,
+            } => Self::Modulo {
+                expression: expression.rename_fresh(map, limits)?,
+                modulus: *modulus,
+                residue: *residue,
+            },
             Self::Bits {
                 expression,
                 zero,
@@ -202,6 +260,7 @@ impl Constraint {
 pub struct RelationState {
     constraints: BTreeSet<Constraint>,
     bottom: bool,
+    path: RelationPath,
 }
 impl RelationState {
     /// Whether this state has been proved contradictory.
@@ -210,48 +269,36 @@ impl RelationState {
     }
     /// Number of retained conjunction atoms.
     pub fn len(&self) -> usize {
-        self.constraints.len()
+        self.constraints.len().saturating_add(self.path.atoms())
     }
     /// No retained guarantee and no known contradiction.
     pub fn is_empty(&self) -> bool {
-        !self.bottom && self.constraints.is_empty()
+        !self.bottom
+            && self.constraints.is_empty()
+            && matches!(self.path.kind(), RelationPathKind::True)
     }
     /// Conservative work estimate for retention/traversal.
     pub fn work_size(&self) -> usize {
-        self.constraints.iter().fold(1usize, |n, c| {
+        self.constraints.iter().fold(self.path.nodes(), |n, c| {
             c.expressions()
                 .iter()
                 .fold(n.saturating_add(1), |n, e| n.saturating_add(e.work_size()))
         })
     }
-    fn insert(&mut self, constraint: Constraint, limits: &RelationLimits) -> CheckResult {
+    fn insert(
+        &mut self,
+        constraint: Constraint,
+        limits: &RelationLimits,
+    ) -> Result<CheckResult, QueryReason> {
         if self.bottom {
-            return CheckResult::Unsat;
+            return Ok(CheckResult::Unsat);
         }
-        if !limits.enabled {
-            return CheckResult::Unknown(QueryReason::Disabled);
-        }
-        if !limits.valid() {
-            return CheckResult::Unknown(QueryReason::Configuration);
-        }
-        if constraint
-            .expressions()
-            .iter()
-            .any(|e| e.nodes() > limits.max_nodes || e.depth() > limits.max_depth)
-        {
-            return CheckResult::Unknown(QueryReason::ExpressionLimit);
-        }
-        if !self.constraints.contains(&constraint)
-            && self.constraints.len() >= limits.max_constraints
-        {
-            return CheckResult::Unknown(QueryReason::ConstraintLimit);
-        }
-        self.constraints.insert(constraint);
+        self.retain(constraint, limits)?;
         let checked = self.check(limits);
         if checked == CheckResult::Unsat {
             self.bottom = true;
         }
-        checked
+        Ok(checked)
     }
     fn retain(
         &mut self,
@@ -271,9 +318,7 @@ impl RelationState {
         {
             return Err(QueryReason::ExpressionLimit);
         }
-        if !self.constraints.contains(&constraint)
-            && self.constraints.len() >= limits.max_constraints
-        {
+        if !self.constraints.contains(&constraint) && self.len() >= limits.max_constraints {
             return Err(QueryReason::ConstraintLimit);
         }
         self.constraints.insert(constraint);
@@ -338,6 +383,34 @@ impl RelationState {
                 limits,
             )?;
         }
+        let (lower, upper) = numeric.interval().signed_bounds();
+        let sign = U256::from(1) << 255usize;
+        let biased_one = (one & !sign) | (zero & sign);
+        let biased_zero = (zero & !sign) | (one & sign);
+        if (lower != U256::ZERO || upper != U256::MAX)
+            && (biased_one < lower || !biased_zero > upper)
+        {
+            self.retain(
+                Constraint::SignedRange {
+                    expression: expression.clone(),
+                    lower,
+                    upper,
+                },
+                limits,
+            )?;
+        }
+        if let Some((modulus, residue)) = numeric.congruence().modulus_residue()
+            && modulus != U256::from(1)
+        {
+            self.retain(
+                Constraint::Modulo {
+                    expression: expression.clone(),
+                    modulus,
+                    residue,
+                },
+                limits,
+            )?;
+        }
         if let Some(values) = numeric.constants() {
             if values.len() > limits.max_nodes {
                 return Err(QueryReason::ExpressionLimit);
@@ -368,12 +441,29 @@ impl RelationState {
     /// Intersect this state with an EVM condition (zero or nonzero).
     /// A solver Unknown retains the new sound assumption; a capacity failure
     /// preserves the prior, weaker state instead of pruning the path.
+    /// Use [`Self::assume_checked`] when coverage depends on retaining the guard.
     pub fn assume(
         &mut self,
         expression: &ExprId,
         nonzero: bool,
         limits: &RelationLimits,
     ) -> CheckResult {
+        self.assume_checked(expression, nonzero, limits)
+            .unwrap_or_else(CheckResult::Unknown)
+    }
+    /// Retain an assumption before checking its feasibility.
+    ///
+    /// `Err` leaves this state unchanged because the assumption did not fit its
+    /// policy. `Ok(Unknown(_))` keeps the complete assumption: encoding or solver
+    /// failure loses pruning precision without losing its guarded input domain.
+    /// Coverage-sensitive callers must preserve this distinction. An already
+    /// contradictory state returns `Ok(Unsat)` without needing another atom.
+    pub fn assume_checked(
+        &mut self,
+        expression: &ExprId,
+        nonzero: bool,
+        limits: &RelationLimits,
+    ) -> Result<CheckResult, QueryReason> {
         self.insert(
             Constraint::Truth {
                 expression: expression.clone(),
@@ -398,6 +488,7 @@ impl RelationState {
             },
             limits,
         )
+        .unwrap_or_else(CheckResult::Unknown)
     }
     /// Add sound bit guarantees; contradictory bits may prove bottom.
     pub fn add_known_bits(
@@ -415,6 +506,7 @@ impl RelationState {
             },
             limits,
         )
+        .unwrap_or_else(CheckResult::Unknown)
     }
     /// Add equality between two value expressions, for state/call substitutions.
     pub fn add_equal(
@@ -430,6 +522,7 @@ impl RelationState {
             },
             limits,
         )
+        .unwrap_or_else(CheckResult::Unknown)
     }
     /// Whether any retained guarantee depends on a variable in this value.
     /// Names alone are insufficient: leaf equality includes private input scope
@@ -442,6 +535,7 @@ impl RelationState {
         self.constraints
             .iter()
             .flat_map(Constraint::expressions)
+            .chain(self.path.expressions())
             .any(|constraint| {
                 constraint
                     .variables()
@@ -480,6 +574,9 @@ impl RelationState {
     /// Cover both paths by keeping only guarantees common to both.
     /// This intentionally loses disjunction precision, never intersects paths.
     pub fn join(&self, other: &Self) -> Self {
+        if self == other {
+            return self.clone();
+        }
         if self.bottom {
             return other.clone();
         }
@@ -493,7 +590,72 @@ impl RelationState {
                 .cloned()
                 .collect(),
             bottom: false,
+            path: if self.path == other.path {
+                self.path.clone()
+            } else {
+                RelationPath::default()
+            },
         }
+    }
+    /// Preserve both complete paths, selected by the same nonzero guard as values/states.
+    /// Failure leaves both input states untouched; callers must retain the pending alternative.
+    pub fn join_guarded(
+        &self,
+        other: &Self,
+        selector: ExprId,
+        limits: &RelationLimits,
+    ) -> Result<Self, QueryReason> {
+        if !limits.enabled {
+            return Err(QueryReason::Disabled);
+        }
+        if !limits.valid() {
+            return Err(QueryReason::Configuration);
+        }
+        if embedded_smt::current_cancellation().is_cancelled() {
+            return Err(QueryReason::Cancelled);
+        }
+        let checked = |state: &Self| {
+            if state.len() > limits.max_constraints {
+                return Err(QueryReason::ConstraintLimit);
+            }
+            if state.work_size() > limits.max_nodes || state.path.depth() > limits.max_depth {
+                return Err(QueryReason::ExpressionLimit);
+            }
+            if state
+                .constraints
+                .iter()
+                .flat_map(Constraint::expressions)
+                .any(|e| e.depth() > limits.max_depth)
+            {
+                return Err(QueryReason::ExpressionLimit);
+            }
+            Ok(state.clone())
+        };
+        if self == other {
+            return checked(self);
+        }
+        if let Some(value) = selector.as_constant() {
+            return checked(if value == U256::ZERO { other } else { self });
+        }
+        let path = RelationPath::guarded(
+            RelationPath::from_state(self),
+            RelationPath::from_state(other),
+            selector,
+            limits,
+        )?;
+        Ok(Self {
+            constraints: BTreeSet::new(),
+            bottom: self.bottom && other.bottom,
+            path,
+        })
+    }
+    /// Complete immutable branch formula for read-only solver/report traversal.
+    pub fn path(&self) -> &RelationPath {
+        &self.path
+    }
+    /// Guarantees true on every retained path, suitable for scalar consumers.
+    pub fn constraints(&self) -> impl Iterator<Item = &Constraint> {
+        self.constraints.iter()
     }
     /// Widen by forgetting any guarantee absent from the previous state.
     pub fn widen(&self, previous: &Self) -> Self {
@@ -503,12 +665,14 @@ impl RelationState {
     pub fn forget(&mut self) {
         self.constraints.clear();
         self.bottom = false;
+        self.path = RelationPath::default();
     }
     /// Runtime leaves needing capture-avoiding renaming during summary replay.
     pub fn fresh_leaves(&self) -> BTreeSet<ExprId> {
         self.constraints
             .iter()
             .flat_map(|c| c.expressions())
+            .chain(self.path.expressions())
             .flat_map(ExprId::fresh_leaves)
             .collect()
     }
@@ -525,6 +689,7 @@ impl RelationState {
                 .map(|c| c.rename(map, limits))
                 .collect::<Result<BTreeSet<_>, _>>()?,
             bottom: self.bottom,
+            path: self.path.rename(map, limits)?,
         })
     }
 }

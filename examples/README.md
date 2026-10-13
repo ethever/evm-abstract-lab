@@ -41,15 +41,15 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 
 ## 内存：从字节读写到抽象数组
 
-[`straight-line.hex`](straight-line.hex) 已展示把计算结果写入内存再返回。继续读[14：EVM内存与抽象字节数组](../docs/14-memory-model.md)，先用 MSTORE/MLOAD、MSTORE8 和 MSIZE 手算字节、偏移与长度，再观察多个可能偏移、逐字节汇合和预算前沿。该课包含运行命令与预期输出；CALL 传递输入、复制返回字节的完整流程见[第 09 课](../docs/09-cross-contract.md)。
+[`straight-line.hex`](straight-line.hex) 已展示把计算结果写入内存再返回。继续读[14：EVM内存与抽象字节数组](../docs/14-memory-model.md)，先用 MSTORE/MLOAD、MSTORE8 和 MSIZE 手算字节、偏移与长度，再对照多个可能偏移的数值投影、完整状态根和预算前沿。该课包含运行命令与预期输出；CALL 传递输入、复制返回字节的完整流程见[第 09 课](../docs/09-cross-contract.md)。
 
 | 文件 | 读写过程 | 要观察什么 |
 | --- | --- | --- |
 | [memory-word.hex](memory-word.hex) | 向偏移 0 写入 42，再读取 word 和 MSIZE | 出口为 `[{0x2a}, {0x20}]`：内容 42 与长度 32 是两个栈槽 |
 | [memory-word-overwrite.hex](memory-word-overwrite.hex) | 先存 `0x1234`，再分别覆盖偏移 30、31 | 两次读取保留 `0xaa34`、`0xaabb`，旧读值不随后续写入改变 |
-| [memory-symbolic-offset.hex](memory-symbolic-offset.hex) | 同一未知 p 经 DUP 后写入 7，再从 p 读取 | 符号身份仍在，未知位置写后读关系未一般保存；空 calldata 固定 p=0 后读出 7 |
+| [memory-symbolic-offset.hex](memory-symbolic-offset.hex) | 同一未知 p 经 DUP 后写入 7，再从 p 读取 | 策略内同址读出 7；完全无约束 p 还留下 MemoryPolicy 前沿，不用具体输入掩盖超策略范围 |
 | [memory-write-alias.hex](memory-write-alias.hex) | 未知输入选择偏移 0 或 1，随后 MSTORE8 写一个字节 | `--context-depth 0` 汇合后，两个位置各自可能为零或 aa；并不证明一次执行同时写两处 |
-| [memory-byte-correlation.hex](memory-byte-correlation.hex) | 分支得到 `0x0101` 或 `0x0202`，汇合后写入并读出 | `--context-depth 0` 额外允许 `0x0102`、`0x0201`；与深度 8 的分开状态比较 |
+| [memory-byte-correlation.hex](memory-byte-correlation.hex) | 分支得到 `0x0101` 或 `0x0202`，汇合后写入并读出 | `--context-depth 0` 的完整 word 读取仍为 `0x0101`、`0x0202`；独立 byte 候选才允许交叉组合 |
 | [memory-overlap-copy.hex](memory-overlap-copy.hex) | MCOPY 将偏移 28～30 复制到 29～31 | 重叠复制使用原始源字节，MLOAD(0) 得 `0x01010203` |
 | [memory-word-bound.json](memory-word-bound.json) | 向偏移 1 写入 `0x1234`，再读取 word 和 MSIZE | 需要 64 字节；将 `--max-memory-bytes` 降到 32 时留下 `Memory` 前沿 |
 
@@ -94,8 +94,8 @@ CLZ 的完整结果为 `0..=256`，共 257 个候选。第一条命令为 `Conve
 | [storage-zero-default.json](storage-zero-default.json) | 未列出的 slot 在完整输入中为零 | 读 slot 0、1、2 得到 `[5,0,0]` |
 | [storage-unknown-default.json](storage-unknown-default.json) | 相同代码、相同已知 slot，却不声明其他 slot 为零 | `[5,⊤,⊤]`；与[前一文件](storage-zero-default.json)分别看 default |
 | [storage-write-unknown-initial.json](storage-write-unknown-initial.json) | 先读未知 slot 0，强写 7，再读一次 | `[⊤,7]`；写入不重绑定旧读值 |
-| [storage-finite-alias.json](storage-finite-alias.json) | 未知 calldata 选择 slot 0 或 1；只写其中一个 | `--context-depth 0` 得到 `{4,9}×{7,9}`，额外组合不是具体执行见证 |
-| [storage-symbolic-key.json](storage-symbolic-key.json) | 同一个未知 k 写入 7，再从 k 读取 | 未设置 calldata 时仍为 `{0,7}`；空 calldata 把 k 固定为 0 后为 7 |
+| [storage-finite-alias.json](storage-finite-alias.json) | 未知 calldata 选择 slot 0 或 1；只写其中一个 | `--context-depth 0` 的数值投影为 `{4,9}`、`{7,9}`；完整根保留同一选择，不能任取交叉组合 |
+| [storage-symbolic-key.json](storage-symbolic-key.json) | 同一个未知 k 写入 7，再从 k 读取 | 省略 calldata 时同址读仍为 7；根保存符号键和有序更新，无需枚举 k |
 | [storage-symbolic-value.json](storage-symbolic-value.json) | 键固定为 0，写入未知表达式 x+1，再比较读回值 | EQ 为 1；值未知与位置未知是不同问题 |
 | [storage-callback-revert.json](storage-callback-revert.json) | A 先写 1，B 写 7并回调 A 写9，随后 B REVERT | 深层临时状态 `(A[0],B[0])=(9,7)`；根成功结束恢复为 `(1,4)` |
 | [storage-transient.json](storage-transient.json) | persistent A[0]=5；transient 初始零，TSTORE 后读7 | `[5,0,7]`；两个 plane 的 slot 0 不是同一个单元 |

@@ -57,6 +57,7 @@ fn scalar_projection_preserves_the_constants_only_numeric_profile() {
         .into_iter()
         .collect(),
         bottom: false,
+        path: Default::default(),
     };
     let result = state.refine_numeric(
         &variable,

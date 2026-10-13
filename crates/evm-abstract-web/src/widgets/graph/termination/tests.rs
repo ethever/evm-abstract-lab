@@ -131,6 +131,8 @@ fn no_edges_and_frontiers_never_invent_a_terminal_kind() {
     assert_eq!(no_edges.single_kind(), None);
 
     report.frontiers = vec![Frontier {
+        range: None,
+        payload: None,
         from: Some(1),
         pc: Some(5),
         kind: FrontierKind::Work,

@@ -2,12 +2,14 @@
 //! Every check owns a fresh native session; EVM arithmetic semantics live here.
 
 use super::{CheckResult, Constraint, QueryReason, RelationLimits, RelationState, ValueQuery};
-use crate::domain::symbolic::{ExprId, ExprKind};
+use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, ExprKind, SlotStateId, SourceId};
 use alloy_primitives::U256;
-use embedded_smt::{Bool, Bv as BV, Context, Outcome, Unknown};
+use embedded_smt::{Array, Bool, Bv as BV, Context, Function, FunctionSort, Outcome, Unknown};
 use revm_bytecode::opcode;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+mod guarantees;
+mod state;
 #[cfg(test)]
 mod tests;
 
@@ -18,6 +20,15 @@ struct Encoder<'a> {
     memo: BTreeMap<ExprId, BV>,
     definitions: Vec<Bool>,
     emitted_definitions: usize,
+    byte_sources: BTreeMap<SourceId, Array>,
+    slot_sources: BTreeMap<SourceId, Array>,
+    byte_arrays: BTreeMap<ByteStateId, Option<Array>>,
+    slot_arrays: BTreeMap<SlotStateId, Array>,
+    hashes: BTreeMap<ByteView, BV>,
+    hash_functions: BTreeMap<usize, Function>,
+    observed_bytes: BTreeSet<ByteStateId>,
+    paths: BTreeMap<usize, Bool>,
+    guarantees: guarantees::Guarantees,
 }
 impl<'a> Encoder<'a> {
     fn new(limits: &'a RelationLimits) -> Self {
@@ -28,9 +39,21 @@ impl<'a> Encoder<'a> {
             memo: BTreeMap::new(),
             definitions: Vec::new(),
             emitted_definitions: 0,
+            byte_sources: BTreeMap::new(),
+            slot_sources: BTreeMap::new(),
+            byte_arrays: BTreeMap::new(),
+            slot_arrays: BTreeMap::new(),
+            hashes: BTreeMap::new(),
+            hash_functions: BTreeMap::new(),
+            observed_bytes: BTreeSet::new(),
+            paths: BTreeMap::new(),
+            guarantees: guarantees::Guarantees::default(),
         }
     }
     fn charge(&mut self, work: usize) -> Result<(), QueryReason> {
+        if embedded_smt::current_cancellation().is_cancelled() {
+            return Err(QueryReason::Cancelled);
+        }
         self.work = self.work.saturating_add(work);
         if self.work > self.limits.max_nodes {
             Err(QueryReason::ExpressionLimit)
@@ -162,6 +185,27 @@ impl<'a> Encoder<'a> {
                     self.operation(*op, &args, exponent)?
                 }
             }
+            ExprKind::Ite {
+                condition,
+                then_value,
+                else_value,
+            } => {
+                if let Some(nonzero) = self.guarantees.truth(condition) {
+                    self.expression(if nonzero { then_value } else { else_value })?
+                } else {
+                    let guard = self.truth(condition)?;
+                    let yes = self.expression(then_value)?;
+                    let no = self.expression(else_value)?;
+                    guard.ite(&yes, &no)
+                }
+            }
+            ExprKind::ByteRead { state, index } => {
+                let index = self.expression(index)?;
+                self.byte(state, &index)?.zero_ext(248)
+            }
+            ExprKind::WordRead { view, offset } => self.word_read(view, offset)?,
+            ExprKind::SlotRead { state, key } => self.slot_read(state, key)?,
+            ExprKind::Keccak { input } => self.hash(input)?,
         };
         self.memo.insert(expression.clone(), value.clone());
         Ok(value)
@@ -325,6 +369,10 @@ impl<'a> Encoder<'a> {
         {
             return Err(QueryReason::ExpressionLimit);
         }
+        if let Some(nonzero) = self.guarantees.truth(expression) {
+            self.charge(1)?;
+            return Ok(Bool::from_bool(nonzero));
+        }
         if let ExprKind::Operation { opcode: op, args } = expression.kind()
             && matches!(
                 *op,
@@ -377,6 +425,24 @@ impl<'a> Encoder<'a> {
                     value.bvand(word(*one)).eq(word(*one)),
                 ])
             }
+            Constraint::SignedRange {
+                expression,
+                lower,
+                upper,
+            } => {
+                let value = self
+                    .expression(expression)?
+                    .bvxor(word(U256::from(1) << 255));
+                Bool::and(&[value.bvuge(word(*lower)), value.bvule(word(*upper))])
+            }
+            Constraint::Modulo {
+                expression,
+                modulus,
+                residue,
+            } => self
+                .expression(expression)?
+                .bvurem(word(*modulus))
+                .eq(word(*residue)),
             Constraint::Members { expression, values } => {
                 self.charge(values.len())?;
                 let value = self.expression(expression)?;
@@ -389,6 +455,44 @@ impl<'a> Encoder<'a> {
             }
             Constraint::Equal { left, right } => self.expression(left)?.eq(self.expression(right)?),
         })
+    }
+    fn path(&mut self, path: &super::RelationPath) -> Result<Bool, QueryReason> {
+        use super::RelationPathKind;
+        if let Some(encoded) = self.paths.get(&path.id()) {
+            return Ok(encoded.clone());
+        }
+        self.charge(1)?;
+        let encoded = match path.kind() {
+            RelationPathKind::True => Bool::from_bool(true),
+            RelationPathKind::False => Bool::from_bool(false),
+            RelationPathKind::Atoms(atoms) => Bool::and(
+                &atoms
+                    .iter()
+                    .map(|atom| self.constraint(atom))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            RelationPathKind::And(children) => Bool::and(
+                &children
+                    .iter()
+                    .map(|child| self.path(child))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            RelationPathKind::Ite {
+                selector,
+                then_path,
+                else_path,
+            } => {
+                let guard = self.truth(selector)?;
+                let yes = self.path(then_path)?;
+                let no = self.path(else_path)?;
+                Bool::or(&[
+                    Bool::and(&[guard.clone(), yes]),
+                    Bool::and(&[guard.not(), no]),
+                ])
+            }
+        };
+        self.paths.insert(path.id(), encoded.clone());
+        Ok(encoded)
     }
 }
 fn word(value: U256) -> BV {
@@ -411,15 +515,41 @@ fn prepared<'a>(
     if !limits.valid() {
         return Err(QueryReason::Configuration);
     }
-    if state.constraints.len() > limits.max_constraints {
+    if state.len() > limits.max_constraints {
         return Err(QueryReason::ConstraintLimit);
     }
     let mut assertions = Vec::new();
     let mut encoder = Encoder::new(limits);
     encoder.bind_observed_constants(state, &mut assertions)?;
-    for constraint in &state.constraints {
-        assertions.push(encoder.constraint(constraint)?);
+    // Encode scalar premises before state observations that can depend on them.
+    // Both groups retain every original atom; only their conjunction order changes.
+    encoder.charge(state.constraints.len())?;
+    for reads_state in [false, true] {
+        for constraint in &state.constraints {
+            if constraint
+                .expressions()
+                .iter()
+                .any(|expression| expression.has_state_semantics())
+                != reads_state
+            {
+                continue;
+            }
+            assertions.push(encoder.constraint(constraint)?);
+            // Reuse a fact only after its supporting assertion exists.
+            encoder.remember_guarantee(constraint)?;
+        }
     }
+    if state.path.nodes() > limits.max_nodes || state.path.depth() > limits.max_depth {
+        return Err(QueryReason::ExpressionLimit);
+    }
+    assertions.push(encoder.path(&state.path)?);
+    // Derived read encodings may precede a later equality/guard. Recompute them
+    // with the complete conjunction, retaining every leaf and source binding.
+    // In particular, an uncompared immutable hash must keep its original value.
+    encoder.charge(encoder.memo.len())?;
+    encoder.memo.retain(|expression, _| {
+        !expression.has_state_semantics() || matches!(expression.kind(), ExprKind::Keccak { .. })
+    });
     if let Some(extra) = extra {
         assertions.push(encoder.constraint(&extra)?);
     }

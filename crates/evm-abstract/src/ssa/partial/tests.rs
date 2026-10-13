@@ -261,12 +261,12 @@ fn completed_fault_has_no_fabricated_operands_or_results() {
 fn relational_frontier_does_not_truncate_a_completed_instruction_or_its_successor() {
     let mut config = config();
     config.analysis.relations.enabled = true;
-    config.analysis.relations.max_nodes = 1;
-    // SLOAD provides an unknown word with a fresh leaf. Adding 1 exceeds the
-    // expression bound, but its numerical result and the subsequent STOP exist.
+    config.analysis.relations.max_nodes = 2;
+    // CALLVALUE provides an unknown word with an input leaf. The bound admits
+    // initial state roots, while adding 1 exceeds it. Numerical ADD and STOP
+    // still complete, so their execution evidence must remain available.
     let mut world = World::new(Fork::Osaka, "continued relational frontier");
-    let mut account = Account::from_hex("5f5460010100", Fork::Osaka).unwrap();
-    account.storage_unknown = true;
+    let account = Account::from_hex("3460010100", Fork::Osaka).unwrap();
     world.insert(address(0x101), account).unwrap();
     let analysis = analysis::analyze_world(
         world,
@@ -275,7 +275,7 @@ fn relational_frontier_does_not_truncate_a_completed_instruction_or_its_successo
             environment: EvmEnvironment {
                 to: address(0x101).into(),
                 caller: address(0x900).into(),
-                value: AbstractValue::constant(U256::ZERO),
+                value: AbstractValue::top(),
                 calldata: ByteArray::empty(),
                 ..EvmEnvironment::default()
             },

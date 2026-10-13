@@ -473,34 +473,49 @@ fn a_child_callvalue_is_not_the_parent_callvalue_variable() {
     ));
 }
 
-fn numeric_json(value: &mut Json) {
+fn alpha_json(value: &mut Json, leaves: &mut BTreeMap<(String, u64), u64>) {
     match value {
-        Json::Array(values) => values.iter_mut().for_each(numeric_json),
-        Json::Object(fields) => {
-            // Compare numeric coverage and world effects, not diagnostic source
-            // identities or expression arena numbering from separate analyses.
-            if fields.contains_key("known_bits") || fields.contains_key("Constants") {
-                fields.retain(|name, _| {
-                    matches!(
-                        name.as_str(),
-                        "Constants" | "known_bits" | "interval" | "congruence" | "nonzero"
-                    )
-                });
+        Json::Array(values) => {
+            for value in values {
+                alpha_json(value, leaves);
             }
-            fields.values_mut().for_each(numeric_json);
+        }
+        Json::Object(fields) => {
+            // Preserve every numeric/provenance field and all symbolic structure.
+            // Only process-private Fresh names differ between independent runs.
+            if let Some(scope) = fields
+                .get("identity_scope")
+                .and_then(Json::as_str)
+                .map(str::to_owned)
+            {
+                for node in fields.get_mut("nodes").unwrap().as_array_mut().unwrap() {
+                    if let Some(token) = node.get_mut("Fresh") {
+                        let next = u64::try_from(leaves.len()).unwrap();
+                        let renamed = *leaves
+                            .entry((scope.clone(), token.as_u64().unwrap()))
+                            .or_insert(next);
+                        *token = Json::from(renamed);
+                    }
+                }
+            }
+            for value in fields.values_mut() {
+                alpha_json(value, leaves);
+            }
         }
         _ => {}
     }
 }
 
 fn outcome_relations(result: &WorldAnalysis) -> BTreeSet<String> {
+    // One mapping covers every graph and outcome, preserving shared leaves.
+    let mut leaves = BTreeMap::new();
     result
         .outcomes()
         .iter()
         .map(|outcome| {
             let mut value =
                 serde_json::to_value((outcome.kind, &outcome.data, &outcome.store)).unwrap();
-            numeric_json(&mut value);
+            alpha_json(&mut value, &mut leaves);
             serde_json::to_string(&value).unwrap()
         })
         .collect()
@@ -508,6 +523,62 @@ fn outcome_relations(result: &WorldAnalysis) -> BTreeSet<String> {
 
 #[test]
 fn summary_reuse_preserves_parent_constraints_and_numeric_outcome_parity() {
+    use evm_abstract::domain::symbolic::{ExprId, ExprLimits, SlotStateId, SourceId};
+    let canonical = |mut value: Json| {
+        alpha_json(&mut value, &mut BTreeMap::new());
+        value
+    };
+    let a = ExprId::fresh().unwrap();
+    let b = ExprId::fresh().unwrap();
+    let c = ExprId::fresh().unwrap();
+    let d = ExprId::fresh().unwrap();
+    assert_eq!(
+        canonical(serde_json::to_value([&a, &a, &b]).unwrap()),
+        canonical(serde_json::to_value([&c, &c, &d]).unwrap())
+    );
+    assert_ne!(
+        canonical(serde_json::to_value([&a, &a, &b]).unwrap()),
+        canonical(serde_json::to_value([&c, &d, &d]).unwrap())
+    );
+    let bounded = AbstractValue::unsigned_range(U256::from(1), U256::from(3))
+        .unwrap()
+        .with_expression(a.clone());
+    let expanded = AbstractValue::unsigned_range(U256::from(1), U256::from(4))
+        .unwrap()
+        .with_expression(c.clone());
+    assert_ne!(
+        canonical(serde_json::to_value(&bounded).unwrap()),
+        canonical(serde_json::to_value(&expanded).unwrap())
+    );
+    let sourced = AbstractValue::constant(U256::from(1)).with_expression(a.clone());
+    assert_ne!(
+        canonical(serde_json::to_value(&sourced).unwrap()),
+        canonical(
+            serde_json::to_value(
+                sourced
+                    .clone()
+                    .with_origin(evm_abstract::domain::provenance::Origin::Storage)
+            )
+            .unwrap()
+        )
+    );
+    let caller = evm_abstract::domain::identity::Symbol::Caller;
+    assert_ne!(
+        canonical(serde_json::to_value(ExprId::input(1, caller)).unwrap()),
+        canonical(serde_json::to_value(ExprId::input(2, caller)).unwrap())
+    );
+    let read = |namespace| {
+        ExprId::slot_read(
+            SlotStateId::input(SourceId::scoped(a.clone(), namespace)),
+            ExprId::constant(U256::ZERO),
+            ExprLimits::default(),
+        )
+        .unwrap()
+    };
+    assert_ne!(
+        canonical(serde_json::to_value(read(U256::from(1))).unwrap()),
+        canonical(serde_json::to_value(read(U256::from(2))).unwrap())
+    );
     let mut root = Assembly::default();
     root.op(opcode::CALLER)
         .guard_eq(1, "calls")
@@ -535,6 +606,7 @@ fn summary_reuse_preserves_parent_constraints_and_numeric_outcome_parity() {
     let child = child.finish();
     let (world, entry) = world(&root.code, &child.code);
     let mut outcomes = Vec::new();
+    let mut fixed_inputs = Vec::new();
     for enabled in [true, false] {
         let result = analysis::analyze_world(
             world.clone(),
@@ -573,8 +645,38 @@ fn summary_reuse_preserves_parent_constraints_and_numeric_outcome_parity() {
         } else {
             assert_eq!(result.summary_stats().hits, 0);
         }
+        let initial = &result.states()[0].entry.call_stack.root().state;
+        fixed_inputs.push(
+            serde_json::to_value((
+                &initial.calldata,
+                initial.call_value.expression(),
+                &initial.saved_store,
+            ))
+            .unwrap(),
+        );
+        for state in result.states() {
+            let root = &state.entry.call_stack.root().state;
+            assert_eq!(root.calldata.state_root(), initial.calldata.state_root());
+            assert_eq!(
+                root.calldata.len().expression(),
+                initial.calldata.len().expression()
+            );
+            assert_eq!(
+                root.call_value.expression(),
+                initial.call_value.expression()
+            );
+        }
+        for outcome in result.outcomes() {
+            for owner in world.accounts().keys() {
+                assert_eq!(
+                    outcome.store.slot_root(*owner, false),
+                    initial.saved_store.state().slot_root(*owner, false)
+                );
+            }
+        }
         outcomes.push(outcome_relations(&result));
     }
+    assert_eq!(fixed_inputs[0], fixed_inputs[1]);
     assert_eq!(outcomes[0], outcomes[1]);
 }
 
@@ -827,12 +929,122 @@ fn native_smt_resource_exhaustion_preserves_both_feasible_branches() {
             ..RelationLimits::default()
         },
     );
-    retained_unknown_branches(&result, &fixture);
+    complete(&result);
+    assert!(reachable(&result, fixture.labels["true"]));
+    assert!(reachable(&result, fixture.labels["false"]));
     assert!(
-        result.execution().frontiers().iter().any(|frontier| {
-            frontier.reason == FrontierReason::Relations(QueryReason::ResourceLimit)
+        result.execution().diagnostics().iter().any(|diagnostic| {
+            diagnostic.kind
+                == analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
         }),
         "native rlimit exhaustion must remain typed, never UNSAT"
+    );
+}
+
+#[test]
+fn initial_symbolic_store_uses_the_configured_policy_and_retains_failure() {
+    use evm_abstract::domain::{Domain, relational::QueryReason};
+    let owner = address(0x101);
+    let mut world = World::new(Fork::Osaka, "initial state construction limit");
+    let mut account = Account::from_hex("00", Fork::Osaka).unwrap();
+    account.storage = (0..65)
+        .map(|i| (U256::from(i), AbstractValue::constant(U256::from(i + 1))))
+        .collect();
+    world.insert(owner, account).unwrap();
+    let entry = Entry::new(owner);
+    let limited =
+        analysis::analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    assert_eq!(limited.status(), Status::Incomplete);
+    assert!(limited.outcomes().is_empty());
+    assert!(limited.frontiers().iter().any(|frontier| {
+        frontier.reason == FrontierReason::Relations(QueryReason::ExpressionLimit)
+    }));
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.max_depth = 128;
+    let domain = Domain::from_spec(
+        Domain::default()
+            .spec()
+            .with_relations(config.analysis.relations),
+    );
+    let result = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(
+        result.status(),
+        Status::Converged,
+        "{:?}",
+        result.frontiers()
+    );
+    assert!(!result.outcomes().is_empty());
+    for outcome in result.outcomes() {
+        assert_eq!(
+            outcome
+                .store
+                .read_checked(owner, &AbstractValue::constant(U256::from(64)), domain)
+                .unwrap()
+                .singleton(),
+            Some(U256::from(65))
+        );
+    }
+}
+
+#[test]
+fn unknown_range_feasibility_retains_both_outcomes_and_its_precision_reason() {
+    use evm_abstract::{analysis::DiagnosticKind, domain::relational::QueryReason};
+    let (world, mut entry) = world("5f345f3e00", "00");
+    entry.environment.value = AbstractValue::top();
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.rlimit = 1;
+    let result = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(
+        result.status(),
+        Status::Converged,
+        "{:?}",
+        result.frontiers()
+    );
+    assert!(result.frontiers().is_empty());
+    for kind in [
+        analysis::OutcomeKind::Return,
+        analysis::OutcomeKind::Failure,
+    ] {
+        assert!(result.outcomes().iter().any(|outcome| outcome.kind == kind));
+    }
+    assert!(result.diagnostics().iter().any(|diagnostic| {
+        diagnostic.pc == 3
+            && diagnostic.kind
+                == DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
+    }));
+}
+
+#[test]
+fn optional_state_read_projection_reports_precision_loss_without_unexpanded_paths() {
+    use evm_abstract::domain::relational::QueryReason;
+    let (world, entry) = world("5f3500", "00");
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.rlimit = 1;
+    let analysis = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(
+        analysis.status(),
+        Status::Converged,
+        "{:?}",
+        analysis.frontiers()
+    );
+    assert!(analysis.frontiers().is_empty());
+    assert!(
+        analysis
+            .states()
+            .iter()
+            .any(|state| state.executed_pcs.contains(&2))
+    );
+    assert!(analysis.diagnostics().iter().any(|diagnostic| {
+        matches!(
+            diagnostic.kind,
+            analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
+        )
+    }));
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == analysis::OutcomeKind::Return)
     );
 }
 
@@ -842,15 +1054,31 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
     let fixture = one_symbolic_guard();
     for limits in [
         RelationLimits {
-            max_nodes: 1,
+            // Two nodes retain the initial account-source root; the derived
+            // branch expression still exceeds this limit.
+            max_nodes: 2,
             ..RelationLimits::default()
         },
         RelationLimits {
-            max_depth: 1,
+            max_depth: 2,
             ..RelationLimits::default()
         },
     ] {
-        let result = limited(&fixture, limits);
+        let result = analysis::analyze_with_environment(
+            Program::from_hex(&fixture.code).unwrap(),
+            Config {
+                context_depth: 0,
+                relations: limits,
+                ..Config::default()
+            },
+            EvmEnvironment {
+                // Calldata is unused; keep the initial root within the tiny
+                // policy so the derived CALLVALUE branch is what exhausts it.
+                calldata: evm_abstract::world::ByteArray::empty(),
+                ..EvmEnvironment::default()
+            },
+        )
+        .unwrap();
         retained_unknown_branches(&result, &fixture);
         assert!(
             result.execution().frontiers().iter().any(|frontier| {
@@ -899,6 +1127,24 @@ fn a_constraint_limit_is_unknown_and_does_not_drop_a_feasible_side() {
         }),
         "the exhausted retained-atom limit must be explicit"
     );
+}
+
+#[test]
+fn uncompared_lazy_hash_reports_precision_loss_while_completing_execution() {
+    use evm_abstract::{analysis::DiagnosticKind, domain::relational::QueryReason};
+    // A partial overwrite of a 128-byte symbolic copy cannot currently be
+    // normalized as a complete content array. Its hash still has a sound value.
+    let result = analysis::analyze_with_environment(
+        Program::from_hex("60805f5f3760ff5f5360805f205000").unwrap(),
+        Config::default(),
+        EvmEnvironment::default(),
+    )
+    .unwrap();
+    complete(&result);
+    assert!(result.execution().diagnostics().iter().any(|diagnostic| {
+        diagnostic.kind
+            == DiagnosticKind::RelationalPrecisionLost(QueryReason::Unsupported(opcode::KECCAK256))
+    }));
 }
 
 #[test]

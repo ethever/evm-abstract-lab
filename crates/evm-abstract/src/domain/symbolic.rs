@@ -1,14 +1,16 @@
 //! Immutable, scoped EVM expressions. Identity is structural, never a bytecode PC.
 //!
 //! Node counts bound the expanded tree, a conservative upper bound on DAG work.
-//! Runtime leaves are globally fresh; input leaves retain caller-supplied scopes.
+//! Runtime leaves are process-fresh; input leaves retain caller-supplied scopes.
 
 use crate::domain::identity::Symbol;
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use serde::Serialize;
 use std::{
+    cmp::Ordering as CmpOrdering,
     collections::{BTreeMap, BTreeSet},
+    hash::{Hash, Hasher},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -16,8 +18,24 @@ use std::{
 };
 use thiserror::Error;
 
+mod bytes;
+mod graph;
+mod hash;
+mod materialize;
+mod reads;
+mod state;
+mod storage;
 #[cfg(test)]
 mod tests;
+mod walk;
+pub use bytes::{ByteStateId, ByteStateKind, ByteView};
+pub use graph::{GraphBinding, GraphLimits, GraphSource, SymbolicGraph, SymbolicGraphNode};
+pub use hash::{HashSupport, MAX_NORMALIZED_HASH_BYTES};
+pub use state::{SourceId, StateBinding, StateError, StateLimits};
+pub use storage::{SlotStateId, SlotStateKind};
+pub(crate) fn state_check(nodes: usize, depth: usize, limits: ExprLimits) -> Result<(), ExprError> {
+    state::check(nodes, depth, limits.into()).map_err(Into::into)
+}
 
 static NEXT_FRESH: AtomicU64 = AtomicU64::new(1);
 
@@ -39,17 +57,17 @@ impl Default for ExprLimits {
 }
 
 /// One immutable input within its owning environment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct InputAtom {
-    /// Private equality namespace; names alone do not establish equality.
-    #[serde(skip)]
+    /// Caller-owned equality namespace; names alone do not establish equality.
+    /// Native graphs retain this scope within their opaque producer namespace.
     pub scope: u64,
     /// Meaning of the immutable input.
     pub symbol: Symbol,
 }
 
 /// Read-only structural expression used by typed reports and solver encoders.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum ExprKind {
     /// Exact 256-bit word.
     Constant(U256),
@@ -64,19 +82,59 @@ pub enum ExprKind {
         /// Structurally retained operands.
         args: Vec<ExprId>,
     },
+    /// Nonzero EVM condition chooses the first alternative.
+    Ite {
+        /// Nonzero EVM condition selecting the first alternative.
+        condition: ExprId,
+        /// Word chosen when the condition is nonzero.
+        then_value: ExprId,
+        /// Word chosen when the condition is zero.
+        else_value: ExprId,
+    },
+    /// Read a byte, zero extended to Word256, from an immutable state.
+    ByteRead {
+        /// Immutable backing-state reference.
+        state: ByteStateId,
+        /// Byte address as a Word256 expression.
+        index: ExprId,
+    },
+    /// Big-endian 32-byte read at a relative offset in a bounded view.
+    WordRead {
+        /// Bounded zero-padded source sequence.
+        view: ByteView,
+        /// Relative first byte address.
+        offset: ExprId,
+    },
+    /// Read an immutable storage state at a Word256 key.
+    SlotRead {
+        /// Immutable backing-state reference.
+        state: SlotStateId,
+        /// Word256 storage key.
+        key: ExprId,
+    },
+    /// Keccak of the complete bounded, zero-padded sequence.
+    Keccak {
+        /// Complete bounded sequence passed to Keccak.
+        input: ByteView,
+    },
 }
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 struct Node {
     kind: ExprKind,
     nodes: usize,
     depth: usize,
+    #[serde(skip)]
+    fingerprint: u64,
+    #[serde(skip)]
+    state_semantics: bool,
 }
 
 /// An immutable expression handle with structural equality and cheap cloning.
 ///
-/// Serialization describes expressions but intentionally omits process-private
-/// namespaces. Equal printed names never prove equality between separate reports.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Serialization exports a bounded flat graph, retaining common leaf bindings
+/// across separate graphs in one report through an opaque producer namespace.
+/// Exported identities do not establish semantic equality across reports.
+#[derive(Clone, Debug)]
 pub struct ExprId(Arc<Node>);
 
 /// An expression cannot be retained within its explicit resource policy.
@@ -84,9 +142,11 @@ pub struct ExprId(Arc<Node>);
 pub enum ExprError {
     /// This opcode is not a supported pure EVM word operation.
     #[error("opcode 0x{0:02x} has no pure expression semantics")]
+    /// Immutable state operation within its declared resource bounds.
     Unsupported(u8),
     /// Operand count disagrees with the pure operation.
     #[error("opcode 0x{opcode:02x} expects {expected} operands, received {actual}")]
+    /// Immutable state operation within its declared resource bounds.
     Arity {
         /// Opcode.
         opcode: u8,
@@ -97,20 +157,36 @@ pub enum ExprError {
     },
     /// Retaining this expression would exceed the node/depth policy.
     #[error("expression needs {nodes} nodes and depth {depth}, exceeding its policy")]
+    /// Immutable state operation within its declared resource bounds.
     Limit {
         /// Expanded node count.
         nodes: usize,
         /// Tree depth.
         depth: usize,
     },
+    /// Cancellation interrupted a state graph construction or traversal.
+    #[error("symbolic graph operation cancelled")]
+    /// Immutable state operation within its declared resource bounds.
+    Cancelled,
+    /// Flat export exceeds its independent exact payload budget.
+    #[error("symbolic export needs {bytes} exact bytes, exceeding limit {limit}")]
+    ExportBytes {
+        /// Exact payload bytes required.
+        bytes: usize,
+        /// Configured exact payload allowance.
+        limit: usize,
+    },
 }
 
 impl ExprId {
     fn leaf(kind: ExprKind) -> Self {
+        let fingerprint = state::fingerprint(&kind);
         Self(Arc::new(Node {
             kind,
             nodes: 1,
             depth: 1,
+            fingerprint,
+            state_semantics: false,
         }))
     }
     /// Exact EVM word.
@@ -217,14 +293,15 @@ impl ExprId {
         if nodes > limits.max_nodes || depth > limits.max_depth {
             return Err(ExprError::Limit { nodes, depth });
         }
-        Ok(Self(Arc::new(Node {
-            kind: ExprKind::Operation {
+        Self::retained(
+            ExprKind::Operation {
                 opcode: op,
                 args: args.to_vec(),
             },
             nodes,
             depth,
-        })))
+            limits,
+        )
     }
     /// Expanded node count, including shared children more than once.
     pub fn nodes(&self) -> usize {
@@ -303,12 +380,7 @@ impl ExprId {
         out
     }
     fn visit(&self, action: &mut impl FnMut(&Self)) {
-        action(self);
-        if let ExprKind::Operation { args, .. } = self.kind() {
-            for arg in args {
-                arg.visit(action);
-            }
-        }
+        walk::visit(self, action);
     }
     /// Rename only explicitly mapped fresh leaves; immutable inputs stay scoped.
     pub fn rename_fresh(
@@ -316,18 +388,36 @@ impl ExprId {
         map: &BTreeMap<Self, Self>,
         limits: ExprLimits,
     ) -> Result<Self, ExprError> {
-        match self.kind() {
-            ExprKind::Fresh(_) => Ok(map.get(self).cloned().unwrap_or_else(|| self.clone())),
-            ExprKind::Operation { opcode, args } => Self::operation(
-                *opcode,
-                &args
-                    .iter()
-                    .map(|a| a.rename_fresh(map, limits))
-                    .collect::<Result<Vec<_>, _>>()?,
-                limits,
-            ),
-            _ => Ok(self.clone()),
+        walk::Renamer::new(map, limits).expression(self)
+    }
+}
+
+impl PartialEq for ExprId {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.0.fingerprint == other.0.fingerprint && self.kind() == other.kind())
+    }
+}
+impl Eq for ExprId {}
+impl PartialOrd for ExprId {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ExprId {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        if Arc::ptr_eq(&self.0, &other.0) {
+            return CmpOrdering::Equal;
         }
+        self.0
+            .fingerprint
+            .cmp(&other.0.fingerprint)
+            .then_with(|| self.kind().cmp(other.kind()))
+    }
+}
+impl Hash for ExprId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.fingerprint.hash(state);
     }
 }
 
@@ -362,6 +452,8 @@ pub(crate) fn arity(op: u8) -> Option<usize> {
 
 impl Serialize for ExprId {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.as_ref().serialize(serializer)
+        SymbolicGraph::expression(self, GraphLimits::default())
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
     }
 }

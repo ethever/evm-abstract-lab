@@ -103,13 +103,13 @@ flowchart TD
 | SSTORE / SLOAD | 状态账户、256 位 slot、word → 交易内状态更新，或 slot 摘要 | [`Store::write` / `read`](../../crates/evm-abstract/src/world/store.rs#L502)，向下追踪 `Plane::write` / `read` |
 | TSTORE / TLOAD | 同样的账户与 slot → 本次交易的 transient plane | `Store::write_transient` / `read_transient`，与 persistent plane 分开 |
 
-先读数据结构再读分支：`ByteArray` 保存长度、默认字节与稀疏字节项；`Plane` 保存默认值与显式 slot。因而“映射中没有这一项”并不直接等于未知。memory 初始读零；storage 的未列出 slot 是否为零，取决于输入是否声明完整。用[第 16 课的默认值对照](../16-storage-model.md#没列出的-slot-是零还是未知)检查这点。
+先读数据结构再读分支：`ByteArray` 保存 ByteStateId 内容根与 length、数值 bytes/default；账户 `Plane` 保存 SlotStateId 根与数值 slots/defaults。数值表方便观察，完整根另保存来源、符号地址、写序和 Copy/View。memory 的 Zero 根保证初始读零；storage 未列出 slot 是否为零，取决于 world 的完整性声明，见[默认值对照](../16-storage-model.md#没列出的-slot-是零还是未知)。
 
-接着在两个写函数中追踪地址分类：确定的单一位置可以替换旧值；若位置有多个候选，每个位置都可能没有被写到，因此要保留旧值并合并新值；不可枚举的位置需要更宽的更新。用 [`memory-write-alias.hex`](../../examples/memory-write-alias.hex) 和 [`storage-finite-alias.json`](../../examples/storage-finite-alias.json)，分别核对[内存写入合并](../14-memory-model.md#6-地址确定时覆盖地址有几个候选时合并)与[两个 slot 候选](../16-storage-model.md#5-有两个可能的-slot为什么要保留旧值)。这就是强更新与弱更新在当前容器中的具体落点。
+接着沿 [`world/store/slots.rs`](../../crates/evm-abstract/src/world/store/slots.rs) 和 [`world/bytes.rs`](../../crates/evm-abstract/src/world/bytes.rs) 分两条线追踪写入：数值表对唯一位置作强更新，对多个候选作弱更新；内容根保存一次使用同一符号地址的有序更新，不为每个位置另选一条路径。用 [`memory-write-alias.hex`](../../examples/memory-write-alias.hex) 和 [`storage-finite-alias.json`](../../examples/storage-finite-alias.json) 比较[内存读取](../14-memory-model.md#6-地址确定时覆盖地址有几个候选时合并)与[两个 slot 的候选](../16-storage-model.md#5-有两个可能的-slot为什么要保留旧值)，指出数值投影看不到哪些配对。
 
-理论约束是：一次可能写入不能抹去“本次其实写了别处”的执行。代价是不同字节、不同 slot 的配对关系可能丢失。继续看[字节相关性实验](../14-memory-model.md#8-为什么刚存进去再读出来会多出候选)以及 [`storage-symbolic-key.json`](../../examples/storage-symbolic-key.json) 的[符号索引实验](../16-storage-model.md#6-无法列出-slot-候选刚写入再读为什么是-07)。当前标量表达式不是通用数组 `select/store` 模型；保留了写入值的表达式，也不自动恢复未知索引的写后读关系。
+理论约束是：一次可能写入不能抹去“本次写了别处”的执行。完整 roots 与整机共享 selector 保留这次选择；SMT 只检查实际编码的关系。继续做[关联 word 往返](../14-memory-model.md#8-为什么刚存进去再读出来会多出候选)和[未知键同址写后读](../16-storage-model.md#6-无法列出-slot-候选刚写入再读为什么是-07)：默认模式分别得到两个完整 word 和 7。地址或候选数值仍宽不表示有序更新已经丢失，也不保证所有复杂别名查询都能完成。
 
-**核对问题：**对同一未知 slot 写 7 再读，为什么完整零默认的 storage 仍可能得到 `{0,7}`？请分别指出索引无法枚举、默认值弱更新和读取的位置，不要只回答“因为值是 Top”。
+**核对问题：**未知 k 的 `SSTORE(k,7); SLOAD(k)` 为什么得到 7，而写后改读固定 slot 0 可能得到 `{0,7}`？从账户根、读取键和写序说明差别，再说明为何不能直接用两个 slot 的独立候选证明一组具体结果可行。
 
 换个方向：[理论路线：内存与 storage 抽象](theory.md#memory-storage)。下一站把这些状态放入真实调用链，检查它们归谁所有。
 
@@ -165,9 +165,9 @@ flowchart TD
 
 顺着条件值的 `expression` 到 [`ExprId`](../../crates/evm-abstract/src/domain/symbolic.rs)，再读 [`RelationState::assume` / `check` / `unique_value`](../../crates/evm-abstract/src/domain/relational.rs)。表达式回答“这是哪个输入经过什么运算得到的值”，关系状态回答“当前路径保证哪些条件”。[`relational/solver.rs`](../../crates/evm-abstract/src/domain/relational/solver.rs) 将这些表达式编码成 EVM 的 256 位运算，[`embedded-smt`](../../crates/embedded-smt/src/lib.rs) 提供进程内求解接口。求解器不替机器执行 CALL，也不自动增加数组索引模型。
 
-现在用[分支假设与数值精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)检查数据方向：数值保证可以导入关系层；假设与查询又可能证明某值唯一，回写更窄的数值摘要。删除分支需要矛盾证明，查询未完成不能当作矛盾。表达式或关系资源不足时，保留仍可能的路径并记录相应 frontier。
+现在用[分支假设与数值精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)检查数据方向：数值保证可以导入关系层；查询证明唯一值后，回写更窄的数值摘要。删除分支需要矛盾证明。可选 value 查询未完成时，若完整保守状态仍能继续，记录精度诊断；无法保留条件、构造后继或覆盖所需执行时才留下 frontier。两种结果都不能被当作矛盾。
 
-继续在 [`RelationState::join`](../../crates/evm-abstract/src/domain/relational.rs#L473) 停一下。两条路径分别保证 `x=1` 与 `x=2` 时，汇合不能把它们同时要求为真；当前实现保留共同保证，因而会失去部分条件关联。用[关系合并示例](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)解释这个结果。再读[作用域与摘要重放](../15-symbolic-relations.md#5-作用域与摘要重放)，回到上一站的 replay，检查 fresh 身份怎样重命名，避免两次不同调用仅因名字相似就被当成同一个值。
+继续在 [`RelationState::join`](../../crates/evm-abstract/src/domain/relational.rs) 与 [`machine/join.rs`](../../crates/evm-abstract/src/analysis/machine/join.rs) 各停一下。前者保留共同保证；后者另用同一个 selector 配对栈、状态根与完整路径公式，不能把 `x=1`、`x=2` 同时要求为真。用[关系合并示例](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)区分数值投影、普通整机 join 和循环 widening。再读[作用域与摘要重放](../15-symbolic-relations.md#5-作用域与摘要重放)，检查一张 rename map 怎样覆盖隐藏在历史 view、返回数据与 rollback store 中的 fresh 身份，避免独立调用被错误绑定。
 
 **核对问题：**为什么在两个不同 calldata 偏移读出的值都标记 Calldata，仍不能证明它们相等？为什么 `x=1` 与 `x=2` 的合流不会把整个汇合块判成不可达？回答时要分别使用 provenance、表达式身份和关系 join。
 

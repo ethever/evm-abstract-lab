@@ -84,7 +84,7 @@ jq '{status, schema_version, calldata: .environment.calldata.length,
 
 两次都退出 0、得到 `Converged`。符号长度保留 `BranchTrue` 和 `BranchFalse`；明确空 calldata 只保留 `BranchTrue`。提高 `--context-depth` 或 `--max-facts` 不会撤销用户给出的空输入约束，也不会自动把一次具体调用扩大成任意调用。
 
-JSON 的分析 `schema_version` 为 5；文本里的 `domain ... domain schema=2` 对应域策略 `domain_spec.schema_version`，两者不是同一个版本字段。单程序 `cfg --format json` 在 `.environment` 记录输入，`ssa --format json` 在 `.analysis.environment` 记录输入。world/RPC 的 `analyze --format json` 在 `.entry.environment` 记录输入，追加 `--ssa` 后则在 `.analysis.entry.environment`。读取环境和帧的具体路径见[第 10 课](10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
+JSON 的分析 `schema_version` 为 6；文本里的 `domain ... domain schema=2` 对应域策略 `domain_spec.schema_version`，两者不是同一个版本字段。单程序 `cfg --format json` 在 `.environment` 记录输入，`ssa --format json` 在 `.analysis.environment` 记录输入。world/RPC 的 `analyze --format json` 在 `.entry.environment` 记录输入，追加 `--ssa` 后则在 `.analysis.entry.environment`。读取环境和帧的具体路径见[第 10 课](10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
 
 ## 2. 诊断、程序失败和分析前沿分别看
 
@@ -157,8 +157,10 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 每次读取都替换成快照里的 4，会漏掉后续写入，也会错误处理 DELEGATECALL 或重入看到的当前状态。
 
-- **强更新**：确定只写一个具体 slot 时，用新值覆盖该 slot 的旧摘要。
-- **弱更新**：写入可能命中多个 slot，或目标未知时，保留旧值与新值的可能性，避免删掉未被写中的情况。
+- **强数值更新**：确定只写一个具体 slot 时，用新值覆盖该单元的旧数值摘要。
+- **弱数值更新**：有多个或未知目标时，逐单元保留旧值与新值的可能性，覆盖未命中的情况。
+
+完整 SlotStateId 另保存同一符号键的有序写入，正常 `SSTORE(k,7); SLOAD(k)` 可得到 7；上述弱数值表不是符号状态的全部含义。改读另一个键时，还须解释别名条件及初始来源。
 
 世界 JSON 的 `storage_unknown` 默认是 true：未列出的初始 slot 保持未知。只有显式设为 false，才把未列出的 slot 视为零。完整的合成示例与只采集少量 slot 的真实快照有不同假设，不能混用。
 
@@ -174,14 +176,14 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 
 | 部分 | 已建模的内容 | 阅读结果时保留的限制 |
 | --- | --- | --- |
-| 输入事实 | 多账户 JSON，或自动读取 chain ID 并固定区块 hash 的 RPC 采集；默认按需增加具体 callee 和 SLOAD 有限槽事实并从入口重跑，保存身份、来源与指纹 | 离线输入不联网；未知目标、无法完整枚举的槽键、关闭发现后未观察的槽和无法判定的账户存在性保持未知；完全信任 RPC 提供者，不请求证明；固定后不回退到移动标签；不支持 EOF 代码格式 |
+| 输入事实 | 多账户 JSON，或自动读取 chain ID 并固定区块 hash 的 RPC 采集；默认按需增加具体 callee 和 SLOAD 有限槽事实并从入口重跑，保存身份、来源与指纹 | 离线输入不联网；未知目标、关闭发现后未观察的初始槽和未判定的账户存在性保持未知；非有限槽键保留符号关系，不能自动 RPC 补查；完全信任 RPC 提供者，不请求证明；固定后不回退到移动标签；不支持 EOF 代码格式 |
 | 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；NumericValue 组合有限常量、KnownBits、Interval、Congruence 和非零保证；AbstractValue 独立保存来源、身份和表达式；按 fork 启用 CLZ | 常量集合及事实交换有局部上限；状态级关系受表达式、约束数量与 SMT rlimit 限制 |
-| 复制与输入身份 | 基本块内的复制身份支持 `x XOR x=0` 等规则；固定输入符号在同一环境内可跨块保持相等，默认 caller/origin 是同一变量 | 临时复制身份在控制流、调用和摘要边界失效；独立环境的同名符号不能据此认作相等；来源标签或数值摘要相同也不证明相等；有界表达式和路径假设可以跨块保留，但合并只保留共同保证，未知读取不会仅凭相同位置获得永久身份 |
-| 内存与数据 | 每帧独立抽象字节数组，load/store/copy、calldata、returndata、返回区传播 | 未知偏移或字节会降低精度；无法追踪的范围留下内存前沿 |
+| 复制与输入身份 | 基本块内的复制身份支持 `x XOR x=0` 等规则；固定输入符号在同一环境内可跨块保持相等，默认 caller/origin 是同一变量 | 临时复制身份在控制流、调用和摘要边界失效；独立环境的同名符号不能据此认作相等；来源标签或数值摘要相同也不证明相等；有界表达式、历史读取和路径假设可跨块保留，整机 join 使用共享 selector；widening 可放弃保证，同一位置在不同历史根上的读取也不能直接认作相同 |
+| 内存与数据 | 每帧独立 ByteStateId，符号地址和有序写入、captured-source Copy、有限 view、长度与零补 | 数值投影或查询仍可较宽；超 logical footprint 策略保留 MemoryPolicy，构造/具体化失败各有 typed 前沿 |
 | JUMP/JUMPI | 有限目标逐个验证；Top 覆盖真实 JUMPDEST；依据数值条件和关系域的分支可行性查询保留边 | 可能有伪边；有界跳转历史不等于内部函数恢复 |
 | 环境、hash、gas | `--evm.*` 描述根调用、交易与区块输入；CALLER、ADDRESS、value 按子调用规则推导；BLOCKHASH/BLOBHASH 检查有效范围，未观察的有效项仍未知；GAS 传播上界 | RPC 固定的是账户状态快照；`--evm.number`、`--evm.chain-id` 等执行环境覆盖不会改变快照身份；环境符号不等于完整符号执行；gas、[EIP-150](https://eips.ethereum.org/EIPS/eip-150)、out-of-gas 与成本不精确 |
 
-SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.provider` 选择后端，CLI/Web 的 `--smt.rlimit` 默认 10000000，不设置墙钟 timeout。各后端的资源单位不同，不能把相同额度理解成相同耗时或相同求解能力。`ResourceLimit`、表达式或约束上限以及其它无法完成的查询产生 `Relations` 前沿并保留可能路径。SAT 仅说明保留的模型约束可满足；一般 hash、未知地址别名和跨交易不变量仍不在完整可行性证明的范围内。参见[第 15 课](15-symbolic-relations.md)。
+SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.provider` 选择后端，CLI/Web 的 `--smt.rlimit` 默认 10000000，不设置墙钟 timeout。各后端的资源单位不同，不能把相同额度理解成相同耗时或相同求解能力。可选 value 查询返回 `ResourceLimit` 或 UNKNOWN，而完整保守状态仍能继续时，记录 `RelationalPrecisionLost`。不能保留必要条件、构造状态或覆盖后续执行时，则留下 `Relations` 或对应 work/状态前沿；取消也保留未完成原因。SAT 只说明当前编码可满足，不证明完整轨迹；同址与部分别名关系已建模，一般 hash 内容比较和复杂查询仍有支持、额度边界。参见[第 15 课](15-symbolic-relations.md)与[第 17 课](17-symbolic-state.md)。
 
 ### 跨账户执行与状态效果
 
@@ -189,7 +191,7 @@ SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.prov
 | --- | --- | --- |
 | 调用身份 | 每帧分别保存代码账户、状态账户、caller、value、static 和继续位置 | 共享代码不意味着共享 storage；CALLCODE/DELEGATECALL 各有环境规则 |
 | CALL 系列 | 读取当前代码状态，暂停 caller，传递 calldata，再返回成功位和数据；RPC 可补查具体目标的初始代码事实 | 非有限目标、离线未知代码或补查失败留下各自前沿；不猜测 callee 没有副作用 |
-| storage/transient | 按状态账户保存，写入使用强/弱更新；后续读取考虑写入和重入；RPC 可补查 SLOAD 所需有限槽的初始值 | 无法完整枚举的槽键保留未知；初始观察不覆盖事务写入；transient storage 只属于本次事务分析；未知余额不能当作零 |
+| storage/transient | 按 state owner 和 plane 保存 SlotStateId 有序更新；符号键同址读取、重入与回滚保留根；RPC 可补查有限槽的初始观察 | 符号键无需枚举即可保存，但 RPC 补查仍需有限候选；复杂别名查询可未知，初始观察不覆盖交易写入；transient 在交易结束清理 |
 | 余额 | 初始抽象余额、CALL 值转移及不足余额时的失败分支 | 不扣除交易 gas 费用 |
 | REVERT/故障 | 恢复调用前 Store；REVERT 保留返回数据，故障返回空数据 | 失败分支不能当成成功但无副作用的调用 |
 | static | 子调用继承限制；禁止状态写入、日志及有值 CALL 等行为 | 违规路径异常终止，返回流程须按失败处理 |
@@ -206,7 +208,7 @@ SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.prov
 | 完整调用摘要 | 只复用前置条件完全匹配、已完成的 callee 图与全部输出关系 | 固定世界、代码 hash、完整帧/Store、完整不可变 EVM 环境（含 origin 与符号作用域）、输入关系约束、完整域策略（DomainSpec）和深度策略等都需一致；状态、代码、生命周期或 profile、交换上限变化都会影响匹配；复用时重命名 callee 内部新符号，保留输入绑定；未完成关系不发布 |
 | 工作与资源预算 | 所有账户及 RPC 重跑轮次共用状态分配数、transfer 次数与累计工作量；另有限采集账户/请求数、帧深度和内存预算 | 重跑保留已耗费用，最终图状态数可小于累计分配数；超限留下有类型前沿，`Incomplete`、退出 2；完整跨合约 SSA 拒绝未完成图，部分 SSA 另标覆盖缺口；与局部交换精度上限分别判断 |
 
-组合域改善了某些值的表示，不会单独解决内存或 storage 的未知别名。强/弱更新仍要根据是否能确定写入目标来选择；“两个值来源于 Storage”也不能作为它们读写同一 slot 的证明。内存的多目标写入、字节间关联丢失与内存前沿，可以用[第 14 课的实验](14-memory-model.md)逐项观察。循环中的区间还会使用 widening（扩大不断移动的界限）来控制传播成本，所以完成固定点也不表示区间达到最精确结果。
+组合数值域描述各个值的可能性；别名还需符号地址、状态根、写序和路径关系。“两个值来源于 Storage”不能证明读写同一 slot，逐 byte/slot 候选也不能证明交叉组合可行。当前 roots 已保存同址与条件更新关系，查询仍可能受支持和额度限制，见[第 14 课](14-memory-model.md)。循环 widening 明确放弃部分数值或路径保证，无法覆盖的增长保留 frontier；固定点完成不等于最精确结果。
 
 ## 6. 测试分别核对了什么
 

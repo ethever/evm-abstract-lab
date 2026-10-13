@@ -1,9 +1,29 @@
-//! Solver-independent Boolean/bit-vector queries with private native sessions.
+//! Solver-independent Boolean, bit-vector and array queries with private native sessions.
 //!
 //! Terms belong to this library, never a native solver. Each check lowers the
 //! same DAG into the selected provider and releases all native handles before
 //! returning. UNKNOWN is distinct from UNSAT. Resource units are provider-specific
 //! and never wall-clock time; none of the providers launches a child process.
+//!
+//! Array operations use native BV-indexed, BV-valued arrays. Z3 and Bitwuzla
+//! accept symbolic constant defaults directly; cvc5's literal-only constructor
+//! is encoded exactly with one native BV1 array per element bit when needed.
+//! This expansion depends on element width and DAG size, never index-domain
+//! cardinality. Uninterpreted applications use finite congruence constraints,
+//! including extensional array equality, and impose no collision-free assumption.
+//!
+//! Native capabilities still determine which queries can be decided. In the
+//! pinned Bitwuzla 0.9.1, some equalities over constant arrays return
+//! [`Unknown::Solver`]. In cvc5 1.4.0, some finite-index write chains joining
+//! different constant defaults raise a native [`Error`]; wide symbolic-default
+//! equalities may exhaust the resource allowance. These results retain their
+//! original meaning, with no fallback or conversion to UNSAT.
+//!
+//! Encoding observes cooperative cancellation checkpoints. Z3 and Bitwuzla
+//! also have safe native interrupt handles. The pinned cvc5 1.4.0 API has no
+//! native interrupt: cancellation during `check_sat` waits for that call to
+//! return, using its finite native resource allowance, then discards its answer.
+//! Resource units do not provide a strict cancellation latency bound.
 
 mod backend;
 mod cancellation;
@@ -15,10 +35,10 @@ mod z3;
 
 use serde::Serialize;
 use std::fmt;
-pub use term::{Bool, Bv, Context};
+pub use term::{Array, Bool, Bv, Context, Function, FunctionArg, FunctionSort};
 
 /// Available embedded SMT engines. Selection never silently falls back.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     /// Z3, using its native per-check resource counter.
@@ -59,14 +79,14 @@ pub const DEFAULT_RLIMIT: u32 = 100_000;
 pub enum Unknown {
     /// The caller explicitly cancelled this query.
     Cancelled,
-    /// The selected provider exhausted its non-wall-clock allowance.
+    /// Query encoding or the provider exhausted its non-clock allowance.
     ResourceLimit,
     /// The provider returned UNKNOWN for another or unspecified reason.
     Solver(String),
 }
 
 /// A native or encoding error, distinct from a satisfiability answer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, thiserror::Error)]
 #[error("{provider}: {message}")]
 pub struct Error {
     /// Provider that could not execute the request.
@@ -92,8 +112,14 @@ pub enum Outcome {
 /// Check a conjunction with an optional model projection in a private session.
 ///
 /// `rlimit == 0` is rejected rather than interpreted as unlimited. Constructed
-/// terms are bounded by the caller; native resource limits govern solving, not
-/// every allocation, term-construction operation, or model extraction step.
+/// terms are bounded by the caller. Function applications are eliminated by
+/// exact pairwise congruence clauses, with at most `rlimit` additional primitive
+/// terms per query; exhausting this allowance returns UNKNOWN. The same value
+/// independently bounds native solving in provider-specific units. Neither
+/// allowance bounds every allocation or model extraction step. cvc5 queries
+/// containing symbolic constant-array defaults use native arrays of individual
+/// element bits, with a separate allowance of `rlimit` generated bit-array
+/// primitives. All DAG lowering and expansion steps check the cancellation token.
 pub fn check(assertions: &[Bool], value: Option<&Bv>, provider: Provider, rlimit: u32) -> Outcome {
     let cancellation = current_cancellation();
     if cancellation.is_cancelled() {

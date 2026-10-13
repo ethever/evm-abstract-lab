@@ -346,6 +346,7 @@ fn long_input_and_diagnostics_stay_bounded_in_a_short_viewport() {
     workspace.inspector.tab = crate::app::inspector::Tab::Diagnostics;
     workspace.report.as_mut().unwrap().diagnostics = (0..100)
         .map(|index| Diagnostic {
+            precision: None,
             state: 0,
             pc: index,
             kind: DiagnosticKind::OpaqueResult,

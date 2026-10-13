@@ -93,8 +93,12 @@ fn slot_contains(store: &Json, address: &str, slot: u64, expected: U256) -> bool
         })
 }
 
+#[path = "support/native.rs"]
+mod native;
+
 fn relations(analysis: &Json) -> BTreeSet<String> {
-    analysis["outcomes"]
+    let outcomes = native::canonical(&analysis["outcomes"]);
+    outcomes
         .as_array()
         .unwrap()
         .iter()
@@ -111,6 +115,7 @@ fn relations(analysis: &Json) -> BTreeSet<String> {
 
 fn verify_export(json: &Json) -> &Json {
     let analysis = &json["analysis"];
+    assert!(native::root(&analysis["world"]["storage_source"]).is_object());
     assert_eq!(analysis["status"], "Converged");
     assert_eq!(
         json["ssa"]["blocks"].as_array().unwrap().len(),

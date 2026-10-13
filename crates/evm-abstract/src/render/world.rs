@@ -16,6 +16,8 @@ use std::fmt::Write;
 
 pub(crate) mod environment;
 mod explain;
+mod json;
+pub use json::{JsonEvidence, evidence};
 mod partial;
 mod ssa;
 mod teaching;
@@ -84,6 +86,15 @@ pub fn normalized_ssa_verbose(analysis: &WorldAnalysis, ir: &crate::ssa::Normali
 
 /// DOT graph preserving call/return/revert/failure edge labels and frontiers.
 pub fn dot(analysis: &WorldAnalysis) -> String {
+    let fingerprint = match analysis.world().fingerprint() {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            return format!(
+                "digraph world {{\n  label={:?};\n}}\n",
+                format!("Snapshot fingerprint unavailable: {error}")
+            );
+        }
+    };
     let mut output = String::from("digraph world {\n  rankdir=LR;\n");
     writeln!(
         output,
@@ -93,7 +104,7 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
             analysis.world().fork(),
             analysis.status(),
             identity(analysis.world().identity()),
-            analysis.world().fingerprint(),
+            fingerprint,
             environment::summary(&analysis.entry().environment, Some(analysis.world().identity())),
             analysis.summary_stats().hits,
             analysis.summary_stats().misses,
@@ -217,24 +228,9 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
 }
 
 /// JSON evidence retains the analysis schema and adds computed snapshot/account facts.
-pub fn json(analysis: &WorldAnalysis) -> Result<serde_json::Value, serde_json::Error> {
-    let mut result = serde_json::to_value(analysis)?;
-    result["world"]["fingerprint"] = serde_json::to_value(analysis.world().fingerprint())?;
-    let hashes: std::collections::BTreeMap<_, _> = analysis
-        .world()
-        .accounts()
-        .keys()
-        .map(|address| (*address, analysis.world().code_hash(*address)))
-        .collect();
-    result["world"]["code_hashes"] = serde_json::to_value(hashes)?;
-    for (input, output) in analysis.outcomes().iter().zip(
-        result["outcomes"]
-            .as_array_mut()
-            .expect("serialized outcomes are an array"),
-    ) {
-        output["store"]["account_observations"] = serde_json::to_value(observations(&input.store))?;
-    }
-    Ok(result)
+pub fn json(analysis: &WorldAnalysis) -> Result<serde_json::Value, crate::render::json::JsonError> {
+    let encoded = crate::render::json::compact(&evidence(analysis)?)?;
+    Ok(serde_json::from_str(&encoded)?)
 }
 
 fn identity(identity: &SnapshotIdentity) -> String {
@@ -267,23 +263,25 @@ fn observations(store: &Store) -> Vec<AccountObservation> {
     store
         .addresses()
         .into_iter()
-        .map(|address| {
-            let code = store.raw_account_code(address);
-            let code_hash = if store.existence(address) == Existence::Absent {
-                Some(B256::ZERO)
-            } else {
-                code.as_ref().map(keccak256)
-            };
-            AccountObservation {
-                address,
-                balance: store.read_balance(address),
-                nonce: store.nonce(address),
-                existence: store.existence(address),
-                code_hash,
-                code_size: code.map(|bytes| bytes.len()),
-                created_in_transaction: store.created_in_transaction(address),
-                pending_destruction: store.pending_destruction(address),
-            }
-        })
+        .map(|address| observation(store, address))
         .collect()
+}
+
+fn observation(store: &Store, address: Address) -> AccountObservation {
+    let code = store.raw_account_code(address);
+    let code_hash = if store.existence(address) == Existence::Absent {
+        Some(B256::ZERO)
+    } else {
+        code.as_ref().map(keccak256)
+    };
+    AccountObservation {
+        address,
+        balance: store.read_balance(address),
+        nonce: store.nonce(address),
+        existence: store.existence(address),
+        code_hash,
+        code_size: code.map(|bytes| bytes.len()),
+        created_in_transaction: store.created_in_transaction(address),
+        pending_destruction: store.pending_destruction(address),
+    }
 }

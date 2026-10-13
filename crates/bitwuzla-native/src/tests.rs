@@ -1,5 +1,7 @@
 use super::{Error, Kind, Solver, Status, Term};
 
+mod arrays;
+
 #[test]
 fn sat_model_is_full_width_and_modular_arithmetic_wraps() {
     let mut solver = Solver::new(1_000_000).unwrap();

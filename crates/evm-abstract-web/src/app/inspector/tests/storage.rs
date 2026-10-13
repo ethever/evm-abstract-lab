@@ -162,6 +162,11 @@ fn storage_report(count: usize) -> api::AnalysisReport {
     initial.code_hash = Some("0xfeed".into());
     initial.delegation_target = Some("0x3333333333333333333333333333333333333333".into());
     initial.program = Some(7);
+    report.programs.push(crate::tests::source_program(
+        7,
+        initial.address.clone(),
+        vec![],
+    ));
     initial.storage = entries(count);
     report.accounts = vec![initial];
     report
@@ -195,7 +200,7 @@ fn expanded_facts_use_natural_height_and_the_resized_panel() {
         "Captured program",
         "Created in transaction",
         "Pending destruction",
-        "Unspecified slots",
+        "Base slot default",
     ] {
         assert!(
             tall.rect(label).is_some(),
@@ -243,7 +248,7 @@ fn expanded_facts_and_first_slot_are_reachable_in_one_short_panel_scroll() {
         expanded.rect("Balance").unwrap().center(),
         -150.0,
     );
-    for label in ["Pending destruction", "Unspecified slots", "0x100000"] {
+    for label in ["Pending destruction", "Base slot default", "0x100000"] {
         assert!(
             scrolled.rect(label).is_some(),
             "main scroll must reach {label}: {:?}",
@@ -363,6 +368,7 @@ fn current_rollback_and_suspended_frame_stores_render_their_own_slots() {
     report.states = vec![api::StateDetails {
         state: 0,
         entry: api::MachineSnapshot {
+            path: evm_abstract_protocol::PathRef { node: 4 },
             frames: vec![frame(0, 1), frame(1, 2)],
             store: 0,
         },
