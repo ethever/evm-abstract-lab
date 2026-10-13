@@ -37,7 +37,7 @@ nix run . -- cfg --hex 366000803700 --format json
 
 RETURNDATACOPY 检查完整 returndata 的源范围，零大小仍遵守源偏移规则；CALL 输出只覆盖实际返回前缀，不把其余请求区间清零。MCOPY 捕获复制前的源，因此重叠区域保持 memmove 语义。某个操作数只有数值 Top、没有可信长度表达式时，表示层仍可报告 `ByteRange::UnknownSize`；这与保留了符号长度的正常 COPY 不同。
 
-求解结论区分 SAT、UNSAT、UNKNOWN、resource limit、cancelled 和 solver error。只有证明能排除路径或收窄数值；SAT 模型的某个值不构成唯一值或链上观察。可选 value 查询未完成但完整保守传播能继续时，`RelationalPrecisionLost` 记录精度损失。真正未覆盖的执行、没有保留下来的条件、构造失败或共享工作耗尽则保留 frontier。
+求解结论区分 SAT、UNSAT、UNKNOWN、resource limit、cancelled 和 solver error。只有证明能排除路径或收窄数值；SAT 模型的某个值不构成唯一值或链上观察。可选数值或可行性查询未完成，但条件已完整保留且保守传播能继续时，`RelationalPrecisionLost` 记录精度损失。`assume_checked` 区分条件保留失败与保留后的查询失败；普通分支和范围分支都使用这个区别。真正未覆盖的执行、没有保留下来的条件、构造失败或共享工作耗尽则保留 frontier，取消仍停止后续工作。
 
 ## 帧与账户分别绑定
 

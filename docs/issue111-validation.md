@@ -1,6 +1,6 @@
 # Issue #111：集成验收与资源记录
 
-本次专项验收在源码 `4a5aebdb6c86e1f86ab474ca759b1c1b16f06835` 上通过 **45 个测试、128 次分析**。逐例记录见 [JSON 证据](evidence/issue111-symbolic-state.json)，测试入口是 [`symbolic_state.rs`](../crates/evm-abstract/tests/symbolic_state.rs)。这是有明确输入和资源策略的实际执行证据；最终 PR 的干净提交、main 基线及完整 Nix 门禁结果另外记录在 PR 描述中。
+本次专项验收在源码 `ae41fcc791c15cd2b6629b79a682570b42c95f74` 上通过 **45 个测试、128 次分析**。逐例记录见 [JSON 证据](evidence/issue111-symbolic-state.json)，测试入口是 [`symbolic_state.rs`](../crates/evm-abstract/tests/symbolic_state.rs)。这是有明确输入和资源策略的实际执行证据；最终 PR 的干净提交、main 基线及完整 Nix 门禁结果另外记录在 PR 描述中。
 
 ## 输入与验证配置
 
@@ -33,13 +33,13 @@ Fork 包含 Cancun、Prague、Osaka。调用上下文、创建和部分字节语
 
 ## 测量方法与规模
 
-测量时间为 UTC 2026-10-12 22:34:15 至 22:34:53，平台为 Linux x86_64。使用未优化的 Cargo test profile。先复制编译完成的专项测试可执行文件，再为每个测试启动独立进程，参数为 `--exact --nocapture --test-threads=1`。冻结二进制 SHA-256：
+测量时间为 UTC 2026-10-13 00:01:39 至 00:02:11，平台为 Linux x86_64。使用未优化的 Cargo test profile。先复制编译完成的专项测试可执行文件，再为每个测试启动独立进程，参数为 `--exact --nocapture --test-threads=1`。冻结二进制 SHA-256：
 
 ```text
-dbfe77afdc320158f0e1fa8ad0d0310dfa5bc1529e75ef88216b62a12e9f14bf
+02e4386a348378e0b037515cb0e1c68f8c8b76e62f310028203888c267359275
 ```
 
-45 个进程的累计 wall time 为 **37.974 秒**；单进程最大峰值 RSS 为 **115268 KiB，约 112.6 MiB**。RSS 使用 Linux `wait4`，不含 Cargo/编译器；wall time 包含进程启动、fixture、SMT 查询和 revm 对照。主机还有其它开发任务，因此这些数字是此次运行记录，不是 release 吞吐承诺，也不是与旧实现的公平性能对照。
+45 个进程的累计 wall time 为 **31.814 秒**；单进程最大峰值 RSS 为 **114668 KiB，约 112.0 MiB**。RSS 使用 Linux `wait4`，不含 Cargo/编译器；wall time 包含进程启动、fixture、SMT 查询和 revm 对照。主机还有其它开发任务，因此这些数字是此次运行记录，不是 release 吞吐承诺，也不是与旧实现的公平性能对照。
 
 | 每次分析的指标 | 此次观测范围 | 含义 |
 | --- | ---: | --- |
