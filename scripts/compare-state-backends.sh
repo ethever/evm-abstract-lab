@@ -121,7 +121,7 @@ for fixture in sorted((root / "examples").glob("*.hex")):
         cases.append((f"{fixture.stem}-{command}",
                       arguments, expected))
 for fixture in sorted((root / "examples/worlds").glob("*.json")):
-    expected = 2 if fixture.stem == "missing-code" else 0
+    expected = 0
     arguments = ["analyze", "--world", str(fixture), "--evm.to", entry, "--evm.caller", "0x0000000000000000000000000000000000001000", "--evm.value", "0", "--evm.calldata", "0x", "--format", "json"]
     cases.append((f"{fixture.stem}-analyze", arguments, expected))
     cases.append((f"{fixture.stem}-ssa", arguments + ["--ssa"], expected))
@@ -165,11 +165,6 @@ for label, arguments, expected in cases:
                 ) or partial.get("status") != "Incomplete" or partial.get("complete") is not False
                         or partial.get("frontiers") != frontiers or "ssa" in payload):
                     sys.exit(f"{label}/{backend}: missing typed MemoryPolicy partial SSA")
-        elif expected == 2:
-            if payload.get("status") != "Incomplete" or not any(
-                "MissingCode" in frontier["reason"] for frontier in payload["frontiers"]
-            ):
-                sys.exit(f"{label}/{backend}: missing typed MissingCode frontier")
         elif arguments[0] != "disasm":
             wrapped = arguments[0] == "ssa" or "--ssa" in arguments
             analysis = payload.get("analysis", {}) if wrapped else payload
@@ -179,6 +174,12 @@ for label, arguments, expected in cases:
                 ir = payload.get("ssa", {})
                 if ir.get("status") != "Converged" or ir.get("complete") is not True:
                     sys.exit(f"{label}/{backend}: expected complete SSA wrapper")
+            if label.startswith("missing-code-"):
+                summaries = analysis.get("unknown_summaries", [])
+                if not summaries or not all(summary.get("closed") is True
+                                            and summary.get("procedures")
+                                            for summary in summaries):
+                    sys.exit(f"{label}/{backend}: expected nonempty closed unknown relations")
         # Whole-report producer renaming retains every other identity and member/array order.
     if canonical["std"] != canonical["imbl"]:
         sys.exit(f"{label}: ordered JSON differs; see {output}")

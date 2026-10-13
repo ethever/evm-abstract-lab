@@ -188,7 +188,7 @@ in
         # Packaged CLIs expose symbolic inputs and preserve the caller/origin alias.
         evm-abstract cfg --hex 33321400 --format json > symbolic-environment.json
         jq -e '
-          .schema_version == 6 and .domain_spec.schema_version == 2 and
+          .schema_version == 7 and .domain_spec.schema_version == 2 and
           .config.relations.enabled and (.config.relations | has("timeout_ms") | not) and
           .environment.to == {"Symbolic":"To"} and .environment.caller == {"Symbolic":"Caller"} and
           .environment.origin == null and .environment.value == "Top" and
