@@ -72,6 +72,37 @@ fn program_serialization_keeps_the_original_unwrapped_shape() {
 }
 
 #[test]
+fn debug_keeps_the_original_derived_shape_in_both_formats() {
+    #[derive(Debug)]
+    #[expect(
+        dead_code,
+        reason = "fields are read by the derived Debug implementation"
+    )]
+    struct Program {
+        fork: Fork,
+        byte_len: usize,
+        bytes: Vec<u8>,
+        blocks: Vec<super::BasicBlock>,
+        jumpdest_blocks: std::collections::BTreeMap<usize, usize>,
+    }
+    let decoded = super::Program::decode_with_fork(
+        &[opcode::PUSH1, 1, opcode::JUMPDEST, opcode::STOP],
+        Fork::Cancun,
+    )
+    .unwrap();
+    // An owned view mirrors the complete pre-sharing derived Debug fields.
+    let original = Program {
+        fork: decoded.fork(),
+        byte_len: decoded.byte_len(),
+        bytes: decoded.bytes().to_vec(),
+        blocks: decoded.blocks().to_vec(),
+        jumpdest_blocks: decoded.jumpdest_blocks().clone(),
+    };
+    assert_eq!(format!("{decoded:?}"), format!("{original:?}"));
+    assert_eq!(format!("{decoded:#?}"), format!("{original:#?}"));
+}
+
+#[test]
 fn equality_compares_captured_bytes_and_fork_across_independent_allocations() {
     let source = [opcode::PUSH1, 1, opcode::STOP];
     let program = Program::decode(&source).unwrap();

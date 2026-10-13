@@ -139,13 +139,27 @@ struct ProgramData {
 
 impl fmt::Debug for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Program")
-            .field("fork", &self.data.fork)
-            .field("byte_len", &self.data.byte_len)
-            .field("bytes", &self.data.bytes)
-            .field("blocks", &self.data.blocks)
-            .field("jumpdest_blocks", &self.data.jumpdest_blocks)
-            .finish()
+        // Keep the original derived layout without explicit trait-object fields.
+        #[derive(Debug)]
+        #[expect(
+            dead_code,
+            reason = "fields are read by the derived Debug implementation"
+        )]
+        struct Program<'a> {
+            fork: &'a Fork,
+            byte_len: &'a usize,
+            bytes: &'a Vec<u8>,
+            blocks: &'a Vec<BasicBlock>,
+            jumpdest_blocks: &'a BTreeMap<usize, usize>,
+        }
+        let view = Program {
+            fork: &self.data.fork,
+            byte_len: &self.data.byte_len,
+            bytes: &self.data.bytes,
+            blocks: &self.data.blocks,
+            jumpdest_blocks: &self.data.jumpdest_blocks,
+        };
+        fmt::Debug::fmt(&view, f)
     }
 }
 
