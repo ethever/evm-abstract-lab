@@ -1,0 +1,17 @@
+{
+  "kind": "synthetic bytecode regression",
+  "purpose": "600 native source/SSA blocks remain distinct through Blocks/States projection, fit/zoom and native SSA focus; independent of real-runtime call frontiers",
+  "byte_length": 4201,
+  "code_sha256": "82d4d6ef516088b5f98a10f13044e72c8cbffe9fbbe38e5b61f5430ada459360",
+  "expected_native_states": 600,
+  "expected_source_blocks": 600,
+  "expected_ssa_blocks": 600,
+  "expected_original_edges": 599,
+  "expected_edge_kind": "Fallthrough",
+  "expected_spatial_groups": 1,
+  "expected_programs": 1,
+  "expected_frame_depth": 1,
+  "block_stride": 7,
+  "last_block_start_pc": 4193,
+  "stop_pc": 4200
+}
