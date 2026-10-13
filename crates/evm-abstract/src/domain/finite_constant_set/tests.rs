@@ -1,6 +1,6 @@
-use super::{EmptyFiniteConstantSet, FiniteConstantSet};
+use super::{EmptyFiniteConstantSet, FiniteConstantSet, Kind};
 use alloy_primitives::U256;
-use std::{collections::BTreeSet, num::NonZeroUsize};
+use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 
 fn capacity(value: usize) -> NonZeroUsize {
     NonZeroUsize::new(value).expect("test capacity is positive")
@@ -184,4 +184,91 @@ fn serialized_and_displayed_candidates_keep_the_existing_contract() {
     );
     assert_eq!(set.to_string(), "{0x2, 0x7}");
     assert_eq!(FiniteConstantSet::top().to_string(), "⊤");
+}
+
+#[test]
+fn byte_candidate_clones_share_the_complete_immutable_set() {
+    let set =
+        FiniteConstantSet::collect_bounded((0_u16..256).map(U256::from), capacity(256)).unwrap();
+    let clones: Vec<_> = (0..64).map(|_| set.clone()).collect();
+    let Kind::Finite(original) = &set.0 else {
+        panic!("byte candidates must remain finite");
+    };
+    for clone in &clones {
+        let Kind::Finite(shared) = &clone.0 else {
+            panic!("cloning cannot lose byte candidates");
+        };
+        assert!(Arc::ptr_eq(original, shared));
+        assert!(std::ptr::eq(
+            set.as_values().unwrap(),
+            clone.as_values().unwrap()
+        ));
+        assert_eq!(clone.cardinality(), Some(256));
+        assert_eq!(clone.work_size(), 256);
+    }
+    let independently_collected =
+        FiniteConstantSet::try_from_values(set.as_values().unwrap().clone()).unwrap();
+    assert_eq!(set, independently_collected);
+    let Kind::Finite(independent) = &independently_collected.0 else {
+        panic!("independent byte candidates must remain finite");
+    };
+    assert!(!Arc::ptr_eq(original, independent));
+    drop(set);
+    let retained = clones.last().unwrap();
+    assert_eq!(retained.cardinality(), Some(256));
+    assert!(retained.contains(U256::ZERO));
+    assert!(retained.contains(U256::from(255)));
+}
+
+#[test]
+fn derived_byte_candidate_sets_leave_shared_siblings_unchanged() {
+    let original =
+        FiniteConstantSet::collect_bounded((0_u16..256).map(U256::from), capacity(256)).unwrap();
+    let sibling = original.clone();
+    let even = sibling
+        .filter(|value| value & U256::ONE == U256::ZERO)
+        .unwrap();
+    let upper =
+        FiniteConstantSet::collect_bounded((128_u16..256).map(U256::from), capacity(256)).unwrap();
+    let intersection = sibling.meet(&upper).unwrap();
+    let joined = even.join(&intersection, capacity(256));
+
+    assert_eq!(even.cardinality(), Some(128));
+    assert!(even.contains(U256::ZERO));
+    assert!(!even.contains(U256::from(255)));
+    assert_eq!(intersection.cardinality(), Some(128));
+    assert!(!intersection.contains(U256::ZERO));
+    assert!(intersection.contains(U256::from(255)));
+    assert_eq!(joined.cardinality(), Some(192));
+    assert_eq!(joined.work_size(), 192);
+    assert!(joined.limit(capacity(191)).is_top());
+    for unchanged in [&original, &sibling] {
+        assert_eq!(unchanged.cardinality(), Some(256));
+        assert_eq!(unchanged.work_size(), 256);
+        assert!(unchanged.contains(U256::from(255)));
+        assert_eq!(unchanged, &original);
+    }
+    assert!(std::ptr::eq(
+        original.as_values().unwrap(),
+        sibling.as_values().unwrap()
+    ));
+    assert_eq!(sibling.filter(|_| false), Err(EmptyFiniteConstantSet));
+    assert_eq!(sibling.cardinality(), Some(256));
+}
+
+#[test]
+fn shared_byte_candidates_keep_the_existing_json_and_debug_shape() {
+    let set =
+        FiniteConstantSet::collect_bounded((0_u16..256).map(U256::from), capacity(256)).unwrap();
+    let expected = serde_json::Value::Array(
+        (0_u16..256)
+            .map(|value| serde_json::Value::String(format!("0x{value:x}")))
+            .collect(),
+    );
+    assert_eq!(serde_json::to_value(&set).unwrap(), expected);
+    assert_eq!(serde_json::to_value(set.clone()).unwrap(), expected);
+    assert_eq!(
+        format!("{set:?}"),
+        format!("FiniteConstantSet(Finite({:?}))", set.as_values().unwrap())
+    );
 }

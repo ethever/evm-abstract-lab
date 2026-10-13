@@ -6,13 +6,13 @@
 
 use alloy_primitives::U256;
 use serde::{Serialize, Serializer};
-use std::{collections::BTreeSet, fmt, num::NonZeroUsize};
+use std::{collections::BTreeSet, fmt, num::NonZeroUsize, sync::Arc};
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
     Top,
-    Finite(BTreeSet<U256>),
+    Finite(Arc<BTreeSet<U256>>),
 }
 
 /// 没有满足约束的候选；不能作为一个可达值的有限常量组件保存。
@@ -20,7 +20,7 @@ enum Kind {
 #[error("finite constant set must be nonempty")]
 pub struct EmptyFiniteConstantSet;
 
-/// Top 或非空的有限常量集合，内部表示不可由调用方直接修改。
+/// Top 或非空的有限常量集合；克隆共享不可变候选，派生操作构造独立集合。
 ///
 /// ```compile_fail
 /// use evm_abstract::domain::FiniteConstantSet;
@@ -39,7 +39,7 @@ impl FiniteConstantSet {
 
     /// 只有一个具体 word 的集合。
     pub fn constant(value: U256) -> Self {
-        Self(Kind::Finite(BTreeSet::from([value])))
+        Self(Kind::Finite(Arc::new(BTreeSet::from([value]))))
     }
 
     /// 取得已有候选集合的所有权，拒绝空集合。
@@ -49,7 +49,7 @@ impl FiniteConstantSet {
         if values.is_empty() {
             return Err(EmptyFiniteConstantSet);
         }
-        Ok(Self(Kind::Finite(values)))
+        Ok(Self(Kind::Finite(Arc::new(values))))
     }
 
     /// 去重后收集完整候选；超过容量时退化为 Top，空输入返回矛盾错误。
@@ -73,7 +73,7 @@ impl FiniteConstantSet {
     pub fn as_values(&self) -> Option<&BTreeSet<U256>> {
         match &self.0 {
             Kind::Top => None,
-            Kind::Finite(values) => Some(values),
+            Kind::Finite(values) => Some(values.as_ref()),
         }
     }
 

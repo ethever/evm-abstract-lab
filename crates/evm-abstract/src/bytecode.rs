@@ -11,9 +11,12 @@ use revm_bytecode::{
     eip7702::{EIP7702_MAGIC_BYTES, Eip7702DecodeError},
     opcode::{self, OpCode},
 };
-use serde::Serialize;
-use std::{collections::BTreeMap, fmt};
+use serde::{Serialize, Serializer};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 use thiserror::Error;
+
+#[cfg(test)]
+mod tests;
 
 /// 一条指令。`pc` 是字节偏移，不是第几条指令。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -115,9 +118,16 @@ pub struct BasicBlock {
     pub instructions: Vec<Instruction>,
 }
 
-/// 已解码的程序；索引私有，避免调用者修改指令后索引失效。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// 已解码的程序；私有不可变数据在帧、回滚快照和摘要之间共享。
+/// 值相等仍比较完整程序，克隆不复制指令或索引。
+#[derive(Clone, PartialEq, Eq)]
 pub struct Program {
+    data: Arc<ProgramData>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename = "Program")]
+struct ProgramData {
     fork: Fork,
     byte_len: usize,
     #[serde(skip)]
@@ -125,6 +135,24 @@ pub struct Program {
     blocks: Vec<BasicBlock>,
     #[serde(skip)]
     jumpdest_blocks: BTreeMap<usize, usize>,
+}
+
+impl fmt::Debug for Program {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Program")
+            .field("fork", &self.data.fork)
+            .field("byte_len", &self.data.byte_len)
+            .field("bytes", &self.data.bytes)
+            .field("blocks", &self.data.blocks)
+            .field("jumpdest_blocks", &self.data.jumpdest_blocks)
+            .finish()
+    }
+}
+
+impl Serialize for Program {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.data.as_ref().serialize(serializer)
+    }
 }
 
 /// 文本输入或不支持的格式错误；普通 EVM 字节码中的无效操作码则是程序中的异常终止。
@@ -270,36 +298,38 @@ impl Program {
             })
             .collect();
         Ok(Self {
-            fork,
-            byte_len: bytes.len(),
-            bytes: bytes.to_vec(),
-            blocks,
-            jumpdest_blocks,
+            data: Arc::new(ProgramData {
+                fork,
+                byte_len: bytes.len(),
+                bytes: bytes.to_vec(),
+                blocks,
+                jumpdest_blocks,
+            }),
         })
     }
 
     /// 本程序的执行层规则；也是其 CFG/SSA 与 JSON 输出使用的规则。
     pub fn fork(&self) -> Fork {
-        self.fork
+        self.data.fork
     }
 
     /// 原始字节码长度，供 CODESIZE 抽象执行使用。
     pub fn byte_len(&self) -> usize {
-        self.byte_len
+        self.data.byte_len
     }
 
     /// Immutable source bytes used by CODECOPY and EXTCODECOPY.
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        &self.data.bytes
     }
 
     /// 基本块，包括尚未证明可达的块。
     pub fn blocks(&self) -> &[BasicBlock] {
-        &self.blocks
+        &self.data.blocks
     }
 
     /// 只有真实指令边界上的 JUMPDEST 才是合法动态跳转目标。
     pub fn jumpdest_blocks(&self) -> &BTreeMap<usize, usize> {
-        &self.jumpdest_blocks
+        &self.data.jumpdest_blocks
     }
 }

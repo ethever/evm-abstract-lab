@@ -7,7 +7,7 @@ use crate::domain::{
     symbolic::{ByteStateId, ByteView, SourceId, StateBinding},
 };
 use alloy_primitives::U256;
-use embedded_smt::Bool;
+use embedded_smt::{Bool, Context};
 
 use super::super::super::checked;
 
@@ -20,8 +20,9 @@ fn policy(provider: SmtProvider) -> RelationLimits {
         provider,
         max_nodes: 8192,
         max_depth: 128,
-        // The differential oracle retains all 32 independent bounds. This is
-        // the workbench's default solver allowance, not a production change.
+        // The proof oracle retains all 32 independent bounds. This allowance
+        // is for equivalence checks, not a performance measurement or a change
+        // to the production policy.
         rlimit: 10_000_000,
         ..RelationLimits::default()
     }
@@ -61,30 +62,120 @@ fn equivalent(
 }
 
 #[test]
-fn dynamic_input_word_matches_byte_reference_for_symbolic_length_and_start() {
+fn input_word_byte_guards_match_nonwrapping_prefix_for_symbolic_start_and_length() {
+    // This arithmetic equivalence is independent of the byte-array backend.
+    // Two native provers check every 256-bit pair; the actual encoder and mask
+    // differential tests below also exercise Cvc5 without repeating its costly
+    // proof of this same standalone arithmetic theorem.
+    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla] {
+        let limits = policy(provider);
+        let symbols = Context::default();
+        let start = symbols.fresh_bv("start", 256);
+        let length = symbols.fresh_bv("length", 256);
+        let remaining = length.bvsub(&start);
+        for source_length_view in [false, true] {
+            for j in 0..32 {
+                let j = word(U256::from(j));
+                let (index, nonwrapping) = valid_sum(&start, &j);
+                let view_bound = if source_length_view {
+                    j.bvult(&length)
+                } else {
+                    Bool::from_bool(true)
+                };
+                let demanded = Bool::and(&[nonwrapping, index.bvult(&length), view_bound]);
+                let prefix = Bool::and(&[start.bvult(&length), j.bvult(&remaining)]);
+                let disagree = Bool::or(&[
+                    Bool::and(&[demanded.clone(), prefix.not()]),
+                    Bool::and(&[demanded.not(), prefix]),
+                ]);
+                // This pure arithmetic lemma covers every 256-bit start and
+                // length, including overflow. No assumptions about array cells
+                // are needed: every retained byte has exactly the old guard.
+                assert_eq!(
+                    checked(&[disagree], &limits),
+                    CheckResult::Unsat,
+                    "{provider:?}: source-length view={source_length_view}, j={j:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn input_word_padding_mask_preserves_arbitrary_raw_prefix() {
     for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
         let limits = policy(provider);
-        let length = ExprId::fresh().unwrap();
-        let start = ExprId::fresh().unwrap();
-        let input = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
-        for requested in [c(32), length.clone()] {
-            let view = ByteView::new(input.clone(), start.clone(), requested);
-            let mut encoder = Encoder::new(&limits);
-            let fast = encoder.input_word(&view).unwrap().unwrap();
-            // Every independent byte miter quantifies over the complete source,
-            // length and start. All 32 UNSAT results imply the full word is
-            // equal, without asking one solver call to combine every circuit.
+        let symbols = Context::default();
+        let raw = symbols.fresh_bv("raw", 256);
+        // These 33 cases exhaust unsigned remaining lengths. The first 32
+        // instantiate constant shifts; the last proves that all longer inputs
+        // retain the arbitrary raw word. Array reads can have any values or
+        // correlations because raw itself is completely unconstrained.
+        for region in 0..=32 {
+            let remaining = if region == 32 {
+                symbols.fresh_bv("remaining", 256)
+            } else {
+                word(U256::from(region))
+            };
+            let missing = BV::from_u64(32, 6).bvsub(remaining.extract(5, 0));
+            let shift = missing.zero_ext(250).bvshl(word(U256::from(3)));
+            let prefix = raw.bvand(word(U256::MAX).bvshl(shift));
+            let masked = remaining.bvugt(word(U256::ZERO)).ite(
+                &remaining.bvuge(word(U256::from(32))).ite(&raw, &prefix),
+                &word(U256::ZERO),
+            );
+            let mut expected = word(U256::ZERO);
             for j in 0..32 {
-                let reference = encoder.view_byte(&view, &word(U256::from(j))).unwrap();
-                let high = 255 - j * 8;
-                let mut assertions = Vec::new();
-                encoder.emit_definitions(&mut assertions);
-                assertions.push(fast.extract(high, high - 7).eq(&reference).not());
-                assert_eq!(
-                    checked(&assertions, &limits),
-                    CheckResult::Unsat,
-                    "{provider:?}: byte={j}, view={view:?}"
-                );
+                let high = 255 - 8 * j;
+                let byte = raw.extract(high, high - 7);
+                let byte = word(U256::from(j))
+                    .bvult(&remaining)
+                    .ite(&byte, &BV::from_u64(0, 8));
+                expected = expected.bvshl(word(U256::from(8))).bvor(byte.zero_ext(248));
+            }
+            let mut assertions = Vec::new();
+            if region == 32 {
+                assertions.push(remaining.bvuge(word(U256::from(32))));
+            }
+            assertions.push(masked.eq(&expected).not());
+            assert_eq!(
+                checked(&assertions, &limits),
+                CheckResult::Unsat,
+                "{provider:?}: remaining region={region}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dynamic_input_words_match_byte_reference_in_nonboundary_symbolic_domains() {
+    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
+        let limits = policy(provider);
+        // Each domain contains four (start,length) pairs. Both the complete
+        // and partially padded paths keep symbolic source indices and lengths,
+        // exercising the actual encoder with an independent view_byte oracle.
+        for (start_min, length_min) in [(37, 92), (100, 113)] {
+            for source_length_view in [false, true] {
+                let start = ExprId::fresh().unwrap();
+                let length = ExprId::fresh().unwrap();
+                let input = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
+                let requested = if source_length_view {
+                    length.clone()
+                } else {
+                    c(32)
+                };
+                let view = ByteView::new(input, start.clone(), requested);
+                let mut encoder = Encoder::new(&limits);
+                let fast = encoder.input_word(&view).unwrap().unwrap();
+                let at = encoder.expression(&start).unwrap();
+                let size = encoder.expression(&length).unwrap();
+                let assumptions = vec![
+                    at.bvuge(word(U256::from(start_min))),
+                    at.bvule(word(U256::from(start_min + 1))),
+                    size.bvuge(word(U256::from(length_min))),
+                    size.bvule(word(U256::from(length_min + 1))),
+                ];
+                equivalent(&mut encoder, &view, fast, &c(0), assumptions, &limits);
             }
         }
     }
