@@ -174,7 +174,9 @@ impl<'a> Encoder<'a> {
             },
             ExprKind::Fresh(_) => self.symbols.fresh_bv("evm_runtime", 256),
             ExprKind::Operation { opcode: op, args } => {
-                if let Some(result) = self.affine_result(*op, args)? {
+                if let Some(result) = self.selector_prefix(*op, args)? {
+                    result
+                } else if let Some(result) = self.affine_result(*op, args)? {
                     result
                 } else {
                     let exponent = args.get(1).and_then(ExprId::as_constant);

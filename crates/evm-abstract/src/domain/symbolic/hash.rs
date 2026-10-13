@@ -4,7 +4,7 @@ use super::{ByteStateKind, ByteView, ExprError, ExprLimits};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
-/// Largest concretely sized sequence normalized into a 0-based SMT byte array.
+/// Largest concretely sized sequence normalized into packed SMT byte content.
 /// Larger symbolic/logical ranges stay lazy; this is an actual expansion bound.
 pub const MAX_NORMALIZED_HASH_BYTES: usize = 64;
 
@@ -14,7 +14,7 @@ pub const MAX_NORMALIZED_HASH_BYTES: usize = 64;
 pub enum HashSupport {
     /// Bounded exact byte-read normalization, independent of backing address.
     Normalized {
-        /// Number of bytes expanded into the normalized content array.
+        /// Number of bytes encoded in the normalized packed content.
         bytes: usize,
     },
     /// One raw source array, its padding length, offset and requested length.

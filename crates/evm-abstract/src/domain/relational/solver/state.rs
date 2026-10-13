@@ -1,7 +1,7 @@
 //! Exact demanded reads for lazy ranges and native initial/storage arrays.
 //!
 //! There is no unconstrained COPY function. Hashing a general lazy range has a
-//! conservative value; canonical/guarded whole-copy and bounded native sequence
+//! conservative value; canonical/guarded whole-copy and bounded packed sequence
 //! arguments supply actual same-content relations without assuming injectivity.
 
 use super::{Array, BV, Bool, Encoder, ExprId, FunctionSort, QueryReason, literal, word};
@@ -454,18 +454,52 @@ impl Encoder<'_> {
         }
         self.word_from_bytes(bytes)
     }
+    /// Encode the first `len <= 64` view bytes, with a zero suffix, as BV512.
+    /// The former normalized array was zero outside these 64 fixed indices;
+    /// its extensional equality is exactly equality of this packed content.
+    fn normalized_hash_content(&mut self, input: &ByteView, len: usize) -> Result<BV, QueryReason> {
+        if len == 0 {
+            self.charge(1)?;
+            return Ok(BV::from_u64(0, 512));
+        }
+        let zero = ExprId::constant(U256::ZERO);
+        let high = self.word_read(input, &zero)?;
+        let low = if len <= 32 {
+            word(U256::ZERO)
+        } else if let Some(offset) = input.offset.as_constant() {
+            if let Some(start) = offset.checked_add(U256::from(32)) {
+                // The shorter view keeps exactly the original remaining bytes.
+                // A checked concrete start lets aligned MSTORE words forward.
+                self.word_read(
+                    &ByteView::new(
+                        input.state.clone(),
+                        ExprId::constant(start),
+                        ExprId::constant(U256::from(len - 32)),
+                    ),
+                    &zero,
+                )?
+            } else {
+                // Every byte in the second word is beyond the mathematical
+                // address space. It must not read a wrapped low address.
+                word(U256::ZERO)
+            }
+        } else {
+            // Preserve the original boundary and valid_sum overflow guards for
+            // a symbolic start; wrapping ADD cannot construct a backing view.
+            self.word_read(input, &ExprId::constant(U256::from(32)))?
+        };
+        self.charge(5)?;
+        Ok(high
+            .zero_ext(256)
+            .bvshl(BV::from_u64(256, 512))
+            .bvor(low.zero_ext(256)))
+    }
     fn function(&mut self, signature: usize) -> embedded_smt::Function {
         self.hash_functions
             .entry(signature)
             .or_insert_with(|| {
                 let sorts = if signature == 0 {
-                    vec![
-                        FunctionSort::Array {
-                            index_width: 256,
-                            element_width: 8,
-                        },
-                        FunctionSort::Bv(256),
-                    ]
+                    vec![FunctionSort::Bv(512), FunctionSort::Bv(256)]
                 } else {
                     vec![
                         FunctionSort::Array {
@@ -550,16 +584,12 @@ impl Encoder<'_> {
             .and_then(|n| usize::try_from(n).ok())
             .filter(|len| *len <= crate::domain::symbolic::MAX_NORMALIZED_HASH_BYTES)
         {
-            // A small normalized sequence uses the SAME signature for every
-            // backing kind, and therefore preserves cross-address content equality.
-            self.charge(len)?;
-            let mut array = Array::constant(256, &byte_zero());
-            for i in 0..len {
-                let byte = self.view_byte(&input, &word(U256::from(i)))?;
-                array = array.store(&word(U256::from(i)), &byte);
-            }
+            // All backing kinds use the same packed-content/length signature.
+            // Zero padding makes it equivalent to the bounded normalized array,
+            // without its store chain and extensional array equality clauses.
+            let content = self.normalized_hash_content(&input, len)?;
             self.function(0)
-                .apply(&[FunctionArg::Array(&array), FunctionArg::Bv(&length)])
+                .apply(&[FunctionArg::Bv(&content), FunctionArg::Bv(&length)])
         } else if let ByteStateKind::Input {
             source,
             length: source_length,
@@ -666,36 +696,4 @@ impl Encoder<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::relational::{CheckResult, RelationLimits};
-    use crate::domain::symbolic::{SourceId, StateLimits};
-    #[test]
-    fn an_unsuccessful_whole_array_lowering_cannot_suppress_initial_byte_facts() {
-        let state = ByteStateId::observed(
-            SourceId::fresh().unwrap(),
-            ExprId::constant(U256::from(1)),
-            vec![StateBinding {
-                index: U256::ZERO,
-                value: ExprId::fresh().unwrap(),
-                numeric: NumericValue::constant(U256::from(0xaa)),
-            }],
-            StateLimits::default(),
-        )
-        .unwrap();
-        let limits = RelationLimits {
-            rlimit: 10_000_000,
-            ..RelationLimits::default()
-        };
-        let mut encoder = Encoder::new(&limits);
-        assert!(encoder.byte_array(&state).unwrap().is_none());
-        let value = encoder.byte(&state, &word(U256::ZERO)).unwrap();
-        let mut assertions = Vec::new();
-        encoder.emit_definitions(&mut assertions);
-        assertions.push(value.eq(BV::from_u64(0xaa, 8)).not());
-        assert_eq!(
-            super::super::checked(&assertions, &limits),
-            CheckResult::Unsat
-        );
-    }
-}
+mod tests;

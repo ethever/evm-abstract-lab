@@ -4,6 +4,8 @@ use super::{CheckResult, QueryReason, RelationLimits, checked, unknown};
 use crate::domain::relational::{SmtError, SmtProvider};
 use embedded_smt::Unknown;
 
+mod prefix;
+
 #[test]
 fn real_provider_configuration_failures_remain_errors_with_provider_identity() {
     for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {

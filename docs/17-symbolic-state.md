@@ -49,11 +49,13 @@ CREATE/CREATE2 需要执行实际 initcode，再验证生成的 runtime。符号
 
 KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同内容均不自动证明哈希不同；不加入 injectivity 或无碰撞假设。可有界提取的真实内容使用真实 digest，并把该观察约束回同一个历史 Keccak 表达式。
 
-当前 hash equality 编码最多为 64 个具体长度字节构造标准化内容数组；独立地址得到的相同小内容可使用同一函数签名。原始 source view、可直接降低的 native array 和有非回绕 guard 的完整 Copy 另有对应支持。一般 lazy view 未能比较内容时使用 `HashSupport::Uncompared`：相同 immutable view 保持稳定，跨 view 的内容相等仍未证明，记录 `RelationalPrecisionLost(Unsupported(KECCAK256))` 并完整保守继续。不能把这一精度边界写成所有哈希目标已经验证。
+当前 hash equality 编码将最多 64 个具体长度字节打包成 512 位内容，不足部分补零，并把原始长度作为同一函数的独立参数；独立地址得到的相同小内容可使用同一函数签名。原标准化数组在这些字节以外恒为零，所以此表示保留相同的完整内容相等关系，同时避免逐字节 store 链和数组外延相等查询。word 读取仍保留源边界与数学地址溢出的零补，不读取范围外的内容。原始 source view、可直接降低的 native array 和有非回绕 guard 的完整 Copy 另有对应支持。一般 lazy view 未能比较内容时使用 `HashSupport::Uncompared`：相同 immutable view 保持稳定，跨 view 的内容相等仍未证明，记录 `RelationalPrecisionLost(Unsupported(KECCAK256))` 并完整保守继续。不能把这一精度边界写成所有哈希目标已经验证。
 
 ## 汇合、固定点与摘要来源
 
 整机 guarded join 为栈值、地址、byte/slot 根、continuation、rollback store 和完整路径公式使用同一个 selector。这样可以表示“p=0x80 时对应那份 memory，p=0xc0 时对应另一份”，避免逐字段交叉配对。路径公式保留 inherited formula 与当前 constraints，二者都属于完整状态。
+
+两边完全相同的无条件约束只保留一份，剩余约束仍由同一个 selector 选择。例如 `ite(s, C AND L, C AND R)` 编码为 `C AND ite(s, L, R)`；只在某个分支成立的条件不能提到 selector 外面。这减少重复编码，并让读取编码继续使用两边共同成立的范围保证。
 
 与自身或已表示的完整替代合并可以吸收。覆盖判断核对完整载荷，必要时用有界查询检查标量和路径保证；UNKNOWN 不能证明覆盖。重复相同覆盖通过规范化减少根的增长，不能仅因内部版本号增加就判定内容改变。
 

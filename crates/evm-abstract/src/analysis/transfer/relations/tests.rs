@@ -6,7 +6,11 @@ use crate::{
         ExecutionConfig, FrontierReason,
         transfer::{Execution, TransferContext, WorkBudget, initial},
     },
-    domain::{AbstractValue, Domain, relational::QueryReason, symbolic::ExprId},
+    domain::{
+        AbstractValue, Domain,
+        relational::{QueryReason, RelationState, SmtProvider},
+        symbolic::{ExprId, SlotStateId, SourceId},
+    },
     world::{Account, Entry, World},
 };
 use alloy_primitives::{Address, U256};
@@ -52,6 +56,7 @@ fn rejected_guard_keeps_the_original_coverage_frontier() {
         budget: &mut budget,
         root_address: None,
         input_scope: None,
+        query_cache: Default::default(),
     };
     let successor = super::branch(&mut result, &condition, true, &mut context, 7).unwrap();
     assert_eq!(successor.relations, before);
@@ -76,9 +81,106 @@ fn shared_work_exhaustion_stops_before_guard_retention() {
         budget: &mut budget,
         root_address: None,
         input_scope: None,
+        query_cache: Default::default(),
     };
     assert!(super::branch(&mut result, &condition, true, &mut context, 7).is_none());
     assert_eq!(result.payload, before);
     assert_eq!(result.frontiers.len(), 1);
     assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+}
+
+#[test]
+fn boolean_state_reads_need_only_the_two_uniqueness_checks() {
+    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
+        let mut config = ExecutionConfig::default();
+        config.analysis.relations.provider = provider;
+        config.analysis.relations.rlimit = 1_000_000;
+        let state =
+            SlotStateId::observed(SourceId::fresh().unwrap(), Vec::new(), Default::default())
+                .unwrap();
+        let read =
+            ExprId::slot_read(state, ExprId::constant(U256::ZERO), Default::default()).unwrap();
+        for code in [
+            opcode::EQ,
+            opcode::LT,
+            opcode::GT,
+            opcode::SLT,
+            opcode::SGT,
+            opcode::ISZERO,
+        ] {
+            let args = if code == opcode::ISZERO {
+                vec![read.clone()]
+            } else {
+                vec![read.clone(), ExprId::constant(U256::ONE)]
+            };
+            let expression = ExprId::operation(code, &args, Default::default()).unwrap();
+            let domain = Domain::default();
+            let mut value = domain
+                .join(
+                    &AbstractValue::constant(U256::ZERO),
+                    &AbstractValue::constant(U256::ONE),
+                )
+                .with_expression(expression);
+            let before = value.clone();
+            // Enough for uniqueness, deliberately insufficient for a third query.
+            let mut budget = WorkBudget::new(3 * config.analysis.relations.rlimit as usize - 1);
+            let mut context = TransferContext {
+                config: &config,
+                domain,
+                budget: &mut budget,
+                root_address: None,
+                input_scope: None,
+                query_cache: Default::default(),
+            };
+            assert_eq!(
+                super::refine(&mut value, &RelationState::default(), &mut context),
+                Ok(true),
+                "{provider:?}/{code}"
+            );
+            assert_eq!(value, before);
+            assert!(!budget.exhausted());
+            assert!(budget.used() >= 2 * config.analysis.relations.rlimit as usize);
+        }
+    }
+}
+
+#[test]
+fn multiple_nonboolean_models_still_filter_all_numeric_candidates() {
+    let config = ExecutionConfig::default();
+    let expression = ExprId::fresh().unwrap();
+    let limits = config.analysis.relations;
+    let branch = |constant| {
+        let mut state = RelationState::default();
+        let eq = ExprId::operation(
+            opcode::EQ,
+            &[expression.clone(), ExprId::constant(U256::from(constant))],
+            Default::default(),
+        )
+        .unwrap();
+        state.assume(&eq, true, &limits);
+        state
+    };
+    let relations = branch(2u64)
+        .join_guarded(&branch(3), ExprId::fresh().unwrap(), &limits)
+        .unwrap();
+    let domain = Domain::default();
+    let mut value = domain
+        .join(
+            &AbstractValue::constant(U256::ZERO),
+            &AbstractValue::constant(U256::ONE),
+        )
+        .with_expression(expression);
+    let mut budget = WorkBudget::new(10_000_000);
+    let mut context = TransferContext {
+        config: &config,
+        domain,
+        budget: &mut budget,
+        root_address: None,
+        input_scope: None,
+        query_cache: Default::default(),
+    };
+    assert_eq!(
+        super::refine(&mut value, &relations, &mut context),
+        Ok(false)
+    );
 }

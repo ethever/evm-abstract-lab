@@ -8,7 +8,7 @@ use crate::domain::{
 };
 use alloy_primitives::{Address, B256, U256, keccak256};
 use serde::{Serialize, Serializer, ser::SerializeSeq};
-use snapshot_state::Checkpoint;
+use snapshot_state::SharedCheckpoint;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod refinement;
@@ -452,7 +452,8 @@ pub struct Store {
 }
 
 /// An opaque savepoint covering every transaction-local observation and effect.
-pub type Snapshot = Checkpoint<Store>;
+/// Clones share the complete immutable captured Store; restoration isolates it.
+pub type Snapshot = SharedCheckpoint<Store>;
 
 impl Store {
     pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&AbstractValue)) {
@@ -1069,7 +1070,7 @@ impl Store {
 
     /// Save all mutable state before entering a child frame.
     pub fn snapshot(&self) -> Snapshot {
-        Checkpoint::capture(self)
+        Snapshot::capture(self)
     }
 
     /// Roll back a reverted or exceptional child frame.
