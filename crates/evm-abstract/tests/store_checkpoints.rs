@@ -35,6 +35,52 @@ fn unchanged_store_join_preserves_exact_summary_preconditions() {
 }
 
 #[test]
+fn cloned_snapshots_share_complete_store_and_preserve_value_format_and_work() {
+    let domain = Domain::default();
+    let (mut store, caller, _) = fixture();
+    store.write(caller, &word(0), &word(3), domain);
+    store.write_transient(caller, &word(0), &word(4), domain);
+    store
+        .emit_log(
+            LogKey {
+                address: caller,
+                code_address: caller,
+                pc: 0,
+            },
+            AbstractLog {
+                topics: vec![word(5)],
+                data: ByteArray::exact(&[1, 2, 3]),
+            },
+            domain,
+        )
+        .unwrap();
+    let saved = store.snapshot();
+    let siblings: Vec<_> = (0..64).map(|_| saved.clone()).collect();
+    for sibling in &siblings {
+        assert!(std::ptr::eq(saved.state(), sibling.state()));
+        assert_eq!(saved.state().work_size(), sibling.state().work_size());
+    }
+    let owned = snapshot_state::Checkpoint::from_state(saved.state().clone());
+    assert_eq!(
+        serde_json::to_value(&saved).unwrap(),
+        serde_json::to_value(&owned).unwrap()
+    );
+    assert_eq!(format!("{saved:?}"), format!("{owned:?}"));
+    assert_eq!(format!("{saved:#?}"), format!("{owned:#?}"));
+    let expected = saved.state().clone();
+    store.havoc_all();
+    store.restore(saved);
+    assert_eq!(store, expected);
+    assert_eq!(store.work_size(), expected.work_size());
+    store.write(caller, &word(0), &word(99), domain);
+    assert_eq!(siblings[0].state(), &expected);
+    assert_eq!(siblings[0].state().possible_logs().len(), 1);
+    let unique = Snapshot::from_state(expected.clone());
+    store.restore(unique);
+    assert_eq!(store, expected);
+}
+
+#[test]
 fn lifecycle_join_retains_uncertainty_between_created_and_unchanged_paths() {
     let domain = Domain::default();
     let (original, caller, created) = fixture();
