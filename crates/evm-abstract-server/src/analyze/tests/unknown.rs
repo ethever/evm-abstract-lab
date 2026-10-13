@@ -28,9 +28,10 @@ fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
         report
             .abstract_summaries
             .iter()
-            .flat_map(|summary| &summary.procedures)
-            .any(|procedure| procedure.kind == api::CodeKind::Runtime
-                && !procedure.covered_blocks.is_empty())
+            .all(|summary| summary.procedures.len() == 1
+                && summary.procedures[0].kind == api::CodeKind::AbstractEnvironment
+                && summary.procedures[0].covered_blocks.is_empty()
+                && summary.procedures[0].dependencies.is_empty())
     );
     assert!(
         report

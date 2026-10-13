@@ -84,6 +84,14 @@ impl Solver<'_> {
                 );
             }
         }
+        if is_static {
+            // Read-only reentrancy preserves the modeled world state. The
+            // arbitrary Return/Revert buffer and Failure above already cover
+            // all parent-visible outcomes of such callbacks at this precision;
+            // closure does not require executing or reporting their blocks.
+            result.payload = payload;
+            return result;
+        }
         // Internal steps and arbitrary chains of unknown callees are included
         // in the effect envelope. Each known-code entry may follow any such
         // chain, so CALLER is an independent address, not just the direct U.

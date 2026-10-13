@@ -18,6 +18,8 @@ mod oracle;
 mod reporting;
 #[path = "unknown_world/rollback.rs"]
 mod rollback;
+#[path = "unknown_world/static_callbacks.rs"]
+mod static_callbacks;
 #[path = "unknown_world/support.rs"]
 mod support;
 #[path = "unknown_world/targets.rs"]

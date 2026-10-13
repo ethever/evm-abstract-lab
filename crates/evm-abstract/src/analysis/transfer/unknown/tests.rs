@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::analysis::machine::fixtures::{address, fixture, word};
+use crate::world::{AbstractLog, LogKey};
 use alloy_primitives::U256;
 
 #[test]
@@ -157,4 +158,123 @@ fn equal_exit_buffers_share_one_invocation_source_but_later_calls_are_fresh() {
         Some(&first_length),
         "separate unknown calls must retain independent length choices"
     );
+}
+
+#[test]
+fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
+    // This protected owner loops forever. Its static callbacks cannot change
+    // the modeled Store, and any outcome visible to the caller is in the
+    // unknown process's envelope irrespective of this code's closure.
+    let (world, mut entry) = fixture(&[(0x102, "5b5f56")]);
+    entry.environment.is_static = true;
+    let config = crate::analysis::ExecutionConfig::default();
+    let domain = config.domain().unwrap();
+    let mut payload = super::super::initial(&world, &entry, domain).unwrap();
+    payload
+        .store
+        .write(address(0x102), &word(0), &word(42), domain);
+    payload
+        .store
+        .write_transient(address(0x102), &word(0), &word(7), domain);
+    payload.store.write_balance(address(0x102), word(19));
+    payload.store.write_nonce(address(0x102), word(3));
+    payload
+        .store
+        .emit_log(
+            LogKey {
+                address: address(0x102),
+                code_address: address(0x102),
+                pc: 0,
+            },
+            AbstractLog {
+                topics: vec![word(9)],
+                data: ByteArray::exact(&[1, 2]),
+            },
+            domain,
+        )
+        .unwrap();
+    payload.active_mut().saved_store = payload.store.snapshot();
+    let mut table = Table::default();
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut counters = Counters::default();
+    let result = Solver {
+        table: &mut table,
+        world: &world,
+        entry: &entry,
+        config: &config,
+        domain,
+        budget: &mut budget,
+        counters: &mut counters,
+        storage_reads: StorageReadPolicy::Abstract,
+    }
+    .environment(payload.clone());
+    assert!(result.frontiers.is_empty());
+    assert!(result.successors.is_empty());
+    assert_eq!(result.payload, payload);
+    assert_eq!(result.outcomes.len(), 3);
+    for kind in [
+        OutcomeKind::Return,
+        OutcomeKind::Revert,
+        OutcomeKind::Failure,
+    ] {
+        let output = result
+            .outcomes
+            .iter()
+            .find(|output| output.kind == kind)
+            .unwrap();
+        assert_eq!(output.store, payload.store);
+        if kind == OutcomeKind::Failure {
+            assert_eq!(output.data.len().singleton(), Some(U256::ZERO));
+        } else {
+            assert!(output.data.len().contains(U256::ZERO));
+            assert!(output.data.len().contains(U256::from(96)));
+            assert!(output.data.byte_at(0, domain).contains(U256::from(255)));
+        }
+    }
+    let (result, evidence) = table.execute(
+        0,
+        &world,
+        &entry,
+        payload,
+        &config,
+        domain,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    );
+    assert!(result.frontiers.is_empty());
+    assert!(evidence.closed);
+    assert_eq!(evidence.procedures.len(), 1);
+    assert_eq!(evidence.procedures[0].frame.mode, FrameCode::Unknown);
+    assert!(evidence.procedures[0].covered_blocks.is_empty());
+}
+
+#[test]
+fn static_environment_keeps_a_typed_frontier_when_envelope_work_is_unavailable() {
+    let (world, mut entry) = fixture(&[(0x102, "00")]);
+    entry.environment.is_static = true;
+    let config = crate::analysis::ExecutionConfig::default();
+    let domain = config.domain().unwrap();
+    let payload = super::super::initial(&world, &entry, domain).unwrap();
+    let mut table = Table::default();
+    let mut budget = WorkBudget::new(0);
+    let mut counters = Counters::default();
+    let mut solver = Solver {
+        table: &mut table,
+        world: &world,
+        entry: &entry,
+        config: &config,
+        domain,
+        budget: &mut budget,
+        counters: &mut counters,
+        storage_reads: StorageReadPolicy::Abstract,
+    };
+    let result = solver.environment(payload.clone());
+    assert_eq!(result.payload, payload);
+    assert!(result.outcomes.is_empty());
+    assert!(result.successors.is_empty());
+    assert_eq!(result.frontiers.len(), 1);
+    assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+    assert_eq!(result.frontiers[0].target.as_ref(), Some(&payload.key()));
+    assert_eq!(budget.used(), 0);
 }

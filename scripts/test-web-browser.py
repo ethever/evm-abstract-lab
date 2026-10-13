@@ -4589,7 +4589,12 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         code,metadata=layout_fixture(name)
         assert metadata["chain_id"]==1 and metadata["requireCanonical"]
         entry=metadata["browser_entry"]
+        print(f"real-runtime analysis start: {name}",flush=True)
         report=layout_submission(page,canvas,code,args.output,name,timeout_seconds=1800,entry=entry)
+        print(f"real-runtime analysis done: {name} status={report['status']} states={len(report['cfg'])} "
+              f"frontiers={[(frontier['kind'],frontier['detail']) for frontier in report['frontiers']]} "
+              f"unknown_closed={[summary['closed'] for summary in report['abstract_summaries']]} "
+              f"analyzing_ns={report['metadata']['timings']['analyzing_ns']}",flush=True)
         assert report["programs"][0]["code_hash"]==metadata["code_hash"]
         assert report["status"] == entry["expected_status"]
         assert len(report["cfg"]) >= entry["minimum_native_states"]
