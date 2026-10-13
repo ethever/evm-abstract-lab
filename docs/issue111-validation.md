@@ -1,14 +1,14 @@
 # Issue #111：集成验收与资源记录
 
-本次专项验收在源码 `ae41fcc791c15cd2b6629b79a682570b42c95f74` 上通过 **45 个测试、128 次分析**。逐例记录见 [JSON 证据](evidence/issue111-symbolic-state.json)，测试入口是 [`symbolic_state.rs`](../crates/evm-abstract/tests/symbolic_state.rs)。这是有明确输入和资源策略的实际执行证据；最终 PR 的干净提交、main 基线及完整 Nix 门禁结果另外记录在 PR 描述中。
+本次专项验收在源码 `6a95223b12248b0e615c2fd7e49cfcfd7f969373` 上通过 **45 个测试、128 次分析**。逐例记录见 [JSON 证据](evidence/issue111-symbolic-state.json)，测试入口是 [`symbolic_state.rs`](../crates/evm-abstract/tests/symbolic_state.rs)。这是本次仅更新文档的提交之前冻结、构建和测量的干净源码，输入和资源策略明确；最终 PR 的干净提交、main 基线及完整 Nix 门禁结果另外记录在 PR 描述中。
 
 ## 输入与验证配置
 
 测试使用离线构造的字节码世界。账户、代码、余额、初始 storage 和交易环境由 fixture 显式设置；未知 calldata、未知槽和符号地址保留为符号输入。没有把求解器的某个模型赋值当作链上观察，也没有依赖代理标准或固定实现地址槽。
 
-专项分析使用 Product 数值域和原生 Z3，`rlimit=100000`、表达式/编码节点额度 8192、深度 128、约束额度 256、共享 work 额度 100000000。通常最多 512 个状态、4096 次 transfer，逻辑 memory 额度 4096 字节；循环测试另用 64 个状态和 64/128 次 transfer，范围测试另用 128 字节或 1 MiB memory 额度。逐次实际配置均写入 JSON；这些是验收配置，不能称为所有库或 CLI 默认配置。
+专项分析使用 Product 数值域和原生 Z3，`rlimit=100000`、表达式/编码节点额度 8192、深度 128、约束额度 256、共享 work 额度 100000000。126 次分析最多 512 个状态、4096 次 transfer；2 次循环分析另用 64 个状态和 64/128 次 transfer。逻辑 memory 额度在 126 次分析中为 4096 字节，另有各 1 次使用 128 字节和 1 MiB。125 次分析开启摘要、3 次显式关闭。逐次实际配置均写入 JSON；这些是验收配置，不能称为所有库或 CLI 默认配置。
 
-Fork 包含 Cancun、Prague、Osaka。调用上下文、创建和部分字节语义测试在三个 fork 分别执行；其余符号关系测试主要使用 Osaka，具体循环范围以对应测试为准。[revm 对照](../crates/evm-abstract/tests/symbolic_state/oracle.rs)独立执行支持的具体 fixture，检查终结、返回数据、账户余额/nonce/storage/代码及调用帧轨迹。有限具体轨迹为符号输入提供见证，不能替代对整个符号范围的 SMT 断言。
+Fork 包含 Cancun、Prague、Osaka，分别测得 31、31、66 次分析。调用上下文、创建和部分字节语义测试在三个 fork 分别执行；其余符号关系测试主要使用 Osaka，具体循环范围以对应测试为准。[revm 对照](../crates/evm-abstract/tests/symbolic_state/oracle.rs)独立执行支持的具体 fixture，检查终结、返回数据、账户余额/nonce/storage/代码及调用帧轨迹。有限具体轨迹为符号输入提供见证，不能替代对整个符号范围的 SMT 断言。
 
 专项 128 次分析使用 Z3。Bitwuzla、cvc5 的 Array/UF、结果分类、资源和取消能力还由 `embedded-smt` 与关系编码测试验证，并纳入完整 Nix 检查；这不等于把本表每个 EVM 场景都在三个 provider 下重复测量。
 
@@ -33,22 +33,22 @@ Fork 包含 Cancun、Prague、Osaka。调用上下文、创建和部分字节语
 
 ## 测量方法与规模
 
-测量时间为 UTC 2026-10-13 00:01:39 至 00:02:11，平台为 Linux x86_64。使用未优化的 Cargo test profile。先复制编译完成的专项测试可执行文件，再为每个测试启动独立进程，参数为 `--exact --nocapture --test-threads=1`。冻结二进制 SHA-256：
+测量时间为 UTC 2026-10-13 02:08:03.092852 至 02:08:37.967463，平台为 Linux x86_64。使用准备好的 Nix 开发环境中的 Cargo/rustc 1.99.0、原生 Z3 4.16.0，以及未优化的 Cargo test profile。构建时将 `CARGO_TARGET_DIR` 和 `CARGO_BUILD_BUILD_DIR` 都指向本次新建的独立目录，设置 `CARGO_BUILD_JOBS=8`、`RUST_TEST_THREADS=4`，进程限定使用 8 个 CPU。从真实 Cargo JSON 的 `compiler-artifact` 记录选取专项测试可执行文件，保存其私有副本、依赖闭包、构建前后源码哈希与二进制 stat/哈希；测量脚本再次复制该私有二进制。每个测试启动独立进程，参数为 `--exact --nocapture --test-threads=1`。冻结二进制 SHA-256：
 
 ```text
-02e4386a348378e0b037515cb0e1c68f8c8b76e62f310028203888c267359275
+205f352b8f62208c9b66087c9aa47b303cc3f64002f2ff73f74f6adb2cffce92
 ```
 
-45 个进程的累计 wall time 为 **31.814 秒**；单进程最大峰值 RSS 为 **114668 KiB，约 112.0 MiB**。RSS 使用 Linux `wait4`，不含 Cargo/编译器；wall time 包含进程启动、fixture、SMT 查询和 revm 对照。主机还有其它开发任务，因此这些数字是此次运行记录，不是 release 吞吐承诺，也不是与旧实现的公平性能对照。
+45 个进程的累计 wall time 为 **34.824 秒**；单进程最大峰值 RSS 为 **114316 KiB，约 111.6 MiB**。RSS 使用 Linux `wait4`，不含 Cargo/编译器；wall time 包含进程启动、fixture、SMT 查询和 revm 对照。主机还有其它开发任务，因此这些数字是此次运行记录，不是 release 吞吐承诺，也不是与旧实现的公平性能对照。
 
 | 每次分析的指标 | 此次观测范围 | 含义 |
 | --- | ---: | --- |
 | states | 1–15 | 实际图状态数量 |
-| transfers | 1–21 | 实际执行变换次数 |
-| work | 15794–94818226 | 累计共享计费工作，包含预留的求解预算 |
-| max_stack_expr_nodes | 0–45 | entry/exit 栈表达式的最大展开计数；不含全部隐藏状态根 |
-| max_memory_work | 29–37303 | 活动帧 memory 表示的最大工作规模 |
-| max_relation_work | 1–185 | entry/exit 关系表示的最大工作规模 |
+| transfers | 1–27 | 实际执行变换次数 |
+| work | 15794–98855915 | 累计共享计费工作，包含预留的求解预算 |
+| max_stack_expr_nodes | 0–42 | entry/exit 栈表达式的最大展开计数；不含全部隐藏状态根 |
+| max_memory_work | 29–23968 | 活动帧 memory 表示的最大工作规模 |
+| max_relation_work | 1–190 | entry/exit 关系表示的最大工作规模 |
 | max_store_work | 97–675 | entry/exit store 表示的最大工作规模 |
 | summary_hits | 0–1 | 每次分析实际摘要命中次数 |
 
@@ -59,6 +59,9 @@ Fork 包含 Cancun、Prague、Osaka。调用上下文、创建和部分字节语
 在已进入项目 Nix 开发环境、依赖已准备的干净源码上构建专项测试：
 
 ```bash
+export CARGO_TARGET_DIR=/tmp/issue111-new-build-target
+export CARGO_BUILD_BUILD_DIR=/tmp/issue111-new-build-intermediates
+export CARGO_BUILD_JOBS=8 RUST_TEST_THREADS=4
 cargo test --locked --offline -p evm-abstract --test symbolic_state \
   --no-run --message-format=json > /tmp/issue111-build.jsonl
 ```
@@ -70,7 +73,7 @@ python3 scripts/measure-symbolic-state.py \
   /path/to/symbolic_state-test-binary "$PWD" /tmp/issue111-new-measurement
 ```
 
-输出目录必须尚不存在。脚本拒绝脏源码，保存 HEAD 和冻结二进制摘要，逐例记录实际退出码；失败测试不会被计为通过。调用者须提供刚由该源码构建的二进制。提交的 JSON 省略本地主机文件路径，保留配置、原始数值、源码/二进制摘要及每例结果。
+两个构建目录和测量输出目录都须使用新路径；测量输出目录必须尚不存在。脚本拒绝脏源码，保存 HEAD 和冻结二进制摘要，逐例记录实际退出码；失败测试不会被计为通过。调用者须提供刚由该源码构建的二进制。提交的 JSON 与原始 `measurements.json` 完全一致，仅删除 `binary`、`original_binary` 两个本机绝对路径字段；保留配置、未舍入的原始数值、源码/二进制摘要、日志文件名及每例结果，并核对删除这两个字段后的无损一致性。
 
 完整交付还必须按 [本地门禁](local-ci.md) 在最终干净提交执行 `nix flake check`，覆盖默认/imbl/全部 features、ignored 测试、原生 SMT、CLI、协议、Wasm 和真实浏览器。专项测量不能替代该门禁。
 
