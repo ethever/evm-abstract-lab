@@ -4601,6 +4601,25 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         assert len(report["frontiers"]) == entry["expected_frontiers"]
         if "expected_frontier_reason" in entry:
             assert all(frontier["kind"] == entry["expected_frontier_reason"] for frontier in report["frontiers"])
+        if "expected_frontiers_by_kind" in entry:
+            expected=entry["expected_frontiers_by_kind"]
+            counts={kind:sum(frontier["kind"]==kind for frontier in report["frontiers"])
+                    for kind in {frontier["kind"] for frontier in report["frontiers"]}}
+            assert counts=={kind:details["count"] for kind,details in expected.items()},counts
+            for frontier in report["frontiers"]:
+                assert frontier["reason"]==expected[frontier["kind"]]["reason"]
+                assert frontier["detail"]==expected[frontier["kind"]]["detail"]
+        if "expected_closed_unknown_summaries" in entry:
+            summaries=report["abstract_summaries"]
+            assert len(summaries)==entry["expected_closed_unknown_summaries"]
+            assert all(summary["closed"] for summary in summaries)
+        if name == "ethereum-uniswap-v2-router02":
+            for summary in report["abstract_summaries"]:
+                assert summary["procedures"]
+                for procedure in summary["procedures"]:
+                    assert procedure["kind"]=="AbstractEnvironment" and procedure["is_static"]
+                    assert not procedure["covered_blocks"]
+                    assert set(procedure["outcomes"])=={"Return","Revert","Failure"}
         pending = layout_pending_machines(report,entry) if "expected_pending_machines" in entry else None
         scene=layout_counts(page,report)
         assert scene["nodes"] >= entry["minimum_source_blocks"]
