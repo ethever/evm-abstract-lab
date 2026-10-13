@@ -5,7 +5,7 @@
 //! Checked disjoint concrete words leave earlier observations intact. Possible
 //! aliases and overlapping word writes use the general demanded-byte encoder.
 
-use super::{BV, Bool, ByteStateId, ByteStateKind, Encoder, ExprId, QueryReason, word};
+use super::{BV, Bool, ByteStateId, ByteStateKind, Encoder, ExprId, QueryReason, valid_sum, word};
 use crate::domain::symbolic::ExprKind;
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -27,6 +27,35 @@ fn disjoint_word(start: &ExprId, destination: &ExprId, length: U256) -> bool {
 }
 
 impl Encoder<'_> {
+    /// A selector observes only the high four bytes of the captured word. Keep
+    /// their original view/source padding and both mathematical address checks;
+    /// the discarded suffix cannot affect unsigned division by 2^224.
+    pub(in crate::domain::relational::solver) fn selector_prefix(
+        &mut self,
+        op: u8,
+        args: &[ExprId],
+    ) -> Result<Option<BV>, QueryReason> {
+        let value = match op {
+            opcode::SHR if args[0].as_constant() == Some(U256::from(224)) => &args[1],
+            opcode::DIV if args[1].as_constant() == Some(U256::ONE << 224) => &args[0],
+            _ => return Ok(None),
+        };
+        let ExprKind::WordRead { view, offset } = value.kind() else {
+            return Ok(None);
+        };
+        let offset = self.expression(offset)?;
+        let mut bytes = Vec::with_capacity(4);
+        for j in 0..4 {
+            let (index, valid) = valid_sum(&offset, &word(U256::from(j)));
+            let byte = self.view_byte(view, &index)?;
+            self.charge(4)?;
+            bytes.push(valid.ite(&byte, &BV::from_u64(0, 8)));
+        }
+        self.charge(1)?;
+        self.word_from_bytes(bytes)
+            .map(|prefix| Some(prefix.zero_ext(224)))
+    }
+
     fn pad_written_word(&mut self, at: BV, value: BV) -> Result<BV, QueryReason> {
         // Near MAX only the leading bytes have mathematical addresses. Keep
         // them and zero the suffix, without assuming caller range validity.
