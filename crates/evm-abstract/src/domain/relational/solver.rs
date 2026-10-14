@@ -659,7 +659,7 @@ fn unique_inner(
     if matches!(expression.kind(), ExprKind::Input(_) | ExprKind::Fresh(_))
         && !state.relevant(expression)
     {
-        return match check(state, None, limits) {
+        return match check_inner(state, None, limits, cache) {
             CheckResult::Sat => ValueQuery::Multiple,
             CheckResult::Unsat => ValueQuery::Infeasible,
             CheckResult::Unknown(reason) => ValueQuery::Unknown(reason),
