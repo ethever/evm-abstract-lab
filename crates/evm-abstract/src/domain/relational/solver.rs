@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) mod candidates;
 mod guarantees;
+pub(super) mod joint;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -645,6 +646,34 @@ pub(super) fn unique_cached(
     cache: &mut embedded_smt::CacheQuery<'_>,
 ) -> ValueQuery {
     unique_inner(state, expression, limits, Some(cache))
+}
+
+pub(super) fn probe_unique(
+    state: &RelationState,
+    expression: &ExprId,
+    limits: &RelationLimits,
+    cache: &mut embedded_smt::CacheQuery<'_>,
+) -> Result<Option<ValueQuery>, QueryReason> {
+    if state.bottom {
+        return Ok(Some(ValueQuery::Infeasible));
+    }
+    if matches!(expression.kind(), ExprKind::Input(_) | ExprKind::Fresh(_))
+        && !state.relevant(expression)
+    {
+        // The ordinary oracle uses a feasibility key for an unrelated leaf.
+        // Branch preparation removes these before probing. Preserve its exact
+        // check-only encoding here, but leave any lookup to the ordinary path.
+        prepared(state, None, limits)?;
+        return Ok(None);
+    }
+    // Keep this sequence identical to unique_inner: full single-expression Fi
+    // (including definitions emitted by its target) precedes the typed lookup.
+    let (mut assertions, mut encoder) = prepared(state, None, limits)?;
+    let value = encoder.expression(expression)?;
+    encoder.emit_definitions(&mut assertions);
+    embedded_smt::probe_unique_cached(&assertions, &value, limits.provider, limits.rlimit, cache)
+        .map(|answer| answer.map(|answer| joint::value_query(answer, limits.provider)))
+        .map_err(|reason| unknown(reason, limits.provider))
 }
 
 fn unique_inner(

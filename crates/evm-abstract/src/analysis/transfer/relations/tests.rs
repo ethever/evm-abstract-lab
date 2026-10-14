@@ -3,6 +3,7 @@
 mod batch_order;
 mod branch_cache;
 mod finite_pair;
+mod joint;
 
 use crate::{
     Fork,

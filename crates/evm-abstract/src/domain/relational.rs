@@ -138,6 +138,16 @@ pub enum ValueQuery {
     Unknown(QueryReason),
 }
 
+/// One projection of a jointly prepared conjunction, or an unpaid work stop.
+/// A later refusal must retain the batch's already proved mathematical answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BudgetedValueQuery {
+    /// The original proof or typed solver/encoding failure for this expression.
+    Value(ValueQuery),
+    /// The root ledger refused the next query before it could run.
+    Work,
+}
+
 /// A retained guarantee over scoped Word256 expressions.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Constraint {
@@ -658,6 +668,29 @@ impl RelationState {
         cache: &mut embedded_smt::CacheQuery<'_>,
     ) -> ValueQuery {
         solver::unique_cached(self, expression, limits, cache)
+    }
+    /// Prepare the complete ordinary single-expression query before consulting
+    /// its decided cache. A miss never constructs a native solver. The caller
+    /// pays preparation work before borrowing the optional maintenance budget.
+    pub(crate) fn probe_unique_value_cached(
+        &self,
+        expression: &ExprId,
+        limits: &RelationLimits,
+        cache: &mut embedded_smt::CacheQuery<'_>,
+    ) -> Result<Option<ValueQuery>, QueryReason> {
+        solver::probe_unique(self, expression, limits, cache)
+    }
+    /// Query 2..=16 distinct expressions over one complete frozen conjunction.
+    /// The caller supplies its unchanged per-check fee (relation work, all
+    /// target work and the original native allowance). Preparation consumes the
+    /// first permit even on failure; joint proofs never enter single-value caches.
+    pub(crate) fn unique_many_budgeted(
+        &self,
+        expressions: &[ExprId],
+        limits: &RelationLimits,
+        budget: &mut embedded_smt::QueryBudget<'_>,
+    ) -> Result<Vec<BudgetedValueQuery>, QueryReason> {
+        solver::joint::unique(self, expressions, limits, budget)
     }
     /// Cover both paths by keeping only guarantees common to both.
     /// This intentionally loses disjunction precision, never intersects paths.

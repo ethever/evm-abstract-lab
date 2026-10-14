@@ -8,6 +8,8 @@ mod index;
 mod key;
 pub use budget::CacheQuery;
 #[cfg(test)]
+mod probe_tests;
+#[cfg(test)]
 mod tests;
 
 use crate::{Bool, Bv, Outcome, Provider, UniqueOutcome, Unknown};
@@ -335,6 +337,75 @@ impl DecidedCache {
 fn cancellation() -> bool {
     crate::current_cancellation().is_cancelled()
 }
+enum UniqueLookup {
+    Hit(UniqueOutcome),
+    Miss(Option<index::CanonicalKey>),
+}
+fn lookup_unique(
+    base: &[Bool],
+    value: &Bv,
+    provider: Provider,
+    rlimit: u32,
+    query: &mut CacheQuery<'_>,
+) -> Result<UniqueLookup, Unknown> {
+    let cache = &mut query.cache;
+    let mut key = cache.key(
+        base,
+        Some(value),
+        provider,
+        rlimit,
+        query.scope,
+        &mut query.budget,
+    );
+    if cancellation() {
+        return Err(Unknown::Cancelled);
+    }
+    if let Some(ref bytes) = key {
+        match cache.get(bytes, &mut query.budget) {
+            Lookup::Hit(Answer::Unique(
+                answer @ (UniqueOutcome::Unique(_)
+                | UniqueOutcome::Multiple
+                | UniqueOutcome::Infeasible),
+            )) => {
+                if cancellation() {
+                    return Err(Unknown::Cancelled);
+                }
+                cache.stats.unique_hits = cache.stats.unique_hits.saturating_add(1);
+                return Ok(UniqueLookup::Hit(answer));
+            }
+            Lookup::Miss => {}
+            _ => key = None,
+        }
+    }
+    if cancellation() {
+        return Err(Unknown::Cancelled);
+    }
+    Ok(UniqueLookup::Miss(key))
+}
+/// Look up a mathematical unique/multiple/infeasible answer without solving.
+/// The caller supplies the same complete single-target conjunction, provider,
+/// limits and scope used by [`check_unique_cached`], and pays its bounded
+/// encoding work before this probe. No native query is performed or prepaid.
+/// Misses, invalid/oversize keys, optional-maintenance refusals and a zero
+/// `rlimit` return `None`; previously paid maintenance is never refunded.
+pub fn probe_unique_cached(
+    base: &[Bool],
+    value: &Bv,
+    provider: Provider,
+    rlimit: u32,
+    query: &mut CacheQuery<'_>,
+) -> Result<Option<UniqueOutcome>, Unknown> {
+    if cancellation() {
+        return Err(Unknown::Cancelled);
+    }
+    if rlimit == 0 {
+        return Ok(None);
+    }
+    match lookup_unique(base, value, provider, rlimit, query)? {
+        UniqueLookup::Hit(answer) => Ok(Some(answer)),
+        UniqueLookup::Miss(_) => Ok(None),
+    }
+}
 /// A mathematical unique/multiple/infeasible answer. Arbitrary model SAT values
 /// are never installed; Unique is recorded only after its independent exclusion
 /// check proved UNSAT. The caller keeps its original prepaid query charges.
@@ -348,31 +419,11 @@ pub fn check_unique_cached(
     if cancellation() || rlimit == 0 {
         return crate::check_unique(base, value, provider, rlimit);
     }
-    let cache = &mut query.cache;
-    let mut key = cache.key(
-        base,
-        Some(value),
-        provider,
-        rlimit,
-        query.scope,
-        &mut query.budget,
-    );
-    if cancellation() {
-        return UniqueOutcome::Unknown(Unknown::Cancelled);
-    }
-    if let Some(ref bytes) = key {
-        match cache.get(bytes, &mut query.budget) {
-            Lookup::Hit(Answer::Unique(answer)) => {
-                if cancellation() {
-                    return UniqueOutcome::Unknown(Unknown::Cancelled);
-                }
-                cache.stats.unique_hits = cache.stats.unique_hits.saturating_add(1);
-                return answer;
-            }
-            Lookup::Miss => {}
-            _ => key = None,
-        }
-    }
+    let key = match lookup_unique(base, value, provider, rlimit, query) {
+        Ok(UniqueLookup::Hit(answer)) => return answer,
+        Ok(UniqueLookup::Miss(key)) => key,
+        Err(reason) => return UniqueOutcome::Unknown(reason),
+    };
     let answer = crate::check_unique(base, value, provider, rlimit);
     if cancellation() {
         return UniqueOutcome::Unknown(Unknown::Cancelled);
@@ -380,10 +431,10 @@ pub fn check_unique_cached(
     match &answer {
         UniqueOutcome::Unique(_) | UniqueOutcome::Multiple | UniqueOutcome::Infeasible => {
             if let Some(key) = key {
-                cache.remember_unique(key, &answer, &mut query.budget)
+                query.cache.remember_unique(key, &answer, &mut query.budget)
             }
         }
-        _ => cache.stats.undecided = cache.stats.undecided.saturating_add(1),
+        _ => query.cache.stats.undecided = query.cache.stats.undecided.saturating_add(1),
     }
     if cancellation() {
         return UniqueOutcome::Unknown(Unknown::Cancelled);

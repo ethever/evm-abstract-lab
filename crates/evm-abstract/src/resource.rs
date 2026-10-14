@@ -37,7 +37,6 @@ impl WorkBudget {
     /// Borrow the same root ledger for a sequence of individually paid queries.
     /// The captured cancellation token and charge-before-query rule survive;
     /// dropping the lease never refunds a paid query or copies its counters.
-    #[cfg(test)]
     pub(crate) fn query_budget(&mut self, amount: usize) -> embedded_smt::QueryBudget<'_> {
         embedded_smt::QueryBudget::new(
             self.maximum,

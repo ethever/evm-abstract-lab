@@ -32,13 +32,19 @@ mod bitwuzla;
 mod cvc5;
 mod decided_cache;
 mod query_budget;
+mod query_many;
 mod query_pair;
 mod term;
 mod z3;
 pub use decided_cache::{
     CacheQuery, CacheScope, CacheStats, DecidedCache, check_cached, check_unique_cached,
+    probe_unique_cached,
 };
 pub use query_budget::QueryBudget;
+pub use query_many::{
+    BudgetedUniqueOutcome, MAX_UNIQUE_PACKED_WIDTH, MAX_UNIQUE_TARGETS, QueryManyError,
+    check_unique_many, check_unique_many_budgeted,
+};
 pub use query_pair::{
     BudgetedOutcome, UniqueOutcome, check_candidates, check_candidates_budgeted, check_unique,
 };

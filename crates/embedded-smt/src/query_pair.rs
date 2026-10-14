@@ -217,4 +217,14 @@ pub(crate) fn observe_native() {
 }
 
 #[cfg(test)]
+pub(crate) fn observe_context() {
+    tests::observe_context();
+}
+
+#[cfg(test)]
+pub(crate) fn observe_finished_query() {
+    tests::observe_finished_query();
+}
+
+#[cfg(test)]
 pub(crate) mod tests;
