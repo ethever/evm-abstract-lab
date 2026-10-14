@@ -376,8 +376,6 @@ record! {
         pub max_depth: usize,
         /// Maximum exact external byte payload.
         pub max_exact_bytes: usize,
-        /// Maximum complete encoded HTTP report bytes, including numeric facts.
-        pub max_output_bytes: usize,
     }
 }
 record! {
@@ -401,8 +399,6 @@ choice! {
         Depth,
         /// Exact byte payload bound.
         ExactBytes,
-        /// Complete JSON encoding exceeded its declared byte policy.
-        OutputBytes,
         /// Cooperative cancellation.
         Cancelled,
         /// A native state root could not be recovered.
@@ -414,13 +410,14 @@ record! {
     pub struct ExportFailure {
         /// Exact rejected resource.
         pub kind: ExportFailureKind,
-        /// Required amount at rejection, or cumulative work at cancellation.
+        /// Required amount at rejection; cancellation records projection work
+        /// or accepted JSON bytes when `written` is present.
         pub required: u64,
         /// Frozen export policy.
         pub limits: ExportLimits,
         /// Work retained before rejection.
         pub usage: ExportUsage,
-        /// Encoded bytes accepted before an output/cancellation failure.
+        /// Encoded bytes accepted before cancellation during report encoding.
         pub written: Option<usize>,
     }
 }

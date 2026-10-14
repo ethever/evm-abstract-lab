@@ -452,7 +452,7 @@ CLI/Web 的 `max_memory_bytes` 默认 64 MiB，库 ExecutionConfig 默认 64 KiB
 
 `OperandsConsumed` 表示参数已弹出，但效果尚未完成；报告与部分 SSA 不伪造结果。Work、Relations、StateJoin、ByteRange 与 Memory 的 typed 原因分别保留。可选 value 查询的 UNKNOWN 是精度损失；条件未保留或覆盖未完成才是 frontier。
 
-构造和求解沿用各自的节点、深度与 work 预算。报告导出保留节点、深度、exact payload、JSON 输出字节上限与取消点，累计 projection work 仅作诊断统计，不因总量拒绝导出。原生 graph 默认 exact payload 为 16 MiB；Web 的 `metadata.export_usage.work` 记录实际 projection work，执行分析的 `AnalysisLimits.max_work` 继续生效。限制和错误详见[第 17 课](17-symbolic-state.md)，完整本地测试证据由集成验收记录。
+构造和求解沿用各自的节点、深度与 work 预算。报告导出保留节点、深度、exact payload 与取消点，整份 JSON 输出不设置字节上限，累计 projection work 仅作诊断统计，不因总量拒绝导出。原生 graph 默认 exact payload 为 16 MiB；Web 的 `metadata.export_usage.work` 记录实际 projection work，执行分析的 `AnalysisLimits.max_work` 继续生效。限制和错误详见[第 17 课](17-symbolic-state.md)，完整本地测试证据由集成验收记录。
 
 ## 14. 从源码找到每条规则
 

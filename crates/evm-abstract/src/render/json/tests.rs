@@ -11,29 +11,80 @@ use crate::{
 };
 use serde::ser::SerializeSeq;
 
+struct RepeatedStrings<'a> {
+    element: &'a str,
+    count: usize,
+    cancellation: Option<&'a Cancellation>,
+}
+impl Serialize for RepeatedStrings<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let length = self.count + usize::from(self.cancellation.is_some());
+        let mut sequence = serializer.serialize_seq(Some(length))?;
+        for _ in 0..self.count {
+            sequence.serialize_element(self.element)?;
+        }
+        if let Some(cancellation) = self.cancellation {
+            cancellation.cancel();
+            sequence.serialize_element("must not append")?;
+        }
+        sequence.end()
+    }
+}
+
 #[test]
-fn byte_policy_fails_before_allocating_the_unadmitted_write() {
-    let mut writer = Writer {
-        bytes: Vec::new(),
-        limits: JsonLimits { max_bytes: 8 },
-        cancellation: Cancellation::default(),
-        failure: None,
-    };
-    writer.write_all(b"1234567").unwrap();
-    assert!(writer.write_all(&[0; 4096]).is_err());
-    assert_eq!(writer.bytes, b"1234567");
-    assert!(matches!(
-        writer.failure,
-        Some(JsonError::Bytes {
-            required: 4103,
-            limit: 8,
-            written: 7
-        })
-    ));
-    let control = Control::default();
-    assert!(
-        matches!(with_control(&"a".repeat(4096), JsonLimits { max_bytes: 128 }, &control), Err(JsonError::Bytes { limit: 128, written, .. }) if written <= 128)
-    );
+fn whole_json_output_can_exceed_64_mib_and_remains_cancellable() {
+    const FORMER_BYTE_LIMIT: usize = 64 * 1024 * 1024;
+    // Reuse one 64 KiB input string, so only the encoded output grows with the
+    // sequence. Inspect borrowed slices rather than allocating a decoded copy.
+    let element = "a".repeat(64 * 1024);
+    for compact_output in [false, true] {
+        let control = Control::new(Default::default());
+        let sequence = RepeatedStrings {
+            element: &element,
+            count: 1024,
+            cancellation: None,
+        };
+        let encoded = if compact_output {
+            compact_with_control(&sequence, &control)
+        } else {
+            with_control(&sequence, &control)
+        }
+        .unwrap();
+        assert!(encoded.len() > FORMER_BYTE_LIMIT);
+        let contents = encoded
+            .strip_prefix('[')
+            .unwrap()
+            .strip_suffix(']')
+            .unwrap();
+        let mut count = 0;
+        for value in contents.split(',') {
+            let value = value
+                .trim()
+                .strip_prefix('"')
+                .unwrap()
+                .strip_suffix('"')
+                .unwrap();
+            assert_eq!(value, element);
+            count += 1;
+        }
+        assert_eq!(count, sequence.count);
+        let complete_bytes = encoded.len();
+        drop(encoded);
+
+        let cancelled = RepeatedStrings {
+            cancellation: Some(control.cancellation()),
+            ..sequence
+        };
+        let error = if compact_output {
+            compact_with_control(&cancelled, &control)
+        } else {
+            with_control(&cancelled, &control)
+        }
+        .unwrap_err();
+        assert!(
+            matches!(error, JsonError::Cancelled { written } if written > FORMER_BYTE_LIMIT && written < complete_bytes)
+        );
+    }
 }
 
 struct CancelDuring<'a>(&'a Cancellation);
@@ -48,14 +99,28 @@ impl Serialize for CancelDuring<'_> {
 }
 #[test]
 fn cancellation_before_and_during_output_is_typed_and_does_not_poison_other_exports() {
-    let control = Control::new(Default::default());
-    assert!(
-        matches!(with_control(&CancelDuring(control.cancellation()), JsonLimits::default(), &control), Err(JsonError::Cancelled { written }) if written > 0)
-    );
-    assert!(matches!(
-        with_control(&vec![1, 2], JsonLimits::default(), &control),
-        Err(JsonError::Cancelled { written: 0 })
-    ));
+    for compact_output in [false, true] {
+        let control = Control::new(Default::default());
+        control.scope(|| {
+            let value = CancelDuring(control.cancellation());
+            let result = if compact_output {
+                compact(&value)
+            } else {
+                pretty(&value)
+            };
+            assert!(matches!(result, Err(JsonError::Cancelled { written }) if written > 0));
+            for result in [pretty(&vec![1, 2]), compact(&vec![1, 2])] {
+                assert!(matches!(result, Err(JsonError::Cancelled { written: 0 })));
+            }
+        });
+        for result in [
+            with_control(&vec![1, 2], &control),
+            compact_with_control(&vec![1, 2], &control),
+        ] {
+            assert!(matches!(result, Err(JsonError::Cancelled { written: 0 })));
+        }
+    }
+    assert_eq!(pretty(&vec![1, 2]).unwrap(), "[\n  1,\n  2\n]");
     assert_eq!(compact(&vec![1, 2]).unwrap(), "[1,2]");
 }
 
@@ -63,7 +128,7 @@ fn cancellation_before_and_during_output_is_typed_and_does_not_poison_other_expo
 fn real_native_frontier_and_streamed_account_evidence_retain_the_native_shape() {
     let address = Address::repeat_byte(0x11);
     let program = Program::from_hex("366000803700").unwrap();
-    let mut world = World::new(Fork::Osaka, "bounded native export");
+    let mut world = World::new(Fork::Osaka, "native export");
     let mut account = Account::empty();
     account.code = Code::Runtime(program);
     world.insert(address, account).unwrap();
@@ -112,13 +177,11 @@ fn real_native_frontier_and_streamed_account_evidence_retain_the_native_shape() 
             .iter()
             .any(|f| !f["range"].is_null())
     );
+    let control = Control::new(Default::default());
+    control.cancellation().cancel();
     assert!(matches!(
-        with_control(
-            &analysis,
-            JsonLimits { max_bytes: 128 },
-            &Control::default()
-        ),
-        Err(JsonError::Bytes { limit: 128, .. })
+        with_control(&analysis, &control),
+        Err(JsonError::Cancelled { written: 0 })
     ));
     assert_eq!(
         serde_json::to_value(&analysis).unwrap(),

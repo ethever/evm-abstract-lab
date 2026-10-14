@@ -57,50 +57,70 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
 }
 
 #[test]
-fn export_error_decodes_schema_11_and_renders_bounds_and_work_statistics() {
-    let reply: api::AnalyzeReply = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../evm-abstract-protocol/tests/fixtures/api-errors/export-analyze-reply.json"
-    )))
-    .unwrap();
-    let mut error = reply.result.unwrap_err();
-    let api::ErrorDetails::Export(detail) = &mut error.details else {
-        panic!("expected export failure details");
-    };
-    detail.usage.work = 64_003_705;
-    let context = egui::Context::default();
-    crate::notation::initialize_fonts(&context);
-    let mut time = 0.0;
-    let text = rendered_at(
-        &context,
-        &mut time,
-        vec![],
-        egui::vec2(1200.0, 900.0),
-        |ui| api_error_details(ui, &error),
-    );
-    let labels: Vec<_> = text.iter().map(|(text, _)| text.as_str()).collect();
-    for expected in [
-        "Export boundary",
-        "OutputBytes",
-        "Required",
-        "8193",
-        "Encoded bytes retained",
-        "8192",
-        "Actual graph nodes",
-        "7",
-        "Exact byte payload",
-        "31",
-        "Projection work",
-        "64003705",
-        "Complete JSON byte limit",
-        "Node/depth limits",
-        "64 / 16",
-        "Exact payload byte limit",
-        "4096",
-    ] {
-        assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
+fn export_errors_decode_schema_12_and_render_bounds_work_and_cancellation_usage() {
+    for cancellation in [false, true] {
+        let reply: api::AnalyzeReply = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../evm-abstract-protocol/tests/fixtures/api-errors/export-analyze-reply.json"
+        )))
+        .unwrap();
+        let mut error = reply.result.unwrap_err();
+        let api::ErrorDetails::Export(detail) = &mut error.details else {
+            panic!("expected export failure details");
+        };
+        detail.usage.work = 64_003_705;
+        if cancellation {
+            let written = 64 * 1024 * 1024 + 8192;
+            error.code = api::ApiErrorCode::Cancelled;
+            error.message = format!("native JSON export cancelled after {written} bytes");
+            detail.kind = api::ExportFailureKind::Cancelled;
+            detail.required = written as u64;
+            detail.written = Some(written);
+        }
+        let required = detail.required.to_string();
+        let written = detail.written.map(|written| written.to_string());
+        let context = egui::Context::default();
+        crate::notation::initialize_fonts(&context);
+        let mut time = 0.0;
+        let text = rendered_at(
+            &context,
+            &mut time,
+            vec![],
+            egui::vec2(1200.0, 900.0),
+            |ui| api_error_details(ui, &error),
+        );
+        let labels: Vec<_> = text.iter().map(|(text, _)| text.as_str()).collect();
+        for expected in [
+            "Export boundary",
+            if cancellation {
+                "Cancelled"
+            } else {
+                "ExactBytes"
+            },
+            "Required",
+            &required,
+            "Actual graph nodes",
+            "7",
+            "Exact byte payload",
+            "31",
+            "Projection work",
+            "64003705",
+            "Node/depth limits",
+            "64 / 16",
+            "Exact payload byte limit",
+            "4096",
+        ] {
+            assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
+        }
+        if let Some(written) = written {
+            assert!(labels.contains(&"Encoded bytes retained"));
+            assert!(labels.contains(&written.as_str()));
+        } else {
+            assert!(!labels.contains(&"Encoded bytes retained"));
+        }
+        assert!(!labels.contains(&"Complete JSON byte limit"));
+        assert!(!labels.iter().any(|label| label.contains("work limit")));
     }
-    assert!(!labels.iter().any(|label| label.contains("work limit")));
 }
 
 #[test]

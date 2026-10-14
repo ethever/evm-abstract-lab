@@ -1,39 +1,14 @@
-//! Bounded native JSON output. Limits apply before appending serialized bytes;
-//! an error preserves the already computed analysis and carries exact usage.
+//! Cancellable native JSON output without a whole-output byte limit.
+//! An error preserves the already computed analysis and carries exact usage.
 use crate::analysis::control::Control;
 use embedded_smt::Cancellation;
 use serde::Serialize;
 use std::io::{self, Write};
 use thiserror::Error;
 
-/// Native JSON output policy, independent of logical memory and solver limits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct JsonLimits {
-    /// Maximum serialized UTF-8 bytes, including metadata and repeated snapshots.
-    pub max_bytes: usize,
-}
-impl Default for JsonLimits {
-    fn default() -> Self {
-        Self {
-            max_bytes: 64 * 1024 * 1024,
-        }
-    }
-}
 /// Native result extraction failed without changing execution facts.
 #[derive(Debug, Error)]
 pub enum JsonError {
-    /// Output would exceed the declared byte policy.
-    #[error(
-        "native JSON export requires at least {required} bytes, limit {limit} (retained {written})"
-    )]
-    Bytes {
-        /// Required bytes at the failed write.
-        required: usize,
-        /// Frozen policy.
-        limit: usize,
-        /// Bytes accepted before failure.
-        written: usize,
-    },
     /// Cancellation was observed before another serialization write.
     #[error("native JSON export cancelled after {written} bytes")]
     Cancelled {
@@ -59,7 +34,6 @@ impl From<serde_json::Error> for JsonError {
 }
 struct Writer {
     bytes: Vec<u8>,
-    limits: JsonLimits,
     cancellation: Cancellation,
     failure: Option<JsonError>,
 }
@@ -74,15 +48,6 @@ impl Write for Writer {
             });
             return Err(io::ErrorKind::Interrupted.into());
         }
-        let required = self.bytes.len().saturating_add(bytes.len());
-        if required > self.limits.max_bytes {
-            self.failure = Some(JsonError::Bytes {
-                required,
-                limit: self.limits.max_bytes,
-                written: self.bytes.len(),
-            });
-            return Err(io::ErrorKind::Other.into());
-        }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
@@ -92,13 +57,11 @@ impl Write for Writer {
 }
 fn encode<T: Serialize>(
     value: &T,
-    limits: JsonLimits,
     cancellation: Cancellation,
     pretty: bool,
 ) -> Result<String, JsonError> {
     let mut writer = Writer {
         bytes: Vec::new(),
-        limits,
         cancellation,
         failure: None,
     };
@@ -120,38 +83,23 @@ fn encode<T: Serialize>(
 }
 /// Pretty native output, preserving the current thread's cancellation scope.
 pub fn pretty<T: Serialize>(value: &T) -> Result<String, JsonError> {
-    encode(
-        value,
-        JsonLimits::default(),
-        embedded_smt::current_cancellation(),
-        true,
-    )
+    encode(value, embedded_smt::current_cancellation(), true)
 }
-/// Compact bounded output for consumers that need a JSON value after encoding.
+/// Compact output, preserving the current thread's cancellation scope.
 pub fn compact<T: Serialize>(value: &T) -> Result<String, JsonError> {
-    encode(
-        value,
-        JsonLimits::default(),
-        embedded_smt::current_cancellation(),
-        false,
-    )
+    encode(value, embedded_smt::current_cancellation(), false)
 }
-/// Explicit bounded/cancellable extraction for application callers.
-pub fn with_control<T: Serialize>(
-    value: &T,
-    limits: JsonLimits,
-    control: &Control,
-) -> Result<String, JsonError> {
-    control.scope(|| encode(value, limits, control.cancellation().clone(), true))
+/// Pretty extraction under an explicit cancellation scope.
+pub fn with_control<T: Serialize>(value: &T, control: &Control) -> Result<String, JsonError> {
+    control.scope(|| encode(value, control.cancellation().clone(), true))
 }
 
-/// Compact extraction under an explicit whole-output policy and cancellation.
+/// Compact extraction under an explicit cancellation scope.
 pub fn compact_with_control<T: Serialize>(
     value: &T,
-    limits: JsonLimits,
     control: &Control,
 ) -> Result<String, JsonError> {
-    control.scope(|| encode(value, limits, control.cancellation().clone(), false))
+    control.scope(|| encode(value, control.cancellation().clone(), false))
 }
 #[cfg(test)]
 mod tests;

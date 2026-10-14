@@ -145,6 +145,66 @@ def submit_bytecode(page, canvas, bytecode: str, evidence: Path):
     return complete_submission(page, admitted)
 
 
+def compression_interactions(browser, url: str, output: Path):
+    """Exercise real HTTP negotiation and transparent decoding in the Wasm app."""
+    cases = [("zstd", ["zstd", "br", "gzip"]),
+             ("br", ["br", "gzip"]), ("gzip", ["gzip"]), ("identity", [])]
+    results = {}
+    for expected, accepted in cases:
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        observe_webgpu(page)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        cdp = page.context.new_cdp_session(page)
+        cdp.send("Network.enable")
+        cdp.send("Network.setAcceptedEncodings", {"encodings": accepted})
+        try:
+            with page.expect_response(lambda response: response.url.endswith("/result")
+                                      and response.request.method == "GET") as fetched:
+                with page.expect_response(lambda response: response.url.endswith("/api/tasks")
+                                          and response.request.method == "POST") as submitted:
+                    page.goto(url, wait_until="networkidle")
+                completed = complete_submission(page, submitted.value)
+            response = fetched.value
+            assert response.status == 200, response.text()
+            headers = response.all_headers()
+            observed = headers.get("content-encoding", "identity")
+            assert observed == expected, (expected, headers)
+            assert "accept-encoding" in headers.get("vary", "").lower(), headers
+            assert headers["content-type"].startswith("application/json"), headers
+            assert headers["cache-control"] == "no-store", headers
+            envelope = response.json()
+            report = envelope["result"]["Ok"]
+            assert report == completed.json()["result"]["Ok"]
+            assert report["schema_version"] == 12
+            assert "max_output_bytes" not in report["metadata"]["export_limits"]
+            assert report["cfg"] and report["ssa"]["blocks"]
+            expect(page.locator("#analysis-status")).to_contain_text("Ready:")
+            page.wait_for_function(
+                "url => performance.getEntriesByName(url).some(entry => entry.responseEnd > 0)",
+                arg=response.url)
+            sizes = page.evaluate("""url => {
+                const entry = performance.getEntriesByName(url).find(entry => entry.responseEnd > 0);
+                return {encoded: entry.encodedBodySize, decoded: entry.decodedBodySize};
+            }""", response.url)
+            assert sizes["decoded"] == len(response.body()), sizes
+            if expected == "identity":
+                assert sizes["encoded"] == sizes["decoded"] > 0, sizes
+            else:
+                assert 0 < sizes["encoded"] < sizes["decoded"], sizes
+            assert not errors, errors
+            results[expected] = {"accepted": accepted, "content_encoding": observed,
+                                 "encoded_bytes": sizes["encoded"], "decoded_bytes": sizes["decoded"],
+                                 "status": report["status"], "wasm_installed_report": True}
+            (output / "compression-report.json").write_text(json.dumps(results, indent=2) + "\n")
+            print(f"HTTP compression {expected}: {sizes['encoded']} wire bytes, "
+                  f"{sizes['decoded']} decoded bytes; Wasm report ready", flush=True)
+        finally:
+            cdp.detach()
+            page.close()
+    return results
+
+
 def budget_interactions(browser, url: str, output: Path):
     """Real decimal editing preserves u64 values through WASM, HTTP and metadata."""
     defaults = {
@@ -181,7 +241,12 @@ def budget_interactions(browser, url: str, output: Path):
         metadata = envelope["result"]["Ok"]["metadata"]
         assert "max_work" not in metadata["export_limits"], metadata
         metadata["export_usage"]["work"] = reported_export_work
-        route.fulfill(response=response, body=json.dumps(envelope))
+        # The intercepted body was decoded before editing. Do not label the
+        # replacement plain JSON with the upstream response's content coding.
+        headers = dict(response.headers)
+        headers.pop("content-encoding", None)
+        headers.pop("content-length", None)
+        route.fulfill(status=response.status, headers=headers, body=json.dumps(envelope))
         decoded_export_work.append(reported_export_work)
 
     page.route("**/api/tasks/*/result", large_export_work)
@@ -192,7 +257,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 11
+    assert initial_report["schema_version"] == 12
     assert "max_work" not in initial_report["metadata"]["export_limits"]
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
@@ -226,7 +291,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 11
+    assert report["schema_version"] == 12
     assert report["status"] == "Converged", report["frontiers"]
     assert "max_work" not in report["metadata"]["export_limits"]
     expected = {**defaults, **edited}
@@ -823,7 +888,7 @@ def diagnostics_interactions(browser, url: str, args):
         assert request["fork"] == fork and posted_bytecode(reply) == code, request
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 11 and report["status"] == "Converged", report
+        assert report["schema_version"] == 12 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report
 
@@ -1197,7 +1262,7 @@ def ssa_values_interactions(browser, url, output):
     for name,code,completion in cases:
         if 'Inspector hidden' not in status.text_content():hide_inspector(page,canvas)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
-        assert report['schema_version']==11 and report['status']==completion
+        assert report['schema_version']==12 and report['status']==completion
         ssa=report['ssa']
         assert len(ssa['values'])==ssa['value_count']
         assert [value['id'] for value in ssa['values']]==list(range(ssa['value_count']))
@@ -1287,7 +1352,7 @@ def unknown_world_interactions(browser, url, output):
              "call_value": "0x0", "calldata": "0x"}
     report = layout_submission(page, canvas, code, output, "unknown-world", entry=entry,
                                source_height_offset=-62)
-    assert report["schema_version"] == 11 and report["status"] == "Converged"
+    assert report["schema_version"] == 12 and report["status"] == "Converged"
     assert report["frontiers"] == [] and report["ssa"]["complete"]
     summaries = report["abstract_summaries"]
     assert summaries and all(summary["closed"] and summary["procedures"] for summary in summaries)
@@ -4515,7 +4580,7 @@ def hierarchy_call_interactions(browser,args):
 
 
 def layout_pending_machines(report, entry):
-    assert report["schema_version"] == 11
+    assert report["schema_version"] == 12
     pending = report["pending_machines"]
     assert len(pending) == entry["expected_pending_machines"]
     assert {frontier["payload"] for frontier in report["frontiers"]} == set(range(len(pending)))
@@ -4709,12 +4774,17 @@ def main() -> None:
     parser.add_argument("--termination-only",action="store_true",help="Run semantic ending styles and existing selected-node flow/SSA acceptance")
     parser.add_argument("--timings-only",action="store_true",help="Run queued analysis, phase timing and delayed-result acceptance")
     parser.add_argument("--http-only",action="store_true",help="Run real browser HTTP persistence and typed route acceptance")
+    parser.add_argument("--compression-only", action="store_true", help="Run zstd, Brotli, gzip and identity negotiation through the real Wasm client")
     parser.add_argument("--diagnostics-only", action="store_true", help="Run typed invalid-opcode causes and state/source navigation acceptance")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     with analysis_server(args) as url:
         with sync_playwright() as playwright:
             browser = launch_browser(playwright.chromium, args.browser)
+            if args.compression_only:
+                compression_interactions(browser, url, args.output)
+                browser.close()
+                return
             if args.unknown_world_only:
                 unknown_world_interactions(browser, url, args.output)
                 browser.close()
@@ -4781,7 +4851,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 11
+            assert analysis["schema_version"] == 12
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
@@ -4869,6 +4939,7 @@ def main() -> None:
             renderer = webgpu_evidence(page)
             unavailable = webgpu_unavailable(browser, url, args.output)
             budgets = budget_interactions(browser, url, args.output)
+            compression = compression_interactions(browser, url, args.output)
             http_transport = http_transport_interactions(browser, url, args.output)
             timings = timing_interactions(browser, args)
             rpc_providers = unconfigured_rpc_interactions(browser, url, args.output)
@@ -4920,6 +4991,7 @@ def main() -> None:
                 "url_configured_world": url_world,
                 "rpc_providers": rpc_providers,
                 "budget_interactions": budgets,
+                "compression": compression,
                 "http_transport": http_transport,
                 "timing_interactions": timings,
                 "platform": "Linux headless Chromium with Xvfb and SwiftShader WebGPU; synthesized browser gestures, not physical macOS hardware",

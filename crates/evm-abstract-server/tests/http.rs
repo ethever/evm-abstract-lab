@@ -1,8 +1,8 @@
 //! Actual TCP tests cover framing, typed API responses and the static asset host.
 
 use evm_abstract_protocol::{
-    AnalysisInput, AnalyzeReply, AnalyzeRequest, ApiErrorCode, BlockSelector, ErrorDetails,
-    JobReply, JobState, RpcInput, RpcProvidersReply,
+    AnalysisInput, AnalyzeReply, AnalyzeRequest, ApiErrorCode, BlockSelector, BytecodeInput,
+    ErrorDetails, JobReply, JobState, RpcInput, RpcProvidersReply,
 };
 use evm_abstract_server::http::{router, serve_with_shutdown};
 use evm_abstract_server::jobs::{Config, Pool};
@@ -66,16 +66,18 @@ fn exchange_with_pool(bytes: &[u8], assets: &Path, pool: &Pool) -> Vec<u8> {
     let mut request = bytes[..boundary].to_vec();
     request.extend_from_slice(b"\r\nConnection: close\r\n\r\n");
     request.extend_from_slice(&bytes[boundary + 4..]);
-    with_server(assets, pool, |address| {
-        let mut client = TcpStream::connect(address).unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(15)))
-            .unwrap();
-        client.write_all(&request).unwrap();
-        let mut response = Vec::new();
-        client.read_to_end(&mut response).unwrap();
-        response
-    })
+    with_server(assets, pool, |address| exchange_at(address, &request))
+}
+
+fn exchange_at(address: SocketAddr, request: &[u8]) -> Vec<u8> {
+    let mut client = TcpStream::connect(address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    client.write_all(request).unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    response
 }
 
 struct Stop(Option<tokio::sync::oneshot::Sender<()>>);
@@ -412,25 +414,352 @@ fn hyper_accepts_chunked_json_and_bounds_the_actual_streamed_body() {
     pool.shutdown().unwrap();
 }
 
-fn read_response(reader: &mut BufReader<TcpStream>) -> (String, Vec<u8>) {
+fn read_response(reader: &mut impl BufRead) -> (String, Vec<u8>) {
     let mut header = String::new();
     let mut length = None;
+    let mut chunked = false;
     loop {
         let mut line = String::new();
         assert!(reader.read_line(&mut line).unwrap() > 0);
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = Some(value.trim().parse::<usize>().unwrap());
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = Some(value.trim().parse::<usize>().unwrap());
+            } else if name.eq_ignore_ascii_case("transfer-encoding") {
+                chunked = value
+                    .split(',')
+                    .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"));
+            }
         }
         header.push_str(&line);
         if line == "\r\n" {
             break;
         }
     }
+    if chunked {
+        assert!(length.is_none());
+        let mut body = Vec::new();
+        loop {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            let size = usize::from_str_radix(line.split(';').next().unwrap().trim(), 16).unwrap();
+            if size == 0 {
+                loop {
+                    line.clear();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                break;
+            }
+            let start = body.len();
+            body.resize(start + size, 0);
+            reader.read_exact(&mut body[start..]).unwrap();
+            let mut separator = [0; 2];
+            reader.read_exact(&mut separator).unwrap();
+            assert_eq!(&separator, b"\r\n");
+        }
+        return (header, body);
+    }
     let mut body = vec![0; length.expect("framework exposes a known body length")];
     reader.read_exact(&mut body).unwrap();
     (header, body)
+}
+
+fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().find_map(|line| {
+        let (field, value) = line.split_once(':')?;
+        field.eq_ignore_ascii_case(name).then_some(value.trim())
+    })
+}
+
+fn decoded_content(encoding: Option<&str>, body: &[u8]) -> Vec<u8> {
+    use async_compression::tokio::bufread::{BrotliDecoder, GzipDecoder, ZstdDecoder};
+
+    match encoding {
+        Some("zstd") => read_decoded(ZstdDecoder::new(body)),
+        Some("br") => read_decoded(BrotliDecoder::new(body)),
+        Some("gzip") => read_decoded(GzipDecoder::new(body)),
+        None => body.to_vec(),
+        other => panic!("unexpected Content-Encoding: {other:?}"),
+    }
+}
+
+fn read_decoded(mut decoder: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let mut body = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut decoder, &mut body)
+                .await
+                .unwrap();
+            body
+        })
+}
+
+fn get_at(address: SocketAddr, path: &str, headers: &str) -> Vec<u8> {
+    exchange_at(
+        address,
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{headers}\r\n")
+            .as_bytes(),
+    )
+}
+
+fn assert_compressed_content(
+    response: &[u8],
+    encoding: Option<&str>,
+    mime: &str,
+    expected: &[u8],
+    identity_wire_bytes: usize,
+) {
+    let (headers, body) = read_response(&mut BufReader::new(response));
+    assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+    assert_eq!(header_value(&headers, "content-encoding"), encoding);
+    assert_eq!(header_value(&headers, "content-type"), Some(mime));
+    assert_eq!(header_value(&headers, "cache-control"), Some("no-store"));
+    assert_eq!(
+        header_value(&headers, "x-content-type-options"),
+        Some("nosniff")
+    );
+    assert!(
+        header_value(&headers, "vary")
+            .unwrap()
+            .split(',')
+            .any(|value| value.trim().eq_ignore_ascii_case("accept-encoding"))
+    );
+    assert_eq!(decoded_content(encoding, &body), expected);
+    if encoding.is_some() {
+        assert!(header_value(&headers, "content-length").is_none());
+        assert_eq!(header_value(&headers, "transfer-encoding"), Some("chunked"));
+        // Include HTTP headers and chunk framing in the actual wire-size comparison.
+        assert!(response.len() < identity_wire_bytes);
+    } else {
+        assert_eq!(body, expected);
+        assert_eq!(
+            header_value(&headers, "content-length")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap(),
+            expected.len()
+        );
+    }
+}
+
+#[test]
+fn analysis_json_compression_negotiates_client_encodings_and_roundtrips_exactly() {
+    let assets = Assets::new();
+    let pool = pool();
+    let request = AnalyzeRequest {
+        input: AnalysisInput::Bytecode(BytecodeInput {
+            bytecode: format!("{}00", "600150".repeat(128)),
+            address: None,
+        }),
+        ..AnalyzeRequest::default()
+    };
+    let id = pool.submit(request).unwrap().id;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let state = pool.status(id).unwrap().state;
+        if state == JobState::Completed {
+            break;
+        }
+        assert!(
+            matches!(state, JobState::Queued | JobState::Running),
+            "{state:?}"
+        );
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(1));
+    }
+    with_server(&assets.0, &pool, |address| {
+        let path = format!("/api/tasks/{id}/result");
+        let identity = get_at(address, &path, "");
+        let (_, expected) = read_response(&mut BufReader::new(identity.as_slice()));
+        assert!(expected.len() > 1024);
+        assert!(
+            serde_json::from_slice::<AnalyzeReply>(&expected)
+                .unwrap()
+                .result
+                .is_ok()
+        );
+        for (accept, encoding) in [
+            ("Accept-Encoding: gzip, br, zstd\r\n", Some("zstd")),
+            ("Accept-Encoding: zstd, gzip, br\r\n", Some("zstd")),
+            ("Accept-Encoding: gzip, br\r\n", Some("br")),
+            ("Accept-Encoding: gzip\r\n", Some("gzip")),
+            ("Accept-Encoding: deflate, br\r\n", Some("br")),
+            ("Accept-Encoding: zstd;q=0, br, gzip\r\n", Some("br")),
+            (
+                "Accept-Encoding: zstd;q=0, br;q=0, gzip;q=0.4\r\n",
+                Some("gzip"),
+            ),
+            (
+                "Accept-Encoding: zstd;q=0.4, br;q=0.5, gzip;q=0.9\r\n",
+                Some("gzip"),
+            ),
+            (
+                "Accept-Encoding: zstd;q=0.4, br;q=0.8, gzip;q=0.5\r\n",
+                Some("br"),
+            ),
+            (
+                "Accept-Encoding: gzip;q=0.5, br;q=0.5, zstd;q=0.5\r\n",
+                Some("zstd"),
+            ),
+            (
+                "aCcEpT-EnCoDiNg: GZip;q=1.000, BR;Q=1, ZStD;Q=1\r\n",
+                Some("zstd"),
+            ),
+            (
+                "Accept-Encoding: gzip;q=0.5\r\nAccept-Encoding: br;q=0.8\r\nAccept-Encoding: zstd;q=0.8\r\n",
+                Some("zstd"),
+            ),
+            ("", None),
+            ("Accept-Encoding:\r\n", None),
+            ("Accept-Encoding: identity\r\n", None),
+            ("Accept-Encoding: deflate, compress\r\n", None),
+            ("Accept-Encoding: zstd;q=0, br;q=0, gzip;q=0\r\n", None),
+            ("Accept-Encoding: zstd;q=0, deflate\r\n", None),
+            (
+                "Accept-Encoding: identity;q=1, zstd;q=0.5, br;q=0.5, gzip;q=0.5\r\n",
+                None,
+            ),
+        ] {
+            let response = get_at(address, &path, accept);
+            assert_compressed_content(
+                &response,
+                encoding,
+                "application/json; charset=utf-8",
+                &expected,
+                identity.len(),
+            );
+        }
+    });
+    pool.shutdown().unwrap();
+}
+
+#[test]
+fn compression_covers_static_assets_and_keepalive_without_changing_mime_or_policy() {
+    let assets = Assets::new();
+    let text = "workbench asset data\n".repeat(1024).into_bytes();
+    for path in ["app.js", "app.css", "app.wasm", "data.json", "image.png"] {
+        fs::write(assets.0.join(path), &text).unwrap();
+    }
+    let pool = pool();
+    with_server(&assets.0, &pool, |address| {
+        for (path, mime) in [
+            ("/app.js", "text/javascript; charset=utf-8"),
+            ("/app.css", "text/css; charset=utf-8"),
+            ("/app.wasm", "application/wasm"),
+            ("/data.json", "application/json; charset=utf-8"),
+        ] {
+            let identity = get_at(address, path, "");
+            for (accept, encoding) in [
+                ("gzip, br, zstd", "zstd"),
+                ("gzip, br", "br"),
+                ("gzip", "gzip"),
+            ] {
+                let response = get_at(address, path, &format!("Accept-Encoding: {accept}\r\n"));
+                assert_compressed_content(&response, Some(encoding), mime, &text, identity.len());
+            }
+        }
+        let client = TcpStream::connect(address).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(client);
+        for (accept, encoding) in [
+            ("gzip, br, zstd", Some("zstd")),
+            ("gzip, br", Some("br")),
+            ("gzip", Some("gzip")),
+            ("identity", None),
+        ] {
+            reader.get_mut().write_all(format!("GET /app.js HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: {accept}\r\n\r\n").as_bytes()).unwrap();
+            let (headers, body) = read_response(&mut reader);
+            assert!(headers.starts_with("HTTP/1.1 200"));
+            assert_eq!(header_value(&headers, "content-encoding"), encoding);
+            assert!(
+                !header_value(&headers, "connection")
+                    .is_some_and(|value| value.eq_ignore_ascii_case("close"))
+            );
+            assert_eq!(decoded_content(encoding, &body), text);
+        }
+        let image = get_at(address, "/image.png", "Accept-Encoding: zstd, br, gzip\r\n");
+        let (headers, body) = read_response(&mut BufReader::new(image.as_slice()));
+        assert_eq!(header_value(&headers, "content-type"), Some("image/png"));
+        assert!(header_value(&headers, "content-encoding").is_none());
+        assert_eq!(body, text);
+    });
+    pool.shutdown().unwrap();
+}
+
+#[test]
+fn compressed_errors_keep_typed_framing_status_and_request_admission_bounds() {
+    let assets = Assets::new();
+    for (request, code, status) in [
+        (
+            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: zstd, br, gzip\r\nContent-Type: application/json\r\nContent-Length: 262145\r\n\r\n",
+            ApiErrorCode::RequestTooLarge,
+            "413",
+        ),
+        (
+            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: zstd, br, gzip\r\nOrigin: https://other.example\r\nContent-Length: 0\r\n\r\n",
+            ApiErrorCode::InvalidRequest,
+            "400",
+        ),
+        (
+            "GET /api/missing HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: zstd, br, gzip\r\n\r\n",
+            ApiErrorCode::NotFound,
+            "404",
+        ),
+        (
+            "GET /api/tasks HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: zstd, br, gzip\r\n\r\n",
+            ApiErrorCode::MethodNotAllowed,
+            "405",
+        ),
+    ] {
+        let response = exchange(request.as_bytes(), &assets.0);
+        let (headers, body) = read_response(&mut BufReader::new(response.as_slice()));
+        assert!(
+            headers.starts_with(&format!("HTTP/1.1 {status}")),
+            "{headers}"
+        );
+        assert_eq!(header_value(&headers, "content-encoding"), Some("zstd"));
+        assert_eq!(
+            header_value(&headers, "content-type"),
+            Some("application/json")
+        );
+        assert_eq!(header_value(&headers, "vary"), Some("accept-encoding"));
+        assert_eq!(header_value(&headers, "cache-control"), Some("no-store"));
+        assert_eq!(
+            header_value(&headers, "x-content-type-options"),
+            Some("nosniff")
+        );
+        let body = decoded_content(Some("zstd"), &body);
+        let reply = serde_json::from_slice::<JobReply>(&body).unwrap();
+        assert_eq!(reply.result.unwrap_err().code, code);
+    }
+
+    // A streamed request is still bounded by bytes actually read, even when its
+    // error response is negotiated and compressed.
+    let oversized = vec![b' '; evm_abstract_protocol::MAX_REQUEST_BYTES + 1];
+    let request = chunked(&oversized);
+    let boundary = request
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap();
+    let mut compressed_request = request[..boundary].to_vec();
+    compressed_request.extend_from_slice(b"\r\nAccept-Encoding: zstd\r\n\r\n");
+    compressed_request.extend_from_slice(&request[boundary + 4..]);
+    let response = exchange(&compressed_request, &assets.0);
+    let (headers, body) = read_response(&mut BufReader::new(response.as_slice()));
+    assert!(headers.starts_with("HTTP/1.1 413"));
+    assert_eq!(header_value(&headers, "content-encoding"), Some("zstd"));
+    let body = decoded_content(Some("zstd"), &body);
+    let reply = serde_json::from_slice::<JobReply>(&body).unwrap();
+    assert_eq!(
+        reply.result.unwrap_err().code,
+        ApiErrorCode::RequestTooLarge
+    );
 }
 
 #[test]

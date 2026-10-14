@@ -265,4 +265,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 [MIT license](LICENSE)。
 
-符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并通过 SMT 使用地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制 logical footprint。Native schema 7 与 Web schema 11 使用 flat typed graphs；报告导出保留节点、深度、exact payload、JSON 输出字节上限和取消检查，累计 projection work 仅作诊断统计。模型、guarded join、账户/plane、hash 和 provider 支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
+符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并通过 SMT 使用地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制 logical footprint。Native schema 7 与 Web schema 12 使用 flat typed graphs；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，累计 projection work 仅作诊断统计。模型、guarded join、账户/plane、hash 和 provider 支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
