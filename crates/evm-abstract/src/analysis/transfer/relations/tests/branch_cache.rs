@@ -88,9 +88,41 @@ fn warm_actual_branches_pay_the_same_mandatory_fee_and_share_the_workbudget_owne
                 .relations
                 .work_size()
                 .saturating_add(length.expression().unwrap().work_size());
+            // The guard planner prepays an extra read-only traversal for each
+            // state wrapper. This fixture has no ITE, so there is no additional
+            // guard retention or native query fee. Count the wrappers rather
+            // than payload.work_size(), which also includes scalar/frame data.
+            let limits = config.analysis.relations.expressions();
+            assert!(successor.store.guard_conditions(limits).unwrap().is_empty());
+            let mut byte_work = 0;
+            let mut checkpoint_work = 0;
+            for frame in successor.call_stack.iter() {
+                for bytes in [&frame.memory, &frame.calldata, &frame.returndata] {
+                    assert!(bytes.guard_conditions(limits).unwrap().is_empty());
+                    byte_work += bytes.work_size();
+                }
+                assert!(
+                    frame
+                        .saved_store
+                        .state()
+                        .guard_conditions(limits)
+                        .unwrap()
+                        .is_empty()
+                );
+                checkpoint_work += frame.saved_store.state().work_size();
+            }
+            let store_work = successor.store.work_size();
+            let collection_work = (store_work + byte_work + checkpoint_work) * 2;
+            eprintln!(
+                "branch mandatory fee: nonzero={nonzero} repeat={repeat} store={store_work} bytes={byte_work} checkpoint={checkpoint_work} collection={collection_work} mandatory={mandatory}"
+            );
             assert_eq!(
                 mandatory,
-                before_payload.work_size() + fee + successor.work_size() * 2 + length_work
+                before_payload.work_size()
+                    + fee
+                    + successor.work_size() * 2
+                    + length_work
+                    + collection_work
             );
             assert!(maintenance <= fee / 4);
             if let Some(first) = first_mandatory {
