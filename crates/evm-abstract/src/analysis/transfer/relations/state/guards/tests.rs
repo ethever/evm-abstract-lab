@@ -29,8 +29,10 @@ enum Case {
 }
 
 fn config() -> ExecutionConfig {
-    let mut config = ExecutionConfig::default();
-    config.max_work = 100_000_000;
+    let mut config = ExecutionConfig {
+        max_work: 100_000_000,
+        ..ExecutionConfig::default()
+    };
     config.analysis.relations.max_nodes = 100_000;
     config.analysis.relations.max_depth = 256;
     config.analysis.relations.rlimit = 1_000_000;
