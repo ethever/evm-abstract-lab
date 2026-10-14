@@ -163,7 +163,7 @@ in
               (.root_procedure as $root | $root != null and
                 .procedures[$root].frame.mode == "Runtime" and
                 (.procedures[$root].covered_blocks | length) > 0)) and
-            ([.analysis.states[].key.frames | length] | max) <= 2 and
+            ([.analysis.states[].key.frames | length] | max) == 3 and
             any(.analysis.outcomes[]; .kind == "Return") and
             all(.analysis.outcomes[] | select(.kind == "Return");
               .data as $data | $data.length.Constants == ["0x20"] and
