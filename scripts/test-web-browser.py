@@ -3702,7 +3702,29 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path):
     states = report["cfg"]
     edges = report["edges"]
     child_ids = {state["id"] for state in states if state["program"] == child["id"]}
-    assert len(states) == 3 and child_ids == {child_state["id"]}
+    assert len(states) == 4 and child_ids == {child_state["id"]}
+    call, = [edge for edge in edges if edge["kind"] == "Call"]
+    returned, = [edge for edge in edges if edge["kind"] == "Return"]
+    failed, = [edge for edge in edges if edge["kind"] == "Failure"]
+    assert len(edges) == 3 and call["to"] == returned["from"] == child_state["id"]
+    assert failed["from"] == call["from"]
+    parent_ids = {call["from"], failed["to"], returned["to"]}
+    assert len(parent_ids) == 3 and parent_ids.isdisjoint(child_ids)
+    by_id = {state["id"]: state for state in states}
+    parent = by_id[call["from"]]
+    assert child_state["frame_depth"] == 2
+    assert all(by_id[state]["program"] == parent["program"] != child["id"]
+               and by_id[state]["frame_depth"] == 1 for state in parent_ids)
+    # A refused CALL and a successful child return resume the same bytecode
+    # with distinct 0/1 status inputs; neither native state may disappear.
+    failure_resume, success_resume = by_id[failed["to"]], by_id[returned["to"]]
+    assert failure_resume["basic_block"] == success_resume["basic_block"] != parent["basic_block"]
+    assert failure_resume["start_pc"] == success_resume["start_pc"]
+    snapshots = {snapshot["state"]: snapshot for snapshot in report["states"]}
+    for state, status in [(failure_resume, 0), (success_resume, 1)]:
+        stack = snapshots[state["id"]]["entry"]["frames"][-1]["stack"]
+        assert len(stack) == 1 and stack[0]["constants"] is not None
+        assert {int(value, 16) for value in stack[0]["constants"]} == {status}
     boundary = [edge for edge in edges if (edge["from"] in child_ids) != (edge["to"] in child_ids)]
     assert len(boundary) == 2 and {edge["kind"] for edge in boundary} == {"Call", "Return"}
     submitted = []
@@ -3713,30 +3735,30 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path):
     page.keyboard.press("2")
     settle_gesture(page)
     graph_mode(page, canvas, "States")
-    full = graph_scope(page, "States", 3, 3, 3)
+    full = graph_scope(page, "States", 4, 4, 4)
     assert full["scope"] == "All programs" and full["native_edges"] == len(edges)
     canvas.click(position={"x": 205, "y": 109})  # native program ComboBox
     rendered_frame(page)
     canvas.screenshot(path=str(output / "world-graph-program-menu.png"))
     canvas.click(position={"x": 205, "y": 181})  # P1 · Runtime (native menu geometry)
     settle_gesture(page)
-    filtered = graph_scope(page, "States", 1, 1, 3)
+    filtered = graph_scope(page, "States", 1, 1, 4)
     assert filtered["scope"] == symbol("P", child["id"])
     assert filtered["edges"] == filtered["native_edges"] == 0
-    assert filtered["hidden_states"] == 2 and filtered["boundary_edges"] == 2
+    assert filtered["hidden_states"] == 3 and filtered["boundary_edges"] == 2
     status = page.locator("#analysis-status")
     expect(status).to_contain_text(f"Selected {symbol('σ', child_state['id'])}; source {symbol('P', child['id'])}")
     child_pixels = node_snapshot(page, canvas, output, "world-graph-child-program", measure_nodes=True)
     assert len(child_pixels["nodes"]) == 1, child_pixels
     graph_mode(page, canvas, "Local")
-    local = graph_scope(page, "Local", 3, 3, 3)
+    local = graph_scope(page, "Local", 4, 4, 4)
     assert local["scope"] == "Cross-program neighborhood"
     assert local["hidden_states"] == local["boundary_edges"] == 0
     assert local["edges"] == local["native_edges"] == len(edges)
     expect(status).to_contain_text(f"Selected {symbol('σ', child_state['id'])}; source {symbol('P', child['id'])}")
     expect(status).to_contain_text("Converged")
     local_pixels = node_snapshot(page, canvas, output, "world-graph-local-cross-program", measure_nodes=True)
-    assert len(local_pixels["nodes"]) == 3, local_pixels
+    assert len(local_pixels["nodes"]) == 4, local_pixels
     assert not submitted, "program filtering or local exploration reran analysis"
     return {"all_programs": full, "child_program": filtered, "cross_program_local": local,
             "selected_native_state": child_state["id"], "child_pixels": child_pixels,
