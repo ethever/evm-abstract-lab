@@ -1,0 +1,213 @@
+{
+  "schema": "known-recursion-selected-validation-v3",
+  "measured_code_head": "348bb8cc629d37411af299c75649d08a623c2667",
+  "main_at_build": "f70afa2b383d574649831c3ff10a885947a1126a",
+  "native_schema": 8,
+  "wire_schema": 13,
+  "scope": "Recorded 348 WETH report and its original USDC900 external timeout without a report. Prior 8d/5048 observations remain separately labeled. Not a final PR/gate identity.",
+  "input": {
+    "files": {
+      "manifest.json": {
+        "path": "examples/known-recursion/captured/manifest.json",
+        "sha256": "ad5d60d40953777a9c444dbcbad01082b1aea677e59c3b70e7d828b61b689336"
+      },
+      "usdc-original-request.json": {
+        "path": "examples/known-recursion/captured/usdc-original-request.json",
+        "sha256": "df1a7eae163963b18e83c7413eb77d6da65381d19b3d2232f02d2f0ad90c6c4e"
+      },
+      "weth-original-request.json": {
+        "path": "examples/known-recursion/captured/weth-original-request.json",
+        "sha256": "48f304b0790176ae9549ae8c183dbc09a9a1b47a36889caefb3b4a1c78cc28ae"
+      }
+    },
+    "fork": "Osaka",
+    "block_number": 26180958,
+    "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+    "caller": "Unknown",
+    "call_value": "Unknown",
+    "calldata_content_and_length": "Unknown"
+  },
+  "external_guards": {
+    "weth_seconds": 120,
+    "usdc_seconds": 900,
+    "cpus": "48-55",
+    "rss_limit_gib": 8,
+    "host_available_floor_gib": 20
+  },
+  "standard_nix_build": {
+    "actual_exit": 0,
+    "metadata_sha256": "e658dd05dd349c83e8b5604b58179ae236cddc2b968083f51e6f612dad2c3e7d",
+    "server_sha256": "fff12ce75490893d869b39c7e5e51031f57a782f1ea8d0676eb074ca815e7369"
+  },
+  "weth": {
+    "report_delivered": true,
+    "status": "Incomplete",
+    "http_body_seconds": 32.68155033700168,
+    "analyzing_seconds": 32.077572478,
+    "process_cpu_seconds": 32.437361,
+    "peak_rss_kib": 260708,
+    "final_states": 137,
+    "cumulative_progress_states": 474,
+    "transfers": 486,
+    "outcomes": 32,
+    "work": 52254064022,
+    "frontiers": {
+      "StateJoin.Shape": 8,
+      "Relations.ExpressionLimit": 18
+    },
+    "ssa_complete": false,
+    "summary": {
+      "kind": "UnknownEnvironment",
+      "closed": false,
+      "procedures": 21
+    },
+    "measurement_sha256": "139aaa1ef726658c8f07c0dd466cf3fe908ce38ab26c890ac4612ec7e98b452c",
+    "report_sha256": "198907fec7d052dd360b6a55e4047f59fbd8fae23b38af069e984e03d3773813"
+  },
+  "usdc": {
+    "state": "external_timeout_no_report",
+    "external_guard_seconds": 900,
+    "report_delivered": false,
+    "termination": "external_timeout",
+    "wall_seconds": 900.5312154218554,
+    "process_cpu_seconds": 902.158705,
+    "peak_rss_kib": 1710676,
+    "owned_process_exit": -15,
+    "owned_pid_absent": true,
+    "case_measurement_sha256": "705a8c5a3675489ec52296cebe85129ee18d16975aad53d5c545458f10d460e6",
+    "aggregate_measurements_sha256": "194cd65ccf50980b2fd483743c02e4fe08911bb50bf7ff17808e95997dc6c4b8",
+    "final_native_status": null,
+    "final_frontiers": null,
+    "final_summaries": null,
+    "ssa_complete": null,
+    "last_progress_only": {
+      "phase": "Analyzing",
+      "round": 4,
+      "accounts": 2,
+      "slots": 2,
+      "requests": 29,
+      "states": 4159,
+      "transfers": 4810,
+      "work": 791464786804
+    },
+    "meaning": "External guard stopped an unfinished Running/Analyzing task. No native final status, precision, closure or Work-exhaustion conclusion."
+  },
+  "mechanism_only": {
+    "basis_head": "9b055cfa6fceade228218a151192ee23dd9e5f2b",
+    "real_evm_branch_fixture_native_checks": {
+      "all_unique": {
+        "serial": 33,
+        "joint": 4
+      },
+      "all_multiple": {
+        "serial": 33,
+        "joint": 3
+      }
+    },
+    "original_usdc_gain_proven": false,
+    "joint_max_targets": 16,
+    "joint_max_packed_bits": 4096,
+    "joint_max_checks": "N+2; single <=2",
+    "mechanism_evidence_sha256": "747bb368cb1c5c64197d16f7a289960440ca5aada07786be2f0d30539e44787b",
+    "state_guard_native_checks": {
+      "serial": 12,
+      "joint": 3,
+      "classification_joint": {
+        "SAT": 1,
+        "UNSAT": 2
+      }
+    },
+    "state_guard_native_evidence_sha256": "ae8c5d274440e87ce4b604e98328cdded66162f2c1a4ea4195f6f83432b53eaa",
+    "storage_16_alias_20_jump_default20M": {
+      "closed": true,
+      "frontiers": 0,
+      "return_word": 7,
+      "work": 9113572,
+      "transfers": 21,
+      "producer_freeze_sha256": "6e5ea37dc15d76cded79abee3b61106114d5ac6fdbb95f248dd073c7a05701d4"
+    }
+  },
+  "remaining_acceptance": {
+    "original_usdc_goal": "not_met; 348, 8d and 5048 all reached external900s without a report",
+    "original_weth_complete_analysis": false,
+    "statistical_speedup_proven": false,
+    "final_gate_record": "PR description on final clean commit"
+  },
+  "prior_usdc900_controls": [
+    {
+      "code_head": "8d73059089a094ae45db2d0f4724145077463768",
+      "report_delivered": false,
+      "termination": "external_timeout",
+      "case_measurement_sha256": "663e52e8434bdc4bedd61a7f35fffa3f7f54ade36ae06bd6562b106b1c810899",
+      "aggregate_measurements_sha256": "c07ffae517ae449385296173c87b11cb7482d3f2d17016f0adf32072ee693d4b"
+    },
+    {
+      "code_head": "5048bae1f613cd259951704c4d9e29608bf17973",
+      "report_delivered": false,
+      "termination": "external_timeout",
+      "case_measurement_sha256": "de42ac0b0f41464dffc3c2c686b13542a6d4ab98935771545ab1086010ab1ca1"
+    }
+  ],
+  "weth_controls": {
+    "code_heads": [
+      "5048bae1f613cd259951704c4d9e29608bf17973",
+      "8d73059089a094ae45db2d0f4724145077463768"
+    ],
+    "comparison_sha256": "a4b69d48b7d612e93419cbee09a70a20e6406b7d69d91ee86a3457b82a2ad8cf",
+    "complete_export_equal_except": [
+      "metadata.work",
+      "metadata.timings"
+    ],
+    "normalization": "Sort only unordered PathAtoms and complete symbolic/storage/transient fact KV pairs; no alpha renaming or other field omission.",
+    "work_current_minus_8d": 31352394,
+    "work_current_minus_5048": -1298278330,
+    "statistical_speedup_proven": false
+  },
+  "focused_348": {
+    "tracked_source_count": 833,
+    "source_unchanged": true,
+    "procedure": {
+      "passed": 58,
+      "actual_exit": 0
+    },
+    "relations": {
+      "passed": 41,
+      "failed": 1,
+      "actual_exit": 101,
+      "failure": "Old exact fee helper omitted 556 paid collection work; the production code was not changed."
+    },
+    "known_recursion": {
+      "passed": 21,
+      "actual_exit": 0
+    },
+    "unknown_world": {
+      "passed": 43,
+      "actual_exit": 0
+    },
+    "clippy_actual_exit": 0,
+    "summary_sha256": "a33a02d5211159975fc2ce86c67fd8d91309c02ecdf18b03096a4796c621d2f1"
+  },
+  "isolated_test_only_fee_supplement": {
+    "relations": {
+      "passed": 42,
+      "failed": 0,
+      "actual_exit": 0
+    },
+    "clippy_actual_exit": 0,
+    "format_actual_exit": 0,
+    "production_identical_to_348": true,
+    "fee_added_by_existing_collection": 556,
+    "evidence_sha256": "1b3567d50996cb62c6dcfb0922d6e978e5ba6cb440643f3afbbbb3f40a967dca"
+  },
+  "usdc_controls": {
+    "code_heads": [
+      "5048bae1f613cd259951704c4d9e29608bf17973",
+      "8d73059089a094ae45db2d0f4724145077463768"
+    ],
+    "comparison_sha256": "7dda790fdcf147125287adb6c618bab2572faaab496ce5e1d8c1dc309a8110ea",
+    "same_raw_request_policy_environment_rpc_input_and_external_guard": true,
+    "all_no_report": true,
+    "completion_speed_ratio": null,
+    "final_precision_or_coverage_equivalence": null
+  }
+}
