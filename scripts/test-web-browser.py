@@ -4716,8 +4716,13 @@ def layout_pending_machines(report, entry):
     assert report["schema_version"] == 13
     pending = report["pending_machines"]
     assert len(pending) == entry["expected_pending_machines"]
-    assert {frontier["payload"] for frontier in report["frontiers"]} == set(range(len(pending)))
+    assert len(report["frontiers"]) == entry["expected_frontiers"]
+    pending_frontiers = [frontier for frontier in report["frontiers"] if frontier["payload"] is not None]
+    assert len(pending_frontiers) == len(pending)
+    assert {frontier["payload"] for frontier in pending_frontiers} == set(range(len(pending)))
     nodes = {node["id"]:node for node in report["cfg"]}
+    states = {state["state"]:state for state in report["states"]}
+    ssa_blocks = {block["state"]:block for block in report["ssa"]["blocks"]}
     programs = {program["id"] for program in report["programs"]}
     graph = report["symbolic"]["nodes"]
     word_kinds = {"Constant","Input","Fresh","Operation","Ite","ByteRead","WordRead","SlotRead","Keccak"}
@@ -4740,10 +4745,7 @@ def layout_pending_machines(report, entry):
         assert type(index) is int and 0 <= index < len(values)
         return values[index]
     buffers = set(); stores = set()
-    for frontier in report["frontiers"]:
-        assert frontier["from"] in nodes and frontier["pc"] is None and frontier["range"] is None
-        assert frontier["reason"] == entry["expected_frontier_details"]
-        machine = pool(frontier["payload"],pending)
+    def machine_snapshot(machine):
         assert set(machine) == {"frames","store","path"} and machine["frames"]
         reference(machine["path"],path_kinds)
         pool(machine["store"],report["stores"]);stores.add(machine["store"])
@@ -4764,6 +4766,51 @@ def layout_pending_machines(report, entry):
         active = machine["frames"][-1]
         assert any(node["program"] == active["program"] and node["basic_block"] == active["basic_block"]
                    and node["frame_depth"] == len(machine["frames"]) for node in nodes.values())
+        return active
+    pending_locations = []; instruction_frontiers = []
+    for frontier in report["frontiers"]:
+        assert frontier["from"] in nodes and frontier["range"] is None
+        assert frontier["kind"] == entry["expected_frontier_reason"]
+        assert frontier["reason"] == entry["expected_frontier_details"]
+        assert frontier["detail"] == f"{frontier['kind']}({frontier['reason'][frontier['kind']]})"
+        source = nodes[frontier["from"]]
+        if frontier["payload"] is not None:
+            assert frontier["pc"] is None
+            machine = pool(frontier["payload"],pending)
+            active = machine_snapshot(machine)
+            target = next(node for node in nodes.values() if node["program"] == active["program"]
+                          and node["basic_block"] == active["basic_block"]
+                          and node["frame_depth"] == len(machine["frames"]))
+            pending_locations.append({"source_start_pc":source["start_pc"],"source_frame_depth":source["frame_depth"],
+                                      "target_start_pc":target["start_pc"],"target_frame_depth":target["frame_depth"]})
+            continue
+        assert frontier["pc"] is not None
+        state = states[frontier["from"]]
+        block = ssa_blocks[frontier["from"]]
+        for name in ["entry","exit"]:
+            active = machine_snapshot(state[name])
+            assert (active["program"],active["basic_block"],len(state[name]["frames"])) == (
+                source["program"],source["basic_block"],source["frame_depth"])
+        instruction = block["instructions"][-1]
+        assert instruction["pc"] == frontier["pc"] == source["executed_pcs"][-1]
+        assert not instruction["fault"] and not instruction["results"] and len(instruction["operands"]) == 2
+        # The exit snapshot is after operand consumption, not a resumable pre-MSTORE checkpoint.
+        assert instruction["effect_result"] is not None and instruction["effect_result"] == block["exit_effect"]
+        assert [len(frame) for frame in block["exit_frames"]] == [len(frame["stack"]) for frame in state["exit"]["frames"]]
+        assert not any(outcome["state"] == frontier["from"] for outcome in report["outcomes"])
+        outgoing = [edge for edge in report["edges"] if edge["from"] == frontier["from"]]
+        assert outgoing
+        edge_ids = {edge["id"] for edge in outgoing}
+        assert len(edge_ids) == len(outgoing)
+        assert not edge_ids.intersection(transition["edge"] for transition in report["ssa"]["transitions"])
+        deferred = {edge["edge"]:edge["reason"] for edge in report["ssa"]["deferred_edges"]}
+        assert all(deferred.get(edge) == "NotInExecutionEvidence" for edge in edge_ids)
+        instruction_frontiers.append({"source_start_pc":source["start_pc"],"source_frame_depth":source["frame_depth"],
+                                      "pc":instruction["pc"],"opcode":instruction["opcode"],"name":instruction["name"],
+                                      "progress":instruction["progress"],"coverage":block["coverage"],
+                                      "deferred_edge_kinds":sorted(edge["kind"] for edge in outgoing)})
+    assert sorted(pending_locations,key=lambda location:location["source_start_pc"]) == entry["expected_pending_frontiers"]
+    assert sorted(instruction_frontiers,key=lambda location:location["pc"]) == entry["expected_instruction_frontiers"]
     for index in stores:
         store = report["stores"][index]
         assert set(store) == {"storage_default","transient_default","balance_default","accounts","logs",
@@ -4797,7 +4844,8 @@ def layout_pending_machines(report, entry):
     assert not report["ssa"]["complete"]
     assert {block["state"] for block in report["ssa"]["blocks"]} == set(nodes)
     assert all(not block["incoming_complete"] for block in report["ssa"]["blocks"])
-    return {"pending_machines":len(pending),"byte_arrays":sorted(buffers),"stores":sorted(stores),
+    return {"pending_machines":len(pending),"instruction_frontiers":instruction_frontiers,
+            "byte_arrays":sorted(buffers),"stores":sorted(stores),
             "typed_reasons":[frontier["reason"] for frontier in report["frontiers"]]}
 
 
