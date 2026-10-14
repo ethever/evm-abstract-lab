@@ -1,5 +1,7 @@
 //! Shared EVM bit-vector encoding over the provider-independent SMT layer.
-//! Every check owns a fresh native session; EVM arithmetic semantics live here.
+//! Checks use fresh native Solvers, except Z3 candidate chunks of 3..=32 same-width
+//! syntactic literals, which share only their chunk's Solver and common lowering.
+//! EVM arithmetic semantics live here.
 
 use super::{CheckResult, Constraint, QueryReason, RelationLimits, RelationState, ValueQuery};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, ExprKind, SlotStateId, SourceId};

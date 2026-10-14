@@ -1,8 +1,10 @@
 //! Solver-independent Boolean, bit-vector and array queries with private native sessions.
 //!
-//! Terms belong to this library, never a native solver. Each check lowers the
-//! same DAG into the selected provider and releases all native handles before
-//! returning. UNKNOWN is distinct from UNSAT. Resource units are provider-specific
+//! Terms belong to this library, never a native solver. Checks lower the same
+//! DAG into the selected provider. Only Z3 candidate chunks of 3..=32 same-width
+//! syntactic literals share a Solver and common lowering; other checks use fresh
+//! Solvers. All native handles are released before the API returns.
+//! UNKNOWN is distinct from UNSAT. Resource units are provider-specific
 //! and never wall-clock time; none of the providers launches a child process.
 //!
 //! Array operations use native BV-indexed, BV-valued arrays. Z3 and Bitwuzla

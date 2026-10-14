@@ -11,12 +11,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod literal_family;
+
 // Record only events from the actual typed APIs; there is no second batch implementation.
 #[derive(Clone, Default)]
 struct Trace {
     contexts: Vec<usize>,
     queries: Vec<usize>,
     native: Vec<usize>,
+    preparations: Vec<usize>,
+    resources: Vec<(u32, Option<u32>, Option<u32>)>,
     finished: usize,
 }
 struct Watch {
@@ -94,6 +98,31 @@ pub(super) fn observe_query() {
         .find(|watch| watch.owner == thread::current().id())
     {
         watch.trace.lock().unwrap().queries.push(context_id());
+    }
+}
+pub(super) fn observe_preparation() {
+    if let Some(watch) = WATCHES
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|watch| watch.owner == thread::current().id())
+    {
+        watch.trace.lock().unwrap().preparations.push(context_id());
+    }
+}
+pub(super) fn observe_resources(rlimit: u32, before: Option<u32>, after: Option<u32>) {
+    if let Some(watch) = WATCHES
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|watch| watch.owner == thread::current().id())
+    {
+        watch
+            .trace
+            .lock()
+            .unwrap()
+            .resources
+            .push((rlimit, before, after));
     }
 }
 pub(super) fn observe_native() {
@@ -270,6 +299,7 @@ fn complete_512_candidates_match_fresh_oracle_with_at_most_32_checks_per_context
     assert_eq!(trace.contexts.len(), 16);
     assert_eq!(trace.queries.len(), 512);
     assert_eq!(trace.native.len(), 512);
+    assert_eq!(trace.preparations.len(), 16);
     for (context, queries) in trace.contexts.iter().zip(trace.queries.chunks(32)) {
         assert!(queries.iter().all(|query| query == context));
     }
@@ -425,60 +455,66 @@ fn actual_typed_apis_keep_array_and_function_congruence_semantics() {
 
 #[test]
 fn actual_native_cancellation_stops_batch_and_same_worker_next_batch_is_clean() {
-    let token = Cancellation::new();
-    let (started, native_started) = mpsc::channel();
-    let observe = Observe::new(None, Some(started), None);
-    thread::scope(|scope| {
-        let cancellation = token.clone();
-        scope.spawn(move || {
-            native_started.recv_timeout(Duration::from_secs(5)).unwrap();
-            thread::sleep(Duration::from_millis(30));
-            cancellation.cancel();
+    for count in [2, 3] {
+        let candidates = (1..=count)
+            .map(|n| Bv::from_u64(n, 256))
+            .collect::<Vec<_>>();
+        let token = Cancellation::new();
+        let (started, native_started) = mpsc::channel();
+        let observe = Observe::new(None, Some(started), None);
+        thread::scope(|scope| {
+            let cancellation = token.clone();
+            scope.spawn(move || {
+                native_started.recv_timeout(Duration::from_secs(5)).unwrap();
+                thread::sleep(Duration::from_millis(30));
+                cancellation.cancel();
+            });
+            let context = Context::default();
+            let target = Bv::from_str(
+                256,
+                "115792089237316195423570985008687907853269984665640564039457584007908834671663",
+            )
+            .unwrap();
+            let mut base = Vec::new();
+            for index in 0..8 {
+                let x = context.fresh_bv(&format!("x{index}"), 256);
+                let y = context.fresh_bv(&format!("y{index}"), 256);
+                base.extend([
+                    x.bvmul(&y).eq(&target),
+                    x.bvugt(Bv::from_u64(1, 256)),
+                    y.bvugt(Bv::from_u64(1, 256)),
+                ]);
+            }
+            let value = context.fresh_bv("candidate", 256);
+            let start = Instant::now();
+            assert_eq!(
+                with_cancellation(&token, || check_candidates(
+                    &base,
+                    &value,
+                    &candidates,
+                    Provider::Z3,
+                    u32::MAX
+                )),
+                [Outcome::Unknown(Unknown::Cancelled)]
+            );
+            assert!(start.elapsed() < Duration::from_secs(5));
+            assert_eq!(observe.trace().native.len(), 1);
+            assert_eq!(observe.trace().queries.len(), 1);
+            assert_eq!(
+                check_candidates(
+                    &[],
+                    &value,
+                    &[Bv::from_u64(1, 256), Bv::from_u64(2, 256)],
+                    Provider::Z3,
+                    DEFAULT_RLIMIT
+                ),
+                [Outcome::Sat(None), Outcome::Sat(None)]
+            );
+            assert_eq!(observe.trace().contexts.len(), 2);
+            assert_eq!(observe.trace().native.len(), 3);
+            assert_eq!(observe.trace().preparations.len(), 3);
         });
-        let context = Context::default();
-        let target = Bv::from_str(
-            256,
-            "115792089237316195423570985008687907853269984665640564039457584007908834671663",
-        )
-        .unwrap();
-        let mut base = Vec::new();
-        for index in 0..8 {
-            let x = context.fresh_bv(&format!("x{index}"), 256);
-            let y = context.fresh_bv(&format!("y{index}"), 256);
-            base.extend([
-                x.bvmul(&y).eq(&target),
-                x.bvugt(Bv::from_u64(1, 256)),
-                y.bvugt(Bv::from_u64(1, 256)),
-            ]);
-        }
-        let value = context.fresh_bv("candidate", 256);
-        let start = Instant::now();
-        assert_eq!(
-            with_cancellation(&token, || check_candidates(
-                &base,
-                &value,
-                &[Bv::from_u64(1, 256), Bv::from_u64(2, 256)],
-                Provider::Z3,
-                u32::MAX
-            )),
-            [Outcome::Unknown(Unknown::Cancelled)]
-        );
-        assert!(start.elapsed() < Duration::from_secs(5));
-        assert_eq!(observe.trace().native.len(), 1);
-        assert_eq!(observe.trace().queries.len(), 1);
-        assert_eq!(
-            check_candidates(
-                &[],
-                &value,
-                &[Bv::from_u64(1, 256), Bv::from_u64(2, 256)],
-                Provider::Z3,
-                DEFAULT_RLIMIT
-            ),
-            [Outcome::Sat(None), Outcome::Sat(None)]
-        );
-        assert_eq!(observe.trace().contexts.len(), 2);
-        assert_eq!(observe.trace().native.len(), 3);
-    });
+    }
 }
 
 #[test]
@@ -748,4 +784,5 @@ fn cancellation_between_context_chunks_refuses_the_next_unpaid_operation_as_work
     assert!(exhausted);
     assert_eq!(observe.trace().contexts.len(), 1);
     assert_eq!(observe.trace().native.len(), 32);
+    assert_eq!(observe.trace().preparations.len(), 1);
 }

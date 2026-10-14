@@ -1,4 +1,4 @@
-//! Scoped finite batches: no public callback and no native Solver reuse.
+//! Scoped finite batches; only same-width literal families reuse a chunk's Solver.
 use crate::{Bool, Bv, Error, Outcome, Provider, QueryBudget, Unknown};
 use num_bigint::BigUint;
 
@@ -55,12 +55,20 @@ fn candidates_inner(
             outcomes.push(BudgetedOutcome::Work);
             break;
         }
+        // Only inspect this paid, bounded chunk. No parsing/native side effects
+        // or later candidate errors can precede the first query's outcome.
+        let incremental = provider == Provider::Z3
+            && chunk.len() > 2
+            && chunk.iter().all(|candidate| {
+                candidate.width() == value.width() && candidate.literal_hex().is_some()
+            });
         let mut run = || {
             #[cfg(test)]
             if provider == Provider::Z3 {
                 tests::observe_context();
             }
             let mut outcomes = Vec::new();
+            let mut family = None;
             for candidate in chunk {
                 if budget
                     .as_deref_mut()
@@ -78,15 +86,43 @@ fn candidates_inner(
                     let mut assertions = base.to_vec();
                     assertions.push(value.eq(candidate));
                     assertions.extend_from_slice(after);
+                    let mut miss = || {
+                        if incremental {
+                            #[cfg(test)]
+                            tests::observe_query();
+                            crate::checked_query(provider, rlimit, || {
+                                crate::z3::solve_literal_candidate(
+                                    &mut family,
+                                    base,
+                                    value,
+                                    after,
+                                    candidate,
+                                    rlimit,
+                                )
+                            })
+                        } else {
+                            checked_current(&assertions, None, provider, rlimit)
+                        }
+                    };
                     if let Some(mut query) = budget.as_deref_mut().and_then(QueryBudget::cache) {
-                        crate::decided_cache::candidate_current(
-                            &assertions,
-                            provider,
-                            rlimit,
-                            &mut query,
-                        )
+                        if incremental {
+                            crate::decided_cache::candidate_with(
+                                &assertions,
+                                provider,
+                                rlimit,
+                                &mut query,
+                                miss,
+                            )
+                        } else {
+                            crate::decided_cache::candidate_current(
+                                &assertions,
+                                provider,
+                                rlimit,
+                                &mut query,
+                            )
+                        }
                     } else {
-                        checked_current(&assertions, None, provider, rlimit)
+                        miss()
                     }
                 };
                 #[cfg(test)]
@@ -113,7 +149,9 @@ fn candidates_inner(
     }
     outcomes
 }
-/// Check base AND value==candidate with a fresh Solver and full allowance each time.
+/// Check base AND value==candidate with the full allowance each time. Z3 chunks
+/// of more than two same-width syntactic literals share a local Solver;
+/// every other query retains its fresh Solver.
 /// Results keep candidate order and stop at the first Unknown/Error. Each chunk
 /// of at most 32 checks owns a private Context, without changing the query limits.
 pub fn check_candidates(
@@ -214,6 +252,16 @@ pub fn check_unique(base: &[Bool], value: &Bv, provider: Provider, rlimit: u32) 
 #[cfg(test)]
 pub(crate) fn observe_native() {
     tests::observe_native();
+}
+
+#[cfg(test)]
+pub(crate) fn observe_preparation() {
+    tests::observe_preparation();
+}
+
+#[cfg(test)]
+pub(crate) fn observe_resources(rlimit: u32, before: Option<u32>, after: Option<u32>) {
+    tests::observe_resources(rlimit, before, after);
 }
 
 #[cfg(test)]

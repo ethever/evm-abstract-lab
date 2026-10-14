@@ -451,7 +451,9 @@ pub fn check_cached(
     rlimit: u32,
     query: &mut CacheQuery<'_>,
 ) -> Outcome {
-    decided(base, provider, rlimit, query, FeasibilityOracle::Fresh)
+    candidate_with(base, provider, rlimit, query, || {
+        crate::check(base, None, provider, rlimit)
+    })
 }
 
 pub(crate) fn candidate_current(
@@ -460,32 +462,23 @@ pub(crate) fn candidate_current(
     rlimit: u32,
     query: &mut CacheQuery<'_>,
 ) -> Outcome {
-    decided(base, provider, rlimit, query, FeasibilityOracle::Current)
+    candidate_with(base, provider, rlimit, query, || {
+        crate::query_pair::checked_current(base, None, provider, rlimit)
+    })
 }
 
-// The mathematical key is shared, but ordinary feasibility misses must never
-// inherit a finite batch's current native context.
-enum FeasibilityOracle {
-    Fresh,
-    Current,
-}
-impl FeasibilityOracle {
-    fn check(&self, base: &[Bool], provider: Provider, rlimit: u32) -> Outcome {
-        match self {
-            Self::Fresh => crate::check(base, None, provider, rlimit),
-            Self::Current => crate::query_pair::checked_current(base, None, provider, rlimit),
-        }
-    }
-}
-fn decided(
+// Keep the complete individual key and remember rules, while allowing a
+// chunk-local literal family to supply its actual Fi check on every miss.
+// Ordinary feasibility callers still supply their fresh private session.
+pub(crate) fn candidate_with(
     base: &[Bool],
     provider: Provider,
     rlimit: u32,
     query: &mut CacheQuery<'_>,
-    oracle: FeasibilityOracle,
+    miss: impl FnOnce() -> Outcome,
 ) -> Outcome {
     if cancellation() || rlimit == 0 {
-        return oracle.check(base, provider, rlimit);
+        return miss();
     }
     let cache = &mut query.cache;
     let mut key = cache.key(base, None, provider, rlimit, query.scope, &mut query.budget);
@@ -509,7 +502,7 @@ fn decided(
             _ => key = None,
         }
     }
-    let answer = oracle.check(base, provider, rlimit);
+    let answer = miss();
     if cancellation() {
         return Outcome::Unknown(Unknown::Cancelled);
     }
