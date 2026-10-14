@@ -175,7 +175,7 @@ for label, arguments, expected in cases:
                 if ir.get("status") != "Converged" or ir.get("complete") is not True:
                     sys.exit(f"{label}/{backend}: expected complete SSA wrapper")
             if label.startswith("missing-code-"):
-                summaries = analysis.get("unknown_summaries", [])
+                summaries = analysis.get("procedure_summaries", [])
                 if not summaries or not all(summary.get("closed") is True
                                             and summary.get("procedures")
                                             for summary in summaries):

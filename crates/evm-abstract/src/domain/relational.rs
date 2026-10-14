@@ -358,6 +358,25 @@ impl RelationState {
         {
             return Ok(());
         }
+        if let Some(values) = numeric.constants() {
+            if values.len() > limits.max_nodes {
+                return Err(QueryReason::ExpressionLimit);
+            }
+            // A complete finite set, filtered by the product, already implies
+            // its masks, bounds, congruence and nonzero constraint. Retaining
+            // those again can create expensive redundant Word256 divisions.
+            return self.retain(
+                Constraint::Members {
+                    expression: expression.clone(),
+                    values: values
+                        .iter()
+                        .copied()
+                        .filter(|value| numeric.contains(*value))
+                        .collect(),
+                },
+                limits,
+            );
+        }
         let (lower, upper) = numeric.interval().unsigned_bounds();
         let (bits_lower, bits_upper) = numeric.known_bits().unsigned_bounds();
         if (lower != U256::ZERO || upper != U256::MAX) && (bits_lower < lower || bits_upper > upper)
@@ -407,22 +426,6 @@ impl RelationState {
                     expression: expression.clone(),
                     modulus,
                     residue,
-                },
-                limits,
-            )?;
-        }
-        if let Some(values) = numeric.constants() {
-            if values.len() > limits.max_nodes {
-                return Err(QueryReason::ExpressionLimit);
-            }
-            self.retain(
-                Constraint::Members {
-                    expression: expression.clone(),
-                    values: values
-                        .iter()
-                        .copied()
-                        .filter(|v| numeric.contains(*v))
-                        .collect(),
                 },
                 limits,
             )?;

@@ -617,6 +617,7 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
             .find(|state| {
                 state.active().code_address == address(0x101)
                     && state.executed_pcs.contains(&comparison_pc)
+                    && state.entry.active().stack.last().unwrap().singleton() == Some(U256::from(1))
             })
             .expect("root EQ was executed");
         let comparison = &compared.exit_stack[0];
@@ -688,6 +689,44 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
             .states()
             .iter()
             .filter(|state| state.key.frames.len() == 1 && state.active().basic_block_index >= 1)
+            .collect();
+        assert_eq!(continuations.len(), 4);
+        for block in [1, 2] {
+            for success in [false, true] {
+                let states: Vec<_> = continuations
+                    .iter()
+                    .filter(|state| {
+                        state.active().basic_block_index == block
+                            && state.entry.active().stack.last().unwrap().singleton()
+                                == Some(U256::from(u8::from(success)))
+                    })
+                    .collect();
+                assert_eq!(states.len(), 1);
+                assert_eq!(
+                    states[0].entry.active().returndata.len().singleton(),
+                    Some(U256::from(if success { 32 } else { 0 }))
+                );
+                if !success && block == 2 {
+                    assert_eq!(
+                        states[0]
+                            .exit
+                            .as_ref()
+                            .unwrap()
+                            .active()
+                            .memory
+                            .read_word_checked(&word(32), domain)
+                            .unwrap()
+                            .singleton(),
+                        Some(U256::ZERO)
+                    );
+                }
+            }
+        }
+        let continuations: Vec<_> = continuations
+            .into_iter()
+            .filter(|state| {
+                state.entry.active().stack.last().unwrap().singleton() == Some(U256::from(1))
+            })
             .collect();
         assert_eq!(continuations.len(), 2);
         let call_success =
@@ -770,17 +809,20 @@ fn bytecode_without_a_concrete_creator_retains_a_creation_frontier() {
 fn symbolic_targets_are_modeled_while_uncovered_copy_sizes_keep_typed_frontiers() {
     for (code, expected_target) in [("5f5f5f5f5f5f356207a120f100", true), ("365f5f3700", false)] {
         let result = analyze(code, EvmEnvironment::default(), Profile::Product);
-        assert_eq!(result.status(), Status::Incomplete);
         if expected_target {
-            assert!(!result.execution().frontiers().is_empty());
+            assert_eq!(result.status(), Status::Converged);
+            assert!(result.execution().frontiers().is_empty());
+            assert!(!result.execution().outcomes().is_empty());
+            assert!(!result.execution().procedure_summaries().is_empty());
             assert!(
                 result
                     .execution()
-                    .frontiers()
+                    .procedure_summaries()
                     .iter()
-                    .all(|frontier| frontier.reason != FrontierReason::UnknownTarget)
+                    .all(|record| record.closed && !record.procedures.is_empty())
             );
         } else {
+            assert_eq!(result.status(), Status::Incomplete);
             assert!(
                 result
                     .execution()
@@ -852,7 +894,11 @@ fn raw_internal_owner_does_not_supply_code_for_an_unrelated_literal_address() {
     );
     let call = format!("5f5f5f5f5f{literal}6207a120f100");
     let result = analyze(&call, EvmEnvironment::default(), Profile::Product);
-    assert_eq!(result.status(), Status::Incomplete);
+    assert_eq!(result.status(), Status::Converged);
+    assert!(result.execution().frontiers().is_empty());
+    let summaries = result.execution().procedure_summaries();
+    assert!(!summaries.is_empty());
+    assert!(summaries.iter().all(|record| record.closed));
     assert!(
         result.execution().states().iter().any(|state| {
             let active = state.active();

@@ -307,7 +307,7 @@ fn rpc_discovery_can_be_disabled_without_guessing_empty_code() {
         assert_eq!(analysis["status"], "Converged");
         assert!(analysis["world"]["accounts"].get(CALLEE).is_none());
         assert!(analysis["frontiers"].as_array().unwrap().is_empty());
-        let summaries = analysis["unknown_summaries"].as_array().unwrap();
+        let summaries = analysis["procedure_summaries"].as_array().unwrap();
         assert!(!summaries.is_empty());
         assert!(summaries.iter().all(|summary| summary["closed"] == true));
         let requests = server.finish();
@@ -455,21 +455,21 @@ fn native_and_delegated_precompile_execution_never_fetches_precompile_code() {
 }
 
 #[test]
-fn unknown_rpc_call_target_retains_actual_depth_budget_without_guessing_remote_addresses() {
+fn unknown_rpc_call_target_closes_procedures_without_guessing_remote_addresses() {
     thread::scope(|scope| {
         // 开放的 GAS 槽键不能完整枚举，读出的调用目标仍未知，不能猜地址。
         let fixture = Fixture::new(&[(ENTRY, "5f5f5f5f5f5a545af100")]);
         let server = RpcServer::new(scope, move |request| fixture.reply(request));
-        let analysis = result(execute(&server, &["--max-call-depth", "2"]), 2);
-        assert_eq!(analysis["status"], "Incomplete");
+        let analysis = result(execute(&server, &["--max-call-depth", "2"]), 0);
+        assert_eq!(analysis["status"], "Converged");
+        assert!(analysis["frontiers"].as_array().unwrap().is_empty());
+        let procedures = analysis["procedure_summaries"].as_array().unwrap();
+        assert!(!procedures.is_empty());
+        assert!(procedures.iter().all(|record| record["closed"] == true));
         assert!(
-            analysis["frontiers"]
-                .as_array()
-                .unwrap()
+            procedures
                 .iter()
-                .any(|frontier| { frontier["reason"] == "CallDepth" }),
-            "{:?}",
-            analysis["frontiers"]
+                .any(|record| record["kind"] == "UnknownEnvironment")
         );
         assert!(
             analysis["rpc_acquisition"]["fetched_accounts"]

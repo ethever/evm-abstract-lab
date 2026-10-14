@@ -53,7 +53,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 如果你正在读 `recorded prefix stack`、`partial φ` 或 `OperandsConsumed`，直接进入 [04：部分 SSA 的逐步实验](docs/04-ssa.md#7-未完成时按需查看部分-ssa)，观察同一程序在内存上限不足与足够时的栈、指令结果和覆盖差异，再回到所选路线。
 
-未知目标、重复回调与共享状态的完整例子见 [18：世界未知部分的抽象执行](docs/18-unknown-world.md)。它连接符号状态、已知代码执行、交互摘要和可见的覆盖报告。
+未知目标、重复回调与共享状态的完整例子见 [18：世界未知部分的抽象执行](docs/18-unknown-world.md)。它连接符号状态、已知代码执行、交互摘要和可见的覆盖报告；[已知代码自身递归](docs/18-unknown-world.md#已知代码自身递归也进入同一过程表)也使用共同更新的过程关系。
 
 ## 从单段代码到多个合约
 
@@ -152,7 +152,7 @@ nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 | `Incomplete` | 缺少事实、遇到模型无法处理的输入或耗尽预算；输出保留原因与停止位置 | `2` |
 | 输入错误 | JSON、参数或初始 RPC 采集失败，未得到有效分析结果 | `1`；参数语法错误由 clap 报告并退出 `2` |
 
-`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 7，`domain_spec.schema_version` 是 2。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
+`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 8，`domain_spec.schema_version` 是 2。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
 
 RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留下 `RpcAcquisition` 前沿，结果为 `Incomplete`、退出 `2`。采集失败的类型与来源另外保存在累计记录中，后续预算中断也不会丢失。输出中的已完成分支不能替代尚未展开的调用。
 
@@ -265,4 +265,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 [MIT license](LICENSE)。
 
-符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并通过 SMT 使用地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制 logical footprint。Native schema 7 与 Web schema 10 使用 flat typed graphs，导出有独立节点、exact payload、work 与取消边界。模型、guarded join、账户/plane、hash 和 provider 支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
+符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并通过 SMT 使用地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制 logical footprint。Native schema 8 与 Web schema 11 使用 flat typed graphs，导出有独立节点、exact payload、work 与取消边界。模型、guarded join、账户/plane、hash 和 provider 支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。

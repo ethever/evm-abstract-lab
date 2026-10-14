@@ -174,7 +174,7 @@ fn unknown_delegatecall_entering_known_c_keeps_c_address_in_normal_call() {
     complete_unknown(&analysis);
     observed.covers(&analysis);
     let normal_c: Vec<_> = analysis
-        .unknown_summaries()
+        .procedure_summaries()
         .iter()
         .flat_map(|summary| &summary.procedures)
         .filter(|procedure| {

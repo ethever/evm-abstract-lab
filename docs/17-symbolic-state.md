@@ -69,9 +69,9 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 摘要重放共享一张 rename map，遍历隐藏在 state source、view、rollback 和返回数据中的 fresh token。固定输入身份保持绑定，调用中新产生的未知来源每次重放使用新身份。重命名和导入按完整变换提交，失败不能安装一半状态。
 
-## 原生 JSON 7 与 Web 协议 10
+## 原生 JSON 8 与 Web 协议 11
 
-Native analysis schema 为 7；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或求解编码超限。
+Native analysis schema 为 8；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或求解编码超限。
 
 原生 graph 的 `identity_scope`、Fresh 编号及 Input scope/symbol 保留同一进程中的身份。source 的 `token` 是本图中的表达式引用，须先解析它指向的身份，再结合 namespace 判断来源；不能直接比较两个图的 token 或 root 索引，也不能用同名打印叶跨报告绑定输入。原生 CLI JSON 通过 `render::json` 的流式 writer 输出，整份 UTF-8 输出默认上限为 64 MiB，每次追加前检查预算与取消；应用可用 `JsonLimits` 与 `with_control` 明确选择策略。超过预算返回 `JsonError::Bytes`，包含已写字节、下一次写入所需字节和额度；取消返回 `JsonError::Cancelled`，保留已计算的分析事实。原生 pending Arc 快照仍可能重复其程序和状态，整份 writer 的预算约束这些重复输出；Web 使用下面的共享目录。直接调用第三方 serde 序列化函数不自动获得整份 writer 预算。
 

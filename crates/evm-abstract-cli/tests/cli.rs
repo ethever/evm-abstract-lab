@@ -576,7 +576,7 @@ fn unknown_code_world_converges_with_closed_summary_evidence_and_verified_ssa() 
     let analysis = &json["analysis"];
     assert_eq!(analysis["status"], "Converged");
     assert!(analysis["frontiers"].as_array().unwrap().is_empty());
-    let summaries = analysis["unknown_summaries"].as_array().unwrap();
+    let summaries = analysis["procedure_summaries"].as_array().unwrap();
     assert!(!summaries.is_empty());
     assert!(summaries.iter().all(|summary| summary["closed"] == true));
     assert!(json["ssa"].is_object());

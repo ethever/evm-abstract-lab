@@ -39,6 +39,18 @@ impl Encoder<'_> {
         if let Some(exact) = numeric.singleton() {
             return Ok(vec![value.eq(word(exact))]);
         }
+        if let Some(values) = numeric.constants() {
+            // Membership in the complete filtered set already implies every
+            // other numeric component. Encoding its redundant congruence can
+            // otherwise bit-blast a full Word256 remainder for a tiny set.
+            return Ok(vec![Bool::or(
+                &values
+                    .iter()
+                    .filter(|candidate| numeric.contains(**candidate))
+                    .map(|candidate| value.eq(word(*candidate)))
+                    .collect::<Vec<_>>(),
+            )]);
+        }
         let mut facts = Vec::new();
         let (lo, hi) = numeric.interval().unsigned_bounds();
         if lo != U256::ZERO {
@@ -69,15 +81,6 @@ impl Encoder<'_> {
             }
         } else if let Some(exact) = numeric.congruence().singleton() {
             facts.push(value.eq(word(exact)));
-        }
-        if let Some(values) = numeric.constants() {
-            facts.push(Bool::or(
-                &values
-                    .iter()
-                    .filter(|v| numeric.contains(**v))
-                    .map(|v| value.eq(word(*v)))
-                    .collect::<Vec<_>>(),
-            ));
         }
         if !numeric.may_be_zero() {
             facts.push(value.eq(word(U256::ZERO)).not());

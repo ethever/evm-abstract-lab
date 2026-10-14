@@ -18,6 +18,10 @@ fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
     assert_eq!(report.status, api::AnalysisStatus::Converged);
     assert!(report.frontiers.is_empty());
     assert!(!report.abstract_summaries.is_empty());
+    assert!(report.abstract_summaries.iter().all(|summary| {
+        summary.kind == api::ProcedureSummaryKind::UnknownEnvironment
+            && summary.root_procedure.is_some()
+    }));
     assert!(
         report
             .abstract_summaries

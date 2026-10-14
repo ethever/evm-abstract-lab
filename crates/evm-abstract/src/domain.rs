@@ -26,6 +26,7 @@ mod spec;
 pub mod symbolic;
 mod transfer;
 mod value;
+mod widening;
 
 use concrete::evaluate;
 pub use finite_constant_set::{EmptyFiniteConstantSet, FiniteConstantSet};

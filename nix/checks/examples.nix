@@ -41,11 +41,11 @@ in
         evm-abstract analyze --world ${sourceRoot}/examples/storage-symbolic-value.json --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --format json |
           jq -e '.status == "Converged" and .states[0].exit.call_stack.root.state.stack[0].Constants == ["0x1"]' > /dev/null
         evm-abstract analyze --world ${sourceRoot}/examples/worlds/missing-code.json ${concreteInputs} --format json --ssa > missing.json
-        jq -e '.analysis.status == "Converged" and .analysis.frontiers == [] and (.analysis.unknown_summaries | length) > 0 and all(.analysis.unknown_summaries[]; .closed) and (.ssa | type == "object")' missing.json > /dev/null
+        jq -e '.analysis.status == "Converged" and .analysis.frontiers == [] and (.analysis.procedure_summaries | length) > 0 and all(.analysis.procedure_summaries[]; .closed) and (.ssa | type == "object")' missing.json > /dev/null
         for world in ${sourceRoot}/examples/unknown-world/*.json; do
           name="$(basename "$world" .json)"
           evm-abstract analyze --world "$world" --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000000900 --evm.value 0 --evm.calldata 0x --format json --ssa > "$name-unknown.json"
-          jq -e '.analysis.status == "Converged" and .analysis.frontiers == [] and (.analysis.unknown_summaries | length) > 0 and all(.analysis.unknown_summaries[]; .closed and (.procedures | length) > 0) and (.ssa | type == "object")' "$name-unknown.json" > /dev/null
+          jq -e '.analysis.status == "Converged" and .analysis.frontiers == [] and (.analysis.procedure_summaries | length) > 0 and all(.analysis.procedure_summaries[]; .closed and (.procedures | length) > 0) and (.ssa | type == "object")' "$name-unknown.json" > /dev/null
           python3 - "$name" "$name-unknown.json" <<'PY'
         import json, sys
         name, path = sys.argv[1:]
@@ -148,6 +148,29 @@ in
             raise AssertionError((name, "missing unknown-world numerical checks"))
         PY
         done
+        # Known self-recursion closes through real CALL rejection and RETURN,
+        # including when optional reuse of graph certificates is disabled.
+        for reuse in on off; do
+          options=()
+          if [ "$reuse" = off ]; then options+=(--no-summaries); fi
+          evm-abstract analyze --world ${sourceRoot}/examples/known-recursion/self-return-42.json ${concreteInputs} --format json --ssa "''${options[@]}" > "known-recursion-$reuse.json"
+          jq -e '
+            .analysis.schema_version == 8 and .analysis.status == "Converged" and
+            .analysis.frontiers == [] and .ssa.complete and
+            (.analysis.procedure_summaries | length) > 0 and
+            all(.analysis.procedure_summaries[];
+              .kind == "KnownRecursion" and .closed and
+              (.root_procedure as $root | $root != null and
+                .procedures[$root].frame.mode == "Runtime" and
+                (.procedures[$root].covered_blocks | length) > 0)) and
+            ([.analysis.states[].key.frames | length] | max) <= 2 and
+            any(.analysis.outcomes[]; .kind == "Return") and
+            all(.analysis.outcomes[] | select(.kind == "Return");
+              .data as $data | $data.length.Constants == ["0x20"] and
+              $data.bytes["31"].Constants == ["0x2a"] and
+              all(range(0; 31); $data.bytes[tostring].Constants == ["0x0"]))
+          ' "known-recursion-$reuse.json" > /dev/null
+        done
         evm-abstract analyze --world ${sourceRoot}/examples/worlds/summary-reuse.json ${concreteInputs} --format json > summary-on.json
         evm-abstract analyze --world ${sourceRoot}/examples/worlds/summary-reuse.json ${concreteInputs} --format json --no-summaries > summary-off.json
         jq -e '.status == "Converged" and .summary_stats.hits > 0 and .summary_stats.imported_states > 0 and any(.summaries[]; (.reused_at | length) > 0) and .world.identity.kind == "offline" and (.world.fingerprint | test("^0x[0-9a-f]{64}$"))' summary-on.json > /dev/null
@@ -188,7 +211,7 @@ in
         # Packaged CLIs expose symbolic inputs and preserve the caller/origin alias.
         evm-abstract cfg --hex 33321400 --format json > symbolic-environment.json
         jq -e '
-          .schema_version == 7 and .domain_spec.schema_version == 2 and
+          .schema_version == 8 and .domain_spec.schema_version == 2 and
           .config.relations.enabled and (.config.relations | has("timeout_ms") | not) and
           .environment.to == {"Symbolic":"To"} and .environment.caller == {"Symbolic":"Caller"} and
           .environment.origin == null and .environment.value == "Top" and

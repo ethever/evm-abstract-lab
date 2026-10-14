@@ -10,7 +10,7 @@ pub(super) fn project(
     symbolic: &mut Pool<'_>,
 ) -> Result<Vec<api::AbstractSummary>, api::ApiError> {
     let mut records = Vec::new();
-    for record in native.unknown_summaries() {
+    for record in native.procedure_summaries() {
         checkpoint(control)?;
         symbolic.charge(record.procedures.len().saturating_add(1))?;
         let mut procedures = Vec::new();
@@ -48,6 +48,15 @@ pub(super) fn project(
         }
         records.push(api::AbstractSummary {
             source_state: record.source_state,
+            kind: match record.kind {
+                analysis::ProcedureSummaryKind::UnknownEnvironment => {
+                    api::ProcedureSummaryKind::UnknownEnvironment
+                }
+                analysis::ProcedureSummaryKind::KnownRecursion => {
+                    api::ProcedureSummaryKind::KnownRecursion
+                }
+            },
+            root_procedure: record.root_procedure,
             closed: record.closed,
             procedures,
             state_count: record.state_count,

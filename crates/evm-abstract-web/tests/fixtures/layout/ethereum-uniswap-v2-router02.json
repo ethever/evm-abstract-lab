@@ -45,6 +45,6 @@
         "detail": "Relations(ExpressionLimit)"
       }
     },
-    "expected_closed_unknown_summaries": 3
+    "expected_closed_procedure_summaries": 3
   }
 }

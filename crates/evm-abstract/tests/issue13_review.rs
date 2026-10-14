@@ -9,7 +9,7 @@ use evm_abstract::{
         AbstractValue, Domain,
         provenance::{Origin, OriginSet, Provenance},
         relational::CheckResult,
-        symbolic::{ExprId, SlotStateId, SlotStateKind},
+        symbolic::{ExprId, ExprKind, SlotStateId, SlotStateKind},
     },
     ssa,
     world::{Account, ByteArray, Entry, World},
@@ -33,6 +33,78 @@ fn entry() -> Entry {
 
 fn call(target: u16, value: u8) -> String {
     format!("60205f5f5f60{value:02x}61{target:04x}620f4240f1")
+}
+
+// Test-only route extraction from actual saved counter roots. A status now has
+// precise numeric value 0 or 1 at its immediate continuation; the literal from
+// another node cannot qualify that call's history in a later joined payload.
+fn counter_route(
+    root: &SlotStateId,
+    target: &SlotStateId,
+    limits: evm_abstract::domain::symbolic::ExprLimits,
+) -> ExprId {
+    fn visit(
+        root: &SlotStateId,
+        target: &SlotStateId,
+        limits: evm_abstract::domain::symbolic::ExprLimits,
+        memo: &mut std::collections::BTreeMap<SlotStateId, ExprId>,
+    ) -> ExprId {
+        if root == target {
+            return ExprId::constant(U256::from(1));
+        }
+        if let Some(predicate) = memo.get(root) {
+            return predicate.clone();
+        }
+        let predicate = match root.kind() {
+            SlotStateKind::Store {
+                previous,
+                key,
+                value,
+            } => {
+                // An overwrite can canonicalize away the old slot spine. The
+                // actual ADD still retains its old counter read, so qualifying
+                // that operand as one identifies the earlier successful write.
+                if let (
+                    SlotStateKind::Store {
+                        key: target_key,
+                        value: target_value,
+                        ..
+                    },
+                    ExprKind::Operation { opcode: op, args },
+                ) = (target.kind(), value.kind())
+                    && key == target_key
+                    && target_value.as_constant() == Some(U256::from(1))
+                    && *op == opcode::ADD
+                    && args[0].as_constant() == Some(U256::from(1))
+                {
+                    ExprId::operation(
+                        opcode::EQ,
+                        &[args[1].clone(), ExprId::constant(U256::from(1))],
+                        limits,
+                    )
+                    .unwrap()
+                } else {
+                    visit(previous, target, limits, memo)
+                }
+            }
+            SlotStateKind::Ite {
+                condition,
+                then_state,
+                else_state,
+            } => ExprId::ite(
+                condition.clone(),
+                visit(then_state, target, limits, memo),
+                visit(else_state, target, limits, memo),
+                limits,
+            )
+            .unwrap(),
+            SlotStateKind::Zero | SlotStateKind::Input { .. } => ExprId::constant(U256::ZERO),
+        };
+        memo.insert(root.clone(), predicate.clone());
+        predicate
+    }
+    assert!(root.nodes() <= limits.max_nodes && root.depth() <= limits.max_depth);
+    visit(root, target, limits, &mut std::collections::BTreeMap::new())
 }
 
 #[test]
@@ -113,10 +185,11 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             })
             .collect();
         continuations.sort_by_key(|state| state.entry.active().key.basic_block_index);
-        assert_eq!(continuations.len(), 3);
+        assert_eq!(continuations.len(), 6);
         let root_bytes = alloy_primitives::hex::decode(&root).unwrap();
-        for (index, (state, pc)) in continuations.iter().zip([15, 35, 56]).enumerate() {
-            assert_eq!(state.entry.active().key.basic_block_index, index + 1);
+        for state in &continuations {
+            let block = state.entry.active().key.basic_block_index;
+            let pc = [15, 35, 56][block - 1];
             assert_eq!(state.active().code_address, address(0x101));
             assert_eq!(state.executed_pcs.first(), Some(&pc));
             assert_eq!(root_bytes[pc - 1], opcode::CALL);
@@ -124,24 +197,143 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             assert!(state.execution_evidence().unwrap().is_current());
             // The value is the actual resumed CALL result, before POP. Current
             // child receipts, rather than old accumulated edges, prove its origin.
+            let status = state.entry.active().stack.last().unwrap();
+            let success = status.singleton().unwrap();
+            assert!(success <= U256::from(1));
+            let expected_edge = if success == U256::from(1) {
+                MachineEdgeKind::Return
+            } else {
+                MachineEdgeKind::Failure
+            };
             assert!(graph.states().iter().any(|predecessor| {
                 predecessor.execution_evidence().is_some_and(|receipt| {
                     receipt.is_current()
-                        && receipt
-                            .successors()
-                            .contains(&(state.id, MachineEdgeKind::Return))
+                        && receipt.successors().contains(&(state.id, expected_edge))
                 })
             }));
-            let status = state.entry.active().stack.last().unwrap();
-            assert_eq!(status.numeric(), union(1).numeric());
+            assert_eq!(status.numeric(), AbstractValue::constant(success).numeric());
             assert_eq!(status.provenance(), &Provenance::constant());
-            assert!(status.expression().is_some());
             assert!(!status.symbolic_limit_reached());
         }
-        let returns: Vec<_> = graph
+        let first_rejected = continuations
+            .iter()
+            .find(|state| {
+                state.active().basic_block_index == 1
+                    && state.entry.active().stack.last().unwrap().singleton() == Some(U256::ZERO)
+            })
+            .unwrap();
+        let rejected_zero = first_rejected
+            .exit
+            .as_ref()
+            .unwrap()
+            .store
+            .read_checked(address(0x101), &zero, domain)
+            .unwrap();
+        assert_eq!(rejected_zero.numeric(), zero.numeric());
+        assert!(!rejected_zero.symbolic_limit_reached());
+        let memory_source = continuations
+            .iter()
+            .flat_map(|state| {
+                state
+                    .execution_evidence()
+                    .unwrap()
+                    .instruction_values()
+                    .unwrap()
+                    .iter()
+                    .filter(|value| {
+                        root_bytes[state.executed_pcs[value.instruction_index()]] == opcode::MLOAD
+                    })
+                    .map(|value| {
+                        assert_eq!(value.provenance(), &Provenance::source(Origin::Memory));
+                        value.provenance().clone()
+                    })
+            })
+            .reduce(|left, right| left.join(&right))
+            .unwrap();
+        // The first rejected CALL writes zero, preserving the initial zero
+        // slot root. Its later join with the first successful memory load adds
+        // Constant to slot0's source. Subsequent loads retain Memory directly.
+        let initial_zero = graph.states()[0]
+            .entry
+            .store
+            .read_checked(address(0x101), &zero, domain)
+            .unwrap();
+        assert_eq!(initial_zero, zero);
+        let historical_source = initial_zero.provenance().join(&memory_source);
+        assert_eq!(rejected_zero.provenance(), &historical_source);
+        let continuations: Vec<_> = continuations
+            .into_iter()
+            .filter(|state| {
+                state.entry.active().stack.last().unwrap().singleton() == Some(U256::from(1))
+            })
+            .collect();
+        assert_eq!(continuations.len(), 3);
+        for (index, state) in continuations.iter().enumerate() {
+            assert_eq!(state.active().basic_block_index, index + 1);
+        }
+        let all_returns: Vec<_> = graph
             .outcomes()
             .iter()
             .filter(|outcome| outcome.kind == OutcomeKind::Return)
+            .collect();
+        // Splitting the last call also improves its failed continuation: it can
+        // retain only the previous 0/1 count, never the successful increment 2.
+        for success in [false, true] {
+            let returns: Vec<_> = all_returns
+                .iter()
+                .filter(|outcome| {
+                    graph.states()[outcome.state]
+                        .entry
+                        .active()
+                        .stack
+                        .last()
+                        .unwrap()
+                        .singleton()
+                        == Some(U256::from(u8::from(success)))
+                })
+                .collect();
+            assert!(!returns.is_empty());
+            for outcome in returns {
+                let payload = graph.states()[outcome.state].exit.as_ref().unwrap();
+                let maximum = if success { 2 } else { 1 };
+                for (slot, bound) in [(0, 1), (1, 1), (2, maximum)] {
+                    assert_eq!(
+                        outcome
+                            .store
+                            .read_checked(
+                                address(0x101),
+                                &AbstractValue::constant(U256::from(slot)),
+                                domain
+                            )
+                            .unwrap()
+                            .numeric(),
+                        union(bound).numeric()
+                    );
+                }
+                for (owner, bound) in [(0x201, maximum), (0x202, 1), (0x300, 0), (0x101, 0)] {
+                    assert_eq!(
+                        payload
+                            .store
+                            .read_transient_checked(address(owner), &zero, domain)
+                            .unwrap()
+                            .numeric(),
+                        union(bound).numeric()
+                    );
+                }
+            }
+        }
+        let returns: Vec<_> = all_returns
+            .into_iter()
+            .filter(|outcome| {
+                graph.states()[outcome.state]
+                    .entry
+                    .active()
+                    .stack
+                    .last()
+                    .unwrap()
+                    .singleton()
+                    == Some(U256::from(1))
+            })
             .collect();
         assert!(!returns.is_empty());
         for outcome in returns {
@@ -172,7 +364,15 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 assert!(read.constants().is_some());
                 assert!(read.contains(U256::from(expected)));
                 assert_eq!(read.numeric(), union(expected).numeric());
-                assert_eq!(read.provenance(), &Provenance::source(Origin::Memory));
+                assert_eq!(
+                    read.provenance(),
+                    if slot == 0 {
+                        &historical_source
+                    } else {
+                        &memory_source
+                    },
+                    "slot {slot}"
+                );
                 assert!(!read.symbolic_limit_reached());
                 assert_eq!(
                     read,
@@ -188,38 +388,85 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 persistent_root,
                 outcome.store.slot_root(address(0x101), false).unwrap()
             );
-            let mut previous = &persistent_root;
-            for (slot, read) in persistent.iter().enumerate().rev() {
-                let SlotStateKind::Store {
-                    previous: older,
-                    key,
-                    value,
-                } = previous.kind()
-                else {
-                    panic!("missing ordered persistent write at slot {slot}");
-                };
-                assert_eq!(key.as_constant(), Some(U256::from(slot)));
-                assert_eq!(Some(value), read.expression());
-                let (_, source) = payload
-                    .store
-                    .symbolic_facts(false)
-                    .find(|(term, _)| *term == value)
-                    .unwrap();
+            let initial_root = graph.states()[0]
+                .entry
+                .store
+                .slot_root(address(0x101), false)
+                .unwrap();
+            assert!(persistent_root.nodes() <= limits.max_nodes);
+            assert!(persistent_root.depth() <= limits.max_depth);
+            // Separate CALL results retain real historical ITE roots. Every
+            // branch must still contain descending writes to 2, 1, 0 and end
+            // at the exact initial zero root; canonical zero writes can vanish.
+            for (slot, read) in persistent.iter().enumerate() {
+                let mut pending = vec![(&persistent_root, 3)];
+                let mut visited = std::collections::BTreeSet::new();
+                let mut sources = None;
+                while let Some((state, upper)) = pending.pop() {
+                    if !visited.insert((state.clone(), upper)) {
+                        continue;
+                    }
+                    assert!(visited.len() <= limits.max_nodes);
+                    let source = match state.kind() {
+                        SlotStateKind::Store {
+                            previous,
+                            key,
+                            value,
+                        } => {
+                            let written: usize = key.as_constant().unwrap().try_into().unwrap();
+                            assert!(written < upper, "out-of-order persistent write");
+                            if written == 0 {
+                                assert_eq!(previous, &initial_root);
+                            }
+                            if written == slot {
+                                let (_, source) = payload
+                                    .store
+                                    .symbolic_facts(false)
+                                    .find(|(term, _)| *term == value)
+                                    .unwrap();
+                                assert!(!source.symbolic_limit_reached());
+                                assert_eq!(source.symbolic_expression().as_ref(), Some(value));
+                                source.clone()
+                            } else {
+                                pending.push((previous, written));
+                                continue;
+                            }
+                        }
+                        SlotStateKind::Ite {
+                            then_state,
+                            else_state,
+                            ..
+                        } => {
+                            pending.extend([(then_state, upper), (else_state, upper)]);
+                            continue;
+                        }
+                        SlotStateKind::Zero => {
+                            assert_eq!(state, &initial_root);
+                            initial_zero.clone()
+                        }
+                        SlotStateKind::Input { .. } => panic!("lost initial persistent root"),
+                    };
+                    sources = Some(sources.map_or_else(
+                        || source.clone(),
+                        |previous: AbstractValue| domain.join(&previous, &source),
+                    ));
+                }
+                let source = sources.unwrap();
                 assert_eq!(read.numeric(), source.numeric());
                 assert_eq!(read.provenance(), source.provenance());
                 assert_eq!(read.identity(), source.identity());
-                assert_eq!(read.expression(), source.expression());
-                previous = older;
+                assert_eq!(
+                    read.expression(),
+                    Some(
+                        &ExprId::slot_read(
+                            persistent_root.clone(),
+                            ExprId::constant(U256::from(slot)),
+                            limits.expressions(),
+                        )
+                        .unwrap()
+                    )
+                );
             }
-            assert!(matches!(previous.kind(), SlotStateKind::Zero));
-            assert_eq!(
-                previous,
-                &graph.states()[0]
-                    .entry
-                    .store
-                    .slot_root(address(0x101), false)
-                    .unwrap()
-            );
 
             let owners = [0x201, 0x202, 0x300, 0x101];
             let counters = owners.map(|owner| {
@@ -252,7 +499,8 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 ));
             }
             // Traverse only the bounded immutable slot spine. The second 201
-            // increment must use its old actual read; 202 cannot change that root.
+            // increment must use its actual callee input. Every current block
+            // executing for owner202 must leave owner201's root unchanged.
             let writes = |root: &SlotStateId| {
                 assert!(root.nodes() <= limits.max_nodes && root.depth() <= limits.max_depth);
                 let mut pending = vec![root];
@@ -286,20 +534,37 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 }
                 values
             };
-            let after_first = &continuations[0].entry.store;
-            let before_third = &continuations[1].entry.store;
+            for state in graph
+                .states()
+                .iter()
+                .filter(|state| state.active().address == address(0x202))
+            {
+                let exit = state.exit.as_ref().unwrap();
+                assert_eq!(
+                    state.entry.store.slot_root(address(0x201), true).unwrap(),
+                    exit.store.slot_root(address(0x201), true).unwrap()
+                );
+            }
+            let third_implementation = graph
+                .states()
+                .iter()
+                .find(|state| {
+                    state.key.frames.len() == 3
+                        && state.key.frames[0].basic_block_index == 2
+                        && state.active().address == address(0x201)
+                        && state.active().code_address == address(0x300)
+                        && state.active().basic_block_index == 0
+                })
+                .unwrap();
+            let before_third = &third_implementation.entry.store;
             let old_count = before_third
                 .read_transient_checked(address(0x201), &zero, domain)
                 .unwrap();
+            assert_eq!(old_count.numeric(), union(1).numeric());
+            assert_eq!(old_count.provenance(), &counter_source);
             assert_eq!(
-                old_count,
-                after_first
-                    .read_transient_checked(address(0x201), &zero, domain)
-                    .unwrap()
-            );
-            assert_eq!(
-                before_third.slot_root(address(0x201), true).unwrap(),
-                after_first.slot_root(address(0x201), true).unwrap()
+                writes(&before_third.slot_root(address(0x201), true).unwrap()),
+                std::collections::BTreeSet::from([ExprId::constant(U256::from(1))])
             );
             let increment = ExprId::operation(
                 opcode::ADD,
@@ -310,10 +575,48 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 limits.expressions(),
             )
             .unwrap();
-            assert_eq!(
-                writes(&histories[0]),
-                std::collections::BTreeSet::from([ExprId::constant(U256::from(1)), increment])
-            );
+            let mut pending = vec![before_third.slot_root(address(0x201), true).unwrap()];
+            let mut actual_inputs = std::collections::BTreeSet::new();
+            let mut increments = std::collections::BTreeSet::new();
+            while let Some(root) = pending.pop() {
+                if !actual_inputs.insert(root.clone()) {
+                    continue;
+                }
+                assert!(actual_inputs.len() <= limits.max_nodes);
+                increments.insert(
+                    ExprId::operation(
+                        opcode::ADD,
+                        &[
+                            ExprId::constant(U256::from(1)),
+                            ExprId::slot_read(
+                                root.clone(),
+                                ExprId::constant(U256::ZERO),
+                                limits.expressions(),
+                            )
+                            .unwrap(),
+                        ],
+                        limits.expressions(),
+                    )
+                    .unwrap(),
+                );
+                match root.kind() {
+                    SlotStateKind::Store { previous, .. } => pending.push(previous.clone()),
+                    SlotStateKind::Ite {
+                        then_state,
+                        else_state,
+                        ..
+                    } => pending.extend([then_state.clone(), else_state.clone()]),
+                    SlotStateKind::Zero => {}
+                    SlotStateKind::Input { .. } => panic!("lost actual increment input"),
+                }
+            }
+            let actual_writes = writes(&histories[0]);
+            assert!(actual_writes.contains(&ExprId::constant(U256::from(1))));
+            assert!(actual_writes.contains(&increment));
+            // Outputs retain earlier executions of the same joined entry.
+            // Each retained increment must read an actual owner201 input root,
+            // including its historical ITE branches, and add exactly one.
+            assert!(actual_writes.is_subset(&increments));
             assert_eq!(
                 writes(&histories[1]),
                 std::collections::BTreeSet::from([ExprId::constant(U256::from(1))])
@@ -363,27 +666,67 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 &joint,
                 CheckResult::Sat,
             );
+            // Returned values must determine owner201's paired counter even
+            // without selecting an increment history through counter_route.
+            check(
+                "returned values independently determine owner201 counter",
+                &and(persistent_premise.clone(), not(equal(&counters[0], 2))),
+                CheckResult::Unsat,
+            );
 
             let terminal_inputs = persistent[2].expression().unwrap();
             assert!(
                 terminal_inputs.nodes() <= limits.max_nodes
                     && terminal_inputs.depth() <= limits.max_depth
             );
-            let terminal_bindings = terminal_inputs.variables();
-            let success = continuations
+            let mut terminal_bindings = terminal_inputs.variables();
+            for value in persistent.iter().chain(&counters) {
+                terminal_bindings.extend(value.symbolic_expression().unwrap().variables());
+            }
+            let routes = [0x201, 0x202].map(|owner| {
+                let index = usize::from(owner == 0x202);
+                let implementation = graph
+                    .states()
+                    .iter()
+                    .find(|state| {
+                        state.key.frames.len() == 3
+                            && state.key.frames[0].basic_block_index == index
+                            && state.active().address == address(owner)
+                            && state.active().code_address == address(0x300)
+                            && state.active().basic_block_index == 0
+                    })
+                    .unwrap();
+                assert_eq!(
+                    implementation
+                        .entry
+                        .store
+                        .read_transient_checked(address(owner), &zero, domain)
+                        .unwrap()
+                        .numeric(),
+                    zero.numeric()
+                );
+                // A successful proxy CALL can contain a rejected DELEGATECALL.
+                // Qualify the actual implementation TSTORE's successful root,
+                // rather than the proxy's joined success-continuation root.
+                let saved = implementation
+                    .exit
+                    .as_ref()
+                    .unwrap()
+                    .store
+                    .slot_root(address(owner), true)
+                    .unwrap();
+                let route = counter_route(&histories[index], &saved, limits.expressions());
+                assert!(
+                    !route.variables().is_empty(),
+                    "historical CALL route was not retained"
+                );
+                assert!(route.variables().is_subset(&terminal_bindings));
+                route
+            });
+            let success = routes
                 .iter()
-                .fold(persistent_premise.clone(), |p, state| {
-                    let status = state.entry.active().stack.last().unwrap();
-                    let expression = status.expression().unwrap();
-                    assert!(
-                        expression.nodes() <= limits.max_nodes
-                            && expression.depth() <= limits.max_depth
-                    );
-                    let bindings = expression.variables();
-                    assert!(!bindings.is_empty());
-                    assert!(bindings.is_subset(&terminal_bindings));
-                    and(p, equal(status, 1))
-                });
+                .cloned()
+                .fold(persistent_premise.clone(), &and);
             check(
                 "all three actual calls succeeded",
                 &success,
@@ -420,9 +763,11 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
 
             // Persistent slot1=1 can retain the first CALL's output after the
             // second CALL is rejected. Preserve that legitimate guarded model.
-            let second_status = continuations[1].entry.active().stack.last().unwrap();
             let rejected_second = and(
-                and(persistent_premise, equal(second_status, 0)),
+                and(
+                    persistent_premise,
+                    and(routes[0].clone(), not(routes[1].clone())),
+                ),
                 equal(&counters[1], 0),
             );
             check(

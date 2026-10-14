@@ -115,7 +115,7 @@ fn created_owner_unknown_delegate_selfdestruct_is_covered_or_has_explicit_creati
     // Relative unknown outputs precede transaction finalization. The concrete
     // SELFDESTRUCT witness must not make code disappear at a delegate return.
     for procedure in analysis
-        .unknown_summaries()
+        .procedure_summaries()
         .iter()
         .flat_map(|s| &s.procedures)
         .filter(|p| p.frame.mode == FrameCode::Unknown && p.frame.address == destination)

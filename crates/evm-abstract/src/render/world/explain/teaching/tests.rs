@@ -321,10 +321,10 @@ fn native_boundaries_and_closed_unknown_code_keep_their_distinct_coverage() {
     assert!(!native_output.contains("B₀ @"));
     assert_eq!(missing.status(), Status::Converged);
     assert!(missing.frontiers().is_empty());
-    assert!(!missing.unknown_summaries().is_empty());
+    assert!(!missing.procedure_summaries().is_empty());
     assert!(
         missing
-            .unknown_summaries()
+            .procedure_summaries()
             .iter()
             .all(|record| record.closed)
     );
@@ -361,7 +361,9 @@ fn zero_state_work_boundary_preserves_observed_code_without_execution_claim() {
 
 #[test]
 fn partial_runtime_keeps_code_and_cfg_without_a_successful_call_guess() {
-    let analysis = simple("5f5f5f5f5f5f355af1", ByteArray::unknown());
+    // The unresolved input-copy size leaves an actual frontier even when the
+    // unknown target's call graph can be covered by a closed procedure.
+    let analysis = simple("5f5f5f355f5f5f355af1", ByteArray::unknown());
     assert_eq!(analysis.status(), Status::Incomplete);
     assert!(!analysis.states().is_empty());
     let output = render(&analysis).unwrap();

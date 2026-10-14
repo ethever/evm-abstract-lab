@@ -89,7 +89,7 @@ nix run . -- cfg --hex 5f1e00 --fork cancun --context-depth 0 --format json
 nix run . -- cfg --hex 5f1e00 --fork osaka --context-depth 0 --format json
 ```
 
-原生分析 JSON 的版本是 `schema_version=7`。普通无效指令的类型化证据位于 `.diagnostics[].kind.InvalidOpcode.Instruction`，包含 `opcode`（数值 `u8`）、`mnemonic`（未定义字节为 `null`）和 `reason`：`ExplicitInvalid`、`UndefinedOpcode` 或 `{"UnavailableInFork":"cancun"}`。Web API 的独立协议版本是 10，保留 `kind="InvalidOpcode"`，同一证据在 `.diagnostics[].invalid_opcode.Instruction`；API 的 fork 枚举使用 `Cancun`、`Prague`、`Osaka`，例如 `{"UnavailableInFork":"Cancun"}`；非 InvalidOpcode 诊断的 `invalid_opcode` 为 `null`。
+原生分析 JSON 的版本是 `schema_version=8`。普通无效指令的类型化证据位于 `.diagnostics[].kind.InvalidOpcode.Instruction`，包含 `opcode`（数值 `u8`）、`mnemonic`（未定义字节为 `null`）和 `reason`：`ExplicitInvalid`、`UndefinedOpcode` 或 `{"UnavailableInFork":"cancun"}`。Web API 的独立协议版本是 11，保留 `kind="InvalidOpcode"`，同一证据在 `.diagnostics[].invalid_opcode.Instruction`；API 的 fork 枚举使用 `Cancun`、`Prague`、`Osaka`，例如 `{"UnavailableInFork":"Cancun"}`；非 InvalidOpcode 诊断的 `invalid_opcode` 为 `null`。
 
 证据在抽象执行尝试该指令时生成，取自当前帧捕获的 runtime 或 initcode。同一 PC 在不同合约中可能对应不同字节，不能用入口程序的反汇编回填。`00fe` 的反汇编仍包含 PC 1 的 INVALID，但 STOP 后的字节没有被执行，不产生相应诊断。
 

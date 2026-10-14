@@ -177,7 +177,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 10
+    assert initial_report["schema_version"] == 11
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
         assert initial_report["metadata"]["limits"][field] == value
@@ -210,7 +210,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 10
+    assert report["schema_version"] == 11
     assert report["status"] == "Converged", report["frontiers"]
     expected = {**defaults, **edited}
     for field, value in expected.items():
@@ -804,7 +804,7 @@ def diagnostics_interactions(browser, url: str, args):
         assert request["fork"] == fork and posted_bytecode(reply) == code, request
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 10 and report["status"] == "Converged", report
+        assert report["schema_version"] == 11 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report
 
@@ -1178,7 +1178,7 @@ def ssa_values_interactions(browser, url, output):
     for name,code,completion in cases:
         if 'Inspector hidden' not in status.text_content():hide_inspector(page,canvas)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
-        assert report['schema_version']==10 and report['status']==completion
+        assert report['schema_version']==11 and report['status']==completion
         ssa=report['ssa']
         assert len(ssa['values'])==ssa['value_count']
         assert [value['id'] for value in ssa['values']]==list(range(ssa['value_count']))
@@ -1268,7 +1268,7 @@ def unknown_world_interactions(browser, url, output):
              "call_value": "0x0", "calldata": "0x"}
     report = layout_submission(page, canvas, code, output, "unknown-world", entry=entry,
                                source_height_offset=-62)
-    assert report["schema_version"] == 10 and report["status"] == "Converged"
+    assert report["schema_version"] == 11 and report["status"] == "Converged"
     assert report["frontiers"] == [] and report["ssa"]["complete"]
     summaries = report["abstract_summaries"]
     assert summaries and all(summary["closed"] and summary["procedures"] for summary in summaries)
@@ -1325,6 +1325,77 @@ def unknown_world_interactions(browser, url, output):
     page.close()
     return result
 
+
+
+def known_recursion_interactions(browser, url, output):
+    """Fold real self-CALL bytecode, then select its Runtime summary in the UI."""
+    page, canvas, errors = layout_page(browser, url)
+    posts = []
+    page.on("request", lambda request: posts.append(request.url)
+            if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+    code = "5f5f5f5f5f305af150602a5f5260205ff3"
+    entry = {"address": "0x0000000000000000000000000000000000000101",
+             "caller": "0x0000000000000000000000000000000000000900",
+             "call_value": "0x0", "calldata": "0x"}
+    report = layout_submission(page, canvas, code, output, "known-recursion", entry=entry,
+                               source_height_offset=-62)
+    assert report["schema_version"] == 11 and report["status"] == "Converged"
+    assert report["frontiers"] == [] and report["ssa"]["complete"]
+    summaries = report["abstract_summaries"]
+    assert summaries
+    for summary in summaries:
+        assert summary["kind"] == "KnownRecursion" and summary["closed"]
+        procedure = summary["procedures"][summary["root_procedure"]]
+        assert procedure["kind"] == "Runtime" and procedure["code_hash"]
+        assert procedure["covered_blocks"] and "Return" in procedure["outcomes"]
+        state = next(state for state in report["states"]
+                     if state["state"] == summary["source_state"])
+        frame = state["entry"]["frames"][-1]
+        assert frame["kind"] == "Runtime" and frame["program"] is not None
+        block = next(block for block in report["cfg"] if block["id"] == state["state"])
+        assert block["instructions"] and block["executed_pcs"] == []
+    assert max(len(state["entry"]["frames"]) for state in report["states"]) <= 3
+    assert any(edge["kind"] == "SummaryReturn" for edge in report["edges"])
+    returns = [outcome for outcome in report["outcomes"] if outcome["kind"] == "Return"]
+    assert returns
+    for outcome in returns:
+        data = report["byte_arrays"][outcome["data"]]
+        assert data["length"]["constants"] == ["0x20"]
+        cells = {cell["offset"]: data["values"][cell["value"]] for cell in data["cells"]}
+        for offset in range(32):
+            assert cells[offset]["constants"] == ["0x2a" if offset == 31 else "0x0"]
+    graph_mode(page, canvas, "States")
+    page.keyboard.press("f")
+    settle_gesture(page)
+    scene = node_snapshot(page, canvas, output, "known-recursion-summary-graph", measure_nodes=True)
+    source = summaries[0]["source_state"]
+    status = page.locator("#analysis-status")
+    for record in scene["node_records"]:
+        left, top, right, bottom = record["bounds"]
+        canvas.click(position={"x": (left + right) / 2, "y": (top + bottom) / 2})
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        if f"Selected {symbol('σ', source)};" in status.text_content():
+            break
+    expect(status).to_contain_text(f"Selected {symbol('σ', source)};")
+    hide_inspector(page, canvas)
+    expect(status).to_contain_text("Inspector: Frame")
+    expect(status).to_contain_text("Recursive bytecode · closed")
+    expect(status).not_to_contain_text("Abstract interactions")
+    tab = inspector_frame_tab(page, canvas)
+    inspector_title_action(page, canvas, "Maximize", tab)
+    settle_gesture(page)
+    png = canvas.screenshot(path=str(output / "known-recursion-summary-inspector.png"))
+    pixels = text_pixels(page, png, (8, 80, 1410, 970))
+    assert len(pixels["rows"]) >= 10 and pixels["white_pixels"] > 100, pixels
+    assert len(posts) == 1 and not errors
+    result = {"status": report["status"], "ssa_complete": report["ssa"]["complete"],
+              "summaries": summaries, "source_state": source,
+              "inspector": status.text_content(), "painted": pixels,
+              "analysis_submissions": len(posts), "renderer": webgpu_evidence(page)}
+    (output / "known-recursion-report.json").write_text(json.dumps(result, indent=2) + "\n")
+    page.close()
+    return result
 
 def warning_pixels(page, png, card):
     """Inspect the independent inset warning dashes above the card's text."""
@@ -4496,7 +4567,7 @@ def hierarchy_call_interactions(browser,args):
 
 
 def layout_pending_machines(report, entry):
-    assert report["schema_version"] == 10
+    assert report["schema_version"] == 11
     pending = report["pending_machines"]
     assert len(pending) == entry["expected_pending_machines"]
     assert {frontier["payload"] for frontier in report["frontiers"]} == set(range(len(pending)))
@@ -4611,9 +4682,9 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
             for frontier in report["frontiers"]:
                 assert frontier["reason"]==expected[frontier["kind"]]["reason"]
                 assert frontier["detail"]==expected[frontier["kind"]]["detail"]
-        if "expected_closed_unknown_summaries" in entry:
+        if "expected_closed_procedure_summaries" in entry:
             summaries=report["abstract_summaries"]
-            assert len(summaries)==entry["expected_closed_unknown_summaries"]
+            assert len(summaries)==entry["expected_closed_procedure_summaries"]
             assert all(summary["closed"] for summary in summaries)
         if name == "ethereum-uniswap-v2-router02":
             for summary in report["abstract_summaries"]:
@@ -4685,7 +4756,7 @@ def main() -> None:
     parser.add_argument("--flow-only",action="store_true",help="Run selected-edge motion and compact-workspace SSA acceptance cases")
     parser.add_argument("--ssa-details-only",action="store_true",help="Run shared SSA reading mode and source-PC reveal acceptance cases")
     parser.add_argument("--ssa-values-only",action="store_true",help="Run normalized SSA and scoped value inspector acceptance")
-    parser.add_argument("--unknown-world-only", action="store_true", help="Run closed unknown interaction and summary inspector acceptance")
+    parser.add_argument("--unknown-world-only", action="store_true", help="Run known recursion, unknown interactions and summary inspector acceptance")
     parser.add_argument("--inspector-controls-only",action="store_true",help="Run inspector controls, resizable storage tables and whole-panel scrolling acceptance")
     parser.add_argument("--termination-only",action="store_true",help="Run semantic ending styles and existing selected-node flow/SSA acceptance")
     parser.add_argument("--timings-only",action="store_true",help="Run queued analysis, phase timing and delayed-result acceptance")
@@ -4698,6 +4769,7 @@ def main() -> None:
             browser = launch_browser(playwright.chromium, args.browser)
             if args.unknown_world_only:
                 unknown_world_interactions(browser, url, args.output)
+                known_recursion_interactions(browser, url, args.output)
                 browser.close()
                 return
             if args.diagnostics_only:
@@ -4762,7 +4834,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 10
+            assert analysis["schema_version"] == 11
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
@@ -4862,6 +4934,7 @@ def main() -> None:
             ssa_details = ssa_details_interactions(browser, url, args.output)
             ssa_values = ssa_values_interactions(browser, url, args.output)
             unknown_world = unknown_world_interactions(browser, url, args.output)
+            known_recursion = known_recursion_interactions(browser, url, args.output)
             inspector_controls = inspector_controls_interactions(browser, url, args.output)
             storage_table = storage_table_interactions(browser, url, args.output)
             storage_scroll = storage_scroll_interactions(browser, url, args.output)
@@ -4892,6 +4965,7 @@ def main() -> None:
                 "ssa_details": ssa_details,
                 "ssa_values": ssa_values,
                 "unknown_world": unknown_world,
+                "known_recursion": known_recursion,
                 "inspector_controls": inspector_controls,
                 "storage_table": storage_table,
                 "storage_scroll": storage_scroll,

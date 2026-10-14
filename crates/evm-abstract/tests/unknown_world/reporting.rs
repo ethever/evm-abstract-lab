@@ -53,10 +53,10 @@ fn closed_static_unknown_summary_has_evidence_and_feeds_later_storage_reads() {
     let analysis = run(world, entry(ByteArray::empty()));
     complete(&analysis);
     assert!(
-        !analysis.unknown_summaries().is_empty(),
+        !analysis.procedure_summaries().is_empty(),
         "closed unknown relation has no public coverage record"
     );
-    for summary in analysis.unknown_summaries() {
+    for summary in analysis.procedure_summaries() {
         assert!(
             summary.closed,
             "Converged included a partial unknown relation"
@@ -185,10 +185,10 @@ fn native_solver_unknown_is_reported_without_erasing_possible_unknown_interactio
     // was closed without needing that unresolved query for its coverage.
     if analysis.status() == Status::Converged {
         assert!(analysis.frontiers().is_empty());
-        assert!(!analysis.unknown_summaries().is_empty());
+        assert!(!analysis.procedure_summaries().is_empty());
         assert!(
             analysis
-                .unknown_summaries()
+                .procedure_summaries()
                 .iter()
                 .all(|summary| summary.closed)
         );
@@ -245,11 +245,13 @@ fn default_work_budget_retains_an_explicit_frontier_for_large_static_workload() 
         frontier_causes(&analysis)
     );
     assert!(analysis.work() <= analysis.config().max_work);
+    // Exhaustion can precede procedure admission. The frontier is required
+    // whether or not a partial procedure record has been constructed yet.
     assert!(
         analysis
-            .unknown_summaries()
+            .frontiers()
             .iter()
-            .any(|summary| !summary.closed)
+            .all(|frontier| { frontier.from.is_some() || frontier.target.is_some() })
     );
 }
 
@@ -267,10 +269,10 @@ fn check_repeated_static_calls(use_summaries: bool) {
         let started = std::time::Instant::now();
         let analysis = run_config(world, entry(ByteArray::empty()), config);
         complete(&analysis);
-        assert!(!analysis.unknown_summaries().is_empty());
+        assert!(!analysis.procedure_summaries().is_empty());
         assert!(
             analysis
-                .unknown_summaries()
+                .procedure_summaries()
                 .iter()
                 .all(|summary| summary.closed)
         );
@@ -291,14 +293,18 @@ fn check_repeated_static_calls(use_summaries: bool) {
             started.elapsed().as_micros()
         );
         let procedure_count: usize = analysis
-            .unknown_summaries()
+            .procedure_summaries()
             .iter()
             .map(|s| s.procedures.len())
             .sum();
-        let reused: usize = analysis.unknown_summaries().iter().map(|s| s.reused).sum();
+        let reused: usize = analysis
+            .procedure_summaries()
+            .iter()
+            .map(|s| s.reused)
+            .sum();
         eprintln!(
             "issue124 scale relation evidence: calls={calls} use_summaries={use_summaries} requests={} procedures={procedure_count} reused={reused}",
-            analysis.unknown_summaries().len()
+            analysis.procedure_summaries().len()
         );
     }
 }

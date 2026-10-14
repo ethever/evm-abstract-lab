@@ -259,6 +259,11 @@ fn frontier_reason(ui: &mut Ui, reason: &api::FrontierDetails) {
         R::Budget(resource) => value::text(ui, "Reached budget", format!("{resource:?}")),
         R::Work => value::text(ui, "Boundary", "Execution work budget"),
         R::SummaryWork => value::text(ui, "Boundary", "Summary work budget"),
+        R::RecursiveNoTerminal => value::text(
+            ui,
+            "Boundary",
+            "Recursive execution has no covered terminal behavior",
+        ),
         R::CallDepth => value::text(ui, "Boundary", "External call depth"),
         R::Memory => value::text(ui, "Boundary", "Logical memory policy; unexpanded inputs"),
         R::ByteRange(reason) => match reason {

@@ -11,9 +11,9 @@ use crate::{
 use std::fmt::{Display, Write};
 
 pub(super) mod bytes;
+pub(super) mod procedure_summaries;
 mod references;
 mod table;
-pub(super) mod unknown_summaries;
 
 use bytes::write_bytes;
 use references::References;
@@ -322,7 +322,7 @@ pub fn render(analysis: &WorldAnalysis) -> String {
         );
     }
 
-    unknown_summaries::write(&mut output, analysis);
+    procedure_summaries::write(&mut output, analysis);
     output.push_str("\nDiagnostics\n");
     if !analysis.diagnostics().is_empty() {
         output.push_str(crate::render::DIAGNOSTIC_RECORDS);

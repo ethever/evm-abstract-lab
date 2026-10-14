@@ -5,16 +5,16 @@ use evm_abstract_notation::Symbol;
 use std::fmt::Write;
 
 pub(in crate::render::world) fn write(output: &mut String, analysis: &WorldAnalysis) {
-    if analysis.unknown_summaries().is_empty() {
+    if analysis.procedure_summaries().is_empty() {
         return;
     }
-    output.push_str("\nAbstract interaction summaries\n");
-    output.push_str("  Numerical bounds for known/unknown interactions; summarized blocks are not expanded CFG traces.\n");
-    for (index, record) in analysis.unknown_summaries().iter().enumerate() {
+    output.push_str("\nProcedure summaries\n");
+    output.push_str("  Numerical bounds for recursive bytecode and unknown interactions; summarized blocks are not expanded CFG traces.\n");
+    for (index, record) in analysis.procedure_summaries().iter().enumerate() {
         writeln!(
             output,
-            "  relation {index} | source={} | closed={} | procedures={} | states={} | transfers={} | propagations={} | reused={}",
-            Symbol::State(record.source_state), record.closed, record.procedures.len(),
+            "  relation {index} | {:?} | root={:?} | source={} | closed={} | procedures={} | states={} | transfers={} | propagations={} | reused={}",
+            record.kind, record.root_procedure, Symbol::State(record.source_state), record.closed, record.procedures.len(),
             record.state_count, record.transfers, record.propagations, record.reused,
         ).unwrap();
         for (index, procedure) in record.procedures.iter().enumerate() {

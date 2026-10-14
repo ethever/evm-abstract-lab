@@ -30,8 +30,8 @@ pub(in crate::world) fn join_scalar(
     widen: bool,
 ) -> AbstractValue {
     let next = domain.join(old, incoming);
-    let next = if widen && next.constants().is_none() {
-        domain.widen(old, &next)
+    let next = if widen {
+        domain.widen_procedure(old, &next)
     } else {
         next
     };
@@ -156,17 +156,13 @@ impl ByteArray {
                     keys.sort_unstable();
                     keys.dedup();
                     let mut cells = BTreeMap::new();
+                    let mut reader = super::numeric::Reader::new(&self.operands, domain);
                     for index in keys.into_iter().take(COPY_FACT_LIMIT) {
                         if embedded_smt::current_cancellation().is_cancelled() {
                             return Err(ExprError::Cancelled.into());
                         }
                         let value = scalar(
-                            &super::numeric::read(
-                                &self.root,
-                                &ExprId::constant(U256::from(index)),
-                                &self.operands,
-                                domain,
-                            ),
+                            &reader.read(&self.root, &ExprId::constant(U256::from(index))),
                             domain,
                         );
                         if value.numeric() != AbstractValue::unknown_byte().numeric() {

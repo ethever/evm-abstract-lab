@@ -196,20 +196,31 @@ fn calldata_is_copied_from_callers_memory_and_returned_bytes_feed_parent() {
             .unwrap()
             .contains(&Origin::Arithmetic)
     );
-    let resumed = analysis
+    let resumed: Vec<_> = analysis
         .states()
         .iter()
-        .find(|s| s.key.frames.len() == 1 && s.active().basic_block_index == 1)
-        .unwrap();
-    assert!(resumed.exit_stack[0].contains(U256::from(7)));
-    assert!(
-        resumed
-            .entry
-            .active()
-            .returndata
-            .len()
-            .contains(U256::from(32))
-    );
+        .filter(|s| s.key.frames.len() == 1 && s.active().basic_block_index == 1)
+        .collect();
+    for success in [false, true] {
+        let states: Vec<_> = resumed
+            .iter()
+            .filter(|s| {
+                s.entry.active().stack.last().unwrap().singleton()
+                    == Some(U256::from(u8::from(success)))
+            })
+            .collect();
+        assert!(!states.is_empty(), "CALL status {success} was not covered");
+        for state in states {
+            assert_numeric_eq(
+                &state.exit_stack[0],
+                &AbstractValue::constant(U256::from(7)),
+            );
+            assert_eq!(
+                state.entry.active().returndata.len().singleton(),
+                Some(U256::from(if success { 32 } else { 0 }))
+            );
+        }
+    }
 }
 
 #[test]
@@ -240,15 +251,36 @@ fn output_copy_preserves_uncopied_suffix_and_full_returndata_size() {
     let before = "aa".repeat(32);
     let caller = format!("7f{before}5f52{}503d5f5100", call(0xf1, 0x200, 0, 0, 32));
     let analysis = run(&[(0x101, &caller), (0x200, "60bb5f5360015ff3")]);
-    let resumed = analysis
+    assert_eq!(analysis.status(), Status::Converged);
+    let resumed: Vec<_> = analysis
         .states()
         .iter()
-        .find(|s| s.key.frames.len() == 1 && s.active().basic_block_index == 1)
-        .unwrap();
-    assert!(resumed.exit_stack[0].contains(U256::from(1)));
-    let mut expected = [0xaa; 32];
-    expected[0] = 0xbb;
-    assert!(resumed.exit_stack[1].contains(U256::from_be_bytes(expected)));
+        .filter(|s| s.key.frames.len() == 1 && s.active().basic_block_index == 1)
+        .collect();
+    for success in [false, true] {
+        let states: Vec<_> = resumed
+            .iter()
+            .filter(|s| {
+                s.entry.active().stack.last().unwrap().singleton()
+                    == Some(U256::from(u8::from(success)))
+            })
+            .collect();
+        assert!(!states.is_empty(), "CALL status {success} was not covered");
+        let mut expected = [0xaa; 32];
+        if success {
+            expected[0] = 0xbb;
+        }
+        for state in states {
+            assert_eq!(
+                state.exit_stack[0].singleton(),
+                Some(U256::from(u8::from(success)))
+            );
+            assert_numeric_eq(
+                &state.exit_stack[1],
+                &AbstractValue::constant(U256::from_be_bytes(expected)),
+            );
+        }
+    }
 }
 
 #[test]
@@ -488,14 +520,17 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
         },
     )
     .unwrap();
-    assert_eq!(analysis.status(), Status::Incomplete);
+    // The known self target now closes through a relative procedure instead
+    // of exhausting the physical depth limit while the unknown remainder runs.
+    assert_eq!(analysis.status(), Status::Converged);
+    assert!(analysis.frontiers().is_empty());
+    assert!(!analysis.procedure_summaries().is_empty());
     assert!(
         analysis
-            .frontiers()
+            .procedure_summaries()
             .iter()
-            .all(|f| f.reason != FrontierReason::UnknownTarget)
+            .all(|summary| summary.closed)
     );
-    assert!(!analysis.unknown_summaries().is_empty());
     assert!(
         analysis
             .states()
@@ -530,10 +565,10 @@ fn missing_code_uses_a_closed_interaction_summary_not_an_empty_success() {
             .iter()
             .any(|edge| matches!(edge.kind, MachineEdgeKind::Summary(OutcomeKind::Return)))
     );
-    assert!(!analysis.unknown_summaries().is_empty());
+    assert!(!analysis.procedure_summaries().is_empty());
     assert!(
         analysis
-            .unknown_summaries()
+            .procedure_summaries()
             .iter()
             .all(|summary| summary.closed)
     );
@@ -632,9 +667,10 @@ fn zero_size_returndatacopy_still_checks_source_offset() {
 
 #[test]
 fn shared_depth_and_work_limits_keep_typed_frontiers() {
-    let recursive = format!("{}00", call(0xf1, 0x101, 0, 0, 0));
+    let first = format!("{}00", call(0xf1, 0x200, 0, 0, 0));
+    let second = format!("{}00", call(0xf1, 0x300, 0, 0, 0));
     let depth = analyze_world(
-        world(&[(0x101, &recursive)]),
+        world(&[(0x101, &first), (0x200, &second), (0x300, "00")]),
         entry(),
         ExecutionConfig {
             max_call_depth: 2,

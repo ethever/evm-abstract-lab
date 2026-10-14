@@ -21,11 +21,8 @@ fn join_scalar(
     widen: bool,
 ) -> AbstractValue {
     let joined = scalar(&domain.join(old, next));
-    if widen && joined.constants().is_none() && old.numeric() != joined.numeric() {
-        let (lower, upper) = domain.widen(old, &joined).interval().unsigned_bounds();
-        scalar(&joined.with_numeric(
-            NumericValue::unsigned_range(lower, upper).expect("ordered widened interval"),
-        ))
+    if widen {
+        scalar(&domain.widen_procedure(old, &joined))
     } else {
         joined
     }
@@ -60,6 +57,7 @@ impl PayloadSummary {
                         .saturating_add(frame.call_value.work_size().saturating_mul(2))
                         .saturating_add(frame.address_operand.work_size().saturating_mul(2))
                         .saturating_add(frame.caller_operand.work_size().saturating_mul(2))
+                        .saturating_add(frame.key.jump_history.len())
                         .saturating_add(program)
                         .saturating_add(4),
                     |work, value| work.saturating_add(value.work_size().saturating_mul(2)),
@@ -87,8 +85,12 @@ pub(super) fn form(
             .iter()
             .map(|frame| {
                 let mut key = frame.key.clone();
-                key.jump_history.clear();
                 let unknown = frame.code == FrameCode::Unknown;
+                key.jump_history = if unknown {
+                    Vec::new()
+                } else {
+                    super::context::canonical(&key.jump_history)?
+                };
                 let stack = if unknown {
                     Vec::new()
                 } else {

@@ -8,6 +8,70 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+#[test]
+fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {
+    let caller = "5f355f5260005f5f5f5f6102006207a120f15060205f5f5f5f6102006207a120f11560295760205ff35b5f5ffd";
+    let (empty, mut entry) = fixtures::fixture(&[]);
+    entry.environment.calldata = crate::world::ByteArray::unknown();
+    let mut world = crate::world::World::new(empty.fork(), "call result partition regression");
+    let domain = crate::domain::Domain::default();
+    for (address, code) in [(0x101, caller), (0x200, "5f545f5260205ff3")] {
+        let mut account = crate::world::Account::from_hex(code, world.fork()).unwrap();
+        account.balance = fixtures::word(1_000_000);
+        account.storage.insert(
+            alloy_primitives::U256::ZERO,
+            domain.join(&fixtures::word(5), &fixtures::word(9)),
+        );
+        world.insert(fixtures::address(address), account).unwrap();
+    }
+    for use_summaries in [true, false] {
+        let analysis = crate::analysis::analyze_world(
+            world.clone(),
+            entry.clone(),
+            crate::analysis::ExecutionConfig {
+                use_summaries,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            analysis.status(),
+            Status::Converged,
+            "{:?}",
+            analysis.frontiers()
+        );
+        assert!(analysis.procedure_summaries().is_empty());
+        if use_summaries {
+            assert!(
+                analysis.summary_stats().hits > 0,
+                "{:?}",
+                analysis.summary_stats()
+            );
+        }
+        let returns = analysis
+            .outcomes()
+            .iter()
+            .filter(|output| output.kind == crate::analysis::OutcomeKind::Return)
+            .collect::<Vec<_>>();
+        assert!(!returns.is_empty());
+        for output in returns {
+            let value = output.data.read_word(&fixtures::word(0), domain);
+            assert_eq!(
+                output.data.len().singleton(),
+                Some(alloy_primitives::U256::from(32))
+            );
+            assert_eq!(
+                value.constants(),
+                domain
+                    .join(&fixtures::word(5), &fixtures::word(9))
+                    .constants()
+            );
+        }
+        let graph = crate::ssa::build_world(&analysis).unwrap();
+        graph.verify(&analysis).unwrap();
+    }
+}
+
 fn interrupted_fixture() -> (WorldAnalysis, usize) {
     let (world, entry) =
         fixtures::fixture(&[(0x101, "60205f5f5f6102006207a120fa5000"), (0x200, "00")]);
@@ -32,7 +96,7 @@ fn engine<'a>(
     let ids: BTreeMap<_, _> = result
         .states
         .iter()
-        .map(|state| (state.key.clone(), state.id))
+        .map(|state| ((state.key.clone(), state.resume_status), state.id))
         .collect();
     let pending: BTreeSet<_> = (0..result.states.len()).filter(|id| *id != child).collect();
     let alternatives = result
@@ -56,12 +120,12 @@ fn engine<'a>(
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new(); count],
         cache: None,
-        unknown: super::transfer::unknown::Table::default(),
+        procedures: super::transfer::procedure::Table::default(),
     }
 }
 
 fn assert_pending(engine: &Engine<'_>, child: usize, reason: &FrontierReason) {
-    let targets: BTreeSet<_> = engine
+    let mut targets: Vec<_> = engine
         .result
         .frontiers
         .iter()
@@ -70,10 +134,18 @@ fn assert_pending(engine: &Engine<'_>, child: usize, reason: &FrontierReason) {
             frontier.target.clone().unwrap()
         })
         .collect();
-    assert_eq!(targets.len(), engine.queued.len() + 1);
-    for id in engine.queued.iter().copied().chain(std::iter::once(child)) {
-        assert!(targets.contains(&engine.result.states[id].key));
-    }
+    let mut expected: Vec<_> = engine
+        .queued
+        .iter()
+        .copied()
+        .chain(std::iter::once(child))
+        .map(|id| engine.result.states[id].key.clone())
+        .collect();
+    // Success/failure partitions can share a public machine key. Every queued
+    // input still needs a frontier, including both occurrences of that key.
+    targets.sort();
+    expected.sort();
+    assert_eq!(targets, expected);
     assert_eq!(engine.result.summary_stats.imported_states, 0);
     assert_eq!(engine.result.summary_stats.hits, 0);
     assert!(engine.result.summaries.is_empty());

@@ -62,7 +62,7 @@ Web 点击 SSA 的 `%value` 可打开 **SSA value** 检查器，查看定义位�
 
 CLI JSON 的 `ssa` 或 `partial_ssa` 包含 `facts` 和 `mappings`。指令的 `pc/opcode/immediate/operands/results/fault` 是原执行来源，`operation` 是规范化计算；阶段与效果仍保留。单程序 JSON 同时提供 `machine_analysis` 与 `state_mapping`，连接原生 SSA 和投影 CFG。
 
-Web 协议版本 6 引入了这些字段；当前共享协议为版本 9，`ssa.values` 按最终 ID 索引，将定义的来源、变换、等价关系、计算依赖和多项 scoped facts 放在一起；每条指令增加 typed `operation`。[协议类型](../crates/evm-abstract-protocol/src/ssa/values.rs)。
+Web 协议版本 6 引入了这些字段；当前共享协议为版本 11，`ssa.values` 按最终 ID 索引，将定义的来源、变换、等价关系、计算依赖和多项 scoped facts 放在一起；每条指令增加 typed `operation`。[协议类型](../crates/evm-abstract-protocol/src/ssa/values.rs)。
 
 ## 后续范围
 

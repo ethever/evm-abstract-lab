@@ -748,10 +748,7 @@ fn rpc_explain_discovery_off_uses_closed_unknown_code_summary_without_fetching_c
         let output = rpc_command(&server, &["--no-rpc-discovery"]);
         assert_eq!(output.status.code(), Some(0));
         let explanation = text(&output);
-        assert!(
-            explanation.contains("Converged")
-                && explanation.contains("Abstract interaction summaries")
-        );
+        assert!(explanation.contains("Converged") && explanation.contains("Procedure summaries"));
         assert!(explanation.contains("Frontiers") && explanation.contains(VERIFIED));
         let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
         assert!(disassembly.contains("CALL") && !disassembly.contains("MSTORE"));

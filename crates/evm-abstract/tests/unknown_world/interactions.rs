@@ -34,10 +34,10 @@ fn check_busy_x(nested: bool, use_summaries: bool) {
     };
     let analysis = run_config(world, entry(calldata(0)), config);
     complete_unknown(&analysis);
-    assert!(!analysis.unknown_summaries().is_empty());
+    assert!(!analysis.procedure_summaries().is_empty());
     assert!(
         analysis
-            .unknown_summaries()
+            .procedure_summaries()
             .iter()
             .all(|summary| summary.closed)
     );
@@ -57,7 +57,7 @@ fn check_busy_x(nested: bool, use_summaries: bool) {
     }
     assert!(
         analysis
-            .unknown_summaries()
+            .procedure_summaries()
             .iter()
             .flat_map(|s| &s.procedures)
             .any(|p| p.frame.code_address == address(A) && p.frame.mode == FrameCode::Runtime),
@@ -67,7 +67,7 @@ fn check_busy_x(nested: bool, use_summaries: bool) {
         assert!(reachable(&analysis, A, code.labels["three"]));
         assert!(
             analysis
-                .unknown_summaries()
+                .procedure_summaries()
                 .iter()
                 .flat_map(|s| &s.procedures)
                 .any(|p| p.frame.code_address == address(V) && p.frame.mode == FrameCode::Unknown),

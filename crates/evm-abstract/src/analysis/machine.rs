@@ -33,12 +33,12 @@ pub struct ExecutionConfig {
     pub analysis: Config,
     /// Maximum shared instruction, candidate, domain-combination and join work.
     pub max_work: usize,
-    /// Maximum number of simultaneously active and suspended frames, including entry.
+    /// Maximum unfolded active/suspended frames, including entry, before recursive folding.
     pub max_call_depth: usize,
     /// Maximum modeled memory footprint and extracted byte-array length.
     pub max_memory_bytes: usize,
-    /// Reuse complete callee graph certificates and unknown relations between
-    /// outer entries. Recursive unknown closure remains enabled either way.
+    /// Reuse complete callee graph certificates and procedure relations between
+    /// outer entries. Recursive closure remains enabled either way.
     pub use_summaries: bool,
 }
 
@@ -202,6 +202,10 @@ pub struct MachineState {
     /// Receipt for the latest transfer; stale after its entry changes.
     #[serde(skip)]
     pub(crate) execution_evidence: Option<ExecutionEvidence>,
+    /// Call result partition retained only at its immediate continuation entry.
+    /// It changes scheduling precision, not the public EVM frame identity.
+    #[serde(skip)]
+    pub(crate) resume_status: Option<bool>,
 }
 
 impl MachineState {
@@ -269,6 +273,8 @@ pub enum FrontierReason {
     SummaryWork,
     /// Another frame would exceed the external-call depth budget.
     CallDepth,
+    /// Recursive bytecode stabilized without covering any finite terminal behavior.
+    RecursiveNoTerminal,
     /// A modeled byte range exceeds the declared memory or representation policy.
     Memory,
     /// A checked byte-array range cannot be retained in its declared representation.
@@ -351,7 +357,7 @@ pub struct MachineOutcome {
 /// One numerical output of a caller-independent procedure relation.
 /// Templates are instantiated with independent SMT roots before execution.
 #[derive(Clone, Debug, Serialize)]
-pub struct UnknownSummaryOutput {
+pub struct ProcedureSummaryOutput {
     /// Relative frame termination; failure effects are rolled back at each caller.
     pub kind: OutcomeKind,
     /// Bound on full return or revert data.
@@ -362,13 +368,13 @@ pub struct UnknownSummaryOutput {
 
 /// A procedure participating in the joint known/unknown fixed point.
 #[derive(Clone, Debug, Serialize)]
-pub struct UnknownProcedureSummary {
+pub struct ProcedureSummary {
     /// Executable and context shape, independent of suspended caller stacks.
     pub frame: FrameKey,
     /// Whole-store numerical input invariant, including transient and lifecycle state.
     pub input: Store,
     /// Growing output alternatives by termination category.
-    pub outputs: Vec<UnknownSummaryOutput>,
+    pub outputs: Vec<ProcedureSummaryOutput>,
     /// Procedures whose output growth replays retained return continuations.
     pub dependencies: Vec<usize>,
     /// Number of strict input expansions.
@@ -379,15 +385,28 @@ pub struct UnknownProcedureSummary {
     pub covered_blocks: Vec<usize>,
 }
 
-/// Coverage evidence for an unknown entry and its recursive procedure system.
+/// Why ordinary stack execution entered the relative procedure worklist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum ProcedureSummaryKind {
+    /// An unobserved implementation or symbolic target remainder.
+    UnknownEnvironment,
+    /// A known runtime entry repeats an executable/storage context in its ancestors.
+    KnownRecursion,
+}
+
+/// Coverage evidence for an entry and its recursive procedure system.
 #[derive(Clone, Debug, Serialize)]
-pub struct UnknownSummaryRecord {
-    /// Main machine node whose unknown execution requested this relation.
+pub struct ProcedureSummaryRecord {
+    /// Main machine node whose execution requested this relation.
     pub source_state: usize,
+    /// Actual source of the abstraction; known runtime remains known runtime.
+    pub kind: ProcedureSummaryKind,
+    /// Entry procedure index, absent when entry or evidence construction failed.
+    pub root_procedure: Option<usize>,
     /// Every whole-payload invariant and dependency has stabilized, without a frontier.
     pub closed: bool,
     /// Known bytecode and unknown procedures solved together.
-    pub procedures: Vec<UnknownProcedureSummary>,
+    pub procedures: Vec<ProcedureSummary>,
     /// Relative block states retained by the shared worklist.
     pub state_count: usize,
     /// Metered block/environment transfers performed for this request.
@@ -418,7 +437,7 @@ pub struct WorldAnalysis {
     pub(crate) rpc_acquisition: Option<super::RpcAcquisition>,
     pub(crate) summary_stats: super::summary::SummaryStats,
     pub(crate) summaries: Vec<super::summary::SummaryRecord>,
-    pub(crate) unknown_summaries: Vec<UnknownSummaryRecord>,
+    pub(crate) procedure_summaries: Vec<ProcedureSummaryRecord>,
 }
 
 impl WorldAnalysis {
@@ -440,8 +459,8 @@ impl WorldAnalysis {
         &self.summaries
     }
     /// Whole-state closure evidence for the unknown/known procedure worklist.
-    pub fn unknown_summaries(&self) -> &[UnknownSummaryRecord] {
-        &self.unknown_summaries
+    pub fn procedure_summaries(&self) -> &[ProcedureSummaryRecord] {
+        &self.procedure_summaries
     }
     /// Fixed input world, including fork and snapshot provenance.
     pub fn world(&self) -> &World {

@@ -1,0 +1,2447 @@
+{
+  "schema": "known-recursion-preliminary-validation-v1",
+  "claim": "Preliminary interrupted/native export/API delivery evidence; does not establish original USDC convergence or final performance improvement",
+  "formal_frozen_batch": null,
+  "fixtures": {
+    "manifest": "examples/known-recursion/captured/manifest.json",
+    "manifest_sha256": "ad5d60d40953777a9c444dbcbad01082b1aea677e59c3b70e7d828b61b689336",
+    "cases": {
+      "usdc": {
+        "offline_cli_arguments": [
+          "--world",
+          "usdc-26180958-observed-world.json",
+          "--evm.to",
+          "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "--format",
+          "json",
+          "--evm.coinbase",
+          "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+          "--evm.timestamp",
+          "0x6acda8f3",
+          "--evm.number",
+          "0x18f7d5e",
+          "--evm.prevrandao",
+          "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+          "--evm.gas-limit",
+          "0x3938700",
+          "--evm.chain-id",
+          "0x1",
+          "--evm.basefee",
+          "0x40800d1",
+          "--evm.blob-basefee",
+          "0x3d73da",
+          "--evm.block-hash",
+          "0x18f7d5d:0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+          "--max-work",
+          "1000000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--max-relations",
+          "2048",
+          "--smt.provider",
+          "z3",
+          "--smt.rlimit",
+          "10000000"
+        ],
+        "rpc_request": "usdc-original-request.json",
+        "world_file": "usdc-26180958-observed-world.json",
+        "world_sha256": "d579a6062e03a353cfe419bae1afcd7b12a062a5e38b46c9a6b58fc4bcc287b6",
+        "original_request_sha256": "df1a7eae163963b18e83c7413eb77d6da65381d19b3d2232f02d2f0ad90c6c4e",
+        "captured_snapshot": {
+          "chain_id": "0x1",
+          "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+          "number": "0x18f7d5e",
+          "parent_hash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+          "timestamp": "0x6acda8f3",
+          "coinbase": "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+          "prevrandao": "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+          "gas_limit": "0x3938700",
+          "base_fee": "0x40800d1",
+          "blob_base_fee": "0x3d73da",
+          "excess_blob_gas": "0xa979acd",
+          "blob_gas_used": "0x0"
+        },
+        "source_initial_accounts": 2,
+        "observed_storage_slots": 2,
+        "programs": [
+          {
+            "code_address": "0x43506849D7C04F9138D1A2050bbF3A0c054402dd",
+            "code_hash": "0xcdfb7d322961af3acae7a8f7ee8b69c205b36f576cc5b077f170c7eb8ecbe3ea",
+            "kind": "Runtime",
+            "bytecode_bytes": 23464,
+            "bytecode_raw_sha256": "21a831a7cff1a353b295490f43a66e48e55d1c76c60cd89b24138efd8e8b7c8a"
+          },
+          {
+            "code_address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "code_hash": "0xd80d4b7c890cb9d6a4893e6b52bc34b56b25335cb13716e0d1d31383e6b41505",
+            "kind": "Runtime",
+            "bytecode_bytes": 2186,
+            "bytecode_raw_sha256": "c1bcd4dc4f30c4dcf6c9fe462abeaf2efefc065dcb4dec74996e471f1ce219b4"
+          }
+        ],
+        "missing_knowledge_boundary": "Unobserved storage and accounts stay unknown; offline input does not dynamically hydrate additional facts.",
+        "cli_serialization_note": "World JSON fork lowercase osaka is required by CLI; original protocol request retains Osaka, identical execution fork."
+      },
+      "weth": {
+        "offline_cli_arguments": [
+          "--world",
+          "weth-26180958-observed-world.json",
+          "--evm.to",
+          "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "--format",
+          "json",
+          "--evm.coinbase",
+          "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+          "--evm.timestamp",
+          "0x6acda8f3",
+          "--evm.number",
+          "0x18f7d5e",
+          "--evm.prevrandao",
+          "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+          "--evm.gas-limit",
+          "0x3938700",
+          "--evm.chain-id",
+          "0x1",
+          "--evm.basefee",
+          "0x40800d1",
+          "--evm.blob-basefee",
+          "0x3d73da",
+          "--evm.block-hash",
+          "0x18f7d5d:0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+          "--max-work",
+          "1000000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--max-relations",
+          "2048",
+          "--smt.provider",
+          "z3",
+          "--smt.rlimit",
+          "10000000"
+        ],
+        "rpc_request": "weth-original-request.json",
+        "world_file": "weth-26180958-observed-world.json",
+        "world_sha256": "79838f0ea7279ec12cd1f80f85f41c9b76117bc64f881c96b9262d192fc76f69",
+        "original_request_sha256": "48f304b0790176ae9549ae8c183dbc09a9a1b47a36889caefb3b4a1c78cc28ae",
+        "captured_snapshot": {
+          "chain_id": "0x1",
+          "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+          "number": "0x18f7d5e",
+          "parent_hash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+          "timestamp": "0x6acda8f3",
+          "coinbase": "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+          "prevrandao": "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+          "gas_limit": "0x3938700",
+          "base_fee": "0x40800d1",
+          "blob_base_fee": "0x3d73da",
+          "excess_blob_gas": "0xa979acd",
+          "blob_gas_used": "0x0"
+        },
+        "source_initial_accounts": 1,
+        "observed_storage_slots": 4,
+        "programs": [
+          {
+            "code_address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            "code_hash": "0xd0a06b12ac47863b5c7be4185c2deaad1c61557033f56c7d4ea74429cbb25e23",
+            "kind": "Runtime",
+            "bytecode_bytes": 3124,
+            "bytecode_raw_sha256": "5566bf50796faf93c9b6f6adacd3b32c70bfe16b48ffc59db6cd144cbdc89739"
+          }
+        ],
+        "missing_knowledge_boundary": "Unobserved storage and accounts stay unknown; offline input does not dynamically hydrate additional facts.",
+        "cli_serialization_note": "World JSON fork lowercase osaka is required by CLI; original protocol request retains Osaka, identical execution fork."
+      }
+    }
+  },
+  "clean_nix_baseline_available": {
+    "schema": "known-recursion-clean-nix-baseline-v1",
+    "declared_source_commit": "eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+    "source_selection": "git+file:///home/ethever/projects/evm-abstract-lab-worktrees/known-recursive-summaries-20261014?rev=eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+    "queried_attribute": "packages.x86_64-linux.default.outPath",
+    "nix_eval_exit_code": 0,
+    "nix_package": "/nix/store/45gq0cd80b9xp604ij8b782jighv29hh-evm-abstract-0.4.0",
+    "deriver": "/nix/store/cjn6h9lls3c55avwqmjfihhx4xm4ir7p-evm-abstract-0.4.0.drv",
+    "scope": "Existing immutable release output of fixed clean eb86 Git source expression; no access to or restart of live workbench. Package may be shared by source-equivalent revisions through Nix filtering.",
+    "binaries": {
+      "evm-abstract": {
+        "frozen_path": "/tmp/evm-known-recursion-agents/baseline/evm-abstract-eb86cb5-clean-nix",
+        "source_path": "/nix/store/45gq0cd80b9xp604ij8b782jighv29hh-evm-abstract-0.4.0/bin/evm-abstract",
+        "sha256": "d452e5e8ce0489ec962d6fc7e4db7c995aca5de974bf59cbd0706a985b8ecfb8",
+        "bytes": 12511936
+      },
+      "evm-abstract-server": {
+        "frozen_path": "/tmp/evm-known-recursion-agents/baseline/evm-abstract-server-eb86cb5-clean-nix",
+        "source_path": "/nix/store/45gq0cd80b9xp604ij8b782jighv29hh-evm-abstract-0.4.0/bin/evm-abstract-server",
+        "sha256": "94193fb04bdca91142fae3c6d0dcce3d821b0cb33c5531ef87b0b41dd5a1f01a",
+        "bytes": 12788104
+      }
+    }
+  },
+  "preliminary_cli_provenance": {
+    "schema": "known-recursion-frozen-baseline-elf-v1",
+    "binary": "/tmp/evm-known-recursion-agents/baseline/evm-abstract-a657-equivalent-eb86cb5",
+    "sha256": "ef66756a39da61684877feb8bce845ae30a78e0dedc0de963052367d4df5f239",
+    "copied_from": "/home/ethever/projects/evm-abstract-lab-worktrees/unknown-world-execution-20261013/target/release/evm-abstract",
+    "actual_build_source_commit": "a657cc334c4ef9532ac19f66bf855d796e3a48f4",
+    "equivalent_baseline_source_commit": "eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+    "not_built_from_baseline_commit": true,
+    "checked_source_paths": [
+      "crates/evm-abstract/src",
+      "crates/evm-abstract/Cargo.toml",
+      "crates/evm-abstract-cli/src",
+      "crates/evm-abstract-cli/Cargo.toml",
+      "Cargo.toml",
+      "Cargo.lock",
+      "flake.nix",
+      "flake.lock",
+      "nix"
+    ],
+    "git_object_identity_by_path": {
+      "crates/evm-abstract/src": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "d458bbd0c1918776d16b44a30698336952022f0f",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "d458bbd0c1918776d16b44a30698336952022f0f"
+      },
+      "crates/evm-abstract/Cargo.toml": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "c552d6d9852bbc2a85081eeca2e89eb1e1e369be",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "c552d6d9852bbc2a85081eeca2e89eb1e1e369be"
+      },
+      "crates/evm-abstract-cli/src": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "be96274f489301b84094cc6f25a08d4951c1bb6c",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "be96274f489301b84094cc6f25a08d4951c1bb6c"
+      },
+      "crates/evm-abstract-cli/Cargo.toml": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "ecc273cfdaa186bae10a2cadea94622f496e6f34",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "ecc273cfdaa186bae10a2cadea94622f496e6f34"
+      },
+      "Cargo.toml": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "444737285cef037659c300327bf2a84442bca018",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "444737285cef037659c300327bf2a84442bca018"
+      },
+      "Cargo.lock": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "bbc785f0e4db4f182d500f6722e96eb7dbe317ed",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "bbc785f0e4db4f182d500f6722e96eb7dbe317ed"
+      },
+      "flake.nix": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "ab86d37cffbbe6825574edd36eacb4f7f6e29d96",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "ab86d37cffbbe6825574edd36eacb4f7f6e29d96"
+      },
+      "flake.lock": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "ebe4d90f7b146e4408e9595af09a1af246177ca2",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "ebe4d90f7b146e4408e9595af09a1af246177ca2"
+      },
+      "nix": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "e1d09869bf1559967264488ea054076520069dc1",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "e1d09869bf1559967264488ea054076520069dc1"
+      }
+    },
+    "source_changes_between_these_commits": [],
+    "scope": "CLI library/application and locked build inputs identical. No claim of an eb86cb5 rebuild. Current developing worktree may be dirty and does not affect this frozen copied ELF."
+  },
+  "preliminary_server_provenance": {
+    "schema": "known-recursion-frozen-baseline-server-v1",
+    "binary": "/tmp/evm-known-recursion-agents/baseline/evm-abstract-server-a657-equivalent-eb86cb5",
+    "sha256": "a31db0598f0c8b6b2d7c0b1d5669cde8637032909939375c1ed0b7ada87ba104",
+    "copied_from": "/home/ethever/projects/evm-abstract-lab-worktrees/unknown-world-execution-20261013/target/release/evm-abstract-server",
+    "baseline_equivalent_source_commit": "eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+    "production_source_recorded_at_previous_measurement": "a657cc334c4ef9532ac19f66bf855d796e3a48f4",
+    "actual_build_started_revision": "285f83a04810656e9123526dd3dec4eb614a7ea3",
+    "actual_build_started_dirty_production": true,
+    "previous_matching_rpc_probe_metadata": {
+      "binary": "/home/ethever/projects/evm-abstract-lab-worktrees/unknown-world-execution-20261013/target/release/evm-abstract-server",
+      "binary_sha256": "a31db0598f0c8b6b2d7c0b1d5669cde8637032909939375c1ed0b7ada87ba104",
+      "server_argv": [
+        "/home/ethever/projects/evm-abstract-lab-worktrees/unknown-world-execution-20261013/target/release/evm-abstract-server",
+        "--assets",
+        "/nix/store/kvc7j11fzsvzfnd826hcblsayniklgwk-evm-abstract-web-assets",
+        "--bind",
+        "127.0.0.1:0",
+        "--workers",
+        "2",
+        "--queue-capacity",
+        "4"
+      ],
+      "source_revision": "a657cc334c4ef9532ac19f66bf855d796e3a48f4",
+      "source_dirty": false,
+      "build_started_revision": "285f83a04810656e9123526dd3dec4eb614a7ea3",
+      "build_started_dirty_production": true,
+      "production_source_file": "crates/evm-abstract/src/analysis/transfer/unknown/environment.rs",
+      "production_source_sha256": "f1bdde8825b19be6065d7b11affc780da002f2b2db85200f0cb95342b4980b7b",
+      "baseline_metadata": "/tmp/evm-issue124-agents/router-cli-default-20261014/metadata.json",
+      "request_sha256": "c5760be58b380825b32362b36562446a6907328fd3ef5685b52cf57759d23bb0",
+      "same_inputs_and_browser_policy": true,
+      "request_reconstruction": "Original layout entry and exact LAYOUT_DEFAULT_LIMITS; serialized default environment verified against actual unknown-world browser request and protocol defaults. No original sandbox request is claimed available.",
+      "started_utc": "2026-10-13T16:33:00.047062+00:00",
+      "browser_screenshot_acceptance": false
+    },
+    "previous_matching_rpc_probe_metadata_sha256": "c1e10382f5910e7dbeabc160ef4b33999befe19105b5c65e028f35bb47484a71",
+    "git_object_identity_by_path": {
+      "crates/evm-abstract/src": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "d458bbd0c1918776d16b44a30698336952022f0f",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "d458bbd0c1918776d16b44a30698336952022f0f"
+      },
+      "crates/evm-abstract/Cargo.toml": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "c552d6d9852bbc2a85081eeca2e89eb1e1e369be",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "c552d6d9852bbc2a85081eeca2e89eb1e1e369be"
+      },
+      "crates/evm-abstract-server/src": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "5f3b8ec2b2d554d14f0fee4e53201de6c6b1af1b",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "5f3b8ec2b2d554d14f0fee4e53201de6c6b1af1b"
+      },
+      "crates/evm-abstract-server/Cargo.toml": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "a5a62b5b89746b8a85a61689ffd980dd747db5d3",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "a5a62b5b89746b8a85a61689ffd980dd747db5d3"
+      },
+      "crates/evm-abstract-protocol/src": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "1e64e87d6244cd2a6096c4d91c313396ebd8fea1",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "1e64e87d6244cd2a6096c4d91c313396ebd8fea1"
+      },
+      "crates/evm-abstract-protocol/Cargo.toml": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "fb73c0baaac56e0f09142004f5c6067c2dcfba4a",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "fb73c0baaac56e0f09142004f5c6067c2dcfba4a"
+      },
+      "Cargo.toml": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "444737285cef037659c300327bf2a84442bca018",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "444737285cef037659c300327bf2a84442bca018"
+      },
+      "Cargo.lock": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "bbc785f0e4db4f182d500f6722e96eb7dbe317ed",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "bbc785f0e4db4f182d500f6722e96eb7dbe317ed"
+      },
+      "flake.nix": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "ab86d37cffbbe6825574edd36eacb4f7f6e29d96",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "ab86d37cffbbe6825574edd36eacb4f7f6e29d96"
+      },
+      "flake.lock": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "ebe4d90f7b146e4408e9595af09a1af246177ca2",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "ebe4d90f7b146e4408e9595af09a1af246177ca2"
+      },
+      "nix": {
+        "a657cc334c4ef9532ac19f66bf855d796e3a48f4": "e1d09869bf1559967264488ea054076520069dc1",
+        "eb86cb5661b77b5be2960ac4b1909c1b36cf6871": "e1d09869bf1559967264488ea054076520069dc1"
+      }
+    },
+    "source_changes_between_a657_and_eb86": [],
+    "scope": "Existing server from parent-controlled static-envelope build; previous metadata records dirty build start at285f and clean measurement sourcea657. Do not claim an eb86 rebuild or that build started clean at a657."
+  },
+  "candidate_first_provenance": {
+    "source_head": "eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+    "dirty_build": true,
+    "scope": "development candidate after recursion integration and guarded numeric projection; not final frozen gate",
+    "build_command": "nix develop --no-update-lock-file -c env CARGO_BUILD_JOBS=8 cargo build --release -p evm-abstract-cli -p evm-abstract-server -j 8",
+    "build_exit_code": 0,
+    "binaries": {
+      "evm-abstract": {
+        "source": "/home/ethever/projects/evm-abstract-lab-worktrees/known-recursive-summaries-20261014/target/release/evm-abstract",
+        "path": "/tmp/evm-known-recursion-agents/candidate-first/evm-abstract",
+        "sha256": "0fbb53472d759db27d975eacf3578b95224dac722ed00af6383f88bef846e979"
+      },
+      "evm-abstract-server": {
+        "source": "/home/ethever/projects/evm-abstract-lab-worktrees/known-recursive-summaries-20261014/target/release/evm-abstract-server",
+        "path": "/tmp/evm-known-recursion-agents/candidate-first/evm-abstract-server",
+        "sha256": "6faa17349ef062a598318645c9d03ee1619e43ff6b2811c0fb0626adbdd0e6b8"
+      }
+    }
+  },
+  "candidate_first_full_build_metadata_sha256": "6968218727a3b7b611118ec61cb8ec2251c27646f1817230bf80d34f635f97ae",
+  "candidate_first_production_hashes_after_build_sha256": "00e4d95e2f8508642747e33e75c17a87337021d41cc55dcc6d3098fdf99bffdb",
+  "batches": {
+    "a657_offline": {
+      "raw_measurements_sha256": "17c8e689b70adceaae782a5bc8ae0f8008fc92ffefb7f0b7f821ecce91ef1593",
+      "raw_evidence_directory": "/tmp/evm-known-recursion-agents/baseline-offline-preliminary",
+      "scope": null,
+      "finished_utc": "2026-10-13T19:22:07.303070+00:00",
+      "samples": [
+        {
+          "case": "usdc",
+          "termination": "external_timeout",
+          "command": [
+            "taskset",
+            "-c",
+            "48,49,50,51,52,53,54,55",
+            "/tmp/evm-known-recursion-agents/baseline/evm-abstract-a657-equivalent-eb86cb5",
+            "analyze",
+            "--world",
+            "/tmp/evm-known-recursion-agents/preparation/usdc-26180958-observed-world.json",
+            "--evm.to",
+            "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "--format",
+            "json",
+            "--evm.coinbase",
+            "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+            "--evm.timestamp",
+            "0x6acda8f3",
+            "--evm.number",
+            "0x18f7d5e",
+            "--evm.prevrandao",
+            "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+            "--evm.gas-limit",
+            "0x3938700",
+            "--evm.chain-id",
+            "0x1",
+            "--evm.basefee",
+            "0x40800d1",
+            "--evm.blob-basefee",
+            "0x3d73da",
+            "--evm.block-hash",
+            "0x18f7d5d:0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+            "--max-work",
+            "1000000000000",
+            "--max-call-depth",
+            "1025",
+            "--max-memory-bytes",
+            "67108864",
+            "--max-states",
+            "100000",
+            "--max-transfers",
+            "10000000",
+            "--context-depth",
+            "128",
+            "--max-constants",
+            "512",
+            "--reduction-rounds",
+            "16",
+            "--max-facts",
+            "4096",
+            "--max-symbolic-nodes",
+            "16384",
+            "--max-symbolic-depth",
+            "256",
+            "--max-relations",
+            "2048",
+            "--smt.provider",
+            "z3",
+            "--smt.rlimit",
+            "10000000"
+          ],
+          "binary_sha256": "ef66756a39da61684877feb8bce845ae30a78e0dedc0de963052367d4df5f239",
+          "process": {
+            "exit_code": -15,
+            "user_seconds": 101.331371,
+            "system_seconds": 18.864904,
+            "peak_rss_kib": 1702140,
+            "pid": 3692892,
+            "guard": {
+              "timeout_seconds": 120,
+              "rss_limit_kib": 8388608,
+              "host_MemAvailable_floor_kib": 20971520,
+              "poll_seconds": 1,
+              "cpu_affinity": [
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55
+              ],
+              "owns_only_created_process_group": true
+            },
+            "started_utc": "2026-10-13T19:19:38.120688+00:00",
+            "finished_utc": "2026-10-13T19:21:39.216971+00:00",
+            "wall_seconds": 121.0960801388137,
+            "guard_stop_sample": {
+              "elapsed_seconds": 120.09507861873135,
+              "VmSize": "1765472 kB",
+              "VmHWM": "1702140 kB",
+              "VmRSS": "1272072 kB",
+              "Threads": "1",
+              "Cpus_allowed_list": "48-55",
+              "user_cpu_seconds": 101.32,
+              "system_cpu_seconds": 18.73,
+              "host_MemAvailable_kib": 55790124,
+              "host_loadavg": "6.74 6.12 5.22 7/4920 3704147"
+            },
+            "owned_pid_absent": true
+          },
+          "report_delivered": false,
+          "world_sha256": "d579a6062e03a353cfe419bae1afcd7b12a062a5e38b46c9a6b58fc4bcc287b6",
+          "request_sha256": "df1a7eae163963b18e83c7413eb77d6da65381d19b3d2232f02d2f0ad90c6c4e",
+          "stdout_bytes": 0,
+          "stderr_bytes": 0,
+          "report_unavailable_reason": "JSONDecodeError: Expecting value: line 1 column 1 (char 0)"
+        },
+        {
+          "case": "weth",
+          "termination": "cli_error",
+          "command": [
+            "taskset",
+            "-c",
+            "48,49,50,51,52,53,54,55",
+            "/tmp/evm-known-recursion-agents/baseline/evm-abstract-a657-equivalent-eb86cb5",
+            "analyze",
+            "--world",
+            "/tmp/evm-known-recursion-agents/preparation/weth-26180958-observed-world.json",
+            "--evm.to",
+            "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            "--format",
+            "json",
+            "--evm.coinbase",
+            "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+            "--evm.timestamp",
+            "0x6acda8f3",
+            "--evm.number",
+            "0x18f7d5e",
+            "--evm.prevrandao",
+            "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+            "--evm.gas-limit",
+            "0x3938700",
+            "--evm.chain-id",
+            "0x1",
+            "--evm.basefee",
+            "0x40800d1",
+            "--evm.blob-basefee",
+            "0x3d73da",
+            "--evm.block-hash",
+            "0x18f7d5d:0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+            "--max-work",
+            "1000000000000",
+            "--max-call-depth",
+            "1025",
+            "--max-memory-bytes",
+            "67108864",
+            "--max-states",
+            "100000",
+            "--max-transfers",
+            "10000000",
+            "--context-depth",
+            "128",
+            "--max-constants",
+            "512",
+            "--reduction-rounds",
+            "16",
+            "--max-facts",
+            "4096",
+            "--max-symbolic-nodes",
+            "16384",
+            "--max-symbolic-depth",
+            "256",
+            "--max-relations",
+            "2048",
+            "--smt.provider",
+            "z3",
+            "--smt.rlimit",
+            "10000000"
+          ],
+          "binary_sha256": "ef66756a39da61684877feb8bce845ae30a78e0dedc0de963052367d4df5f239",
+          "cli_error_kind": "NativeJsonOutputLimit",
+          "process": {
+            "exit_code": 1,
+            "user_seconds": 23.135875,
+            "system_seconds": 4.510416,
+            "peak_rss_kib": 243668,
+            "pid": 3704183,
+            "guard": {
+              "timeout_seconds": 120,
+              "rss_limit_kib": 8388608,
+              "host_MemAvailable_floor_kib": 20971520,
+              "poll_seconds": 1,
+              "cpu_affinity": [
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55
+              ],
+              "owns_only_created_process_group": true
+            },
+            "started_utc": "2026-10-13T19:21:39.258512+00:00",
+            "finished_utc": "2026-10-13T19:22:07.281985+00:00",
+            "wall_seconds": 28.02327099489048,
+            "owned_pid_absent": true
+          },
+          "report_delivered": false,
+          "world_sha256": "79838f0ea7279ec12cd1f80f85f41c9b76117bc64f881c96b9262d192fc76f69",
+          "request_sha256": "48f304b0790176ae9549ae8c183dbc09a9a1b47a36889caefb3b4a1c78cc28ae",
+          "stdout_bytes": 0,
+          "stderr_bytes": 95,
+          "report_unavailable_reason": "JSONDecodeError: Expecting value: line 1 column 1 (char 0)"
+        }
+      ]
+    },
+    "a657_rpc": {
+      "raw_measurements_sha256": "474852e1f076deb38645b7d300fd6bba7c26f2e32fa63a495cf3fa48a1eadce4",
+      "raw_evidence_directory": "/tmp/evm-known-recursion-agents/baseline-rpc-web-preliminary",
+      "scope": "Preliminary diagnostic; simultaneous parent Nix assets build with cores8. Original request bytes and fixed block; isolated HTTP API server, not browser UI acceptance.",
+      "finished_utc": "2026-10-13T19:43:59.246128+00:00",
+      "samples": [
+        {
+          "case": "usdc",
+          "termination": "external_timeout",
+          "report_delivered": false,
+          "last_snapshot": {
+            "id": 2099841551590215813,
+            "state": "Running",
+            "progress": {
+              "phase": "Analyzing",
+              "round": 2,
+              "accounts": 1,
+              "slots": 1,
+              "requests": 17,
+              "states": 709,
+              "transfers": 570,
+              "work": 18307557666
+            },
+            "timings": {
+              "queue_ns": 61504,
+              "processing_ns": 119811151644,
+              "validating_ns": 14123243,
+              "pinning_ns": 3250452,
+              "acquiring_ns": 10885246,
+              "analyzing_ns": 119782892703,
+              "building_ssa_ns": 0,
+              "projecting_ns": 0
+            }
+          },
+          "request_wall_seconds": 121.02865196717903,
+          "process": {
+            "started_utc": "2026-10-13T19:41:11.090358+00:00",
+            "guard": {
+              "cpus": [
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55
+              ],
+              "timeout_seconds": 120,
+              "rss_limit_kib": 8388608,
+              "host_available_floor_kib": 20971520,
+              "poll_seconds": 1
+            },
+            "exit_code": -15,
+            "pid": 3795388,
+            "guard_stop_sample": {
+              "elapsed_seconds": 120.08499553613365,
+              "host_MemAvailable_kib": 57969060,
+              "VmSize": "724984 kB",
+              "VmHWM": "1710376 kB",
+              "VmRSS": "381264 kB",
+              "Threads": "6",
+              "Cpus_allowed_list": "48-55",
+              "user_seconds": 81.05,
+              "system_seconds": 39.14
+            },
+            "stop_reason": "external_timeout",
+            "signal_sent": "SIGTERM to owned process group",
+            "wall_seconds": 121.08733219327405,
+            "user_seconds": 81.058359,
+            "system_seconds": 39.192877,
+            "peak_rss_kib": 1710376,
+            "finished_utc": "2026-10-13T19:43:12.177697+00:00",
+            "termination": "external_timeout",
+            "owned_pid_absent": true
+          },
+          "command": [
+            "taskset",
+            "-c",
+            "48,49,50,51,52,53,54,55",
+            "/tmp/evm-known-recursion-agents/baseline/evm-abstract-server-a657-equivalent-eb86cb5",
+            "--bind",
+            "127.0.0.1:0",
+            "--assets",
+            "/nix/store/kvc7j11fzsvzfnd826hcblsayniklgwk-evm-abstract-web-assets",
+            "--rpc-config",
+            "[REDACTED_RPC_ENDPOINT]",
+            "--workers",
+            "1",
+            "--queue-capacity",
+            "1",
+            "--retained-jobs",
+            "2"
+          ],
+          "request_sha256": "df1a7eae163963b18e83c7413eb77d6da65381d19b3d2232f02d2f0ad90c6c4e"
+        },
+        {
+          "case": "weth",
+          "termination": "http_report_delivered",
+          "task_state": "Completed",
+          "report_delivered": true,
+          "last_snapshot": {
+            "id": 8478401736573723620,
+            "state": "Completed",
+            "progress": {
+              "phase": "Complete",
+              "round": 2,
+              "accounts": 1,
+              "slots": 4,
+              "requests": 20,
+              "states": 468,
+              "transfers": 484,
+              "work": 53270542527
+            },
+            "timings": {
+              "queue_ns": 25367,
+              "processing_ns": 45634562009,
+              "validating_ns": 7952334,
+              "pinning_ns": 1773005,
+              "acquiring_ns": 42311293,
+              "analyzing_ns": 45485188808,
+              "building_ssa_ns": 9833470,
+              "projecting_ns": 87503099
+            }
+          },
+          "request_wall_seconds": 46.43064732477069,
+          "result_http": {
+            "http_status": 200,
+            "response_bytes": 11803061,
+            "raw_response_sha256": "11631b8f8f052bb659d9ef3f1ce016a4db08fc43778e44cf9f457fbe16c22d46",
+            "persisted_response_sha256": "11631b8f8f052bb659d9ef3f1ce016a4db08fc43778e44cf9f457fbe16c22d46",
+            "endpoint_redacted": false,
+            "elapsed_seconds": 0.09776895912364125
+          },
+          "process": {
+            "started_utc": "2026-10-13T19:43:12.179436+00:00",
+            "guard": {
+              "cpus": [
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55
+              ],
+              "timeout_seconds": 120,
+              "rss_limit_kib": 8388608,
+              "host_available_floor_kib": 20971520,
+              "poll_seconds": 1
+            },
+            "exit_code": -15,
+            "pid": 3800061,
+            "stop_reason": "capture_complete",
+            "signal_sent": "SIGTERM to owned process group",
+            "wall_seconds": 47.03151987120509,
+            "user_seconds": 38.956677,
+            "system_seconds": 6.921988,
+            "peak_rss_kib": 256552,
+            "finished_utc": "2026-10-13T19:43:59.210955+00:00",
+            "termination": "capture_complete",
+            "owned_pid_absent": true
+          },
+          "command": [
+            "taskset",
+            "-c",
+            "48,49,50,51,52,53,54,55",
+            "/tmp/evm-known-recursion-agents/baseline/evm-abstract-server-a657-equivalent-eb86cb5",
+            "--bind",
+            "127.0.0.1:0",
+            "--assets",
+            "/nix/store/kvc7j11fzsvzfnd826hcblsayniklgwk-evm-abstract-web-assets",
+            "--rpc-config",
+            "[REDACTED_RPC_ENDPOINT]",
+            "--workers",
+            "1",
+            "--queue-capacity",
+            "1",
+            "--retained-jobs",
+            "2"
+          ],
+          "request_sha256": "48f304b0790176ae9549ae8c183dbc09a9a1b47a36889caefb3b4a1c78cc28ae",
+          "metrics": {
+            "status": "Incomplete",
+            "frontier_count": 29,
+            "frontier_kind_counts": {
+              "StateJoin": 11,
+              "Relations": 18
+            },
+            "states": 136,
+            "transfers": 484,
+            "outcomes": 32,
+            "summary_requests": 1,
+            "summary_closed": [
+              false
+            ],
+            "all_reported_summaries_closed": false,
+            "procedure_kinds": {
+              "AbstractEnvironment": 1,
+              "Runtime": 2,
+              "Precompile": 18
+            },
+            "relation_states": 113,
+            "propagations": 29,
+            "reused": 3,
+            "graph_sizes": {
+              "serialized_roots": 0,
+              "serialized_nodes": 0,
+              "largest_serialized_graph": 0,
+              "scope": "Repeated serialized observations, not unique live DAG nodes or SMT formulas"
+            },
+            "work": 53270542527,
+            "snapshot": {
+              "chain_id": "0x1",
+              "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+              "number": "0x18f7d5e",
+              "parent_hash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+              "timestamp": "0x6acda8f3",
+              "coinbase": "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+              "prevrandao": "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+              "gas_limit": "0x3938700",
+              "base_fee": "0x40800d1",
+              "blob_base_fee": "0x3d73da",
+              "excess_blob_gas": "0xa979acd",
+              "blob_gas_used": "0x0"
+            },
+            "timings": {
+              "queue_ns": 25367,
+              "processing_ns": 45634562009,
+              "validating_ns": 7952334,
+              "pinning_ns": 1773005,
+              "acquiring_ns": 42311293,
+              "analyzing_ns": 45485188808,
+              "building_ssa_ns": 9833470,
+              "projecting_ns": 87503099
+            },
+            "acquisition": {
+              "rounds": 2,
+              "fetched_accounts": [],
+              "failed_accounts": [],
+              "fetched_storage": [
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x0"
+                },
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x1"
+                },
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x2"
+                },
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x67aa9b7d2b6d14f3837d07b1073399a41e4104b1d98f169f02cc04f44f14f4b0"
+                }
+              ],
+              "failed_storage": [],
+              "failures": [],
+              "requests": 20,
+              "states_created": 468
+            },
+            "export_limits": {
+              "max_nodes": 65536,
+              "max_depth": 256,
+              "max_exact_bytes": 16777216,
+              "max_work": 64000000,
+              "max_output_bytes": 67108864
+            },
+            "export_usage": {
+              "nodes": 3710,
+              "exact_bytes": 3316,
+              "work": 28127367
+            },
+            "cfg_states": 136,
+            "ssa_complete": false,
+            "symbolic_nodes": 3710,
+            "projected_byte_arrays": 73,
+            "projected_stores": 43
+          },
+          "frontiers": [
+            {
+              "from": 58,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 59,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 60,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 61,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 62,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 63,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 64,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 74,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 76,
+              "pc": 0,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 215,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 215,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 217,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 217,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 0,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2408,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2331,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2096,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 0,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 768,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 768,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 770,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 770,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 1073,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2408,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2331,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2096,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 76,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 80,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            }
+          ]
+        }
+      ]
+    },
+    "candidate_first_rpc": {
+      "raw_measurements_sha256": "79f496e401d69c2f934047d8eb030127ecfff86f2ce1d6f1aecde3c3538afc14",
+      "raw_evidence_directory": "/tmp/evm-known-recursion-agents/candidate-first-rpc-preliminary",
+      "scope": "Same input bytes and explicit policy per case/mode; offline and RPC modes have different acquisition boundaries and are not pooled",
+      "finished_utc": "2026-10-13T19:50:51.228640+00:00",
+      "samples": [
+        {
+          "case": "usdc",
+          "mode": "rpc",
+          "side": "candidate",
+          "termination": "external_timeout",
+          "report_delivered": false,
+          "last_snapshot": {
+            "id": 7129133837066937714,
+            "state": "Running",
+            "progress": {
+              "phase": "Analyzing",
+              "round": 2,
+              "accounts": 1,
+              "slots": 1,
+              "requests": 17,
+              "states": 719,
+              "transfers": 1581,
+              "work": 47522790676
+            },
+            "timings": {
+              "queue_ns": 34174,
+              "processing_ns": 119825208713,
+              "validating_ns": 6918150,
+              "pinning_ns": 1790308,
+              "acquiring_ns": 4579927,
+              "analyzing_ns": 119811920328,
+              "building_ssa_ns": 0,
+              "projecting_ns": 0
+            }
+          },
+          "request_wall_seconds": 120.3290552389808,
+          "process": {
+            "started_utc": "2026-10-13T19:48:07.369189+00:00",
+            "guard": {
+              "cpus": [
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55
+              ],
+              "timeout_seconds": 120.0,
+              "rss_limit_kib": 8388608,
+              "host_available_floor_kib": 20971520,
+              "poll_seconds": 1.0
+            },
+            "exit_code": -15,
+            "pid": 3826814,
+            "exit_observation": "pidfd wakes resource monitor",
+            "guard_stop_sample": {
+              "elapsed_seconds": 120.18042270001024,
+              "host_MemAvailable_kib": 58306680,
+              "VmSize": "798876 kB",
+              "VmHWM": "1855960 kB",
+              "VmRSS": "464040 kB",
+              "Threads": "5",
+              "Cpus_allowed_list": "48-55",
+              "user_seconds": 82.31,
+              "system_seconds": 37.87
+            },
+            "stop_reason": "external_timeout",
+            "signal_sent": "SIGTERM to owned process group",
+            "wall_seconds": 120.23331778915599,
+            "user_seconds": 82.31997,
+            "system_seconds": 37.930731,
+            "peak_rss_kib": 1855960,
+            "finished_utc": "2026-10-13T19:50:07.602497+00:00",
+            "termination": "external_timeout",
+            "owned_pid_absent": true
+          },
+          "command": [
+            "taskset",
+            "-c",
+            "48,49,50,51,52,53,54,55",
+            "/tmp/evm-known-recursion-agents/candidate-first/evm-abstract-server",
+            "--bind",
+            "127.0.0.1:0",
+            "--assets",
+            "/nix/store/lxw93wccjdvivqpb9ssl5jkn1iwijngw-evm-abstract-web-assets",
+            "--rpc-config",
+            "[REDACTED_RPC_ENDPOINT]",
+            "--workers",
+            "1",
+            "--queue-capacity",
+            "1",
+            "--retained-jobs",
+            "2"
+          ],
+          "request_sha256": "df1a7eae163963b18e83c7413eb77d6da65381d19b3d2232f02d2f0ad90c6c4e",
+          "binary_sha256": "6faa17349ef062a598318645c9d03ee1619e43ff6b2811c0fb0626adbdd0e6b8"
+        },
+        {
+          "case": "weth",
+          "mode": "rpc",
+          "side": "candidate",
+          "termination": "http_report_delivered",
+          "task_state": "Completed",
+          "report_delivered": true,
+          "last_snapshot": {
+            "id": 8874717804395732486,
+            "state": "Completed",
+            "progress": {
+              "phase": "Complete",
+              "round": 2,
+              "accounts": 1,
+              "slots": 4,
+              "requests": 20,
+              "states": 463,
+              "transfers": 484,
+              "work": 53722818778
+            },
+            "timings": {
+              "queue_ns": 33562,
+              "processing_ns": 42769416055,
+              "validating_ns": 7492185,
+              "pinning_ns": 1759892,
+              "acquiring_ns": 7558368,
+              "analyzing_ns": 42645657672,
+              "building_ssa_ns": 10810535,
+              "projecting_ns": 96137403
+            }
+          },
+          "completed_progress": {
+            "phase": "Complete",
+            "round": 2,
+            "accounts": 1,
+            "slots": 4,
+            "requests": 20,
+            "states": 463,
+            "transfers": 484,
+            "work": 53722818778
+          },
+          "request_wall_seconds": 43.43834529398009,
+          "submit_to_body_received_seconds": 43.19308243691921,
+          "result_http": {
+            "http_status": 200,
+            "response_bytes": 11490775,
+            "raw_response_sha256": "eae6dec5a3113318ab98122b3cc155a234bf918c0e15b1d68b0ea4a336f8bf59",
+            "persisted_response_sha256": "eae6dec5a3113318ab98122b3cc155a234bf918c0e15b1d68b0ea4a336f8bf59",
+            "endpoint_redacted": false,
+            "elapsed_seconds": 0.0815657158382237,
+            "body_received_monotonic": 3589450.568757554,
+            "capture_limit_bytes": 134217728
+          },
+          "process": {
+            "started_utc": "2026-10-13T19:50:07.728478+00:00",
+            "guard": {
+              "cpus": [
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55
+              ],
+              "timeout_seconds": 120.0,
+              "rss_limit_kib": 8388608,
+              "host_available_floor_kib": 20971520,
+              "poll_seconds": 1.0
+            },
+            "exit_code": -15,
+            "pid": 3833012,
+            "exit_observation": "pidfd wakes resource monitor",
+            "stop_reason": "capture_complete",
+            "signal_sent": "SIGTERM to owned process group",
+            "wall_seconds": 43.47037347173318,
+            "user_seconds": 39.425931,
+            "system_seconds": 3.61646,
+            "peak_rss_kib": 249924,
+            "finished_utc": "2026-10-13T19:50:51.198844+00:00",
+            "termination": "capture_complete",
+            "owned_pid_absent": true
+          },
+          "command": [
+            "taskset",
+            "-c",
+            "48,49,50,51,52,53,54,55",
+            "/tmp/evm-known-recursion-agents/candidate-first/evm-abstract-server",
+            "--bind",
+            "127.0.0.1:0",
+            "--assets",
+            "/nix/store/lxw93wccjdvivqpb9ssl5jkn1iwijngw-evm-abstract-web-assets",
+            "--rpc-config",
+            "[REDACTED_RPC_ENDPOINT]",
+            "--workers",
+            "1",
+            "--queue-capacity",
+            "1",
+            "--retained-jobs",
+            "2"
+          ],
+          "request_sha256": "48f304b0790176ae9549ae8c183dbc09a9a1b47a36889caefb3b4a1c78cc28ae",
+          "binary_sha256": "6faa17349ef062a598318645c9d03ee1619e43ff6b2811c0fb0626adbdd0e6b8",
+          "metrics": {
+            "status": "Incomplete",
+            "frontier_count": 29,
+            "frontier_kind_counts": {
+              "StateJoin": 11,
+              "Relations": 18
+            },
+            "states": 133,
+            "transfers": 484,
+            "outcomes": 32,
+            "summary_requests": 2,
+            "summary_closed": [
+              true,
+              false
+            ],
+            "all_reported_summaries_closed": false,
+            "procedure_kinds": {
+              "Runtime": 3,
+              "AbstractEnvironment": 1,
+              "Precompile": 18
+            },
+            "relation_states": 117,
+            "propagations": 31,
+            "reused": 4,
+            "graph_sizes": {
+              "serialized_roots": 0,
+              "serialized_nodes": 0,
+              "largest_serialized_graph": 0,
+              "scope": "Repeated serialized observations, not unique live DAG nodes or SMT formulas"
+            },
+            "work": 53722818778,
+            "snapshot": {
+              "chain_id": "0x1",
+              "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+              "number": "0x18f7d5e",
+              "parent_hash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+              "timestamp": "0x6acda8f3",
+              "coinbase": "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+              "prevrandao": "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+              "gas_limit": "0x3938700",
+              "base_fee": "0x40800d1",
+              "blob_base_fee": "0x3d73da",
+              "excess_blob_gas": "0xa979acd",
+              "blob_gas_used": "0x0"
+            },
+            "timings": {
+              "queue_ns": 33562,
+              "processing_ns": 42769416055,
+              "validating_ns": 7492185,
+              "pinning_ns": 1759892,
+              "acquiring_ns": 7558368,
+              "analyzing_ns": 42645657672,
+              "building_ssa_ns": 10810535,
+              "projecting_ns": 96137403
+            },
+            "acquisition": {
+              "rounds": 2,
+              "fetched_accounts": [],
+              "failed_accounts": [],
+              "fetched_storage": [
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x0"
+                },
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x1"
+                },
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x2"
+                },
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x67aa9b7d2b6d14f3837d07b1073399a41e4104b1d98f169f02cc04f44f14f4b0"
+                }
+              ],
+              "failed_storage": [],
+              "failures": [],
+              "requests": 20,
+              "states_created": 463
+            },
+            "export_limits": {
+              "max_nodes": 65536,
+              "max_depth": 256,
+              "max_exact_bytes": 16777216,
+              "max_work": 64000000,
+              "max_output_bytes": 67108864
+            },
+            "export_usage": {
+              "nodes": 3608,
+              "exact_bytes": 3316,
+              "work": 26601306
+            },
+            "cfg_states": 133,
+            "ssa_complete": false,
+            "symbolic_nodes": 3608,
+            "projected_byte_arrays": 72,
+            "projected_stores": 43
+          },
+          "frontiers": [
+            {
+              "from": 58,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 59,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 60,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 61,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 62,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 63,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 64,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 74,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 75,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 76,
+              "pc": 0,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 215,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 215,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 217,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 217,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 0,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2408,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2331,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2096,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 0,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 768,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 768,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 770,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 770,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 1073,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2408,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2331,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2096,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 76,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            }
+          ]
+        }
+      ],
+      "source_before_commit": "eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+      "source_before_dirty": true,
+      "source_unchanged": false,
+      "input_unchanged": true,
+      "binary_unchanged": true
+    },
+    "candidate_second_rpc": {
+      "raw_measurements_sha256": "c6c9722984f5b8ab995d60900014a75c80eb18845f4ff23dc1d5017df7a7f1a0",
+      "raw_evidence_directory": "/tmp/evm-known-recursion-agents/candidate-second-rpc-preliminary",
+      "scope": "Preliminary candidate-second finite-Members encoding diagnostic; concurrent development/short tests. Uninstrumented native process; GDB snapshots will be separately labeled if captured",
+      "finished_utc": "2026-10-13T20:06:03.560753+00:00",
+      "source_before_commit": "eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+      "source_before_dirty": true,
+      "source_unchanged": false,
+      "input_unchanged": true,
+      "binary_unchanged": true,
+      "samples": [
+        {
+          "case": "usdc",
+          "mode": "rpc",
+          "side": "candidate",
+          "termination": "external_timeout",
+          "report_delivered": false,
+          "last_snapshot": {
+            "id": 2201914196146024037,
+            "state": "Running",
+            "progress": {
+              "phase": "Analyzing",
+              "round": 2,
+              "accounts": 1,
+              "slots": 1,
+              "requests": 17,
+              "states": 1100,
+              "transfers": 3823,
+              "work": 162881314804
+            },
+            "timings": {
+              "queue_ns": 46707,
+              "processing_ns": 119799580580,
+              "validating_ns": 14002505,
+              "pinning_ns": 2937024,
+              "acquiring_ns": 5266852,
+              "analyzing_ns": 119777374199,
+              "building_ssa_ns": 0,
+              "projecting_ns": 0
+            }
+          },
+          "request_wall_seconds": 120.30287715187296,
+          "process": {
+            "started_utc": "2026-10-13T20:03:22.676216+00:00",
+            "guard": {
+              "cpus": [
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55
+              ],
+              "timeout_seconds": 120.0,
+              "rss_limit_kib": 8388608,
+              "host_available_floor_kib": 20971520,
+              "poll_seconds": 1.0
+            },
+            "exit_code": -15,
+            "pid": 3884042,
+            "exit_observation": "pidfd wakes resource monitor",
+            "guard_stop_sample": {
+              "elapsed_seconds": 120.19020607508719,
+              "host_MemAvailable_kib": 58633744,
+              "VmSize": "798880 kB",
+              "VmHWM": "475368 kB",
+              "VmRSS": "461768 kB",
+              "Threads": "6",
+              "Cpus_allowed_list": "48-55",
+              "user_seconds": 116.73,
+              "system_seconds": 3.72
+            },
+            "stop_reason": "external_timeout",
+            "signal_sent": "SIGTERM to owned process group",
+            "wall_seconds": 120.25859852321446,
+            "user_seconds": 116.732807,
+            "system_seconds": 3.7924160000000002,
+            "peak_rss_kib": 475368,
+            "finished_utc": "2026-10-13T20:05:22.934807+00:00",
+            "termination": "external_timeout",
+            "owned_pid_absent": true
+          },
+          "command": [
+            "taskset",
+            "-c",
+            "48,49,50,51,52,53,54,55",
+            "/tmp/evm-known-recursion-agents/candidate-second/evm-abstract-server",
+            "--bind",
+            "127.0.0.1:0",
+            "--assets",
+            "/nix/store/lxw93wccjdvivqpb9ssl5jkn1iwijngw-evm-abstract-web-assets",
+            "--rpc-config",
+            "[REDACTED_RPC_ENDPOINT]",
+            "--workers",
+            "1",
+            "--queue-capacity",
+            "1",
+            "--retained-jobs",
+            "2"
+          ],
+          "request_sha256": "df1a7eae163963b18e83c7413eb77d6da65381d19b3d2232f02d2f0ad90c6c4e",
+          "binary_sha256": "e4db1540786488221516c2565263675eaa8e2772f91e7fb80235de21e54b2c22"
+        },
+        {
+          "case": "weth",
+          "mode": "rpc",
+          "side": "candidate",
+          "termination": "http_report_delivered",
+          "task_state": "Completed",
+          "report_delivered": true,
+          "last_snapshot": {
+            "id": 9011891560784446091,
+            "state": "Completed",
+            "progress": {
+              "phase": "Complete",
+              "round": 2,
+              "accounts": 1,
+              "slots": 4,
+              "requests": 20,
+              "states": 463,
+              "transfers": 484,
+              "work": 53717301766
+            },
+            "timings": {
+              "queue_ns": 60623,
+              "processing_ns": 39845894727,
+              "validating_ns": 14102871,
+              "pinning_ns": 3175653,
+              "acquiring_ns": 8704793,
+              "analyzing_ns": 39726381034,
+              "building_ssa_ns": 9011031,
+              "projecting_ns": 84519345
+            }
+          },
+          "completed_progress": {
+            "phase": "Complete",
+            "round": 2,
+            "accounts": 1,
+            "slots": 4,
+            "requests": 20,
+            "states": 463,
+            "transfers": 484,
+            "work": 53717301766
+          },
+          "request_wall_seconds": 40.43902407074347,
+          "submit_to_body_received_seconds": 40.19369056914002,
+          "result_http": {
+            "http_status": 200,
+            "response_bytes": 11486575,
+            "raw_response_sha256": "6637854e44aeca2e0bcc15a8ed41e6335d6426ea622fa122d6e01808399b6af9",
+            "persisted_response_sha256": "6637854e44aeca2e0bcc15a8ed41e6335d6426ea622fa122d6e01808399b6af9",
+            "endpoint_redacted": false,
+            "elapsed_seconds": 0.09076190833002329,
+            "body_received_monotonic": 3590362.910292276,
+            "capture_limit_bytes": 134217728
+          },
+          "process": {
+            "started_utc": "2026-10-13T20:05:23.063122+00:00",
+            "guard": {
+              "cpus": [
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55
+              ],
+              "timeout_seconds": 120.0,
+              "rss_limit_kib": 8388608,
+              "host_available_floor_kib": 20971520,
+              "poll_seconds": 1.0
+            },
+            "exit_code": -15,
+            "pid": 3896071,
+            "exit_observation": "pidfd wakes resource monitor",
+            "stop_reason": "capture_complete",
+            "signal_sent": "SIGTERM to owned process group",
+            "wall_seconds": 40.4758289991878,
+            "user_seconds": 35.695146,
+            "system_seconds": 4.409282,
+            "peak_rss_kib": 263440,
+            "finished_utc": "2026-10-13T20:06:03.538946+00:00",
+            "termination": "capture_complete",
+            "owned_pid_absent": true
+          },
+          "command": [
+            "taskset",
+            "-c",
+            "48,49,50,51,52,53,54,55",
+            "/tmp/evm-known-recursion-agents/candidate-second/evm-abstract-server",
+            "--bind",
+            "127.0.0.1:0",
+            "--assets",
+            "/nix/store/lxw93wccjdvivqpb9ssl5jkn1iwijngw-evm-abstract-web-assets",
+            "--rpc-config",
+            "[REDACTED_RPC_ENDPOINT]",
+            "--workers",
+            "1",
+            "--queue-capacity",
+            "1",
+            "--retained-jobs",
+            "2"
+          ],
+          "request_sha256": "48f304b0790176ae9549ae8c183dbc09a9a1b47a36889caefb3b4a1c78cc28ae",
+          "binary_sha256": "e4db1540786488221516c2565263675eaa8e2772f91e7fb80235de21e54b2c22",
+          "metrics": {
+            "status": "Incomplete",
+            "frontier_count": 29,
+            "frontier_kind_counts": {
+              "StateJoin": 11,
+              "Relations": 18
+            },
+            "states": 133,
+            "transfers": 484,
+            "outcomes": 32,
+            "summary_requests": 2,
+            "summary_closed": [
+              true,
+              false
+            ],
+            "all_reported_summaries_closed": false,
+            "procedure_kinds": {
+              "Runtime": 3,
+              "AbstractEnvironment": 1,
+              "Precompile": 18
+            },
+            "relation_states": 117,
+            "propagations": 31,
+            "reused": 4,
+            "graph_sizes": {
+              "serialized_roots": 0,
+              "serialized_nodes": 0,
+              "largest_serialized_graph": 0,
+              "scope": "Repeated serialized observations, not unique live DAG nodes or SMT formulas"
+            },
+            "work": 53717301766,
+            "snapshot": {
+              "chain_id": "0x1",
+              "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+              "number": "0x18f7d5e",
+              "parent_hash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+              "timestamp": "0x6acda8f3",
+              "coinbase": "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+              "prevrandao": "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+              "gas_limit": "0x3938700",
+              "base_fee": "0x40800d1",
+              "blob_base_fee": "0x3d73da",
+              "excess_blob_gas": "0xa979acd",
+              "blob_gas_used": "0x0"
+            },
+            "timings": {
+              "queue_ns": 60623,
+              "processing_ns": 39845894727,
+              "validating_ns": 14102871,
+              "pinning_ns": 3175653,
+              "acquiring_ns": 8704793,
+              "analyzing_ns": 39726381034,
+              "building_ssa_ns": 9011031,
+              "projecting_ns": 84519345
+            },
+            "acquisition": {
+              "rounds": 2,
+              "fetched_accounts": [],
+              "failed_accounts": [],
+              "fetched_storage": [
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x0"
+                },
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x1"
+                },
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x2"
+                },
+                {
+                  "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                  "slot": "0x67aa9b7d2b6d14f3837d07b1073399a41e4104b1d98f169f02cc04f44f14f4b0"
+                }
+              ],
+              "failed_storage": [],
+              "failures": [],
+              "requests": 20,
+              "states_created": 463
+            },
+            "export_limits": {
+              "max_nodes": 65536,
+              "max_depth": 256,
+              "max_exact_bytes": 16777216,
+              "max_work": 64000000,
+              "max_output_bytes": 67108864
+            },
+            "export_usage": {
+              "nodes": 3608,
+              "exact_bytes": 3316,
+              "work": 26601090
+            },
+            "cfg_states": 133,
+            "ssa_complete": false,
+            "symbolic_nodes": 3608,
+            "projected_byte_arrays": 72,
+            "projected_stores": 43
+          },
+          "frontiers": [
+            {
+              "from": 58,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 59,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 60,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 61,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 62,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 63,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 64,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 74,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 75,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 76,
+              "pc": 0,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 215,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 215,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 217,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 217,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 0,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2408,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2331,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2096,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 0,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 768,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 768,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 770,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 770,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 1073,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2408,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2331,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": 2096,
+              "kind": "Relations",
+              "reason": {
+                "Relations": "ExpressionLimit"
+              },
+              "detail": "Relations(ExpressionLimit)"
+            },
+            {
+              "from": 76,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            },
+            {
+              "from": 76,
+              "pc": null,
+              "kind": "StateJoin",
+              "reason": {
+                "StateJoin": "Shape"
+              },
+              "detail": "StateJoin(Shape)"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "readonly_rpc_probe": {
+    "schema": "known-recursion-original-rpc-readonly-probe-v1",
+    "configuration_source": "Original perf119 oldmain-usdc/server.command.json and snapshot-fix-usdc/reproduce.py",
+    "endpoint_label": "original local loopback RPC on port8545 (no credentials recorded)",
+    "live1111_accesses": 0,
+    "analysis_requests": 0,
+    "read_only_jsonrpc_calls": 5,
+    "timeout_per_call_seconds": 3,
+    "requested_block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+    "queries": [
+      {
+        "name": "chain_id",
+        "method": "eth_chainId",
+        "params": [],
+        "http_status": 200,
+        "response_sha256": "1b4c9948350921489f387c8ac3eddf70c737d393b182e71eba1ff4c83a96dc9e",
+        "reply_id_matches": true,
+        "successful": true,
+        "result": "0x1",
+        "elapsed_seconds": 0.002578692976385355
+      },
+      {
+        "name": "block",
+        "method": "eth_getBlockByHash",
+        "params": [
+          "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+          false
+        ],
+        "http_status": 200,
+        "response_sha256": "104d271205119965e4607c6dc523da947845f5cbb2c7122ed7c757c1889b0327",
+        "reply_id_matches": true,
+        "successful": true,
+        "block": {
+          "hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+          "number": "0x18f7d5e",
+          "parentHash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+          "timestamp": "0x6acda8f3"
+        },
+        "requested_hash_matches": true,
+        "elapsed_seconds": 0.0010671787895262241
+      },
+      {
+        "name": "proxy_code",
+        "method": "eth_getCode",
+        "params": [
+          "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          {
+            "blockHash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+            "requireCanonical": true
+          }
+        ],
+        "http_status": 200,
+        "response_sha256": "68e05cee322a880ad04bc33312250a7e2bf44d49090577e075d2f5c48728754b",
+        "reply_id_matches": true,
+        "successful": true,
+        "code_bytes": 2186,
+        "raw_code_sha256": "c1bcd4dc4f30c4dcf6c9fe462abeaf2efefc065dcb4dec74996e471f1ce219b4",
+        "matches_captured_code": true,
+        "elapsed_seconds": 0.0017682402394711971
+      },
+      {
+        "name": "storage_0",
+        "method": "eth_getStorageAt",
+        "params": [
+          "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "0x10d6a54a4754c8869d6886b5f5d7fbfa5b4522237ea5c60d11bc4e7a1ff9390b",
+          {
+            "blockHash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+            "requireCanonical": true
+          }
+        ],
+        "http_status": 200,
+        "response_sha256": "e865468cfa7b70f437858c1145fc7fb94e8ac88d58c7527872b522c34c1ed8a7",
+        "reply_id_matches": true,
+        "successful": true,
+        "result": "0x000000000000000000000000807a96288a1a408dbc13de2b1d087d10356395d2",
+        "matches_captured_storage": true,
+        "elapsed_seconds": 0.0018450920470058918
+      },
+      {
+        "name": "storage_1",
+        "method": "eth_getStorageAt",
+        "params": [
+          "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3",
+          {
+            "blockHash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+            "requireCanonical": true
+          }
+        ],
+        "http_status": 200,
+        "response_sha256": "9706331f127689a4f1d79ed9fcc18fbe3115ef878a66597fa095b156f03079e6",
+        "reply_id_matches": true,
+        "successful": true,
+        "result": "0x00000000000000000000000043506849d7c04f9138d1a2050bbf3a0c054402dd",
+        "matches_captured_storage": true,
+        "elapsed_seconds": 0.0008593644015491009
+      }
+    ],
+    "available_same_pinned_state": true
+  },
+  "native_solver_cost": {
+    "reason": "Uninstrumented primary diagnostics have unavailable native check counts; separate short instrumented diagnostic is native-probe-preliminary.json",
+    "evidence": "native-probe-preliminary.json",
+    "wall_not_combined": true
+  },
+  "stack_snapshot": {
+    "metadata": {
+      "owned_isolated_server_pid": 3826814,
+      "binary": "/tmp/evm-known-recursion-agents/candidate-first/evm-abstract-server",
+      "method": "gdb read-only all-thread stack capture; ptrace briefly pauses this preliminary run; not a formal wall sample",
+      "started_monotonic": 3589370.781560393,
+      "exit_code": 0,
+      "elapsed_seconds": 0.4651206508278847
+    },
+    "sha256": "0c28c198173baa22e716578594f7df3fa251b75d7a9017262524ac390d697546",
+    "observation": "One analysis thread in native Z3 AST table expansion and unsigned-rem bitblasting; cancellation observer waiting. Snapshot is not a statistical CPU profile."
+  },
+  "scope_notes": [
+    "Original caller/value/calldata contents and length remain Unknown; 100-byte witness is a separate permitted subset.",
+    "Offline worlds contain all captured initial observations with unobserved storage unknown; exclude dynamic RPC acquisition.",
+    "HTTP Completed means report delivered; native Incomplete/frontiers/partial SSA remain explicit.",
+    "SIGTERM after capture_complete is cleanup of owned server, distinct from analysis failure.",
+    "Server process peak RSS/CPU includes acquisition, analysis, projection and request handling; API task timings separately report phases.",
+    "No live 1111 service was accessed or restarted.",
+    "These diagnostics had concurrent development/build/test load and no final quiet alternating latency claim."
+  ],
+  "candidate_second_provenance": {
+    "source_head": "eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+    "dirty_build": true,
+    "scope": "development candidate2 adds exact finite numeric membership instead of redundant modular constraints; no widening/continuation partition changes",
+    "build_command": "nix develop --no-update-lock-file -c env CARGO_BUILD_JOBS=8 cargo build --release -p evm-abstract-cli -p evm-abstract-server -j 8",
+    "build_exit_code": 0,
+    "binaries": {
+      "evm-abstract": {
+        "source": "/home/ethever/projects/evm-abstract-lab-worktrees/known-recursive-summaries-20261014/target/release/evm-abstract",
+        "path": "/tmp/evm-known-recursion-agents/candidate-second/evm-abstract",
+        "sha256": "acf6f0e38d3d1451d04e15156f815c112d62475394073099c3a471d7ef607295"
+      },
+      "evm-abstract-server": {
+        "source": "/home/ethever/projects/evm-abstract-lab-worktrees/known-recursive-summaries-20261014/target/release/evm-abstract-server",
+        "path": "/tmp/evm-known-recursion-agents/candidate-second/evm-abstract-server",
+        "sha256": "e4db1540786488221516c2565263675eaa8e2772f91e7fb80235de21e54b2c22"
+      }
+    }
+  },
+  "candidate_second_full_build_metadata_sha256": "c517b0211b7b12ebcf068f1d006cb1a00445d086c8ea70832c64cc912d76b686"
+}

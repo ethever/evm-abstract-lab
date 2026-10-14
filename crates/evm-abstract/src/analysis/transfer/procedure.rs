@@ -1,4 +1,4 @@
-//! Caller-independent environment/procedure saturation.
+//! Caller-independent saturation for known recursion and unknown interactions.
 //!
 //! A table entry is a numerical whole-payload invariant, not an SMT valuation
 //! and not a stack-depth unrolling. Every live block and separate summary invocation gets
@@ -16,7 +16,9 @@ use crate::{
         FrontierReason, Limit, MachineEdgeKind, MachineError, MachineKey, MachinePayload,
         OutcomeKind, RootFrame,
         engine::Counters,
-        machine::{UnknownProcedureSummary, UnknownSummaryOutput, UnknownSummaryRecord},
+        machine::{
+            ProcedureSummary, ProcedureSummaryKind, ProcedureSummaryOutput, ProcedureSummaryRecord,
+        },
     },
     domain::{AbstractValue, Domain, NumericValue, relational::RelationState},
     world::{
@@ -28,13 +30,18 @@ use alloy_primitives::{Address, keccak256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+mod context;
+mod cycles;
 mod environment;
 mod payload;
+mod projection;
+mod recursion;
 mod solver;
 #[cfg(test)]
 mod tests;
 
 use payload::{form, instantiate, join, semantic_eq};
+pub(in crate::analysis) use recursion::is_recursive_entry;
 
 /// This is an internal owner namespace, never an observed account address.
 /// All unknown-owner effects are abstracted together, including possible aliases.
@@ -92,15 +99,23 @@ struct Node {
     procedure: usize,
     payload: PayloadSummary,
     updates: usize,
+    /// Local control-flow edges, including return to a CALL continuation.
+    /// Callee entries stay in the separate procedure dependency graph.
+    successors: BTreeSet<usize>,
+    loop_head: bool,
 }
 
 struct Procedure {
     frame: FrameKey,
     entry: usize,
-    nodes: BTreeMap<FrameKey, usize>,
+    // A real CALL continuation keeps success/failure separate for one block.
+    // No arbitrary scalar or physical depth becomes part of this finite key.
+    nodes: BTreeMap<(FrameKey, Option<bool>), usize>,
     outputs: BTreeMap<OutcomeKind, Output>,
     subscribers: Vec<usize>,
     dependencies: BTreeSet<usize>,
+    recursive: bool,
+    local_cycle: bool,
     output_updates: usize,
     covered_blocks: BTreeSet<usize>,
 }
@@ -122,7 +137,7 @@ struct Subscriber {
     delivered: BTreeMap<OutcomeKind, usize>,
 }
 
-/// One shared relation table can grow across multiple unknown entries of a
+/// One shared relation table can grow across multiple relative entries of a
 /// transaction. The optional graph-certificate cache is independent of this
 /// semantic fixed point and cannot replace it for recursive calls.
 #[derive(Default)]
@@ -169,7 +184,7 @@ impl Table {
         budget: &mut WorkBudget,
         counters: &mut Counters,
         storage_reads: StorageReadPolicy,
-    ) -> (Execution, UnknownSummaryRecord) {
+    ) -> (Execution, ProcedureSummaryRecord) {
         // Recursive closure is mandatory. This option only controls reuse
         // between distinct entries from the outer transaction worklist.
         if !config.use_summaries {
@@ -178,6 +193,11 @@ impl Table {
         let start_transfers = counters.transfers;
         let start_propagations = self.propagations;
         let start_reused = self.reused;
+        let kind = if payload.active().code == FrameCode::Unknown {
+            ProcedureSummaryKind::UnknownEnvironment
+        } else {
+            ProcedureSummaryKind::KnownRecursion
+        };
         let mut result = super::empty_execution(payload.clone());
         let mut solver = Solver {
             table: self,
@@ -204,6 +224,22 @@ impl Table {
             }
         };
         solver.run();
+        if kind == ProcedureSummaryKind::KnownRecursion
+            && let Some(root) = root
+            && solver.table.procedures[root].outputs.is_empty()
+            && solver.table.queue.is_empty()
+            && solver.table.frontiers.is_empty()
+        {
+            // Folding physical depth cannot certify empty finite behavior.
+            // CALL rejection normally supplies real continuation-derived exits;
+            // when none reaches a terminal, retain the unmodeled termination.
+            let current = solver.table.procedures[root].entry;
+            solver.frontier_summary(
+                solver.table.nodes[current].payload.clone(),
+                FrontierReason::RecursiveNoTerminal,
+                0,
+            );
+        }
         if let Some(root) = root {
             let outputs = solver.table.procedures[root].outputs.clone();
             let mut data_sources: Vec<(ByteArraySummary, ByteArray)> = Vec::new();
@@ -326,7 +362,7 @@ impl Table {
                     .procedures
                     .iter()
                     .map(|procedure| {
-                        Ok(UnknownProcedureSummary {
+                        Ok(ProcedureSummary {
                             frame: procedure.frame.clone(),
                             input: solver.table.nodes[procedure.entry]
                                 .payload
@@ -336,7 +372,7 @@ impl Table {
                                 .outputs
                                 .iter()
                                 .map(|(kind, output)| {
-                                    Ok(UnknownSummaryOutput {
+                                    Ok(ProcedureSummaryOutput {
                                         kind: *kind,
                                         data: output.data.instantiate(domain)?,
                                         store: output.store.instantiate(domain)?,
@@ -361,8 +397,10 @@ impl Table {
         let closed = solver.table.queue.is_empty()
             && solver.table.queued.is_empty()
             && result.frontiers.is_empty();
-        let record = UnknownSummaryRecord {
+        let record = ProcedureSummaryRecord {
             source_state,
+            kind,
+            root_procedure: root.filter(|root| *root < procedures.len()),
             closed,
             procedures,
             state_count: solver.table.nodes.len(),

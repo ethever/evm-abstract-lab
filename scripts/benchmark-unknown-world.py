@@ -70,7 +70,7 @@ def slot(store, owner, key, allowed):
 
 def precision(report, case):
     assert report["status"] == "Converged" and not report["frontiers"]
-    summaries = report["unknown_summaries"]
+    summaries = report["procedure_summaries"]
     assert summaries and all(item["closed"] and item["procedures"] for item in summaries)
     returns = [item for item in report["outcomes"] if item["kind"] == "Return"]
     assert returns
@@ -154,10 +154,10 @@ def run(binary, output, case, reuse, repetition, max_work):
         "report_bytes": report_path.stat().st_size,
         "status": report["status"], "frontiers": len(report["frontiers"]),
         "states": len(report["states"]), "transfers": report["transfers"],
-        "work": report["work"], "summary_requests": len(report["unknown_summaries"]),
-        "relation_states": sum(item["state_count"] for item in report["unknown_summaries"]),
-        "propagations": sum(item["propagations"] for item in report["unknown_summaries"]),
-        "reused": sum(item["reused"] for item in report["unknown_summaries"]),
+        "work": report["work"], "summary_requests": len(report["procedure_summaries"]),
+        "relation_states": sum(item["state_count"] for item in report["procedure_summaries"]),
+        "propagations": sum(item["propagations"] for item in report["procedure_summaries"]),
+        "reused": sum(item["reused"] for item in report["procedure_summaries"]),
         "checked_precision": checked, "config": report["config"],
         "graph_sizes": graph_sizes(report),
         "fixture_sha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),

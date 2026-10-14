@@ -147,10 +147,10 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
         )
         .unwrap();
     }
-    for (index, record) in analysis.unknown_summaries().iter().enumerate() {
+    for (index, record) in analysis.procedure_summaries().iter().enumerate() {
         writeln!(output, "  U{index} [label={:?}, shape=note, color=blue];", format!(
-            "Abstract interaction relation {index}\nclosed={} procedures={} states={}\ntransfers={} propagations={} reused={}",
-            record.closed, record.procedures.len(), record.state_count,
+            "Procedure relation {index} · {:?}\nroot={:?} closed={} procedures={} states={}\ntransfers={} propagations={} reused={}",
+            record.kind, record.root_procedure, record.closed, record.procedures.len(), record.state_count,
             record.transfers, record.propagations, record.reused,
         )).unwrap();
         writeln!(

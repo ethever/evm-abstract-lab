@@ -137,7 +137,7 @@ pub(super) fn run_metered(
         rpc_acquisition: None,
         summary_stats: SummaryStats::default(),
         summaries: Vec::new(),
-        unknown_summaries: Vec::new(),
+        procedure_summaries: Vec::new(),
     };
     // 输入 lift、Store 与回滚点复制也使用根账本，不让初始化获得免费工作。
     if counters.states >= result.config.analysis.max_states {
@@ -237,6 +237,7 @@ pub(super) fn run_metered(
         exit_stack: Vec::new(),
         executed_pcs: Vec::new(),
         execution_evidence: None,
+        resume_status: None,
     });
     counters.states += 1;
     let cache = result.config.use_summaries.then(Cache::new);
@@ -246,7 +247,7 @@ pub(super) fn run_metered(
         budget,
         counters,
         storage_reads,
-        ids: BTreeMap::from([(key, 0)]),
+        ids: BTreeMap::from([((key, None), 0)]),
         queue: VecDeque::from([0]),
         queued: BTreeSet::from([0]),
         edges: BTreeSet::new(),
@@ -255,7 +256,7 @@ pub(super) fn run_metered(
         cache,
         alternatives: vec![alternatives],
         selectors: BTreeSet::new(),
-        unknown: transfer::unknown::Table::default(),
+        procedures: transfer::procedure::Table::default(),
     };
     engine.run();
     engine.counters.report(engine.budget.used());
@@ -281,8 +282,10 @@ struct Engine<'a> {
     alternatives: Vec<EntryAlternatives>,
     /// Only selectors allocated by a machine join, never source/observation IDs.
     selectors: BTreeSet<ExprId>,
-    /// 结构键 -> `result.states` 的索引；键相同才允许汇合抽象输入。
-    ids: BTreeMap<super::MachineKey, usize>,
+    /// Structural entries, with a bounded status partition for the first block
+    /// resumed by a call. Intraprocedural successors use None again;
+    /// neither recursion depth nor arbitrary stack values become new keys.
+    ids: BTreeMap<(super::MachineKey, Option<bool>), usize>,
     /// FIFO 调度记录；摘要回放可能满足已排队节点，因此这里允许残留失效项。
     queue: VecDeque<usize>,
     /// 当前仍需处理的节点集合，用于去重和判断 queue 项是否仍有效。
@@ -297,7 +300,7 @@ struct Engine<'a> {
     /// 可选的完整 callee 图证书缓存；关闭摘要时普通工作表路径仍然成立。
     cache: Option<Cache>,
     /// Known/unknown procedure inputs, outputs and retained return continuations.
-    unknown: transfer::unknown::Table,
+    procedures: transfer::procedure::Table,
 }
 
 /// 当前节点尝试使用摘要后的调度决定，而非子调用的 Return/Revert/Failure。
@@ -443,9 +446,10 @@ impl Engine<'_> {
             // 暂时移出 cache，使它与 &mut self 能同时用于传播和认证。
             // 每条继续/中断路径都放回同一缓存；take 不是清空或重置分析结果。
             let mut cache = self.cache.take();
-            let is_unknown =
-                self.result.states[id].entry.active().code == super::FrameCode::Unknown;
-            let attempt = if !is_unknown && let Some(cache) = &mut cache {
+            let entry = &self.result.states[id].entry;
+            let relative_procedure = entry.active().code == super::FrameCode::Unknown
+                || transfer::procedure::is_recursive_entry(entry);
+            let attempt = if !relative_procedure && let Some(cache) = &mut cache {
                 self.try_summary(id, cache)
             } else {
                 SummaryAttempt::Miss
@@ -457,8 +461,8 @@ impl Engine<'_> {
             }
             let reused = matches!(attempt, SummaryAttempt::Hit);
             if !reused {
-                let execution = if is_unknown {
-                    let (execution, evidence) = self.unknown.execute(
+                let execution = if relative_procedure {
+                    let (execution, evidence) = self.procedures.execute(
                         id,
                         &self.result.world,
                         &self.result.entry,
@@ -470,7 +474,7 @@ impl Engine<'_> {
                         self.storage_reads,
                     );
                     self.result.transfers = self.counters.transfers;
-                    self.result.unknown_summaries.push(evidence);
+                    self.result.procedure_summaries.push(evidence);
                     execution
                 } else {
                     self.result.transfers += 1;
@@ -671,7 +675,9 @@ impl Engine<'_> {
     ) -> Option<usize> {
         successor.payload.normalize();
         let key = successor.payload.key();
-        let to = if let Some(existing) = self.ids.get(&key).copied() {
+        let resume_status = self.call_resume_status(from, &successor);
+        let entry_key = (key.clone(), resume_status);
+        let to = if let Some(existing) = self.ids.get(&entry_key).copied() {
             let cyclic = match self.joins_cycle(existing, from) {
                 Ok(cyclic) => cyclic,
                 Err(error) => {
@@ -731,7 +737,7 @@ impl Engine<'_> {
             let alternatives = EntryAlternatives::new(&successor.payload);
             // states 与 completed_calls 同时追加，保证后者始终可用同一节点编号索引。
             let id = self.result.states.len();
-            self.ids.insert(key.clone(), id);
+            self.ids.insert(entry_key, id);
             self.result.states.push(MachineState {
                 id,
                 key,
@@ -740,6 +746,7 @@ impl Engine<'_> {
                 exit_stack: Vec::new(),
                 executed_pcs: Vec::new(),
                 execution_evidence: None,
+                resume_status,
             });
             self.counters.states += 1;
             self.completed_calls.push(Vec::new());
@@ -756,6 +763,59 @@ impl Engine<'_> {
         });
         self.record_successor(from, to, successor.kind);
         Some(to)
+    }
+
+    fn call_resume_status(&self, from: usize, successor: &Successor) -> Option<bool> {
+        if !matches!(
+            successor.kind,
+            MachineEdgeKind::Return
+                | MachineEdgeKind::Revert
+                | MachineEdgeKind::Failure
+                | MachineEdgeKind::Summary(_)
+        ) || !matches!(
+            successor.payload.active().code,
+            super::FrameCode::Runtime | super::FrameCode::InitCode
+        ) {
+            return None;
+        }
+        let state = &self.result.states[from];
+        let source = &state.entry;
+        let popped_call = source.call_stack.depth()
+            == successor.payload.call_stack.depth().saturating_add(1)
+            && source
+                .call_stack
+                .active_child()
+                .is_some_and(|child| child.continuation.creation.is_none());
+        let rejected_call = successor.kind == MachineEdgeKind::Failure
+            && source.call_stack.depth() == successor.payload.call_stack.depth()
+            && state.executed_pcs.last().is_some_and(|pc| {
+                source.active().program.as_ref().is_some_and(|program| {
+                    program.blocks()[source.active().key.basic_block_index]
+                        .instructions
+                        .iter()
+                        .any(|instruction| {
+                            instruction.pc == *pc
+                                && matches!(
+                                    instruction.opcode,
+                                    revm_bytecode::opcode::CALL
+                                        | revm_bytecode::opcode::CALLCODE
+                                        | revm_bytecode::opcode::DELEGATECALL
+                                        | revm_bytecode::opcode::STATICCALL
+                                )
+                        })
+                })
+            });
+        if !popped_call && !rejected_call {
+            return None;
+        }
+        // Several successes joined with local rejection can leave an arbitrary
+        // ITE selector on the success arm. Keeping just this resumed block apart
+        // preserves the returned prefix without dropping any failure behavior.
+        match successor.payload.active().stack.last()?.singleton()? {
+            alloy_primitives::U256::ZERO => Some(false),
+            alloy_primitives::U256::ONE => Some(true),
+            _ => None,
+        }
     }
 
     fn joins_cycle(&mut self, target: usize, from: usize) -> Result<bool, MachineError> {
@@ -958,7 +1018,7 @@ impl Engine<'_> {
             diagnostics: self.diagnostics.clone(),
             completed_calls: self.completed_calls.clone(),
             cache: None,
-            unknown: transfer::unknown::Table::default(),
+            procedures: transfer::procedure::Table::default(),
         };
         for (old, new) in &prepared.renaming {
             if staged.selectors.contains(old) {
@@ -996,7 +1056,10 @@ impl Engine<'_> {
         let mut ids = Vec::new();
         for node in prepared.nodes {
             let key = node.entry.key();
-            let id = if let Some(existing) = self.ids.get(&key).copied() {
+            // Preserve the certified call continuation partition. Replaying
+            // its graph must not merge success with a previously seen failure.
+            let entry_key = (key.clone(), node.resume_status);
+            let id = if let Some(existing) = self.ids.get(&entry_key).copied() {
                 let joined = self.alternatives[existing]
                     .join_cyclic(
                         &self.result.states[existing].entry,
@@ -1047,7 +1110,7 @@ impl Engine<'_> {
                 }
                 let id = self.result.states.len();
                 self.alternatives.push(EntryAlternatives::new(&node.entry));
-                self.ids.insert(key.clone(), id);
+                self.ids.insert(entry_key, id);
                 self.result.states.push(MachineState {
                     id,
                     key,
@@ -1059,6 +1122,7 @@ impl Engine<'_> {
                         node.instruction_progress,
                         node.instruction_values,
                     )),
+                    resume_status: node.resume_status,
                 });
                 self.counters.states += 1;
                 self.completed_calls.push(node.completed_calls);

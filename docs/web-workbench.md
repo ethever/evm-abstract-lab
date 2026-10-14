@@ -278,3 +278,5 @@ RPC 回归先启动本地 JSON-RPC fixtures，再用真实配置文件启动分�
 实现参考：[eframe WebRunner](https://docs.rs/eframe/0.36.2/wasm32-unknown-unknown/eframe/web/struct.WebRunner.html)、[egui Painter](https://docs.rs/egui/0.36.2/egui/struct.Painter.html)。
 
 协议 10 进一步保留未知交互的 `abstract_summaries`、过程依赖与实际覆盖块，以及独立的摘要成功／回退／失败边。Unknown frame 显示为 Abstract environment，不生成捕获指令；对应节点的 inspector 可查看闭合状态与迭代计数。示例与语义见[第 18 课](18-unknown-world.md)。
+
+当前协议 11 增加摘要入口类别和根过程索引，区分已知 bytecode 递归与未知交互。已知递归仍显示真实 Runtime 代码身份，图卡片和 Frame inspector 标出 Recursive bytecode；摘要中实际覆盖的块与主图逐指令执行记录分别展示。闭合关系可以继续产生返回边；未覆盖的终结行为和资源边界仍保留前沿。

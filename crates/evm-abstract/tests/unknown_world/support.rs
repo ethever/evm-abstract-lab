@@ -214,10 +214,10 @@ pub(super) fn complete(analysis: &WorldAnalysis) {
 pub(super) fn complete_unknown(analysis: &WorldAnalysis) {
     complete(analysis);
     assert!(
-        !analysis.unknown_summaries().is_empty(),
+        !analysis.procedure_summaries().is_empty(),
         "complete unknown execution has no coverage records"
     );
-    for summary in analysis.unknown_summaries() {
+    for summary in analysis.procedure_summaries() {
         assert!(
             summary.closed,
             "unknown relation at source {} remains open",
@@ -292,7 +292,7 @@ pub(super) fn reachable(analysis: &WorldAnalysis, owner: u64, pc: usize) -> bool
     }) else {
         return false;
     };
-    analysis.unknown_summaries().iter().any(|summary| {
+    analysis.procedure_summaries().iter().any(|summary| {
         summary.procedures.iter().any(|procedure| {
             procedure.frame.code_address == address(owner)
                 && procedure.frame.code_hash == keccak256(program.bytes())
