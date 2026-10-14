@@ -253,12 +253,9 @@ fn warm_fresh_projection_keeps_complete_numeric_results_and_pays_original_querie
             );
             assert_eq!(value.singleton(), Some(U256::from(2)));
         }
-        if rlimit == 10_000_000 {
-            assert_eq!(budget.smt_cache_stats().candidate_hits, 2);
-        } else {
-            assert_eq!(budget.smt_cache_stats().candidate_hits, 0);
-            assert!(budget.smt_cache_stats().bypasses > 0);
-        }
+        // Both original quarter-query allowances now admit the complete key.
+        assert_eq!(budget.smt_cache_stats().candidate_hits, 2);
+        assert_eq!(budget.smt_cache_stats().bypasses, 0);
         assert_eq!(
             budget.used(),
             fees + budget.smt_cache_stats().maintenance_work as usize
