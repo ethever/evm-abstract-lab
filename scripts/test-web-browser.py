@@ -152,12 +152,11 @@ def compression_interactions(browser, url: str, output: Path):
     results = {}
     for expected, accepted in cases:
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        requested = ", ".join(accepted) if accepted else "identity"
+        page.set_extra_http_headers({"Accept-Encoding": requested})
         observe_webgpu(page)
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
-        cdp = page.context.new_cdp_session(page)
-        cdp.send("Network.enable")
-        cdp.send("Network.setAcceptedEncodings", {"encodings": accepted})
         try:
             with page.expect_response(lambda response: response.url.endswith("/result")
                                       and response.request.method == "GET") as fetched:
@@ -167,6 +166,8 @@ def compression_interactions(browser, url: str, output: Path):
                 completed = complete_submission(page, submitted.value)
             response = fetched.value
             assert response.status == 200, response.text()
+            request_headers = response.request.all_headers()
+            assert request_headers.get("accept-encoding") == requested, request_headers
             headers = response.all_headers()
             observed = headers.get("content-encoding", "identity")
             assert observed == expected, (expected, headers)
@@ -193,14 +194,14 @@ def compression_interactions(browser, url: str, output: Path):
             else:
                 assert 0 < sizes["encoded"] < sizes["decoded"], sizes
             assert not errors, errors
-            results[expected] = {"accepted": accepted, "content_encoding": observed,
+            results[expected] = {"accepted": accepted, "request_accept_encoding": requested,
+                                 "content_encoding": observed,
                                  "encoded_bytes": sizes["encoded"], "decoded_bytes": sizes["decoded"],
                                  "status": report["status"], "wasm_installed_report": True}
             (output / "compression-report.json").write_text(json.dumps(results, indent=2) + "\n")
             print(f"HTTP compression {expected}: {sizes['encoded']} wire bytes, "
                   f"{sizes['decoded']} decoded bytes; Wasm report ready", flush=True)
         finally:
-            cdp.detach()
             page.close()
     return results
 
