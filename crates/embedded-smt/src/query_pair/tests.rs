@@ -236,31 +236,86 @@ fn typed_unique_matches_fresh_unique_multiple_and_infeasible_oracles() {
 
 #[test]
 fn candidates_use_independent_solvers_and_original_rlimit_on_every_query() {
-    let x = Context::default().fresh_bv("x", 8);
-    let observe = Observe::new(None, None, None);
+    let context = Context::default();
+    let x = context.fresh_bv("x", 8);
+    let rlimit = 100;
+    let mut candidates = (0..31).map(|n| Bv::from_u64(n, 8)).collect::<Vec<_>>();
+    // One symbolic candidate keeps the entire chunk on the fresh-Solver path.
+    candidates.push(context.fresh_bv("candidate", 8));
+    for allowance in [rlimit, DEFAULT_RLIMIT, rlimit] {
+        let observe = Observe::new(None, None, None);
+        assert_eq!(
+            check_candidates(&[], &x, &candidates, Provider::Z3, allowance),
+            vec![Outcome::Sat(None); 32]
+        );
+        let trace = observe.trace();
+        assert_eq!(trace.contexts.len(), 1);
+        assert_eq!(trace.queries, vec![trace.contexts[0]; 32]);
+        assert_eq!(trace.native, trace.queries);
+        assert_eq!(trace.preparations, trace.queries);
+        assert_eq!(trace.resources.len(), 32);
+        let used = trace
+            .resources
+            .iter()
+            .map(|(limit, before, after)| {
+                assert_eq!(*limit, allowance);
+                let delta = after
+                    .expect("native resource counter")
+                    .checked_sub(before.expect("native resource counter"))
+                    .expect("monotonic context resource counter");
+                assert!(delta <= allowance);
+                u64::from(delta)
+            })
+            .sum::<u64>();
+        assert!(
+            used > u64::from(rlimit),
+            "fixture must exercise cumulative work beyond one low allowance: {used}"
+        );
+    }
+
+    let square = x.bvmul(&x);
+    let candidates = [Bv::from_u64(4, 8), Bv::from_u64(9, 8)];
+    {
+        let observe = Observe::new(None, None, None);
+        assert_eq!(
+            check_candidates(&[], &square, &candidates, Provider::Z3, 1),
+            [Outcome::Unknown(Unknown::ResourceLimit)]
+        );
+        let trace = observe.trace();
+        assert_eq!(trace.contexts.len(), 1);
+        assert_eq!(trace.queries, trace.contexts);
+        assert_eq!(trace.preparations, trace.queries);
+        assert_eq!(trace.native, trace.queries);
+        assert_eq!(trace.resources.len(), 1);
+        let (limit, before, after) = trace.resources[0];
+        assert_eq!(limit, 1);
+        let used = after
+            .expect("native resource counter")
+            .checked_sub(before.expect("native resource counter"))
+            .expect("monotonic context resource counter");
+        assert!(used >= limit);
+    }
     assert_eq!(
-        check_candidates(
-            &[],
-            &x,
-            &[Bv::from_u64(1, 8), Bv::from_u64(2, 8)],
-            Provider::Z3,
-            DEFAULT_RLIMIT
-        ),
+        check_candidates(&[], &x, &candidates, Provider::Z3, DEFAULT_RLIMIT),
         [Outcome::Sat(None), Outcome::Sat(None)]
     );
-    assert_eq!(observe.trace().contexts.len(), 1);
-    assert_eq!(observe.trace().native.len(), 2);
-    let candidates = [Bv::from_u64(4, 8), Bv::from_u64(9, 8)];
-    for allowance in [1, 100, 1000, DEFAULT_RLIMIT, 1, DEFAULT_RLIMIT] {
-        let expected = fresh_candidates(&[], &x.bvmul(&x), &candidates, Provider::Z3, allowance);
+
+    // Near a resource cutoff, separate Contexts need not follow the same search
+    // trajectory. At the full allowance, require exact mathematical answers.
+    for (numbers, expected) in [
+        ([4, 9], [Outcome::Sat(None), Outcome::Sat(None)]),
+        ([3, 4], [Outcome::Unsat, Outcome::Sat(None)]),
+    ] {
+        let candidates = numbers.map(|n| Bv::from_u64(n, 8));
+        let fresh = fresh_candidates(&[], &square, &candidates, Provider::Z3, DEFAULT_RLIMIT);
+        assert_eq!(fresh, expected);
         assert_eq!(
-            check_candidates(&[], &x.bvmul(&x), &candidates, Provider::Z3, allowance),
-            expected,
-            "rlimit {allowance}"
+            check_candidates(&[], &square, &candidates, Provider::Z3, DEFAULT_RLIMIT),
+            fresh
         );
     }
     assert_eq!(
-        check_unique(&[x.bvmul(&x).eq(Bv::from_u64(4, 8))], &x, Provider::Z3, 1),
+        check_unique(&[square.eq(Bv::from_u64(4, 8))], &x, Provider::Z3, 1),
         UniqueOutcome::Unknown(Unknown::ResourceLimit)
     );
     assert_eq!(
