@@ -30,8 +30,16 @@ mod cancellation;
 pub use cancellation::{Cancellation, current_cancellation, with_cancellation};
 mod bitwuzla;
 mod cvc5;
+mod decided_cache;
+mod query_budget;
+mod query_pair;
 mod term;
 mod z3;
+pub use decided_cache::{CacheQuery, CacheScope, CacheStats, DecidedCache, check_unique_cached};
+pub use query_budget::QueryBudget;
+pub use query_pair::{
+    BudgetedOutcome, UniqueOutcome, check_candidates, check_candidates_budgeted, check_unique,
+};
 
 use serde::Serialize;
 use std::fmt;
@@ -121,6 +129,13 @@ pub enum Outcome {
 /// element bits, with a separate allowance of `rlimit` generated bit-array
 /// primitives. All DAG lowering and expansion steps check the cancellation token.
 pub fn check(assertions: &[Bool], value: Option<&Bv>, provider: Provider, rlimit: u32) -> Outcome {
+    checked_query(provider, rlimit, || match provider {
+        Provider::Z3 => z3::solve(assertions, value, rlimit),
+        Provider::Bitwuzla => bitwuzla::solve(assertions, value, rlimit),
+        Provider::Cvc5 => cvc5::solve(assertions, value, rlimit),
+    })
+}
+fn checked_query(provider: Provider, rlimit: u32, operation: impl FnOnce() -> Outcome) -> Outcome {
     let cancellation = current_cancellation();
     if cancellation.is_cancelled() {
         return Outcome::Unknown(Unknown::Cancelled);
@@ -131,11 +146,7 @@ pub fn check(assertions: &[Bool], value: Option<&Bv>, provider: Provider, rlimit
             message: "rlimit must be positive".into(),
         });
     }
-    let outcome = match provider {
-        Provider::Z3 => z3::solve(assertions, value, rlimit),
-        Provider::Bitwuzla => bitwuzla::solve(assertions, value, rlimit),
-        Provider::Cvc5 => cvc5::solve(assertions, value, rlimit),
-    };
+    let outcome = operation();
     if cancellation.is_cancelled() {
         Outcome::Unknown(Unknown::Cancelled)
     } else {

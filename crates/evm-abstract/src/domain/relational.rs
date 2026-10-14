@@ -61,6 +61,14 @@ impl RelationLimits {
     pub fn valid(self) -> bool {
         self.max_constraints > 0 && self.max_nodes > 0 && self.max_depth > 0 && self.rlimit > 0
     }
+    pub(crate) fn cache_scope(self) -> embedded_smt::CacheScope {
+        embedded_smt::CacheScope {
+            enabled: self.enabled,
+            constraints: self.max_constraints,
+            nodes: self.max_nodes,
+            depth: self.max_depth,
+        }
+    }
 }
 
 /// A query did not prove either satisfiability or contradiction.
@@ -106,6 +114,15 @@ pub enum CheckResult {
     Unsat,
     /// Preserve the path; no contradiction was established.
     Unknown(QueryReason),
+}
+
+/// A finite refinement stopped before all candidate answers were obtained.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum CandidateError {
+    #[error("the root query work budget was exhausted")]
+    Work,
+    #[error("candidate query stopped: {0:?}")]
+    Query(QueryReason),
 }
 
 /// A bounded value-refinement query.
@@ -570,9 +587,28 @@ impl RelationState {
             limits,
         )
     }
+    /// Check the same complete conjunction for every candidate, in input order.
+    /// A shared immutable encoding does not merge identities or query fuel.
+    pub(crate) fn can_equal_candidates(
+        &self,
+        expression: &ExprId,
+        candidates: &[U256],
+        limits: &RelationLimits,
+        budget: &mut embedded_smt::QueryBudget<'_>,
+    ) -> Result<Vec<CheckResult>, CandidateError> {
+        solver::candidates::check(self, expression, candidates, limits, budget)
+    }
     /// Ask whether every satisfying valuation agrees on this expression.
     pub fn unique_value(&self, expression: &ExprId, limits: &RelationLimits) -> ValueQuery {
         solver::unique(self, expression, limits)
+    }
+    pub(crate) fn unique_value_cached(
+        &self,
+        expression: &ExprId,
+        limits: &RelationLimits,
+        cache: &mut embedded_smt::CacheQuery<'_>,
+    ) -> ValueQuery {
+        solver::unique_cached(self, expression, limits, cache)
     }
     /// Cover both paths by keeping only guarantees common to both.
     /// This intentionally loses disjunction precision, never intersects paths.

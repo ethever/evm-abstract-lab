@@ -210,9 +210,10 @@ fn repeated_refinement_reuses_native_unique_and_multiple_proofs_for_every_provid
         let multiple = read(SourceId::fresh().unwrap());
         for (expression, expected) in [(unique, Some(U256::from(7))), (multiple, None)] {
             let allowance = config.analysis.relations.rlimit as usize;
-            // Two misses would need four native allowances. The second call
-            // succeeds with less than one allowance left after the first.
-            let mut budget = WorkBudget::new(3 * allowance - 1);
+            // The first optional mathematical-cache maintenance can spend at
+            // most half an allowance. This still cannot pay four native
+            // allowances, so the second call needs the original transfer cache.
+            let mut budget = WorkBudget::new(3 * allowance + allowance / 2 - 1);
             let mut context = TransferContext {
                 config: &config,
                 domain: Domain::default(),
@@ -232,6 +233,16 @@ fn repeated_refinement_reuses_native_unique_and_multiple_proofs_for_every_provid
             assert_eq!(first.singleton(), expected);
             let after_first = context.budget.used();
             assert!(after_first >= 2 * allowance);
+            assert_eq!(
+                context.query_cache.get(
+                    &RelationState::default(),
+                    &expression,
+                    &config.analysis.relations
+                ),
+                Some(expected.map_or(ValueQuery::Multiple, ValueQuery::Unique)),
+                "the original transfer cache retained the real solver proof"
+            );
+            let mathematical_hits = context.budget.smt_cache_stats().unique_hits;
             let mut second = AbstractValue::top().with_expression(expression);
             assert_eq!(
                 super::super::refine(&mut second, &RelationState::default(), &mut context),
@@ -240,6 +251,11 @@ fn repeated_refinement_reuses_native_unique_and_multiple_proofs_for_every_provid
             );
             assert_eq!(second, first);
             assert!(context.budget.used() - after_first < allowance);
+            assert_eq!(
+                context.budget.smt_cache_stats().unique_hits,
+                mathematical_hits,
+                "the transfer cache answered before the mathematical/native query path"
+            );
             assert!(!context.budget.exhausted());
         }
     }
@@ -261,7 +277,10 @@ fn cached_multiple_still_filters_changed_finite_candidates_for_every_provider() 
             .unwrap();
         let allowance = policy.rlimit as usize;
         let domain = Domain::default();
-        let mut budget = WorkBudget::new(5 * allowance - 1);
+        // Unique maintenance <= R/2; two candidate maintenance steps <= R/2.
+        // The total still cannot pay the six mandatory native allowances that
+        // would be needed without the original transfer-level Multiple proof.
+        let mut budget = WorkBudget::new(6 * allowance - 1);
         let mut context = TransferContext {
             config: &config,
             domain,
@@ -279,6 +298,10 @@ fn cached_multiple_still_filters_changed_finite_candidates_for_every_provider() 
             "{provider:?}"
         );
         assert_eq!(first.singleton(), None);
+        assert_eq!(
+            context.query_cache.get(&relations, &expression, &policy),
+            Some(ValueQuery::Multiple)
+        );
         let mut changed = domain
             .join(
                 &AbstractValue::constant(U256::ZERO),

@@ -4,6 +4,7 @@
 //! encoding limit retains the path and records why relational precision stopped.
 
 mod cache;
+mod candidates;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -119,10 +120,39 @@ pub(super) fn refine(
     let answer = if let Some(answer) = context.query_cache.get(relations, &expression, &limits) {
         answer
     } else {
+        // A complete finite upper bound needs only its two candidate checks.
+        // The bound need not be asserted in SMT: UNSAT excludes each candidate
+        // individually. Any singleton result is local to this numeric value,
+        // so it must not be remembered as a global uniqueness proof.
+        if let Some(candidates) = value
+            .constants()
+            .filter(|values| values.len() == 2)
+            .cloned()
+        {
+            let feasible = candidates::refine(value, &expression, &candidates, relations, context)?;
+            if feasible && value.constants().is_some_and(|values| values.len() == 2) {
+                // Two different SAT witnesses prove non-uniqueness even when
+                // the numeric upper bound was never part of the conjunction.
+                context.query_cache.remember(
+                    relations,
+                    &expression,
+                    &limits,
+                    &ValueQuery::Multiple,
+                );
+            }
+            return Ok(feasible);
+        }
         if !charge(relations, &expression, 2, context) {
             return Err(FrontierReason::Work);
         }
-        let answer = relations.unique_value(&expression, &limits);
+        let answer = relations.unique_value_cached(
+            &expression,
+            &limits,
+            &mut context
+                .budget
+                .smt_cache_query(limits.cache_scope())
+                .with_allowance((limits.rlimit as usize).saturating_mul(2) / 4),
+        );
         context
             .query_cache
             .remember(relations, &expression, &limits, &answer);
@@ -156,28 +186,7 @@ pub(super) fn refine(
                 return Ok(true);
             }
             if let Some(candidates) = value.constants().cloned() {
-                let mut retained = Vec::new();
-                for candidate in candidates {
-                    if !charge(relations, &expression, 1, context) {
-                        return Err(FrontierReason::Work);
-                    }
-                    match relations.can_equal(&expression, candidate, &limits) {
-                        CheckResult::Unsat => {}
-                        CheckResult::Sat => retained.push(candidate),
-                        CheckResult::Unknown(reason) => {
-                            return Err(FrontierReason::Relations(reason));
-                        }
-                    }
-                }
-                if let Some(narrowed) = retained
-                    .into_iter()
-                    .map(AbstractValue::constant)
-                    .reduce(|left, right| context.domain.join(&left, &right))
-                {
-                    *value = value.clone().with_numeric(narrowed.numeric().clone());
-                } else {
-                    return Ok(false);
-                }
+                return candidates::refine(value, &expression, &candidates, relations, context);
             }
         }
         ValueQuery::Infeasible => return Ok(false),

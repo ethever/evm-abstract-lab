@@ -8,6 +8,7 @@ use embedded_smt::{Array, Bool, Bv as BV, Context, Function, FunctionSort, Outco
 use revm_bytecode::opcode;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(super) mod candidates;
 mod guarantees;
 mod state;
 #[cfg(test)]
@@ -506,9 +507,8 @@ fn literal(value: &BV) -> Option<U256> {
 fn boolean(value: Bool) -> BV {
     value.ite(&word(U256::from(1)), &word(U256::ZERO))
 }
-fn prepared<'a>(
+fn prepared_prefix<'a>(
     state: &RelationState,
-    extra: Option<Constraint>,
     limits: &'a RelationLimits,
 ) -> Result<(Vec<Bool>, Encoder<'a>), QueryReason> {
     if !limits.enabled {
@@ -552,6 +552,15 @@ fn prepared<'a>(
     encoder.memo.retain(|expression, _| {
         !expression.has_state_semantics() || matches!(expression.kind(), ExprKind::Keccak { .. })
     });
+    Ok((assertions, encoder))
+}
+
+fn prepared<'a>(
+    state: &RelationState,
+    extra: Option<Constraint>,
+    limits: &'a RelationLimits,
+) -> Result<(Vec<Bool>, Encoder<'a>), QueryReason> {
+    let (mut assertions, mut encoder) = prepared_prefix(state, limits)?;
     if let Some(extra) = extra {
         assertions.push(encoder.constraint(&extra)?);
     }
@@ -596,6 +605,24 @@ pub(super) fn unique(
     expression: &ExprId,
     limits: &RelationLimits,
 ) -> ValueQuery {
+    unique_inner(state, expression, limits, None)
+}
+
+pub(super) fn unique_cached(
+    state: &RelationState,
+    expression: &ExprId,
+    limits: &RelationLimits,
+    cache: &mut embedded_smt::CacheQuery<'_>,
+) -> ValueQuery {
+    unique_inner(state, expression, limits, Some(cache))
+}
+
+fn unique_inner(
+    state: &RelationState,
+    expression: &ExprId,
+    limits: &RelationLimits,
+    cache: Option<&mut embedded_smt::CacheQuery<'_>>,
+) -> ValueQuery {
     if state.bottom {
         return ValueQuery::Infeasible;
     }
@@ -617,18 +644,31 @@ pub(super) fn unique(
         Err(reason) => return ValueQuery::Unknown(reason),
     };
     encoder.emit_definitions(&mut assertions);
-    let printed =
-        match embedded_smt::check(&assertions, Some(&value), limits.provider, limits.rlimit) {
-            Outcome::Sat(Some(value)) => value,
-            Outcome::Sat(None) => return ValueQuery::Unknown(QueryReason::ModelUnavailable),
-            Outcome::Unsat => return ValueQuery::Infeasible,
-            Outcome::Unknown(reason) => {
-                return ValueQuery::Unknown(unknown(reason, limits.provider));
-            }
-            Outcome::Error(error) => {
-                return ValueQuery::Unknown(QueryReason::SolverError(error));
-            }
-        };
+    let answer = if let Some(cache) = cache {
+        embedded_smt::check_unique_cached(
+            &assertions,
+            &value,
+            limits.provider,
+            limits.rlimit,
+            cache,
+        )
+    } else {
+        embedded_smt::check_unique(&assertions, &value, limits.provider, limits.rlimit)
+    };
+    let printed = match answer {
+        embedded_smt::UniqueOutcome::Unique(value) => value,
+        embedded_smt::UniqueOutcome::Multiple => return ValueQuery::Multiple,
+        embedded_smt::UniqueOutcome::Infeasible => return ValueQuery::Infeasible,
+        embedded_smt::UniqueOutcome::ModelUnavailable => {
+            return ValueQuery::Unknown(QueryReason::ModelUnavailable);
+        }
+        embedded_smt::UniqueOutcome::Unknown(reason) => {
+            return ValueQuery::Unknown(unknown(reason, limits.provider));
+        }
+        embedded_smt::UniqueOutcome::Error(error) => {
+            return ValueQuery::Unknown(QueryReason::SolverError(error));
+        }
+    };
     let constant = if let Some(hex) = printed.strip_prefix("#x") {
         U256::from_str_radix(hex, 16).ok()
     } else if let Some(binary) = printed.strip_prefix("#b") {
@@ -636,15 +676,8 @@ pub(super) fn unique(
     } else {
         None
     };
-    let Some(constant) = constant else {
-        return ValueQuery::Unknown(QueryReason::ModelUnavailable);
-    };
-    assertions.push(value.eq(word(constant)).not());
-    // A second independent request keeps the same neutral terms and allowance.
-    // It cannot accidentally switch a reused Z3 solver into another strategy.
-    match checked(&assertions, limits) {
-        CheckResult::Unsat => ValueQuery::Unique(constant),
-        CheckResult::Sat => ValueQuery::Multiple,
-        CheckResult::Unknown(reason) => ValueQuery::Unknown(reason),
-    }
+    constant.map_or(
+        ValueQuery::Unknown(QueryReason::ModelUnavailable),
+        ValueQuery::Unique,
+    )
 }

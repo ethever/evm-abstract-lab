@@ -4,6 +4,7 @@ use super::{CheckResult, QueryReason, RelationLimits, checked, unknown};
 use crate::domain::relational::{SmtError, SmtProvider};
 use embedded_smt::Unknown;
 
+mod decided_cache;
 mod prefix;
 
 #[test]

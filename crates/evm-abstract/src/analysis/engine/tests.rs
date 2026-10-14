@@ -7,6 +7,7 @@ use crate::{
     resource::WorkBudget,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+mod decided_cache;
 
 #[test]
 fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {

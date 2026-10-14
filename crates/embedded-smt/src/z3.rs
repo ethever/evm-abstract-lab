@@ -192,19 +192,32 @@ impl Backend for Z3 {
     }
 }
 
+fn solve_current(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Outcome {
+    let solver = Solver::new_for_logic("QF_ABV").expect("Z3 supports QF_ABV");
+    let mut params = Params::new();
+    params.set_u32("rlimit", rlimit);
+    solver.set_params(&params);
+    let context = ::z3::Context::thread_local();
+    let handle = context.handle();
+    let cancellation = crate::current_cancellation();
+    #[cfg(test)]
+    crate::query_pair::observe_native();
+    crate::cancellation::interruptible(
+        &cancellation,
+        move || handle.interrupt(),
+        || backend::execute(assertions, value, Z3 { solver, rlimit }, rlimit),
+    )
+}
+
+pub(crate) fn solve_in_context(
+    context: &::z3::Context,
+    assertions: &[Bool],
+    value: Option<&Bv>,
+    rlimit: u32,
+) -> Outcome {
+    ::z3::with_z3_context(context, || solve_current(assertions, value, rlimit))
+}
+
 pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Outcome {
-    ::z3::with_z3_config(&Config::new(), || {
-        let solver = Solver::new_for_logic("QF_ABV").expect("Z3 supports QF_ABV");
-        let mut params = Params::new();
-        params.set_u32("rlimit", rlimit);
-        solver.set_params(&params);
-        let context = ::z3::Context::thread_local();
-        let handle = context.handle();
-        let cancellation = crate::current_cancellation();
-        crate::cancellation::interruptible(
-            &cancellation,
-            move || handle.interrupt(),
-            || backend::execute(assertions, value, Z3 { solver, rlimit }, rlimit),
-        )
-    })
+    ::z3::with_z3_config(&Config::new(), || solve_current(assertions, value, rlimit))
 }

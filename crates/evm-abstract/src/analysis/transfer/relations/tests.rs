@@ -1,5 +1,8 @@
 //! Guard rejection and shared work remain coverage boundaries.
 
+mod batch_order;
+mod finite_pair;
+
 use crate::{
     Fork,
     analysis::{
