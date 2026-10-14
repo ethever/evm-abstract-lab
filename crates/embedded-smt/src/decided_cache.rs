@@ -58,7 +58,7 @@ const ENTRY_METADATA: usize = 1024;
 pub struct CacheStats {
     /// Full-key unique-projection hits.
     pub unique_hits: u64,
-    /// Full-key candidate SAT/UNSAT hits.
+    /// Full-key feasibility/candidate SAT/UNSAT hits.
     pub candidate_hits: u64,
     /// Keys successfully constructed but absent.
     pub misses: u64,
@@ -390,14 +390,51 @@ pub fn check_unique_cached(
     }
     answer
 }
+/// Check a complete conjunction using an analysis-owned SAT/UNSAT cache.
+/// The caller retains its original prepaid query fee and validates its encoding
+/// policy before lookup. Misses and optional-maintenance refusals use
+/// [`crate::check`] with no model projection and a fresh private native session.
+pub fn check_cached(
+    base: &[Bool],
+    provider: Provider,
+    rlimit: u32,
+    query: &mut CacheQuery<'_>,
+) -> Outcome {
+    decided(base, provider, rlimit, query, FeasibilityOracle::Fresh)
+}
+
 pub(crate) fn candidate_current(
     base: &[Bool],
     provider: Provider,
     rlimit: u32,
     query: &mut CacheQuery<'_>,
 ) -> Outcome {
+    decided(base, provider, rlimit, query, FeasibilityOracle::Current)
+}
+
+// The mathematical key is shared, but ordinary feasibility misses must never
+// inherit a finite batch's current native context.
+enum FeasibilityOracle {
+    Fresh,
+    Current,
+}
+impl FeasibilityOracle {
+    fn check(&self, base: &[Bool], provider: Provider, rlimit: u32) -> Outcome {
+        match self {
+            Self::Fresh => crate::check(base, None, provider, rlimit),
+            Self::Current => crate::query_pair::checked_current(base, None, provider, rlimit),
+        }
+    }
+}
+fn decided(
+    base: &[Bool],
+    provider: Provider,
+    rlimit: u32,
+    query: &mut CacheQuery<'_>,
+    oracle: FeasibilityOracle,
+) -> Outcome {
     if cancellation() || rlimit == 0 {
-        return crate::query_pair::checked_current(base, None, provider, rlimit);
+        return oracle.check(base, provider, rlimit);
     }
     let cache = &mut query.cache;
     let mut key = cache.key(base, None, provider, rlimit, query.scope, &mut query.budget);
@@ -421,7 +458,7 @@ pub(crate) fn candidate_current(
             _ => key = None,
         }
     }
-    let answer = crate::query_pair::checked_current(base, None, provider, rlimit);
+    let answer = oracle.check(base, provider, rlimit);
     if cancellation() {
         return Outcome::Unknown(Unknown::Cancelled);
     }

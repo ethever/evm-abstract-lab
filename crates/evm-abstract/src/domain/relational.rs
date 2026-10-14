@@ -307,11 +307,22 @@ impl RelationState {
         constraint: Constraint,
         limits: &RelationLimits,
     ) -> Result<CheckResult, QueryReason> {
+        self.insert_inner(constraint, limits, None)
+    }
+    fn insert_inner(
+        &mut self,
+        constraint: Constraint,
+        limits: &RelationLimits,
+        cache: Option<&mut embedded_smt::CacheQuery<'_>>,
+    ) -> Result<CheckResult, QueryReason> {
         if self.bottom {
             return Ok(CheckResult::Unsat);
         }
         self.retain(constraint, limits)?;
-        let checked = self.check(limits);
+        let checked = match cache {
+            Some(cache) => solver::check_cached(self, limits, cache),
+            None => self.check(limits),
+        };
         if checked == CheckResult::Unsat {
             self.bottom = true;
         }
@@ -490,6 +501,25 @@ impl RelationState {
                 nonzero,
             },
             limits,
+        )
+    }
+    /// Branch-only cached feasibility; retention and full encoding still precede
+    /// lookup. Rejected retention leaves the state unchanged, and only a proved
+    /// contradiction installs bottom.
+    pub(crate) fn assume_checked_cached(
+        &mut self,
+        expression: &ExprId,
+        nonzero: bool,
+        limits: &RelationLimits,
+        cache: &mut embedded_smt::CacheQuery<'_>,
+    ) -> Result<CheckResult, QueryReason> {
+        self.insert_inner(
+            Constraint::Truth {
+                expression: expression.clone(),
+                nonzero,
+            },
+            limits,
+            Some(cache),
         )
     }
     /// Add sound unsigned numeric bounds for one value.

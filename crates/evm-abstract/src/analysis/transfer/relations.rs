@@ -246,14 +246,24 @@ pub(super) fn branch(
             boundary(result, pc, FrontierReason::Relations(reason));
         }
     }
-    if !charge(&payload.relations, &expression, 1, context) {
+    let query_fee = payload
+        .relations
+        .work_size()
+        .saturating_add(expression.work_size())
+        .saturating_add(limits.rlimit as usize);
+    if !context.budget.charge(query_fee) {
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
-    match payload
-        .relations
-        .assume_checked(&expression, nonzero, &limits)
-    {
+    match payload.relations.assume_checked_cached(
+        &expression,
+        nonzero,
+        &limits,
+        &mut context
+            .budget
+            .smt_cache_query(limits.cache_scope())
+            .with_allowance(query_fee / 4),
+    ) {
         Ok(CheckResult::Unsat) => return None,
         Ok(CheckResult::Sat) => {}
         Ok(CheckResult::Unknown(QueryReason::Cancelled)) | Err(QueryReason::Cancelled) => {

@@ -56,6 +56,9 @@ impl Observe {
     pub(crate) fn native_calls(&self) -> usize {
         self.trace.lock().unwrap().native.len()
     }
+    pub(crate) fn native_contexts(&self) -> Vec<usize> {
+        self.trace.lock().unwrap().native.clone()
+    }
 }
 impl Drop for Observe {
     fn drop(&mut self) {

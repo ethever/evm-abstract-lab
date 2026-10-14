@@ -35,7 +35,9 @@ mod query_budget;
 mod query_pair;
 mod term;
 mod z3;
-pub use decided_cache::{CacheQuery, CacheScope, CacheStats, DecidedCache, check_unique_cached};
+pub use decided_cache::{
+    CacheQuery, CacheScope, CacheStats, DecidedCache, check_cached, check_unique_cached,
+};
 pub use query_budget::QueryBudget;
 pub use query_pair::{
     BudgetedOutcome, UniqueOutcome, check_candidates, check_candidates_budgeted, check_unique,

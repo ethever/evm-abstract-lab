@@ -5,6 +5,7 @@ use crate::{
 };
 
 mod collisions;
+mod feasibility;
 mod resources;
 
 fn scope() -> CacheScope {

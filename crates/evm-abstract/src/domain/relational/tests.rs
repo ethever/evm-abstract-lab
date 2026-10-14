@@ -1,4 +1,5 @@
 mod assumptions;
+mod cached_assumptions;
 mod forwarding;
 mod guarantees;
 mod guarded_join;

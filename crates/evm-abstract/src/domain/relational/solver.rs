@@ -577,10 +577,16 @@ fn unknown(reason: Unknown, provider: super::SmtProvider) -> QueryReason {
 }
 
 fn checked(assertions: &[Bool], limits: &RelationLimits) -> CheckResult {
-    match embedded_smt::check(assertions, None, limits.provider, limits.rlimit) {
+    check_outcome(
+        embedded_smt::check(assertions, None, limits.provider, limits.rlimit),
+        limits.provider,
+    )
+}
+fn check_outcome(outcome: Outcome, provider: super::SmtProvider) -> CheckResult {
+    match outcome {
         Outcome::Sat(_) => CheckResult::Sat,
         Outcome::Unsat => CheckResult::Unsat,
-        Outcome::Unknown(reason) => CheckResult::Unknown(unknown(reason, limits.provider)),
+        Outcome::Unknown(reason) => CheckResult::Unknown(unknown(reason, provider)),
         Outcome::Error(error) => CheckResult::Unknown(QueryReason::SolverError(error)),
     }
 }
@@ -590,6 +596,23 @@ pub(super) fn check(
     extra: Option<Constraint>,
     limits: &RelationLimits,
 ) -> CheckResult {
+    check_inner(state, extra, limits, None)
+}
+
+pub(super) fn check_cached(
+    state: &RelationState,
+    limits: &RelationLimits,
+    cache: &mut embedded_smt::CacheQuery<'_>,
+) -> CheckResult {
+    check_inner(state, None, limits, Some(cache))
+}
+
+fn check_inner(
+    state: &RelationState,
+    extra: Option<Constraint>,
+    limits: &RelationLimits,
+    cache: Option<&mut embedded_smt::CacheQuery<'_>>,
+) -> CheckResult {
     if state.bottom {
         return CheckResult::Unsat;
     }
@@ -597,7 +620,13 @@ pub(super) fn check(
         Ok(query) => query,
         Err(reason) => return CheckResult::Unknown(reason),
     };
-    checked(&assertions, limits)
+    match cache {
+        Some(cache) => check_outcome(
+            embedded_smt::check_cached(&assertions, limits.provider, limits.rlimit, cache),
+            limits.provider,
+        ),
+        None => checked(&assertions, limits),
+    }
 }
 
 pub(super) fn unique(
