@@ -1,6 +1,8 @@
 //! Known bytecode recursion is checked against concrete revm execution, with
 //! independent assertions for closure, call context and transaction effects.
 
+#[path = "known_recursion/admission.rs"]
+mod admission;
 #[path = "known_recursion/captured.rs"]
 mod captured;
 #[path = "known_recursion/contexts.rs"]

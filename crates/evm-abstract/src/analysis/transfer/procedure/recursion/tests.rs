@@ -1,11 +1,10 @@
 //! Known bytecode retains its semantics when a repeated entry becomes relative.
 
-use super::is_recursive_entry;
 use crate::{
     analysis::{
-        ChildFrame, Continuation, ExecutionConfig, FrameCode, FrontierReason, OutcomeKind,
-        ProcedureSummaryKind, Status, analyze_world,
-        machine::fixtures::{address, fixture, payload, word},
+        ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, ProcedureSummaryKind, Status,
+        analyze_world,
+        machine::fixtures::{address, fixture, word},
     },
     domain::Domain,
     world::{Account, Entry, World},
@@ -39,45 +38,7 @@ fn check_entry_gas_failure(
     assert_eq!(outcome.store, result.states()[0].entry.store);
 }
 
-#[test]
-fn repeated_entry_identity_keeps_code_owner_static_and_creation_distinct() {
-    let domain = Domain::default();
-    let original = payload(domain);
-    assert!(!is_recursive_entry(&original));
-    let mut entered = original.clone();
-    let mut state = entered.active().clone();
-    state.key.caller = address(0x101).into();
-    entered.call_stack.push_child(ChildFrame {
-        state,
-        continuation: Continuation {
-            return_block: Some(1),
-            output_offset: word(0),
-            output_size: word(0),
-            creation: None,
-        },
-    });
-    assert!(
-        is_recursive_entry(&entered),
-        "CALLER is an input, not stack identity"
-    );
-    for variant in 0..6 {
-        let mut different = entered.clone();
-        let child = different.call_stack.children_mut().last_mut().unwrap();
-        match variant {
-            0 => child.state.key.address = address(0x102),
-            1 => child.state.key.code_address = address(0x102),
-            2 => child.state.key.is_static = true,
-            3 => child.continuation.creation = Some(address(0x102)),
-            4 => child.state.key.basic_block_index = 1,
-            5 => child.state.stack.push(word(1)),
-            _ => unreachable!(),
-        }
-        assert!(
-            !is_recursive_entry(&different),
-            "different context {variant}"
-        );
-    }
-}
+mod admission;
 
 #[test]
 fn direct_known_recursion_closes_with_default_depth_and_without_unknown_effects() {
@@ -101,7 +62,14 @@ fn direct_known_recursion_closes_with_default_depth_and_without_unknown_effects(
             result
                 .states()
                 .iter()
-                .all(|state| state.entry.call_stack.depth() <= 2)
+                .all(|state| state.entry.call_stack.depth() <= 3)
+        );
+        assert!(
+            result
+                .states()
+                .iter()
+                .any(|state| state.entry.call_stack.depth() == 3),
+            "a direct edge must repeat before the relative solver takes over"
         );
         let records = result.procedure_summaries();
         assert!(!records.is_empty());
