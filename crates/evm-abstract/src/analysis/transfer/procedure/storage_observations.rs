@@ -6,6 +6,7 @@
 
 use super::{
     AbstractValue, Address, Domain, FrameCode, MachineError, MachinePayload, NumericValue,
+    stack_alias::StackAliases,
 };
 use crate::{
     domain::{
@@ -57,7 +58,7 @@ fn in_scope(payload: &MachinePayload, domain: Domain) -> bool {
     frame.code != FrameCode::Unknown
         && domain.spec().relations().enabled
         // The internal namespace can represent symbolic logical owners. This
-        // first prototype deliberately covers only the concrete logical case.
+        // bounded domain deliberately covers only the concrete logical case.
         && frame.key.address_value.as_concrete() == Some(frame.key.address)
 }
 
@@ -291,10 +292,39 @@ impl StorageObservations {
         Ok(Self(observations))
     }
 
-    /// Prepay reconstruction, numeric copies and comparison with earlier facts.
-    pub(super) fn work_size(&self, stack: &[AbstractValue]) -> usize {
-        let count = self.0.len().saturating_add(1);
-        self.0.iter().fold(0usize, |work, observation| {
+    // Only the current partition proves equality. Keep every positional record
+    // for future joins; differing read bounds in one class still install both.
+    // Form caps the records at MAX_POSITIONS, and join can only remove records.
+    fn needs_install(&self, index: usize, aliases: &StackAliases) -> bool {
+        let observation = &self.0[index];
+        !self.0[..index].iter().any(|earlier| {
+            earlier.owner == observation.owner
+                && aliases.same_class(earlier.stack_position, observation.stack_position)
+                && earlier.numeric == observation.numeric
+        })
+    }
+
+    /// Prepay all retained numeric work, but reconstruct each equal alias fact once.
+    pub(super) fn work_size(&self, stack: &[AbstractValue], aliases: &StackAliases) -> usize {
+        let installations: Vec<_> = (0..self.0.len())
+            .filter(|&index| self.needs_install(index, aliases))
+            .collect();
+        // At most 15 numeric Eq checks per record, plus copying/join/equality.
+        // Eq rejects unequal finite lengths before scanning candidates. The
+        // form fee's 256 covers this for a literal (numeric work 13); bounded
+        // member imports reserve a larger product. Joins prepay retained work.
+        let retained = self.0.iter().fold(0usize, |work, observation| {
+            work.saturating_add(
+                observation
+                    .numeric
+                    .work_size()
+                    .saturating_add(1)
+                    .saturating_mul(MAX_POSITIONS.saturating_add(2)),
+            )
+        });
+        let count = installations.len().saturating_add(1);
+        installations.into_iter().fold(retained, |work, index| {
+            let observation = &self.0[index];
             // Instantiation only reads roots within this cap. SummaryPlane is
             // deliberately opaque here; no World traversal is needed to bound it.
             let root = MAX_ROOT_WORK;
@@ -314,9 +344,15 @@ impl StorageObservations {
     pub(super) fn install(
         &self,
         payload: &mut MachinePayload,
+        aliases: &StackAliases,
         domain: Domain,
     ) -> Result<(), MachineError> {
-        for observation in &self.0 {
+        for (index, observation) in self.0.iter().enumerate() {
+            MachineError::check_cancelled()?;
+            // Each scan is bounded by MAX_POSITIONS and prepaid numeric work.
+            if !self.needs_install(index, aliases) {
+                continue;
+            }
             MachineError::check_cancelled()?;
             let frame = payload.active();
             if frame.key.address != observation.owner {

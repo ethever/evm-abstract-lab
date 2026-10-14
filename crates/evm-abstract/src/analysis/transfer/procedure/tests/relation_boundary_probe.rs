@@ -345,3 +345,78 @@ fn storage_observation_known_delegatecall_write_replaces_current_snapshot() {
         );
     }
 }
+
+#[test]
+fn storage_duplicate_default_work_probe() {
+    // Both programs must close under the default budget with the exact read.
+    // The second keeps 16 DUP aliases through all 20 unconditional JUMPs.
+    let config = crate::analysis::ExecutionConfig::default();
+    assert_eq!(config.max_work, 20_000_000);
+    let domain = config.domain().unwrap();
+    for copies in [1usize, 16] {
+        let mut code = vec![0x5f, 0x35];
+        code.extend(std::iter::repeat_n(0x80, copies));
+        code.extend([0x60, 0x07, 0x90, 0x55]);
+        for _ in 0..20 {
+            let target = u16::try_from(code.len() + 4).unwrap();
+            code.extend([0x61, (target >> 8) as u8, target as u8, 0x56, 0x5b]);
+        }
+        code.extend(std::iter::repeat_n(0x50, copies - 1));
+        code.extend([0x54, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3]);
+        let hex: String = code.iter().map(|byte| format!("{byte:02x}")).collect();
+        println!("STORAGE_DUPLICATE_CODE copies={copies} jumps=20 hex={hex}");
+        let (world, mut entry) = fixture(&[(0x101, hex.as_str())]);
+        entry.environment.calldata = ByteArray::unknown();
+        let input = super::super::super::initial(&world, &entry, domain).unwrap();
+        let mut table = Table::default();
+        let mut budget = WorkBudget::new(config.max_work);
+        let mut counters = Counters::default();
+        let (execution, record) = table.execute(
+            0,
+            &world,
+            &entry,
+            input,
+            &config,
+            domain,
+            &mut budget,
+            &mut counters,
+            StorageReadPolicy::Abstract,
+        );
+        let frontiers: Vec<_> = execution
+            .frontiers
+            .iter()
+            .map(|f| (&f.reason, f.pc))
+            .collect();
+        let returns: Vec<_> = execution
+            .outcomes
+            .iter()
+            .filter(|o| o.kind == OutcomeKind::Return)
+            .map(|o| {
+                let value = o.data.read_word(&word(0), domain);
+                (
+                    o.data.len().singleton(),
+                    value.singleton(),
+                    value.contains(U256::from(7)),
+                    value.numeric().clone(),
+                )
+            })
+            .collect();
+        println!(
+            "STORAGE_DUPLICATE_RESULT copies={copies} jumps=20 max_work={} closed={} frontiers={frontiers:?} returns={returns:?} work={} transfers={} states={} procedures={}",
+            config.max_work,
+            record.closed,
+            budget.used(),
+            record.transfers,
+            record.state_count,
+            record.procedures.len()
+        );
+        assert!(record.closed && execution.frontiers.is_empty());
+        assert!(!returns.is_empty());
+        assert!(
+            returns
+                .iter()
+                .all(|r| r.0 == Some(U256::from(32)) && r.1 == Some(U256::from(7)))
+        );
+        assert!(returns.iter().all(|r| r.2));
+    }
+}

@@ -76,6 +76,145 @@ fn joined_finite_read_is_recovered_from_the_exact_instantiated_root() {
 }
 
 #[test]
+fn equal_alias_observations_install_once_but_keep_every_position_and_numeric_fee() {
+    let (_, entry, mut input, domain) = written_input();
+    let key = input.active().stack[0].clone();
+    input.active_mut().stack = vec![key; MAX_POSITIONS];
+    let summary = form(&input, &entry, domain).unwrap();
+    let observations = &summary.storage_observations;
+    let frame = summary.active();
+    assert_eq!(observations.0.len(), MAX_POSITIONS);
+    for index in 0..MAX_POSITIONS {
+        assert_eq!(
+            observations.needs_install(index, &frame.stack_aliases),
+            index == 0
+        );
+        assert_eq!(observations.0[index].stack_position, index);
+    }
+    let single = StorageObservations(vec![observations.0[0].clone()]);
+    let numeric_fee = observations.0[0]
+        .numeric
+        .work_size()
+        .saturating_add(1)
+        .saturating_mul(MAX_POSITIONS + 2);
+    assert_eq!(
+        observations.work_size(&frame.stack, &frame.stack_aliases),
+        single.work_size(&frame.stack, &frame.stack_aliases) + (MAX_POSITIONS - 1) * numeric_fee
+    );
+    let restored = instantiate(&summary, domain).unwrap();
+    assert_eq!(restored.relations.len(), 1);
+    assert_eq!(
+        form(&restored, &entry, domain)
+            .unwrap()
+            .storage_observations,
+        summary.storage_observations
+    );
+}
+
+#[test]
+fn same_alias_with_different_compatible_read_bounds_installs_both() {
+    let (_, entry, mut input, domain) = written_input();
+    let key = input.active().stack[0].clone();
+    input.active_mut().stack.push(key);
+    let mut summary = form(&input, &entry, domain).unwrap();
+    for (observation, (lower, upper)) in summary
+        .storage_observations
+        .0
+        .iter_mut()
+        .zip([(2, 9), (5, 12)])
+    {
+        observation.numeric =
+            NumericValue::unsigned_range(U256::from(lower), U256::from(upper)).unwrap();
+        assert!(observation.numeric.contains(U256::from(7)));
+    }
+    summary.work = summary.measure_work();
+    let observations = &summary.storage_observations;
+    assert_eq!(observations.0.len(), 2);
+    assert!(summary.active().stack_aliases.same_class(0, 1));
+    assert!(observations.needs_install(0, &summary.active().stack_aliases));
+    assert!(observations.needs_install(1, &summary.active().stack_aliases));
+    let restored = instantiate(&summary, domain).unwrap();
+    let owner = restored.active().key.address;
+    let root = restored.store.slot_root(owner, false).unwrap();
+    let key = &restored.active().stack[0];
+    for (lower, upper) in [(2, 9), (5, 12)] {
+        assert!(restored.relations.constraints().any(|constraint| {
+            matches!(constraint, Constraint::Range {
+                expression, lower: actual_lower, upper: actual_upper,
+            } if *actual_lower == U256::from(lower) && *actual_upper == U256::from(upper)
+                && matches_read(expression, &root, key))
+        }));
+    }
+}
+
+#[test]
+fn joined_alias_split_and_new_leader_use_the_current_partition() {
+    let (_, entry, mut input, domain) = written_input();
+    let key = input.active().stack[0].clone();
+    input.active_mut().stack = vec![key.clone(); 4];
+    let left = form(&input, &entry, domain).unwrap();
+    let other = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    input.active_mut().stack = vec![key, other.clone(), other.clone(), other];
+    let mut right = form(&input, &entry, domain).unwrap();
+    // Supply compatible per-position read guarantees independently of aliases.
+    right.storage_observations = left.storage_observations.clone();
+    right.work = right.measure_work();
+    for widen in [false, true] {
+        let joined = join(&left, &right, domain, widen).unwrap();
+        let observations = &joined.storage_observations;
+        let aliases = &joined.active().stack_aliases;
+        assert_eq!(observations.0.len(), 4);
+        assert!(!aliases.same_class(0, 1));
+        assert!(aliases.same_class(1, 3));
+        assert_eq!(
+            [0, 1, 2, 3].map(|index| observations.needs_install(index, aliases)),
+            [true, true, false, false]
+        );
+        assert!(
+            observations.work_size(&joined.active().stack, aliases)
+                > left
+                    .storage_observations
+                    .work_size(&left.active().stack, &left.active().stack_aliases,)
+        );
+        assert_eq!(instantiate(&joined, domain).unwrap().relations.len(), 2);
+
+        let mut missing = right.clone();
+        missing.storage_observations.0.remove(0);
+        let dropped = join(&left, &missing, domain, widen).unwrap();
+        assert!(!semantic_eq(&joined, &dropped));
+        assert_eq!(dropped.storage_observations.0.len(), 3);
+        assert_eq!(dropped.storage_observations.0[0].stack_position, 1);
+        assert_eq!(instantiate(&dropped, domain).unwrap().relations.len(), 1);
+    }
+}
+
+#[test]
+fn independent_equal_numeric_keys_and_mixed_bound_alias_splits_install_separately() {
+    let (_, entry, mut input, domain) = written_input();
+    let key = input.active().stack[0].clone();
+    input.active_mut().stack.push(key.clone());
+    let aliased = form(&input, &entry, domain).unwrap();
+    let independent = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let narrow = key
+        .clone()
+        .with_numeric(NumericValue::unsigned_range(U256::from(2), U256::from(9)).unwrap());
+    for other in [independent, narrow] {
+        input.active_mut().stack = vec![key.clone(), other];
+        let mut summary = form(&input, &entry, domain).unwrap();
+        summary.storage_observations = aliased.storage_observations.clone();
+        summary.work = summary.measure_work();
+        let aliases = &summary.active().stack_aliases;
+        assert!(!aliases.same_class(0, 1));
+        assert!(summary.storage_observations.needs_install(0, aliases));
+        assert!(summary.storage_observations.needs_install(1, aliases));
+        assert_eq!(instantiate(&summary, domain).unwrap().relations.len(), 2);
+    }
+    let mut owners = aliased.storage_observations.clone();
+    owners.0[1].owner = crate::analysis::machine::fixtures::address(0x202);
+    assert!(owners.needs_install(1, &aliased.active().stack_aliases));
+}
+
+#[test]
 fn observation_cost_ignores_code_and_caps_optional_root_work() {
     let (_, _, mut input, domain) = written_input();
     let fee = form_work(&input, domain);
@@ -118,7 +257,7 @@ fn observation_cost_ignores_code_and_caps_optional_root_work() {
 }
 
 #[test]
-fn symbolic_logical_owner_is_outside_this_prototype_scope() {
+fn symbolic_logical_owner_is_outside_current_scope() {
     let (_, _, mut input, domain) = written_input();
     input.active_mut().key.address_value = crate::world::AddressInput::unknown_to();
     assert_eq!(form_work(&input, domain), 0);

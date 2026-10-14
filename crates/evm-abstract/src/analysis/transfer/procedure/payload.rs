@@ -38,7 +38,9 @@ impl PayloadSummary {
 
     pub(super) fn measure_work(&self) -> usize {
         let store_work = self.store.work_size();
-        let observation_work = self.storage_observations.work_size(&self.active().stack);
+        let observation_work = self
+            .storage_observations
+            .work_size(&self.active().stack, &self.active().stack_aliases);
         let frames = self.frames.iter().fold(
             store_work.saturating_add(observation_work),
             |work, frame| {
@@ -180,6 +182,7 @@ pub(super) fn form(
         location: payload.key(),
     };
     summary.work = summary.measure_work();
+    MachineError::check_cancelled()?;
     Ok(summary)
 }
 
@@ -237,6 +240,7 @@ pub(super) fn join(
     // The erased histories must not remain a permanent replay cost. The new
     // whole bound itself supplies the conservative construction/traversal size.
     out.work = out.measure_work();
+    MachineError::check_cancelled()?;
     Ok(out)
 }
 
@@ -300,7 +304,9 @@ pub(super) fn instantiate(
         store: payload.store.instantiate(domain)?,
         relations: RelationState::default(),
     };
-    payload.storage_observations.install(&mut output, domain)?;
+    payload
+        .storage_observations
+        .install(&mut output, &payload.active().stack_aliases, domain)?;
     MachineError::check_cancelled()?;
     Ok(output)
 }

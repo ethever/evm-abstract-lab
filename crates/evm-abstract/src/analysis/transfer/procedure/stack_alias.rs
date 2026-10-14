@@ -27,6 +27,11 @@ impl StackAliases {
         Self::work_for_len(self.0.len())
     }
 
+    /// Only membership in this partition is evidence; absent positions never alias.
+    pub(super) fn same_class(&self, left: usize, right: usize) -> bool {
+        matches!((self.0.get(left), self.0.get(right)), (Some(a), Some(b)) if a == b)
+    }
+
     /// Caller reserves tree work and numeric comparison work before entering.
     pub(super) fn form(stack: &[AbstractValue], enabled: bool) -> Result<Self, MachineError> {
         MachineError::check_cancelled()?;
