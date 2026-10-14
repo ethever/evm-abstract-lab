@@ -595,15 +595,34 @@ def flow_frames(page, canvas, output: Path, name: str, regions):
     start=time.monotonic()
     max_interval=min(56,min(region[3]-region[1] for region in regions.values()))/(2*60)
     valid_pairs=0
-    # Capture consecutive real compositor frames first. PNG decoding, pixel
-    # extraction and browser round trips belong after sampling, otherwise
-    # they can consume the entire conservative half-cycle timing allowance.
-    # Capture the real Chromium surface directly. Playwright's screenshot
-    # preparation can otherwise spend the half-cycle allowance on frame waits.
-    # Retain the same conservative wall-clock bounds and lossless PNG evidence.
+    # egui reads performance.now for its animation phase. Hold that application
+    # clock at each sample while the real compositor presents the frame: slow
+    # SwiftShader PNG capture must not advance a periodic head past half a cycle.
+    # Browser rAF and DOM timers still run normally, and each clock step exceeds
+    # the selected edge's 33ms repaint deadline. Direction is checked below from
+    # actual PNG pixels; unchanged or reversed frames still fail acceptance.
+    step_seconds=min(0.1,max_interval/3)
+    assert step_seconds>0.033, "flow sampling region must allow a full repaint step"
     cdp=page.context.new_cdp_session(page)
+    clock_started=False
     try:
+        clock_start=page.evaluate("""() => {
+            const own=Object.getOwnPropertyDescriptor(performance,'now');
+            const nativeNow=performance.now.bind(performance);
+            const now=nativeNow();
+            window.__evmFlowSamplingClock={own,nativeNow,now};
+            Object.defineProperty(performance,'now',{
+                configurable:true,value:() => window.__evmFlowSamplingClock.now});
+            return now;
+        }""")
+        clock_started=True
         for index in range(24):
+            animation_seconds=page.evaluate("""({start,step,index}) => {
+                const clock=window.__evmFlowSamplingClock;
+                clock.now=start+step*(index+1)*1000;
+                return (performance.now()-start)/1000;
+            }""", {"start":clock_start,"step":step_seconds,"index":index})
+            rendered_frame(page)
             capture_begin=time.monotonic()-start
             captured=cdp.send("Page.captureScreenshot",{
                 "format":"png","fromSurface":True,"captureBeyondViewport":False,
@@ -611,15 +630,34 @@ def flow_frames(page, canvas, output: Path, name: str, regions):
             capture_end=time.monotonic()-start
             png=base64.b64decode(captured["data"])
             (output/f"{name}-{index:02}.png").write_bytes(png)
-            if captures and capture_end-captures[-1][0]["capture_begin_seconds"]<max_interval:
+            if captures and animation_seconds-captures[-1][0]["animation_seconds"]<max_interval:
                 valid_pairs+=1
-            captures.append(({"capture_begin_seconds":capture_begin,"capture_end_seconds":capture_end,"screenshot_box":box},png))
+            captures.append(({"capture_begin_seconds":capture_begin,"capture_end_seconds":capture_end,
+                              "animation_seconds":animation_seconds,
+                              "animation_clock":"controlled performance.now", "screenshot_box":box},png))
             # Six timing-valid pairs provide several opportunities to see a head
             # fully inside the gap. Direction still requires its own two different
             # advancing frame pairs below; timing or presence alone cannot pass it.
             if len(captures)>=10 and valid_pairs>=6: break
     finally:
-        cdp.detach()
+        try:
+            # Preserve monotonicity when handing the application back to its
+            # native clock, including on a failed capture or pixel assertion.
+            if clock_started:
+                try:
+                    page.wait_for_function("""() => {
+                        const clock=window.__evmFlowSamplingClock;
+                        return clock.nativeNow()>=clock.now;
+                    }""", timeout=5000)
+                finally:
+                    page.evaluate("""() => {
+                        const clock=window.__evmFlowSamplingClock;
+                        if(clock.own) Object.defineProperty(performance,'now',clock.own);
+                        else delete performance.now;
+                        delete window.__evmFlowSamplingClock;
+                    }""")
+        finally:
+            cdp.detach()
     frames=[]
     for frame,png in captures:
         frame["regions"]=flow_pixels(page,png,regions,box)
@@ -639,9 +677,9 @@ def assert_flow_direction(frames, region: str, direction):
     # periodic head from wrapping forward under a heavily loaded compositor.
     max_interval=min(56,height)/(2*60)
     for index,(before,after) in enumerate(zip(frames,frames[1:])):
-        interval=after["capture_end_seconds"]-before["capture_begin_seconds"]
+        interval=after["animation_seconds"]-before["animation_seconds"]
         if interval>=max_interval:
-            skipped_pairs.append({"index":index,"capture_interval_upper_bound":interval})
+            skipped_pairs.append({"index":index,"animation_interval":interval})
             continue
         old=before["regions"][region]["markers"]
         new=after["regions"][region]["markers"]
@@ -663,7 +701,8 @@ def assert_flow_direction(frames, region: str, direction):
         f"rendered heads did not move source to target in {region}: "
         f"forward={advances}, backward={backwards}, frames={frames}")
     return {"screen_direction":direction,"forward_steps":advances,"backward_steps":backwards,
-            "advanced_pairs":advanced_pairs,"max_capture_interval":max_interval,"skipped_pairs":skipped_pairs}
+            "advanced_pairs":advanced_pairs,"animation_clock":"controlled performance.now",
+            "max_animation_interval":max_interval,"skipped_pairs":skipped_pairs}
 
 
 def vertical_edge_region(source, target):
