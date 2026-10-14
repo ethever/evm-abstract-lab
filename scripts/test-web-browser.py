@@ -170,6 +170,21 @@ def budget_interactions(browser, url: str, output: Path):
     observe_webgpu(page)
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
+    # Unbounded export accounting can exceed Wasm's usize and JavaScript's
+    # exact Number range. Let the real Wasm client decode an exact u64 total.
+    reported_export_work = 9_007_199_254_740_993
+    decoded_export_work = []
+
+    def large_export_work(route):
+        response = route.fetch()
+        envelope = response.json()
+        metadata = envelope["result"]["Ok"]["metadata"]
+        assert "max_work" not in metadata["export_limits"], metadata
+        metadata["export_usage"]["work"] = reported_export_work
+        route.fulfill(response=response, body=json.dumps(envelope))
+        decoded_export_work.append(reported_export_work)
+
+    page.route("**/api/tasks/*/result", large_export_work)
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
@@ -177,7 +192,8 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 10
+    assert initial_report["schema_version"] == 11
+    assert "max_work" not in initial_report["metadata"]["export_limits"]
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
         assert initial_report["metadata"]["limits"][field] == value
@@ -210,18 +226,21 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 10
+    assert report["schema_version"] == 11
     assert report["status"] == "Converged", report["frontiers"]
+    assert "max_work" not in report["metadata"]["export_limits"]
     expected = {**defaults, **edited}
     for field, value in expected.items():
         assert request["limits"][field] == value, (field, request["limits"])
         assert report["metadata"]["limits"][field] == value, (field, report["metadata"])
     assert not errors, errors
+    assert len(decoded_export_work) >= 2, decoded_export_work
     canvas.screenshot(path=str(output / "large-budget-result.png"))
     (output / "large-budget-request.json").write_text(reply.request.post_data + "\n")
     (output / "large-budget-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
     result = {"defaults": defaults, "edited": edited, "status": report["status"],
               "metadata_preserves_exact_integers": True,
+              "wasm_decoded_export_work": reported_export_work,
               "renderer": webgpu_evidence(page)}
     page.close()
     return result
@@ -804,7 +823,7 @@ def diagnostics_interactions(browser, url: str, args):
         assert request["fork"] == fork and posted_bytecode(reply) == code, request
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 10 and report["status"] == "Converged", report
+        assert report["schema_version"] == 11 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report
 
@@ -1178,7 +1197,7 @@ def ssa_values_interactions(browser, url, output):
     for name,code,completion in cases:
         if 'Inspector hidden' not in status.text_content():hide_inspector(page,canvas)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
-        assert report['schema_version']==10 and report['status']==completion
+        assert report['schema_version']==11 and report['status']==completion
         ssa=report['ssa']
         assert len(ssa['values'])==ssa['value_count']
         assert [value['id'] for value in ssa['values']]==list(range(ssa['value_count']))
@@ -1268,7 +1287,7 @@ def unknown_world_interactions(browser, url, output):
              "call_value": "0x0", "calldata": "0x"}
     report = layout_submission(page, canvas, code, output, "unknown-world", entry=entry,
                                source_height_offset=-62)
-    assert report["schema_version"] == 10 and report["status"] == "Converged"
+    assert report["schema_version"] == 11 and report["status"] == "Converged"
     assert report["frontiers"] == [] and report["ssa"]["complete"]
     summaries = report["abstract_summaries"]
     assert summaries and all(summary["closed"] and summary["procedures"] for summary in summaries)
@@ -4496,7 +4515,7 @@ def hierarchy_call_interactions(browser,args):
 
 
 def layout_pending_machines(report, entry):
-    assert report["schema_version"] == 10
+    assert report["schema_version"] == 11
     pending = report["pending_machines"]
     assert len(pending) == entry["expected_pending_machines"]
     assert {frontier["payload"] for frontier in report["frontiers"]} == set(range(len(pending)))
@@ -4762,7 +4781,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 10
+            assert analysis["schema_version"] == 11
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})

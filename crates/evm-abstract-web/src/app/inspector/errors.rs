@@ -69,11 +69,8 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
             );
             value::text(
                 ui,
-                "Payload/work limits",
-                format!(
-                    "{} / {}",
-                    detail.limits.max_exact_bytes, detail.limits.max_work
-                ),
+                "Exact payload byte limit",
+                detail.limits.max_exact_bytes.to_string(),
             );
         }),
         api::ErrorDetails::Validation(detail) => fields(ui, |ui| {

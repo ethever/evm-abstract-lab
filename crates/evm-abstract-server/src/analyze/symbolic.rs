@@ -173,7 +173,6 @@ impl<'a> Pool<'a> {
                 max_nodes: 65_536,
                 max_depth: 256,
                 max_exact_bytes: 16 * 1024 * 1024,
-                max_work: 64_000_000,
                 max_output_bytes: evm_abstract::render::json::JsonLimits::default().max_bytes,
             },
             usage: api::ExportUsage {
@@ -188,13 +187,13 @@ impl<'a> Pool<'a> {
     pub fn payload(&mut self, bytes: usize) -> Result<(), api::ApiError> {
         let required = self.usage.exact_bytes.saturating_add(bytes);
         if required > self.limits.max_exact_bytes {
-            return Err(self.failure(api::ExportFailureKind::ExactBytes, required));
+            return Err(self.failure(api::ExportFailureKind::ExactBytes, required as u64));
         }
         self.charge(bytes)?;
         self.usage.exact_bytes = required;
         Ok(())
     }
-    pub fn failure(&self, kind: api::ExportFailureKind, required: usize) -> api::ApiError {
+    pub fn failure(&self, kind: api::ExportFailureKind, required: u64) -> api::ApiError {
         api::ApiError {
             code: if kind == api::ExportFailureKind::Cancelled {
                 api::ApiErrorCode::Cancelled
@@ -215,11 +214,9 @@ impl<'a> Pool<'a> {
         if checkpoint(self.control).is_err() {
             return Err(self.failure(api::ExportFailureKind::Cancelled, self.usage.work));
         }
-        let required = self.usage.work.saturating_add(work);
-        if required > self.limits.max_work {
-            return Err(self.failure(api::ExportFailureKind::Work, required));
-        }
-        self.usage.work = required;
+        // Work is an informational total. Even after saturation every charge
+        // remains a cancellation checkpoint.
+        self.usage.work = self.usage.work.saturating_add(work as u64);
         Ok(())
     }
     fn index(&self, root: Root) -> usize {
@@ -253,7 +250,7 @@ impl<'a> Pool<'a> {
     fn intern(&mut self, root: Root) -> Result<usize, api::ApiError> {
         self.charge(1)?;
         if root.depth() > self.limits.max_depth {
-            return Err(self.failure(api::ExportFailureKind::Depth, root.depth()));
+            return Err(self.failure(api::ExportFailureKind::Depth, root.depth() as u64));
         }
         if let Some(index) = self.memo.get(&root.key()) {
             return Ok(*index);
@@ -274,7 +271,7 @@ impl<'a> Pool<'a> {
             }
             let required = self.graph.nodes.len().saturating_add(1);
             if required > self.limits.max_nodes {
-                return Err(self.failure(api::ExportFailureKind::Nodes, required));
+                return Err(self.failure(api::ExportFailureKind::Nodes, required as u64));
             }
             let node = self.node(&item)?;
             if let Root::Path(path) = item {
@@ -322,7 +319,7 @@ impl<'a> Pool<'a> {
         } else {
             let depth = source.path().depth().saturating_add(1);
             if depth > self.limits.max_depth {
-                return Err(self.failure(api::ExportFailureKind::Depth, depth));
+                return Err(self.failure(api::ExportFailureKind::Depth, depth as u64));
             }
             for expr in paths::expressions(&atoms) {
                 self.expression(expr)?;
@@ -341,7 +338,7 @@ impl<'a> Pool<'a> {
         self.charge(1)?;
         let required = self.graph.nodes.len().saturating_add(1);
         if required > self.limits.max_nodes {
-            return Err(self.failure(api::ExportFailureKind::Nodes, required));
+            return Err(self.failure(api::ExportFailureKind::Nodes, required as u64));
         }
         let index = self.graph.nodes.len();
         self.graph.nodes.push(node);

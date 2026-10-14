@@ -1,6 +1,6 @@
-//! Native comparison/copy bounds, distinct from expanding the report's DAG.
+//! Native comparison/copy metering, distinct from expanding the report's DAG.
 //! Entries, map lookups and fixed-size node data are metering primitives; set
-//! contents and recursive scalar comparisons pay their retained cardinality.
+//! contents and recursive scalar comparisons record their retained cardinality.
 use super::symbolic;
 use evm_abstract::{
     domain::{
@@ -20,7 +20,7 @@ impl BufferWork {
         source: &ByteArray,
         export: &mut symbolic::Pool<'_>,
     ) -> Result<Self, api::ApiError> {
-        // Count reads are O(1). No opaque work_size scan happens before payment.
+        // Count reads are O(1). Record the scan before inspecting entries.
         export.charge(source.metadata_len())?;
         // Root handle, memory flag and fixed-size RangeError/failure marker.
         let mut copy = 3usize;
@@ -97,7 +97,7 @@ impl BufferWork {
 
 fn scalar_copy_work(value: &AbstractValue) -> usize {
     // NumericValue and OriginSet use cached set lengths. The counted elements
-    // bound the later copy/compare; inspecting this estimate does not scan sets.
+    // estimate the later copy/compare; reading this estimate does not scan sets.
     value
         .numeric()
         .work_size()
@@ -127,7 +127,7 @@ fn expression_extra(
     }
     // Full ExprId equality checks fingerprint, then recursive scalar structure.
     // Byte/slot state handles compare by id; their histories/payloads are never
-    // traversed by equality. Keep the expanded *scalar* bound even on collisions.
+    // traversed by equality. Count expanded scalar work even on collisions.
     let mut work = 0usize;
     let mut pending = vec![source];
     while let Some(expression) = pending.pop() {
@@ -153,6 +153,6 @@ fn expression_extra(
         export.charge(children.len())?;
         pending.extend(children);
     }
-    // The copy bound already includes the first expression-handle operation.
+    // The copy estimate already includes the first expression-handle operation.
     Ok(work.saturating_sub(1))
 }

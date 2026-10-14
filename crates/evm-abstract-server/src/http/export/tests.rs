@@ -23,7 +23,7 @@ fn actual_report_encoding_is_bounded_cancellable_and_retains_cached_facts() {
     );
     assert_eq!(detail.limits, source.metadata.export_limits);
     assert_eq!(detail.usage, source.metadata.export_usage);
-    assert!(detail.required > detail.limits.max_output_bytes);
+    assert!(detail.required > detail.limits.max_output_bytes as u64);
     assert_eq!(source, retained);
     let control = Control::new(Default::default());
     control.cancellation().cancel();

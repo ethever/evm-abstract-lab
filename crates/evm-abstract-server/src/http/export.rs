@@ -45,7 +45,7 @@ fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
         message,
         details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
             kind,
-            required,
+            required: required as u64,
             limits: report.metadata.export_limits,
             usage: report.metadata.export_usage,
             written: Some(written),

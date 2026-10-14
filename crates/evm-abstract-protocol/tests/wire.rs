@@ -85,6 +85,25 @@ fn cumulative_counters_preserve_u64_values_above_wasm_and_javascript_integer_ran
 }
 
 #[test]
+fn export_work_remains_diagnostic_above_the_former_hard_cap() {
+    for work in [
+        64_003_705,
+        u64::from(u32::MAX) + 1,
+        9_007_199_254_740_993,
+        u64::MAX,
+    ] {
+        let usage = ExportUsage {
+            nodes: 7,
+            exact_bytes: 31,
+            work,
+        };
+        let json = serde_json::to_string(&usage).unwrap();
+        assert!(json.contains(&format!("\"work\":{work}")));
+        roundtrip(usage);
+    }
+}
+
+#[test]
 fn monotonic_timings_preserve_nanoseconds_without_javascript_integer_rounding() {
     for count in [9_007_199_254_740_993, u64::MAX] {
         let timings = AnalysisTimings {
@@ -297,7 +316,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 10);
+    assert_eq!(SCHEMA_VERSION, 11);
 }
 
 #[test]
