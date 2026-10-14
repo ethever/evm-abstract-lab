@@ -1,5 +1,6 @@
-//! Error envelopes retain the exact wire data captured before payload compaction.
-//! Fixtures were recorded at b629ffe00443d993db1d4b36dc1c1753bbf968c9.
+//! Error envelopes retain every typed field through payload compaction.
+//! Validation/RPC fixtures were recorded at b629ffe00443d993db1d4b36dc1c1753bbf968c9;
+//! export fixtures follow wire schema 11.
 use evm_abstract_protocol::*;
 
 #[test]
@@ -25,7 +26,7 @@ fn assert_frozen_wire(error: ApiError, error_json: &str, reply_json: &str) {
 }
 
 #[test]
-fn export_error_preserves_every_policy_usage_and_written_field_on_the_old_wire() {
+fn export_error_preserves_every_policy_usage_and_written_field_on_schema_11_wire() {
     assert_frozen_wire(
         ApiError {
             code: ApiErrorCode::Export,
@@ -37,7 +38,6 @@ fn export_error_preserves_every_policy_usage_and_written_field_on_the_old_wire()
                     max_nodes: 64,
                     max_depth: 16,
                     max_exact_bytes: 4096,
-                    max_work: 16384,
                     max_output_bytes: 8192,
                 },
                 usage: ExportUsage {
@@ -111,6 +111,8 @@ fn export_payload_keeps_strict_typed_field_validation() {
         json.replace("\"written\":8192", "\"written\":null,\"written\":null"),
         json.replace(",\"written\":8192", ""),
         json.replace("\"max_nodes\":64", "\"max_nodes\":64,\"unknown_limit\":1"),
+        json.replace("\"max_nodes\":64", "\"max_nodes\":64,\"max_work\":16384"),
+        json.replace("\"OutputBytes\"", "\"Work\""),
         json.replace("\"OutputBytes\"", "\"UnknownBoundary\""),
     ] {
         assert!(

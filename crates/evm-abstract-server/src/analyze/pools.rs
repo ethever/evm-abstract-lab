@@ -114,7 +114,7 @@ impl<'a> Pools<'a> {
                     continue;
                 }
                 let equal = self.buffers[id] == *source;
-                // A cancellation arriving during a prepaid native comparison
+                // A cancellation arriving during a metered native comparison
                 // must not become a successful cache hit.
                 self.symbolic.charge(0)?;
                 if equal {

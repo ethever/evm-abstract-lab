@@ -69,7 +69,7 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 摘要重放共享一张 rename map，遍历隐藏在 state source、view、rollback 和返回数据中的 fresh token。固定输入身份保持绑定，调用中新产生的未知来源每次重放使用新身份。重命名和导入按完整变换提交，失败不能安装一半状态。
 
-## 原生 JSON 8 与 Web 协议 11
+## 原生 JSON 8 与 Web 协议 12
 
 Native analysis schema 为 8；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或求解编码超限。
 
@@ -81,7 +81,7 @@ Web/server 的单份 `AnalysisReport.symbolic.nodes` 共享所有 scalar、byte�
 
 `MachineSnapshot.path` 表达完整状态条件。`Frontier.range` 保留 offset/size/limit、condition 和 nonzero side；其 payload 与一般 join 的 `Frontier.payload` 都引用 `pending_machines`。Program、store、byte source 仍在原共享目录中，不在每个 frontier 递归倾倒完整分析。
 
-导出独立计量实际 DAG 节点、exact bytes 与遍历/池化工作，默认 65,536 节点、深度 256、16 MiB exact payload、64,000,000 work。策略和实耗分别在 `metadata.export_limits`、`metadata.export_usage`。HTTP 整份报告 JSON 还受 `max_output_bytes` 的 64 MiB 策略约束，包含全部数值事实和目录；编码的 `OutputBytes` failure 保留 required/written、图实耗和原策略，缓存中的分析事实不变。超限或取消报告 typed export failure，不把成功分析改写成数值 Top。UI 校验版本、节点 sort、依赖顺序和 pool refs 后安装结果；DAG 与 byte/slot 行按可见区渲染，exact payload 只显示有界预览。
+导出独立计量实际 DAG 节点、exact bytes 与遍历/池化工作，默认上限为 65,536 节点、深度 256、16 MiB exact payload。策略和实耗分别在 `metadata.export_limits`、`metadata.export_usage`；其中 `export_usage.work` 仅作诊断统计，没有累计工作硬上限，也不会因 work 总量拒绝导出。Web 协议 11 移除 `ExportLimits.max_work` 与 `ExportFailureKind::Work`，执行分析的 `AnalysisLimits.max_work` 继续生效。HTTP 整份报告 JSON 仍受 `max_output_bytes` 的 64 MiB 策略约束，包含全部数值事实和目录；编码的 `OutputBytes` failure 保留 required/written、图实耗和原策略，缓存中的分析事实不变。其余导出超限或取消仍报告 typed export failure，不把成功分析改写成数值 Top。UI 校验版本、节点 sort、依赖顺序和 pool refs 后安装结果；DAG 与 byte/slot 行按可见区渲染，exact payload 只显示有界预览。
 
 MemoryPolicy 前沿在 UI 明确标记“策略下尚未展开”，与 EVM Failure、REVERT 分开。`ByteRange` 描述表示层错误，`StateJoin` 描述完整替代无法合并；正常 alias 的未定精度不能显示成已证明成功。
 

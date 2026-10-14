@@ -376,22 +376,20 @@ record! {
         pub max_depth: usize,
         /// Maximum exact external byte payload.
         pub max_exact_bytes: usize,
-        /// Maximum cumulative traversal and pool-intern work.
-        pub max_work: usize,
         /// Maximum complete encoded HTTP report bytes, including numeric facts.
         pub max_output_bytes: usize,
     }
 }
 record! {
-    /// Measured report projection work; no logical-range byte expansion.
+    /// Measured report projection usage; work is diagnostic and has no hard cap.
     #[derive(std::hash::Hash, Copy)]
     pub struct ExportUsage {
         /// Actual retained mixed DAG nodes.
         pub nodes: usize,
         /// Actual exact byte payload.
         pub exact_bytes: usize,
-        /// Charged traversals, scalar facts and interning candidates.
-        pub work: usize,
+        /// Saturating diagnostic count, independent of the browser's pointer width.
+        pub work: u64,
     }
 }
 choice! {
@@ -403,8 +401,6 @@ choice! {
         Depth,
         /// Exact byte payload bound.
         ExactBytes,
-        /// Cumulative projection work bound.
-        Work,
         /// Complete JSON encoding exceeded its declared byte policy.
         OutputBytes,
         /// Cooperative cancellation.
@@ -418,8 +414,8 @@ record! {
     pub struct ExportFailure {
         /// Exact rejected resource.
         pub kind: ExportFailureKind,
-        /// Required amount at the rejection point.
-        pub required: usize,
+        /// Required amount at rejection, or cumulative work at cancellation.
+        pub required: u64,
         /// Frozen export policy.
         pub limits: ExportLimits,
         /// Work retained before rejection.
