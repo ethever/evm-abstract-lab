@@ -601,10 +601,11 @@ pub(super) fn check(
 
 pub(super) fn check_cached(
     state: &RelationState,
+    extra: Option<Constraint>,
     limits: &RelationLimits,
     cache: &mut embedded_smt::CacheQuery<'_>,
 ) -> CheckResult {
-    check_inner(state, None, limits, Some(cache))
+    check_inner(state, extra, limits, Some(cache))
 }
 
 fn check_inner(

@@ -320,7 +320,7 @@ impl RelationState {
         }
         self.retain(constraint, limits)?;
         let checked = match cache {
-            Some(cache) => solver::check_cached(self, limits, cache),
+            Some(cache) => solver::check_cached(self, None, limits, cache),
             None => self.check(limits),
         };
         if checked == CheckResult::Unsat {
@@ -615,6 +615,25 @@ impl RelationState {
                 right: ExprId::constant(value),
             }),
             limits,
+        )
+    }
+    /// Cached exact-candidate feasibility without retaining the candidate.
+    /// The caller pays its original query fee before constructing the cache borrow.
+    pub(crate) fn can_equal_cached(
+        &self,
+        expression: &ExprId,
+        value: U256,
+        limits: &RelationLimits,
+        cache: &mut embedded_smt::CacheQuery<'_>,
+    ) -> CheckResult {
+        solver::check_cached(
+            self,
+            Some(Constraint::Equal {
+                left: expression.clone(),
+                right: ExprId::constant(value),
+            }),
+            limits,
+            cache,
         )
     }
     /// Check the same complete conjunction for every candidate, in input order.
