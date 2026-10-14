@@ -32,6 +32,7 @@ use tokio::{
     sync::{Semaphore, watch},
     task::JoinSet,
 };
+use tower_http::compression::CompressionLayer;
 
 const MAX_CONNECTIONS: usize = 32;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
@@ -73,6 +74,9 @@ pub fn router(assets: PathBuf, jobs: crate::jobs::Pool) -> Router {
         .fallback(asset)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(middleware::from_fn(request_policy))
+        // Negotiate and stream response compression, including policy errors and assets.
+        // Equal client weights prefer zstd, then Brotli, then gzip.
+        .layer(CompressionLayer::new())
         .with_state(Application { assets, jobs })
 }
 

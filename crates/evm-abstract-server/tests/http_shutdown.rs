@@ -23,6 +23,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     time::timeout,
 };
+use tower_http::compression::CompressionLayer;
 
 // Shorter than the server's ten-second header deadline: shutdown must close an
 // accepted idle connection itself, rather than waiting for its normal expiry.
@@ -109,6 +110,110 @@ impl hyper::body::Body for ControlledBody {
             .poll_recv(cx)
             .map(|next| next.map(|bytes| Ok(Frame::data(bytes))))
     }
+}
+
+async fn read_chunked_body(client: &mut BufReader<TcpStream>) -> Vec<u8> {
+    let mut body = Vec::new();
+    loop {
+        let mut line = String::new();
+        assert_ne!(client.read_line(&mut line).await.unwrap(), 0);
+        let size = usize::from_str_radix(line.trim(), 16).unwrap();
+        if size == 0 {
+            line.clear();
+            client.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "\r\n");
+            return body;
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        client.read_exact(&mut body[start..]).await.unwrap();
+        let mut separator = [0; 2];
+        client.read_exact(&mut separator).await.unwrap();
+        assert_eq!(&separator, b"\r\n");
+    }
+}
+
+#[test]
+fn shutdown_drains_a_compressed_response_before_its_source_stream_is_complete() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            timeout(TEST_TIMEOUT, async {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let (chunks, body) = mpsc::channel(1);
+                let first = Bytes::from("first response chunk\n".repeat(32768));
+                let last = Bytes::from_static(b"completed after shutdown");
+                let mut expected = first.to_vec();
+                expected.extend_from_slice(&last);
+                chunks.send(first).await.unwrap();
+                let body = Arc::new(Mutex::new(Some(Body::new(ControlledBody(body)))));
+                let app = Router::new()
+                    .route(
+                        "/",
+                        get(move || {
+                            let body = body.lock().unwrap().take().unwrap();
+                            async move { Response::new(body) }
+                        }),
+                    )
+                    .layer(CompressionLayer::new());
+                let (stop, stopped) = oneshot::channel();
+                let (observed, mut shutdown_observed) = oneshot::channel();
+                let server = serve_with_shutdown(listener, app, async {
+                    stopped.await.unwrap();
+                    observed.send(()).unwrap();
+                });
+                tokio::pin!(server);
+
+                let (started, response_started) = oneshot::channel();
+                let client = tokio::spawn(async move {
+                    let mut socket = TcpStream::connect(address).await.unwrap();
+                    socket
+                        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: zstd, br, gzip\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let mut client = BufReader::new(socket);
+                    let head = read_head(&mut client).await;
+                    let head = head.to_ascii_lowercase();
+                    assert!(head.contains("content-encoding: zstd\r\n"));
+                    assert!(head.contains("transfer-encoding: chunked\r\n"));
+                    assert!(head.contains("vary: accept-encoding\r\n"));
+                    assert!(!head.contains("content-length:"));
+                    started.send(()).unwrap();
+                    let encoded = read_chunked_body(&mut client).await;
+                    let mut decoder = async_compression::tokio::bufread::ZstdDecoder::new(encoded.as_slice());
+                    let mut decoded = Vec::new();
+                    decoder.read_to_end(&mut decoded).await.unwrap();
+                    assert_eq!(decoded, expected);
+                    assert!(encoded.len() < decoded.len());
+                    let mut trailing = Vec::new();
+                    client.read_to_end(&mut trailing).await.unwrap();
+                    assert!(trailing.is_empty());
+                });
+
+                // Compression must start the response before the last input chunk exists.
+                tokio::select! {
+                    result = &mut server => panic!("server stopped before shutdown: {result:?}"),
+                    result = response_started => result.unwrap(),
+                }
+                stop.send(()).unwrap();
+                poll_fn(|cx| match server.as_mut().poll(cx) {
+                    Poll::Pending => Poll::Ready(()),
+                    Poll::Ready(result) => panic!("server did not drain its compressed response: {result:?}"),
+                })
+                .await;
+                shutdown_observed.try_recv().unwrap();
+                chunks.send(last).await.unwrap();
+                drop(chunks);
+                let (server, client) = tokio::join!(server, client);
+                server.unwrap();
+                client.unwrap();
+            })
+            .await
+            .expect("shutdown must drain and finish the compressed stream");
+        });
 }
 
 #[test]

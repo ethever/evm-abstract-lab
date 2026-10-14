@@ -105,7 +105,6 @@ pub(crate) fn empty_report() -> AnalysisReport {
                 max_nodes: 65536,
                 max_depth: 256,
                 max_exact_bytes: 16777216,
-                max_output_bytes: 64 * 1024 * 1024,
             },
             export_usage: api::ExportUsage {
                 nodes: 5,

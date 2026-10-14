@@ -62,6 +62,26 @@ let
     '';
   };
   browserPython = pkgs.python3.withPackages (python: [ python.playwright ]);
+  browserCheck =
+    name: extraArgs:
+    pkgs.runCommand name
+      {
+        nativeBuildInputs = [
+          browserPython
+          pkgs.xvfb-run
+        ];
+        FONTCONFIG_FILE = dependencies.fontConfig;
+        inherit (dependencies.environment) SSL_CERT_FILE;
+      }
+      ''
+        export XDG_CONFIG_HOME="$TMPDIR/browser-config"
+        export XDG_CACHE_HOME="$TMPDIR/browser-cache"
+        mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+        xvfb-run -a python ${sourceRoot}/scripts/test-web-browser.py \
+          --server ${build.release.package}/bin/evm-abstract-server \
+          --assets ${assets} --browser ${lib.getExe pkgs.chromium} --output "$out" \
+          ${lib.escapeShellArgs extraArgs}
+      '';
 in
 {
   inherit
@@ -92,31 +112,8 @@ in
     );
   }
   // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-    web-browser =
-      pkgs.runCommand "evm-abstract-web-browser"
-        {
-          nativeBuildInputs = [
-            browserPython
-            pkgs.xvfb-run
-          ];
-          # egui bundles canvas fonts, but Chromium's hidden IME input still
-          # needs a system font to insert text inside the isolated Nix builder.
-          FONTCONFIG_FILE = dependencies.fontConfig;
-          # The RPC client's TLS verifier also initializes for loopback HTTP.
-          inherit (dependencies.environment) SSL_CERT_FILE;
-        }
-        ''
-          # Chromium's crash reporter resolves its database through XDG even
-          # when Playwright supplies a temporary browser profile.
-          export XDG_CONFIG_HOME="$TMPDIR/browser-config"
-          export XDG_CACHE_HOME="$TMPDIR/browser-cache"
-          mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
-          # Headless Chromium still needs an X display for presenting software
-          # WebGPU canvas textures through its Vulkan compositor.
-          xvfb-run -a python ${sourceRoot}/scripts/test-web-browser.py \
-            --server ${build.release.package}/bin/evm-abstract-server \
-            --assets ${assets} --browser ${lib.getExe pkgs.chromium} --output "$out"
-        '';
+    web-browser = browserCheck "evm-abstract-web-browser" [ ];
+    web-compression = browserCheck "evm-abstract-web-compression" [ "--compression-only" ];
   };
   devPackages = [ wasmBindgen ];
 }

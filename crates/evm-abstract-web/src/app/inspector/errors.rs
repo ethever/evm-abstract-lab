@@ -59,11 +59,6 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
             value::text(ui, "Projection work", detail.usage.work.to_string());
             value::text(
                 ui,
-                "Complete JSON byte limit",
-                detail.limits.max_output_bytes.to_string(),
-            );
-            value::text(
-                ui,
                 "Node/depth limits",
                 format!("{} / {}", detail.limits.max_nodes, detail.limits.max_depth),
             );

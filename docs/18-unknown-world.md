@@ -141,7 +141,7 @@ A 的 SLOAD 不能直接读取 C.storage；两次读取均由 C 执行。固定�
 | 摘要内部实际执行的已知块 | procedure `covered_blocks`、代码身份 | 过程级覆盖来源，不冒充主图展开轨迹 |
 | 尚未完成 | `frontiers` 与 `closed: false` | 真实预算／状态／效果缺口 |
 
-协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；这两种报告的 schema 版本分别为 native 7、Web protocol 11。
+协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；这两种报告的 schema 版本分别为 native 7、Web protocol 12。
 
 分析仍受累计 work、状态数、transfer、表达式、memory 等预算约束。中断时已经可靠得到的结果可以继续展示，但不能把没有处理完的交互标成 closed。也不能把最后一次访问过的旧状态当作当前合并后全部输入的代表。
 
