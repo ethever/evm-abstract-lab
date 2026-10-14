@@ -1,5 +1,7 @@
 //! Selected CALL-style output paths refine metadata, never historical roots.
 
+use std::collections::BTreeSet;
+
 use super::super::*;
 use crate::domain::relational::{
     CheckResult, QueryReason, RelationLimits, RelationState, ScalarQuery, ValueQuery,
@@ -62,6 +64,206 @@ fn call_output() -> (ByteArray, ExprId, ExprId) {
     )
     .unwrap();
     (joined, selector, branch)
+}
+
+fn call_output_with_scalar_guards() -> (ByteArray, ExprId, ExprId, ExprId) {
+    let (mut joined, byte_guard, _) = call_output();
+    joined.refine_operands(&mut |_, value| value.forget_expression());
+    let operand_guard = ExprId::fresh().unwrap();
+    let nested_operand_guard = ExprId::fresh().unwrap();
+    let operand = v(16)
+        .join_guarded(
+            &v(32),
+            Domain::default(),
+            nested_operand_guard.clone(),
+            policy().expressions(),
+        )
+        .unwrap()
+        .join_guarded(
+            &v(64),
+            Domain::default(),
+            operand_guard.clone(),
+            policy().expressions(),
+        )
+        .unwrap();
+    // Retained scalar metadata has its own guards, outside the byte root.
+    joined
+        .operands
+        .insert(operand.expression().unwrap().clone(), operand);
+    (joined, byte_guard, operand_guard, nested_operand_guard)
+}
+
+#[test]
+fn guard_collection_finds_byte_root_and_scalar_guards_without_changing_history() {
+    let (joined, byte_guard, operand_guard, nested_operand_guard) =
+        call_output_with_scalar_guards();
+    let domain = Domain::default();
+    let original = joined.clone();
+    let root = joined.state_root().clone();
+    let sources = joined.fresh_leaves();
+    let historical = joined.read_word(&v(0x400), domain);
+    let historical_expression = historical.expression().unwrap().clone();
+    assert!(historical.contains(U256::ZERO));
+    assert!(historical.contains(U256::from(512)));
+    assert_ne!(byte_guard, operand_guard);
+    assert_ne!(byte_guard, nested_operand_guard);
+    assert_ne!(operand_guard, nested_operand_guard);
+    let expected = BTreeSet::from([byte_guard.clone(), operand_guard, nested_operand_guard]);
+    assert_eq!(
+        joined.guard_conditions(policy().expressions()).unwrap(),
+        expected
+    );
+    assert_eq!(joined, original);
+    assert_eq!(joined.state_root(), &root);
+    assert_eq!(joined.fresh_leaves(), sources);
+    assert_eq!(joined.read_word(&v(0x400), domain), historical);
+    assert_eq!(historical.expression(), Some(&historical_expression));
+
+    // Dropping scalar expressions leaves the CALL guard in the immutable root.
+    let mut root_only = joined.clone();
+    root_only.update_values(&mut |value| value.forget_expression());
+    for value in root_only
+        .bytes
+        .values()
+        .chain(root_only.operands.values())
+        .chain([&root_only.length, &root_only.default])
+    {
+        if let Some(expression) = value.expression() {
+            assert_eq!(
+                Some(expression.clone()),
+                value.singleton().map(ExprId::constant),
+                "root-only fixture must have no scalar guard expressions",
+            );
+        }
+    }
+    let root_only_original = root_only.clone();
+    let root_only_sources = root_only.fresh_leaves();
+    assert_eq!(
+        root_only.guard_conditions(policy().expressions()).unwrap(),
+        BTreeSet::from([byte_guard]),
+    );
+    assert_eq!(root_only, root_only_original);
+    assert_eq!(root_only.state_root(), &root);
+    assert_eq!(root_only.fresh_leaves(), root_only_sources);
+    assert_eq!(root_only.read_word(&v(0x400), domain), historical);
+    assert_eq!(joined, original);
+}
+
+#[test]
+fn collected_serial_proofs_match_native_refinement_on_the_same_frozen_call_output() {
+    let (frozen, byte_guard, operand_guard, nested_operand_guard) =
+        call_output_with_scalar_guards();
+    let domain = Domain::default();
+    let historical = frozen.read_word(&v(0x400), domain);
+    let expected_conditions = BTreeSet::from([
+        byte_guard.clone(),
+        operand_guard.clone(),
+        nested_operand_guard.clone(),
+    ]);
+    let expected_order: Vec<_> = expected_conditions.iter().cloned().collect();
+    for (selector_value, expected_truth, expected_word) in [
+        (Some(0usize), Some(false), Some(U256::ZERO)),
+        (Some(2usize), Some(true), Some(U256::from(512))),
+        (None, None, None),
+    ] {
+        let mut relations = RelationState::default();
+        if let Some(value) = selector_value {
+            for condition in [&byte_guard, &operand_guard, &nested_operand_guard] {
+                let equal = ExprId::operation(
+                    opcode::EQ,
+                    &[condition.clone(), ExprId::constant(U256::from(value))],
+                    policy().expressions(),
+                )
+                .unwrap();
+                assert_eq!(relations.assume(&equal, true, &policy()), CheckResult::Sat);
+            }
+            assert_eq!(
+                relations.unique_value(&byte_guard, &policy()),
+                ValueQuery::Unique(U256::from(value)),
+            );
+        }
+        let mut prepared = frozen.clone();
+        let conditions = prepared.guard_conditions(policy().expressions()).unwrap();
+        assert_eq!(conditions, expected_conditions);
+        assert_eq!(prepared, frozen);
+        let mut proofs = BTreeMap::new();
+        let mut proof_calls = Vec::new();
+        for condition in conditions {
+            proof_calls.push(condition.clone());
+            proofs.insert(condition.clone(), prove(&relations, &condition).unwrap());
+        }
+        assert_eq!(proof_calls, expected_order);
+        assert_eq!(
+            proofs,
+            BTreeMap::from([
+                (byte_guard.clone(), expected_truth),
+                (operand_guard.clone(), expected_truth),
+                (nested_operand_guard.clone(), expected_truth),
+            ]),
+        );
+        assert_eq!(prepared, frozen);
+        let mut lookup_calls = Vec::new();
+        let prepared_result = prepared
+            .refine_guards(domain, policy().expressions(), &mut |condition| {
+                lookup_calls.push(condition.clone());
+                Ok::<_, QueryReason>(*proofs.get(condition).expect("collected guard proof"))
+            })
+            .unwrap();
+        let mut direct = frozen.clone();
+        let mut direct_calls = Vec::new();
+        let direct_result = direct
+            .refine_guards(domain, policy().expressions(), &mut |condition| {
+                direct_calls.push(condition.clone());
+                prove(&relations, condition)
+            })
+            .unwrap();
+        assert_eq!(lookup_calls, expected_order);
+        assert_eq!(direct_calls, expected_order);
+        assert_eq!(prepared_result, direct_result);
+        assert_eq!(prepared, direct);
+        assert_eq!(prepared.state_root(), frozen.state_root());
+        assert_eq!(prepared.fresh_leaves(), frozen.fresh_leaves());
+        for index in [0, 0x400, 0x41f, 0x420, 0x4bf] {
+            assert_eq!(
+                prepared.byte_at(index, domain),
+                direct.byte_at(index, domain)
+            );
+            assert_eq!(
+                prepared.read_word(&v(index), domain),
+                direct.read_word(&v(index), domain)
+            );
+        }
+        let output = prepared.slice(&v(0x400), &v(192), 2048, domain).unwrap();
+        assert_eq!(output.read_word(&v(0), domain).singleton(), expected_word);
+        if let Some(expected) = expected_word {
+            assert_eq!(
+                output.exact_bytes().unwrap()[..32],
+                expected.to_be_bytes::<32>()
+            );
+        } else {
+            assert_eq!(prepared, frozen);
+            assert_eq!(prepared.read_word(&v(0x400), domain), historical);
+        }
+        assert_eq!(frozen.read_word(&v(0x400), domain), historical);
+    }
+
+    // A later serial proof error must not publish the earlier wrapper fact.
+    let mut failed = frozen.clone();
+    let mut error_calls = Vec::new();
+    assert_eq!(
+        failed.refine_guards(domain, policy().expressions(), &mut |condition| {
+            error_calls.push(condition.clone());
+            if error_calls.len() == 2 {
+                Err(QueryReason::ResourceLimit)
+            } else {
+                Ok(Some(true))
+            }
+        }),
+        Err(GuardRefinementError::Proof(QueryReason::ResourceLimit)),
+    );
+    assert_eq!(error_calls, expected_order[..2]);
+    assert_eq!(failed, frozen);
+    assert_eq!(failed.read_word(&v(0x400), domain), historical);
 }
 
 #[test]
@@ -183,52 +385,68 @@ fn retained_operand_keys_refine_short_return_copy_and_preserve_its_suffix() {
 
 #[test]
 fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
-    let (mut joined, _, _) = call_output();
+    let (mut joined, selector, _) = call_output();
     let original = joined.clone();
     let domain = Domain::default();
+    assert_eq!(
+        joined.guard_conditions(policy().expressions()).unwrap(),
+        BTreeSet::from([selector]),
+    );
+    assert_eq!(joined, original);
+    let mut calls = 0;
     assert!(
         joined
-            .refine_guards(
-                domain,
-                policy().expressions(),
-                &mut |_| Ok::<_, QueryReason>(None)
-            )
+            .refine_guards(domain, policy().expressions(), &mut |_| {
+                calls += 1;
+                Ok::<_, QueryReason>(None)
+            })
             .unwrap()
     );
+    assert_eq!(calls, 1);
     assert_eq!(joined, original);
+    calls = 0;
     assert_eq!(
-        joined.refine_guards(domain, policy().expressions(), &mut |_| Err(
-            QueryReason::ResourceLimit
-        )),
+        joined.refine_guards(domain, policy().expressions(), &mut |_| {
+            calls += 1;
+            Err(QueryReason::ResourceLimit)
+        }),
         Err(GuardRefinementError::Proof(QueryReason::ResourceLimit)),
     );
+    assert_eq!(calls, 1);
     assert_eq!(joined, original);
+    let tiny = ExprLimits {
+        max_nodes: 1,
+        max_depth: 1,
+    };
+    assert!(joined.guard_conditions(tiny).is_err());
+    assert_eq!(joined, original);
+    calls = 0;
     assert!(
         joined
-            .refine_guards(
-                domain,
-                ExprLimits {
-                    max_nodes: 1,
-                    max_depth: 1
-                },
-                &mut |_| Ok::<_, QueryReason>(Some(true))
-            )
+            .refine_guards(domain, tiny, &mut |_| {
+                calls += 1;
+                Ok::<_, QueryReason>(Some(true))
+            })
             .is_err()
     );
+    assert_eq!(calls, 0);
     assert_eq!(joined, original);
     let cancel = embedded_smt::Cancellation::new();
     cancel.cancel();
+    calls = 0;
     embedded_smt::with_cancellation(&cancel, || {
+        assert!(joined.guard_conditions(policy().expressions()).is_err());
+        assert_eq!(joined, original);
         assert!(
             joined
-                .refine_guards(
-                    domain,
-                    policy().expressions(),
-                    &mut |_| Ok::<_, QueryReason>(Some(true))
-                )
+                .refine_guards(domain, policy().expressions(), &mut |_| {
+                    calls += 1;
+                    Ok::<_, QueryReason>(Some(true))
+                })
                 .is_err()
         );
     });
+    assert_eq!(calls, 0);
     assert_eq!(joined, original);
 }
 

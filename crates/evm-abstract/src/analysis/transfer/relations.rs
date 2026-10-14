@@ -88,12 +88,28 @@ enum PreparedRefinement {
     Pending(ExprId),
 }
 
+enum PreparationKind {
+    Scalar,
+    /// Only an actual ISZERO target, whose intrinsic range is exactly {0, 1}.
+    /// Two distinct full-model witnesses therefore exhaust its numeric bound.
+    IntrinsicBoolean,
+}
+
 /// Keep the numerical and original per-value proof paths ahead of batching.
 /// Pending values have paid for local preparation, but not a native query.
 fn prepare_refine(
     value: &mut AbstractValue,
     relations: &RelationState,
     context: &mut TransferContext<'_>,
+) -> Result<PreparedRefinement, FrontierReason> {
+    prepare_refine_mode(value, relations, context, PreparationKind::Scalar)
+}
+
+fn prepare_refine_mode(
+    value: &mut AbstractValue,
+    relations: &RelationState,
+    context: &mut TransferContext<'_>,
+    kind: PreparationKind,
 ) -> Result<PreparedRefinement, FrontierReason> {
     let limits = context.config.analysis.relations;
     if !limits.enabled || value.singleton().is_some() {
@@ -146,10 +162,11 @@ fn prepare_refine(
     // The bound need not be asserted in SMT: UNSAT excludes each candidate
     // individually. Any singleton result is local to this numeric value,
     // so it must not be remembered as a global uniqueness proof.
-    if let Some(candidates) = value
-        .constants()
-        .filter(|values| values.len() == 2)
-        .cloned()
+    if matches!(kind, PreparationKind::Scalar)
+        && let Some(candidates) = value
+            .constants()
+            .filter(|values| values.len() == 2)
+            .cloned()
     {
         let feasible = candidates::refine(value, &expression, &candidates, relations, context)?;
         if feasible && value.constants().is_some_and(|values| values.len() == 2) {
