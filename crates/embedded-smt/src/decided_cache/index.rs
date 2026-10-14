@@ -18,7 +18,8 @@ pub(super) fn digest(bytes: &[u8], budget: &mut MaintenanceBudget<'_>) -> Option
     // Both complete byte passes are paid before hashing. Hash stability and
     // collision resistance are irrelevant to proof: the bounded bucket checks
     // every canonical byte before returning a stored mathematical answer.
-    if !budget.charge(budget::tree_work(0, bytes.len()).saturating_mul(2)) {
+    // Each pass includes its eight-byte domain word and fixed scan setup.
+    if !budget.charge(budget::linear_scan_work(bytes.len().saturating_add(8)).saturating_mul(2)) {
         return None;
     }
     let mut first = DefaultHasher::new();
@@ -31,9 +32,9 @@ pub(super) fn digest(bytes: &[u8], budget: &mut MaintenanceBudget<'_>) -> Option
 }
 
 pub(super) fn equality_work(entries: usize, bytes: usize) -> usize {
-    // Preserve the existing byte-comparison weight, with at most four complete
-    // equality checks rather than a full key at each balanced-tree comparison.
-    budget::tree_work(0, bytes).saturating_mul(entries)
+    // Prepay at most four full linear comparisons, even if a length check or
+    // early mismatch can finish sooner. Full Eq remains the only hit proof.
+    budget::linear_scan_work(bytes).saturating_mul(entries)
 }
 
 pub(super) fn bucket_work() -> usize {

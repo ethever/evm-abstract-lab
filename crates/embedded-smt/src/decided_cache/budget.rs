@@ -69,7 +69,7 @@ impl MaintenanceBudget<'_> {
         true
     }
 }
-/// Logical work for byte comparisons and balanced-tree path/maintenance steps.
+/// Logical work for balanced-tree comparisons and path/maintenance steps.
 /// The factor includes scans within tree nodes and balancing metadata. It is a
 /// conservative accounting unit, not a claim about CPU instruction counts.
 pub(super) fn tree_work(entries: usize, bytes: usize) -> usize {
@@ -77,4 +77,29 @@ pub(super) fn tree_work(entries: usize, bytes: usize) -> usize {
     64usize
         .saturating_mul(levels)
         .saturating_mul(bytes.saturating_add(1))
+}
+
+/// One logical unit per byte visited (or byte pair compared), plus scan setup.
+/// This describes linear work, not a CPU instruction or cycle count.
+pub(super) fn linear_scan_work(bytes: usize) -> usize {
+    bytes.saturating_add(1)
+}
+
+/// Fixed-width hashing, probing, full pointer equality and slot access. This is
+/// an expected/amortized estimate; collisions do not have a constant-time bound.
+pub(super) fn hash_work(operations: usize) -> usize {
+    64usize.saturating_mul(operations)
+}
+
+/// Pay expected old-table rehash/moves separately from linear new-table storage.
+/// The new capacity bound includes load-factor slack; two metadata bytes per
+/// slot and fixed padding cover control initialization in this logical policy.
+/// It bounds admitted capacity, not allocator RSS or adversarial probe cost.
+pub(super) fn hash_growth_work(old_capacity: usize, new_capacity_bound: usize) -> usize {
+    hash_work(old_capacity)
+        .saturating_add(
+            new_capacity_bound
+                .saturating_mul(std::mem::size_of::<(usize, u32)>().saturating_add(2)),
+        )
+        .saturating_add(64)
 }

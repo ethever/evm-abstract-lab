@@ -357,6 +357,7 @@ fn refused_optional_maintenance_runs_the_oracle_without_exhausting_or_refunding(
     let mut cache = DecidedCache::default();
     candidate(&mut cache, &[x.eq(&one)]);
     let entries = cache.stats().entries;
+    let maintenance_before = cache.stats().maintenance_work;
     let mut used = 0;
     let mut exhausted = false;
     let mut budget = QueryBudget::new(10, &mut used, &mut exhausted, Cancellation::default(), 10)
@@ -377,6 +378,7 @@ fn refused_optional_maintenance_runs_the_oracle_without_exhausting_or_refunding(
     assert!(!exhausted);
     assert_eq!(cache.stats().candidate_hits, 0);
     assert_eq!(cache.stats().entries, entries);
+    assert_eq!(cache.stats().maintenance_work, maintenance_before);
     let mut used = 0;
     let mut exhausted = false;
     let mut budget = QueryBudget::new(20, &mut used, &mut exhausted, Cancellation::default(), 10)
@@ -393,11 +395,53 @@ fn refused_optional_maintenance_runs_the_oracle_without_exhausting_or_refunding(
         ),
         [
             BudgetedOutcome::Solver(Outcome::Sat(None)),
+            BudgetedOutcome::Solver(Outcome::Sat(None))
+        ]
+    );
+    // The two-unit allowance cannot pay the 128-unit hash-state setup, so
+    // optional maintenance is refused without charging or exhausting the ledger.
+    assert_eq!(used, 20);
+    assert!(!exhausted);
+    assert_eq!(cache.stats().candidate_hits, 0);
+    assert_eq!(cache.stats().entries, entries);
+    assert_eq!(cache.stats().maintenance_work, maintenance_before);
+
+    // Admit exactly the setup charge, then refuse the first key byte. Paid
+    // maintenance is retained, leaving too little for the second original fee.
+    let fee = 4 * super::super::budget::hash_work(2);
+    let mut used = 0;
+    let mut exhausted = false;
+    let mut budget = QueryBudget::new(
+        2 * fee,
+        &mut used,
+        &mut exhausted,
+        Cancellation::default(),
+        fee,
+    )
+    .with_cache(&mut cache, scope());
+    assert_eq!(
+        check_candidates_budgeted(
+            &[],
+            &x,
+            &[Bv::from_u64(1, 8), Bv::from_u64(2, 8)],
+            &[],
+            Provider::Z3,
+            DEFAULT_RLIMIT,
+            &mut budget
+        ),
+        [
+            BudgetedOutcome::Solver(Outcome::Sat(None)),
             BudgetedOutcome::Work
         ]
     );
     assert!(exhausted);
-    assert!(used > 10 && used <= 20);
+    assert_eq!(used, fee + super::super::budget::hash_work(2));
+    assert_eq!(cache.stats().candidate_hits, 0);
+    assert_eq!(cache.stats().entries, entries);
+    assert_eq!(
+        cache.stats().maintenance_work,
+        maintenance_before + super::super::budget::hash_work(2) as u64
+    );
 }
 
 #[test]

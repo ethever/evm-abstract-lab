@@ -5,13 +5,20 @@
 
 use super::{
     CacheScope, Limits,
-    budget::{MaintenanceBudget, tree_work},
+    budget::{MaintenanceBudget, hash_work, tree_work},
 };
 use crate::{
     Bool, Bv, Cancellation, Provider,
     term::{Op, Sort, Term},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
+
+mod pointers;
+#[cfg(test)]
+mod tests;
 
 type Result<T> = std::result::Result<T, ()>;
 fn sort_key(sort: Sort) -> (u8, u32, u32) {
@@ -28,9 +35,9 @@ struct Encoder<'a, 'b, 'c> {
     limits: Limits,
     cancellation: Cancellation,
     out: Vec<u8>,
-    nodes: BTreeMap<usize, u32>,
+    nodes: HashMap<usize, u32>,
     variables: BTreeMap<((u8, u32, u32), &'a str), u32>,
-    functions: BTreeMap<usize, u32>,
+    functions: HashMap<usize, u32>,
     edges: usize,
     steps: usize,
     budget: &'b mut MaintenanceBudget<'c>,
@@ -85,10 +92,7 @@ impl<'a> Encoder<'a, '_, '_> {
         let mut pending = vec![(term, false)];
         while let Some((current, ready)) = pending.pop() {
             self.checkpoint()?;
-            if !self
-                .budget
-                .charge(tree_work(self.nodes.len(), 0).saturating_mul(3))
-            {
+            if !self.budget.charge(1) {
                 return Err(());
             }
             self.steps = self.steps.checked_add(1).ok_or(())?;
@@ -101,7 +105,7 @@ impl<'a> Encoder<'a, '_, '_> {
             {
                 return Err(());
             }
-            if self.nodes.contains_key(&current.id()) {
+            if pointers::get(&self.nodes, current.id(), self.budget)?.is_some() {
                 continue;
             }
             if !ready {
@@ -128,14 +132,19 @@ impl<'a> Encoder<'a, '_, '_> {
             self.op(current)?;
             self.number(u32::try_from(current.0.args.len()).map_err(|_| ())?)?;
             for child in &current.0.args {
-                if !self.budget.charge(tree_work(self.nodes.len(), 0)) {
-                    return Err(());
-                }
-                self.number(*self.nodes.get(&child.id()).ok_or(())?)?;
+                let child_id = pointers::get(&self.nodes, child.id(), self.budget)?.ok_or(())?;
+                self.number(child_id)?;
             }
-            self.nodes.insert(current.id(), id);
+            pointers::insert(
+                &mut self.nodes,
+                current.id(),
+                id,
+                self.limits.nodes,
+                &self.cancellation,
+                self.budget,
+            )?;
         }
-        self.nodes.get(&term.id()).copied().ok_or(())
+        pointers::get(&self.nodes, term.id(), self.budget)?.ok_or(())
     }
     fn op(&mut self, term: &'a Term) -> Result<()> {
         let tag = match &term.0.op {
@@ -198,12 +207,7 @@ impl<'a> Encoder<'a, '_, '_> {
                 self.number(id)?;
             }
             Op::Apply(declaration) => {
-                if !self.budget.charge(
-                    declaration
-                        .name
-                        .len()
-                        .saturating_add(tree_work(self.functions.len(), 0)),
-                ) {
+                if !self.budget.charge(declaration.name.len()) {
                     return Err(());
                 }
                 if declaration.name.contains('\0') {
@@ -212,10 +216,21 @@ impl<'a> Encoder<'a, '_, '_> {
                 let next = u32::try_from(self.functions.len()).map_err(|_| ())?;
                 // Pointer identities exist ONLY in this temporary lookup. They
                 // are replaced by canonical IDs, never serialized or retained.
-                let id = *self
-                    .functions
-                    .entry(Arc::as_ptr(declaration) as usize)
-                    .or_insert(next);
+                let pointer = Arc::as_ptr(declaration) as usize;
+                let id = match pointers::get(&self.functions, pointer, self.budget)? {
+                    Some(id) => id,
+                    None => {
+                        pointers::insert(
+                            &mut self.functions,
+                            pointer,
+                            next,
+                            self.limits.nodes,
+                            &self.cancellation,
+                            self.budget,
+                        )?;
+                        next
+                    }
+                };
                 self.number(id)?;
                 // apply() validates every argument against the declaration, so
                 // this is its complete domain and result signature, including
@@ -248,17 +263,33 @@ pub(super) fn query(
     if base.len() > limits.nodes {
         return Err(());
     }
-    let mut encoder = Encoder {
+    let cancellation = crate::current_cancellation();
+    // HashMap::new initializes RandomState even before any table allocation.
+    if cancellation.is_cancelled() || !budget.charge(hash_work(2)) {
+        return Err(());
+    }
+    let encoder = Encoder {
         limits,
-        cancellation: crate::current_cancellation(),
+        cancellation,
         out: Vec::new(),
-        nodes: BTreeMap::new(),
+        nodes: HashMap::new(),
         variables: BTreeMap::new(),
-        functions: BTreeMap::new(),
+        functions: HashMap::new(),
         edges: 0,
         steps: 0,
         budget,
     };
+    encode(encoder, base, model, provider, rlimit, scope)
+}
+
+fn encode<'a>(
+    mut encoder: Encoder<'a, '_, '_>,
+    base: &'a [Bool],
+    model: Option<&'a Bv>,
+    provider: Provider,
+    rlimit: u32,
+    scope: CacheScope,
+) -> Result<Vec<u8>> {
     encoder.checkpoint()?;
     encoder.byte(1)?; // Typed key format version.
     encoder.byte(match provider {
