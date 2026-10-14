@@ -83,6 +83,25 @@ fn failure(error: api::ApiError, kind: api::ExportFailureKind) -> api::ExportFai
     *detail
 }
 
+fn assert_buffer_roundtrip(pools: &Pools<'_>, id: usize) {
+    pools.symbolic.graph.validate().unwrap();
+    let snapshot = (
+        &pools.buffers_dto[id],
+        &pools.symbolic.graph,
+        pools.symbolic.usage,
+    );
+    let decoded: (api::ByteArraySnapshot, api::SymbolicGraph, api::ExportUsage) =
+        serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    assert_eq!(
+        decoded,
+        (
+            pools.buffers_dto[id].clone(),
+            pools.symbolic.graph.clone(),
+            pools.symbolic.usage,
+        )
+    );
+}
+
 #[test]
 fn complete_buffer_clones_reuse_one_snapshot_without_repaying_expanded_cells() {
     let source = deep_buffer();
@@ -91,7 +110,6 @@ fn complete_buffer_clones_reuse_one_snapshot_without_repaying_expanded_cells() {
     assert!(expanded > 1_000_000);
     let control = Control::default();
     let mut pools = Pools::new(&control);
-    assert!(expanded.saturating_mul(65) > pools.symbolic.limits.max_work);
     let id = pools.buffer(&source).unwrap();
     let graph_nodes = pools.symbolic.graph.nodes.len();
     let snapshot = pools.buffers_dto[id].clone();
@@ -101,7 +119,7 @@ fn complete_buffer_clones_reuse_one_snapshot_without_repaying_expanded_cells() {
     assert_eq!(pools.buffers.len(), 1);
     assert_eq!(pools.buffers_dto, vec![snapshot.clone()]);
     assert_eq!(pools.symbolic.graph.nodes.len(), graph_nodes);
-    assert!(pools.symbolic.usage.work < expanded);
+    assert!(pools.symbolic.usage.work < expanded as u64);
     assert_eq!(snapshot.cells.len(), 32);
     pools.symbolic.graph.validate().unwrap();
     let bytes = serde_json::to_vec(&(&snapshot, &pools.symbolic.graph)).unwrap();
@@ -255,7 +273,7 @@ fn forced_candidate_collision_does_not_merge_independent_input_sources() {
 }
 
 #[test]
-fn independently_allocated_equal_expression_trees_keep_the_full_comparison_bound() {
+fn independently_allocated_equal_expression_trees_keep_full_comparison_accounting() {
     let left = deep_expression();
     let right = deep_expression();
     assert!(left == right);
@@ -265,15 +283,14 @@ fn independently_allocated_equal_expression_trees_keep_the_full_comparison_bound
     assert!(source == incoming);
     let control = Control::default();
     let mut pools = Pools::new(&control);
-    pools.buffer(&source).unwrap();
-    pools.symbolic.limits.max_work = pools.symbolic.usage.work + 1024;
-    let detail = failure(
-        pools.buffer(&incoming).unwrap_err(),
-        api::ExportFailureKind::Work,
-    );
-    assert!(detail.required > detail.limits.max_work);
-    assert!(detail.usage.work <= detail.limits.max_work);
+    let id = pools.buffer(&source).unwrap();
+    let snapshot = pools.buffers_dto[id].clone();
+    let before = pools.symbolic.usage.work;
+    assert_eq!(pools.buffer(&incoming).unwrap(), id);
+    assert!(pools.symbolic.usage.work - before > 1024);
     assert_eq!(pools.buffers.len(), 1);
+    assert_eq!(pools.buffers_dto[id], snapshot);
+    assert_buffer_roundtrip(&pools, id);
 }
 
 #[test]
@@ -300,7 +317,6 @@ fn independently_allocated_equal_reads_do_not_compare_their_backing_history() {
     );
     let control = Control::default();
     let mut pools = Pools::new(&control);
-    assert!(source.work_size().saturating_mul(65) > pools.symbolic.limits.max_work);
     let id = pools.buffer(&source).unwrap();
     let nodes = pools.symbolic.graph.nodes.len();
     let snapshot = pools.buffers_dto[id].clone();
@@ -312,13 +328,12 @@ fn independently_allocated_equal_reads_do_not_compare_their_backing_history() {
     assert_eq!(pools.symbolic.graph.nodes.len(), nodes);
     let marginal = pools.symbolic.usage.work - before;
     let expanded = source.work_size();
-    assert!(marginal < expanded);
+    assert!(marginal < expanded as u64);
     let backing = source.state_root().nodes();
     let entries = source.metadata_len();
     let total = pools.symbolic.usage.work;
-    let limit = pools.symbolic.limits.max_work;
     eprintln!(
-        "buffer read reuse: expanded={expanded} backing={backing} entries={entries} hits=64 marginal={marginal} total={total} limit={limit}"
+        "buffer read reuse: expanded={expanded} backing={backing} entries={entries} hits=64 marginal={marginal} total={total}"
     );
     assert_eq!(pools.buffers_dto[id], snapshot);
     pools.symbolic.graph.validate().unwrap();
@@ -407,7 +422,7 @@ fn equal_word_reads_reuse_large_history_and_retain_full_view_scalars() {
 }
 
 #[test]
-fn nonshared_word_view_offset_and_length_keep_recursive_work_bounds() {
+fn nonshared_word_view_offset_and_length_keep_recursive_work_accounting() {
     let state = ByteStateId::input(SourceId::fresh().unwrap(), ExprId::fresh().unwrap());
     for offset in [true, false] {
         let left = deep_expression();
@@ -436,39 +451,109 @@ fn nonshared_word_view_offset_and_length_keep_recursive_work_bounds() {
         assert!(source == incoming);
         let control = Control::default();
         let mut pools = Pools::new(&control);
-        pools.buffer(&source).unwrap();
-        pools.symbolic.limits.max_work = pools.symbolic.usage.work + 1024;
-        let detail = failure(
-            pools.buffer(&incoming).unwrap_err(),
-            api::ExportFailureKind::Work,
-        );
-        assert!(detail.required > detail.limits.max_work);
+        let id = pools.buffer(&source).unwrap();
+        let snapshot = pools.buffers_dto[id].clone();
+        let before = pools.symbolic.usage.work;
+        assert_eq!(pools.buffer(&incoming).unwrap(), id);
+        assert!(pools.symbolic.usage.work - before > 1024);
         assert_eq!(pools.buffers.len(), 1);
+        assert_eq!(pools.buffers_dto[id], snapshot);
+        assert_buffer_roundtrip(&pools, id);
     }
 }
 
 #[test]
-fn large_exact_buffer_prepays_metadata_before_visiting_or_copying_it() {
-    let source = ByteArray::exact(&vec![1; 4096]);
-    let control = Control::default();
+fn buffer_projection_past_former_work_cap_remains_lossless_and_cancellable() {
+    let bytes = vec![1; 4096];
+    let source = ByteArray::exact(&bytes);
+    let retained = source.clone();
+    let control = Control::new(Default::default());
     let mut pools = Pools::new(&control);
-    pools.symbolic.limits.max_work = source.metadata_len() - 1;
+    let id = pools.buffer(&source).unwrap();
+    let snapshot = pools.buffers_dto[id].clone();
+    let before = pools.symbolic.usage;
+    assert!(before.work > source.metadata_len() as u64);
+    assert!(before.work < 64_000_000);
+    assert_eq!(snapshot.cells.len(), bytes.len());
+    for (offset, cell) in snapshot.cells.iter().enumerate() {
+        assert_eq!(cell.offset, offset);
+        assert_eq!(
+            snapshot.values[cell.value].constants,
+            Some(vec!["0x1".into()])
+        );
+    }
+    // Each hit meters the real metadata scan and complete native comparison;
+    // no synthetic charges or seeded usage bypass the former boundary.
+    for _ in 0..1024 {
+        assert_eq!(pools.buffer(&source).unwrap(), id);
+    }
+    assert!(pools.symbolic.usage.work > 64_000_000);
+    assert_eq!(pools.symbolic.usage.nodes, before.nodes);
+    assert_eq!(pools.symbolic.usage.exact_bytes, bytes.len());
+    assert_eq!(pools.buffers_dto, vec![snapshot]);
+    let api::Expression::View(view) =
+        &pools.symbolic.graph.nodes[pools.buffers_dto[id].symbolic.node]
+    else {
+        panic!("complete byte view required");
+    };
+    assert_eq!(
+        pools.symbolic.graph.nodes[view.state.node],
+        api::Expression::BytesExact(format!("0x{}", "01".repeat(bytes.len())))
+    );
+    let next = ByteArray::exact(&[2, 3, 4, 5]);
+    let after_hits = pools.symbolic.usage.work;
+    let next_id = pools.buffer(&next).unwrap();
+    assert_ne!(next_id, id);
+    assert!(pools.symbolic.usage.work > after_hits);
+    assert_eq!(pools.buffers_dto[next_id].cells.len(), 4);
+    assert_buffer_roundtrip(&pools, id);
+    assert_buffer_roundtrip(&pools, next_id);
+    let usage = pools.symbolic.usage;
+    control.cancellation().cancel();
     let detail = failure(
         pools.buffer(&source).unwrap_err(),
-        api::ExportFailureKind::Work,
+        api::ExportFailureKind::Cancelled,
     );
-    assert_eq!(detail.required, 1 + source.metadata_len());
-    assert_eq!(detail.usage.work, 1);
-    assert_eq!(detail.usage.nodes, 0);
-    assert_eq!(detail.usage.exact_bytes, 0);
-    assert!(pools.buffers.is_empty());
-    assert!(pools.buffers_dto.is_empty());
+    assert_eq!(detail.required, usage.work);
+    assert_eq!(detail.usage, usage);
+    assert_eq!(detail.limits, pools.symbolic.limits);
+    assert_eq!(source, retained);
+}
+
+#[test]
+fn saturated_work_still_allows_projection_and_preserves_payload_bounds_and_cancellation() {
+    let source = ByteArray::exact(&[1, 2, 3, 4]);
+    let retained = source.clone();
+    let control = Control::new(Default::default());
+    let mut pools = Pools::new(&control);
+    pools.symbolic.usage.work = u64::MAX - 1;
+    let id = pools.buffer(&source).unwrap();
+    assert_eq!(pools.symbolic.usage.work, u64::MAX);
+    assert_eq!(pools.buffer(&source).unwrap(), id);
+    assert_eq!(pools.symbolic.usage.work, u64::MAX);
+    assert_eq!(pools.buffers_dto[id].cells.len(), 4);
+    assert_buffer_roundtrip(&pools, id);
+    pools.symbolic.limits.max_exact_bytes = pools.symbolic.usage.exact_bytes;
+    let detail = failure(
+        pools.buffer(&ByteArray::exact(&[5, 6, 7, 8])).unwrap_err(),
+        api::ExportFailureKind::ExactBytes,
+    );
+    assert_eq!(detail.usage.work, u64::MAX);
+    assert!(detail.required > detail.limits.max_exact_bytes as u64);
+    control.cancellation().cancel();
+    let usage = pools.symbolic.usage;
+    let detail = failure(
+        pools.buffer(&source).unwrap_err(),
+        api::ExportFailureKind::Cancelled,
+    );
+    assert_eq!(detail.required, u64::MAX);
+    assert_eq!(detail.usage, usage);
+    assert_eq!(source, retained);
 }
 
 #[test]
 fn buffer_export_bounds_and_cache_hit_cancellation_remain_typed_and_lossless() {
     for (kind, limit) in [
-        (api::ExportFailureKind::Work, 0),
         (api::ExportFailureKind::Nodes, 0),
         (api::ExportFailureKind::Depth, 1),
         (api::ExportFailureKind::ExactBytes, 3),
@@ -482,7 +567,6 @@ fn buffer_export_bounds_and_cache_hit_cancellation_remain_typed_and_lossless() {
         let control = Control::default();
         let mut pools = Pools::new(&control);
         match kind {
-            api::ExportFailureKind::Work => pools.symbolic.limits.max_work = limit,
             api::ExportFailureKind::Nodes => pools.symbolic.limits.max_nodes = limit,
             api::ExportFailureKind::Depth => pools.symbolic.limits.max_depth = limit,
             api::ExportFailureKind::ExactBytes => pools.symbolic.limits.max_exact_bytes = limit,
@@ -491,7 +575,7 @@ fn buffer_export_bounds_and_cache_hit_cancellation_remain_typed_and_lossless() {
         let detail = failure(pools.buffer(&source).unwrap_err(), kind);
         assert_eq!(detail.limits, pools.symbolic.limits);
         assert_eq!(detail.usage, pools.symbolic.usage);
-        assert!(detail.required > limit);
+        assert!(detail.required > limit as u64);
         assert_eq!(source, retained);
     }
     let source = ByteArray::memory();

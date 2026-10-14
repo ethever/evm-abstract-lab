@@ -57,13 +57,17 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
 }
 
 #[test]
-fn export_error_decodes_the_old_reply_and_renders_each_typed_resource_field() {
+fn export_error_decodes_schema_11_and_renders_bounds_and_work_statistics() {
     let reply: api::AnalyzeReply = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../evm-abstract-protocol/tests/fixtures/api-errors/export-analyze-reply.json"
     )))
     .unwrap();
-    let error = reply.result.unwrap_err();
+    let mut error = reply.result.unwrap_err();
+    let api::ErrorDetails::Export(detail) = &mut error.details else {
+        panic!("expected export failure details");
+    };
+    detail.usage.work = 64_003_705;
     let context = egui::Context::default();
     crate::notation::initialize_fonts(&context);
     let mut time = 0.0;
@@ -87,15 +91,16 @@ fn export_error_decodes_the_old_reply_and_renders_each_typed_resource_field() {
         "Exact byte payload",
         "31",
         "Projection work",
-        "127",
+        "64003705",
         "Complete JSON byte limit",
         "Node/depth limits",
         "64 / 16",
-        "Payload/work limits",
-        "4096 / 16384",
+        "Exact payload byte limit",
+        "4096",
     ] {
         assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
     }
+    assert!(!labels.iter().any(|label| label.contains("work limit")));
 }
 
 #[test]

@@ -197,7 +197,9 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 
 协议 9 加入 report-local mixed symbolic DAG。scalar refs、byte views、persistent/transient roots 和完整 path guards 在同一目录中共享；range/join 的待处理 payload 引用有限 pending machine pool。前端校验 node sort、依赖顺序和 pool refs，按可见行显示来源、写入和复制范围。typed export error 保留策略与实耗；MemoryPolicy 的未展开输入与 EVM Failure 分开显示。详情见[第 17 课](17-symbolic-state.md)。
 
-共享协议版本为 9。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+共享协议版本为 11。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+
+版本 11 移除报告导出的 `ExportLimits.max_work` 和 `ExportFailureKind::Work`；`metadata.export_usage.work` 继续保存累计 projection work，仅作诊断统计，work 总量不会导致导出失败。导出的节点、依赖深度、exact payload、完整 JSON 字节上限与取消检查继续生效，导出错误展示这些策略和实耗。执行分析仍遵守 `AnalysisLimits.max_work`，界面的 Logical work 输入继续控制分析预算。
 
 | 请求 | 返回 |
 | --- | --- |
