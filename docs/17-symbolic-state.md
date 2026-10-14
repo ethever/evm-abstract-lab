@@ -69,19 +69,19 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 摘要重放共享一张 rename map，遍历隐藏在 state source、view、rollback 和返回数据中的 fresh token。固定输入身份保持绑定，调用中新产生的未知来源每次重放使用新身份。重命名和导入按完整变换提交，失败不能安装一半状态。
 
-## 原生 JSON 8 与 Web 协议 12
+## 原生 JSON 8 与 Web 协议 13
 
 Native analysis schema 为 8；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或求解编码超限。
 
-原生 graph 的 `identity_scope`、Fresh 编号及 Input scope/symbol 保留同一进程中的身份。source 的 `token` 是本图中的表达式引用，须先解析它指向的身份，再结合 namespace 判断来源；不能直接比较两个图的 token 或 root 索引，也不能用同名打印叶跨报告绑定输入。原生 CLI JSON 通过 `render::json` 的流式 writer 输出，整份 UTF-8 输出默认上限为 64 MiB，每次追加前检查预算与取消；应用可用 `JsonLimits` 与 `with_control` 明确选择策略。超过预算返回 `JsonError::Bytes`，包含已写字节、下一次写入所需字节和额度；取消返回 `JsonError::Cancelled`，保留已计算的分析事实。原生 pending Arc 快照仍可能重复其程序和状态，整份 writer 的预算约束这些重复输出；Web 使用下面的共享目录。直接调用第三方 serde 序列化函数不自动获得整份 writer 预算。
+原生 graph 的 `identity_scope`、Fresh 编号及 Input scope/symbol 保留同一进程中的身份。source 的 `token` 是本图中的表达式引用，须先解析它指向的身份，再结合 namespace 判断来源；不能直接比较两个图的 token 或 root 索引，也不能用同名打印叶跨报告绑定输入。原生 CLI JSON 通过 `render::json` 的流式 writer 输出，整份 UTF-8 输出不设置字节上限，每次追加前检查取消。`pretty` 与 `compact` 沿用当前线程的取消作用域；应用可用 `with_control(value, control)` 或 `compact_with_control(value, control)` 明确传入控制。取消返回 `JsonError::Cancelled` 并记录已写字节，保留已计算的分析事实；值序列化失败继续返回 `JsonError::Serialization`。原生 pending Arc 快照仍可能重复其程序和状态，Web 使用下面的共享目录。
 
-世界指纹保留原 v2 编码和全部初始观察；`World::fingerprint` 返回 `Result<B256, FingerprintError>`。取消、值编码失败和长度前缀溢出分别是 `Cancelled`、`Encoding`、`LengthOverflow`，不生成替代 digest。`render::world::evidence` 在报告输出前有界计算该指纹并返回可失败的借用视图，原生 JSON 通过 `JsonError::Fingerprint` 传播；文本和 DOT 明确显示 unavailable 和错误并停止渲染。Server 使用 `ErrorDetails::Fingerprint` 保存类型与编码坐标，取消映射为 Cancelled，其余失败映射为 Export。调用方须在适用的 `Control.scope` 内计算 evidence，随后 writer 仍逐次检查取消与整份输出预算。
+世界指纹保留原 v2 编码和全部初始观察；`World::fingerprint` 返回 `Result<B256, FingerprintError>`。取消、值编码失败和长度前缀溢出分别是 `Cancelled`、`Encoding`、`LengthOverflow`，不生成替代 digest。`render::world::evidence` 在报告输出前有界计算该指纹并返回可失败的借用视图，原生 JSON 通过 `JsonError::Fingerprint` 传播；文本和 DOT 明确显示 unavailable 和错误并停止渲染。Server 使用 `ErrorDetails::Fingerprint` 保存类型与编码坐标，取消映射为 Cancelled，其余失败映射为 Export。调用方须在适用的 `Control.scope` 内计算 evidence，随后 writer 仍逐次检查取消。
 
 Web/server 的单份 `AnalysisReport.symbolic.nodes` 共享所有 scalar、byte、slot、view 和 path。引用按语义分为 `ExpressionRef`、`ByteStateRef`、`SlotStateRef`、`ByteViewRef`、`PathRef`；依赖指向较早节点。`ValueInfo.expression` 是 scalar ref；`ByteArraySnapshot.symbolic` 是 view ref；账户 `storage_root`、`transient_root` 分开。状态局部 `symbolic_facts` / `storage_facts` / `transient_facts` 还保存已被指令消耗的 symbolic operand 数值信息，不能跨快照错误复用。来源 token、namespace、非 singleton 常量集、位、signed/unsigned bounds、nonzero、congruence、provenance 和 equality identity 均保留。
 
 `MachineSnapshot.path` 表达完整状态条件。`Frontier.range` 保留 offset/size/limit、condition 和 nonzero side；其 payload 与一般 join 的 `Frontier.payload` 都引用 `pending_machines`。Program、store、byte source 仍在原共享目录中，不在每个 frontier 递归倾倒完整分析。
 
-导出独立计量实际 DAG 节点、exact bytes 与遍历/池化工作，默认上限为 65,536 节点、深度 256、16 MiB exact payload。策略和实耗分别在 `metadata.export_limits`、`metadata.export_usage`；其中 `export_usage.work` 仅作诊断统计，没有累计工作硬上限，也不会因 work 总量拒绝导出。Web 协议 11 移除 `ExportLimits.max_work` 与 `ExportFailureKind::Work`，执行分析的 `AnalysisLimits.max_work` 继续生效。HTTP 整份报告 JSON 仍受 `max_output_bytes` 的 64 MiB 策略约束，包含全部数值事实和目录；编码的 `OutputBytes` failure 保留 required/written、图实耗和原策略，缓存中的分析事实不变。其余导出超限或取消仍报告 typed export failure，不把成功分析改写成数值 Top。UI 校验版本、节点 sort、依赖顺序和 pool refs 后安装结果；DAG 与 byte/slot 行按可见区渲染，exact payload 只显示有界预览。
+导出独立计量实际 DAG 节点、exact bytes 与遍历/池化工作，默认上限为 65,536 节点、深度 256、16 MiB exact payload。策略和实耗分别在 `metadata.export_limits`、`metadata.export_usage`；其中 `export_usage.work` 仅作诊断统计，没有累计工作硬上限，也不会因 work 总量拒绝导出，执行分析的 `AnalysisLimits.max_work` 继续生效。Web 协议 13 的 `ExportLimits` 只声明节点、深度和 exact payload 策略，HTTP 整份报告 JSON 不设置字节上限。编码取消仍报告 typed `Cancelled` export failure，保留 `required` / `written`、图实耗和原策略，缓存中的分析事实不变。图或 exact payload 超限仍报告相应 typed export failure，不把成功分析改写成数值 Top。UI 校验版本、节点 sort、依赖顺序和 pool refs 后安装结果；DAG 与 byte/slot 行按可见区渲染，exact payload 只显示有界预览。
 
 MemoryPolicy 前沿在 UI 明确标记“策略下尚未展开”，与 EVM Failure、REVERT 分开。`ByteRange` 描述表示层错误，`StateJoin` 描述完整替代无法合并；正常 alias 的未定精度不能显示成已证明成功。
 

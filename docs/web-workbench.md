@@ -199,7 +199,7 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 
 共享协议版本为 12。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 
-版本 11 移除报告导出的 `ExportLimits.max_work` 和 `ExportFailureKind::Work`；`metadata.export_usage.work` 继续保存累计 projection work，仅作诊断统计，work 总量不会导致导出失败。导出的节点、依赖深度、exact payload、完整 JSON 字节上限与取消检查继续生效，导出错误展示这些策略和实耗。执行分析仍遵守 `AnalysisLimits.max_work`，界面的 Logical work 输入继续控制分析预算。
+版本 12 的 `ExportLimits` 保留节点、依赖深度与 exact payload 上限，整份报告 JSON 不设置字节上限；`metadata.export_usage.work` 保存累计 projection work，仅作诊断统计，work 总量不会导致导出失败。导出继续检查取消，错误展示相应策略和实耗，编码取消另保留已写字节。执行分析仍遵守 `AnalysisLimits.max_work`，界面的 Logical work 输入继续控制分析预算。
 
 | 请求 | 返回 |
 | --- | --- |
@@ -281,4 +281,4 @@ RPC 回归先启动本地 JSON-RPC fixtures，再用真实配置文件启动分�
 
 协议 10 进一步保留未知交互的 `abstract_summaries`、过程依赖与实际覆盖块，以及独立的摘要成功／回退／失败边。Unknown frame 显示为 Abstract environment，不生成捕获指令；对应节点的 inspector 可查看闭合状态与迭代计数。示例与语义见[第 18 课](18-unknown-world.md)。
 
-当前协议 12 增加摘要入口类别和根过程索引，区分已知 bytecode 递归与未知交互。已知递归仍显示真实 Runtime 代码身份，图卡片和 Frame inspector 标出 Recursive bytecode；摘要中实际覆盖的块与主图逐指令执行记录分别展示。闭合关系可以继续产生返回边；未覆盖的终结行为和资源边界仍保留前沿。
+当前协议 13 增加摘要入口类别和根过程索引，区分已知 bytecode 递归与未知交互。已知递归仍显示真实 Runtime 代码身份，图卡片和 Frame inspector 标出 Recursive bytecode；摘要中实际覆盖的块与主图逐指令执行记录分别展示。闭合关系可以继续产生返回边；未覆盖的终结行为和资源边界仍保留前沿。

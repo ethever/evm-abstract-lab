@@ -38,6 +38,12 @@ hyper-util = { version = "=0.1.21", features = [
     "http1",
 ] }
 tower = { version = "=0.5.3", default-features = false }
+tower-http = { version = "=0.6.11", default-features = false, features = [
+    "compression-zstd",
+    "compression-br",
+    "compression-gzip",
+] }
+async-compression = { version = "=0.4.42", default-features = false }
 tokio-io-timeout = "=1.2.1"
 alloy = { version = "=2.5.0", default-features = false, features = [
     "std",

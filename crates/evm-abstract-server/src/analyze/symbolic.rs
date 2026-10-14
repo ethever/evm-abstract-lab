@@ -173,7 +173,6 @@ impl<'a> Pool<'a> {
                 max_nodes: 65_536,
                 max_depth: 256,
                 max_exact_bytes: 16 * 1024 * 1024,
-                max_output_bytes: evm_abstract::render::json::JsonLimits::default().max_bytes,
             },
             usage: api::ExportUsage {
                 nodes: 0,

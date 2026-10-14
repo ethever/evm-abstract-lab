@@ -1,1 +1,1 @@
-{"code":"Export","message":"report export OutputBytes boundary (required 8193)","details":{"Export":{"kind":"OutputBytes","required":8193,"limits":{"max_nodes":64,"max_depth":16,"max_exact_bytes":4096,"max_output_bytes":8192},"usage":{"nodes":7,"exact_bytes":31,"work":127},"written":8192}}}
+{"code":"Export","message":"report export ExactBytes boundary (required 8193)","details":{"Export":{"kind":"ExactBytes","required":8193,"limits":{"max_nodes":64,"max_depth":16,"max_exact_bytes":4096},"usage":{"nodes":7,"exact_bytes":31,"work":127},"written":null}}}

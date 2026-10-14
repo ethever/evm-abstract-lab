@@ -172,9 +172,9 @@ CALL 返回后的第一个基本块按成功位 0 / 1 分开传播，随后恢�
 | 摘要内部实际执行的已知块 | procedure `covered_blocks`、代码身份 | 过程级覆盖来源，不冒充主图展开轨迹 |
 | 尚未完成 | `frontiers` 与 `closed: false` | 真实预算／状态／效果缺口 |
 
-协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；这两种报告的 schema 版本分别为 native 8、Web protocol 12。
+协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；这两种报告的 schema 版本分别为 native 8、Web protocol 13。
 
-native 8 将旧 `unknown_summaries` 统一为 `procedure_summaries`；Web protocol 12 新增摘要的 `kind` 和 `root_procedure`。消费者应按版本同步迁移。Web 的已知递归节点显示 Recursive bytecode summary，Frame inspector 显示 Recursive bytecode；未知过程继续显示 Abstract environment／Abstract interactions。
+native 8 将旧 `unknown_summaries` 统一为 `procedure_summaries`；Web protocol 13 新增摘要的 `kind` 和 `root_procedure`。消费者应按版本同步迁移。Web 的已知递归节点显示 Recursive bytecode summary，Frame inspector 显示 Recursive bytecode；未知过程继续显示 Abstract environment／Abstract interactions。
 
 下面是 `self-return-42.json` 的真实 Chromium 检查截图。选中的仍是有代码哈希、storage owner 和 caller continuation 的 Runtime frame；下方记录其递归过程已经闭合。这是小型递归语义与界面的验证，USDC 性能须单独测量。
 

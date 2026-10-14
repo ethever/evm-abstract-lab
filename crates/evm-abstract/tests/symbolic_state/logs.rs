@@ -13,7 +13,7 @@ use evm_abstract::{
         symbolic::{ByteStateKind, ExprError, ExprKind, GraphLimits, SymbolicGraph},
     },
     render::{
-        json::{JsonError, JsonLimits, with_control},
+        json::{JsonError, with_control},
         world::evidence,
     },
     world::AbstractLog,
@@ -354,7 +354,7 @@ fn symbolic_log_native_graphs_and_bounded_report_preserve_all_bindings() {
     );
 
     let report = evidence(&analysis).unwrap();
-    let encoded = with_control(&report, JsonLimits::default(), &Control::default()).unwrap();
+    let encoded = with_control(&report, &Control::default()).unwrap();
     let decoded: Value = serde_json::from_str(&encoded).unwrap();
     assert_eq!(
         decoded["schema_version"],
@@ -411,8 +411,8 @@ fn symbolic_log_native_graphs_and_bounded_report_preserve_all_bindings() {
             *graph_root(exported_length)
         );
     }
-    // Separate per-graph retention from total report bytes. Each failure must
-    // leave the same captured LOG, history, numeric facts and source identities.
+    // Graph retention failures and cancellation must leave the same captured
+    // LOG, history, numeric facts and source identities.
     assert!(matches!(
         SymbolicGraph::view(
             &view,
@@ -423,13 +423,6 @@ fn symbolic_log_native_graphs_and_bounded_report_preserve_all_bindings() {
         ),
         Err(ExprError::Limit { .. })
     ));
-    assert!(
-        matches!(with_control(&report, JsonLimits { max_bytes: 128 }, &Control::default()), Err(JsonError::Bytes { required, limit: 128, written }) if required > 128 && written <= 128)
-    );
-    let byte_limit = encoded.len() - 1;
-    assert!(
-        matches!(with_control(&report, JsonLimits { max_bytes: byte_limit }, &Control::default()), Err(JsonError::Bytes { required, limit, written }) if required > limit && limit == byte_limit && written <= limit)
-    );
     let cancellation = Control::new(Default::default());
     cancellation.cancellation().cancel();
     cancellation.scope(|| {
@@ -439,15 +432,13 @@ fn symbolic_log_native_graphs_and_bounded_report_preserve_all_bindings() {
         ));
     });
     assert!(matches!(
-        with_control(&report, JsonLimits::default(), &cancellation),
+        with_control(&report, &cancellation),
         Err(JsonError::Cancelled { written: 0 })
     ));
     assert_eq!(serde_json::to_value(log).unwrap(), captured["log"]);
     assert_eq!(
-        serde_json::from_str::<Value>(
-            &with_control(&report, JsonLimits::default(), &Control::default()).unwrap()
-        )
-        .unwrap(),
+        serde_json::from_str::<Value>(&with_control(&report, &Control::default()).unwrap())
+            .unwrap(),
         decoded
     );
     assert_eq!(verify_history(&analysis, &fixture), (old, current));

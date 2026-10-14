@@ -1,6 +1,6 @@
 //! Error envelopes retain every typed field through payload compaction.
 //! Validation/RPC fixtures were recorded at b629ffe00443d993db1d4b36dc1c1753bbf968c9;
-//! export fixtures follow wire schema 11.
+//! export fixtures follow wire schema 12.
 use evm_abstract_protocol::*;
 
 #[test]
@@ -26,30 +26,49 @@ fn assert_frozen_wire(error: ApiError, error_json: &str, reply_json: &str) {
 }
 
 #[test]
-fn export_error_preserves_every_policy_usage_and_written_field_on_schema_11_wire() {
+fn export_error_preserves_every_policy_usage_and_written_field_on_schema_12_wire() {
     assert_frozen_wire(
         ApiError {
             code: ApiErrorCode::Export,
-            message: "report export OutputBytes boundary (required 8193)".into(),
+            message: "report export ExactBytes boundary (required 8193)".into(),
             details: ErrorDetails::Export(Box::new(ExportFailure {
-                kind: ExportFailureKind::OutputBytes,
+                kind: ExportFailureKind::ExactBytes,
                 required: 8193,
                 limits: ExportLimits {
                     max_nodes: 64,
                     max_depth: 16,
                     max_exact_bytes: 4096,
-                    max_output_bytes: 8192,
                 },
                 usage: ExportUsage {
                     nodes: 7,
                     exact_bytes: 31,
                     work: 127,
                 },
-                written: Some(8192),
+                written: None,
             })),
         },
         include_str!("fixtures/api-errors/export-api-error.json"),
         include_str!("fixtures/api-errors/export-analyze-reply.json"),
+    );
+}
+
+#[test]
+fn export_cancellation_retains_written_bytes_beyond_the_former_output_limit() {
+    let mut error: ApiError =
+        serde_json::from_str(include_str!("fixtures/api-errors/export-api-error.json")).unwrap();
+    let written = 64 * 1024 * 1024 + 8192;
+    error.code = ApiErrorCode::Cancelled;
+    error.message = format!("native JSON export cancelled after {written} bytes");
+    let ErrorDetails::Export(detail) = &mut error.details else {
+        panic!("expected export failure details");
+    };
+    detail.kind = ExportFailureKind::Cancelled;
+    detail.required = written as u64;
+    detail.written = Some(written);
+    let reply = AnalyzeReply { result: Err(error) };
+    assert_eq!(
+        serde_json::from_str::<AnalyzeReply>(&serde_json::to_string(&reply).unwrap()).unwrap(),
+        reply
     );
 }
 
@@ -108,12 +127,17 @@ fn rpc_error_retains_the_exact_nested_world_source_on_the_old_wire() {
 fn export_payload_keeps_strict_typed_field_validation() {
     let json = include_str!("fixtures/api-errors/export-api-error.json");
     for invalid in [
-        json.replace("\"written\":8192", "\"written\":null,\"written\":null"),
-        json.replace(",\"written\":8192", ""),
+        json.replace("\"written\":null", "\"written\":null,\"written\":null"),
+        json.replace(",\"written\":null", ""),
         json.replace("\"max_nodes\":64", "\"max_nodes\":64,\"unknown_limit\":1"),
         json.replace("\"max_nodes\":64", "\"max_nodes\":64,\"max_work\":16384"),
-        json.replace("\"OutputBytes\"", "\"Work\""),
-        json.replace("\"OutputBytes\"", "\"UnknownBoundary\""),
+        json.replace(
+            "\"max_nodes\":64",
+            "\"max_nodes\":64,\"max_output_bytes\":67108864",
+        ),
+        json.replace("\"ExactBytes\"", "\"Work\""),
+        json.replace("\"ExactBytes\"", "\"OutputBytes\""),
+        json.replace("\"ExactBytes\"", "\"UnknownBoundary\""),
     ] {
         assert!(
             serde_json::from_str::<ApiError>(&invalid).is_err(),
