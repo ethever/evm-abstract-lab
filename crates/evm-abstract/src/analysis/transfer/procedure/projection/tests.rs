@@ -1,14 +1,138 @@
-use super::Projection;
+use super::{MachineError, Projection};
 use crate::{
     analysis::{
         ExecutionConfig,
         machine::fixtures::{address, payload, word},
     },
-    domain::{AbstractValue, Domain, symbolic::ExprId},
+    domain::{
+        AbstractValue, Domain, NumericValue,
+        relational::{RelationLimits, RelationState},
+        symbolic::ExprId,
+    },
     resource::WorkBudget,
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
+
+fn bounded_relations(expressions: &[ExprId], limits: &RelationLimits) -> RelationState {
+    let mut relations = RelationState::default();
+    for expression in expressions {
+        relations
+            .observe(
+                expression,
+                &NumericValue::unsigned_range(U256::from(5), U256::from(15)).unwrap(),
+                limits,
+            )
+            .unwrap();
+    }
+    relations
+}
+
+#[test]
+fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
+    let domain = Domain::default();
+    let limits = RelationLimits::default();
+    let expressions = [ExprId::fresh().unwrap(), ExprId::fresh().unwrap()];
+    let relations = bounded_relations(&expressions, &limits);
+    let relation_work = relations.work_size();
+    let cases = [
+        (0, AbstractValue::top(), 5),
+        (
+            0,
+            AbstractValue::unsigned_range(U256::from(8), U256::from(100)).unwrap(),
+            8,
+        ),
+        (1, AbstractValue::top(), 5),
+    ];
+    let mut budget = WorkBudget::new(usize::MAX);
+    let mut projection = Projection::new(&relations, domain, &limits, &mut budget);
+    let mut expected_work = 0;
+    for (index, value, lower) in cases {
+        let original = value.with_expression(expressions[index].clone());
+        // These are the existing admission and refinement charges, even when
+        // only the old numeric bound (rather than the expression) changes.
+        expected_work += expressions[index].work_size()
+            + relation_work
+            + domain.refinement_work(&original, relations.len());
+        let mut value = original.clone();
+        projection.value(&mut value);
+        assert_eq!(
+            value.numeric().interval().unsigned_bounds(),
+            (U256::from(lower), U256::from(15))
+        );
+        assert_eq!(value.expression(), original.expression());
+        assert_eq!(projection.budget.used(), expected_work);
+        let mut repeated = original;
+        projection.value(&mut repeated);
+        assert_eq!(repeated, value);
+        assert_eq!(projection.budget.used(), expected_work);
+    }
+    assert_eq!(projection.relations_work_size_scans, 1);
+    projection.finish().unwrap();
+    assert_eq!(budget.used(), expected_work);
+    assert!(!budget.exhausted());
+}
+
+#[test]
+fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
+    let domain = Domain::default();
+    let limits = RelationLimits::default();
+    let expression = ExprId::fresh().unwrap();
+    let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
+    let original = AbstractValue::top().with_expression(expression.clone());
+    let admission = expression.work_size() + relations.work_size();
+    let fee = admission + domain.refinement_work(&original, relations.len());
+    for maximum in [fee, fee - 1] {
+        let mut budget = WorkBudget::new(maximum);
+        let mut projection = Projection::new(&relations, domain, &limits, &mut budget);
+        let mut value = original.clone();
+        projection.value(&mut value);
+        assert_eq!(projection.relations_work_size_scans, 1);
+        if maximum == fee {
+            assert_eq!(
+                value.numeric().interval().unsigned_bounds(),
+                (U256::from(5), U256::from(15))
+            );
+            projection.finish().unwrap();
+            assert_eq!(budget.used(), fee);
+            assert!(!budget.exhausted());
+        } else {
+            assert_eq!(value, original);
+            assert_eq!(projection.finish(), Err(MachineError::Work));
+            assert_eq!(budget.used(), admission);
+            assert!(budget.exhausted());
+        }
+    }
+}
+
+#[test]
+fn concrete_values_and_empty_relations_do_not_scan() {
+    let domain = Domain::default();
+    let limits = RelationLimits::default();
+    let expression = ExprId::fresh().unwrap();
+    let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
+    let empty = RelationState::default();
+    for relations in [&relations, &empty] {
+        let mut budget = WorkBudget::new(0);
+        let mut projection = Projection::new(relations, domain, &limits, &mut budget);
+        assert_eq!(projection.relations_work_size_scans, 0);
+        let mut values = vec![
+            AbstractValue::constant(U256::ONE).with_expression(expression.clone()),
+            AbstractValue::top(),
+        ];
+        if relations.is_empty() {
+            values.push(AbstractValue::top().with_expression(expression.clone()));
+        }
+        let original = values.clone();
+        for value in &mut values {
+            projection.value(value);
+        }
+        assert_eq!(values, original);
+        assert_eq!(projection.relations_work_size_scans, 0);
+        projection.finish().unwrap();
+        assert_eq!(budget.used(), 0);
+    }
+}
 
 #[test]
 fn call_guard_survives_a_stored_word_projection_without_fixing_high_bits() {

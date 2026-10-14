@@ -19,6 +19,9 @@ mod tests;
 
 pub(super) struct Projection<'a> {
     relations: &'a RelationState,
+    relations_work_size: Option<usize>,
+    #[cfg(test)]
+    relations_work_size_scans: usize,
     domain: Domain,
     limits: &'a RelationLimits,
     budget: &'a mut WorkBudget,
@@ -35,6 +38,9 @@ impl<'a> Projection<'a> {
     ) -> Self {
         Self {
             relations,
+            relations_work_size: None,
+            #[cfg(test)]
+            relations_work_size_scans: 0,
             domain,
             limits,
             budget,
@@ -55,11 +61,15 @@ impl<'a> Projection<'a> {
             }
             return;
         }
-        if !self.budget.charge(
-            expression
-                .work_size()
-                .saturating_add(self.relations.work_size()),
-        ) {
+        if !self.budget.charge(expression.work_size().saturating_add(
+            *self.relations_work_size.get_or_insert_with(|| {
+                #[cfg(test)]
+                {
+                    self.relations_work_size_scans += 1;
+                }
+                self.relations.work_size()
+            }),
+        )) {
             self.failure = Some(MachineError::work_failure());
             return;
         }
