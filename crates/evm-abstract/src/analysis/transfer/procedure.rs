@@ -38,6 +38,7 @@ mod projection;
 mod recursion;
 mod solver;
 mod stack_alias;
+mod storage_observations;
 #[cfg(test)]
 mod tests;
 
@@ -91,6 +92,7 @@ struct PayloadSummary {
     frames: Vec<FrameSummary>,
     continuations: Vec<Continuation>,
     store: StoreSummary,
+    storage_observations: storage_observations::StorageObservations,
     /// Canonical retained-object and independent-instantiation charge.
     work: usize,
     /// Procedure location only; this is never a witness for the joined invariant.

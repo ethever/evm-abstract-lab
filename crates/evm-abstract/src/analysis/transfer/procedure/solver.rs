@@ -25,7 +25,14 @@ impl Solver<'_> {
                 super::context::work_size(frame.key.jump_history.len())
             })
         });
-        self.reserve(history_work.saturating_add(super::payload::alias_form_work(&refined)))?;
+        self.reserve(
+            history_work
+                .saturating_add(super::payload::alias_form_work(&refined))
+                .saturating_add(super::storage_observations::form_work(
+                    &refined,
+                    self.domain,
+                )),
+        )?;
         form(&refined, self.entry, self.domain)
     }
 
@@ -489,6 +496,8 @@ impl Solver<'_> {
             } else {
                 child.saved_store
             };
+            // Changing the active frame and Store invalidates current-read templates.
+            resumed.storage_observations = Default::default();
             resumed.work = resumed.measure_work();
             self.table.subscribers[subscriber]
                 .delivered
@@ -508,6 +517,8 @@ impl Solver<'_> {
                 .saturating_mul(4),
         )?;
         let mut payload = instantiate(&template, self.domain)?;
+        // Installed constraints still refer only to the old immutable snapshot.
+        // Never reinstall those read bounds after replacing the Store.
         payload.store = store.instantiate(self.domain)?;
         let data = data.instantiate(self.domain)?;
         let execution = resume_summary_inner(

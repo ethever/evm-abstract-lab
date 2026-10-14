@@ -14,15 +14,18 @@ fn report_execution(case: &str, mode: &str, execution: &Execution, domain: Domai
         );
         if output.kind == OutcomeKind::Return {
             returns += 1;
-            if ["sameblock", "crossblock", "xor-sameblock", "xor-crossblock"].contains(&case) {
+            if [
+                "sameblock",
+                "crossblock",
+                "two-jump",
+                "xor-sameblock",
+                "xor-crossblock",
+            ]
+            .contains(&case)
+            {
                 assert_eq!(output.data.len().singleton(), Some(U256::from(32)));
-                if case == "crossblock" && mode == "table" {
-                    // Stack equalities do not preserve a symbolic storage write.
-                    assert!(value.numeric().is_top());
-                } else {
-                    let expected = if case.starts_with("xor-") { 0 } else { 7 };
-                    assert_eq!(value.singleton(), Some(U256::from(expected)));
-                }
+                let expected = if case.starts_with("xor-") { 0 } else { 7 };
+                assert_eq!(value.singleton(), Some(U256::from(expected)));
             }
         }
     }
@@ -38,6 +41,7 @@ fn relation_boundary_probe() {
     for (case, code) in [
         ("sameblock", "5f358060079055545f5260205ff3"),
         ("crossblock", "5f358060079055600a565b545f5260205ff3"),
+        ("two-jump", "5f358060079055600a565b600e565b545f5260205ff3"),
         ("xor-sameblock", "5f3580185f5260205ff3"),
         ("xor-crossblock", "5f35806006565b185f5260205ff3"),
     ] {
@@ -260,5 +264,84 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
                 budget.smt_cache_stats(),
             );
         }
+    }
+}
+
+#[test]
+fn storage_observation_known_delegatecall_write_replaces_current_snapshot() {
+    // Controlled Table probe: the parent retains slot 1 across JUMP, then the
+    // child writes 9 in its storage namespace. Revert must preserve actual 7;
+    // success must preserve actual 9 in one joint data+Store outcome.
+    let parent = "60018060079055600a565b5f5f5f5f6102015af450545f5260205ff3";
+    for (case, child, expected) in [
+        ("success", "60096001555f5ff3", 9),
+        ("revert", "60096001555f5ffd", 7),
+    ] {
+        let (world, entry) = fixture(&[(0x101, parent), (0x201, child)]);
+        let config = crate::analysis::ExecutionConfig::default();
+        let domain = config.domain().unwrap();
+        let input = super::super::super::initial(&world, &entry, domain).unwrap();
+        let mut table = Table::default();
+        let mut budget = WorkBudget::new(config.max_work);
+        let mut counters = Counters::default();
+        let (execution, record) = table.execute(
+            0,
+            &world,
+            &entry,
+            input,
+            &config,
+            domain,
+            &mut budget,
+            &mut counters,
+            StorageReadPolicy::Abstract,
+        );
+        println!(
+            "STORAGE_CALL_PROBE case={case} closed={} frontiers={:?} work={} transfers={}",
+            record.closed,
+            execution.frontiers,
+            budget.used(),
+            record.transfers
+        );
+        assert!(record.closed && execution.frontiers.is_empty());
+        assert!(
+            record.procedures.len() >= 2,
+            "known child must execute through Table"
+        );
+        for output in execution
+            .outcomes
+            .iter()
+            .filter(|out| out.kind == OutcomeKind::Return)
+        {
+            let value = output.data.read_word(&word(0), domain);
+            let stored = output
+                .store
+                .read_checked(address(0x101), &word(1), domain)
+                .unwrap();
+            println!(
+                "STORAGE_CALL_PROBE case={case} data_singleton={:?} store_singleton={:?} data_constants={:?} store_constants={:?} data_top={} store_top={}",
+                value.singleton(),
+                stored.singleton(),
+                value.constants(),
+                stored.constants(),
+                value.numeric().is_top(),
+                stored.numeric().is_top()
+            );
+            assert_eq!(output.data.len().singleton(), Some(U256::from(32)));
+        }
+        assert!(
+            execution.outcomes.iter().any(|output| {
+                output.kind == OutcomeKind::Return
+                    && output
+                        .data
+                        .read_word(&word(0), domain)
+                        .contains(U256::from(expected))
+                    && output
+                        .store
+                        .read_checked(address(0x101), &word(1), domain)
+                        .unwrap()
+                        .contains(U256::from(expected))
+            }),
+            "a joint parent outcome must retain the actual {case} value {expected}"
+        );
     }
 }

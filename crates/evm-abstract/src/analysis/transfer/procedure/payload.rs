@@ -37,10 +37,11 @@ impl PayloadSummary {
     }
 
     pub(super) fn measure_work(&self) -> usize {
-        let frames = self
-            .frames
-            .iter()
-            .fold(self.store.work_size(), |work, frame| {
+        let store_work = self.store.work_size();
+        let observation_work = self.storage_observations.work_size(&self.active().stack);
+        let frames = self.frames.iter().fold(
+            store_work.saturating_add(observation_work),
+            |work, frame| {
                 let program = frame.program.as_ref().map_or(0, |program| {
                     program
                         .blocks()
@@ -63,7 +64,8 @@ impl PayloadSummary {
                         .saturating_add(4),
                     |work, value| work.saturating_add(value.work_size().saturating_mul(2)),
                 )
-            });
+            },
+        );
         self.continuations
             .iter()
             .fold(frames, |work, continuation| {
@@ -96,6 +98,8 @@ pub(super) fn form(
     domain: Domain,
 ) -> Result<PayloadSummary, MachineError> {
     MachineError::check_cancelled()?;
+    let storage_observations =
+        super::storage_observations::StorageObservations::form(payload, domain)?;
     let frames =
         payload
             .call_stack
@@ -171,6 +175,7 @@ pub(super) fn form(
         frames,
         continuations,
         store: payload.store.summary_projection(domain)?,
+        storage_observations,
         work: 0,
         location: payload.key(),
     };
@@ -191,6 +196,9 @@ pub(super) fn join(
     }
     let mut out = old.clone();
     out.store = old.store.join(&next.store, domain, widen);
+    out.storage_observations =
+        old.storage_observations
+            .join(&next.storage_observations, domain, widen)?;
     for ((output, left), right) in out.frames.iter_mut().zip(&old.frames).zip(&next.frames) {
         if left.key != right.key
             || left.code != right.code
@@ -236,6 +244,7 @@ pub(super) fn semantic_eq(left: &PayloadSummary, right: &PayloadSummary) -> bool
     left.frames == right.frames
         && left.continuations == right.continuations
         && left.store == right.store
+        && left.storage_observations == right.storage_observations
 }
 
 /// Summaries are not executable arrays. Each invocation gets independent source
@@ -286,9 +295,12 @@ pub(super) fn instantiate(
             continuation: continuation.clone(),
         })
         .collect();
-    Ok(MachinePayload {
+    let mut output = MachinePayload {
         call_stack: CallStack::from_parts(root, children),
         store: payload.store.instantiate(domain)?,
         relations: RelationState::default(),
-    })
+    };
+    payload.storage_observations.install(&mut output, domain)?;
+    MachineError::check_cancelled()?;
+    Ok(output)
 }
