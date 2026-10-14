@@ -5,7 +5,9 @@
 //! Checked disjoint concrete words leave earlier observations intact. Possible
 //! aliases and overlapping word writes use the general demanded-byte encoder.
 
-use super::{BV, Bool, ByteStateId, ByteStateKind, Encoder, ExprId, QueryReason, valid_sum, word};
+use super::{
+    BV, Bool, ByteStateId, ByteStateKind, Encoder, ExprId, QueryReason, choose, valid_sum, word,
+};
 use crate::domain::symbolic::ExprKind;
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -52,7 +54,7 @@ impl Encoder<'_> {
             let (index, valid) = valid_sum(&offset, &word(U256::from(j)));
             let byte = self.view_byte(view, &index)?;
             self.charge(4)?;
-            bytes.push(valid.ite(&byte, &BV::from_u64(0, 8)));
+            bytes.push(choose(&valid, &byte, &BV::from_u64(0, 8)));
         }
         self.charge(1)?;
         self.word_from_bytes(bytes)
@@ -65,9 +67,11 @@ impl Encoder<'_> {
         let missing = word(U256::from(31)).bvsub(word(U256::MAX).bvsub(&at));
         let mask = word(U256::MAX).bvshl(missing.bvmul(word(U256::from(8))));
         self.charge(7)?;
-        Ok(at
-            .bvule(word(U256::MAX - U256::from(31)))
-            .ite(&value, &value.bvand(mask)))
+        Ok(choose(
+            &at.bvule(word(U256::MAX - U256::from(31))),
+            &value,
+            &value.bvand(mask),
+        ))
     }
 
     fn previous_word(
@@ -269,7 +273,7 @@ impl Encoder<'_> {
                     .bvshl(shift);
                 let updated = old.bvand(mask.bvnot()).bvor(byte);
                 self.charge(10)?;
-                Ok(Some(inside.ite(&updated, &old)))
+                Ok(Some(choose(&inside, &updated, &old)))
             }
             _ => Ok(None),
         }
