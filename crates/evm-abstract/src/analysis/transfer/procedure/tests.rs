@@ -5,6 +5,8 @@ use crate::analysis::machine::fixtures::{address, fixture, word};
 use crate::world::{AbstractLog, LogKey};
 use alloy_primitives::U256;
 
+mod relation_boundary_probe;
+
 #[test]
 fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory() {
     let code = "610000351561005f57610001610000350361000052306101011461003e576100206100006100206100006100006101015af11561006f57610020610000f35b6100206100006100206100006100006102015af11561006f57610020610000f35b6100005461000052610020610000f35b610000610000fd";

@@ -1,9 +1,9 @@
-//! Canonical whole-frame numerical bounds and independent executable instances.
+//! Canonical numerical bounds, finite stack aliases and independent instances.
 
 use super::{
     AbstractValue, ByteArray, CallStack, ChildFrame, Continuation, Domain, Entry, FrameCode,
     FrameState, FrameSummary, MachineError, MachinePayload, NumericValue, PayloadSummary,
-    RelationState, RootFrame, Snapshot, relations,
+    RelationState, RootFrame, Snapshot, relations, stack_alias::StackAliases,
 };
 
 fn scalar(value: &AbstractValue) -> AbstractValue {
@@ -58,6 +58,7 @@ impl PayloadSummary {
                         .saturating_add(frame.address_operand.work_size().saturating_mul(2))
                         .saturating_add(frame.caller_operand.work_size().saturating_mul(2))
                         .saturating_add(frame.key.jump_history.len())
+                        .saturating_add(frame.stack_aliases.work_size())
                         .saturating_add(program)
                         .saturating_add(4),
                     |work, value| work.saturating_add(value.work_size().saturating_mul(2)),
@@ -71,6 +72,22 @@ impl PayloadSummary {
                     .saturating_add(1)
             })
     }
+}
+
+/// Tree lookup/allocation and numeric Eq are reserved before alias formation.
+/// Numeric Eq short-circuits unequal finite lengths; equal bounds have equal
+/// numeric traversal sizes. Source expression comparison is never required.
+pub(super) fn alias_form_work(payload: &MachinePayload) -> usize {
+    payload.call_stack.iter().fold(0usize, |work, frame| {
+        if frame.code == FrameCode::Unknown {
+            work
+        } else {
+            frame.stack.iter().fold(
+                work.saturating_add(StackAliases::work_for_len(frame.stack.len())),
+                |work, value| work.saturating_add(value.work_size().saturating_mul(2)),
+            )
+        }
+    })
 }
 
 pub(super) fn form(
@@ -96,6 +113,10 @@ pub(super) fn form(
                 } else {
                     frame.stack.iter().map(scalar).collect()
                 };
+                let stack_aliases = StackAliases::form(
+                    if unknown { &[] } else { &frame.stack },
+                    domain.spec().relations().enabled,
+                )?;
                 key.stack_height = stack.len();
                 if unknown {
                     key.basic_block_index = 0;
@@ -105,6 +126,7 @@ pub(super) fn form(
                     code: frame.code,
                     program: frame.program.clone(),
                     stack,
+                    stack_aliases,
                     memory: if unknown {
                         ByteArray::memory().summary_projection(domain)?
                     } else {
@@ -180,6 +202,7 @@ pub(super) fn join(
         for ((output, left), right) in output.stack.iter_mut().zip(&left.stack).zip(&right.stack) {
             *output = join_scalar(left, right, domain, widen);
         }
+        output.stack_aliases = left.stack_aliases.intersect(&right.stack_aliases)?;
         output.call_value = join_scalar(&left.call_value, &right.call_value, domain, widen);
         output.address_operand =
             join_scalar(&left.address_operand, &right.address_operand, domain, widen);
@@ -215,8 +238,8 @@ pub(super) fn semantic_eq(left: &PayloadSummary, right: &PayloadSummary) -> bool
         && left.store == right.store
 }
 
-/// Numerical summaries are not executable arrays. Separate invocations never
-/// share source variables, even when their abstract input bounds are equal.
+/// Summaries are not executable arrays. Each invocation gets independent source
+/// variables; only its own retained stack classes share scalar expressions.
 pub(super) fn instantiate(
     payload: &PayloadSummary,
     domain: Domain,
@@ -230,11 +253,8 @@ pub(super) fn instantiate(
                 code: frame.code,
                 program: frame.program.clone(),
                 stack: frame
-                    .stack
-                    .iter()
-                    .cloned()
-                    .map(|value| relations::identify(value, domain.spec().relations().enabled))
-                    .collect(),
+                    .stack_aliases
+                    .instantiate(&frame.stack, domain.spec().relations().enabled)?,
                 memory: frame.memory.instantiate(domain)?,
                 calldata: frame.calldata.instantiate(domain)?,
                 environment_calldata: frame.environment_calldata,

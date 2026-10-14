@@ -1,6 +1,6 @@
 //! Caller-independent saturation for known recursion and unknown interactions.
 //!
-//! A table entry is a numerical whole-payload invariant, not an SMT valuation
+//! A table entry retains numerical bounds and finite stack equalities, not an SMT valuation
 //! and not a stack-depth unrolling. Every live block and separate summary invocation gets
 //! independent array roots. A caller subscription keeps its own continuation
 //! and rollback checkpoint. Known bytecode, repeated environment interactions,
@@ -37,6 +37,7 @@ mod payload;
 mod projection;
 mod recursion;
 mod solver;
+mod stack_alias;
 #[cfg(test)]
 mod tests;
 
@@ -74,6 +75,7 @@ struct FrameSummary {
     code: FrameCode,
     program: Option<crate::bytecode::Program>,
     stack: Vec<AbstractValue>,
+    stack_aliases: stack_alias::StackAliases,
     memory: ByteArraySummary,
     calldata: ByteArraySummary,
     environment_calldata: bool,

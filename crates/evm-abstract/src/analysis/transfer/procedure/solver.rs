@@ -25,7 +25,7 @@ impl Solver<'_> {
                 super::context::work_size(frame.key.jump_history.len())
             })
         });
-        self.reserve(history_work)?;
+        self.reserve(history_work.saturating_add(super::payload::alias_form_work(&refined)))?;
         form(&refined, self.entry, self.domain)
     }
 
@@ -342,6 +342,13 @@ impl Solver<'_> {
         let key = (from, callee);
         let subscription =
             if let Some(subscription) = self.table.subscribers_by_key.get(&key).copied() {
+                self.reserve(
+                    self.table.subscribers[subscription]
+                        .payload
+                        .work_size()
+                        .saturating_add(payload.work_size())
+                        .saturating_mul(4),
+                )?;
                 let old = &self.table.subscribers[subscription];
                 let grown = join(
                     &old.payload,
