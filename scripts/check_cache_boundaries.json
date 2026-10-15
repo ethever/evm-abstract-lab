@@ -47,7 +47,8 @@
         "smt-*",
         "native-*",
         "example-*",
-        "cargo-context-*"
+        "cargo-context-*",
+        "cargo-bindgen-environment"
       ]
     },
     {
@@ -101,7 +102,8 @@
         "*embedded-smt",
         "*bitwuzla-native",
         "native-*",
-        "cargo-context-*"
+        "cargo-context-*",
+        "cargo-bindgen-environment"
       ]
     },
     {
@@ -129,7 +131,8 @@
         "*embedded-smt",
         "*bitwuzla-native",
         "native-*",
-        "cargo-context-*"
+        "cargo-context-*",
+        "cargo-bindgen-environment"
       ]
     },
     {
@@ -157,7 +160,8 @@
         "web-clippy",
         "web-no-dyn",
         "web-browser*",
-        "cargo-context-*"
+        "cargo-context-*",
+        "cargo-bindgen-environment"
       ]
     },
     {
@@ -191,7 +195,8 @@
         "*embedded-smt",
         "*bitwuzla-native",
         "native-*",
-        "cargo-context-*"
+        "cargo-context-*",
+        "cargo-bindgen-environment"
       ]
     },
     {
