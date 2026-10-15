@@ -7,6 +7,27 @@ from statistics import median
 import re
 
 
+def canvas_screenshot(page, **options):
+    """Capture the viewport canvas once its real display geometry is ready.
+
+    The application canvas fills the viewport. Locator.screenshot also scrolls
+    it into view and waits for two stable animation frames; under software GPU
+    contention those redundant frames can exhaust the action timeout. Check the
+    exact CSS and backing geometry, then capture the same rectangle directly.
+    Pixel assertions still inspect the browser's actual composited output.
+    """
+    bounds = page.wait_for_function("""() => {
+        const canvas = document.querySelector('#evm-canvas');
+        if (!canvas) return null;
+        const r = canvas.getBoundingClientRect();
+        if (r.x !== 0 || r.y !== 0 || r.width !== innerWidth || r.height !== innerHeight
+            || canvas.width !== innerWidth * devicePixelRatio
+            || canvas.height !== innerHeight * devicePixelRatio) return null;
+        return {x: r.x, y: r.y, width: r.width, height: r.height};
+    }""").json_value()
+    return page.screenshot(clip=bounds, **options)
+
+
 def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, float, float], measure_nodes: bool = False):
     """Measure the rendered selected node, independently of application state.
 
@@ -88,7 +109,7 @@ def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, floa
     )
 
 def node_snapshot(page, canvas, output: Path, name: str, region=(4, 123, 1436, 970), measure_nodes=False, min_selected_pixels=20):
-    screenshot = canvas.screenshot(path=str(output / f"{name}.png"))
+    screenshot = canvas_screenshot(page, path=str(output / f"{name}.png"))
     metrics = graph_screenshot_metrics(page, screenshot, region, measure_nodes)
     assert metrics["bounds"] and metrics["selected_pixels"] >= min_selected_pixels, f"selected CFG node missing: {name}: {metrics}"
     return metrics

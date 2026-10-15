@@ -7,7 +7,7 @@ import re
 from web_test_graph_helpers import frozen_camera, graph_mode, pinch_wheel, workspace_panes
 from web_test_harness import complete_submission, launch_browser, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
-from web_test_pixels import assert_anchored_zoom, assert_same_scene, assert_translation, graph_screenshot_metrics, node_snapshot, require_selected_complete, screenshot_metrics
+from web_test_pixels import assert_anchored_zoom, assert_same_scene, assert_translation, canvas_screenshot, graph_screenshot_metrics, node_snapshot, require_selected_complete, screenshot_metrics
 
 
 def graph_interactions(browser_type, executable: str, url: str, output: Path, dprs=(1, 2)):
@@ -244,15 +244,15 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             page.keyboard.press("Control+A")
             page.keyboard.type(bytecode, delay=5)
             settle_gesture(page)
-            editor_before_scroll = canvas.screenshot(path=str(output / f"{prefix}-modal-before-scroll.png"))
+            editor_before_scroll = canvas_screenshot(page, path=str(output / f"{prefix}-modal-before-scroll.png"))
             page.mouse.move(600, 420)
             page.mouse.wheel(0, -300)
             settle_gesture(page)
-            editor_after_scroll = canvas.screenshot(path=str(output / f"{prefix}-modal-after-scroll.png"))
+            editor_after_scroll = canvas_screenshot(page, path=str(output / f"{prefix}-modal-after-scroll.png"))
             assert screenshot_metrics(page, editor_before_scroll, (350, 365, 1090, 480))["hash"] != screenshot_metrics(page, editor_after_scroll, (350, 365, 1090, 480))["hash"], "wheel did not scroll the actual modal editor"
             page.keyboard.type("fF", delay=40)
             rendered_frame(page)
-            canvas.screenshot(path=str(output / f"{prefix}-editor-draft-f.png"))
+            canvas_screenshot(page, path=str(output / f"{prefix}-editor-draft-f.png"))
             page.keyboard.press("Escape")
             settle_gesture(page)
             after_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-after-f", editor_region)
@@ -289,7 +289,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
                     # source tooltip can overlap the neighboring selected node.
                     page.mouse.move(2, 2)
                     settle_gesture(page)
-                    before_png = canvas.screenshot()
+                    before_png = canvas_screenshot(page)
                     before_node = graph_screenshot_metrics(page, before_png, graph_region)
                     before_code = screenshot_metrics(page, before_png, region)
                     assert before_node["bounds"], f"missing node before {name} scroll"
@@ -298,7 +298,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
                     settle_gesture(page)
                     page.mouse.move(2, 2)
                     settle_gesture(page)
-                    after_png = canvas.screenshot(path=str(output / f"adjacent-scroll-{name}.png"))
+                    after_png = canvas_screenshot(page, path=str(output / f"adjacent-scroll-{name}.png"))
                     after_node = graph_screenshot_metrics(page, after_png, graph_region)
                     after_code = screenshot_metrics(page, after_png, region)
                     assert_translation(before_node, after_node, 0, 0)
