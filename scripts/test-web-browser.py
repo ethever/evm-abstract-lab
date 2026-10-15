@@ -91,12 +91,14 @@ def measured_backend_timings(report):
 
 
 def complete_submission(page, admitted, timeout_seconds: int = 60):
-    reply = admitted.json()["result"]
+    # Parse raw HTTP text in Python so u64 Job IDs never pass through JS Number.
+    reply = json.loads(admitted.text())["result"]
     if "Err" in reply:
         return AnalysisResponse(admitted, {"result": reply}, admitted.status)
     job = reply["Ok"]
+    job_id = job["id"]
     observed_status = admitted.status
-    task_url = admitted.url + "/" + str(job["id"])
+    task_url = admitted.url + "/" + str(job_id)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         state = job["state"]
@@ -106,6 +108,8 @@ def complete_submission(page, admitted, timeout_seconds: int = 60):
             timing = measured_backend_timings(envelope["result"]["Ok"])
             assert timing == job["timings"], "report and completed job disagree on measured time"
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)
+            expect(page.locator("#analysis-status")).to_contain_text(
+                re.compile(rf"(?:^|; )Job ID: {job_id}(?=;|$)"), timeout=timeout_seconds * 1000)
             return AnalysisResponse(admitted, envelope, result.status)
         if isinstance(state, dict) and "Failed" in state:
             error = state["Failed"]
@@ -499,8 +503,6 @@ def graph_screenshot_metrics(page, screenshot: bytes, region, measure_nodes=Fals
             const regionClipped={left:fx0===0,top:fy0===0,right:fx1===width-1,bottom:fy1===height-1};
             const viewportClipped={left:left+fx0===0,top:top+fy0===0,right:left+fx1===image.width-1,bottom:top+fy1===image.height-1};
             const visibleSides=Object.keys(sides).filter(side=>!regionClipped[side] && sides[side]>=0.45);
-            const measurable=write>=30*scale*scale && Math.max(x1-x0+1,bx1-bx0+1)>=10*scale
-                && Math.max(y1-y0+1,by1-by0+1)>=8*scale;
             const fourSides=Object.values(outlineSides).every(score=>score>=0.45);
             const ox0=fourSides?Math.min(...positions.left):x0,oy0=fourSides?Math.min(...positions.top):y0;
             const ox1=fourSides?Math.max(...positions.right):x1,oy1=fourSides?Math.max(...positions.bottom):y1;
@@ -509,6 +511,13 @@ def graph_screenshot_metrics(page, screenshot: bytes, region, measure_nodes=Fals
             const roundedCorners=fourSides && [[ox0,oy0],[ox1,oy0],[ox0,oy1],[ox1,oy1]].every(([x,y])=>
                 x>=0 && x<width && y>=0 && y<height && !outline(x,y) && fillAt[y*width+x]<0);
             const complete=fourSides && roundedCorners;
+            // Tiny selected fills can have fewer than 30 exact-color pixels.
+            // Keep the ordinary cutoff; require a complete rounded selection
+            // outline with all four accent sides and the same pixel threshold.
+            const tinySelected=complete && visibleSides.length===4 && borderPixels>=30*scale*scale;
+            const measurable=(write>=30*scale*scale || tinySelected)
+                && Math.max(x1-x0+1,bx1-bx0+1)>=10*scale
+                && Math.max(y1-y0+1,by1-by0+1)>=8*scale;
             const outlineBounds=css(ox0,oy0,ox1,oy1);
             records.push({bounds:css(x0,y0,x1,y1),fill_bounds:css(fx0,fy0,fx1,fy1),outline_bounds:outlineBounds,
                           outer_bounds:borderPixels?css(bx0,by0,bx1,by1):css(x0,y0,x1,y1),
@@ -937,7 +946,7 @@ def diagnostics_interactions(browser, url: str, args):
         settle_gesture(page)
         png = canvas.screenshot(path=str(output / f"diagnostics-{name}.png"))
         # Measure the painted summary, state/opcode receipt and explanatory cause.
-        pixels = text_pixels(page, png, (8, 794, 1410, 970))
+        pixels = text_pixels(page, png, inspector_diagnostics_region(page, canvas))
         assert len(pixels["rows"]) >= minimum_rows and pixels["white_pixels"] > 50, pixels
         return pixels
 
@@ -1025,7 +1034,7 @@ def diagnostics_interactions(browser, url: str, args):
             child_page.mouse.move(2, 2)
             settle_gesture(child_page)
             png = child_canvas.screenshot(path=str(output / "diagnostics-child.png"))
-            pixels = text_pixels(child_page, png, (8, 794, 1410, 970))
+            pixels = text_pixels(child_page, png, inspector_diagnostics_region(child_page, child_canvas))
             assert len(pixels["rows"]) >= 3, pixels
             row = pixels["rows"][1]
             child_canvas.click(position={"x": 120, "y": sum(row) / 2})
@@ -1086,15 +1095,42 @@ def save_png_crop(page, screenshot: bytes, region, path: Path):
     path.write_bytes(base64.b64decode(encoded))
 
 
+def workspace_content_bottom(page, screenshot: bytes, *, above_inspector=False):
+    """Measure the status panel's top, optionally stopping above a docked Inspector."""
+    status = (page.locator("#analysis-status").text_content() or "") if above_inspector else ""
+    panels = 2 if re.search(r"(?:^|; )Inspector:", status) and " · Maximized" not in status else 1
+    return page.evaluate("""async ({png,panels}) => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+        const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
+        const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+        const data=ctx.getImageData(0,0,c.width,c.height).data,scale=c.width/innerWidth;
+        const border=(x,y)=>{const i=(y*c.width+x)*4;
+            return data[i]===47 && data[i+1]===62 && data[i+2]===80;};
+        // Native bottom Panels paint full-width separators. Interior rules,
+        // cards and text do not reach both canvas edges. Collapse HiDPI bands.
+        const lines=[];
+        for(let y=c.height-1;y>=0;y--) {
+            if(!border(0,y) || !border(c.width-1,y))continue;
+            let x=1;while(x<c.width-1 && border(x,y))x++;
+            if(x<c.width-1)continue;
+            if(lines.length && lines[lines.length-1]===y+1)lines[lines.length-1]=y;
+            else lines.push(y);
+        }
+        if(lines.length<panels)throw new Error(`missing bottom panel separators: ${lines}`);
+        return lines[panels-1]/scale;
+    }""", {"png":base64.b64encode(screenshot).decode(),"panels":panels})
+
+
 def ssa_text_snapshot(page, canvas, output, name):
     page.mouse.move(2,2);page.wait_for_timeout(800);rendered_frame(page)
     png=canvas.screenshot(path=str(output/f"{name}.png"))
     size=page.viewport_size
-    selected=screenshot_metrics(page,png,(4,75,size["width"]-4,size["height"]-30))
+    bottom=workspace_content_bottom(page,png,above_inspector=True)
+    selected=screenshot_metrics(page,png,(4,75,size["width"]-4,bottom))
     assert selected["bounds"], f"missing selected native SSA header: {name}"
     # The selected state header supplies the actual start of the virtual table,
     # independently of the global metadata bar's height or responsive layout.
-    region=(4,selected["bounds"][1],size["width"]-4,size["height"]-30)
+    region=(4,selected["bounds"][1],size["width"]-4,bottom)
     return {**text_pixels(page,png,region),"selected":selected,"region":region}
 
 
@@ -1436,7 +1472,7 @@ def unknown_world_interactions(browser, url, output):
     page.mouse.move(2, 2)
     settle_gesture(page)
     png = canvas.screenshot(path=str(output / "unknown-world-summary-inspector.png"))
-    pixels = text_pixels(page, png, (8, 80, 1410, 970))
+    pixels = text_pixels(page, png, (8, 80, 1410, workspace_content_bottom(page, png)))
     assert len(pixels["rows"]) >= 10 and pixels["white_pixels"] > 100, pixels
     assert len(posts) == 1, "summary selection or inspection reran analysis"
     assert not errors, errors
@@ -1510,7 +1546,7 @@ def known_recursion_interactions(browser, url, output):
     inspector_title_action(page, canvas, "Maximize", tab)
     settle_gesture(page)
     png = canvas.screenshot(path=str(output / "known-recursion-summary-inspector.png"))
-    pixels = text_pixels(page, png, (8, 80, 1410, 970))
+    pixels = text_pixels(page, png, (8, 80, 1410, workspace_content_bottom(page, png)))
     assert len(pixels["rows"]) >= 10 and pixels["white_pixels"] > 100, pixels
     assert len(posts) == 1 and not errors
     result = {"status": report["status"], "ssa_complete": report["ssa"]["complete"],
@@ -1818,60 +1854,122 @@ def hide_inspector(page, canvas):
     settle_gesture(page)
 
 
-def select_inspector_tab(page, canvas, tab: str, y: float = 778):
+INSPECTOR_TAB_POSITIONS = {
+    "Frame": 30, "Stack": 80, "SSA value": 141, "Memory": 210,
+    "Storage": 274, "Transient": 341, "Calldata": 408, "Returndata": 481,
+    "Outcomes": 561, "Acquisition": 640, "Environment": 727, "Timing": 799, "Diagnostics": 866,
+}
+
+
+def select_inspector_tab(page, canvas, tab: str, y: float | None = None):
     # Compact shared controls, measured in the packaged 1440x1000 WASM app.
-    # Callers that resize the inspector pass its measured toolbar center.
-    positions = {
-        "Frame": 30, "Stack": 80, "SSA value": 141, "Memory": 210,
-        "Storage": 274, "Transient": 341, "Calldata": 408, "Returndata": 481,
-        "Outcomes": 561, "Acquisition": 640, "Environment": 727, "Timing": 799, "Diagnostics": 866,
-    }
-    canvas.click(position={"x": positions[tab], "y": y})
+    # Preserve caller-supplied geometry after inspector resizing or dragging.
+    if y is None:
+        selected = inspector_selected_tab(page, canvas)
+        y = (selected[1] + selected[3]) / 2
+    canvas.click(position={"x": INSPECTOR_TAB_POSITIONS[tab], "y": y})
     expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: {tab}")
 
 
-def inspector_frame_tab(page, canvas):
-    """Measure the selected Frame tab from its painted fill, including after drag."""
-    expect(page.locator("#analysis-status")).to_contain_text("Inspector: Frame")
+def inspector_painted_controls(page, canvas):
+    """Measure compact selected tabs and inactive title actions from their actual fills."""
     page.mouse.move(2, 2)
     settle_gesture(page)
     png = canvas.screenshot()
-    candidates = page.evaluate("""async png => {
+    return page.evaluate("""async png => {
         const image = new Image(); image.src = `data:image/png;base64,${png}`;
         await image.decode();
         const c = document.createElement('canvas'); c.width=image.width; c.height=image.height;
         const ctx=c.getContext('2d'); ctx.drawImage(image,0,0);
         const pixels=ctx.getImageData(0,0,c.width,c.height).data;
-        const visited=new Uint8Array(c.width*c.height), scale=c.width/innerWidth, result=[];
-        const selected=i=>pixels[i*4]===33 && pixels[i*4+1]===65 && pixels[i*4+2]===75;
+        const visited=new Uint8Array(c.width*c.height), scale=c.width/innerWidth;
+        const result={selected:[],actions:[]};
+        // palette::SELECTED and inactive action RAISED; move the pointer away
+        // before capture so a hovered action cannot be mistaken for a tab.
+        const kind=i=>pixels[i*4]===33 && pixels[i*4+1]===65 && pixels[i*4+2]===75 ? 0 :
+            pixels[i*4]===29 && pixels[i*4+1]===40 && pixels[i*4+2]===56 ? 1 : -1;
         for (let y=Math.ceil(25*scale);y<c.height;y++) for(let x=0;x<c.width;x++) {
             const start=y*c.width+x;
-            if(visited[start] || !selected(start))continue;
+            const group=kind(start);
+            if(visited[start] || group<0)continue;
             const queue=[start];visited[start]=1;let left=x,right=x,top=y,bottom=y,count=0;
             for(let at=0;at<queue.length;at++) {
                 const i=queue[at],px=i%c.width,py=Math.floor(i/c.width);count++;
                 left=Math.min(left,px);right=Math.max(right,px);top=Math.min(top,py);bottom=Math.max(bottom,py);
                 for(const next of [px>0?i-1:-1,px+1<c.width?i+1:-1,py>0?i-c.width:-1,py+1<c.height?i+c.width:-1]) {
-                    if(next>=0 && !visited[next] && selected(next)){visited[next]=1;queue.push(next);}
+                    if(next>=0 && !visited[next] && kind(next)===group){visited[next]=1;queue.push(next);}
                 }
             }
             const w=(right-left+1)/scale,h=(bottom-top+1)/scale;
-            // Frame is the first compact tab, not a selected SSA row or the
-            // similarly colored Block entry observation control beneath it.
-            if(left/scale>=4 && left/scale<=10 && w>=40 && w<=50 && h>=14 && h<=20 && count>120*scale*scale)
-                result.push([left/scale,top/scale,(right+1)/scale,(bottom+1)/scale]);
+            if(w>=(group===0?40:30) && w<=100 && h>=14 && h<=20 && count>120*scale*scale)
+                result[group===0?'selected':'actions'].push([left/scale,top/scale,(right+1)/scale,(bottom+1)/scale]);
         }
-        return result.sort((a,b)=>a[1]-b[1]);
+        for(const rectangles of Object.values(result))rectangles.sort((a,b)=>a[1]-b[1]);
+        return result;
     }""", base64.b64encode(png).decode())
-    assert len(candidates) == 1, f"expected one selected Frame tab, got {candidates}"
+
+
+def inspector_selected_tab(page, canvas, tab: str | None = None):
+    """Locate the status-selected tab without assuming the inspector's height."""
+    labels = "|".join(re.escape(label) for label in INSPECTOR_TAB_POSITIONS)
+    selected = re.findall(rf"(?:^|; )Inspector: ({labels})(?= ·| %|;|$)",
+                          page.locator("#analysis-status").text_content() or "")
+    assert len(selected) == 1, f"expected one selected Inspector label, got {selected}"
+    if tab is not None:
+        assert selected == [tab], f"expected Inspector: {tab}, got {selected}"
+    tab = selected[0]
+    controls = inspector_painted_controls(page, canvas)
+    # The inspector alone has adjacent right-aligned Maximize/Restore and Hide
+    # actions. Match their painted row, not another selected control at the same
+    # x (notably graph Blocks beside the Memory tab's x coordinate).
+    titlebars = [hide for hide in controls["actions"]
+                 if 2 <= page.viewport_size["width"] - hide[2] <= 10
+                 and 30 <= hide[2] - hide[0] <= 45
+                 and any(45 <= action[2] - action[0] <= 85
+                         and 2 <= hide[0] - action[2] <= 9
+                         and abs((hide[1] + hide[3] - action[1] - action[3]) / 2) <= 1
+                         for action in controls["actions"])]
+    assert len(titlebars) == 1, f"expected one Inspector Hide/Maximize titlebar, got {titlebars}"
+    titlebar = titlebars[0]
+    candidates = [rect for rect in controls["selected"]
+                  if abs((rect[0] + rect[2]) / 2 - INSPECTOR_TAB_POSITIONS[tab]) <= 8
+                  and abs((rect[1] + rect[3] - titlebar[1] - titlebar[3]) / 2) <= 1
+                  and (tab != "Frame" or (4 <= rect[0] <= 10 and 40 <= rect[2] - rect[0] <= 50))]
+    assert len(candidates) == 1, f"expected one selected {tab} tab, got {candidates}"
     return candidates[0]
 
 
-def inspector_title_action(page, canvas, action: str, frame_tab):
+def inspector_frame_tab(page, canvas):
+    """Keep Frame-specific assertions for drag, resize and restore callers."""
+    expect(page.locator("#analysis-status")).to_contain_text("Inspector: Frame")
+    return inspector_selected_tab(page, canvas, "Frame")
+
+
+def inspector_block_entry_control(page, canvas):
+    """Find the selected Block entry control immediately below the Frame toolbar."""
+    expect(page.locator("#analysis-status")).to_contain_text("Inspector: Frame · Block entry")
+    toolbar = inspector_frame_tab(page, canvas)
+    candidates = [rect for rect in inspector_painted_controls(page, canvas)["selected"]
+                  if 20 <= rect[0] <= 50 and 70 <= rect[2] - rect[0] <= 85
+                  and 0 <= rect[1] - toolbar[3] <= 10]
+    assert len(candidates) == 1, f"expected one selected Block entry control, got {candidates}"
+    return candidates[0]
+
+
+def inspector_diagnostics_region(page, canvas):
+    """The existing default 210px dock has no observation row on Diagnostics."""
+    title = inspector_selected_tab(page, canvas, "Diagnostics")
+    # Start after the actual titlebar and its 3px item gap. This keeps the same
+    # 176px content window inside the default dock, above the status/Job ID panel.
+    top = title[3] + 3
+    return (8, top, 1410, top + 176)
+
+
+def inspector_title_action(page, canvas, action: str, selected_tab):
     """Use the real right-aligned titlebar at its painted vertical position."""
     inset = {"Maximize": 79, "Restore": 73, "Hide": 24}[action]
     canvas.click(position={"x": page.viewport_size["width"] - inset,
-                           "y": (frame_tab[1] + frame_tab[3]) / 2})
+                           "y": (selected_tab[1] + selected_tab[3]) / 2})
     settle_gesture(page)
 
 
@@ -2329,12 +2427,19 @@ def assert_storage_literal_pixels(cell, text: str):
         "…7890190abcdef": ([108,10], "8b9dc9c7c872399ea7f0c8aa2c1be3e03610fcb1bd7224af9ffa8b13b9a6dda9"),
         "…90abcdef": ([69,10], "400ff596c148f1a88017f63a1ccc0cc31cd655306ba58e6c52950f79415e81b2"),
         "…90190abcdef": ([93,10], "ff5b7b798e75e4de049ff8445836b31c155ad8d3a08f07e3625c8450b46767cd"),
+        "{0x105f}": ([61,12], "fd1ab3bd3503fbd583c7f1443389c9cd9c436bfc915f8bb5ae4d0b187b5a5f22"),
+        "{0x205f}": ([61,12], "01a9f16f529282cffa2f49e72b9c1686e9ca3d452e2ce788636eaa5c83592176"),
     }
     size,expected=reviewed[text]
     if text=="{"+STORAGE_SLOT_WORD+"}":
         # One historical red127 sample rounds to128 in current Chromium.
         # Compare the complete independent raster with the existing <=2 bound.
         return assert_storage_reviewed_pixels(cell,"full_value",text,size,expected)
+    if text in ("{0x105f}", "{0x205f}"):
+        # Moving the scroll viewport can round a 127 sample to128. Verify every
+        # RGB sample against the original short-literal raster, including braces.
+        key = "last_storage_value" if text == "{0x105f}" else "last_transient_value"
+        return assert_storage_reviewed_pixels(cell,key,text,size,expected)
     assert cell["mask_size"]==size and cell["mask_sha256"]==expected, f"rendered {text} changed: {storage_pixel_report(cell)}"
     return {"expected_text":text,"mask_size":size,"mask_sha256":expected}
 
@@ -2697,7 +2802,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     tab = inspector_frame_tab(page, canvas)
     toolbar_y = (tab[1] + tab[3]) / 2
     evidence = {}
-    # Exact glyph masks from the reviewed DPR1 "0x5f" and "{0x105f}" /
+    # Independent glyph rasters from the reviewed DPR1 "0x5f" and "{0x105f}" /
     # "{0x205f}" crops. Separate cells preserve the old exact-text acceptance
     # despite the adjustable gap, without allowing an off-by-one final slot.
     last_cell_hashes = {
@@ -2715,7 +2820,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         default_table = storage_table_pixels(page, default_png,
             (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
         assert default_table["header"]["slot"] and default_table["header"]["value"],storage_pixel_report(default_table)
-        # Preserve the reviewed final-row hashes at their original Value x=138.
+        # Preserve the reviewed final-row glyph placement at original Value x=138.
         # The larger default moves Value to x=531, where one unchanged glyph
         # sample rounds from 127 to 128 and crosses the exact ink-mask threshold.
         # A real native drag also lets this scroll case retain an explicit width.
@@ -2774,7 +2879,12 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         assert len(last_row["rows"]) == 1 and last_row["white_pixels"] > 100, "last slot row was clipped or blank"
         for cell,expected_hash in [("slot",last_cell_hashes["slot"]),("value",last_cell_hashes[kind])]:
             actual=final_cells[cell]
-            assert actual and actual["mask_sha256"]==expected_hash,f"last rendered {title} {cell} changed: {storage_pixel_report(actual)}"
+            if cell == "value":
+                assert actual, f"last rendered {title} Value is missing"
+                last_value_comparison=assert_storage_literal_pixels(
+                    actual, "{0x105f}" if kind == "storage" else "{0x205f}")
+            else:
+                assert actual and actual["mask_sha256"]==expected_hash,f"last rendered {title} {cell} changed: {storage_pixel_report(actual)}"
             left,top,right,bottom=actual["bounds"]
             save_png_crop(page,settled,(left-1,top-1,right+1,bottom+1),output/f"{kind}-last-{cell}.png")
         page.mouse.move(80,wheel_y)
@@ -2788,6 +2898,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         evidence[kind] = {"entries": count, "expected_last_slot": hex(count - 1),
             "expected_last_value": account[kind][-1]["value"]["constants"],
             "expected_last_cell_mask_sha256": {"slot":last_cell_hashes["slot"],"value":last_cell_hashes[kind]},
+            "last_value_rgb_comparison":last_value_comparison,
             "facts_region": facts_region, "collapsed_facts": collapsed_facts,
             "collapsed_facts_region":collapsed_facts_region,
             "collapsed_prefix":collapsed_prefix,"expanded_prefix":expanded_prefix,
@@ -3550,7 +3661,7 @@ def timing_interactions(browser, args):
                 wait_for_job(page, url, job_id,
                              lambda job: job["progress"]["phase"] == "Acquiring")
             admitted = submit_rpc(page, canvas, rpc, args.output, "timing-queued", 0, providers)
-            job_id = admitted.json()["result"]["Ok"]["id"]
+            job_id = json.loads(admitted.text())["result"]["Ok"]["id"]
             queued = wait_for_job(page, url, job_id, lambda job: job["state"] == "Queued")
             expect(status).to_contain_text("Queued")
             before = visible_seconds(page, "Elapsed")
@@ -3620,7 +3731,7 @@ def timing_interactions(browser, args):
             assert visible_seconds(page, "Frontend preparation") == preparation
             canvas.click(position={"x": 75, "y": 978})
             expect(status).to_contain_text("Inspector: Timing")
-            inspector_title_action(page, canvas, "Maximize", (0, 778, 0, 778))
+            inspector_title_action(page, canvas, "Maximize", inspector_selected_tab(page, canvas, "Timing"))
             expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
             canvas.screenshot(path=str(args.output / "timing-completed.png"))
             page.unroute_all(behavior="wait")
@@ -3628,9 +3739,13 @@ def timing_interactions(browser, args):
             rpc.started.clear()
             rpc.disconnected.clear()
             cancelled = submit_rpc(page, canvas, rpc, args.output, "timing-cancel", 0, providers)
-            cancelled_id = cancelled.json()["result"]["Ok"]["id"]
+            cancelled_id = json.loads(cancelled.text())["result"]["Ok"]["id"]
             assert rpc.started.wait(5), "cancelled task never entered its own real RPC read"
             expect(status).to_contain_text("Elapsed:")
+            expect(status).to_contain_text(
+                re.compile(rf"(?:^|; )Current Job ID: {cancelled_id}(?=;|$)"))
+            expect(status).to_contain_text(
+                re.compile(rf"(?:^|; )Result Job ID: {job_id}(?=;|$)"))
             with page.expect_response(lambda response: response.request.method == "DELETE"
                                       and response.url.endswith(f"/api/tasks/{cancelled_id}")):
                 canvas.click(position={"x": 30, "y": 988})
@@ -3937,7 +4052,9 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
         png = canvas.screenshot(path=str(output / f"world-{tab.lower()}.png"))
         screenshots[tab] = hashlib.sha256(png).hexdigest()
     assert len(set(screenshots.values())) == len(tabs), "inspector controls did not expose distinct views"
-    canvas.click(position={"x": 166, "y": 801})
+    entry = inspector_block_entry_control(page, canvas)
+    # inspector.rs places Observed exit directly after Block entry in this row.
+    canvas.click(position={"x": entry[2] + 50, "y": (entry[1] + entry[3]) / 2})
     expect(status).to_contain_text("Observed exit")
     select_inspector_tab(page, canvas, "Memory")
     expect(status).to_contain_text("Memory")
@@ -4463,13 +4580,13 @@ def layout_card_extent(page, png):
     # Include tiny cards below the ordinary connected-component size cutoff.
     # Solid fills become subpixel at this scale. Measure the brighter real card
     # outlines/edges instead; the background grid and dim group dashes remain
-    # below this palette threshold.
-    return page.evaluate("""async png => {
+    # below this palette threshold. Exclude status separators, which also match.
+    return page.evaluate("""async ({png,contentBottom}) => {
         const image = new Image(); image.src = `data:image/png;base64,${png}`; await image.decode();
         const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height;
         const context=canvas.getContext('2d'); context.drawImage(image,0,0);
         const scale=image.width/innerWidth;
-        const top=Math.round(123*scale), bottom=Math.round((innerHeight-30)*scale);
+        const top=Math.round(123*scale), bottom=Math.round(contentBottom*scale);
         const data=context.getImageData(0,top,image.width,bottom-top).data;
         let left=image.width,right=-1,first=bottom,last=-1,count=0;
         for(let y=0;y<bottom-top;y++) for(let x=4*scale;x<image.width-4*scale;x++) {
@@ -4479,7 +4596,8 @@ def layout_card_extent(page, png):
             }
         }
         return {bounds:count?[left/scale,first/scale,(right+1)/scale,(last+1)/scale]:null,pixels:count};
-    }""", base64.b64encode(png).decode())
+    }""", {"png":base64.b64encode(png).decode(),
+           "contentBottom":workspace_content_bottom(page, png, above_inspector=True)})
 
 
 def assert_layout_camera_interval(actual, predicted):

@@ -74,6 +74,28 @@ impl Workspace {
     pub(super) fn status(&mut self, ui: &mut Ui) -> Option<Command> {
         let mut command = None;
         let wide = ui.available_width() > 780.0;
+        // Keep full decimal IDs and their controls outside the truncating
+        // status row, including when a previous report remains visible.
+        if self.task.snapshot.is_some() || self.report_job_id.is_some() {
+            Density::Inline.scope(ui, |ui| {
+                for (label, id) in self.job_identities() {
+                    ui.push_id(label, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add(egui::Label::new(format!("{label}: {}", id.0)).wrap());
+                            if controls::action(ui, "Copy", Density::Inline)
+                                .on_hover_text(format!("Copy {label}"))
+                                .clicked()
+                            {
+                                ui.ctx().copy_text(id.0.to_string());
+                            }
+                        });
+                    });
+                }
+                if self.report.is_some() && self.report_job_id.is_none() {
+                    ui.label("Result Job ID: unavailable");
+                }
+            });
+        }
         // Match the native initial row height so this bottom panel does not
         // shrink after the graph has fitted its first canvas.
         Density::Regular.scope(ui, |ui| {
@@ -133,6 +155,9 @@ impl Workspace {
         command
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 pub(super) fn result_context(
     ui: &mut Ui,

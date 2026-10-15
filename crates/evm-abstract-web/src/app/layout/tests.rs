@@ -720,3 +720,118 @@ fn scrolling_the_modal_editor_does_not_navigate_the_background_graph() {
     assert_eq!(graph_titles(&after), titles);
     assert_eq!(workspace.graph.zoom, zoom);
 }
+
+#[test]
+fn accepted_server_result_keeps_first_fit_after_fast_completion_and_rerun() {
+    use crate::app::{Command, JobOperation, Message};
+    use evm_abstract_protocol::{
+        AnalysisProgress, AnalysisTimings, JobId, JobReply, JobSnapshot, JobState,
+    };
+
+    fn status(
+        workspace: &mut Workspace,
+        generation: u64,
+        id: JobId,
+        operation: JobOperation,
+        state: JobState,
+    ) {
+        workspace.receive_message(Message::Status {
+            generation,
+            operation,
+            result: Ok(JobReply {
+                result: Ok(JobSnapshot {
+                    id,
+                    state,
+                    progress: AnalysisProgress::default(),
+                    timings: AnalysisTimings::default(),
+                }),
+            }),
+        });
+    }
+    fn begin(workspace: &mut Workspace, id: JobId) -> u64 {
+        let Command::Submit { generation, .. } = workspace.initial_command() else {
+            panic!("expected submit");
+        };
+        status(
+            workspace,
+            generation,
+            id,
+            JobOperation::Submit,
+            JobState::Running,
+        );
+        generation
+    }
+    fn complete(workspace: &mut Workspace, generation: u64, id: JobId) {
+        status(
+            workspace,
+            generation,
+            id,
+            JobOperation::Poll,
+            JobState::Completed,
+        );
+        workspace.receive_message(Message::Result {
+            generation,
+            id,
+            result: Box::new(Ok(AnalyzeReply {
+                result: Ok(crate::tests::report()),
+            })),
+            transfer_ns: 0,
+            parsing_ns: 0,
+        });
+        assert_eq!(workspace.report_job_id, Some(id));
+        assert!(!workspace.previous_report);
+    }
+
+    let size = Vec2::new(1440.0, 900.0);
+    for rerun in [false, true] {
+        let ctx = Context::default();
+        crate::palette::configure(&ctx);
+        let mut workspace = Workspace::default();
+        workspace.graph.set_mode(crate::widgets::GraphMode::States);
+        workspace.view = crate::app::View::Graph;
+        let first = JobId(u64::MAX);
+        let generation = begin(&mut workspace, first);
+        // The initial server result is accepted before any workspace frame.
+        complete(&mut workspace, generation, first);
+        if rerun {
+            settled(&ctx, &mut workspace, size);
+            let current = JobId(u64::MAX - 1);
+            let generation = begin(&mut workspace, current);
+            let retained = settled(&ctx, &mut workspace, size);
+            assert!(workspace.previous_report);
+            let labels = texts(&retained);
+            for expected in [
+                format!("Current Job ID: {}", current.0),
+                format!("Result Job ID: {}", first.0),
+            ] {
+                assert!(
+                    labels.iter().any(|(label, _)| *label == expected),
+                    "{expected}: {labels:?}"
+                );
+            }
+            // Accepting this report collapses two metadata rows to one.
+            complete(&mut workspace, generation, current);
+        }
+        let fitted = settled(&ctx, &mut workspace, size);
+        assert_eq!(
+            fitted.platform_output.num_completed_passes, 1,
+            "settled status geometry must not keep requesting another pass; rerun={rerun}"
+        );
+        let fitted_zoom = workspace.graph.zoom;
+        let fitted_titles = graph_titles(&fitted);
+        assert_eq!(fitted_titles.len(), 3, "rerun={rerun}");
+        assert!(has_camera_label(&fitted, fitted_zoom, "Fit"));
+        workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
+        let manual = settled(&ctx, &mut workspace, size);
+        assert!(workspace.graph.zoom < fitted_zoom);
+        assert_ne!(graph_titles(&manual), fitted_titles);
+        let restored = press_f(&ctx, &mut workspace, size, Modifiers::NONE, Some("f"));
+        assert_eq!(workspace.graph.zoom, fitted_zoom, "rerun={rerun}");
+        assert!(has_camera_label(&restored, fitted_zoom, "Fit"));
+        assert_eq!(
+            graph_titles(&restored),
+            fitted_titles,
+            "accepted server result first-fit changed after F; rerun={rerun}"
+        );
+    }
+}

@@ -96,9 +96,14 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
             if let Some(reason) = &presentation.reason {
                 ui.label(RichText::new(reason).small().color(palette::MUTED));
             }
-            if let Some(reason)=&diagnostic.precision {
-                ui.label(RichText::new("Value precision remains unknown; complete conservative propagation continues.").color(palette::WARNING));
-                errors::fields(ui,|ui|query(ui,reason));
+            if let Some(reason) = &diagnostic.precision {
+                ui.label(
+                    RichText::new(
+                        "Value precision remains unknown; conservative propagation continues.",
+                    )
+                    .color(palette::WARNING),
+                );
+                errors::fields(ui, |ui| query(ui, reason));
             }
             if let Some(reduction) = &diagnostic.reduction {
                 ui.label(
@@ -362,6 +367,7 @@ fn query(ui: &mut Ui, reason: &api::QueryBoundary) {
         R::ScalarFactLimit => "Scalar fact bound",
         R::ScalarFactError(_) => "Scalar fact interpretation failed",
         R::ExpressionLimit => "Expression size / encoding work bound",
+        R::Unsupported(0x20) => "Keccak input comparison is not fully modeled",
         R::Unsupported(_) => "Unsupported pure operation",
         R::ResourceLimit => "Native solver resource allowance",
         R::SolverUnknown(_) => "Solver could not decide",
@@ -379,6 +385,7 @@ fn query(ui: &mut Ui, reason: &api::QueryBoundary) {
             value::text(ui, "Provider", format!("{:?}", detail.provider));
             value::text(ui, "Binding diagnostic", &detail.message);
         }
+        R::Unsupported(0x20) => value::text(ui, "Opcode", "0x20 (KECCAK256)"),
         R::Unsupported(opcode) => value::text(ui, "Opcode", format!("0x{opcode:02x}")),
         _ => {}
     }
