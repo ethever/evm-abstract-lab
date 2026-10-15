@@ -539,20 +539,23 @@ fn actual_native_cancellation_stops_batch_and_same_worker_next_batch_is_clean() 
             // Bound that startup separately; measure cancellation responsiveness
             // from the actual cancellation request, not unrelated preparation.
             let cancellation = token.clone();
-            let canceller = scope.spawn(move || {
+            let (cancelled, cancellation_time) = mpsc::channel();
+            scope.spawn(move || {
                 native_started
                     .recv_timeout(Duration::from_secs(60))
                     .unwrap();
                 thread::sleep(Duration::from_millis(30));
                 let requested_at = Instant::now();
                 cancellation.cancel();
-                requested_at
+                cancelled.send(requested_at).unwrap();
             });
             let outcomes = with_cancellation(&token, || {
                 check_candidates(&base, &value, &candidates, Provider::Z3, u32::MAX)
             });
             let completed_at = Instant::now();
-            let requested_at = canceller.join().unwrap();
+            let requested_at = cancellation_time
+                .recv_timeout(Duration::from_secs(60))
+                .unwrap();
             assert_eq!(outcomes, [Outcome::Unknown(Unknown::Cancelled)]);
             assert!(completed_at >= requested_at);
             assert!(completed_at.duration_since(requested_at) < Duration::from_secs(5));
