@@ -473,8 +473,28 @@ fn retry_after_empty_or_failed_catalog_recovers_and_ignores_old_callbacks() {
 }
 
 const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
-const WETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
-const USDT: &str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+const MAINNET_EXAMPLES: [(&str, &str); 8] = [
+    ("USDC", USDC),
+    ("WETH", "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+    ("USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7"),
+    ("Multicall3", "0xcA11bde05977b3631167028862bE2a173976CA11"),
+    (
+        "Uniswap V2 Router02",
+        "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+    ),
+    (
+        "Uniswap V2 Pair (USDC/WETH)",
+        "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",
+    ),
+    (
+        "Uniswap V2 Factory",
+        "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",
+    ),
+    (
+        "Uniswap V4 PoolManager",
+        "0x000000000004444c5dc75cB358380D2e3dE08A90",
+    ),
+];
 
 fn settle_sized(ctx: &Context, form: &mut AnalysisForm, size: Vec2) -> FullOutput {
     paint_sized(ctx, form, vec![], size);
@@ -521,7 +541,9 @@ fn visible_label(output: &FullOutput, label: &str, viewport: Rect) -> Pos2 {
             egui::Shape::Text(text) if text.galley.text() == label => {
                 let rect = Rect::from_min_size(text.pos, text.galley.size());
                 let shown = rect.intersect(clip);
-                shown.width() >= rect.width() - 1.0 && shown.height() >= rect.height() - 1.0
+                !text.galley.elided
+                    && shown.width() >= rect.width() - 1.0
+                    && shown.height() >= rect.height() - 1.0
             }
             egui::Shape::Vec(shapes) => shapes.iter().any(|shape| visible(shape, label, clip)),
             _ => false,
@@ -533,7 +555,7 @@ fn visible_label(output: &FullOutput, label: &str, viewport: Rect) -> Pos2 {
             label,
             shape.clip_rect.intersect(viewport)
         )),
-        "{label} is allocated but clipped"
+        "{label} is allocated but clipped or truncated"
     );
     center
 }
@@ -558,6 +580,9 @@ fn ethereum_entry_examples_submit_the_chosen_address_and_preserve_every_other_in
     form.environment.call_value = evm_abstract_protocol::WordInput::Concrete("0x2a".into());
     form.environment.chain_id = Some("0x1".into());
     form.limits.max_work = 9_007_199_254_740_993;
+    form.limits.max_states = 12_345;
+    form.limits.max_constants = 42;
+    form.limits.rpc_max_response_bytes = 8 * 1024 * 1024;
     form.fork = Fork::Prague;
     let mut expected = form.request();
     let AnalysisInput::Rpc(input) = &expected.input else {
@@ -568,14 +593,15 @@ fn ethereum_entry_examples_submit_the_chosen_address_and_preserve_every_other_in
         "default entry must be the reviewed mainnet USDC address"
     );
     let size = Vec2::new(900.0, 700.0);
-    for (current, next, address) in [
-        ("USDC", "WETH", WETH),
-        ("WETH", "USDT", USDT),
-        ("USDT", "USDC", USDC),
-    ] {
+    let mut current = "USDC";
+    for (next, address) in MAINNET_EXAMPLES
+        .into_iter()
+        .skip(1)
+        .chain([MAINNET_EXAMPLES[0]])
+    {
         form.open = true;
         let output = settle_sized(&ctx, &mut form, size);
-        click(&ctx, &mut form, text_center(&output, current));
+        assert!(click(&ctx, &mut form, text_center(&output, current)).is_none());
         let output = settle_sized(&ctx, &mut form, size);
         assert!(
             click(&ctx, &mut form, text_center(&output, next)).is_none(),
@@ -592,8 +618,10 @@ fn ethereum_entry_examples_submit_the_chosen_address_and_preserve_every_other_in
         );
         let output = settle_sized(&ctx, &mut form, size);
         text_center(&output, next);
+        assert!(form.open, "analysis was submitted before clicking Analyze");
         let submitted = click(&ctx, &mut form, text_center(&output, "Analyze")).unwrap();
         assert_eq!(submitted, expected);
+        current = next;
         frame(&ctx, &mut form, vec![]);
     }
 }
@@ -611,12 +639,27 @@ fn custom_entry_remains_editable_visible_and_persistent_in_narrow_windows() {
         };
         load_providers(&mut form);
         let viewport = Rect::from_min_size(Pos2::ZERO, size);
+        let mut current = "USDC";
+        for (label, address) in MAINNET_EXAMPLES.into_iter().skip(1) {
+            let output = settle_sized(&ctx, &mut form, size);
+            let selector = visible_label(&output, current, viewport);
+            assert!(click_sized(&ctx, &mut form, selector, size).is_none());
+            let output = settle_sized(&ctx, &mut form, size);
+            let choice = visible_label(&output, label, viewport);
+            visible_label(&output, "Custom", viewport);
+            assert!(click_sized(&ctx, &mut form, choice, size).is_none());
+            let output = settle_sized(&ctx, &mut form, size);
+            visible_label(&output, label, viewport);
+            assert_eq!(form.rpc.address, address);
+            current = label;
+        }
         let output = settle_sized(&ctx, &mut form, size);
-        let usdc = visible_label(&output, "USDC", viewport);
-        click_sized(&ctx, &mut form, usdc, size);
+        let selector = visible_label(&output, current, viewport);
+        assert!(click_sized(&ctx, &mut form, selector, size).is_none());
         let output = settle_sized(&ctx, &mut form, size);
         let custom = visible_label(&output, "Custom", viewport);
-        click_sized(&ctx, &mut form, custom, size);
+        assert!(click_sized(&ctx, &mut form, custom, size).is_none());
+        assert!(form.rpc.address.is_empty());
         settle_sized(&ctx, &mut form, size);
         let editor = ctx.read_response(Id::new("rpc_address")).unwrap();
         assert!(editor.interact_rect.height() >= 16.0);
@@ -656,18 +699,26 @@ fn typing_a_known_address_changes_the_label_without_rewriting_the_draft() {
         ..AnalysisForm::default()
     };
     load_providers(&mut form);
-    settle_sized(&ctx, &mut form, Vec2::new(900.0, 700.0));
-    let lower = WETH.to_ascii_lowercase();
-    replace_text(&ctx, &mut form, &lower);
-    let output = settle_sized(&ctx, &mut form, Vec2::new(900.0, 700.0));
-    text_center(&output, "WETH");
-    assert_eq!(
-        form.rpc.address, lower,
-        "recognizing an example must not normalize user text in place"
-    );
+    let size = Vec2::new(900.0, 700.0);
+    settle_sized(&ctx, &mut form, size);
+    for (label, address) in MAINNET_EXAMPLES {
+        for draft in [address.to_ascii_lowercase(), address.to_ascii_uppercase()] {
+            let editor = ctx.read_response(Id::new("rpc_address")).unwrap();
+            assert!(click(&ctx, &mut form, editor.interact_rect.center()).is_none());
+            replace_text(&ctx, &mut form, &draft);
+            let output = settle_sized(&ctx, &mut form, size);
+            visible_label(&output, label, Rect::from_min_size(Pos2::ZERO, size));
+            assert_eq!(
+                form.rpc.address, draft,
+                "recognizing {label} must not normalize user text in place"
+            );
+            assert!(form.open, "typing an example must not submit analysis");
+        }
+    }
+    let draft = form.rpc.address.clone();
     let request = frame(&ctx, &mut form, vec![enter()]).unwrap();
     let AnalysisInput::Rpc(input) = request.input else {
         panic!("expected RPC input")
     };
-    assert_eq!(input.address, lower);
+    assert_eq!(input.address, draft);
 }

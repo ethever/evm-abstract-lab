@@ -3467,14 +3467,25 @@ RPC_TEST_TOKEN = "rpc-value-shown-in-provider-selector"
 USDC_ENTRY = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 WETH_ENTRY = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 USDT_ENTRY = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+RPC_ENTRY_EXAMPLES = (
+    ("USDC", USDC_ENTRY),
+    ("WETH", WETH_ENTRY),
+    ("USDT", USDT_ENTRY),
+    ("Multicall3", "0xcA11bde05977b3631167028862bE2a173976CA11"),
+    ("Uniswap V2 Router02", "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
+    ("Uniswap V2 Pair (USDC/WETH)", "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+    ("Uniswap V2 Factory", "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"),
+    ("Uniswap V4 PoolManager", "0x000000000004444c5dc75cB358380D2e3dE08A90"),
+)
 CUSTOM_ENTRY = "0x3333333333333333333333333333333333333333"
+RPC_ENTRY_ADDRESSES = {address.lower() for _, address in RPC_ENTRY_EXAMPLES} | {CUSTOM_ENTRY}
 
 
 class EntryRpcFixture(RpcFixture):
-    """Preset addresses execute tiny fixture code, never live token contracts."""
+    """Preset addresses execute tiny fixture code, never live mainnet contracts."""
     def _result(self, method, params):
         account_methods = ("eth_getCode", "eth_getBalance", "eth_getTransactionCount", "eth_getStorageAt")
-        if method in account_methods and params[0].lower() in (USDC_ENTRY.lower(), WETH_ENTRY.lower(), USDT_ENTRY.lower(), CUSTOM_ENTRY):
+        if method in account_methods and params[0].lower() in RPC_ENTRY_ADDRESSES:
             assert params[-1] == {"blockHash": self.block_hash, "requireCanonical": True}
             return {"eth_getCode": "0x00", "eth_getBalance": "0x100000", "eth_getTransactionCount": "0x1", "eth_getStorageAt": "0x" + "00" * 32}[method]
         return super()._result(method, params)
@@ -4009,8 +4020,15 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     submitted = []
     page.on("request", lambda request: submitted.append(request.post_data_json)
             if request.method == "POST" and request.url.endswith("/api/tasks") else None)
-    results = {"automatic_entry": baseline["input"], "selected_addresses": [], "snapshot_pins": {}}
-    for ordinal, (label, address, menu_y) in enumerate([("weth", WETH_ENTRY, 487), ("usdt", USDT_ENTRY, 510), ("usdc", USDC_ENTRY, 464)]):
+    expected_submissions = []
+    results = {"automatic_entry": baseline["input"], "selected_addresses": [],
+               "selected_examples": [], "snapshot_pins": {}}
+    # Keep the original token transitions, then exercise every new mainnet row.
+    # The expanded popup retains 20-point controls and a 23-point row stride;
+    # its 300-point height displays all eight presets and Custom without scrolling.
+    for ordinal, menu_index in enumerate([1, 2, 0, *range(3, len(RPC_ENTRY_EXAMPLES))]):
+        ui_label, address = RPC_ENTRY_EXAMPLES[menu_index]
+        label = re.sub(r"[^a-z0-9]+", "-", ui_label.lower()).strip("-")
         open_rpc_input(page, canvas)
         if ordinal == 0:
             # The entry choice must preserve an independently chosen provider.
@@ -4020,9 +4038,11 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
         canvas.click(position={"x": 454, "y": 425})
         rendered_frame(page)
         canvas.screenshot(path=str(output / f"entry-{label}-options.png"))
-        canvas.click(position={"x": 460, "y": menu_y})
+        request_offset = len(rpc.requests)
+        canvas.click(position={"x": 460, "y": 464 + menu_index * 23})
         settle_gesture(page)
-        assert len(submitted) == ordinal, "choosing an entry unexpectedly submitted analysis"
+        assert submitted == expected_submissions, f"choosing {ui_label} unexpectedly submitted analysis"
+        assert len(rpc.requests) == request_offset, f"choosing {ui_label} unexpectedly contacted the provider"
         canvas.screenshot(path=str(output / f"entry-{label}-selected.png"))
         request_offset = len(rpc.requests)
         with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
@@ -4037,9 +4057,19 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
         expected["input"]["Rpc"]["provider_id"] = providers[1]["id"]
         expected["input"]["Rpc"]["address"] = address
         assert reply.request.post_data_json == expected, "entry selection reset unrelated request fields"
+        expected_submissions.append(expected)
+        assert submitted == expected_submissions, f"{ui_label} did not submit exactly once to the chosen provider"
         assert reply.json()["result"]["Ok"]["metadata"]["entry_address"].lower() == address.lower()
         results["selected_addresses"].append(address)
+        results["selected_examples"].append({"label": ui_label, "address": address})
     open_rpc_input(page, canvas)
+    canvas.click(position={"x": 454, "y": 425})
+    rendered_frame(page)
+    canvas.screenshot(path=str(output / "entry-custom-options.png"))
+    # Custom follows all presets plus the popup's separator.
+    canvas.click(position={"x": 460, "y": 464 + len(RPC_ENTRY_EXAMPLES) * 23 + 9})
+    settle_gesture(page)
+    assert submitted == expected_submissions, "choosing Custom unexpectedly submitted analysis"
     canvas.click(position={"x": 600, "y": 448})
     page.keyboard.press("Control+A")
     page.keyboard.type(CUSTOM_ENTRY, delay=3)
@@ -4049,7 +4079,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     settle_gesture(page)
     open_rpc_input(page, canvas)
     canvas.screenshot(path=str(output / "entry-custom-reopened.png"))
-    assert len(submitted) == 3
+    assert submitted == expected_submissions, "editing or reopening Custom unexpectedly submitted analysis"
     request_offset = len(rpc.requests)
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
         page.keyboard.press("Control+Enter")
@@ -4063,7 +4093,11 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     expected["input"]["Rpc"]["provider_id"] = providers[1]["id"]
     expected["input"]["Rpc"]["address"] = CUSTOM_ENTRY
     assert reply.request.post_data_json == expected, "reopening the form replaced the hand-edited address"
+    expected_submissions.append(expected)
+    assert submitted == expected_submissions, "Custom did not submit exactly once to the chosen provider"
+    assert reply.json()["result"]["Ok"]["metadata"]["entry_address"].lower() == CUSTOM_ENTRY.lower()
     results["custom_reopened_address"] = CUSTOM_ENTRY
+    results["provider_submissions"] = [request["input"] for request in submitted]
     results["renderer"] = webgpu_evidence(page)
     page.close()
     return results
@@ -4088,7 +4122,7 @@ def configured_world_interactions(browser, args):
                 page.close()
                 examples = entry_example_interactions(browser, url, args.output, providers, rpc)
                 # Each scenario audits its own pinned acquisition, independently
-                # of the completed WETH/USDT/USDC/custom-address example tasks.
+                # of the completed preset and custom-address example tasks.
                 rpc.requests.clear()
                 result = world_interactions(browser, url, args.output, rpc, pending, providers)
                 result["entry_examples"] = examples
