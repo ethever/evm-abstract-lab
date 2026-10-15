@@ -1,10 +1,26 @@
-# Resolve workspace feature requests before splitting Cargo invocations. Cargo's
-# resolver still owns registry dependencies; this fixed point makes each local
-# package see the features it saw in the original --workspace matrix.
-{ pkgs, sources }:
+# Resolve local features inside the original Cargo root/target context. Cargo
+# itself resolves registry features through a package with a disabled target.
+{
+  pkgs,
+  sources,
+  craneLib ? null,
+  cargoVendorDir ? null,
+}:
 let
   lib = pkgs.lib;
   sorted = values: lib.sort builtins.lessThan (lib.unique values);
+  forModes =
+    f:
+    lib.genAttrs [ "native" "wasm" ] (
+      target: lib.genAttrs [ "build" "test" ] (kind: f { inherit target kind; })
+    );
+  defaultRoots =
+    mode:
+    if mode.target == "wasm" && sources.packages ? evm-abstract-web then
+      [ "evm-abstract-web" ]
+    else
+      sources.names;
+  scopeRoots = mode: mode.featureRoots or (defaultRoots mode);
   dependenciesByName = lib.genAttrs sources.names (
     name:
     lib.unique (
@@ -18,13 +34,12 @@ let
       })
     )
   );
-  allDependencies = name: dependenciesByName.${name};
-  featureDefinitions =
+  definitions = lib.genAttrs sources.names (
     name:
     let
       declared = sources.packages.${name}.manifest.features or { };
       suppressed = lib.concatMap (
-        values: map (value: lib.removePrefix "dep:" value) (lib.filter (lib.hasPrefix "dep:") values)
+        values: map (lib.removePrefix "dep:") (lib.filter (lib.hasPrefix "dep:") values)
       ) (builtins.attrValues declared);
       implicit = lib.listToAttrs (
         lib.concatMap (
@@ -32,16 +47,25 @@ let
           lib.optional ((dependency.spec.optional or false) && !(lib.elem dependency.alias suppressed)) (
             lib.nameValuePair dependency.alias [ "dep:${dependency.alias}" ]
           )
-        ) (allDependencies name)
+        ) dependenciesByName.${name}
       );
     in
-    implicit // declared;
-  definitions = lib.genAttrs sources.names featureDefinitions;
+    implicit // declared
+  );
   empty = lib.genAttrs sources.names (_: {
+    active = false;
     features = [ ];
     dependencies = [ ];
     requests = { };
   });
+  activate =
+    state: name:
+    state
+    // {
+      ${name} = state.${name} // {
+        active = true;
+      };
+    };
   addFeature =
     state: name: feature:
     if !(builtins.hasAttr feature definitions.${name}) then
@@ -78,49 +102,61 @@ let
     else if lib.hasInfix "/" value then
       let
         parts = lib.splitString "/" value;
-        rawAlias = builtins.head parts;
-        weak = lib.hasSuffix "?" rawAlias;
-        alias = lib.removeSuffix "?" rawAlias;
-        feature = lib.last parts;
-        enabled = lib.elem alias state.${name}.dependencies;
+        raw = builtins.head parts;
+        alias = lib.removeSuffix "?" raw;
       in
-      if weak && !enabled then state else addRequest (addDependency state name alias) name alias feature
+      if lib.hasSuffix "?" raw && !(lib.elem alias state.${name}.dependencies) then
+        state
+      else
+        addRequest (addDependency state name alias) name alias (lib.last parts)
     else
       addFeature state name value;
   expandPackage =
-    state: name:
-    let
-      seeded = lib.foldl' (
+    mode: roots: state: name:
+    if !state.${name}.active then
+      state
+    else
+      let
+        dependencies = sources.dependencies name (
+          mode
+          // {
+            kind = if lib.elem name roots then mode.kind else "build";
+          }
+        );
+        seeded = lib.foldl' (
+          current: dependency:
+          if dependency.spec.optional or false then current else addDependency current name dependency.alias
+        ) state dependencies;
+        expanded = lib.foldl' (
+          current: feature: lib.foldl' (expandValue name) current definitions.${name}.${feature}
+        ) seeded seeded.${name}.features;
+      in
+      lib.foldl' (
         current: dependency:
-        if dependency.spec.optional or false then current else addDependency current name dependency.alias
-      ) state (allDependencies name);
-      expanded = lib.foldl' (
-        current: feature: lib.foldl' (expandValue name) current definitions.${name}.${feature}
-      ) seeded seeded.${name}.features;
-    in
-    lib.foldl' (
-      current: dependency:
-      if dependency.name == null || !(lib.elem dependency.alias current.${name}.dependencies) then
-        current
-      else
-        lib.foldl' (next: feature: addFeature next dependency.name feature) current (
-          (dependency.spec.features or [ ])
-          ++ (current.${name}.requests.${dependency.alias} or [ ])
-          ++ lib.optional (dependency.spec.default-features or true) "default"
-        )
-    ) expanded (allDependencies name);
+        if dependency.name == null || !(lib.elem dependency.alias current.${name}.dependencies) then
+          current
+        else
+          lib.foldl' (next: feature: addFeature next dependency.name feature)
+            (activate current dependency.name)
+            (
+              (dependency.spec.features or [ ])
+              ++ (current.${name}.requests.${dependency.alias} or [ ])
+              ++ lib.optional (dependency.spec.default-features or true) "default"
+            )
+      ) expanded dependencies;
   fixedPoint =
-    state:
+    mode: roots: state:
     let
-      next = lib.foldl' expandPackage state sources.names;
+      next = lib.foldl' (expandPackage mode roots) state sources.names;
     in
-    if next == state then state else fixedPoint next;
+    if next == state then state else fixedPoint mode roots next;
   resolve =
-    selection:
+    selection: mode:
     let
+      roots = scopeRoots mode;
       seeded = lib.foldl' (
         state: name:
-        lib.foldl' (current: feature: addFeature current name feature) state (
+        lib.foldl' (current: feature: addFeature current name feature) (activate state name) (
           [ "default" ]
           ++ (
             if selection == "all" then
@@ -129,103 +165,71 @@ let
               lib.optional (selection == "imbl") "imbl"
           )
         )
-      ) empty sources.names;
-      packages = fixedPoint seeded;
+      ) empty roots;
+      packages = fixedPoint mode roots seeded;
     in
     {
-      inherit packages;
+      inherit packages selection;
       signature = builtins.toJSON packages;
     };
-  default = resolve "default";
-  imblCandidate = resolve "imbl";
-  imbl = if imblCandidate.signature == default.signature then default else imblCandidate;
-  allCandidate = resolve "all";
-  allFeatures =
-    if allCandidate.signature == default.signature then
-      default
-    else if allCandidate.signature == imbl.signature then
-      imbl
+  resolvedByMode = forModes (
+    mode: lib.genAttrs [ "default" "imbl" "all" ] (selection: resolve selection mode)
+  );
+  forMode =
+    mode: configuration:
+    if scopeRoots mode == defaultRoots mode then
+      resolvedByMode.${mode.target}.${mode.kind}.${configuration.selection}
     else
-      allCandidate;
+      resolve configuration.selection mode;
+  default = resolvedByMode.native.test.default;
+  imbl = resolvedByMode.native.test.imbl;
+  allFeatures = resolvedByMode.native.test.all;
+  configurationsByMode = forModes (
+    mode:
+    lib.listToAttrs (
+      map (configuration: lib.nameValuePair configuration.signature configuration) (
+        builtins.attrValues resolvedByMode.${mode.target}.${mode.kind}
+      )
+    )
+  );
   devProfile = sources.rootManifest.profile.dev or { };
   testProfile = lib.recursiveUpdate devProfile (
     builtins.removeAttrs (sources.rootManifest.profile.test or { }) [ "panic" ]
   );
-  # --profile test selects lib test harnesses even for `cargo build --lib`.
-  # Only use ordinary dev libraries when their actual declared settings match;
-  # a future test-only profile change must select a separate cache automatically.
   testSharesDevArtifacts = testProfile == devProfile && (devProfile.panic or "unwind") == "unwind";
+  # --profile test selects a harness even for build --lib. Equal declared settings
+  # permit ordinary dev libraries; changed test settings select a separate cache.
   libraryProfileFor = profile: if profile == "test" && testSharesDevArtifacts then "dev" else profile;
-  configurationsBySignature = lib.listToAttrs (
-    map (configuration: lib.nameValuePair configuration.signature configuration) [
-      default
-      imbl
-      allFeatures
-    ]
-  );
-  forModes =
-    function:
-    lib.genAttrs [ "native" "wasm" ] (
-      target: lib.genAttrs [ "build" "test" ] (kind: function { inherit target kind; })
-    );
-  # Resolver 2/3 separates host build-dependency features from normal/dev ones.
-  # Keep those groups separate while reproducing workspace-wide unification.
-  dependencyKey =
-    dependency:
-    builtins.toJSON {
-      name = dependency.spec.package or dependency.alias;
-      source = builtins.removeAttrs dependency.spec [
-        "features"
-        "default-features"
-        "optional"
-        "package"
-      ];
-      host = dependency.kind == "build";
-    };
-  computeRegistryRequests =
-    mode: configuration:
-    lib.foldl' (
-      groups: name:
-      lib.foldl' (
-        current: dependency:
-        if
-          dependency.name != null || !(lib.elem dependency.alias configuration.packages.${name}.dependencies)
-        then
-          current
-        else
-          let
-            key = dependencyKey dependency;
-            previous =
-              current.${key} or {
-                features = [ ];
-                defaults = false;
-              };
-          in
-          current
-          // {
-            ${key} = {
-              features = sorted (
-                previous.features
-                ++ (dependency.spec.features or [ ])
-                ++ (configuration.packages.${name}.requests.${dependency.alias} or [ ])
-              );
-              defaults = previous.defaults || (dependency.spec.default-features or true);
-            };
-          }
-      ) groups (sources.dependencies name mode)
-    ) { } sources.names;
-  registryRequestsByMode = forModes (
+  unifier = import ./cargo-feature-unifier.nix {
+    inherit
+      pkgs
+      sources
+      craneLib
+      cargoVendorDir
+      ;
+  };
+  unifiers = forModes (
     mode:
     lib.mapAttrs (
-      _: configuration: computeRegistryRequests mode configuration
-    ) configurationsBySignature
+      _: configuration: unifier { inherit mode configuration; }
+    ) configurationsByMode.${mode.target}.${mode.kind}
   );
-  registryRequests =
-    mode: configuration: registryRequestsByMode.${mode.target}.${mode.kind}.${configuration.signature};
+  contextFor =
+    mode: configuration:
+    let
+      selected = forMode mode configuration;
+    in
+    if scopeRoots mode == defaultRoots mode then
+      unifiers.${mode.target}.${mode.kind}.${selected.signature}
+    else
+      unifier {
+        inherit mode;
+        configuration = selected;
+      };
+  resolverManifest = mode: configuration: (contextFor mode configuration).manifest;
   computePatchedManifest =
     name: mode: configuration:
     let
-      groups = registryRequests mode configuration;
       patchTable =
         kind: values:
         lib.mapAttrs (
@@ -235,38 +239,14 @@ let
             dependency = lib.findFirst (candidate: candidate.alias == alias && candidate.kind == kind) null (
               sources.dependencies name mode
             );
-            local = dependency != null && dependency.name != null;
-            request =
-              if local then
-                {
-                  features = configuration.packages.${dependency.name}.features;
-                  defaults = spec.default-features or true;
-                }
-              else if dependency != null then
-                groups.${dependencyKey dependency} or {
-                  features = [ ];
-                  defaults = spec.default-features or true;
-                }
-              else
-                {
-                  features = [ ];
-                  defaults = spec.default-features or true;
-                };
-            # Inherited paths are rooted at the workspace manifest, whereas an
-            # explicit dependency's path is relative to its package manifest.
-            base =
-              if (builtins.isAttrs original && (original.workspace or false)) then
-                original
-              else if builtins.isString original then
-                { version = original; }
-              else
-                original;
           in
-          base
-          // {
-            features = sorted ((spec.features or [ ]) ++ request.features);
-            default-features = request.defaults;
-          }
+          if dependency == null || dependency.name == null then
+            original
+          else
+            original
+            // {
+              features = sorted ((spec.features or [ ]) ++ configuration.packages.${dependency.name}.features);
+            }
         ) values;
       patch =
         table:
@@ -292,47 +272,52 @@ let
     mode:
     lib.mapAttrs (
       _: configuration: lib.genAttrs sources.names (name: computePatchedManifest name mode configuration)
-    ) configurationsBySignature
+    ) configurationsByMode.${mode.target}.${mode.kind}
   );
   patchManifest =
     name: mode: configuration:
-    patchedManifests.${mode.target}.${mode.kind}.${configuration.signature}.${name};
+    let
+      selected = forMode mode configuration;
+    in
+    if scopeRoots mode == defaultRoots mode then
+      patchedManifests.${mode.target}.${mode.kind}.${selected.signature}.${name}
+    else
+      computePatchedManifest name mode selected;
   featureArgs =
     name: configuration:
+    lib.optionalString (configuration.packages.${name}.features != [ ])
+      "--features ${
+        lib.escapeShellArg (lib.concatStringsSep "," configuration.packages.${name}.features)
+      }";
+  packageArgs =
+    name: mode: configuration:
     let
-      features = configuration.packages.${name}.features;
+      selected = forMode mode configuration;
+      features = map (feature: "${name}/${feature}") selected.packages.${name}.features;
     in
-    lib.optionalString (
+    "-p ${lib.escapeShellArg name} -p nix-feature-unifier --no-default-features"
+    + lib.optionalString (
       features != [ ]
-    ) "--features ${lib.escapeShellArg (lib.concatStringsSep "," features)}";
-  # Only manifests in this closure are rewritten. An imbl-only matrix change
-  # must not alter the notation/protocol derivation hashes.
-  makeConfiguredSource =
-    roots: mode: configuration:
+    ) " --features ${lib.escapeShellArg (lib.concatStringsSep "," features)}";
+  workspaceFeatureArgs =
+    configuration:
+    lib.concatMapStringsSep " " (
+      name:
+      lib.concatMapStringsSep " " (
+        feature: "--features ${lib.escapeShellArg "${name}/${feature}"}"
+      ) configuration.packages.${name}.features
+    ) sources.names;
+  workspaceArgs =
+    mode: configuration:
     let
-      sourceMode = mode // {
-        kind = mode.sourceKind or mode.kind;
-        inherit configuration;
-      };
-      selected = sources.closure roots sourceMode;
-      manifests = map (name: {
-        path = sources.packages.${name}.path;
-        file = manifestFiles.${mode.target}.${mode.kind}.${configuration.signature}.${name}.real;
-      }) selected;
-      base = sources.sourceFor roots sourceMode;
+      selected = forMode mode configuration;
     in
-    pkgs.runCommand "source" { } ''
-      mkdir -p "$out"
-      cp -R ${base}/. "$out/"
-      chmod -R u+w "$out"
-      ${lib.concatMapStringsSep "\n" (
-        manifest: ''cp ${manifest.file} "$out/${manifest.path}/Cargo.toml"''
-      ) manifests}
-    '';
-  # Crane's writer is exposed by its library and keeps generated TOML stable.
-  craneWriteTOML = name: value: (pkgs.formats.toml { }).generate name value;
+    if mode.target == "wasm" then
+      packageArgs "evm-abstract-web" mode selected
+    else
+      "--workspace --no-default-features ${workspaceFeatureArgs selected}";
+  writeTOML = name: value: (pkgs.formats.toml { }).generate name value;
   dummyBuild = pkgs.writeText "dummy-build.rs" "fn main() {}\n";
-  dummyRoot = craneWriteTOML "Cargo.toml" sources.rootManifest;
   manifestFiles = forModes (
     mode:
     lib.mapAttrs (
@@ -343,8 +328,8 @@ let
           manifest = patchManifest name mode configuration;
         in
         {
-          real = craneWriteTOML "${name}-Cargo.toml" manifest;
-          dummy = craneWriteTOML "${name}-Cargo.toml" (
+          real = writeTOML "${name}-Cargo.toml" manifest;
+          dummy = writeTOML "${name}-Cargo.toml" (
             manifest
             // {
               package = manifest.package // {
@@ -354,84 +339,93 @@ let
           );
         }
       )
-    ) configurationsBySignature
+    ) configurationsByMode.${mode.target}.${mode.kind}
   );
-  # Materialize each single-package source once. Its dependency closure can be
-  # large, and tests, Clippy, Rustdoc and library caches all request the same tree.
-  configuredSources = forModes (
+  makeSource =
+    dummy: roots: mode: requested:
+    let
+      configuration = forMode mode requested;
+      sourceMode = mode // {
+        kind = mode.sourceKind or mode.kind;
+        inherit configuration;
+      };
+      selected = sources.closure roots sourceMode;
+      files = map (name: {
+        path = sources.packages.${name}.path;
+        file =
+          manifestFiles.${mode.target}.${mode.kind}.${configuration.signature}.${name}.${
+            if dummy then "dummy" else "real"
+          };
+      }) selected;
+      base = if dummy then sources.dummy else sources.sourceFor roots sourceMode;
+    in
+    pkgs.runCommand "source" { } ''
+      mkdir -p "$out"
+      cp -R ${base}/. "$out/"
+      chmod -R u+w "$out"
+      cp -R ${(contextFor mode configuration).overlay}/. "$out/"
+      ${lib.concatMapStringsSep "\n" (
+        manifest: ''cp ${manifest.file} "$out/${manifest.path}/Cargo.toml"''
+      ) files}
+    '';
+  # Shared attrsets memoize source traversal/TOML generation across all Cargo
+  # consumers. Matrix names with equal resolved state select the same entries.
+  sourceCache = forModes (
     mode:
     lib.genAttrs [ "build" "test" ] (
       sourceKind:
       lib.mapAttrs (
         _: configuration:
         lib.genAttrs sources.names (
-          name: makeConfiguredSource [ name ] (mode // { inherit sourceKind; }) configuration
+          name: makeSource false [ name ] (mode // { inherit sourceKind; }) configuration
         )
-      ) configurationsBySignature
+      ) configurationsByMode.${mode.target}.${mode.kind}
     )
+  );
+  dummyCache = forModes (
+    mode:
+    lib.mapAttrs (
+      _: configuration: lib.genAttrs sources.names (name: makeSource true [ name ] mode configuration)
+    ) configurationsByMode.${mode.target}.${mode.kind}
   );
   configuredSource =
     roots: mode: configuration:
-    if builtins.length roots == 1 then
-      configuredSources.${mode.target}.${mode.kind}.${mode.sourceKind or mode.kind}.${configuration.signature}.${builtins.head roots}
-    else
-      makeConfiguredSource roots mode configuration;
-  makeConfiguredDummy =
-    roots: mode: configuration:
     let
-      files = map (name: {
-        path = sources.packages.${name}.path;
-        file = manifestFiles.${mode.target}.${mode.kind}.${configuration.signature}.${name}.dummy;
-      }) (sources.closure roots (mode // { inherit configuration; }));
+      selected = forMode mode configuration;
     in
-    pkgs.runCommand "source" { } ''
-      mkdir -p "$out"
-      cp -R ${sources.dummy}/. "$out/"
-      chmod -R u+w "$out"
-      cp ${dummyRoot} "$out/Cargo.toml"
-      ${lib.concatMapStringsSep "\n" (
-        manifest: ''cp ${manifest.file} "$out/${manifest.path}/Cargo.toml"''
-      ) files}
-    '';
-  configuredDummies = forModes (
-    mode:
-    lib.mapAttrs (
-      _: configuration: lib.genAttrs sources.names (name: makeConfiguredDummy [ name ] mode configuration)
-    ) configurationsBySignature
-  );
+    if builtins.length roots == 1 && scopeRoots mode == defaultRoots mode then
+      sourceCache.${mode.target}.${mode.kind}.${mode.sourceKind or mode.kind}.${selected.signature}.${builtins.head roots}
+    else
+      makeSource false roots mode selected;
   configuredDummyFor =
     roots: mode: configuration:
-    if builtins.length roots == 1 then
-      configuredDummies.${mode.target}.${mode.kind}.${configuration.signature}.${builtins.head roots}
+    let
+      selected = forMode mode configuration;
+    in
+    if builtins.length roots == 1 && scopeRoots mode == defaultRoots mode then
+      dummyCache.${mode.target}.${mode.kind}.${selected.signature}.${builtins.head roots}
     else
-      makeConfiguredDummy roots mode configuration;
-  configuredDummy = configuredDummyFor sources.names;
-  workspaceFeatureArgs =
-    configuration:
-    lib.concatMapStringsSep " " (
-      name:
-      lib.concatMapStringsSep " " (
-        feature: "--features ${lib.escapeShellArg "${name}/${feature}"}"
-      ) configuration.packages.${name}.features
-    ) sources.names;
+      makeSource true roots mode selected;
 in
 {
   inherit
     default
     imbl
     allFeatures
+    forMode
+    scopeRoots
+    resolverManifest
+    contextFor
+    packageArgs
+    workspaceArgs
     featureArgs
-    configuredSource
-    configuredDummy
-    configuredDummyFor
     workspaceFeatureArgs
     patchManifest
+    configuredSource
+    configuredDummyFor
     testSharesDevArtifacts
     libraryProfileFor
     ;
-  unique = lib.unique [
-    default
-    imbl
-    allFeatures
-  ];
+  configuredDummy = configuredDummyFor sources.names;
+  unique = builtins.attrValues configurationsByMode.native.test;
 }

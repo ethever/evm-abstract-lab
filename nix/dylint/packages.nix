@@ -14,6 +14,7 @@ let
     hash = "sha256-KgEn3AZnITS6Uhc6CElCMqOucu+/Cc4w9Jm5oU+v5Iw=";
   };
   native = {
+    prePatch = import ../cargo-concurrency.nix;
     nativeBuildInputs = [ pkgs.pkg-config ];
     buildInputs = [ pkgs.openssl ];
     OPENSSL_NO_VENDOR = "1";

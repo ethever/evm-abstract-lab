@@ -20,6 +20,8 @@ let
   mode = {
     kind = "build";
     target = "wasm";
+    # Predecessor libraries use the features resolved by the original Web root.
+    featureRoots = [ "evm-abstract-web" ];
   };
   configuration = build.configurations.default;
   # The same dependency DAG shares notation/protocol/layout compilation. Target

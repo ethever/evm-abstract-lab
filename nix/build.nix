@@ -9,7 +9,14 @@
 let
   lib = pkgs.lib;
   sources = import ./sources.nix { inherit pkgs craneLib sourceRoot; };
-  configurations = import ./cargo-configurations.nix { inherit pkgs sources; };
+  configurations = import ./cargo-configurations.nix {
+    inherit
+      pkgs
+      sources
+      craneLib
+      cargoVendorDir
+      ;
+  };
   cargoVendorDir = craneLib.vendorCargoDeps { src = sources.workspace; };
   common = dependencies.environment // {
     src = sources.workspace;
@@ -25,10 +32,7 @@ let
     cargoExtraArgs = "--workspace --locked";
     # Crane otherwise exports per-command job/thread limits from NIX_BUILD_CORES.
     # Leave scheduling to Cargo, the test harness and the caller's environment.
-    postPatch = ''
-      postPatchHooks+=(clearCargoConcurrencyLimits)
-      clearCargoConcurrencyLimits() { unset CARGO_BUILD_JOBS RUST_TEST_THREADS; }
-    '';
+    prePatch = import ./cargo-concurrency.nix;
     meta = {
       description = "Analyze multi-account EVM worlds, cross-contract graphs and SSA";
       license = lib.licenses.mit;
@@ -56,7 +60,7 @@ let
     // {
       pname = name;
       src = configurations.configuredSource [ name ] mode configuration;
-      cargoExtraArgs = "--locked -p ${lib.escapeShellArg name} ${configurations.featureArgs name configuration}";
+      cargoExtraArgs = "--locked ${configurations.packageArgs name mode configuration}";
     };
   mkArtifacts =
     args:
@@ -103,7 +107,7 @@ let
         ;
       common = common // {
         CARGO_PROFILE = profile;
-        cargoExtraArgs = "--workspace --locked ${configurations.workspaceFeatureArgs configuration}";
+        cargoExtraArgs = "--locked ${configurations.workspaceArgs mode configuration}";
       };
       cargoArtifacts = artifacts.base;
       package = pkgs.symlinkJoin {

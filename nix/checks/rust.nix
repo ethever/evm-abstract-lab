@@ -4,6 +4,7 @@
   pkgs,
   craneLib,
   build,
+  sourceRoot,
   ...
 }:
 let
@@ -12,6 +13,24 @@ let
   forVariant =
     prefix: variant:
     let
+      # Clippy's workspace wrapper has its own fingerprints. Share linted local
+      # metadata along the DAG instead of relinting core for each consumer.
+      clippyArtifacts = build.mkArtifacts {
+        inherit (variant) mode configuration;
+        profile = "test";
+        libraryCommand = args: "cargoWithProfile clippy ${args.cargoExtraArgs} --lib -- -D warnings";
+      };
+      docMode = variant.mode // {
+        kind = "build";
+        sourceKind = "build";
+      };
+      docArtifacts = build.mkArtifacts {
+        mode = docMode;
+        configuration = variant.configuration;
+        profile = build.configurations.libraryProfileFor "test";
+        baseCommand = args: "cargoWithProfile check ${args.cargoExtraArgs}";
+        libraryCommand = args: "cargoWithProfile check ${args.cargoExtraArgs} --lib";
+      };
       forPackage =
         name:
         let
@@ -55,18 +74,17 @@ let
             args
             // {
               cargoClippyExtraArgs = "--all-targets -- -D warnings";
+              cargoArtifacts = clippyArtifacts.forPackage name;
               doInstallCargoArtifacts = false;
             }
           );
           "${prefix}docs-${name}" =
             if build.sources.hasDocs name then
               craneLib.cargoDoc (
-                args
+                (build.commonFor name docMode variant.configuration)
                 // {
-                  inherit (build.commonFor name (variant.mode // { sourceKind = "build"; }) variant.configuration)
-                    src
-                    ;
-                  cargoArtifacts = variant.artifacts.libraries.${name};
+                  CARGO_PROFILE = "test";
+                  cargoArtifacts = docArtifacts.forPackage name;
                   RUSTDOCFLAGS = "-D warnings";
                 }
               )
@@ -110,12 +128,24 @@ forVariant "" build.test
 // forVariant "all-features-" build.allFeaturesTest
 // forRelease "" build.release
 // forRelease "imbl-" build.imblRelease
+// (import ../tests/cargo-feature-contexts.nix {
+  inherit
+    pkgs
+    craneLib
+    build
+    sourceRoot
+    ;
+})
 // {
+  cargo-concurrency =
+    (import ../tests/cargo-concurrency.nix { inherit pkgs craneLib; }) "cargo-concurrency"
+      { inherit (build.common) prePatch; };
   cargo-feature-resolution =
     assert import ../tests/cargo-configurations.nix {
       inherit pkgs;
       inherit (build) sources;
     };
+    assert import ../tests/wasm-feature-scope.nix { inherit pkgs; };
     pkgs.runCommand "cargo-feature-resolution" { } ''mkdir -p "$out"'';
   fmt = craneLib.cargoFmt (
     build.common

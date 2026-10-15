@@ -51,7 +51,9 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 | [`nix/build.nix`](../nix/build.nix) | Rust 构建的公开接口与 profile 组合 |
 | [`nix/sources.nix`](../nix/sources.nix) | 从 Cargo manifest 自动发现包、路径依赖和源码闭包 |
 | [`nix/cargo-configurations.nix`](../nix/cargo-configurations.nix) | 解析 workspace feature 请求、生成一致的包配置、等价矩阵去重 |
+| [`nix/cargo-feature-unifier.nix`](../nix/cargo-feature-unifier.nix) | 保留 Cargo 的依赖 feature 组合；原生 workspace 与 Wasm Web 使用各自的解析上下文 |
 | [`nix/cargo-artifacts.nix`](../nix/cargo-artifacts.nix) | 沿包依赖图复用第三方缓存和已编译的本地库 |
+| [`nix/cargo-concurrency.nix`](../nix/cargo-concurrency.nix) | 在正确的 Hook 顺序中清理额外的 Cargo jobs 和测试线程设置 |
 | [`nix/check-inputs.nix`](../nix/check-inputs.nix) | 检查的独立文件与文件集输入，避免带入整个仓库 |
 | [`nix/check-aggregate.nix`](../nix/check-aggregate.nix) | 纯汇总节点及其叶子依赖，开发入口只构建受影响成员 |
 | [`nix/shell.nix`](../nix/shell.nix) | 开发环境及其显式依赖 |
@@ -62,6 +64,7 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 | [`nix/web.nix`](../nix/web.nix)、[`nix/web/`](../nix/web/) | 薄入口、Wasm 与 HTML 分层打包、按清单生成浏览器检查 |
 | [`nix/checks/fixtures.nix`](../nix/checks/fixtures.nix)、[`nix/checks/examples/`](../nix/checks/examples/) | 共享安装后分析报告、独立示例断言与输出格式检查 |
 | [`nix/checks/tooling/sources.nix`](../nix/checks/tooling/sources.nix) | 格式器所需内容、文档内容与链接目标名的独立缓存边界 |
+| [`nix/tests/`](../nix/tests/) | feature 矩阵、解析上下文、前置库缓存和 Wasm 隔离回归 |
 
 Bitwuzla 和 cvc5 从锁定源码构建，使各自嵌入的 CaDiCaL 符号保持私有。cvc5 使用系统默认链接器，避免该版本 gold 生成的符号版本表与 Rust 的 LLD 不兼容。这里通过编译和链接设置解决问题，不再用 Python 修改已生成的 ELF。首次构建这两个原生包可能较慢，之后可以复用 Nix 产物。
 
@@ -103,7 +106,9 @@ Nix 使用以下缓存层（[Crane 的依赖缓存](https://crane.dev/API.html#c
 | Web 打包 | wasm-bindgen 输出与 HTML 页面 | Wasm 产物、匹配的 wasm-bindgen 或 HTML 变化 |
 | 验证结果 | 独立的测试、lint、文档、原生库和浏览器检查 | 对应检查的输入变化 |
 
-源码闭包由 Cargo manifest 自动计算，包检查共享已编译的前置库；修改不相关包不会重跑该包检查。默认、imbl、全部 features 的解析结果相同才复用同一节点，新增 feature 会重新比较。修改应用 `.rs` 不会丢弃第三方依赖产物；修改 Markdown 不会重编应用；修改 Web HTML 只重做资源打包。浏览器各用例只带入声明的模块和夹具，注册表检查验证其传递依赖与全量覆盖。安装后示例和后端对照共享同一次 JSON/SSA 分析报告，文本、DOT、explain 的输出协议仍各自验证。不同 profile、features、target 和编译器的产物有独立缓存，避免把快速测试依赖当作 release 依赖复用。`nix flake check` 也复用输入未变化的验证结果，输入相同的缓存结果就是同一项检查的先前成功产物。
+源码闭包由 Cargo manifest 自动计算，包检查共享已编译的前置库；修改不相关包不会重跑该包检查。默认、imbl、全部 features 的解析结果相同才复用同一节点，新增 feature 会重新比较。辅助包只参与依赖解析，自身没有编译单元，让分包构建保留原生 workspace 或 Web 根包各自的第三方 feature 组合；普通依赖、开发依赖和宿主构建依赖分别保留其 Cargo 语义。
+
+修改应用 `.rs` 不会丢弃第三方依赖产物；修改 Markdown 不会重编应用；修改 Web HTML 只重做资源打包。浏览器各用例只带入声明的模块和夹具，注册表检查验证其传递依赖与全量覆盖。安装后示例和后端对照共享同一次 JSON/SSA 分析报告，文本、DOT、explain 的输出协议仍各自验证。不同 profile、features、target 和编译器的产物有独立缓存，避免把快速测试依赖当作 release 依赖复用。`nix flake check` 也复用输入未变化的验证结果，输入相同的缓存结果就是同一项检查的先前成功产物。
 
 ## 验证
 
@@ -115,8 +120,10 @@ nix run --no-update-lock-file .#check-changes -- --base origin/main --plan
 nix flake check --print-build-logs --no-update-lock-file
 nix run --no-update-lock-file .#no-dyn
 nix run --no-update-lock-file .#no-dyn-ui
-nix fmt
+find flake.nix nix -type f -name '*.nix' -print0 | xargs -0 nix fmt --no-update-lock-file --
 ```
+
+Cargo 解析回归对照原始根包与分包构建的实际 unit graph，检查 features、宿主与目标、profile、依赖边和前置库上下文，并确认辅助包不产生编译单元。输入只含 Cargo 清单、锁文件及虚拟目标，修改 Rust 正文可以复用这些检查；编译器保护脚本会拒绝意外编译 crate。
 
 TOML 回归使用 Nix 提供的 Taplo，向真实 LSP 发送格式化请求并与同版本 CLI 比较结果，验证项目的格式配置。原生求解器共存和安装后分析示例也保留在完整门禁中。编辑器和插件的安装由用户负责。
 

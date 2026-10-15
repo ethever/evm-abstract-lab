@@ -23,7 +23,8 @@
 }:
 let
   lib = pkgs.lib;
-  selected = sources.closure roots (mode // { inherit configuration; });
+  contextConfiguration = configurations.forMode mode configuration;
+  selected = sources.closure roots (mode // { configuration = contextConfiguration; });
   libraryProfile = configurations.libraryProfileFor profile;
   inherit (sources) hasLibrary;
   direct =
@@ -35,7 +36,7 @@ let
           dependency.name != null
           && (
             !(dependency.spec.optional or false)
-            || lib.elem dependency.alias configuration.packages.${name}.dependencies
+            || lib.elem dependency.alias contextConfiguration.packages.${name}.dependencies
           )
         ) (sources.dependencies name (mode // { kind = "build"; }))
       )
@@ -80,28 +81,27 @@ let
           -o -name "lib$target.rlib" -o -name "lib$target.rmeta" \) -delete
     done < "$TMPDIR/dummy-targets"
   '';
-  baseFor = lib.genAttrs selected (
-    name:
+  scopeRoots = configurations.scopeRoots mode;
+  base =
     let
-      args = commonFor name mode configuration // {
+      args = commonFor (builtins.head scopeRoots) mode contextConfiguration // {
         CARGO_PROFILE = profile;
-        cargoExtraArgs = (commonFor name mode configuration).cargoExtraArgs + " ${baseExtraArgs}";
+        cargoExtraArgs = "--locked ${configurations.workspaceArgs mode contextConfiguration} ${baseExtraArgs}";
       };
-      inherited = map (dependency: baseFor.${dependency}) (direct name);
     in
     craneLib.mkCargoDerivation (
       (builtins.removeAttrs args [ "src" ])
       // {
-        pname = "${name}-registry-artifacts";
-        src = configurations.configuredDummyFor [ name ] mode configuration;
-        cargoArtifacts = if inherited == [ ] then null else merge "${name}-registry-dependencies" inherited;
+        pname = "${mode.target}-${mode.kind}-registry-artifacts";
+        src = configurations.configuredDummyFor scopeRoots mode contextConfiguration;
+        cargoArtifacts = null;
         nativeBuildInputs = args.nativeBuildInputs ++ [ pkgs.jq ];
         env.CRANE_BUILD_DEPS_ONLY = 1;
         installCargoArtifactsMode = "use-symlink";
         doCheck = mode.kind == "test";
         buildPhaseCargoCommand =
           if baseCommand != null then
-            baseCommand
+            (if builtins.isFunction baseCommand then baseCommand args else baseCommand)
           else
             ''
               cargoWithProfile check ${args.cargoExtraArgs} ${
@@ -112,8 +112,10 @@ let
         checkPhaseCargoCommand = "cargoWithProfile test ${args.cargoExtraArgs} --all-targets --no-run";
         preInstall = discardDummyWorkspace;
       }
-    )
-  );
+    );
+  # One resolver context owns one third-party cache. Independent local branches
+  # must not compile their shared serde/proptest/native dependencies separately.
+  baseFor = lib.genAttrs selected (_: base);
   libraries = lib.genAttrs (lib.filter hasLibrary selected) (
     name:
     let
@@ -123,7 +125,7 @@ let
           // {
             sourceKind = if libraryProfile == "test" then "test" else "build";
           }
-        ) configuration
+        ) contextConfiguration
         // {
           CARGO_PROFILE = libraryProfile;
           cargoArtifacts = merge "${name}-dependencies" (
@@ -145,12 +147,11 @@ let
   forPackage =
     name:
     let
-      closure = sources.closure [ name ] (mode // { inherit configuration; });
+      closure = sources.closure [ name ] (mode // { configuration = contextConfiguration; });
     in
     merge "${name}-selected" (
       map (dependency: libraries.${dependency}) (lib.filter hasLibrary closure) ++ [ baseFor.${name} ]
     );
-  base = merge "workspace-registry" (map (name: baseFor.${name}) roots);
 in
 {
   inherit

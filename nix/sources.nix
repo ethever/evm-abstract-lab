@@ -77,24 +77,27 @@ let
     manifest: mode:
     let
       select =
-        table:
+        predicate: table:
         (lib.optional (table ? dependencies) {
           kind = "normal";
+          inherit predicate;
           values = table.dependencies;
         })
         ++ (lib.optional (table ? build-dependencies) {
           kind = "build";
+          inherit predicate;
           values = table.build-dependencies;
         })
         ++ (lib.optional (mode.kind == "test" && table ? dev-dependencies) {
           kind = "dev";
+          inherit predicate;
           values = table.dev-dependencies;
         });
     in
-    select manifest
+    select null manifest
     ++ lib.concatLists (
       lib.mapAttrsToList (
-        predicate: table: lib.optionals (targetMatches mode.target predicate) (select table)
+        predicate: table: lib.optionals (targetMatches mode.target predicate) (select predicate table)
       ) (manifest.target or { })
     );
   dependenciesForPath =
@@ -108,7 +111,7 @@ let
         in
         {
           inherit alias spec;
-          inherit (table) kind;
+          inherit (table) kind predicate;
           path =
             if !(spec ? path) then
               null

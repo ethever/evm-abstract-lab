@@ -46,7 +46,8 @@
         "state-backend-*",
         "smt-*",
         "native-*",
-        "example-*"
+        "example-*",
+        "cargo-context-*"
       ]
     },
     {
@@ -99,7 +100,8 @@
         "*snapshot-state",
         "*embedded-smt",
         "*bitwuzla-native",
-        "native-*"
+        "native-*",
+        "cargo-context-*"
       ]
     },
     {
@@ -126,7 +128,8 @@
         "*snapshot-state",
         "*embedded-smt",
         "*bitwuzla-native",
-        "native-*"
+        "native-*",
+        "cargo-context-*"
       ]
     },
     {
@@ -153,7 +156,8 @@
         "web-build",
         "web-clippy",
         "web-no-dyn",
-        "web-browser*"
+        "web-browser*",
+        "cargo-context-*"
       ]
     },
     {
@@ -186,7 +190,8 @@
         "*snapshot-state",
         "*embedded-smt",
         "*bitwuzla-native",
-        "native-*"
+        "native-*",
+        "cargo-context-*"
       ]
     },
     {

@@ -34,13 +34,25 @@ let
     };
   commonFor =
     name: mode: configuration:
-    build.commonFor name mode configuration
-    // workspaceCommon
+    let
+      base = build.commonFor name mode configuration;
+    in
+    base
+    // environment
     // {
-      # Preserve the precise configured source/selection after applying nightly
-      # environment defaults, whose broad workspace source is for vendoring only.
-      inherit (build.commonFor name mode configuration) src;
-      cargoExtraArgs = (build.commonFor name mode configuration).cargoExtraArgs + " --offline";
+      # Preserve the target-specific environment as well as source selection:
+      # applying the broad native common would put SMT libraries into Wasm drvs.
+      CARGO_NET_OFFLINE = "true";
+      CARGO_PROFILE = "dev";
+      nativeBuildInputs = base.nativeBuildInputs ++ [
+        packages.tools
+        pkgs.pkg-config
+        pkgs.jq
+      ];
+      buildInputs = base.buildInputs ++ [ pkgs.openssl ];
+      OPENSSL_NO_VENDOR = "1";
+      preConfigure = toolchain.enter packages.tools;
+      cargoExtraArgs = base.cargoExtraArgs + " --offline";
     };
   dylint = args: targets: ''
     cargo dylint --all --fail-on-no-libraries --no-build --no-metadata \
@@ -80,9 +92,9 @@ let
         craneLib = lintCrane;
         common = workspaceCommon;
         profile = "dev";
-        # commonFor owns --offline and the shared test cache adds --all-targets.
-        # Cargo rejects either flag when it occurs twice in one invocation.
-        baseExtraArgs = "--target-dir ${targetDir}";
+        # The shared registry command owns its package/feature selection, while
+        # test mode adds --all-targets. Each CLI flag must occur only once.
+        baseExtraArgs = "--offline --target-dir ${targetDir}";
         libraryCommand =
           args:
           dylint args "--lib"
@@ -120,7 +132,9 @@ let
                     export DYLINT_DRIVER='${packages.driver}/lib/dylint/${toolchain.name}/dylint-driver'
                     export DYLINT_LIBRARY='${packages.libraryPath}'
                     export CARGO_TARGET_DIR="$PWD/${targetDir}"
-                    DYLINT_SKIP_DOCTEST_CONTROLS=1 bash scripts/test-no-dyn-doctests.sh -p ${lib.escapeShellArg name} ${build.configurations.featureArgs name configuration}
+                    DYLINT_SKIP_DOCTEST_CONTROLS=1 bash scripts/test-no-dyn-doctests.sh ${
+                      build.configurations.packageArgs name mode configuration
+                    }
                   '';
                 }
               )
@@ -140,27 +154,26 @@ let
         inherit checks;
       };
     };
-  webCommon =
-    commonFor "evm-abstract-web" {
-      kind = "build";
-      target = "wasm";
-    } build.configurations.default
-    // {
-      pname = "evm-abstract-web-no-dyn";
-      CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
-      CARGO_PROFILE = "dev";
-      nativeBuildInputs = [ packages.tools ];
-      buildInputs = [ ];
-      cargoExtraArgs = "--locked --offline -p evm-abstract-web --lib --target-dir ${targetDir}";
-      doCheck = false;
-    };
+  webMode = {
+    kind = "build";
+    target = "wasm";
+    featureRoots = [ "evm-abstract-web" ];
+  };
+  webCommon = commonFor "evm-abstract-web" webMode build.configurations.default // {
+    pname = "evm-abstract-web-no-dyn";
+    CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
+    CARGO_PROFILE = "dev";
+    nativeBuildInputs = [ packages.tools ];
+    buildInputs = [ ];
+    cargoExtraArgs = "--locked --offline ${
+      build.configurations.packageArgs "evm-abstract-web" webMode build.configurations.default
+    } --lib --target-dir ${targetDir}";
+    doCheck = false;
+  };
   webArtifacts = lintCrane.buildDepsOnly (
     (builtins.removeAttrs webCommon [ "src" ])
     // {
-      dummySrc = build.configurations.configuredDummy {
-        kind = "build";
-        target = "wasm";
-      } build.configurations.default;
+      dummySrc = build.configurations.configuredDummy webMode build.configurations.default;
     }
   );
 in
@@ -168,6 +181,13 @@ forVariant "" build.configurations.default
 // forVariant "imbl-" build.configurations.imbl
 // forVariant "all-features-" build.configurations.allFeatures
 // {
+  dylint-driver-concurrency =
+    (import ../tests/cargo-concurrency.nix {
+      inherit pkgs;
+      craneLib = lintCrane;
+    })
+      "dylint-driver-concurrency"
+      { inherit (packages.driver) prePatch postPatch; };
   no-dyn-doctest-controls = doctestControls;
   web-no-dyn = lintCrane.mkCargoDerivation (
     webCommon
@@ -176,8 +196,7 @@ forVariant "" build.configurations.default
       doInstallCargoArtifacts = false;
       buildPhaseCargoCommand = ''
         cargo dylint --all --fail-on-no-libraries --no-build --no-metadata \
-          --lib-path ${packages.libraryPath} -- --locked --offline \
-          -p evm-abstract-web --lib --target wasm32-unknown-unknown
+          --lib-path ${packages.libraryPath} -- ${webCommon.cargoExtraArgs} --target wasm32-unknown-unknown
       '';
     }
   );
