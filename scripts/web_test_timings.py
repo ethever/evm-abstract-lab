@@ -2,13 +2,26 @@
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from playwright.sync_api import expect
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, expect
 import json
 import re
 import time
 from web_test_harness import analysis_server, measured_backend_timings, observe_webgpu, open_input, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
 from web_test_inspector_helpers import INSPECTOR_TAB_POSITIONS, inspector_painted_controls, inspector_selected_tab, inspector_title_action
 from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, submit_rpc, visible_seconds, wait_for_job
+
+
+def wait_for_elapsed_advance(page, before):
+    """Observe a new live timer value after the fixture's controlled hold."""
+    try:
+        page.wait_for_function("""before => {
+            const status = document.querySelector('#analysis-status')?.textContent ?? '';
+            const match = status.match(/(?:^|; )Elapsed: ([0-9.]+) (ms|s)(?:;|$)/);
+            return match && Number(match[1]) / (match[2] === 'ms' ? 1000 : 1) > before;
+        }""", arg=before, timeout=30000)
+    except PlaywrightTimeoutError as error:
+        status = page.locator("#analysis-status").text_content()
+        raise AssertionError(f"visible Elapsed did not advance beyond {before}s within 30s: {status}") from error
 
 
 def timing_interactions(browser, args):
@@ -42,6 +55,7 @@ def timing_interactions(browser, args):
             expect(status).to_contain_text("Queued")
             before = visible_seconds(page, "Elapsed")
             page.wait_for_timeout(400)
+            wait_for_elapsed_advance(page, before)
             after = visible_seconds(page, "Elapsed")
             assert after > before, "queued user wait stopped advancing"
             queued_later = wait_for_job(page, url, job_id, lambda job: job["state"] == "Queued")
@@ -81,6 +95,7 @@ def timing_interactions(browser, args):
             expect(status).to_contain_text("Loading result")
             fetch_before = visible_seconds(page, "Elapsed")
             page.wait_for_timeout(400)
+            wait_for_elapsed_advance(page, fetch_before)
             fetch_after = visible_seconds(page, "Elapsed")
             assert fetch_after > fetch_before, "user wait stopped before result transport finished"
             frozen_backend = wait_for_job(page, url, job_id, lambda job: job["state"] == "Completed")
