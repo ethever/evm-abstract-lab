@@ -158,15 +158,19 @@ def storage_table_interactions(browser, url: str, output: Path):
         small_toolbar_y=sum(small_tab[1::2])/2
         select_inspector_tab(page,canvas,title,small_toolbar_y)
         canvas.click(position={"x":120,"y":small_tab[3]+80})
-        page.mouse.move(80,small_tab[3]+115)
+        # The indented symbolic tree has its own scroll area. Target the outer
+        # inspector's left margin so it receives the complete wheel delta.
+        page.mouse.move(8,small_tab[3]+115)
         page.mouse.wheel(0,600)
         settle_gesture(page)
-        page.mouse.move(2,2)
+        # Keep the pointer in the outer scroll area while pending wheel frames
+        # bring the complete table into view.
         scrolled=storage_scrolled_snapshot(page,output/f"storage-table-{kind}-scrolled.png",
             (4,small_tab[3]+52,1416,970),narrow)
+        page.mouse.move(2,2)
         assert_storage_preference(scrolled,preferences[kind])
         scrolled_value=assert_storage_cell_text(narrow["rows"][-1]["value"],scrolled["rows"][-1]["value"])
-        page.mouse.move(80,small_tab[3]+115)
+        page.mouse.move(8,small_tab[3]+115)
         page.mouse.wheel(0,-600)
         settle_gesture(page)
         canvas.click(position={"x":120,"y":small_tab[3]+80})
