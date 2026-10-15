@@ -211,5 +211,11 @@ forVariant "" build.configurations.default
       checkPhaseCargoCommand = "cargoWithProfile test --locked --offline -- --include-ignored";
     }
   );
-  no-dyn-fmt = lintCrane.cargoFmt (packages.lintCommon // { cargoExtraArgs = "--all"; });
+  no-dyn-fmt = lintCrane.cargoFmt (
+    packages.lintCommon
+    // {
+      src = packages.formattingSource;
+      cargoExtraArgs = "--all";
+    }
+  );
 }

@@ -133,4 +133,4 @@ TOML 回归使用 Nix 提供的 Taplo，向真实 LSP 发送格式化请求并�
 nix run --no-update-lock-file .#check-changes -- --probe scripts/check_cache_boundaries.json
 ```
 
-[探针清单](../scripts/check_cache_boundaries.json)在临时快照中模拟 Markdown、Web、共享 crate、浏览器模块和跨 crate fixture 的改动，检查实际 derivation 的变化集合。它只描述预期的缓存边界；日常检查选择始终由实际 Nix 依赖图计算。只有通过 `check-aggregate.nix` 声明的透明汇总允许展开；包含额外断言的检查必须保留为实际构建目标。当前清单包含 Linux 浏览器检查，应在 Linux 运行。
+[探针清单](../scripts/check_cache_boundaries.json)在临时快照中模拟 Markdown、Web、共享 crate、浏览器模块、跨 crate fixture 和 lint UI 期望输出的改动，检查实际 derivation 的变化集合。它只描述预期的缓存边界；日常检查选择始终由实际 Nix 依赖图计算。只有通过 `check-aggregate.nix` 声明的透明汇总允许展开；包含额外断言的检查必须保留为实际构建目标。当前清单包含 Linux 浏览器检查，应在 Linux 运行。

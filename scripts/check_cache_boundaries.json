@@ -298,6 +298,19 @@
       "only_changed": [
         "doc-links"
       ]
+    },
+    {
+      "name": "dylint-ui-expectation-isolation",
+      "description": "Changing a Dylint UI expected diagnostic rebuilds only the UI check, preserving lint libraries, registry caches and Rust formatting.",
+      "mutations": [
+        {
+          "path": "lints/no_dyn/ui/rejected.stderr",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-dyn-ui"
+      ]
     }
   ]
 }

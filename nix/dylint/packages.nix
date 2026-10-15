@@ -59,16 +59,32 @@ let
       '';
     }
   );
+  uiSource = pkgs.lib.cleanSourceWith {
+    src = lintRoot;
+    filter = path: type: lintCrane.filterCargoSources path type || pkgs.lib.hasSuffix ".stderr" path;
+  };
+  # Compiler-plugin production builds and dummy dependency preparation never
+  # read UI cases or their expected diagnostics. Only the UI execution owns them.
+  productionSource = pkgs.lib.cleanSourceWith {
+    src = uiSource;
+    filter =
+      path: _:
+      let
+        relative = pkgs.lib.removePrefix "${toString lintRoot}/" (toString path);
+      in
+      relative != "ui" && !(pkgs.lib.hasPrefix "ui/" relative) && !(pkgs.lib.hasSuffix ".stderr" path);
+  };
+  formattingSource = pkgs.lib.cleanSourceWith {
+    src = uiSource;
+    filter = lintCrane.filterCargoSources;
+  };
   lintCommon =
     native
     // toolchain.environment driver
     // {
       pname = "no-dyn";
       version = "0.1.0";
-      src = pkgs.lib.cleanSourceWith {
-        src = lintRoot;
-        filter = path: type: lintCrane.filterCargoSources path type || pkgs.lib.hasSuffix ".stderr" path;
-      };
+      src = uiSource;
       strictDeps = true;
       CARGO_NET_OFFLINE = "true";
       nativeBuildInputs = native.nativeBuildInputs ++ [ tools ];
@@ -78,6 +94,7 @@ let
   library = lintCrane.buildPackage (
     lintCommon
     // {
+      src = productionSource;
       cargoExtraArgs = "--locked --offline --lib";
       doCheck = false;
       doNotRemoveReferencesToRustToolchain = true;
@@ -90,6 +107,7 @@ let
   testArtifacts = lintCrane.buildDepsOnly (
     lintCommon
     // {
+      src = productionSource;
       CARGO_PROFILE = "test";
       cargoExtraArgs = "--locked --offline";
       cargoBuildExtraArgs = "--all-targets";
@@ -101,6 +119,7 @@ in
     tools
     driver
     lintCommon
+    formattingSource
     library
     testArtifacts
     ;
