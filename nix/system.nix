@@ -28,7 +28,12 @@ let
       ;
   };
   dylint = import ./dylint.nix {
-    inherit pkgs craneLib sourceRoot;
+    inherit
+      pkgs
+      craneLib
+      sourceRoot
+      build
+      ;
     crane = inputs.crane;
     common = build.common;
   };
@@ -52,7 +57,7 @@ in
   apps =
     dylint.apps
     // web.apps
-    // (import ./commands.nix { inherit pkgs; })
+    // (import ./commands.nix { inherit pkgs sourceRoot; })
     // {
       default = {
         type = "app";

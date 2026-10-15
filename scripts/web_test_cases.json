@@ -1,0 +1,647 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "startup",
+      "group": "startup",
+      "module": "web_test_startup",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_example_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_startup.py"
+      ]
+    },
+    {
+      "id": "submissions",
+      "group": "startup",
+      "module": "web_test_submissions",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_example_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_submissions.py"
+      ]
+    },
+    {
+      "id": "responsive-views",
+      "group": "responsive",
+      "module": "web_test_responsive_views",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_example_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_responsive_views.py"
+      ]
+    },
+    {
+      "id": "responsive-input",
+      "group": "responsive",
+      "module": "web_test_responsive_input",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_example_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_responsive_input.py"
+      ]
+    },
+    {
+      "id": "webgpu-unavailable",
+      "group": "renderer",
+      "module": "web_test_renderer",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_renderer.py"
+      ]
+    },
+    {
+      "id": "budgets",
+      "group": "transport",
+      "module": "web_test_budgets",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_budgets.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "compression",
+      "group": "transport",
+      "module": "web_test_compression",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_compression.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "http",
+      "group": "transport",
+      "module": "web_test_http",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_http.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "timings",
+      "group": "timing",
+      "module": "web_test_timings",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_helpers.py",
+        "scripts/web_test_timings.py"
+      ]
+    },
+    {
+      "id": "rpc-unconfigured",
+      "group": "rpc",
+      "module": "web_test_rpc_unconfigured",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_helpers.py",
+        "scripts/web_test_rpc_unconfigured.py"
+      ]
+    },
+    {
+      "id": "rpc-entry",
+      "group": "rpc",
+      "module": "web_test_rpc_entry",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_entry.py",
+        "scripts/web_test_rpc_helpers.py"
+      ]
+    },
+    {
+      "id": "rpc-world",
+      "group": "rpc",
+      "module": "web_test_rpc_world",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_helpers.py",
+        "scripts/web_test_rpc_world.py"
+      ]
+    },
+    {
+      "id": "rpc-cancellation",
+      "group": "rpc",
+      "module": "web_test_rpc_cancellation",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_cancellation.py",
+        "scripts/web_test_rpc_helpers.py"
+      ]
+    },
+    {
+      "id": "rpc-url",
+      "group": "rpc",
+      "module": "web_test_rpc_url",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_helpers.py",
+        "scripts/web_test_rpc_url.py"
+      ]
+    },
+    {
+      "id": "block-overview",
+      "group": "graph",
+      "module": "web_test_overview",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_overview.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "panes",
+      "group": "graph",
+      "module": "web_test_panes",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_panes.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "edge-flow",
+      "group": "graph",
+      "module": "web_test_edge_flow",
+      "parameters": {},
+      "dependencies": [
+        "crates/evm-abstract-web/tests/fixtures/layout/linear-chain.hex",
+        "crates/evm-abstract-web/tests/fixtures/layout/linear-chain.json",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_edge_flow.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "compact-ssa",
+      "group": "ssa",
+      "module": "web_test_compact_ssa",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_compact_ssa.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "ssa-details",
+      "group": "ssa",
+      "module": "web_test_ssa_details",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_ssa_details.py",
+        "scripts/web_test_ssa_helpers.py"
+      ]
+    },
+    {
+      "id": "ssa-values",
+      "group": "ssa",
+      "module": "web_test_ssa_values",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_ssa_helpers.py",
+        "scripts/web_test_ssa_values.py"
+      ]
+    },
+    {
+      "id": "unknown-world",
+      "group": "semantics",
+      "module": "web_test_unknown_world",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_unknown_world.py"
+      ]
+    },
+    {
+      "id": "known-recursion",
+      "group": "semantics",
+      "module": "web_test_known_recursion",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_known_recursion.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "inspector-controls",
+      "group": "inspector",
+      "module": "web_test_inspector",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "storage-table",
+      "group": "inspector",
+      "module": "web_test_storage_table",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_storage_helpers.py",
+        "scripts/web_test_storage_literals.json",
+        "scripts/web_test_storage_table.py"
+      ]
+    },
+    {
+      "id": "storage-scroll",
+      "group": "inspector",
+      "module": "web_test_storage_scroll",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_storage_helpers.py",
+        "scripts/web_test_storage_literals.json",
+        "scripts/web_test_storage_scroll.py"
+      ]
+    },
+    {
+      "id": "termination",
+      "group": "semantics",
+      "module": "web_test_termination",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_ending_helpers.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_termination.py"
+      ]
+    },
+    {
+      "id": "termination-call",
+      "group": "semantics",
+      "module": "web_test_termination_call",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_ending_helpers.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_helpers.py",
+        "scripts/web_test_termination_call.py"
+      ]
+    },
+    {
+      "id": "gestures-dpr1",
+      "group": "graph",
+      "module": "web_test_gestures",
+      "parameters": {
+        "dpr": 1
+      },
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_gestures.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "gestures-dpr2",
+      "group": "graph",
+      "module": "web_test_gestures",
+      "parameters": {
+        "dpr": 2
+      },
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_gestures.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "hierarchy-small",
+      "group": "hierarchy",
+      "module": "web_test_hierarchy_small",
+      "parameters": {},
+      "dependencies": [
+        "crates/evm-abstract-web/tests/fixtures/layout/linear-chain.hex",
+        "crates/evm-abstract-web/tests/fixtures/layout/linear-chain.json",
+        "crates/evm-abstract-web/tests/fixtures/layout/shortcut.hex",
+        "crates/evm-abstract-web/tests/fixtures/layout/shortcut.json",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hierarchy_small.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "hierarchy-long-chain",
+      "group": "hierarchy",
+      "module": "web_test_hierarchy_chain",
+      "parameters": {},
+      "dependencies": [
+        "crates/evm-abstract-web/tests/fixtures/layout/long-linear-chain.hex",
+        "crates/evm-abstract-web/tests/fixtures/layout/long-linear-chain.json",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hierarchy_chain.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "hierarchy-native-projection",
+      "group": "hierarchy",
+      "module": "web_test_hierarchy_chain",
+      "parameters": {
+        "fixture_name": "long-linear-chain-600",
+        "native_projection": true
+      },
+      "dependencies": [
+        "crates/evm-abstract-web/tests/fixtures/layout/long-linear-chain-600.hex",
+        "crates/evm-abstract-web/tests/fixtures/layout/long-linear-chain-600.json",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hierarchy_chain.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "hierarchy-calls",
+      "group": "hierarchy",
+      "module": "web_test_hierarchy_calls",
+      "parameters": {},
+      "dependencies": [
+        "crates/evm-abstract-web/tests/fixtures/layout/nested-call-world.json",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hierarchy_calls.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_helpers.py"
+      ]
+    },
+    {
+      "id": "runtime-weth9",
+      "group": "captured-runtime",
+      "module": "web_test_runtimes",
+      "parameters": {
+        "fixture": "ethereum-weth9"
+      },
+      "dependencies": [
+        "crates/evm-abstract-web/tests/fixtures/layout/ethereum-weth9.hex",
+        "crates/evm-abstract-web/tests/fixtures/layout/ethereum-weth9.json",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_runtimes.py"
+      ]
+    },
+    {
+      "id": "runtime-router02",
+      "group": "captured-runtime",
+      "module": "web_test_runtimes",
+      "parameters": {
+        "fixture": "ethereum-uniswap-v2-router02"
+      },
+      "dependencies": [
+        "crates/evm-abstract-web/tests/fixtures/layout/ethereum-uniswap-v2-router02.hex",
+        "crates/evm-abstract-web/tests/fixtures/layout/ethereum-uniswap-v2-router02.json",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_runtimes.py"
+      ]
+    },
+    {
+      "id": "runtime-multicall3",
+      "group": "captured-runtime",
+      "module": "web_test_runtimes",
+      "parameters": {
+        "fixture": "ethereum-multicall3"
+      },
+      "dependencies": [
+        "crates/evm-abstract-web/tests/fixtures/layout/ethereum-multicall3.hex",
+        "crates/evm-abstract-web/tests/fixtures/layout/ethereum-multicall3.json",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_runtimes.py"
+      ]
+    },
+    {
+      "id": "diagnostics",
+      "group": "diagnostics",
+      "module": "web_test_diagnostics",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_diagnostics.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_helpers.py"
+      ]
+    }
+  ],
+  "legacy_flags": {
+    "layout-only": [
+      "hierarchy-small",
+      "hierarchy-long-chain",
+      "hierarchy-native-projection",
+      "hierarchy-calls",
+      "runtime-weth9",
+      "runtime-router02",
+      "runtime-multicall3"
+    ],
+    "layout-small-only": [
+      "hierarchy-small",
+      "hierarchy-long-chain",
+      "hierarchy-native-projection",
+      "hierarchy-calls"
+    ],
+    "flow-only": [
+      "edge-flow",
+      "compact-ssa"
+    ],
+    "ssa-details-only": [
+      "ssa-details"
+    ],
+    "ssa-values-only": [
+      "ssa-values"
+    ],
+    "unknown-world-only": [
+      "unknown-world",
+      "known-recursion"
+    ],
+    "inspector-controls-only": [
+      "inspector-controls",
+      "storage-table",
+      "storage-scroll"
+    ],
+    "termination-only": [
+      "termination",
+      "termination-call",
+      "edge-flow",
+      "ssa-details",
+      "gestures-dpr1",
+      "gestures-dpr2"
+    ],
+    "timings-only": [
+      "timings"
+    ],
+    "http-only": [
+      "http"
+    ],
+    "compression-only": [
+      "compression"
+    ],
+    "diagnostics-only": [
+      "diagnostics"
+    ]
+  }
+}

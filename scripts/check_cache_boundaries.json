@@ -1,0 +1,298 @@
+{
+  "version": 1,
+  "description": "Derivation identity assertions; these are regression expectations, not the development check selector's dependency map.",
+  "cases": [
+    {
+      "name": "readme-only",
+      "description": "Markdown contents affect offline documentation links and preserve every code and browser check.",
+      "mutations": [
+        {
+          "path": "README.md",
+          "append": "\n<!-- cache boundary probe -->\n"
+        }
+      ],
+      "only_changed": [
+        "doc-links"
+      ]
+    },
+    {
+      "name": "web-source-isolation",
+      "description": "A frontend implementation edit invalidates its consumers while preserving native package closures.",
+      "mutations": [
+        {
+          "path": "crates/evm-abstract-web/src/lib.rs",
+          "append": "\n// Cache boundary probe.\n"
+        }
+      ],
+      "changed": [
+        "tests-evm-abstract-web",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser-startup",
+        "release-build",
+        "imbl-release-build"
+      ],
+      "unchanged": [
+        "*evm-abstract",
+        "*evm-abstract-cli",
+        "*evm-abstract-layout",
+        "*evm-abstract-notation",
+        "*evm-abstract-protocol",
+        "*evm-abstract-server",
+        "*snapshot-state",
+        "*embedded-smt",
+        "*bitwuzla-native",
+        "state-backend-*",
+        "smt-*",
+        "native-*",
+        "example-*"
+      ]
+    },
+    {
+      "name": "rpc-case-isolation",
+      "description": "A leaf RPC test edit changes exactly that case, the registry validator, and the browser aggregate.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_rpc_cancellation.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-browser-rpc-cancellation",
+        "web-browser-registry",
+        "web-browser"
+      ]
+    },
+    {
+      "name": "manifest-content-projection",
+      "description": "Semantically identical manifest formatting preserves every projected browser case.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_cases.json",
+          "append": "\n"
+        }
+      ],
+      "only_changed": [
+        "web-browser-registry"
+      ]
+    },
+    {
+      "name": "protocol-dependency-closure",
+      "description": "Protocol source changes reach native server and web consumers without invalidating independent analysis and solver crates.",
+      "mutations": [
+        {
+          "path": "crates/evm-abstract-protocol/src/lib.rs",
+          "append": "\n// Cache boundary probe.\n"
+        }
+      ],
+      "changed": [
+        "*evm-abstract-protocol",
+        "tests-evm-abstract-server",
+        "tests-evm-abstract-web",
+        "web-build"
+      ],
+      "unchanged": [
+        "*evm-abstract",
+        "*evm-abstract-notation",
+        "*evm-abstract-layout",
+        "*snapshot-state",
+        "*embedded-smt",
+        "*bitwuzla-native",
+        "native-*"
+      ]
+    },
+    {
+      "name": "notation-transitive-closure",
+      "description": "A shared notation dependency reaches both native analysis and browser consumers through transitive package edges.",
+      "mutations": [
+        {
+          "path": "crates/evm-abstract-notation/src/lib.rs",
+          "append": "\n// Cache boundary probe.\n"
+        }
+      ],
+      "changed": [
+        "*evm-abstract-notation",
+        "tests-evm-abstract",
+        "tests-evm-abstract-layout",
+        "tests-evm-abstract-cli",
+        "tests-evm-abstract-server",
+        "tests-evm-abstract-web",
+        "release-build",
+        "web-build"
+      ],
+      "unchanged": [
+        "*evm-abstract-protocol",
+        "*snapshot-state",
+        "*embedded-smt",
+        "*bitwuzla-native",
+        "native-*"
+      ]
+    },
+    {
+      "name": "sibling-include-fixture",
+      "description": "JSON included from a sibling crate remains visible to both protocol and frontend native tests.",
+      "mutations": [
+        {
+          "path": "crates/evm-abstract-protocol/tests/fixtures/api-errors/export-analyze-reply.json",
+          "append": "\n"
+        }
+      ],
+      "changed": [
+        "tests-evm-abstract-protocol",
+        "tests-evm-abstract-web"
+      ],
+      "unchanged": [
+        "*evm-abstract",
+        "*evm-abstract-notation",
+        "*evm-abstract-layout",
+        "*snapshot-state",
+        "*embedded-smt",
+        "*bitwuzla-native",
+        "native-*",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser*"
+      ]
+    },
+    {
+      "name": "installed-world-fixture-isolation",
+      "description": "An installed world fixture reaches its shared native reports while preserving browser and production Wasm inputs.",
+      "mutations": [
+        {
+          "path": "examples/worlds/call-return-branch.json",
+          "append": "\n"
+        }
+      ],
+      "changed": [
+        "example-world-call-return-branch",
+        "example-explain-call",
+        "example-explain-verbose",
+        "example-explain-partial",
+        "example-ssa-world-aligned",
+        "state-backend-parity-call-return-branch",
+        "state-backend-parity",
+        "examples"
+      ],
+      "unchanged": [
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser*",
+        "*evm-abstract-protocol",
+        "*evm-abstract-notation",
+        "*evm-abstract-layout",
+        "*snapshot-state",
+        "*embedded-smt",
+        "*bitwuzla-native",
+        "native-*"
+      ]
+    },
+    {
+      "name": "web-html-repackage-only",
+      "description": "HTML repackages the existing Wasm, reaches document fragment checks and invalidates browser consumers without recompiling Rust.",
+      "mutations": [
+        {
+          "path": "crates/evm-abstract-web/index.html",
+          "append": "\n<!-- Cache boundary probe. -->\n"
+        }
+      ],
+      "only_changed": [
+        "web-build",
+        "web-browser",
+        "web-compression",
+        "web-browser-startup",
+        "web-browser-submissions",
+        "web-browser-responsive-views",
+        "web-browser-responsive-input",
+        "web-browser-webgpu-unavailable",
+        "web-browser-budgets",
+        "web-browser-compression",
+        "web-browser-http",
+        "web-browser-timings",
+        "web-browser-rpc-unconfigured",
+        "web-browser-rpc-entry",
+        "web-browser-rpc-world",
+        "web-browser-rpc-cancellation",
+        "web-browser-rpc-url",
+        "web-browser-block-overview",
+        "web-browser-panes",
+        "web-browser-edge-flow",
+        "web-browser-compact-ssa",
+        "web-browser-ssa-details",
+        "web-browser-ssa-values",
+        "web-browser-unknown-world",
+        "web-browser-known-recursion",
+        "web-browser-inspector-controls",
+        "web-browser-storage-table",
+        "web-browser-storage-scroll",
+        "web-browser-termination",
+        "web-browser-termination-call",
+        "web-browser-gestures-dpr1",
+        "web-browser-gestures-dpr2",
+        "web-browser-hierarchy-small",
+        "web-browser-hierarchy-long-chain",
+        "web-browser-hierarchy-native-projection",
+        "web-browser-hierarchy-calls",
+        "web-browser-runtime-weth9",
+        "web-browser-runtime-router02",
+        "web-browser-runtime-multicall3",
+        "web-browser-diagnostics",
+        "doc-links"
+      ]
+    },
+    {
+      "name": "selector-implementation-isolation",
+      "description": "The derivation planner implementation reaches its own tests without invalidating unrelated checks.",
+      "mutations": [
+        {
+          "path": "scripts/check-changes.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "check-changes"
+      ]
+    },
+    {
+      "name": "probe-manifest-validation",
+      "description": "The probe manifest is validated by the selector regression check.",
+      "mutations": [
+        {
+          "path": "scripts/check_cache_boundaries.json",
+          "append": "\n"
+        }
+      ],
+      "only_changed": [
+        "check-changes"
+      ]
+    },
+    {
+      "name": "toml-editor-harness-isolation",
+      "description": "The editor formatter harness does not invalidate plain TOML lint.",
+      "mutations": [
+        {
+          "path": "scripts/test-toml-format.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "toml-format"
+      ]
+    },
+    {
+      "name": "documentation-projection-harness-isolation",
+      "description": "The exact documentation projection regression harness reaches only its offline documentation check.",
+      "mutations": [
+        {
+          "path": "scripts/test-doc-inputs.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "doc-links"
+      ]
+    }
+  ]
+}

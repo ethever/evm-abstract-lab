@@ -1,4 +1,5 @@
-# Vendor once; keep dependency artifacts separate by profile and features.
+# Public build interface. Source ownership, feature equivalence and compiled
+# artifact reuse each live in their own module; checks consume this shared graph.
 {
   pkgs,
   craneLib,
@@ -7,75 +8,122 @@
 }:
 let
   lib = pkgs.lib;
-  src = lib.cleanSourceWith {
-    src = sourceRoot;
-    filter =
-      path: type:
-      let
-        relative = lib.removePrefix "${toString sourceRoot}/" (toString path);
-        application = !(relative == "lints" || lib.hasPrefix "lints/" relative);
-        fixture = lib.hasPrefix "examples/" relative || lib.hasPrefix "crates/" relative;
-        native = lib.hasPrefix "crates/" relative;
-      in
-      application
-      && (
-        craneLib.filterCargoSources path type
-        || (native && (lib.hasSuffix ".cpp" path || lib.hasSuffix ".h" path))
-        || (fixture && (lib.hasSuffix ".hex" path || lib.hasSuffix ".json" path))
-        || (
-          lib.hasPrefix "crates/evm-abstract-web/assets/fonts/" relative
-          && (lib.hasSuffix ".ttf" path || lib.hasSuffix ".txt" path)
-        )
-      );
-  };
-  cargoVendorDir = craneLib.vendorCargoDeps { inherit src; };
+  sources = import ./sources.nix { inherit pkgs craneLib sourceRoot; };
+  configurations = import ./cargo-configurations.nix { inherit pkgs sources; };
+  cargoVendorDir = craneLib.vendorCargoDeps { src = sources.workspace; };
   common = dependencies.environment // {
-    inherit src cargoVendorDir;
+    src = sources.workspace;
+    inherit cargoVendorDir;
     inherit (dependencies) nativeBuildInputs buildInputs;
     strictDeps = true;
+    # Cargo may refresh an existing output without changing its filename (for
+    # example bindgen metadata between check/build). Writable inherited copies
+    # preserve timestamps and fingerprints without mutating immutable caches.
+    doNotLinkInheritedArtifacts = true;
     pname = "evm-abstract";
-    version =
-      (builtins.fromTOML (builtins.readFile (sourceRoot + "/Cargo.toml"))).workspace.package.version;
+    version = sources.rootManifest.workspace.package.version;
     cargoExtraArgs = "--workspace --locked";
+    # Crane otherwise exports per-command job/thread limits from NIX_BUILD_CORES.
+    # Leave scheduling to Cargo, the test harness and the caller's environment.
+    postPatch = ''
+      postPatchHooks+=(clearCargoConcurrencyLimits)
+      clearCargoConcurrencyLimits() { unset CARGO_BUILD_JOBS RUST_TEST_THREADS; }
+    '';
     meta = {
       description = "Analyze multi-account EVM worlds, cross-contract graphs and SSA";
       license = lib.licenses.mit;
       mainProgram = "evm-abstract";
     };
   };
-  variant =
-    profile: features:
-    let
-      variantCommon = common // {
-        CARGO_PROFILE = profile;
-        cargoExtraArgs = "--workspace --locked ${features}";
-      };
-      cargoArtifacts = craneLib.buildDepsOnly (
-        variantCommon
+  commonFor =
+    name: mode: configuration:
+    (
+      if mode.target == "wasm" then
+        builtins.removeAttrs common (
+          (builtins.attrNames dependencies.environment)
+          ++ [
+            "nativeBuildInputs"
+            "buildInputs"
+          ]
+        )
         // {
-          # The test cache compiles dummy tests (--no-run) and dev-dependencies.
-          # The release cache only builds production dependencies.
-          doCheck = profile == "test";
+          nativeBuildInputs = [ ];
+          buildInputs = [ ];
         }
+      else
+        common
+    )
+    // {
+      pname = name;
+      src = configurations.configuredSource [ name ] mode configuration;
+      cargoExtraArgs = "--locked -p ${lib.escapeShellArg name} ${configurations.featureArgs name configuration}";
+    };
+  mkArtifacts =
+    args:
+    import ./cargo-artifacts.nix (
+      {
+        inherit
+          pkgs
+          craneLib
+          sources
+          common
+          commonFor
+          configurations
+          ;
+      }
+      // args
+    );
+  variant =
+    profile: configuration:
+    let
+      mode = {
+        kind = if profile == "test" then "test" else "build";
+        target = "native";
+      };
+      artifacts = mkArtifacts { inherit profile mode configuration; };
+      packages = lib.genAttrs sources.names (
+        name:
+        craneLib.buildPackage (
+          commonFor name mode configuration
+          // {
+            CARGO_PROFILE = profile;
+            cargoArtifacts = artifacts.forPackage name;
+            doCheck = false;
+          }
+        )
       );
     in
     {
-      common = variantCommon;
-      inherit cargoArtifacts;
-      package = craneLib.buildPackage (
-        variantCommon
-        // {
-          inherit cargoArtifacts;
-          doCheck = false;
-        }
-      );
+      inherit
+        configuration
+        mode
+        artifacts
+        packages
+        commonFor
+        ;
+      common = common // {
+        CARGO_PROFILE = profile;
+        cargoExtraArgs = "--workspace --locked ${configurations.workspaceFeatureArgs configuration}";
+      };
+      cargoArtifacts = artifacts.base;
+      package = pkgs.symlinkJoin {
+        name = "evm-abstract-${profile}-${common.version}";
+        paths = builtins.attrValues packages;
+        inherit (common) meta;
+      };
     };
 in
 {
-  inherit common;
-  release = variant "release" "";
-  imblRelease = variant "release" "--features imbl";
-  test = variant "test" "";
-  imblTest = variant "test" "--features imbl";
-  allFeaturesTest = variant "test" "--all-features";
+  inherit
+    common
+    commonFor
+    sources
+    configurations
+    mkArtifacts
+    ;
+  release = variant "release" configurations.default;
+  imblRelease = variant "release" configurations.imbl;
+  test = variant "test" configurations.default;
+  imblTest = variant "test" configurations.imbl;
+  allFeaturesTest = variant "test" configurations.allFeatures;
 }

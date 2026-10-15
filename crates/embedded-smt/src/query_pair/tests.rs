@@ -518,12 +518,6 @@ fn actual_native_cancellation_stops_batch_and_same_worker_next_batch_is_clean() 
         let (started, native_started) = mpsc::channel();
         let observe = Observe::new(None, Some(started), None);
         thread::scope(|scope| {
-            let cancellation = token.clone();
-            scope.spawn(move || {
-                native_started.recv_timeout(Duration::from_secs(5)).unwrap();
-                thread::sleep(Duration::from_millis(30));
-                cancellation.cancel();
-            });
             let context = Context::default();
             let target = Bv::from_str(
                 256,
@@ -541,6 +535,15 @@ fn actual_native_cancellation_stops_batch_and_same_worker_next_batch_is_clean() 
                 ]);
             }
             let value = context.fresh_bv("candidate", 256);
+            // Fixture construction can be descheduled by other parallel checks.
+            // Start the native-call watchdog only after that setup is complete;
+            // the query and cancellation still have the same five-second bound.
+            let cancellation = token.clone();
+            scope.spawn(move || {
+                native_started.recv_timeout(Duration::from_secs(5)).unwrap();
+                thread::sleep(Duration::from_millis(30));
+                cancellation.cancel();
+            });
             let start = Instant::now();
             assert_eq!(
                 with_cancellation(&token, || check_candidates(
