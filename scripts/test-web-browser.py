@@ -2422,12 +2422,19 @@ def assert_storage_literal_pixels(cell, text: str):
         "…7890190abcdef": ([108,10], "8b9dc9c7c872399ea7f0c8aa2c1be3e03610fcb1bd7224af9ffa8b13b9a6dda9"),
         "…90abcdef": ([69,10], "400ff596c148f1a88017f63a1ccc0cc31cd655306ba58e6c52950f79415e81b2"),
         "…90190abcdef": ([93,10], "ff5b7b798e75e4de049ff8445836b31c155ad8d3a08f07e3625c8450b46767cd"),
+        "{0x105f}": ([61,12], "fd1ab3bd3503fbd583c7f1443389c9cd9c436bfc915f8bb5ae4d0b187b5a5f22"),
+        "{0x205f}": ([61,12], "01a9f16f529282cffa2f49e72b9c1686e9ca3d452e2ce788636eaa5c83592176"),
     }
     size,expected=reviewed[text]
     if text=="{"+STORAGE_SLOT_WORD+"}":
         # One historical red127 sample rounds to128 in current Chromium.
         # Compare the complete independent raster with the existing <=2 bound.
         return assert_storage_reviewed_pixels(cell,"full_value",text,size,expected)
+    if text in ("{0x105f}", "{0x205f}"):
+        # Moving the scroll viewport can round a 127 sample to128. Verify every
+        # RGB sample against the original short-literal raster, including braces.
+        key = "last_storage_value" if text == "{0x105f}" else "last_transient_value"
+        return assert_storage_reviewed_pixels(cell,key,text,size,expected)
     assert cell["mask_size"]==size and cell["mask_sha256"]==expected, f"rendered {text} changed: {storage_pixel_report(cell)}"
     return {"expected_text":text,"mask_size":size,"mask_sha256":expected}
 
@@ -2790,7 +2797,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     tab = inspector_frame_tab(page, canvas)
     toolbar_y = (tab[1] + tab[3]) / 2
     evidence = {}
-    # Exact glyph masks from the reviewed DPR1 "0x5f" and "{0x105f}" /
+    # Independent glyph rasters from the reviewed DPR1 "0x5f" and "{0x105f}" /
     # "{0x205f}" crops. Separate cells preserve the old exact-text acceptance
     # despite the adjustable gap, without allowing an off-by-one final slot.
     last_cell_hashes = {
@@ -2808,7 +2815,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         default_table = storage_table_pixels(page, default_png,
             (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
         assert default_table["header"]["slot"] and default_table["header"]["value"],storage_pixel_report(default_table)
-        # Preserve the reviewed final-row hashes at their original Value x=138.
+        # Preserve the reviewed final-row glyph placement at original Value x=138.
         # The larger default moves Value to x=531, where one unchanged glyph
         # sample rounds from 127 to 128 and crosses the exact ink-mask threshold.
         # A real native drag also lets this scroll case retain an explicit width.
@@ -2867,7 +2874,12 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         assert len(last_row["rows"]) == 1 and last_row["white_pixels"] > 100, "last slot row was clipped or blank"
         for cell,expected_hash in [("slot",last_cell_hashes["slot"]),("value",last_cell_hashes[kind])]:
             actual=final_cells[cell]
-            assert actual and actual["mask_sha256"]==expected_hash,f"last rendered {title} {cell} changed: {storage_pixel_report(actual)}"
+            if cell == "value":
+                assert actual, f"last rendered {title} Value is missing"
+                last_value_comparison=assert_storage_literal_pixels(
+                    actual, "{0x105f}" if kind == "storage" else "{0x205f}")
+            else:
+                assert actual and actual["mask_sha256"]==expected_hash,f"last rendered {title} {cell} changed: {storage_pixel_report(actual)}"
             left,top,right,bottom=actual["bounds"]
             save_png_crop(page,settled,(left-1,top-1,right+1,bottom+1),output/f"{kind}-last-{cell}.png")
         page.mouse.move(80,wheel_y)
@@ -2881,6 +2893,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         evidence[kind] = {"entries": count, "expected_last_slot": hex(count - 1),
             "expected_last_value": account[kind][-1]["value"]["constants"],
             "expected_last_cell_mask_sha256": {"slot":last_cell_hashes["slot"],"value":last_cell_hashes[kind]},
+            "last_value_rgb_comparison":last_value_comparison,
             "facts_region": facts_region, "collapsed_facts": collapsed_facts,
             "collapsed_facts_region":collapsed_facts_region,
             "collapsed_prefix":collapsed_prefix,"expanded_prefix":expanded_prefix,
