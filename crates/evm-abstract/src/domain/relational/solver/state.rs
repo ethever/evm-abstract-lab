@@ -17,6 +17,21 @@ mod word;
 fn byte_zero() -> BV {
     BV::from_u64(0, 8)
 }
+/// Both branches have already passed normal EVM encoding, including its
+/// fallible expression work, charges and accumulated definitions/numeric facts.
+/// Generic SMT ITEs cannot assume this boundary and keep arbitrary subgraphs.
+fn choose(guard: &Bool, yes: &BV, no: &BV) -> BV {
+    assert_eq!(
+        yes.width(),
+        no.width(),
+        "conditional branches must have equal widths"
+    );
+    match guard.as_bool() {
+        Some(true) => yes.clone(),
+        Some(false) => no.clone(),
+        None => guard.ite(yes, no),
+    }
+}
 fn valid_sum(a: &BV, b: &BV) -> (BV, Bool) {
     if let (Some(a), Some(b)) = (literal(a), literal(b)) {
         let (sum, overflow) = a.overflowing_add(b);
@@ -38,6 +53,18 @@ impl Encoder<'_> {
         self.charge(numeric.work_size())?;
         if let Some(exact) = numeric.singleton() {
             return Ok(vec![value.eq(word(exact))]);
+        }
+        if let Some(values) = numeric.constants() {
+            // Membership in the complete filtered set already implies every
+            // other numeric component. Encoding its redundant congruence can
+            // otherwise bit-blast a full Word256 remainder for a tiny set.
+            return Ok(vec![Bool::or(
+                &values
+                    .iter()
+                    .filter(|candidate| numeric.contains(**candidate))
+                    .map(|candidate| value.eq(word(*candidate)))
+                    .collect::<Vec<_>>(),
+            )]);
         }
         let mut facts = Vec::new();
         let (lo, hi) = numeric.interval().unsigned_bounds();
@@ -69,15 +96,6 @@ impl Encoder<'_> {
             }
         } else if let Some(exact) = numeric.congruence().singleton() {
             facts.push(value.eq(word(exact)));
-        }
-        if let Some(values) = numeric.constants() {
-            facts.push(Bool::or(
-                &values
-                    .iter()
-                    .filter(|v| numeric.contains(**v))
-                    .map(|v| value.eq(word(*v)))
-                    .collect::<Vec<_>>(),
-            ));
         }
         if !numeric.may_be_zero() {
             facts.push(value.eq(word(U256::ZERO)).not());
@@ -305,7 +323,11 @@ impl Encoder<'_> {
                 }
                 let length = self.expression(length)?;
                 self.charge(2)?;
-                Ok(index.bvult(&length).ite(&array.select(index), &byte_zero()))
+                Ok(choose(
+                    &index.bvult(&length),
+                    &array.select(index),
+                    &byte_zero(),
+                ))
             }
             ByteStateKind::WriteByte {
                 previous,
@@ -316,7 +338,7 @@ impl Encoder<'_> {
                 let value = self.expression(value)?.extract(7, 0);
                 let old = self.byte(previous, index)?;
                 self.charge(2)?;
-                Ok(index.eq(&offset).ite(&value, &old))
+                Ok(choose(&index.eq(&offset), &value, &old))
             }
             ByteStateKind::WriteWord {
                 previous,
@@ -334,7 +356,7 @@ impl Encoder<'_> {
                 let byte = value.bvlshr(&shift).extract(7, 0);
                 let old = self.byte(previous, index)?;
                 self.charge(7)?;
-                Ok(inside.ite(&byte, &old))
+                Ok(choose(&inside, &byte, &old))
             }
             ByteStateKind::Copy {
                 previous,
@@ -349,7 +371,7 @@ impl Encoder<'_> {
                 let new = self.view_byte(source, &delta)?;
                 let old = self.byte(previous, index)?;
                 self.charge(4)?;
-                Ok(inside.ite(&new, &old))
+                Ok(choose(&inside, &new, &old))
             }
             ByteStateKind::Slice { source } => self.view_byte(source, index),
             ByteStateKind::Ite {
@@ -360,7 +382,7 @@ impl Encoder<'_> {
                 let guard = self.truth(condition)?;
                 let yes = self.byte(then_state, index)?;
                 let no = self.byte(else_state, index)?;
-                Ok(guard.ite(&yes, &no))
+                Ok(choose(&guard, &yes, &no))
             }
         }
     }
@@ -380,7 +402,7 @@ impl Encoder<'_> {
             let yes = self.view_byte(&yes_view, index)?;
             let no = self.view_byte(&no_view, index)?;
             self.charge(1)?;
-            return Ok(guard.ite(&yes, &no));
+            return Ok(choose(&guard, &yes, &no));
         }
         if let ByteStateKind::Copy {
             destination,
@@ -399,14 +421,18 @@ impl Encoder<'_> {
             let (_, valid) = valid_sum(&destination, index);
             let byte = self.view_byte(source, index)?;
             self.charge(2)?;
-            return Ok(valid.ite(&byte, &byte_zero()));
+            return Ok(choose(&valid, &byte, &byte_zero()));
         }
         let offset = self.expression(&view.offset)?;
         let length = self.expression(&view.length)?;
         let (backing, valid) = valid_sum(&offset, index);
         let byte = self.byte(&view.state, &backing)?;
         self.charge(5)?;
-        Ok(Bool::and(&[valid, index.bvult(length)]).ite(&byte, &byte_zero()))
+        Ok(choose(
+            &Bool::and(&[valid, index.bvult(length)]),
+            &byte,
+            &byte_zero(),
+        ))
     }
     pub(super) fn word_read(
         &mut self,
@@ -448,7 +474,7 @@ impl Encoder<'_> {
         for j in 0..32 {
             let (index, valid) = valid_sum(&offset, &word(U256::from(j)));
             let byte = self.view_byte(view, &index)?;
-            let byte = valid.ite(&byte, &byte_zero());
+            let byte = choose(&valid, &byte, &byte_zero());
             self.charge(4)?;
             bytes.push(byte);
         }

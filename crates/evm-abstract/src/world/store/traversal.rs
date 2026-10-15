@@ -20,6 +20,16 @@ fn rename(
     Ok(())
 }
 impl Store {
+    /// Import proved numeric guarantees using the immutable original term keys.
+    /// Compact operand values need not retain an optional expression themselves.
+    pub(crate) fn refine_operands(&mut self, update: &mut impl FnMut(&ExprId, &mut AbstractValue)) {
+        for plane in [&mut self.persistent, &mut self.transient] {
+            for (expression, value) in &mut plane.operands {
+                update(expression, value);
+            }
+        }
+    }
+
     /// Runtime symbols from roots, source tokens, scalar accounts and event views.
     pub fn fresh_leaves(&self) -> BTreeSet<ExprId> {
         let mut out = BTreeSet::new();

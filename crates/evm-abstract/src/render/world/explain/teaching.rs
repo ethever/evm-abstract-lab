@@ -89,7 +89,7 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
     write_outcomes(&mut output, analysis, &refs);
     write_diagnostics(&mut output, analysis);
     write_frontiers(&mut output, analysis, &refs);
-    super::super::text::unknown_summaries::write(&mut output, analysis);
+    super::super::text::procedure_summaries::write(&mut output, analysis);
     output.push('\n');
     if analysis.status() == Status::Converged {
         output.push_str(&super::super::normalized_ssa(

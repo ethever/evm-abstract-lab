@@ -368,8 +368,9 @@ fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
 
     let call = |offset: u8| format!("602060{offset:02x}5f5f5f6102006207a120f1");
     let counter_caller = format!("{}50{}50{}506020516040511800", call(0), call(32), call(64));
-    // The counter changes the ordered symbolic store on each call even though
+    // A successful counter call changes the ordered symbolic store even though
     // its numeric projection remains Top. Those exact preconditions must miss.
+    // A rejected earlier CALL leaves the original input and can validly reuse it.
     // GAS produces a new unknown output without changing any input. A warm-up
     // with no output copy lets both compared calls replay the same certificate.
     let readonly_caller = format!(
@@ -409,11 +410,48 @@ fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
                         .iter()
                         .any(|record| record.reused_at.len() >= 2)
                 );
-            } else {
+            } else if !use_summaries {
                 assert_eq!(graph.summary_stats().hits, 0);
             }
             if use_summaries && !reusable {
-                assert_eq!(graph.summaries().len(), 3);
+                let initial = &graph.states()[0].entry.store;
+                let reused: Vec<_> = graph
+                    .summaries()
+                    .iter()
+                    .filter(|record| !record.reused_at.is_empty())
+                    .collect();
+                assert_eq!(reused.len(), 1);
+                assert_eq!(&reused[0].input.store, initial);
+                assert_eq!(reused[0].input.frame.state.saved_store.state(), initial);
+                assert_eq!(
+                    graph.states()[reused[0].source_state].key.frames[0].basic_block_index,
+                    0
+                );
+                for site in &reused[0].reused_at {
+                    assert_eq!(graph.states()[*site].key.frames[0].basic_block_index, 1);
+                    assert_eq!(
+                        graph.states()[*site].active().code_hash,
+                        reused[0].input.frame.state.key.code_hash
+                    );
+                }
+                let admitted_sites: std::collections::BTreeSet<_> = graph
+                    .summaries()
+                    .iter()
+                    .map(|record| {
+                        graph.states()[record.source_state].key.frames[0].basic_block_index
+                    })
+                    .collect();
+                assert_eq!(admitted_sites, std::collections::BTreeSet::from([0, 1, 2]));
+                for record in graph.summaries() {
+                    assert!(!record.outputs.is_empty());
+                    for output in &record.outputs {
+                        assert_eq!(output.kind, evm_abstract::analysis::OutcomeKind::Return);
+                        assert_ne!(
+                            output.store.slot_root(address(0x200), false).unwrap(),
+                            record.input.store.slot_root(address(0x200), false).unwrap()
+                        );
+                    }
+                }
                 for pair in graph.summaries().windows(2) {
                     assert_ne!(pair[0].input.store, pair[1].input.store);
                     assert_ne!(
@@ -439,6 +477,12 @@ fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
                 .iter()
                 .find(|state| {
                     state.active().code_address == entry.address
+                        && state
+                            .entry
+                            .active()
+                            .stack
+                            .last()
+                            .is_some_and(|value| value.singleton() == Some(U256::from(1)))
                         && state
                             .executed_pcs
                             .contains(&(state.program().unwrap().byte_len() - 1))
@@ -485,7 +529,10 @@ fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
                     .states()
                     .iter()
                     .filter(|state| {
-                        state.key.frames.len() == 1 && state.active().basic_block_index >= 2
+                        state.key.frames.len() == 1
+                            && state.active().basic_block_index >= 2
+                            && state.entry.active().stack.last().unwrap().singleton()
+                                == Some(U256::from(1))
                     })
                     .collect();
                 assert_eq!(continuations.len(), 2);

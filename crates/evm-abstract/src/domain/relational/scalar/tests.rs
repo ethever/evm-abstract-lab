@@ -10,6 +10,73 @@ use revm_bytecode::opcode;
 use std::num::NonZeroUsize;
 
 #[test]
+fn masked_target_equality_refines_only_the_proved_bits() {
+    let limits = super::super::RelationLimits::default();
+    let variable = ExprId::fresh().unwrap();
+    let mask = (U256::ONE << 160usize) - U256::ONE;
+    let address = U256::from(0x101);
+    for swapped in [false, true] {
+        let args = if swapped {
+            [ExprId::constant(mask), variable.clone()]
+        } else {
+            [variable.clone(), ExprId::constant(mask)]
+        };
+        let projected = ExprId::operation(opcode::AND, &args, limits.expressions()).unwrap();
+        let equality = ExprId::operation(
+            opcode::EQ,
+            &[projected.clone(), ExprId::constant(address)],
+            limits.expressions(),
+        )
+        .unwrap();
+        for constraint in [
+            super::super::Constraint::Truth {
+                expression: equality.clone(),
+                nonzero: true,
+            },
+            super::super::Constraint::Equal {
+                left: ExprId::constant(address),
+                right: projected,
+            },
+        ] {
+            let relations = super::super::RelationState {
+                constraints: [constraint].into_iter().collect(),
+                bottom: false,
+                path: Default::default(),
+            };
+            let ScalarQuery::Refined { numeric, .. } = relations.refine_numeric(
+                &variable,
+                &NumericValue::top(),
+                Domain::default(),
+                &limits,
+            ) else {
+                panic!("masked equality must translate into known bits");
+            };
+            assert!(numeric.contains(address));
+            assert!(numeric.contains((U256::MAX & !mask) | address));
+            assert!(!numeric.contains(address + U256::ONE));
+            assert!(
+                numeric.singleton().is_none(),
+                "unknown high bits must remain unknown"
+            );
+        }
+        let excluded = super::super::RelationState {
+            constraints: [super::super::Constraint::Truth {
+                expression: equality,
+                nonzero: false,
+            }]
+            .into_iter()
+            .collect(),
+            bottom: false,
+            path: Default::default(),
+        };
+        assert_eq!(
+            excluded.refine_numeric(&variable, &NumericValue::top(), Domain::default(), &limits),
+            ScalarQuery::Unchanged
+        );
+    }
+}
+
+#[test]
 fn malformed_or_metadata_facts_never_claim_numerical_bottom() {
     for error in [
         FactError::InvalidBitIndex(256),

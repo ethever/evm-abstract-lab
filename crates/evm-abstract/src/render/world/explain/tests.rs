@@ -176,10 +176,10 @@ fn empty_code_and_missing_entry_remain_distinct_without_fake_disassembly() {
     );
     assert_eq!(missing.status(), Status::Converged);
     assert!(missing.frontiers().is_empty());
-    assert!(!missing.unknown_summaries().is_empty());
+    assert!(!missing.procedure_summaries().is_empty());
     assert!(
         missing
-            .unknown_summaries()
+            .procedure_summaries()
             .iter()
             .all(|record| record.closed)
     );

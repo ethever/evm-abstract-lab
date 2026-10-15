@@ -31,9 +31,9 @@ pub(super) mod create;
 mod errors;
 mod hash;
 mod precompile;
+pub(super) mod procedure;
 mod ranges;
 mod relations;
-pub(super) mod unknown;
 
 pub(super) use crate::resource::WorkBudget;
 use budget::{byte_work, operation_work};

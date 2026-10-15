@@ -1,0 +1,19 @@
+{
+  "fork": "osaka",
+  "provenance": "synthetic:issue123:known-self-call-return42",
+  "identity": {
+    "kind": "offline",
+    "label": "known-self-call-return42:v1"
+  },
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000101",
+      "code": "0x5f5f5f5f5f305af150602a5f5260205ff3",
+      "storage": {},
+      "storage_unknown": false,
+      "balance": "0xf4240",
+      "nonce": "0x0",
+      "existence": "present"
+    }
+  ]
+}

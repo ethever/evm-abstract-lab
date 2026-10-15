@@ -42,7 +42,7 @@ pub use symbolic::*;
 /// Same-origin analysis endpoint.
 pub const API_PATH: &str = "/api/tasks";
 /// Wire schema version, independent of the engine's private JSON formats.
-pub const SCHEMA_VERSION: u16 = 12;
+pub const SCHEMA_VERSION: u16 = 13;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 

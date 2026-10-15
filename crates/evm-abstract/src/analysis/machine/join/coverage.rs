@@ -305,19 +305,21 @@ pub(super) fn covers(
     if let Some(value) = predicate.as_constant() {
         return Ok(value != U256::ZERO);
     }
-    reserve(
-        budget,
-        incoming
-            .relations
-            .work_size()
-            .saturating_add(predicate.work_size())
-            .saturating_add(policy.rlimit as usize),
-    )?;
+    let query_fee = incoming
+        .relations
+        .work_size()
+        .saturating_add(predicate.work_size())
+        .saturating_add(policy.rlimit as usize);
+    reserve(budget, query_fee)?;
     Ok(
-        match incoming
-            .relations
-            .can_equal(&predicate, U256::ZERO, &policy)
-        {
+        match incoming.relations.can_equal_cached(
+            &predicate,
+            U256::ZERO,
+            &policy,
+            &mut budget
+                .smt_cache_query(policy.cache_scope())
+                .with_allowance(query_fee / 4),
+        ) {
             CheckResult::Unsat => true,
             CheckResult::Unknown(QueryReason::Cancelled) => {
                 return Err(MachineError::Relations(QueryReason::Cancelled));
@@ -326,3 +328,6 @@ pub(super) fn covers(
         },
     )
 }
+
+#[cfg(test)]
+mod tests;

@@ -31,17 +31,17 @@ fn wide_symbolic_policy() -> ExecutionConfig {
 
 fn complete_symbolic(analysis: &evm_abstract::analysis::WorldAnalysis) {
     complete(analysis);
-    assert!(!analysis.unknown_summaries().is_empty());
+    assert!(!analysis.procedure_summaries().is_empty());
     assert!(
         analysis
-            .unknown_summaries()
+            .procedure_summaries()
             .iter()
             .all(|summary| summary.closed)
     );
 }
 
 fn symbolic_with_native_input_gaps(analysis: &evm_abstract::analysis::WorldAnalysis) {
-    assert!(!analysis.unknown_summaries().is_empty());
+    assert!(!analysis.procedure_summaries().is_empty());
     if analysis.frontiers().is_empty() {
         complete_symbolic(analysis);
     } else {
@@ -69,7 +69,7 @@ fn symbolic_with_native_input_gaps(analysis: &evm_abstract::analysis::WorldAnaly
         let expected: std::collections::BTreeSet<_> = (1..=17).chain([256]).map(address).collect();
         assert_eq!(native_gaps, expected);
         let open: Vec<_> = analysis
-            .unknown_summaries()
+            .procedure_summaries()
             .iter()
             .filter(|summary| !summary.closed)
             .collect();

@@ -77,6 +77,8 @@ variant! {
         Work,
         /// SummaryWork boundary.
         SummaryWork,
+        /// Recursive execution has no covered terminal behavior in this model.
+        RecursiveNoTerminal,
         /// CallDepth boundary.
         CallDepth,
         /// A byte-array representation rejected the original range.

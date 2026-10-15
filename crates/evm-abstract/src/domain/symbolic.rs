@@ -179,6 +179,12 @@ pub enum ExprError {
 }
 
 impl ExprId {
+    /// Temporary lookup key while the caller retains this immutable node.
+    /// Never persist it: pointer reuse does not establish semantic identity.
+    pub(crate) fn immutable_node_key(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+
     fn leaf(kind: ExprKind) -> Self {
         let fingerprint = state::fingerprint(&kind);
         Self(Arc::new(Node {

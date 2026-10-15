@@ -1,5 +1,15 @@
 //! Recursive abstract execution evidence, separate from concrete graph edges.
 
+choice! {
+    /// Why the main execution requested a procedure fixed point.
+    pub enum ProcedureSummaryKind {
+        /// Unobserved execution interacting with captured bytecode.
+        UnknownEnvironment,
+        /// A recursive call between captured bytecode procedures.
+        KnownRecursion,
+    }
+}
+
 record! {
     /// A known-code or abstract-environment relation in one joint fixed point.
     pub struct AbstractProcedure {
@@ -27,10 +37,14 @@ record! {
 }
 
 record! {
-    /// One unknown entry and the mutually recursive relations used to cover it.
+    /// One summarized entry and the mutually recursive relations used to cover it.
     pub struct AbstractSummary {
         /// Native machine state requesting the relation.
         pub source_state: usize,
+        /// Distinguishes unknown execution from recursion through known bytecode.
+        pub kind: ProcedureSummaryKind,
+        /// Requested root within procedures, absent if admission was interrupted.
+        pub root_procedure: Option<usize>,
         /// All required transitions and dependencies reached a covered invariant.
         pub closed: bool,
         /// Known and unknown execution contexts participating in the relation.

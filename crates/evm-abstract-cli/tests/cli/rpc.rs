@@ -307,7 +307,7 @@ fn rpc_discovery_can_be_disabled_without_guessing_empty_code() {
         assert_eq!(analysis["status"], "Converged");
         assert!(analysis["world"]["accounts"].get(CALLEE).is_none());
         assert!(analysis["frontiers"].as_array().unwrap().is_empty());
-        let summaries = analysis["unknown_summaries"].as_array().unwrap();
+        let summaries = analysis["procedure_summaries"].as_array().unwrap();
         assert!(!summaries.is_empty());
         assert!(summaries.iter().all(|summary| summary["closed"] == true));
         let requests = server.finish();
@@ -455,37 +455,71 @@ fn native_and_delegated_precompile_execution_never_fetches_precompile_code() {
 }
 
 #[test]
-fn unknown_rpc_call_target_retains_actual_depth_budget_without_guessing_remote_addresses() {
+fn unknown_rpc_call_target_closes_procedures_without_guessing_remote_addresses() {
     thread::scope(|scope| {
         // 开放的 GAS 槽键不能完整枚举，读出的调用目标仍未知，不能猜地址。
-        let fixture = Fixture::new(&[(ENTRY, "5f5f5f5f5f5a545af100")]);
-        let server = RpcServer::new(scope, move |request| fixture.reply(request));
-        let analysis = result(execute(&server, &["--max-call-depth", "2"]), 2);
-        assert_eq!(analysis["status"], "Incomplete");
-        assert!(
-            analysis["frontiers"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|frontier| { frontier["reason"] == "CallDepth" }),
-            "{:?}",
-            analysis["frontiers"]
-        );
-        assert!(
-            analysis["rpc_acquisition"]["fetched_accounts"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        let requests = server.finish();
-        assert_eq!(
-            requests
-                .iter()
-                .filter(|request| request["method"] == "eth_getCode")
-                .count(),
-            1
-        );
-        assert_pinned(&requests);
+        // 自调用边重复要进入第三帧；深度 2 在递归摘要准入前截断。
+        for (depth, status, exit) in [("3", "Converged", 0), ("2", "Incomplete", 2)] {
+            let fixture = Fixture::new(&[(ENTRY, "5f5f5f5f5f5a545af100")]);
+            let server = RpcServer::new(scope, move |request| fixture.reply(request));
+            let analysis = result(execute(&server, &["--max-call-depth", depth]), exit);
+            assert_eq!(analysis["status"], status, "max-call-depth={depth}");
+            assert!(!analysis["outcomes"].as_array().unwrap().is_empty());
+            let frontiers = analysis["frontiers"].as_array().unwrap();
+            let procedures = analysis["procedure_summaries"].as_array().unwrap();
+            assert!(!procedures.is_empty());
+            assert!(procedures.iter().all(|record| record["closed"] == true));
+            assert!(
+                procedures
+                    .iter()
+                    .any(|record| record["kind"] == "UnknownEnvironment")
+            );
+            for record in procedures {
+                let root = usize::try_from(record["root_procedure"].as_u64().unwrap()).unwrap();
+                assert!(
+                    !record["procedures"][root]["outputs"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+            if depth == "3" {
+                assert!(frontiers.is_empty());
+                assert!(
+                    procedures
+                        .iter()
+                        .any(|record| record["kind"] == "KnownRecursion")
+                );
+            } else {
+                // 环境摘要已闭合，普通执行的深度边界仍使整个分析不完整。
+                assert!(!frontiers.is_empty());
+                for frontier in frontiers {
+                    assert_eq!(frontier["reason"], "CallDepth");
+                    assert_eq!(frontier["pc"], 8);
+                }
+            }
+            assert!(
+                analysis["rpc_acquisition"]["fetched_accounts"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            let requests = server.finish();
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request["method"] != "eth_getStorageAt")
+            );
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request["method"] == "eth_getCode")
+                    .count(),
+                1
+            );
+            assert_eq!(requests_for(&requests, "eth_getCode", ENTRY).len(), 1);
+            assert_pinned(&requests);
+        }
     });
 }
 

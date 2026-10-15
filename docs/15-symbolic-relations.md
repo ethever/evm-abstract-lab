@@ -112,7 +112,7 @@ jq '.states[] | select(.key.basic_block_index == 2)
 
 `entry_constants` 为 `["0x1"]`。constraints 中的 `Truth` 保存 `nonzero:true` 和一份 flat expression graph：`root` 指向 `nodes` 中的 Operation，opcode 20 即 EQ，`args` 是常量 1 与 Input(CallValue) 的本图索引。Input 还带 scope，图带 identity_scope。输入表达式仍表示原来的 v，数值层证明它在这个状态里只能为 1；不能把不同图中的同一个索引当成同一节点，也不会为每条分支伪造新交易。
 
-结果 JSON 的 `schema_version` 为 7；`domain_spec.schema_version` 与 `cost_version` 都为 2。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
+结果 JSON 的 `schema_version` 为 8；`domain_spec.schema_version` 与 `cost_version` 都为 2。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
 
 版本 4 将数值事实错误保留为带参数的 `ScalarFactError`，将求解器绑定错误 `SolverError` 与原生 `SolverUnknown` 分开，后两者都保留求解器身份。原生 UNKNOWN 的自由文本原因仍作为该类型的说明；它不会被当作不可满足。Web 的展示协议独立使用版本 12。
 

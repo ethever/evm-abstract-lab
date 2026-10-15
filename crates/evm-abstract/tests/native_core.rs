@@ -69,10 +69,10 @@ fn external_code_omitted_by_single_program_input_uses_native_interaction_summari
             .iter()
             .any(|state| state.active().mode == FrameCode::Unknown)
     );
-    assert!(!view.execution().unknown_summaries().is_empty());
+    assert!(!view.execution().procedure_summaries().is_empty());
     assert!(
         view.execution()
-            .unknown_summaries()
+            .procedure_summaries()
             .iter()
             .all(|summary| summary.closed)
     );

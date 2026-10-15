@@ -60,7 +60,7 @@ fn invalid_opcode_report_preserves_original_bytes_names_causes_and_closure() {
         let mut input = request(bytecode);
         input.fork = fork;
         let report = analyze(input).unwrap();
-        assert_eq!(report.schema_version, 12);
+        assert_eq!(report.schema_version, 13);
         assert_eq!(report.status, AnalysisStatus::Converged);
         assert!(report.frontiers.is_empty());
         let diagnostics: Vec<_> = report

@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use evm_abstract_protocol::{
     AnalysisReport, CfgBlock, CfgEdge, DeferredEdge, SsaBlock, SsaTransition, StateDetails,
@@ -22,6 +22,7 @@ pub(super) struct ReportIndex {
     outgoing: BTreeMap<usize, Vec<usize>>,
     incoming: BTreeMap<usize, Vec<usize>>,
     frontiers: BTreeMap<usize, usize>,
+    recursive_summaries: BTreeSet<usize>,
     terminations: Terminations,
 }
 
@@ -68,6 +69,14 @@ impl ReportIndex {
                 .map(|(pos, item)| (item.edge, pos))
                 .collect(),
             terminations: Terminations::new(report),
+            recursive_summaries: report
+                .abstract_summaries
+                .iter()
+                .filter(|summary| {
+                    summary.kind == evm_abstract_protocol::ProcedureSummaryKind::KnownRecursion
+                })
+                .map(|summary| summary.source_state)
+                .collect(),
             ..Self::default()
         };
         for (position, edge) in report.edges.iter().enumerate() {
@@ -84,6 +93,10 @@ impl ReportIndex {
 
     pub(super) fn cfg<'a>(&self, report: &'a AnalysisReport, state: usize) -> Option<&'a CfgBlock> {
         report.cfg.get(*self.cfg.get(&state)?)
+    }
+
+    pub(super) fn has_recursive_summary(&self, state: usize) -> bool {
+        self.recursive_summaries.contains(&state)
     }
 
     pub(super) fn ssa<'a>(&self, report: &'a AnalysisReport, state: usize) -> Option<&'a SsaBlock> {

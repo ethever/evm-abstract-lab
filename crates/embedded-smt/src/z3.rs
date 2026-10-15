@@ -161,7 +161,12 @@ impl Backend for Z3 {
     }
     fn check(&mut self) -> Result<Status, Error> {
         let before = resources(&self.solver);
-        Ok(match self.solver.check() {
+        #[cfg(test)]
+        crate::query_pair::observe_native();
+        let result = self.solver.check();
+        #[cfg(test)]
+        crate::query_pair::observe_resources(self.rlimit, before, resources(&self.solver));
+        Ok(match result {
             SatResult::Sat => Status::Sat,
             SatResult::Unsat => Status::Unsat,
             SatResult::Unknown => {
@@ -192,19 +197,121 @@ impl Backend for Z3 {
     }
 }
 
-pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Outcome {
-    ::z3::with_z3_config(&Config::new(), || {
+fn solve_current(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Outcome {
+    let solver = Solver::new_for_logic("QF_ABV").expect("Z3 supports QF_ABV");
+    #[cfg(test)]
+    crate::query_pair::observe_preparation();
+    let mut params = Params::new();
+    params.set_u32("rlimit", rlimit);
+    solver.set_params(&params);
+    let context = ::z3::Context::thread_local();
+    let handle = context.handle();
+    let cancellation = crate::current_cancellation();
+    crate::cancellation::interruptible(
+        &cancellation,
+        move || handle.interrupt(),
+        || backend::execute(assertions, value, Z3 { solver, rlimit }, rlimit),
+    )
+}
+
+/// Native state belongs to one <=32 literal chunk. Common lowering's memo and
+/// congruence table are gone before this object can push a candidate scope.
+pub(crate) struct LiteralFamily {
+    backend: Z3,
+    target: BV,
+}
+impl LiteralFamily {
+    fn prepare(base: &[Bool], value: &Bv, after: &[Bool], rlimit: u32) -> Result<Self, Failure> {
+        backend::checkpoint()?;
         let solver = Solver::new_for_logic("QF_ABV").expect("Z3 supports QF_ABV");
+        #[cfg(test)]
+        crate::query_pair::observe_preparation();
         let mut params = Params::new();
         params.set_u32("rlimit", rlimit);
         solver.set_params(&params);
-        let context = ::z3::Context::thread_local();
-        let handle = context.handle();
-        let cancellation = crate::current_cancellation();
-        crate::cancellation::interruptible(
-            &cancellation,
-            move || handle.interrupt(),
-            || backend::execute(assertions, value, Z3 { solver, rlimit }, rlimit),
-        )
-    })
+        let mut backend = Z3 { solver, rlimit };
+        // One original congruence allowance, never allowance * family size.
+        let target = backend::prepare_literal_family(base, value, after, &mut backend, rlimit)?;
+        Ok(Self {
+            backend,
+            target: target.bv().clone(),
+        })
+    }
+
+    fn check(&mut self, candidate: &Bv, rlimit: u32) -> Result<Outcome, Failure> {
+        backend::checkpoint()?;
+        if candidate.width() != self.target.get_size()
+            || !matches!(candidate.0.0.op, Op::Literal(_))
+        {
+            return Err(error("literal family requires a same-width syntactic literal").into());
+        }
+        // No DAG lowering or memo survives pop: this primitive cannot introduce
+        // UF applications or common definitions. Native ASTs own their nodes.
+        let literal = self.backend.make_primitive(&candidate.0.0, &[])?;
+        backend::checkpoint()?;
+        let equality = self.target.eq(literal.bv());
+        backend::checkpoint()?;
+        self.backend.solver.push();
+        let result = (|| {
+            backend::checkpoint()?;
+            self.backend.solver.assert(&equality);
+            let mut params = Params::new();
+            params.set_u32("rlimit", rlimit);
+            self.backend.solver.set_params(&params);
+            self.backend.rlimit = rlimit;
+            backend::checkpoint()?;
+            let status = self.backend.check()?;
+            backend::checkpoint()?;
+            Ok(match status {
+                Status::Sat => Outcome::Sat(None),
+                Status::Unsat => Outcome::Unsat,
+                Status::Unknown(reason) => Outcome::Unknown(reason),
+            })
+        })();
+        self.backend.solver.pop(1);
+        result
+    }
+}
+
+pub(crate) fn solve_literal_candidate(
+    family: &mut Option<LiteralFamily>,
+    base: &[Bool],
+    value: &Bv,
+    after: &[Bool],
+    candidate: &Bv,
+    rlimit: u32,
+) -> Outcome {
+    let context = ::z3::Context::thread_local();
+    let handle = context.handle();
+    let cancellation = crate::current_cancellation();
+    crate::cancellation::interruptible(
+        &cancellation,
+        move || handle.interrupt(),
+        || {
+            let result = (|| {
+                backend::checkpoint()?;
+                if family.is_none() {
+                    *family = Some(LiteralFamily::prepare(base, value, after, rlimit)?);
+                }
+                family
+                    .as_mut()
+                    .expect("prepared literal family")
+                    .check(candidate, rlimit)
+            })();
+            result.unwrap_or_else(Failure::outcome)
+        },
+    )
+}
+
+pub(crate) fn solve_in_context(
+    context: &::z3::Context,
+    assertions: &[Bool],
+    value: Option<&Bv>,
+    rlimit: u32,
+) -> Outcome {
+    ::z3::with_z3_context(context, || solve_current(assertions, value, rlimit))
+}
+
+pub(crate) fn solve(assertions: &[Bool], value: Option<&Bv>, rlimit: u32) -> Outcome {
+    ::z3::with_z3_config(&Config::new(), || solve_current(assertions, value, rlimit))
 }

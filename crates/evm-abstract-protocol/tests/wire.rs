@@ -316,7 +316,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 12);
+    assert_eq!(SCHEMA_VERSION, 13);
 }
 
 #[test]
@@ -440,4 +440,35 @@ fn mixed_graph_checks_sorts_and_backward_dependencies() {
         offset: ExpressionRef { node: 1 },
     });
     assert_eq!(wrong.validate().unwrap_err().actual, None);
+}
+
+#[test]
+fn procedure_summary_wire_requires_entry_kind_and_nullable_root() {
+    for kind in [
+        ProcedureSummaryKind::UnknownEnvironment,
+        ProcedureSummaryKind::KnownRecursion,
+    ] {
+        let summary = AbstractSummary {
+            source_state: 7,
+            kind,
+            root_procedure: None,
+            closed: false,
+            procedures: vec![],
+            state_count: 0,
+            transfers: 0,
+            propagations: 0,
+            reused: 0,
+        };
+        let json = serde_json::to_value(&summary).unwrap();
+        let roundtrip: AbstractSummary = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(roundtrip, summary);
+        for field in ["kind", "root_procedure"] {
+            let mut missing = json.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<AbstractSummary>(missing).is_err());
+        }
+        let mut invalid_kind = json;
+        invalid_kind["kind"] = serde_json::json!("Runtime");
+        assert!(serde_json::from_value::<AbstractSummary>(invalid_kind).is_err());
+    }
 }

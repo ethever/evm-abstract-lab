@@ -61,6 +61,14 @@ impl RelationLimits {
     pub fn valid(self) -> bool {
         self.max_constraints > 0 && self.max_nodes > 0 && self.max_depth > 0 && self.rlimit > 0
     }
+    pub(crate) fn cache_scope(self) -> embedded_smt::CacheScope {
+        embedded_smt::CacheScope {
+            enabled: self.enabled,
+            constraints: self.max_constraints,
+            nodes: self.max_nodes,
+            depth: self.max_depth,
+        }
+    }
 }
 
 /// A query did not prove either satisfiability or contradiction.
@@ -108,6 +116,15 @@ pub enum CheckResult {
     Unknown(QueryReason),
 }
 
+/// A finite refinement stopped before all candidate answers were obtained.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum CandidateError {
+    #[error("the root query work budget was exhausted")]
+    Work,
+    #[error("candidate query stopped: {0:?}")]
+    Query(QueryReason),
+}
+
 /// A bounded value-refinement query.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum ValueQuery {
@@ -119,6 +136,16 @@ pub enum ValueQuery {
     Infeasible,
     /// Leave the numerical approximation unchanged.
     Unknown(QueryReason),
+}
+
+/// One projection of a jointly prepared conjunction, or an unpaid work stop.
+/// A later refusal must retain the batch's already proved mathematical answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BudgetedValueQuery {
+    /// The original proof or typed solver/encoding failure for this expression.
+    Value(ValueQuery),
+    /// The root ledger refused the next query before it could run.
+    Work,
 }
 
 /// A retained guarantee over scoped Word256 expressions.
@@ -290,11 +317,22 @@ impl RelationState {
         constraint: Constraint,
         limits: &RelationLimits,
     ) -> Result<CheckResult, QueryReason> {
+        self.insert_inner(constraint, limits, None)
+    }
+    fn insert_inner(
+        &mut self,
+        constraint: Constraint,
+        limits: &RelationLimits,
+        cache: Option<&mut embedded_smt::CacheQuery<'_>>,
+    ) -> Result<CheckResult, QueryReason> {
         if self.bottom {
             return Ok(CheckResult::Unsat);
         }
         self.retain(constraint, limits)?;
-        let checked = self.check(limits);
+        let checked = match cache {
+            Some(cache) => solver::check_cached(self, None, limits, cache),
+            None => self.check(limits),
+        };
         if checked == CheckResult::Unsat {
             self.bottom = true;
         }
@@ -358,6 +396,25 @@ impl RelationState {
         {
             return Ok(());
         }
+        if let Some(values) = numeric.constants() {
+            if values.len() > limits.max_nodes {
+                return Err(QueryReason::ExpressionLimit);
+            }
+            // A complete finite set, filtered by the product, already implies
+            // its masks, bounds, congruence and nonzero constraint. Retaining
+            // those again can create expensive redundant Word256 divisions.
+            return self.retain(
+                Constraint::Members {
+                    expression: expression.clone(),
+                    values: values
+                        .iter()
+                        .copied()
+                        .filter(|value| numeric.contains(*value))
+                        .collect(),
+                },
+                limits,
+            );
+        }
         let (lower, upper) = numeric.interval().unsigned_bounds();
         let (bits_lower, bits_upper) = numeric.known_bits().unsigned_bounds();
         if (lower != U256::ZERO || upper != U256::MAX) && (bits_lower < lower || bits_upper > upper)
@@ -411,22 +468,6 @@ impl RelationState {
                 limits,
             )?;
         }
-        if let Some(values) = numeric.constants() {
-            if values.len() > limits.max_nodes {
-                return Err(QueryReason::ExpressionLimit);
-            }
-            self.retain(
-                Constraint::Members {
-                    expression: expression.clone(),
-                    values: values
-                        .iter()
-                        .copied()
-                        .filter(|v| numeric.contains(*v))
-                        .collect(),
-                },
-                limits,
-            )?;
-        }
         if !numeric.may_be_zero() {
             self.retain(
                 Constraint::Truth {
@@ -470,6 +511,25 @@ impl RelationState {
                 nonzero,
             },
             limits,
+        )
+    }
+    /// Branch-only cached feasibility; retention and full encoding still precede
+    /// lookup. Rejected retention leaves the state unchanged, and only a proved
+    /// contradiction installs bottom.
+    pub(crate) fn assume_checked_cached(
+        &mut self,
+        expression: &ExprId,
+        nonzero: bool,
+        limits: &RelationLimits,
+        cache: &mut embedded_smt::CacheQuery<'_>,
+    ) -> Result<CheckResult, QueryReason> {
+        self.insert_inner(
+            Constraint::Truth {
+                expression: expression.clone(),
+                nonzero,
+            },
+            limits,
+            Some(cache),
         )
     }
     /// Add sound unsigned numeric bounds for one value.
@@ -567,9 +627,70 @@ impl RelationState {
             limits,
         )
     }
+    /// Cached exact-candidate feasibility without retaining the candidate.
+    /// The caller pays its original query fee before constructing the cache borrow.
+    pub(crate) fn can_equal_cached(
+        &self,
+        expression: &ExprId,
+        value: U256,
+        limits: &RelationLimits,
+        cache: &mut embedded_smt::CacheQuery<'_>,
+    ) -> CheckResult {
+        solver::check_cached(
+            self,
+            Some(Constraint::Equal {
+                left: expression.clone(),
+                right: ExprId::constant(value),
+            }),
+            limits,
+            cache,
+        )
+    }
+    /// Check the same complete conjunction for every candidate, in input order.
+    /// A shared immutable encoding does not merge identities or query fuel.
+    pub(crate) fn can_equal_candidates(
+        &self,
+        expression: &ExprId,
+        candidates: &[U256],
+        limits: &RelationLimits,
+        budget: &mut embedded_smt::QueryBudget<'_>,
+    ) -> Result<Vec<CheckResult>, CandidateError> {
+        solver::candidates::check(self, expression, candidates, limits, budget)
+    }
     /// Ask whether every satisfying valuation agrees on this expression.
     pub fn unique_value(&self, expression: &ExprId, limits: &RelationLimits) -> ValueQuery {
         solver::unique(self, expression, limits)
+    }
+    pub(crate) fn unique_value_cached(
+        &self,
+        expression: &ExprId,
+        limits: &RelationLimits,
+        cache: &mut embedded_smt::CacheQuery<'_>,
+    ) -> ValueQuery {
+        solver::unique_cached(self, expression, limits, cache)
+    }
+    /// Prepare the complete ordinary single-expression query before consulting
+    /// its decided cache. A miss never constructs a native solver. The caller
+    /// pays preparation work before borrowing the optional maintenance budget.
+    pub(crate) fn probe_unique_value_cached(
+        &self,
+        expression: &ExprId,
+        limits: &RelationLimits,
+        cache: &mut embedded_smt::CacheQuery<'_>,
+    ) -> Result<Option<ValueQuery>, QueryReason> {
+        solver::probe_unique(self, expression, limits, cache)
+    }
+    /// Query 2..=16 distinct expressions over one complete frozen conjunction.
+    /// The caller supplies its unchanged per-check fee (relation work, all
+    /// target work and the original native allowance). Preparation consumes the
+    /// first permit even on failure; joint proofs never enter single-value caches.
+    pub(crate) fn unique_many_budgeted(
+        &self,
+        expressions: &[ExprId],
+        limits: &RelationLimits,
+        budget: &mut embedded_smt::QueryBudget<'_>,
+    ) -> Result<Vec<BudgetedValueQuery>, QueryReason> {
+        solver::joint::unique(self, expressions, limits, budget)
     }
     /// Cover both paths by keeping only guarantees common to both.
     /// This intentionally loses disjunction precision, never intersects paths.

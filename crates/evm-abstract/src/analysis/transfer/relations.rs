@@ -4,6 +4,8 @@
 //! encoding limit retains the path and records why relational precision stopped.
 
 mod cache;
+mod candidates;
+mod joint;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -73,16 +75,52 @@ pub(super) fn refine(
     relations: &RelationState,
     context: &mut TransferContext<'_>,
 ) -> Result<bool, FrontierReason> {
+    match prepare_refine(value, relations, context)? {
+        PreparedRefinement::Done(feasible) => Ok(feasible),
+        PreparedRefinement::Pending(expression) => {
+            native_refine(value, &expression, relations, context)
+        }
+    }
+}
+
+enum PreparedRefinement {
+    Done(bool),
+    Pending(ExprId),
+}
+
+enum PreparationKind {
+    Scalar,
+    /// Only an actual ISZERO target, whose intrinsic range is exactly {0, 1}.
+    /// Two distinct full-model witnesses therefore exhaust its numeric bound.
+    IntrinsicBoolean,
+}
+
+/// Keep the numerical and original per-value proof paths ahead of batching.
+/// Pending values have paid for local preparation, but not a native query.
+fn prepare_refine(
+    value: &mut AbstractValue,
+    relations: &RelationState,
+    context: &mut TransferContext<'_>,
+) -> Result<PreparedRefinement, FrontierReason> {
+    prepare_refine_mode(value, relations, context, PreparationKind::Scalar)
+}
+
+fn prepare_refine_mode(
+    value: &mut AbstractValue,
+    relations: &RelationState,
+    context: &mut TransferContext<'_>,
+    kind: PreparationKind,
+) -> Result<PreparedRefinement, FrontierReason> {
     let limits = context.config.analysis.relations;
     if !limits.enabled || value.singleton().is_some() {
-        return Ok(!relations.is_bottom());
+        return Ok(PreparedRefinement::Done(!relations.is_bottom()));
     }
     let Some(expression) = value.expression().cloned() else {
-        return Ok(true);
+        return Ok(PreparedRefinement::Done(true));
     };
     let has_state_semantics = expression.has_state_semantics();
     if relations.is_empty() && !has_state_semantics {
-        return Ok(true);
+        return Ok(PreparedRefinement::Done(true));
     }
     // Constraints on another independent input cannot make this value unique.
     if !context
@@ -92,7 +130,7 @@ pub(super) fn refine(
         return Err(FrontierReason::Work);
     }
     if !has_state_semantics && !relations.relevant(&expression) {
-        return Ok(true);
+        return Ok(PreparedRefinement::Done(true));
     }
     if !context
         .budget
@@ -104,10 +142,10 @@ pub(super) fn refine(
         ScalarQuery::Refined { numeric, complete } => {
             *value = value.clone().with_numeric(*numeric);
             if complete || value.singleton().is_some() {
-                return Ok(true);
+                return Ok(PreparedRefinement::Done(true));
             }
         }
-        ScalarQuery::Infeasible => return Ok(false),
+        ScalarQuery::Infeasible => return Ok(PreparedRefinement::Done(false)),
         ScalarQuery::Unchanged => {}
         ScalarQuery::Unknown(crate::domain::relational::QueryReason::ScalarFactLimit) => {}
         ScalarQuery::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
@@ -116,18 +154,66 @@ pub(super) fn refine(
     if cache_work == usize::MAX || !context.budget.charge(cache_work) {
         return Err(FrontierReason::Work);
     }
-    let answer = if let Some(answer) = context.query_cache.get(relations, &expression, &limits) {
-        answer
-    } else {
-        if !charge(relations, &expression, 2, context) {
-            return Err(FrontierReason::Work);
+    if let Some(answer) = context.query_cache.get(relations, &expression, &limits) {
+        return finish_refine(value, &expression, relations, context, answer)
+            .map(PreparedRefinement::Done);
+    }
+    // A complete finite upper bound needs only its two candidate checks.
+    // The bound need not be asserted in SMT: UNSAT excludes each candidate
+    // individually. Any singleton result is local to this numeric value,
+    // so it must not be remembered as a global uniqueness proof.
+    if matches!(kind, PreparationKind::Scalar)
+        && let Some(candidates) = value
+            .constants()
+            .filter(|values| values.len() == 2)
+            .cloned()
+    {
+        let feasible = candidates::refine(value, &expression, &candidates, relations, context)?;
+        if feasible && value.constants().is_some_and(|values| values.len() == 2) {
+            // Two different SAT witnesses prove non-uniqueness even when
+            // the numeric upper bound was never part of the conjunction.
+            context
+                .query_cache
+                .remember(relations, &expression, &limits, &ValueQuery::Multiple);
         }
-        let answer = relations.unique_value(&expression, &limits);
-        context
-            .query_cache
-            .remember(relations, &expression, &limits, &answer);
-        answer
-    };
+        return Ok(PreparedRefinement::Done(feasible));
+    }
+    Ok(PreparedRefinement::Pending(expression))
+}
+
+/// The unchanged single-value oracle is also the fallback after joint failure.
+fn native_refine(
+    value: &mut AbstractValue,
+    expression: &ExprId,
+    relations: &RelationState,
+    context: &mut TransferContext<'_>,
+) -> Result<bool, FrontierReason> {
+    let limits = context.config.analysis.relations;
+    if !charge(relations, expression, 2, context) {
+        return Err(FrontierReason::Work);
+    }
+    let answer = relations.unique_value_cached(
+        expression,
+        &limits,
+        &mut context
+            .budget
+            .smt_cache_query(limits.cache_scope())
+            .with_allowance((limits.rlimit as usize).saturating_mul(2) / 4),
+    );
+    context
+        .query_cache
+        .remember(relations, expression, &limits, &answer);
+    finish_refine(value, expression, relations, context, answer)
+}
+
+/// Apply each proof to this caller's own numeric upper bound and identity.
+fn finish_refine(
+    value: &mut AbstractValue,
+    expression: &ExprId,
+    relations: &RelationState,
+    context: &mut TransferContext<'_>,
+    answer: ValueQuery,
+) -> Result<bool, FrontierReason> {
     match answer {
         ValueQuery::Unique(exact) => {
             if value.contains(exact) {
@@ -156,28 +242,7 @@ pub(super) fn refine(
                 return Ok(true);
             }
             if let Some(candidates) = value.constants().cloned() {
-                let mut retained = Vec::new();
-                for candidate in candidates {
-                    if !charge(relations, &expression, 1, context) {
-                        return Err(FrontierReason::Work);
-                    }
-                    match relations.can_equal(&expression, candidate, &limits) {
-                        CheckResult::Unsat => {}
-                        CheckResult::Sat => retained.push(candidate),
-                        CheckResult::Unknown(reason) => {
-                            return Err(FrontierReason::Relations(reason));
-                        }
-                    }
-                }
-                if let Some(narrowed) = retained
-                    .into_iter()
-                    .map(AbstractValue::constant)
-                    .reduce(|left, right| context.domain.join(&left, &right))
-                {
-                    *value = value.clone().with_numeric(narrowed.numeric().clone());
-                } else {
-                    return Ok(false);
-                }
+                return candidates::refine(value, expression, &candidates, relations, context);
             }
         }
         ValueQuery::Infeasible => return Ok(false),
@@ -237,16 +302,26 @@ pub(super) fn branch(
             boundary(result, pc, FrontierReason::Relations(reason));
         }
     }
-    if !charge(&payload.relations, &expression, 1, context) {
+    let query_fee = payload
+        .relations
+        .work_size()
+        .saturating_add(expression.work_size())
+        .saturating_add(limits.rlimit as usize);
+    if !context.budget.charge(query_fee) {
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
-    match payload
-        .relations
-        .assume_checked(&expression, nonzero, &limits)
-    {
+    let guard_retained = match payload.relations.assume_checked_cached(
+        &expression,
+        nonzero,
+        &limits,
+        &mut context
+            .budget
+            .smt_cache_query(limits.cache_scope())
+            .with_allowance(query_fee / 4),
+    ) {
         Ok(CheckResult::Unsat) => return None,
-        Ok(CheckResult::Sat) => {}
+        Ok(CheckResult::Sat) => true,
         Ok(CheckResult::Unknown(QueryReason::Cancelled)) | Err(QueryReason::Cancelled) => {
             boundary(
                 result,
@@ -257,6 +332,7 @@ pub(super) fn branch(
         }
         Err(reason) => {
             boundary(result, pc, FrontierReason::Relations(reason));
+            false
         }
         Ok(CheckResult::Unknown(reason)) => {
             // The assumption is already retained. A failed feasibility check
@@ -265,21 +341,28 @@ pub(super) fn branch(
                 pc,
                 crate::analysis::DiagnosticKind::RelationalPrecisionLost(reason),
             ));
+            true
         }
-    }
+    };
     let relations = payload.relations.clone();
-    for value in &mut payload.active_mut().stack {
-        match refine(value, &relations, context) {
-            Ok(false) => return None,
-            Ok(true) => {}
-            Err(reason) => {
-                if refinement_failure(result, pc, reason) {
-                    return None;
-                }
-            }
-        }
-    }
-    match refine(&mut payload.active_mut().call_value, &relations, context) {
+    let projection = if guard_retained {
+        joint::refine(
+            &mut payload,
+            &relations,
+            context,
+            &mut result.diagnostics,
+            pc,
+        )
+    } else {
+        joint::individual(
+            &mut payload,
+            &relations,
+            context,
+            &mut result.diagnostics,
+            pc,
+        )
+    };
+    match projection {
         Ok(false) => return None,
         Ok(true) => {}
         Err(reason) => {

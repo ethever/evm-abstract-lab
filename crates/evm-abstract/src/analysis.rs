@@ -34,7 +34,8 @@ pub use machine::{
     ByteRangeBoundary, CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence,
     FrameCode, FrameKey, FrameState, FrontierReason, InstructionProgress, InstructionValue,
     JoinBoundary, MachineEdge, MachineEdgeKind, MachineError, MachineFrontier, MachineKey,
-    MachineOutcome, MachinePayload, MachineState, OutcomeKind, RangeKind, RangeRequest,
+    MachineOutcome, MachinePayload, MachineState, OutcomeKind, ProcedureSummary,
+    ProcedureSummaryKind, ProcedureSummaryOutput, ProcedureSummaryRecord, RangeKind, RangeRequest,
     RangeWitness, RootFrame, WorldAnalysis,
 };
 pub use rpc::{
@@ -44,10 +45,10 @@ pub use rpc::{
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;
 
-/// Serialized native analysis format. Version 6 exports flat immutable scalar,
-/// byte/slot and relation-path graphs, preserving opcode and source evidence.
+/// Serialized native analysis format. Version 8 generalizes procedure summaries
+/// to known recursion and unknown interactions, with explicit entry provenance.
 /// The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 7;
+pub const SCHEMA_VERSION: u16 = 8;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

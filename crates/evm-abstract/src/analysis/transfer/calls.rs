@@ -305,8 +305,11 @@ pub(super) fn call(
     // The decoder splits after every CALL. An end-of-code continuation is a
     // synthetic empty block, making each return pop exactly one frame.
     debug_assert!(next <= program.blocks().len());
-    // Gas and (possibly abstract) balance can reject the call before entry.
-    // This failure preserves all caller writes and clears returndata.
+    // Gas, balance or the physical EVM depth limit can reject a call before
+    // entry. Relative procedures abstract absolute depth, so retaining this
+    // branch also covers maximum-depth rejection without unrolling 1024 frames.
+    // It preserves all caller writes and clears returndata before real bytecode
+    // continues; procedure saturation never invents a root terminal from it.
     immediate_call_failure(result, result.payload.clone(), next);
     // The transaction entry has physical depth zero. No child is entered once
     // the EVM's 1024 depth limit is exceeded, independent of analysis budgets.
@@ -404,7 +407,7 @@ pub(super) fn call(
         remaining = target_guard(result, &input, &projected, &candidate, false, context, pc);
     }
     if !finite && let Some(payload) = remaining {
-        let namespace = super::unknown::owner_namespace(world, &payload.store);
+        let namespace = super::procedure::owner_namespace(world, &payload.store);
         branches.push((
             namespace,
             AddressInput::Concrete(namespace),

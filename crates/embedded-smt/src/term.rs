@@ -12,6 +12,7 @@ use std::{
 };
 
 mod array;
+mod fold;
 mod function;
 pub use array::Array;
 use function::FunctionDecl;
@@ -173,6 +174,9 @@ impl Bv {
     }
     fn binary(&self, other: &Self, op: Op) -> Self {
         assert_eq!(self.width(), other.width(), "bit-vector widths must match");
+        if let Some(value) = fold::binary(self, other, &op) {
+            return value;
+        }
         Self(Term::new(
             op,
             self.0.0.sort,
@@ -181,6 +185,9 @@ impl Bv {
     }
     fn compare(&self, other: &Self, op: Op) -> Bool {
         assert_eq!(self.width(), other.width(), "bit-vector widths must match");
+        if let Some(value) = fold::compare(self, other, &op) {
+            return value;
+        }
         Bool(Term::new(
             op,
             Sort::Bool,
@@ -201,6 +208,9 @@ impl Bv {
             .width()
             .checked_add(extra)
             .expect("bit-vector width overflow");
+        if let Some(value) = fold::zero_extend(self, width) {
+            return value;
+        }
         Self(Term::new(
             Op::ZeroExtend(extra),
             Sort::Bv(width),
@@ -213,6 +223,9 @@ impl Bv {
             low <= high && high < self.width(),
             "valid bit extraction range"
         );
+        if let Some(value) = fold::extract(self, high, low) {
+            return value;
+        }
         Self(Term::new(
             Op::Extract(high, low),
             Sort::Bv(high - low + 1),
@@ -310,12 +323,25 @@ impl Bool {
     pub fn from_bool(value: bool) -> Self {
         Self(Term::new(Op::Bool(value), Sort::Bool, vec![]))
     }
+    /// Read only a syntactic Boolean literal, without solving the formula.
+    pub fn as_bool(&self) -> Option<bool> {
+        match (&self.0.0.op, self.0.0.sort) {
+            (Op::Bool(value), Sort::Bool) if self.0.0.args.is_empty() => Some(*value),
+            _ => None,
+        }
+    }
     /// Logical negation.
     pub fn not(&self) -> Self {
+        if let Some(value) = self.as_bool() {
+            return Self::from_bool(!value);
+        }
         Self(Term::new(Op::Not, Sort::Bool, vec![self.0.clone()]))
     }
     /// Conjunction; the empty conjunction is true.
     pub fn and(values: &[Self]) -> Self {
+        if let Some(value) = fold::boolean(values, true) {
+            return Self::from_bool(value);
+        }
         if values.is_empty() {
             return Self::from_bool(true);
         }
@@ -330,6 +356,9 @@ impl Bool {
     }
     /// Disjunction; the empty disjunction is false.
     pub fn or(values: &[Self]) -> Self {
+        if let Some(value) = fold::boolean(values, false) {
+            return Self::from_bool(value);
+        }
         if values.is_empty() {
             return Self::from_bool(false);
         }
@@ -349,6 +378,9 @@ impl Bool {
             no.width(),
             "conditional branches must have equal widths"
         );
+        if let Some(value) = fold::ite(self, yes, no) {
+            return value;
+        }
         Bv(Term::new(
             Op::Ite,
             yes.0.0.sort,

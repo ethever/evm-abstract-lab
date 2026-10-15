@@ -310,6 +310,23 @@ pub(in crate::world) fn refresh_scalar(
 }
 
 impl ByteArray {
+    /// Collect distinct ITE selectors under the existing retention and traversal
+    /// limits without changing this wrapper. Proofs apply to this same frozen
+    /// state; the owning set can be moved into the serial refinement loop.
+    pub(crate) fn guard_conditions(
+        &self,
+        limits: ExprLimits,
+    ) -> Result<BTreeSet<ExprId>, RangeError> {
+        self.check_existing(limits)?;
+        let mut pending = vec![Node::Bytes(self.root.clone())];
+        self.visit_values(&mut |v| {
+            if let Some(e) = v.expression() {
+                pending.push(Node::Expression(e.clone()));
+            }
+        });
+        guards(pending, limits).map_err(RangeError::from)
+    }
+
     /// Apply only caller-proved guard truth. None retains both alternatives;
     /// false means the imported facts prove the whole state infeasible. Errors
     /// leave this wrapper unchanged. The callback owns query/budget diagnostics.
@@ -319,14 +336,7 @@ impl ByteArray {
         limits: ExprLimits,
         proof: &mut impl FnMut(&ExprId) -> Result<Option<bool>, E>,
     ) -> Result<bool, GuardRefinementError<E>> {
-        self.check_existing(limits)?;
-        let mut pending = vec![Node::Bytes(self.root.clone())];
-        self.visit_values(&mut |v| {
-            if let Some(e) = v.expression() {
-                pending.push(Node::Expression(e.clone()));
-            }
-        });
-        let conditions = guards(pending, limits).map_err(RangeError::from)?;
+        let conditions = self.guard_conditions(limits)?;
         let mut out = self.clone();
         for condition in conditions {
             if let Some(nonzero) = proof(&condition).map_err(GuardRefinementError::Proof)?

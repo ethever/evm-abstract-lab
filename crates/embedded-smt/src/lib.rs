@@ -1,8 +1,10 @@
 //! Solver-independent Boolean, bit-vector and array queries with private native sessions.
 //!
-//! Terms belong to this library, never a native solver. Each check lowers the
-//! same DAG into the selected provider and releases all native handles before
-//! returning. UNKNOWN is distinct from UNSAT. Resource units are provider-specific
+//! Terms belong to this library, never a native solver. Checks lower the same
+//! DAG into the selected provider. Only Z3 candidate chunks of 3..=32 same-width
+//! syntactic literals share a Solver and common lowering; other checks use fresh
+//! Solvers. All native handles are released before the API returns.
+//! UNKNOWN is distinct from UNSAT. Resource units are provider-specific
 //! and never wall-clock time; none of the providers launches a child process.
 //!
 //! Array operations use native BV-indexed, BV-valued arrays. Z3 and Bitwuzla
@@ -30,8 +32,24 @@ mod cancellation;
 pub use cancellation::{Cancellation, current_cancellation, with_cancellation};
 mod bitwuzla;
 mod cvc5;
+mod decided_cache;
+mod query_budget;
+mod query_many;
+mod query_pair;
 mod term;
 mod z3;
+pub use decided_cache::{
+    CacheQuery, CacheScope, CacheStats, DecidedCache, check_cached, check_unique_cached,
+    probe_unique_cached,
+};
+pub use query_budget::QueryBudget;
+pub use query_many::{
+    BudgetedUniqueOutcome, MAX_UNIQUE_PACKED_WIDTH, MAX_UNIQUE_TARGETS, QueryManyError,
+    check_unique_many, check_unique_many_budgeted,
+};
+pub use query_pair::{
+    BudgetedOutcome, UniqueOutcome, check_candidates, check_candidates_budgeted, check_unique,
+};
 
 use serde::Serialize;
 use std::fmt;
@@ -121,6 +139,13 @@ pub enum Outcome {
 /// element bits, with a separate allowance of `rlimit` generated bit-array
 /// primitives. All DAG lowering and expansion steps check the cancellation token.
 pub fn check(assertions: &[Bool], value: Option<&Bv>, provider: Provider, rlimit: u32) -> Outcome {
+    checked_query(provider, rlimit, || match provider {
+        Provider::Z3 => z3::solve(assertions, value, rlimit),
+        Provider::Bitwuzla => bitwuzla::solve(assertions, value, rlimit),
+        Provider::Cvc5 => cvc5::solve(assertions, value, rlimit),
+    })
+}
+fn checked_query(provider: Provider, rlimit: u32, operation: impl FnOnce() -> Outcome) -> Outcome {
     let cancellation = current_cancellation();
     if cancellation.is_cancelled() {
         return Outcome::Unknown(Unknown::Cancelled);
@@ -131,11 +156,7 @@ pub fn check(assertions: &[Bool], value: Option<&Bv>, provider: Provider, rlimit
             message: "rlimit must be positive".into(),
         });
     }
-    let outcome = match provider {
-        Provider::Z3 => z3::solve(assertions, value, rlimit),
-        Provider::Bitwuzla => bitwuzla::solve(assertions, value, rlimit),
-        Provider::Cvc5 => cvc5::solve(assertions, value, rlimit),
-    };
+    let outcome = operation();
     if cancellation.is_cancelled() {
         Outcome::Unknown(Unknown::Cancelled)
     } else {

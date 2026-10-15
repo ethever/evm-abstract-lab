@@ -4,10 +4,13 @@
 
 use evm_abstract::{
     Fork, U256,
-    analysis::{self, ExecutionConfig, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis},
+    analysis::{
+        self, ExecutionConfig, FrameCode, MachineEdgeKind, OutcomeKind, ProcedureSummaryKind,
+        Status, WorldAnalysis,
+    },
     domain::{AbstractValue, Domain},
     ssa,
-    world::{Account, ByteArray, Entry, World},
+    world::{Account, ByteArray, Code, Entry, World},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -105,9 +108,42 @@ fn covers_steps(analysis: &WorldAnalysis, trace: Trace) {
                     && state.executed_pcs.contains(&step.pc)
             })
             .collect();
+        // A recursive callee's actual analyzed blocks belong to the procedure
+        // record. Its public evidence does not fabricate ordinary machine nodes.
+        // Every available main-graph block-entry stack is still checked below;
+        // compare() separately requires one outcome to cover all concrete effects.
+        let in_procedure = analysis.procedure_summaries().iter().any(|record| {
+            record.kind == ProcedureSummaryKind::KnownRecursion
+                && record.closed
+                && record
+                    .root_procedure
+                    .and_then(|root| record.procedures.get(root))
+                    .is_some_and(|root| !root.outputs.is_empty())
+                && record.procedures.iter().any(|procedure| {
+                    let frame = &procedure.frame;
+                    let Some(account) = analysis.world().account(step.code) else {
+                        return false;
+                    };
+                    let Code::Runtime(program) = &account.code else {
+                        return false;
+                    };
+                    frame.mode == FrameCode::Runtime
+                        && frame.code_hash == alloy_primitives::keccak256(program.bytes())
+                        && frame.code_address == step.code
+                        && frame.address == step.address
+                        && frame.caller.as_concrete() == Some(step.caller)
+                        && frame.is_static == step.is_static
+                        && !procedure.outputs.is_empty()
+                        && procedure.covered_blocks.iter().any(|block| {
+                            program.blocks().get(*block).is_some_and(|block| {
+                                block.instructions.iter().any(|i| i.pc == step.pc)
+                            })
+                        })
+                })
+        });
         assert!(
-            !matching.is_empty(),
-            "concrete opcode/frame missing from abstract graph: {step:?}"
+            !matching.is_empty() || in_procedure,
+            "concrete opcode/frame missing from analyzed graph and closed procedure: {step:?}"
         );
         if matching
             .iter()

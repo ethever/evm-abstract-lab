@@ -74,6 +74,8 @@ pub(super) fn preview(
             0,
             ("Conservative interaction summaries".into(), palette::PURPLE),
         );
+    } else if index.has_recursive_summary(block.id) {
+        lines.insert(0, ("Recursive bytecode summary".into(), palette::PURPLE));
     }
     NodeText::new(title, detail, lines, coverage, frontier)
         .with_identity(vec![Symbol::State(block.id).to_string(), location])

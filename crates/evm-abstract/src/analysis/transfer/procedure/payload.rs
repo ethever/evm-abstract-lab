@@ -1,9 +1,9 @@
-//! Canonical whole-frame numerical bounds and independent executable instances.
+//! Canonical numerical bounds, finite stack aliases and independent instances.
 
 use super::{
     AbstractValue, ByteArray, CallStack, ChildFrame, Continuation, Domain, Entry, FrameCode,
     FrameState, FrameSummary, MachineError, MachinePayload, NumericValue, PayloadSummary,
-    RelationState, RootFrame, Snapshot, relations,
+    RelationState, RootFrame, Snapshot, relations, stack_alias::StackAliases,
 };
 
 fn scalar(value: &AbstractValue) -> AbstractValue {
@@ -21,11 +21,8 @@ fn join_scalar(
     widen: bool,
 ) -> AbstractValue {
     let joined = scalar(&domain.join(old, next));
-    if widen && joined.constants().is_none() && old.numeric() != joined.numeric() {
-        let (lower, upper) = domain.widen(old, &joined).interval().unsigned_bounds();
-        scalar(&joined.with_numeric(
-            NumericValue::unsigned_range(lower, upper).expect("ordered widened interval"),
-        ))
+    if widen {
+        scalar(&domain.widen_procedure(old, &joined))
     } else {
         joined
     }
@@ -40,10 +37,13 @@ impl PayloadSummary {
     }
 
     pub(super) fn measure_work(&self) -> usize {
-        let frames = self
-            .frames
-            .iter()
-            .fold(self.store.work_size(), |work, frame| {
+        let store_work = self.store.work_size();
+        let observation_work = self
+            .storage_observations
+            .work_size(&self.active().stack, &self.active().stack_aliases);
+        let frames = self.frames.iter().fold(
+            store_work.saturating_add(observation_work),
+            |work, frame| {
                 let program = frame.program.as_ref().map_or(0, |program| {
                     program
                         .blocks()
@@ -60,11 +60,14 @@ impl PayloadSummary {
                         .saturating_add(frame.call_value.work_size().saturating_mul(2))
                         .saturating_add(frame.address_operand.work_size().saturating_mul(2))
                         .saturating_add(frame.caller_operand.work_size().saturating_mul(2))
+                        .saturating_add(frame.key.jump_history.len())
+                        .saturating_add(frame.stack_aliases.work_size())
                         .saturating_add(program)
                         .saturating_add(4),
                     |work, value| work.saturating_add(value.work_size().saturating_mul(2)),
                 )
-            });
+            },
+        );
         self.continuations
             .iter()
             .fold(frames, |work, continuation| {
@@ -75,25 +78,51 @@ impl PayloadSummary {
     }
 }
 
+/// Tree lookup/allocation and numeric Eq are reserved before alias formation.
+/// Numeric Eq short-circuits unequal finite lengths; equal bounds have equal
+/// numeric traversal sizes. Source expression comparison is never required.
+pub(super) fn alias_form_work(payload: &MachinePayload) -> usize {
+    payload.call_stack.iter().fold(0usize, |work, frame| {
+        if frame.code == FrameCode::Unknown {
+            work
+        } else {
+            frame.stack.iter().fold(
+                work.saturating_add(StackAliases::work_for_len(frame.stack.len())),
+                |work, value| work.saturating_add(value.work_size().saturating_mul(2)),
+            )
+        }
+    })
+}
+
 pub(super) fn form(
     payload: &MachinePayload,
     entry: &Entry,
     domain: Domain,
 ) -> Result<PayloadSummary, MachineError> {
     MachineError::check_cancelled()?;
+    let storage_observations =
+        super::storage_observations::StorageObservations::form(payload, domain)?;
     let frames =
         payload
             .call_stack
             .iter()
             .map(|frame| {
                 let mut key = frame.key.clone();
-                key.jump_history.clear();
                 let unknown = frame.code == FrameCode::Unknown;
+                key.jump_history = if unknown {
+                    Vec::new()
+                } else {
+                    super::context::canonical(&key.jump_history)?
+                };
                 let stack = if unknown {
                     Vec::new()
                 } else {
                     frame.stack.iter().map(scalar).collect()
                 };
+                let stack_aliases = StackAliases::form(
+                    if unknown { &[] } else { &frame.stack },
+                    domain.spec().relations().enabled,
+                )?;
                 key.stack_height = stack.len();
                 if unknown {
                     key.basic_block_index = 0;
@@ -103,6 +132,7 @@ pub(super) fn form(
                     code: frame.code,
                     program: frame.program.clone(),
                     stack,
+                    stack_aliases,
                     memory: if unknown {
                         ByteArray::memory().summary_projection(domain)?
                     } else {
@@ -147,10 +177,12 @@ pub(super) fn form(
         frames,
         continuations,
         store: payload.store.summary_projection(domain)?,
+        storage_observations,
         work: 0,
         location: payload.key(),
     };
     summary.work = summary.measure_work();
+    MachineError::check_cancelled()?;
     Ok(summary)
 }
 
@@ -167,6 +199,9 @@ pub(super) fn join(
     }
     let mut out = old.clone();
     out.store = old.store.join(&next.store, domain, widen);
+    out.storage_observations =
+        old.storage_observations
+            .join(&next.storage_observations, domain, widen)?;
     for ((output, left), right) in out.frames.iter_mut().zip(&old.frames).zip(&next.frames) {
         if left.key != right.key
             || left.code != right.code
@@ -178,6 +213,7 @@ pub(super) fn join(
         for ((output, left), right) in output.stack.iter_mut().zip(&left.stack).zip(&right.stack) {
             *output = join_scalar(left, right, domain, widen);
         }
+        output.stack_aliases = left.stack_aliases.intersect(&right.stack_aliases)?;
         output.call_value = join_scalar(&left.call_value, &right.call_value, domain, widen);
         output.address_operand =
             join_scalar(&left.address_operand, &right.address_operand, domain, widen);
@@ -204,6 +240,7 @@ pub(super) fn join(
     // The erased histories must not remain a permanent replay cost. The new
     // whole bound itself supplies the conservative construction/traversal size.
     out.work = out.measure_work();
+    MachineError::check_cancelled()?;
     Ok(out)
 }
 
@@ -211,10 +248,11 @@ pub(super) fn semantic_eq(left: &PayloadSummary, right: &PayloadSummary) -> bool
     left.frames == right.frames
         && left.continuations == right.continuations
         && left.store == right.store
+        && left.storage_observations == right.storage_observations
 }
 
-/// Numerical summaries are not executable arrays. Separate invocations never
-/// share source variables, even when their abstract input bounds are equal.
+/// Summaries are not executable arrays. Each invocation gets independent source
+/// variables; only its own retained stack classes share scalar expressions.
 pub(super) fn instantiate(
     payload: &PayloadSummary,
     domain: Domain,
@@ -228,11 +266,8 @@ pub(super) fn instantiate(
                 code: frame.code,
                 program: frame.program.clone(),
                 stack: frame
-                    .stack
-                    .iter()
-                    .cloned()
-                    .map(|value| relations::identify(value, domain.spec().relations().enabled))
-                    .collect(),
+                    .stack_aliases
+                    .instantiate(&frame.stack, domain.spec().relations().enabled)?,
                 memory: frame.memory.instantiate(domain)?,
                 calldata: frame.calldata.instantiate(domain)?,
                 environment_calldata: frame.environment_calldata,
@@ -264,9 +299,14 @@ pub(super) fn instantiate(
             continuation: continuation.clone(),
         })
         .collect();
-    Ok(MachinePayload {
+    let mut output = MachinePayload {
         call_stack: CallStack::from_parts(root, children),
         store: payload.store.instantiate(domain)?,
         relations: RelationState::default(),
-    })
+    };
+    payload
+        .storage_observations
+        .install(&mut output, &payload.active().stack_aliases, domain)?;
+    MachineError::check_cancelled()?;
+    Ok(output)
 }

@@ -177,7 +177,7 @@ def compression_interactions(browser, url: str, output: Path):
             envelope = response.json()
             report = envelope["result"]["Ok"]
             assert report == completed.json()["result"]["Ok"]
-            assert report["schema_version"] == 12
+            assert report["schema_version"] == 13
             assert "max_output_bytes" not in report["metadata"]["export_limits"]
             assert report["cfg"] and report["ssa"]["blocks"]
             expect(page.locator("#analysis-status")).to_contain_text("Ready:")
@@ -258,7 +258,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 12
+    assert initial_report["schema_version"] == 13
     assert "max_work" not in initial_report["metadata"]["export_limits"]
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
@@ -292,7 +292,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 12
+    assert report["schema_version"] == 13
     assert report["status"] == "Converged", report["frontiers"]
     assert "max_work" not in report["metadata"]["export_limits"]
     expected = {**defaults, **edited}
@@ -928,7 +928,7 @@ def diagnostics_interactions(browser, url: str, args):
         assert request["fork"] == fork and posted_bytecode(reply) == code, request
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 12 and report["status"] == "Converged", report
+        assert report["schema_version"] == 13 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report
 
@@ -1302,7 +1302,7 @@ def ssa_values_interactions(browser, url, output):
     for name,code,completion in cases:
         if 'Inspector hidden' not in status.text_content():hide_inspector(page,canvas)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
-        assert report['schema_version']==12 and report['status']==completion
+        assert report['schema_version']==13 and report['status']==completion
         ssa=report['ssa']
         assert len(ssa['values'])==ssa['value_count']
         assert [value['id'] for value in ssa['values']]==list(range(ssa['value_count']))
@@ -1392,7 +1392,7 @@ def unknown_world_interactions(browser, url, output):
              "call_value": "0x0", "calldata": "0x"}
     report = layout_submission(page, canvas, code, output, "unknown-world", entry=entry,
                                source_height_offset=-62)
-    assert report["schema_version"] == 12 and report["status"] == "Converged"
+    assert report["schema_version"] == 13 and report["status"] == "Converged"
     assert report["frontiers"] == [] and report["ssa"]["complete"]
     summaries = report["abstract_summaries"]
     assert summaries and all(summary["closed"] and summary["procedures"] for summary in summaries)
@@ -1449,6 +1449,77 @@ def unknown_world_interactions(browser, url, output):
     page.close()
     return result
 
+
+
+def known_recursion_interactions(browser, url, output):
+    """Fold real self-CALL bytecode, then select its Runtime summary in the UI."""
+    page, canvas, errors = layout_page(browser, url)
+    posts = []
+    page.on("request", lambda request: posts.append(request.url)
+            if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+    code = "5f5f5f5f5f305af150602a5f5260205ff3"
+    entry = {"address": "0x0000000000000000000000000000000000000101",
+             "caller": "0x0000000000000000000000000000000000000900",
+             "call_value": "0x0", "calldata": "0x"}
+    report = layout_submission(page, canvas, code, output, "known-recursion", entry=entry,
+                               source_height_offset=-62)
+    assert report["schema_version"] == 13 and report["status"] == "Converged"
+    assert report["frontiers"] == [] and report["ssa"]["complete"]
+    summaries = report["abstract_summaries"]
+    assert summaries
+    for summary in summaries:
+        assert summary["kind"] == "KnownRecursion" and summary["closed"]
+        procedure = summary["procedures"][summary["root_procedure"]]
+        assert procedure["kind"] == "Runtime" and procedure["code_hash"]
+        assert procedure["covered_blocks"] and "Return" in procedure["outcomes"]
+        state = next(state for state in report["states"]
+                     if state["state"] == summary["source_state"])
+        frame = state["entry"]["frames"][-1]
+        assert frame["kind"] == "Runtime" and frame["program"] is not None
+        block = next(block for block in report["cfg"] if block["id"] == state["state"])
+        assert block["instructions"] and block["executed_pcs"] == []
+    assert max(len(state["entry"]["frames"]) for state in report["states"]) <= 3
+    assert any(edge["kind"] == "SummaryReturn" for edge in report["edges"])
+    returns = [outcome for outcome in report["outcomes"] if outcome["kind"] == "Return"]
+    assert returns
+    for outcome in returns:
+        data = report["byte_arrays"][outcome["data"]]
+        assert data["length"]["constants"] == ["0x20"]
+        cells = {cell["offset"]: data["values"][cell["value"]] for cell in data["cells"]}
+        for offset in range(32):
+            assert cells[offset]["constants"] == ["0x2a" if offset == 31 else "0x0"]
+    graph_mode(page, canvas, "States")
+    page.keyboard.press("f")
+    settle_gesture(page)
+    scene = node_snapshot(page, canvas, output, "known-recursion-summary-graph", measure_nodes=True)
+    source = summaries[0]["source_state"]
+    status = page.locator("#analysis-status")
+    for record in scene["node_records"]:
+        left, top, right, bottom = record["bounds"]
+        canvas.click(position={"x": (left + right) / 2, "y": (top + bottom) / 2})
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        if f"Selected {symbol('σ', source)};" in status.text_content():
+            break
+    expect(status).to_contain_text(f"Selected {symbol('σ', source)};")
+    hide_inspector(page, canvas)
+    expect(status).to_contain_text("Inspector: Frame")
+    expect(status).to_contain_text("Recursive bytecode · closed")
+    expect(status).not_to_contain_text("Abstract interactions")
+    tab = inspector_frame_tab(page, canvas)
+    inspector_title_action(page, canvas, "Maximize", tab)
+    settle_gesture(page)
+    png = canvas.screenshot(path=str(output / "known-recursion-summary-inspector.png"))
+    pixels = text_pixels(page, png, (8, 80, 1410, 970))
+    assert len(pixels["rows"]) >= 10 and pixels["white_pixels"] > 100, pixels
+    assert len(posts) == 1 and not errors
+    result = {"status": report["status"], "ssa_complete": report["ssa"]["complete"],
+              "summaries": summaries, "source_state": source,
+              "inspector": status.text_content(), "painted": pixels,
+              "analysis_submissions": len(posts), "renderer": webgpu_evidence(page)}
+    (output / "known-recursion-report.json").write_text(json.dumps(result, indent=2) + "\n")
+    page.close()
+    return result
 
 def warning_pixels(page, png, card):
     """Inspect the independent inset warning dashes above the card's text."""
@@ -3736,7 +3807,29 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path):
     states = report["cfg"]
     edges = report["edges"]
     child_ids = {state["id"] for state in states if state["program"] == child["id"]}
-    assert len(states) == 3 and child_ids == {child_state["id"]}
+    assert len(states) == 4 and child_ids == {child_state["id"]}
+    call, = [edge for edge in edges if edge["kind"] == "Call"]
+    returned, = [edge for edge in edges if edge["kind"] == "Return"]
+    failed, = [edge for edge in edges if edge["kind"] == "Failure"]
+    assert len(edges) == 3 and call["to"] == returned["from"] == child_state["id"]
+    assert failed["from"] == call["from"]
+    parent_ids = {call["from"], failed["to"], returned["to"]}
+    assert len(parent_ids) == 3 and parent_ids.isdisjoint(child_ids)
+    by_id = {state["id"]: state for state in states}
+    parent = by_id[call["from"]]
+    assert child_state["frame_depth"] == 2
+    assert all(by_id[state]["program"] == parent["program"] != child["id"]
+               and by_id[state]["frame_depth"] == 1 for state in parent_ids)
+    # A refused CALL and a successful child return resume the same bytecode
+    # with distinct 0/1 status inputs; neither native state may disappear.
+    failure_resume, success_resume = by_id[failed["to"]], by_id[returned["to"]]
+    assert failure_resume["basic_block"] == success_resume["basic_block"] != parent["basic_block"]
+    assert failure_resume["start_pc"] == success_resume["start_pc"]
+    snapshots = {snapshot["state"]: snapshot for snapshot in report["states"]}
+    for state, status in [(failure_resume, 0), (success_resume, 1)]:
+        stack = snapshots[state["id"]]["entry"]["frames"][-1]["stack"]
+        assert len(stack) == 1 and stack[0]["constants"] is not None
+        assert {int(value, 16) for value in stack[0]["constants"]} == {status}
     boundary = [edge for edge in edges if (edge["from"] in child_ids) != (edge["to"] in child_ids)]
     assert len(boundary) == 2 and {edge["kind"] for edge in boundary} == {"Call", "Return"}
     submitted = []
@@ -3747,30 +3840,30 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path):
     page.keyboard.press("2")
     settle_gesture(page)
     graph_mode(page, canvas, "States")
-    full = graph_scope(page, "States", 3, 3, 3)
+    full = graph_scope(page, "States", 4, 4, 4)
     assert full["scope"] == "All programs" and full["native_edges"] == len(edges)
     canvas.click(position={"x": 205, "y": 109})  # native program ComboBox
     rendered_frame(page)
     canvas.screenshot(path=str(output / "world-graph-program-menu.png"))
     canvas.click(position={"x": 205, "y": 181})  # P1 · Runtime (native menu geometry)
     settle_gesture(page)
-    filtered = graph_scope(page, "States", 1, 1, 3)
+    filtered = graph_scope(page, "States", 1, 1, 4)
     assert filtered["scope"] == symbol("P", child["id"])
     assert filtered["edges"] == filtered["native_edges"] == 0
-    assert filtered["hidden_states"] == 2 and filtered["boundary_edges"] == 2
+    assert filtered["hidden_states"] == 3 and filtered["boundary_edges"] == 2
     status = page.locator("#analysis-status")
     expect(status).to_contain_text(f"Selected {symbol('σ', child_state['id'])}; source {symbol('P', child['id'])}")
     child_pixels = node_snapshot(page, canvas, output, "world-graph-child-program", measure_nodes=True)
     assert len(child_pixels["nodes"]) == 1, child_pixels
     graph_mode(page, canvas, "Local")
-    local = graph_scope(page, "Local", 3, 3, 3)
+    local = graph_scope(page, "Local", 4, 4, 4)
     assert local["scope"] == "Cross-program neighborhood"
     assert local["hidden_states"] == local["boundary_edges"] == 0
     assert local["edges"] == local["native_edges"] == len(edges)
     expect(status).to_contain_text(f"Selected {symbol('σ', child_state['id'])}; source {symbol('P', child['id'])}")
     expect(status).to_contain_text("Converged")
     local_pixels = node_snapshot(page, canvas, output, "world-graph-local-cross-program", measure_nodes=True)
-    assert len(local_pixels["nodes"]) == 3, local_pixels
+    assert len(local_pixels["nodes"]) == 4, local_pixels
     assert not submitted, "program filtering or local exploration reran analysis"
     return {"all_programs": full, "child_program": filtered, "cross_program_local": local,
             "selected_native_state": child_state["id"], "child_pixels": child_pixels,
@@ -4620,11 +4713,16 @@ def hierarchy_call_interactions(browser,args):
 
 
 def layout_pending_machines(report, entry):
-    assert report["schema_version"] == 12
+    assert report["schema_version"] == 13
     pending = report["pending_machines"]
     assert len(pending) == entry["expected_pending_machines"]
-    assert {frontier["payload"] for frontier in report["frontiers"]} == set(range(len(pending)))
+    assert len(report["frontiers"]) == entry["expected_frontiers"]
+    pending_frontiers = [frontier for frontier in report["frontiers"] if frontier["payload"] is not None]
+    assert len(pending_frontiers) == len(pending)
+    assert {frontier["payload"] for frontier in pending_frontiers} == set(range(len(pending)))
     nodes = {node["id"]:node for node in report["cfg"]}
+    states = {state["state"]:state for state in report["states"]}
+    ssa_blocks = {block["state"]:block for block in report["ssa"]["blocks"]}
     programs = {program["id"] for program in report["programs"]}
     graph = report["symbolic"]["nodes"]
     word_kinds = {"Constant","Input","Fresh","Operation","Ite","ByteRead","WordRead","SlotRead","Keccak"}
@@ -4647,10 +4745,7 @@ def layout_pending_machines(report, entry):
         assert type(index) is int and 0 <= index < len(values)
         return values[index]
     buffers = set(); stores = set()
-    for frontier in report["frontiers"]:
-        assert frontier["from"] in nodes and frontier["pc"] is None and frontier["range"] is None
-        assert frontier["reason"] == entry["expected_frontier_details"]
-        machine = pool(frontier["payload"],pending)
+    def machine_snapshot(machine):
         assert set(machine) == {"frames","store","path"} and machine["frames"]
         reference(machine["path"],path_kinds)
         pool(machine["store"],report["stores"]);stores.add(machine["store"])
@@ -4671,6 +4766,51 @@ def layout_pending_machines(report, entry):
         active = machine["frames"][-1]
         assert any(node["program"] == active["program"] and node["basic_block"] == active["basic_block"]
                    and node["frame_depth"] == len(machine["frames"]) for node in nodes.values())
+        return active
+    pending_locations = []; instruction_frontiers = []
+    for frontier in report["frontiers"]:
+        assert frontier["from"] in nodes and frontier["range"] is None
+        assert frontier["kind"] == entry["expected_frontier_reason"]
+        assert frontier["reason"] == entry["expected_frontier_details"]
+        assert frontier["detail"] == f"{frontier['kind']}({frontier['reason'][frontier['kind']]})"
+        source = nodes[frontier["from"]]
+        if frontier["payload"] is not None:
+            assert frontier["pc"] is None
+            machine = pool(frontier["payload"],pending)
+            active = machine_snapshot(machine)
+            target = next(node for node in nodes.values() if node["program"] == active["program"]
+                          and node["basic_block"] == active["basic_block"]
+                          and node["frame_depth"] == len(machine["frames"]))
+            pending_locations.append({"source_start_pc":source["start_pc"],"source_frame_depth":source["frame_depth"],
+                                      "target_start_pc":target["start_pc"],"target_frame_depth":target["frame_depth"]})
+            continue
+        assert frontier["pc"] is not None
+        state = states[frontier["from"]]
+        block = ssa_blocks[frontier["from"]]
+        for name in ["entry","exit"]:
+            active = machine_snapshot(state[name])
+            assert (active["program"],active["basic_block"],len(state[name]["frames"])) == (
+                source["program"],source["basic_block"],source["frame_depth"])
+        instruction = block["instructions"][-1]
+        assert instruction["pc"] == frontier["pc"] == source["executed_pcs"][-1]
+        assert not instruction["fault"] and not instruction["results"] and len(instruction["operands"]) == 2
+        # The exit snapshot is after operand consumption, not a resumable pre-MSTORE checkpoint.
+        assert instruction["effect_result"] is not None and instruction["effect_result"] == block["exit_effect"]
+        assert [len(frame) for frame in block["exit_frames"]] == [len(frame["stack"]) for frame in state["exit"]["frames"]]
+        assert not any(outcome["state"] == frontier["from"] for outcome in report["outcomes"])
+        outgoing = [edge for edge in report["edges"] if edge["from"] == frontier["from"]]
+        assert outgoing
+        edge_ids = {edge["id"] for edge in outgoing}
+        assert len(edge_ids) == len(outgoing)
+        assert not edge_ids.intersection(transition["edge"] for transition in report["ssa"]["transitions"])
+        deferred = {edge["edge"]:edge["reason"] for edge in report["ssa"]["deferred_edges"]}
+        assert all(deferred.get(edge) == "NotInExecutionEvidence" for edge in edge_ids)
+        instruction_frontiers.append({"source_start_pc":source["start_pc"],"source_frame_depth":source["frame_depth"],
+                                      "pc":instruction["pc"],"opcode":instruction["opcode"],"name":instruction["name"],
+                                      "progress":instruction["progress"],"coverage":block["coverage"],
+                                      "deferred_edge_kinds":sorted(edge["kind"] for edge in outgoing)})
+    assert sorted(pending_locations,key=lambda location:location["source_start_pc"]) == entry["expected_pending_frontiers"]
+    assert sorted(instruction_frontiers,key=lambda location:location["pc"]) == entry["expected_instruction_frontiers"]
     for index in stores:
         store = report["stores"][index]
         assert set(store) == {"storage_default","transient_default","balance_default","accounts","logs",
@@ -4704,7 +4844,8 @@ def layout_pending_machines(report, entry):
     assert not report["ssa"]["complete"]
     assert {block["state"] for block in report["ssa"]["blocks"]} == set(nodes)
     assert all(not block["incoming_complete"] for block in report["ssa"]["blocks"])
-    return {"pending_machines":len(pending),"byte_arrays":sorted(buffers),"stores":sorted(stores),
+    return {"pending_machines":len(pending),"instruction_frontiers":instruction_frontiers,
+            "byte_arrays":sorted(buffers),"stores":sorted(stores),
             "typed_reasons":[frontier["reason"] for frontier in report["frontiers"]]}
 
 
@@ -4735,9 +4876,9 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
             for frontier in report["frontiers"]:
                 assert frontier["reason"]==expected[frontier["kind"]]["reason"]
                 assert frontier["detail"]==expected[frontier["kind"]]["detail"]
-        if "expected_closed_unknown_summaries" in entry:
+        if "expected_closed_procedure_summaries" in entry:
             summaries=report["abstract_summaries"]
-            assert len(summaries)==entry["expected_closed_unknown_summaries"]
+            assert len(summaries)==entry["expected_closed_procedure_summaries"]
             assert all(summary["closed"] for summary in summaries)
         if name == "ethereum-uniswap-v2-router02":
             for summary in report["abstract_summaries"]:
@@ -4809,7 +4950,7 @@ def main() -> None:
     parser.add_argument("--flow-only",action="store_true",help="Run selected-edge motion and compact-workspace SSA acceptance cases")
     parser.add_argument("--ssa-details-only",action="store_true",help="Run shared SSA reading mode and source-PC reveal acceptance cases")
     parser.add_argument("--ssa-values-only",action="store_true",help="Run normalized SSA and scoped value inspector acceptance")
-    parser.add_argument("--unknown-world-only", action="store_true", help="Run closed unknown interaction and summary inspector acceptance")
+    parser.add_argument("--unknown-world-only", action="store_true", help="Run known recursion, unknown interactions and summary inspector acceptance")
     parser.add_argument("--inspector-controls-only",action="store_true",help="Run inspector controls, resizable storage tables and whole-panel scrolling acceptance")
     parser.add_argument("--termination-only",action="store_true",help="Run semantic ending styles and existing selected-node flow/SSA acceptance")
     parser.add_argument("--timings-only",action="store_true",help="Run queued analysis, phase timing and delayed-result acceptance")
@@ -4827,6 +4968,7 @@ def main() -> None:
                 return
             if args.unknown_world_only:
                 unknown_world_interactions(browser, url, args.output)
+                known_recursion_interactions(browser, url, args.output)
                 browser.close()
                 return
             if args.diagnostics_only:
@@ -4891,7 +5033,7 @@ def main() -> None:
             assert reply.status == 200, f"initial analysis failed: {reply.status}"
             result = reply.json()
             analysis = result["result"]["Ok"]
-            assert analysis["schema_version"] == 12
+            assert analysis["schema_version"] == 13
             assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
             assert len(analysis["cfg"]) > 1, "example did not produce a graph"
             assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})
@@ -4992,6 +5134,7 @@ def main() -> None:
             ssa_details = ssa_details_interactions(browser, url, args.output)
             ssa_values = ssa_values_interactions(browser, url, args.output)
             unknown_world = unknown_world_interactions(browser, url, args.output)
+            known_recursion = known_recursion_interactions(browser, url, args.output)
             inspector_controls = inspector_controls_interactions(browser, url, args.output)
             storage_table = storage_table_interactions(browser, url, args.output)
             storage_scroll = storage_scroll_interactions(browser, url, args.output)
@@ -5022,6 +5165,7 @@ def main() -> None:
                 "ssa_details": ssa_details,
                 "ssa_values": ssa_values,
                 "unknown_world": unknown_world,
+                "known_recursion": known_recursion,
                 "inspector_controls": inspector_controls,
                 "storage_table": storage_table,
                 "storage_scroll": storage_scroll,

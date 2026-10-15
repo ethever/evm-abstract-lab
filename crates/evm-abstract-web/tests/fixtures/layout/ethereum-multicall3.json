@@ -23,7 +23,7 @@
     "chain_id": "0x1",
     "minimum_native_states": 250,
     "minimum_source_blocks": 50,
-    "scope": "One exact aggregate3 entry, eight self-targeted getChainId calls, concrete root address and explicit CHAINID=1. Standalone code with abstract account observations. Retained frontiers make this an incomplete abstract graph, not completed on-chain calls or all-entrypoint coverage.",
+    "scope": "One exact calldata input with eight self-targeted four-byte requests, concrete root address and explicit CHAINID=1. Standalone code with abstract account observations. Two pending machines and one instruction-local MSTORE frontier retain an incomplete abstract graph; the MSTORE has consumed its operands without completing.",
     "abi_validation": {
       "method": "eth_call",
       "block_hash": "0x249b266a4b3e71abf93278a2e96938a49099ac2afafa6f8193e28c21872d57dc",
@@ -37,6 +37,34 @@
     "expected_frontier_details": {
       "Relations": "ExpressionLimit"
     },
-    "expected_pending_machines": 3
+    "expected_pending_machines": 2,
+    "expected_pending_frontiers": [
+      {
+        "source_start_pc": 150,
+        "source_frame_depth": 2,
+        "target_start_pc": 401,
+        "target_frame_depth": 2
+      },
+      {
+        "source_start_pc": 194,
+        "source_frame_depth": 2,
+        "target_start_pc": 1965,
+        "target_frame_depth": 1
+      }
+    ],
+    "expected_instruction_frontiers": [
+      {
+        "source_start_pc": 2016,
+        "source_frame_depth": 1,
+        "pc": 2032,
+        "opcode": 82,
+        "name": "MSTORE",
+        "progress": "OperandsConsumed",
+        "coverage": "Current",
+        "deferred_edge_kinds": [
+          "BranchFalse"
+        ]
+      }
+    ]
   }
 }

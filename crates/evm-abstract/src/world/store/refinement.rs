@@ -11,18 +11,16 @@ use crate::{
         bytes::refinement::{Node, guards, refresh_scalar, retain_truth},
     },
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 impl Store {
-    /// Project caller-proved zero/nonzero selectors through both planes and log
-    /// data. No proof result becomes an initial/RPC observation. False means
-    /// infeasible; any error leaves the transaction checkpoint unchanged.
-    pub fn refine_guards<E>(
-        &mut self,
-        domain: Domain,
+    /// Collect distinct ITE selectors from both storage planes, account scalars
+    /// and log data under the existing limits, without changing this wrapper or
+    /// initial observations. Proofs apply to this same frozen state.
+    pub(crate) fn guard_conditions(
+        &self,
         limits: ExprLimits,
-        proof: &mut impl FnMut(&ExprId) -> Result<Option<bool>, E>,
-    ) -> Result<bool, GuardRefinementError<E>> {
+    ) -> Result<BTreeSet<ExprId>, StoreError> {
         self.check_existing(limits)?;
         let mut pending = Vec::new();
         for plane in [&self.persistent, &self.transient] {
@@ -37,7 +35,19 @@ impl Store {
                 pending.push(Node::Expression(expression.clone()));
             }
         });
-        let conditions = guards(pending, limits).map_err(StoreError::from)?;
+        guards(pending, limits).map_err(StoreError::from)
+    }
+
+    /// Project caller-proved zero/nonzero selectors through both planes and log
+    /// data. No proof result becomes an initial/RPC observation. False means
+    /// infeasible; any error leaves the transaction checkpoint unchanged.
+    pub fn refine_guards<E>(
+        &mut self,
+        domain: Domain,
+        limits: ExprLimits,
+        proof: &mut impl FnMut(&ExprId) -> Result<Option<bool>, E>,
+    ) -> Result<bool, GuardRefinementError<E>> {
+        let conditions = self.guard_conditions(limits)?;
         let mut truths = BTreeMap::new();
         for condition in conditions {
             truths.insert(

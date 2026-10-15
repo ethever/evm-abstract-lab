@@ -1,13 +1,41 @@
 //! Joint known/unknown procedure worklist and per-caller return propagation.
 
 use super::{
-    Arc, BTreeMap, BTreeSet, ByteArray, CallStack, DiagnosticKind, Execution, ExecutionFrontier,
-    FrameCode, FrontierReason, Limit, MachineEdgeKind, MachineError, MachinePayload, Node,
-    OutcomeKind, Output, PayloadSummary, Procedure, RelationState, RootFrame, Solver, Store,
+    AbstractValue, Arc, BTreeMap, BTreeSet, ByteArray, CallStack, DiagnosticKind, Execution,
+    ExecutionFrontier, FrameCode, FrontierReason, Limit, MachineEdgeKind, MachineError,
+    MachinePayload, Node, OutcomeKind, Output, PayloadSummary, Procedure, RootFrame, Solver, Store,
     Subscriber, execute_inner, form, instantiate, join, resume_summary_inner, semantic_eq,
 };
 
 impl Solver<'_> {
+    fn form(&mut self, payload: &MachinePayload) -> Result<PayloadSummary, MachineError> {
+        let mut refined = payload.clone();
+        let mut projection = super::projection::Projection::new(
+            &payload.relations,
+            self.domain,
+            &self.config.analysis.relations,
+            self.budget,
+        );
+        projection.payload(&mut refined);
+        projection.finish()?;
+        let history_work = refined.call_stack.iter().fold(0usize, |work, frame| {
+            work.saturating_add(if frame.code == FrameCode::Unknown {
+                0
+            } else {
+                super::context::work_size(frame.key.jump_history.len())
+            })
+        });
+        self.reserve(
+            history_work
+                .saturating_add(super::payload::alias_form_work(&refined))
+                .saturating_add(super::storage_observations::form_work(
+                    &refined,
+                    self.domain,
+                )),
+        )?;
+        form(&refined, self.entry, self.domain)
+    }
+
     pub(super) fn reserve(&mut self, cost: usize) -> Result<(), MachineError> {
         MachineError::check_cancelled()?;
         if cost == usize::MAX || !self.budget.charge(cost) {
@@ -60,12 +88,23 @@ impl Solver<'_> {
     }
 
     pub(super) fn procedure(&mut self, payload: MachinePayload) -> Result<usize, MachineError> {
+        self.procedure_from(payload, None)
+    }
+
+    fn procedure_from(
+        &mut self,
+        payload: MachinePayload,
+        from: Option<usize>,
+    ) -> Result<usize, MachineError> {
         self.reserve(payload.work_size().saturating_mul(4))?;
-        let payload = form(&payload, self.entry, self.domain)?;
+        let payload = self.form(&payload)?;
         let key = payload.active().key.clone();
         if let Some(id) = self.table.procedures_by_key.get(&key).copied() {
             self.table.reused += 1;
-            self.enqueue_summary(id, payload)?;
+            if let Some(from) = from {
+                self.call_dependency(from, id)?;
+            }
+            self.enqueue_summary(id, payload, None, None)?;
             return Ok(id);
         }
         let id = self.table.procedures.len();
@@ -80,10 +119,12 @@ impl Solver<'_> {
             outputs: BTreeMap::new(),
             subscribers: Vec::new(),
             dependencies: BTreeSet::new(),
+            recursive: false,
+            local_cycle: false,
             output_updates: 0,
             covered_blocks: BTreeSet::new(),
         });
-        if let Err(error) = self.enqueue_summary(id, payload) {
+        if let Err(error) = self.enqueue_summary(id, payload, None, None) {
             let failed = self
                 .table
                 .procedures
@@ -92,6 +133,9 @@ impl Solver<'_> {
             self.table.procedures_by_key.remove(&failed.frame);
             return Err(error);
         }
+        if let Some(from) = from {
+            self.call_dependency(from, id)?;
+        }
         Ok(id)
     }
 
@@ -99,19 +143,26 @@ impl Solver<'_> {
         &mut self,
         procedure: usize,
         payload: MachinePayload,
+        resume_status: Option<bool>,
+        from: usize,
     ) -> Result<usize, MachineError> {
         self.reserve(payload.work_size().saturating_mul(4))?;
-        let payload = form(&payload, self.entry, self.domain)?;
-        self.enqueue_summary(procedure, payload)
+        let payload = self.form(&payload)?;
+        self.enqueue_summary(procedure, payload, resume_status, Some(from))
     }
 
     pub(super) fn enqueue_summary(
         &mut self,
         procedure: usize,
         payload: PayloadSummary,
+        resume_status: Option<bool>,
+        from: Option<usize>,
     ) -> Result<usize, MachineError> {
-        let key = payload.active().key.clone();
+        let key = (payload.active().key.clone(), resume_status);
         let id = if let Some(id) = self.table.procedures[procedure].nodes.get(&key).copied() {
+            if let Some(from) = from {
+                self.node_edge(from, id)?;
+            }
             let old = &self.table.nodes[id];
             let cost = old
                 .payload
@@ -124,7 +175,8 @@ impl Solver<'_> {
                 &old.payload,
                 &payload,
                 self.domain,
-                old.updates > self.domain.capacity(),
+                self.node_feedback(id)
+                    && old.updates >= self.domain.spec().widening_after_updates(),
             )?;
             if semantic_eq(&widened, &old.payload) {
                 return Ok(id);
@@ -137,15 +189,31 @@ impl Solver<'_> {
             if self.counters.states >= self.config.analysis.max_states {
                 return Err(MachineError::States);
             }
-            self.reserve(payload.work_size())?;
+            if let Some(from) = from
+                && self.table.nodes[from].procedure != procedure
+            {
+                return Err(MachineError::Shape);
+            }
+            // A fresh target has no outgoing edge and cannot close a cycle.
+            // Reserve its graph edge together with the node before installation.
+            self.reserve(
+                payload
+                    .work_size()
+                    .saturating_add(usize::from(from.is_some())),
+            )?;
             let id = self.table.nodes.len();
             self.table.nodes.push(Node {
                 procedure,
                 payload,
                 updates: 0,
+                successors: BTreeSet::new(),
+                loop_head: false,
             });
             self.table.procedures[procedure].nodes.insert(key, id);
             self.counters.states += 1;
+            if let Some(from) = from {
+                self.table.nodes[from].successors.insert(id);
+            }
             id
         };
         if self.table.queued.insert(id) {
@@ -233,7 +301,29 @@ impl Solver<'_> {
             let operation = if successor.kind == MachineEdgeKind::Call {
                 self.subscribe(from, successor.payload)
             } else {
-                self.enqueue(procedure, successor.payload).map(|_| ())
+                let resume_status = if successor.payload.active().code == FrameCode::Runtime
+                    && matches!(
+                        successor.kind,
+                        MachineEdgeKind::Return
+                            | MachineEdgeKind::Revert
+                            | MachineEdgeKind::Failure
+                    ) {
+                    successor
+                        .payload
+                        .active()
+                        .stack
+                        .last()
+                        .and_then(AbstractValue::singleton)
+                        .filter(|status| *status <= alloy_primitives::U256::ONE)
+                        .map(|status| status == alloy_primitives::U256::ONE)
+                } else {
+                    None
+                };
+                // This finite partition lasts exactly the first resumed block,
+                // where bytecode normally tests CALL status. Its successors use
+                // their actual new edge kinds and return to ordinary node keys.
+                self.enqueue(procedure, successor.payload, resume_status, from)
+                    .map(|_| ())
             };
             if let Err(error) = operation {
                 self.frontier(original, error.frontier_reason(), 0);
@@ -252,21 +342,27 @@ impl Solver<'_> {
                 state: payload.active().clone(),
             }),
             store: payload.store.clone(),
-            relations: RelationState::default(),
+            relations: payload.relations.clone(),
         };
-        let callee = self.procedure(callee_payload)?;
-        let payload = form(&payload, self.entry, self.domain)?;
-        let caller = self.table.nodes[from].procedure;
-        self.table.procedures[caller].dependencies.insert(callee);
+        let callee = self.procedure_from(callee_payload, Some(from))?;
+        let payload = self.form(&payload)?;
         let key = (from, callee);
         let subscription =
             if let Some(subscription) = self.table.subscribers_by_key.get(&key).copied() {
+                self.reserve(
+                    self.table.subscribers[subscription]
+                        .payload
+                        .work_size()
+                        .saturating_add(payload.work_size())
+                        .saturating_mul(4),
+                )?;
                 let old = &self.table.subscribers[subscription];
                 let grown = join(
                     &old.payload,
                     &payload,
                     self.domain,
-                    old.updates > self.domain.capacity(),
+                    self.node_feedback(from)
+                        && old.updates >= self.domain.spec().widening_after_updates(),
                 )?;
                 if semantic_eq(&grown, &old.payload) {
                     return Ok(());
@@ -317,7 +413,9 @@ impl Solver<'_> {
         let store = store.summary_projection(self.domain)?;
         let data = data.summary_projection(self.domain)?;
         let output = if let Some(old) = self.table.procedures[procedure].outputs.get(&kind) {
-            let widen = old.generation > self.domain.capacity();
+            let feedback = self.table.procedures[procedure].recursive
+                || self.table.procedures[procedure].local_cycle;
+            let widen = feedback && old.generation > self.domain.spec().widening_after_updates();
             let joined_store = old.store.join(&store, self.domain, widen);
             let joined_data = old.data.join(&data, self.domain, widen);
             if old.store == joined_store && old.data == joined_data {
@@ -398,13 +496,15 @@ impl Solver<'_> {
             } else {
                 child.saved_store
             };
+            // Changing the active frame and Store invalidates current-read templates.
+            resumed.storage_observations = Default::default();
             resumed.work = resumed.measure_work();
             self.table.subscribers[subscriber]
                 .delivered
                 .insert(kind, generation);
             self.table.propagations += 1;
             return self
-                .enqueue_summary(self.table.nodes[from].procedure, resumed)
+                .enqueue_summary(self.table.nodes[from].procedure, resumed, None, Some(from))
                 .map(|_| ());
         }
         let template = subscription.payload.clone();
@@ -417,6 +517,8 @@ impl Solver<'_> {
                 .saturating_mul(4),
         )?;
         let mut payload = instantiate(&template, self.domain)?;
+        // Installed constraints still refer only to the old immutable snapshot.
+        // Never reinstall those read bounds after replacing the Store.
         payload.store = store.instantiate(self.domain)?;
         let data = data.instantiate(self.domain)?;
         let execution = resume_summary_inner(

@@ -43,6 +43,32 @@ pub enum ScalarQuery {
 fn binary(left: Term, predicate: BinaryPredicate, right: Term) -> Fact {
     Fact::Binary(BinaryFact::new(left, predicate, right))
 }
+
+fn masked_equal(expression: &ExprId, constant: U256, target: &ExprId) -> Option<Fact> {
+    let ExprKind::Operation { opcode: op, args } = expression.kind() else {
+        return None;
+    };
+    if *op != opcode::AND {
+        return None;
+    }
+    let mask = if args.first() == Some(target) {
+        args.get(1)?.as_constant()?
+    } else if args.get(1) == Some(target) {
+        args.first()?.as_constant()?
+    } else {
+        return None;
+    };
+    // Equality of an address projection determines only the masked bits. In
+    // particular, its high 96 bits are not proved zero by target dispatch.
+    if constant & !mask != U256::ZERO {
+        return None;
+    }
+    Some(Fact::Unary(UnaryFact::new(
+        Symbol::THIS,
+        UnaryPredicate::KnownBits(BitConstraints::new(mask & !constant, mask & constant).ok()?),
+    )))
+}
+
 fn guard(expression: &ExprId, truth: bool, target: &ExprId) -> Option<Fact> {
     let subject = Term::Symbol(Symbol::THIS);
     if expression == target {
@@ -61,6 +87,18 @@ fn guard(expression: &ExprId, truth: bool, target: &ExprId) -> Option<Fact> {
     };
     if *op == opcode::ISZERO {
         return guard(&args[0], !truth, target);
+    }
+    if *op == opcode::EQ && truth {
+        if let Some(constant) = args.get(1)?.as_constant()
+            && let Some(fact) = masked_equal(&args[0], constant, target)
+        {
+            return Some(fact);
+        }
+        if let Some(constant) = args[0].as_constant()
+            && let Some(fact) = masked_equal(&args[1], constant, target)
+        {
+            return Some(fact);
+        }
     }
     let (left, right) = if &args[0] == target {
         (subject, Term::Constant(args.get(1)?.as_constant()?))
@@ -163,6 +201,13 @@ fn direct(constraint: &Constraint, target: &ExprId) -> Result<Option<Fact>, Fact
                 Term::Constant(left.as_constant().unwrap()),
             ))
         }
+        Constraint::Equal { left, right } => right
+            .as_constant()
+            .and_then(|constant| masked_equal(left, constant, target))
+            .or_else(|| {
+                left.as_constant()
+                    .and_then(|constant| masked_equal(right, constant, target))
+            }),
         _ => None,
     })
 }
@@ -177,6 +222,14 @@ fn failed(error: FactError) -> ScalarQuery {
     }
 }
 impl RelationState {
+    /// Whether this exact expression has a consequence in the local scalar
+    /// proof language. Callers can skip reduction for unrelated cached reads.
+    pub(crate) fn has_direct_numeric_guarantee(&self, expression: &ExprId) -> bool {
+        self.constraints
+            .iter()
+            .any(|constraint| !matches!(direct(constraint, expression), Ok(None)))
+    }
+
     /// Project direct EQ/ISZERO/ordered constant guards through the existing
     /// scalar fact language. A useful range can avoid an unnecessary SMT unique
     /// query; nonlocal inverse constraints remain explicitly incomplete here.

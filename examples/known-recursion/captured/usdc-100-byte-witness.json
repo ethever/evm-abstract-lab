@@ -1,0 +1,10 @@
+{
+  "world": "usdc-26180958-observed-world.json",
+  "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+  "caller": "0x807a96288a1a408dbc13de2b1d087d10356395d2",
+  "value": "0x0",
+  "calldata": "0x4f1ef286000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4800000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000",
+  "byte_length": 100,
+  "source_issue": "https://github.com/ethever/evm-abstract-lab/issues/123",
+  "scope": "A concrete input contained in the original Unknown-input request; unobserved initial storage stays unknown in abstract execution."
+}

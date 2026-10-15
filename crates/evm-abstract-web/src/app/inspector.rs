@@ -178,13 +178,13 @@ impl Inspector {
         } else {
             ""
         };
-        let mut interactions = "";
+        let mut interactions = String::new();
         if self.tab == Tab::Frame {
             for summary in &report.abstract_summaries {
                 if Some(summary.source_state) == selection.state {
-                    interactions = " · Abstract interactions · closed";
+                    interactions = format!(" · {} · closed", summaries::label(summary.kind));
                     if !summary.closed {
-                        interactions = " · Abstract interactions · open";
+                        interactions = format!(" · {} · open", summaries::label(summary.kind));
                         break;
                     }
                 }

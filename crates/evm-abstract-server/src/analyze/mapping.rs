@@ -113,6 +113,7 @@ pub(super) fn frontier(source: &analysis::FrontierReason) -> FrontierKind {
             FrontierKind::Work
         }
         analysis::FrontierReason::CallDepth => FrontierKind::CallDepth,
+        analysis::FrontierReason::RecursiveNoTerminal => FrontierKind::Model,
         analysis::FrontierReason::Memory => FrontierKind::Memory,
         analysis::FrontierReason::ByteRange(_) => FrontierKind::ByteRange,
         analysis::FrontierReason::StateJoin(_) => FrontierKind::StateJoin,
@@ -152,6 +153,7 @@ pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol
         N::Budget(bound) => P::Budget(limit(*bound)),
         N::Work => P::Work,
         N::SummaryWork => P::SummaryWork,
+        N::RecursiveNoTerminal => P::RecursiveNoTerminal,
         N::CallDepth => P::CallDepth,
         N::Memory => P::Memory,
         N::ByteRange(reason) => P::ByteRange(match reason {

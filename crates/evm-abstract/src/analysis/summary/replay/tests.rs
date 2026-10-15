@@ -88,6 +88,7 @@ fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload,
     };
     let node = Node {
         entry: entry.clone(),
+        resume_status: Some(true),
         exit: exit.clone(),
         exit_stack: vec![historical],
         executed_pcs: vec![0],
@@ -161,6 +162,7 @@ fn replay_renames_all_hidden_sources_roots_history_and_outputs_with_one_map() {
     let expected: BTreeSet<_> = old_tokens.iter().map(|token| map[token].clone()).collect();
     let prepared = replay.prepare(&mut budget).unwrap();
     let node = &prepared.nodes[0];
+    assert_eq!(node.resume_status, Some(true));
     assert_eq!(
         node.entry.active().calldata.state_root(),
         certificate.nodes[0].entry.active().calldata.state_root()

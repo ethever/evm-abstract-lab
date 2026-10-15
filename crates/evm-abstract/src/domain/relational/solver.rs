@@ -1,5 +1,7 @@
 //! Shared EVM bit-vector encoding over the provider-independent SMT layer.
-//! Every check owns a fresh native session; EVM arithmetic semantics live here.
+//! Checks use fresh native Solvers, except Z3 candidate chunks of 3..=32 same-width
+//! syntactic literals, which share only their chunk's Solver and common lowering.
+//! EVM arithmetic semantics live here.
 
 use super::{CheckResult, Constraint, QueryReason, RelationLimits, RelationState, ValueQuery};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, ExprKind, SlotStateId, SourceId};
@@ -8,7 +10,9 @@ use embedded_smt::{Array, Bool, Bv as BV, Context, Function, FunctionSort, Outco
 use revm_bytecode::opcode;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(super) mod candidates;
 mod guarantees;
+pub(super) mod joint;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -506,9 +510,8 @@ fn literal(value: &BV) -> Option<U256> {
 fn boolean(value: Bool) -> BV {
     value.ite(&word(U256::from(1)), &word(U256::ZERO))
 }
-fn prepared<'a>(
+fn prepared_prefix<'a>(
     state: &RelationState,
-    extra: Option<Constraint>,
     limits: &'a RelationLimits,
 ) -> Result<(Vec<Bool>, Encoder<'a>), QueryReason> {
     if !limits.enabled {
@@ -552,6 +555,15 @@ fn prepared<'a>(
     encoder.memo.retain(|expression, _| {
         !expression.has_state_semantics() || matches!(expression.kind(), ExprKind::Keccak { .. })
     });
+    Ok((assertions, encoder))
+}
+
+fn prepared<'a>(
+    state: &RelationState,
+    extra: Option<Constraint>,
+    limits: &'a RelationLimits,
+) -> Result<(Vec<Bool>, Encoder<'a>), QueryReason> {
+    let (mut assertions, mut encoder) = prepared_prefix(state, limits)?;
     if let Some(extra) = extra {
         assertions.push(encoder.constraint(&extra)?);
     }
@@ -568,10 +580,16 @@ fn unknown(reason: Unknown, provider: super::SmtProvider) -> QueryReason {
 }
 
 fn checked(assertions: &[Bool], limits: &RelationLimits) -> CheckResult {
-    match embedded_smt::check(assertions, None, limits.provider, limits.rlimit) {
+    check_outcome(
+        embedded_smt::check(assertions, None, limits.provider, limits.rlimit),
+        limits.provider,
+    )
+}
+fn check_outcome(outcome: Outcome, provider: super::SmtProvider) -> CheckResult {
+    match outcome {
         Outcome::Sat(_) => CheckResult::Sat,
         Outcome::Unsat => CheckResult::Unsat,
-        Outcome::Unknown(reason) => CheckResult::Unknown(unknown(reason, limits.provider)),
+        Outcome::Unknown(reason) => CheckResult::Unknown(unknown(reason, provider)),
         Outcome::Error(error) => CheckResult::Unknown(QueryReason::SolverError(error)),
     }
 }
@@ -581,6 +599,24 @@ pub(super) fn check(
     extra: Option<Constraint>,
     limits: &RelationLimits,
 ) -> CheckResult {
+    check_inner(state, extra, limits, None)
+}
+
+pub(super) fn check_cached(
+    state: &RelationState,
+    extra: Option<Constraint>,
+    limits: &RelationLimits,
+    cache: &mut embedded_smt::CacheQuery<'_>,
+) -> CheckResult {
+    check_inner(state, extra, limits, Some(cache))
+}
+
+fn check_inner(
+    state: &RelationState,
+    extra: Option<Constraint>,
+    limits: &RelationLimits,
+    cache: Option<&mut embedded_smt::CacheQuery<'_>>,
+) -> CheckResult {
     if state.bottom {
         return CheckResult::Unsat;
     }
@@ -588,7 +624,13 @@ pub(super) fn check(
         Ok(query) => query,
         Err(reason) => return CheckResult::Unknown(reason),
     };
-    checked(&assertions, limits)
+    match cache {
+        Some(cache) => check_outcome(
+            embedded_smt::check_cached(&assertions, limits.provider, limits.rlimit, cache),
+            limits.provider,
+        ),
+        None => checked(&assertions, limits),
+    }
 }
 
 pub(super) fn unique(
@@ -596,13 +638,59 @@ pub(super) fn unique(
     expression: &ExprId,
     limits: &RelationLimits,
 ) -> ValueQuery {
+    unique_inner(state, expression, limits, None)
+}
+
+pub(super) fn unique_cached(
+    state: &RelationState,
+    expression: &ExprId,
+    limits: &RelationLimits,
+    cache: &mut embedded_smt::CacheQuery<'_>,
+) -> ValueQuery {
+    unique_inner(state, expression, limits, Some(cache))
+}
+
+pub(super) fn probe_unique(
+    state: &RelationState,
+    expression: &ExprId,
+    limits: &RelationLimits,
+    cache: &mut embedded_smt::CacheQuery<'_>,
+) -> Result<Option<ValueQuery>, QueryReason> {
+    if state.bottom {
+        return Ok(Some(ValueQuery::Infeasible));
+    }
+    if matches!(expression.kind(), ExprKind::Input(_) | ExprKind::Fresh(_))
+        && !state.relevant(expression)
+    {
+        // The ordinary oracle uses a feasibility key for an unrelated leaf.
+        // Branch preparation removes these before probing. Preserve its exact
+        // check-only encoding here, but leave any lookup to the ordinary path.
+        prepared(state, None, limits)?;
+        return Ok(None);
+    }
+    // Keep this sequence identical to unique_inner: full single-expression Fi
+    // (including definitions emitted by its target) precedes the typed lookup.
+    let (mut assertions, mut encoder) = prepared(state, None, limits)?;
+    let value = encoder.expression(expression)?;
+    encoder.emit_definitions(&mut assertions);
+    embedded_smt::probe_unique_cached(&assertions, &value, limits.provider, limits.rlimit, cache)
+        .map(|answer| answer.map(|answer| joint::value_query(answer, limits.provider)))
+        .map_err(|reason| unknown(reason, limits.provider))
+}
+
+fn unique_inner(
+    state: &RelationState,
+    expression: &ExprId,
+    limits: &RelationLimits,
+    cache: Option<&mut embedded_smt::CacheQuery<'_>>,
+) -> ValueQuery {
     if state.bottom {
         return ValueQuery::Infeasible;
     }
     if matches!(expression.kind(), ExprKind::Input(_) | ExprKind::Fresh(_))
         && !state.relevant(expression)
     {
-        return match check(state, None, limits) {
+        return match check_inner(state, None, limits, cache) {
             CheckResult::Sat => ValueQuery::Multiple,
             CheckResult::Unsat => ValueQuery::Infeasible,
             CheckResult::Unknown(reason) => ValueQuery::Unknown(reason),
@@ -617,18 +705,31 @@ pub(super) fn unique(
         Err(reason) => return ValueQuery::Unknown(reason),
     };
     encoder.emit_definitions(&mut assertions);
-    let printed =
-        match embedded_smt::check(&assertions, Some(&value), limits.provider, limits.rlimit) {
-            Outcome::Sat(Some(value)) => value,
-            Outcome::Sat(None) => return ValueQuery::Unknown(QueryReason::ModelUnavailable),
-            Outcome::Unsat => return ValueQuery::Infeasible,
-            Outcome::Unknown(reason) => {
-                return ValueQuery::Unknown(unknown(reason, limits.provider));
-            }
-            Outcome::Error(error) => {
-                return ValueQuery::Unknown(QueryReason::SolverError(error));
-            }
-        };
+    let answer = if let Some(cache) = cache {
+        embedded_smt::check_unique_cached(
+            &assertions,
+            &value,
+            limits.provider,
+            limits.rlimit,
+            cache,
+        )
+    } else {
+        embedded_smt::check_unique(&assertions, &value, limits.provider, limits.rlimit)
+    };
+    let printed = match answer {
+        embedded_smt::UniqueOutcome::Unique(value) => value,
+        embedded_smt::UniqueOutcome::Multiple => return ValueQuery::Multiple,
+        embedded_smt::UniqueOutcome::Infeasible => return ValueQuery::Infeasible,
+        embedded_smt::UniqueOutcome::ModelUnavailable => {
+            return ValueQuery::Unknown(QueryReason::ModelUnavailable);
+        }
+        embedded_smt::UniqueOutcome::Unknown(reason) => {
+            return ValueQuery::Unknown(unknown(reason, limits.provider));
+        }
+        embedded_smt::UniqueOutcome::Error(error) => {
+            return ValueQuery::Unknown(QueryReason::SolverError(error));
+        }
+    };
     let constant = if let Some(hex) = printed.strip_prefix("#x") {
         U256::from_str_radix(hex, 16).ok()
     } else if let Some(binary) = printed.strip_prefix("#b") {
@@ -636,15 +737,8 @@ pub(super) fn unique(
     } else {
         None
     };
-    let Some(constant) = constant else {
-        return ValueQuery::Unknown(QueryReason::ModelUnavailable);
-    };
-    assertions.push(value.eq(word(constant)).not());
-    // A second independent request keeps the same neutral terms and allowance.
-    // It cannot accidentally switch a reused Z3 solver into another strategy.
-    match checked(&assertions, limits) {
-        CheckResult::Unsat => ValueQuery::Unique(constant),
-        CheckResult::Sat => ValueQuery::Multiple,
-        CheckResult::Unknown(reason) => ValueQuery::Unknown(reason),
-    }
+    constant.map_or(
+        ValueQuery::Unknown(QueryReason::ModelUnavailable),
+        ValueQuery::Unique,
+    )
 }

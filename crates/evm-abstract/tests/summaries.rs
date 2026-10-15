@@ -317,9 +317,18 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
 }
 
 #[test]
-fn incomplete_recursive_children_never_publish_a_complete_relation() {
-    let code = format!("{}00", call(0xf1, 0x101, 0, 0));
-    let (world, entry) = fixture(&[(0x101, &code)]);
+fn incomplete_child_chain_never_publishes_a_complete_relation() {
+    // Exhaust the unfolding policy before reaching a repeated procedure. A
+    // completed failure alternative cannot certify the unentered child branch.
+    let first = format!("{}00", call(0xf1, 0x200, 0, 0));
+    let second = format!("{}00", call(0xf1, 0x300, 0, 0));
+    let third = format!("{}00", call(0xf1, 0x400, 0, 0));
+    let (world, entry) = fixture(&[
+        (0x101, &first),
+        (0x200, &second),
+        (0x300, &third),
+        (0x400, "00"),
+    ]);
     let analysis = analyze_world(
         world,
         entry,

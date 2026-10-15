@@ -19,6 +19,15 @@ impl From<Error> for Failure {
         Self::Native(error)
     }
 }
+impl Failure {
+    pub(crate) fn outcome(self) -> Outcome {
+        match self {
+            Self::Native(error) => Outcome::Error(error),
+            Self::Cancelled => Outcome::Unknown(Unknown::Cancelled),
+            Self::ResourceLimit => Outcome::Unknown(Unknown::ResourceLimit),
+        }
+    }
+}
 pub(crate) fn checkpoint() -> Result<(), Failure> {
     if crate::current_cancellation().is_cancelled() {
         Err(Failure::Cancelled)
@@ -84,6 +93,33 @@ fn lower<B: Backend>(
     Ok(memo[&term.id()].clone())
 }
 
+/// Fix every common assertion and UF congruence clause before any candidate
+/// scope. Only these caller-owned DAGs enter the memo; it is discarded here so
+/// temporary candidate equalities can never alias a dropped term's pointer ID.
+pub(crate) fn prepare_literal_family<B: Backend>(
+    base: &[Bool],
+    value: &Bv,
+    after: &[Bool],
+    backend: &mut B,
+    rlimit: u32,
+) -> Result<B::Term, Failure> {
+    let mut memo = BTreeMap::new();
+    let mut congruence = Congruence::new(rlimit);
+    for assertion in base {
+        let native = lower(&assertion.0, backend, &mut memo, &mut congruence)?;
+        checkpoint()?;
+        backend.assert(&native)?;
+    }
+    let target = lower(&value.0, backend, &mut memo, &mut congruence)?;
+    for assertion in after {
+        let native = lower(&assertion.0, backend, &mut memo, &mut congruence)?;
+        checkpoint()?;
+        backend.assert(&native)?;
+    }
+    checkpoint()?;
+    Ok(target)
+}
+
 fn run<B: Backend>(
     assertions: &[Bool],
     value: Option<&Bv>,
@@ -126,12 +162,7 @@ pub(crate) fn execute<B: Backend>(
     backend: B,
     rlimit: u32,
 ) -> Outcome {
-    match run(assertions, value, backend, rlimit) {
-        Ok(outcome) => outcome,
-        Err(Failure::Native(error)) => Outcome::Error(error),
-        Err(Failure::Cancelled) => Outcome::Unknown(Unknown::Cancelled),
-        Err(Failure::ResourceLimit) => Outcome::Unknown(Unknown::ResourceLimit),
-    }
+    run(assertions, value, backend, rlimit).unwrap_or_else(Failure::outcome)
 }
 
 #[cfg(test)]

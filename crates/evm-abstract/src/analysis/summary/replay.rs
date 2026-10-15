@@ -158,6 +158,7 @@ impl<'a> Replay<'a> {
         }
         Ok(Node {
             entry: self.payload(&source.entry)?,
+            resume_status: source.resume_status,
             exit: self.payload(&source.exit)?,
             exit_stack,
             executed_pcs: source.executed_pcs.clone(),

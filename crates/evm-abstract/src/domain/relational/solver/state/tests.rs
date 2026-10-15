@@ -9,6 +9,9 @@ use crate::domain::{
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+mod finite;
+mod term_fold;
+
 fn c(value: u64) -> ExprId {
     ExprId::constant(U256::from(value))
 }

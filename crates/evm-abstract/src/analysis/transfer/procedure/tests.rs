@@ -5,6 +5,133 @@ use crate::analysis::machine::fixtures::{address, fixture, word};
 use crate::world::{AbstractLog, LogKey};
 use alloy_primitives::U256;
 
+mod relation_boundary_probe;
+
+#[test]
+fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory() {
+    let code = "610000351561005f57610001610000350361000052306101011461003e576100206100006100206100006100006101015af11561006f57610020610000f35b6100206100006100206100006100006102015af11561006f57610020610000f35b6100005461000052610020610000f35b610000610000fd";
+    let (empty, mut entry) = fixture(&[]);
+    entry.environment.calldata = ByteArray::unknown();
+    let mut world = World::new(empty.fork(), "recursive output partition regression");
+    for (owner, value) in [(0x101, 5), (0x201, 9)] {
+        let mut account = crate::world::Account::from_hex(code, world.fork()).unwrap();
+        account.balance = word(1_000_000);
+        account.storage.insert(U256::ZERO, word(value));
+        world.insert(address(owner), account).unwrap();
+    }
+    let config = crate::analysis::ExecutionConfig {
+        max_work: 200_000_000,
+        ..Default::default()
+    };
+    let domain = config.domain().unwrap();
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut counters = Counters::default();
+    let mut queue = VecDeque::from([super::super::initial(&world, &entry, domain).unwrap()]);
+    let recursive = loop {
+        let payload = queue.pop_front().expect("known cycle must be reachable");
+        if is_recursive_entry(&payload) {
+            break payload;
+        }
+        assert!(payload.call_stack.depth() <= 3);
+        let execution = execute_inner(
+            &world,
+            &entry,
+            payload,
+            &config,
+            domain,
+            &mut budget,
+            StorageReadPolicy::Abstract,
+            false,
+        );
+        queue.extend(
+            execution
+                .successors
+                .into_iter()
+                .map(|successor| successor.payload),
+        );
+    };
+    let mut table = Table::default();
+    let (_, record) = table.execute(
+        0,
+        &world,
+        &entry,
+        recursive,
+        &config,
+        domain,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    );
+    assert!(record.closed);
+    for procedure in record.procedures {
+        for output in procedure
+            .outputs
+            .into_iter()
+            .filter(|output| output.kind == OutcomeKind::Return)
+        {
+            let word = output.data.read_word(&word(0), domain);
+            assert!(
+                word.constants()
+                    .is_some_and(|values| values.iter().all(|value| [
+                        U256::from(5),
+                        U256::from(9)
+                    ]
+                    .contains(value))),
+                "{word}"
+            );
+        }
+    }
+    for use_summaries in [true, false] {
+        let result = crate::analysis::analyze_world(
+            world.clone(),
+            entry.clone(),
+            crate::analysis::ExecutionConfig {
+                use_summaries,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result.status, crate::analysis::Status::Converged);
+        assert!(result.frontiers.is_empty());
+        assert!(!result.procedure_summaries.is_empty());
+        assert!(
+            result
+                .procedure_summaries
+                .iter()
+                .all(|record| record.closed)
+        );
+        let returns = result
+            .outcomes
+            .iter()
+            .filter(|output| output.kind == OutcomeKind::Return)
+            .collect::<Vec<_>>();
+        assert!(!returns.is_empty());
+        for output in returns {
+            let value = output.data.read_word(&word(0), domain);
+            assert!(
+                value
+                    .constants()
+                    .is_some_and(|values| values.iter().all(|value| [
+                        U256::from(5),
+                        U256::from(9),
+                    ]
+                    .contains(value))),
+                "outer state{} {value}",
+                output.state,
+            );
+            for (owner, expected) in [(0x101, 5), (0x201, 9)] {
+                assert_eq!(
+                    output
+                        .store
+                        .read(address(owner), &word(0), domain)
+                        .singleton(),
+                    Some(U256::from(expected)),
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn parked_joined_summary_contains_the_current_bound() {
     let domain = Domain::default();

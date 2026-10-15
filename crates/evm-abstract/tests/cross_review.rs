@@ -250,18 +250,14 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
             );
             // The child committed on this edge, within a still-revertible outer call.
             let resumed_middle = &analysis.states()[edge.to].entry;
-            let before_child = child_state.entry.active().saved_store.state();
             let persistent = resumed_middle.store.read(address(0x300), &zero, domain);
-            let expected_persistent = domain.join(
-                &before_child.read(address(0x300), &zero, domain),
-                &AbstractValue::constant(U256::from(9)),
-            );
+            let expected_persistent = effects.read(address(0x300), &zero, domain);
             assert_eq!(persistent.numeric(), expected_persistent.numeric());
             assert_eq!(persistent.provenance(), expected_persistent.provenance());
             let transient = resumed_middle
                 .store
                 .read_transient(address(0x300), &zero, domain);
-            let expected_transient = domain.join(&zero, &AbstractValue::constant(U256::from(10)));
+            let expected_transient = effects.read_transient(address(0x300), &zero, domain);
             assert_eq!(transient.numeric(), expected_transient.numeric());
             assert_eq!(transient.provenance(), expected_transient.provenance());
             assert!(

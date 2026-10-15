@@ -125,7 +125,7 @@ pub struct SummaryStats {
     pub misses: usize,
     /// Complete immutable relations published after worklist closure.
     pub published: usize,
-    /// Candidates whose input changed or whose graph never fully closed.
+    /// Candidates whose input changed or whose complete graph could not be certified.
     pub rejected_incomplete: usize,
     /// Child graph states materialized from completed certificates.
     pub imported_states: usize,
@@ -134,6 +134,7 @@ pub struct SummaryStats {
 #[derive(Clone)]
 pub(super) struct Node {
     pub entry: MachinePayload,
+    pub resume_status: Option<bool>,
     pub exit: MachinePayload,
     pub exit_stack: Vec<crate::domain::AbstractValue>,
     pub executed_pcs: Vec<usize>,
@@ -439,6 +440,9 @@ impl Cache {
                 budget,
             ) {
                 Capture::Pending => self.candidates.push(candidate),
+                Capture::Uncertifiable => {
+                    analysis.summary_stats.rejected_incomplete += 1;
+                }
                 Capture::Work => {
                     self.candidates.push(candidate);
                     self.candidates.extend(iter);
@@ -511,6 +515,7 @@ impl Cache {
 enum Capture {
     Pending,
     Work,
+    Uncertifiable,
     Complete(Certificate),
 }
 
@@ -567,6 +572,14 @@ fn capture(
             return Capture::Pending;
         }
         for edge in edges.iter().filter(|edge| edge.from == id) {
+            if matches!(edge.kind, super::MachineEdgeKind::Summary(_)) {
+                // The exact graph replay renames node IDs, but has no binding
+                // for a relative procedure's source_state, root and effects.
+                // Replaying this graph would erase its abstraction provenance.
+                // Keep ordinary execution and let the shared procedure table
+                // supply a fresh, correctly qualified summary at the new site.
+                return Capture::Uncertifiable;
+            }
             if analysis.states[edge.to].entry.call_stack.depth() >= depth {
                 internal.push(edge.clone());
                 queue.push_back(edge.to);
@@ -623,6 +636,7 @@ fn capture(
             let state = &analysis.states[*id];
             Node {
                 entry: relative(&state.entry, depth - 1),
+                resume_status: state.resume_status,
                 exit: relative(
                     state.exit.as_ref().expect("closure checked exit"),
                     depth - 1,

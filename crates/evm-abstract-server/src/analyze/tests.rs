@@ -445,5 +445,6 @@ fn relational_frontier_projection_preserves_native_causes_and_provider() {
     }
 }
 
+mod known_recursion;
 mod symbolic;
 mod unknown;

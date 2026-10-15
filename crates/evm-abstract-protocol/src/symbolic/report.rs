@@ -200,6 +200,13 @@ impl Validation<'_> {
             self.store(outcome.store)?;
         }
         for summary in &self.report.abstract_summaries {
+            if let Some(root) = summary.root_procedure {
+                self.pool(
+                    PoolReferenceKind::AbstractProcedure,
+                    root,
+                    summary.procedures.len(),
+                )?;
+            }
             if !self
                 .report
                 .states

@@ -137,7 +137,7 @@ fn real_static_reentry_reads_known_owners_and_handles_a_failed_write() {
         only(&output_word(outcome, 128), &[42]);
     }
     let static_procedures: Vec<_> = analysis
-        .unknown_summaries()
+        .procedure_summaries()
         .iter()
         .flat_map(|summary| &summary.procedures)
         .filter(|procedure| procedure.frame.mode == FrameCode::Unknown && procedure.frame.is_static)

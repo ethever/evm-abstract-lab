@@ -16,6 +16,8 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
     };
     report.abstract_summaries.push(api::AbstractSummary {
         source_state: 0,
+        kind: api::ProcedureSummaryKind::UnknownEnvironment,
+        root_procedure: None,
         closed: true,
         procedures: vec![],
         state_count: 1,
@@ -28,6 +30,11 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
             .accessible_summary(&report, selection)
             .contains("Abstract interactions · closed")
     );
+    report.abstract_summaries[0].kind = api::ProcedureSummaryKind::KnownRecursion;
+    let known = inspector.accessible_summary(&report, selection);
+    assert!(known.contains("Recursive bytecode · closed"));
+    assert!(!known.contains("Abstract interactions"));
+    report.abstract_summaries[0].kind = api::ProcedureSummaryKind::UnknownEnvironment;
     report.abstract_summaries[0].closed = false;
     assert!(
         inspector
