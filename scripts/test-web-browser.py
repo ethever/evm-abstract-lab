@@ -503,8 +503,6 @@ def graph_screenshot_metrics(page, screenshot: bytes, region, measure_nodes=Fals
             const regionClipped={left:fx0===0,top:fy0===0,right:fx1===width-1,bottom:fy1===height-1};
             const viewportClipped={left:left+fx0===0,top:top+fy0===0,right:left+fx1===image.width-1,bottom:top+fy1===image.height-1};
             const visibleSides=Object.keys(sides).filter(side=>!regionClipped[side] && sides[side]>=0.45);
-            const measurable=write>=30*scale*scale && Math.max(x1-x0+1,bx1-bx0+1)>=10*scale
-                && Math.max(y1-y0+1,by1-by0+1)>=8*scale;
             const fourSides=Object.values(outlineSides).every(score=>score>=0.45);
             const ox0=fourSides?Math.min(...positions.left):x0,oy0=fourSides?Math.min(...positions.top):y0;
             const ox1=fourSides?Math.max(...positions.right):x1,oy1=fourSides?Math.max(...positions.bottom):y1;
@@ -513,6 +511,13 @@ def graph_screenshot_metrics(page, screenshot: bytes, region, measure_nodes=Fals
             const roundedCorners=fourSides && [[ox0,oy0],[ox1,oy0],[ox0,oy1],[ox1,oy1]].every(([x,y])=>
                 x>=0 && x<width && y>=0 && y<height && !outline(x,y) && fillAt[y*width+x]<0);
             const complete=fourSides && roundedCorners;
+            // Tiny selected fills can have fewer than 30 exact-color pixels.
+            // Keep the ordinary cutoff; require a complete rounded selection
+            // outline with all four accent sides and the same pixel threshold.
+            const tinySelected=complete && visibleSides.length===4 && borderPixels>=30*scale*scale;
+            const measurable=(write>=30*scale*scale || tinySelected)
+                && Math.max(x1-x0+1,bx1-bx0+1)>=10*scale
+                && Math.max(y1-y0+1,by1-by0+1)>=8*scale;
             const outlineBounds=css(ox0,oy0,ox1,oy1);
             records.push({bounds:css(x0,y0,x1,y1),fill_bounds:css(fx0,fy0,fx1,fy1),outline_bounds:outlineBounds,
                           outer_bounds:borderPixels?css(bx0,by0,bx1,by1):css(x0,y0,x1,y1),
