@@ -77,15 +77,22 @@ nix build .#web-assets
 
 RPC 表单在 **RPC provider** 下拉框的当前选项与每个候选项中同时显示后端配置的名称和 RPC URL，默认选择第一项；**Root account** 预填 Ethereum 主网 USDC 地址。长名称或 URL 会按可用宽度省略显示，悬停可查看完整名称和地址。名单加载中、加载失败或为空时，**Analyze** 和 **Ctrl+Enter** 都不会提交 RPC 任务；失败或为空时可点击 **Retry** 重新获取名单。切回 **Bytecode** 仍能分析字节码。
 
-入口示例下拉框提供 **USDC**（默认）、**WETH**、**USDT** 与 **Custom**。三个预置地址均标记为 **Ethereum mainnet**，应搭配 Ethereum 主网 RPC：
+入口示例下拉框提供 **USDC**（默认）、**WETH**、**USDT**、**Multicall3**、**Uniswap V2 Router02**、**Uniswap V2 Pair (USDC/WETH)**、**Uniswap V2 Factory**、**Uniswap V4 PoolManager** 与 **Custom**。八个预置地址均标记为 **Ethereum mainnet**，应搭配 Ethereum 主网 RPC：
 
-| 示例 | Root account | 官方来源 |
+| 示例 | Root account | 地址来源 |
 | --- | --- | --- |
 | USDC | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | [Circle 支持的 USDC 合约](https://help.circle.com/support/en/usdc-supported-blockchains-minting-redemption-faqs?id=kb_article_view&sysparm_article=KB0010590) |
 | WETH | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | [ethereum.org 的 canonical WETH 实现](https://ethereum.org/wrapped-eth/) |
 | USDT | `0xdAC17F958D2ee523a2206206994597C13D831ec7` | [Tether 支持的协议与合约地址](https://tether.to/en/supported-protocols/) |
+| Multicall3 | `0xcA11bde05977b3631167028862bE2a173976CA11` | [Multicall3 官方部署清单，chainId=1](https://github.com/mds1/multicall3/blob/main/deployments.json) |
+| Uniswap V2 Router02 | `0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D` | [Uniswap V2 官方部署](https://developers.uniswap.org/docs/protocols/v2/deployments) |
+| Uniswap V2 Pair (USDC/WETH) | `0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc` | 以主网 Factory、USDC、WETH 地址按官方 [UniswapV2Library.pairFor](https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol) 推导 |
+| Uniswap V2 Factory | `0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f` | [Uniswap V2 官方部署](https://developers.uniswap.org/docs/protocols/v2/deployments) |
+| Uniswap V4 PoolManager | `0x000000000004444c5dc75cB358380D2e3dE08A90` | [Uniswap V4 官方部署，Ethereum: 1](https://developers.uniswap.org/docs/protocols/v4/deployments) |
 
-选择 USDC、WETH 或 USDT 只把对应地址写入草稿；也可选择 **Custom** 手工编辑地址，重新打开表单会保留草稿。提供者、区块、环境和预算设置不变。切换下拉选项不会自动提交，点击 **Analyze** 或按 **Ctrl+Enter** 才开始新的分析。
+V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路由和创建池子的合约。V4 的[池子状态与执行逻辑集中在单例 PoolManager](https://developers.uniswap.org/docs/protocols/v4/concepts/poolmanager)，池子通过 PoolKey / PoolId 区分，因此 V4 示例以 PoolManager 作为 Root account。选择某个具体 V4 池子的调用还需在 calldata 中提供相应池子参数。
+
+选择预置示例只把对应地址写入草稿；也可选择 **Custom** 手工编辑地址，重新打开表单会保留草稿。提供者、区块、环境和预算设置不变。切换下拉选项不会自动提交，点击 **Analyze** 或按 **Ctrl+Enter** 才开始新的分析。
 
 **Execution budget**、**Precision and solver**、**RPC acquisition budget** 保留全部预算与精度设置。CLI 的 `cfg`、`ssa`、`analyze`、`explain` 与 Web 共用下表中的较大默认值；可以在十进制文本框中继续调大，前端与后端都不另设业务最大值。输入、请求与报告保留原始整数，超过 `2^53` 的值也不会经过浮点数舍入。
 
