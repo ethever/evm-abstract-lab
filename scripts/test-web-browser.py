@@ -1090,15 +1090,42 @@ def save_png_crop(page, screenshot: bytes, region, path: Path):
     path.write_bytes(base64.b64decode(encoded))
 
 
+def workspace_content_bottom(page, screenshot: bytes, *, above_inspector=False):
+    """Measure the status panel's top, optionally stopping above a docked Inspector."""
+    status = (page.locator("#analysis-status").text_content() or "") if above_inspector else ""
+    panels = 2 if re.search(r"(?:^|; )Inspector:", status) and " · Maximized" not in status else 1
+    return page.evaluate("""async ({png,panels}) => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+        const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
+        const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+        const data=ctx.getImageData(0,0,c.width,c.height).data,scale=c.width/innerWidth;
+        const border=(x,y)=>{const i=(y*c.width+x)*4;
+            return data[i]===47 && data[i+1]===62 && data[i+2]===80;};
+        // Native bottom Panels paint full-width separators. Interior rules,
+        // cards and text do not reach both canvas edges. Collapse HiDPI bands.
+        const lines=[];
+        for(let y=c.height-1;y>=0;y--) {
+            if(!border(0,y) || !border(c.width-1,y))continue;
+            let x=1;while(x<c.width-1 && border(x,y))x++;
+            if(x<c.width-1)continue;
+            if(lines.length && lines[lines.length-1]===y+1)lines[lines.length-1]=y;
+            else lines.push(y);
+        }
+        if(lines.length<panels)throw new Error(`missing bottom panel separators: ${lines}`);
+        return lines[panels-1]/scale;
+    }""", {"png":base64.b64encode(screenshot).decode(),"panels":panels})
+
+
 def ssa_text_snapshot(page, canvas, output, name):
     page.mouse.move(2,2);page.wait_for_timeout(800);rendered_frame(page)
     png=canvas.screenshot(path=str(output/f"{name}.png"))
     size=page.viewport_size
-    selected=screenshot_metrics(page,png,(4,75,size["width"]-4,size["height"]-30))
+    bottom=workspace_content_bottom(page,png,above_inspector=True)
+    selected=screenshot_metrics(page,png,(4,75,size["width"]-4,bottom))
     assert selected["bounds"], f"missing selected native SSA header: {name}"
     # The selected state header supplies the actual start of the virtual table,
     # independently of the global metadata bar's height or responsive layout.
-    region=(4,selected["bounds"][1],size["width"]-4,size["height"]-30)
+    region=(4,selected["bounds"][1],size["width"]-4,bottom)
     return {**text_pixels(page,png,region),"selected":selected,"region":region}
 
 
@@ -1440,7 +1467,7 @@ def unknown_world_interactions(browser, url, output):
     page.mouse.move(2, 2)
     settle_gesture(page)
     png = canvas.screenshot(path=str(output / "unknown-world-summary-inspector.png"))
-    pixels = text_pixels(page, png, (8, 80, 1410, 970))
+    pixels = text_pixels(page, png, (8, 80, 1410, workspace_content_bottom(page, png)))
     assert len(pixels["rows"]) >= 10 and pixels["white_pixels"] > 100, pixels
     assert len(posts) == 1, "summary selection or inspection reran analysis"
     assert not errors, errors
@@ -1514,7 +1541,7 @@ def known_recursion_interactions(browser, url, output):
     inspector_title_action(page, canvas, "Maximize", tab)
     settle_gesture(page)
     png = canvas.screenshot(path=str(output / "known-recursion-summary-inspector.png"))
-    pixels = text_pixels(page, png, (8, 80, 1410, 970))
+    pixels = text_pixels(page, png, (8, 80, 1410, workspace_content_bottom(page, png)))
     assert len(pixels["rows"]) >= 10 and pixels["white_pixels"] > 100, pixels
     assert len(posts) == 1 and not errors
     result = {"status": report["status"], "ssa_complete": report["ssa"]["complete"],
@@ -4535,13 +4562,13 @@ def layout_card_extent(page, png):
     # Include tiny cards below the ordinary connected-component size cutoff.
     # Solid fills become subpixel at this scale. Measure the brighter real card
     # outlines/edges instead; the background grid and dim group dashes remain
-    # below this palette threshold.
-    return page.evaluate("""async png => {
+    # below this palette threshold. Exclude status separators, which also match.
+    return page.evaluate("""async ({png,contentBottom}) => {
         const image = new Image(); image.src = `data:image/png;base64,${png}`; await image.decode();
         const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height;
         const context=canvas.getContext('2d'); context.drawImage(image,0,0);
         const scale=image.width/innerWidth;
-        const top=Math.round(123*scale), bottom=Math.round((innerHeight-30)*scale);
+        const top=Math.round(123*scale), bottom=Math.round(contentBottom*scale);
         const data=context.getImageData(0,top,image.width,bottom-top).data;
         let left=image.width,right=-1,first=bottom,last=-1,count=0;
         for(let y=0;y<bottom-top;y++) for(let x=4*scale;x<image.width-4*scale;x++) {
@@ -4551,7 +4578,8 @@ def layout_card_extent(page, png):
             }
         }
         return {bounds:count?[left/scale,first/scale,(right+1)/scale,(last+1)/scale]:null,pixels:count};
-    }""", base64.b64encode(png).decode())
+    }""", {"png":base64.b64encode(png).decode(),
+           "contentBottom":workspace_content_bottom(page, png, above_inspector=True)})
 
 
 def assert_layout_camera_interval(actual, predicted):
