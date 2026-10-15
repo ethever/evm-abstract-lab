@@ -4,9 +4,11 @@ from pathlib import Path
 import base64
 import hashlib
 import json
+import time
 import zlib
+from playwright.sync_api import Error as PlaywrightError
 from web_test_harness import rendered_frame, settle_gesture
-from web_test_pixels import save_png_crop, text_pixels
+from web_test_pixels import canvas_screenshot, save_png_crop, text_pixels
 
 
 STORAGE_SLOT_WORD = "0x1234567890abcdef234567890abcdef134567890abcdef124567890190abcdef"
@@ -88,6 +90,33 @@ def storage_table_snapshot(page, canvas, output: Path, name: str, tab_bottom: fl
     assert min(origins)>table["separator"], f"Slot labels invaded Value: {storage_pixel_report(table)}"
     save_png_crop(page,png,table["table_bounds"],output/f"{name}-table.png")
     return table
+
+def storage_scrolled_snapshot(page, evidence: Path, region, previous):
+    """Wait for the resized, scrolled table's actual painted rows."""
+    deadline = time.monotonic() + 30
+    while True:
+        png = canvas_screenshot(page, path=str(evidence))
+        try:
+            table = storage_table_pixels(page, png, region)
+        except PlaywrightError as error:
+            if "missing painted storage column separator" not in str(error):
+                raise
+            problem = error
+        else:
+            rows = table["rows"]
+            # This fixture moved the inspector below its previous entire table.
+            # Require all original rows and the terminal Value's dimensions so
+            # an old frame or a partially clipped table cannot satisfy readiness.
+            ready = (table["table_bounds"][1] > previous["table_bounds"][3]
+                     and len(rows) == len(previous["rows"])
+                     and all(row["slot"] and row["value"] for row in rows)
+                     and rows[-1]["value"]["mask_size"] == previous["rows"][-1]["value"]["mask_size"])
+            if ready:
+                return table
+            problem = AssertionError(f"scrolled storage rows are not painted: {storage_pixel_report(table)}")
+        if time.monotonic() >= deadline:
+            raise problem
+        rendered_frame(page)
 
 def drag_storage_separator(page, table, target_x: float):
     """Drag the separator located in the actual PNG, using browser pointer input."""

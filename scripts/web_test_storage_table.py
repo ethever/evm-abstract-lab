@@ -6,7 +6,7 @@ from playwright.sync_api import expect
 import json
 from web_test_harness import observe_webgpu, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
 from web_test_inspector_helpers import inspector_frame_tab, inspector_title_action, select_inspector_tab
-from web_test_storage_helpers import STORAGE_SLOT_WORD, assert_storage_cell_text, assert_storage_literal_pixels, assert_storage_preference, assert_storage_reviewed_pixels, assert_storage_suffix, drag_storage_separator, storage_glyph_cells, storage_hover_snapshot, storage_pixel_report, storage_reviewed_raster, storage_separator_offset, storage_table_pixels, storage_table_snapshot
+from web_test_storage_helpers import STORAGE_SLOT_WORD, assert_storage_cell_text, assert_storage_literal_pixels, assert_storage_preference, assert_storage_reviewed_pixels, assert_storage_suffix, drag_storage_separator, storage_glyph_cells, storage_hover_snapshot, storage_pixel_report, storage_reviewed_raster, storage_scrolled_snapshot, storage_separator_offset, storage_table_snapshot
 
 
 def storage_table_interactions(browser, url: str, output: Path):
@@ -162,9 +162,8 @@ def storage_table_interactions(browser, url: str, output: Path):
         page.mouse.wheel(0,600)
         settle_gesture(page)
         page.mouse.move(2,2)
-        scrolled_png=canvas.screenshot(path=str(output/f"storage-table-{kind}-scrolled.png"))
-        scrolled=storage_table_pixels(page,scrolled_png,
-            (4,small_tab[3]+52,1416,970))
+        scrolled=storage_scrolled_snapshot(page,output/f"storage-table-{kind}-scrolled.png",
+            (4,small_tab[3]+52,1416,970),narrow)
         assert_storage_preference(scrolled,preferences[kind])
         scrolled_value=assert_storage_cell_text(narrow["rows"][-1]["value"],scrolled["rows"][-1]["value"])
         page.mouse.move(80,small_tab[3]+115)

@@ -7,7 +7,7 @@ import json
 import re
 import time
 from web_test_harness import analysis_server, measured_backend_timings, observe_webgpu, open_input, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
-from web_test_inspector_helpers import inspector_selected_tab, inspector_title_action
+from web_test_inspector_helpers import INSPECTOR_TAB_POSITIONS, inspector_painted_controls, inspector_selected_tab, inspector_title_action
 from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, submit_rpc, visible_seconds, wait_for_job
 
 
@@ -139,6 +139,18 @@ def timing_interactions(browser, args):
             canvas.click(position={"x": 380, "y": 361})  # Bytecode in the taller RPC modal
             page.keyboard.press("Escape")
             settle_gesture(page)
+            # Closing can leave one prepared modal frame ahead of the logic
+            # that releases its TextEdit. Observe the uncovered inspector before
+            # reopening, rather than sending the next shortcut into that frame.
+            deadline = time.monotonic() + 30
+            while True:
+                controls = inspector_painted_controls(page, canvas)
+                if any(abs((rect[0] + rect[2]) / 2 - INSPECTOR_TAB_POSITIONS["Timing"]) <= 8
+                       and rect[1] < 100 for rect in controls["selected"]):
+                    break
+                assert time.monotonic() < deadline, f"closed modal did not reveal the Timing inspector: {controls}"
+                rendered_frame(page)
+            page.wait_for_function("document.activeElement === document.querySelector('#evm-canvas')")
             failed = submit_bytecode(page, canvas, "not-bytecode", args.output / "timing-error-input.png")
             assert failed.json()["result"]["Err"]["code"] == "InvalidBytecode"
             failure_wait = visible_seconds(page, "Total wait")

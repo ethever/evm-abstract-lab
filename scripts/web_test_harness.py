@@ -73,6 +73,13 @@ def analysis_server(args, rpc_config: Path | str | None = None, *, workers: int 
             process.wait()
 
 def rendered_frame(page) -> None:
+    # eframe can present one already prepared frame before running logic again.
+    # Two real submissions after the last text event therefore include the
+    # frame that consumes it; browser rAF callbacks alone do not establish this.
+    page.wait_for_function("""() => {
+        const pending = window.__webTestInputFrame;
+        return pending === undefined || window.__webgpuEvidence.submissions >= pending + 2;
+    }""")
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
 
 class AnalysisResponse:
@@ -136,6 +143,18 @@ def open_input(page):
     # The product shortcut opens the modal and focuses its initial source field.
     page.keyboard.press("Control+Enter")
     settle_gesture(page)
+    # The modal requests its TextEdit focus after painting the controls. Wait
+    # until eframe has applied that request to its real DOM text agent before
+    # sending selection/paste events, which a focused canvas would discard.
+    page.wait_for_function("""() => {
+        const canvas = document.querySelector('#evm-canvas');
+        const agent = canvas?.nextElementSibling;
+        if (!(agent instanceof HTMLInputElement) || document.activeElement !== agent) return false;
+        const x = parseFloat(agent.style.left), y = parseFloat(agent.style.top);
+        return x > canvas.offsetLeft && y > canvas.offsetTop &&
+               x <= canvas.offsetLeft + canvas.clientWidth &&
+               y <= canvas.offsetTop + canvas.clientHeight;
+    }""")
 
 def posted_bytecode(reply):
     return reply.request.post_data_json["input"]["Bytecode"]["bytecode"]
@@ -194,6 +213,11 @@ def observe_webgpu(page, unavailable: str | None = None) -> None:
                           devices: 0, configurations: [], textures: 0,
                           submissions: 0, indexed_draws: 0, errors: []};
         window.__webgpuEvidence = evidence;
+        addEventListener('input', event => {
+            const canvas = document.querySelector('#evm-canvas');
+            if (event.target instanceof HTMLInputElement && event.target === canvas?.nextElementSibling)
+                window.__webTestInputFrame = evidence.submissions;
+        }, {capture: true});
         const getContext = HTMLCanvasElement.prototype.getContext;
         HTMLCanvasElement.prototype.getContext = function(kind, ...args) {
             const result = getContext.call(this, kind, ...args);
