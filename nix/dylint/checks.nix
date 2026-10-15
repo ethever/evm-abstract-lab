@@ -159,15 +159,16 @@ let
     target = "wasm";
     featureRoots = [ "evm-abstract-web" ];
   };
+  webPackageArgs = "--locked --offline ${
+    build.configurations.packageArgs "evm-abstract-web" webMode build.configurations.default
+  } --lib";
   webCommon = commonFor "evm-abstract-web" webMode build.configurations.default // {
     pname = "evm-abstract-web-no-dyn";
     CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
     CARGO_PROFILE = "dev";
     nativeBuildInputs = [ packages.tools ];
     buildInputs = [ ];
-    cargoExtraArgs = "--locked --offline ${
-      build.configurations.packageArgs "evm-abstract-web" webMode build.configurations.default
-    } --lib --target-dir ${targetDir}";
+    cargoExtraArgs = "${webPackageArgs} --target-dir ${targetDir}";
     doCheck = false;
   };
   webArtifacts = lintCrane.buildDepsOnly (
@@ -195,8 +196,10 @@ forVariant "" build.configurations.default
       cargoArtifacts = webArtifacts;
       doInstallCargoArtifacts = false;
       buildPhaseCargoCommand = ''
+        # Dylint owns --target-dir; only plain Cargo dependency preparation
+        # receives that flag explicitly through webCommon.
         cargo dylint --all --fail-on-no-libraries --no-build --no-metadata \
-          --lib-path ${packages.libraryPath} -- ${webCommon.cargoExtraArgs} --target wasm32-unknown-unknown
+          --lib-path ${packages.libraryPath} -- ${webPackageArgs} --target wasm32-unknown-unknown
       '';
     }
   );
