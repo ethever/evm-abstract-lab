@@ -91,12 +91,14 @@ def measured_backend_timings(report):
 
 
 def complete_submission(page, admitted, timeout_seconds: int = 60):
-    reply = admitted.json()["result"]
+    # Parse raw HTTP text in Python so u64 Job IDs never pass through JS Number.
+    reply = json.loads(admitted.text())["result"]
     if "Err" in reply:
         return AnalysisResponse(admitted, {"result": reply}, admitted.status)
     job = reply["Ok"]
+    job_id = job["id"]
     observed_status = admitted.status
-    task_url = admitted.url + "/" + str(job["id"])
+    task_url = admitted.url + "/" + str(job_id)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         state = job["state"]
@@ -106,6 +108,8 @@ def complete_submission(page, admitted, timeout_seconds: int = 60):
             timing = measured_backend_timings(envelope["result"]["Ok"])
             assert timing == job["timings"], "report and completed job disagree on measured time"
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)
+            expect(page.locator("#analysis-status")).to_contain_text(
+                re.compile(rf"(?:^|; )Job ID: {job_id}(?=;|$)"), timeout=timeout_seconds * 1000)
             return AnalysisResponse(admitted, envelope, result.status)
         if isinstance(state, dict) and "Failed" in state:
             error = state["Failed"]
@@ -3550,7 +3554,7 @@ def timing_interactions(browser, args):
                 wait_for_job(page, url, job_id,
                              lambda job: job["progress"]["phase"] == "Acquiring")
             admitted = submit_rpc(page, canvas, rpc, args.output, "timing-queued", 0, providers)
-            job_id = admitted.json()["result"]["Ok"]["id"]
+            job_id = json.loads(admitted.text())["result"]["Ok"]["id"]
             queued = wait_for_job(page, url, job_id, lambda job: job["state"] == "Queued")
             expect(status).to_contain_text("Queued")
             before = visible_seconds(page, "Elapsed")
@@ -3628,9 +3632,13 @@ def timing_interactions(browser, args):
             rpc.started.clear()
             rpc.disconnected.clear()
             cancelled = submit_rpc(page, canvas, rpc, args.output, "timing-cancel", 0, providers)
-            cancelled_id = cancelled.json()["result"]["Ok"]["id"]
+            cancelled_id = json.loads(cancelled.text())["result"]["Ok"]["id"]
             assert rpc.started.wait(5), "cancelled task never entered its own real RPC read"
             expect(status).to_contain_text("Elapsed:")
+            expect(status).to_contain_text(
+                re.compile(rf"(?:^|; )Current Job ID: {cancelled_id}(?=;|$)"))
+            expect(status).to_contain_text(
+                re.compile(rf"(?:^|; )Result Job ID: {job_id}(?=;|$)"))
             with page.expect_response(lambda response: response.request.method == "DELETE"
                                       and response.url.endswith(f"/api/tasks/{cancelled_id}")):
                 canvas.click(position={"x": 30, "y": 988})

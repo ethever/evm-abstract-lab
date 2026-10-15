@@ -14,7 +14,7 @@ use crate::{palette, widgets};
 use directory::{Directory, Pick};
 use egui::{Key, Modifiers, Ui};
 use evm_abstract_notation::{Symbol, WideSymbol};
-use evm_abstract_protocol::{AnalysisReport, AnalyzeReply, AnalyzeRequest, SCHEMA_VERSION};
+use evm_abstract_protocol::{AnalysisReport, AnalyzeReply, AnalyzeRequest, JobId, SCHEMA_VERSION};
 use form::AnalysisForm;
 use inspector::Inspector;
 #[cfg(target_arch = "wasm32")]
@@ -93,6 +93,9 @@ pub(crate) enum View {
 /// task runs; stale callbacks cannot replace the selected result.
 pub struct Workspace {
     report: Option<AnalysisReport>,
+    // Only a validated report from an accepted server result owns this ID.
+    // It remains bound to the visible report across later task generations.
+    report_job_id: Option<JobId>,
     task: Task,
     startup: startup::Startup,
     form: AnalysisForm,
@@ -117,6 +120,7 @@ impl Default for Workspace {
     fn default() -> Self {
         Self {
             report: None,
+            report_job_id: None,
             task: Task::default(),
             startup: startup::Startup::default(),
             form: AnalysisForm::default(),
@@ -218,11 +222,16 @@ impl Workspace {
             egui::Panel::top("workspace_header")
                 .frame(palette::chrome_frame())
                 .show(ui, |ui| self.header(ui));
-            egui::Panel::bottom("workspace_status")
+            let available_bottom = ui.available_rect_before_wrap().bottom();
+            let status_response = egui::Panel::bottom("workspace_status")
                 .frame(palette::chrome_frame())
                 .show(ui, |ui| {
                     command = self.status(ui);
                 });
+            // A cached status height can leave the graph's first-fit viewport stale.
+            if (status_response.response.rect.bottom() - available_bottom).abs() > 1.0 {
+                ui.ctx().request_discard("status panel size changed");
+            }
             self.sync_selection();
             // Freeze this frame's presentation: a title action takes effect on
             // the next frame, keeping the inspector's widget IDs unique.
@@ -496,14 +505,23 @@ impl Workspace {
                     {
                         self.task.retry_result(TaskError::Api(error))
                     }
-                    result => self.receive(result),
+                    result => self.receive_result(result, Some(id)),
                 }
             }
         }
     }
 
     /// Apply a typed immutable result; schema failures never enter view state.
+    /// Reports received directly have no server Job ID association.
     pub fn receive(&mut self, result: Result<AnalyzeReply, TransportError>) {
+        self.receive_result(result, None);
+    }
+
+    fn receive_result(
+        &mut self,
+        result: Result<AnalyzeReply, TransportError>,
+        report_job_id: Option<JobId>,
+    ) {
         let prepare_started = timing::now();
         match result {
             Ok(AnalyzeReply { result: Ok(report) }) if report.schema_version == SCHEMA_VERSION => {
@@ -536,6 +554,7 @@ impl Workspace {
                 self.directory.open =
                     report.metadata.snapshot.is_some() || report.programs.len() > 1;
                 self.report = Some(report);
+                self.report_job_id = report_job_id;
                 self.task.complete();
                 let mut frontend = self.task.frontend.clone();
                 frontend.view_ns = timing::elapsed_ns(prepare_started, timing::now());
@@ -566,6 +585,35 @@ impl Workspace {
     }
 
     fn accessible_task_status(&self) -> String {
+        let mut status = self.task_status_summary();
+        for (label, id) in self.job_identities() {
+            status.push_str(&format!("; {label}: {}", id.0));
+        }
+        if self.report.is_some() && self.report_job_id.is_none() {
+            status.push_str("; Result Job ID: unavailable");
+        }
+        status
+    }
+
+    fn job_identities(&self) -> impl Iterator<Item = (&'static str, JobId)> {
+        let current = self.task.snapshot.as_ref().map(|snapshot| snapshot.id);
+        let label = if self.report.is_some() && self.report_job_id != current {
+            "Current Job ID"
+        } else {
+            "Job ID"
+        };
+        [
+            (label, current),
+            (
+                "Result Job ID",
+                self.report_job_id.filter(|id| Some(*id) != current),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(label, id)| id.map(|id| (label, id)))
+    }
+
+    fn task_status_summary(&self) -> String {
         if self.startup.loading() {
             return "Loading the initial example…".into();
         }
