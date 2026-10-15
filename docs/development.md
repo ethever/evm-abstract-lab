@@ -54,6 +54,7 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 | [`nix/cargo-feature-unifier.nix`](../nix/cargo-feature-unifier.nix) | 保留 Cargo 的依赖 feature 组合；原生 workspace 与 Wasm Web 使用各自的解析上下文 |
 | [`nix/cargo-artifacts.nix`](../nix/cargo-artifacts.nix) | 沿包依赖图复用第三方缓存和已编译的本地库 |
 | [`nix/cargo-concurrency.nix`](../nix/cargo-concurrency.nix) | 在正确的 Hook 顺序中清理额外的 Cargo jobs 和测试线程设置 |
+| [`nix/cargo-bindgen.nix`](../nix/cargo-bindgen.nix) | 清理 bindgen 解析参数中的产物随机种子，稳定生成绑定的缓存 |
 | [`nix/check-inputs.nix`](../nix/check-inputs.nix) | 检查的独立文件与文件集输入，避免带入整个仓库 |
 | [`nix/check-aggregate.nix`](../nix/check-aggregate.nix) | 纯汇总节点及其叶子依赖，开发入口只构建受影响成员 |
 | [`nix/shell.nix`](../nix/shell.nix) | 开发环境及其显式依赖 |
@@ -124,6 +125,8 @@ find flake.nix nix -type f -name '*.nix' -print0 | xargs -0 nix fmt --no-update-
 ```
 
 Cargo 解析回归对照原始根包与分包构建的实际 unit graph，检查 features、宿主与目标、profile、依赖边和前置库上下文，并确认辅助包不产生编译单元。输入只含 Cargo 清单、锁文件及虚拟目标，修改 Rust 正文可以复用这些检查；编译器保护脚本会拒绝意外编译 crate。
+
+bindgen 解析参数中去除 Nix 为当前产物生成的随机种子，其余参数按完整 token 保留，包括调用者设置的种子和带引号的宏。实际 C/C++ 编译继续使用 Nix 的编译参数；两个真实构建的环境回归保护这项边界。
 
 TOML 回归使用 Nix 提供的 Taplo，向真实 LSP 发送格式化请求并与同版本 CLI 比较结果，验证项目的格式配置。原生求解器共存和安装后分析示例也保留在完整门禁中。编辑器和插件的安装由用户负责。
 

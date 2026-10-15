@@ -59,6 +59,9 @@ let
     )
     // {
       pname = name;
+      prePatch =
+        common.prePatch
+        + lib.optionalString (mode.target != "wasm") (import ./cargo-bindgen.nix { inherit pkgs; });
       src = configurations.configuredSource [ name ] mode configuration;
       cargoExtraArgs = "--locked ${configurations.packageArgs name mode configuration}";
     };
