@@ -87,9 +87,11 @@ fn actual_init_and_runtime_same_owner_same_pc_keep_distinct_log_arities() {
             account.balance = word(100);
             world.insert(owner, account).unwrap();
             world.insert(child, Account::absent()).unwrap();
-            let mut entry = Entry::new(owner);
-            entry.environment.value = word(0);
-            entry.environment.calldata = ByteArray::empty();
+            // CREATE also covers an initcode-gas failure that returns zero.
+            // A subsequent CALL(0) is empty in this finite fixture, rather than
+            // an unrelated unknown contract that could reenter the factory.
+            world.insert(Address::ZERO, Account::absent()).unwrap();
+            let entry = Entry::concrete(owner, address(0x1000), word(0), ByteArray::empty());
             let mut config = ExecutionConfig {
                 max_work: 100_000_000,
                 ..ExecutionConfig::default()
