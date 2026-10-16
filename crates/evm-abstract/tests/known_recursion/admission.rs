@@ -152,25 +152,18 @@ fn changing_calldata_still_folds_real_direct_and_mutual_call_cycles() {
         assert_eq!(observed.output_word(0), U256::from(42));
         assert!(observed.steps.iter().any(|step| step.depth >= 5));
         if !mutual {
-            // The exact decreasing input changes a numerical table bound before
-            // it stabilizes. Keep its actual default20M resource boundary
-            // separate from the adequately funded functional check below.
-            let limited = run(world.clone(), input.clone());
-            assert_eq!(limited.config().max_work, 20_000_000);
-            assert_eq!(limited.config().max_call_depth, 32);
-            assert_eq!(limited.status(), Status::Incomplete);
-            assert!(!limited.frontiers().is_empty());
-            assert!(limited.frontiers().iter().all(|frontier| matches!(
-                frontier.reason,
-                FrontierReason::Work | FrontierReason::SummaryWork
-            )));
-            assert!(!limited.procedure_summaries().is_empty());
-            assert!(
-                limited
-                    .procedure_summaries()
-                    .iter()
-                    .all(|record| !record.closed)
-            );
+            // This changing-input cycle now closes under the unchanged default
+            // policy. Explicit work-cutoff coverage lives in resources.rs.
+            let default_policy = run(world.clone(), input.clone());
+            assert_eq!(default_policy.config().max_work, 20_000_000);
+            assert_eq!(default_policy.config().max_call_depth, 32);
+            complete_recursion(&default_policy);
+            for outcome in returns(&default_policy) {
+                only(outcome.data.len(), &[32]);
+                only(&output_word(outcome, 0), &[42]);
+                only(&read(&outcome.store, A, 0), &[5]);
+            }
+            observed.covers(&default_policy);
         }
         for use_summaries in [true, false] {
             let analysis = run_config(

@@ -256,7 +256,7 @@ fn false_edges_exclude_the_same_equality_on_later_blocks() {
 }
 
 #[test]
-fn joined_paths_keep_the_union_of_one_and_two_and_exclude_a_third_value() {
+fn joined_unknown_paths_include_both_values_and_selected_paths_exclude_a_third() {
     let mut code = Assembly::default();
     code.op(opcode::CALLVALUE)
         .op(opcode::PUSH0)
@@ -302,10 +302,26 @@ fn joined_paths_keep_the_union_of_one_and_two_and_exclude_a_third_value() {
                 "lost feasible {branch}: {profile:?}"
             );
         }
-        assert!(
-            !reachable(&result, fixture.labels["bad"]),
-            "join is x=1 OR x=2, not AND or an unconstrained x"
-        );
+        // The unknown join selector keeps x=1 OR x=2 in the path DAG. Local
+        // projection imports common facts only, so it need not exclude x=3.
+        // Reachability is an overapproximation, never a satisfying valuation.
+        for (selector, selected, excluded) in [(0, "two", "one"), (1, "one", "two")] {
+            let selected_result = analyze(
+                &fixture.code,
+                profile,
+                EvmEnvironment {
+                    calldata: evm_abstract::world::ByteArray::exact(&[selector]),
+                    ..EvmEnvironment::default()
+                },
+            );
+            complete(&selected_result);
+            assert!(reachable(&selected_result, fixture.labels[selected]));
+            assert!(!reachable(&selected_result, fixture.labels[excluded]));
+            assert!(
+                !reachable(&selected_result, fixture.labels["bad"]),
+                "a known selector must retain its guarded value: {profile:?}"
+            );
+        }
     }
 }
 
