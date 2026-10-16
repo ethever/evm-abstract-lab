@@ -25,10 +25,10 @@ impl Engine<'_, '_> {
 
     pub(super) fn term(&mut self, expression: &ExprId) -> LocalResult<ExprId> {
         self.work.charge(1)?;
-        if let Some(exact) = self.known(expression).singleton() {
+        if let Some(exact) = self.known(expression)?.singleton() {
             return Ok(ExprId::constant(exact));
         }
-        if let Some(term) = self.terms.get(expression) {
+        if let Some(term) = self.terms.get(expression, self.work)? {
             return Ok(term.clone());
         }
         let term = match expression.kind() {
@@ -37,7 +37,7 @@ impl Engine<'_, '_> {
                     .iter()
                     .map(|arg| self.term(arg))
                     .collect::<LocalResult<Vec<_>>>()?;
-                if *code == opcode::EQ && self.same(&args[0], &args[1]) == Some(true) {
+                if *code == opcode::EQ && self.same(&args[0], &args[1])? == Some(true) {
                     ExprId::constant(U256::ONE)
                 } else {
                     self.operation(*code, &args)?
@@ -66,7 +66,8 @@ impl Engine<'_, '_> {
             }
             _ => expression.clone(),
         };
-        self.terms.insert(expression.clone(), term.clone());
+        self.terms
+            .insert(expression.clone(), term.clone(), self.work)?;
         Ok(term)
     }
 
@@ -130,9 +131,9 @@ impl Engine<'_, '_> {
                     source,
                     length,
                 } => {
-                    if self.same(&view.offset, destination) == Some(true)
-                        && self.same(&view.length, length) == Some(true)
-                        && self.same(length, &source.length) == Some(true)
+                    if self.same(&view.offset, destination)? == Some(true)
+                        && self.same(&view.length, length)? == Some(true)
+                        && self.same(length, &source.length)? == Some(true)
                         && self.fits(destination, length)?
                     {
                         Some(source.clone())
@@ -147,8 +148,8 @@ impl Engine<'_, '_> {
                     }
                 }
                 ByteStateKind::Slice { source }
-                    if self.same(&view.offset, &ExprId::constant(U256::ZERO)) == Some(true)
-                        && self.same(&view.length, &source.length) == Some(true) =>
+                    if self.same(&view.offset, &ExprId::constant(U256::ZERO))? == Some(true)
+                        && self.same(&view.length, &source.length)? == Some(true) =>
                 {
                     Some(source.clone())
                 }
@@ -234,7 +235,7 @@ impl Engine<'_, '_> {
         if self.eval(at)?.interval().unsigned_bounds().1 > U256::MAX - U256::from(31) {
             return Ok(None);
         }
-        if self.same(at, written) == Some(true) {
+        if self.same(at, written)? == Some(true) {
             return Ok(Some(0));
         }
         if let ExprKind::Operation {
@@ -243,7 +244,7 @@ impl Engine<'_, '_> {
         } = written.kind()
         {
             for (base, offset) in [(&args[0], &args[1]), (&args[1], &args[0])] {
-                if self.same(base, at) == Some(true)
+                if self.same(base, at)? == Some(true)
                     && let Some(offset) = self.exact(offset)?.filter(|n| *n < U256::from(32))
                 {
                     return Ok(Some(offset.to::<usize>()));
@@ -262,7 +263,7 @@ impl Engine<'_, '_> {
                 offset,
                 value,
             } => {
-                if self.same(at, offset) == Some(true) {
+                if self.same(at, offset)? == Some(true) {
                     let value = self.term(value)?;
                     if let Some(at) = self.exact(at)? {
                         let available = U256::MAX - at;
@@ -317,7 +318,7 @@ impl Engine<'_, '_> {
                 source,
                 length,
             } => {
-                if self.same(at, destination) == Some(true)
+                if self.same(at, destination)? == Some(true)
                     && self.eval(length)?.interval().unsigned_bounds().0 >= U256::from(32)
                     && self.fits(at, &word_length)?
                 {

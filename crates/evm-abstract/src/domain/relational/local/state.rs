@@ -56,7 +56,7 @@ impl Engine<'_, '_> {
                     _ => {
                         let key = self.term(key)?;
                         let stored = self.term(stored)?;
-                        self.same(&key, &stored)
+                        self.same(&key, &stored)?
                     }
                 };
                 match equal {
@@ -143,7 +143,7 @@ impl Engine<'_, '_> {
             } => {
                 let equal = match (self.exact(index)?, self.exact(offset)?) {
                     (Some(a), Some(b)) => Some(a == b),
-                    _ => self.same(index, offset),
+                    _ => self.same(index, offset)?,
                 };
                 match equal {
                     Some(false) => self.byte(previous, index),
@@ -174,7 +174,7 @@ impl Engine<'_, '_> {
                         }
                         Some(at - start)
                     }
-                    _ if self.same(index, offset) == Some(true) => Some(U256::ZERO),
+                    _ if self.same(index, offset)? == Some(true) => Some(U256::ZERO),
                     _ => None,
                 };
                 if let Some(relative) = relative {
@@ -276,7 +276,7 @@ impl Engine<'_, '_> {
                     value,
                     ..
                 } = view.state.kind()
-                && self.same(written, &view.offset) == Some(true)
+                && self.same(written, &view.offset)? == Some(true)
             {
                 return self.eval(value);
             }

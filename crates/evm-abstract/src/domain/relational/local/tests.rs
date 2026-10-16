@@ -275,7 +275,7 @@ fn demanded_word_reads_do_not_wrap_mathematical_addresses() {
 }
 
 #[test]
-fn root_ledger_refusal_cannot_be_returned_as_a_local_proof() {
+fn optional_local_projection_refusal_cannot_be_returned_as_a_local_proof() {
     let limits = RelationLimits::default();
     let x = ExprId::fresh().unwrap();
     let mut state = RelationState::default();
@@ -288,8 +288,9 @@ fn root_ledger_refusal_cannot_be_returned_as_a_local_proof() {
         state.local_value_budgeted(&x, &limits, &mut budget),
         ValueQuery::Undetermined(_)
     ));
-    assert!(budget.exhausted());
+    assert!(!budget.exhausted());
     assert_eq!(budget.used(), 0);
+    assert!(budget.can_afford(0));
     assert_eq!(state, before);
 }
 
@@ -301,23 +302,118 @@ fn rejected_local_step_preserves_paid_work_without_charging_the_rejected_step() 
             remaining: 3,
             cancellation: analysis_control::current_cancellation(),
             ledger: Some(&mut budget),
-            key_work: 7,
         };
         assert!(work.charge(2).is_ok());
         assert_eq!(work.remaining, 1);
-        assert_eq!(work.ledger.as_ref().unwrap().used(), 14);
+        assert_eq!(work.ledger.as_ref().unwrap().used(), 2);
         assert!(matches!(
             work.charge(2),
             Err(super::Stop::Pending(QueryReason::ExpressionLimit))
         ));
         assert_eq!(work.remaining, 1);
-        assert_eq!(work.ledger.as_ref().unwrap().used(), 14);
+        assert_eq!(work.ledger.as_ref().unwrap().used(), 2);
         assert!(!work.ledger.as_ref().unwrap().exhausted());
         assert!(work.charge(1).is_ok());
         assert_eq!(work.remaining, 0);
     }
-    assert_eq!(budget.used(), 21);
+    assert_eq!(budget.used(), 3);
     assert!(!budget.exhausted());
+}
+
+#[test]
+fn optional_reservation_refusal_keeps_paid_work_and_root_capacity() {
+    let mut budget = WorkBudget::new(2);
+    {
+        let mut work = super::Work {
+            remaining: 3,
+            cancellation: analysis_control::current_cancellation(),
+            ledger: Some(&mut budget),
+        };
+        assert!(work.charge(1).is_ok());
+        assert!(matches!(
+            work.charge(2),
+            Err(super::Stop::Pending(QueryReason::ExpressionLimit))
+        ));
+        assert_eq!(work.remaining, 2);
+        assert_eq!(work.ledger.as_ref().unwrap().used(), 1);
+        assert!(!work.ledger.as_ref().unwrap().exhausted());
+        assert!(work.charge(1).is_ok());
+    }
+    assert_eq!(budget.used(), 2);
+    assert!(!budget.exhausted());
+}
+
+#[test]
+fn key_lookup_pays_pointer_checks_separately_from_structural_comparisons() {
+    let mut prefix = ExprId::fresh().unwrap();
+    for _ in 0..16 {
+        prefix = op(opcode::ADD, &[prefix, c(1)]);
+    }
+    let key = op(opcode::ADD, &[prefix.clone(), c(1)]);
+    let equivalent = op(opcode::ADD, &[prefix, c(1)]);
+    assert_ne!(key.immutable_node_key(), equivalent.immutable_node_key());
+    assert_eq!(key, equivalent);
+    let mut keys = super::keys::KeyMap::default();
+    let mut work = super::Work {
+        remaining: 1024,
+        cancellation: analysis_control::current_cancellation(),
+        ledger: None,
+    };
+    assert!(keys.insert(key.clone(), 7, &mut work).is_ok());
+    for (query, expected) in [(&key, Some(&7)), (&equivalent, None)] {
+        let mut budget = WorkBudget::new(2);
+        let answer = keys.get(
+            query,
+            &mut super::Work {
+                remaining: 1024,
+                cancellation: analysis_control::current_cancellation(),
+                ledger: Some(&mut budget),
+            },
+        );
+        if let Some(value) = expected {
+            assert_eq!(answer.unwrap(), Some(value));
+            assert_eq!(budget.used(), 2);
+        } else {
+            assert!(matches!(
+                answer,
+                Err(super::Stop::Pending(QueryReason::ExpressionLimit))
+            ));
+            assert_eq!(
+                budget.used(),
+                1,
+                "only the completed integer lookup is paid"
+            );
+        }
+        assert!(!budget.exhausted());
+    }
+    assert_eq!(keys.get(&equivalent, &mut work).unwrap(), Some(&7));
+    assert!(keys.insert(equivalent.clone(), 9, &mut work).is_ok());
+    assert_eq!(keys.get(&key, &mut work).unwrap(), Some(&9));
+    assert!(keys.remove(&equivalent, &mut work).is_ok());
+    assert_eq!(keys.get(&key, &mut work).unwrap(), None);
+}
+
+#[test]
+fn exact_compound_guarantee_does_not_reconstruct_the_unknown_word() {
+    let limits = RelationLimits {
+        max_nodes: 128,
+        ..RelationLimits::default()
+    };
+    let source = ByteStateId::input(SourceId::fresh().unwrap(), ExprId::fresh().unwrap());
+    let read = ExprId::word_read(
+        ByteView::new(source, c(0), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let mut state = RelationState::default();
+    state
+        .observe(&read, &NumericValue::constant(U256::from(7)), &limits)
+        .unwrap();
+    assert_eq!(
+        state.local_value(&read, &limits),
+        ValueQuery::Exact(U256::from(7))
+    );
 }
 
 #[test]

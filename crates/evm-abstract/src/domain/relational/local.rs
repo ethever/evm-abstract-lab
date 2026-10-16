@@ -15,8 +15,11 @@ use crate::domain::{
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
+use keys::KeyMap;
+
+mod keys;
 mod state;
 mod terms;
 #[cfg(test)]
@@ -45,7 +48,6 @@ struct Work<'a> {
     remaining: usize,
     cancellation: analysis_control::Cancellation,
     ledger: Option<&'a mut crate::resource::WorkBudget>,
-    key_work: usize,
 }
 impl Work<'_> {
     fn charge(&mut self, amount: usize) -> LocalResult<()> {
@@ -56,7 +58,7 @@ impl Work<'_> {
             .remaining
             .checked_sub(amount)
             .ok_or(Stop::Pending(QueryReason::ExpressionLimit))?;
-        self.prepay(amount.saturating_mul(self.key_work))?;
+        self.prepay(amount)?;
         self.remaining = remaining;
         Ok(())
     }
@@ -64,14 +66,30 @@ impl Work<'_> {
         if self.cancellation.is_cancelled() {
             return Err(Stop::Pending(QueryReason::Cancelled));
         }
-        if self
-            .ledger
-            .as_mut()
-            .is_some_and(|ledger| !ledger.charge(amount))
-        {
-            return Err(Stop::Pending(QueryReason::ExpressionLimit));
+        if let Some(ledger) = self.ledger.as_mut() {
+            // Optional precision may stop without exhausting the shared ledger.
+            // The later charge is still transactional if cancellation races.
+            if !ledger.can_afford(amount) || !ledger.charge(amount) {
+                return Err(Stop::Pending(if self.cancellation.is_cancelled() {
+                    QueryReason::Cancelled
+                } else {
+                    QueryReason::ExpressionLimit
+                }));
+            }
         }
         Ok(())
+    }
+    fn same_expression(&mut self, left: &ExprId, right: &ExprId) -> LocalResult<bool> {
+        self.charge(left.comparison_work(right))?;
+        Ok(left == right)
+    }
+    fn order_expression(
+        &mut self,
+        left: &ExprId,
+        right: &ExprId,
+    ) -> LocalResult<std::cmp::Ordering> {
+        self.charge(left.comparison_work(right))?;
+        Ok(left.cmp(right))
     }
 }
 
@@ -110,25 +128,12 @@ pub(super) fn project(
     {
         return Err(QueryReason::ExpressionLimit);
     }
-    // One structural step prepays a worst-case bounded key scan/comparison.
-    // Numeric reduction and finite scans pay their own domain cost separately.
-    // An alias comparison may scan all disequalities and follow a decreasing
-    // parent chain for each endpoint. BTree lookup depth also grows with the
-    // bounded local memo. Reserve both rather than treating a key check as O(1).
-    let graph_work = state
-        .work_size()
-        .saturating_add(expression.map_or(0, ExprId::work_size))
-        .saturating_add(1);
-    let key_steps = state
-        .len()
-        .saturating_add(2)
-        .max((usize::BITS - graph_work.leading_zeros()) as usize + 2);
-    let key_work = graph_work.saturating_mul(key_steps.saturating_mul(key_steps));
+    // Local steps and key operations pay their actual bounded traversal.
+    // Numeric operations retain their separate scalar-domain reservations.
     let mut work = Work {
         remaining: limits.max_nodes,
         cancellation,
         ledger,
-        key_work,
     };
     let mut engine = Engine::new(&mut work, limits, Domain::default());
     let run = (|| {
@@ -164,11 +169,11 @@ struct Engine<'a, 'ledger> {
     work: &'a mut Work<'ledger>,
     limits: &'a RelationLimits,
     domain: Domain,
-    parents: BTreeMap<ExprId, ExprId>,
-    unequal: BTreeSet<(ExprId, ExprId)>,
-    facts: BTreeMap<ExprId, NumericValue>,
-    memo: BTreeMap<ExprId, NumericValue>,
-    terms: BTreeMap<ExprId, ExprId>,
+    parents: KeyMap<ExprId>,
+    unequal: Vec<(ExprId, ExprId)>,
+    facts: KeyMap<NumericValue>,
+    memo: KeyMap<NumericValue>,
+    terms: KeyMap<ExprId>,
 }
 impl<'a, 'ledger> Engine<'a, 'ledger> {
     fn new(work: &'a mut Work<'ledger>, limits: &'a RelationLimits, domain: Domain) -> Self {
@@ -176,20 +181,22 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             work,
             limits,
             domain,
-            parents: BTreeMap::new(),
-            unequal: BTreeSet::new(),
-            facts: BTreeMap::new(),
-            memo: BTreeMap::new(),
-            terms: BTreeMap::new(),
+            parents: KeyMap::default(),
+            unequal: Vec::new(),
+            facts: KeyMap::default(),
+            memo: KeyMap::default(),
+            terms: KeyMap::default(),
         }
     }
 
-    fn root(&self, expression: &ExprId) -> ExprId {
-        let mut root = expression;
-        while let Some(parent) = self.parents.get(root) {
-            root = parent;
+    fn root(&mut self, expression: &ExprId) -> LocalResult<ExprId> {
+        self.work.charge(1)?;
+        let mut root = expression.clone();
+        while let Some(parent) = self.parents.get(&root, self.work)? {
+            self.work.charge(1)?;
+            root = parent.clone();
         }
-        root.clone()
+        Ok(root)
     }
 
     fn meet(&mut self, left: &NumericValue, right: &NumericValue) -> LocalResult<NumericValue> {
@@ -209,114 +216,122 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         super::intersect_numeric(left, right, self.domain).ok_or(Stop::Bottom)
     }
 
-    fn known(&self, expression: &ExprId) -> NumericValue {
-        let root = self.root(expression);
-        root.as_constant()
-            .map(NumericValue::constant)
-            .or_else(|| self.facts.get(&root).cloned())
-            .unwrap_or_else(|| match root.kind() {
-                ExprKind::Input(input)
-                    if matches!(
-                        input.symbol,
-                        crate::domain::identity::Symbol::To
-                            | crate::domain::identity::Symbol::Caller
-                            | crate::domain::identity::Symbol::Origin
-                            | crate::domain::identity::Symbol::Coinbase
-                    ) =>
-                {
-                    NumericValue::unknown_address()
-                }
-                ExprKind::Operation { opcode, .. }
-                    if matches!(
-                        *opcode,
-                        opcode::EQ
-                            | opcode::ISZERO
-                            | opcode::LT
-                            | opcode::GT
-                            | opcode::SLT
-                            | opcode::SGT
-                    ) =>
-                {
-                    NumericValue::unsigned_range(U256::ZERO, U256::ONE).unwrap()
-                }
-                _ => NumericValue::top(),
-            })
+    fn known(&mut self, expression: &ExprId) -> LocalResult<NumericValue> {
+        let root = self.root(expression)?;
+        if let Some(value) = root.as_constant() {
+            return Ok(NumericValue::constant(value));
+        }
+        if let Some(value) = self.facts.get(&root, self.work)? {
+            self.work.prepay(value.work_size())?;
+            return Ok(value.clone());
+        }
+        Ok(match root.kind() {
+            ExprKind::Input(input)
+                if matches!(
+                    input.symbol,
+                    crate::domain::identity::Symbol::To
+                        | crate::domain::identity::Symbol::Caller
+                        | crate::domain::identity::Symbol::Origin
+                        | crate::domain::identity::Symbol::Coinbase
+                ) =>
+            {
+                NumericValue::unknown_address()
+            }
+            ExprKind::Operation { opcode, .. }
+                if matches!(
+                    *opcode,
+                    opcode::EQ
+                        | opcode::ISZERO
+                        | opcode::LT
+                        | opcode::GT
+                        | opcode::SLT
+                        | opcode::SGT
+                ) =>
+            {
+                NumericValue::unsigned_range(U256::ZERO, U256::ONE).unwrap()
+            }
+            _ => NumericValue::top(),
+        })
     }
 
     fn learn(&mut self, expression: &ExprId, value: &NumericValue) -> LocalResult<()> {
         self.work.charge(1)?;
-        let root = self.root(expression);
-        let old = self.known(&root);
+        let root = self.root(expression)?;
+        let old = self.known(&root)?;
         let next = self.meet(&old, value)?;
         if old != next {
-            self.facts.insert(root, next);
+            self.facts.insert(root, next, self.work)?;
         }
         Ok(())
     }
 
     fn equal(&mut self, left: &ExprId, right: &ExprId) -> LocalResult<()> {
         self.work.charge(1)?;
-        let a = self.root(left);
-        let b = self.root(right);
-        if a == b {
+        let a = self.root(left)?;
+        let b = self.root(right)?;
+        if self.work.same_expression(&a, &b)? {
             return Ok(());
         }
-        if self.same(&a, &b) == Some(false) {
+        if self.same(&a, &b)? == Some(false) {
             return Err(Stop::Bottom);
         }
-        let av = self.known(&a);
-        let bv = self.known(&b);
+        let av = self.known(&a)?;
+        let bv = self.known(&b)?;
         let value = self.meet(&av, &bv)?;
         // Roots strictly decrease, including for x == f(x); no recursive rewrite.
-        let (root, child) = if a < b { (a, b) } else { (b, a) };
-        self.facts.remove(&child);
-        self.parents.insert(child, root.clone());
-        self.facts.insert(root, value);
+        let (root, child) = if self.work.order_expression(&a, &b)? == std::cmp::Ordering::Less {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        self.facts.remove(&child, self.work)?;
+        self.parents.insert(child, root.clone(), self.work)?;
+        self.facts.insert(root, value, self.work)?;
         Ok(())
     }
 
-    fn same(&self, left: &ExprId, right: &ExprId) -> Option<bool> {
-        let a = self.root(left);
-        let b = self.root(right);
-        if a == b {
-            return Some(true);
+    fn same(&mut self, left: &ExprId, right: &ExprId) -> LocalResult<Option<bool>> {
+        let a = self.root(left)?;
+        let b = self.root(right)?;
+        if self.work.same_expression(&a, &b)? {
+            return Ok(Some(true));
         }
-        if self.unequal.iter().any(|(x, y)| {
-            let x = self.root(x);
-            let y = self.root(y);
-            (x == a && y == b) || (x == b && y == a)
-        }) {
-            return Some(false);
+        for index in 0..self.unequal.len() {
+            self.work.charge(1)?;
+            let (x, y) = self.unequal[index].clone();
+            let x = self.root(&x)?;
+            let y = self.root(&y)?;
+            if (self.work.same_expression(&x, &a)? && self.work.same_expression(&y, &b)?)
+                || (self.work.same_expression(&x, &b)? && self.work.same_expression(&y, &a)?)
+            {
+                return Ok(Some(false));
+            }
         }
-        let av = self.known(&a);
-        let bv = self.known(&b);
+        let av = self.known(&a)?;
+        let bv = self.known(&b)?;
         if let (Some(a), Some(b)) = (av.singleton(), bv.singleton()) {
-            return Some(a == b);
+            return Ok(Some(a == b));
         }
         if (av.nonzero && bv.singleton() == Some(U256::ZERO))
             || (bv.nonzero && av.singleton() == Some(U256::ZERO))
         {
-            return Some(false);
+            return Ok(Some(false));
         }
         let (al, au) = av.interval().unsigned_bounds();
         let (bl, bu) = bv.interval().unsigned_bounds();
         if au < bl || bu < al || av.bits.meet(&bv.bits).is_none() {
-            return Some(false);
+            return Ok(Some(false));
         }
-        None
+        Ok(None)
     }
 
     fn import(&mut self, expression: &ExprId, fact: Fact) -> LocalResult<()> {
-        self.work.prepay(
-            self.domain
-                .refinement_work(&AbstractValue::from_numeric(self.known(expression)), 1),
-        )?;
+        let known = self.known(expression)?;
+        let input = AbstractValue::from_numeric(known);
+        self.work.prepay(self.domain.refinement_work(&input, 1))?;
         let mut lattice = FactLattice::new(self.domain.spec().fact_limit());
         lattice.insert(fact)?;
-        let value = crate::domain::reduce::import(
-            &AbstractValue::from_numeric(self.known(expression)),
-            &lattice,
-        )?;
+        let value = crate::domain::reduce::import(&input, &lattice)?;
         self.learn(expression, value.numeric())
     }
 
@@ -373,10 +388,11 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             } => {
                 if nonzero {
                     self.equal(&args[0], &args[1])
-                } else if self.same(&args[0], &args[1]) == Some(true) {
+                } else if self.same(&args[0], &args[1])? == Some(true) {
                     Err(Stop::Bottom)
                 } else {
-                    self.unequal.insert((args[0].clone(), args[1].clone()));
+                    self.work.charge(1)?;
+                    self.unequal.push((args[0].clone(), args[1].clone()));
                     Ok(())
                 }
             }
@@ -490,10 +506,11 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
                 opcode::ISZERO => self.truth(&args[0], !nonzero)?,
                 opcode::EQ if nonzero => self.equal(&args[0], &args[1])?,
                 opcode::EQ => {
-                    if self.same(&args[0], &args[1]) == Some(true) {
+                    if self.same(&args[0], &args[1])? == Some(true) {
                         return Err(Stop::Bottom);
                     }
-                    self.unequal.insert((args[0].clone(), args[1].clone()));
+                    self.work.charge(1)?;
+                    self.unequal.push((args[0].clone(), args[1].clone()));
                 }
                 _ => {}
             }
@@ -502,7 +519,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
     }
 
     fn inverse(&mut self, expression: &ExprId) -> LocalResult<()> {
-        let Some(exact) = self.known(expression).singleton() else {
+        let Some(exact) = self.known(expression)?.singleton() else {
             return Ok(());
         };
         let ExprKind::Operation { opcode: op, args } = expression.kind() else {
@@ -516,8 +533,12 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             }
             return self.direct_truth(expression, exact != U256::ZERO);
         }
-        let a = self.known(&args[0]).singleton();
-        let b = args.get(1).and_then(|arg| self.known(arg).singleton());
+        let a = self.known(&args[0])?.singleton();
+        let b = if let Some(arg) = args.get(1) {
+            self.known(arg)?.singleton()
+        } else {
+            None
+        };
         let inferred = match (*op, a, b) {
             (opcode::NOT, _, _) => Some((&args[0], !exact)),
             (opcode::ADD, _, Some(b)) => Some((&args[0], exact.wrapping_sub(b))),
@@ -566,16 +587,15 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
 
     fn eval(&mut self, expression: &ExprId) -> LocalResult<NumericValue> {
         self.work.charge(1)?;
-        let known = self.known(expression);
-        if known.singleton().is_some()
-            && matches!(
-                expression.kind(),
-                ExprKind::Constant(_) | ExprKind::Input(_) | ExprKind::Fresh(_)
-            )
-        {
+        let known = self.known(expression)?;
+        // Imported exact guarantees also cover compound terms. Reconstructing
+        // a whole known word cannot add information; feasibility stays unproved.
+        if known.singleton().is_some() {
             return Ok(known);
         }
-        if let Some(value) = self.memo.get(expression).cloned() {
+        if let Some(value) = self.memo.get(expression, self.work)? {
+            self.work.prepay(value.work_size())?;
+            let value = value.clone();
             return self.meet(&known, &value);
         }
         let numeric = match expression.kind() {
@@ -589,7 +609,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
                     None
                 };
                 if *op == opcode::EQ
-                    && let Some(equal) = self.same(&left, right.as_ref().expect("binary EQ"))
+                    && let Some(equal) = self.same(&left, right.as_ref().expect("binary EQ"))?
                 {
                     NumericValue::constant(U256::from(u8::from(equal)))
                 } else {
@@ -619,7 +639,9 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             ExprKind::SlotRead { state, key } => self.slot(state, key)?,
             ExprKind::ByteRead { state, index } => self.byte(state, index)?,
             ExprKind::WordRead { view, offset } => match self.word_term(view, offset)? {
-                Some(forwarded) if forwarded != *expression => self.eval(&forwarded)?,
+                Some(forwarded) if !self.work.same_expression(&forwarded, expression)? => {
+                    self.eval(&forwarded)?
+                }
                 _ => self.word(view, offset)?,
             },
             // Equality of hashes follows expression identity; no injectivity or
@@ -627,7 +649,9 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             ExprKind::Keccak { input } => self.hash(input)?,
         };
         let value = self.meet(&known, &numeric)?;
-        self.memo.insert(expression.clone(), value.clone());
+        self.work.prepay(value.work_size())?;
+        self.memo
+            .insert(expression.clone(), value.clone(), self.work)?;
         Ok(value)
     }
 }
