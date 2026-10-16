@@ -60,6 +60,9 @@ impl Work<'_> {
         Ok(())
     }
     fn prepay(&mut self, amount: usize) -> LocalResult<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(Stop::Pending(QueryReason::Cancelled));
+        }
         if self
             .ledger
             .as_mut()
@@ -108,11 +111,18 @@ pub(super) fn project(
     }
     // One structural step prepays a worst-case bounded key scan/comparison.
     // Numeric reduction and finite scans pay their own domain cost separately.
+    // An alias comparison may scan all disequalities and follow a decreasing
+    // parent chain for each endpoint. BTree lookup depth also grows with the
+    // bounded local memo. Reserve both rather than treating a key check as O(1).
+    let key_steps = state
+        .len()
+        .saturating_add(2)
+        .max((usize::BITS - limits.max_nodes.leading_zeros()) as usize + 2);
     let key_work = state
         .work_size()
         .saturating_add(expression.map_or(0, ExprId::work_size))
         .saturating_add(1)
-        .saturating_mul(state.len().saturating_add(2));
+        .saturating_mul(key_steps.saturating_mul(key_steps));
     let mut work = Work {
         remaining: limits.max_nodes,
         cancellation,
@@ -182,6 +192,8 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
     }
 
     fn meet(&mut self, left: &NumericValue, right: &NumericValue) -> LocalResult<NumericValue> {
+        self.work
+            .prepay(left.work_size().saturating_add(right.work_size()))?;
         if left == right || right.is_top() {
             return Ok(left.clone());
         }
@@ -483,6 +495,10 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
     }
 
     fn apply(&mut self, op: u8, args: &[NumericValue]) -> LocalResult<NumericValue> {
+        self.work.prepay(
+            args.iter()
+                .fold(1usize, |n, value| n.saturating_add(value.work_size())),
+        )?;
         let args = args
             .iter()
             .cloned()

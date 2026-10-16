@@ -17,6 +17,9 @@ fn denied(error: ExprError) -> Stop {
 impl Engine<'_, '_> {
     fn operation(&mut self, code: u8, args: &[ExprId]) -> LocalResult<ExprId> {
         self.work.charge(args.len().saturating_add(1))?;
+        self.work.prepay(args.iter().fold(1usize, |n, expression| {
+            n.saturating_add(expression.work_size())
+        }))?;
         ExprId::operation(code, args, self.limits.expressions()).map_err(denied)
     }
 

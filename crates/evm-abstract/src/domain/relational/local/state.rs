@@ -311,6 +311,8 @@ impl Engine<'_, '_> {
             };
             bytes.push(byte.to::<u8>());
         }
+        self.work
+            .prepay(length.saturating_mul(24).saturating_add(24))?;
         Ok(NumericValue::constant(U256::from_be_bytes(
             keccak256(bytes).0,
         )))
