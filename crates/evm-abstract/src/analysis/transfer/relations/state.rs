@@ -1,5 +1,6 @@
 //! Preserve branch proofs in numeric views of conditional byte and slot roots.
 
+mod active;
 mod guards;
 
 use super::super::TransferContext;
@@ -146,12 +147,15 @@ pub(super) fn refine(
             }
         }
     }
-    guards::refine(
+    if !guards::refine(
         payload,
         relations,
         context,
         diagnostics,
         pc,
         (domain, limits),
-    )
+    )? {
+        return Ok(false);
+    }
+    active::refine(payload, relations, context, diagnostics, pc)
 }
