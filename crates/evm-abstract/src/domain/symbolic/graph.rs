@@ -35,7 +35,7 @@ fn identity_scope() -> &'static str {
     })
 }
 
-/// Export resource policy, separate from logical byte ranges and solver work.
+/// Export resource policy, separate from logical byte ranges and execution work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct GraphLimits {
     /// Maximum graph metadata/scalar traversal work.
