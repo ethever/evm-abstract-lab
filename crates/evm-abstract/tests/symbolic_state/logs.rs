@@ -66,8 +66,8 @@ fn captured_log<'a>(
     fixture: &Fixture,
 ) -> (&'a MachineOutcome, &'a AbstractLog, &'a MachinePayload) {
     complete(analysis);
-    // The engine retains one conservative entry gas failure independently of
-    // executed instructions (engine.rs). It must leave the whole store intact;
+    // Pre-entry gas failure restores the checkpoint captured before the root
+    // recipient touch. The entered root Store already includes that touch;
     // every executed route in this fixture completes normally.
     let failures: Vec<_> = analysis
         .outcomes()
@@ -78,9 +78,19 @@ fn captured_log<'a>(
     assert_eq!(failures[0].kind, OutcomeKind::Failure);
     assert_eq!(failures[0].state, 0);
     assert_eq!(failures[0].data.len().singleton(), Some(U256::ZERO));
+    let entered = &analysis.states()[0].entry;
+    let checkpoint = entered.call_stack.root().state.saved_store.state();
+    assert_eq!(
+        entered.store.touched_in_transaction(address(ROOT)),
+        Some(true)
+    );
+    assert_eq!(
+        checkpoint.touched_in_transaction(address(ROOT)),
+        Some(false)
+    );
     assert_eq!(
         serde_json::to_value(&failures[0].store).unwrap(),
-        serde_json::to_value(&analysis.states()[0].entry.store).unwrap()
+        serde_json::to_value(checkpoint).unwrap()
     );
     let log_pc = executed_opcode(analysis, fixture, "log", opcode::LOG0);
     executed_opcode(analysis, fixture, "copy", opcode::CALLDATACOPY);

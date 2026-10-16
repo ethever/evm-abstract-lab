@@ -338,3 +338,23 @@ pub(super) fn return_words(analysis: &WorldAnalysis, expected: &[u64]) {
         );
     }
 }
+
+/// Unknown compound correlations may retain the fixture's 0xffff guard return.
+/// Required normal results must still occur; arbitrary or empty returns fail.
+pub(super) fn conservative_guarded_returns_include(analysis: &WorldAnalysis, required: &[u64]) {
+    let mut allowed = required.to_vec();
+    allowed.push(0xffff);
+    return_words(analysis, &allowed);
+    for expected in required {
+        assert!(
+            analysis.outcomes().iter().any(|outcome| {
+                outcome.kind == OutcomeKind::Return
+                    && outcome
+                        .data
+                        .read_word(&word(0), Domain::default())
+                        .contains(U256::from(*expected))
+            }),
+            "conservative guard evaluation lost normal return {expected}"
+        );
+    }
+}

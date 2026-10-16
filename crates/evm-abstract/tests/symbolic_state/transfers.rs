@@ -235,14 +235,18 @@ fn delegate_echo_fixture(revert: bool) -> (Fixture, Fixture) {
         .op(opcode::CALLDATASIZE)
         .op(opcode::EQ)
         .op(opcode::ISZERO)
-        .jump("bad", true)
+        .jump("bad_length", true)
         .op(opcode::RETURNDATASIZE)
         .op(opcode::PUSH0)
         .push(0x400)
         .op(opcode::RETURNDATACOPY)
         .push(0x400)
         .op(opcode::MLOAD)
-        .require_top(7)
+        .op(opcode::DUP1)
+        .push(7)
+        .op(opcode::EQ)
+        .op(opcode::ISZERO)
+        .jump("bad_word", true)
         .op(opcode::POP)
         .op(opcode::CALLDATASIZE)
         .op(opcode::PUSH0)
@@ -264,21 +268,35 @@ fn delegate_echo_fixture(revert: bool) -> (Fixture, Fixture) {
         .label("outside")
         .return_word(0)
         .label("bad")
-        .return_word(0xffff);
+        .return_word(0xffff)
+        .label("bad_length")
+        .return_word(0xfffe)
+        .label("bad_word")
+        .return_word(0xfffd);
     let root = root.finish();
     (root, child)
 }
 
 fn delegate_echo(revert: bool) {
     let (root, child) = delegate_echo_fixture(revert);
-    let analysis = run_world(
-        construct_world(Fork::Osaka, &[(ROOT, &root.code), (0x200, &child.code)]),
-        entry(ByteArray::unknown()),
-        config(),
-    );
+    let world = construct_world(Fork::Osaka, &[(ROOT, &root.code), (0x200, &child.code)]);
+    let analysis = run_world(world.clone(), entry(ByteArray::unknown()), config());
     complete(&analysis);
     no_bad_branch(&analysis, &child, 0x200);
-    no_bad_branch(&analysis, &root, ROOT);
+    for label in ["bad_length", "bad_word"] {
+        assert!(
+            !reachable(&analysis, ROOT, root.labels[label]),
+            "direct forwarded {label} relation must survive"
+        );
+    }
+    if !revert {
+        no_bad_branch(&analysis, &root, ROOT);
+    }
+    // The REVERT continuation joins nonempty child data with pre-entry failure.
+    // Local projection may forget the equality between its two symbolic hash
+    // views. This permits an extra abstract hash-mismatch branch; it does not
+    // establish a concrete mismatch. Length, known word and child guards above
+    // stay strict, as do all guards for the exact revm witnesses below.
     let forwarded: Vec<_> = analysis
         .outcomes()
         .iter()
@@ -313,6 +331,26 @@ fn delegate_echo(revert: bool) {
             }
         );
     }
+    for length in [32, 33, 64, 255, 511, 512] {
+        let mut calldata = vec![0; length];
+        calldata[..32].copy_from_slice(&U256::from(7).to_be_bytes::<32>());
+        for (offset, byte) in calldata.iter_mut().enumerate().skip(32) {
+            *byte = (offset % 251) as u8;
+        }
+        // Match this concrete execution against one unknown-input outcome, so
+        // separate byte/length/store witnesses cannot mask a lost correlation.
+        let observed =
+            super::oracle::compare(&world, &entry(ByteArray::exact(&calldata)), &analysis);
+        assert_eq!(
+            observed.kind,
+            if revert {
+                OutcomeKind::Revert
+            } else {
+                OutcomeKind::Return
+            }
+        );
+        assert_eq!(observed.output, calldata);
+    }
 }
 
 #[test]
@@ -330,6 +368,14 @@ fn concrete_delegate_echo_witnesses_validate_the_symbolic_fixture_bytecode() {
                 let entry = entry(ByteArray::exact(&input));
                 let analysis = run_world(world.clone(), entry.clone(), config());
                 complete(&analysis);
+                no_bad_branch(&analysis, &root, ROOT);
+                no_bad_branch(&analysis, &child, 0x200);
+                for label in ["bad_length", "bad_word"] {
+                    assert!(
+                        !reachable(&analysis, ROOT, root.labels[label]),
+                        "exact input lost {label}: fork={fork} revert={revert} length={length}"
+                    );
+                }
                 let concrete = super::oracle::compare(&world, &entry, &analysis);
                 assert_eq!(
                     concrete.kind,
