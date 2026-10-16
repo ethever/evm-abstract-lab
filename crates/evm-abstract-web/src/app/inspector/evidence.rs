@@ -141,12 +141,12 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
         if let Some(range) = &frontier.range {
             let (evidence, limit_label, help) = match range.request.kind {
                 api::RangeKind::MemoryPolicy => (
-                    "Host memory materialization policy leaves these inputs unexpanded; EVM failure is not established.",
-                    "Materialization policy limit",
-                    "The historical max_memory_bytes policy bounds host materialization. Exceeding it does not exclude EVM success or establish EVM failure.",
+                    "The historical memory-footprint policy leaves these inputs unexpanded; EVM failure is not established.",
+                    "Historical memory policy limit",
+                    "This witness records the configured max_memory_bytes footprint cap of the earlier analysis policy. It does not establish EVM failure. Logical U256 representability is recorded separately.",
                 ),
                 api::RangeKind::LogicalMemory => (
-                    "Logical memory representability leaves these inputs unexpanded.",
+                    "Logical memory range uses word-rounded U256 representability.",
                     "Word-rounded U256 end limit",
                     "For a nonempty access, offset + size and its rounding up to 32 bytes must fit in U256; the end limit is U256::MAX & !31. Empty accesses do not expand memory. This bound is independent of host materialization policy.",
                 ),
