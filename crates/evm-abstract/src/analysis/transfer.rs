@@ -590,8 +590,27 @@ fn execute_inner(
         }
         match op {
             opcode::JUMP | opcode::JUMPI => {
+                let history_work = result
+                    .payload
+                    .active()
+                    .key
+                    .jump_history
+                    .len()
+                    .saturating_mul(2)
+                    .saturating_add(1);
+                if !context.budget.charge(history_work) {
+                    boundary(&mut result, pc, FrontierReason::Work);
+                    return result;
+                }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let frame = result.payload.active_mut();
+                // Only the most recent occurrence partitions analysis contexts.
+                // Repeated loop sources must reach the same key before the
+                // configured history window fills with duplicate iterations.
+                frame
+                    .key
+                    .jump_history
+                    .retain(|source| *source != block.start_pc);
                 frame.key.jump_history.push(block.start_pc);
                 let discard = frame
                     .key
