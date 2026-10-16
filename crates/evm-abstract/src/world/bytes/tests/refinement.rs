@@ -280,7 +280,7 @@ fn collected_serial_proofs_match_native_refinement_on_the_same_frozen_call_outpu
 }
 
 #[test]
-fn call_result_guard_keeps_local_precision_gap_and_direct_selector_refines_output() {
+fn call_result_guard_derives_selector_truth_and_refines_the_full_output() {
     let (joined, selector, branch) = call_output();
     let domain = Domain::default();
     let before = joined.read_word(&v(0x400), domain);
@@ -292,61 +292,34 @@ fn call_result_guard_keeps_local_precision_gap_and_direct_selector_refines_outpu
             relations.assume(&branch, failure, &policy()),
             CheckResult::MayBeFeasible
         );
-        // The local inverse rules do not infer selector truth from
-        // ISZERO(ITE(selector, 1, 0)). The old solver established that implication.
-        // In particular, Bounds is no evidence of multiple satisfying witnesses.
-        let ValueQuery::Bounds(bounds) = relations.local_value(&selector, &policy()) else {
-            panic!("expected the documented inverse-ITE precision gap");
-        };
-        let candidates = if failure {
-            vec![U256::ZERO]
-        } else {
-            vec![U256::ONE, U256::from(2)]
-        };
-        for candidate in candidates {
-            assert!(
-                bounds.contains(candidate),
-                "lost concrete selector candidate {candidate}"
+        // ISZERO(ITE(selector, 1, 0)) determines truth, not the
+        // particular nonzero word used as a selector.
+        if failure {
+            assert_eq!(
+                relations.local_value(&selector, &policy()),
+                ValueQuery::Exact(U256::ZERO)
             );
+        } else {
+            let ValueQuery::Bounds(bounds) = relations.local_value(&selector, &policy()) else {
+                panic!("the nonzero selector still includes different words");
+            };
+            assert!(bounds.contains(U256::ONE));
+            assert!(bounds.contains(U256::from(2)));
+            assert!(!bounds.contains(U256::ZERO));
         }
-        let spurious = if failure { U256::ONE } else { U256::ZERO };
-        assert!(
-            bounds.contains(spurious),
-            "inverse-ITE gap retains a spurious selector"
-        );
-        assert_eq!(prove(&relations, &selector), Ok(None));
+        assert_eq!(prove(&relations, &selector), Ok(Some(!failure)));
         assert_eq!(prove(&relations, &branch), Ok(Some(failure)));
-        let mut unresolved = joined.clone();
+        let mut derived = joined.clone();
         assert!(
-            unresolved
+            derived
                 .refine_guards(domain, policy().expressions(), &mut |e| prove(
                     &relations, e
                 ))
                 .unwrap()
         );
-        assert_eq!(unresolved, joined);
-        let unresolved_word = unresolved.read_word(&v(0x400), domain);
-        for candidate in [U256::ZERO, U256::from(512)] {
-            assert!(unresolved_word.contains(candidate));
-        }
-
-        // Supply the selector premise explicitly to keep testing success/failure
-        // projection, whole output contents and historical roots at full precision.
-        assert_eq!(
-            relations.assume(&selector, !failure, &policy()),
-            CheckResult::MayBeFeasible
-        );
-        let mut selected = joined.clone();
-        assert!(
-            selected
-                .refine_guards(domain, policy().expressions(), &mut |e| prove(
-                    &relations, e
-                ))
-                .unwrap()
-        );
-        assert_eq!(selected.state_root(), joined.state_root());
-        assert_eq!(selected.fresh_leaves(), joined.fresh_leaves());
-        let output = selected.slice(&v(0x400), &v(192), 2048, domain).unwrap();
+        assert_eq!(derived.state_root(), joined.state_root());
+        assert_eq!(derived.fresh_leaves(), joined.fresh_leaves());
+        let output = derived.slice(&v(0x400), &v(192), 2048, domain).unwrap();
         assert_eq!(
             output.read_word(&v(0), domain).singleton(),
             Some(U256::from(expected))
@@ -355,6 +328,22 @@ fn call_result_guard_keeps_local_precision_gap_and_direct_selector_refines_outpu
             output.exact_bytes().unwrap()[..32],
             U256::from(expected).to_be_bytes::<32>()
         );
+
+        // The explicit selector premise independently gives the same full
+        // projection; it cannot make the already derived proof stronger.
+        assert_eq!(
+            relations.assume(&selector, !failure, &policy()),
+            CheckResult::MayBeFeasible
+        );
+        let mut explicit = joined.clone();
+        assert!(
+            explicit
+                .refine_guards(domain, policy().expressions(), &mut |e| prove(
+                    &relations, e
+                ))
+                .unwrap()
+        );
+        assert_eq!(explicit, derived);
         assert!(before.singleton().is_none());
         assert_eq!(joined.read_word(&v(0x400), domain), before);
     }
