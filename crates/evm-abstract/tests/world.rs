@@ -6,7 +6,7 @@ use evm_abstract::{
         AbstractValue, Domain,
         provenance::Origin,
         relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
-        symbolic::ExprId,
+        symbolic::{ExprId, ExprKind},
     },
     world::{
         AbstractLog, Account, ByteArray, Code, LogError, LogKey, RangeError, Store, World,
@@ -161,6 +161,44 @@ fn store_join_includes_missing_slots_defaults_and_balances() {
                 .observe(persistent.expression().unwrap(), v(slot).numeric(), &policy)
                 .unwrap();
             assert_eq!(relations.check(&policy), CheckResult::MayBeFeasible);
+            // A fact about the persistent read does not invert its state ITE in
+            // the local evaluator. Both other-plane alternatives remain covered.
+            for (expression, candidates) in [
+                (transient.expression().unwrap(), [0, 19]),
+                (balance.expression().unwrap(), [0, 10]),
+            ] {
+                let ValueQuery::Bounds(bounds) = relations.local_value(expression, &policy) else {
+                    panic!("expected the documented cross-plane selector precision gap");
+                };
+                for possible in candidates {
+                    assert!(bounds.contains(U256::from(possible)));
+                }
+            }
+            // The actual shared selector, when supplied, still selects the
+            // complete correlated store in either join order. No new selector
+            // or replacement store is introduced by this positive control.
+            let ExprKind::Ite {
+                condition,
+                then_value,
+                else_value,
+            } = balance.expression().unwrap().kind()
+            else {
+                panic!("the joined balance must retain its branch selector");
+            };
+            let then_balance = then_value.as_constant().unwrap();
+            let else_balance = else_value.as_constant().unwrap();
+            assert!(
+                (then_balance == U256::ZERO && else_balance == U256::from(10))
+                    || (then_balance == U256::from(10) && else_balance == U256::ZERO)
+            );
+            assert_eq!(
+                relations.assume(
+                    condition,
+                    then_balance == U256::from(expected_balance),
+                    &policy,
+                ),
+                CheckResult::MayBeFeasible
+            );
             assert_eq!(
                 relations.local_value(transient.expression().unwrap(), &policy),
                 ValueQuery::Exact(U256::from(expected_transient)),
@@ -439,10 +477,23 @@ fn unknown_memory_offset_is_conservative_without_allocating_a_range() {
             relations.local_value(word.expression().unwrap(), &policy),
             ValueQuery::Exact(expected),
         );
+        assert_eq!(
+            relations.can_equal(word.expression().unwrap(), U256::from(0x2a2a), &policy),
+            CheckResult::ProvenImpossible,
+            "a fixed write offset still excludes two nonzero bytes"
+        );
     }
+    // Independent per-byte joins lose the fact that only one offset was
+    // written. MayBeFeasible is this precision gap, not a satisfying witness.
+    let ValueQuery::Bounds(bounds) =
+        RelationState::default().local_value(word.expression().unwrap(), &policy)
+    else {
+        panic!("expected the documented unknown-offset correlation precision gap");
+    };
+    assert!(bounds.contains(U256::from(0x2a2a)));
     assert_eq!(
         RelationState::default().can_equal(word.expression().unwrap(), U256::from(0x2a2a), &policy),
-        CheckResult::ProvenImpossible,
+        CheckResult::MayBeFeasible,
     );
     assert!(memory.stored_bytes().next().is_none());
     assert!(memory.work_size() < 1000);
