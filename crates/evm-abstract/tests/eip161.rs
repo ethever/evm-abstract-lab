@@ -6,7 +6,7 @@ use evm_abstract::{
     Address, Fork, U256,
     analysis::{ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
     domain::{AbstractValue, Domain},
-    world::{Account, ByteArray, Entry, Existence, Store, World},
+    world::{Account, AddressInput, ByteArray, Entry, Existence, Store, World},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -337,6 +337,48 @@ fn root_and_child_reverts_restore_their_own_touch_scope() {
 #[derive(Default)]
 struct Trace {
     calls: usize,
+}
+
+#[test]
+fn symbolic_root_recipient_does_not_definitely_clear_a_synthetic_owner() {
+    for summaries in [false, true] {
+        let mut world = World::new(Fork::Osaka, "symbolic recipient touch");
+        for owner in [address(0x101), address(0x200)] {
+            world.insert(owner, Account::empty()).unwrap();
+        }
+        world
+            .insert(
+                address(0x300),
+                Account::from_hex("00", Fork::Osaka).unwrap(),
+            )
+            .unwrap();
+        let mut entry =
+            Entry::concrete(address(0x101), address(0x1000), word(0), ByteArray::empty());
+        entry.environment.to = AddressInput::unknown_to();
+        let config = ExecutionConfig {
+            max_work: 100_000_000,
+            use_summaries: summaries,
+            ..ExecutionConfig::default()
+        };
+        let graph = analyze_world(world, entry, config).unwrap();
+        assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
+        let returned: Vec<_> = returns(&graph).collect();
+        assert!(!returned.is_empty());
+        for store in returned {
+            for owner in [address(0x101), address(0x200)] {
+                // Unknown covers both the touched/deleted and untouched/present
+                // possibilities for each concrete empty account.
+                assert_eq!(store.existence(owner), Existence::Unknown);
+            }
+            assert_eq!(store.existence(address(0x300)), Existence::Present);
+        }
+        assert!(graph.outcomes().iter().any(|outcome| {
+            outcome.kind == OutcomeKind::Failure
+                && [address(0x101), address(0x200), address(0x300)]
+                    .into_iter()
+                    .all(|owner| outcome.store.existence(owner) == Existence::Present)
+        }));
+    }
 }
 
 impl<CTX> Inspector<CTX, EthInterpreter> for Trace {

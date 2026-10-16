@@ -99,7 +99,13 @@ pub(super) fn initial(
     // message-call recipient, while the separate pre-entry gas failure and
     // ordinary root rollback must retain this untouched checkpoint.
     let saved_store = store.snapshot();
-    store.touch_account(entry.address);
+    if let Some(recipient) = entry.environment.to.as_concrete() {
+        store.touch_account(recipient);
+    } else {
+        // Bytecode-only entry uses a synthetic code index, not an observed
+        // recipient. Any account may be touched; no particular one must be.
+        store.may_touch_all();
+    }
     Ok(MachinePayload {
         relations: crate::domain::relational::RelationState::default(),
         call_stack: CallStack::new(RootFrame {
