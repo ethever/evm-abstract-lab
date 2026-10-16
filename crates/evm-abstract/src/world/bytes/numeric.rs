@@ -12,6 +12,8 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
 
+mod packing;
+
 type Facts = BTreeMap<ExprId, AbstractValue>;
 
 pub(in crate::world) fn scalar(
@@ -535,6 +537,10 @@ impl Reader<'_> {
                         .map_or_else(zero, |i| self.read(state, &ExprId::constant(i)))
                 })
                 .collect::<Vec<_>>();
+            if let Some(value) = packing::pack(&bytes, domain) {
+                out = Some(join(out, value, domain));
+                continue;
+            }
             let mut parts = bytes
                 .into_iter()
                 .enumerate()
