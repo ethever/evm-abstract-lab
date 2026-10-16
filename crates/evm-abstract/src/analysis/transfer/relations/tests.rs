@@ -236,3 +236,65 @@ fn retained_guarded_facts_never_prune_an_admitted_numeric_candidate() {
     );
     assert!(value.contains(U256::ZERO) && value.contains(U256::ONE));
 }
+
+#[test]
+fn unused_local_capacity_does_not_become_an_automatic_work_fee() {
+    let expression = ExprId::fresh().unwrap();
+    let other = ExprId::fresh().unwrap();
+    let mut work = Vec::new();
+    for nodes in [1024, 4096] {
+        let mut config = ExecutionConfig::default();
+        config.analysis.relations.max_nodes = nodes;
+        let mut relations = RelationState::default();
+        relations.add_equal(&expression, &other, &config.analysis.relations);
+        let mut value = Domain::default()
+            .join(
+                &AbstractValue::constant(U256::ONE),
+                &AbstractValue::constant(U256::from(2)),
+            )
+            .with_expression(expression.clone());
+        let mut budget = WorkBudget::new(10_000_000);
+        assert_eq!(
+            super::refine(&mut value, &relations, &mut context(&config, &mut budget)),
+            Ok(true)
+        );
+        assert!(value.contains(U256::ONE) && value.contains(U256::from(2)));
+        assert_eq!(value.expression(), Some(&expression));
+        work.push(budget.used());
+    }
+    assert!(work[0] > 0);
+    assert_eq!(
+        work[0], work[1],
+        "capacity that was never traversed is not local work"
+    );
+}
+
+#[test]
+fn a_work_stop_mid_projection_keeps_every_original_finite_candidate() {
+    let config = ExecutionConfig::default();
+    let expression = ExprId::fresh().unwrap();
+    let other = ExprId::fresh().unwrap();
+    let mut relations = RelationState::default();
+    relations.add_equal(&expression, &other, &config.analysis.relations);
+    let before = Domain::default()
+        .join(
+            &AbstractValue::constant(U256::ONE),
+            &AbstractValue::constant(U256::from(2)),
+        )
+        .with_expression(expression);
+    let mut full = before.clone();
+    let mut budget = WorkBudget::new(10_000_000);
+    assert_eq!(
+        super::refine(&mut full, &relations, &mut context(&config, &mut budget)),
+        Ok(true)
+    );
+    let mut limited = WorkBudget::new(budget.used() - 1);
+    let mut value = before.clone();
+    assert_eq!(
+        super::refine(&mut value, &relations, &mut context(&config, &mut limited)),
+        Err(FrontierReason::Work)
+    );
+    assert_eq!(value, before);
+    assert!(limited.exhausted());
+    assert!(limited.used() > 0);
+}

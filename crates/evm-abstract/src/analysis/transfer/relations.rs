@@ -4,7 +4,6 @@
 //! Real bounds retain the path and record why optional precision stopped.
 
 mod cache;
-mod candidates;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -18,24 +17,8 @@ use crate::{
         symbolic::ExprId,
     },
 };
-use alloy_primitives::U256;
 
 pub(super) use cache::QueryCache;
-
-fn charge(
-    state: &RelationState,
-    expression: &ExprId,
-    _checks: usize,
-    context: &mut TransferContext<'_>,
-) -> bool {
-    let limits = context.config.analysis.relations;
-    context.budget.charge(
-        state
-            .work_size()
-            .saturating_add(expression.work_size())
-            .saturating_add(limits.max_nodes),
-    )
-}
 
 /// Failure of an optional value projection does not leave an execution path
 /// unexpanded. Cancellation and the shared ledger still stop real work.
@@ -143,8 +126,7 @@ fn prepare_refine(
         return Err(FrontierReason::Work);
     }
     if let Some(answer) = context.query_cache.get(relations, &expression, &limits) {
-        return finish_refine(value, &expression, relations, context, answer)
-            .map(PreparedRefinement::Done);
+        return finish_refine(value, context, answer).map(PreparedRefinement::Done);
     }
     Ok(PreparedRefinement::Pending(expression))
 }
@@ -157,9 +139,6 @@ fn local_refine(
     context: &mut TransferContext<'_>,
 ) -> Result<bool, FrontierReason> {
     let limits = context.config.analysis.relations;
-    if !charge(relations, expression, 1, context) {
-        return Err(FrontierReason::Work);
-    }
     let answer = relations.local_value_budgeted(expression, &limits, context.budget);
     if context.budget.exhausted() {
         return Err(FrontierReason::Work);
@@ -167,14 +146,12 @@ fn local_refine(
     context
         .query_cache
         .remember(relations, expression, &limits, &answer);
-    finish_refine(value, expression, relations, context, answer)
+    finish_refine(value, context, answer)
 }
 
 /// Apply each proof to this caller's own numeric upper bound and identity.
 fn finish_refine(
     value: &mut AbstractValue,
-    expression: &ExprId,
-    relations: &RelationState,
     context: &mut TransferContext<'_>,
     answer: ValueQuery,
 ) -> Result<bool, FrontierReason> {
@@ -201,9 +178,6 @@ fn finish_refine(
                 return Ok(false);
             };
             *value = value.clone().with_numeric(numeric);
-            if let Some(candidates) = value.constants().filter(|values| values.len() > 1).cloned() {
-                return candidates::refine(value, expression, &candidates, relations, context);
-            }
         }
         ValueQuery::ProvenImpossible => return Ok(false),
         ValueQuery::Undetermined(reason) => return Err(FrontierReason::Relations(reason)),
@@ -265,8 +239,7 @@ pub(super) fn branch(
     let query_fee = payload
         .relations
         .work_size()
-        .saturating_add(expression.work_size())
-        .saturating_add(limits.max_nodes);
+        .saturating_add(expression.work_size());
     if !context.budget.charge(query_fee) {
         boundary(result, pc, FrontierReason::Work);
         return None;

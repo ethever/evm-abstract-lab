@@ -308,8 +308,7 @@ pub(super) fn covers(
     let query_fee = incoming
         .relations
         .work_size()
-        .saturating_add(predicate.work_size())
-        .saturating_add(policy.max_nodes);
+        .saturating_add(predicate.work_size());
     reserve(budget, query_fee)?;
     let answer = incoming
         .relations

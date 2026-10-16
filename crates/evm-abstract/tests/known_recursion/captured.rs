@@ -5,10 +5,7 @@ use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     Fork,
     analysis::{Config, ExecutionConfig, OutcomeKind},
-    domain::{
-        AbstractValue, Domain, Profile,
-        relational::{RelationLimits, SmtProvider},
-    },
+    domain::{AbstractValue, Domain, Profile, relational::RelationLimits},
     world::{Account, AddressInput, ByteArray, Entry, World},
 };
 use revm_bytecode::opcode;
@@ -94,14 +91,17 @@ pub(super) fn witness_entry() -> Entry {
     input
 }
 
-/// This full captured runtime uses its original Web policy. Synthetic tests
-/// continue to exercise the complete library default, including depth32/work20M.
+/// Replay the captured request's retained execution/domain/retention limits.
+/// Native-provider fields are asserted only as historical raw-capture evidence;
+/// cost_version3 runs local reasoning, so its work is not old SMT timing/fuel.
+/// Synthetic tests retain the complete library default (depth32/work20M).
 fn original_policy() -> ExecutionConfig {
     let request: Value = serde_json::from_str(ORIGINAL_REQUEST).unwrap();
     let limits = &request["limits"];
     let limit = |name: &str| usize::try_from(limits[name].as_u64().unwrap()).unwrap();
     assert_eq!(limits["domain_profile"], "Product");
     assert_eq!(limits["smt_provider"], "Z3");
+    assert!(limits["smt_rlimit"].as_u64().is_some_and(|fuel| fuel > 0));
     ExecutionConfig {
         max_work: limit("max_work"),
         max_call_depth: limit("max_call_depth"),
@@ -120,8 +120,6 @@ fn original_policy() -> ExecutionConfig {
                 max_constraints: limit("max_constraints"),
                 max_nodes: limit("max_expression_nodes"),
                 max_depth: limit("max_expression_depth"),
-                provider: SmtProvider::Z3,
-                rlimit: u32::try_from(limit("smt_rlimit")).unwrap(),
             },
         },
     }

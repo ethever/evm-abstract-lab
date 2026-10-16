@@ -221,8 +221,7 @@ fn constrained(
     let cost = payload
         .relations
         .work_size()
-        .saturating_add(expression.work_size())
-        .saturating_add(limits.max_nodes);
+        .saturating_add(expression.work_size());
     if !context.budget.charge(cost) {
         return Err(FrontierReason::Work);
     }

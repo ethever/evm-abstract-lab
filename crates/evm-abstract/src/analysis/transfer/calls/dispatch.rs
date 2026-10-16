@@ -63,8 +63,7 @@ pub(super) fn target_guard(
     let work = guarded
         .relations
         .work_size()
-        .saturating_add(expression.work_size())
-        .saturating_add(if equal { limits.max_nodes } else { 0 });
+        .saturating_add(expression.work_size());
     if !context.budget.charge(work) {
         boundary(result, pc, FrontierReason::Work);
         return None;

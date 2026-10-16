@@ -114,15 +114,15 @@ pub(super) fn project(
     // An alias comparison may scan all disequalities and follow a decreasing
     // parent chain for each endpoint. BTree lookup depth also grows with the
     // bounded local memo. Reserve both rather than treating a key check as O(1).
+    let graph_work = state
+        .work_size()
+        .saturating_add(expression.map_or(0, ExprId::work_size))
+        .saturating_add(1);
     let key_steps = state
         .len()
         .saturating_add(2)
-        .max((usize::BITS - limits.max_nodes.leading_zeros()) as usize + 2);
-    let key_work = state
-        .work_size()
-        .saturating_add(expression.map_or(0, ExprId::work_size))
-        .saturating_add(1)
-        .saturating_mul(key_steps.saturating_mul(key_steps));
+        .max((usize::BITS - graph_work.leading_zeros()) as usize + 2);
+    let key_work = graph_work.saturating_mul(key_steps.saturating_mul(key_steps));
     let mut work = Work {
         remaining: limits.max_nodes,
         cancellation,
