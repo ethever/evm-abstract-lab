@@ -17,7 +17,9 @@ The ExprId evaluator, source/root meaning, capture-avoiding namespace allocation
 and production NumericValue/provenance refinement remain binding obligations.
 
 Pruning is exact recursive semantic equivalence under compatible known truths.
-It models the pending constant-guard repair, not its execution by Rust at 4f0c0a.
+The scoped-tree normalization corresponds to production fix 14e6a48 plus its
+mechanical U256-import correction 7009a3d. This does not prove general ExprId
+renaming exact, NumericValue refinement, or the whole Rust executor.
 -/
 namespace NoSmt.ConditionalFacts
 
