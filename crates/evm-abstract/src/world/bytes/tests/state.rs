@@ -20,7 +20,7 @@ fn prove(relations: &RelationState, value: &AbstractValue, expected: U256) {
     }
     assert_eq!(
         relations.local_value(
-            value.expression().unwrap(),
+            &value.symbolic_expression().unwrap(),
             &RelationLimits {
                 max_nodes: 100_000,
                 max_depth: 256,
@@ -240,18 +240,12 @@ fn guarded_join_keeps_pointer_state_pairing() {
         max_depth: 256,
         ..RelationLimits::default()
     };
-    // Local evaluation joins an unknown pointer and both memory alternatives
-    // independently; it does not split on their shared selector. Seven remains
-    // possible, but the former unconditional exact-seven proof is unavailable.
-    let ValueQuery::Bounds(bounds) =
-        RelationState::default().local_value(read.expression().unwrap(), &p)
-    else {
-        panic!("expected the documented pointer/state correlation precision gap");
-    };
-    assert!(bounds.contains(U256::from(7)));
-    assert!(
-        bounds.contains(U256::ZERO),
-        "local bounds retain a spurious zero"
+    // The paired whole-word demand now forwards the same constant from each
+    // selected snapshot. A singleton needs no retained expression handle.
+    assert_eq!(read.singleton(), Some(U256::from(7)));
+    assert_eq!(
+        RelationState::default().local_value(&read.symbolic_expression().unwrap(), &p),
+        ValueQuery::Exact(U256::from(7))
     );
     for nonzero in [false, true] {
         let mut relations = RelationState::default();
@@ -711,7 +705,7 @@ fn finite_host_boundary_offsets_keep_uncached_byte_upper_bounds() {
         .observe(offset.expression().unwrap(), offset.numeric(), &policy)
         .unwrap();
     assert_eq!(
-        relations.local_value(read.expression().unwrap(), &policy),
+        relations.local_value(&read.symbolic_expression().unwrap(), &policy),
         ValueQuery::Exact(value.singleton().unwrap()),
     );
     assert!(memory.work_size() < 2000);

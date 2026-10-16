@@ -116,7 +116,10 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
     for completion in [opcode::RETURN, opcode::REVERT] {
         let mut parent = Vec::new();
         call(&mut parent, 64, 32);
-        parent.push(opcode::POP);
+        parent.extend([opcode::POP, opcode::RETURNDATASIZE]);
+        push(&mut parent, U256::from(32));
+        parent.extend([opcode::EQ, opcode::ISZERO]);
+        let short = conditional_jump(&mut parent);
         // MCOPY(0, 64, 32); MSTORE(32, MLOAD(0)); RETURN(32, 32).
         for n in [32_u64, 64, 0] {
             push(&mut parent, U256::from(n));
@@ -126,6 +129,12 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
         parent.push(opcode::MLOAD);
         mstore(&mut parent, 32);
         finish(&mut parent, 32, 32, opcode::RETURN);
+        // A legal pre-entry CALL failure has empty returndata and copied no
+        // word. Keep that path observable separately from the full window.
+        label(&mut parent, short);
+        parent.push(opcode::RETURNDATASIZE);
+        mstore(&mut parent, 0);
+        finish(&mut parent, 0, 32, opcode::REVERT);
         let mut child = vec![opcode::SELFBALANCE];
         mstore(&mut child, 0);
         finish(&mut child, 0, 32, completion);
@@ -134,9 +143,33 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
         caller.balance = word(1_000_000);
         let mut callee = account(&child);
         callee.balance = AbstractValue::unsigned_range(U256::from(3), U256::from(9)).unwrap();
+        let initial_balance = callee.balance.clone();
         world.insert(address(PARENT), caller).unwrap();
         world.insert(address(CHILD), callee).unwrap();
         let analysis = run(world);
+        let refusals: Vec<_> = analysis
+            .outcomes()
+            .iter()
+            .filter(|outcome| outcome.kind == OutcomeKind::Revert)
+            .collect();
+        assert!(
+            !refusals.is_empty(),
+            "the legal empty-return CALL path remains"
+        );
+        for refusal in refusals {
+            assert_eq!(
+                refusal
+                    .data
+                    .read_word_checked(&word(0), Domain::default())
+                    .unwrap()
+                    .singleton(),
+                Some(U256::ZERO)
+            );
+            assert_eq!(
+                refusal.store.read_balance(address(CHILD)).numeric(),
+                initial_balance.numeric()
+            );
+        }
         for outcome in analysis
             .outcomes()
             .iter()
