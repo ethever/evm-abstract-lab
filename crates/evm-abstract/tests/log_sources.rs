@@ -138,8 +138,8 @@ fn actual_init_and_runtime_same_owner_same_pc_keep_distinct_log_arities() {
                     .instantiate(Domain::default())
                     .unwrap(),
             ] {
-                assert!(replay.possible_logs().contains_key(&init_key));
-                assert!(replay.possible_logs().contains_key(&runtime_key));
+                assert!(replay.possible_logs().get(&init_key).is_some());
+                assert!(replay.possible_logs().get(&runtime_key).is_some());
             }
             let native = serde_json::to_value(store).unwrap();
             let report = serde_json::to_value(render::world::evidence(&analysis).unwrap()).unwrap();
