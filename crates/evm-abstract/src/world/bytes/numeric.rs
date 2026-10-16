@@ -27,6 +27,11 @@ pub(super) fn scalar_in(
     context: &Context<'_>,
     domain: Domain,
 ) -> AbstractValue {
+    if context.stopped() {
+        // The checked demand retries a private cache refusal or propagates
+        // cancellation before installing a result. This is only a sentinel.
+        return AbstractValue::top();
+    }
     if let Some(v) = context.value(expression, domain) {
         if let Some(constant) = expression.as_constant() {
             // A constant-key source union is not a unique input occurrence.
@@ -62,6 +67,9 @@ pub(super) fn scalar_in(
             }
         }
         return v.clone();
+    }
+    if context.stopped() {
+        return AbstractValue::top();
     }
     if let Some(v) = expression.as_constant() {
         return AbstractValue::constant(v);
@@ -144,6 +152,9 @@ impl<'a> Reader<'a> {
     }
 
     fn word_byte_union(&mut self, expression: &ExprId) -> AbstractValue {
+        if self.context.stopped() {
+            return AbstractValue::top();
+        }
         if let Some(value) = self.word_bytes.get(expression) {
             return value.clone();
         }
@@ -171,6 +182,9 @@ impl<'a> Reader<'a> {
     }
 
     pub(super) fn read(&mut self, state: &ByteStateId, index: &ExprId) -> AbstractValue {
+        if self.context.stopped() {
+            return AbstractValue::top();
+        }
         let domain = self.domain;
         let context = self.context.clone();
         let state = demanded_state(state, index, 1, &context, domain);
@@ -433,6 +447,9 @@ pub(super) fn read(
 
 impl Reader<'_> {
     pub(super) fn word(&mut self, state: &ByteStateId, offset: &ExprId) -> AbstractValue {
+        if self.context.stopped() {
+            return AbstractValue::top();
+        }
         let domain = self.domain;
         let context = self.context.clone();
         let state = demanded_state(state, offset, 32, &context, domain);
@@ -556,11 +573,17 @@ fn demanded_state<'a>(
     };
     let end = start.saturating_add(U256::from(width - 1));
     let mut cursor = state;
+    if context.stopped() {
+        return cursor;
+    }
     while let Some(previous) =
         cursor.prior_to_disjoint_write_with_bound(start, end, &|destination| {
             context.write_lower_bound(destination, domain)
         })
     {
+        if context.stopped() {
+            break;
+        }
         cursor = previous;
     }
     cursor

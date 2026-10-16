@@ -7,6 +7,7 @@
 mod active;
 mod context;
 pub(super) use context::Context;
+pub(super) use context::{CONTEXTS, Preparation, preparation};
 
 use super::{RangeError, native};
 use crate::domain::{
@@ -33,6 +34,7 @@ pub(super) struct ConditionalFacts {
     limited: bool,
     lookup_scopes: usize,
     lookup_numeric_work: usize,
+    fact_entries: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -84,6 +86,10 @@ impl ConditionalFacts {
             let mut lookup_scopes = 0;
             let mut lookup_numeric_work = 0;
             for scope in [&branch.then_facts, &branch.else_facts] {
+                out.fact_entries = out
+                    .fact_entries
+                    .saturating_add(scope.facts.len())
+                    .saturating_add(scope.conditional.fact_entries);
                 lookup_scopes = lookup_scopes.max(
                     scope
                         .conditional
@@ -203,9 +209,7 @@ impl ConditionalFacts {
         self.work
     }
 
-    /// Each scalar/write-bound lookup probes all active maps and may intersect
-    /// their bounds. Sum worst per-map payloads along active paths once when
-    /// constructing metadata; repeated read lookups must pay this cost again.
+    /// Conservative fallback for readers without a prepared metadata demand.
     pub(super) fn lookup_work(&self, domain: Domain) -> usize {
         self.lookup_scopes
             .saturating_mul(

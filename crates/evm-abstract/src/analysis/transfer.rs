@@ -1039,8 +1039,27 @@ fn execute_inner(
                     opcode::RETURNDATASIZE => frame.returndata.len().clone(),
                     opcode::MSIZE => frame.memory.len().clone(),
                     opcode::CALLDATALOAD => {
-                        match frame.calldata.read_word_checked(&args[0], domain) {
-                            Ok(value) => value,
+                        let plan =
+                            match frame
+                                .calldata
+                                .prepare_word_read(&args[0], domain, context.budget)
+                            {
+                                Ok(Some(plan)) => plan,
+                                Ok(None) => {
+                                    boundary(&mut result, pc, FrontierReason::Work);
+                                    return result;
+                                }
+                                Err(error) => {
+                                    boundary(&mut result, pc, errors::bytes(error));
+                                    return result;
+                                }
+                            };
+                        match plan.read_word_budgeted(context.budget) {
+                            Ok(Some(value)) => value,
+                            Ok(None) => {
+                                boundary(&mut result, pc, FrontierReason::Work);
+                                return result;
+                            }
                             Err(error) => {
                                 boundary(&mut result, pc, errors::bytes(error));
                                 return result;
@@ -1104,16 +1123,30 @@ fn execute_inner(
                             .unwrap_or_else(AbstractValue::top)
                     }),
                     opcode::MLOAD => {
+                        let plan =
+                            match frame
+                                .memory
+                                .prepare_word_read(&args[0], domain, context.budget)
+                            {
+                                Ok(Some(plan)) => plan,
+                                Ok(None) => {
+                                    boundary(&mut result, pc, FrontierReason::Work);
+                                    return result;
+                                }
+                                Err(error) => {
+                                    boundary(&mut result, pc, errors::bytes(error));
+                                    return result;
+                                }
+                            };
                         if !touch_memory(&mut result, &args[0], &constant(32), context, pc) {
                             return result;
                         }
-                        match result
-                            .payload
-                            .active()
-                            .memory
-                            .read_word_checked(&args[0], domain)
-                        {
-                            Ok(value) => value,
+                        match plan.read_word_budgeted(context.budget) {
+                            Ok(Some(value)) => value,
+                            Ok(None) => {
+                                boundary(&mut result, pc, FrontierReason::Work);
+                                return result;
+                            }
                             Err(error) => {
                                 boundary(&mut result, pc, errors::bytes(error));
                                 return result;

@@ -1,18 +1,29 @@
 //! Demand-local guard choices select only their corresponding operand facts.
 
 use super::{ConditionalFacts, Facts};
-use crate::domain::{AbstractValue, Domain, relational::intersect_numeric, symbolic::ExprId};
+use crate::domain::{
+    AbstractValue, Domain,
+    relational::intersect_numeric,
+    symbolic::{ExprError, ExprId},
+};
 use alloy_primitives::U256;
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+
+mod memo;
+pub(in crate::world::bytes) use memo::{CONTEXTS, Preparation, preparation};
 
 /// Resolve the active metadata scopes once per guard environment. Scalar
 /// lookups then inspect only their own key in those maps, never the fact DAG.
+/// Clones share a complete-value memo; changed choices start a separate memo.
+/// The shared demand owns no snapshots and dies before its borrowed facts.
 #[derive(Clone)]
 pub(in crate::world::bytes) struct Context<'a> {
     facts: &'a Facts,
     conditional: Option<&'a ConditionalFacts>,
-    choices: BTreeMap<ExprId, bool>,
-    active: Vec<&'a Facts>,
+    choices: Rc<BTreeMap<ExprId, bool>>,
+    active: Rc<Vec<&'a Facts>>,
+    memo: Rc<RefCell<memo::Memo<'a>>>,
+    demand: Option<Rc<memo::Demand>>,
 }
 
 impl<'a> Context<'a> {
@@ -23,22 +34,87 @@ impl<'a> Context<'a> {
         let mut out = Self {
             facts,
             conditional,
-            choices: BTreeMap::new(),
-            active: Vec::new(),
+            choices: Rc::new(BTreeMap::new()),
+            active: Rc::new(Vec::new()),
+            memo: Rc::new(RefCell::new(memo::Memo::default())),
+            demand: None,
         };
         out.select();
         out
     }
 
+    /// The caller has reserved preparation.work before any demand allocations.
+    pub(in crate::world::bytes) fn prepared(
+        facts: &'a Facts,
+        conditional: &'a ConditionalFacts,
+        domain: Domain,
+        nodes: usize,
+    ) -> Self {
+        let mut out = Self {
+            facts,
+            conditional: Some(conditional),
+            choices: Rc::new(BTreeMap::new()),
+            active: Rc::new(Vec::new()),
+            memo: Rc::new(RefCell::new(memo::Memo::default())),
+            demand: Some(Rc::new(memo::Demand::new(domain, nodes))),
+        };
+        out.select();
+        out
+    }
+
+    pub(in crate::world::bytes) fn check(&self) -> Result<(), ExprError> {
+        if analysis_control::current_cancellation().is_cancelled() {
+            return Err(ExprError::Cancelled);
+        }
+        self.demand.as_ref().map_or(Ok(()), |demand| demand.check())
+    }
+
+    /// A private cache refusal is separate from source validation/cancellation.
+    pub(in crate::world::bytes) fn cache_refused(&self) -> bool {
+        self.demand.as_ref().is_some_and(|demand| demand.refused())
+    }
+
+    pub(in crate::world::bytes) fn stopped(&self) -> bool {
+        self.cache_refused() || self.check().is_err()
+    }
+
+    fn reserve(&self, nodes: usize) -> bool {
+        !self.stopped()
+            && self
+                .demand
+                .as_ref()
+                .is_none_or(|demand| demand.reserve(nodes))
+    }
+
+    fn fact<'b>(&self, facts: &'b Facts, expression: &ExprId) -> Option<&'b AbstractValue> {
+        if self.demand.is_none() {
+            return facts.get(expression);
+        }
+        memo::probe(facts, expression, &|nodes| self.reserve(nodes))
+            .then(|| facts.get(expression))
+            .flatten()
+    }
+
+    fn choice(&self, expression: &ExprId) -> Option<bool> {
+        if self.demand.is_none() {
+            return self.choices.get(expression).copied();
+        }
+        memo::probe(&self.choices, expression, &|nodes| self.reserve(nodes))
+            .then(|| self.choices.get(expression).copied())
+            .flatten()
+    }
+
     fn select(&mut self) {
         fn selected<'a>(
             conditional: &'a ConditionalFacts,
-            facts: &Facts,
-            choices: &BTreeMap<ExprId, bool>,
+            context: &Context<'_>,
             active: &mut Vec<&'a Facts>,
         ) {
             for branch in &conditional.branches {
-                let truth = choices.get(&branch.condition).copied().or_else(|| {
+                if !context.reserve(1) {
+                    return;
+                }
+                let truth = context.choice(&branch.condition).or_else(|| {
                     branch
                         .condition
                         .as_constant()
@@ -47,9 +123,12 @@ impl<'a> Context<'a> {
                             active
                                 .iter()
                                 .rev()
-                                .filter_map(|facts| facts.get(&branch.condition))
-                                .chain(facts.get(&branch.condition))
+                                .filter_map(|facts| context.fact(facts, &branch.condition))
+                                .chain(context.fact(context.facts, &branch.condition))
                                 .find_map(|value| {
+                                    if !context.reserve(value.numeric().work_size()) {
+                                        return None;
+                                    }
                                     if !value.may_be_zero() {
                                         Some(true)
                                     } else if !value.may_be_nonzero() {
@@ -67,21 +146,74 @@ impl<'a> Context<'a> {
                     &branch.else_facts
                 };
                 if !scope.facts.is_empty() {
+                    let growth = if active.len() == active.capacity() {
+                        active.len()
+                    } else {
+                        0
+                    };
+                    if !context.reserve(growth.saturating_add(1)) {
+                        return;
+                    }
                     active.push(&scope.facts);
                 }
-                selected(&scope.conditional, facts, choices, active);
+                selected(&scope.conditional, context, active);
             }
         }
-        self.active.clear();
+        let mut active = Vec::new();
         if let Some(conditional) = self.conditional {
-            selected(conditional, self.facts, &self.choices, &mut self.active);
+            selected(conditional, self, &mut active);
         }
+        self.active = Rc::new(active);
     }
 
     pub(in crate::world::bytes) fn branch(&self, condition: &ExprId, nonzero: bool) -> Self {
-        let mut out = self.clone();
-        out.choices.insert(condition.clone(), nonzero);
+        if !self.reserve(1) || self.choice(condition) == Some(nonzero) {
+            return self.clone();
+        }
+        let key = (condition.immutable_node_key(), nonzero);
+        if self.demand.is_some() {
+            if !self.reserve(memo::CONTEXTS) {
+                return self.clone();
+            }
+            if let Some((_, old)) = self.memo.borrow().branches.get(&key) {
+                return old.clone();
+            }
+        }
+        if !self.reserve(self.choices.len().saturating_add(1)) {
+            return self.clone();
+        }
+        let mut nodes = condition.work_size();
+        for key in self.choices.keys() {
+            if !self.reserve(1) {
+                return self.clone();
+            }
+            nodes = nodes.saturating_add(key.work_size());
+        }
+        if let Some(demand) = &self.demand
+            && !demand.context(nodes, self.choices.len().saturating_add(1))
+        {
+            return self.clone();
+        }
+        if !self.reserve(nodes.saturating_add(memo::CONTEXTS)) {
+            return self.clone();
+        }
+        let mut choices = (*self.choices).clone();
+        choices.insert(condition.clone(), nonzero);
+        let mut out = Self {
+            facts: self.facts,
+            conditional: self.conditional,
+            choices: Rc::new(choices),
+            active: Rc::new(Vec::new()),
+            memo: Rc::new(RefCell::new(memo::Memo::default())),
+            demand: self.demand.as_ref().map(Rc::clone),
+        };
         out.select();
+        if self.demand.is_some() && !self.stopped() {
+            self.memo
+                .borrow_mut()
+                .branches
+                .insert(key, (condition.clone(), out.clone()));
+        }
         out
     }
 
@@ -90,8 +222,65 @@ impl<'a> Context<'a> {
         expression: &ExprId,
         domain: Domain,
     ) -> Option<AbstractValue> {
-        let mut out = self.facts.get(expression).cloned();
-        for value in self.active.iter().filter_map(|facts| facts.get(expression)) {
+        if !self.reserve(1)
+            || self
+                .demand
+                .as_ref()
+                .is_some_and(|demand| !demand.policy(domain))
+        {
+            return None;
+        }
+        let Some(demand) = &self.demand else {
+            return self.resolve(expression, domain);
+        };
+        if let Some(value) = self
+            .memo
+            .borrow()
+            .get(expression, domain, &|nodes| self.reserve(nodes))
+        {
+            return value;
+        }
+        if self.stopped() {
+            return None;
+        }
+        let out = self.resolve(expression, domain);
+        // An interrupted callback must never install a completed negative entry.
+        if !self.stopped() {
+            self.memo
+                .borrow_mut()
+                .insert(expression, &out, domain, demand, &|nodes| {
+                    self.reserve(nodes)
+                });
+        }
+        (!self.stopped()).then_some(out).flatten()
+    }
+
+    fn resolve(&self, expression: &ExprId, domain: Domain) -> Option<AbstractValue> {
+        let mut out = match self.fact(self.facts, expression) {
+            Some(value) if self.reserve(value.work_size()) => Some(value.clone()),
+            _ => None,
+        };
+        for facts in self.active.iter() {
+            if !self.reserve(1) {
+                return None;
+            }
+            let Some(value) = self.fact(facts, expression) else {
+                continue;
+            };
+            if !self.reserve(
+                value
+                    .work_size()
+                    .saturating_mul(2)
+                    .saturating_add(
+                        out.as_ref()
+                            .map_or(0, AbstractValue::work_size)
+                            .saturating_mul(3),
+                    )
+                    .saturating_add(domain.capacity())
+                    .saturating_add(32),
+            ) {
+                return None;
+            }
             out = Some(match out {
                 Some(old) => {
                     let numeric = if old.numeric() == value.numeric() || value.numeric().is_top() {
@@ -109,8 +298,17 @@ impl<'a> Context<'a> {
                 None => value.clone(),
             });
         }
-        if let Some(nonzero) = self.choices.get(expression) {
-            let truth = if *nonzero {
+        if let Some(nonzero) = self.choice(expression) {
+            if !self.reserve(
+                32usize.saturating_add(
+                    out.as_ref()
+                        .map_or(0, AbstractValue::work_size)
+                        .saturating_mul(2),
+                ),
+            ) {
+                return None;
+            }
+            let truth = if nonzero {
                 AbstractValue::unsigned_range(U256::ONE, U256::MAX).expect("nonempty range")
             } else {
                 AbstractValue::constant(U256::ZERO)
@@ -136,3 +334,6 @@ impl<'a> Context<'a> {
             .map(|value| value.interval().unsigned_bounds().0)
     }
 }
+
+#[cfg(test)]
+mod tests;

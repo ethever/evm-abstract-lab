@@ -18,6 +18,7 @@ pub use summary::ByteArraySummary;
 mod tests;
 mod traversal;
 pub(super) mod widening;
+mod word_plan;
 
 use crate::domain::{
     AbstractValue, Domain,
@@ -343,7 +344,10 @@ impl ByteArray {
             limits(domain),
             &|destination| context.write_lower_bound(destination, domain),
         )?;
-        let numeric = numeric::Reader::with_context(context, domain).read(&self.root, &offset_expr);
+        context.check()?;
+        let numeric =
+            numeric::Reader::with_context(context.clone(), domain).read(&self.root, &offset_expr);
+        context.check()?;
         Ok(numeric::attach(numeric, expression))
     }
     /// Read one byte; retention failure is marked for the analysis boundary.
@@ -376,29 +380,14 @@ impl ByteArray {
         )?;
         self.conditional.check(limits(domain))?;
         let context = conditional::Context::new(&facts, Some(&self.conditional));
-        let view = if self.memory {
-            ByteView::new(
-                self.root.clone(),
-                offset_expr.clone(),
-                ExprId::constant(U256::from(32)),
-            )
-        } else {
-            // Preserve the full input boundary independently of the word offset.
-            self.view().slice(
-                offset_expr.clone(),
-                ExprId::constant(U256::from(32)),
-                limits(domain).into(),
-            )?
-        };
-        let expression = reads::word_expression(
-            view,
-            ExprId::constant(U256::ZERO),
+        word_plan::evaluate(
+            &self.root,
+            (!self.memory).then_some(&self.length),
+            &offset_expr,
             &context,
             domain,
-            limits(domain),
-        )?;
-        let numeric = numeric::Reader::with_context(context, domain).word(&self.root, &offset_expr);
-        Ok(numeric::attach(numeric, expression))
+        )
+        .map(|value| value.expect("an unprepared read has no optional cache refusal"))
     }
     /// Read one word; retention failure is marked for the analysis boundary.
     pub fn read_word(&self, offset: &AbstractValue, domain: Domain) -> AbstractValue {
@@ -865,8 +854,7 @@ impl ByteArray {
         }
     }
     pub(crate) fn word_numeric_work(&self, _offset: &AbstractValue, domain: Domain) -> usize {
-        // Scalar and write-bound lookups repeat during a word walk. Charge
-        // their map probes and meets from cached metadata, without a root scan.
+        // The original complete fee is also the fallback fee of a private plan.
         self.root
             .work_size()
             .saturating_mul(32)

@@ -100,8 +100,7 @@ pub(super) fn operation_work(
         | opcode::GAS => environment
             .work_size()
             .saturating_add(environment.projection_work(domain)),
-        opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain)
-            .saturating_add(frame.memory.word_numeric_work(&args[0], domain)),
+        opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain),
         opcode::MSTORE => byte_work(&args.iter().collect::<Vec<_>>(), 32, array_size, domain)
             .saturating_add(
                 32usize.saturating_mul(domain.operation_work(&[
@@ -136,8 +135,7 @@ pub(super) fn operation_work(
             .map_or(1, |values| values.len())
             .saturating_mul(domain.capacity())
             .saturating_add(1),
-        opcode::CALLDATALOAD => byte_work(&[&args[0]], 32, array_size, domain)
-            .saturating_add(frame.calldata.word_numeric_work(&args[0], domain)),
+        opcode::CALLDATALOAD => byte_work(&[&args[0]], 32, array_size, domain),
         opcode::KECCAK256 => byte_work(&[&args[0], &args[1]], range_size(1), array_size, domain),
         opcode::RETURN | opcode::REVERT | opcode::LOG0..=opcode::LOG4 => {
             // These consumers retain a view; logical bytes are charged only
