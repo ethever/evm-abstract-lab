@@ -113,7 +113,7 @@ fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query()
     let projected = AbstractValue::unknown_address().with_expression(expression.clone());
     let candidate = word(0x301);
     let mut result = super::super::empty_execution(payload.clone());
-    let mut budget = WorkBudget::new(config.analysis.relations.rlimit as usize - 1);
+    let mut budget = WorkBudget::new(config.max_work);
     let mut context = TransferContext {
         config: &config,
         domain,

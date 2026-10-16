@@ -1,5 +1,4 @@
 mod assumptions;
-mod cached_assumptions;
 mod forwarding;
 mod guarantees;
 mod guarded_join;
@@ -29,7 +28,7 @@ fn op(opcode: u8, args: &[ExprId]) -> ExprId {
 fn limits() -> RelationLimits {
     RelationLimits {
         max_nodes: 4096,
-        rlimit: 10_000_000,
+
         ..RelationLimits::default()
     }
 }
@@ -42,11 +41,11 @@ fn incompatible_branch_conditions_are_unsat_with_a_retained_input() {
     let mut state = RelationState::default();
     assert_eq!(
         state.assume(&op(opcode::EQ, &[x.clone(), c(1)]), true, &limits()),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         state.assume(&op(opcode::EQ, &[x, c(2)]), true, &limits()),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
     assert!(state.is_bottom());
 }
@@ -57,11 +56,11 @@ fn distinct_input_scopes_remain_independent_not_disequal() {
     let equality = op(opcode::EQ, &[left, right]);
     assert_eq!(
         RelationState::default().assume(&equality, true, &limits()),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         RelationState::default().assume(&equality, false, &limits()),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
 }
 #[test]
@@ -75,11 +74,11 @@ fn join_covers_both_paths_instead_of_conjoining_their_conditions() {
     assert!(!joined.is_bottom());
     assert_eq!(
         joined.can_equal(&x, U256::from(1), &limits()),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         joined.can_equal(&x, U256::from(2), &limits()),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
 }
 #[test]
@@ -90,8 +89,8 @@ fn budget_unknown_never_becomes_unsat_or_a_fabricated_constant() {
         ..limits()
     };
     assert!(matches!(
-        RelationState::default().unique_value(&op(opcode::ADD, &[x, c(1)]), &limits),
-        ValueQuery::Unknown(_)
+        RelationState::default().local_value(&op(opcode::ADD, &[x, c(1)]), &limits),
+        ValueQuery::Undetermined(_)
     ));
 }
 #[test]
@@ -101,8 +100,8 @@ fn arithmetic_relation_refines_other_values_and_wraps_as_evm_words() {
     let mut state = RelationState::default();
     state.assume(&op(opcode::EQ, &[next, c(0)]), true, &limits());
     assert_eq!(
-        state.unique_value(&x, &limits()),
-        ValueQuery::Unique(U256::MAX)
+        state.local_value(&x, &limits()),
+        ValueQuery::Exact(U256::MAX)
     );
 }
 #[test]
@@ -142,15 +141,8 @@ fn all_exact_encodings_match_the_shared_evm_oracle_at_boundaries() {
         opcode::SAR,
         opcode::CLZ,
     ];
-    for provider in [
-        super::SmtProvider::Z3,
-        super::SmtProvider::Bitwuzla,
-        super::SmtProvider::Cvc5,
-    ] {
-        let policy = RelationLimits {
-            provider,
-            ..limits()
-        };
+    {
+        let policy = RelationLimits { ..limits() };
         for (index, opcode) in ops.into_iter().enumerate() {
             for (offset, a) in values.into_iter().enumerate() {
                 let b = values[(index + offset + 1) % values.len()];
@@ -166,15 +158,15 @@ fn all_exact_encodings_match_the_shared_evm_oracle_at_boundaries() {
                 for (variable, value) in variables.iter().zip(actuals).take(count) {
                     assert_eq!(
                         state.add_unsigned_bounds(variable, value, value, &policy),
-                        CheckResult::Sat
+                        CheckResult::MayBeFeasible
                     );
                 }
                 let expression = op(opcode, &variables[..count]);
                 let expected = crate::domain::concrete::evaluate(opcode, a, b, modulus);
                 assert_eq!(
-                    state.unique_value(&expression, &policy),
-                    ValueQuery::Unique(expected),
-                    "provider={provider},opcode={opcode:x},a={a},b={b},c={modulus}"
+                    state.local_value(&expression, &policy),
+                    ValueQuery::Exact(expected),
+                    "provider=local,opcode={opcode:x},a={a},b={b},c={modulus}"
                 );
             }
         }
@@ -190,9 +182,9 @@ fn scalar_observation_imports_bounds_bits_and_constants_without_solver_roundtrip
         .unwrap();
     assert_eq!(
         state.can_equal(&x, U256::from(256), &limits()),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
-    assert_eq!(state.unique_value(&x, &limits()), ValueQuery::Multiple);
+    bounds_include(state.local_value(&x, &limits()), &[0, 255]);
     state
         .observe(
             &x,
@@ -201,8 +193,8 @@ fn scalar_observation_imports_bounds_bits_and_constants_without_solver_roundtrip
         )
         .unwrap();
     assert_eq!(
-        state.unique_value(&x, &limits()),
-        ValueQuery::Unique(U256::from(7))
+        state.local_value(&x, &limits()),
+        ValueQuery::Exact(U256::from(7))
     );
 }
 
@@ -216,16 +208,16 @@ fn constraint_capacity_preserves_prior_guarantees_without_claiming_bottom() {
     let mut state = RelationState::default();
     assert_eq!(
         state.assume(&op(opcode::EQ, &[x.clone(), c(1)]), true, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         state.assume(&op(opcode::EQ, &[x.clone(), c(2)]), true, &policy),
-        CheckResult::Unknown(super::QueryReason::ConstraintLimit)
+        CheckResult::Undetermined(super::QueryReason::ConstraintLimit)
     );
     assert!(!state.is_bottom());
     assert_eq!(
-        state.unique_value(&x, &policy),
-        ValueQuery::Unique(U256::from(1))
+        state.local_value(&x, &policy),
+        ValueQuery::Exact(U256::from(1))
     );
 }
 
@@ -257,10 +249,13 @@ fn default_fuel_handles_a_scoped_address_equality_without_redundant_bool_circuit
         1,
         "address mask alone implies its unsigned bounds and comparison word has built-in boolean semantics"
     );
-    assert_eq!(state.assume(&condition, true, &policy), CheckResult::Sat);
     assert_eq!(
-        state.unique_value(&caller, &policy),
-        ValueQuery::Unique(U256::from(1))
+        state.assume(&condition, true, &policy),
+        CheckResult::MayBeFeasible
+    );
+    assert_eq!(
+        state.local_value(&caller, &policy),
+        ValueQuery::Exact(U256::from(1))
     );
 }
 
@@ -270,17 +265,17 @@ fn deterministic_resource_exhaustion_is_unknown_and_cannot_poison_a_fresh_query(
     let condition = op(opcode::EQ, &[x.clone(), c(1)]);
     let mut state = RelationState::default();
     let tiny = RelationLimits {
-        rlimit: 1,
+        max_nodes: condition.work_size(),
         ..RelationLimits::default()
     };
     assert_eq!(
         state.assume(&condition, true, &tiny),
-        CheckResult::Unknown(super::QueryReason::ResourceLimit)
+        CheckResult::Undetermined(super::QueryReason::ExpressionLimit)
     );
     assert!(!state.is_bottom());
     assert_eq!(
-        state.unique_value(&x, &RelationLimits::default()),
-        ValueQuery::Unique(U256::from(1))
+        state.local_value(&x, &RelationLimits::default()),
+        ValueQuery::Exact(U256::from(1))
     );
 }
 
@@ -291,21 +286,21 @@ fn direct_boolean_encoding_still_honors_the_expression_depth_limit() {
     let mut state = RelationState::default();
     assert_eq!(
         state.assume(&condition, true, &RelationLimits::default()),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         state.check(&RelationLimits {
             max_depth: 1,
             ..RelationLimits::default()
         }),
-        CheckResult::Unknown(super::QueryReason::ExpressionLimit)
+        CheckResult::Undetermined(super::QueryReason::ExpressionLimit)
     );
 }
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(24))]
     #[test]
-    fn native_word_operations_match_evm_for_arbitrary_full_width_operands(
+    fn local_word_operations_match_evm_for_arbitrary_full_width_operands(
         limbs_a in proptest::arbitrary::any::<[u64;4]>(),
         limbs_b in proptest::arbitrary::any::<[u64;4]>(),
         selected in 0usize..8,
@@ -316,7 +311,7 @@ proptest::proptest! {
         let mut state = RelationState::default();
         state.add_unsigned_bounds(&left,a,a,&limits()); state.add_unsigned_bounds(&right,b,b,&limits());
         let expression = op(opcode,&[left,right]);
-        proptest::prop_assert_eq!(state.unique_value(&expression,&limits()), ValueQuery::Unique(crate::domain::concrete::evaluate(opcode,a,b,U256::ZERO)));
+        proptest::prop_assert_eq!(state.local_value(&expression,&limits()), ValueQuery::Exact(crate::domain::concrete::evaluate(opcode,a,b,U256::ZERO)));
     }
 }
 
@@ -334,22 +329,20 @@ fn default_fuel_handles_false_address_guard_and_unrelated_value_projection() {
             &policy,
         )
         .unwrap();
-    assert_eq!(state.assume(&condition, false, &policy), CheckResult::Sat);
+    assert_eq!(
+        state.assume(&condition, false, &policy),
+        CheckResult::MayBeFeasible
+    );
     assert!(state.relevant(&caller));
     assert!(!state.relevant(&other));
-    assert_eq!(state.unique_value(&caller, &policy), ValueQuery::Multiple);
-    assert_eq!(state.unique_value(&other, &policy), ValueQuery::Multiple);
+    bounds_include(state.local_value(&caller, &policy), &[0, 2]);
+    bounds_include(state.local_value(&other, &policy), &[0, 1]);
 }
 
 #[test]
 fn exact_exponentiation_handles_symbolic_base_and_literal_exponent_boundaries() {
-    for provider in [
-        super::SmtProvider::Z3,
-        super::SmtProvider::Bitwuzla,
-        super::SmtProvider::Cvc5,
-    ] {
+    {
         let policy = RelationLimits {
-            provider,
             ..RelationLimits::default()
         };
         for (base, exponent) in [
@@ -371,15 +364,15 @@ fn exact_exponentiation_handles_symbolic_base_and_literal_exponent_boundaries() 
                 .unwrap();
             let expression = op(opcode::EXP, &[variable, ExprId::constant(exponent)]);
             assert_eq!(
-                state.unique_value(&expression, &policy),
-                ValueQuery::Unique(base.wrapping_pow(exponent)),
-                "provider={provider}, base={base}, exponent={exponent}"
+                state.local_value(&expression, &policy),
+                ValueQuery::Exact(base.wrapping_pow(exponent)),
+                "provider=local, base={base}, exponent={exponent}"
             );
         }
     }
 }
 #[test]
-fn full_symbolic_exponentiation_respects_encoding_and_native_resource_limits() {
+fn symbolic_exponentiation_retains_unknown_without_a_fake_resource_failure() {
     let expression = op(
         opcode::EXP,
         &[
@@ -387,25 +380,12 @@ fn full_symbolic_exponentiation_respects_encoding_and_native_resource_limits() {
             ExprId::input(1, Symbol::GasPrice),
         ],
     );
-    assert_eq!(
-        RelationState::default().unique_value(&expression, &RelationLimits::default()),
-        ValueQuery::Unknown(super::QueryReason::ExpressionLimit)
-    );
-    for provider in [
-        super::SmtProvider::Z3,
-        super::SmtProvider::Bitwuzla,
-        super::SmtProvider::Cvc5,
-    ] {
-        let native = RelationLimits {
-            provider,
-            max_nodes: 4096,
-            rlimit: 1,
-            ..RelationLimits::default()
-        };
-        assert_eq!(
-            RelationState::default().unique_value(&expression, &native),
-            ValueQuery::Unknown(super::QueryReason::ResourceLimit)
-        );
+    let answer = RelationState::default().local_value(&expression, &RelationLimits::default());
+    let ValueQuery::Bounds(bounds) = answer else {
+        panic!("expected conservative exponentiation bounds: {answer:?}");
+    };
+    for (base, exponent) in [(0u64, 0u64), (0, 1), (2, 255), (7, 32)] {
+        assert!(bounds.contains(U256::from(base).wrapping_pow(U256::from(exponent))));
     }
 }
 
@@ -421,7 +401,7 @@ fn symbolic_square_is_equal_to_modular_multiplication_without_nested_model_terms
             false,
             &RelationLimits::default()
         ),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
 }
 #[test]
@@ -435,7 +415,10 @@ fn observed_constant_substitution_preserves_intrinsic_address_bounds() {
             &RelationLimits::default(),
         )
         .unwrap();
-    assert_eq!(state.check(&RelationLimits::default()), CheckResult::Unsat);
+    assert_eq!(
+        state.check(&RelationLimits::default()),
+        CheckResult::ProvenImpossible
+    );
 }
 
 fn direct_guard_state(expression: ExprId, truth: bool) -> RelationState {
@@ -558,56 +541,58 @@ fn default_fuel_handles_masked_derived_loop_guard_with_named_arithmetic() {
         state.observe(&next, &numeric, &policy).unwrap();
         assert_eq!(
             state.assume(&op(opcode::LT, &[next, c(10)]), truth, &policy),
-            CheckResult::Sat,
+            CheckResult::MayBeFeasible,
             "truth={truth}"
         );
     }
 }
 
 #[test]
-fn every_provider_preserves_uniqueness_path_relations_and_evm_wrapping() {
-    for provider in [
-        super::SmtProvider::Z3,
-        super::SmtProvider::Bitwuzla,
-        super::SmtProvider::Cvc5,
-    ] {
-        let policy = RelationLimits {
-            provider,
-            ..limits()
-        };
+fn local_facts_preserve_exactness_path_relations_and_evm_wrapping() {
+    {
+        let policy = RelationLimits { ..limits() };
         let x = ExprId::input(1, Symbol::CallValue);
         let next = op(opcode::ADD, &[x.clone(), c(1)]);
         let mut state = RelationState::default();
         assert_eq!(
             state.assume(&op(opcode::EQ, &[next, c(0)]), true, &policy),
-            CheckResult::Sat,
-            "{provider}"
+            CheckResult::MayBeFeasible,
+            "local"
         );
         assert_eq!(
-            state.unique_value(&x, &policy),
-            ValueQuery::Unique(U256::MAX),
-            "{provider}"
+            state.local_value(&x, &policy),
+            ValueQuery::Exact(U256::MAX),
+            "local"
         );
         assert_eq!(
             state.can_equal(&x, U256::ZERO, &policy),
-            CheckResult::Unsat,
-            "{provider}"
+            CheckResult::ProvenImpossible,
+            "local"
         );
         let mut range = RelationState::default();
         assert_eq!(
             range.add_unsigned_bounds(&x, U256::from(1), U256::from(2), &policy),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
-        assert_eq!(
-            range.unique_value(&x, &policy),
-            ValueQuery::Multiple,
-            "{provider}"
-        );
+        bounds_include(range.local_value(&x, &policy), &[1, 2]);
         let same = op(opcode::EQ, &[x.clone(), x]);
         assert_eq!(
             RelationState::default().assume(&same, false, &policy),
-            CheckResult::Unsat,
-            "{provider}"
+            CheckResult::ProvenImpossible,
+            "local"
+        );
+    }
+}
+
+/// Nonexact results must include each independently known concrete alternative.
+fn bounds_include(answer: ValueQuery, samples: &[u64]) {
+    let ValueQuery::Bounds(bounds) = answer else {
+        panic!("expected nonexact local bounds: {answer:?}");
+    };
+    for sample in samples {
+        assert!(
+            bounds.contains(U256::from(*sample)),
+            "local bounds excluded admitted value {sample}"
         );
     }
 }

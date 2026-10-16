@@ -108,7 +108,6 @@ impl Config {
         if self.relations.max_nodes == 0
             || self.relations.max_depth == 0
             || self.relations.max_constraints == 0
-            || self.relations.rlimit == 0
         {
             return Err(ConfigError::Relations);
         }

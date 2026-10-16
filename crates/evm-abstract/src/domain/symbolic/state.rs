@@ -159,7 +159,7 @@ pub(super) fn fingerprint(value: &impl Hash) -> u64 {
     hasher.finish()
 }
 pub(super) fn check(nodes: usize, depth: usize, limits: StateLimits) -> Result<(), StateError> {
-    if embedded_smt::current_cancellation().is_cancelled() {
+    if analysis_control::current_cancellation().is_cancelled() {
         return Err(StateError::Cancelled);
     }
     if nodes == usize::MAX

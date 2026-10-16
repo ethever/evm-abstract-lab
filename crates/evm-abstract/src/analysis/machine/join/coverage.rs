@@ -1,6 +1,6 @@
 //! Optional complete-payload coverage proofs. Immutable roots and numeric
-//! shape must agree first; SMT then proves all scalar bindings and old path
-//! guarantees. A failed/unknown proof never removes the incoming alternative.
+//! shape must agree first; local impossibility establishes required scalar
+//! bindings and old path guarantees when these cheap rules suffice. A failed/unknown proof never removes the incoming alternative.
 
 use super::{MachineError, checkpoint};
 use crate::{
@@ -309,24 +309,21 @@ pub(super) fn covers(
         .relations
         .work_size()
         .saturating_add(predicate.work_size())
-        .saturating_add(policy.rlimit as usize);
+        .saturating_add(policy.max_nodes);
     reserve(budget, query_fee)?;
-    Ok(
-        match incoming.relations.can_equal_cached(
-            &predicate,
-            U256::ZERO,
-            &policy,
-            &mut budget
-                .smt_cache_query(policy.cache_scope())
-                .with_allowance(query_fee / 4),
-        ) {
-            CheckResult::Unsat => true,
-            CheckResult::Unknown(QueryReason::Cancelled) => {
-                return Err(MachineError::Relations(QueryReason::Cancelled));
-            }
-            CheckResult::Sat | CheckResult::Unknown(_) => false,
-        },
-    )
+    let answer = incoming
+        .relations
+        .can_equal_budgeted(&predicate, U256::ZERO, &policy, budget);
+    if budget.exhausted() {
+        return Err(MachineError::work_failure());
+    }
+    Ok(match answer {
+        CheckResult::ProvenImpossible => true,
+        CheckResult::Undetermined(QueryReason::Cancelled) => {
+            return Err(MachineError::Relations(QueryReason::Cancelled));
+        }
+        CheckResult::MayBeFeasible | CheckResult::Undetermined(_) => false,
+    })
 }
 
 #[cfg(test)]

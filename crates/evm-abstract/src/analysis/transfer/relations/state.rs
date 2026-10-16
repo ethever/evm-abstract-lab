@@ -79,19 +79,6 @@ pub(super) fn refine(
     }
     let domain = context.domain;
     let limits = context.config.analysis.relations.expressions();
-    let return_length = payload.active().returndata.len().expression().cloned();
-    if return_length
-        .as_ref()
-        .is_some_and(|expression| !context.budget.charge(expression.work_size()))
-    {
-        return Err(FrontierReason::Work);
-    }
-    let return_length_leaves =
-        return_length.map_or_else(Default::default, |expression| expression.variables());
-    // CALL output copies retain their length expressions in the byte operand
-    // maps. A later RETURNDATASIZE guard must refine those same expressions,
-    // before root evaluation can identify the untouched suffix. Refining only
-    // ITE truth loses the stronger fact length == 1.
     let mut failed = None;
     for frame in payload.call_stack.iter_mut() {
         for value in [&mut frame.address_operand, &mut frame.caller_operand]
@@ -144,22 +131,7 @@ pub(super) fn refine(
                 if failed.is_some() {
                     return;
                 }
-                let refinement = if matches!(expression.kind(), ExprKind::Fresh(_))
-                    && return_length_leaves.contains(expression)
-                {
-                    // A joined CALL buffer may include an empty failure arm.
-                    // Its length guard can imply a fresh length only through
-                    // the selector. Query those retained scalar length leaves,
-                    // never each cached byte, under the original state policy.
-                    let mut identified = value.clone().with_expression(expression.clone());
-                    let refinement = super::refine(&mut identified, relations, context);
-                    if refinement == Ok(true) {
-                        *value = value.clone().with_numeric(identified.numeric().clone());
-                    }
-                    refinement
-                } else {
-                    refine_expression(expression, value, relations, context)
-                };
+                let refinement = refine_expression(expression, value, relations, context);
                 match refinement {
                     Ok(false) => failed = Some(Ok(false)),
                     Ok(true) => {}

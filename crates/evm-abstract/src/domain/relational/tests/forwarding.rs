@@ -1,8 +1,6 @@
 //! Default-budget proofs and independent boundary checks for demanded reads.
 
-use super::super::{
-    CheckResult, QueryReason, RelationLimits, RelationState, SmtProvider, ValueQuery,
-};
+use super::super::{CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery};
 use crate::domain::{identity::Symbol, numeric::NumericValue, symbolic::*};
 use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;
@@ -11,10 +9,9 @@ use std::sync::Arc;
 fn c(value: u64) -> ExprId {
     ExprId::constant(U256::from(value))
 }
-fn policy(provider: SmtProvider) -> RelationLimits {
+fn policy() -> RelationLimits {
     // Match the actual acceptance policy; retain the provider's default fuel.
     RelationLimits {
-        provider,
         max_nodes: 8192,
         max_depth: 128,
         max_constraints: 256,
@@ -30,8 +27,8 @@ fn read(state: ByteStateId, at: ExprId, limits: RelationLimits) -> ExprId {
 
 #[test]
 fn default_policy_forwards_symbolic_words_and_byte_overlays_with_history() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let length = ExprId::input(51, Symbol::CalldataLength);
         let input = ByteStateId::input(SourceId::input(51, Symbol::CalldataLength), length);
         let p = op(
@@ -66,31 +63,11 @@ fn default_policy_forwards_symbolic_words_and_byte_overlays_with_history() {
             (true, op(opcode::EQ, &[latest, expected], limits)),
         ] {
             let path = RelationState::default();
-            if provider == SmtProvider::Cvc5 && overlaid {
-                assert_eq!(limits.rlimit, 100_000);
-                // Pin the observed boundary of this input-derived address query
-                // at 100k fuel. UNKNOWN cannot claim the contrary path infeasible.
-                assert_eq!(
-                    path.can_equal(&equality, U256::from(1), &limits),
-                    CheckResult::Unknown(QueryReason::ResourceLimit),
-                    "Cvc5 overlay satisfiability at 100k fuel"
-                );
-                assert_eq!(
-                    path.can_equal(&equality, U256::ZERO, &limits),
-                    CheckResult::Unknown(QueryReason::ResourceLimit),
-                    "Cvc5 overlay contradiction proof"
-                );
-                assert_eq!(
-                    path.unique_value(&equality, &limits),
-                    ValueQuery::Unknown(QueryReason::ResourceLimit),
-                    "Cvc5 overlay uniqueness"
-                );
-                continue;
-            }
+
             assert_eq!(
-                path.unique_value(&equality, &limits),
-                ValueQuery::Unique(U256::from(1)),
-                "{provider:?}, overlaid={overlaid}"
+                path.local_value(&equality, &limits),
+                ValueQuery::Exact(U256::from(1)),
+                "local, overlaid={overlaid}"
             );
         }
     }
@@ -98,8 +75,8 @@ fn default_policy_forwards_symbolic_words_and_byte_overlays_with_history() {
 
 #[test]
 fn default_policy_forwarded_words_zero_pad_overflow_and_keep_wrapped_bytes_separate() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         for start in [
             U256::ZERO,
             U256::MAX - U256::from(31),
@@ -138,17 +115,17 @@ fn default_policy_forwarded_words_zero_pad_overflow_and_keep_wrapped_bytes_separ
             let mut path = RelationState::default();
             assert_eq!(
                 path.add_equal(&p, &ExprId::constant(start), &limits),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
             assert_eq!(
-                path.unique_value(&historical, &limits),
-                ValueQuery::Unique(U256::from_be_bytes(old)),
-                "{provider:?} at {start}"
+                path.local_value(&historical, &limits),
+                ValueQuery::Exact(U256::from_be_bytes(old)),
+                "local at {start}"
             );
             assert_eq!(
-                path.unique_value(&updated, &limits),
-                ValueQuery::Unique(U256::from_be_bytes(new)),
-                "{provider:?} at {start}"
+                path.local_value(&updated, &limits),
+                ValueQuery::Exact(U256::from_be_bytes(new)),
+                "local at {start}"
             );
         }
     }
@@ -156,8 +133,8 @@ fn default_policy_forwarded_words_zero_pad_overflow_and_keep_wrapped_bytes_separ
 
 #[test]
 fn default_policy_concrete_read_after_symbolic_store_retains_both_alias_paths() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let input = ByteStateId::input(SourceId::fresh().unwrap(), ExprId::fresh().unwrap());
         let key = read(input, c(0), limits);
         let state = SlotStateId::zero()
@@ -171,13 +148,13 @@ fn default_policy_concrete_read_after_symbolic_store_retains_both_alias_paths() 
             let mut path = RelationState::default();
             assert_eq!(
                 path.assume(&guard, alias, &limits),
-                CheckResult::Sat,
-                "{provider:?}, alias={alias} assumption"
+                CheckResult::MayBeFeasible,
+                "local, alias={alias} assumption"
             );
             assert_eq!(
-                path.unique_value(&value, &limits),
-                ValueQuery::Unique(U256::from(expected)),
-                "{provider:?}"
+                path.local_value(&value, &limits),
+                ValueQuery::Exact(U256::from(expected)),
+                "local"
             );
         }
     }
@@ -185,8 +162,8 @@ fn default_policy_concrete_read_after_symbolic_store_retains_both_alias_paths() 
 
 #[test]
 fn input_word_prefix_padding_matches_observed_bytes_and_view_boundaries() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         for (start, lengths) in [
             (
                 U256::ZERO,
@@ -241,7 +218,7 @@ fn input_word_prefix_padding_matches_observed_bytes_and_view_boundaries() {
                 let mut path = RelationState::default();
                 assert_eq!(
                     path.add_equal(&length, &ExprId::constant(boundary), &limits),
-                    CheckResult::Sat
+                    CheckResult::MayBeFeasible
                 );
                 for requested in [length.clone(), c(32), c(7)] {
                     let word = ExprId::word_read(
@@ -263,9 +240,9 @@ fn input_word_prefix_padding_matches_observed_bytes_and_view_boundaries() {
                         }
                     });
                     assert_eq!(
-                        path.unique_value(&word, &limits),
-                        ValueQuery::Unique(U256::from_be_bytes(expected)),
-                        "{provider:?}, start={start}, source length={boundary}, view length={requested}"
+                        path.local_value(&word, &limits),
+                        ValueQuery::Exact(U256::from_be_bytes(expected)),
+                        "local, start={start}, source length={boundary}, view length={requested}"
                     );
                 }
             }
@@ -275,8 +252,8 @@ fn input_word_prefix_padding_matches_observed_bytes_and_view_boundaries() {
 
 #[test]
 fn default_policy_guarded_echo_hashes_keep_empty_data_and_disjoint_copy_relations() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let length = ExprId::fresh().unwrap();
         let input = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
         let original = ByteView::new(input.clone(), c(0), length.clone());
@@ -320,33 +297,39 @@ fn default_policy_guarded_echo_hashes_keep_empty_data_and_disjoint_copy_relation
         let mut path = RelationState::default();
         assert_eq!(
             path.add_unsigned_bounds(&length, U256::from(32), U256::from(512), &limits),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
-        assert_eq!(path.assume(&guard, false, &limits), CheckResult::Sat);
+        assert_eq!(
+            path.assume(&guard, false, &limits),
+            CheckResult::MayBeFeasible
+        );
         for (label, hash) in [("old_hash", old_hash), ("new_hash", new_hash.clone())] {
             assert_eq!(
-                path.unique_value(
+                path.local_value(
                     &op(opcode::EQ, &[hash, source_hash.clone()], limits),
                     &limits
                 ),
-                ValueQuery::Unique(U256::from(1)),
-                "{provider:?}, hash={label}"
+                ValueQuery::Exact(U256::from(1)),
+                "local, hash={label}"
             );
         }
         let mut empty = RelationState::default();
-        assert_eq!(empty.assume(&guard, true, &limits), CheckResult::Sat);
         assert_eq!(
-            empty.unique_value(&new_hash, &limits),
-            ValueQuery::Unique(U256::from_be_bytes(keccak256([]).0)),
-            "{provider:?}"
+            empty.assume(&guard, true, &limits),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            empty.local_value(&new_hash, &limits),
+            ValueQuery::Exact(U256::from_be_bytes(keccak256([]).0)),
+            "local"
         );
     }
 }
 
 #[test]
 fn overlapping_copy_hashes_do_not_claim_preservation_from_wrapped_range_ends() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         for at in [U256::ZERO, U256::MAX] {
             let length = ExprId::fresh().unwrap();
             let input = ByteStateId::input(SourceId::fresh().unwrap(), ExprId::constant(U256::MAX));
@@ -367,15 +350,18 @@ fn overlapping_copy_hashes_do_not_claim_preservation_from_wrapped_range_ends() {
             .unwrap();
             let equality = op(opcode::EQ, &[before, after], limits);
             let mut path = RelationState::default();
-            assert_eq!(path.add_equal(&length, &c(128), &limits), CheckResult::Sat);
+            assert_eq!(
+                path.add_equal(&length, &c(128), &limits),
+                CheckResult::MayBeFeasible
+            );
             assert_eq!(
                 path.can_equal(&equality, U256::ZERO, &limits),
-                CheckResult::Sat,
-                "{provider:?} at {at}"
+                CheckResult::MayBeFeasible,
+                "local at {at}"
             );
             assert_eq!(
                 path.can_equal(&equality, U256::from(1), &limits),
-                CheckResult::Sat,
+                CheckResult::MayBeFeasible,
                 "hash collisions remain possible"
             );
         }

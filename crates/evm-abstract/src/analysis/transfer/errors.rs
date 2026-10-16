@@ -13,9 +13,18 @@ pub(super) fn expression(error: ExprError) -> FrontierReason {
     FrontierReason::Relations(match error {
         ExprError::Cancelled => QueryReason::Cancelled,
         ExprError::Limit { .. } | ExprError::ExportBytes { .. } => QueryReason::ExpressionLimit,
-        ExprError::Unsupported(op) | ExprError::Arity { opcode: op, .. } => {
-            QueryReason::Unsupported(op)
+        ExprError::Unsupported(op) => {
+            QueryReason::ScalarFactError(crate::domain::facts::FactError::UnsupportedOperation(op))
         }
+        ExprError::Arity {
+            opcode,
+            expected,
+            actual,
+        } => QueryReason::ScalarFactError(crate::domain::facts::FactError::InvalidOperation {
+            opcode,
+            expected,
+            actual,
+        }),
     })
 }
 

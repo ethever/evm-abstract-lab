@@ -1,8 +1,8 @@
-//! Bounded cross-value constraints, queried by an in-process bit-vector solver.
+//! Bounded cross-value guarantees with local consequence propagation.
 //!
-//! Constraints are guarantees: join retains common guarantees, never conjoins
-//! unrelated paths. Only a proved UNSAT prunes; budgets/unsupported encodings
-//! and solver unknown preserve the path and its sound retained assumptions.
+//! Joins retain common guarantees or guarded alternatives. Only a proved local
+//! contradiction prunes; bounds and cancellation preserve retained assumptions.
+//! A consistent local approximation is not a satisfiability proof.
 
 use super::{
     NumericValue,
@@ -12,30 +12,25 @@ use alloy_primitives::U256;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod local;
 mod path;
 mod scalar;
-mod solver;
-pub use embedded_smt::{Error as SmtError, Provider as SmtProvider};
 pub use path::{RelationPath, RelationPathKind};
 pub use scalar::ScalarQuery;
 #[cfg(test)]
 mod tests;
 
-/// Explicit bounded policy for expression construction and SMT queries.
+/// Explicit bounded policy for retention and local consequence propagation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct RelationLimits {
     /// Enable relational queries; scalar/value identity precision is independent.
     pub enabled: bool,
     /// Maximum retained conjunction atoms.
     pub max_constraints: usize,
-    /// Maximum expression/encoding traversal work in one query.
+    /// Maximum expression traversal and propagation work in one query.
     pub max_nodes: usize,
     /// Maximum expression nesting.
     pub max_depth: usize,
-    /// Selected in-process provider; it never falls back to a different provider.
-    pub provider: SmtProvider,
-    /// Per-check resource allowance in provider-specific, non-wall-clock units.
-    pub rlimit: u32,
 }
 impl Default for RelationLimits {
     fn default() -> Self {
@@ -44,8 +39,6 @@ impl Default for RelationLimits {
             max_constraints: 128,
             max_nodes: 1024,
             max_depth: 64,
-            provider: SmtProvider::default(),
-            rlimit: embedded_smt::DEFAULT_RLIMIT,
         }
     }
 }
@@ -57,95 +50,80 @@ impl RelationLimits {
             max_depth: self.max_depth,
         }
     }
-    /// Zero limits are configuration errors, never unbounded solver settings.
+    /// Zero limits are configuration errors, never unbounded traversal settings.
     pub fn valid(self) -> bool {
-        self.max_constraints > 0 && self.max_nodes > 0 && self.max_depth > 0 && self.rlimit > 0
-    }
-    pub(crate) fn cache_scope(self) -> embedded_smt::CacheScope {
-        embedded_smt::CacheScope {
-            enabled: self.enabled,
-            constraints: self.max_constraints,
-            nodes: self.max_nodes,
-            depth: self.max_depth,
-        }
+        self.max_constraints > 0 && self.max_nodes > 0 && self.max_depth > 0
     }
 }
 
-/// A query did not prove either satisfiability or contradiction.
+/// A real bound, configuration error or cancellation stopped local reasoning.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum QueryReason {
-    /// Explicit caller cancellation; the enclosing controlled analysis stops.
+    /// Explicit caller cancellation; the controlled analysis stops.
     Cancelled,
-    /// Relational queries were explicitly disabled.
+    /// Relational refinement was explicitly disabled.
     Disabled,
-    /// Invalid zero-sized query policy.
+    /// Invalid zero-sized policy.
     Configuration,
     /// The next assumption cannot fit the retained conjunction.
     ConstraintLimit,
-    /// The bounded local scalar fact table could not complete the projection.
+    /// The bounded scalar fact table could not complete the projection.
     ScalarFactLimit,
     /// Local fact interpretation failed without proving numerical bottom.
     ScalarFactError(super::facts::FactError),
-    /// Expression size or encoded work exceeds the query policy.
+    /// Expression size, depth or local propagation work exceeds the policy.
     ExpressionLimit,
-    /// A pure operation is conservatively opaque in the current encoder.
-    Unsupported(u8),
-    /// Native solver exhausted its deterministic resource allowance.
-    ResourceLimit,
-    /// Native solver returned UNKNOWN for a provider-specific reason.
-    SolverUnknown {
-        /// Provider that returned UNKNOWN.
-        provider: SmtProvider,
-        /// Original native explanation; it is not an adapter error.
-        reason: String,
-    },
-    /// The native binding or checked adapter failed; this is distinct from UNKNOWN.
-    SolverError(SmtError),
-    /// A model or its word value was unavailable.
-    ModelUnavailable,
 }
 
-/// Native check result; only Unsat justifies eliminating a path.
+/// Only a proved contradiction justifies eliminating a path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum CheckResult {
-    /// Satisfiable in the supported exact bit-vector encoding.
-    Sat,
+    /// No contradiction was found; no satisfying valuation is claimed.
+    MayBeFeasible,
     /// No valuation satisfies the retained guarantees.
-    Unsat,
-    /// Preserve the path; no contradiction was established.
-    Unknown(QueryReason),
+    ProvenImpossible,
+    /// Retain the path and all successfully retained assumptions.
+    Undetermined(QueryReason),
 }
 
-/// A finite refinement stopped before all candidate answers were obtained.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum CandidateError {
-    #[error("the root query work budget was exhausted")]
-    Work,
-    #[error("candidate query stopped: {0:?}")]
-    Query(QueryReason),
-}
-
-/// A bounded value-refinement query.
+/// A value obtained from sound bounded local consequences.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum ValueQuery {
-    /// All valuations of the retained constraints agree on this exact word.
-    Unique(U256),
-    /// At least two satisfying values remain.
-    Multiple,
+    /// Every valuation of the retained guarantees has this value.
+    Exact(U256),
     /// The state is proved impossible.
-    Infeasible,
-    /// Leave the numerical approximation unchanged.
-    Unknown(QueryReason),
+    ProvenImpossible,
+    /// A sound local upper approximation; top is ordinary imprecision.
+    Bounds(Box<NumericValue>),
+    /// A real bound or cancellation prevented the query from completing.
+    Undetermined(QueryReason),
 }
 
-/// One projection of a jointly prepared conjunction, or an unpaid work stop.
-/// A later refusal must retain the batch's already proved mathematical answers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BudgetedValueQuery {
-    /// The original proof or typed solver/encoding failure for this expression.
-    Value(ValueQuery),
-    /// The root ledger refused the next query before it could run.
-    Work,
+/// Intersect two numeric upper approximations without changing expression identity.
+/// The caller pays scalar reduction work before invoking this helper.
+pub(crate) fn intersect_numeric(
+    left: &NumericValue,
+    right: &NumericValue,
+    domain: super::Domain,
+) -> Option<NumericValue> {
+    let numeric = NumericValue {
+        finite: left.finite.meet(&right.finite).ok()?,
+        bits: left.bits.meet(&right.bits)?,
+        interval: left.interval.meet(&right.interval)?,
+        congruence: left.congruence.meet(&right.congruence)?,
+        nonzero: left.nonzero || right.nonzero,
+    };
+    if numeric
+        .constants()
+        .is_some_and(|values| !values.iter().any(|value| numeric.contains(*value)))
+    {
+        return None;
+    }
+    let reduced = domain.reduce(&super::AbstractValue::from_numeric(numeric));
+    if reduced.status == super::ReductionStatus::Empty {
+        return None;
+    }
+    Some(domain.project(&reduced.value).numeric().clone())
 }
 
 /// A retained guarantee over scoped Word256 expressions.
@@ -317,23 +295,12 @@ impl RelationState {
         constraint: Constraint,
         limits: &RelationLimits,
     ) -> Result<CheckResult, QueryReason> {
-        self.insert_inner(constraint, limits, None)
-    }
-    fn insert_inner(
-        &mut self,
-        constraint: Constraint,
-        limits: &RelationLimits,
-        cache: Option<&mut embedded_smt::CacheQuery<'_>>,
-    ) -> Result<CheckResult, QueryReason> {
         if self.bottom {
-            return Ok(CheckResult::Unsat);
+            return Ok(CheckResult::ProvenImpossible);
         }
         self.retain(constraint, limits)?;
-        let checked = match cache {
-            Some(cache) => solver::check_cached(self, None, limits, cache),
-            None => self.check(limits),
-        };
-        if checked == CheckResult::Unsat {
+        let checked = self.check(limits);
+        if checked == CheckResult::ProvenImpossible {
             self.bottom = true;
         }
         Ok(checked)
@@ -362,7 +329,7 @@ impl RelationState {
         self.constraints.insert(constraint);
         Ok(())
     }
-    /// Import sound scalar guarantees without invoking a solver per component.
+    /// Import sound scalar guarantees without checking each component separately.
     /// Budget failure may leave a sound subset installed; it never creates bottom.
     pub fn observe(
         &mut self,
@@ -385,9 +352,9 @@ impl RelationState {
                 limits,
             );
         }
-        // Comparison expressions are already exact 0/1 words in the encoder.
-        // Reasserting their range, 255 zero bits and {0,1} membership expands a
-        // trivial branch into redundant BV circuits and wastes deterministic fuel.
+        // Comparison expressions are already exact 0/1 words in the numeric interpreter.
+        // Reasserting their range, 255 zero bits and {0,1} membership adds
+        // redundant constraints to the same bounded conjunction.
         if numeric.contains(U256::ZERO)
             && numeric.contains(U256::from(1))
             && matches!(expression.kind(), ExprKind::Operation { opcode, .. } if matches!(*opcode,
@@ -402,7 +369,7 @@ impl RelationState {
             }
             // A complete finite set, filtered by the product, already implies
             // its masks, bounds, congruence and nonzero constraint. Retaining
-            // those again can create expensive redundant Word256 divisions.
+            // those again duplicates facts already carried by the finite set.
             return self.retain(
                 Constraint::Members {
                     expression: expression.clone(),
@@ -480,7 +447,7 @@ impl RelationState {
         Ok(())
     }
     /// Intersect this state with an EVM condition (zero or nonzero).
-    /// A solver Unknown retains the new sound assumption; a capacity failure
+    /// An interrupted local check retains the new sound assumption; a capacity failure
     /// preserves the prior, weaker state instead of pruning the path.
     /// Use [`Self::assume_checked`] when coverage depends on retaining the guard.
     pub fn assume(
@@ -490,15 +457,15 @@ impl RelationState {
         limits: &RelationLimits,
     ) -> CheckResult {
         self.assume_checked(expression, nonzero, limits)
-            .unwrap_or_else(CheckResult::Unknown)
+            .unwrap_or_else(CheckResult::Undetermined)
     }
     /// Retain an assumption before checking its feasibility.
     ///
     /// `Err` leaves this state unchanged because the assumption did not fit its
-    /// policy. `Ok(Unknown(_))` keeps the complete assumption: encoding or solver
-    /// failure loses pruning precision without losing its guarded input domain.
+    /// policy. `Ok(Undetermined(_))` keeps the complete assumption: a traversal
+    /// bound loses pruning precision without losing its guarded input domain.
     /// Coverage-sensitive callers must preserve this distinction. An already
-    /// contradictory state returns `Ok(Unsat)` without needing another atom.
+    /// contradictory state returns `Ok(ProvenImpossible)` without needing another atom.
     pub fn assume_checked(
         &mut self,
         expression: &ExprId,
@@ -511,25 +478,6 @@ impl RelationState {
                 nonzero,
             },
             limits,
-        )
-    }
-    /// Branch-only cached feasibility; retention and full encoding still precede
-    /// lookup. Rejected retention leaves the state unchanged, and only a proved
-    /// contradiction installs bottom.
-    pub(crate) fn assume_checked_cached(
-        &mut self,
-        expression: &ExprId,
-        nonzero: bool,
-        limits: &RelationLimits,
-        cache: &mut embedded_smt::CacheQuery<'_>,
-    ) -> Result<CheckResult, QueryReason> {
-        self.insert_inner(
-            Constraint::Truth {
-                expression: expression.clone(),
-                nonzero,
-            },
-            limits,
-            Some(cache),
         )
     }
     /// Add sound unsigned numeric bounds for one value.
@@ -548,7 +496,7 @@ impl RelationState {
             },
             limits,
         )
-        .unwrap_or_else(CheckResult::Unknown)
+        .unwrap_or_else(CheckResult::Undetermined)
     }
     /// Add sound bit guarantees; contradictory bits may prove bottom.
     pub fn add_known_bits(
@@ -566,7 +514,7 @@ impl RelationState {
             },
             limits,
         )
-        .unwrap_or_else(CheckResult::Unknown)
+        .unwrap_or_else(CheckResult::Undetermined)
     }
     /// Add equality between two value expressions, for state/call substitutions.
     pub fn add_equal(
@@ -582,7 +530,7 @@ impl RelationState {
             },
             limits,
         )
-        .unwrap_or_else(CheckResult::Unknown)
+        .unwrap_or_else(CheckResult::Undetermined)
     }
     /// Whether any retained guarantee depends on a variable in this value.
     /// Names alone are insufficient: leaf equality includes private input scope
@@ -607,90 +555,113 @@ impl RelationState {
     pub fn mentions(&self, expression: &ExprId) -> bool {
         self.relevant(expression)
     }
-    /// Check the current conjunction with a fresh, privately owned native solver.
+    /// Look for a contradiction using bounded local facts and path alternatives.
     pub fn check(&self, limits: &RelationLimits) -> CheckResult {
-        solver::check(self, None, limits)
+        match local::project(self, None, None, limits, None) {
+            Ok(None) => CheckResult::ProvenImpossible,
+            Ok(Some(_)) => CheckResult::MayBeFeasible,
+            Err(reason) => CheckResult::Undetermined(reason),
+        }
     }
-    /// Check whether an exact candidate remains possible; Unknown keeps it.
+    /// Exclude a candidate only when local consequences prove it impossible.
     pub fn can_equal(
         &self,
         expression: &ExprId,
         value: U256,
         limits: &RelationLimits,
     ) -> CheckResult {
-        solver::check(
+        match local::project(
             self,
+            Some(expression),
             Some(Constraint::Equal {
                 left: expression.clone(),
                 right: ExprId::constant(value),
             }),
             limits,
-        )
+            None,
+        ) {
+            Ok(None) => CheckResult::ProvenImpossible,
+            Ok(Some(_)) => CheckResult::MayBeFeasible,
+            Err(reason) => CheckResult::Undetermined(reason),
+        }
     }
-    /// Cached exact-candidate feasibility without retaining the candidate.
-    /// The caller pays its original query fee before constructing the cache borrow.
-    pub(crate) fn can_equal_cached(
+    /// Evaluate retained numeric/equality/state identities without model queries.
+    pub fn local_value(&self, expression: &ExprId, limits: &RelationLimits) -> ValueQuery {
+        match local::project(self, Some(expression), None, limits, None) {
+            Ok(None) => ValueQuery::ProvenImpossible,
+            Ok(Some(value)) => value.singleton().map_or_else(
+                || ValueQuery::Bounds(Box::new(value.clone())),
+                ValueQuery::Exact,
+            ),
+            Err(reason) => ValueQuery::Undetermined(reason),
+        }
+    }
+    /// Production projection pays local work to the existing root ledger.
+    /// A refused ledger reservation leaves the mathematical result uninstalled;
+    /// callers distinguish it through `budget.exhausted()` before applying it.
+    pub(crate) fn local_value_budgeted(
+        &self,
+        expression: &ExprId,
+        limits: &RelationLimits,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> ValueQuery {
+        match local::project(self, Some(expression), None, limits, Some(budget)) {
+            Ok(None) => ValueQuery::ProvenImpossible,
+            Ok(Some(value)) => value.singleton().map_or_else(
+                || ValueQuery::Bounds(Box::new(value.clone())),
+                ValueQuery::Exact,
+            ),
+            Err(reason) => ValueQuery::Undetermined(reason),
+        }
+    }
+    pub(crate) fn can_equal_budgeted(
         &self,
         expression: &ExprId,
         value: U256,
         limits: &RelationLimits,
-        cache: &mut embedded_smt::CacheQuery<'_>,
+        budget: &mut crate::resource::WorkBudget,
     ) -> CheckResult {
-        solver::check_cached(
+        match local::project(
             self,
+            Some(expression),
             Some(Constraint::Equal {
                 left: expression.clone(),
                 right: ExprId::constant(value),
             }),
             limits,
-            cache,
-        )
+            Some(budget),
+        ) {
+            Ok(None) => CheckResult::ProvenImpossible,
+            Ok(Some(_)) => CheckResult::MayBeFeasible,
+            Err(reason) => CheckResult::Undetermined(reason),
+        }
     }
-    /// Check the same complete conjunction for every candidate, in input order.
-    /// A shared immutable encoding does not merge identities or query fuel.
-    pub(crate) fn can_equal_candidates(
-        &self,
+    pub(crate) fn assume_checked_budgeted(
+        &mut self,
         expression: &ExprId,
-        candidates: &[U256],
+        nonzero: bool,
         limits: &RelationLimits,
-        budget: &mut embedded_smt::QueryBudget<'_>,
-    ) -> Result<Vec<CheckResult>, CandidateError> {
-        solver::candidates::check(self, expression, candidates, limits, budget)
-    }
-    /// Ask whether every satisfying valuation agrees on this expression.
-    pub fn unique_value(&self, expression: &ExprId, limits: &RelationLimits) -> ValueQuery {
-        solver::unique(self, expression, limits)
-    }
-    pub(crate) fn unique_value_cached(
-        &self,
-        expression: &ExprId,
-        limits: &RelationLimits,
-        cache: &mut embedded_smt::CacheQuery<'_>,
-    ) -> ValueQuery {
-        solver::unique_cached(self, expression, limits, cache)
-    }
-    /// Prepare the complete ordinary single-expression query before consulting
-    /// its decided cache. A miss never constructs a native solver. The caller
-    /// pays preparation work before borrowing the optional maintenance budget.
-    pub(crate) fn probe_unique_value_cached(
-        &self,
-        expression: &ExprId,
-        limits: &RelationLimits,
-        cache: &mut embedded_smt::CacheQuery<'_>,
-    ) -> Result<Option<ValueQuery>, QueryReason> {
-        solver::probe_unique(self, expression, limits, cache)
-    }
-    /// Query 2..=16 distinct expressions over one complete frozen conjunction.
-    /// The caller supplies its unchanged per-check fee (relation work, all
-    /// target work and the original native allowance). Preparation consumes the
-    /// first permit even on failure; joint proofs never enter single-value caches.
-    pub(crate) fn unique_many_budgeted(
-        &self,
-        expressions: &[ExprId],
-        limits: &RelationLimits,
-        budget: &mut embedded_smt::QueryBudget<'_>,
-    ) -> Result<Vec<BudgetedValueQuery>, QueryReason> {
-        solver::joint::unique(self, expressions, limits, budget)
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<CheckResult, QueryReason> {
+        if self.bottom {
+            return Ok(CheckResult::ProvenImpossible);
+        }
+        self.retain(
+            Constraint::Truth {
+                expression: expression.clone(),
+                nonzero,
+            },
+            limits,
+        )?;
+        let answer = match local::project(self, None, None, limits, Some(budget)) {
+            Ok(None) => CheckResult::ProvenImpossible,
+            Ok(Some(_)) => CheckResult::MayBeFeasible,
+            Err(reason) => CheckResult::Undetermined(reason),
+        };
+        if answer == CheckResult::ProvenImpossible {
+            self.bottom = true;
+        }
+        Ok(answer)
     }
     /// Cover both paths by keeping only guarantees common to both.
     /// This intentionally loses disjunction precision, never intersects paths.
@@ -732,7 +703,7 @@ impl RelationState {
         if !limits.valid() {
             return Err(QueryReason::Configuration);
         }
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(QueryReason::Cancelled);
         }
         let checked = |state: &Self| {
@@ -790,7 +761,7 @@ impl RelationState {
         checked(&joined)?;
         Ok(joined)
     }
-    /// Complete immutable branch formula for read-only solver/report traversal.
+    /// Complete immutable branch formula for read-only local/report traversal.
     pub fn path(&self) -> &RelationPath {
         &self.path
     }

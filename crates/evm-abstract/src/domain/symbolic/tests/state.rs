@@ -225,9 +225,9 @@ fn disjoint_write_lookup_preserves_limits_and_cancellation() {
             Err(StateError::Limit { .. })
         ));
     }
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
             slots.store(c(0), c(7), limits()),
             Err(StateError::Cancelled)
@@ -334,9 +334,9 @@ fn normalized_constructions_still_obey_resource_and_cancellation_policy() {
             .is_err()
     );
     assert!(zero.join_guarded(&zero, c(1), denied).is_err());
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
             zero.write_byte(c(0), c(0), limits()),
             Err(StateError::Cancelled)

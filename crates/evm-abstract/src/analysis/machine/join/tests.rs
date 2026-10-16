@@ -35,11 +35,11 @@ fn one_selector_pairs_every_frame_value_root_checkpoint_and_continuation() {
     let policy = domain.spec().relations();
     assert_eq!(
         left.relations.assume(&predicate, true, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         right.relations.assume(&predicate, false, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     for (payload, at, marker) in [(&mut left, 0x80, 11), (&mut right, 0xc0, 22)] {
         payload
@@ -114,14 +114,17 @@ fn one_selector_pairs_every_frame_value_root_checkpoint_and_continuation() {
     assert_eq!(
         joined
             .relations
-            .unique_value(loaded.expression().unwrap(), &policy),
-        ValueQuery::Unique(U256::from(7))
+            .local_value(loaded.expression().unwrap(), &policy),
+        ValueQuery::Exact(U256::from(7))
     );
     let mut chosen = joined.relations.clone();
-    assert_eq!(chosen.assume(&selector, true, &policy), CheckResult::Sat);
+    assert_eq!(
+        chosen.assume(&selector, true, &policy),
+        CheckResult::MayBeFeasible
+    );
     assert_eq!(
         chosen.can_equal(&predicate, U256::ZERO, &policy),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
 }
 
@@ -460,7 +463,7 @@ fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
     incoming.active_mut().memory = seven;
     assert_eq!(
         incoming.relations.assume(&guard, false, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     let mut alternatives = EntryAlternatives::new(&old);
     let mut budget = WorkBudget::new(10_000_000);
@@ -469,7 +472,10 @@ fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
         .unwrap()
         .expect("root leaf membership does not prove complete guarded coverage");
     let mut path = joined.relations.clone();
-    assert_eq!(path.assume(&guard, false, &policy), CheckResult::Sat);
+    assert_eq!(
+        path.assume(&guard, false, &policy),
+        CheckResult::MayBeFeasible
+    );
     let word = joined
         .active()
         .memory
@@ -477,11 +483,11 @@ fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
         .unwrap();
     assert_eq!(
         path.can_equal(word.expression().unwrap(), U256::from(7), &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         path.can_equal(word.expression().unwrap(), U256::from(9), &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
 }
 
@@ -549,11 +555,11 @@ fn canonical_case_rebuild_keeps_previously_accepted_stack_root_pairs() {
         .symbolic_expression()
         .unwrap();
     for (counter, word, expected) in [
-        (1, 7, CheckResult::Sat),
-        (1, 9, CheckResult::Sat),
-        (5, 11, CheckResult::Sat),
-        (1, 11, CheckResult::Unsat),
-        (5, 7, CheckResult::Unsat),
+        (1, 7, CheckResult::MayBeFeasible),
+        (1, 9, CheckResult::MayBeFeasible),
+        (5, 11, CheckResult::MayBeFeasible),
+        (1, 11, CheckResult::ProvenImpossible),
+        (5, 7, CheckResult::ProvenImpossible),
     ] {
         let a = ExprId::operation(
             revm_bytecode::opcode::EQ,
@@ -684,7 +690,7 @@ fn a_constrained_entry_from_outside_a_cycle_keeps_its_actual_guard() {
         .unwrap();
     assert_eq!(
         guarded.relations.assume(&guard, true, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     let result = alternatives
         .join_cyclic(&entry, &guarded, domain, &mut budget, &selectors, false)
@@ -703,13 +709,16 @@ fn a_constrained_entry_from_outside_a_cycle_keeps_its_actual_guard() {
         .symbolic_expression()
         .unwrap();
     for (truth, counter, word, expected) in [
-        (true, 5, 11, CheckResult::Sat),
-        (false, 5, 11, CheckResult::Unsat),
-        (false, 1, 7, CheckResult::Sat),
-        (true, 5, 7, CheckResult::Unsat),
+        (true, 5, 11, CheckResult::MayBeFeasible),
+        (false, 5, 11, CheckResult::ProvenImpossible),
+        (false, 1, 7, CheckResult::MayBeFeasible),
+        (true, 5, 7, CheckResult::ProvenImpossible),
     ] {
         let mut path = result.relations.clone();
-        assert_eq!(path.assume(&guard, truth, &policy), CheckResult::Sat);
+        assert_eq!(
+            path.assume(&guard, truth, &policy),
+            CheckResult::MayBeFeasible
+        );
         let equals = [(stack.clone(), counter), (memory.clone(), word)].map(|(value, constant)| {
             ExprId::operation(
                 revm_bytecode::opcode::EQ,

@@ -4,7 +4,7 @@
 //! Applications acknowledge completion only after the controlled call returns.
 
 use super::progress::Observer;
-pub use embedded_smt::Cancellation as CancelToken;
+pub use analysis_control::Cancellation as CancelToken;
 
 /// Cancellation was observed before starting the next analysis operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -35,7 +35,7 @@ impl Control {
         }
     }
 
-    /// Signal shared with the task owner and network/solver boundaries.
+    /// Signal shared with the task owner and operation boundaries.
     pub fn cancellation(&self) -> &CancelToken {
         &self.cancellation
     }
@@ -54,8 +54,8 @@ impl Control {
         }
     }
 
-    /// Scope the native solver's cancellation context to this worker thread.
+    /// Scope cooperative cancellation to this worker thread.
     pub fn scope<T>(&self, operation: impl FnOnce() -> T) -> T {
-        embedded_smt::with_cancellation(&self.cancellation, operation)
+        analysis_control::with_cancellation(&self.cancellation, operation)
     }
 }

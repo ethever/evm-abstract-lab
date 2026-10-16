@@ -1,12 +1,7 @@
 //! Content hashes retain a conservative value when equality support is limited.
 
 use super::{Execution, TransferContext, boundary, errors};
-use crate::{
-    analysis::DiagnosticKind,
-    domain::{AbstractValue, relational::QueryReason, symbolic::HashSupport},
-    world::ByteArray,
-};
-use revm_bytecode::opcode;
+use crate::{domain::AbstractValue, world::ByteArray};
 
 pub(super) fn evaluate(
     bytes: &ByteArray,
@@ -21,23 +16,5 @@ pub(super) fn evaluate(
             return None;
         }
     };
-    if value.singleton().is_none() {
-        match bytes
-            .view()
-            .hash_support(context.config.analysis.relations.expressions())
-        {
-            Ok(HashSupport::Uncompared) => result.diagnostics.push((
-                pc,
-                DiagnosticKind::RelationalPrecisionLost(QueryReason::Unsupported(
-                    opcode::KECCAK256,
-                )),
-            )),
-            Ok(_) => {}
-            Err(error) => {
-                boundary(result, pc, errors::expression(error));
-                return None;
-            }
-        }
-    }
     Some(value)
 }

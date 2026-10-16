@@ -148,7 +148,7 @@ fn guard(expression: &ExprId, truth: bool, target: &ExprId) -> Option<Fact> {
         _ => return None,
     })
 }
-fn direct(constraint: &Constraint, target: &ExprId) -> Result<Option<Fact>, FactError> {
+pub(super) fn direct(constraint: &Constraint, target: &ExprId) -> Result<Option<Fact>, FactError> {
     let unary = |predicate| Some(Fact::Unary(UnaryFact::new(Symbol::THIS, predicate)));
     Ok(match constraint {
         Constraint::Truth {
@@ -231,8 +231,8 @@ impl RelationState {
     }
 
     /// Project direct EQ/ISZERO/ordered constant guards through the existing
-    /// scalar fact language. A useful range can avoid an unnecessary SMT unique
-    /// query; nonlocal inverse constraints remain explicitly incomplete here.
+    /// scalar fact language. A useful range can avoid a larger local traversal; nonlocal inverse
+    /// constraints remain explicitly incomplete here.
     pub fn refine_numeric(
         &self,
         expression: &ExprId,

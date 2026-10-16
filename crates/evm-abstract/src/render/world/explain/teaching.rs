@@ -81,8 +81,12 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
     output.push_str("  σᵢ = state; Bᵢ = frame-local block; fᵢ = frame within a state; Cᵢ = captured code; Uᵢ = unresolved frontier; stacks are bottom-to-top.\n");
     write_rpc(&mut output, analysis, &refs);
     let relations = analysis.config().analysis.relations;
-    writeln!(output, "  relations={} | SMT=in-process {} | rlimit={} | resource unit={} | expression nodes={} | depth={} | constraints={}",
-        relations.enabled, relations.provider, relations.rlimit, relations.provider.resource_unit(), relations.max_nodes, relations.max_depth, relations.max_constraints).unwrap();
+    writeln!(
+        output,
+        "  relations={} | local propagation | expression nodes={} | depth={} | constraints={}",
+        relations.enabled, relations.max_nodes, relations.max_depth, relations.max_constraints
+    )
+    .unwrap();
     write_addresses(&mut output, &refs);
     write_code(&mut output, analysis, &refs);
     write_cfg(&mut output, analysis, &refs);

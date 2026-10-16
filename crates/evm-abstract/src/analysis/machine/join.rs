@@ -87,7 +87,7 @@ impl From<StoreError> for MachineError {
 
 impl MachineError {
     pub(crate) fn check_cancelled() -> Result<(), Self> {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             Err(Self::Relations(QueryReason::Cancelled))
         } else {
             Ok(())
@@ -95,7 +95,7 @@ impl MachineError {
     }
 
     pub(crate) fn work_failure() -> Self {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             Self::Relations(QueryReason::Cancelled)
         } else {
             Self::Work
@@ -122,9 +122,18 @@ impl MachineError {
 fn expression_reason(error: ExprError) -> FrontierReason {
     FrontierReason::Relations(match error {
         ExprError::Cancelled => QueryReason::Cancelled,
-        ExprError::Unsupported(op) | ExprError::Arity { opcode: op, .. } => {
-            QueryReason::Unsupported(op)
+        ExprError::Unsupported(op) => {
+            QueryReason::ScalarFactError(crate::domain::facts::FactError::UnsupportedOperation(op))
         }
+        ExprError::Arity {
+            opcode,
+            expected,
+            actual,
+        } => QueryReason::ScalarFactError(crate::domain::facts::FactError::InvalidOperation {
+            opcode,
+            expected,
+            actual,
+        }),
         ExprError::Limit { .. } | ExprError::ExportBytes { .. } => QueryReason::ExpressionLimit,
     })
 }

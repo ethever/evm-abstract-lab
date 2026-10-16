@@ -1,8 +1,7 @@
 //! Common conjunctions stay unconditional; every residual uses the machine guard.
 
 use super::super::{
-    CheckResult, Constraint, QueryReason, RelationLimits, RelationPath, RelationState, SmtProvider,
-    ValueQuery,
+    CheckResult, Constraint, QueryReason, RelationLimits, RelationPath, RelationState, ValueQuery,
 };
 use super::{c, limits, op};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId};
@@ -25,12 +24,9 @@ fn equal(left: &ExprId, value: u64) -> Constraint {
 }
 
 #[test]
-fn common_guarantees_preserve_word_memory_and_storage_selection_for_every_provider() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let policy = RelationLimits {
-            provider,
-            ..limits()
-        };
+fn common_guarantees_preserve_word_memory_and_storage_selection_with_local_facts() {
+    {
+        let policy = RelationLimits { ..limits() };
         let bounds = policy.expressions();
         let guard = ExprId::fresh().unwrap();
         let common_word = ExprId::fresh().unwrap();
@@ -43,14 +39,11 @@ fn common_guarantees_preserve_word_memory_and_storage_selection_for_every_provid
         assert_eq!(joined.constraints().cloned().collect::<Vec<_>>(), [common]);
         assert_eq!(joined.len(), 3);
         assert_eq!(
-            joined.unique_value(&common_word, &policy),
-            ValueQuery::Unique(U256::from(5)),
-            "{provider:?}: common guarantee"
+            joined.local_value(&common_word, &policy),
+            ValueQuery::Exact(U256::from(5)),
+            "local: common guarantee"
         );
-        assert_eq!(
-            joined.unique_value(&branch_word, &policy),
-            ValueQuery::Multiple
-        );
+        super::bounds_include(joined.local_value(&branch_word, &policy), &[7, 9]);
 
         let memory = ByteStateId::zero()
             .write_word(c(0), c(7), bounds.into())
@@ -80,30 +73,30 @@ fn common_guarantees_preserve_word_memory_and_storage_selection_for_every_provid
         let selected = ExprId::ite(guard.clone(), c(7), c(9), bounds).unwrap();
         for expression in [selected, memory_word, storage_word] {
             assert_eq!(
-                joined.unique_value(&op(opcode::EQ, &[branch_word.clone(), expression]), &policy),
-                ValueQuery::Unique(U256::from(1)),
-                "{provider:?}: one guard pairs relations and values/states"
+                joined.local_value(&op(opcode::EQ, &[branch_word.clone(), expression]), &policy),
+                ValueQuery::Exact(U256::from(1)),
+                "local: one guard pairs relations and values/states"
             );
         }
         for (nonzero, expected) in [(true, 7), (false, 9)] {
             let mut selected = joined.clone();
-            assert_eq!(selected.assume(&guard, nonzero, &policy), CheckResult::Sat);
             assert_eq!(
-                selected.unique_value(&branch_word, &policy),
-                ValueQuery::Unique(U256::from(expected)),
-                "{provider:?}: branch {nonzero}"
+                selected.assume(&guard, nonzero, &policy),
+                CheckResult::MayBeFeasible
+            );
+            assert_eq!(
+                selected.local_value(&branch_word, &policy),
+                ValueQuery::Exact(U256::from(expected)),
+                "local: branch {nonzero}"
             );
         }
     }
 }
 
 #[test]
-fn disjoint_branch_guarantees_are_never_unconditional_for_every_provider() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let policy = RelationLimits {
-            provider,
-            ..limits()
-        };
+fn disjoint_branch_guarantees_are_never_unconditional_with_local_facts() {
+    {
+        let policy = RelationLimits { ..limits() };
         let guard = ExprId::fresh().unwrap();
         let left = ExprId::fresh().unwrap();
         let right = ExprId::fresh().unwrap();
@@ -115,28 +108,24 @@ fn disjoint_branch_guarantees_are_never_unconditional_for_every_provider() {
             [(true, &left, &right, 7), (false, &right, &left, 9)]
         {
             let mut selected = joined.clone();
-            assert_eq!(selected.assume(&guard, nonzero, &policy), CheckResult::Sat);
             assert_eq!(
-                selected.unique_value(fixed, &policy),
-                ValueQuery::Unique(U256::from(expected)),
-                "{provider:?}: selected branch guarantee"
+                selected.assume(&guard, nonzero, &policy),
+                CheckResult::MayBeFeasible
             );
             assert_eq!(
-                selected.unique_value(free, &policy),
-                ValueQuery::Multiple,
-                "{provider:?}: other branch guarantee remains conditional"
+                selected.local_value(fixed, &policy),
+                ValueQuery::Exact(U256::from(expected)),
+                "local: selected branch guarantee"
             );
+            super::bounds_include(selected.local_value(free, &policy), &[0, 17]);
         }
     }
 }
 
 #[test]
-fn nested_conditional_guarantees_keep_their_original_selectors_for_every_provider() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let policy = RelationLimits {
-            provider,
-            ..limits()
-        };
+fn nested_conditional_guarantees_keep_their_original_selectors_with_local_facts() {
+    {
+        let policy = RelationLimits { ..limits() };
         let common_word = ExprId::fresh().unwrap();
         let branch_word = ExprId::fresh().unwrap();
         let inner_guard = ExprId::fresh().unwrap();
@@ -165,20 +154,20 @@ fn nested_conditional_guarantees_keep_their_original_selectors_for_every_provide
         )
         .unwrap();
         assert_eq!(
-            joined.unique_value(&op(opcode::EQ, &[branch_word.clone(), expected]), &policy),
-            ValueQuery::Unique(U256::from(1)),
-            "{provider:?}: nested correlation"
+            joined.local_value(&op(opcode::EQ, &[branch_word.clone(), expected]), &policy),
+            ValueQuery::Exact(U256::from(1)),
+            "local: nested correlation"
         );
         for candidate in 1..=3 {
             assert_eq!(
                 joined.can_equal(&branch_word, U256::from(candidate), &policy),
-                CheckResult::Sat,
-                "{provider:?}: retained alternative {candidate}"
+                CheckResult::MayBeFeasible,
+                "local: retained alternative {candidate}"
             );
         }
         assert_eq!(
             joined.can_equal(&branch_word, U256::from(4), &policy),
-            CheckResult::Unsat
+            CheckResult::ProvenImpossible
         );
     }
 }
@@ -269,12 +258,9 @@ fn common_constraints_count_once_and_still_obey_aggregate_limits() {
 }
 
 #[test]
-fn factoring_preserves_bottom_alternatives_and_constant_selectors_for_every_provider() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let policy = RelationLimits {
-            provider,
-            ..limits()
-        };
+fn factoring_preserves_bottom_alternatives_and_constant_selectors_with_local_facts() {
+    {
+        let policy = RelationLimits { ..limits() };
         let common_word = ExprId::fresh().unwrap();
         let branch_word = ExprId::fresh().unwrap();
         let guard = ExprId::fresh().unwrap();
@@ -287,16 +273,16 @@ fn factoring_preserves_bottom_alternatives_and_constant_selectors_for_every_prov
         ] {
             let joined = yes.join_guarded(no, guard.clone(), &policy).unwrap();
             assert!(!joined.is_bottom());
-            assert_eq!(joined.check(&policy), CheckResult::Sat);
+            assert_eq!(joined.check(&policy), CheckResult::MayBeFeasible);
             assert_eq!(
-                joined.unique_value(&branch_word, &policy),
-                ValueQuery::Unique(U256::from(9))
+                joined.local_value(&branch_word, &policy),
+                ValueQuery::Exact(U256::from(9))
             );
             let mut infeasible = joined.clone();
             assert_eq!(
                 infeasible.assume(&guard, !feasible_nonzero, &policy),
-                CheckResult::Unsat,
-                "{provider:?}: impossible branch stays false"
+                CheckResult::ProvenImpossible,
+                "local: impossible branch stays false"
             );
         }
         let mut another_impossible = possible.clone();
@@ -305,7 +291,7 @@ fn factoring_preserves_bottom_alternatives_and_constant_selectors_for_every_prov
             .join_guarded(&another_impossible, guard, &policy)
             .unwrap();
         assert!(both.is_bottom());
-        assert_eq!(both.check(&policy), CheckResult::Unsat);
+        assert_eq!(both.check(&policy), CheckResult::ProvenImpossible);
         assert_eq!(
             impossible.join_guarded(&possible, c(0), &policy).unwrap(),
             possible

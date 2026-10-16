@@ -1,8 +1,6 @@
 //! Captured call-word history, read boundaries and conservative alias regressions.
 
-use super::super::{
-    CheckResult, QueryReason, RelationLimits, RelationState, SmtProvider, ValueQuery,
-};
+use super::super::{CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -10,9 +8,8 @@ use revm_bytecode::opcode;
 fn c(value: u64) -> ExprId {
     ExprId::constant(U256::from(value))
 }
-fn policy(provider: SmtProvider) -> RelationLimits {
+fn policy() -> RelationLimits {
     RelationLimits {
-        provider,
         max_nodes: 8192,
         max_depth: 128,
         max_constraints: 256,
@@ -41,8 +38,8 @@ fn copy_word(memory: &ByteStateId, at: u64, value: ExprId, limits: RelationLimit
 
 #[test]
 fn captured_copy_history_survives_disjoint_status_words_and_freshening() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let x = ExprId::fresh().unwrap();
         let y = ExprId::fresh().unwrap();
         let first_guard = ExprId::fresh().unwrap();
@@ -81,25 +78,25 @@ fn captured_copy_history_survives_disjoint_status_words_and_freshening() {
         assert_eq!(first, snapshot, "captured state identity survives writes");
         assert_eq!(
             RelationState::default()
-                .unique_value(&equality(current, historical.clone(), limits), &limits,),
-            ValueQuery::Unique(U256::from(1)),
-            "{provider:?} history across both call alternatives"
+                .local_value(&equality(current, historical.clone(), limits), &limits,),
+            ValueQuery::Exact(U256::from(1)),
+            "local history across both call alternatives"
         );
         let mut successful = RelationState::default();
         assert_eq!(
             successful.assume(&first_guard, false, &limits),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
         assert_eq!(
             successful.assume(&second_guard, false, &limits),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
         let equal_observations = equality(historical.clone(), second, limits);
         for value in [U256::ZERO, U256::from(1)] {
             assert_eq!(
                 successful.can_equal(&equal_observations, value, &limits),
-                CheckResult::Sat,
-                "{provider:?}: independent GAS observations may agree or differ"
+                CheckResult::MayBeFeasible,
+                "local: independent GAS observations may agree or differ"
             );
         }
         let map = latest
@@ -111,20 +108,20 @@ fn captured_copy_history_survives_disjoint_status_words_and_freshening() {
         assert_ne!(latest, renamed);
         let renamed_history = historical.rename_fresh(&map, limits.expressions()).unwrap();
         assert_eq!(
-            RelationState::default().unique_value(
+            RelationState::default().local_value(
                 &equality(read(renamed, c(0x80), limits), renamed_history, limits),
                 &limits,
             ),
-            ValueQuery::Unique(U256::from(1)),
-            "{provider:?}: replay keeps shared historical dependencies"
+            ValueQuery::Exact(U256::from(1)),
+            "local: replay keeps shared historical dependencies"
         );
     }
 }
 
 #[test]
 fn later_word_aliases_and_overflow_do_not_inherit_disjoint_history() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         for (at, written, symbolic) in [
             (U256::from(128), U256::from(159), false),
             (U256::from(128), U256::from(160), false),
@@ -155,13 +152,13 @@ fn later_word_aliases_and_overflow_do_not_inherit_disjoint_history() {
             ] {
                 assert_eq!(
                     path.add_equal(&leaf, &ExprId::constant(value), &limits),
-                    CheckResult::Sat
+                    CheckResult::MayBeFeasible
                 );
             }
             if symbolic {
                 assert_eq!(
                     path.add_equal(&key, &ExprId::constant(written), &limits),
-                    CheckResult::Sat
+                    CheckResult::MayBeFeasible
                 );
             }
             let expected: [u8; 32] = std::array::from_fn(|j| {
@@ -175,9 +172,9 @@ fn later_word_aliases_and_overflow_do_not_inherit_disjoint_history() {
                 }
             });
             assert_eq!(
-                path.unique_value(&read(after, ExprId::constant(at), limits), &limits),
-                ValueQuery::Unique(U256::from_be_bytes(expected)),
-                "{provider:?}: read={at}, written={written}, symbolic={symbolic}"
+                path.local_value(&read(after, ExprId::constant(at), limits), &limits),
+                ValueQuery::Exact(U256::from_be_bytes(expected)),
+                "local: read={at}, written={written}, symbolic={symbolic}"
             );
         }
     }
@@ -185,8 +182,8 @@ fn later_word_aliases_and_overflow_do_not_inherit_disjoint_history() {
 
 #[test]
 fn copied_word_history_respects_short_views_overlap_and_mathematical_padding() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         for (at, destination, copied, symbolic) in [
             (U256::ZERO, U256::ZERO, U256::from(1), false),
             (U256::ZERO, U256::ZERO, U256::from(31), false),
@@ -229,7 +226,7 @@ fn copied_word_history_respects_short_views_overlap_and_mathematical_padding() {
                     &ExprId::constant(U256::from_be_bytes([0x11; 32])),
                     &limits
                 ),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
             let source_bytes: [u8; 32] = std::array::from_fn(|j| j as u8);
             assert_eq!(
@@ -238,12 +235,12 @@ fn copied_word_history_respects_short_views_overlap_and_mathematical_padding() {
                     &ExprId::constant(U256::from_be_bytes(source_bytes)),
                     &limits
                 ),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
             if symbolic {
                 assert_eq!(
                     path.add_equal(&address, &ExprId::constant(destination), &limits),
-                    CheckResult::Sat
+                    CheckResult::MayBeFeasible
                 );
             }
             let expected: [u8; 32] = std::array::from_fn(|j| {
@@ -262,9 +259,9 @@ fn copied_word_history_respects_short_views_overlap_and_mathematical_padding() {
                 }
             });
             assert_eq!(
-                path.unique_value(&read(memory, ExprId::constant(at), limits), &limits),
-                ValueQuery::Unique(U256::from_be_bytes(expected)),
-                "{provider:?}: read={at}, copy={destination}, length={copied}, symbolic={symbolic}"
+                path.local_value(&read(memory, ExprId::constant(at), limits), &limits),
+                ValueQuery::Exact(U256::from_be_bytes(expected)),
+                "local: read={at}, copy={destination}, length={copied}, symbolic={symbolic}"
             );
         }
     }
@@ -272,8 +269,8 @@ fn copied_word_history_respects_short_views_overlap_and_mathematical_padding() {
 
 #[test]
 fn guarded_word_views_keep_boundaries_and_typed_query_denials() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let guard = ExprId::fresh().unwrap();
         let yes = ByteStateId::zero()
             .write_word(
@@ -308,11 +305,14 @@ fn guarded_word_views_keep_boundaries_and_typed_query_denials() {
             (false, U256::from_be_bytes([0xbb; 32])),
         ] {
             let mut path = RelationState::default();
-            assert_eq!(path.assume(&guard, nonzero, &limits), CheckResult::Sat);
             assert_eq!(
-                path.unique_value(&value, &limits),
-                ValueQuery::Unique(expected),
-                "{provider:?}, guard={nonzero}"
+                path.assume(&guard, nonzero, &limits),
+                CheckResult::MayBeFeasible
+            );
+            assert_eq!(
+                path.local_value(&value, &limits),
+                ValueQuery::Exact(expected),
+                "local, guard={nonzero}"
             );
         }
         let denied = RelationLimits {
@@ -320,23 +320,23 @@ fn guarded_word_views_keep_boundaries_and_typed_query_denials() {
             ..limits
         };
         assert_eq!(
-            RelationState::default().unique_value(&value, &denied),
-            ValueQuery::Unknown(QueryReason::ExpressionLimit)
+            RelationState::default().local_value(&value, &denied),
+            ValueQuery::Undetermined(QueryReason::ExpressionLimit)
         );
         let denied = RelationLimits {
             max_depth: value.depth() - 1,
             ..limits
         };
         assert_eq!(
-            RelationState::default().unique_value(&value, &denied),
-            ValueQuery::Unknown(QueryReason::ExpressionLimit)
+            RelationState::default().local_value(&value, &denied),
+            ValueQuery::Undetermined(QueryReason::ExpressionLimit)
         );
-        let token = embedded_smt::Cancellation::new();
+        let token = analysis_control::Cancellation::new();
         token.cancel();
-        embedded_smt::with_cancellation(&token, || {
+        analysis_control::with_cancellation(&token, || {
             assert_eq!(
-                RelationState::default().unique_value(&value, &limits),
-                ValueQuery::Unknown(QueryReason::Cancelled)
+                RelationState::default().local_value(&value, &limits),
+                ValueQuery::Undetermined(QueryReason::Cancelled)
             );
         });
     }

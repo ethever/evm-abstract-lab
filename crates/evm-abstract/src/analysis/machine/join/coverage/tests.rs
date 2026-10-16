@@ -11,12 +11,11 @@ use crate::{
     resource::WorkBudget,
 };
 use alloy_primitives::U256;
-use embedded_smt::{Cancellation, with_cancellation};
+use analysis_control::{Cancellation, with_cancellation};
 use revm_bytecode::opcode;
 
-fn pair(rlimit: u32, equal: bool) -> (Domain, MachinePayload, MachinePayload, ExprId, ExprId) {
-    let mut config = fixtures::config();
-    config.analysis.relations.rlimit = rlimit;
+fn pair(equal: bool) -> (Domain, MachinePayload, MachinePayload, ExprId, ExprId) {
+    let config = fixtures::config();
     let domain = config.domain().unwrap();
     let old = ExprId::fresh().unwrap();
     let new = ExprId::fresh().unwrap();
@@ -29,52 +28,31 @@ fn pair(rlimit: u32, equal: bool) -> (Domain, MachinePayload, MachinePayload, Ex
             incoming
                 .relations
                 .add_equal(&old, &new, &domain.spec().relations()),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
     }
     (domain, previous, incoming, old, new)
 }
 
 #[test]
-fn warm_coverage_preserves_the_original_paid_work_in_the_same_owner() {
-    let (domain, previous, incoming, _, _) = pair(1_000_000, true);
-    let before_previous = previous.clone();
-    let before_incoming = incoming.clone();
+fn direct_coverage_proofs_pay_local_work_and_preserve_both_inputs() {
+    let (domain, previous, incoming, _, _) = pair(true);
+    let old_previous = previous.clone();
+    let old_incoming = incoming.clone();
     let mut budget = WorkBudget::new(100_000_000);
-    let mut cold_paid = None;
-    for repeat in 0..2 {
-        let before_work = budget.used();
-        let before_cache = budget.smt_cache_stats();
+    for _ in 0..2 {
+        let before = budget.used();
         assert!(covers(&previous, &incoming, domain, &mut budget).unwrap());
-        let after_cache = budget.smt_cache_stats();
-        let maintenance = (after_cache.maintenance_work - before_cache.maintenance_work) as usize;
-        let paid = budget.used() - before_work - maintenance;
-        assert!(paid >= domain.spec().relations().rlimit as usize);
-        if let Some(cold) = cold_paid {
-            assert_eq!(
-                paid, cold,
-                "a warm proof retains every original work charge"
-            );
-        } else {
-            cold_paid = Some(paid);
-        }
-        assert_eq!(
-            after_cache.candidate_hits - before_cache.candidate_hits,
-            repeat
-        );
-        assert_eq!(previous, before_previous);
-        assert_eq!(incoming, before_incoming);
+        assert!(budget.used() > before);
+        assert_eq!(previous, old_previous);
+        assert_eq!(incoming, old_incoming);
         assert!(!budget.exhausted());
     }
-    assert_eq!(budget.smt_cache_stats().entries, 1);
-    let mut other = WorkBudget::new(100_000_000);
-    assert!(covers(&previous, &incoming, domain, &mut other).unwrap());
-    assert_eq!(other.smt_cache_stats().candidate_hits, 0);
 }
 
 #[test]
 fn unknown_coverage_keeps_the_complete_incoming_alternative() {
-    let (domain, previous, incoming, old, new) = pair(1, false);
+    let (domain, previous, incoming, old, new) = pair(false);
     let equality = ExprId::operation(
         opcode::EQ,
         &[old.clone(), new.clone()],
@@ -85,14 +63,13 @@ fn unknown_coverage_keeps_the_complete_incoming_alternative() {
         incoming
             .relations
             .can_equal(&equality, U256::ZERO, &domain.spec().relations()),
-        CheckResult::Unknown(QueryReason::ResourceLimit)
+        CheckResult::MayBeFeasible
     );
     let before_previous = previous.clone();
     let before_incoming = incoming.clone();
     let mut budget = WorkBudget::new(100_000_000);
     assert!(!covers(&previous, &incoming, domain, &mut budget).unwrap());
-    assert_eq!(budget.smt_cache_stats().undecided, 1);
-    assert_eq!(budget.smt_cache_stats().entries, 0);
+
     let mut alternatives = super::super::EntryAlternatives::new(&previous);
     let joined = alternatives
         .join(&previous, &incoming, domain, &mut budget)
@@ -103,23 +80,23 @@ fn unknown_coverage_keeps_the_complete_incoming_alternative() {
     assert!(retained.contains(&new));
     assert_eq!(previous, before_previous);
     assert_eq!(incoming, before_incoming);
-    assert_eq!(budget.smt_cache_stats().entries, 0);
+
     assert!(!budget.exhausted());
 }
 
 #[test]
 fn guardless_and_cancelled_coverage_cannot_reuse_a_warm_proof() {
-    let (domain, previous, incoming, _, _) = pair(1_000_000, true);
+    let (domain, previous, incoming, _, _) = pair(true);
     let mut budget = WorkBudget::new(100_000_000);
     assert!(covers(&previous, &incoming, domain, &mut budget).unwrap());
-    let before_cache = budget.smt_cache_stats();
+
     let mut guardless = previous.clone();
     guardless.active_mut().stack[0].forget_expression();
     guardless.active_mut().stack[0].forget_identity();
     let before_guardless = guardless.clone();
     let before_incoming = incoming.clone();
     assert!(!covers(&guardless, &incoming, domain, &mut budget).unwrap());
-    assert_eq!(budget.smt_cache_stats(), before_cache);
+
     let token = Cancellation::new();
     token.cancel();
     with_cancellation(&token, || {
@@ -128,7 +105,7 @@ fn guardless_and_cancelled_coverage_cannot_reuse_a_warm_proof() {
             Err(MachineError::Relations(QueryReason::Cancelled))
         );
     });
-    assert_eq!(budget.smt_cache_stats(), before_cache);
+
     assert_eq!(guardless, before_guardless);
     assert_eq!(incoming, before_incoming);
     let mut empty = WorkBudget::new(0);

@@ -5,7 +5,7 @@ use crate::{
     analysis::FrontierReason,
     domain::{
         AbstractValue,
-        relational::{CandidateError, CheckResult, RelationState},
+        relational::{CheckResult, RelationState},
         symbolic::ExprId,
     },
 };
@@ -20,32 +20,23 @@ pub(super) fn refine(
     context: &mut TransferContext<'_>,
 ) -> Result<bool, FrontierReason> {
     let limits = context.config.analysis.relations;
-    let candidates = candidates.iter().copied().collect::<Vec<_>>();
     let cost = relations
         .work_size()
         .saturating_add(expression.work_size())
-        .saturating_add(limits.rlimit as usize);
-    let answers = {
-        let mut budget = context
-            .budget
-            .cached_query_budget(cost, limits.cache_scope());
-        relations.can_equal_candidates(expression, &candidates, &limits, &mut budget)
-    }
-    .map_err(|reason| match reason {
-        CandidateError::Work => FrontierReason::Work,
-        CandidateError::Query(reason) => FrontierReason::Relations(reason),
-    })?;
-    assert_eq!(
-        answers.len(),
-        candidates.len(),
-        "a successful batch is complete"
-    );
+        .saturating_add(limits.max_nodes);
     let mut retained = Vec::new();
-    for (candidate, answer) in candidates.into_iter().zip(answers) {
+    for candidate in candidates {
+        if !context.budget.charge(cost) {
+            return Err(FrontierReason::Work);
+        }
+        let answer = relations.can_equal_budgeted(expression, *candidate, &limits, context.budget);
+        if context.budget.exhausted() {
+            return Err(FrontierReason::Work);
+        }
         match answer {
-            CheckResult::Unsat => {}
-            CheckResult::Sat => retained.push(candidate),
-            CheckResult::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
+            CheckResult::ProvenImpossible => {}
+            CheckResult::MayBeFeasible => retained.push(*candidate),
+            CheckResult::Undetermined(reason) => return Err(FrontierReason::Relations(reason)),
         }
     }
     if let Some(narrowed) = retained

@@ -43,7 +43,8 @@ impl DomainSpec {
             capacity,
             reduction_rounds,
             fact_limit,
-            cost_version: 2,
+            // Version 3 charges bounded local propagation instead of native fuel.
+            cost_version: 3,
             widening_after_updates: 2,
             provenance_policy: "scoped-expressions-and-value-identities-v3",
             relations: super::relational::RelationLimits::default(),

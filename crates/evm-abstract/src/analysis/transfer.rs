@@ -201,7 +201,7 @@ fn boundary_reason(reason: FrontierReason) -> FrontierReason {
     // The shared ledger declines both exhausted work and cancellation. Keep
     // the actual interruption distinct at every transfer frontier, including
     // callers that return a raw Work error before a frontier is constructed.
-    if reason == FrontierReason::Work && embedded_smt::current_cancellation().is_cancelled() {
+    if reason == FrontierReason::Work && analysis_control::current_cancellation().is_cancelled() {
         FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
     } else {
         reason

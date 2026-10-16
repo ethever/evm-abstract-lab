@@ -122,9 +122,9 @@ fn symbolic_policy_partition_retains_both_domains_and_pre_effect_state() {
                 .relations
                 .can_equal(&source, word, &config.analysis.relations),
             if legal {
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             } else {
-                CheckResult::Unsat
+                CheckResult::ProvenImpossible
             }
         );
         assert_eq!(
@@ -133,9 +133,9 @@ fn symbolic_policy_partition_retains_both_domains_and_pre_effect_state() {
                 .relations
                 .can_equal(&source, word, &config.analysis.relations),
             if legal {
-                CheckResult::Unsat
+                CheckResult::ProvenImpossible
             } else {
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             }
         );
     }
@@ -159,7 +159,7 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
             .payload
             .relations
             .assume(&other, true, &config.analysis.relations),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     let before = result.payload.clone();
     let source = ExprId::fresh().unwrap();

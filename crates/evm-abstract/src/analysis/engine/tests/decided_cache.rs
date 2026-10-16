@@ -8,7 +8,7 @@ use crate::{
 };
 
 #[test]
-fn recursive_counter_retains_default_closure_and_accounts_optional_maintenance() {
+fn recursive_counter_retains_default_closure_under_local_reasoning() {
     let code = "610000351561002b576100016100003503610000525b6100006100006100206100006100006101015af1505b61002a61000052610020610000f3";
     let (world, mut entry) = fixtures::fixture(&[(0x101, code)]);
     entry.environment.calldata = ByteArray::unknown();
@@ -24,17 +24,6 @@ fn recursive_counter_retains_default_closure_and_accounts_optional_maintenance()
         StorageReadPolicy::Abstract,
     )
     .unwrap();
-    let cache = ledger.smt_cache_stats();
-    eprintln!(
-        "decided-cache counter: total_work={} maintenance_work={} hits={}/{} bypasses={} states={} transfers={}",
-        ledger.used(),
-        cache.maintenance_work,
-        cache.unique_hits,
-        cache.candidate_hits,
-        cache.bypasses,
-        result.states().len(),
-        result.transfers()
-    );
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -62,5 +51,6 @@ fn recursive_counter_retains_default_closure_and_accounts_optional_maintenance()
             Some(alloy_primitives::U256::from(42))
         );
     }
-    assert!(cache.maintenance_work > 0 && cache.maintenance_work < ledger.used() as u64);
+    assert!(ledger.used() > 0);
+    assert!(!ledger.exhausted());
 }

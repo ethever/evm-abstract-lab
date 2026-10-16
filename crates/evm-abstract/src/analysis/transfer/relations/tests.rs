@@ -1,10 +1,5 @@
 //! Guard rejection and shared work remain coverage boundaries.
 
-mod batch_order;
-mod branch_cache;
-mod finite_pair;
-mod joint;
-
 use crate::{
     Fork,
     analysis::{
@@ -13,7 +8,7 @@ use crate::{
     },
     domain::{
         AbstractValue, Domain,
-        relational::{QueryReason, RelationState, SmtProvider},
+        relational::{QueryReason, RelationState},
         symbolic::{ExprId, SlotStateId, SourceId},
     },
     world::{Account, Entry, World},
@@ -99,64 +94,107 @@ fn shared_work_exhaustion_stops_before_guard_retention() {
 }
 
 #[test]
-fn boolean_state_reads_need_only_the_two_uniqueness_checks() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let mut config = ExecutionConfig::default();
-        config.analysis.relations.provider = provider;
-        config.analysis.relations.rlimit = 1_000_000;
-        let state =
-            SlotStateId::observed(SourceId::fresh().unwrap(), Vec::new(), Default::default())
-                .unwrap();
-        let read =
-            ExprId::slot_read(state, ExprId::constant(U256::ZERO), Default::default()).unwrap();
-        for code in [
-            opcode::EQ,
-            opcode::LT,
-            opcode::GT,
-            opcode::SLT,
-            opcode::SGT,
-            opcode::ISZERO,
-        ] {
-            let args = if code == opcode::ISZERO {
-                vec![read.clone()]
-            } else {
-                vec![read.clone(), ExprId::constant(U256::ONE)]
-            };
-            let expression = ExprId::operation(code, &args, Default::default()).unwrap();
-            let domain = Domain::default();
-            let mut value = domain
-                .join(
-                    &AbstractValue::constant(U256::ZERO),
-                    &AbstractValue::constant(U256::ONE),
-                )
-                .with_expression(expression);
-            let before = value.clone();
-            // Enough for uniqueness, deliberately insufficient for a third query.
-            let mut budget = WorkBudget::new(3 * config.analysis.relations.rlimit as usize - 1);
-            let mut context = TransferContext {
-                config: &config,
-                domain,
-                budget: &mut budget,
-                root_address: None,
-                input_scope: None,
-                query_cache: Default::default(),
-                procedure: false,
-                discover_code: false,
-            };
-            assert_eq!(
-                super::refine(&mut value, &RelationState::default(), &mut context),
-                Ok(true),
-                "{provider:?}/{code}"
-            );
-            assert_eq!(value, before);
-            assert!(!budget.exhausted());
-            assert!(budget.used() >= 2 * config.analysis.relations.rlimit as usize);
-        }
+fn unknown_boolean_state_reads_keep_both_values_without_precision_diagnostics() {
+    let config = ExecutionConfig::default();
+    let state =
+        SlotStateId::observed(SourceId::fresh().unwrap(), Vec::new(), Default::default()).unwrap();
+    let read = ExprId::slot_read(state, ExprId::constant(U256::ZERO), Default::default()).unwrap();
+    let expression = ExprId::operation(opcode::ISZERO, &[read], Default::default()).unwrap();
+    let mut value = AbstractValue::unsigned_range(U256::ZERO, U256::ONE)
+        .unwrap()
+        .with_expression(expression);
+    let before = value.clone();
+    let mut budget = WorkBudget::new(10_000_000);
+    let mut context = context(&config, &mut budget);
+    assert_eq!(
+        super::refine(&mut value, &RelationState::default(), &mut context),
+        Ok(true)
+    );
+    assert!(value.contains(U256::ZERO) && value.contains(U256::ONE));
+    assert_eq!(value.expression(), before.expression());
+    assert!(!budget.exhausted());
+    assert!(budget.used() > 0);
+}
+
+fn context<'a>(config: &'a ExecutionConfig, budget: &'a mut WorkBudget) -> TransferContext<'a> {
+    TransferContext {
+        config,
+        domain: Domain::default(),
+        budget,
+        root_address: None,
+        input_scope: None,
+        query_cache: Default::default(),
+        procedure: false,
+        discover_code: false,
     }
 }
 
 #[test]
-fn multiple_nonboolean_models_still_filter_all_numeric_candidates() {
+fn branch_keeps_expressions_until_instruction_consumption() {
+    let config = ExecutionConfig::default();
+    let expression = ExprId::fresh().unwrap();
+    let condition = AbstractValue::top().with_expression(expression.clone());
+    let mut result = execution();
+    result.payload.active_mut().stack.push(condition.clone());
+    let mut budget = WorkBudget::new(10_000_000);
+    let mut context = context(&config, &mut budget);
+    let mut successor = super::branch(&mut result, &condition, false, &mut context, 7).unwrap();
+    assert!(result.frontiers.is_empty());
+    assert!(result.diagnostics.is_empty());
+    assert!(
+        successor.active().stack[0].singleton().is_none(),
+        "branch must not eagerly scan/project stack"
+    );
+    let relations = successor.relations.clone();
+    assert_eq!(
+        super::refine(
+            &mut successor.active_mut().stack[0],
+            &relations,
+            &mut context
+        ),
+        Ok(true)
+    );
+    assert_eq!(successor.active().stack[0].singleton(), Some(U256::ZERO));
+    assert_eq!(successor.active().stack[0].expression(), Some(&expression));
+}
+
+#[test]
+fn cached_local_bounds_cannot_override_narrower_callers_or_cancellation() {
+    let config = ExecutionConfig::default();
+    let expression = ExprId::fresh().unwrap();
+    let other = ExprId::fresh().unwrap();
+    let mut relations = RelationState::default();
+    relations.add_equal(&expression, &other, &config.analysis.relations);
+    let mut value = AbstractValue::top().with_expression(expression.clone());
+    let mut budget = WorkBudget::new(20_000_000);
+    let mut context = context(&config, &mut budget);
+    assert_eq!(
+        super::refine(&mut value, &relations, &mut context),
+        Ok(true)
+    );
+    let mut narrowed = AbstractValue::unsigned_range(U256::from(7), U256::from(9))
+        .unwrap()
+        .with_expression(expression);
+    assert_eq!(
+        super::refine(&mut narrowed, &relations, &mut context),
+        Ok(true)
+    );
+    assert!(narrowed.contains(U256::from(7)) && narrowed.contains(U256::from(9)));
+    assert!(!narrowed.contains(U256::from(6)));
+    let before = narrowed.clone();
+    let token = analysis_control::Cancellation::new();
+    token.cancel();
+    analysis_control::with_cancellation(&token, || {
+        assert_eq!(
+            super::refine(&mut narrowed, &relations, &mut context),
+            Err(FrontierReason::Relations(QueryReason::Cancelled))
+        );
+    });
+    assert_eq!(narrowed, before);
+}
+
+#[test]
+fn retained_guarded_facts_never_prune_an_admitted_numeric_candidate() {
     let config = ExecutionConfig::default();
     let expression = ExprId::fresh().unwrap();
     let limits = config.analysis.relations;
@@ -194,6 +232,7 @@ fn multiple_nonboolean_models_still_filter_all_numeric_candidates() {
     };
     assert_eq!(
         super::refine(&mut value, &relations, &mut context),
-        Ok(false)
+        Ok(true)
     );
+    assert!(value.contains(U256::ZERO) && value.contains(U256::ONE));
 }
