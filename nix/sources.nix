@@ -225,6 +225,10 @@ let
       rel = relative path;
     in
     !(rel == "lints" || lib.hasPrefix "lints/" rel)
+    # This corpus is read only by the independent Python scale check. Rust
+    # fixtures use other examples subtrees; retaining it would invalidate every
+    # test closure merely because a crate reads an unrelated example.
+    && !(rel == "examples/no-smt-scale" || lib.hasPrefix "examples/no-smt-scale/" rel)
     && !(lib.elem (baseNameOf path) [
       ".git"
       "target"
