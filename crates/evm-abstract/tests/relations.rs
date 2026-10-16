@@ -1180,28 +1180,59 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
             ..RelationLimits::default()
         },
     ] {
+        let config = Config {
+            context_depth: 0,
+            relations: limits,
+            ..Config::default()
+        };
+        let environment = EvmEnvironment {
+            // Calldata is unused; keep the initial root within the tiny
+            // policy so the derived CALLVALUE branch is what exhausts it.
+            calldata: evm_abstract::world::ByteArray::empty(),
+            ..EvmEnvironment::default()
+        };
         let result = analysis::analyze_with_environment(
             Program::from_hex(&fixture.code).unwrap(),
-            Config {
-                context_depth: 0,
-                relations: limits,
-                ..Config::default()
-            },
-            EvmEnvironment {
-                // Calldata is unused; keep the initial root within the tiny
-                // policy so the derived CALLVALUE branch is what exhausts it.
-                calldata: evm_abstract::world::ByteArray::empty(),
-                ..EvmEnvironment::default()
-            },
+            config.clone(),
+            environment.clone(),
         )
         .unwrap();
-        retained_unknown_branches(&result, &fixture);
+        complete(&result);
+        assert!(result.frontiers().is_empty());
+        assert!(result.execution().frontiers().is_empty());
+        for branch in ["true", "false"] {
+            assert!(reachable(&result, fixture.labels[branch]));
+        }
+        // The numeric result survives; forgetting its optional expression
+        // loses correlation without leaving either branch unexpanded.
         assert!(
-            result.execution().frontiers().iter().any(|frontier| {
-                frontier.reason == FrontierReason::Relations(QueryReason::ExpressionLimit)
+            result.diagnostics().iter().any(|diagnostic| {
+                matches!(
+                    diagnostic.kind,
+                    analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ExpressionLimit)
+                )
             }),
-            "expression exhaustion must retain its reason"
+            "optional expression exhaustion must report precision loss"
         );
+        for (value, selected, excluded) in [(1, "true", "false"), (0, "false", "true")] {
+            let witness = analysis::analyze_with_environment(
+                Program::from_hex(&fixture.code).unwrap(),
+                config.clone(),
+                EvmEnvironment {
+                    value: AbstractValue::constant(U256::from(value)),
+                    ..environment.clone()
+                },
+            )
+            .unwrap();
+            complete(&witness);
+            assert!(witness.frontiers().is_empty());
+            assert!(witness.execution().frontiers().is_empty());
+            assert!(reachable(&witness, fixture.labels[selected]));
+            assert!(
+                !reachable(&witness, fixture.labels[excluded]),
+                "CALLVALUE={value} witnesses only the {selected} branch"
+            );
+        }
     }
 }
 
