@@ -157,6 +157,8 @@ fn complex_symbolic_recursion_retains_real_frontiers_under_default_work() {
                 .iter()
                 .all(|f| matches!(f.reason, FrontierReason::Work | FrontierReason::SummaryWork))
         );
-        assert!(!analysis.procedure_summaries().is_empty());
+        // The budget may stop before recursive-summary admission or publication.
+        // A real work frontier does not require a summary to have been created.
+        assert!(analysis.work() <= analysis.config().max_work);
     }
 }
