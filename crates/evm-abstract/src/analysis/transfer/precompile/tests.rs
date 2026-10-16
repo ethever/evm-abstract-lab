@@ -180,7 +180,12 @@ fn symbolic_outputs_include_provider_successes_and_invalid_inputs_for_all_forks(
                 &config,
                 &mut WorkBudget::new(config.max_work),
             );
-            assert!(result.frontiers.is_empty(), "{fork} {:?}", native.id());
+            assert!(
+                result.frontiers.is_empty(),
+                "{fork} {:?}: {:?}",
+                native.id(),
+                result.frontiers
+            );
             assert_eq!(result.outcomes.len(), 3);
             let returned = result
                 .outcomes

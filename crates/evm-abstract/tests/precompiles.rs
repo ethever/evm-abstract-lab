@@ -184,11 +184,14 @@ fn symbolic_native_inputs_continue_and_large_crypto_work_keeps_typed_frontiers()
                 .any(|outcome| outcome.kind == kind)
         );
     }
+    // Root entry binds the unobserved source once. Identity must preserve that
+    // complete executed array, rather than the unbound constructor's identity.
+    let bound_input = &unknown.states()[0].entry.active().calldata;
     assert!(
         unknown
             .outcomes()
             .iter()
-            .any(|outcome| { outcome.kind == OutcomeKind::Return && outcome.data == input })
+            .any(|outcome| { outcome.kind == OutcomeKind::Return && &outcome.data == bound_input })
     );
     let mut blake = vec![0u8; 213];
     blake[..4].copy_from_slice(&u32::MAX.to_be_bytes());
