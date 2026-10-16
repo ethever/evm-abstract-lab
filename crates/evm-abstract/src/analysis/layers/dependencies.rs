@@ -139,6 +139,7 @@ impl FactDependencies {
         };
         let compiled = catalog
             .source(frame.key.code_hash, mode)
+            .filter(|compiled| frame.program.as_ref() == Some(compiled.program()))
             .and_then(|code| code.blocks().get(frame.key.basic_block_index));
         let requirements = compiled.map_or_else(
             || {

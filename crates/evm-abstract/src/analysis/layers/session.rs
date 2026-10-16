@@ -51,11 +51,14 @@ pub enum RefinementEffect {
         /// Explicit locations added by this batch.
         added: Vec<FactKey>,
     },
-    /// A fresh native execution is required. Old reports keep their original
+    /// A fresh EVM execution is required. Old reports keep their original
     /// facts, runtime writes, historical roots, and rollback checkpoints.
     RestartRequired {
         /// Revision consumed by the invalidated graph or previous fact batch.
         previous: FactRevision,
+        /// Revision that produced the indexed graph. Several injections can
+        /// accumulate before the next execution; they never reset invalidation.
+        executed_revision: FactRevision,
         /// Facts that the next root execution must consume.
         current: FactRevision,
         /// Explicit locations added by this batch.
@@ -68,7 +71,7 @@ pub enum RefinementEffect {
     },
 }
 
-/// An immutable native result and the exact fact revision that produced it.
+/// An immutable EVM result and the exact fact revision that produced it.
 #[derive(Debug)]
 pub struct SessionAnalysis {
     snapshot: SnapshotId,
@@ -77,6 +80,7 @@ pub struct SessionAnalysis {
     analysis: WorldAnalysis,
     dependencies: FactDependencies,
     reuse: ReuseStats,
+    demand_driven: bool,
 }
 
 impl SessionAnalysis {
@@ -125,6 +129,11 @@ impl SessionAnalysis {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Whether finite missing observations were requested before abstraction.
+    pub fn demand_driven(&self) -> bool {
+        self.demand_driven
     }
 }
 
@@ -178,6 +187,8 @@ pub struct AnalysisSession {
     budget: WorkBudget,
     counters: Counters,
     has_executed: bool,
+    executed_revision: Option<FactRevision>,
+    pending_changes: BTreeSet<FactKey>,
     latest: Option<Arc<SessionAnalysis>>,
     reuse: ExecutionReuse,
 }
@@ -259,6 +270,7 @@ impl AnalysisSession {
                 Arc::clone(&catalog),
                 config.analysis.max_states,
                 config.max_work,
+                config.max_memory_bytes,
             ),
             catalog,
             facts: StateFacts::from_base(snapshot, observations),
@@ -269,6 +281,8 @@ impl AnalysisSession {
             seed: world,
             counters: Counters::default(),
             has_executed: false,
+            executed_revision: None,
+            pending_changes: BTreeSet::new(),
             latest: None,
         })
     }
@@ -327,6 +341,7 @@ impl AnalysisSession {
                 Arc::clone(&catalog),
                 config.analysis.max_states,
                 config.max_work,
+                config.max_memory_bytes,
             ),
             catalog,
             facts,
@@ -337,6 +352,8 @@ impl AnalysisSession {
             seed,
             counters: Counters::default(),
             has_executed: false,
+            executed_revision: None,
+            pending_changes: BTreeSet::new(),
             latest: None,
         })
     }
@@ -378,12 +395,28 @@ impl AnalysisSession {
     /// Analyze the current revision or share its unchanged report without rerunning.
     /// A new revision always creates fresh Store and saved rollback checkpoints.
     pub fn analyze(&mut self) -> Result<Arc<SessionAnalysis>, SessionError> {
+        self.analyze_policy(StorageReadPolicy::Abstract)
+    }
+
+    /// Request concrete missing initial code/finite slots without doing I/O.
+    /// Supply the returned typed demands through `refine`, then call again.
+    /// Unknown targets/keys still follow the ordinary conservative executor.
+    pub fn analyze_with_demands(&mut self) -> Result<Arc<SessionAnalysis>, SessionError> {
+        self.analyze_policy(StorageReadPolicy::Discover)
+    }
+
+    fn analyze_policy(
+        &mut self,
+        policy: StorageReadPolicy,
+    ) -> Result<Arc<SessionAnalysis>, SessionError> {
         // A same-revision report is still a new API request: both the current
         // thread scope and the session's captured token must allow its return.
         if crate::analysis::MachineError::check_cancelled().is_err() || !self.budget.charge(0) {
             return Err(SessionError::Cancelled(Cancelled));
         }
-        if let Some(latest) = &self.latest {
+        if let Some(latest) = &self.latest
+            && latest.demand_driven == (policy == StorageReadPolicy::Discover)
+        {
             return Ok(Arc::clone(latest));
         }
         let world = project_world(
@@ -399,9 +432,12 @@ impl AnalysisSession {
             self.config.clone(),
             &mut self.budget,
             &mut self.counters,
-            StorageReadPolicy::Abstract,
+            policy,
             Some(&mut self.reuse),
         )?;
+        if crate::analysis::MachineError::check_cancelled().is_err() || !self.budget.charge(0) {
+            return Err(SessionError::Cancelled(Cancelled));
+        }
         let report = Arc::new(SessionAnalysis {
             snapshot: self.facts.snapshot().clone(),
             revision: self.facts.revision(),
@@ -409,8 +445,11 @@ impl AnalysisSession {
             analysis,
             dependencies: self.reuse.dependencies.clone(),
             reuse: self.reuse.stats(),
+            demand_driven: policy == StorageReadPolicy::Discover,
         });
         self.has_executed = true;
+        self.executed_revision = Some(self.facts.revision());
+        self.pending_changes.clear();
         self.latest = Some(Arc::clone(&report));
         Ok(report)
     }
@@ -440,6 +479,8 @@ impl AnalysisSession {
             Some(&mut self.reuse),
         )?;
         self.has_executed = true;
+        self.executed_revision = Some(self.facts.revision());
+        self.pending_changes.clear();
         self.latest = None;
         Ok(analysis)
     }
@@ -451,6 +492,10 @@ impl AnalysisSession {
         observer: &crate::analysis::progress::Observer,
     ) -> Result<WorldAnalysis, ConfigError> {
         self.counters = Counters::with_observer(observer);
+        // This adapter consumes the session, so a memo could never be reused
+        // after fact injection. Keep the shared catalog/dependency path without
+        // charging one-shot calls for constructing disposable memo entries.
+        self.reuse.disable_memo();
         engine::run_reusing(
             self.seed,
             self.entry,
@@ -493,9 +538,14 @@ impl AnalysisSession {
         self.latest = None;
         if self.has_executed {
             let dependencies = self.reuse.dependencies.clone();
-            let affected_states = dependencies.affected_states(&added);
+            self.pending_changes.extend(added.iter().copied());
+            let affected_states = dependencies
+                .affected_states(&self.pending_changes.iter().copied().collect::<Vec<_>>());
             Ok(RefinementEffect::RestartRequired {
                 previous,
+                executed_revision: self
+                    .executed_revision
+                    .expect("executed sessions retain their revision"),
                 current,
                 added,
                 dependencies,
@@ -672,6 +722,9 @@ fn intersect(
 ) -> Result<AbstractValue, SessionError> {
     match observed {
         Observed::Unobserved => Ok(base.clone()),
+        Observed::Known(value) if *base == AbstractValue::top() => {
+            Ok(AbstractValue::constant(value))
+        }
         Observed::Known(value) if base.contains(value) => {
             Ok(base.clone().with_numeric(NumericValue::constant(value)))
         }

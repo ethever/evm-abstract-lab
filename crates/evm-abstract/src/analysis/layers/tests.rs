@@ -695,3 +695,206 @@ fn completed_report_cache_observes_current_and_captured_cancellation() {
     captured.cancellation().cancel();
     assert!(session.analyze().is_err());
 }
+
+#[test]
+fn offline_demands_inject_initial_values_after_runtime_write_and_preserve_rollback() {
+    let mut session = session("60095f55600154505f5ffd");
+    let pending = session.analyze_with_demands().unwrap();
+    assert!(pending.demand_driven());
+    assert_eq!(pending.analysis().status(), Status::Incomplete);
+    assert_eq!(
+        pending.demands(),
+        [FactDemand::Storage {
+            address: address(0x101),
+            slot: U256::from(1)
+        }]
+        .into_iter()
+        .collect()
+    );
+    let snapshot = session.facts().snapshot().clone();
+    session
+        .refine(
+            &snapshot,
+            [Observation::Storage {
+                address: address(0x101),
+                slot: U256::from(1),
+                value: U256::from(3),
+            }],
+        )
+        .unwrap();
+    let refined = session.analyze_with_demands().unwrap();
+    assert!(refined.demands().is_empty());
+    assert_eq!(
+        refined.analysis().status(),
+        Status::Converged,
+        "{:?}",
+        refined.analysis().frontiers()
+    );
+    let reverted: Vec<_> = refined
+        .analysis()
+        .outcomes()
+        .iter()
+        .filter(|o| o.kind == OutcomeKind::Revert)
+        .collect();
+    assert!(!reverted.is_empty());
+    for outcome in reverted {
+        assert!(
+            outcome
+                .store
+                .read(address(0x101), &word(0), Domain::default())
+                .singleton()
+                .is_none()
+        );
+        assert_eq!(
+            outcome
+                .store
+                .read(address(0x101), &word(1), Domain::default())
+                .singleton(),
+            Some(U256::from(3))
+        );
+    }
+    assert_eq!(pending.demands().len(), 1);
+    assert_ne!(pending.revision(), refined.revision());
+}
+
+#[test]
+fn consecutive_injections_keep_the_executed_revision_and_cumulative_invalidation() {
+    let mut session = session("60026003016008565b5f545f5260205ff3");
+    let original = session.analyze().unwrap();
+    let snapshot = session.facts().snapshot().clone();
+    let first = session
+        .refine(
+            &snapshot,
+            [Observation::Existence {
+                address: address(0x101),
+                exists: true,
+            }],
+        )
+        .unwrap();
+    assert!(
+        matches!(first, RefinementEffect::RestartRequired { ref affected_states, .. } if affected_states.contains(&0))
+    );
+    let second = session
+        .refine(
+            &snapshot,
+            [Observation::Storage {
+                address: address(0x202),
+                slot: U256::ZERO,
+                value: U256::ZERO,
+            }],
+        )
+        .unwrap();
+    let RefinementEffect::RestartRequired {
+        executed_revision,
+        affected_states,
+        ..
+    } = second
+    else {
+        panic!("executed session must invalidate");
+    };
+    assert_eq!(executed_revision, original.revision());
+    assert!(affected_states.contains(&0));
+    assert_ne!(session.facts().revision(), executed_revision);
+}
+
+#[test]
+fn catalog_code_binding_keeps_delegatecall_storage_owner_independent() {
+    let (catalog, caller) = catalog("60205f5f5f6102026207a120f41560155760205ff35b5f5ffd");
+    let callee = Program::from_hex_with_fork("5f545f5260205ff3", Fork::Osaka).unwrap();
+    let (catalog, callee) = catalog.with_runtime(callee).unwrap();
+    let snapshot = SnapshotId::offline("delegated owner");
+    let facts = StateFacts::new(snapshot.clone())
+        .refine(
+            &snapshot,
+            [
+                Observation::Code {
+                    address: address(0x202),
+                    code: CodeObservation::Runtime(callee),
+                },
+                Observation::Storage {
+                    address: address(0x101),
+                    slot: U256::ZERO,
+                    value: U256::from(7),
+                },
+                Observation::Storage {
+                    address: address(0x202),
+                    slot: U256::ZERO,
+                    value: U256::from(99),
+                },
+            ],
+        )
+        .unwrap()
+        .into_facts();
+    let mut session = AnalysisSession::new(
+        Arc::new(catalog),
+        facts,
+        caller,
+        Entry::new(address(0x101)),
+        ExecutionConfig::default(),
+    )
+    .unwrap();
+    let report = session.analyze().unwrap();
+    assert_eq!(
+        report.analysis().status(),
+        Status::Converged,
+        "{:?}",
+        report.analysis().frontiers()
+    );
+    assert!(
+        report
+            .analysis()
+            .states()
+            .iter()
+            .any(|state| state.active().code_address == address(0x202)
+                && state.active().address == address(0x101))
+    );
+    assert!(
+        returns(&report)
+            .iter()
+            .all(|value| value.singleton() == Some(U256::from(7)))
+    );
+    for owner in [address(0x101), address(0x202)] {
+        assert_eq!(session.facts().balance(owner), Observed::Unobserved);
+        assert_eq!(session.facts().nonce(owner), Observed::Unobserved);
+        assert_eq!(session.facts().existence(owner), Observed::Unobserved);
+    }
+}
+
+#[test]
+fn exact_initial_fact_does_not_bypass_static_write_failure() {
+    let (catalog, id) = catalog("60095f5500");
+    let snapshot = SnapshotId::offline("static owner");
+    let facts = StateFacts::new(snapshot.clone())
+        .refine(
+            &snapshot,
+            [Observation::Storage {
+                address: address(0x101),
+                slot: U256::ZERO,
+                value: U256::from(3),
+            }],
+        )
+        .unwrap()
+        .into_facts();
+    let mut entry = Entry::new(address(0x101));
+    entry.environment.is_static = true;
+    let mut session =
+        AnalysisSession::new(catalog, facts, id, entry, ExecutionConfig::default()).unwrap();
+    let report = session.analyze().unwrap();
+    assert_eq!(report.analysis().status(), Status::Converged);
+    assert!(
+        report
+            .analysis()
+            .outcomes()
+            .iter()
+            .all(|outcome| outcome.kind == OutcomeKind::Failure)
+    );
+    for outcome in report.analysis().outcomes() {
+        assert_eq!(
+            outcome
+                .store
+                .read(address(0x101), &word(0), Domain::default())
+                .singleton(),
+            Some(U256::from(3))
+        );
+    }
+}

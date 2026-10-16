@@ -100,7 +100,7 @@ impl CompiledCode {
         self.id
     }
 
-    /// The immutable decoded program shared with native execution frames.
+    /// The immutable decoded program shared with EVM execution frames.
     pub fn program(&self) -> &Program {
         &self.program
     }
@@ -234,7 +234,7 @@ impl CodeCatalog {
         self.entries.get(&id)
     }
 
-    /// Decoded bytes consumed by the native executor.
+    /// Decoded bytes consumed by the EVM executor.
     pub fn program(&self, id: CodeId) -> Option<&Program> {
         self.get(id).map(|code| code.program())
     }

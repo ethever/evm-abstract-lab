@@ -182,9 +182,9 @@ pub enum FactError {
     #[error("initial observations belong to a different snapshot")]
     Snapshot {
         /// Session's immutable identity.
-        expected: SnapshotId,
+        expected: Box<SnapshotId>,
         /// Rejected batch identity.
-        observed: SnapshotId,
+        observed: Box<SnapshotId>,
     },
     /// A known initial fact may not be overwritten or contradicted indirectly.
     #[error("conflicting initial observation at {key:?}")]
@@ -268,8 +268,8 @@ impl StateFacts {
     ) -> Result<FactRefinement, FactError> {
         if snapshot != &self.snapshot {
             return Err(FactError::Snapshot {
-                expected: self.snapshot.clone(),
-                observed: snapshot.clone(),
+                expected: Box::new(self.snapshot.clone()),
+                observed: Box::new(snapshot.clone()),
             });
         }
         let mut next = self.clone();
