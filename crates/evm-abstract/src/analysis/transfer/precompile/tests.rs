@@ -213,10 +213,27 @@ fn symbolic_outputs_include_provider_successes_and_invalid_inputs_for_all_forks(
                     }
                 }
             }
-            // The engine already abstracts available CALL gas. Keep genuine
-            // provider gas failures even for always-valid input, e.g. identity.
+            // Available CALL gas is abstract. Native empty-input special cases
+            // need not all halt at zero gas; cover the actual pinned status.
             let no_gas = native.execute(&sample(native.id()), 0, 0).unwrap();
-            assert!(matches!(no_gas.status, PrecompileStatus::Halt(_)));
+            let (included, data) = match no_gas.status {
+                PrecompileStatus::Success => (OutcomeKind::Return, &returned.data),
+                PrecompileStatus::Revert => (OutcomeKind::Revert, &reverted.data),
+                PrecompileStatus::Halt(_) => (OutcomeKind::Failure, &failed.data),
+            };
+            assert!(
+                result
+                    .outcomes
+                    .iter()
+                    .any(|outcome| outcome.kind == included),
+                "missing {fork} {:?} zero-gas status {included:?}",
+                native.id()
+            );
+            if included != OutcomeKind::Failure {
+                assert_contains(data, &no_gas.bytes, domain);
+            } else {
+                assert_eq!(data.len().singleton(), Some(U256::ZERO));
+            }
             // A spurious empty success alone cannot cover nonempty outputs.
             if !matches!(native.id(), PrecompileId::EcRec | PrecompileId::P256Verify) {
                 assert_ne!(returned.data.len().singleton(), Some(U256::ZERO));
@@ -301,6 +318,34 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
         );
         assert!(budget.used() < 50_000);
     }
+}
+
+#[test]
+fn a_large_known_length_with_unknown_content_needs_no_full_materialization_fee() {
+    let config = ExecutionConfig {
+        max_memory_bytes: 1_000_000,
+        max_work: 1_000_000,
+        ..config()
+    };
+    let input = ByteArray::unknown()
+        .slice(
+            &value(0),
+            &value(1_000_000),
+            1_000_000,
+            config.domain().unwrap(),
+        )
+        .unwrap();
+    let (world, entry, payload) = fixture(address(2), input, Fork::Osaka, &config);
+    let mut budget = WorkBudget::new(config.max_work);
+    let result = run(&world, &entry, payload, &config, &mut budget);
+    assert!(result.frontiers.is_empty());
+    assert_eq!(result.outcomes.len(), 3);
+    assert!(!budget.exhausted());
+    assert!(budget.used() < 1_000_000);
+    assert!(result.outcomes.iter().any(|outcome| {
+        outcome.kind == OutcomeKind::Return
+            && outcome.data.len().singleton() == Some(U256::from(32))
+    }));
 }
 
 #[test]
@@ -588,7 +633,7 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
 }
 
 #[test]
-fn concrete_crypto_refusal_and_cancellation_stay_analysis_frontiers() {
+fn expensive_concrete_crypto_is_optional_and_cancellation_stays_a_frontier() {
     let config = config();
     let mut blake = vec![0; 213];
     blake[..4].copy_from_slice(&u32::MAX.to_be_bytes());
@@ -601,7 +646,12 @@ fn concrete_crypto_refusal_and_cancellation_stay_analysis_frontiers() {
         &config,
         &mut WorkBudget::new(config.max_work),
     );
-    assert_boundary(&result, FrontierReason::Work);
+    assert!(result.frontiers.is_empty());
+    assert_eq!(result.outcomes.len(), 3);
+    assert!(result.outcomes.iter().any(|outcome| {
+        outcome.kind == OutcomeKind::Return
+            && outcome.data.len().singleton() == Some(U256::from(64))
+    }));
     let mut oversized = modexp_input();
     oversized[64..96].copy_from_slice(&U256::MAX.to_be_bytes::<32>());
     let (world, entry, payload) = fixture(
@@ -617,7 +667,11 @@ fn concrete_crypto_refusal_and_cancellation_stay_analysis_frontiers() {
         &config,
         &mut WorkBudget::new(config.max_work),
     );
-    assert_boundary(&result, FrontierReason::PrecompileInput(address(5)));
+    assert!(result.frontiers.is_empty());
+    assert_eq!(result.outcomes.len(), 3);
+    assert!(result.outcomes.iter().any(|outcome| {
+        outcome.kind == OutcomeKind::Return && outcome.data.len().contains(U256::MAX)
+    }));
     for target in [4, 6] {
         let (world, entry, payload) =
             fixture(address(target), ByteArray::unknown(), Fork::Osaka, &config);

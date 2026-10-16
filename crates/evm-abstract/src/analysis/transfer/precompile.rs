@@ -6,7 +6,10 @@ use super::{Execution, TransferContext, boundary, calls::finish};
 use crate::{
     Fork,
     analysis::{FrontierReason, OutcomeKind},
-    domain::{AbstractValue, Domain, symbolic::ExprLimits},
+    domain::{
+        AbstractValue, Domain,
+        symbolic::{ByteStateKind, ExprLimits},
+    },
     world::{ByteArray, RangeError},
 };
 use alloy_primitives::{Address, U256};
@@ -79,11 +82,13 @@ pub(super) fn execute(
     let input = &result.payload.active().calldata;
     // Cached counts prepay the representation scan, including exact buffers
     // reachable through views. Logical length contributes only if extracted.
-    if !context.budget.charge(
-        input
-            .metadata_len()
-            .saturating_add(input.state_root().work_size()),
-    ) || !context.budget.charge(input.work_size())
+    if context.budget.exhausted()
+        || !context.budget.charge(
+            input
+                .metadata_len()
+                .saturating_add(input.state_root().work_size()),
+        )
+        || !context.budget.charge(input.work_size())
     {
         boundary(result, 0, FrontierReason::Work);
         return;
@@ -108,11 +113,17 @@ pub(super) fn execute(
         }
     };
     let Some(cost) = cost(address, &input, context.config.max_memory_bytes) else {
-        // A refused concrete native operation is an analysis boundary. It is
-        // not evidence of symbolic input and must not trigger a summary.
-        boundary(result, 0, FrontierReason::PrecompileInput(address));
+        // Native computation is optional: this envelope is also sound for
+        // known input whose crypto cost cannot be bounded by this policy.
+        summarize(result, native.id(), context);
         return;
     };
+    if !context.budget.can_afford(cost) {
+        // Decline before charge so this optional computation cannot exhaust
+        // the ledger or hide an already refused operation.
+        summarize(result, native.id(), context);
+        return;
+    }
     if !context.budget.charge(cost) {
         boundary(result, 0, FrontierReason::Work);
         return;
@@ -125,8 +136,8 @@ pub(super) fn execute(
     );
 }
 
-/// None means semantic abstraction or no attempted materialization, never a
-/// swallowed cancellation, expression error, allocation refusal or work limit.
+/// None selects a semantic envelope before an unaffordable optional extraction.
+/// Typed errors from actual work remain analysis boundaries.
 fn materialize(
     input: &ByteArray,
     context: &mut TransferContext<'_>,
@@ -142,41 +153,48 @@ fn materialize(
         // This policy bounds extraction, not the semantics of a native buffer.
         return Ok(None);
     }
-    let work = length.saturating_mul(
-        input
-            .work_size()
-            .saturating_add(context.domain.capacity().saturating_pow(2))
-            .saturating_add(8),
-    );
-    if !context.budget.charge(work) {
+    if context.budget.exhausted() {
         return Err(FrontierReason::Work);
     }
-    let view = input.view();
-    let limits = ExprLimits {
-        max_nodes: length
-            .saturating_mul(input.state_root().nodes().saturating_add(2))
-            .max(view.nodes()),
-        max_depth: input.state_root().depth().saturating_add(2),
-    };
-    if let Some(bytes) = view
-        .known_bytes(limits)
-        .map_err(super::errors::expression)?
-    {
-        return Ok(Some(bytes));
+    let per_byte = input
+        .work_size()
+        .saturating_add(context.domain.capacity().saturating_pow(2))
+        .saturating_add(8);
+    if matches!(input.state_root().kind(), ByteStateKind::Exact(_)) {
+        let work = length.saturating_mul(per_byte);
+        if !context.budget.can_afford(work) {
+            return Ok(None);
+        }
+        if !context.budget.charge(work) {
+            return Err(FrontierReason::Work);
+        }
+        let view = input.view();
+        let limits = ExprLimits {
+            max_nodes: length
+                .saturating_mul(input.state_root().nodes().saturating_add(2))
+                .max(view.nodes()),
+            max_depth: input.state_root().depth().saturating_add(2),
+        };
+        return view.known_bytes(limits).map_err(super::errors::expression);
     }
-    // Numerical facts can make an otherwise symbolic source materializable.
-    // Checked reads preserve the failure that exact_bytes_bounded erases.
+    // Known length does not imply known content. Charge and examine one byte
+    // at a time: the first unknown byte needs no full-length allocation or fee.
+    // Earlier paid work is never refunded if the result becomes a summary.
     let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|_| FrontierReason::Memory)?;
     for index in 0..length {
+        if !context.budget.can_afford(per_byte) {
+            return Ok(None);
+        }
+        if !context.budget.charge(per_byte) {
+            return Err(FrontierReason::Work);
+        }
         let value = input
             .read_byte_checked(&AbstractValue::constant(U256::from(index)), context.domain)
             .map_err(super::errors::bytes)?;
         let Some(byte) = value.singleton().and_then(|n| u8::try_from(n).ok()) else {
             return Ok(None);
         };
+        bytes.try_reserve(1).map_err(|_| FrontierReason::Memory)?;
         bytes.push(byte);
     }
     Ok(Some(bytes))
@@ -228,7 +246,7 @@ fn summarize(result: &mut Execution, id: &PrecompileId, context: &mut TransferCo
         .saturating_mul(4)
         .saturating_add(1024)
         .saturating_mul(3);
-    if !context.budget.charge(work) {
+    if context.budget.exhausted() || !context.budget.charge(work) {
         boundary(result, 0, FrontierReason::Work);
         return;
     }
@@ -258,7 +276,7 @@ fn summarize(result: &mut Execution, id: &PrecompileId, context: &mut TransferCo
     .into_iter()
     .zip(data)
     {
-        if !context.budget.charge(0) {
+        if context.budget.exhausted() || !context.budget.charge(0) {
             boundary(result, 0, FrontierReason::Work);
             return;
         }
