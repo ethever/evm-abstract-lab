@@ -730,6 +730,16 @@ impl Store {
             });
         }
         for address in addresses {
+            // Explicit defaults and an omitted owner denote the same code
+            // state. Touch-only joins can introduce these cache entries; they
+            // must not change a key already used to index the machine state.
+            if matches!(self.code(address), None | Some(Code::Unknown))
+                && self.existence(address) == Existence::Unknown
+                && self.created_in_transaction(address) == self.created_default
+                && self.pending_destruction(address) == self.pending_destruction_default
+            {
+                continue;
+            }
             bytes.extend(address.as_slice());
             match self.code(address) {
                 Some(Code::Runtime(program)) => {
