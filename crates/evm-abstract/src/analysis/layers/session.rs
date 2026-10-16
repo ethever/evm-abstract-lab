@@ -27,7 +27,9 @@ pub enum FactDemand {
     Code(crate::Address),
     /// Missing initial slot, independently of the executing code address.
     Storage {
+        /// Concrete persistent-storage owner, which can differ from code address.
         address: crate::Address,
+        /// Full-width initial storage key required before execution continues.
         slot: crate::U256,
     },
 }
@@ -415,7 +417,7 @@ impl AnalysisSession {
 
     /// Shared executor for acquisition adapters using their cumulative ledger.
     /// Observations still enter exclusively through `refine` and fresh projection.
-    pub(crate) fn run_metered(
+    pub(in crate::analysis) fn run_metered(
         &mut self,
         budget: &mut WorkBudget,
         counters: &mut Counters,
