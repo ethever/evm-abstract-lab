@@ -14,8 +14,14 @@ use crate::{
 };
 use alloy_primitives::{Address, U256};
 use revm_precompile::{
-    PrecompileId, PrecompileResult, PrecompileSpecId, PrecompileStatus, Precompiles,
+    Precompile, PrecompileId, PrecompileResult, PrecompileSpecId, PrecompileStatus, Precompiles,
 };
+
+// Internal precision quanta, independent of the caller's total work allowance.
+// These limit optional exact computation, never EVM gas or valid buffer sizes.
+// Exceeding either selects the same conservative semantic envelope.
+const MAX_EXACT_PRECOMPILE_WORK: usize = 16 * 1024 * 1024;
+const MAX_MATERIALIZATION_WORK: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests;
@@ -79,6 +85,18 @@ pub(super) fn execute(
     address: Address,
     context: &mut TransferContext<'_>,
 ) {
+    execute_with(result, fork, address, context, |native, input| {
+        native.execute(input, u64::MAX, 0)
+    });
+}
+
+fn execute_with(
+    result: &mut Execution,
+    fork: Fork,
+    address: Address,
+    context: &mut TransferContext<'_>,
+    run_native: impl FnOnce(&Precompile, &[u8]) -> PrecompileResult,
+) {
     let input = &result.payload.active().calldata;
     // Cached counts prepay the representation scan, including exact buffers
     // reachable through views. Logical length contributes only if extracted.
@@ -118,7 +136,7 @@ pub(super) fn execute(
         summarize(result, native.id(), context);
         return;
     };
-    if !context.budget.can_afford(cost) {
+    if cost > MAX_EXACT_PRECOMPILE_WORK || !context.budget.can_afford(cost) {
         // Decline before charge so this optional computation cannot exhaust
         // the ledger or hide an already refused operation.
         summarize(result, native.id(), context);
@@ -128,12 +146,7 @@ pub(super) fn execute(
         boundary(result, 0, FrontierReason::Work);
         return;
     }
-    finish_native(
-        result,
-        address,
-        native.execute(&input, u64::MAX, 0),
-        context,
-    );
+    finish_native(result, address, run_native(native, &input), context);
 }
 
 /// None selects a semantic envelope before an unaffordable optional extraction.
@@ -162,7 +175,7 @@ fn materialize(
         .saturating_add(8);
     if matches!(input.state_root().kind(), ByteStateKind::Exact(_)) {
         let work = length.saturating_mul(per_byte);
-        if !context.budget.can_afford(work) {
+        if work > MAX_MATERIALIZATION_WORK || !context.budget.can_afford(work) {
             return Ok(None);
         }
         if !context.budget.charge(work) {
@@ -181,8 +194,10 @@ fn materialize(
     // at a time: the first unknown byte needs no full-length allocation or fee.
     // Earlier paid work is never refunded if the result becomes a summary.
     let mut bytes = Vec::new();
+    let mut materialization_work = 0usize;
     for index in 0..length {
-        if !context.budget.can_afford(per_byte) {
+        materialization_work = materialization_work.saturating_add(per_byte);
+        if materialization_work > MAX_MATERIALIZATION_WORK || !context.budget.can_afford(per_byte) {
             return Ok(None);
         }
         if !context.budget.charge(per_byte) {

@@ -664,6 +664,81 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
 }
 
 #[test]
+fn huge_native_and_materialization_work_use_summaries_even_with_a_large_ledger() {
+    let mut config = config();
+    config.max_work = 1_000_000_000_000;
+    config.max_memory_bytes = 1_000_000;
+    config.analysis.max_constants = 8;
+    let mut blake = vec![0; 213];
+    blake[..4].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(cost(address(9), &blake, config.max_memory_bytes).unwrap() > MAX_EXACT_PRECOMPILE_WORK);
+    let concrete = ByteArray::exact(&blake);
+    // Establish that the native-quantum case gets past exact materialization,
+    // rather than accidentally testing only the other admission boundary.
+    assert_eq!(
+        materialize(
+            &concrete,
+            &mut context(&config, &mut WorkBudget::new(config.max_work)),
+        )
+        .unwrap(),
+        Some(blake)
+    );
+    for (target, input) in [(9, concrete), (2, ByteArray::exact(&vec![0; 262_144]))] {
+        let (_, _, payload) = fixture(address(target), input, Fork::Osaka, &config);
+        let mut result = empty_execution(payload);
+        let mut budget = WorkBudget::new(config.max_work);
+        execute_with(
+            &mut result,
+            Fork::Osaka,
+            address(target),
+            &mut context(&config, &mut budget),
+            |_, _| panic!("an over-quantum native must not execute"),
+        );
+        assert!(result.frontiers.is_empty());
+        assert_eq!(result.outcomes.len(), 3);
+        assert!(!budget.exhausted());
+        let expected_length = if target == 9 { 64 } else { 32 };
+        assert!(result.outcomes.iter().any(|outcome| {
+            outcome.kind == OutcomeKind::Return
+                && outcome.data.len().singleton() == Some(U256::from(expected_length))
+        }));
+    }
+}
+
+#[test]
+fn exact_native_admission_keeps_cheap_computation_and_sticky_resource_refusal() {
+    let config = config();
+    let (_, _, payload) = fixture(address(2), ByteArray::exact(b"hello"), Fork::Osaka, &config);
+    let mut result = empty_execution(payload.clone());
+    let mut called = false;
+    execute_with(
+        &mut result,
+        Fork::Osaka,
+        address(2),
+        &mut context(&config, &mut WorkBudget::new(config.max_work)),
+        |native, input| {
+            called = true;
+            native.execute(input, u64::MAX, 0)
+        },
+    );
+    assert!(called);
+    assert!(result.frontiers.is_empty());
+    assert_eq!(result.outcomes.len(), 1);
+    let mut budget = WorkBudget::new(config.max_work);
+    assert!(!budget.charge(config.max_work + 1));
+    let mut result = empty_execution(payload);
+    execute_with(
+        &mut result,
+        Fork::Osaka,
+        address(2),
+        &mut context(&config, &mut budget),
+        |_, _| panic!("a refused ledger must not execute native work"),
+    );
+    assert_boundary(&result, FrontierReason::Work);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
 fn expensive_concrete_crypto_is_optional_and_cancellation_stays_a_frontier() {
     let config = config();
     let mut blake = vec![0; 213];
