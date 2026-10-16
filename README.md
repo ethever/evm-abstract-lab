@@ -55,6 +55,8 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 未知目标、重复回调与共享状态的完整例子见 [18：世界未知部分的抽象执行](docs/18-unknown-world.md)。它连接符号状态、已知代码执行、交互摘要和可见的覆盖报告；[已知代码自身递归](docs/18-unknown-world.md#已知代码自身递归也进入同一过程表)也使用共同更新的过程关系。
 
+[代码与初始事实分层](docs/18-layered-analysis.md)介绍如何先只提供代码，再向同一快照注入观察并继续分析。可检查的数学性质及其与生产代码的对应边界见[形式化证明](docs/proofs/README.md)。
+
 ## 从单段代码到多个合约
 
 单段 `.hex` 适合学习局部计算。跨合约的 `explain` 和 `analyze` 入口使用**世界文件**（world JSON）：把多个账户的代码、初始存储和其他已知事实放在一起，通过 `--evm.to` 指定 root frame 的目标。下面显式固定 caller、value 和 calldata 来重放教学场景；省略它们时使用符号输入。

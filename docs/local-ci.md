@@ -44,7 +44,7 @@ nix flake check --print-build-logs --no-update-lock-file
 nix eval --json .#checks.x86_64-linux --apply builtins.attrNames
 ```
 
-[Rust 检查](../nix/checks/rust.nix)使用快速 test profile，按包覆盖默认、imbl、全部 features 的所有 targets 和 doctest，包含 ignored 测试，并运行 Clippy 和 Rustdoc。feature 请求解析后完全等价的配置共享同一 derivation；今后新增不同的 feature 会自动形成独立检查。release 与 imbl release 产物也会构建，并用于[安装后示例](../nix/checks/examples.nix)、[后端对照与求解器检查](../nix/checks/runtime.nix)。测试和发布构建分开缓存，见[构建说明](development.md#构建-profile-与缓存)。
+[Rust 检查](../nix/checks/rust.nix)使用快速 test profile，按包覆盖默认、imbl、全部 features 的所有 targets 和 doctest，包含 ignored 测试，并运行 Clippy 和 Rustdoc。feature 请求解析后完全等价的配置共享同一 derivation；今后新增不同的 feature 会自动形成独立检查。release 与 imbl release 产物也会构建，并用于[安装后示例](../nix/checks/examples.nix)、[后端对照与安装后运行检查](../nix/checks/runtime.nix)。测试和发布构建分开缓存，见[构建说明](development.md#构建-profile-与缓存)。
 
 [Cargo 解析回归](../nix/tests/cargo-feature-contexts.nix)还比较原始根包和分包构建的真实 unit graph，保护第三方 feature 组合、宿主依赖、测试目标及前置库缓存。它使用虚拟源码，不编译 crate；不变的清单和锁文件可复用检查结果。
 
