@@ -4,17 +4,15 @@ use super::super::*;
 use crate::domain::{
     identity::Symbol,
     provenance::Origin,
-    relational::{CheckResult, RelationLimits, RelationState, SmtProvider, ValueQuery},
+    relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
     symbolic::ExprKind,
 };
 
-fn policy(provider: SmtProvider) -> RelationLimits {
+fn policy() -> RelationLimits {
     RelationLimits {
-        provider,
         max_nodes: 16_384,
         max_depth: 256,
         max_constraints: 2048,
-        rlimit: 10_000_000,
         ..RelationLimits::default()
     }
 }
@@ -25,12 +23,12 @@ fn domain(policy: RelationLimits) -> Domain {
 
 fn prove(relations: &RelationState, value: &AbstractValue, expected: U256, limits: RelationLimits) {
     assert_eq!(
-        relations.unique_value(&expr(value).unwrap(), &limits),
-        ValueQuery::Unique(expected)
+        relations.local_value(&expr(value).unwrap(), &limits),
+        ValueQuery::Exact(expected)
     );
     assert_eq!(
         relations.can_equal(&expr(value).unwrap(), expected ^ U256::ONE, &limits),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
 }
 
@@ -48,7 +46,7 @@ fn return_length(limits: RelationLimits) -> (ExprId, ExprId) {
 
 #[test]
 fn free_pointer_reads_across_calldata_and_return_copies_stay_bounded() {
-    let limits = policy(SmtProvider::Z3);
+    let limits = policy();
     let domain = domain(limits);
     let (_, length) = return_length(limits);
     let returned = constant(32).with_expression(length.clone());
@@ -95,252 +93,248 @@ fn free_pointer_reads_across_calldata_and_return_copies_stay_bounded() {
 
 #[test]
 fn disjoint_copy_reads_preserve_sources_facts_snapshots_and_hashes() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
-        let domain = domain(limits);
-        let input = |scope, origin| {
-            let mut value = AbstractValue::top();
-            value.set_origin(origin);
-            value
-                .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(scope))
-                .with_numeric(constant(7).numeric().clone())
-        };
-        let a = input(901, Origin::Calldata);
-        let b = input(902, Origin::Returndata);
-        let mut memory = ByteArray::memory();
-        memory.write_word(&zero(), &a, 256, domain).unwrap();
-        memory.write_word(&constant(32), &b, 256, domain).unwrap();
-        let snapshot = memory.clone();
-        let old = memory.read_word_checked(&zero(), domain).unwrap();
-        let hash = memory
-            .slice(&zero(), &constant(64), 256, domain)
-            .unwrap()
-            .keccak(domain, 64)
-            .unwrap();
-        let (_, length) = return_length(limits);
-        let returned = constant(32).with_expression(length.clone());
-        memory
-            .copy_from(&constant(128), &snapshot, &zero(), &returned, 256, domain)
-            .unwrap();
-        let root = memory.state_root().clone();
-        assert!(
-            matches!(root.kind(), ByteStateKind::Copy { source, length: retained, .. } if source.state == *snapshot.state_root() && retained == &length)
-        );
-        for current in [
-            &memory,
-            &memory.widening_form(domain, limits.expressions()).unwrap(),
-        ] {
-            let mut relations = RelationState::default();
-            for (expression, value) in current.symbolic_facts() {
-                relations
-                    .observe(expression, value.numeric(), &limits)
-                    .unwrap();
-            }
-            for (offset, original, origin) in
-                [(0, &a, Origin::Calldata), (32, &b, Origin::Returndata)]
-            {
-                assert_eq!(
-                    current.operands.get(original.expression().unwrap()),
-                    Some(original)
-                );
-                let read = current
-                    .read_word_checked(&constant(offset), domain)
-                    .unwrap();
-                assert_eq!(read.expression(), original.expression());
-                assert!(
-                    read.provenance()
-                        .origins()
-                        .sources()
-                        .unwrap()
-                        .contains(&origin)
-                );
-                prove(&relations, &read, U256::from(7), limits);
-            }
-            assert!(
-                !current
-                    .read_word(&zero(), domain)
-                    .same_identity(&current.read_word(&constant(32), domain))
-            );
-            assert_eq!(current.state_root(), &root);
-        }
-        let new_hash = memory
-            .slice(&zero(), &constant(64), 256, domain)
-            .unwrap()
-            .keccak(domain, 64)
-            .unwrap();
-        assert_eq!(hash.singleton(), new_hash.singleton());
-        assert!(hash.singleton().is_some());
-        memory
-            .write_word(&zero(), &constant(11), 256, domain)
-            .unwrap();
-        assert!(old.same_identity(&a));
-        let mut historical_relations = RelationState::default();
-        for (expression, value) in snapshot.symbolic_facts() {
-            historical_relations
+    let limits = policy();
+    let domain = domain(limits);
+    let input = |scope, origin| {
+        let mut value = AbstractValue::top();
+        value.set_origin(origin);
+        value
+            .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(scope))
+            .with_numeric(constant(7).numeric().clone())
+    };
+    let a = input(901, Origin::Calldata);
+    let b = input(902, Origin::Returndata);
+    let mut memory = ByteArray::memory();
+    memory.write_word(&zero(), &a, 256, domain).unwrap();
+    memory.write_word(&constant(32), &b, 256, domain).unwrap();
+    let snapshot = memory.clone();
+    let old = memory.read_word_checked(&zero(), domain).unwrap();
+    let hash = memory
+        .slice(&zero(), &constant(64), 256, domain)
+        .unwrap()
+        .keccak(domain, 64)
+        .unwrap();
+    let (_, length) = return_length(limits);
+    let returned = constant(32).with_expression(length.clone());
+    memory
+        .copy_from(&constant(128), &snapshot, &zero(), &returned, 256, domain)
+        .unwrap();
+    let root = memory.state_root().clone();
+    assert!(
+        matches!(root.kind(), ByteStateKind::Copy { source, length: retained, .. } if source.state == *snapshot.state_root() && retained == &length)
+    );
+    for current in [
+        &memory,
+        &memory.widening_form(domain, limits.expressions()).unwrap(),
+    ] {
+        let mut relations = RelationState::default();
+        for (expression, value) in current.symbolic_facts() {
+            relations
                 .observe(expression, value.numeric(), &limits)
                 .unwrap();
         }
-        prove(&historical_relations, &old, U256::from(7), limits);
-        assert_eq!(
-            snapshot.read_word(&zero(), domain).singleton(),
-            Some(U256::from(7))
+        for (offset, original, origin) in [(0, &a, Origin::Calldata), (32, &b, Origin::Returndata)]
+        {
+            assert_eq!(
+                current.operands.get(original.expression().unwrap()),
+                Some(original)
+            );
+            let read = current
+                .read_word_checked(&constant(offset), domain)
+                .unwrap();
+            assert_eq!(read.expression(), original.expression());
+            assert!(
+                read.provenance()
+                    .origins()
+                    .sources()
+                    .unwrap()
+                    .contains(&origin)
+            );
+            prove(&relations, &read, U256::from(7), limits);
+        }
+        assert!(
+            !current
+                .read_word(&zero(), domain)
+                .same_identity(&current.read_word(&constant(32), domain))
         );
-        assert_eq!(
-            memory.read_word(&zero(), domain).singleton(),
-            Some(U256::from(11))
-        );
+        assert_eq!(current.state_root(), &root);
     }
+    let new_hash = memory
+        .slice(&zero(), &constant(64), 256, domain)
+        .unwrap()
+        .keccak(domain, 64)
+        .unwrap();
+    assert_eq!(hash.singleton(), new_hash.singleton());
+    assert!(hash.singleton().is_some());
+    memory
+        .write_word(&zero(), &constant(11), 256, domain)
+        .unwrap();
+    assert!(old.same_identity(&a));
+    let mut historical_relations = RelationState::default();
+    for (expression, value) in snapshot.symbolic_facts() {
+        historical_relations
+            .observe(expression, value.numeric(), &limits)
+            .unwrap();
+    }
+    prove(&historical_relations, &old, U256::from(7), limits);
+    assert_eq!(
+        snapshot.read_word(&zero(), domain).singleton(),
+        Some(U256::from(7))
+    );
+    assert_eq!(
+        memory.read_word(&zero(), domain).singleton(),
+        Some(U256::from(11))
+    );
 }
 
 #[test]
-fn overlapping_and_symbolic_copy_ranges_keep_solver_alternatives() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
-        let domain = domain(limits);
-        let source = ByteArray::exact(&[0xab; 32]);
-        let mut original = ByteArray::memory();
-        original
-            .write_word(&zero(), &constant(7), 256, domain)
+fn overlapping_and_symbolic_copy_ranges_keep_local_alternatives() {
+    let limits = policy();
+    let domain = domain(limits);
+    let source = ByteArray::exact(&[0xab; 32]);
+    let mut original = ByteArray::memory();
+    original
+        .write_word(&zero(), &constant(7), 256, domain)
+        .unwrap();
+    let target = AbstractValue::unsigned_range(U256::ZERO, U256::from(64))
+        .unwrap()
+        .with_expression(ExprId::fresh().unwrap());
+    let mut symbolic = original.clone();
+    symbolic
+        .copy_from(&target, &source, &zero(), &constant(32), 256, domain)
+        .unwrap();
+    let read = symbolic.read_word_checked(&zero(), domain).unwrap();
+    assert!(
+        matches!(read.expression().unwrap().kind(), ExprKind::WordRead { view, .. } if &view.state == symbolic.state_root())
+    );
+    for (at, expected) in [(0, U256::from_be_bytes([0xab; 32])), (64, U256::from(7))] {
+        let mut relations = RelationState::default();
+        relations
+            .observe(
+                target.expression().unwrap(),
+                constant(at).numeric(),
+                &limits,
+            )
             .unwrap();
-        let target = AbstractValue::unsigned_range(U256::ZERO, U256::from(64))
-            .unwrap()
-            .with_expression(ExprId::fresh().unwrap());
-        let mut symbolic = original.clone();
-        symbolic
-            .copy_from(&target, &source, &zero(), &constant(32), 256, domain)
-            .unwrap();
-        let read = symbolic.read_word_checked(&zero(), domain).unwrap();
-        assert!(
-            matches!(read.expression().unwrap().kind(), ExprKind::WordRead { view, .. } if &view.state == symbolic.state_root())
-        );
-        for (at, expected) in [(0, U256::from_be_bytes([0xab; 32])), (64, U256::from(7))] {
-            let mut relations = RelationState::default();
-            relations
-                .observe(
-                    target.expression().unwrap(),
-                    constant(at).numeric(),
-                    &limits,
-                )
-                .unwrap();
-            prove(&relations, &read, expected, limits);
-        }
-        let (guard, length) = return_length(limits);
-        let uncertain = domain
-            .join(&zero(), &constant(32))
-            .with_expression(length.clone());
-        let mut symbolic = original.clone();
-        symbolic
-            .copy_from(&zero(), &source, &zero(), &uncertain, 256, domain)
-            .unwrap();
-        let read = symbolic.read_word_checked(&zero(), domain).unwrap();
-        assert!(read.singleton().is_none());
-        assert!(
-            matches!(symbolic.state_root().kind(), ByteStateKind::Copy { length: retained, .. } if retained == &length)
-        );
-        for (success, expected) in [
-            (false, U256::from(7)),
-            (true, U256::from_be_bytes([0xab; 32])),
-        ] {
-            let mut relations = RelationState::default();
-            assert_eq!(relations.assume(&guard, success, &limits), CheckResult::Sat);
-            prove(&relations, &read, expected, limits);
-        }
-        // This demand precedes the destination for every possible copy length.
-        let mut disjoint = original.clone();
-        disjoint
-            .copy_from(&constant(128), &source, &zero(), &uncertain, 256, domain)
-            .unwrap();
-        assert_eq!(
-            disjoint.read_word(&zero(), domain).singleton(),
-            Some(U256::from(7))
-        );
-        assert!(
-            matches!(disjoint.state_root().kind(), ByteStateKind::Copy { length: retained, .. } if retained == &length)
-        );
-        let mut overlapping = original;
-        overlapping
-            .copy_from(&constant(31), &source, &zero(), &constant(1), 256, domain)
-            .unwrap();
-        let read = overlapping.read_word_checked(&zero(), domain).unwrap();
-        assert!(
-            matches!(read.expression().unwrap().kind(), ExprKind::WordRead { view, .. } if &view.state == overlapping.state_root())
-        );
-        prove(&RelationState::default(), &read, U256::from(0xab), limits);
+        prove(&relations, &read, expected, limits);
     }
+    let (guard, length) = return_length(limits);
+    let uncertain = domain
+        .join(&zero(), &constant(32))
+        .with_expression(length.clone());
+    let mut symbolic = original.clone();
+    symbolic
+        .copy_from(&zero(), &source, &zero(), &uncertain, 256, domain)
+        .unwrap();
+    let read = symbolic.read_word_checked(&zero(), domain).unwrap();
+    assert!(read.singleton().is_none());
+    assert!(
+        matches!(symbolic.state_root().kind(), ByteStateKind::Copy { length: retained, .. } if retained == &length)
+    );
+    for (success, expected) in [
+        (false, U256::from(7)),
+        (true, U256::from_be_bytes([0xab; 32])),
+    ] {
+        let mut relations = RelationState::default();
+        assert_eq!(
+            relations.assume(&guard, success, &limits),
+            CheckResult::MayBeFeasible
+        );
+        prove(&relations, &read, expected, limits);
+    }
+    // This demand precedes the destination for every possible copy length.
+    let mut disjoint = original.clone();
+    disjoint
+        .copy_from(&constant(128), &source, &zero(), &uncertain, 256, domain)
+        .unwrap();
+    assert_eq!(
+        disjoint.read_word(&zero(), domain).singleton(),
+        Some(U256::from(7))
+    );
+    assert!(
+        matches!(disjoint.state_root().kind(), ByteStateKind::Copy { length: retained, .. } if retained == &length)
+    );
+    let mut overlapping = original;
+    overlapping
+        .copy_from(&constant(31), &source, &zero(), &constant(1), 256, domain)
+        .unwrap();
+    let read = overlapping.read_word_checked(&zero(), domain).unwrap();
+    assert!(
+        matches!(read.expression().unwrap().kind(), ExprKind::WordRead { view, .. } if &view.state == overlapping.state_root())
+    );
+    prove(&RelationState::default(), &read, U256::from(0xab), limits);
 }
 
 #[test]
 fn copy_range_clips_maximum_and_large_sources_stay_lazy() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
-        let expression = |n| ExprId::constant(n);
-        let source = ByteStateId::exact(Arc::from([0xab, 0xcd]));
-        let root = ByteStateId::zero()
-            .copy(
-                expression(U256::MAX),
-                ByteView::new(
-                    source.clone(),
-                    expression(U256::ZERO),
-                    expression(U256::from(2)),
-                ),
+    let limits = policy();
+    let expression = |n| ExprId::constant(n);
+    let source = ByteStateId::exact(Arc::from([0xab, 0xcd]));
+    let root = ByteStateId::zero()
+        .copy(
+            expression(U256::MAX),
+            ByteView::new(
+                source.clone(),
+                expression(U256::ZERO),
                 expression(U256::from(2)),
-                limits.expressions().into(),
-            )
-            .unwrap();
-        assert_eq!(
-            ExprId::byte_read(root.clone(), expression(U256::ZERO), limits.expressions())
-                .unwrap()
-                .as_constant(),
-            Some(U256::ZERO)
-        );
-        let read = ExprId::word_read(
-            ByteView::new(root, expression(U256::MAX), expression(U256::from(32))),
-            expression(U256::ZERO),
-            limits.expressions(),
+            ),
+            expression(U256::from(2)),
+            limits.expressions().into(),
         )
         .unwrap();
+    assert_eq!(
+        ExprId::byte_read(root.clone(), expression(U256::ZERO), limits.expressions())
+            .unwrap()
+            .as_constant(),
+        Some(U256::ZERO)
+    );
+    let read = ExprId::word_read(
+        ByteView::new(root, expression(U256::MAX), expression(U256::from(32))),
+        expression(U256::ZERO),
+        limits.expressions(),
+    )
+    .unwrap();
+    prove(
+        &RelationState::default(),
+        &AbstractValue::top().with_expression(read),
+        U256::from(0xab) << 248,
+        limits,
+    );
+    let root = ByteStateId::zero()
+        .copy(
+            expression(U256::from(1024)),
+            ByteView::new(
+                source.clone(),
+                expression(U256::ZERO),
+                expression(U256::MAX),
+            ),
+            expression(U256::MAX),
+            limits.expressions().into(),
+        )
+        .unwrap();
+    assert_eq!(root.nodes(), 7);
+    assert!(
+        matches!(root.kind(), ByteStateKind::Copy { source: view, .. } if view.state == source)
+    );
+    for (index, expected) in [
+        (U256::ZERO, U256::ZERO),
+        (U256::from(1024), U256::from(0xab)),
+        (U256::MAX, U256::ZERO),
+    ] {
+        let read =
+            ExprId::byte_read(root.clone(), expression(index), limits.expressions()).unwrap();
         prove(
             &RelationState::default(),
             &AbstractValue::top().with_expression(read),
-            U256::from(0xab) << 248,
+            expected,
             limits,
         );
-        let root = ByteStateId::zero()
-            .copy(
-                expression(U256::from(1024)),
-                ByteView::new(
-                    source.clone(),
-                    expression(U256::ZERO),
-                    expression(U256::MAX),
-                ),
-                expression(U256::MAX),
-                limits.expressions().into(),
-            )
-            .unwrap();
-        assert_eq!(root.nodes(), 7);
-        assert!(
-            matches!(root.kind(), ByteStateKind::Copy { source: view, .. } if view.state == source)
-        );
-        for (index, expected) in [
-            (U256::ZERO, U256::ZERO),
-            (U256::from(1024), U256::from(0xab)),
-            (U256::MAX, U256::ZERO),
-        ] {
-            let read =
-                ExprId::byte_read(root.clone(), expression(index), limits.expressions()).unwrap();
-            prove(
-                &RelationState::default(),
-                &AbstractValue::top().with_expression(read),
-                expected,
-                limits,
-            );
-        }
     }
 }
 
 #[test]
 fn disjoint_copy_demand_keeps_limits_cancellation_and_atomic_failures() {
-    let limits = policy(SmtProvider::Z3);
+    let limits = policy();
     let domain = domain(limits);
     let source = ByteArray::exact(&[0xab; 4]);
     let mut memory = ByteArray::memory();

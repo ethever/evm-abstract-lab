@@ -110,8 +110,8 @@ fn symbolic_expansion_agrees_with_checked_word_rounding_and_zero_size() {
                             .unwrap();
                     }
                     assert_eq!(
-                        relations.unique_value(&expression, &policy),
-                        ValueQuery::Unique(U256::from(expected))
+                        relations.local_value(&expression, &policy),
+                        ValueQuery::Exact(U256::from(expected))
                     );
                 }
             }

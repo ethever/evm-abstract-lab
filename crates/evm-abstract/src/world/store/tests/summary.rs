@@ -4,7 +4,7 @@ use super::super::*;
 use crate::{
     Fork,
     domain::{
-        relational::{CheckResult, RelationLimits, RelationState},
+        relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
         symbolic::ExprLimits,
     },
     world::Account,
@@ -398,7 +398,7 @@ fn projected_overwrites_keep_rpc_dependencies_and_historical_reads_separate() {
 }
 
 #[test]
-fn instantiated_bounded_cells_are_smt_constraints_with_independent_slot_values() {
+fn instantiated_bounded_cells_are_local_constraints_with_independent_slot_values() {
     let (world, a, _) = fixture();
     let domain = Domain::default();
     let bounds = AbstractValue::unsigned_range(U256::from(7), U256::from(8)).unwrap();
@@ -412,10 +412,18 @@ fn instantiated_bounded_cells_are_smt_constraints_with_independent_slot_values()
         .unwrap();
     let first = replay.read(a, &word(2), domain);
     let second = replay.read(a, &word(3), domain);
-    let policy = RelationLimits {
-        rlimit: 1_000_000,
-        ..RelationLimits::default()
-    };
+    let policy = RelationLimits::default();
+    for read in [&first, &second] {
+        let ValueQuery::Bounds(bounds) =
+            RelationState::default().local_value(read.expression().unwrap(), &policy)
+        else {
+            panic!("both concrete slot candidates must survive projection and fresh replay");
+        };
+        for candidate in [7, 8] {
+            assert!(read.contains(U256::from(candidate)));
+            assert!(bounds.contains(U256::from(candidate)));
+        }
+    }
     let equal = ExprId::operation(
         opcode::EQ,
         &[
@@ -427,8 +435,27 @@ fn instantiated_bounded_cells_are_smt_constraints_with_independent_slot_values()
     .unwrap();
     assert_eq!(
         RelationState::default().assume(&equal, false, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
+    for (left, right) in [(7, 8), (8, 7)] {
+        let mut independent = RelationState::default();
+        for (read, expected) in [(&first, left), (&second, right)] {
+            independent
+                .observe(
+                    read.expression().unwrap(),
+                    word(expected).numeric(),
+                    &policy,
+                )
+                .unwrap();
+        }
+        assert_eq!(independent.check(&policy), CheckResult::MayBeFeasible);
+        for (read, expected) in [(&first, left), (&second, right)] {
+            assert_eq!(
+                independent.local_value(read.expression().unwrap(), &policy),
+                ValueQuery::Exact(U256::from(expected))
+            );
+        }
+    }
     let invalid = ExprId::operation(
         opcode::EQ,
         &[
@@ -440,7 +467,7 @@ fn instantiated_bounded_cells_are_smt_constraints_with_independent_slot_values()
     .unwrap();
     assert_eq!(
         RelationState::default().assume(&invalid, true, &policy),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
 }
 

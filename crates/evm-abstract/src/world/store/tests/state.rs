@@ -35,7 +35,6 @@ fn policy() -> RelationLimits {
     RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     }
 }
@@ -84,15 +83,15 @@ fn mixed_concrete_symbolic_writes_keep_order_and_numeric_bounds() {
     eq.observe(k.expression().unwrap(), v(0).numeric(), &p)
         .unwrap();
     assert_eq!(
-        eq.unique_value(value.expression().unwrap(), &p),
-        ValueQuery::Unique(U256::from(9))
+        eq.local_value(value.expression().unwrap(), &p),
+        ValueQuery::Exact(U256::from(9))
     );
     let mut ne = RelationState::default();
     ne.observe(k.expression().unwrap(), v(1).numeric(), &p)
         .unwrap();
     assert_eq!(
-        ne.unique_value(value.expression().unwrap(), &p),
-        ValueQuery::Unique(U256::from(7))
+        ne.local_value(value.expression().unwrap(), &p),
+        ValueQuery::Exact(U256::from(7))
     );
 }
 #[test]
@@ -151,7 +150,7 @@ fn observed_initial_slots_bind_symbolic_and_numeric_facts() {
     .unwrap();
     assert_eq!(
         RelationState::default().assume(&invalid, true, &p),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
     assert!(store.read(address, &v(5), domain).numeric().is_top());
     assert!(matches!(
@@ -242,13 +241,33 @@ fn guarded_store_join_retains_same_selector_as_key() {
         .join_guarded(&right, domain, guard.clone(), ExprLimits::default())
         .unwrap();
     let key = v(0)
-        .join_guarded(&v(1), domain, guard, ExprLimits::default())
+        .join_guarded(&v(1), domain, guard.clone(), ExprLimits::default())
         .unwrap();
     let read = joined.read(address, &key, domain);
-    assert_eq!(
-        RelationState::default().unique_value(read.expression().unwrap(), &policy()),
-        ValueQuery::Unique(U256::from(7))
+    assert!(read.contains(U256::from(7)));
+    // An unknown selector is not enumerated. Independent local joins lose the
+    // key/state correlation, while each explicitly selected branch stays exact.
+    let ValueQuery::Bounds(bounds) =
+        RelationState::default().local_value(read.expression().unwrap(), &policy())
+    else {
+        panic!("expected the documented key/state correlation precision gap");
+    };
+    assert!(bounds.contains(U256::from(7)));
+    assert!(
+        bounds.contains(U256::ZERO),
+        "local bounds retain a spurious zero"
     );
+    for nonzero in [false, true] {
+        let mut relations = RelationState::default();
+        assert_eq!(
+            relations.assume(&guard, nonzero, &policy()),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            relations.local_value(read.expression().unwrap(), &policy()),
+            ValueQuery::Exact(U256::from(7))
+        );
+    }
 }
 #[test]
 fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
@@ -396,7 +415,7 @@ fn ordinary_join_unites_numeric_key_facts_at_shared_root() {
 }
 
 #[test]
-fn complete_symbolic_observation_has_solver_bound_and_zero_unobserved_base() {
+fn complete_symbolic_observation_has_local_bound_and_zero_unobserved_base() {
     let (mut world, address) = world(true);
     let observed = AbstractValue::unsigned_range(U256::from(7), U256::from(8))
         .unwrap()
@@ -421,7 +440,7 @@ fn complete_symbolic_observation_has_solver_bound_and_zero_unobserved_base() {
     .unwrap();
     assert_eq!(
         RelationState::default().assume(&eq, true, &p),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
     assert_eq!(
         store.read(address, &v(5), Domain::default()).singleton(),
@@ -491,6 +510,13 @@ fn ordinary_store_union_retains_an_alternative_under_old_guard_false() {
     let p = policy();
     let mut relations = RelationState::default();
     relations.observe(&guard, v(0).numeric(), &p).unwrap();
+    let ValueQuery::Bounds(bounds) = relations.local_value(value.expression().unwrap(), &p) else {
+        panic!("ordinary union must retain both alternatives under the old false guard");
+    };
+    for candidate in [7, 9] {
+        assert!(value.contains(U256::from(candidate)));
+        assert!(bounds.contains(U256::from(candidate)));
+    }
     let eq = ExprId::operation(
         opcode::EQ,
         &[
@@ -500,7 +526,7 @@ fn ordinary_store_union_retains_an_alternative_under_old_guard_false() {
         p.expressions(),
     )
     .unwrap();
-    assert_eq!(relations.assume(&eq, true, &p), CheckResult::Sat);
+    assert_eq!(relations.assume(&eq, true, &p), CheckResult::MayBeFeasible);
 }
 
 #[test]
@@ -512,10 +538,32 @@ fn numeric_only_slot_aliases_constrain_native_reads() {
     store.write_checked(address, &key, &v(7), domain).unwrap();
     let read = store.read(address, &v(2), domain);
     assert_eq!(read.singleton(), Some(U256::ZERO));
-    assert_eq!(
-        RelationState::default().unique_value(read.expression().unwrap(), &policy()),
-        ValueQuery::Unique(U256::ZERO)
+    // The scalar read excludes slot 2, but local alias comparison does not
+    // exclude it from a nonsingleton synthesized key solely by its finite set.
+    let ValueQuery::Bounds(bounds) =
+        RelationState::default().local_value(read.expression().unwrap(), &policy())
+    else {
+        panic!("expected the documented finite-key alias precision gap");
+    };
+    assert!(bounds.contains(U256::ZERO));
+    assert!(
+        bounds.contains(U256::from(7)),
+        "local bounds retain the spurious alias"
     );
+    let root = store.slot_root(address, false).unwrap();
+    let SlotStateKind::Store { key: stored, .. } = root.kind() else {
+        panic!("expected the original persistent write");
+    };
+    for candidate in [0, 1] {
+        let mut relations = RelationState::default();
+        relations
+            .observe(stored, v(candidate).numeric(), &policy())
+            .unwrap();
+        assert_eq!(
+            relations.local_value(read.expression().unwrap(), &policy()),
+            ValueQuery::Exact(U256::ZERO)
+        );
+    }
 }
 
 #[test]
