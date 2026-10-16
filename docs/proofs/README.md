@@ -21,8 +21,8 @@ LEAN_BIN=/absolute/path/to/lean-4.30.0/bin/lean \
   bash proofs/check.sh /absolute/path/to/proof-evidence
 ```
 
-The script compiles project modules into the evidence directory, checks every
-public theorem's `#print axioms`, and writes `audit.json` with source hashes,
+The script compiles project modules into the evidence directory, checks 188
+public theorem and regression targets with `#print axioms`, and writes `audit.json` with source hashes,
 theorem dependencies and the actual expected-rejection exit. Warnings are errors.
 The deliberately false [OldJoinRejected.lean](../../proofs/counterexamples/OldJoinRejected.lean)
 must fail because `decide` establishes that the old join excludes zero, after its
@@ -44,7 +44,7 @@ library/checker, and the dependency-report audit remain trusted infrastructure.
 | --- | --- |
 | [Facts](../../proofs/NoSmt/Facts.lean) | Finite partial must-fact map, absent = Top; support intersection with finite-set union; concretization includes both input paths; old left-biased join excludes the permitted right-path `0`, corrected join accepts it; equal roots can have different facts. |
 | [PartialFacts](../../proofs/NoSmt/PartialFacts.lean) | The same support-intersection algorithm for an arbitrary component domain, with explicit left/right component-join obligations; the finite-set instance discharges both. Production `NumericValue` inclusion is a separate obligation. |
-| [ConditionalFacts](../../proofs/NoSmt/ConditionalFacts.lean) | Common-key Gamma conjoined with guarded residual and previous scopes; whole-value residual filtering under unique keys, including a duplicate-shadow counterexample; left/right inclusion with finite Nat-set and BitVec256-set instances; unknown-guard and inactive-EMPTY witnesses; exact recursive pruning that retains active numeric guarantees and all conjunctions; support-checked fresh injection with numeric-derived guard truths. The pruning proof specifies the pending production repair; final source binding remains coordinator-owned. |
+| [ConditionalFacts](../../proofs/NoSmt/ConditionalFacts.lean) | Common-key Gamma conjoined with guarded residual and previous scopes; whole-value residual filtering under unique keys, including a duplicate-shadow counterexample; left/right inclusion with finite Nat-set and BitVec256-set instances; unknown-guard and inactive-EMPTY witnesses; exact recursive pruning that retains active numeric guarantees and all conjunctions; support-checked fresh injection with numeric-derived guard truths. The pruning proof corresponds to the implemented constant-guard normalization; the source correspondence and twelve-level Rust case-preparation regression are listed separately in the contract. |
 | [Snapshots](../../proofs/NoSmt/Snapshots.lean) | Typed snapshot and owner keys; consistent insertion, idempotence, conflict and wrong-snapshot refusal; concretization after injection is the old set intersected with the supplied initial fact; ordered write precedence, nonalias reads, history versions and rollback. |
 | [Effects](../../proofs/NoSmt/Effects.lean) | The protected-owner field envelope; local havoc inclusion, idempotence and closure for any finite allowed local-write trace; proved executable callback store/add/sequence/indirect-call rules and every finite allowed mixed trace, including a repeated indirect-call instance. |
 | [Engine](../../proofs/NoSmt/Engine.lean) | Generic forward simulation and postfixed finite-prefix coverage; proved local Word256 register, load/store, zero-branch, unknown-envelope, checkpoint, touch and rollback transitions; a checked finite certificate for a looping program containing unknown writes and repeated indirect callbacks, with a protected-code invariant and an empty-queue counterexample. |
