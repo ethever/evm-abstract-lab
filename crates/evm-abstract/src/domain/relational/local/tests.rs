@@ -95,6 +95,71 @@ fn observed_zero_comparison_retains_the_target_exclusion() {
 }
 
 #[test]
+fn candidate_equality_cannot_supply_its_own_compound_value() {
+    let limits = RelationLimits::default();
+    let base = ExprId::fresh().unwrap();
+    let square = op(opcode::MUL, &[base.clone(), base.clone()]);
+    let slots = SlotStateId::zero()
+        .store(c(0), c(9), limits.expressions().into())
+        .unwrap();
+    let read = ExprId::slot_read(slots, c(0), limits.expressions()).unwrap();
+    let mut state = RelationState::default();
+    assert_eq!(
+        state.add_equal(&base, &c(3), &limits),
+        CheckResult::MayBeFeasible
+    );
+    let before = state.clone();
+    for expression in [square, read] {
+        assert_eq!(
+            state.local_value(&expression, &limits),
+            ValueQuery::Exact(U256::from(9))
+        );
+        for (candidate, expected) in [
+            (8, CheckResult::ProvenImpossible),
+            (9, CheckResult::MayBeFeasible),
+        ] {
+            assert_eq!(
+                state.can_equal(&expression, U256::from(candidate), &limits),
+                expected
+            );
+            let mut budget = WorkBudget::new(20_000_000);
+            assert_eq!(
+                state.can_equal_budgeted(&expression, U256::from(candidate), &limits, &mut budget),
+                expected
+            );
+            assert!(!budget.exhausted());
+        }
+    }
+    assert_eq!(state, before);
+}
+
+#[test]
+fn unknown_candidate_queries_keep_typed_interruption_without_a_witness() {
+    let limits = RelationLimits::default();
+    let expression = op(opcode::MUL, &[ExprId::fresh().unwrap(), c(3)]);
+    let state = RelationState::default();
+    assert_eq!(
+        state.can_equal(&expression, U256::from(7), &limits),
+        CheckResult::MayBeFeasible
+    );
+    let mut budget = WorkBudget::new(0);
+    assert_eq!(
+        state.can_equal_budgeted(&expression, U256::from(7), &limits, &mut budget),
+        CheckResult::Undetermined(QueryReason::ExpressionLimit)
+    );
+    assert_eq!(budget.used(), 0);
+    assert!(!budget.exhausted());
+    let token = analysis_control::Cancellation::new();
+    token.cancel();
+    analysis_control::with_cancellation(&token, || {
+        assert_eq!(
+            state.can_equal(&expression, U256::from(7), &limits),
+            CheckResult::Undetermined(QueryReason::Cancelled)
+        );
+    });
+}
+
+#[test]
 fn nonzero_symbolic_storage_key_cannot_alias_zero() {
     let limits = RelationLimits::default();
     let key = ExprId::fresh().unwrap();

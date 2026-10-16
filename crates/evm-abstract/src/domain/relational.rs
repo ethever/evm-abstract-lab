@@ -570,16 +570,7 @@ impl RelationState {
         value: U256,
         limits: &RelationLimits,
     ) -> CheckResult {
-        match local::project(
-            self,
-            Some(expression),
-            Some(Constraint::Equal {
-                left: expression.clone(),
-                right: ExprId::constant(value),
-            }),
-            limits,
-            None,
-        ) {
+        match local::project(self, Some(expression), Some(value), limits, None) {
             Ok(None) => CheckResult::ProvenImpossible,
             Ok(Some(_)) => CheckResult::MayBeFeasible,
             Err(reason) => CheckResult::Undetermined(reason),
@@ -621,16 +612,7 @@ impl RelationState {
         limits: &RelationLimits,
         budget: &mut crate::resource::WorkBudget,
     ) -> CheckResult {
-        match local::project(
-            self,
-            Some(expression),
-            Some(Constraint::Equal {
-                left: expression.clone(),
-                right: ExprId::constant(value),
-            }),
-            limits,
-            Some(budget),
-        ) {
+        match local::project(self, Some(expression), Some(value), limits, Some(budget)) {
             Ok(None) => CheckResult::ProvenImpossible,
             Ok(Some(_)) => CheckResult::MayBeFeasible,
             Err(reason) => CheckResult::Undetermined(reason),

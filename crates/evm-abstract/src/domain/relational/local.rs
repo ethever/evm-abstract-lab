@@ -94,10 +94,11 @@ impl Work<'_> {
 }
 
 /// `None` is proved bottom; a numeric result covers every remaining alternative.
+/// A candidate is checked against the original facts, never imported as a fact.
 pub(super) fn project(
     state: &RelationState,
     expression: Option<&ExprId>,
-    extra: Option<Constraint>,
+    candidate: Option<U256>,
     limits: &RelationLimits,
     ledger: Option<&mut crate::resource::WorkBudget>,
 ) -> Result<Option<NumericValue>, QueryReason> {
@@ -140,23 +141,24 @@ pub(super) fn project(
         for atom in &state.constraints {
             engine.atom(atom)?;
         }
-        if let Some(extra) = &extra {
-            engine.atom(extra)?;
-        }
         engine.path(&state.path)?;
         // At most one bounded inverse pass; incompleteness only loses precision.
         for atom in &state.constraints {
             engine.validate(atom)?;
         }
-        if let Some(extra) = &extra {
-            engine.validate(extra)?;
-        }
         engine.memo.clear(engine.work)?;
         engine.terms.clear(engine.work)?;
-        expression.map_or_else(
-            || Ok(NumericValue::top()),
-            |expression| engine.eval(expression),
-        )
+        let Some(expression) = expression else {
+            return Ok(NumericValue::top());
+        };
+        let value = engine.eval(expression)?;
+        if let Some(candidate) = candidate
+            && (!value.contains(candidate)
+                || engine.same(expression, &ExprId::constant(candidate))? == Some(false))
+        {
+            return Err(Stop::Bottom);
+        }
+        Ok(value)
     })();
     match run {
         Ok(value) => Ok(Some(value)),
