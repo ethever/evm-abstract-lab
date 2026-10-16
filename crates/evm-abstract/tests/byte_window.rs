@@ -170,27 +170,48 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
                 initial_balance.numeric()
             );
         }
-        for outcome in analysis
+        let returned = analysis
             .outcomes()
             .iter()
             .filter(|outcome| outcome.kind == OutcomeKind::Return)
-        {
-            let returned = outcome
-                .data
-                .read_word_checked(&word(0), Domain::default())
-                .unwrap();
-            bounded(&returned);
-            let balance = outcome.store.read_balance(address(CHILD));
-            assert_eq!(returned.numeric(), balance.numeric());
-            // Opcode results add source categories; the stored account bound
-            // itself still has the observation's unknown provenance.
-            let sources = returned
+            .map(|outcome| {
+                let value = outcome
+                    .data
+                    .read_word_checked(&word(0), Domain::default())
+                    .unwrap();
+                (outcome, value)
+            })
+            .collect::<Vec<_>>();
+        for (outcome, value) in &returned {
+            assert_eq!(outcome.data.len().singleton(), Some(U256::from(32)));
+            // Summary joins may retain the zero-padding alternative after the
+            // length guard. That false positive does not justify losing the
+            // upper bound or any real balance/return combination.
+            assert!(value.numeric().interval().unsigned_bounds().1 <= U256::from(9));
+            assert!(!value.contains(U256::from(10)), "{value:?}");
+            // Provenance records the current observation: MLOAD replaces the
+            // earlier SELFBALANCE category with Memory, not an ancestor trace.
+            let sources = value
                 .provenance()
                 .origins()
                 .sources()
-                .expect("forwarding preserves a complete source summary");
-            assert!(sources.contains(&Origin::Balance));
+                .expect("MLOAD has a known observation category");
             assert!(sources.contains(&Origin::Memory));
+            assert_eq!(sources.len(), 1);
+        }
+        for n in 3_u64..=9 {
+            let n = U256::from(n);
+            assert!(
+                returned.iter().any(|(outcome, value)| {
+                    value.contains(n)
+                        && outcome.store.read_balance(address(CHILD)).contains(n)
+                        && outcome
+                            .store
+                            .read_balance(address(PARENT))
+                            .contains(U256::from(1_000_000))
+                }),
+                "a single return outcome must cover the unchanged balances and returned {n}"
+            );
         }
     }
 }
