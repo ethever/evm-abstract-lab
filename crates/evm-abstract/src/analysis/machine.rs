@@ -279,7 +279,7 @@ pub enum FrontierReason {
     Memory,
     /// A checked byte-array range cannot be retained in its declared representation.
     ByteRange(ByteRangeBoundary),
-    /// A relational query could not finish within the declared symbolic/SMT policy.
+    /// A relational query could not complete under the declared local reasoning policy.
     Relations(crate::domain::relational::QueryReason),
     /// A complete incoming machine alternative could not be merged safely.
     StateJoin(JoinBoundary),
@@ -355,7 +355,7 @@ pub struct MachineOutcome {
 }
 
 /// One numerical output of a caller-independent procedure relation.
-/// Templates are instantiated with independent SMT roots before execution.
+/// Templates are instantiated with independent symbolic state roots before execution.
 #[derive(Clone, Debug, Serialize)]
 pub struct ProcedureSummaryOutput {
     /// Relative frame termination; failure effects are rolled back at each caller.

@@ -122,6 +122,8 @@ fn main() {
 
 第一次 `analyze()` 按两个未知初始槽执行。补入的是两个不同槽的零与非零观察，第二次从入口重新执行，返回 word 收窄为 7。`before` 仍引用原来那份报告及其事实版本；补充事实不会修改它。`Entry::new(address)` 固定入口目的地址，未提供的 caller、value、calldata 和区块字段继续使用符号输入。
 
+符号身份用于标识输入和状态读取的来源，值未知时仍可保留；它不等于 `Observed::Known`。`StateFacts` 记录固定初始快照的精确观察，`revision()` 标识这些观察的版本；报告中的运行时写入、历史读取与回滚根则属于产生该报告的执行。补事实生成的新版本不会改绑旧历史。
+
 ## 新事实怎样影响执行与历史
 
 `AnalysisSession::refine` 返回 `RefinementEffect`：没有新观察时是 `Unchanged`；尚未执行时是 `InitialFacts`；已经执行过则是 `RestartRequired`。后者记录旧执行使用的版本、新版本、加入的 `FactKey` 和受影响的图状态。连续补入多批事实时，失效范围累计到下一次执行，不会忘掉先前批次的影响。

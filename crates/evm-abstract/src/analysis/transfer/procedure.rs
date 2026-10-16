@@ -1,10 +1,10 @@
 //! Caller-independent saturation for known recursion and unknown interactions.
 //!
-//! A table entry retains numerical bounds and finite stack equalities, not an SMT valuation
-//! and not a stack-depth unrolling. Every live block and separate summary invocation gets
-//! independent array roots. A caller subscription keeps its own continuation
-//! and rollback checkpoint. Known bytecode, repeated environment interactions,
-//! and their mutually recursive calls therefore use the same worklist.
+//! A table entry retains numerical bounds and finite stack equalities; recursion uses
+//! worklist saturation rather than stack-depth unrolling. Every live block and separate
+//! summary invocation gets independent symbolic state roots. A caller subscription keeps
+//! its own continuation and rollback checkpoint. Known bytecode, repeated environment
+//! interactions, and their mutually recursive calls therefore use the same worklist.
 
 use super::{
     Execution, ExecutionFrontier, StorageReadPolicy, Successor, TransferContext, WorkBudget,
@@ -317,7 +317,7 @@ impl Table {
                 result.frontiers.extend(execution.frontiers);
             }
         }
-        // Every frontier retains its actual numerical/SMT procedure state;
+        // Every frontier retains its actual numerical and relational procedure state;
         // successful discovered outputs remain useful on an interrupted solve.
         result.frontiers.extend(
             solver

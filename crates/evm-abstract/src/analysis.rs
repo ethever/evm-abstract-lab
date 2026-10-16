@@ -214,7 +214,7 @@ pub enum Limit {
 /// 无法继续展开的明确前沿，保留其来源和预期状态键。
 #[derive(Clone, Debug, Serialize)]
 pub struct Frontier {
-    /// Full native reason, including symbolic and SMT resource limits.
+    /// Full native reason, including symbolic and relational resource limits.
     pub reason: FrontierReason,
     /// 已知来源状态；最初入口没有来源。
     pub from: Option<usize>,
