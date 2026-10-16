@@ -1,8 +1,7 @@
 //! Preserve branch proofs in numeric views of conditional byte and slot roots.
 
-#[cfg(test)]
-mod active;
 mod guards;
+mod length;
 
 use super::super::TransferContext;
 use crate::{
@@ -148,6 +147,7 @@ pub(super) fn refine(
             }
         }
     }
+    length::refine(payload, relations, context)?;
     guards::refine(
         payload,
         relations,
