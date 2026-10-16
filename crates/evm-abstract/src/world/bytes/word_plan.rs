@@ -82,13 +82,13 @@ impl ByteArray {
             .spend(self.operands.len())
             .then(|| fact_work(&self.operands));
         let preparation = if self.conditional.len() != 0
-            && metadata.is_some()
+            && let Some(metadata_work) = metadata
             && census.fits(&self.root, offset, (!self.memory).then_some(&self.length))
         {
             Some(conditional::preparation(
                 self.root.work_size(),
                 offset,
-                metadata.expect("the bounded size scan completed"),
+                metadata_work,
                 self.operands.len(),
                 &self.conditional,
                 domain,

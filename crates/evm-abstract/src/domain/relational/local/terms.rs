@@ -141,21 +141,18 @@ impl Engine<'_, '_> {
                     condition,
                     then_state,
                     else_state,
-                } => match self.choose(condition)? {
-                    Some(nonzero) => Some(
-                        view.branch_view(
-                            if nonzero {
-                                then_state.clone()
-                            } else {
-                                else_state.clone()
-                            },
-                            condition,
-                            nonzero,
-                        )
-                        .0,
-                    ),
-                    None => None,
-                },
+                } => self.choose(condition)?.map(|nonzero| {
+                    view.branch_view(
+                        if nonzero {
+                            then_state.clone()
+                        } else {
+                            else_state.clone()
+                        },
+                        condition,
+                        nonzero,
+                    )
+                    .0
+                }),
                 ByteStateKind::Copy {
                     previous,
                     destination,

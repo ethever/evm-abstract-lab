@@ -36,10 +36,10 @@ pub(super) fn validate_target(
     }
     // A concrete extent needs a U256 end, never a host index. Symbolic success
     // is constrained at transfer; expanded() does not invent numeric guard facts.
-    if let (Some(offset), Some(size)) = (offset.singleton(), size.singleton()) {
-        if checked_end(offset, size, memory).is_none() {
-            return Err(RangeError::OffsetTooLarge(offset));
-        }
+    if let (Some(offset), Some(size)) = (offset.singleton(), size.singleton())
+        && checked_end(offset, size, memory).is_none()
+    {
+        return Err(RangeError::OffsetTooLarge(offset));
     }
     Ok(())
 }
