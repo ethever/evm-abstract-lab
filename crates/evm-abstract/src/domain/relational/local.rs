@@ -151,8 +151,8 @@ pub(super) fn project(
         if let Some(extra) = &extra {
             engine.validate(extra)?;
         }
-        engine.memo.clear();
-        engine.terms.clear();
+        engine.memo.clear(engine.work)?;
+        engine.terms.clear(engine.work)?;
         expression.map_or_else(
             || Ok(NumericValue::top()),
             |expression| engine.eval(expression),
@@ -488,8 +488,8 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
 
     fn truth(&mut self, expression: &ExprId, nonzero: bool) -> LocalResult<()> {
         self.work.charge(1)?;
-        self.memo.clear();
-        self.terms.clear();
+        self.memo.clear(self.work)?;
+        self.terms.clear(self.work)?;
         let value = self.eval(expression)?;
         if (nonzero && !value.may_be_nonzero()) || (!nonzero && !value.may_be_zero()) {
             return Err(Stop::Bottom);

@@ -4,6 +4,9 @@
 use super::{LocalResult, Work};
 use crate::domain::symbolic::ExprId;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) struct KeyMap<T> {
     buckets: Vec<Bucket<T>>,
 }
@@ -111,7 +114,16 @@ impl<T> KeyMap<T> {
         Ok(())
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(super) fn clear(&mut self, work: &mut Work<'_>) -> LocalResult<()> {
+        work.charge(self.buckets.len())?;
+        let entries = self
+            .buckets
+            .iter()
+            .fold(self.buckets.len(), |count, bucket| {
+                count.saturating_add(bucket.entries.len())
+            });
+        work.charge(entries)?;
         self.buckets.clear();
+        Ok(())
     }
 }
