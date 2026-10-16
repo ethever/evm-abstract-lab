@@ -358,9 +358,9 @@ fn joined_default_base_read_cancellation_is_typed() {
     let joined = a
         .join_guarded(&b, domain, ExprId::fresh().unwrap(), ExprLimits::default())
         .unwrap();
-    let cancel = embedded_smt::Cancellation::new();
+    let cancel = analysis_control::Cancellation::new();
     cancel.cancel();
-    embedded_smt::with_cancellation(&cancel, || {
+    analysis_control::with_cancellation(&cancel, || {
         let result = joined.read_checked(Address::repeat_byte(0x99), &v(0), domain);
         assert!(matches!(
             result,
@@ -447,9 +447,9 @@ fn checked_store_self_join_respects_budget_cancel_and_failure() {
             )
             .is_err()
     );
-    let cancel = embedded_smt::Cancellation::new();
+    let cancel = analysis_control::Cancellation::new();
     cancel.cancel();
-    embedded_smt::with_cancellation(&cancel, || {
+    analysis_control::with_cancellation(&cancel, || {
         assert!(matches!(
             store.join_guarded(
                 &store,

@@ -11,7 +11,10 @@ use super::{
 use super::{InstructionProgress, InstructionValue};
 use crate::{
     domain::{AbstractValue, Domain, provenance::Origin},
-    world::{AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, Store, Symbol, World},
+    world::{
+        AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, LogSourceKind, Store, Symbol,
+        World,
+    },
 };
 use alloy_primitives::{Address, U256, keccak256};
 use revm_bytecode::opcode;
@@ -370,6 +373,17 @@ fn execute_inner(
             *value = value.clone().with_identity(scope, definition);
         }
         definition = definition.saturating_add(1);
+    }
+    // Root execution is a message-call entry. Keep the engine's separate
+    // pre-entry gas-failure alternative untouched; an executed root touch is
+    // inside its saved-store scope and disappears on ordinary root rollback.
+    // Detached procedure roots already inherit their actual caller's touches.
+    if !procedure
+        && result.payload.call_stack.depth() == 1
+        && result.payload.active().key.basic_block_index == 0
+    {
+        let owner = result.payload.active().key.address;
+        result.payload.store.touch_account(owner);
     }
     let code = result.payload.active().code;
     if let FrameCode::Precompile(address) = code {
@@ -947,6 +961,12 @@ fn execute_inner(
                 let source = LogKey {
                     address: frame.key.address,
                     code_address: frame.key.code_address,
+                    code_hash: frame.key.code_hash,
+                    source_kind: if frame.key.mode == FrameCode::InitCode {
+                        LogSourceKind::Init
+                    } else {
+                        LogSourceKind::Runtime
+                    },
                     pc,
                 };
                 if result

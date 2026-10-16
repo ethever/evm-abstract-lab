@@ -62,6 +62,8 @@ fn native_guard_projection_pairs_slots_balances_logs_and_restores_old_snapshot()
     let site = LogKey {
         address,
         code_address: address,
+        code_hash: alloy_primitives::B256::ZERO,
+        source_kind: crate::world::LogSourceKind::Runtime,
         pc: 7,
     };
     let old = logged_store(&world, &site, 3, ByteArray::exact(&[3]), domain);
@@ -228,6 +230,8 @@ fn collector_fixture() -> CollectorFixture {
     let site = LogKey {
         address: owners[0],
         code_address: code_owner,
+        code_hash: alloy_primitives::B256::ZERO,
+        source_kind: crate::world::LogSourceKind::Runtime,
         pc: 11,
     };
     let mut world = World::new(Fork::Osaka, "guard collector owners");

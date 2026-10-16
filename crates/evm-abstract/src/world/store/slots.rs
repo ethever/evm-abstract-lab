@@ -370,13 +370,7 @@ impl Plane {
         out.base = self
             .base
             .join_guarded(&other.base, selector.clone(), limits.into())?;
-        out.operands = self.operands.clone();
-        for (e, v) in &other.operands {
-            out.operands
-                .entry(e.clone())
-                .and_modify(|old| *old = domain.join(old, v))
-                .or_insert_with(|| v.clone());
-        }
+        out.operands = operands::join_common(&self.operands, &other.operands, domain);
         let addresses = self
             .roots
             .keys()
@@ -394,6 +388,8 @@ impl Plane {
                 )?,
             );
         }
+        // The pointwise numeric-cache union above already covers both inputs.
+        // Do not rewalk each whole root after dropping path-local guarantees.
         Ok(out)
     }
 }

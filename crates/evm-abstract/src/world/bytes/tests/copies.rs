@@ -381,9 +381,9 @@ fn disjoint_copy_demand_keeps_limits_cancellation_and_atomic_failures() {
         Err(RangeError::OffsetTooLarge(_))
     ));
     assert_eq!(memory, original);
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
             memory.read_word_checked(&zero(), domain),
             Err(RangeError::Expression(ExprError::Cancelled))

@@ -276,9 +276,9 @@ fn numerical_projection_preserves_failed_construction_and_cancellation() {
         failed.summary_projection(Domain::default()),
         Err(RangeError::UnknownSize)
     );
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
             ByteArray::exact(&[1]).summary_projection(Domain::default()),
             Err(RangeError::Expression(ExprError::Cancelled))

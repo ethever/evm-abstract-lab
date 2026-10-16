@@ -391,9 +391,9 @@ fn singleton_metadata_bound_and_cancellation_reject_slot_writes_atomically() {
         ))
     ));
     assert_eq!(store, snapshot);
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert!(
             store
                 .write_checked(

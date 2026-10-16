@@ -431,10 +431,10 @@ fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
     );
     assert_eq!(calls, 0);
     assert_eq!(joined, original);
-    let cancel = embedded_smt::Cancellation::new();
+    let cancel = analysis_control::Cancellation::new();
     cancel.cancel();
     calls = 0;
-    embedded_smt::with_cancellation(&cancel, || {
+    analysis_control::with_cancellation(&cancel, || {
         assert!(joined.guard_conditions(policy().expressions()).is_err());
         assert_eq!(joined, original);
         assert!(

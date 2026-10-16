@@ -527,9 +527,9 @@ fn scoped_lower_bounds_preserve_max_padding_symbolic_length_and_atomic_errors() 
             .is_err()
     );
     assert_eq!(memory, snapshot);
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert!(matches!(
             memory.read_word_checked(&constant(64), domain),
             Err(RangeError::Expression(ExprError::Cancelled)

@@ -346,9 +346,9 @@ fn normalization_keeps_retention_and_cancellation_checks_and_failed_writes_atomi
         )
         .unwrap();
     assert_eq!(memory, original);
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
             memory.read_word_checked(&constant(0), domain),
             Err(RangeError::Expression(ExprError::Cancelled))

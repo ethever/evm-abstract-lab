@@ -289,8 +289,8 @@ fn equal_exit_buffers_share_one_invocation_source_but_later_calls_are_fresh() {
 
 #[test]
 fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
-    // This protected owner loops forever. Its static callbacks cannot change
-    // the modeled Store, and any outcome visible to the caller is in the
+    // This protected owner loops forever. Static callbacks preserve its values,
+    // while touch metadata remains possible. Every caller-visible outcome is in the
     // unknown process's envelope irrespective of this code's closure.
     let (world, mut entry) = fixture(&[(0x102, "5b5f56")]);
     entry.environment.is_static = true;
@@ -311,6 +311,8 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
             LogKey {
                 address: address(0x102),
                 code_address: address(0x102),
+                code_hash: alloy_primitives::B256::ZERO,
+                source_kind: crate::world::LogSourceKind::Runtime,
                 pc: 0,
             },
             AbstractLog {
@@ -321,6 +323,10 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
         )
         .unwrap();
     payload.active_mut().saved_store = payload.store.snapshot();
+    let mut touched_payload = payload.clone();
+    touched_payload.store.may_touch_all();
+    let mut rolled_back = touched_payload.store.clone();
+    rolled_back.restore(payload.active().saved_store.clone());
     let mut table = Table::default();
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
@@ -337,7 +343,7 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
     .environment(payload.clone());
     assert!(result.frontiers.is_empty());
     assert!(result.successors.is_empty());
-    assert_eq!(result.payload, payload);
+    assert_eq!(result.payload, touched_payload);
     assert_eq!(result.outcomes.len(), 3);
     for kind in [
         OutcomeKind::Return,
@@ -349,7 +355,14 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
             .iter()
             .find(|output| output.kind == kind)
             .unwrap();
-        assert_eq!(output.store, payload.store);
+        assert_eq!(
+            &output.store,
+            if kind == OutcomeKind::Return {
+                &touched_payload.store
+            } else {
+                &rolled_back
+            }
+        );
         if kind == OutcomeKind::Failure {
             assert_eq!(output.data.len().singleton(), Some(U256::ZERO));
         } else {

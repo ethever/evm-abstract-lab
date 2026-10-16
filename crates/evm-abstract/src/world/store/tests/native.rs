@@ -107,6 +107,8 @@ fn native_slot_and_log_arrays_keep_shape_order_and_cancel_without_buffering() {
                 LogKey {
                     address,
                     code_address: address,
+                    code_hash: B256::ZERO,
+                    source_kind: LogSourceKind::Runtime,
                     pc,
                 },
                 AbstractLog {
@@ -138,9 +140,9 @@ fn native_slot_and_log_arrays_keep_shape_order_and_cancel_without_buffering() {
     assert!(json["logs"][0].get("address").is_some());
     assert!(json["logs"][0].get("topics").is_some());
     assert!(json["logs"][0].get("data").is_some());
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         let error = serde_json::to_vec(&arrays).unwrap_err();
         assert!(error.to_string().contains("cancelled"));
     });

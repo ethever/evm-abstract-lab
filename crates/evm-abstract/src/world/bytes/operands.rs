@@ -7,6 +7,23 @@ use crate::domain::{
 };
 use std::collections::BTreeMap;
 
+/// These are unconditional guarantees, so a missing entry on either path means
+/// no guarantee. The immutable roots keep branch effects even when their local
+/// operand bounds cannot be retained outside that branch.
+pub(in crate::world) fn join_common(
+    left: &BTreeMap<ExprId, AbstractValue>,
+    right: &BTreeMap<ExprId, AbstractValue>,
+    domain: Domain,
+) -> BTreeMap<ExprId, AbstractValue> {
+    left.iter()
+        .filter_map(|(expression, value)| {
+            right
+                .get(expression)
+                .map(|other| (expression.clone(), domain.join(value, other)))
+        })
+        .collect()
+}
+
 /// Merge source alternatives, never infer input identity from an equal number.
 /// The caller stages this map so a rejected metadata bound remains atomic.
 pub(in crate::world) fn remember(

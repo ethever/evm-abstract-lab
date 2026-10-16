@@ -85,8 +85,8 @@ impl Solver<'_> {
             }
         }
         if is_static {
-            // Read-only reentrancy preserves the modeled world state. The
-            // arbitrary Return/Revert buffer and Failure above already cover
+            // Read-only reentrancy preserves values, but may add touch metadata.
+            // The arbitrary Return/Revert buffer and Failure above already cover
             // all parent-visible outcomes of such callbacks at this precision;
             // closure does not require executing or reporting their blocks.
             result.payload = payload;

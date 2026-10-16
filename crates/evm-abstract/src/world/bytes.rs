@@ -143,7 +143,7 @@ pub(in crate::world) fn check_value(
     value: &AbstractValue,
     limits: ExprLimits,
 ) -> Result<(), ExprError> {
-    if embedded_smt::current_cancellation().is_cancelled() {
+    if analysis_control::current_cancellation().is_cancelled() {
         return Err(ExprError::Cancelled);
     }
     if value.symbolic_limit_reached() {
@@ -708,15 +708,9 @@ impl ByteArray {
             root: self
                 .root
                 .join_guarded(&other.root, selector, expression_limits.into())?,
-            operands: self.operands.clone(),
+            operands: operands::join_common(&self.operands, &other.operands, domain),
             failure: self.failure.clone().or_else(|| other.failure.clone()),
         };
-        for (key, value) in &other.operands {
-            out.operands
-                .entry(key.clone())
-                .and_modify(|old| *old = domain.join(old, value))
-                .or_insert_with(|| value.clone());
-        }
         for index in self.bytes.keys().chain(other.bytes.keys()) {
             out.bytes.entry(*index).or_insert_with(zero);
         }
@@ -794,7 +788,7 @@ impl ByteArray {
         let mut output = Vec::new();
         output.try_reserve_exact(length).ok()?;
         for i in 0..length {
-            if i % 256 == 0 && embedded_smt::current_cancellation().is_cancelled() {
+            if i % 256 == 0 && analysis_control::current_cancellation().is_cancelled() {
                 return None;
             }
             let byte = numeric::read(

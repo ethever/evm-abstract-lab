@@ -12,6 +12,7 @@ use snapshot_state::SharedCheckpoint;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod effects;
+mod lifecycle;
 mod refinement;
 mod slots;
 mod summary;
@@ -26,14 +27,30 @@ pub use summary::StoreSummary;
 /// Ordered state observations with the selected snapshot storage backend.
 pub use snapshot_state::OrderedMap;
 
+/// Execution phase of the captured bytecode containing a LOG instruction.
+/// Kept in world so event identities do not depend on analysis frame types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogSourceKind {
+    /// Contract initialization, before returned runtime code is installed.
+    Init,
+    /// Deployed runtime, including delegated execution.
+    Runtime,
+}
+
 /// One possible event source. Code and storage owners differ in delegated calls.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct LogKey {
     /// Emitter address, i.e. the frame's execution/storage account.
     pub address: Address,
-    /// Account whose runtime contains this LOG instruction.
+    /// Account whose captured code contains this LOG instruction.
     pub code_address: Address,
-    /// LOG instruction's byte offset in that runtime.
+    /// Hash of the emitting frame's captured bytes, independent of later writes
+    /// to the account's runtime code in the transaction store.
+    pub code_hash: B256,
+    /// Whether the captured bytes execute as initcode or deployed runtime.
+    pub source_kind: LogSourceKind,
+    /// LOG instruction's byte offset in the captured code.
     pub pc: usize,
 }
 
@@ -100,7 +117,7 @@ fn serialize_logs<S: Serializer>(
     }
     let mut sequence = serializer.serialize_seq(Some(logs.len()))?;
     for (source, payload) in logs {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(serde::ser::Error::custom(
                 "world log serialization cancelled",
             ));
@@ -235,7 +252,7 @@ fn serialize_slots<S: Serializer>(
     }
     let mut sequence = serializer.serialize_seq(Some(slots.len()))?;
     for ((address, slot), value) in slots {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(serde::ser::Error::custom(
                 "world slot serialization cancelled",
             ));
@@ -452,6 +469,10 @@ pub struct Store {
     created_default: Option<bool>,
     pending_destruction: OrderedMap<Address, Option<bool>>,
     pending_destruction_default: Option<bool>,
+    // Some(true) is must-touch, Some(false) is untouched, None is may-touch.
+    // This is transaction state: joins, summaries and checkpoints must retain it.
+    touched: OrderedMap<Address, Option<bool>>,
+    touched_default: Option<bool>,
     #[serde(serialize_with = "serialize_logs")]
     possible_logs: OrderedMap<LogKey, AbstractLog>,
     logs_unknown: bool,
@@ -581,6 +602,8 @@ impl Store {
             created_default: Some(false),
             pending_destruction: OrderedMap::new(),
             pending_destruction_default: Some(false),
+            touched: OrderedMap::new(),
+            touched_default: Some(false),
             possible_logs: OrderedMap::new(),
             logs_unknown: false,
         }
@@ -784,6 +807,7 @@ impl Store {
     /// Prepare a collision-free destination for initcode execution. A prefunded
     /// balance survives; persistent and transient slots start at zero.
     pub fn begin_creation(&mut self, address: Address) {
+        self.touch_account(address);
         self.persistent.reset_account(address);
         self.transient.reset_account(address);
         self.codes.insert(address, Code::Empty);
@@ -830,6 +854,7 @@ impl Store {
         let balance = self.read_balance(address);
         let created = self.created_in_transaction(address);
         if address != beneficiary {
+            self.touch_account(beneficiary);
             let recipient = self.read_balance(beneficiary);
             self.write_balance(
                 beneficiary,
@@ -857,45 +882,38 @@ impl Store {
         }
     }
 
-    /// Commit deferred [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) deletion only at outermost completion. A joined
-    /// optional deletion conservatively joins the retained and deleted accounts.
+    /// Commit deferred EIP-6780 deletion and EIP-161 touched-empty clearing.
+    /// Uncertain deletion joins retained/deleted states; untouched empty accounts
+    /// and accounts proven nonempty remain intact.
     pub fn finalize_transaction(&mut self, domain: Domain) {
-        let pending = self
-            .addresses()
-            .into_iter()
-            .map(|address| (address, self.pending_destruction(address)))
-            .collect::<Vec<_>>();
-        self.pending_destruction.clear();
-        self.pending_destruction_default = Some(false);
-        for (address, pending) in pending {
-            if pending == Some(false) {
-                continue;
-            }
-            let mut deleted = self.clone();
-            deleted.persistent.reset_account(address);
-            deleted.transient.reset_account(address);
-            deleted.codes.insert(address, Code::Empty);
-            deleted
-                .nonces
-                .insert(address, AbstractValue::constant(U256::ZERO));
-            deleted
-                .balances
-                .insert(address, AbstractValue::constant(U256::ZERO));
-            deleted.existence.insert(address, Existence::Absent);
-            if pending == Some(true) {
-                *self = deleted;
-            } else {
-                *self = self.join(&deleted, domain);
+        for address in self.addresses() {
+            let delete = lifecycle::or(
+                self.pending_destruction(address),
+                lifecycle::and(self.touched_in_transaction(address), self.is_empty(address)),
+            );
+            match delete {
+                Some(false) => {}
+                Some(true) => self.delete_account(address),
+                None => {
+                    let mut deleted = self.clone();
+                    deleted.delete_account(address);
+                    *self = self.join(&deleted, domain);
+                }
             }
         }
         // These flags describe an active transaction, never the next transaction.
         self.created.clear();
         self.created_default = Some(false);
+        self.pending_destruction.clear();
+        self.pending_destruction_default = Some(false);
+        self.touched.clear();
+        self.touched_default = Some(false);
         self.transient = Plane::new(AbstractValue::constant(U256::ZERO), true);
     }
 
     /// Forget storage, balance, code, nonce and lifecycle facts at an account.
     pub fn havoc_account(&mut self, address: Address) {
+        self.may_touch_account(address);
         self.persistent.havoc_account(address);
         self.transient.havoc_account(address);
         self.balances.insert(address, AbstractValue::top());
@@ -909,6 +927,7 @@ impl Store {
 
     /// Unknown external code can reenter and affect any account in this world.
     pub fn havoc_all(&mut self) {
+        self.may_touch_all();
         self.persistent.havoc_all();
         self.transient.havoc_all();
         self.balances.clear();
@@ -1063,6 +1082,13 @@ impl Store {
                 self.pending_destruction_default,
                 other.pending_destruction_default,
             ),
+            touched: summary::join_flags(
+                &self.touched,
+                self.touched_default,
+                &other.touched,
+                other.touched_default,
+            ),
+            touched_default: summary::join_flag(self.touched_default, other.touched_default),
             possible_logs,
             logs_unknown,
         }
@@ -1115,7 +1141,18 @@ impl Store {
 
     /// Roll back a reverted or exceptional child frame.
     pub fn restore(&mut self, snapshot: Snapshot) {
+        // All supported forks retain RIPEMD-160's touch on revert. This narrow
+        // consensus exception does not retain its balance/storage/log effects.
+        // revm 43.0.2 JournalEntry::AccountTouched::revert uses the same rule.
+        let ripemd = Address::from_word(U256::from(3).into());
+        let ripemd_touched = self.touched_in_transaction(ripemd);
         snapshot.restore(self);
+        let restored = lifecycle::or(self.touched_in_transaction(ripemd), ripemd_touched);
+        if restored != self.touched_default {
+            self.touched.insert(ripemd, restored);
+        } else {
+            self.touched.remove(&ripemd);
+        }
     }
 
     /// Explicit current persistent slots, keyed by storage owner and slot.
@@ -1180,6 +1217,7 @@ impl Store {
             .chain(self.existence.keys())
             .chain(self.created.keys())
             .chain(self.pending_destruction.keys())
+            .chain(self.touched.keys())
             .chain(self.persistent.defaults.keys())
             .chain(self.transient.defaults.keys())
             .chain(self.persistent.roots.keys())
@@ -1243,7 +1281,8 @@ impl Store {
             .saturating_add(self.existence.len())
             .saturating_add(self.created.len())
             .saturating_add(self.pending_destruction.len())
-            .saturating_add(2);
+            .saturating_add(self.touched.len())
+            .saturating_add(3);
         self.possible_logs.values().fold(
             lifecycle_work
                 .saturating_add(self.persistent.initial_independence.work_size())

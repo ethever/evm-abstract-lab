@@ -501,6 +501,7 @@ pub(super) fn call(
             ),
             _ => unreachable!(),
         };
+        let unknown_target = target_operand.is_some();
         let address_operand = if matches!(op, opcode::CALL | opcode::STATICCALL) {
             target_operand
         } else {
@@ -514,6 +515,23 @@ pub(super) fn call(
         let saved_store = input_payload.store.snapshot();
         let code_hash = captured_hash(&program, &input_payload.store, code_address, code);
         let mut payload = input_payload.clone();
+        // revm's CALL checkpoint precedes transfer_loaded: a zero transfer
+        // touches its recipient, and failure restores that touch with the child
+        // store. CALLCODE's self-transfer and DELEGATECALL do not add a touch.
+        if matches!(op, opcode::CALL | opcode::STATICCALL) && target != caller_address {
+            if unknown_target {
+                payload.store.may_touch_all();
+            } else {
+                payload.store.touch_account(target);
+            }
+            if op == opcode::CALL && value.may_be_nonzero() {
+                if value.may_be_zero() {
+                    payload.store.may_touch_account(caller_address);
+                } else {
+                    payload.store.touch_account(caller_address);
+                }
+            }
+        }
         // A proven zero transfer leaves both balances and their input identities
         // unchanged. Rebuilding them with ADD/SUB would add arithmetic metadata
         // and make otherwise identical rollback preconditions look different.

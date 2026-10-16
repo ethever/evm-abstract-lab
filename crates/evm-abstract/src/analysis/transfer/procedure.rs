@@ -258,10 +258,10 @@ impl Table {
                     break;
                 }
                 let mut returned = payload.clone();
-                // Static execution has an identity Store effect, including
-                // initial-read roots shared with the caller's historical values.
+                // Static execution preserves data and historical read roots,
+                // while nested zero-value calls can add EIP-161 touches.
                 let output_store = if payload.active().key.is_static {
-                    Ok(payload.store.clone())
+                    Ok(output.store.apply_static_touches(&payload.store))
                 } else {
                     output.store.instantiate(domain)
                 };

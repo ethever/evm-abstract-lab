@@ -12,6 +12,111 @@ use crate::{
 use alloy_primitives::U256;
 use std::collections::BTreeSet;
 
+#[test]
+fn actual_machine_join_keeps_zero_and_nonzero_branches_after_one_sided_world_proof() {
+    use crate::analysis::{EdgeKind, MachineEdgeKind, transfer};
+    use std::convert::Infallible;
+
+    let mut config = fixtures::config();
+    config.analysis.relations.enabled = false;
+    let domain = config.domain().unwrap();
+    let limits = domain.spec().relations().expressions();
+    for opcode in [0x51u8, 0x54, 0x5c] {
+        // MLOAD/SLOAD/TLOAD; ISZERO; JUMPI, followed by two marker returns.
+        let code = format!("5f{opcode:02x}15600e5760015f5260205ff35b5f5f5260205ff3");
+        let (world, entry) = fixtures::fixture(&[(0x101, &code)]);
+        let mut right = transfer::initial(&world, &entry, domain).unwrap();
+        let guard = ExprId::fresh().unwrap();
+        if opcode == 0x51 {
+            let mut yes = ByteArray::memory();
+            let mut no = ByteArray::memory();
+            yes.write_word(&fixtures::word(0), &fixtures::word(1), 64, domain)
+                .unwrap();
+            no.write_word(&fixtures::word(0), &fixtures::word(0), 64, domain)
+                .unwrap();
+            right.active_mut().memory = yes
+                .join_guarded(&no, domain, guard.clone(), limits)
+                .unwrap();
+        } else {
+            let mut yes = right.store.clone();
+            let mut no = right.store.clone();
+            for (store, value) in [(&mut yes, 1), (&mut no, 0)] {
+                if opcode == 0x5c {
+                    store
+                        .write_transient_checked(
+                            entry.address,
+                            &fixtures::word(0),
+                            &fixtures::word(value),
+                            domain,
+                        )
+                        .unwrap();
+                } else {
+                    store
+                        .write_checked(
+                            entry.address,
+                            &fixtures::word(0),
+                            &fixtures::word(value),
+                            domain,
+                        )
+                        .unwrap();
+                }
+            }
+            right.store = yes
+                .join_guarded(&no, domain, guard.clone(), limits)
+                .unwrap();
+            let saved = right.store.snapshot();
+            right.active_mut().saved_store = saved;
+        }
+        let mut left = right.clone();
+        // The left input represents the external path guard != 0; the right
+        // retains the original unconstrained guard and therefore still has zero.
+        let mut proof =
+            |condition: &ExprId| Ok::<_, Infallible>((condition == &guard).then_some(true));
+        assert!(
+            left.active_mut()
+                .memory
+                .refine_guards(domain, limits, &mut proof)
+                .unwrap()
+        );
+        assert!(
+            left.store
+                .refine_guards(domain, limits, &mut proof)
+                .unwrap()
+        );
+        let saved = left.store.snapshot();
+        left.active_mut().saved_store = saved;
+        for (a, b) in [(&left, &right), (&right, &left)] {
+            let joined = a.join(b, domain).unwrap();
+            if opcode != 0x51 {
+                let saved = joined.active().saved_store.state();
+                let read = if opcode == 0x5c {
+                    saved
+                        .read_transient_checked(entry.address, &fixtures::word(0), domain)
+                        .unwrap()
+                } else {
+                    saved
+                        .read_checked(entry.address, &fixtures::word(0), domain)
+                        .unwrap()
+                };
+                assert!(read.contains(U256::ZERO) && read.contains(U256::ONE));
+            }
+            let execution = transfer::execute(
+                &world,
+                &entry,
+                joined,
+                &config,
+                domain,
+                &mut WorkBudget::new(config.max_work),
+                transfer::StorageReadPolicy::Abstract,
+            );
+            assert!(execution.frontiers.is_empty(), "{:?}", execution.frontiers);
+            for branch in [EdgeKind::BranchTrue, EdgeKind::BranchFalse] {
+                assert!(execution.successors.iter().any(|successor| successor.kind == MachineEdgeKind::Intraprocedural(branch)), "opcode {opcode:#x} lost {branch:?}");
+            }
+        }
+    }
+}
+
 fn scalar_guard(value: &AbstractValue) -> ExprId {
     match value.expression().expect("joined scalar expression").kind() {
         ExprKind::Ite { condition, .. } => condition.clone(),

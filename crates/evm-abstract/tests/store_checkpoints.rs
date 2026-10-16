@@ -45,6 +45,8 @@ fn cloned_snapshots_share_complete_store_and_preserve_value_format_and_work() {
             LogKey {
                 address: caller,
                 code_address: caller,
+                code_hash: alloy_primitives::B256::ZERO,
+                source_kind: evm_abstract::world::LogSourceKind::Runtime,
                 pc: 0,
             },
             AbstractLog {
@@ -70,14 +72,18 @@ fn cloned_snapshots_share_complete_store_and_preserve_value_format_and_work() {
     let expected = saved.state().clone();
     store.havoc_all();
     store.restore(saved);
-    assert_eq!(store, expected);
-    assert_eq!(store.work_size(), expected.work_size());
+    let mut reverted = expected.clone();
+    // Havoc covers a call to RIPEMD-160; its possible touch is the sole
+    // consensus exception to ordinary checkpoint rollback.
+    reverted.may_touch_account(Address::from_word(U256::from(3).into()));
+    assert_eq!(store, reverted);
+    assert_eq!(store.work_size(), reverted.work_size());
     store.write(caller, &word(0), &word(99), domain);
     assert_eq!(siblings[0].state(), &expected);
     assert_eq!(siblings[0].state().possible_logs().len(), 1);
     let unique = Snapshot::from_state(expected.clone());
     store.restore(unique);
-    assert_eq!(store, expected);
+    assert_eq!(store, reverted);
 }
 
 #[test]
@@ -118,6 +124,8 @@ fn outer_rollback_restores_successful_deeper_effects_and_all_state_planes() {
             LogKey {
                 address: created,
                 code_address: created,
+                code_hash: alloy_primitives::B256::ZERO,
+                source_kind: evm_abstract::world::LogSourceKind::Runtime,
                 pc: 0,
             },
             AbstractLog {
@@ -211,7 +219,9 @@ fn divergent_checkpoints_merge_pre_call_states_without_aliasing_live_versions() 
     assert_eq!(left, right_before);
     assert_eq!(left.read(caller, &word(0), domain), right_read);
     right.restore(left_checkpoint);
-    assert_eq!(right, left_before);
+    let mut right_reverted = left_before.clone();
+    right_reverted.may_touch_account(Address::from_word(U256::from(3).into()));
+    assert_eq!(right, right_reverted);
     assert_eq!(right.read(caller, &word(0), domain), left_read);
     assert_eq!(expected.read(caller, &word(0), domain), joined_read);
     assert_eq!(joined_read.numeric(), product.numeric());

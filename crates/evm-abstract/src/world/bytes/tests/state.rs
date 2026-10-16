@@ -411,9 +411,9 @@ fn checked_self_join_respects_budget_and_cancellation() {
             )
             .is_err()
     );
-    let cancel = embedded_smt::Cancellation::new();
+    let cancel = analysis_control::Cancellation::new();
     cancel.cancel();
-    embedded_smt::with_cancellation(&cancel, || {
+    analysis_control::with_cancellation(&cancel, || {
         assert!(matches!(
             array.join_guarded(&array, Domain::default(), guard, ExprLimits::default()),
             Err(RangeError::State(StateError::Cancelled))

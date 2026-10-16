@@ -56,6 +56,8 @@ pub struct StoreSummary {
     created_default: Option<bool>,
     pending_destruction: OrderedMap<Address, Option<bool>>,
     pending_destruction_default: Option<bool>,
+    touched: OrderedMap<Address, Option<bool>>,
+    touched_default: Option<bool>,
     possible_logs: OrderedMap<LogKey, SummaryLog>,
     logs_unknown: bool,
 }
@@ -100,7 +102,7 @@ fn remaining_upper(
     domain: Domain,
     memo: &mut BTreeMap<SlotStateId, AbstractValue>,
 ) -> Result<AbstractValue, StoreError> {
-    if embedded_smt::current_cancellation().is_cancelled() {
+    if analysis_control::current_cancellation().is_cancelled() {
         return Err(crate::domain::symbolic::ExprError::Cancelled.into());
     }
     if let Some(value) = memo.get(root) {
@@ -193,7 +195,7 @@ impl Plane {
             .chain(self.slots.keys().map(|(owner, _)| *owner))
             .collect();
         for address in addresses {
-            if embedded_smt::current_cancellation().is_cancelled() {
+            if analysis_control::current_cancellation().is_cancelled() {
                 return Err(crate::domain::symbolic::ExprError::Cancelled.into());
             }
             let root = self.root_at(address)?;
@@ -484,7 +486,7 @@ fn join_numeric_map(
         .collect()
 }
 
-fn join_flags(
+pub(super) fn join_flags(
     left: &OrderedMap<Address, Option<bool>>,
     left_default: Option<bool>,
     right: &OrderedMap<Address, Option<bool>>,
@@ -509,7 +511,7 @@ fn join_flags(
 impl Store {
     /// Sound whole-payload projection for unknown procedure fixed points.
     pub fn summary_projection(&self, domain: Domain) -> Result<StoreSummary, StoreError> {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(crate::domain::symbolic::ExprError::Cancelled.into());
         }
         // Numerical projection consumes old roots without retaining new read
@@ -564,6 +566,13 @@ impl Store {
                 .map(|(owner, value)| (*owner, *value))
                 .collect(),
             pending_destruction_default: self.pending_destruction_default,
+            touched: self
+                .touched
+                .iter()
+                .filter(|(_, value)| **value != self.touched_default)
+                .map(|(owner, value)| (*owner, *value))
+                .collect(),
+            touched_default: self.touched_default,
             possible_logs: if self.logs_unknown {
                 OrderedMap::new()
             } else {
@@ -602,7 +611,8 @@ impl StoreSummary {
                     .len()
                     .saturating_add(self.created.len())
                     .saturating_add(self.pending_destruction.len())
-                    .saturating_add(3)
+                    .saturating_add(self.touched.len())
+                    .saturating_add(4)
                     .saturating_mul(2),
             );
         self.possible_logs.values().fold(
@@ -701,6 +711,13 @@ impl StoreSummary {
                 self.pending_destruction_default,
                 other.pending_destruction_default,
             ),
+            touched: join_flags(
+                &self.touched,
+                self.touched_default,
+                &other.touched,
+                other.touched_default,
+            ),
+            touched_default: join_flag(self.touched_default, other.touched_default),
             possible_logs: logs,
             logs_unknown,
         }
@@ -709,6 +726,33 @@ impl StoreSummary {
     /// Whole-payload subsumption, including defaults, lifecycle and events.
     pub fn covers(&self, other: &Self, domain: Domain) -> bool {
         self.join(other, domain, false) == *self
+    }
+
+    /// Apply the only persistent bookkeeping effect of a static invocation.
+    /// Data and immutable read roots retain the caller's exact identities.
+    /// Existing must-touches cannot be undone by a widened callee summary.
+    pub fn apply_static_touches(&self, input: &Store) -> Store {
+        let mut out = input.clone();
+        out.touched_default = super::lifecycle::or(input.touched_default, self.touched_default);
+        out.touched = input
+            .touched
+            .keys()
+            .chain(self.touched.keys())
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|address| {
+                let touched = super::lifecycle::or(
+                    input.touched_in_transaction(address),
+                    self.touched
+                        .get(&address)
+                        .copied()
+                        .unwrap_or(self.touched_default),
+                );
+                (touched != out.touched_default).then_some((address, touched))
+            })
+            .collect();
+        out
     }
 
     /// Independent symbolic state for one procedure execution or result replay.
@@ -734,6 +778,8 @@ impl StoreSummary {
             created_default: self.created_default,
             pending_destruction: self.pending_destruction.clone(),
             pending_destruction_default: self.pending_destruction_default,
+            touched: self.touched.clone(),
+            touched_default: self.touched_default,
             possible_logs: self
                 .possible_logs
                 .iter()

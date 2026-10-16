@@ -16,7 +16,8 @@ mod store;
 pub use bytes::{ByteArray, ByteArraySummary, GuardRefinementError, RangeError};
 pub use snapshot::{FingerprintError, SnapshotEnvironment, SnapshotIdentity};
 pub use store::{
-    AbstractLog, LogError, LogKey, OrderedMap, Snapshot, Store, StoreError, StoreSummary,
+    AbstractLog, LogError, LogKey, LogSourceKind, OrderedMap, Snapshot, Store, StoreError,
+    StoreSummary,
 };
 
 use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::AbstractValue};

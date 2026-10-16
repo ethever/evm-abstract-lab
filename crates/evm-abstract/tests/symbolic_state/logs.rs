@@ -108,6 +108,11 @@ fn captured_log<'a>(
     let (key, log) = outcome.store.possible_logs().iter().next().unwrap();
     assert_eq!(key.address, address(ROOT));
     assert_eq!(key.code_address, address(ROOT));
+    assert_eq!(
+        key.code_hash,
+        analysis.states()[outcome.state].active().code_hash
+    );
+    assert_eq!(key.source_kind, evm_abstract::world::LogSourceKind::Runtime);
     assert_eq!(key.pc, log_pc);
     assert!(log.topics.is_empty());
     let before = analysis
@@ -370,6 +375,11 @@ fn symbolic_log_native_graphs_and_bounded_report_preserve_all_bindings() {
     assert_eq!(exported["topics"], captured["log"]["topics"]);
     assert_eq!(exported["address"], json!(address(ROOT)));
     assert_eq!(exported["code_address"], json!(address(ROOT)));
+    assert_eq!(
+        exported["code_hash"],
+        json!(analysis.states()[outcome.state].active().code_hash)
+    );
+    assert_eq!(exported["source_kind"], json!("runtime"));
     assert_eq!(exported["pc"], json!(fixture.labels["log"] + 1));
     let exported_length = &exported["data"]["length"]["expression"];
     assert_eq!(graph_root(exported_length), graph_root(&length_graph));

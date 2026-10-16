@@ -97,7 +97,7 @@ pub(in crate::world) fn walk(
 ) -> Result<usize, ExprError> {
     let mut seen = BTreeSet::new();
     while let Some(node) = pending.pop() {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled);
         }
         if !seen.insert(node.clone()) {

@@ -245,9 +245,9 @@ fn guarded_word_views_preserve_padding_symbolic_offset_limits_and_cancellation()
             ),
             Err(ExprError::Limit { .. })
         ));
-        let cancellation = embedded_smt::Cancellation::new();
+        let cancellation = analysis_control::Cancellation::new();
         cancellation.cancel();
-        embedded_smt::with_cancellation(&cancellation, || {
+        analysis_control::with_cancellation(&cancellation, || {
             assert_eq!(
                 ExprId::word_read(view, term(U256::ZERO), limits.expressions()),
                 Err(ExprError::Cancelled)

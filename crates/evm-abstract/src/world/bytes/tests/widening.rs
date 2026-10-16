@@ -86,9 +86,9 @@ fn widening_form_preserves_original_on_failure_cancel_and_low_policy() {
             .is_err()
     );
     assert_eq!(memory, original);
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert!(matches!(
             memory.widening_form(domain, limits(domain)),
             Err(RangeError::Expression(ExprError::Cancelled)

@@ -483,10 +483,12 @@ fn write_store(output: &mut String, store: &Store, refs: &References) {
     for (index, (site, log)) in store.possible_logs().iter().enumerate() {
         writeln!(
             output,
-            "      {} | address={} | code={} | pc=0x{:x}",
+            "      {} | address={} | code={} | hash={} | source={:?} | pc=0x{:x}",
             Symbol::Log(index),
             refs.address(site.address),
             refs.address(site.code_address),
+            refs.hash(site.code_hash),
+            site.source_kind,
             site.pc
         )
         .unwrap();

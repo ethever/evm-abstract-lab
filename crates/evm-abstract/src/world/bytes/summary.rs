@@ -134,7 +134,7 @@ impl ByteArray {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled.into());
         }
         // Projection consumes an existing complete graph; it does not retain
@@ -158,7 +158,7 @@ impl ByteArray {
                     let mut cells = BTreeMap::new();
                     let mut reader = super::numeric::Reader::new(&self.operands, domain);
                     for index in keys.into_iter().take(COPY_FACT_LIMIT) {
-                        if embedded_smt::current_cancellation().is_cancelled() {
+                        if analysis_control::current_cancellation().is_cancelled() {
                             return Err(ExprError::Cancelled.into());
                         }
                         let value = scalar(
@@ -173,7 +173,7 @@ impl ByteArray {
                 }
             }
         };
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled.into());
         }
         Ok(ByteArraySummary {
@@ -403,7 +403,7 @@ impl ByteArraySummary {
         // A numerical presentation cache needs no second copy of the root in
         // every byte expression. Actual reads attach their state term on demand.
         for index in out.bytes.keys().copied().collect::<Vec<_>>() {
-            if embedded_smt::current_cancellation().is_cancelled() {
+            if analysis_control::current_cancellation().is_cancelled() {
                 return Err(ExprError::Cancelled.into());
             }
             out.bytes.insert(

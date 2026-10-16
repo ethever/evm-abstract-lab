@@ -68,7 +68,8 @@ impl Store {
     /// Cover unknown internal steps and unknown-to-unknown interactions.
     /// Known executable owners change storage through analyzed callbacks; a
     /// delegated unknown execution additionally writes its current owner.
-    /// Static execution is an exact identity. Errors leave the store unchanged.
+    /// Static execution preserves values but can touch zero-value recipients.
+    /// Errors leave the store unchanged.
     pub(crate) fn unknown_effects(
         &mut self,
         protected: &BTreeSet<Address>,
@@ -77,11 +78,18 @@ impl Store {
         domain: Domain,
     ) -> Result<(), StoreError> {
         if is_static {
+            // STATICCALL (and zero-value CALL under a static parent) still
+            // passes through transfer_loaded in revm. Nested successful calls
+            // can therefore make empty accounts eligible for EIP-161 clearing.
+            self.may_touch_all();
             return Ok(());
         }
         let limits = domain.spec().relations().expressions();
         self.check_existing(limits)?;
         let mut out = self.clone();
+        // Arbitrary successful internal calls may touch any recipient, even
+        // when no balance is transferred. Earlier definite touches persist.
+        out.may_touch_all();
         // Empty/absent accounts can be deployment destinations. Protection is
         // justified by current nonempty code, not merely inclusion in a world.
         let stable: BTreeSet<_> = protected

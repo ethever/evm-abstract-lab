@@ -453,6 +453,8 @@ fn log_key() -> LogKey {
     LogKey {
         address: address(1),
         code_address: address(2),
+        code_hash: alloy_primitives::B256::ZERO,
+        source_kind: evm_abstract::world::LogSourceKind::Runtime,
         pc: 17,
     }
 }
