@@ -12,7 +12,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn fresh_id() -> u64 {
     NEXT_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .expect("initial fact identity namespace available")
 }
 
@@ -372,7 +372,8 @@ impl StateFacts {
         self.existence(address) == Observed::Known(false)
             || self
                 .observations
-                .contains_key(&FactKey::StorageComplete(address))
+                .get(&FactKey::StorageComplete(address))
+                .is_some()
     }
 
     /// Initial slot observation, preserving unobserved/known-zero distinctions.
