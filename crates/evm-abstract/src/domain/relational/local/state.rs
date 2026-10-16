@@ -26,6 +26,19 @@ pub(super) struct SourceWord {
     value: U256,
 }
 
+/// Metadata shared by the bytes of one demanded, nonwrapping word window.
+/// Only fully covered copies forward here; other histories use the scalar read.
+struct ByteWindow<'a> {
+    start: U256,
+    content: WindowContent<'a>,
+}
+
+enum WindowContent<'a> {
+    Zero,
+    Exact(&'a [u8]),
+    Input { upper: U256, words: Vec<usize> },
+}
+
 impl Engine<'_, '_> {
     fn initial_byte(&mut self, state: &ByteStateId, index: &ExprId) -> LocalResult<ExprId> {
         let ByteStateKind::Input { source, length, .. } = state.kind() else {
@@ -133,16 +146,32 @@ impl Engine<'_, '_> {
         length: &ExprId,
         at: U256,
     ) -> LocalResult<Option<U256>> {
+        let words = self.matching_source_words(source, length, at, at)?;
+        self.window_source_byte(&words, at)
+    }
+
+    fn matching_source_words(
+        &mut self,
+        source: &SourceId,
+        length: &ExprId,
+        start: U256,
+        end: U256,
+    ) -> LocalResult<Vec<usize>> {
+        let mut words = Vec::new();
         if self.source_words.is_empty() {
-            return Ok(None);
+            return Ok(words);
         }
-        let mut found = None;
+        let mut canonical = None;
         for index in 0..self.source_words.len() {
             self.work.charge(1)?;
             let word = &self.source_words[index];
-            let Some(relative) = at.checked_sub(word.start).filter(|n| *n < word.prefix) else {
+            if word.start > end
+                || start
+                    .checked_sub(word.start)
+                    .is_some_and(|relative| relative >= word.prefix)
+            {
                 continue;
-            };
+            }
             if source.namespace() != word.source.namespace()
                 || !self
                     .work
@@ -152,21 +181,148 @@ impl Engine<'_, '_> {
             }
             let same_length = self.work.same_expression(length, &word.input_length)?;
             let canonical_length = word.length.clone();
-            let value = word.value;
             if !same_length {
-                let length = self.term(length)?;
-                if !self.work.same_expression(&length, &canonical_length)? {
+                if canonical.is_none() {
+                    canonical = Some(self.term(length)?);
+                }
+                if !self
+                    .work
+                    .same_expression(canonical.as_ref().unwrap(), &canonical_length)?
+                {
                     continue;
                 }
             }
+            let growth = if words.len() == words.capacity() {
+                words.len()
+            } else {
+                0
+            };
+            self.work.charge(growth.saturating_add(1))?;
+            words.push(index);
+        }
+        Ok(words)
+    }
+
+    fn window_source_byte(&mut self, words: &[usize], at: U256) -> LocalResult<Option<U256>> {
+        let mut found = None;
+        for &index in words {
             self.work.charge(1)?;
-            let byte = (value >> ((31 - relative.to::<usize>()) * 8)) & U256::from(255);
+            let word = &self.source_words[index];
+            let Some(relative) = at.checked_sub(word.start).filter(|n| *n < word.prefix) else {
+                continue;
+            };
+            self.work.charge(1)?;
+            let byte = (word.value >> ((31 - relative.to::<usize>()) * 8)) & U256::from(255);
             if found.is_some_and(|previous| previous != byte) {
                 return Err(super::Stop::Bottom);
             }
             found = Some(byte);
         }
         Ok(found)
+    }
+
+    fn view_window<'a>(
+        &mut self,
+        view: &'a ByteView,
+        relative: U256,
+    ) -> LocalResult<Option<ByteWindow<'a>>> {
+        self.work.charge(1)?;
+        let lower = self.eval(&view.length)?.interval().unsigned_bounds().0;
+        if relative
+            .checked_add(U256::from(32))
+            .is_none_or(|end| end > lower)
+        {
+            return Ok(None);
+        }
+        let Some(start) = self
+            .exact(&view.offset)?
+            .and_then(|offset| offset.checked_add(relative))
+            .filter(|start| start.checked_add(U256::from(31)).is_some())
+        else {
+            return Ok(None);
+        };
+        self.byte_window(&view.state, start)
+    }
+
+    fn byte_window<'a>(
+        &mut self,
+        state: &'a ByteStateId,
+        start: U256,
+    ) -> LocalResult<Option<ByteWindow<'a>>> {
+        self.work.charge(1)?;
+        let content = match state.kind() {
+            ByteStateKind::Zero => WindowContent::Zero,
+            ByteStateKind::Exact(bytes) => WindowContent::Exact(bytes),
+            ByteStateKind::Input {
+                source,
+                length,
+                bindings,
+            } if bindings.is_empty() && !self.has_source_bytes => {
+                let upper = self.eval(length)?.interval().unsigned_bounds().1;
+                let end = start
+                    .checked_add(U256::from(31))
+                    .expect("nonwrapping window");
+                let words = self.matching_source_words(source, length, start, end)?;
+                WindowContent::Input { upper, words }
+            }
+            ByteStateKind::Copy {
+                destination,
+                source,
+                length,
+                ..
+            } => {
+                let Some(relative) = self
+                    .exact(destination)?
+                    .and_then(|destination| start.checked_sub(destination))
+                else {
+                    return Ok(None);
+                };
+                let lower = self.eval(length)?.interval().unsigned_bounds().0;
+                if relative
+                    .checked_add(U256::from(32))
+                    .is_none_or(|end| end > lower)
+                {
+                    return Ok(None);
+                }
+                return self.view_window(source, relative);
+            }
+            ByteStateKind::Slice { source } => return self.view_window(source, start),
+            ByteStateKind::Ite {
+                condition,
+                then_state,
+                else_state,
+            } => {
+                return match self.choose(condition)? {
+                    Some(true) => self.byte_window(then_state, start),
+                    Some(false) => self.byte_window(else_state, start),
+                    None => Ok(None),
+                };
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(ByteWindow { start, content }))
+    }
+
+    fn window_byte(&mut self, window: &ByteWindow<'_>, index: usize) -> LocalResult<NumericValue> {
+        self.work.charge(1)?;
+        let at = window
+            .start
+            .checked_add(U256::from(index))
+            .expect("nonwrapping window");
+        Ok(match &window.content {
+            WindowContent::Zero => NumericValue::constant(U256::ZERO),
+            WindowContent::Exact(bytes) => NumericValue::constant(U256::from(
+                usize::try_from(at)
+                    .ok()
+                    .and_then(|at| bytes.get(at))
+                    .copied()
+                    .unwrap_or(0),
+            )),
+            WindowContent::Input { upper, words } if at < *upper => self
+                .window_source_byte(words, at)?
+                .map_or_else(NumericValue::unknown_byte, NumericValue::constant),
+            WindowContent::Input { .. } => NumericValue::constant(U256::ZERO),
+        })
     }
 
     fn view_sources(&mut self, view: &ByteView) -> LocalResult<()> {
@@ -551,6 +707,7 @@ impl Engine<'_, '_> {
         // Whole-word forwarding above preserves correlations and explicit
         // source facts. Independent unconstrained bytes add no information to
         // generic SHL/OR; pack their masks directly, keeping concrete padding.
+        let window = self.view_window(view, relative)?;
         self.work.prepay(32)?;
         let mut bytes = Vec::with_capacity(32);
         let mut simple = true;
@@ -558,9 +715,12 @@ impl Engine<'_, '_> {
         let mut one = U256::ZERO;
         for i in 0..32usize {
             self.work.charge(1)?;
-            let byte = match relative.checked_add(U256::from(i)) {
-                Some(at) => self.view_byte(view, at)?,
-                None => NumericValue::constant(U256::ZERO),
+            let byte = match &window {
+                Some(window) => self.window_byte(window, i)?,
+                None => match relative.checked_add(U256::from(i)) {
+                    Some(at) => self.view_byte(view, at)?,
+                    None => NumericValue::constant(U256::ZERO),
+                },
             };
             self.work.prepay(byte.work_size())?;
             let shift = (31 - i) * 8;
