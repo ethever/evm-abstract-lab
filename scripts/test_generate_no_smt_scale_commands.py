@@ -47,8 +47,10 @@ class GeneratorTests(unittest.TestCase):
 
     def test_derivation_only_removes_solver_policy_and_binds_selected_source(self):
         profile = self.generate()
-        for field in ["schema", "boundary", "report_adapter", "report_exit_codes"]:
+        for field in ["schema", "boundary", "report_adapter"]:
             self.assertEqual(profile[field], self.baseline[field])
+        self.assertEqual(profile["report_exit_codes"], [0, 2])
+        self.assertEqual(self.baseline["report_exit_codes"], [0])
         self.assertEqual(profile["policy"], {key: value for key, value in
                          self.baseline["policy"].items() if key not in {"smt_provider", "smt_rlimit"}})
         mapping = profile["policy_mapping"]

@@ -46,6 +46,9 @@ def generate(repository, source):
         "scope": "Offline CLI interface only; measured ELF/build identity is supplied separately. "
                  "Logical work is not comparable with baseline cost version 2.",
     }
+    # The CLI prints an Incomplete Report before returning 2. The harness still
+    # validates the JSON and keeps external stops and parse failures separate.
+    profile["report_exit_codes"] = [0, 2]
     for key in ("smt_provider", "smt_rlimit"):
         del profile["policy"][key]
         del profile["policy_mapping"][key]

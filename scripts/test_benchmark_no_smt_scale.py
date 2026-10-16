@@ -72,8 +72,19 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse(sample["report_delivered"])
         self.assertIsNone(sample["nativefinal"])
         # A reviewed profile may explicitly allow a nonzero final-report exit.
-        self.commands["report_exit_codes"] = [2]
-        self.assertTrue(self.collect()["report_delivered"])
+        self.commands["report_exit_codes"] = [0, 2]
+        sample = self.collect()
+        self.assertTrue(sample["report_delivered"])
+        self.assertEqual(sample["termination"], "process_error")
+        self.assertEqual(sample["nativefinal"]["status"], "Incomplete")
+        self.assertEqual(sample["nativefinal"]["frontiers"], report()["frontiers"])
+        self.assertIsNone(sample["nativefinal"]["closure"]["all_closed"])
+        # Accepting exit 2 must still enforce the parsing cap before reading JSON.
+        sample = self.collect(limit=1)
+        self.assertFalse(sample["report_delivered"])
+        self.assertIsNone(sample["nativefinal"])
+        self.assertEqual(sample["phase"], "output_unvalidated_parse_guard")
+        self.assertIsNotNone(sample["report_error"])
 
     def test_incomplete_keeps_failure_frontier_and_unknown_closure(self):
         sample = self.collect()
