@@ -374,17 +374,6 @@ fn execute_inner(
         }
         definition = definition.saturating_add(1);
     }
-    // Root execution is a message-call entry. Keep the engine's separate
-    // pre-entry gas-failure alternative untouched; an executed root touch is
-    // inside its saved-store scope and disappears on ordinary root rollback.
-    // Detached procedure roots already inherit their actual caller's touches.
-    if !procedure
-        && result.payload.call_stack.depth() == 1
-        && result.payload.active().key.basic_block_index == 0
-    {
-        let owner = result.payload.active().key.address;
-        result.payload.store.touch_account(owner);
-    }
     let code = result.payload.active().code;
     if let FrameCode::Precompile(address) = code {
         precompile::execute(&mut result, world.fork(), address, context);

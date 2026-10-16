@@ -95,6 +95,11 @@ pub(super) fn initial(
     calldata
         .check_existing(domain.spec().relations().expressions())
         .map_err(super::errors::bytes)?;
+    // Capture the transaction's pre-entry state first. An entered root is a
+    // message-call recipient, while the separate pre-entry gas failure and
+    // ordinary root rollback must retain this untouched checkpoint.
+    let saved_store = store.snapshot();
+    store.touch_account(entry.address);
     Ok(MachinePayload {
         relations: crate::domain::relational::RelationState::default(),
         call_stack: CallStack::new(RootFrame {
@@ -124,7 +129,7 @@ pub(super) fn initial(
                 )),
                 address_operand: None,
                 caller_operand: None,
-                saved_store: store.snapshot(),
+                saved_store,
             },
         }),
         store,

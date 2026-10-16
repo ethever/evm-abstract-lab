@@ -244,7 +244,7 @@ pub(super) fn run_reusing(
         state: 0,
         kind: OutcomeKind::Failure,
         data: crate::world::ByteArray::empty(),
-        store: initial.store.clone(),
+        store: initial.call_stack.root().state.saved_store.state().clone(),
     });
     // S0 是状态表中的第一个节点。后续编号按发现顺序分配，不按基本块或 PC 排序。
     let key = initial.key();

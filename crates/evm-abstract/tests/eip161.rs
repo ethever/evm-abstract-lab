@@ -326,6 +326,11 @@ fn root_and_child_reverts_restore_their_own_touch_scope() {
         assert!(
             returns(&analysis).all(|store| store.existence(address(0x900)) == Existence::Present)
         );
+        assert!(analysis.outcomes().iter().any(|outcome| {
+            outcome.kind == OutcomeKind::Failure
+                && outcome.store.existence(address(0x101)) == Existence::Present
+                && outcome.store.touched_in_transaction(address(0x101)) == Some(false)
+        }));
     }
 }
 
