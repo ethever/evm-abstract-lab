@@ -12,6 +12,7 @@ use crate::domain::{
     relational::{QueryReason, RelationLimits, RelationState},
     symbolic::{ExprError, ExprId, ExprLimits},
 };
+use alloy_primitives::U256;
 use serde::{
     Serialize, Serializer,
     ser::{Error, SerializeSeq},
