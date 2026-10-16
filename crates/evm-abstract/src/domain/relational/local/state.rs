@@ -9,10 +9,22 @@ use crate::domain::{
     known_bits::KnownBits,
     symbolic::{
         ByteStateId, ByteStateKind, ByteView, ExprId, ExprKind, SlotStateId, SlotStateKind,
+        SourceId,
     },
 };
 use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;
+
+/// A directly guaranteed initial word, retained only for this query. The prefix
+/// excludes view padding; checked subtraction matches its nonwrapping window.
+pub(super) struct SourceWord {
+    source: SourceId,
+    input_length: ExprId,
+    length: ExprId,
+    start: U256,
+    prefix: U256,
+    value: U256,
+}
 
 impl Engine<'_, '_> {
     fn initial_byte(&mut self, state: &ByteStateId, index: &ExprId) -> LocalResult<ExprId> {
@@ -78,9 +90,9 @@ impl Engine<'_, '_> {
         view: &ByteView,
         relative: &ExprId,
     ) -> LocalResult<()> {
-        if !matches!(view.state.kind(), ByteStateKind::Input { .. }) {
+        let ByteStateKind::Input { source, length, .. } = view.state.kind() else {
             return Ok(());
-        }
+        };
         let Some(word) = self.known(expression)?.singleton() else {
             return Ok(());
         };
@@ -91,21 +103,70 @@ impl Engine<'_, '_> {
         let lower = self.eval(&view.length)?.interval().unsigned_bounds().0;
         // Only bytes inside the guaranteed view prefix constrain its backing
         // source. Short-view padding and mathematical overflow bind no cell.
-        self.work.charge(32)?;
-        for i in 0..32usize {
-            self.work.charge(1)?;
-            let Some(at) = relative.checked_add(U256::from(i)).filter(|at| *at < lower) else {
-                break;
-            };
-            let Some(at) = start.checked_add(at) else {
-                break;
-            };
-            let byte = (word >> ((31 - i) * 8)) & U256::from(255);
-            let read = self.initial_byte(&view.state, &ExprId::constant(at))?;
-            self.learn(&read, &NumericValue::constant(byte))?;
-            self.has_source_bytes = true;
-        }
+        let Some(prefix) = lower.checked_sub(relative).filter(|n| *n != U256::ZERO) else {
+            return Ok(());
+        };
+        let Some(start) = start.checked_add(relative) else {
+            return Ok(());
+        };
+        let canonical_length = self.term(length)?;
+        let growth = if self.source_words.len() == self.source_words.capacity() {
+            self.source_words.len()
+        } else {
+            0
+        };
+        self.work.charge(growth.saturating_add(1))?;
+        self.source_words.push(SourceWord {
+            source: source.clone(),
+            input_length: length.clone(),
+            length: canonical_length,
+            start,
+            prefix: prefix.min(U256::from(32)),
+            value: word,
+        });
         Ok(())
+    }
+
+    fn source_word_byte(
+        &mut self,
+        source: &SourceId,
+        length: &ExprId,
+        at: U256,
+    ) -> LocalResult<Option<U256>> {
+        if self.source_words.is_empty() {
+            return Ok(None);
+        }
+        let mut found = None;
+        for index in 0..self.source_words.len() {
+            self.work.charge(1)?;
+            let word = &self.source_words[index];
+            let Some(relative) = at.checked_sub(word.start).filter(|n| *n < word.prefix) else {
+                continue;
+            };
+            if source.namespace() != word.source.namespace()
+                || !self
+                    .work
+                    .same_expression(source.token(), word.source.token())?
+            {
+                continue;
+            }
+            let same_length = self.work.same_expression(length, &word.input_length)?;
+            let canonical_length = word.length.clone();
+            let value = word.value;
+            if !same_length {
+                let length = self.term(length)?;
+                if !self.work.same_expression(&length, &canonical_length)? {
+                    continue;
+                }
+            }
+            self.work.charge(1)?;
+            let byte = (value >> ((31 - relative.to::<usize>()) * 8)) & U256::from(255);
+            if found.is_some_and(|previous| previous != byte) {
+                return Err(super::Stop::Bottom);
+            }
+            found = Some(byte);
+        }
+        Ok(found)
     }
 
     fn view_sources(&mut self, view: &ByteView) -> LocalResult<()> {
@@ -291,10 +352,12 @@ impl Engine<'_, '_> {
                     }))
             }
             ByteStateKind::Input {
-                length, bindings, ..
+                source,
+                length: input_length,
+                bindings,
             } => {
                 let at = self.exact(index)?;
-                let length = self.eval(length)?;
+                let length = self.eval(input_length)?;
                 let Some(at) = at else {
                     return Ok(NumericValue::unknown_byte());
                 };
@@ -302,18 +365,25 @@ impl Engine<'_, '_> {
                 if at >= upper {
                     return Ok(NumericValue::constant(U256::ZERO));
                 }
+                let word_byte = self.source_word_byte(source, input_length, at)?;
                 if self.has_source_bytes {
                     let initial = self.initial_byte(state, &ExprId::constant(at))?;
                     let observed = self.known(&initial)?;
                     if observed
                         .singleton()
                         .is_some_and(|byte| byte <= U256::from(255))
+                        && word_byte.is_none()
                     {
                         return Ok(observed);
                     }
                     if !observed.is_top() {
-                        return self.meet(&observed, &NumericValue::unknown_byte());
+                        let byte = word_byte
+                            .map_or_else(NumericValue::unknown_byte, NumericValue::constant);
+                        return self.meet(&observed, &byte);
                     }
+                }
+                if let Some(byte) = word_byte {
+                    return Ok(NumericValue::constant(byte));
                 }
                 for binding in bindings {
                     self.work.charge(1)?;

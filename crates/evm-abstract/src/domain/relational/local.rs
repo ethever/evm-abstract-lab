@@ -181,6 +181,7 @@ struct Engine<'a, 'ledger> {
     terms: KeyMap<ExprId>,
     check_definitions: bool,
     has_source_bytes: bool,
+    source_words: Vec<state::SourceWord>,
 }
 impl<'a, 'ledger> Engine<'a, 'ledger> {
     fn new(work: &'a mut Work<'ledger>, limits: &'a RelationLimits, domain: Domain) -> Self {
@@ -195,6 +196,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             terms: KeyMap::default(),
             check_definitions: false,
             has_source_bytes: false,
+            source_words: Vec::new(),
         }
     }
 

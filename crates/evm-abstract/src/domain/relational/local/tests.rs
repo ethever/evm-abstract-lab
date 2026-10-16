@@ -379,6 +379,95 @@ fn shared_byte_overlay_preserves_the_original_word_selection() {
 }
 
 #[test]
+fn known_source_word_registration_leaves_byte_facts_unmaterialized() {
+    let limits = RelationLimits::default();
+    let initial = ByteStateId::input(SourceId::fresh().unwrap(), c(64));
+    let read = ExprId::word_read(
+        ByteView::new(initial.clone(), c(0), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let byte = ExprId::byte_read(initial, c(31), limits.expressions()).unwrap();
+    let mut work = super::Work {
+        remaining: limits.max_nodes,
+        cancellation: analysis_control::current_cancellation(),
+        ledger: None,
+    };
+    let mut engine = super::Engine::new(&mut work, &limits, crate::domain::Domain::default());
+    engine
+        .atom(&Constraint::Equal {
+            left: read.clone(),
+            right: c(7),
+        })
+        .unwrap();
+    engine.source_facts(&read).unwrap();
+    assert_eq!(engine.source_words.len(), 1);
+    assert!(!engine.has_source_bytes);
+    assert!(engine.known(&byte).unwrap().is_top());
+    assert_eq!(engine.eval(&read).unwrap().singleton(), Some(U256::from(7)));
+    let before_demand = engine.work.remaining;
+    assert_eq!(engine.eval(&byte).unwrap().singleton(), Some(U256::from(7)));
+    assert!(engine.work.remaining < before_demand);
+    assert!(engine.known(&byte).unwrap().is_top());
+}
+
+#[test]
+fn demanded_source_word_bytes_preserve_identity_guards_and_nonwrapping_windows() {
+    let limits = RelationLimits::default();
+    let token = ExprId::fresh().unwrap();
+    let source = SourceId::scoped(token.clone(), U256::ONE);
+    let initial = ByteStateId::input(source.clone(), c(64));
+    let word = |state, start| {
+        ExprId::word_read(
+            ByteView::new(state, start, c(32)),
+            c(0),
+            limits.expressions(),
+        )
+        .unwrap()
+    };
+    let byte = |state, index| ExprId::byte_read(state, index, limits.expressions()).unwrap();
+    let original = word(initial.clone(), c(0));
+    let mut state = RelationState::default();
+    state
+        .observe(&original, &NumericValue::constant(U256::from(7)), &limits)
+        .unwrap();
+    assert_eq!(
+        state.local_value(&byte(initial.clone(), c(31)), &limits),
+        ValueQuery::Exact(U256::from(7))
+    );
+    for other in [
+        ByteStateId::input(SourceId::scoped(token, U256::from(2)), c(64)),
+        ByteStateId::input(source.clone(), c(63)),
+        ByteStateId::input(SourceId::fresh().unwrap(), c(64)),
+    ] {
+        let answer = state.local_value(&byte(other, c(31)), &limits);
+        let ValueQuery::Bounds(bounds) = answer else {
+            panic!("a different source or length has no word guarantee: {answer:?}");
+        };
+        assert!(bounds.contains(U256::from(255)));
+    }
+
+    let selector = ExprId::fresh().unwrap();
+    let selected = ExprId::ite(selector, original, c(7), limits.expressions()).unwrap();
+    let mut guarded = RelationState::default();
+    guarded
+        .observe(&selected, &NumericValue::constant(U256::from(7)), &limits)
+        .unwrap();
+    let answer = guarded.local_value(&byte(initial, c(31)), &limits);
+    assert!(matches!(answer, ValueQuery::Bounds(bounds) if bounds.contains(U256::from(255))));
+
+    let initial = ByteStateId::input(source, ExprId::constant(U256::MAX));
+    let edge = word(initial.clone(), ExprId::constant(U256::MAX));
+    let mut edge_state = RelationState::default();
+    edge_state
+        .observe(&edge, &NumericValue::constant(U256::ZERO), &limits)
+        .unwrap();
+    let answer = edge_state.local_value(&byte(initial, c(0)), &limits);
+    assert!(matches!(answer, ValueQuery::Bounds(bounds) if bounds.contains(U256::from(255))));
+}
+
+#[test]
 fn overlapping_source_words_reuse_only_their_guaranteed_initial_bytes() {
     let limits = RelationLimits::default();
     let states = limits.expressions().into();
