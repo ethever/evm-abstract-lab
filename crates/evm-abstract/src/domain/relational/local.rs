@@ -437,6 +437,16 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
                 then_path,
                 else_path,
                 ..
+            } if matches!(then_path.kind(), RelationPathKind::False) => self.common(else_path)?,
+            RelationPathKind::Ite {
+                then_path,
+                else_path,
+                ..
+            } if matches!(else_path.kind(), RelationPathKind::False) => self.common(then_path)?,
+            RelationPathKind::Ite {
+                then_path,
+                else_path,
+                ..
             } => {
                 let a = self.common(then_path)?;
                 let b = self.common(else_path)?;
@@ -465,6 +475,22 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
                     self.path(path)?;
                 }
                 Ok(())
+            }
+            RelationPathKind::Ite {
+                selector,
+                then_path,
+                else_path,
+            } if matches!(then_path.kind(), RelationPathKind::False) => {
+                self.direct_truth(selector, false)?;
+                self.path(else_path)
+            }
+            RelationPathKind::Ite {
+                selector,
+                then_path,
+                else_path,
+            } if matches!(else_path.kind(), RelationPathKind::False) => {
+                self.direct_truth(selector, true)?;
+                self.path(then_path)
             }
             RelationPathKind::Ite {
                 selector,

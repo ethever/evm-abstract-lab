@@ -129,6 +129,12 @@ fn copied_long_view_reuses_the_original_full_word_fact() {
         limits.expressions(),
     )
     .unwrap();
+    let long_original = ExprId::word_read(
+        ByteView::new(source.clone(), c(0), length.clone()),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
     let copied = ByteStateId::zero()
         .copy(
             c(128),
@@ -143,19 +149,25 @@ fn copied_long_view_reuses_the_original_full_word_fact() {
         limits.expressions(),
     )
     .unwrap();
-    let mut state = RelationState::default();
-    assert_eq!(
-        state.add_unsigned_bounds(&length, U256::from(32), U256::from(64), &limits),
-        CheckResult::MayBeFeasible
-    );
-    assert_eq!(
-        state.add_equal(&original, &c(7), &limits),
-        CheckResult::MayBeFeasible
-    );
-    assert_eq!(
-        state.local_value(&read, &limits),
-        ValueQuery::Exact(U256::from(7))
-    );
+    for original in [original, long_original] {
+        let mut state = RelationState::default();
+        assert_eq!(
+            state.add_unsigned_bounds(&length, U256::from(32), U256::from(64), &limits),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            state.add_equal(&original, &c(7), &limits),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            state.local_value(&read, &limits),
+            ValueQuery::Exact(U256::from(7))
+        );
+        assert_eq!(
+            state.local_value(&original, &limits),
+            ValueQuery::Exact(U256::from(7))
+        );
+    }
 }
 
 #[test]
@@ -202,6 +214,51 @@ fn unknown_selector_never_leaks_an_alternatives_facts() {
         selected.local_value(&x, &limits),
         ValueQuery::Exact(U256::ONE)
     );
+}
+
+#[test]
+fn statically_impossible_alternative_implies_its_guard_without_search() {
+    let limits = RelationLimits::default();
+    let guard = ExprId::fresh().unwrap();
+    let value = ExprId::fresh().unwrap();
+    let impossible = RelationState {
+        bottom: true,
+        ..Default::default()
+    };
+    let mut possible = RelationState::default();
+    assert_eq!(
+        possible.add_equal(&value, &c(9), &limits),
+        CheckResult::MayBeFeasible
+    );
+    for (then_state, else_state, expected) in [
+        (&impossible, &possible, U256::ZERO),
+        (&possible, &impossible, U256::ONE),
+    ] {
+        let joined = then_state
+            .join_guarded(else_state, guard.clone(), &limits)
+            .unwrap();
+        assert_eq!(
+            joined.local_value(&value, &limits),
+            ValueQuery::Exact(U256::from(9))
+        );
+        if expected == U256::ZERO {
+            assert_eq!(
+                joined.local_value(&guard, &limits),
+                ValueQuery::Exact(U256::ZERO)
+            );
+        } else {
+            let ValueQuery::Bounds(bounds) = joined.local_value(&guard, &limits) else {
+                panic!("nonzero guard should preserve every unproved nonzero word");
+            };
+            assert!(!bounds.contains(U256::ZERO));
+            assert!(bounds.contains(U256::ONE));
+            assert!(bounds.contains(U256::MAX));
+        }
+        assert_eq!(
+            joined.can_equal(&guard, U256::ONE - expected, &limits),
+            CheckResult::ProvenImpossible
+        );
+    }
 }
 
 #[test]

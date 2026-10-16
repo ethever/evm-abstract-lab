@@ -191,6 +191,13 @@ impl Engine<'_, '_> {
         relative: &ExprId,
     ) -> LocalResult<Option<ExprId>> {
         self.work.charge(1)?;
+        self.work
+            .prepay(view.nodes().saturating_add(relative.work_size()))?;
+        let original = ExprId::word_read(view.clone(), relative.clone(), self.limits.expressions())
+            .map_err(denied)?;
+        if let Some(value) = self.known(&original)?.singleton() {
+            return Ok(Some(ExprId::constant(value)));
+        }
         let Some(relative) = self.exact(relative)? else {
             return Ok(None);
         };
