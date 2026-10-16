@@ -5,12 +5,16 @@
   ...
 }:
 let
-  nixFiles = [
-    (sourceRoot + "/flake.nix")
-  ]
-  ++ pkgs.lib.filter (path: pkgs.lib.hasSuffix ".nix" (toString path)) (
-    pkgs.lib.filesystem.listFilesRecursive (sourceRoot + "/nix")
-  );
+  sources = import ./tooling/sources.nix { inherit pkgs sourceRoot; };
+  inputs = import ../check-inputs.nix {
+    inherit (pkgs) lib;
+    inherit sourceRoot;
+  };
+  planner = inputs.files [
+    "scripts/check-changes.py"
+    "scripts/test_check_changes.py"
+    "scripts/check_cache_boundaries.json"
+  ];
 in
 {
   nix-format =
@@ -19,8 +23,25 @@ in
         nativeBuildInputs = [ pkgs.nixfmt ];
       }
       ''
-        nixfmt --check ${pkgs.lib.escapeShellArgs (map (path: "${path}") nixFiles)}
+        cd ${sources.nix}
+        set -o pipefail
+        nixfmt --check flake.nix
+        find nix -name '*.nix' -type f -print0 | sort -z | xargs -0 nixfmt --check
         touch $out
+      '';
+  check-changes =
+    pkgs.runCommand "evm-abstract-check-changes"
+      {
+        nativeBuildInputs = [
+          pkgs.python3
+          pkgs.git
+        ];
+      }
+      ''
+        export GIT_CONFIG_GLOBAL=/dev/null
+        export GIT_CONFIG_NOSYSTEM=1
+        python -B ${planner}/scripts/test_check_changes.py
+        touch "$out"
       '';
   toml-lint =
     pkgs.runCommand "evm-abstract-toml-lint"
@@ -28,7 +49,7 @@ in
         nativeBuildInputs = [ pkgs.taplo ];
       }
       ''
-        cd ${sourceRoot}
+        cd ${sources.toml}
         taplo lint --no-schema
         touch $out
       '';
@@ -41,9 +62,9 @@ in
         ];
       }
       ''
-        cd ${sourceRoot}
+        cd ${sources.tomlFormat}
         taplo fmt --check
-        python ${sourceRoot}/scripts/test-toml-format.py
+        python scripts/test-toml-format.py
         touch $out
       '';
   doc-links =
@@ -52,14 +73,16 @@ in
         nativeBuildInputs = [
           pkgs.lychee
           pkgs.bash
+          pkgs.python3
         ];
         # Lychee initializes its TLS client even with --offline.
         inherit (dependencies.environment) SSL_CERT_FILE;
       }
       ''
-        cd ${sourceRoot}
-        lychee --config ./lychee.toml --offline --root-dir "$PWD" -- README.md '**/*.md'
-        bash ${sourceRoot}/scripts/test-doc-links.sh ${sourceRoot}/lychee.toml
+        cd ${sources.docs}
+        lychee --config ${sources.linksConfig} --offline --root-dir "$PWD" -- README.md '**/*.md'
+        bash ${sources.linksTest} ${sources.linksConfig}
+        python ${sources.linksProjectionTest} ${sources.docs} ${sources.linksConfig}
         touch $out
       '';
 }

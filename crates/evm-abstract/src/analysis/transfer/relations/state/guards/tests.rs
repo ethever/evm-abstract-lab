@@ -64,20 +64,21 @@ fn condition(case: Case, relations: &mut RelationState) -> ExprId {
     let limits = config().analysis.relations;
     let write_key = ExprId::fresh().unwrap();
     let read_key = ExprId::fresh().unwrap();
-    let difference = op(opcode::XOR, &[write_key.clone(), read_key.clone()]);
     let alias = match case {
-        Case::Undecided => op(opcode::AND, &[difference, ExprId::constant(U256::ONE)]),
-        _ => op(
-            opcode::OR,
-            &[
-                difference.clone(),
-                op(opcode::SHL, &[ExprId::constant(U256::ONE), difference]),
-            ],
+        Case::Undecided => op(
+            opcode::ISZERO,
+            &[op(
+                opcode::AND,
+                &[
+                    op(opcode::XOR, &[write_key.clone(), read_key.clone()]),
+                    ExprId::constant(U256::ONE),
+                ],
+            )],
         ),
+        _ => op(opcode::EQ, &[write_key.clone(), read_key.clone()]),
     };
-    let alias = op(opcode::ISZERO, &[alias]);
-    // Retain the frozen premise without a setup feasibility check. The OR/SHL
-    // identity couples keys without giving the local scalar pass their alias.
+    // Retain the frozen premise without a setup feasibility check. The observed
+    // source binding keeps the Boolean targets cold even with direct key aliases.
     relations
         .observe(
             &alias,

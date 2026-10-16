@@ -37,15 +37,17 @@ else
   task_rustdoc=(rustdoc "+$task_toolchain")
 fi
 
-task_fixture=$(mktemp -d)
-trap 'rm -rf -- "$task_fixture"' EXIT
-cat > "$task_fixture/accepted.rs" <<'EOF'
+# Controls form a shared Nix node; direct local use still runs them first.
+if [[ ${DYLINT_SKIP_DOCTEST_CONTROLS:-0} != 1 ]]; then
+  task_fixture=$(mktemp -d)
+  trap 'rm -rf -- "$task_fixture"' EXIT
+  cat > "$task_fixture/accepted.rs" <<'EOF'
 /// ```
 /// let _sum = [1u8, 2, 3].into_iter().sum::<u8>();
 /// ```
 pub struct StaticDoctest;
 EOF
-cat > "$task_fixture/rejected.rs" <<'EOF'
+  cat > "$task_fixture/rejected.rs" <<'EOF'
 /// ```
 /// let value = 1u8;
 /// let _object: &dyn std::fmt::Display = &value;
@@ -53,22 +55,33 @@ cat > "$task_fixture/rejected.rs" <<'EOF'
 pub struct DynamicDoctest;
 EOF
 
-if ! "${task_rustdoc[@]}" --test --edition=2024 "${task_rustdoc_flags[@]}" \
-    "$task_fixture/accepted.rs" > "$task_fixture/accepted.log" 2>&1; then
-  cat "$task_fixture/accepted.log" >&2
-  echo 'The statically dispatched doctest control failed.' >&2
-  exit 1
+  if ! "${task_rustdoc[@]}" --test --edition=2024 "${task_rustdoc_flags[@]}" \
+      "$task_fixture/accepted.rs" > "$task_fixture/accepted.log" 2>&1; then
+    cat "$task_fixture/accepted.log" >&2
+    echo 'The statically dispatched doctest control failed.' >&2
+    exit 1
+  fi
+  if "${task_rustdoc[@]}" --test --edition=2024 "${task_rustdoc_flags[@]}" \
+      "$task_fixture/rejected.rs" > "$task_fixture/rejected.log" 2>&1; then
+    echo 'The doctest compiler accepted dynamic dispatch; no_dyn was not enforced.' >&2
+    exit 1
+  fi
+  if ! grep -Fq 'dynamic dispatch is forbidden' "$task_fixture/rejected.log"; then
+    cat "$task_fixture/rejected.log" >&2
+    echo 'The rejected doctest failed without a no_dyn diagnostic.' >&2
+    exit 1
+  fi
+  echo 'Doctest controls passed: static dispatch compiles, dyn dispatch is rejected by no_dyn.'
 fi
-if "${task_rustdoc[@]}" --test --edition=2024 "${task_rustdoc_flags[@]}" \
-    "$task_fixture/rejected.rs" > "$task_fixture/rejected.log" 2>&1; then
-  echo 'The doctest compiler accepted dynamic dispatch; no_dyn was not enforced.' >&2
-  exit 1
+if [[ ${DYLINT_DOCTEST_CONTROLS_ONLY:-0} == 1 ]]; then
+  exit 0
 fi
-if ! grep -Fq 'dynamic dispatch is forbidden' "$task_fixture/rejected.log"; then
-  cat "$task_fixture/rejected.log" >&2
-  echo 'The rejected doctest failed without a no_dyn diagnostic.' >&2
-  exit 1
-fi
-echo 'Doctest controls passed: static dispatch compiles, dyn dispatch is rejected by no_dyn.'
 
-cargo "+$task_toolchain" test --workspace --doc --locked "$@"
+# A package check must not accidentally expand back to the whole workspace.
+task_selection=(--workspace)
+for task_argument in "$@"; do
+  case "$task_argument" in
+    -p|--package|-p?*|--package=*) task_selection=(); break ;;
+  esac
+done
+cargo "+$task_toolchain" test "${task_selection[@]}" --doc --locked "$@"

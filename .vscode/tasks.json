@@ -15,12 +15,40 @@
         "--locked",
         "--workspace"
       ],
-      "options": { "cwd": "${workspaceFolder}" },
-      "group": { "kind": "build", "isDefault": true },
-      "problemMatcher": ["$rustc"]
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$rustc"
+      ]
     },
     {
-      "label": "Nix: test",
+      "label": "Nix: check affected",
+      "type": "process",
+      "command": "nix",
+      "args": [
+        "run",
+        "--no-update-lock-file",
+        "${workspaceFolder}#check-changes",
+        "--"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "Nix: test workspace (Cargo)",
       "type": "process",
       "command": "nix",
       "args": [
@@ -33,9 +61,16 @@
         "--locked",
         "--workspace"
       ],
-      "options": { "cwd": "${workspaceFolder}" },
-      "group": { "kind": "test", "isDefault": true },
-      "problemMatcher": ["$rustc"]
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "test",
+        "isDefault": false
+      },
+      "problemMatcher": [
+        "$rustc"
+      ]
     },
     {
       "label": "Nix: clippy",
@@ -55,8 +90,29 @@
         "-D",
         "warnings"
       ],
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": ["$rustc"]
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "Nix: full merge gate",
+      "type": "process",
+      "command": "nix",
+      "args": [
+        "flake",
+        "check",
+        "--print-build-logs",
+        "--no-update-lock-file"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$rustc"
+      ]
     }
   ]
 }

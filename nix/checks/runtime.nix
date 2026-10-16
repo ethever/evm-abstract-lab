@@ -1,3 +1,5 @@
+# Independent installed-runtime contracts. Each fixture/provider is a separate
+# check, allowing Nix to cache and schedule them without a second worker pool.
 {
   pkgs,
   sourceRoot,
@@ -5,80 +7,96 @@
   ...
 }:
 let
-  package = build.release.package;
-  imblPackage = build.imblRelease.package;
+  lib = pkgs.lib;
+  aggregateCheck = import ../check-aggregate.nix { inherit pkgs; };
+  fixtures = import ./fixtures.nix { inherit pkgs sourceRoot build; };
+  normalization = fixtures.inputs.file "scripts/normalize_identity_scopes.py";
+  normalizationTests = fixtures.inputs.files [
+    "scripts/normalize_identity_scopes.py"
+    "scripts/test_normalize_identity_scopes.py"
+  ];
+  parity = lib.listToAttrs (
+    map (
+      world:
+      let
+        name = lib.removeSuffix ".json" world;
+        std = fixtures.worldReport { world = "examples/worlds/${world}"; };
+        imbl = fixtures.worldReport {
+          world = "examples/worlds/${world}";
+          variant = "imbl";
+        };
+      in
+      lib.nameValuePair "state-backend-parity-${name}" (
+        pkgs.runCommand "evm-abstract-state-backend-parity-${name}"
+          { nativeBuildInputs = [ pkgs.python3 ]; }
+          ''
+            mkdir -p "$out/std" "$out/imbl" "$out/normalized/std" "$out/normalized/imbl"
+            cmp ${std}/exit-code ${imbl}/exit-code
+            for kind in std imbl; do
+              case "$kind" in std) report=${std} ;; imbl) report=${imbl} ;; esac
+              cp "$report/analysis.json" "$out/$kind/${name}.json"
+              python ${normalization} \
+                < "$report/analysis.json" > "$out/normalized/$kind/${name}.json"
+              if [ "$(cat "$report/exit-code")" = 0 ]; then
+                cp "$report/report.json" "$out/$kind/${name}-ssa.json"
+                python ${normalization} \
+                  < "$report/report.json" > "$out/normalized/$kind/${name}-ssa.json"
+              fi
+            done
+            diff -r "$out/normalized/std" "$out/normalized/imbl"
+          ''
+      )
+    ) fixtures.worlds
+  );
+  package = build.release.packages.evm-abstract-cli;
+  providers = lib.genAttrs [ "z3" "bitwuzla" "cvc5" ] (
+    provider:
+    pkgs.runCommand "evm-abstract-installed-smt-${provider}" { nativeBuildInputs = [ pkgs.jq ]; } ''
+      mkdir "$out"
+      PATH= ${package}/bin/evm-abstract cfg \
+        --hex 3480600114600957005b80600214601257005b00 \
+        --context-depth 0 --smt.provider ${provider} --smt.rlimit 200000 \
+        --format json > "$out/report.json"
+      jq -e --arg provider ${provider} '
+        .status == "Converged" and .frontiers == [] and
+        .config.relations.provider == $provider and .config.relations.rlimit == 200000 and
+        (.program.blocks as $blocks |
+         [.states[].key.basic_block_index | $blocks[.].start_pc] as $reachable |
+         ($reachable | index(9)) != null and ($reachable | index(8)) != null and
+         ($reachable | index(17)) != null and ($reachable | index(18)) == null)
+      ' "$out/report.json" > /dev/null
+    ''
+  );
+  providerChecks = lib.mapAttrs' (
+    name: value: lib.nameValuePair "smt-provider-${name}" value
+  ) providers;
 in
-{
+parity
+// providerChecks
+// rec {
   state-backend-normalization =
     pkgs.runCommand "evm-abstract-state-backend-normalization" { nativeBuildInputs = [ pkgs.python3 ]; }
       ''
-        python3 ${sourceRoot}/scripts/test_normalize_identity_scopes.py
-        touch $out
+        python ${normalizationTests}/scripts/test_normalize_identity_scopes.py
+        touch "$out"
       '';
-  state-backend-parity =
-    pkgs.runCommand "evm-abstract-state-backend-parity"
-      {
-        nativeBuildInputs = [
-          pkgs.jq
-          pkgs.python3
-        ];
-      }
+  # Compatibility aggregators only reference their leaves; they execute no
+  # test a second time, and the automatic planner deduplicates identical drvs.
+  state-backend-parity = aggregateCheck {
+    name = "evm-abstract-state-backend-parity";
+    checks = parity;
+  };
+  smt-provider-default =
+    pkgs.runCommand "evm-abstract-installed-smt-default" { nativeBuildInputs = [ pkgs.jq ]; }
       ''
-        set -euo pipefail
-        mkdir -p std imbl normalized/std normalized/imbl
-        compare_reports() {
-          python3 ${sourceRoot}/scripts/normalize_identity_scopes.py < "std/$1.json" > "normalized/std/$1.json"
-          python3 ${sourceRoot}/scripts/normalize_identity_scopes.py < "imbl/$1.json" > "normalized/imbl/$1.json"
-          cmp "normalized/std/$1.json" "normalized/imbl/$1.json"
-        }
-        for world in ${sourceRoot}/examples/worlds/*.json; do
-          name="$(basename "$world" .json)"
-          std_status=0
-          imbl_status=0
-          ${package}/bin/evm-abstract analyze --world "$world" \
-            --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-            --format json > "std/$name.json" || std_status=$?
-          ${imblPackage}/bin/evm-abstract analyze --world "$world" \
-            --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-            --format json > "imbl/$name.json" || imbl_status=$?
-          test "$std_status" -eq "$imbl_status"
-          case "$std_status" in 0|2) ;; *) exit 1 ;; esac
-          compare_reports "$name"
-          if test "$std_status" -eq 0; then
-            ${package}/bin/evm-abstract analyze --world "$world" \
-              --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-              --format json --ssa > "std/$name-ssa.json"
-            ${imblPackage}/bin/evm-abstract analyze --world "$world" \
-              --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-              --format json --ssa > "imbl/$name-ssa.json"
-            compare_reports "$name-ssa"
-          else
-            jq -e '.status == "Incomplete"' "std/$name.json" > /dev/null
-          fi
-        done
-        mkdir $out
-        cp -r std imbl normalized $out/
-      '';
-  smt-providers =
-    pkgs.runCommand "evm-abstract-installed-smt-providers" { nativeBuildInputs = [ pkgs.jq ]; }
-      ''
-        set -euo pipefail
         mkdir "$out"
-        for provider in z3 bitwuzla cvc5; do
-          PATH= ${package}/bin/evm-abstract cfg \
-            --hex 3480600114600957005b80600214601257005b00 \
-            --context-depth 0 --smt.provider "$provider" --smt.rlimit 200000 \
-            --format json > "$out/$provider.json"
-          jq -e --arg provider "$provider" '
-            .status == "Converged" and .frontiers == [] and
-            .config.relations.provider == $provider and .config.relations.rlimit == 200000 and
-            (.program.blocks as $blocks |
-             [.states[].key.basic_block_index | $blocks[.].start_pc] as $reachable |
-             ($reachable | index(9)) != null and ($reachable | index(8)) != null and
-             ($reachable | index(17)) != null and ($reachable | index(18)) == null)
-          ' "$out/$provider.json" > /dev/null
-        done
-        ${package}/bin/evm-abstract cfg --hex 00 --format json > "$out/default.json"
-        jq -e '.config.relations.provider == "z3" and .config.relations.rlimit == 10000000' "$out/default.json" > /dev/null
+        ${package}/bin/evm-abstract cfg --hex 00 --format json > "$out/report.json"
+        jq -e '.config.relations.provider == "z3" and .config.relations.rlimit == 10000000' "$out/report.json" > /dev/null
       '';
+  smt-providers = aggregateCheck {
+    name = "evm-abstract-installed-smt-providers";
+    checks = providerChecks // {
+      inherit smt-provider-default;
+    };
+  };
 }

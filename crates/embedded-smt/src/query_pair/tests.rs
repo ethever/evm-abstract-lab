@@ -518,12 +518,6 @@ fn actual_native_cancellation_stops_batch_and_same_worker_next_batch_is_clean() 
         let (started, native_started) = mpsc::channel();
         let observe = Observe::new(None, Some(started), None);
         thread::scope(|scope| {
-            let cancellation = token.clone();
-            scope.spawn(move || {
-                native_started.recv_timeout(Duration::from_secs(5)).unwrap();
-                thread::sleep(Duration::from_millis(30));
-                cancellation.cancel();
-            });
             let context = Context::default();
             let target = Bv::from_str(
                 256,
@@ -541,18 +535,30 @@ fn actual_native_cancellation_stops_batch_and_same_worker_next_batch_is_clean() 
                 ]);
             }
             let value = context.fresh_bv("candidate", 256);
-            let start = Instant::now();
-            assert_eq!(
-                with_cancellation(&token, || check_candidates(
-                    &base,
-                    &value,
-                    &candidates,
-                    Provider::Z3,
-                    u32::MAX
-                )),
-                [Outcome::Unknown(Unknown::Cancelled)]
-            );
-            assert!(start.elapsed() < Duration::from_secs(5));
+            // Parallel checks can delay context preparation before native entry.
+            // Bound that startup separately; measure cancellation responsiveness
+            // from the actual cancellation request, not unrelated preparation.
+            let cancellation = token.clone();
+            let (cancelled, cancellation_time) = mpsc::channel();
+            scope.spawn(move || {
+                native_started
+                    .recv_timeout(Duration::from_secs(60))
+                    .unwrap();
+                thread::sleep(Duration::from_millis(30));
+                let requested_at = Instant::now();
+                cancellation.cancel();
+                cancelled.send(requested_at).unwrap();
+            });
+            let outcomes = with_cancellation(&token, || {
+                check_candidates(&base, &value, &candidates, Provider::Z3, u32::MAX)
+            });
+            let completed_at = Instant::now();
+            let requested_at = cancellation_time
+                .recv_timeout(Duration::from_secs(60))
+                .unwrap();
+            assert_eq!(outcomes, [Outcome::Unknown(Unknown::Cancelled)]);
+            assert!(completed_at >= requested_at);
+            assert!(completed_at.duration_since(requested_at) < Duration::from_secs(5));
             assert_eq!(observe.trace().native.len(), 1);
             assert_eq!(observe.trace().queries.len(), 1);
             assert_eq!(

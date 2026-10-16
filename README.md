@@ -218,15 +218,18 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 
 ## 验证与源码导航
 
-每次 PR 合并前，必须在本地对最终提交执行完整门禁。准备提交、运行检查与记录结果的步骤见[本地检查流程](docs/local-ci.md)。
+日常小任务使用自动受影响检查；每次 PR 合并前，再对最终提交执行完整门禁。准备提交、运行检查与记录结果的步骤见[本地检查流程](docs/local-ci.md)。
 
 ```bash
+nix run --no-update-lock-file .#check-changes --
+# 已提交的任务可比较任务开始前的提交或 origin/main
+nix run --no-update-lock-file .#check-changes -- --base origin/main --plan
 nix flake check --print-build-logs --no-update-lock-file
 ```
 
 安装与运行生成经过运行性能优化的 release 产物；工作区测试使用快速的 test profile，测试通过与否由 `nix flake check` 验证。构建没有项目固定的并发上限或 CPU 预留，profile 和 Nix 缓存分层见[构建说明](docs/development.md#构建-profile-与缓存)。
 
-完整门禁检查默认、imbl、全部 features 的工作区测试与 doctest（包含 ignored 测试）、Clippy、Rust 格式、Rustdoc、Nix 格式、TOML 语法与格式、离线文档链接、原生求解器自测，以及打包后二进制的例子、图输出和真实浏览器交互。开发时可按修改范围单独运行：
+完整门禁检查默认、imbl、全部 features 的工作区测试与 doctest（包含 ignored 测试）、Clippy、Rust 格式、Rustdoc、Nix 格式、TOML 语法与格式、离线文档链接、原生求解器自测，以及打包后二进制的例子、图输出和真实浏览器交互。按包、fixture 和浏览器用例缓存检查，等价 feature 配置和重复别名复用同一 derivation。开发时也可以手动指定 Cargo 范围：
 
 ```bash
 cargo test --workspace --locked

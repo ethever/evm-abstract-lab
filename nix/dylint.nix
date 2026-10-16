@@ -3,6 +3,7 @@
   crane,
   craneLib,
   common,
+  build,
   sourceRoot ? ../.,
 }:
 let
@@ -25,6 +26,7 @@ in
       common
       toolchain
       packages
+      build
       ;
   };
   packages = {
