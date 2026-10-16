@@ -225,7 +225,9 @@ fn result_observations_preserve_small_work_budget_receipts() {
 
     let (world, entry) = fixture(&[(0x101, "6003565b00")]);
     let initial = transfer::initial(&world, &entry, domain).unwrap();
-    for maximum in [3, 4] {
+    // JUMP pays its history-navigation work before dispatch, then reserves a
+    // separate successor visit. Neither refusal may invent a completed edge.
+    for maximum in [3, 4, 5] {
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
@@ -242,12 +244,17 @@ fn result_observations_preserve_small_work_budget_receipts() {
             execution.instruction_progress,
             vec![
                 InstructionProgress::Completed,
-                InstructionProgress::Dispatched,
+                if maximum == 3 {
+                    InstructionProgress::OperandsConsumed
+                } else {
+                    InstructionProgress::Dispatched
+                },
             ]
         );
         assert!(execution.outcomes.is_empty());
         assert_eq!(execution.instruction_values.len(), 1);
-        if maximum == 3 {
+        assert!(execution.payload.active().stack.is_empty());
+        if maximum < 5 {
             assert!(execution.successors.is_empty());
             assert_eq!(
                 execution.frontiers,
@@ -275,6 +282,88 @@ fn result_observations_preserve_small_work_budget_receipts() {
                 1
             );
         }
+    }
+
+    let (world, entry) = fixture(&[(0x101, "5f3500")]);
+    let initial = transfer::initial(&world, &entry, domain).unwrap();
+    let initial_snapshots = serde_json::to_value((
+        &initial.store,
+        &initial.active().calldata,
+        &initial.active().memory,
+    ))
+    .unwrap();
+    // One unit stops before the load's visit and preserves its operand. The
+    // larger allowance pays the scalar scan and byte operation but cannot pay
+    // the complete word plan. Its real receipt must retain the popped operand
+    // phase, without an output value or any installed state change.
+    for maximum in [1, 10_000] {
+        let mut budget = WorkBudget::new(maximum);
+        let execution = transfer::execute(
+            &world,
+            &entry,
+            initial.clone(),
+            &config,
+            domain,
+            &mut budget,
+            StorageReadPolicy::Abstract,
+        );
+        let before_load = maximum == 1;
+        assert!(budget.exhausted());
+        if before_load {
+            assert_eq!(budget.used(), 1);
+        } else {
+            let scalar_scan = 32 * (domain.capacity() + 32);
+            assert!(budget.used() > 2 + scalar_scan);
+            assert!(budget.used() <= maximum);
+        }
+        assert_eq!(
+            execution.executed_pcs,
+            if before_load { vec![0] } else { vec![0, 1] }
+        );
+        assert_eq!(
+            execution.instruction_progress,
+            if before_load {
+                vec![InstructionProgress::Completed]
+            } else {
+                vec![
+                    InstructionProgress::Completed,
+                    InstructionProgress::OperandsConsumed,
+                ]
+            }
+        );
+        assert_eq!(execution.instruction_values.len(), 1);
+        assert_eq!(
+            execution.payload.active().stack.len(),
+            usize::from(before_load)
+        );
+        if before_load {
+            assert_eq!(
+                execution.payload.active().stack[0].singleton(),
+                Some(U256::ZERO)
+            );
+        }
+        assert!(execution.successors.is_empty());
+        assert!(execution.outcomes.is_empty());
+        assert!(execution.diagnostics.is_empty());
+        assert_eq!(
+            execution.frontiers,
+            vec![crate::analysis::transfer::ExecutionFrontier {
+                pc: 1,
+                reason: FrontierReason::Work,
+                target: Some(execution.payload.key()),
+                range: None,
+                payload: None,
+            }]
+        );
+        assert_eq!(
+            serde_json::to_value((
+                &execution.payload.store,
+                &execution.payload.active().calldata,
+                &execution.payload.active().memory,
+            ))
+            .unwrap(),
+            initial_snapshots
+        );
     }
 }
 
