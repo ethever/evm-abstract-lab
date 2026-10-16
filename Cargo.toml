@@ -1,7 +1,6 @@
 [workspace]
 members = [
-    "crates/bitwuzla-native",
-    "crates/embedded-smt",
+    "crates/analysis-control",
     "crates/evm-abstract",
     "crates/evm-abstract-cli",
     "crates/evm-abstract-layout",
@@ -64,10 +63,6 @@ proptest = "=1.11.0"
 num-bigint = "=0.4.8"
 num-integer = "=0.1.47"
 num-traits = "=0.2.19"
-z3 = "=0.20.2"
-cvc5 = "=0.6.0"
-cc = "=1.5.1"
-pkg-config = "=0.3.34"
 tokio = { version = "=1.53.2", features = ["rt", "time", "macros", "net"] }
 reqwest = { version = "=0.13.4", default-features = false, features = [
     "json",

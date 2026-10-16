@@ -16,7 +16,6 @@ pub(crate) const MAX_FACTS: usize = 4096;
 pub(crate) const MAX_CONSTRAINTS: usize = 2048;
 pub(crate) const MAX_EXPRESSION_NODES: usize = 16_384;
 pub(crate) const MAX_EXPRESSION_DEPTH: usize = 256;
-pub(crate) const SMT_RLIMIT: u32 = 10_000_000;
 pub(crate) const MAX_RPC_ACCOUNTS: usize = 4096;
 pub(crate) const MAX_RPC_REQUESTS: usize = 1_000_000;
 pub(crate) const MAX_RPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;

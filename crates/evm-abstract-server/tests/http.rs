@@ -1082,3 +1082,33 @@ fn rpc_submission_rejects_unknown_ids_and_legacy_endpoints_before_network_or_job
     pool.submit(AnalyzeRequest::default()).unwrap();
     pool.shutdown().unwrap();
 }
+
+#[test]
+fn obsolete_solver_settings_fail_before_job_admission() {
+    let assets = Assets::new();
+    let pool = pool();
+    for (name, value) in [
+        ("smt_provider", serde_json::json!("Z3")),
+        ("smt_rlimit", serde_json::json!(10000000)),
+    ] {
+        let mut input = serde_json::to_value(AnalyzeRequest::default()).unwrap();
+        input["limits"][name] = value;
+        let body = serde_json::to_string(&input).unwrap();
+        let request = format!(
+            "POST /api/tasks HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (header, reply) = decode_job(&exchange_with_pool(request.as_bytes(), &assets.0, &pool));
+        assert!(header.starts_with("HTTP/1.1 400"));
+        let error = reply.result.unwrap_err();
+        assert_eq!(error.code, ApiErrorCode::InvalidRequest);
+        let ErrorDetails::Validation(detail) = error.details else {
+            panic!("typed validation");
+        };
+        assert_eq!(
+            detail.kind,
+            evm_abstract_protocol::ValidationErrorKind::Json
+        );
+    }
+    pool.shutdown().unwrap();
+}

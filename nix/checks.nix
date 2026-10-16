@@ -4,3 +4,4 @@ args:
 // (import ./checks/runtime.nix args)
 // (import ./checks/tooling.nix args)
 // (import ./checks/examples.nix args)
+// (import ./checks/proofs.nix args)

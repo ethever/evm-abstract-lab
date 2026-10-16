@@ -22,7 +22,7 @@ fn default_product_and_constants_only_have_observable_precision_differences() {
         "5f3560011660021600",
         &["--max-constants", "1", "--domain", "constants-only"],
     );
-    assert_eq!(product["schema_version"], 8);
+    assert_eq!(product["schema_version"], 9);
     assert_eq!(product["domain_spec"]["profile"], "product");
     assert_eq!(product["config"]["domain_profile"], "product");
     assert_eq!(baseline["domain_spec"]["profile"], "constants-only");
@@ -44,7 +44,7 @@ fn default_product_and_constants_only_have_observable_precision_differences() {
     for json in [&product, &baseline] {
         assert_eq!(json["status"], "Converged");
         assert_eq!(json["domain_spec"]["word_bits"], 256);
-        assert_eq!(json["domain_spec"]["cost_version"], 2);
+        assert_eq!(json["domain_spec"]["cost_version"], 3);
         assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
         assert_eq!(
             json["domain_spec"]["provenance_policy"],
@@ -114,6 +114,6 @@ fn initial_world_budget_is_incomplete_with_an_explicit_source_free_frontier() {
     assert!(frontiers[0]["target"].is_null());
     assert!(frontiers[0]["pc"].is_null());
     assert_eq!(frontiers[0]["reason"], "Work");
-    assert_eq!(json["schema_version"], 8);
+    assert_eq!(json["schema_version"], 9);
     assert_eq!(json["domain_spec"]["profile"], "product");
 }

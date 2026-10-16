@@ -312,26 +312,34 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
         .color(palette::MUTED),
     );
     for log in &store.logs {
-        ui.collapsing(
-            format!(
-                "{} · pc 0x{:x} · {} topics",
-                log.address,
-                log.pc,
-                log.topics.len()
-            ),
-            |ui| {
-                ui.monospace(format!("Code account: {}", log.code_address));
-                for (index, topic) in log.topics.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Topic {index}"));
-                        value::cell(ui, topic);
-                    });
-                }
-                ui.allocate_ui(egui::vec2(ui.available_width(), 100.0), |ui| {
-                    super::buffers::show(ui, report, log.data, "Log data")
+        egui::CollapsingHeader::new(format!(
+            "{} · {:?} · pc 0x{:x} · {} topics",
+            log.address,
+            log.source_kind,
+            log.pc,
+            log.topics.len()
+        ))
+        .id_salt((
+            "log_site",
+            &log.address,
+            &log.code_address,
+            &log.code_hash,
+            log.source_kind,
+            log.pc,
+        ))
+        .show(ui, |ui| {
+            ui.monospace(format!("Code account: {}", log.code_address));
+            ui.monospace(format!("Code hash: {}", log.code_hash));
+            for (index, topic) in log.topics.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Topic {index}"));
+                    value::cell(ui, topic);
                 });
-            },
-        );
+            }
+            ui.allocate_ui(egui::vec2(ui.available_width(), 100.0), |ui| {
+                super::buffers::show(ui, report, log.data, "Log data")
+            });
+        });
     }
 }
 

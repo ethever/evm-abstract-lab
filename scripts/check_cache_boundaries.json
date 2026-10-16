@@ -41,14 +41,13 @@
         "*evm-abstract-protocol",
         "*evm-abstract-server",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
         "state-backend-*",
-        "smt-*",
-        "native-*",
+        "symbolic-*",
         "example-*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -99,11 +98,10 @@
         "*evm-abstract-notation",
         "*evm-abstract-layout",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
-        "native-*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -128,11 +126,10 @@
       "unchanged": [
         "*evm-abstract-protocol",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
-        "native-*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -153,15 +150,14 @@
         "*evm-abstract-notation",
         "*evm-abstract-layout",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
-        "native-*",
         "web-build",
         "web-clippy",
         "web-no-dyn",
         "web-browser*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -192,11 +188,10 @@
         "*evm-abstract-notation",
         "*evm-abstract-layout",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
-        "native-*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -315,6 +310,19 @@
       ],
       "only_changed": [
         "no-dyn-ui"
+      ]
+    },
+    {
+      "name": "lean-proof-source-isolation",
+      "description": "A proof source content edit rebuilds only the standalone Lean checker; documentation reads proof target names, not Lean contents.",
+      "mutations": [
+        {
+          "path": "proofs/NoSmt/Facts.lean",
+          "append": "\n-- Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "lean-proofs"
       ]
     }
   ]

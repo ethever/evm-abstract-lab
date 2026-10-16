@@ -23,7 +23,7 @@ let
           mkCheck "known-recursion-${reuse}" [ ] { } ''
             test "$(cat ${report}/exit-code)" = 0
             jq -e '
-              .analysis.schema_version == 8 and .analysis.status == "Converged" and
+              .analysis.schema_version == 9 and .analysis.status == "Converged" and
               .analysis.frontiers == [] and .ssa.complete and
               (.analysis.procedure_summaries | length) > 0 and
               all(.analysis.procedure_summaries[];

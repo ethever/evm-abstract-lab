@@ -27,8 +27,8 @@ mod storage;
 
 #[path = "rpc/budgets.rs"]
 mod budgets;
-#[path = "rpc/smt.rs"]
-mod smt;
+#[path = "rpc/relations.rs"]
+mod relations;
 
 const ENTRY: &str = "0x0000000000000000000000000000000000000101";
 const CALLEE: &str = "0x0000000000000000000000000000000000000200";

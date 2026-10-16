@@ -50,8 +50,6 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         max_constraints: count,
         max_expression_nodes: count,
         max_expression_depth: count,
-        smt_provider: SmtProvider::Cvc5,
-        smt_rlimit: u32::MAX,
         rpc_max_accounts: count,
         rpc_max_requests: count,
         rpc_max_response_bytes: count,
@@ -235,7 +233,7 @@ fn nullable_fields_remain_required_and_duplicate_null_is_rejected() {
 }
 
 #[test]
-fn relational_failures_preserve_fact_coordinates_and_solver_outcomes() {
+fn relational_boundaries_preserve_local_causes_and_fact_coordinates() {
     for cause in [
         QueryBoundary::ScalarFactError(FactFailure::InvalidOperation(FactOperationFailure {
             opcode: 0x01,
@@ -247,14 +245,13 @@ fn relational_failures_preserve_fact_coordinates_and_solver_outcomes() {
             required: 65,
         })),
         QueryBoundary::ScalarFactError(FactFailure::OriginContradiction(7)),
-        QueryBoundary::SolverUnknown(SolverUnknown {
-            provider: SmtProvider::Z3,
-            reason: "theory limitation".into(),
-        }),
-        QueryBoundary::SolverError(SolverFailure {
-            provider: SmtProvider::Cvc5,
-            message: "native binding failure".into(),
-        }),
+        QueryBoundary::Cancelled,
+        QueryBoundary::Disabled,
+        QueryBoundary::Configuration,
+        QueryBoundary::ConstraintLimit,
+        QueryBoundary::ScalarFactLimit,
+        QueryBoundary::ExpressionLimit,
+        QueryBoundary::ScalarFactError(FactFailure::UnsupportedOperation(0xfe)),
     ] {
         roundtrip(Frontier {
             range: None,
@@ -316,7 +313,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 13);
+    assert_eq!(SCHEMA_VERSION, 14);
 }
 
 #[test]
@@ -471,4 +468,67 @@ fn procedure_summary_wire_requires_entry_kind_and_nullable_root() {
         invalid_kind["kind"] = serde_json::json!("Runtime");
         assert!(serde_json::from_value::<AbstractSummary>(invalid_kind).is_err());
     }
+}
+
+#[test]
+fn obsolete_solver_settings_and_causes_are_explicitly_rejected() {
+    for (name, value) in [
+        ("smt_provider", serde_json::json!("z3")),
+        ("smt_rlimit", serde_json::json!(10000000)),
+    ] {
+        let mut request = serde_json::to_value(AnalyzeRequest::default()).unwrap();
+        request["limits"][name] = value;
+        let error = serde_json::from_value::<AnalyzeRequest>(request).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("unknown AnalysisLimits field: {name}")),
+            "{error}"
+        );
+    }
+    for obsolete in [
+        serde_json::json!("ResourceLimit"),
+        serde_json::json!("ModelUnavailable"),
+        serde_json::json!({"SolverUnknown": {"provider": "Z3", "reason": "unknown"}}),
+        serde_json::json!({"SolverError": {"provider": "Cvc5", "message": "failure"}}),
+    ] {
+        assert!(serde_json::from_value::<QueryBoundary>(obsolete).is_err());
+    }
+}
+
+#[test]
+fn log_source_identity_is_required_and_distinguishes_init_runtime_and_code_hashes() {
+    let hash = format!("0x{}", "11".repeat(32));
+    let log = LogSnapshot {
+        address: format!("0x{}", "22".repeat(20)),
+        code_address: format!("0x{}", "33".repeat(20)),
+        code_hash: hash.clone(),
+        source_kind: LogSourceKind::Init,
+        pc: 7,
+        topics: vec![],
+        data: 0,
+    };
+    roundtrip(vec![
+        log.clone(),
+        LogSnapshot {
+            source_kind: LogSourceKind::Runtime,
+            ..log.clone()
+        },
+        LogSnapshot {
+            code_hash: format!("0x{}", "44".repeat(32)),
+            source_kind: LogSourceKind::Runtime,
+            ..log.clone()
+        },
+    ]);
+    for field in ["code_hash", "source_kind"] {
+        let mut missing = serde_json::to_value(&log).unwrap();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<LogSnapshot>(missing)
+                .unwrap_err()
+                .to_string()
+                .contains(field)
+        );
+    }
+    assert_eq!(serde_json::to_value(&log).unwrap()["code_hash"], hash);
 }

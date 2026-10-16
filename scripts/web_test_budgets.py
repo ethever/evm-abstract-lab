@@ -20,7 +20,6 @@ def budget_interactions(browser, url: str, output: Path):
         "max_constraints": 2048,
         "max_expression_nodes": 16_384,
         "max_expression_depth": 256,
-        "smt_rlimit": 10_000_000,
         "rpc_max_accounts": 4096,
         "rpc_max_requests": 1_000_000,
         "rpc_max_response_bytes": 64 * 1024 * 1024,
@@ -57,7 +56,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 13
+    assert initial_report["schema_version"] == 14
     assert "max_work" not in initial_report["metadata"]["export_limits"]
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
@@ -91,7 +90,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 13
+    assert report["schema_version"] == 14
     assert report["status"] == "Converged", report["frontiers"]
     assert "max_work" not in report["metadata"]["export_limits"]
     expected = {**defaults, **edited}

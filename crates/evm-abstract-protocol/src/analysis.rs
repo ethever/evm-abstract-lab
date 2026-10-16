@@ -212,7 +212,7 @@ choice! {
         CallDepth,
         /// Memory modeling cap.
         Memory,
-        /// Symbolic or SMT bound.
+        /// Symbolic representation or local path reasoning bound.
         Relations,
         /// Call destination is not covered by supplied code.
         UnknownTarget,

@@ -112,7 +112,7 @@ SSA 在静态表示中给每个值定义分配一个唯一名字，让使用者�
 2. 按[第 16 课的 slot 实验](../16-storage-model.md#2-第一个实验替换-slot-0读取-slot-0-和-slot-1)区分初始 world 与当前 Store，手算[两候选 slot 的更新](../16-storage-model.md#5-有两个可能的-slot为什么要保留旧值)。同时检查[未列出的 slot](../16-storage-model.md#没列出的-slot-是零还是未知)：是否为零取决于初始完整性声明，不取决于表项数量。
 3. 比较[同一符号 memory 偏移](../14-memory-model.md#同一个未知偏移写后再读也未必恢复原值)与[同一未知 storage 键](../16-storage-model.md#6-无法列出-slot-候选刚写入再读为什么是-07)。正常同址写后读得到 7；无约束 memory 地址还包含超策略输入，原始 [`memory-symbolic-offset.hex`](../../examples/memory-symbolic-offset.hex) 因而保留 frontier。不要用具体 calldata 替代未知输入来掩盖覆盖边界。
 
-源码看 [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs) 的根、view 与读写，以及 [`Store` 的 slot 转换](../../crates/evm-abstract/src/world/store/slots.rs)。`select(store(S,k,7),k)=7` 表达当前有序状态模型利用的同址规则；它无需先求出 k 的数值。EVM 的账户归属、写序、byte 长度、零补和范围仍由分析器定义，求解器不能替代这些语义。
+源码看 [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs) 的根、view 与读写，以及 [`Store` 的 slot 转换](../../crates/evm-abstract/src/world/store/slots.rs)。`select(store(S,k,7),k)=7` 表达当前有序状态模型利用的同址规则；它无需先求出 k 的数值。EVM 的账户归属、写序、byte 长度、零补和范围仍由分析器定义，局部数值推理不能替代这些语义。
 
 **完成问题：**同一个 k 的写后读为何是 7，改读固定 slot 0 又为何需要别名条件？只看两个 slot 的独立候选与看完整根，分别能证明到哪一步？增大常量容量是否会自动补上未完成的 solver 查询？
 
@@ -122,15 +122,15 @@ SSA 在静态表示中给每个值定义分配一个唯一名字，让使用者�
 
 ## 第六步：从“值未知”走到“这些未知值必须满足什么关系”
 
-本主题的独立模块：[符号关系与 SMT](../modules/relations.md)。
+本主题的独立模块：[符号关系与局部推理](../modules/relations.md)。
 
 一个数未知，不代表关于它什么都不知道。读取同一个输入两次，可以知道它们相等；计算 `y=x+1` 可以保存运算关系；进入 `x==1` 的真分支后，可以保存当前路径上的 `x=1`。数值摘要、值身份、表达式与路径约束分别回答这些问题，不能用一个“符号值”概念把它们混在一起。
 
-SMT 在这里检查已经编码的条件能否同时成立。若同一个 x 已经等于 1，再要求它等于 2，条件矛盾，后继可以删除。求解结果 Unknown 表示没有完成相应判断，需要保留路径和限制证据；SAT 也只说明当前编码可满足，不能直接充当完整 EVM 轨迹的执行见证。
+局部推理在这里检查保留的条件是否已能证明矛盾。若同一个 x 已经等于 1，再要求它等于 2，条件矛盾，后继可以删除。没有证明矛盾时继续保留路径，这不承诺存在完整 EVM 交易见证；真实的表示界限与取消另保留类型化原因。
 
 1. 做[第 15 课的两次 CALLVALUE 判断](../15-symbolic-relations.md#1-先看同一个输入不能同时等于-1-和-2)，比较关系开启与关闭时 pc=`0x12` 是否出现。写下每条分支新增的条件，解释删除后继用的是“同一个输入”加“当前路径条件”这两项知识。
 2. 读[五层信息](../15-symbolic-relations.md#2-五层信息分别保存什么)和 [`assume` / 数值精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)，给第二步的数值摘要、第四步的 SSA 名字各找位置。再用正文两次计算 `x+1` 的例子区分表达式相等、来源标签相同与数值摘要相同。
-3. 阅读[关系 join](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)、[作用域](../15-symbolic-relations.md#5-作用域与摘要重放)与[状态索引关系](../15-symbolic-relations.md#有值的表达式不等于有符号索引数组)。左路 `x=1`、右路 `x=2` 不能直接合取；普通 RelationState join 保留共同项，整机 join 另保存共享 selector 下的完整替代。循环 widening 则明确放弃部分保证，详见第 17 课。将这些表示层次带回第五步，说明为何数值投影宽于完整读取，且求解器不能凭空补上未编码的语义。
+3. 阅读[关系 join](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)、[作用域](../15-symbolic-relations.md#5-作用域与摘要重放)与[状态索引关系](../15-symbolic-relations.md#有值的表达式不等于有符号索引数组)。左路 `x=1`、右路 `x=2` 不能直接合取；普通 RelationState join 保留共同项，整机 join 另保存共享 selector 下的完整替代。循环 widening 则明确放弃部分保证，详见第 17 课。将这些表示层次带回第五步，说明为何数值投影宽于完整读取，且局部规则不能凭空补上未建模的语义。
 
 源码看 [`domain/symbolic.rs`](../../crates/evm-abstract/src/domain/symbolic.rs) 的 `ExprId`、[`domain/relational.rs`](../../crates/evm-abstract/src/domain/relational.rs) 的 `assume` / `join` / `unique_value`，再接到 [`analysis/transfer/relations.rs`](../../crates/evm-abstract/src/analysis/transfer/relations.rs)。运算遵守 256 位 EVM 规则；表达式节点、深度、关系数量与求解资源都有上限，见[第 15 课资源预算](../15-symbolic-relations.md#7-原生后端与确定性资源预算)。固定输入身份有环境作用域，跨报告同名 Caller 不能直接建立相等关系。
 

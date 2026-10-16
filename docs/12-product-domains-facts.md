@@ -123,7 +123,7 @@ EVM 的一个 word 是 256 位，取值空间为 `0 .. 2^256-1`。组合域中�
 | `expression`：`ExprId` | 不可变输入、运行时新值及其 EVM 纯运算表达式 | 把每次经过同一个 pc 的新值当成同一个变量 |
 | 机器状态的 `relations` | 当前路径保留的跨值假设及数值保证 | 全局共享不同路径的假设 |
 
-`AbstractValue` 通过显式字段组合这些信息，没有通过 Deref 隐藏这几层。更改来源标签不改写身份，SMT 证明后的数值收窄也保留原变量与表达式。
+`AbstractValue` 通过显式字段组合这些信息，没有通过 Deref 隐藏这几层。更改来源标签不改写身份，局部事实证明后的数值收窄也保留原变量与表达式。
 
 来源记录的是当前观察和纯运算输入的类别摘要。MLOAD、SLOAD 等读取会重新标记为 Memory、Storage；纯算术合并输入类别并加入 Arithmetic。它不保存完整读取位置、祖先链或污点历史。
 
@@ -206,7 +206,7 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 | 二元事实 | x=y、x≠y、x<y | 来源相同不能建立 x=y |
 | 运算关系 | result 是两个操作数 XOR 的结果 | 必须遵守 EVM word 语义和弹栈顺序 |
 
-运算关系让[第 2 节](#2-再手算两个未知值一定相同吗)的复制身份证明派上用场：可信 x=y 加上 XOR 关系，才得到 result=0。局部事实中的值编号只标记本次交换的值，不是 SSA 编号或永久变量。它与跨基本块保留的 `ExprId` / `RelationState` 是两组接口：前者规约一次数值操作，后者记录状态路径中的表达式、等式和取值假设，并按需要查询进程内位向量求解器。
+运算关系让[第 2 节](#2-再手算两个未知值一定相同吗)的复制身份证明派上用场：可信 x=y 加上 XOR 关系，才得到 result=0。局部事实中的值编号只标记本次交换的值，不是 SSA 编号或永久变量。它与跨基本块保留的 `ExprId` / `RelationState` 是两组接口：前者规约一次数值操作，后者记录状态路径中的表达式、等式和取值假设，并以局部事实推导保守数值上界和矛盾。
 
 来源、地址范围和代码用途也必须区分。`IsAddress` 保证高 96 位为零；`IsCodeAddress` 只记录作为代码地址使用的角色。它们都不能证明该账户存在，更不能提供未知账户的代码。
 
@@ -218,7 +218,7 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 
 数值投影逐组件做 join：常量取并集，位只留共有保证，区间取包络，同余保留共有性质，可能来源取并集。它看不到路径特有的配对；完整机器的共享 selector 与路径公式另保留这些关系。暂时无法枚举所有候选时，不能截取前几个数来冒充完整集合。
 
-当前实现把**数值 join**与**临时 facts 规约**分开。join 不额外运行有界交换；后续运算可以规约已有约束。几轮传播未必得到相同闭包，把中途结果直接定义为数值 join，会让合并次序影响表示。这里没有声称实现理论上最精确的 reduced product。普通 `RelationState::join` 保留共同保证；整机 guarded join 另保存同一个 selector 下的完整替代。`x=1` 与 `x=2` 不会被错误合成 `x=1 AND x=2`，但有限关系表示与 solver 额度也不保证任意路径析取都能被精确处理。
+当前实现把**数值 join**与**临时 facts 规约**分开。join 不额外运行有界交换；后续运算可以规约已有约束。几轮传播未必得到相同闭包，把中途结果直接定义为数值 join，会让合并次序影响表示。这里没有声称实现理论上最精确的 reduced product。普通 `RelationState::join` 保留共同保证；整机 guarded join 另保存同一个 selector 下的完整替代。`x=1` 与 `x=2` 不会被错误合成 `x=1 AND x=2`，但有限关系表示与局部推理规则也不保证任意路径析取都能被精确处理。
 
 循环还需要控制不断扩大的范围。其余完整载荷保持不变时，引擎可对重复增长的栈 word 作 **widening（扩大）**：扩大移动的区间端点，并放弃仍会增长的常量、位与同余细节。未改变的 word 保留原有数值保证。扩大后的状态只留共同路径保证，不能仍宣称所有标量关联精确，也不能独立改变地址而留下旧窄根。
 
@@ -267,7 +267,7 @@ nix run . -- analyze \
 jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
-结果的 `schema_version` 为 8；其中 `domain_spec.schema_version` 为 2，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `cost_version` 为 2，`provenance_policy` 是 `scoped-expressions-and-value-identities-v3`。`domain_spec.relations` 冻结关系开关、表达式/约束预算和 SMT 的 `rlimit`，同样参与摘要资格。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
+结果的 `schema_version` 为 9；其中 `domain_spec.schema_version` 为 2，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `cost_version` 为 3，`provenance_policy` 是 `scoped-expressions-and-value-identities-v3`。`domain_spec.relations` 冻结关系开关、表达式/约束预算，同样参与摘要资格。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
 
 `--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 constants-only 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；CLI 默认容量 512 可以容纳全部候选；显式降至 8 时则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
 

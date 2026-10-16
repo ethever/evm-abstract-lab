@@ -17,7 +17,7 @@ LAYOUT_DEFAULT_LIMITS = {
     "max_memory_bytes":64*1024*1024, "use_summaries":True, "domain_profile":"Product",
     "reduction_rounds":16, "max_facts":4096, "relations_enabled":True,
     "max_constraints":2048, "max_expression_nodes":16_384, "max_expression_depth":256,
-    "smt_provider":"Z3", "smt_rlimit":10_000_000, "rpc_max_accounts":4096,
+    "rpc_max_accounts":4096,
     "rpc_max_requests":1_000_000, "rpc_max_response_bytes":64*1024*1024,
     "rpc_timeout_ms":120_000,
 }

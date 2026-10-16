@@ -225,17 +225,6 @@ pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol
     }
 }
 
-fn solver_provider(
-    source: evm_abstract::domain::relational::SmtProvider,
-) -> evm_abstract_protocol::SmtProvider {
-    use evm_abstract::domain::relational::SmtProvider as N;
-    use evm_abstract_protocol::SmtProvider as P;
-    match source {
-        N::Z3 => P::Z3,
-        N::Bitwuzla => P::Bitwuzla,
-        N::Cvc5 => P::Cvc5,
-    }
-}
 fn fact_failure(
     source: &evm_abstract::domain::facts::FactError,
 ) -> evm_abstract_protocol::FactFailure {
@@ -291,18 +280,5 @@ pub(super) fn query(
         NQ::ScalarFactLimit => Q::ScalarFactLimit,
         NQ::ScalarFactError(error) => Q::ScalarFactError(fact_failure(error)),
         NQ::ExpressionLimit => Q::ExpressionLimit,
-        NQ::Unsupported(op) => Q::Unsupported(*op),
-        NQ::ResourceLimit => Q::ResourceLimit,
-        NQ::SolverUnknown { provider, reason } => {
-            Q::SolverUnknown(evm_abstract_protocol::SolverUnknown {
-                provider: solver_provider(*provider),
-                reason: reason.clone(),
-            })
-        }
-        NQ::SolverError(error) => Q::SolverError(evm_abstract_protocol::SolverFailure {
-            provider: solver_provider(error.provider),
-            message: error.message.clone(),
-        }),
-        NQ::ModelUnavailable => Q::ModelUnavailable,
     }
 }

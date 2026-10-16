@@ -6,7 +6,7 @@
   build,
 }:
 let
-  common = build.commonFor "embedded-smt" {
+  common = build.commonFor "evm-abstract" {
     target = "native";
     kind = "build";
   } build.configurations.default;

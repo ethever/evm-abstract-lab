@@ -1,4 +1,4 @@
-//! Concrete scalar-fact and solver causes carried by relational frontiers.
+//! Concrete scalar-fact causes carried by local reasoning frontiers.
 
 record! {
     /// Pure-operation arity mismatch during scalar fact interpretation.
@@ -44,23 +44,5 @@ variant! {
         OriginContradiction(u32),
         /// Semantic atom allowance was exceeded.
         Capacity(FactCapacityFailure),
-    }
-}
-record! {
-    /// The solver returned UNKNOWN without establishing unsatisfiability.
-    pub struct SolverUnknown {
-        /// Selected provider.
-        pub provider: crate::SmtProvider,
-        /// Native provider explanation, supplementary to the typed outcome.
-        pub reason: String,
-    }
-}
-record! {
-    /// Native binding or checked encoding failed before a solver answer.
-    pub struct SolverFailure {
-        /// Provider whose binding or encoding failed.
-        pub provider: crate::SmtProvider,
-        /// Original external diagnostic, supplementary to the typed failure.
-        pub message: String,
     }
 }

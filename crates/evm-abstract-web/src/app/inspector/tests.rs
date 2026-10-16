@@ -571,7 +571,7 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
     );
 }
 #[test]
-fn relational_frontier_details_show_fact_arity_and_distinguish_solver_failure() {
+fn relational_frontier_details_show_fact_arity_and_all_local_boundaries() {
     let mut report = crate::tests::report();
     report.diagnostics.clear();
     report.frontiers = vec![api::Frontier {
@@ -609,31 +609,36 @@ fn relational_frontier_details_show_fact_arity_and_distinguish_solver_failure() 
             "missing {required}: {arity:?}"
         );
     }
-    report.frontiers[0].reason =
-        api::FrontierDetails::Relations(api::QueryBoundary::SolverError(api::SolverFailure {
-            provider: api::SmtProvider::Cvc5,
-            message: "binding rejected term".into(),
-        }));
-    let failure = rendered(&context, &mut time, vec![], |ui| {
-        evidence::diagnostics(ui, &report, &mut selection)
-    });
-    for required in [
-        "Solver binding or encoding failed",
-        "Provider",
-        "Cvc5",
-        "Binding diagnostic",
-        "binding rejected term",
+    for (reason, expected) in [
+        (api::QueryBoundary::Cancelled, "Relational query cancelled"),
+        (api::QueryBoundary::Disabled, "Relational queries disabled"),
+        (
+            api::QueryBoundary::Configuration,
+            "Invalid relational policy",
+        ),
+        (
+            api::QueryBoundary::ConstraintLimit,
+            "Retained constraint bound",
+        ),
+        (api::QueryBoundary::ScalarFactLimit, "Scalar fact bound"),
+        (
+            api::QueryBoundary::ExpressionLimit,
+            "Expression size / local work bound",
+        ),
+        (
+            api::QueryBoundary::ScalarFactError(api::FactFailure::UnsupportedOperation(0xfe)),
+            "Unsupported pure word operation",
+        ),
     ] {
+        report.frontiers[0].reason = api::FrontierDetails::Relations(reason);
+        let visible = rendered(&context, &mut time, vec![], |ui| {
+            evidence::diagnostics(ui, &report, &mut selection)
+        });
         assert!(
-            failure.iter().any(|(text, _)| text == required),
-            "missing {required}: {failure:?}"
+            visible.iter().any(|(text, _)| text == expected),
+            "missing {expected}: {visible:?}"
         );
     }
-    assert!(
-        !failure
-            .iter()
-            .any(|(text, _)| text == "Solver could not decide")
-    );
 }
 
 #[test]
@@ -916,5 +921,69 @@ fn task_progress_and_typed_task_error_keep_the_full_u64_handle() {
             .iter()
             .any(|(text, _)| text == &format!("task{}", u64::MAX)),
         "missing task: {visible:?}"
+    );
+}
+
+#[test]
+fn identical_log_captions_keep_independent_captured_code_panels() {
+    let report = crate::tests::report();
+    let mut source = store();
+    source.accounts.clear();
+    let first_hash = format!("0x{}", "11".repeat(32));
+    let second_hash = format!("0x{}", "22".repeat(32));
+    for code_hash in [&first_hash, &second_hash] {
+        source.logs.push(api::LogSnapshot {
+            address: account().address,
+            code_address: account().address,
+            code_hash: code_hash.clone(),
+            source_kind: api::LogSourceKind::Runtime,
+            pc: 7,
+            topics: vec![],
+            data: 0,
+        });
+    }
+    let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
+    context.global_style_mut(|style| style.animation_time = 0.0);
+    let mut time = 0.0;
+    let size = egui::vec2(1100.0, 900.0);
+    let before = rendered_at(&context, &mut time, vec![], size, |ui| {
+        stores::changes(ui, &report, &source)
+    });
+    let caption = format!("{} · Runtime · pc 0x7 · 0 topics", account().address);
+    let headers: Vec<_> = before.iter().filter(|(text, _)| text == &caption).collect();
+    assert_eq!(headers.len(), 2);
+    let position = headers[0].1.center();
+    for pressed in [true, false] {
+        rendered_at(
+            &context,
+            &mut time,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            size,
+            |ui| stores::changes(ui, &report, &source),
+        );
+    }
+    let visible = rendered_at(&context, &mut time, vec![], size, |ui| {
+        stores::changes(ui, &report, &source)
+    });
+    assert!(
+        visible
+            .iter()
+            .any(|(text, _)| text == &format!("Code hash: {first_hash}")),
+        "{visible:?}"
+    );
+    assert!(
+        !visible
+            .iter()
+            .any(|(text, _)| text == &format!("Code hash: {second_hash}")),
+        "same-caption log panels must open independently: {visible:?}"
     );
 }

@@ -1,5 +1,5 @@
 # The one dependency inventory used by builds, development and editor children.
-{ pkgs, nativeSmt }:
+{ pkgs }:
 let
   fontConfig = pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; };
 in
@@ -10,14 +10,8 @@ in
     pkgs.pkg-config
     pkgs.rustPlatform.bindgenHook
   ];
-  buildInputs = [
-    nativeSmt.z3
-    nativeSmt.bitwuzla
-    nativeSmt.cvc5
-  ];
+  buildInputs = [ ];
   environment = {
-    CVC5_LIB_DIR = "${nativeSmt.cvc5}/lib";
-    CVC5_INCLUDE_DIR = "${nativeSmt.cvc5}/include";
     SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
   };
   # OpenSSL is needed by the Dylint UI test's git2 dependency. Keep it explicit

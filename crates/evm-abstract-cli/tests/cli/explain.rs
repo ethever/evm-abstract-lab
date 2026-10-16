@@ -212,19 +212,10 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
         ("--max-symbolic-nodes", defaults.max_expression_nodes),
         ("--max-symbolic-depth", defaults.max_expression_depth),
         ("--max-relations", defaults.max_constraints),
-        ("--smt.rlimit", u64::from(defaults.smt_rlimit)),
     ]
     .map(|(flag, value)| (flag, value.to_string()));
     let mut args = vec![
-        "explain",
-        "--hex",
-        &code,
-        "--fork",
-        "osaka",
-        "--domain",
-        "product",
-        "--smt.provider",
-        "z3",
+        "explain", "--hex", &code, "--fork", "osaka", "--domain", "product",
     ];
     for (flag, value) in &explicit_values {
         args.extend([*flag, value.as_str()]);

@@ -41,7 +41,7 @@ let
     // environment
     // {
       # Preserve the target-specific environment as well as source selection:
-      # applying the broad native common would put SMT libraries into Wasm drvs.
+      # Applying native inputs would couple Wasm checks to unrelated C libraries.
       CARGO_NET_OFFLINE = "true";
       CARGO_PROFILE = "dev";
       nativeBuildInputs = base.nativeBuildInputs ++ [

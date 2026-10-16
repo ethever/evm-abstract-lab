@@ -1,4 +1,4 @@
-# Independent installed-runtime contracts. Each fixture/provider is a separate
+# Independent installed-runtime contracts. Each fixture is a separate
 # check, allowing Nix to cache and schedule them without a second worker pool.
 {
   pkgs,
@@ -49,30 +49,8 @@ let
     ) fixtures.worlds
   );
   package = build.release.packages.evm-abstract-cli;
-  providers = lib.genAttrs [ "z3" "bitwuzla" "cvc5" ] (
-    provider:
-    pkgs.runCommand "evm-abstract-installed-smt-${provider}" { nativeBuildInputs = [ pkgs.jq ]; } ''
-      mkdir "$out"
-      PATH= ${package}/bin/evm-abstract cfg \
-        --hex 3480600114600957005b80600214601257005b00 \
-        --context-depth 0 --smt.provider ${provider} --smt.rlimit 200000 \
-        --format json > "$out/report.json"
-      jq -e --arg provider ${provider} '
-        .status == "Converged" and .frontiers == [] and
-        .config.relations.provider == $provider and .config.relations.rlimit == 200000 and
-        (.program.blocks as $blocks |
-         [.states[].key.basic_block_index | $blocks[.].start_pc] as $reachable |
-         ($reachable | index(9)) != null and ($reachable | index(8)) != null and
-         ($reachable | index(17)) != null and ($reachable | index(18)) == null)
-      ' "$out/report.json" > /dev/null
-    ''
-  );
-  providerChecks = lib.mapAttrs' (
-    name: value: lib.nameValuePair "smt-provider-${name}" value
-  ) providers;
 in
 parity
-// providerChecks
 // rec {
   state-backend-normalization =
     pkgs.runCommand "evm-abstract-state-backend-normalization" { nativeBuildInputs = [ pkgs.python3 ]; }
@@ -86,17 +64,34 @@ parity
     name = "evm-abstract-state-backend-parity";
     checks = parity;
   };
-  smt-provider-default =
-    pkgs.runCommand "evm-abstract-installed-smt-default" { nativeBuildInputs = [ pkgs.jq ]; }
+  symbolic-defaults =
+    pkgs.runCommand "evm-abstract-installed-symbolic-defaults" { nativeBuildInputs = [ pkgs.jq ]; }
       ''
         mkdir "$out"
         ${package}/bin/evm-abstract cfg --hex 00 --format json > "$out/report.json"
-        jq -e '.config.relations.provider == "z3" and .config.relations.rlimit == 10000000' "$out/report.json" > /dev/null
+        jq -e '.config.relations == {
+          enabled: true, max_constraints: 2048, max_nodes: 16384, max_depth: 256
+        }' "$out/report.json" > /dev/null
       '';
-  smt-providers = aggregateCheck {
-    name = "evm-abstract-installed-smt-providers";
-    checks = providerChecks // {
-      inherit smt-provider-default;
+  symbolic-path-facts =
+    pkgs.runCommand "evm-abstract-installed-symbolic-path-facts" { nativeBuildInputs = [ pkgs.jq ]; }
+      ''
+        mkdir "$out"
+        PATH= ${package}/bin/evm-abstract cfg \
+          --hex 3480600114600957005b80600214601257005b00 \
+          --context-depth 0 --format json > "$out/report.json"
+        jq -e '
+          .status == "Converged" and .frontiers == [] and
+          (.program.blocks as $blocks |
+           [.states[].key.basic_block_index | $blocks[.].start_pc] as $reachable |
+           ($reachable | index(9)) != null and ($reachable | index(8)) != null and
+           ($reachable | index(17)) != null and ($reachable | index(18)) == null)
+        ' "$out/report.json" > /dev/null
+      '';
+  symbolic-analysis = aggregateCheck {
+    name = "evm-abstract-installed-symbolic-analysis";
+    checks = {
+      inherit symbolic-defaults symbolic-path-facts;
     };
   };
 }

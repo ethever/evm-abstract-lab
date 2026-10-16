@@ -366,28 +366,11 @@ fn query(ui: &mut Ui, reason: &api::QueryBoundary) {
         R::ConstraintLimit => "Retained constraint bound",
         R::ScalarFactLimit => "Scalar fact bound",
         R::ScalarFactError(_) => "Scalar fact interpretation failed",
-        R::ExpressionLimit => "Expression size / encoding work bound",
-        R::Unsupported(0x20) => "Keccak input comparison is not fully modeled",
-        R::Unsupported(_) => "Unsupported pure operation",
-        R::ResourceLimit => "Native solver resource allowance",
-        R::SolverUnknown(_) => "Solver could not decide",
-        R::SolverError(_) => "Solver binding or encoding failed",
-        R::ModelUnavailable => "Model value unavailable",
+        R::ExpressionLimit => "Expression size / local work bound",
     };
     value::text(ui, "Query boundary", label);
-    match reason {
-        R::ScalarFactError(error) => fact(ui, error),
-        R::SolverUnknown(detail) => {
-            value::text(ui, "Provider", format!("{:?}", detail.provider));
-            value::text(ui, "Native reason", &detail.reason);
-        }
-        R::SolverError(detail) => {
-            value::text(ui, "Provider", format!("{:?}", detail.provider));
-            value::text(ui, "Binding diagnostic", &detail.message);
-        }
-        R::Unsupported(0x20) => value::text(ui, "Opcode", "0x20 (KECCAK256)"),
-        R::Unsupported(opcode) => value::text(ui, "Opcode", format!("0x{opcode:02x}")),
-        _ => {}
+    if let R::ScalarFactError(error) = reason {
+        fact(ui, error);
     }
 }
 

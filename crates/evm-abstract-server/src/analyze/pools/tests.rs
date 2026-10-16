@@ -593,3 +593,66 @@ fn buffer_export_bounds_and_cache_hit_cancellation_remain_typed_and_lossless() {
     assert_eq!(detail.limits, pools.symbolic.limits);
     assert_eq!(source, retained);
 }
+
+#[test]
+fn log_pool_preserves_captured_hash_and_init_runtime_identity_through_json() {
+    use alloy_primitives::{Address, B256};
+    use evm_abstract::{
+        Fork,
+        world::{AbstractLog, LogKey, LogSourceKind, Store, World},
+    };
+    let owner = Address::from([0x11; 20]);
+    let code_owner = Address::from([0x22; 20]);
+    let hash = B256::from([0x33; 32]);
+    let other_hash = B256::from([0x44; 32]);
+    let mut source = Store::new(&World::new(Fork::Osaka, "log source projection"));
+    let cases = [
+        (hash, LogSourceKind::Init, api::LogSourceKind::Init),
+        (hash, LogSourceKind::Runtime, api::LogSourceKind::Runtime),
+        (
+            other_hash,
+            LogSourceKind::Runtime,
+            api::LogSourceKind::Runtime,
+        ),
+    ];
+    for (index, &(code_hash, source_kind, _)) in cases.iter().enumerate() {
+        source
+            .emit_log(
+                LogKey {
+                    address: owner,
+                    code_address: code_owner,
+                    code_hash,
+                    source_kind,
+                    pc: 7,
+                },
+                AbstractLog {
+                    topics: vec![AbstractValue::constant(U256::from(index)); index],
+                    data: ByteArray::exact(&[index as u8]),
+                },
+                Domain::default(),
+            )
+            .unwrap();
+    }
+    let control = Control::default();
+    let mut pools = Pools::new(&control);
+    let id = pools.store(&source).unwrap();
+    assert_eq!(pools.store(&source.clone()).unwrap(), id);
+    let snapshot = &pools.stores[id];
+    assert_eq!(snapshot.logs.len(), 3);
+    for (index, &(code_hash, _, source_kind)) in cases.iter().enumerate() {
+        let log = snapshot
+            .logs
+            .iter()
+            .find(|log| log.code_hash == code_hash.to_string() && log.source_kind == source_kind)
+            .unwrap();
+        assert_eq!(log.address, owner.to_string());
+        assert_eq!(log.code_address, code_owner.to_string());
+        assert_eq!(log.pc, 7);
+        assert_eq!(log.topics.len(), index);
+    }
+    let encoded = serde_json::to_vec(snapshot).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<api::StoreSnapshot>(&encoded).unwrap(),
+        *snapshot
+    );
+}

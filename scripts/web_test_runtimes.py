@@ -9,7 +9,7 @@ from web_test_pixels import layout_ink, node_snapshot
 
 
 def layout_pending_machines(report, entry):
-    assert report["schema_version"] == 13
+    assert report["schema_version"] == 14
     pending = report["pending_machines"]
     assert len(pending) == entry["expected_pending_machines"]
     assert len(report["frontiers"]) == entry["expected_frontiers"]

@@ -60,7 +60,7 @@ fn invalid_opcode_report_preserves_original_bytes_names_causes_and_closure() {
         let mut input = request(bytecode);
         input.fork = fork;
         let report = analyze(input).unwrap();
-        assert_eq!(report.schema_version, 13);
+        assert_eq!(report.schema_version, evm_abstract_protocol::SCHEMA_VERSION);
         assert_eq!(report.status, AnalysisStatus::Converged);
         assert!(report.frontiers.is_empty());
         let diagnostics: Vec<_> = report
@@ -678,10 +678,6 @@ fn nonpositive_execution_and_precision_budgets_still_fail_native_admission() {
         },
         AnalysisLimits {
             max_expression_depth: 0,
-            ..AnalysisLimits::default()
-        },
-        AnalysisLimits {
-            smt_rlimit: 0,
             ..AnalysisLimits::default()
         },
     ] {

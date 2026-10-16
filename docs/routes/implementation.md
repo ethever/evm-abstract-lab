@@ -165,7 +165,7 @@ flowchart TD
 
 运行 [`symbolic-conflicting-guards.hex`](../../examples/symbolic-conflicting-guards.hex) 的[矛盾条件实验](../15-symbolic-relations.md#1-先看同一个输入不能同时等于-1-和-2)，对照关闭和开启关系层的 JSON，定位关闭时保留、开启后消失的状态或边。再从 `transfer::execute` 的 JUMPI 分支进入 [`relations::branch`](../../crates/evm-abstract/src/analysis/transfer/relations.rs#L128)：输入是当前机器载荷、条件值和真假方向；正常情况下输出附有分支假设的后继载荷，证明不可行时则不生成后继。工作预算耗尽也可停止该分支并记录 `Work` 前沿，此时没有后继并不表示已证明不可达。
 
-顺着条件值的 `expression` 到 [`ExprId`](../../crates/evm-abstract/src/domain/symbolic.rs)，再读 [`RelationState::assume` / `check` / `unique_value`](../../crates/evm-abstract/src/domain/relational.rs)。表达式回答“这是哪个输入经过什么运算得到的值”，关系状态回答“当前路径保证哪些条件”。[`relational/solver.rs`](../../crates/evm-abstract/src/domain/relational/solver.rs) 将这些表达式编码成 EVM 的 256 位运算，[`embedded-smt`](../../crates/embedded-smt/src/lib.rs) 提供进程内求解接口。求解器不替机器执行 CALL，也不自动增加数组索引模型。
+顺着条件值的 `expression` 到 [`ExprId`](../../crates/evm-abstract/src/domain/symbolic.rs)，再读 [`RelationState`](../../crates/evm-abstract/src/domain/relational.rs) 的假设保留、局部检查与数值投影。表达式回答“这是哪个输入经过什么运算得到的值”，关系状态回答“当前路径保证哪些条件”。局部事实只能在证明矛盾时删边，只能按已证明的上界收窄数值；未证明矛盾继续保留路径。EVM 的调用、数组根和读取语义由各自的 transfer 与状态模块解释。
 
 现在用[分支假设与数值精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)检查数据方向：数值保证可以导入关系层；查询证明唯一值后，回写更窄的数值摘要。删除分支需要矛盾证明。可选 value 查询未完成时，若完整保守状态仍能继续，记录精度诊断；无法保留条件、构造后继或覆盖所需执行时才留下 frontier。两种结果都不能被当作矛盾。
 

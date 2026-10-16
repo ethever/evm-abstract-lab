@@ -34,12 +34,12 @@ fn policy(report: &Value, world: bool, expected: &AnalysisLimits) {
         ("max_nodes", expected.max_expression_nodes),
         ("max_depth", expected.max_expression_depth),
         ("max_constraints", expected.max_constraints),
-        ("rlimit", u64::from(expected.smt_rlimit)),
     ] {
         assert_eq!(config["relations"][name], value, "{name}: {config}");
     }
     assert_eq!(config["relations"]["enabled"], expected.relations_enabled);
-    assert_eq!(config["relations"]["provider"], "z3");
+    assert!(config["relations"].get("provider").is_none());
+    assert!(config["relations"].get("rlimit").is_none());
     assert_eq!(config["domain_profile"], "product");
     assert_eq!(report["domain_spec"]["capacity"], expected.max_constants);
     assert_eq!(
@@ -98,7 +98,6 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
         max_expression_nodes: 1024,
         max_expression_depth: 64,
         max_constraints: 128,
-        smt_rlimit: 100_000,
         ..AnalysisLimits::default()
     };
     let world = report(analyze(
@@ -128,8 +127,6 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
             "64",
             "--max-relations",
             "128",
-            "--smt.rlimit",
-            "100000",
         ],
     ));
     policy(&world, true, &expected);
@@ -215,7 +212,6 @@ fn raw_and_world_verbose_explanations_report_the_same_web_precision_policy() {
         for expected in [
             format!("reduction rounds={}", expected.reduction_rounds),
             format!("fact atoms={}", expected.max_facts),
-            format!("rlimit={}", expected.smt_rlimit),
             format!("expression nodes={}", expected.max_expression_nodes),
             format!("depth={}", expected.max_expression_depth),
             format!("constraints={}", expected.max_constraints),

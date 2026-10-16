@@ -12,7 +12,7 @@ def run_startup(context):
     page, canvas, reply = example_page(context.browser, context.url)
     result = reply.json()
     analysis = result["result"]["Ok"]
-    assert analysis["schema_version"] == 13
+    assert analysis["schema_version"] == 14
     assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0
     assert len(analysis["cfg"]) > 1, "example did not produce a graph"
     assert {"BranchTrue", "BranchFalse"}.issubset({edge["kind"] for edge in analysis["edges"]})

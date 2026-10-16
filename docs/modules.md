@@ -14,7 +14,7 @@
 | [SSA 与部分执行](modules/ssa.md) | `%value`、φ、prefix stack、progress 各在说明什么？ | 值名与位置、入口 φ、执行前缀、覆盖与验证 | [04](04-ssa.md) |
 | [CFG、固定点与敏感性](modules/control-flow.md) | 一个 Bᵢ 为什么对应多个 σᵢ？为什么同一状态会重跑？ | 状态与边、工作表、上下文划分、未知跳转 | [03](03-cfg.md)、[05](05-sensitivity.md) |
 | [数值摘要与组合域](modules/domains.md) | `{1,2}`、Top、位与范围保留了什么？ | 覆盖与精度、join/transfer、组件交换、限制与身份 | [02](02-domain.md)、[12](12-product-domains-facts.md) |
-| [符号关系与 SMT](modules/relations.md) | 同一个未知值如何跨指令关联？什么证据允许排除分支？ | 输入身份、分支假设、关系合并与作用域、表示和资源边界 | [15](15-symbolic-relations.md) |
+| [符号关系与局部推理](modules/relations.md) | 同一个未知值如何跨指令关联？什么证据允许排除分支？ | 输入身份、分支假设、关系合并与作用域、表示和资源边界 | [15](15-symbolic-relations.md) |
 | [调用、状态归属与回滚](modules/calls-state.md) | 谁的代码在跑？失败恢复哪一份状态？ | 调用与返回、代理/重入、嵌套回滚、状态容器与边界 | [09](09-cross-contract.md)、[11](11-state-backends.md) |
 | [RPC、快照与调用摘要](modules/rpc-summaries.md) | 初始事实从哪里来？补查为何重跑？什么结果可以复用？ | 固定快照、按需补查、完整调用摘要、代码生命周期扩展 | [10](10-snapshots-summaries-creation.md) |
 | [字节码、协议与输入](modules/execution.md) | 怎样解码？哪些字节能跳转到？默认分析哪些调用？ | 指令边界、基本块、fork、环境输入 | [00](00-start.md)、[01](01-bytecode.md)、[08](08-forks.md)、[13](13-evm-environment.md) |
@@ -22,13 +22,13 @@
 
 ## 一个模块怎样拆开学
 
-以 [Memory & Storage](modules/memory-storage.md) 为例，先只做确定地址上的读写，再按需要进入别名和跨调用状态。核心读写不需要先理解 RPC、完整 CALL 报告或 SMT 编码。
+以 [Memory & Storage](modules/memory-storage.md) 为例，先只做确定地址上的读写，再按需要进入别名和跨调用状态。核心读写不需要先理解 RPC、完整 CALL 报告或复杂关系推理。
 
 | 你需要掌握到哪里 | 可以先学的小单元 | 暂时可以留到以后 |
 | --- | --- | --- |
 | 看懂 MSTORE/MLOAD 的数值、字节和长度 | memory 基础读写 | 未知位置、跨调用输出区 |
 | 看懂 SSTORE/SLOAD 的 slot 和默认值 | storage 基础读写 | 代理、重入、RPC 槽位发现 |
-| 解释未知地址的写后读与数值投影 | 地址、写序、根与数值更新 | 复杂 SMT 编码、摘要认证 |
+| 解释未知地址的写后读与数值投影 | 地址、写序、根与数值更新 | 复杂关系推理、摘要认证 |
 | 追踪跨合约状态的提交和撤销 | 状态归属与回滚扩展 | 无关的字节码、域实现细节 |
 
 同一个小单元也有两种方向。例如理解多候选地址写入：

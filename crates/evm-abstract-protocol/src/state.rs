@@ -289,13 +289,27 @@ record! {
         pub pending_destruction: Option<bool>,
     }
 }
+choice! {
+    /// Execution phase of the captured bytecode containing a LOG instruction.
+    #[derive(std::hash::Hash)]
+    pub enum LogSourceKind {
+        /// Initialization before returned runtime code is installed.
+        Init,
+        /// Deployed runtime, including delegated execution.
+        Runtime,
+    }
+}
 record! {
-    /// Possible log payload with its native emission site.
+    /// Possible log payload with its complete captured emission identity.
     pub struct LogSnapshot {
         /// Emitting storage owner.
         pub address: String,
         /// Executing code account.
         pub code_address: String,
+        /// Exact hash of the emitting frame's captured code, as hexadecimal text.
+        pub code_hash: String,
+        /// Initialization or deployed runtime of those captured bytes.
+        pub source_kind: LogSourceKind,
         /// Opcode offset.
         pub pc: usize,
         /// Abstract topics.

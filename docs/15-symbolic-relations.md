@@ -1,6 +1,6 @@
 # 15：用表达式与关系约束筛掉矛盾分支
 
-学习入口：[模块：符号关系与 SMT](modules/relations.md) · [理论：身份、路径与关系](routes/theory.md#relations) · [实现：表达式与求解接口](routes/implementation.md#relations) · [选择路线](learning-routes.md)。
+学习入口：[模块：符号关系与局部推理](modules/relations.md) · [理论：身份、路径与关系](routes/theory.md#relations) · [实现：表达式与局部推理接口](routes/implementation.md#relations) · [选择路线](learning-routes.md)。
 
 [第 12 课](12-product-domains-facts.md)解释一个值保存哪些数值性质，[第 13 课](13-evm-environment.md)说明这些值对应哪些固定输入。本课再看多个值之间的关系，以及分支条件怎样限制后续执行。先只追踪一个输入和两个比较，再把这些信息放回 memory、storage 和调用中。具体字节位置与 slot 还不熟时，可以先读[第 14 课](14-memory-model.md)和[第 16 课](16-storage-model.md)的单单元实验。
 
@@ -112,9 +112,9 @@ jq '.states[] | select(.key.basic_block_index == 2)
 
 `entry_constants` 为 `["0x1"]`。constraints 中的 `Truth` 保存 `nonzero:true` 和一份 flat expression graph：`root` 指向 `nodes` 中的 Operation，opcode 20 即 EQ，`args` 是常量 1 与 Input(CallValue) 的本图索引。Input 还带 scope，图带 identity_scope。输入表达式仍表示原来的 v，数值层证明它在这个状态里只能为 1；不能把不同图中的同一个索引当成同一节点，也不会为每条分支伪造新交易。
 
-结果 JSON 的 `schema_version` 为 8；`domain_spec.schema_version` 与 `cost_version` 都为 2。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
+结果 JSON 的 `schema_version` 为 9；`domain_spec.schema_version` 为 2，`cost_version` 为 3。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
 
-版本 4 将数值事实错误保留为带参数的 `ScalarFactError`，将求解器绑定错误 `SolverError` 与原生 `SolverUnknown` 分开，后两者都保留求解器身份。原生 UNKNOWN 的自由文本原因仍作为该类型的说明；它不会被当作不可满足。Web 的展示协议独立使用版本 12。
+Native schema 9 和 Web schema 14 明确移除 provider / `rlimit` 与 solver 结果。Web 展示协议独立使用版本 14。数值事实错误继续保留为带参数的 `ScalarFactError`；取消、配置、约束容量、事实容量和表达式界限仍类型化传输。旧 solver/provider/model 结果不再属于当前协议。
 
 ## 2. 五层信息分别保存什么
 
@@ -171,15 +171,15 @@ false 后继：assume(condition == 0)
 
 `assume` 是状态转换操作，不是必须单独新建的域。它将一条条件加入关系状态，并查询合取是否矛盾。已知位、数值界或完整有限候选可以作为同一表达式的保证导入；数值已经精确为常量时，直接保留该等式。
 
-SMT 只把已证明的后果反馈给数值层。例如，所有满足约束的赋值都令 x=1，才将对应表达式的数值收窄为 1。完整有限候选也可以逐个检查：UNSAT 的候选可排除，Unknown 的候选不能被当作不可能。
+局部推理只把已证明的后果反馈给数值层。例如，路径已保证 x=1，且所有相关事实一致时，才将 x 的数值收窄为 1。表达式或事实不能确定结果时保留原有保守上界，不能任取一个候选作为唯一值。
 
-| 查询结果 | 可以据此做什么 |
+| 局部检查结果 | 可以据此做什么 |
 | --- | --- |
-| SAT | 当前编码的合取可满足；继续分析 |
-| UNSAT | 当前合取没有解；可排除该后继 |
-| Unknown | 保留路径，记录限制或未知原因 |
+| `MayBeFeasible` | 未证明矛盾，继续保留路径 |
+| `ProvenImpossible` | 已证明当前条件矛盾，可排除该后继 |
+| `Undetermined(reason)` | 遇到真实配置、保留界限或取消，保留相应类型化原因 |
 
-SAT 不等于一条完整 EVM 轨迹的具体执行见证。内存、storage、调用效果等仍可能是抽象摘要；未被精确建模的部分不会因为一次 SMT 查询成功就变得精确。
+`MayBeFeasible` 不承诺当前条件存在满足赋值。数值投影的 `Bounds` 也只是已证明的上界，可以仍为 Top；它不提供具体执行见证。表达式与状态根仍由 EVM transfer、读取与回滚规则解释。
 
 ## 4. join 和 widening 不能漏掉路径
 
@@ -233,19 +233,19 @@ fresh 叶表示新产生的未知运行时值，不按字节码 pc 命名。DUP 
 
 重放使用同一张 rename map，覆盖值、路径约束、byte/slot source、view、返回数据、暂停 caller、continuation 和 rollback store 中需要改名的内部 fresh；真实输入和调用前已有身份保持绑定。变换成功后才整体安装，不能只重命名返回栈却留下旧根或旧条件。
 
-导出的身份作用域不是跨分析的输入绑定协议，flat graph 也不是可直接重新加载的原生求解器状态。比较独立报告须核对其输入和来源绑定；不能因同名 Caller 或同编号 Fresh 就建立相等关系。
+导出的身份作用域不是跨分析的输入绑定协议，flat graph 也不是可直接重新加载的完整分析状态。比较独立报告须核对其输入和来源绑定；不能因同名 Caller 或同编号 Fresh 就建立相等关系。
 
 ## 6. Word256 编码与字节往返
 
-三个后端共用 EVM 运算到定宽位向量的编码规则，再分别交给 Z3、Bitwuzla 或 cvc5。位向量显式保留宽度，不把 EVM word 默认为无界整数。
+表达式记录 EVM 的定宽运算；数值抽象与局部折叠遵守 Word256 语义，不把 EVM word 当成无界整数。
 
 - ADD、SUB、MUL 等运算按模 `2^256` 回绕。
-- DIV、SDIV、MOD、SMOD 显式处理除数零；有符号运算保留 EVM 的符号和溢出规则。
-- ADDMOD、MULMOD 保留足够宽的中间结果后取模，不能先截成 256 位再取模。
+- DIV、SDIV、MOD、SMOD 保留除数零以及有符号溢出的 EVM 规则。
+- ADDMOD、MULMOD 必须按完整数学中间结果取模，不能先截成 256 位再取模。
 - BYTE、SIGNEXTEND、逻辑位移、算术位移与 CLZ 使用相应 Word256 规则。
-- EXP 使用精确平方乘编码；字面量指数只处理有效位。中间乘积由局部 BV 变量及定义等式连接，避免向模型求值传入指数级展开的乘积树。
+- EXP 保留指数运算和操作数；数值不能被局部规则确定时保留保守上界，不展开成一个原生求解任务。
 
-完整符号指数需要较多编码节点，可能在默认节点预算下成为 `ExpressionLimit`；扩大节点预算也不保证 native solver 能在给定 rlimit 内完成。资源限制保留 Unknown，不能据此猜测 EXP 结果。
+表达式节点、深度和局部遍历有独立界限。扩大表示上限不增加推理规则，也不保证任意符号算术关系都能得到精确结果。
 
 MSTORE/MSTORE8 的完整 byte/word 更新、WordRead、SlotRead、Copy 和 Keccak 现在属于同一个不可变 EVM 状态模型。标量身份与状态关系一起工作，旧读取捕获旧根。详见[第 17 课](17-symbolic-state.md)。
 
@@ -253,60 +253,43 @@ MSTORE/MSTORE8 的完整 byte/word 更新、WordRead、SlotRead、Copy 和 Kecca
 
 ### 标量表达式与有序状态模型怎样配合
 
-单个 Word256 运算描述值怎样计算；ByteStateId、SlotStateId 和 view 描述值读自哪份有序状态。当前分析器将符号地址、长度、零补、账户归属和回滚关系一起保留，再编码给 SMT。数组使用 BV 索引和元素：slot 值为 Word256，byte 元素为 8 位；32 字节按 EVM 大端顺序组成 word。Keccak 使用绑定完整内容的函数关系，没有 injectivity 假设；不同来源不证明不同内容或不同哈希。
+单个 Word256 运算描述值怎样计算；ByteStateId、SlotStateId 和 view 描述值读自哪份有序状态。分析器保留符号地址、长度、零补、账户归属和回滚关系，slot 值为 Word256，byte 元素为 8 位；32 字节按 EVM 大端顺序组成 word。Keccak 保留完整输入内容的来源关系，没有 injectivity 假设；不同来源不证明不同内容或不同哈希。
 
-同址写后读、混合写序、overlap 和 branch pairing 要通过真实指令继续传递读取结论；source graph 接口存在并不自动证明全部路径已覆盖。未知代码、具体化需求和求解额度继续使用准确的 typed 边界。
+同址写后读、混合写序、overlap 和 branch pairing 要通过真实指令继续传递读取结论；source graph 接口存在不自动证明全部路径已覆盖。局部规则不能证明的别名与复杂内容关系保持保守上界，真实未覆盖行为继续保留准确的 typed 边界。
 
-## 7. 原生后端与确定性资源预算
+<a id="7-原生后端与确定性资源预算"></a>
 
-默认求解器是 Z3。下面用同一段字节码分别选择三个后端：
+## 7. 局部推理与工作预算
+
+下面在默认关系策略下分析同一段字节码：
 
 ```bash
-for provider in z3 bitwuzla cvc5; do
-  nix run . -- cfg --hex 3480600114600957005b80600214601257005b00 \
-    --context-depth 0 --smt.provider "$provider" --smt.rlimit 100000
-done
+nix run . -- cfg --hex 3480600114600957005b80600214601257005b00 \
+  --context-depth 0 --max-symbolic-nodes 16384 \
+  --max-symbolic-depth 256 --max-relations 2048
 ```
 
-三个求解器都通过原生库的接口在当前进程内运行。查询之间不共用可变求解状态，原生表达式和求解器句柄不存入执行状态或摘要。关系分析只依赖统一的查询结果：可满足、不可满足、无法判定，以及被证明的唯一值或候选值集合；选择后端不改变 EVM 指令的编码规则。
-
-同一个块的转换过程可以复用已经完成的值查询证明。缓存要求完整关系状态、表达式身份和求解策略都相同；状态或策略变化就清空，只保留唯一值、多值或不可满足的确定结果，不缓存 Unknown。缓存有条目数和表达式工作量上限，命中后仍检查取消与分析工作预算，并按当前数值摘要做收窄。它保存查询结论，不保存原生求解器会话。
-
-cvc5 使用固定的原生策略：关闭会将中间变量代回表达式的非子句简化，并启用位向量算术抽象。后者先处理较小的问题，再检查、补充被暂时省略的算术关系；原生求解器完成一致性检查后才报告 SAT。这样避免连续平方在预算检查前就被展开成巨大的乘法表达式或布尔条件。所有原始等式仍被保留；资源不够时仍返回 Unknown。对应选项是 [`simplification=none`](https://cvc5.github.io/docs/cvc5-1.4.0/options.html#lbl-option-simplification) 和 [`bv-abstraction=true`](https://github.com/cvc5/cvc5/blob/cvc5-1.4.0/src/theory/bv/bv_solver_bitblast.cpp)。
-
-CFG 和 world 分析的文本报告会显示 `SMT=in-process z3`、`bitwuzla` 或 `cvc5`，并用 `resource unit` 标明额度的计数单位。JSON 中，单段字节码记录在 `.config.relations.provider` 和 `.config.relations.rlimit`，world/RPC 分析记录在 `.config.analysis.relations` 下；带 SSA 的 JSON 外层再包一层 `.analysis`。比较两份分析结果时，应同时保留求解器名称和资源额度。
-
-`--smt.rlimit` 为每次检查分配求解额度，没有墙钟 timeout 或 deadline。CLI/Web 默认值为 10000000；直接使用库的 `RelationLimits::default()` 时，rlimit 仍为 100000，表达式节点、深度和关系数量默认分别为 1024、64、128。上面的命令显式使用 100000 做对照，较大的额度给一次查询更多求解机会，也可能增加运行时间。达到资源限制、表达式边界或约束容量时，会留下相应原因；分析的共享 `max-work` 账本另行计入查询及数据处理工作。这些单位不是 EVM gas，也不是秒数。不同求解器的计数方式不同，`z3` 的 100000 与 `cvc5` 的 100000 不能视为同样的计算量，跨后端比较应观察实际结果、耗时及未完成原因。
-
-| 后端 | `--smt.rlimit` 实际控制什么 | 文本报告中的单位 |
-| --- | --- | --- |
-| `z3` | Z3 自己的资源计数，每次检查设置原生 `rlimit` | `z3 resource units` |
-| `cvc5` | cvc5 自己的资源计数，每次检查设置原生 `rlimit-per` | `cvc5 resource units` |
-| `bitwuzla` | 允许求解器询问“是否应该停止”的次数；次数用尽后要求它停止 | `termination checks (cooperative)` |
-
-Bitwuzla 的限制是协作式的：它在预处理的循环边界和单线程 CaDiCaL 求解过程中调用停止检查；CaDiCaL 是它用于判断布尔条件的内部引擎。检查次数用尽不代表已经完成的基本运算恰好等于该次数。一次预处理、把位向量转换为布尔条件的过程，以及提取满足条件的赋值，都不受这个次数逐步约束。因此，`--smt.rlimit 100000` 不能当作整个 Bitwuzla 调用的严格工作量上限。所有后端在构造原生表达式和读取结果时也会做额外工作，表达式节点、深度和分析总工作预算仍需同时保留。
+CLI 不再接受 `--smt.provider`、`--smt.rlimit`，Web 不再提供 solver 下拉框或资源额度输入；协议 14 的旧字段会在请求解码时拒绝。JSON 中，单段字节码的策略仍位于 `.config.relations`，world/RPC 位于 `.config.analysis.relations`；带 SSA 的 JSON 外层再包一层 `.analysis`。策略只包含 `enabled`、`max_nodes`、`max_depth`、`max_constraints`。
 
 | 参数 | CLI / Web 默认值 | 限制什么 |
 | --- | --- | --- |
-| `--no-relations` | 默认启用关系分析 | 关闭纯标量派生表达式传播与分支/数值关系查询；数值、可信身份和 byte/slot 内容根仍保留 |
-| `--max-symbolic-nodes` | 16384 | 保留表达式及单次编码遍历的节点工作量 |
+| `--no-relations` | 默认启用关系分析 | 关闭纯标量派生表达式传播与局部分支/数值精化；数值、可信身份和 byte/slot 内容根仍保留 |
+| `--max-symbolic-nodes` | 16384 | 保留表达式及局部遍历的节点工作量 |
 | `--max-symbolic-depth` | 256 | 表达式嵌套深度 |
 | `--max-relations` | 2048 | 当前关系合取的原子数 |
-| `--smt.provider` | `z3` | 进程内后端，可选 `z3`、`bitwuzla`、`cvc5` |
-| `--smt.rlimit` | 10000000 | 单次求解检查的资源额度，单位由所选后端决定 |
 
-保留表达式的大小指标按展开树计，是共享 DAG 的保守上界；求解编码还单独计入实际遍历和构造工作。导出 flat graph 则按实际 DAG 节点和 exact payload 计量，不能用序列化额度替代分析额度。共享节点不消除深度或计数溢出边界，COPY 的逻辑字节长度也不等于逐字节执行工作。构造超过限制或计数溢出时显式拒绝，不保留被低估的大小。
+库的 `RelationLimits::default()` 继续使用较小的节点、深度与约束默认值 1024、64、128。CLI/Web 不隐式修改库默认值。整次分析的 `WorkBudget` 继续累计真实执行、数值与符号工作，并在检查点传播取消；它没有原生查询额度预留或 solver 会话缓存。
 
-`--max-facts` 仍控制数值域内一次临时事实交换的容量；它不是持久关系状态的容量。`--context-depth` 仍保留跳转来源历史，也不是路径条件表。增大这些参数不能代替缺少的语义，或让预算中断的图变成完整证明。
+保留表达式的大小指标按展开树计，是共享 DAG 的保守上界；局部遍历另计实际工作。导出 flat graph 则按实际 DAG 节点和 exact payload 计量，不能用序列化额度替代分析额度。共享节点不消除深度或计数溢出边界，COPY 的逻辑字节长度也不等于逐字节执行工作。构造超过限制或计数溢出时显式拒绝，不保留被低估的大小。
+
+`--max-facts` 控制数值域内一次临时事实交换的容量；它不是持久关系状态的容量。`--context-depth` 保留跳转来源历史，也不是路径条件表。增大这些参数不能代替缺少的语义，或让预算中断的图变成完整证明。
 
 ## 源码与验证入口
 
 - [`symbolic.rs`](../crates/evm-abstract/src/domain/symbolic.rs)：作用域、结构表达式、fresh 叶、规范化和节点边界。
 - [`relational.rs`](../crates/evm-abstract/src/domain/relational.rs)：保证导入、assume、共同保证 join、相关性与查询结果；整机 join/widening 另在 machine 层。
-- [`relational/solver.rs`](../crates/evm-abstract/src/domain/relational/solver.rs)：共享的 EVM 定宽位向量编码、关系查询和结果解释。
-- [`embedded-smt`](../crates/embedded-smt/src/lib.rs)：与 EVM 无关的求解接口、三个进程内后端及各自的资源计数。
 - [`transfer/relations.rs`](../crates/evm-abstract/src/analysis/transfer/relations.rs)：分支假设与回写数值。
 - [`summary/replay.rs`](../crates/evm-abstract/src/analysis/summary/replay.rs)：资格检查后的 fresh 重命名和 caller 前缀恢复。
-- [`relational/tests.rs`](../crates/evm-abstract/src/domain/relational/tests.rs)、[`symbolic/tests.rs`](../crates/evm-abstract/src/domain/symbolic/tests.rs)、[`tests/relations.rs`](../crates/evm-abstract/tests/relations.rs)：Word256 编码、作用域、预算、矛盾分支、内存和摘要回归。
+- [`relational/tests.rs`](../crates/evm-abstract/src/domain/relational/tests.rs)、[`symbolic/tests.rs`](../crates/evm-abstract/src/domain/symbolic/tests.rs)、[`tests/relations.rs`](../crates/evm-abstract/tests/relations.rs)：Word256 语义、作用域、预算、矛盾分支、内存和摘要回归。
 
 这些测试覆盖当前实现，不代表任意 EVM 程序都能精确恢复路径。判断一次结果时仍需同时读取输入、数值策略、关系预算、status 和 frontiers。

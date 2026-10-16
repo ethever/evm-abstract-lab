@@ -8,8 +8,7 @@ let
   };
   toolchain = pkgs.rust-bin.fromRustupToolchainFile (sourceRoot + "/rust-toolchain.toml");
   craneLib = (inputs.crane.mkLib pkgs).overrideToolchain toolchain;
-  nativeSmt = import ./smt.nix { inherit pkgs; };
-  dependencies = import ./dependencies.nix { inherit pkgs nativeSmt; };
+  dependencies = import ./dependencies.nix { inherit pkgs; };
   build = import ./build.nix {
     inherit
       pkgs
@@ -65,7 +64,7 @@ in
         meta = build.release.package.meta;
       };
     };
-  checks = checks // dylint.checks // nativeSmt.checks // web.checks;
+  checks = checks // dylint.checks // web.checks;
   devShells.default = import ./shell.nix {
     inherit
       craneLib

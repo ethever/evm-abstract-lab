@@ -23,13 +23,13 @@ nix run . -- cfg --hex 366000803700 --format json
 | ByteRead / WordRead / SlotRead | 读取时的不可变状态与地址 |
 | Keccak | 被哈希的完整、有长度的内容序列 |
 
-`MSTORE(p,x); MSTORE8(p+31,0xaa); MLOAD(p)` 通过有序 word/byte 更新表达最后一个字节的覆盖。`SSTORE(k,7); SSTORE(q,9); SLOAD(k)` 则保留写序：q=k 时为 9，q≠k 时为 7。条件尚未证明时保留其关系，不能任挑一个 solver 赋值充当确定答案。
+`MSTORE(p,x); MSTORE8(p+31,0xaa); MLOAD(p)` 通过有序 word/byte 更新表达最后一个字节的覆盖。`SSTORE(k,7); SSTORE(q,9); SLOAD(k)` 则保留写序：q=k 时为 9，q≠k 时为 7。条件尚未证明时保留其关系，不能任挑一个候选值充当确定答案。
 
 来源身份不是内容差异证明。独立来源可能具有相同内容；同一来源的完整复制则可共享内容关系。固定离线世界的未知槽身份随该世界的 clone 保持，独立世界即使标签相同也不是同一个输入。RPC 世界绑定固定 chain/block/fork；新获取的初始观察不能把当前交易写入替换成链上旧值。
 
-## EVM 语义由分析器负责，SMT 检查后果
+## EVM 状态语义与局部推理
 
-求解器接收 typed Word256、数组 select/store、条件与函数应用。分析器仍负责帧、调用、范围、零补、字节顺序和状态生命周期。SMT 不自动决定“哪个账户”“哪个 fork”或“复制是否已经执行”。
+typed Word256 表达式、byte/slot 根、条件与有序更新继续保留。局部推理利用已保留的身份和数值事实收窄上界；帧、调用、范围、零补、字节顺序和状态生命周期仍由 EVM 模型负责。图上存在一份表达式并不自动得到精确读取结论。
 
 新 memory 全零，MSTORE/MLOAD 使用 32 个大端字节，MSTORE8 取最低 8 位。View 保留长度，普通源读取按语义补零。访问范围使用数学意义的加法、溢出检查与零大小分支；栈 ADD 等指令继续使用 Word256 回绕。不能用回绕后的 `offset+size` 掩盖范围越界。
 
@@ -37,7 +37,7 @@ nix run . -- cfg --hex 366000803700 --format json
 
 RETURNDATACOPY 检查完整 returndata 的源范围，零大小仍遵守源偏移规则；CALL 输出只覆盖实际返回前缀，不把其余请求区间清零。MCOPY 捕获复制前的源，因此重叠区域保持 memmove 语义。某个操作数只有数值 Top、没有可信长度表达式时，表示层仍可报告 `ByteRange::UnknownSize`；这与保留了符号长度的正常 COPY 不同。
 
-求解结论区分 SAT、UNSAT、UNKNOWN、resource limit、cancelled 和 solver error。只有证明能排除路径或收窄数值；SAT 模型的某个值不构成唯一值或链上观察。可选数值或可行性查询未完成，但条件已完整保留且保守传播能继续时，`RelationalPrecisionLost` 记录精度损失。`assume_checked` 区分条件保留失败与保留后的查询失败；普通分支和范围分支都使用这个区别。真正未覆盖的执行、没有保留下来的条件、构造失败或共享工作耗尽则保留 frontier，取消仍停止后续工作。
+局部检查区分已证明矛盾、未证明矛盾，以及真实的配置、表示或取消边界。只有证明才能排除路径或收窄数值，普通的宽上界可以仍为 Top。可选数值精化遇到真实界限，但条件已完整保留且保守传播能继续时，`RelationalPrecisionLost` 记录原因。真正未覆盖的执行、没有保留下来的条件、构造失败或共享工作耗尽则保留 frontier，取消仍停止后续工作。
 
 ## 帧与账户分别绑定
 
@@ -69,9 +69,9 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 摘要重放共享一张 rename map，遍历隐藏在 state source、view、rollback 和返回数据中的 fresh token。固定输入身份保持绑定，调用中新产生的未知来源每次重放使用新身份。重命名和导入按完整变换提交，失败不能安装一半状态。
 
-## 原生 JSON 8 与 Web 协议 13
+## 原生 JSON 9 与 Web 协议 14
 
-Native analysis schema 为 8；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或求解编码超限。
+Native analysis schema 为 9；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或局部表达式遍历超限。
 
 原生 graph 的 `identity_scope`、Fresh 编号及 Input scope/symbol 保留同一进程中的身份。source 的 `token` 是本图中的表达式引用，须先解析它指向的身份，再结合 namespace 判断来源；不能直接比较两个图的 token 或 root 索引，也不能用同名打印叶跨报告绑定输入。原生 CLI JSON 通过 `render::json` 的流式 writer 输出，整份 UTF-8 输出不设置字节上限，每次追加前检查取消。`pretty` 与 `compact` 沿用当前线程的取消作用域；应用可用 `with_control(value, control)` 或 `compact_with_control(value, control)` 明确传入控制。取消返回 `JsonError::Cancelled` 并记录已写字节，保留已计算的分析事实；值序列化失败继续返回 `JsonError::Serialization`。原生 pending Arc 快照仍可能重复其程序和状态，Web 使用下面的共享目录。
 
@@ -81,16 +81,18 @@ Web/server 的单份 `AnalysisReport.symbolic.nodes` 共享所有 scalar、byte�
 
 `MachineSnapshot.path` 表达完整状态条件。`Frontier.range` 保留 offset/size/limit、condition 和 nonzero side；其 payload 与一般 join 的 `Frontier.payload` 都引用 `pending_machines`。Program、store、byte source 仍在原共享目录中，不在每个 frontier 递归倾倒完整分析。
 
-导出独立计量实际 DAG 节点、exact bytes 与遍历/池化工作，默认上限为 65,536 节点、深度 256、16 MiB exact payload。策略和实耗分别在 `metadata.export_limits`、`metadata.export_usage`；其中 `export_usage.work` 仅作诊断统计，没有累计工作硬上限，也不会因 work 总量拒绝导出，执行分析的 `AnalysisLimits.max_work` 继续生效。Web 协议 13 的 `ExportLimits` 只声明节点、深度和 exact payload 策略，HTTP 整份报告 JSON 不设置字节上限。编码取消仍报告 typed `Cancelled` export failure，保留 `required` / `written`、图实耗和原策略，缓存中的分析事实不变。图或 exact payload 超限仍报告相应 typed export failure，不把成功分析改写成数值 Top。UI 校验版本、节点 sort、依赖顺序和 pool refs 后安装结果；DAG 与 byte/slot 行按可见区渲染，exact payload 只显示有界预览。
+导出独立计量实际 DAG 节点、exact bytes 与遍历/池化工作，默认上限为 65,536 节点、深度 256、16 MiB exact payload。策略和实耗分别在 `metadata.export_limits`、`metadata.export_usage`；其中 `export_usage.work` 仅作诊断统计，没有累计工作硬上限，也不会因 work 总量拒绝导出，执行分析的 `AnalysisLimits.max_work` 继续生效。Web 协议 14 的 `ExportLimits` 只声明节点、深度和 exact payload 策略，HTTP 整份报告 JSON 不设置字节上限。编码取消仍报告 typed `Cancelled` export failure，保留 `required` / `written`、图实耗和原策略，缓存中的分析事实不变。图或 exact payload 超限仍报告相应 typed export failure，不把成功分析改写成数值 Top。UI 校验版本、节点 sort、依赖顺序和 pool refs 后安装结果；DAG 与 byte/slot 行按可见区渲染，exact payload 只显示有界预览。
 
 MemoryPolicy 前沿在 UI 明确标记“策略下尚未展开”，与 EVM Failure、REVERT 分开。`ByteRange` 描述表示层错误，`StateJoin` 描述完整替代无法合并；正常 alias 的未定精度不能显示成已证明成功。
 
 未知执行过程的闭合关系、摘要返回边与过程覆盖目录见[第 18 课](18-unknown-world.md)。关系表会显式进行数值投影，保留保守上界；这种投影与原有完整图摘要的身份重命名有不同精度边界。
 
+Native schema 9 与 Web schema 14 的 LOG 来源身份同时包含 emitter、code account、captured code hash、Init/Runtime 和 pc。初始化与部署后代码即使在同一地址和偏移发出 LOG，也保留不同来源；Web 日志面板按完整身份分开，展示捕获的代码 hash。Native `source_kind` 为 `init` / `runtime`，Web 共享枚举为 `Init` / `Runtime`。
+
 ## 验证边界与证据
 
-三个 native provider 的 Array/UF 基础接口、原生 resource/cancellation 及 malformed input 边界由 `embedded-smt`、`bitwuzla-native` 的测试覆盖。基础接口通过不自动证明所有 EVM 路径通过；实际 opcode、上下文、rollback、summary、收敛与 revm 对照需要独立验收。
+原生 solver 及其接口已移除。表达式、数值事实、byte/slot 写序、路径与取消分别保留独立回归；这些检查不自动证明所有 EVM 路径都被精确覆盖。实际 opcode、上下文、rollback、summary、收敛与 revm 对照需要按具体模型分别验收。
 
 教程中的同址 memory/storage、有限别名、完整 word 往返、重叠复制与矛盾分支例子，各自核对一项具体关系。完全无约束的 memory 地址及 calldata 长度仍保留策略前沿，退出码为 2。循环 cases 是有界的保守抽象规则，不保证任意循环都达到固定点；历史读取和摘要重放仍须按实际图、输入与分析额度分别检查。库默认 1024 节点与 CLI 默认 16384 节点也不是同一种验证条件，不能由简单例子的通过推断全部默认策略已验证。
 
-协议验收还须从真实 COPY/storage alias 分析经过 typed report、JSON 解析、前端引用校验与 SSA，并覆盖大共享图、range prestate、预算和取消。专项源码 SHA、fork、输入假设、provider/rlimit、节点/状态/求解成本、内存与耗时见 [Issue #111 集成验收](issue111-validation.md)；最终提交的完整 Nix 门禁结果另记于实施 PR。
+协议验收还须从真实 COPY/storage alias 分析经过 typed report、JSON 解析、前端引用校验与 SSA，并覆盖大共享图、range prestate、预算和取消。旧 SMT 实现的专项源码 SHA、fork、输入假设、provider/rlimit、节点/状态/求解成本、内存与耗时保留于历史的 [Issue #111 集成验收](issue111-validation.md)；最终提交的完整 Nix 门禁结果另记于实施 PR。

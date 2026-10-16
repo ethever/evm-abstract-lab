@@ -58,7 +58,6 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 | [`nix/check-inputs.nix`](../nix/check-inputs.nix) | 检查的独立文件与文件集输入，避免带入整个仓库 |
 | [`nix/check-aggregate.nix`](../nix/check-aggregate.nix) | 纯汇总节点及其叶子依赖，开发入口只构建受影响成员 |
 | [`nix/shell.nix`](../nix/shell.nix) | 开发环境及其显式依赖 |
-| [`nix/smt.nix`](../nix/smt.nix)、[`nix/smt/`](../nix/smt/) | 三个求解器所需原生包、编译/链接设置和共存检查 |
 | [`nix/dylint.nix`](../nix/dylint.nix)、[`nix/dylint/`](../nix/dylint/) | lint 工具链、可复用插件构建、命令和检查 |
 | [`nix/checks.nix`](../nix/checks.nix)、[`nix/checks/`](../nix/checks/) | Rust、格式、文档、安装后示例和后端对照检查 |
 | [`nix/commands.nix`](../nix/commands.nix) | 自动受影响检查与可选实验的 Nix 入口 |
@@ -67,7 +66,6 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 | [`nix/checks/tooling/sources.nix`](../nix/checks/tooling/sources.nix) | 格式器所需内容、文档内容与链接目标名的独立缓存边界 |
 | [`nix/tests/`](../nix/tests/) | feature 矩阵、解析上下文、前置库缓存和 Wasm 隔离回归 |
 
-Bitwuzla 和 cvc5 从锁定源码构建，使各自嵌入的 CaDiCaL 符号保持私有。cvc5 使用系统默认链接器，避免该版本 gold 生成的符号版本表与 Rust 的 LLD 不兼容。这里通过编译和链接设置解决问题，不再用 Python 修改已生成的 ELF。首次构建这两个原生包可能较慢，之后可以复用 Nix 产物。
 
 保留的脚本有明确边界：极短的编辑器/命令兼容入口负责调用 Nix；文档链接反例、Taplo LSP 协议检查和性能采样是真实验证逻辑。依赖安装与版本选择由 Nix 模块承担，不在这些测试里另建一套环境。
 
@@ -100,7 +98,7 @@ Nix 使用以下缓存层（[Crane 的依赖缓存](https://crane.dev/API.html#c
 
 | 层 | 缓存内容 | 何时重新生成 |
 | --- | --- | --- |
-| 工具链与原生库 | Rust、Dylint 工具、SMT 库 | 对应锁定输入、版本或原生构建设置变化 |
+| 工具链与原生库 | Rust、Dylint 工具、预编译与传输依赖 | 对应锁定输入、版本或原生构建设置变化 |
 | Vendored 源码 | 同一份 Cargo.lock 的第三方 crate 源码 | 锁文件或 registry 配置变化 |
 | Rust 依赖产物 | 各 profile、features、target、编译器下，按包依赖图共享的第三方和本地库产物 | 对应工具链、profile、features、target、依赖或编译环境变化 |
 | 应用产物 | CLI、分析服务、原生前端和优化后的 Wasm | 相关 Rust、C++、manifest 或编译期 fixture 变化 |
@@ -128,7 +126,7 @@ Cargo 解析回归对照原始根包与分包构建的实际 unit graph，检查
 
 bindgen 解析参数中去除 Nix 为当前产物生成的随机种子，其余参数按完整 token 保留，包括调用者设置的种子和带引号的宏。实际 C/C++ 编译继续使用 Nix 的编译参数；两个真实构建的环境回归保护这项边界。
 
-TOML 回归使用 Nix 提供的 Taplo，向真实 LSP 发送格式化请求并与同版本 CLI 比较结果，验证项目的格式配置。原生求解器共存和安装后分析示例也保留在完整门禁中。编辑器和插件的安装由用户负责。
+TOML 回归使用 Nix 提供的 Taplo，向真实 LSP 发送格式化请求并与同版本 CLI 比较结果，验证项目的格式配置。安装后分析示例与独立 Lean 形式化模型检查也保留在完整门禁中。编辑器和插件的安装由用户负责。
 
 缓存边界可用实际 derivation 回归验证：
 

@@ -242,7 +242,7 @@ fn invalid_numeric_draft_blocks_button_and_keyboard_until_corrected() {
 #[test]
 fn precision_and_acquisition_inputs_accept_values_above_previous_admission_caps() {
     for (header, initial, value) in [
-        ("Precision and solver", "512", "10000"),
+        ("Precision", "512", "10000"),
         ("RPC acquisition budget", "67108864", "9007199254740993"),
     ] {
         let ctx = Context::default();
@@ -259,7 +259,7 @@ fn precision_and_acquisition_inputs_accept_values_above_previous_admission_caps(
         click(&ctx, &mut form, text_center(&output, initial));
         replace_text(&ctx, &mut form, value);
         let request = frame(&ctx, &mut form, vec![enter()]).unwrap();
-        if header == "Precision and solver" {
+        if header == "Precision" {
             assert_eq!(request.limits.max_constants, 10_000);
         } else {
             assert_eq!(request.limits.rpc_max_response_bytes, 9_007_199_254_740_993);

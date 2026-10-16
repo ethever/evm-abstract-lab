@@ -48,7 +48,7 @@ nix eval --json .#checks.x86_64-linux --apply builtins.attrNames
 
 [Cargo 解析回归](../nix/tests/cargo-feature-contexts.nix)还比较原始根包和分包构建的真实 unit graph，保护第三方 feature 组合、宿主依赖、测试目标及前置库缓存。它使用虚拟源码，不编译 crate；不变的清单和锁文件可复用检查结果。
 
-Web 前端另外覆盖 Wasm 构建、Clippy、Dylint 与真实 Chromium 页面交互。浏览器用例由[清单](../scripts/web_test_cases.json)生成独立检查，声明各自 Python 模块与夹具的精确依赖，完整集合和旧命令别名由注册表回归检查保护；压缩检查复用同一个用例。定义见 [`nix/web.nix`](../nix/web.nix) 和 [Dylint 检查](../nix/dylint/checks.nix)。[原生求解器检查](../nix/smt.nix)包含 Z3、Bitwuzla、cvc5、CaDiCaL 的上游自测和实际安装库的共存检查。[检查模块](../nix/checks.nix)还包含 Rust / Nix 格式、文档、默认 / imbl / 全 features 的 Dylint 动态派发检查和 lint 的 UI 回归测试（见[检查说明](no-dynamic-dispatch.md)）。`toml-lint` 用 Taplo 检查仓库 TOML 的语法与重复键；`toml-format` 检查格式，并通过真实 Taplo LSP 请求验证配置下的格式化结果与同版本 CLI 一致，均使用 Nix Taplo 并覆盖隐藏目录中的 TOML。规则见 [`taplo.toml`](../taplo.toml)。VS Code 和插件由用户自行安装；门禁检查项目工具和配置，不验证用户安装的任意插件版本。局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
+Web 前端另外覆盖 Wasm 构建、Clippy、Dylint 与真实 Chromium 页面交互。浏览器用例由[清单](../scripts/web_test_cases.json)生成独立检查，声明各自 Python 模块与夹具的精确依赖，完整集合和旧命令别名由注册表回归检查保护；压缩检查复用同一个用例。定义见 [`nix/web.nix`](../nix/web.nix) 和 [Dylint 检查](../nix/dylint/checks.nix)。独立的 `lean-proofs` 检查使用 Lean 4.30 的 Std 库验证形式化模型；其源码与 Rust/native 构建闭包分开，模型与生产实现的对应范围由证明文档说明。[检查模块](../nix/checks.nix)还包含 Rust / Nix 格式、文档、默认 / imbl / 全 features 的 Dylint 动态派发检查和 lint 的 UI 回归测试（见[检查说明](no-dynamic-dispatch.md)）。`toml-lint` 用 Taplo 检查仓库 TOML 的语法与重复键；`toml-format` 检查格式，并通过真实 Taplo LSP 请求验证配置下的格式化结果与同版本 CLI 一致，均使用 Nix Taplo 并覆盖隐藏目录中的 TOML。规则见 [`taplo.toml`](../taplo.toml)。VS Code 和插件由用户自行安装；门禁检查项目工具和配置，不验证用户安装的任意插件版本。局部 Cargo 测试或单独链接检查用于开发阶段，不能替代完整门禁。
 
 失败或中断时，修正问题，再检查最终提交。若把输出通过管道交给 `tee` 保存，必须启用 `pipefail` 或另外保存 Nix 的退出码，避免把日志工具的成功当成检查成功。
 

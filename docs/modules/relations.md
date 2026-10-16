@@ -2,7 +2,7 @@
 
 [模块目录](../modules.md) · [理论视角](../routes/theory.md#relations) · [实现视角](../routes/implementation.md#relations) · [两条完整路线](../learning-routes.md)
 
-本模块从“未知值也可以彼此关联”开始，解释身份、表达式、分支假设和求解结果怎样配合。目标是能为一条消失的 CFG 边指出证据，并分清这份证明没有覆盖哪些语义。
+本模块从“未知值也可以彼此关联”开始，解释身份、表达式、分支假设和局部证明怎样配合。目标是能为一条消失的 CFG 边指出证据，并分清这份证明没有覆盖哪些语义。
 
 ## 最小先修与学习范围
 
@@ -38,7 +38,7 @@
 
 **观察与停点：**按正文 JSON 查询，B₂ 的出边只有 `BranchFalse`，入口 v 的常量为 `{1}`；关闭关系后两条分支都保留。两份分析都可 `Converged`，边多是精度差别，不自动表示传播未完成。
 
-**自检：**为什么 SAT 只说明当前编码可满足，不能直接证明一笔完整 EVM 交易能走通？Unknown 为什么不能被当成 UNSAT 删除分支？完成这两问就已达到本模块的基础目标。
+**自检：**为什么未证明矛盾不等于已有一笔可执行的完整 EVM 交易？为什么不能在缺少矛盾证据时删除分支？完成这两问就已达到本模块的基础目标。
 
 <a id="join-scope"></a>
 
@@ -56,16 +56,16 @@
 
 <a id="limits"></a>
 
-## 可选单元：状态关系怎样进入求解，何时仍会未知？
+## 可选单元：状态关系怎样参与局部推理，何时仍会未知？
 
 如果要解释写后读，先完成[内存与 storage 的基础单元](memory-storage.md#memory-basics)，再读[15 的状态索引关系](../15-symbolic-relations.md#有值的表达式不等于有符号索引数组)。同一账户的 `SSTORE(k,7); SLOAD(k)` 不需要先枚举 k：SlotStateId 保存写后根，SlotRead 使用同一个键，默认例子得到 7。
 
-**理论角度：**身份回答“地址是否还是 k”，有序根回答“读的是写入之前还是之后”。两项合起来才可用 `select(store(S,k,7),k)=7`。若随后向 q 写入，还需区分 q=k 与 q≠k；不同来源或不同 hash 输入不能直接证明不等。求解未完成也不等于条件不成立。
+**理论角度：**身份回答“地址是否还是 k”，有序根回答“读的是写入之前还是之后”。两项合起来才可用 `select(store(S,k,7),k)=7`。若随后向 q 写入，还需区分 q=k 与 q≠k；不同来源或不同 hash 输入不能直接证明不等。没有局部证明也不等于条件不成立。
 
-**实现角度：**[`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs) 与 [`Store`](../../crates/evm-abstract/src/world/store/slots.rs) 建立 EVM 状态根，[`relational/solver/state.rs`](../../crates/evm-abstract/src/domain/relational/solver/state.rs) 解释 byte/slot 数组、view、更新和读取；[`relations::refine`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 再将已证明的后果反馈到数值投影。SMT 使用分析器提供的长度、范围和账户规则，不替机器执行这些操作。
+**实现角度：**[`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs) 与 [`Store`](../../crates/evm-abstract/src/world/store/slots.rs) 建立 EVM 状态根；[`RelationState`](../../crates/evm-abstract/src/domain/relational.rs) 保留局部事实和路径条件；[`relations::refine`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 再将已证明的上界反馈到数值投影。长度、范围、账户和回滚规则仍由状态实现负责。
 
-再读[资源预算与后端](../15-symbolic-relations.md#7-原生后端与确定性资源预算)，找到当前报告的 provider、rlimit、status 和 frontiers。rlimit 的单位随求解器而异，不能直接读成秒数或 EVM gas。
+再读[局部推理与工作预算](../15-symbolic-relations.md#7-局部推理与工作预算)，找到当前报告的表达式/约束上限、status 和 frontiers。`max_work` 是抽象工作量，不是秒数或 EVM gas。
 
-**观察与停点：**能分别解释数值投影较宽、widening 放弃保证、编码支持边界和查询资源不足。可选查询未完成可记录精度诊断，执行覆盖不完整则保留 frontier；不用把所有 Unknown 都读成同一种结果。结论范围继续读[证据模块](evidence.md)。
+**观察与停点：**能分别解释数值投影较宽、widening 放弃保证、局部推理规则边界和表示容量不足。可选查询未完成可记录精度诊断，执行覆盖不完整则保留 frontier；不用把所有 Unknown 都读成同一种结果。结论范围继续读[证据模块](evidence.md)。
 
 最终验收：选默认关系模式排除的一条边，写出输入身份、已有假设、新增条件及排除依据；再写出一项该结论没有证明的 EVM 行为。

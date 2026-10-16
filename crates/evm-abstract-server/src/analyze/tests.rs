@@ -387,10 +387,10 @@ fn rpc_nested_failure_keeps_native_hashes_and_coordinates_in_json() {
 }
 
 #[test]
-fn relational_frontier_projection_preserves_native_causes_and_provider() {
+fn relational_frontier_projection_preserves_all_local_causes() {
     use evm_abstract::domain::{
         facts::{FactError, Symbol},
-        relational::{QueryReason, SmtError, SmtProvider},
+        relational::QueryReason,
     };
     let cases = [
         (
@@ -413,25 +413,23 @@ fn relational_frontier_projection_preserves_native_causes_and_provider() {
             }),
             api::QueryBoundary::ScalarFactError(api::FactFailure::Contradiction(17)),
         ),
+        (QueryReason::Cancelled, api::QueryBoundary::Cancelled),
+        (QueryReason::Disabled, api::QueryBoundary::Disabled),
         (
-            QueryReason::SolverUnknown {
-                provider: SmtProvider::Bitwuzla,
-                reason: "incomplete theory".into(),
-            },
-            api::QueryBoundary::SolverUnknown(api::SolverUnknown {
-                provider: api::SmtProvider::Bitwuzla,
-                reason: "incomplete theory".into(),
-            }),
+            QueryReason::Configuration,
+            api::QueryBoundary::Configuration,
         ),
         (
-            QueryReason::SolverError(SmtError {
-                provider: SmtProvider::Cvc5,
-                message: "binding rejected term".into(),
-            }),
-            api::QueryBoundary::SolverError(api::SolverFailure {
-                provider: api::SmtProvider::Cvc5,
-                message: "binding rejected term".into(),
-            }),
+            QueryReason::ConstraintLimit,
+            api::QueryBoundary::ConstraintLimit,
+        ),
+        (
+            QueryReason::ScalarFactLimit,
+            api::QueryBoundary::ScalarFactLimit,
+        ),
+        (
+            QueryReason::ExpressionLimit,
+            api::QueryBoundary::ExpressionLimit,
         ),
     ];
     for (native, expected) in cases {

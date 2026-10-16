@@ -1,6 +1,6 @@
 # egui Web 工作台
 
-工作台在浏览器中显示反汇编、SSA、跨合约 CFG 和机器状态。输入可以是普通 EVM 运行时字节码，也可以是后端配置的 RPC 提供者与链上地址；执行规则可选 Cancun、Prague 或 Osaka。原生 Rust 后端直接调用核心分析库，不启动 CLI 子进程，浏览器不加载原生 SMT 库。
+工作台在浏览器中显示反汇编、SSA、跨合约 CFG 和机器状态。输入可以是普通 EVM 运行时字节码，也可以是后端配置的 RPC 提供者与链上地址；执行规则可选 Cancun、Prague 或 Osaka。原生 Rust 后端直接调用核心分析库，不启动 CLI 子进程，浏览器只负责请求、校验与展示。
 
 ## 启动
 
@@ -110,15 +110,14 @@ V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路�
 | Constraints / `max_constraints` | 2,048 |
 | Expression nodes / `max_expression_nodes` | 16,384 |
 | Expression depth / `max_expression_depth` | 256 |
-| Resource limit / `smt_rlimit` | 10,000,000 |
 | Accounts / `rpc_max_accounts` | 4,096 |
 | Requests / `rpc_max_requests` | 1,000,000 |
 | Response bytes / `rpc_max_response_bytes` | 67,108,864（64 MiB） |
 | Timeout (ms) / `rpc_timeout_ms` | 120,000（120 秒） |
 
-这些仍是用户指定的有限预算，达到执行、精度或采集边界时仍会停止相应工作并报告原因，不会自动改为无限。除 `context_depth` 可以为 0（不保留内部跳转历史）外，表中参数都必须是正整数。SMT 默认使用 Z3，额度计量的是所选求解器的资源单位，不是毫秒；默认启用关系推理、Product 数值域和完整被调用者摘要复用。RPC 的连接与整个请求（包括响应体）都遵循配置的 timeout，不再叠加固定 5 秒连接上限；账户、响应大小及初始槽位也不再有独立的 4096 / 64 MiB / 1024 硬上限。
+这些仍是用户指定的有限预算，达到执行、精度或采集边界时仍会停止相应工作并报告原因，不会自动改为无限。除 `context_depth` 可以为 0（不保留内部跳转历史）外，表中参数都必须是正整数。默认启用局部关系推理、Product 数值域和完整被调用者摘要复用。RPC 的连接与整个请求（包括响应体）都遵循配置的 timeout，不再叠加固定 5 秒连接上限；账户、响应大小及初始槽位也不再有独立的 4096 / 64 MiB / 1024 硬上限。
 
-Web 协议的数值仍受类型可表示范围约束：`smt_rlimit` 为 `u32`，最大 4,294,967,295；其余表中字段为 `u64`，最大 18,446,744,073,709,551,615。后端还检查需要转换为原生 `usize` 的字段是否能在运行平台表示。超出类型范围的输入不会被夹紧或近似接受。CLI 使用相同的默认配置，显式参数仍可覆盖；对应选项见[CLI 精度与预算表](05-sensitivity.md#7-实验时分别调整精度与预算)。直接使用 Rust 库的 `Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 和 `RpcInput::new()` 时，仍保留各类型原有的较小默认值；它们不会隐式采用 CLI/Web 配置。
+Web 协议的数值仍受类型可表示范围约束：表中字段均为 `u64`，最大 18,446,744,073,709,551,615。后端还检查需要转换为原生 `usize` 的字段是否能在运行平台表示。超出类型范围的输入不会被夹紧或近似接受。CLI 使用相同的默认配置，显式参数仍可覆盖；对应选项见[CLI 精度与预算表](05-sensitivity.md#7-实验时分别调整精度与预算)。直接使用 Rust 库的 `Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 和 `RpcInput::new()` 时，仍保留各类型原有的较小默认值；它们不会隐式采用 CLI/Web 配置。
 
 任务运行期间保留上一份完整结果，并显示新任务的状态与离散进度；新任务成功后才原子替换结果。输入草稿的编辑不会改变正在查看的报告。取消、失败或迟到的旧请求也不会把旧报告冒充新任务结果。
 
@@ -132,12 +131,12 @@ Web 协议的数值仍受类型可表示范围约束：`smt_rlimit` 为 `u32`，
 | --- | --- |
 | Validation | 后端验证与输入准备 |
 | RPC | 固定链与区块、初始读取、全部补读账户和存储 |
-| Abstract analysis | 全部分析轮次的抽象执行，包含其中的 SMT 求解 |
+| Abstract analysis | 全部分析轮次的抽象执行，包含局部关系推理 |
 | SSA construction | 构建、规范化与验证 SSA |
 | Report projection | 整理原生状态、值和效果，生成结构化展示报告 |
 | Frontend preparation | 获取并解析报告、安装结果以及当前视图的首次准备 |
 
-RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑”。显示的 RPC 和抽象执行时间累计所有轮次，最终图只保留最后一轮也不会丢掉此前耗时。SMT 是抽象执行内部的工作，不重复加入总时间。
+RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑”。显示的 RPC 和抽象执行时间累计所有轮次，最终图只保留最后一轮也不会丢掉此前耗时。局部关系推理属于抽象执行内部工作，不重复加入总时间。
 
 前端准备还可查看 **Result transfer**、**JSON parsing** 和 **First view setup**。首次准备只测实际打开的视图；不会为了统计而提前生成其他视图的 CFG 布局。用户总等待也包含提交和状态轮询等往返延迟，不能把后端处理、排队与前端准备当作覆盖全部等待的精确加总。这里统计实际耗时，`work` 仍表示逻辑工作量；区块 `Timestamp` 和 RPC timeout 保留各自原有含义。
 
@@ -204,7 +203,7 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 
 协议 9 加入 report-local mixed symbolic DAG。scalar refs、byte views、persistent/transient roots 和完整 path guards 在同一目录中共享；range/join 的待处理 payload 引用有限 pending machine pool。前端校验 node sort、依赖顺序和 pool refs，按可见行显示来源、写入和复制范围。typed export error 保留策略与实耗；MemoryPolicy 的未展开输入与 EVM Failure 分开显示。详情见[第 17 课](17-symbolic-state.md)。
 
-共享协议版本为 12。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+共享协议版本为 14。版本 14 删除 `AnalysisLimits.smt_provider`、`smt_rlimit` 与原生 solver 诊断枚举；旧请求中的这些字段会在任务入队前明确拒绝，旧报告也不能作为版本 14 安装。表达式、byte/slot 根、路径、scalar facts 和真实精度边界继续保留。 LOG 的 `code_hash` 和 `source_kind` 为必填来源字段，配合 emitter、code account 与 pc 区分初始化和部署后代码；前端面板使用完整身份。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 
 版本 12 的 `ExportLimits` 保留节点、依赖深度与 exact payload 上限，整份报告 JSON 不设置字节上限；`metadata.export_usage.work` 保存累计 projection work，仅作诊断统计，work 总量不会导致导出失败。导出继续检查取消，错误展示相应策略和实耗，编码取消另保留已写字节。执行分析仍遵守 `AnalysisLimits.max_work`，界面的 Logical work 输入继续控制分析预算。
 
@@ -216,13 +215,13 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 | `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
 
-版本 8 为 `Diagnostic` 增加类型化的 `invalid_opcode` 证据。普通指令保留实际 `opcode`、可选 `mnemonic` 与无效原因，区分 `0xfe (INVALID)`、未定义的 `0xef` 和当前 fork 未启用的 `0x1e (CLZ)`；字节来自诊断状态的当前捕获程序。委托入口单独表示为 `DelegationEntry`，无法核验字节时说明缺失原因，不跳到根程序的合成 PC 0。Diagnostics 保留同 PC 不同抽象状态的每条记录及其跳转；记录数不是不同指令数或失败交易次数。原生 CLI 分析格式独立使用版本 6，字段路径见[第 08 课](08-forks.md#从诊断区分原始操作码)。
+版本 8 为 `Diagnostic` 增加类型化的 `invalid_opcode` 证据。普通指令保留实际 `opcode`、可选 `mnemonic` 与无效原因，区分 `0xfe (INVALID)`、未定义的 `0xef` 和当前 fork 未启用的 `0x1e (CLZ)`；字节来自诊断状态的当前捕获程序。委托入口单独表示为 `DelegationEntry`，无法核验字节时说明缺失原因，不跳到根程序的合成 PC 0。Diagnostics 保留同 PC 不同抽象状态的每条记录及其跳转；记录数不是不同指令数或失败交易次数。原生 CLI 分析格式独立使用版本 9，字段路径见[第 08 课](08-forks.md#从诊断区分原始操作码)。
 
 版本 7 为 `JobSnapshot` 和报告的 `metadata` 增加 `AnalysisTimings`。字段均为 `u64` 纳秒：`queue_ns`、`processing_ns`，以及 `validating_ns`、`pinning_ns`、`acquiring_ns`、`analyzing_ns`、`building_ssa_ns`、`projecting_ns`。阶段耗时互不重复，合计为 `processing_ns`；RPC 展示值为 `pinning_ns + acquiring_ns`。直接调用分析服务函数时队列时间为零。成功、失败或取消后，终态快照的计时冻结；成功报告保留同一份后端计时。用户等待与前端准备属于本次浏览器观察，单独保存，不以浏览器与后端的时钟起点相减计算。
 
 版本 6 为 SSA 增加规范化 `operation`、按最终 ValueId 索引的 `values`、带范围的事实和来源关系；原始 opcode、PC、效果与执行阶段仍保留。版本 5 的提供者名单新增展示用的 `endpoint`；RPC 分析输入继续使用 `provider_id`，不接受浏览器在请求中指定 `endpoint`。例如 `AnalyzeRequest.input` 为 `{"Rpc":{"provider_id":"mainnet","address":"0x0000000000000000000000000000000000000101","block":"Latest","accounts":[]}}`；其余 `fork`、`environment`、`limits` 字段仍按共享请求类型提供。后端在任务入队前按 ID 查找配置，未知 ID 返回 `InvalidRequest`。这些变更属于 Web 共享协议，CLI 的显式 `--rpc` 参数保持其原有用法。
 
-版本 4 将 `AnalysisLimits` 中除 `smt_rlimit: u32` 外的数值统一为 `u64`，避免 Wasm 的 32 位 `usize` 限制后端预算。累计 work / transfers 遥测也使用 `u64`。浏览器在 Rust 中直接处理 JSON 文本，保留整数精度；其他客户端处理这些数字时也应使用可精确保留 64 位整数的解析方式。报告的 `metadata.limits` 保存实际提交的完整策略，不用默认值覆盖用户输入。
+`AnalysisLimits` 的数值均使用 `u64`，避免 Wasm 的 32 位 `usize` 限制后端预算。累计 work / transfers 遥测也使用 `u64`。浏览器在 Rust 中直接处理 JSON 文本，保留整数精度；其他客户端处理这些数字时也应使用可精确保留 64 位整数的解析方式。报告的 `metadata.limits` 保存实际提交的完整策略，不用默认值覆盖用户输入。
 
 报告包含代码目录、完整帧上下文、有效环境、快照身份、账户事实、入口／出口状态和终结结果。不可变 byte-array 与 store 使用报告内索引复用，每个 byte-array 的完整抽象字节值也用局部字典复用；符号表达式用扁平 DAG 表达，保留结构并避免 JSON 嵌套深度随表达式深度增长。状态轮询不重复下载整份报告。
 
@@ -254,7 +253,7 @@ CPU 分析由通道调度到有限原生线程池，每项分析在一个工作�
 
 节点访问使用 Alloy RPC client、Ethereum RPC 类型和区块选择类型；有界传输适配继续约束实际 HTTP 请求次数、响应字节数和超时，取消时释放当前请求及其网络驱动。快照采集仍只在启动时解析一次区块，后续代码、余额、nonce 和存储查询使用固定区块身份；客户端不启用自动重试或批量请求，累计预算记录实际发起的 HTTP 请求。
 
-状态为 `Queued → Running → Completed/Failed`。取消排队任务会直接释放其请求；运行中的任务先进入 `Cancelling`，然后停止后续工作并丢弃结果，确认工作线程释放任务资源后才进入 `Cancelled`。RPC 请求／响应 future 会被丢弃并关闭 reactor；Z3 与 Bitwuzla 接入原生中断，执行预算检查点、SSA 构建和报告投影也检查取消。cvc5、预编译或系统 DNS 等无法主动中断的当前调用可能需要先返回，这段时间仍显示 `Cancelling`，不声称固定毫秒内停止。每个工作线程由只等待退出的监督线程持有，panic 和停机都在 join 完成、线程本地原生上下文析构之后确认；监视原生中断的辅助线程也只等待信号，不执行第二份分析。
+状态为 `Queued → Running → Completed/Failed`。取消排队任务会直接释放其请求；运行中的任务先进入 `Cancelling`，停止后续工作并丢弃结果，确认工作线程释放任务资源后才进入 `Cancelled`。RPC 请求／响应 future 会被丢弃并关闭 reactor；执行预算检查点、局部关系推理、SSA 构建、报告投影与序列化均检查相同取消作用域。预编译或系统 DNS 等当前调用可能需要先返回，这段时间仍显示 `Cancelling`。每个工作线程由只等待退出的监督线程持有，panic 和停机在 join 完成后确认。通用取消令牌来自无 solver 依赖的 `analysis-control`。
 
 进度显示实际阶段和累计 work、transfer、状态、账户、槽位、请求计数，不把开放工作表伪装为百分比。结束时以最终报告校正可丢弃的中间进度事件。初始采集失败是类型化失败；后续补查失败仍可产生带 RPC 证据的 `Incomplete` 报告。工作线程异常退出有明确错误状态，调度器补充工作线程继续服务。
 
@@ -288,4 +287,4 @@ RPC 回归先启动本地 JSON-RPC fixtures，再用真实配置文件启动分�
 
 协议 10 进一步保留未知交互的 `abstract_summaries`、过程依赖与实际覆盖块，以及独立的摘要成功／回退／失败边。Unknown frame 显示为 Abstract environment，不生成捕获指令；对应节点的 inspector 可查看闭合状态与迭代计数。示例与语义见[第 18 课](18-unknown-world.md)。
 
-当前协议 13 增加摘要入口类别和根过程索引，区分已知 bytecode 递归与未知交互。已知递归仍显示真实 Runtime 代码身份，图卡片和 Frame inspector 标出 Recursive bytecode；摘要中实际覆盖的块与主图逐指令执行记录分别展示。闭合关系可以继续产生返回边；未覆盖的终结行为和资源边界仍保留前沿。
+协议 13 增加摘要入口类别和根过程索引，版本 14 继续保留这些字段，区分已知 bytecode 递归与未知交互。已知递归仍显示真实 Runtime 代码身份，图卡片和 Frame inspector 标出 Recursive bytecode；摘要中实际覆盖的块与主图逐指令执行记录分别展示。闭合关系可以继续产生返回边；未覆盖的终结行为和资源边界仍保留前沿。

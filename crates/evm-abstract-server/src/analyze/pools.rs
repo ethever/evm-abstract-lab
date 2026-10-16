@@ -8,7 +8,7 @@ use evm_abstract::analysis::control::Control;
 use evm_abstract::{
     analysis::{FrameCode, MachinePayload},
     bytecode::Program,
-    world::{ByteArray, Code, Existence, Store},
+    world::{ByteArray, Code, Existence, LogSourceKind, Store},
 };
 use evm_abstract_protocol as api;
 use std::collections::BTreeMap;
@@ -261,6 +261,11 @@ impl<'a> Pools<'a> {
                 Ok(api::LogSnapshot {
                     address: key.address.to_string(),
                     code_address: key.code_address.to_string(),
+                    code_hash: key.code_hash.to_string(),
+                    source_kind: match key.source_kind {
+                        LogSourceKind::Init => api::LogSourceKind::Init,
+                        LogSourceKind::Runtime => api::LogSourceKind::Runtime,
+                    },
                     pc: key.pc,
                     topics: log
                         .topics

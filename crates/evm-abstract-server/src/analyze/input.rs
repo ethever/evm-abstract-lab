@@ -2,10 +2,7 @@
 use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     analysis,
-    domain::{
-        AbstractValue, Profile,
-        relational::{RelationLimits, SmtProvider},
-    },
+    domain::{AbstractValue, Profile, relational::RelationLimits},
     world::{AddressInput, BlobHashes, ByteArray, EvmEnvironment, GasInput, rpc},
 };
 use evm_abstract_protocol as api;
@@ -203,12 +200,6 @@ pub(super) fn config(
                 max_constraints: host_size(input.max_constraints, "max_constraints")?,
                 max_nodes: host_size(input.max_expression_nodes, "max_expression_nodes")?,
                 max_depth: host_size(input.max_expression_depth, "max_expression_depth")?,
-                rlimit: input.smt_rlimit,
-                provider: match input.smt_provider {
-                    api::SmtProvider::Z3 => SmtProvider::Z3,
-                    api::SmtProvider::Bitwuzla => SmtProvider::Bitwuzla,
-                    api::SmtProvider::Cvc5 => SmtProvider::Cvc5,
-                },
             },
         },
         max_work: host_size(input.max_work, "max_work")?,
@@ -280,7 +271,6 @@ mod tests {
             max_constraints: 4_097,
             max_expression_nodes: 16_385,
             max_expression_depth: 129,
-            smt_rlimit: 10_000_001,
             rpc_max_accounts: 4_097,
             rpc_max_requests: 65_537,
             rpc_max_response_bytes: 67_108_865,
@@ -300,7 +290,6 @@ mod tests {
         assert_eq!(native.analysis.relations.max_constraints, 4_097);
         assert_eq!(native.analysis.relations.max_nodes, 16_385);
         assert_eq!(native.analysis.relations.max_depth, 129);
-        assert_eq!(native.analysis.relations.rlimit, 10_000_001);
         assert!(native.analysis.validate().is_ok());
         let rpc = rpc(
             &source(),
@@ -346,7 +335,6 @@ mod tests {
                 max_constraints: count,
                 max_expression_nodes: count,
                 max_expression_depth: count,
-                smt_rlimit: u32::MAX,
                 rpc_max_accounts: count,
                 rpc_max_requests: count,
                 rpc_max_response_bytes: count,
@@ -366,7 +354,6 @@ mod tests {
             assert_eq!(native.analysis.relations.max_constraints as u64, count);
             assert_eq!(native.analysis.relations.max_nodes as u64, count);
             assert_eq!(native.analysis.relations.max_depth as u64, count);
-            assert_eq!(native.analysis.relations.rlimit, u32::MAX);
             assert!(native.analysis.validate().is_ok());
             let rpc = rpc(
                 &source(),

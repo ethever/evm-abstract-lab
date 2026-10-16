@@ -37,10 +37,10 @@ mod normalized;
 mod numbers;
 #[path = "cli/partial_ssa.rs"]
 mod partial_ssa;
+#[path = "cli/relations.rs"]
+mod relations;
 #[path = "cli/rpc.rs"]
 mod rpc;
-#[path = "cli/smt.rs"]
-mod smt;
 
 fn run_concrete(args: &[&str]) -> std::process::Output {
     let mut scoped = args.to_vec();

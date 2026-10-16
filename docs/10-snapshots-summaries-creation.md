@@ -115,11 +115,11 @@ jq '{schema_version,
                | {environment, relations, frame: .frame.state.key})}' /tmp/summary-on.json
 ```
 
-分析 `schema_version` 为 8。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
+分析 `schema_version` 为 9。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
 
 本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中，入口关系在 `.summaries[].input.relations`。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
 
-单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 8 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
+单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 9 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
 
 环境类型与输入作用域见 [`world/environment.rs`](../crates/evm-abstract/src/world/environment.rs)，JSON 边界见 [`analysis.rs`](../crates/evm-abstract/src/analysis.rs)，帧结构见 [`machine/frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)。
 
