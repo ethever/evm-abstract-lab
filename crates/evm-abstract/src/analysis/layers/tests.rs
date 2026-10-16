@@ -625,10 +625,32 @@ fn ordinary_routes_share_layered_execution_and_preserve_abstract_world_bounds() 
     )
     .unwrap();
     let before = session.analyze().unwrap();
-    assert!(returns(&before).iter().all(|v| !v.contains(U256::from(2))
-        && v.contains(U256::from(3))
-        && v.contains(U256::from(9))
-        && !v.contains(U256::from(10))));
+    assert_eq!(
+        before.analysis().world().account(address(0x101)),
+        Some(&account)
+    );
+    let state = before.analysis().states().first().unwrap();
+    assert_eq!(
+        state.entry.store.read_balance(address(0x101)),
+        account.balance
+    );
+    let value = state
+        .execution_evidence()
+        .unwrap()
+        .instruction_values()
+        .unwrap()
+        .iter()
+        .find(|value| state.executed_pcs[value.instruction_index()] == 0)
+        .expect("SELFBALANCE must produce an instruction result");
+    assert_eq!(value.numeric(), account.balance.numeric());
+    let returned = returns(&before);
+    assert!(
+        returned.iter().all(|v| !v.contains(U256::from(2))
+            && v.contains(U256::from(3))
+            && v.contains(U256::from(9))
+            && !v.contains(U256::from(10))),
+        "returned byte view must retain the Store and SELFBALANCE bounds: {returned:?}"
+    );
     let snapshot = session.facts().snapshot().clone();
     let revision = session.facts().revision();
     for observation in [
@@ -636,10 +658,19 @@ fn ordinary_routes_share_layered_execution_and_preserve_abstract_world_bounds() 
             address: address(0x101),
             value: U256::from(2),
         },
+        Observation::Balance {
+            address: address(0x101),
+            value: U256::from(10),
+        },
         Observation::Storage {
             address: address(0x101),
             slot: U256::ZERO,
             value: U256::ZERO,
+        },
+        Observation::Storage {
+            address: address(0x101),
+            slot: U256::ZERO,
+            value: U256::from(9),
         },
         Observation::Storage {
             address: address(0x101),
@@ -677,6 +708,142 @@ fn ordinary_routes_share_layered_execution_and_preserve_abstract_world_bounds() 
         before.analysis().world().account(address(0x101)),
         Some(&account)
     );
+}
+
+#[test]
+fn world_refinement_preserves_value_layers_and_rejects_both_bound_violations_atomically() {
+    use crate::{
+        domain::{NumericValue, identity::Symbol, provenance::Origin},
+        world::{Account, World},
+    };
+    let owner = address(0x101);
+    let neighbor = address(0x202);
+    let bounded = |lower, upper, symbol, origin| {
+        let mut value = AbstractValue::unsigned_range(U256::from(lower), U256::from(upper))
+            .unwrap()
+            .with_symbol(symbol, Some(1029));
+        value.set_origin(origin);
+        value
+    };
+    let mut account = Account::unknown();
+    account.code = Code::Runtime(Program::from_hex_with_fork("00", Fork::Osaka).unwrap());
+    account.balance = bounded(3u64, 9u64, Symbol::CallValue, Origin::Balance);
+    account.nonce = bounded(11u64, 17u64, Symbol::Number, Origin::Nonce);
+    account.storage.insert(
+        U256::ZERO,
+        bounded(
+            5u64,
+            8u64,
+            Symbol::CalldataWord(U256::ZERO),
+            Origin::Storage,
+        ),
+    );
+    let mut world = World::offline(Fork::Osaka, "layered bounds and sources", "input world");
+    world.insert(owner, account.clone()).unwrap();
+    world.insert(neighbor, Account::unknown()).unwrap();
+    let mut session =
+        AnalysisSession::from_world(world.clone(), Entry::new(owner), ExecutionConfig::default())
+            .unwrap();
+    assert_eq!(session.facts().balance(owner), Observed::Unobserved);
+    assert_eq!(session.facts().nonce(owner), Observed::Unobserved);
+    assert_eq!(
+        session.facts().storage(owner, U256::ZERO),
+        Observed::Unobserved
+    );
+    let before = session.analyze().unwrap();
+    assert_eq!(before.analysis().world().accounts(), world.accounts());
+    let snapshot = session.facts().snapshot().clone();
+    let revision = session.facts().revision();
+    for observation in [
+        Observation::Balance {
+            address: owner,
+            value: U256::from(2),
+        },
+        Observation::Balance {
+            address: owner,
+            value: U256::from(10),
+        },
+        Observation::Nonce {
+            address: owner,
+            value: U256::from(10),
+        },
+        Observation::Nonce {
+            address: owner,
+            value: U256::from(18),
+        },
+        Observation::Storage {
+            address: owner,
+            slot: U256::ZERO,
+            value: U256::from(4),
+        },
+        Observation::Storage {
+            address: owner,
+            slot: U256::ZERO,
+            value: U256::from(9),
+        },
+    ] {
+        let key = observation.key();
+        assert!(matches!(
+            session.refine(&snapshot, [observation]),
+            Err(SessionError::Facts(FactError::Conflict { key: rejected })) if rejected == key
+        ));
+        assert_eq!(session.facts().revision(), revision);
+        assert!(Arc::ptr_eq(&before, &session.analyze().unwrap()));
+    }
+    let observations = [
+        Observation::Balance {
+            address: owner,
+            value: U256::from(7),
+        },
+        Observation::Nonce {
+            address: owner,
+            value: U256::from(13),
+        },
+        Observation::Storage {
+            address: owner,
+            slot: U256::ZERO,
+            value: U256::from(6),
+        },
+    ];
+    let mut invalid_batch = observations.clone();
+    invalid_batch[2] = Observation::Storage {
+        address: owner,
+        slot: U256::ZERO,
+        value: U256::from(9),
+    };
+    assert!(session.refine(&snapshot, invalid_batch).is_err());
+    assert_eq!(session.facts().revision(), revision);
+    assert!(Arc::ptr_eq(&before, &session.analyze().unwrap()));
+    session.refine(&snapshot, observations).unwrap();
+    let after = session.analyze().unwrap();
+    let projected = after.analysis().world();
+    let mut expected = account.clone();
+    expected.balance = expected
+        .balance
+        .with_numeric(NumericValue::constant(U256::from(7)));
+    expected.nonce = expected
+        .nonce
+        .with_numeric(NumericValue::constant(U256::from(13)));
+    expected.storage.insert(
+        U256::ZERO,
+        account.storage[&U256::ZERO]
+            .clone()
+            .with_numeric(NumericValue::constant(U256::from(6))),
+    );
+    // Whole-value equality checks provenance, scoped identity and expression
+    // as well as numeric facts. Unobserved neighbors must not acquire zeroes.
+    assert_eq!(projected.account(owner), Some(&expected));
+    assert_eq!(projected.account(neighbor), world.account(neighbor));
+    assert_eq!(projected.identity(), world.identity());
+    assert_eq!(projected.provenance(), world.provenance());
+    assert_eq!(
+        projected.storage_source_token(),
+        world.storage_source_token()
+    );
+    assert_eq!(session.base().accounts(), world.accounts());
+    assert_eq!(before.analysis().world().accounts(), world.accounts());
+    assert_eq!(before.revision(), revision);
+    assert_eq!(after.snapshot(), &snapshot);
 }
 
 #[test]
