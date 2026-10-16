@@ -355,6 +355,7 @@ fn loop_fixed_point_forgets_cross_field_equality_without_rebinding_immutable_inp
     complete(&no_loop);
     assert!(no_loop.frontiers().is_empty());
     assert!(no_loop.execution().frontiers().is_empty());
+    assert!(!no_loop.states().is_empty());
     for state in no_loop.states() {
         assert_eq!(
             state.exit_stack.last().unwrap().singleton(),
