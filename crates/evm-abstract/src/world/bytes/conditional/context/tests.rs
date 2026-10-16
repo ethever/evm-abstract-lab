@@ -46,7 +46,10 @@ fn memo_keeps_complete_values_negative_results_and_exact_guard_environments() {
     let context = Context::prepared(&facts, &conditional, domain, 1_000_000);
     assert_eq!(context.value(&key, domain), None);
     assert_eq!(
-        context.memo.borrow().get(&key, domain, &|_| true),
+        context
+            .memo
+            .borrow()
+            .get(&key, domain, context.demand.as_deref().unwrap(), &|_| true),
         Some(None)
     );
     let yes = context.branch(&guard, true);
@@ -193,7 +196,13 @@ fn metadata_walk_and_context_capacity_refuse_only_the_private_attempt() {
     assert_eq!(short.value(&key, domain), None);
     assert!(short.cache_refused());
     short.check().unwrap();
-    assert_eq!(short.memo.borrow().get(&key, domain, &|_| true), None);
+    assert_eq!(
+        short
+            .memo
+            .borrow()
+            .get(&key, domain, short.demand.as_deref().unwrap(), &|_| true),
+        None
+    );
     let root = Context::prepared(&facts, &conditional, domain, 1_000_000);
     let mut context = root.clone();
     for _ in 1..memo::CONTEXTS {
@@ -222,7 +231,10 @@ fn cancellation_is_observed_even_on_a_warm_memo_hit() {
         assert_eq!(context.check(), Err(ExprError::Cancelled));
     });
     assert_eq!(
-        context.memo.borrow().get(&key, domain, &|_| true),
+        context
+            .memo
+            .borrow()
+            .get(&key, domain, context.demand.as_deref().unwrap(), &|_| true),
         Some(Some(constant(7)))
     );
 }
@@ -256,4 +268,30 @@ fn guarded_word_preparation_pays_a_bounded_arena_instead_of_every_lookup_reducti
     assert!(prepared.work > prepared.nodes);
     assert!(prepared.work < old);
     assert!(prepared.work < 20_000_000);
+}
+
+#[test]
+fn warm_key_lookups_do_not_rescan_the_frozen_source_map() {
+    let domain = Domain::default();
+    for count in [40, 80] {
+        let facts: Facts = (0..count)
+            .map(|i| (ExprId::fresh().unwrap(), constant(i)))
+            .collect();
+        let conditional = ConditionalFacts::default();
+        let context = Context::prepared(&facts, &conditional, domain, 10_000_000);
+        let demand = context.demand.as_deref().unwrap();
+        assert_eq!(demand.source_key_visits(), count);
+        for (key, expected) in &facts {
+            assert_eq!(context.value(key, domain), Some(expected.clone()));
+        }
+        let before = demand.source_key_visits();
+        for _ in 0..2 {
+            for (key, expected) in &facts {
+                assert_eq!(context.value(key, domain), Some(expected.clone()));
+            }
+        }
+        assert_eq!(demand.source_key_visits(), before);
+        assert!(!context.cache_refused());
+        context.check().unwrap();
+    }
 }

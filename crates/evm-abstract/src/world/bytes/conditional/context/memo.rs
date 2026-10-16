@@ -20,11 +20,14 @@ pub(super) struct Demand {
     maximum: usize,
     used: Cell<usize>,
     contexts: Cell<usize>,
+    maximum_key_work: Cell<usize>,
+    #[cfg(test)]
+    source_key_visits: Cell<usize>,
     refused: Cell<bool>,
 }
 
 impl Demand {
-    pub(super) fn new(domain: Domain, maximum: usize) -> Self {
+    pub(super) fn new(domain: Domain, maximum: usize, maximum_key_work: usize) -> Self {
         let spec = domain.spec();
         Self {
             limits: spec.relations().expressions(),
@@ -38,8 +41,27 @@ impl Demand {
             maximum,
             used: Cell::new(0),
             contexts: Cell::new(1),
+            maximum_key_work: Cell::new(maximum_key_work),
+            #[cfg(test)]
+            source_key_visits: Cell::new(0),
             refused: Cell::new(false),
         }
+    }
+
+    pub(super) fn include_key(&self, work: usize) {
+        self.maximum_key_work
+            .set(self.maximum_key_work.get().max(work));
+    }
+
+    pub(super) fn source_key(&self, work: usize) {
+        self.include_key(work);
+        #[cfg(test)]
+        self.source_key_visits.set(self.source_key_visits.get() + 1);
+    }
+
+    #[cfg(test)]
+    pub(super) fn source_key_visits(&self) -> usize {
+        self.source_key_visits.get()
     }
 
     pub(super) fn policy(&self, domain: Domain) -> bool {
@@ -124,6 +146,7 @@ impl Memo<'_> {
         &self,
         expression: &ExprId,
         domain: Domain,
+        demand: &Demand,
         reserve: &impl Fn(usize) -> bool,
     ) -> Option<Option<AbstractValue>> {
         if !reserve(POLICIES) {
@@ -141,7 +164,7 @@ impl Memo<'_> {
                 return Some(None);
             }
         }
-        if !probe(&policy.values, expression, reserve) {
+        if !probe(policy.values.len(), expression, demand, reserve) {
             return None;
         }
         let value = policy.values.get(expression)?;
@@ -195,7 +218,7 @@ impl Memo<'_> {
         let work = expression.work_size().saturating_add(value.work_size());
         // Positive keys belong only to the immutable source maps or
         // bounded choices, so all of them are retained until demand completion.
-        if !probe(&policy.values, expression, reserve)
+        if !probe(policy.values.len(), expression, demand, reserve)
             || !reserve(
                 policy
                     .work
@@ -212,24 +235,30 @@ impl Memo<'_> {
     }
 }
 
-/// Reserve the expanded-tree comparison bound before BTreeMap can compare
-/// structural keys, including adversarial equal-fingerprint collisions.
-pub(super) fn probe<V>(
-    facts: &BTreeMap<ExprId, V>,
+/// Reserve a B-tree search from cached key sizes, without visiting its keys.
+/// Rust 1.99's B-tree has at most eleven keys per node. Its height is at most
+/// one plus log2(len + 1); scanning all keys is a second independent upper bound.
+/// The frozen demand's maximum covers source keys and newly retained choices,
+/// including structural comparisons when expression fingerprints collide.
+/// Taking a length instead of a map makes a planning key scan impossible here.
+pub(super) fn probe(
+    len: usize,
     expression: &ExprId,
+    demand: &Demand,
     reserve: &impl Fn(usize) -> bool,
 ) -> bool {
-    if !reserve(facts.len().saturating_add(1)) {
-        return false;
-    }
-    let mut work = 1usize;
-    for key in facts.keys() {
-        if !reserve(1) {
-            return false;
-        }
-        work = work.saturating_add(expression.comparison_work(key));
-    }
-    reserve(work)
+    let levels = (len.saturating_add(1).ilog2() as usize).saturating_add(1);
+    let comparisons = len.min(11usize.saturating_mul(levels));
+    reserve(
+        comparisons
+            .saturating_mul(
+                expression
+                    .work_size()
+                    .saturating_add(demand.maximum_key_work.get())
+                    .saturating_add(1),
+            )
+            .saturating_add(1),
+    )
 }
 
 pub(in crate::world::bytes) struct Preparation {

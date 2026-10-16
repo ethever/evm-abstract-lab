@@ -50,13 +50,25 @@ impl<'a> Context<'a> {
         domain: Domain,
         nodes: usize,
     ) -> Self {
+        let demand = Rc::new(memo::Demand::new(
+            domain,
+            nodes,
+            conditional.largest_expression,
+        ));
+        // Immutable source keys are sized once, before any prepared lookups.
+        // Conditional keys already have a cached maximum in their owner.
+        if demand.reserve(facts.len().saturating_add(1)) {
+            for key in facts.keys() {
+                demand.source_key(key.work_size());
+            }
+        }
         let mut out = Self {
             facts,
             conditional: Some(conditional),
             choices: Rc::new(BTreeMap::new()),
             active: Rc::new(Vec::new()),
             memo: Rc::new(RefCell::new(memo::Memo::default())),
-            demand: Some(Rc::new(memo::Demand::new(domain, nodes))),
+            demand: Some(demand),
         };
         out.select();
         out
@@ -90,18 +102,28 @@ impl<'a> Context<'a> {
         if self.demand.is_none() {
             return facts.get(expression);
         }
-        memo::probe(facts, expression, &|nodes| self.reserve(nodes))
-            .then(|| facts.get(expression))
-            .flatten()
+        memo::probe(
+            facts.len(),
+            expression,
+            self.demand.as_deref().expect("prepared lookup"),
+            &|nodes| self.reserve(nodes),
+        )
+        .then(|| facts.get(expression))
+        .flatten()
     }
 
     fn choice(&self, expression: &ExprId) -> Option<bool> {
         if self.demand.is_none() {
             return self.choices.get(expression).copied();
         }
-        memo::probe(&self.choices, expression, &|nodes| self.reserve(nodes))
-            .then(|| self.choices.get(expression).copied())
-            .flatten()
+        memo::probe(
+            self.choices.len(),
+            expression,
+            self.demand.as_deref().expect("prepared choice"),
+            &|nodes| self.reserve(nodes),
+        )
+        .then(|| self.choices.get(expression).copied())
+        .flatten()
     }
 
     fn select(&mut self) {
@@ -197,6 +219,9 @@ impl<'a> Context<'a> {
         if !self.reserve(nodes.saturating_add(memo::CONTEXTS)) {
             return self.clone();
         }
+        if let Some(demand) = &self.demand {
+            demand.include_key(condition.work_size());
+        }
         let mut choices = (*self.choices).clone();
         choices.insert(condition.clone(), nonzero);
         let mut out = Self {
@@ -236,7 +261,7 @@ impl<'a> Context<'a> {
         if let Some(value) = self
             .memo
             .borrow()
-            .get(expression, domain, &|nodes| self.reserve(nodes))
+            .get(expression, domain, demand, &|nodes| self.reserve(nodes))
         {
             return value;
         }
