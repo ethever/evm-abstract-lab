@@ -1,4 +1,4 @@
-//! These are real native-solver proofs, beyond constructor-only normalization.
+//! Local state interpretation and retained conditional/history guarantees.
 use super::super::{CheckResult, RelationLimits, RelationState, ScalarQuery, ValueQuery};
 use crate::domain::{AbstractValue, Domain, NumericValue, identity::Symbol, symbolic::*};
 use alloy_primitives::U256;
@@ -533,7 +533,7 @@ fn newly_observed_source_content_binds_an_older_hash_application() {
 }
 
 #[test]
-fn scalar_ite_retains_solver_semantics_after_direct_numeric_projection() {
+fn scalar_ite_retains_path_identity_after_direct_numeric_projection() {
     let limits = policy();
     let value = ExprId::ite(ExprId::fresh().unwrap(), c(128), c(192), expr_limits()).unwrap();
     let mut path = RelationState::default();

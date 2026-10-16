@@ -1,15 +1,16 @@
-//! Read-only hash encoding support, shared with diagnostics and protocol users.
+//! Read-only hash content shapes, shared with diagnostics and protocol users.
+//! Classification alone proves no equality: consumers need a sound local rule.
 
 use super::{ByteStateKind, ByteView, ExprError, ExprLimits};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
-/// Largest concretely sized sequence normalized into packed SMT byte content.
+/// Largest concrete sequence classified as eligible for bounded byte comparison.
 /// Larger symbolic/logical ranges stay lazy; this is an actual expansion bound.
 pub const MAX_NORMALIZED_HASH_BYTES: usize = 64;
 
-/// Content-equality evidence used by the current hash encoding. These strategies
-/// add deterministic same-input relations, never collision-free assumptions.
+/// Structural content classes retained for reporting and local interpretation.
+/// These tags do not certify an equality or a collision-free assumption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum HashSupport {
     /// Bounded exact byte-read normalization, independent of backing address.
@@ -19,7 +20,8 @@ pub enum HashSupport {
     },
     /// One raw source array, its padding length, offset and requested length.
     SourceView,
-    /// Exact full-content native array plus offset and requested length.
+    /// Historical serialized label for a fully retained byte-state DAG.
+    /// No native array or provider is constructed by the core.
     NativeArray,
     /// Copy equality under range guards: a complete copied view, or an earlier
     /// view preserved by a disjoint later copy. Overlapping views stay conservative.
@@ -31,7 +33,7 @@ pub enum HashSupport {
     Uncompared,
 }
 impl ByteView {
-    /// Describe equality support without invoking SMT or materializing the range.
+    /// Describe retained content shape without materializing the range.
     /// Uncompared is a precision boundary, not an infeasible/unreachable path.
     pub fn hash_support(&self, limits: ExprLimits) -> Result<HashSupport, ExprError> {
         let view = self.canonicalize();

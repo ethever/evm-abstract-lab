@@ -1,4 +1,4 @@
-//! Default-policy native checks for shared ordered updates above guarded states.
+//! Default-policy local checks for shared ordered updates above guarded states.
 
 use super::super::{CheckResult, RelationLimits, RelationState, ValueQuery};
 use crate::domain::{

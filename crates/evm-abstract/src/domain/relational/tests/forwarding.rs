@@ -1,6 +1,6 @@
 //! Default-budget proofs and independent boundary checks for demanded reads.
 
-use super::super::{CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery};
+use super::super::{CheckResult, RelationLimits, RelationState, ValueQuery};
 use crate::domain::{identity::Symbol, numeric::NumericValue, symbolic::*};
 use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;
@@ -10,7 +10,7 @@ fn c(value: u64) -> ExprId {
     ExprId::constant(U256::from(value))
 }
 fn policy() -> RelationLimits {
-    // Match the actual acceptance policy; retain the provider's default fuel.
+    // Match the retained expression and constraint policy.
     RelationLimits {
         max_nodes: 8192,
         max_depth: 128,

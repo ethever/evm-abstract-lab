@@ -1,4 +1,4 @@
-//! Native checks for conjunction reduction and its guarded/overlap boundaries.
+//! Local conjunction consequences and guarded/overlap boundaries.
 
 use super::super::{CheckResult, Constraint, RelationLimits, RelationState, ValueQuery};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId, StateBinding};
@@ -205,7 +205,7 @@ fn retained_inconsistent_equalities_and_ranges_cannot_produce_a_folded_value() {
             .unwrap();
         let read = ExprId::slot_read(storage, k.clone(), limits.expressions()).unwrap();
         // Retained constraints can await checking after imports or joins.
-        // Exercise the native assertions without eager insertion setting bottom.
+        // Exercise retained local constraints before eager insertion marks bottom.
         let equal = RelationState {
             constraints: [
                 Constraint::Equal {
