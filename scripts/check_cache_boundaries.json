@@ -80,7 +80,7 @@
     },
     {
       "name": "protocol-dependency-closure",
-      "description": "Protocol source changes reach native server and web consumers without invalidating independent analysis and solver crates.",
+      "description": "Protocol source changes reach native server and web consumers without invalidating independent analysis crates.",
       "mutations": [
         {
           "path": "crates/evm-abstract-protocol/src/lib.rs",
@@ -323,6 +323,58 @@
       ],
       "only_changed": [
         "lean-proofs"
+      ]
+    },
+    {
+      "name": "no-smt-scale-script-isolation",
+      "description": "A scale script input changes only the independent scripts/JSON contract check, never an engine build or browser check.",
+      "mutations": [
+        {
+          "path": "scripts/benchmark-no-smt-scale.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-smt-scale-contracts"
+      ]
+    },
+    {
+      "name": "no-smt-scale-generator-isolation",
+      "description": "A scale generator input changes only the independent scripts/JSON contract check, never an engine build or browser check.",
+      "mutations": [
+        {
+          "path": "scripts/generate-no-smt-scale-commands.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-smt-scale-contracts"
+      ]
+    },
+    {
+      "name": "no-smt-scale-contract-test-isolation",
+      "description": "A scale contract-test input changes only the independent scripts/JSON contract check, never an engine build or browser check.",
+      "mutations": [
+        {
+          "path": "scripts/test_generate_no_smt_scale_commands.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-smt-scale-contracts"
+      ]
+    },
+    {
+      "name": "no-smt-scale-fixture-isolation",
+      "description": "A scale fixture input changes only the independent scripts/JSON contract check, never an engine build or browser check.",
+      "mutations": [
+        {
+          "path": "examples/no-smt-scale/code-only/unknown-input.json",
+          "append": "\n"
+        }
+      ],
+      "only_changed": [
+        "no-smt-scale-contracts"
       ]
     }
   ]
