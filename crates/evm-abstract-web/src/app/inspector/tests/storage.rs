@@ -172,6 +172,66 @@ fn storage_report(count: usize) -> api::AnalysisReport {
     report
 }
 
+// Calibrate the fixed metadata/table chrome independently of the large list.
+// One vs two actual rows isolates widget cost, including invisible widgets.
+fn viewport_widget_budget(panel: &Panel<'_>) -> usize {
+    assert!(
+        panel.store.is_none(),
+        "calibration uses the initial-account fixture"
+    );
+    let mut reference = panel.report.clone();
+    let [(two, pitch), (one, _)] = [2, 1].map(|rows| {
+        let account = reference
+            .accounts
+            .iter_mut()
+            .find(|account| account.address == panel.address)
+            .unwrap();
+        let entries = if panel.transient {
+            &mut account.transient
+        } else {
+            &mut account.storage
+        };
+        assert!(entries.len() >= rows);
+        entries.truncate(rows);
+        let sample = Panel {
+            report: &reference,
+            store: None,
+            address: panel.address,
+            transient: panel.transient,
+            height: panel.height,
+        };
+        let context = context();
+        let mut time = 0.0;
+        sample.expand(&context, &mut time);
+        let drawn = sample.scroll(
+            &context,
+            &mut time,
+            Pos2::new(240.0, panel.height * 0.5),
+            -1_000_000.0,
+        );
+        assert_eq!(drawn.slots(), rows, "reference rows must actually paint");
+        let style = context.style();
+        let font = egui::TextStyle::Monospace.resolve(&style);
+        let height = 21.0_f32
+            .max(context.fonts_mut(|fonts| fonts.row_height(&font)))
+            .max(style.spacing.interact_size.y);
+        (drawn.widgets, height + style.spacing.item_spacing.y)
+    });
+    assert!(two > one, "actual row widgets must be counted: {one}/{two}");
+    let per_row = two - one;
+    let fixed = one
+        .checked_sub(per_row)
+        .expect("fixed metadata/table widgets");
+    // TableBody::rows rounds the viewport endpoints and retains one end row:
+    // ceil(viewport/pitch)+2 bounds even a partially clipped starting row.
+    let rows = (panel.height / pitch).ceil() as usize + 2;
+    let budget = fixed + rows * per_row;
+    eprintln!(
+        "fixed widgets={fixed}, widgets/row={per_row}, viewport rows={rows}, budget={budget}"
+    );
+    budget
+}
+
 #[test]
 fn expanded_facts_use_natural_height_and_the_resized_panel() {
     let report = storage_report(100);
@@ -270,6 +330,7 @@ fn ten_thousand_slots_create_only_viewport_rows_and_reach_the_last_slot() {
         transient: false,
         height: 240.0,
     };
+    let widget_budget = viewport_widget_budget(&panel);
     let context = context();
     let mut time = 0.0;
     let first = panel.expand(&context, &mut time);
@@ -282,8 +343,8 @@ fn ten_thousand_slots_create_only_viewport_rows_and_reach_the_last_slot() {
     );
     assert!(last.slots() > 0 && last.slots() <= 12);
     assert!(
-        last.widgets < 100,
-        "virtualization must bound actual creation, got {} widgets",
+        last.widgets <= widget_budget,
+        "actual creation {} exceeds fixed-metadata + viewport-row budget {widget_budget}",
         last.widgets
     );
     let state = egui::scroll_area::State::load(&context, last.scroll_id).unwrap();
@@ -291,7 +352,7 @@ fn ten_thousand_slots_create_only_viewport_rows_and_reach_the_last_slot() {
     let returned = panel.scroll(&context, &mut time, Pos2::new(240.0, 140.0), 1_000_000.0);
     assert!(returned.rect("Balance").is_some());
     assert_eq!(returned.slots(), 0);
-    assert!(returned.widgets < 100);
+    assert!(returned.widgets <= widget_budget);
 }
 
 #[test]

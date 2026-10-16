@@ -131,7 +131,7 @@ fn world_ssa_and_text_report_the_complete_retained_relation_policy() {
         );
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(
-            text.contains("relations=true | expression nodes=4096 | depth=128 | constraints=1024"),
+            text.contains("relations=true | local propagation | expression nodes=4096 | depth=128 | constraints=1024"),
             "{text}"
         );
         for obsolete in ["SMT=", "rlimit=", "resource unit="] {

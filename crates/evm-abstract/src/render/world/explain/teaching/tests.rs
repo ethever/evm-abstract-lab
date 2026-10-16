@@ -4,8 +4,8 @@ use super::render;
 use crate::{
     Fork,
     analysis::{
-        Diagnostic, DiagnosticKind, ExecutionConfig, FrameCode, Status, WorldAnalysis,
-        analyze_world,
+        Diagnostic, DiagnosticKind, ExecutionConfig, FrameCode, FrontierReason, OutcomeKind,
+        Status, WorldAnalysis, analyze_world,
     },
     domain::{AbstractValue, Domain, Profile, ReductionStatus},
     world::{Account, ByteArray, Entry, World},
@@ -284,10 +284,33 @@ fn converged_unknown_jump_and_fact_caps_remain_visible() {
 
 #[test]
 fn native_boundaries_and_closed_unknown_code_keep_their_distinct_coverage() {
-    let native = run(
-        World::new(Fork::Osaka, "native boundary"),
-        address(4),
-        ByteArray::unknown(),
+    let world = World::new(Fork::Osaka, "unknown identity input");
+    let native_entry = entry(address(4), ByteArray::unknown());
+    let config = ExecutionConfig::default();
+    let closed_native = analyze_world(world.clone(), native_entry.clone(), config.clone()).unwrap();
+    assert_eq!(closed_native.status(), Status::Converged);
+    assert!(closed_native.frontiers().is_empty());
+    // Use the same initialized native entry with one fewer logical work unit.
+    // Optional concrete-native refusal now has a sound summary, not a frontier.
+    let max_work = closed_native
+        .work()
+        .checked_sub(1)
+        .expect("native work was charged");
+    assert!(max_work > 0, "the bounded configuration must stay valid");
+    let native =
+        analyze_world(world, native_entry, ExecutionConfig { max_work, ..config }).unwrap();
+    assert!(!native.frontiers().is_empty());
+    assert!(
+        native
+            .frontiers()
+            .iter()
+            .all(|frontier| frontier.reason == FrontierReason::Work)
+    );
+    assert!(
+        native
+            .states()
+            .iter()
+            .any(|state| state.active().code == FrameCode::Precompile(address(4)))
     );
     let missing = run(
         World::new(Fork::Osaka, "missing code boundary"),
@@ -319,6 +342,46 @@ fn native_boundaries_and_closed_unknown_code_keep_their_distinct_coverage() {
     assert!(native_output.contains("Native precompile"));
     assert!(!native_output.contains("Captured instruction list"));
     assert!(!native_output.contains("B₀ @"));
+    assert!(
+        native
+            .states()
+            .iter()
+            .all(|state| state.program().is_none())
+    );
+
+    assert!(!closed_native.states().is_empty());
+    assert!(
+        closed_native
+            .states()
+            .iter()
+            .all(|state| state.program().is_none())
+    );
+    for kind in [
+        OutcomeKind::Return,
+        OutcomeKind::Revert,
+        OutcomeKind::Failure,
+    ] {
+        assert!(
+            closed_native
+                .outcomes()
+                .iter()
+                .any(|outcome| outcome.kind == kind)
+        );
+    }
+    let ssa = crate::ssa::build_normalized_world(&closed_native).unwrap();
+    assert!(ssa.complete());
+    assert!(
+        ssa.blocks()
+            .iter()
+            .all(|block| block.instructions.is_empty())
+    );
+    let closed_native_output = render(&closed_native).unwrap();
+    assert!(closed_native_output.contains("Native precompile"));
+    assert!(!closed_native_output.contains("Captured instruction list"));
+    assert!(!closed_native_output.contains("B₀ @"));
+    assert!(closed_native_output.contains("Verified cross-contract SSA:"));
+    assert!(!closed_native_output.contains("SSA unavailable"));
+
     assert_eq!(missing.status(), Status::Converged);
     assert!(missing.frontiers().is_empty());
     assert!(!missing.procedure_summaries().is_empty());

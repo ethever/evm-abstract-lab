@@ -47,7 +47,7 @@ fn rpc_analyze_and_explain_keep_local_relation_bounds() {
             let text = String::from_utf8(output.stdout).unwrap();
             assert!(
                 text.contains(
-                    "relations=true | expression nodes=4096 | depth=128 | constraints=1024"
+                    "relations=true | local propagation | expression nodes=4096 | depth=128 | constraints=1024"
                 )
             );
             assert!(!text.contains("SMT=") && !text.contains("rlimit="));
