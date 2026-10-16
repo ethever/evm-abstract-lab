@@ -52,11 +52,12 @@ impl Work<'_> {
         if self.cancellation.is_cancelled() {
             return Err(Stop::Pending(QueryReason::Cancelled));
         }
-        self.prepay(amount.saturating_mul(self.key_work))?;
-        self.remaining = self
+        let remaining = self
             .remaining
             .checked_sub(amount)
             .ok_or(Stop::Pending(QueryReason::ExpressionLimit))?;
+        self.prepay(amount.saturating_mul(self.key_work))?;
+        self.remaining = remaining;
         Ok(())
     }
     fn prepay(&mut self, amount: usize) -> LocalResult<()> {

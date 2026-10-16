@@ -207,6 +207,33 @@ fn root_ledger_refusal_cannot_be_returned_as_a_local_proof() {
 }
 
 #[test]
+fn rejected_local_step_preserves_paid_work_without_charging_the_rejected_step() {
+    let mut budget = WorkBudget::new(100);
+    {
+        let mut work = super::Work {
+            remaining: 3,
+            cancellation: analysis_control::current_cancellation(),
+            ledger: Some(&mut budget),
+            key_work: 7,
+        };
+        assert!(work.charge(2).is_ok());
+        assert_eq!(work.remaining, 1);
+        assert_eq!(work.ledger.as_ref().unwrap().used(), 14);
+        assert!(matches!(
+            work.charge(2),
+            Err(super::Stop::Pending(QueryReason::ExpressionLimit))
+        ));
+        assert_eq!(work.remaining, 1);
+        assert_eq!(work.ledger.as_ref().unwrap().used(), 14);
+        assert!(!work.ledger.as_ref().unwrap().exhausted());
+        assert!(work.charge(1).is_ok());
+        assert_eq!(work.remaining, 0);
+    }
+    assert_eq!(budget.used(), 21);
+    assert!(!budget.exhausted());
+}
+
+#[test]
 fn retained_inconsistent_bits_are_a_real_local_contradiction() {
     let x = ExprId::fresh().unwrap();
     let state = RelationState {
