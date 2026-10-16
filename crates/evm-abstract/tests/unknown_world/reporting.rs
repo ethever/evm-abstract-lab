@@ -1,7 +1,8 @@
 use super::{contexts, support::*};
 use evm_abstract::{
     analysis::{
-        DiagnosticKind, ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, Status,
+        ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, Status, control::Control,
+        progress::Observer,
     },
     domain::relational::QueryReason,
     world::ByteArray,
@@ -143,7 +144,7 @@ fn missing_known_callback_effect_coverage_remains_incomplete() {
 }
 
 #[test]
-fn native_solver_unknown_is_reported_without_erasing_possible_unknown_interactions() {
+fn local_cancellation_is_reported_without_poisoning_possible_unknown_interactions() {
     let a = contexts::readonly_parent(opcode::CALL);
     let mut c = Assembly::default();
     c.input(0)
@@ -155,34 +156,39 @@ fn native_solver_unknown_is_reported_without_erasing_possible_unknown_interactio
     let mut world = new_world();
     insert(&mut world, A, &a, &[(0, 42)]);
     insert(&mut world, C, &c.finish(), &[(0, 5)]);
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.rlimit = 1;
-    let analysis = run_config(world, entry(ByteArray::empty()), config);
+    // The removed solver-fuel fixture now exercises real scoped cancellation.
+    // The fresh retry uses the same world, input and complete default policy.
+    let input = entry(ByteArray::empty());
+    let control = Control::new(Observer::default());
+    control.cancellation().cancel();
+    let cancelled =
+        control.scope(|| run_config(world.clone(), input.clone(), ExecutionConfig::default()));
+    assert_eq!(cancelled.status(), Status::Incomplete);
     assert!(
-        analysis.diagnostics().iter().any(|d| matches!(
-            d.kind,
-            DiagnosticKind::RelationalPrecisionLost(
-                QueryReason::ResourceLimit | QueryReason::SolverUnknown { .. }
-            )
-        )) || analysis.frontiers().iter().any(|f| matches!(
-            f.reason,
-            FrontierReason::Relations(
-                QueryReason::ResourceLimit | QueryReason::SolverUnknown { .. }
-            )
-        )),
-        "native UNKNOWN/resource-limit cause was not retained"
+        cancelled
+            .frontiers()
+            .iter()
+            .any(|frontier| frontier.reason == FrontierReason::Relations(QueryReason::Cancelled)),
+        "local cancellation cause was not retained"
     );
+    assert!(
+        cancelled
+            .outcomes()
+            .iter()
+            .all(|outcome| outcome.kind != evm_abstract::analysis::OutcomeKind::Return)
+    );
+    let analysis = run_config(world, input, ExecutionConfig::default());
     let outcomes = returns(&analysis);
     for expected in [5, 9] {
         assert!(
             outcomes
                 .iter()
                 .any(|o| read(&o.store, C, 0).contains(evm_abstract::U256::from(expected))),
-            "solver UNKNOWN was used to prune C={expected}"
+            "fresh local analysis omitted C={expected} after leaving the cancelled scope"
         );
     }
-    // UNKNOWN may coexist with convergence only if the whole sound relation
-    // was closed without needing that unresolved query for its coverage.
+    // Ordinary local imprecision may coexist with convergence only when the
+    // complete conservative relation was closed for all retained interactions.
     if analysis.status() == Status::Converged {
         assert!(analysis.frontiers().is_empty());
         assert!(!analysis.procedure_summaries().is_empty());

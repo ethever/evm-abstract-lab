@@ -79,7 +79,7 @@ fn unresolved_alias_read_retains_both_results_and_their_conditions() {
 }
 
 #[test]
-fn smt_proved_distinct_arithmetic_slot_preserves_last_write_order() {
+fn distinct_arithmetic_slot_preserves_last_write_order() {
     // k and k+1 differ even at the EVM word wrap boundary.
     let mut code = Assembly::default();
     store_input_key(&mut code, 0, 7);

@@ -1,7 +1,6 @@
 //! EVM-level relational regressions: feasible paths survive and contradictions do not.
 //!
-//! These tests inspect native CFG reachability, rather than asking a particular
-//! solver or relation representation to report the answer it was constructed with.
+//! These tests inspect CFG reachability, concrete controls and local guarantees.
 
 use alloy_primitives::{Address, U256, hex};
 use evm_abstract::{
@@ -919,26 +918,57 @@ fn retained_unknown_branches(result: &analysis::Analysis, fixture: &Fixture) {
 }
 
 #[test]
-fn native_smt_resource_exhaustion_preserves_both_feasible_branches() {
-    use evm_abstract::domain::relational::{QueryReason, RelationLimits};
-    let fixture = one_symbolic_guard();
-    let result = limited(
-        &fixture,
-        RelationLimits {
-            rlimit: 1,
-            ..RelationLimits::default()
-        },
+fn local_work_exhaustion_retains_guards_and_recovers_exact_with_the_default_policy() {
+    use evm_abstract::domain::{
+        relational::{CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery},
+        symbolic::ExprId,
+    };
+    let policy = RelationLimits::default();
+    let input = ExprId::fresh().unwrap();
+    let derived = ExprId::operation(
+        opcode::ADD,
+        &[input.clone(), ExprId::constant(U256::ONE)],
+        policy.expressions(),
+    )
+    .unwrap();
+    let guard = ExprId::operation(
+        opcode::EQ,
+        &[derived, ExprId::constant(U256::from(2))],
+        policy.expressions(),
+    )
+    .unwrap();
+    let mut relations = RelationState::default();
+    assert_eq!(
+        relations.assume(&guard, true, &policy),
+        CheckResult::MayBeFeasible
     );
+    let before = relations.clone();
+    // The obsolete native-fuel fixture now bounds actual local steps. The
+    // complete retained graph fits; importing and validating it needs more work.
+    let bounded = RelationLimits {
+        max_nodes: relations.work_size(),
+        ..policy
+    };
+    assert!(guard.nodes() <= bounded.max_nodes);
+    assert!(guard.depth() <= bounded.max_depth);
+    assert_eq!(
+        relations.local_value(&input, &bounded),
+        ValueQuery::Undetermined(QueryReason::ExpressionLimit)
+    );
+    assert_eq!(relations, before, "interruption must preserve the guard");
+    assert_eq!(
+        relations.local_value(&input, &policy),
+        ValueQuery::Exact(U256::ONE)
+    );
+    assert_eq!(
+        relations.can_equal(&input, U256::ZERO, &policy),
+        CheckResult::ProvenImpossible
+    );
+    let fixture = one_symbolic_guard();
+    let result = limited(&fixture, policy);
     complete(&result);
     assert!(reachable(&result, fixture.labels["true"]));
     assert!(reachable(&result, fixture.labels["false"]));
-    assert!(
-        result.execution().diagnostics().iter().any(|diagnostic| {
-            diagnostic.kind
-                == analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
-        }),
-        "native rlimit exhaustion must remain typed, never UNSAT"
-    );
 }
 
 #[test]
@@ -987,13 +1017,25 @@ fn initial_symbolic_store_uses_the_configured_policy_and_retains_failure() {
 }
 
 #[test]
-fn unknown_range_feasibility_retains_both_outcomes_and_its_precision_reason() {
-    use evm_abstract::{analysis::DiagnosticKind, domain::relational::QueryReason};
+fn cancelled_range_analysis_can_be_retried_without_losing_either_outcome() {
+    use evm_abstract::analysis::{ControlledAnalysisError, control::Control, progress::Observer};
     let (world, mut entry) = world("5f345f3e00", "00");
     entry.environment.value = AbstractValue::top();
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.rlimit = 1;
-    let result = analysis::analyze_world(world, entry, config).unwrap();
+    // Replace the removed fuel knob with an actual cancellation boundary. Both
+    // the retry and concrete controls keep the original execution defaults.
+    let control = Control::new(Observer::default());
+    control.cancellation().cancel();
+    assert!(matches!(
+        analysis::analyze_world_with_control(
+            world.clone(),
+            entry.clone(),
+            ExecutionConfig::default(),
+            &control
+        ),
+        Err(ControlledAnalysisError::Cancelled)
+    ));
+    let result =
+        analysis::analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -1007,20 +1049,38 @@ fn unknown_range_feasibility_retains_both_outcomes_and_its_precision_reason() {
     ] {
         assert!(result.outcomes().iter().any(|outcome| outcome.kind == kind));
     }
-    assert!(result.diagnostics().iter().any(|diagnostic| {
-        diagnostic.pc == 3
-            && diagnostic.kind
-                == DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
-    }));
+    for (size, returns) in [(0u64, true), (1, false)] {
+        let mut concrete = entry.clone();
+        concrete.environment.value = AbstractValue::constant(U256::from(size));
+        let control =
+            analysis::analyze_world(world.clone(), concrete, ExecutionConfig::default()).unwrap();
+        assert_eq!(control.status(), Status::Converged);
+        assert_eq!(
+            control
+                .outcomes()
+                .iter()
+                .any(|outcome| outcome.kind == analysis::OutcomeKind::Return),
+            returns,
+            "empty returndata permits size zero and rejects size one"
+        );
+        assert!(
+            control
+                .outcomes()
+                .iter()
+                .any(|outcome| outcome.kind == analysis::OutcomeKind::Failure)
+        );
+    }
 }
 
 #[test]
 fn optional_state_read_projection_reports_precision_loss_without_unexpanded_paths() {
-    use evm_abstract::domain::relational::QueryReason;
+    use evm_abstract::domain::relational::{QueryReason, ValueQuery};
     let (world, entry) = world("5f3500", "00");
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.rlimit = 1;
-    let analysis = analysis::analyze_world(world, entry, config).unwrap();
+    // This replaces only the obsolete native-fuel fixture. Sixty-four nodes
+    // retain the read graph, but cannot pay the real 32-byte local projection.
+    config.analysis.relations.max_nodes = 64;
+    let analysis = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -1037,7 +1097,7 @@ fn optional_state_read_projection_reports_precision_loss_without_unexpanded_path
     assert!(analysis.diagnostics().iter().any(|diagnostic| {
         matches!(
             diagnostic.kind,
-            analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
+            analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ExpressionLimit)
         )
     }));
     assert!(
@@ -1045,6 +1105,46 @@ fn optional_state_read_projection_reports_precision_loss_without_unexpanded_path
             .outcomes()
             .iter()
             .any(|outcome| outcome.kind == analysis::OutcomeKind::Return)
+    );
+    let loaded = &analysis
+        .states()
+        .iter()
+        .find(|state| state.executed_pcs.contains(&1))
+        .unwrap()
+        .exit_stack[0];
+    assert!(loaded.contains(U256::ZERO));
+    assert!(loaded.contains(U256::MAX));
+    let expression = loaded
+        .expression()
+        .expect("interruption retains the input read");
+    assert!(expression.nodes() <= config.analysis.relations.max_nodes);
+    assert!(expression.depth() <= config.analysis.relations.max_depth);
+    assert_eq!(
+        evm_abstract::domain::relational::RelationState::default()
+            .local_value(expression, &config.analysis.relations),
+        ValueQuery::Undetermined(QueryReason::ExpressionLimit)
+    );
+    let ValueQuery::Bounds(bounds) = evm_abstract::domain::relational::RelationState::default()
+        .local_value(expression, &Default::default())
+    else {
+        panic!("the default local policy must complete the same read");
+    };
+    for value in [U256::ZERO, U256::MAX] {
+        assert!(bounds.contains(value), "local read bounds excluded {value}");
+    }
+    let mut concrete = entry;
+    concrete.environment.calldata = evm_abstract::world::ByteArray::exact(&[7; 32]);
+    let exact = analysis::analyze_world(world, concrete, config).unwrap();
+    assert_eq!(exact.status(), Status::Converged);
+    assert_eq!(
+        exact
+            .states()
+            .iter()
+            .find(|state| state.executed_pcs.contains(&1))
+            .unwrap()
+            .exit_stack[0]
+            .singleton(),
+        Some(U256::from_be_bytes([7; 32]))
     );
 }
 
@@ -1130,10 +1230,14 @@ fn a_constraint_limit_is_unknown_and_does_not_drop_a_feasible_side() {
 }
 
 #[test]
-fn uncompared_lazy_hash_reports_precision_loss_while_completing_execution() {
-    use evm_abstract::{analysis::DiagnosticKind, domain::relational::QueryReason};
-    // A partial overwrite of a 128-byte symbolic copy cannot currently be
-    // normalized as a complete content array. Its hash still has a sound value.
+fn uncompared_lazy_hash_keeps_concrete_hashes_without_a_precision_failure() {
+    use evm_abstract::{
+        analysis::DiagnosticKind,
+        domain::{Domain, relational::ValueQuery},
+        world::ByteArray,
+    };
+    // A partial overwrite of a 128-byte symbolic copy retains a content term.
+    // Its ordinary unknown value is not an unsupported-provider diagnostic.
     let result = analysis::analyze_with_environment(
         Program::from_hex("60805f5f3760ff5f5360805f205000").unwrap(),
         Config::default(),
@@ -1141,10 +1245,55 @@ fn uncompared_lazy_hash_reports_precision_loss_while_completing_execution() {
     )
     .unwrap();
     complete(&result);
-    assert!(result.execution().diagnostics().iter().any(|diagnostic| {
-        diagnostic.kind
-            == DiagnosticKind::RelationalPrecisionLost(QueryReason::Unsupported(opcode::KECCAK256))
+    assert!(result.execution().diagnostics().iter().all(|diagnostic| {
+        !matches!(diagnostic.kind, DiagnosticKind::RelationalPrecisionLost(_))
     }));
+    // No memory write follows KECCAK256, so the actual terminal memory is its
+    // input snapshot even though POP removes the intermediate stack result.
+    let payload = result
+        .execution()
+        .states()
+        .iter()
+        .find_map(|state| state.exit.as_ref())
+        .unwrap();
+    let domain = Domain::from_spec(result.execution().domain_spec());
+    let materialize_limit = ExecutionConfig::default().max_memory_bytes;
+    let input = payload
+        .active()
+        .memory
+        .slice(
+            &AbstractValue::constant(U256::ZERO),
+            &AbstractValue::constant(U256::from(128)),
+            materialize_limit,
+            domain,
+        )
+        .unwrap();
+    let hash = input.keccak(domain, materialize_limit).unwrap();
+    let answer = payload
+        .relations
+        .local_value(hash.expression().unwrap(), &domain.spec().relations());
+    let ValueQuery::Bounds(bounds) = answer else {
+        panic!("unknown content should retain completed local bounds: {answer:?}");
+    };
+    for fill in [0u8, 7] {
+        let mut bytes = [fill; 128];
+        bytes[0] = 255;
+        let expected = U256::from_be_bytes(alloy_primitives::keccak256(bytes).0);
+        assert!(hash.contains(expected));
+        assert!(
+            bounds.contains(expected),
+            "local bounds excluded concrete hash {expected}"
+        );
+        let exact = ByteArray::exact(&bytes)
+            .keccak(domain, materialize_limit)
+            .unwrap();
+        assert_eq!(exact.singleton(), Some(expected));
+        assert_eq!(
+            evm_abstract::domain::relational::RelationState::default()
+                .local_value(exact.expression().unwrap(), &domain.spec().relations()),
+            ValueQuery::Exact(expected)
+        );
+    }
 }
 
 #[test]
