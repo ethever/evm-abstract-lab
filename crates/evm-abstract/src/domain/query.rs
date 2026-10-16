@@ -42,9 +42,8 @@ fn feasible(
     memo[depth][usize::from(lower_tight)][usize::from(upper_tight)] = Some(answer);
     answer
 }
-fn extreme(lo: U256, hi: U256, bits: KnownBits, maximum: bool) -> Option<U256> {
-    let mut memo = [[[None; 2]; 2]; 257];
-    if !feasible(0, true, true, lo, hi, bits, &mut memo) {
+fn extreme(lo: U256, hi: U256, bits: KnownBits, maximum: bool, memo: &mut Memo) -> Option<U256> {
+    if !feasible(0, true, true, lo, hi, bits, memo) {
         return None;
     }
     let (mut lower_tight, mut upper_tight, mut result) = (true, true, U256::ZERO);
@@ -60,7 +59,7 @@ fn extreme(lo: U256, hi: U256, bits: KnownBits, maximum: bool) -> Option<U256> {
             }
             let next_lower = lower_tight && bit == lo.bit(index);
             let next_upper = upper_tight && bit == hi.bit(index);
-            if feasible(depth + 1, next_lower, next_upper, lo, hi, bits, &mut memo) {
+            if feasible(depth + 1, next_lower, next_upper, lo, hi, bits, memo) {
                 if bit {
                     result |= U256::from(1) << index;
                 }
@@ -73,7 +72,39 @@ fn extreme(lo: U256, hi: U256, bits: KnownBits, maximum: bool) -> Option<U256> {
     Some(result)
 }
 pub(super) fn mask_bounds(lo: U256, hi: U256, bits: KnownBits) -> Option<(U256, U256)> {
-    Some((extreme(lo, hi, bits, false)?, extreme(lo, hi, bits, true)?))
+    mask_bounds_with_memo(lo, hi, bits, || [[[None; 2]; 2]; 257])
+}
+
+fn mask_bounds_with_memo(
+    lo: U256,
+    hi: U256,
+    bits: KnownBits,
+    new_memo: impl FnOnce() -> Memo,
+) -> Option<(U256, U256)> {
+    if lo > hi {
+        return None;
+    }
+    let lower_matches = bits.contains(lo);
+    if lo == hi {
+        return lower_matches.then_some((lo, hi));
+    }
+    let upper_matches = bits.contains(hi);
+    if lower_matches && upper_matches {
+        return Some((lo, hi));
+    }
+    // 可行性只依赖 depth/tight、区间和位约束，与极值方向无关。
+    let mut memo = new_memo();
+    let lower = if lower_matches {
+        lo
+    } else {
+        extreme(lo, hi, bits, false, &mut memo)?
+    };
+    let upper = if upper_matches {
+        hi
+    } else {
+        extreme(lo, hi, bits, true, &mut memo)?
+    };
+    Some((lower, upper))
 }
 
 fn bit_pattern_count(value: &NumericValue, capacity: usize) -> Option<usize> {
@@ -168,4 +199,89 @@ pub(super) fn candidates(value: &NumericValue, capacity: usize) -> Option<BTreeS
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KnownBits, U256, mask_bounds, mask_bounds_with_memo};
+
+    #[test]
+    fn mask_bounds_matches_exhaustive_four_bit_enumeration() {
+        for zero in 0_u8..16 {
+            for one in 0_u8..16 {
+                if zero & one != 0 {
+                    continue;
+                }
+                let bits = KnownBits::new(U256::from(zero), U256::from(one)).unwrap();
+                for lo in 0_u8..16 {
+                    for hi in lo..16 {
+                        let values = (lo..=hi)
+                            .filter(|value| value & zero == 0 && value & one == one)
+                            .collect::<Vec<_>>();
+                        let expected = values
+                            .first()
+                            .zip(values.last())
+                            .map(|(&first, &last)| (U256::from(first), U256::from(last)));
+                        assert_eq!(
+                            mask_bounds(U256::from(lo), U256::from(hi), bits),
+                            expected,
+                            "zero={zero} one={one} lo={lo} hi={hi}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mask_bounds_shortcuts_and_word_boundaries_share_at_most_one_memo() {
+        let word = U256::from::<u64>;
+        let zero = U256::ZERO;
+        let one = word(1);
+        let high = one << 255;
+        let max = U256::MAX;
+        let top = KnownBits::top();
+        let even = KnownBits::new(one, zero).unwrap();
+        let high_set = KnownBits::new(zero, high).unwrap();
+        let high_clear = KnownBits::new(high, zero).unwrap();
+        let exact = KnownBits::exact(high);
+        let exact_max = KnownBits::exact(max);
+        let exact_zero = KnownBits::exact(zero);
+        for (lo, hi, bits, expected, memos) in [
+            (zero, max, top, Some((zero, max)), 0),
+            (one, one, top, Some((one, one)), 0),
+            (high, high, exact, Some((high, high)), 0),
+            (one, one, even, None, 0),
+            (max, zero, top, None, 0),
+            (word(2), one, even, None, 0),
+            (zero, word(14), even, Some((zero, word(14))), 0),
+            (zero, word(15), even, Some((zero, word(14))), 1),
+            (one, word(14), even, Some((word(2), word(14))), 1),
+            (one, word(15), even, Some((word(2), word(14))), 1),
+            (zero, max, high_set, Some((high, max)), 1),
+            (high, max, high_set, Some((high, max)), 0),
+            (zero, max, high_clear, Some((zero, high - one)), 1),
+            (
+                high - one,
+                high + one,
+                high_set,
+                Some((high, high + one)),
+                1,
+            ),
+            (zero, max, exact, Some((high, high)), 1),
+            (zero, max, exact_max, Some((max, max)), 1),
+            (zero, max, exact_zero, Some((zero, zero)), 1),
+            (zero, high - one, exact, None, 1),
+            (max, max, exact_max, Some((max, max)), 0),
+            (max, max, exact_zero, None, 0),
+        ] {
+            let mut created = 0;
+            let actual = mask_bounds_with_memo(lo, hi, bits, || {
+                created += 1;
+                [[[None; 2]; 2]; 257]
+            });
+            assert_eq!(actual, expected, "lo={lo} hi={hi} bits={bits:?}");
+            assert_eq!(created, memos, "lo={lo} hi={hi} bits={bits:?}");
+        }
+    }
 }
