@@ -3,7 +3,7 @@
 use crate::{
     Fork,
     analysis::{ExecutionConfig, OutcomeKind, Status, analyze_world, machine::fixtures},
-    domain::relational::RelationLimits,
+    domain::{AbstractValue, relational::RelationLimits},
     world::{Account, Entry, EvmEnvironment, World},
 };
 use alloy_primitives::U256;
@@ -48,6 +48,31 @@ fn screen_policy() -> ExecutionConfig {
     config
 }
 
+fn same_word_witness(returned: &AbstractValue, stored: &AbstractValue, value: U256) -> bool {
+    returned
+        .symbolic_expression()
+        .is_some_and(|expression| Some(expression) == stored.symbolic_expression())
+        && returned.contains(value)
+        && stored.contains(value)
+}
+
+#[test]
+fn marginal_word_bounds_do_not_certify_a_joint_witness() {
+    use crate::domain::{Domain, symbolic::ExprId};
+    let domain = Domain::default();
+    let x = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let next = domain.apply(revm_bytecode::opcode::ADD, &[x.clone(), fixtures::word(1)]);
+    // Both margins contain 1, but x and x + 1 cannot jointly equal 1.
+    assert!(x.contains(U256::ONE) && next.contains(U256::ONE));
+    assert!(!same_word_witness(&x, &next, U256::ONE));
+    assert!(same_word_witness(&x, &x, U256::ONE));
+    assert!(same_word_witness(
+        &fixtures::word(1),
+        &fixtures::word(1),
+        U256::ONE
+    ));
+}
+
 #[test]
 fn symbolic_countdown_closes_with_unknown_initial_state_and_joint_witnesses() {
     let input: serde_json::Value = serde_json::from_str(include_str!(concat!(
@@ -87,14 +112,11 @@ fn symbolic_countdown_closes_with_unknown_initial_state_and_joint_witnesses() {
                 analysis.outcomes().iter().any(|outcome| {
                     outcome.kind == OutcomeKind::Return
                         && outcome.data.len().contains(U256::from(32))
-                        && outcome
-                            .data
-                            .read_word(&fixtures::word(0), domain)
-                            .contains(expected)
-                        && outcome
-                            .store
-                            .read(owner, &fixtures::word(0), domain)
-                            .contains(expected)
+                        && same_word_witness(
+                            &outcome.data.read_word(&fixtures::word(0), domain),
+                            &outcome.store.read(owner, &fixtures::word(0), domain),
+                            expected,
+                        )
                 }),
                 "no joint return/store outcome for initial={initial}, count={count}"
             );
