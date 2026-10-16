@@ -33,20 +33,26 @@ fn sequence_guard_agrees_with_checked_math_including_empty_and_overflow() {
 }
 
 #[test]
-fn memory_guard_distinguishes_zero_size_and_word_rounded_capacity() {
+fn memory_guard_distinguishes_zero_size_and_word_rounded_u256_end() {
     let domain = Domain::default();
-    for (offset, size, cap, expected) in [
-        (U256::MAX, 0, 0, true),
-        (U256::ZERO, 1, 31, false),
-        (U256::ZERO, 1, 32, true),
-        (U256::from(31), 1, 32, true),
-        (U256::from(31), 2, 63, false),
-        (U256::from(31), 2, 64, true),
-        (U256::MAX, 1, usize::MAX, false),
+    let bound = super::logical::MAX_END;
+    for (offset, size, expected) in [
+        (U256::MAX, 0, true),
+        (U256::ZERO, 1, true),
+        (U256::from(31), 2, true),
+        (bound - U256::from(1), 1, true),
+        (bound - U256::from(1), 2, false),
+        (bound, 1, false),
+        (bound + U256::from(1), 0, true),
+        (U256::MAX, 1, false),
     ] {
-        let actual = memory_condition(&value(offset), &value(U256::from(size)), cap, domain);
+        let actual = memory_condition(&value(offset), &value(U256::from(size)), domain);
         assert_eq!(actual.singleton(), Some(U256::from(u8::from(expected))));
     }
+    assert_eq!(
+        memory_condition(&value(U256::ZERO), &value(bound), domain).singleton(),
+        Some(U256::from(1))
+    );
 }
 
 fn execution() -> super::Execution {
@@ -72,7 +78,7 @@ fn execution() -> super::Execution {
 }
 
 #[test]
-fn symbolic_policy_partition_retains_both_domains_and_pre_effect_state() {
+fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
     use crate::{
         analysis::ExecutionConfig,
         domain::{relational::CheckResult, symbolic::ExprId},
@@ -103,41 +109,26 @@ fn symbolic_policy_partition_retains_both_domains_and_pre_effect_state() {
         &mut context,
         7
     ));
-    assert_eq!(result.frontiers.len(), 1);
-    let pending = result.frontiers[0].range.as_ref().unwrap();
-    assert_eq!(pending.nonzero, Some(false));
-    assert_eq!(pending.payload.active().memory, before);
+    assert!(result.frontiers.is_empty());
+    assert_eq!(result.outcomes.len(), 1);
+    assert_eq!(
+        result.outcomes[0].kind,
+        crate::analysis::OutcomeKind::Failure
+    );
+    assert_eq!(result.outcomes[0].data.len().singleton(), Some(U256::ZERO));
     assert_eq!(result.payload.active().memory, before);
-    for (length, legal) in [
-        (0, true),
-        (32, true),
-        (64, true),
-        (65, false),
-        (4096, false),
-    ] {
+    for (length, legal) in [(0, true), (32, true), (64, true), (65, true), (4096, true)] {
         let word = U256::from(length);
         assert_eq!(
-            super::memory_condition(
-                &value(U256::ZERO),
-                &value(word),
-                config.max_memory_bytes,
-                Domain::default(),
-            )
-            .singleton(),
+            super::memory_condition(&value(U256::ZERO), &value(word), Domain::default(),)
+                .singleton(),
             Some(U256::from(u8::from(legal))),
-            "known sizes retain the exact policy decision"
+            "host extraction capacity does not exclude logical success"
         );
         // The retained OR/AND guard keeps both partitions. A candidate is not
         // imported into F to search its compound Boolean alternatives.
         assert_eq!(
             result
-                .payload
-                .relations
-                .can_equal(&source, word, &config.analysis.relations),
-            CheckResult::MayBeFeasible
-        );
-        assert_eq!(
-            pending
                 .payload
                 .relations
                 .can_equal(&source, word, &config.analysis.relations),
@@ -191,6 +182,14 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
     assert_eq!(result.frontiers.len(), 1);
     let pending = result.frontiers[0].range.as_ref().unwrap();
     assert_eq!(pending.nonzero, None);
+    assert_eq!(
+        pending.request.kind,
+        crate::analysis::RangeKind::LogicalMemory
+    );
+    assert_eq!(
+        pending.request.limit.singleton(),
+        Some(super::logical::MAX_END)
+    );
     assert_eq!(*pending.payload, before);
     assert_eq!(
         result.frontiers[0].reason,
@@ -201,9 +200,9 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
 }
 
 #[test]
-fn encoder_limit_keeps_both_guarded_memory_domains() {
+fn encoder_limit_keeps_success_guard_and_gas_failure_coverage() {
     use crate::{
-        analysis::{ExecutionConfig, FrontierReason},
+        analysis::ExecutionConfig,
         domain::{
             relational::{Constraint, QueryReason},
             symbolic::{ByteStateId, ByteView, ExprId, SourceId},
@@ -227,7 +226,7 @@ fn encoder_limit_keeps_both_guarded_memory_domains() {
     )
     .unwrap();
     let size = AbstractValue::top().with_expression(hash);
-    let condition = super::memory_condition(&value(U256::ZERO), &size, 64, Domain::default());
+    let condition = super::memory_condition(&value(U256::ZERO), &size, Domain::default());
     let expression = condition.symbolic_expression().unwrap();
     assert!(expression.nodes() <= config.analysis.relations.max_nodes);
     let mut budget = super::super::WorkBudget::new(10_000_000);
@@ -249,18 +248,17 @@ fn encoder_limit_keeps_both_guarded_memory_domains() {
         7
     ));
     assert_eq!(result.payload.active().memory, before);
-    assert_eq!(result.frontiers.len(), 1);
-    assert_eq!(result.frontiers[0].reason, FrontierReason::Memory);
-    let excluded = result.frontiers[0].range.as_ref().unwrap();
-    assert_eq!(excluded.nonzero, Some(false));
-    assert_eq!(excluded.payload.active().memory, before);
-    for (payload, nonzero) in [(&result.payload, true), (excluded.payload.as_ref(), false)] {
-        assert!(payload.relations.constraints().any(|atom| atom
-            == &Constraint::Truth {
-                expression: expression.clone(),
-                nonzero,
-            }));
-    }
+    assert!(result.frontiers.is_empty());
+    assert_eq!(result.outcomes.len(), 1);
+    assert_eq!(
+        result.outcomes[0].kind,
+        crate::analysis::OutcomeKind::Failure
+    );
+    assert!(result.payload.relations.constraints().any(|atom| atom
+        == &Constraint::Truth {
+            expression: expression.clone(),
+            nonzero: true,
+        }));
     assert_eq!(
         result
             .diagnostics

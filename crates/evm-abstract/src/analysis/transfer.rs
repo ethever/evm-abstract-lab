@@ -245,6 +245,16 @@ fn touch_memory(
     if !ranges::memory(result, offset, size, context, pc) {
         return false;
     }
+    expand_memory(result, offset, size, context, pc)
+}
+
+fn expand_memory(
+    result: &mut Execution,
+    offset: &AbstractValue,
+    size: &AbstractValue,
+    context: &mut TransferContext<'_>,
+    pc: usize,
+) -> bool {
     let config = context.config;
     let domain = context.domain;
     if !context.budget.charge(byte_work(
@@ -863,12 +873,14 @@ fn execute_inner(
                     result.mark_instruction(InstructionProgress::Dispatched);
                     return result;
                 }
-                if op == opcode::MCOPY
-                    && !touch_memory(&mut result, &args[1], &args[2], context, pc)
-                {
-                    return result;
-                }
-                if !touch_memory(&mut result, &args[0], &args[2], context, pc) {
+                let admitted = if op == opcode::MCOPY {
+                    ranges::memory_copy(&mut result, &args[1], &args[0], &args[2], context, pc)
+                        && expand_memory(&mut result, &args[1], &args[2], context, pc)
+                        && expand_memory(&mut result, &args[0], &args[2], context, pc)
+                } else {
+                    touch_memory(&mut result, &args[0], &args[2], context, pc)
+                };
+                if !admitted {
                     return result;
                 }
                 if let Err(error) = result.payload.active_mut().memory.copy_from(

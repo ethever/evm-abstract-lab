@@ -114,13 +114,36 @@ pub(super) fn operation_work(
                 AbstractValue::constant(crate::U256::from(255)),
             ])),
         opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY => {
-            byte_work(&args.iter().collect::<Vec<_>>(), 0, array_size, domain).saturating_add(
-                if op == opcode::CODECOPY {
-                    program.byte_len()
-                } else {
-                    0
-                },
+            let source_facts = match op {
+                opcode::CALLDATACOPY => frame.calldata.stored_bytes().len(),
+                opcode::CODECOPY => program.byte_len(),
+                opcode::RETURNDATACOPY => frame.returndata.stored_bytes().len(),
+                _ => frame.memory.stored_bytes().len(),
+            };
+            let old_facts = frame.memory.stored_bytes().len();
+            let cached =
+                old_facts.saturating_add(source_facts.min(256usize.saturating_sub(old_facts)));
+            // COPY captures a root and refreshes only retained sparse facts.
+            // The 256 ceiling matches COPY_FACT_LIMIT, independently of L.
+            // Each refreshed fact can walk the retained source/target graphs.
+            byte_work(
+                &args.iter().collect::<Vec<_>>(),
+                cached,
+                array_size
+                    .saturating_mul(cached.saturating_add(2))
+                    .saturating_mul(
+                        domain
+                            .capacity()
+                            .saturating_mul(domain.capacity())
+                            .saturating_add(1),
+                    ),
+                domain,
             )
+            .saturating_add(if op == opcode::CODECOPY {
+                program.byte_len()
+            } else {
+                0
+            })
         }
         opcode::EXTCODECOPY => {
             byte_work(&args.iter().collect::<Vec<_>>(), 0, array_size, domain).saturating_add(
@@ -140,7 +163,20 @@ pub(super) fn operation_work(
         opcode::RETURN | opcode::REVERT | opcode::LOG0..=opcode::LOG4 => {
             // These consumers retain a view; logical bytes are charged only
             // when a concrete consumer actually materializes them.
-            byte_work(&[&args[0], &args[1]], 0, array_size, domain)
+            let cached = frame.memory.stored_bytes().len().min(256);
+            byte_work(
+                &[&args[0], &args[1]],
+                cached,
+                array_size
+                    .saturating_mul(cached.saturating_add(2))
+                    .saturating_mul(
+                        domain
+                            .capacity()
+                            .saturating_mul(domain.capacity())
+                            .saturating_add(1),
+                    ),
+                domain,
+            )
         }
         opcode::SLOAD | opcode::SSTORE | opcode::TLOAD | opcode::TSTORE => result
             .payload

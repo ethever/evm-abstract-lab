@@ -74,20 +74,24 @@ fn osaka_p256_entry_executes_native_code_instead_of_fixture_bytecode() {
 
 #[test]
 fn model_frontier_key_retains_the_current_stack_height() {
-    // A memory boundary consumes its offset; retained 42 stays in the frame.
-    let analysis = analyze_world(
-        world(Fork::Osaka, "602a60405100"),
-        entry(0x101),
-        ExecutionConfig {
-            max_memory_bytes: 32,
-            ..ExecutionConfig::default()
-        },
-    )
-    .unwrap();
+    // A real expression-retention boundary consumes KECCAK's range operands;
+    // retained 42 stays in the frame. A host cap alone is no longer a boundary.
+    let mut config = ExecutionConfig {
+        max_memory_bytes: 32,
+        ..ExecutionConfig::default()
+    };
+    config.analysis.relations.max_nodes = 1;
+    let analysis =
+        analyze_world(world(Fork::Osaka, "602a602060402000"), entry(0x101), config).unwrap();
     let frontier = analysis
         .frontiers()
         .iter()
-        .find(|frontier| frontier.reason == FrontierReason::Memory)
+        .find(|frontier| {
+            frontier.reason
+                == FrontierReason::Relations(
+                    evm_abstract::domain::relational::QueryReason::ExpressionLimit,
+                )
+        })
         .unwrap();
     let state = &analysis.states()[frontier.from.unwrap()];
     let payload = state.exit.as_ref().unwrap();

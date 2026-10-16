@@ -605,7 +605,9 @@ fn unrepresentable_nonce_and_shared_creation_limits_are_explicit() {
                 max_memory_bytes: 1,
                 ..ExecutionConfig::default()
             },
-            FrontierReason::Memory,
+            // Lazy memory stays complete; extracting executable initcode is
+            // a real physical consumer and still obeys the one-byte cap.
+            FrontierReason::Creation(CreationBoundary::UnknownInitCode),
         ),
     ] {
         let analysis = analysis::analyze_world(

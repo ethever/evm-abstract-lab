@@ -3,11 +3,7 @@ use super::support::{
     reachable, return_words, run, run_world,
 };
 use alloy_primitives::U256;
-use evm_abstract::{
-    Fork,
-    analysis::{FrontierReason, OutcomeKind, Status},
-    world::ByteArray,
-};
+use evm_abstract::{Fork, analysis::OutcomeKind, world::ByteArray};
 use revm_bytecode::opcode;
 
 /// Bounds come from EVM branches, never from choosing one concrete length.
@@ -61,15 +57,13 @@ fn minimal_unknown_length_copy_keeps_eligible_completion_and_symbolic_length() {
         covers.into_iter().all(|covered| covered),
         "zero and nonzero lengths survive"
     );
-    // A logical-range policy may retain an explicit out-of-policy frontier.
-    if analysis.status() == Status::Incomplete {
-        assert!(
-            analysis
-                .frontiers()
-                .iter()
-                .all(|frontier| frontier.reason == FrontierReason::Memory)
-        );
-    }
+    complete(&analysis);
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .any(|o| o.kind == OutcomeKind::Failure)
+    );
 }
 
 #[test]
@@ -137,7 +131,7 @@ fn bounded_large_logical_copy_does_not_expand_one_byte_at_a_time() {
 }
 
 #[test]
-fn copy_over_policy_retains_a_frontier_and_the_in_policy_paths() {
+fn copy_over_materialization_cap_retains_the_complete_logical_success_domain() {
     let mut code = Assembly::default();
     bounded_input(&mut code, 0, 512);
     copy_all_input(&mut code);
@@ -150,22 +144,26 @@ fn copy_over_policy_retains_a_frontier_and_the_in_policy_paths() {
         entry(ByteArray::unknown()),
         policy,
     );
-    assert_eq!(analysis.status(), Status::Incomplete);
-    assert!(
-        analysis
-            .frontiers()
-            .iter()
-            .any(|frontier| frontier.reason == FrontierReason::Memory)
-    );
+    complete(&analysis);
     assert!(
         analysis.outcomes().iter().any(|outcome| {
             outcome.kind == OutcomeKind::Return
                 && analysis.states()[outcome.state]
                     .exit
                     .as_ref()
-                    .is_some_and(|payload| payload.active().memory.len().contains(U256::from(128)))
+                    .is_some_and(|payload| {
+                        [0, 128, 512]
+                            .into_iter()
+                            .all(|n| payload.active().memory.len().contains(U256::from(n)))
+                    })
         }),
-        "an over-policy possibility must not erase the eligible COPY completion"
+        "the whole requested extent survives beyond the physical extraction cap"
+    );
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .any(|o| o.kind == OutcomeKind::Failure)
     );
 }
 

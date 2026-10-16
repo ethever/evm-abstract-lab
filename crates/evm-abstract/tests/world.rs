@@ -418,23 +418,31 @@ fn overlapping_copy_uses_source_snapshot() {
 }
 
 #[test]
-fn range_limits_are_typed_atomic_and_allow_zero_size_at_any_offset() {
+fn logical_ranges_ignore_materialization_caps_and_keep_invalid_updates_atomic() {
     let domain = Domain::default();
     let mut memory = ByteArray::memory();
+    memory.write_word(&v(1), &v(42), 32, domain).unwrap();
+    assert_eq!(memory.len().singleton(), Some(U256::from(64)));
+    assert_eq!(
+        memory.read_word(&v(1), domain).singleton(),
+        Some(U256::from(42))
+    );
+    let unbound = memory
+        .slice(&v(0), &AbstractValue::top(), 32, domain)
+        .unwrap();
+    assert!(unbound.len().numeric().is_top());
+    assert!(unbound.len().expression().is_some());
+    let maximal = memory
+        .slice(&v(0), &AbstractValue::constant(U256::MAX), 32, domain)
+        .unwrap();
+    assert_eq!(maximal.len().singleton(), Some(U256::MAX));
+    assert!(maximal.exact_bytes_bounded(32).is_none());
     let original = memory.clone();
     assert!(matches!(
-        memory.write_word(&v(1), &v(42), 32, domain),
-        Err(RangeError::TooLarge { .. })
+        memory.write_word(&AbstractValue::constant(U256::MAX), &v(42), 32, domain),
+        Err(RangeError::OffsetTooLarge(_))
     ));
     assert_eq!(memory, original);
-    assert!(matches!(
-        memory.slice(&v(0), &AbstractValue::top(), 32, domain),
-        Err(RangeError::UnknownSize)
-    ));
-    assert!(matches!(
-        memory.slice(&v(0), &AbstractValue::constant(U256::MAX), 32, domain),
-        Err(RangeError::TooLarge { .. })
-    ));
     memory
         .expand(&AbstractValue::constant(U256::MAX), &v(0), 32, domain)
         .unwrap();

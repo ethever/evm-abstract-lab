@@ -710,10 +710,18 @@ fn shared_depth_and_work_limits_keep_typed_frontiers() {
         },
     )
     .unwrap();
+    assert_eq!(memory.status(), Status::Converged);
+    assert!(memory.frontiers().is_empty());
     assert!(
         memory
-            .frontiers()
+            .outcomes()
             .iter()
-            .any(|f| f.reason == FrontierReason::Memory)
+            .any(|o| o.kind == OutcomeKind::Return)
+    );
+    assert!(
+        memory
+            .outcomes()
+            .iter()
+            .any(|o| o.kind == OutcomeKind::Failure)
     );
 }

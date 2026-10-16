@@ -4,11 +4,7 @@ use super::{
     support::{Assembly, ROOT, complete, config, construct_world, entry, no_bad_branch, run_world},
 };
 use alloy_primitives::U256;
-use evm_abstract::{
-    Fork,
-    analysis::{FrontierReason, OutcomeKind, Status},
-    world::ByteArray,
-};
+use evm_abstract::{Fork, analysis::OutcomeKind, world::ByteArray};
 use revm_bytecode::opcode;
 
 #[test]
@@ -210,22 +206,13 @@ fn nonempty_memory_access_does_not_wrap_a_maximal_offset_to_zero() {
         entry(ByteArray::empty()),
         config(),
     );
-    if analysis.status() == Status::Incomplete {
-        assert!(
-            analysis
-                .frontiers()
-                .iter()
-                .any(|frontier| frontier.reason == FrontierReason::Memory)
-        );
-    } else {
-        complete(&analysis);
-        assert!(
-            analysis
-                .outcomes()
-                .iter()
-                .any(|outcome| outcome.kind == OutcomeKind::Failure)
-        );
-    }
+    complete(&analysis);
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == OutcomeKind::Failure)
+    );
     assert!(
         analysis
             .outcomes()

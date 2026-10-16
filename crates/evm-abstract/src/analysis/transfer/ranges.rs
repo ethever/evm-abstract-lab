@@ -4,7 +4,6 @@
 //! without allowing EVM's modular arithmetic to wrap an invalid range to zero.
 
 use crate::domain::{AbstractValue, Domain};
-use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::sync::Arc;
 
@@ -16,6 +15,8 @@ use crate::{
     domain::relational::{CheckResult, QueryReason},
     world::ByteArray,
 };
+
+mod logical;
 
 struct Partition {
     allowed: Option<MachinePayload>,
@@ -36,8 +37,8 @@ impl Constrained {
     }
 }
 
-/// Keep excluded inputs before memory changes. A solver UNKNOWN may retain
-/// both guarded branches; inability to retain the guard stops this instruction.
+/// Admit a logical extent and a conservative gas-failure alternative before
+/// this instruction changes memory. Host extraction limits are unrelated.
 pub(super) fn memory(
     result: &mut Execution,
     offset: &AbstractValue,
@@ -45,38 +46,72 @@ pub(super) fn memory(
     context: &mut TransferContext<'_>,
     pc: usize,
 ) -> bool {
+    if !logical::failure(result, context, pc) {
+        return false;
+    }
+    allow_memory(result, offset, size, context, pc)
+}
+
+/// MCOPY checks both endpoints against the captured, pre-instruction state.
+/// One unguarded gas failure covers either endpoint without duplicate unwinds.
+pub(super) fn memory_copy(
+    result: &mut Execution,
+    source: &AbstractValue,
+    destination: &AbstractValue,
+    size: &AbstractValue,
+    context: &mut TransferContext<'_>,
+    pc: usize,
+) -> bool {
+    logical::failure(result, context, pc)
+        && allow_memory(result, source, size, context, pc)
+        && allow_memory(result, destination, size, context, pc)
+}
+
+fn allow_memory(
+    result: &mut Execution,
+    offset: &AbstractValue,
+    size: &AbstractValue,
+    context: &mut TransferContext<'_>,
+    pc: usize,
+) -> bool {
+    // Eight pure predicates/arithmetic operations, their argument copies and
+    // retained expressions. Pay from operand metadata before constructing the
+    // guard; neither a logical byte count nor a host-size conversion is work.
+    let guard_work = offset
+        .work_size()
+        .saturating_add(size.work_size())
+        .saturating_add(2)
+        .saturating_mul(16)
+        .saturating_mul(
+            context
+                .domain
+                .capacity()
+                .saturating_mul(context.domain.capacity())
+                .saturating_add(1),
+        );
+    if !context.budget.charge(guard_work) {
+        super::boundary(result, pc, FrontierReason::Work);
+        return false;
+    }
     let request = RangeRequest {
-        kind: RangeKind::MemoryPolicy,
+        kind: RangeKind::LogicalMemory,
         offset: super::relations::identify(
             offset.clone(),
             context.config.analysis.relations.enabled,
         ),
         size: super::relations::identify(size.clone(), context.config.analysis.relations.enabled),
-        limit: super::constant(context.config.max_memory_bytes),
+        limit: AbstractValue::constant(logical::MAX_END),
     };
-    let condition = memory_condition(
-        &request.offset,
-        &request.size,
-        context.config.max_memory_bytes,
-        context.domain,
-    );
+    let condition = memory_condition(&request.offset, &request.size, context.domain);
     if !condition.may_be_zero() {
         return true;
     }
     let Some(partition) = partition(result, &request, &condition, context, pc) else {
         return false;
     };
-    if let Some(payload) = partition.excluded {
-        pending(
-            result,
-            pc,
-            FrontierReason::Memory,
-            request,
-            condition,
-            Some(false),
-            payload,
-        );
-    }
+    // The excluded nonempty domain is universally unaffordable under the
+    // pinned fork costs; logical::failure already covers it and all affordable
+    // or potentially unaffordable representable accesses. No policy frontier.
     let Some(payload) = partition.allowed else {
         return false;
     };
@@ -145,7 +180,7 @@ fn partition(
     let cost = result
         .payload
         .work_size()
-        .saturating_mul(2)
+        .saturating_mul(3)
         .saturating_add(condition.work_size());
     if !context.budget.charge(cost) {
         super::boundary(result, pc, FrontierReason::Work);
@@ -270,15 +305,14 @@ fn pending(
     });
 }
 
-/// A nonempty access must fit the word-rounded logical memory policy. An empty
-/// access never expands memory, even when its offset is not host representable.
+/// A nonempty access must have a word-rounded U256 end. Empty accesses never
+/// expand memory, including offset MAX. The subtraction stays guarded.
 pub(super) fn memory_condition(
     offset: &AbstractValue,
     size: &AbstractValue,
-    maximum: usize,
     domain: Domain,
 ) -> AbstractValue {
-    let limit = AbstractValue::constant(U256::from(maximum - maximum % 32));
+    let limit = AbstractValue::constant(logical::MAX_END);
     let empty = domain.apply(opcode::ISZERO, std::slice::from_ref(size));
     let fits = sequence_condition(offset, size, &limit, domain);
     domain.apply(opcode::OR, &[empty, fits])

@@ -61,8 +61,8 @@ pub enum RangeError {
     /// The caller supplied neither a finite size nor a symbolic size expression.
     #[error("byte range has unknown size without an expression")]
     UnknownSize,
-    /// A concrete target offset cannot be represented as a host range.
-    #[error("byte offset {0} does not fit a host index")]
+    /// A nonempty target at this offset has no representable U256 logical end.
+    #[error("byte range at {0} has no representable logical end")]
     OffsetTooLarge(U256),
     /// Concrete target range overflow.
     #[error("byte range at {offset} of size {size} overflows")]
@@ -394,21 +394,24 @@ impl ByteArray {
         self.read_word_checked(offset, domain)
             .unwrap_or_else(|_| AbstractValue::top().with_symbolic_limit())
     }
-    /// Lazy zero-padded slice. The cap bounds requested length, never source offset.
+    /// Lazy zero-padded slice with the complete U256 requested length.
+    /// `max_bytes` is retained for API compatibility; only physical extraction
+    /// (exact_bytes_bounded) applies a host materialization limit.
     pub fn slice(
         &self,
         offset: &AbstractValue,
         size: &AbstractValue,
-        max_bytes: usize,
+        _max_bytes: usize,
         domain: Domain,
     ) -> Result<Self, RangeError> {
-        ranges::validate_size(size, max_bytes)?;
         if size.singleton() == Some(U256::ZERO) {
             return Ok(Self::empty());
         }
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
+        let offset = &ranges::normalized(offset)?;
+        let size = &ranges::normalized(size)?;
         let offset_expr = expr(offset)?;
         let size_expr = expr(size)?;
         let mut operands = self.operands.clone();
@@ -460,7 +463,8 @@ impl ByteArray {
         }
         Ok(out)
     }
-    /// Expand logical memory after transfer has constrained symbolic ranges.
+    /// Expand U256 logical memory after transfer has constrained symbolic ranges.
+    /// The compatible max_bytes argument does not cap this lazy allocation.
     pub fn expand(
         &mut self,
         offset: &AbstractValue,
@@ -474,7 +478,9 @@ impl ByteArray {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
-        ranges::validate_target(offset, size, max_bytes, self.memory)?;
+        ranges::validate_target(offset, size, self.memory)?;
+        let offset = &ranges::normalized(offset)?;
+        let size = &ranges::normalized(size)?;
         let allocation = (expr(offset)?, expr(size)?);
         ranges::check_allocation(&allocation, domain)?;
         if self.allocations.contains(&allocation) {
@@ -482,6 +488,7 @@ impl ByteArray {
             return Ok(());
         }
         let length = ranges::expanded(&self.length, offset, size, max_bytes, self.memory, domain)?;
+        check_value(&length, limits(domain))?;
         if self.allocations.len().saturating_add(1) > limits(domain).max_nodes {
             return Err(StateError::Limit {
                 nodes: self.allocations.len().saturating_add(1),
@@ -521,6 +528,7 @@ impl ByteArray {
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
+        let offset = &ranges::normalized(offset)?;
         let mut out = self.clone();
         out.expand(offset, &constant(width), max_bytes, domain)?;
         let at = expr(offset)?;
@@ -594,6 +602,9 @@ impl ByteArray {
         if let Some(error) = self.failure.as_ref().or(source.failure.as_ref()) {
             return Err(error.clone());
         }
+        let target_offset = &ranges::normalized(target_offset)?;
+        let source_offset = &ranges::normalized(source_offset)?;
+        let size = &ranges::normalized(size)?;
         let mut out = self.clone();
         out.expand(target_offset, size, max_bytes, domain)?;
         let dst = expr(target_offset)?;
@@ -653,6 +664,8 @@ impl ByteArray {
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
+        let target_offset = &ranges::normalized(target_offset)?;
+        let requested = &ranges::normalized(requested)?;
         let mut out = self.clone();
         out.expand(target_offset, requested, max_bytes, domain)?;
         let copied = ranges::minimum(requested, returndata.len(), domain)?;
