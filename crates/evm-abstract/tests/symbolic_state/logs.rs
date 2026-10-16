@@ -140,7 +140,7 @@ fn verify_history(analysis: &WorldAnalysis, fixture: &Fixture) -> (AbstractValue
                 U256::from(length),
                 &config().analysis.relations
             ),
-            CheckResult::Unsat
+            CheckResult::ProvenImpossible
         );
     }
     // Compare every retained product/source field with the real pre-write slice.
@@ -247,11 +247,11 @@ fn verify_history(analysis: &WorldAnalysis, fixture: &Fixture) -> (AbstractValue
     assert_eq!(current.provenance(), word(9).provenance());
     for (read, expected) in [(&old, 7), (&current, 9)] {
         assert_eq!(
-            payload.relations.unique_value(
+            payload.relations.local_value(
                 &read.symbolic_expression().unwrap(),
                 &config().analysis.relations
             ),
-            ValueQuery::Unique(U256::from(expected))
+            ValueQuery::Exact(U256::from(expected))
         );
     }
     (old, current)

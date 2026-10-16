@@ -741,7 +741,7 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
         assert_eq!(
             exit.relations
                 .can_equal(&call_success, U256::from(1), &inspection),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
         for right in [1, 2] {
             let pair = and(
@@ -753,7 +753,7 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
             );
             assert_eq!(
                 exit.relations.can_equal(&pair, U256::from(1), &inspection),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
         }
         let same = ExprId::operation(
@@ -769,7 +769,7 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
         let wrong = and(call_success, wrong);
         assert_eq!(
             exit.relations.can_equal(&wrong, U256::from(1), &inspection),
-            CheckResult::Unsat
+            CheckResult::ProvenImpossible
         );
     }
 }

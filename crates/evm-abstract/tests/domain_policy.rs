@@ -549,7 +549,7 @@ fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
                     terminal
                         .relations
                         .can_equal(&call_success, U256::from(1), &limits),
-                    CheckResult::Sat
+                    CheckResult::MayBeFeasible
                 );
                 for right in [1, 2] {
                     let pair = and(
@@ -558,7 +558,7 @@ fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
                     );
                     assert_eq!(
                         terminal.relations.can_equal(&pair, U256::from(1), &limits),
-                        CheckResult::Sat
+                        CheckResult::MayBeFeasible
                     );
                 }
             }

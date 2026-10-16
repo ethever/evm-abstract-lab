@@ -159,7 +159,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             }
         }
         // Inspection uses the unchanged analysis query policy: 1024 nodes,
-        // depth 64, 128 atoms and the finite default provider resource limit.
+        // depth 64 and 128 atoms, with bounded local propagation work.
         let limits = domain.spec().relations();
         assert_eq!(graph.domain_spec().relations(), limits);
         let union = |maximum: u64| {
@@ -648,7 +648,8 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                     predicate.nodes(),
                     predicate.depth()
                 );
-                // UNKNOWN and solver errors are neither SAT witnesses nor proofs.
+                // MayBeFeasible only means no local contradiction was proved.
+                // The concrete outcomes and exact controls above remain separate checks.
                 assert_eq!(actual, expected, "{fork:?} {name}");
             };
             let persistent_premise = persistent
@@ -664,14 +665,14 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             check(
                 "joint expected storage and counters",
                 &joint,
-                CheckResult::Sat,
+                CheckResult::MayBeFeasible,
             );
             // Returned values must determine owner201's paired counter even
             // without selecting an increment history through counter_route.
             check(
                 "returned values independently determine owner201 counter",
                 &and(persistent_premise.clone(), not(equal(&counters[0], 2))),
-                CheckResult::Unsat,
+                CheckResult::ProvenImpossible,
             );
 
             let terminal_inputs = persistent[2].expression().unwrap();
@@ -728,14 +729,14 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 .cloned()
                 .fold(persistent_premise.clone(), &and);
             check(
-                "all three actual calls succeeded",
+                "successful call guards remain locally admissible",
                 &success,
-                CheckResult::Sat,
+                CheckResult::MayBeFeasible,
             );
             check(
-                "same successful model has all expected counters",
+                "successful guards do not locally exclude expected counters",
                 &and(success.clone(), joint),
-                CheckResult::Sat,
+                CheckResult::MayBeFeasible,
             );
             let wrong = counters.iter().zip([2, 1, 0, 0]).fold(
                 ExprId::constant(U256::ZERO),
@@ -747,7 +748,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             check(
                 "qualified wrong owner counter",
                 &and(success, wrong),
-                CheckResult::Unsat,
+                CheckResult::ProvenImpossible,
             );
             let unused_owner_wrong = ExprId::operation(
                 opcode::OR,
@@ -758,11 +759,11 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             check(
                 "code/caller owner counter contamination",
                 &unused_owner_wrong,
-                CheckResult::Unsat,
+                CheckResult::ProvenImpossible,
             );
 
             // Persistent slot1=1 can retain the first CALL's output after the
-            // second CALL is rejected. Preserve that legitimate guarded model.
+            // second CALL is rejected. Preserve that legitimate guarded case.
             let rejected_second = and(
                 and(
                     persistent_premise,
@@ -773,7 +774,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             check(
                 "second call rejected with old memory retained",
                 &rejected_second,
-                CheckResult::Sat,
+                CheckResult::MayBeFeasible,
             );
             for (index, owner) in owners.into_iter().enumerate() {
                 assert_eq!(

@@ -345,7 +345,7 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
         payload
             .relations
             .can_equal(length, U256::from(513), &config().analysis.relations),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
     assert_eq!(captured_length.expression(), input.len().expression());
     let root = good[0].store.slot_root(address(ROOT), false).unwrap();
@@ -407,11 +407,11 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
             .unwrap()
     );
     assert_eq!(
-        payload.relations.unique_value(
+        payload.relations.local_value(
             &read.symbolic_expression().unwrap(),
             &config().analysis.relations
         ),
-        ValueQuery::Unique(U256::from(7))
+        ValueQuery::Exact(U256::from(7))
     );
     // Capture the actual second KECCAK before RETURN's later memory write.
     // Check the alias independently under its pre-SLOAD relations, before the
@@ -456,10 +456,10 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
         .read_checked(address(ROOT), &second_key, domain)
         .unwrap();
     assert_eq!(
-        hashed_payload.relations.unique_value(
+        hashed_payload.relations.local_value(
             &second_read.symbolic_expression().unwrap(),
             &config().analysis.relations
         ),
-        ValueQuery::Unique(U256::from(7))
+        ValueQuery::Exact(U256::from(7))
     );
 }

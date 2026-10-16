@@ -276,7 +276,7 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
                 {
                     assert_eq!(
                         RelationState::default().can_equal(&expression, *candidate, &inspection),
-                        CheckResult::Sat
+                        CheckResult::MayBeFeasible
                     );
                 }
                 assert_eq!(
@@ -285,7 +285,7 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
                         U256::from(0xffff),
                         &inspection
                     ),
-                    CheckResult::Unsat
+                    CheckResult::ProvenImpossible
                 );
             }
         }

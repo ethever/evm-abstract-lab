@@ -4,7 +4,7 @@ use evm_abstract::{
     analysis::{Config, ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
     domain::{
         AbstractValue, Domain,
-        relational::{CheckResult, RelationLimits, RelationState},
+        relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
     },
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
@@ -209,7 +209,7 @@ pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> 
         .max()
         .unwrap_or(0);
     eprintln!(
-        "issue111 evidence: fork={} status={:?} states={} transfers={} work={} max_memory_work={} max_stack_expr_nodes={} max_relation_work={} max_store_work={} summary_hits={} summary_misses={} elapsed_us={} provider={:?} rlimit={} node_limit={} depth_limit={} constraint_limit={} memory_limit={} work_limit={} state_limit={} transfer_limit={} summaries={} frontiers={:?}",
+        "issue111 evidence: fork={} status={:?} states={} transfers={} work={} max_memory_work={} max_stack_expr_nodes={} max_relation_work={} max_store_work={} summary_hits={} summary_misses={} elapsed_us={} node_limit={} depth_limit={} constraint_limit={} memory_limit={} work_limit={} state_limit={} transfer_limit={} summaries={} frontiers={:?}",
         analysis.world().fork(),
         analysis.status(),
         analysis.states().len(),
@@ -222,8 +222,6 @@ pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> 
         analysis.summary_stats().hits,
         analysis.summary_stats().misses,
         started.elapsed().as_micros(),
-        policy.analysis.relations.provider,
-        policy.analysis.relations.rlimit,
         policy.analysis.relations.max_nodes,
         policy.analysis.relations.max_depth,
         policy.analysis.relations.max_constraints,
@@ -285,21 +283,29 @@ pub(super) fn executed_opcode(
     pc
 }
 
-/// Numeric coverage alone can overapproximate an infeasible length. Require a
-/// checked SAT witness under the real outlet relation for every boundary sample.
+/// Keep each boundary sample in the numeric bound and check that the retained
+/// relation does not locally exclude it. This does not claim a satisfying witness.
 pub(super) fn possible_lengths(relations: &RelationState, length: &AbstractValue, samples: &[u64]) {
     assert!(length.singleton().is_none());
     let expression = length.expression().expect("symbolic input length");
+    let projected = relations.local_value(expression, &config().analysis.relations);
+    let ValueQuery::Bounds(bounds) = projected else {
+        panic!("boundary lengths need completed local bounds, got {projected:?}");
+    };
     for sample in samples {
         assert!(length.contains(U256::from(*sample)), "missing {sample}");
+        assert!(
+            bounds.contains(U256::from(*sample)),
+            "local bounds excluded length {sample}"
+        );
         assert_eq!(
             relations.can_equal(
                 expression,
                 U256::from(*sample),
                 &config().analysis.relations
             ),
-            CheckResult::Sat,
-            "length {sample} needs a feasible symbolic route"
+            CheckResult::MayBeFeasible,
+            "local reasoning must not exclude length {sample}"
         );
     }
 }
