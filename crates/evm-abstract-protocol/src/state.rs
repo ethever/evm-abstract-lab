@@ -285,6 +285,9 @@ record! {
         pub transient: Vec<StorageEntry>,
         /// Whether created in this transaction, or None if unknown.
         pub created: Option<bool>,
+        /// Transaction touch guarantee: true means must touch, false untouched,
+        /// and None includes both possibilities.
+        pub touched: Option<bool>,
         /// Whether deletion is pending, or None if unknown.
         pub pending_destruction: Option<bool>,
     }
@@ -327,6 +330,8 @@ record! {
         pub transient_default: ValueInfo,
         /// Default balance of unlisted accounts.
         pub balance_default: ValueInfo,
+        /// Touch guarantee for unlisted accounts; None preserves may-touch.
+        pub touched_default: Option<bool>,
         /// Accounts with explicit observations or effects.
         pub accounts: Vec<AccountState>,
         /// Possible logs retained by source site.

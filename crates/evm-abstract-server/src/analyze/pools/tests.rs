@@ -656,3 +656,69 @@ fn log_pool_preserves_captured_hash_and_init_runtime_identity_through_json() {
         *snapshot
     );
 }
+
+#[test]
+fn touch_only_store_versions_project_account_and_unlisted_guarantees_without_intern_merging() {
+    use evm_abstract::{
+        Address, Fork,
+        world::{Account, Store, World},
+    };
+    let owner = Address::repeat_byte(0x11);
+    let other = Address::repeat_byte(0x22);
+    let unlisted = Address::repeat_byte(0x33);
+    let mut world = World::new(Fork::Osaka, "transaction touch projection");
+    for address in [owner, other] {
+        world.insert(address, Account::empty()).unwrap();
+    }
+    let untouched = Store::new(&world);
+    let mut touched = untouched.clone();
+    touched.touch_account(owner);
+    let mut optional = touched.clone();
+    optional.may_touch_all();
+    let control = Control::default();
+    let mut pools = Pools::new(&control);
+    let original_id = pools.store(&untouched).unwrap();
+    let touched_id = pools.store(&touched).unwrap();
+    let optional_id = pools.store(&optional).unwrap();
+    assert_ne!(original_id, touched_id);
+    assert_ne!(touched_id, optional_id);
+    assert_ne!(original_id, optional_id);
+    assert_eq!(pools.store(&touched.clone()).unwrap(), touched_id);
+    let original = pools.stores[original_id].clone();
+    assert_eq!(original.touched_default, Some(false));
+    assert!(
+        original
+            .accounts
+            .iter()
+            .all(|account| account.touched == Some(false))
+    );
+    let mut expected_touched = original;
+    expected_touched
+        .accounts
+        .iter_mut()
+        .find(|account| account.address == owner.to_string())
+        .unwrap()
+        .touched = Some(true);
+    // Full DTO equality also checks unchanged numerical facts and data roots.
+    assert_eq!(pools.stores[touched_id], expected_touched);
+    let mut expected_optional = expected_touched;
+    expected_optional.touched_default = None;
+    expected_optional
+        .accounts
+        .iter_mut()
+        .find(|account| account.address == other.to_string())
+        .unwrap()
+        .touched = None;
+    assert_eq!(pools.stores[optional_id], expected_optional);
+    assert!(
+        !expected_optional
+            .accounts
+            .iter()
+            .any(|account| account.address == unlisted.to_string())
+    );
+    assert_eq!(optional.touched_in_transaction(unlisted), None);
+    assert_eq!(pools.account(&optional, unlisted).unwrap().touched, None);
+    let encoded = serde_json::to_vec(&expected_optional).unwrap();
+    let decoded: api::StoreSnapshot = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, expected_optional);
+}

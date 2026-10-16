@@ -204,6 +204,7 @@ fn account() -> api::AccountState {
         transient_default: word("0x0"),
         transient: vec![],
         created: Some(false),
+        touched: Some(false),
         pending_destruction: Some(false),
     }
 }
@@ -214,6 +215,7 @@ fn store() -> api::StoreSnapshot {
         storage_default: word("0x0"),
         transient_default: word("0x0"),
         balance_default: word("0x0"),
+        touched_default: Some(false),
         accounts: vec![account()],
         logs: vec![],
         logs_unknown: false,
@@ -986,4 +988,43 @@ fn identical_log_captions_keep_independent_captured_code_panels() {
             .any(|(text, _)| text == &format!("Code hash: {second_hash}")),
         "same-caption log panels must open independently: {visible:?}"
     );
+}
+
+#[test]
+fn touched_only_account_versions_are_visible_as_changes_with_unchanged_data_roots() {
+    let mut report = crate::tests::report();
+    report.accounts = vec![account()];
+    let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
+    context.global_style_mut(|style| style.animation_time = 0.0);
+    let mut time = 0.0;
+    let mut source = store();
+    let initial = rendered_at(
+        &context,
+        &mut time,
+        vec![],
+        egui::vec2(900.0, 700.0),
+        |ui| stores::changes(ui, &report, &source),
+    );
+    assert!(
+        !initial
+            .iter()
+            .any(|(text, _)| text == &report.accounts[0].address)
+    );
+    for touched in [Some(true), None] {
+        source.accounts[0].touched = touched;
+        let visible = rendered_at(
+            &context,
+            &mut time,
+            vec![],
+            egui::vec2(900.0, 700.0),
+            |ui| stores::changes(ui, &report, &source),
+        );
+        assert!(
+            visible
+                .iter()
+                .any(|(text, _)| text == &report.accounts[0].address),
+            "touch-only change omitted: {visible:?}"
+        );
+    }
 }

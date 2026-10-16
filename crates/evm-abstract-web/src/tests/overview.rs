@@ -174,6 +174,7 @@ fn attach_snapshots(report: &mut AnalysisReport) {
         storage_default: top.clone(),
         transient_default: scalar(0),
         balance_default: top,
+        touched_default: Some(false),
         accounts: vec![],
         logs: vec![],
         logs_unknown: false,

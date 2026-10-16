@@ -42,6 +42,7 @@ pub(super) fn storage(
         .show(ui, |ui| {
             ui.label(RichText::new(address).monospace());
             if let Some(store) = store {
+                touch_default(ui, store);
                 super::symbolic::facts(
                     ui,
                     if transient {
@@ -88,6 +89,11 @@ pub(super) fn storage(
                                     ui,
                                     "Created in transaction",
                                     certainty(account.created),
+                                );
+                                value::text(
+                                    ui,
+                                    "Touched in transaction",
+                                    touch_status(account.touched),
                                 );
                                 value::text(
                                     ui,
@@ -185,6 +191,7 @@ fn storage_rows(ui: &mut Ui, entries: &[StorageEntry], transient: bool) {
 }
 
 pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapshot) {
+    touch_default(ui, store);
     let mut changed = false;
     for account in &store.accounts {
         let initial = report
@@ -224,6 +231,7 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
                             );
                         }
                         value::text(ui, "Created", certainty(account.created));
+                        value::text(ui, "Touched in transaction", touch_status(account.touched));
                         value::text(
                             ui,
                             "Pending destruction",
@@ -340,6 +348,21 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
                 super::buffers::show(ui, report, log.data, "Log data")
             });
         });
+    }
+}
+
+fn touch_default(ui: &mut Ui, store: &StoreSnapshot) {
+    ui.horizontal(|ui| {
+        ui.label("Unlisted account touch");
+        ui.monospace(touch_status(store.touched_default));
+    });
+}
+
+fn touch_status(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "Must be touched",
+        Some(false) => "Untouched",
+        None => "May be touched",
     }
 }
 

@@ -127,6 +127,8 @@ variant! {
         Environment(crate::EnvironmentFailure),
         /// Exact native configuration invariant.
         Configuration(crate::ConfigurationFailure),
+        /// Typed immutable initial-input session failure.
+        Session(Box<crate::SessionFailure>),
         /// Rejected server resource range.
         Limit(crate::LimitFailure),
         /// Invalid input or configuration.

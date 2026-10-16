@@ -532,3 +532,95 @@ fn log_source_identity_is_required_and_distinguishes_init_runtime_and_code_hashe
     }
     assert_eq!(serde_json::to_value(&log).unwrap()["code_hash"], hash);
 }
+
+fn touch_snapshot(touched: Option<bool>, touched_default: Option<bool>) -> StoreSnapshot {
+    let zero = ValueInfo {
+        summary: "{0x0}".into(),
+        constants: Some(vec!["0x0".into()]),
+        known_zero: format!("0x{}", "f".repeat(64)),
+        known_one: "0x0".into(),
+        nonzero: false,
+        unsigned: WordBounds {
+            lower: "0x0".into(),
+            upper: "0x0".into(),
+        },
+        signed: WordBounds {
+            lower: "0x0".into(),
+            upper: "0x0".into(),
+        },
+        congruence: CongruenceValue::Exact("0x0".into()),
+        origins: Some(vec![ValueOrigin::Constant]),
+        code_address_role: false,
+        identity: None,
+        expression: None,
+        symbolic_limit: false,
+    };
+    let account = AccountState {
+        address: format!("0x{}", "11".repeat(20)),
+        existence: AccountExistence::Present,
+        balance: zero.clone(),
+        nonce: zero.clone(),
+        code_kind: CodeKind::Empty,
+        code_hash: None,
+        program: None,
+        delegation_target: None,
+        storage_default: zero.clone(),
+        storage_root: SlotStateRef { node: 0 },
+        transient_root: SlotStateRef { node: 0 },
+        storage: vec![],
+        transient_default: zero.clone(),
+        transient: vec![],
+        created: Some(false),
+        touched,
+        pending_destruction: Some(false),
+    };
+    StoreSnapshot {
+        storage_default: zero.clone(),
+        transient_default: zero.clone(),
+        balance_default: zero,
+        touched_default,
+        accounts: vec![account],
+        logs: vec![],
+        logs_unknown: false,
+        storage_facts: vec![],
+        transient_facts: vec![],
+    }
+}
+
+#[test]
+fn transaction_touch_guarantees_and_unlisted_defaults_roundtrip_independently() {
+    for touched in [Some(true), Some(false), None] {
+        for default in [Some(true), Some(false), None] {
+            let snapshot = touch_snapshot(touched, default);
+            let encoded = serde_json::to_value(&snapshot).unwrap();
+            assert_eq!(
+                encoded["accounts"][0]["touched"],
+                serde_json::json!(touched)
+            );
+            assert_eq!(encoded["touched_default"], serde_json::json!(default));
+            let decoded: StoreSnapshot = serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded.accounts[0].touched, touched);
+            assert_eq!(decoded.touched_default, default);
+            roundtrip(decoded);
+        }
+    }
+}
+
+#[test]
+fn missing_touch_fields_are_rejected_instead_of_defaulting_unknown_to_untouched() {
+    let encoded = serde_json::to_value(touch_snapshot(None, None)).unwrap();
+    let mut missing_default = encoded.clone();
+    missing_default
+        .as_object_mut()
+        .unwrap()
+        .remove("touched_default");
+    let error = serde_json::from_value::<StoreSnapshot>(missing_default).unwrap_err();
+    assert!(error.to_string().contains("missing field: touched_default"));
+    let mut missing_account = encoded;
+    missing_account["accounts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("touched");
+    let error = serde_json::from_value::<StoreSnapshot>(missing_account).unwrap_err();
+    assert!(error.to_string().contains("missing field: touched"));
+}

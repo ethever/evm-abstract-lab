@@ -110,12 +110,14 @@ def layout_pending_machines(report, entry):
     for index in stores:
         store = report["stores"][index]
         assert set(store) == {"storage_default","transient_default","balance_default","accounts","logs",
-                              "logs_unknown","storage_facts","transient_facts"}
+                              "logs_unknown","storage_facts","transient_facts","touched_default"}
+        assert store["touched_default"] is None or isinstance(store["touched_default"],bool)
         for name in ["storage_default","transient_default","balance_default"]:facts(store[name])
         for account in store["accounts"]:
             assert set(account) == {"address","existence","balance","nonce","code_kind","code_hash","program",
                                     "delegation_target","storage_default","storage_root","transient_root","storage",
-                                    "transient_default","transient","created","pending_destruction"}
+                                    "transient_default","transient","created","pending_destruction","touched"}
+            assert account["touched"] is None or isinstance(account["touched"],bool)
             assert account["program"] is None or account["program"] in programs
             for name in ["balance","nonce","storage_default","transient_default"]:facts(account[name])
             for name in ["storage_root","transient_root"]:reference(account[name],slot_kinds)

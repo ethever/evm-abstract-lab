@@ -1,4 +1,5 @@
-//! Intern complete immutable buffers, stores and code; references are report-local.
+//! Intern immutable snapshot versions of buffers, transaction stores and code.
+//! References are report-local; transaction touch facts belong to each version.
 mod budget;
 mod values;
 
@@ -234,6 +235,7 @@ impl<'a> Pools<'a> {
                 })
                 .collect::<Result<_, api::ApiError>>()?,
             created: source.created_in_transaction(address),
+            touched: source.touched_in_transaction(address),
             pending_destruction: source.pending_destruction(address),
         })
     }
@@ -242,6 +244,8 @@ impl<'a> Pools<'a> {
         for id in 0..self.stores_native.len() {
             self.symbolic.charge(1)?;
             self.symbolic.charge(source.work_size())?;
+            // Equal data roots may carry different touch facts and therefore
+            // different EIP-161 completion behavior. Compare the whole store.
             if self.stores_native[id] == *source {
                 return Ok(id);
             }
@@ -280,6 +284,7 @@ impl<'a> Pools<'a> {
             storage_default: self.symbolic.value(source.global_storage_default())?,
             transient_default: self.symbolic.value(source.global_transient_default())?,
             balance_default: self.symbolic.value(source.balance_default())?,
+            touched_default: source.touched_default(),
             accounts,
             logs,
             logs_unknown: source.logs_unknown(),

@@ -70,6 +70,14 @@ fn checkpoint(control: &Control) -> Result<(), api::ApiError> {
 fn config_error(error: analysis::ConfigError) -> api::ApiError {
     errors::configuration(error)
 }
+fn rpc_error(error: analysis::RpcAnalysisError) -> api::ApiError {
+    match error {
+        analysis::RpcAnalysisError::Session(error) => errors::session_error(error),
+        analysis::RpcAnalysisError::Cancelled(_) => cancelled(),
+        analysis::RpcAnalysisError::Config(error) => config_error(error),
+        analysis::RpcAnalysisError::Rpc(error) => rpc::error(error),
+    }
+}
 fn run(
     request: api::AnalyzeRequest,
     control: &Control,
@@ -144,11 +152,7 @@ fn run(
                 config,
                 control,
             )
-            .map_err(|error| match error {
-                analysis::RpcAnalysisError::Cancelled(_) => cancelled(),
-                analysis::RpcAnalysisError::Config(error) => config_error(error),
-                analysis::RpcAnalysisError::Rpc(error) => rpc::error(error),
-            })?
+            .map_err(rpc_error)?
             .into_analysis();
             (native, api::AnalysisScope::RpcWorld)
         }
