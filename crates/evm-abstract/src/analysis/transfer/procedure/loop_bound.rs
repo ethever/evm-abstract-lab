@@ -13,6 +13,9 @@ mod tests;
 pub(in crate::analysis) struct LoopBound {
     layout: PayloadSummary,
     bound: PayloadSummary,
+    // Reprojection can restore singleton/bit facts erased by the fallback.
+    // Keep every later lattice operation in the same canonical coarse form.
+    coarse: bool,
 }
 
 fn reserve(budget: &mut WorkBudget, cost: usize) -> Result<(), MachineError> {
@@ -128,23 +131,31 @@ fn materialize(
     bound: PayloadSummary,
     domain: Domain,
     budget: &mut WorkBudget,
-) -> Result<(PayloadSummary, MachinePayload), MachineError> {
+) -> Result<(PayloadSummary, MachinePayload, bool), MachineError> {
     reserve(budget, bound.work_size().saturating_mul(4))?;
     match instantiate(&bound, domain) {
-        Ok(payload) => Ok((bound, payload)),
+        Ok(payload) => Ok((bound, payload, false)),
         Err(error) if retention_refusal(&error) => {
             // One conservative retry changes the retained invariant itself.
             // Subsequent coverage uses this larger bound, never the failed one.
             let bound = coarse(&bound);
             reserve(budget, bound.work_size().saturating_mul(4))?;
             let payload = instantiate(&bound, domain)?;
-            Ok((bound, payload))
+            Ok((bound, payload, true))
         }
         Err(error) => Err(error),
     }
 }
 
 impl LoopBound {
+    fn normalize(&self, summary: PayloadSummary) -> PayloadSummary {
+        if self.coarse {
+            coarse(&summary)
+        } else {
+            summary
+        }
+    }
+
     pub(in crate::analysis) fn new(
         old: &MachinePayload,
         incoming: &MachinePayload,
@@ -168,8 +179,15 @@ impl LoopBound {
         // buffer used only to choose those coordinates on the first feedback.
         let layout = restrict(&layout, &layout, domain);
         let bound = restrict(&join(&old, &incoming, domain, true)?, &layout, domain);
-        let (bound, payload) = materialize(bound, domain, budget)?;
-        Ok((Self { layout, bound }, payload))
+        let (bound, payload, coarse) = materialize(bound, domain, budget)?;
+        Ok((
+            Self {
+                layout,
+                bound,
+                coarse,
+            },
+            payload,
+        ))
     }
 
     pub(in crate::analysis) fn work_size(&self) -> usize {
@@ -195,26 +213,27 @@ impl LoopBound {
                 .saturating_add(incoming.work_size())
                 .saturating_mul(8),
         )?;
-        let incoming = restrict(&incoming, &self.layout, domain);
-        let joined = restrict(
+        let incoming = self.normalize(restrict(&incoming, &self.layout, domain));
+        let joined = self.normalize(restrict(
             &join(&self.bound, &incoming, domain, false)?,
             &self.layout,
             domain,
-        );
+        ));
         if semantic_eq(&joined, &self.bound) {
             MachineError::check_cancelled()?;
             return Ok(None);
         }
-        let bound = restrict(
+        let bound = self.normalize(restrict(
             &join(&self.bound, &joined, domain, true)?,
             &self.layout,
             domain,
-        );
-        let (bound, payload) = materialize(bound, domain, budget)?;
+        ));
+        let (bound, payload, coarse) = materialize(bound, domain, budget)?;
         Ok(Some((
             Self {
                 layout: self.layout.clone(),
                 bound,
+                coarse: self.coarse || coarse,
             },
             payload,
         )))

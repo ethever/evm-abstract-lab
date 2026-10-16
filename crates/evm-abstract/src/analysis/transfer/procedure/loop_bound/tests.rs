@@ -8,6 +8,43 @@ use crate::{
 use alloy_primitives::U256;
 
 #[test]
+fn hybrid_loop_replay_joins_implicit_operands_and_keeps_shape_checks() {
+    let domain = Domain::default();
+    let (world, mut entry) = fixtures::fixture(&[(0x101, "00")]);
+    entry.environment.to = crate::world::AddressInput::unknown_to();
+    let old = transfer::initial(&world, &entry, domain).unwrap();
+    let mut budget = WorkBudget::new(1_000_000_000_000);
+    let (_, mut live) = LoopBound::new(&old, &old, &entry, domain, &mut budget).unwrap();
+    // One replay branch narrows ADDRESS. The implicit branch still admits all
+    // 160-bit addresses, independently of its concrete storage-owner namespace.
+    live.active_mut().address_operand = Some(fixtures::word(7));
+    for (left, right) in [(&old, &live), (&live, &old)] {
+        let joined = left.join(right, domain).unwrap();
+        assert_eq!(joined.key(), old.key());
+        let address = joined.active().address_operand.as_ref().unwrap();
+        assert!(address.contains(U256::ZERO));
+        assert!(address.contains(U256::MAX >> 96usize));
+        assert!(!address.contains(U256::ONE << 160usize));
+        assert_eq!(
+            joined.active().caller_operand.as_ref().unwrap().singleton(),
+            Some(U256::from(0x900))
+        );
+    }
+    let mut incompatible = live.clone();
+    incompatible.active_mut().key.caller = fixtures::address(0x901).into();
+    assert!(matches!(
+        old.join(&incompatible, domain),
+        Err(MachineError::Shape)
+    ));
+    incompatible = live;
+    incompatible.active_mut().program = None;
+    assert!(matches!(
+        old.join(&incompatible, domain),
+        Err(MachineError::Shape)
+    ));
+}
+
+#[test]
 fn materializing_a_canonical_loop_bound_is_idempotent_without_reusing_sources() {
     let domain = Domain::default();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
