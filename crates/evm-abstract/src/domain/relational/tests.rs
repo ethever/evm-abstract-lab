@@ -390,19 +390,48 @@ fn symbolic_exponentiation_retains_unknown_without_a_fake_resource_failure() {
 }
 
 #[test]
-fn symbolic_square_is_equal_to_modular_multiplication_without_nested_model_terms() {
+fn symbolic_square_retains_arithmetic_without_algebraic_entailment() {
+    let policy = RelationLimits::default();
     let base = ExprId::input(1, Symbol::CallValue);
     let square = op(opcode::EXP, &[base.clone(), c(2)]);
-    let product = op(opcode::MUL, &[base.clone(), base]);
-    let mut state = RelationState::default();
+    let product = op(opcode::MUL, &[base.clone(), base.clone()]);
+    assert_eq!(square.inputs(), base.inputs());
+    assert_eq!(product.inputs(), base.inputs());
+    for expression in [&square, &product] {
+        bounds_include(
+            RelationState::default().local_value(expression, &policy),
+            &[0, 1, 9],
+        );
+    }
+    let equality = op(opcode::EQ, &[square.clone(), product.clone()]);
+    // The retained operations share an input, but local rules do not rewrite
+    // EXP(x, 2) into MUL(x, x). This result does not witness a counterexample.
     assert_eq!(
-        state.assume(
-            &op(opcode::EQ, &[square, product]),
-            false,
-            &RelationLimits::default()
-        ),
-        CheckResult::ProvenImpossible
+        RelationState::default().assume(&equality, false, &policy),
+        CheckResult::MayBeFeasible
     );
+    for (input, expected) in [
+        (U256::from(3), U256::from(9)),
+        (U256::ONE << 128, U256::ZERO),
+        (U256::MAX, U256::ONE),
+    ] {
+        let mut state = RelationState::default();
+        assert_eq!(
+            state.add_equal(&base, &ExprId::constant(input), &policy),
+            CheckResult::MayBeFeasible
+        );
+        for expression in [&square, &product] {
+            assert_eq!(
+                state.local_value(expression, &policy),
+                ValueQuery::Exact(expected),
+                "concrete base {input}"
+            );
+        }
+        assert_eq!(
+            state.assume(&equality, false, &policy),
+            CheckResult::ProvenImpossible
+        );
+    }
 }
 #[test]
 fn observed_constant_substitution_preserves_intrinsic_address_bounds() {

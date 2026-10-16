@@ -348,7 +348,7 @@ fn overlapping_copy_hashes_do_not_claim_preservation_from_wrapped_range_ends() {
                 limits.expressions(),
             )
             .unwrap();
-            let equality = op(opcode::EQ, &[before, after], limits);
+            let equality = op(opcode::EQ, &[before.clone(), after.clone()], limits);
             let mut path = RelationState::default();
             assert_eq!(
                 path.add_equal(&length, &c(128), &limits),
@@ -359,11 +359,39 @@ fn overlapping_copy_hashes_do_not_claim_preservation_from_wrapped_range_ends() {
                 CheckResult::MayBeFeasible,
                 "local at {at}"
             );
-            assert_eq!(
-                path.can_equal(&equality, U256::from(1), &limits),
-                CheckResult::MayBeFeasible,
-                "hash collisions remain possible"
-            );
+            if at == U256::ZERO {
+                assert_eq!(
+                    path.can_equal(&equality, U256::ONE, &limits),
+                    CheckResult::MayBeFeasible,
+                    "unknown input does not prove that the hashes differ"
+                );
+            } else {
+                // Input length MAX excludes address MAX. The old view is all
+                // padding; the copy writes aa there and bb cannot wrap to zero.
+                let original = [0u8; 128];
+                let mut changed = original;
+                changed[0] = 0xaa;
+                let old_hash = U256::from_be_bytes(keccak256(original).0);
+                let new_hash = U256::from_be_bytes(keccak256(changed).0);
+                assert_ne!(old_hash, new_hash);
+                assert_eq!(
+                    path.local_value(&before, &limits),
+                    ValueQuery::Exact(old_hash)
+                );
+                assert_eq!(
+                    path.local_value(&after, &limits),
+                    ValueQuery::Exact(new_hash)
+                );
+                assert_eq!(
+                    path.local_value(&equality, &limits),
+                    ValueQuery::Exact(U256::ZERO)
+                );
+                assert_eq!(
+                    path.can_equal(&equality, U256::ONE, &limits),
+                    CheckResult::ProvenImpossible,
+                    "these concrete padded byte sequences have distinct hashes"
+                );
+            }
         }
     }
 }

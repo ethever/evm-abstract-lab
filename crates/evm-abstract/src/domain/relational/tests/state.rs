@@ -238,14 +238,29 @@ fn conditional_pointer_and_state_are_paired_by_one_guard() {
         let state = left
             .join_guarded(&right, g.clone(), state_limits())
             .unwrap();
-        let p = ExprId::ite(g, c(128), c(192), expr_limits()).unwrap();
+        assert!(matches!(
+            state.kind(),
+            ByteStateKind::Ite { condition, .. } if *condition == g
+        ));
+        let p = ExprId::ite(g.clone(), c(128), c(192), expr_limits()).unwrap();
         let value = word(state, p);
         assert!(value.has_state_semantics());
-        assert_eq!(
-            RelationState::default().local_value(&value, &limits),
-            ValueQuery::Exact(U256::from(7)),
-            "local"
-        );
+        assert!(value.fresh_leaves().contains(&g));
+        // The pointer and state retain the same unknown selector. Numeric
+        // projection does not split that selector to prove the paired read.
+        super::bounds_include(RelationState::default().local_value(&value, &limits), &[7]);
+        for nonzero in [true, false] {
+            let mut path = RelationState::default();
+            assert_eq!(
+                path.assume(&g, nonzero, &limits),
+                CheckResult::MayBeFeasible
+            );
+            assert_eq!(
+                path.local_value(&value, &limits),
+                ValueQuery::Exact(U256::from(7)),
+                "local: determined pointer/state selector {nonzero}"
+            );
+        }
     }
 }
 #[test]
@@ -261,18 +276,33 @@ fn guarded_path_join_retains_two_formulas_and_summary_dependencies() {
     assert!(!path.is_empty());
     assert!(path.relevant(&x));
     assert!(path.fresh_leaves().contains(&g));
+    assert!(matches!(
+        path.path().kind(),
+        super::super::RelationPathKind::Ite { selector, .. } if *selector == g
+    ));
     super::bounds_include(path.local_value(&x, &limits), &[7, 9]);
     let expected = ExprId::ite(g.clone(), c(7), c(9), expr_limits()).unwrap();
-    assert_eq!(
-        path.local_value(&op(opcode::EQ, &[x.clone(), expected]), &limits),
-        ValueQuery::Exact(U256::from(1))
-    );
-    let mut left = path.clone();
-    assert_eq!(left.assume(&g, true, &limits), CheckResult::MayBeFeasible);
-    assert_eq!(
-        left.local_value(&x, &limits),
-        ValueQuery::Exact(U256::from(7))
-    );
+    let equality = op(opcode::EQ, &[x.clone(), expected.clone()]);
+    // Retaining both formulas does not imply a numeric proof of their shared
+    // unknown-selector correlation. Determined selectors remain exact.
+    super::bounds_include(path.local_value(&equality, &limits), &[1]);
+    for (nonzero, value) in [(true, 7), (false, 9)] {
+        let mut selected = path.clone();
+        assert_eq!(
+            selected.assume(&g, nonzero, &limits),
+            CheckResult::MayBeFeasible
+        );
+        for expression in [&x, &expected] {
+            assert_eq!(
+                selected.local_value(expression, &limits),
+                ValueQuery::Exact(U256::from(value))
+            );
+        }
+        assert_eq!(
+            selected.local_value(&equality, &limits),
+            ValueQuery::Exact(U256::ONE)
+        );
+    }
     assert_eq!(
         path,
         path.join_guarded(&path, ExprId::fresh().unwrap(), &limits)

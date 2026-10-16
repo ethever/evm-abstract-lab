@@ -1,7 +1,8 @@
 //! Common conjunctions stay unconditional; every residual uses the machine guard.
 
 use super::super::{
-    CheckResult, Constraint, QueryReason, RelationLimits, RelationPath, RelationState, ValueQuery,
+    CheckResult, Constraint, QueryReason, RelationLimits, RelationPath, RelationPathKind,
+    RelationState, ValueQuery,
 };
 use super::{c, limits, op};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId};
@@ -38,6 +39,10 @@ fn common_guarantees_preserve_word_memory_and_storage_selection_with_local_facts
 
         assert_eq!(joined.constraints().cloned().collect::<Vec<_>>(), [common]);
         assert_eq!(joined.len(), 3);
+        assert!(matches!(
+            joined.path().kind(),
+            RelationPathKind::Ite { selector, .. } if *selector == guard
+        ));
         assert_eq!(
             joined.local_value(&common_word, &policy),
             ValueQuery::Exact(U256::from(5)),
@@ -71,11 +76,18 @@ fn common_guarantees_preserve_word_memory_and_storage_selection_with_local_facts
             .unwrap();
         let storage_word = ExprId::slot_read(storage, c(0), bounds).unwrap();
         let selected = ExprId::ite(guard.clone(), c(7), c(9), bounds).unwrap();
-        for expression in [selected, memory_word, storage_word] {
-            assert_eq!(
-                joined.local_value(&op(opcode::EQ, &[branch_word.clone(), expression]), &policy),
-                ValueQuery::Exact(U256::from(1)),
-                "local: one guard pairs relations and values/states"
+        let expressions = [selected, memory_word, storage_word];
+        // An unknown selector retains the paired formulas and states. Numeric
+        // projection uses common facts rather than proving their correlation.
+        for expression in &expressions {
+            assert!(expression.fresh_leaves().contains(&guard));
+            super::bounds_include(joined.local_value(expression, &policy), &[7, 9]);
+            super::bounds_include(
+                joined.local_value(
+                    &op(opcode::EQ, &[branch_word.clone(), expression.clone()]),
+                    &policy,
+                ),
+                &[1],
             );
         }
         for (nonzero, expected) in [(true, 7), (false, 9)] {
@@ -89,6 +101,20 @@ fn common_guarantees_preserve_word_memory_and_storage_selection_with_local_facts
                 ValueQuery::Exact(U256::from(expected)),
                 "local: branch {nonzero}"
             );
+            for expression in &expressions {
+                assert_eq!(
+                    selected.local_value(expression, &policy),
+                    ValueQuery::Exact(U256::from(expected)),
+                    "local: selected value/state {nonzero}"
+                );
+                assert_eq!(
+                    selected.local_value(
+                        &op(opcode::EQ, &[branch_word.clone(), expression.clone()]),
+                        &policy
+                    ),
+                    ValueQuery::Exact(U256::ONE)
+                );
+            }
         }
     }
 }
@@ -147,17 +173,30 @@ fn nested_conditional_guarantees_keep_their_original_selectors_with_local_facts(
             .unwrap();
         assert_eq!(joined.constraints().cloned().collect::<Vec<_>>(), [common]);
         let expected = ExprId::ite(
-            outer_guard,
-            ExprId::ite(inner_guard, c(1), c(2), policy.expressions()).unwrap(),
+            outer_guard.clone(),
+            ExprId::ite(inner_guard.clone(), c(1), c(2), policy.expressions()).unwrap(),
             c(3),
             policy.expressions(),
         )
         .unwrap();
-        assert_eq!(
-            joined.local_value(&op(opcode::EQ, &[branch_word.clone(), expected]), &policy),
-            ValueQuery::Exact(U256::from(1)),
-            "local: nested correlation"
-        );
+        let RelationPathKind::Ite {
+            selector,
+            then_path,
+            ..
+        } = joined.path().kind()
+        else {
+            panic!("outer selector was not retained");
+        };
+        assert_eq!(*selector, outer_guard);
+        assert!(matches!(
+            then_path.kind(),
+            RelationPathKind::Ite { selector, .. } if *selector == inner_guard
+        ));
+        super::bounds_include(joined.local_value(&branch_word, &policy), &[1, 2, 3]);
+        // Local projection does not discharge a whole-formula equality across
+        // both unknown selectors; the selectors still retain every relation.
+        let equality = op(opcode::EQ, &[branch_word.clone(), expected.clone()]);
+        super::bounds_include(joined.local_value(&equality, &policy), &[1]);
         for candidate in 1..=3 {
             assert_eq!(
                 joined.can_equal(&branch_word, U256::from(candidate), &policy),
@@ -167,8 +206,36 @@ fn nested_conditional_guarantees_keep_their_original_selectors_with_local_facts(
         }
         assert_eq!(
             joined.can_equal(&branch_word, U256::from(4), &policy),
-            CheckResult::ProvenImpossible
+            CheckResult::MayBeFeasible,
+            "unknown selectors do not supply a feasibility witness or a global exclusion"
         );
+        for (outer, inner, value) in [(true, true, 1), (true, false, 2), (false, false, 3)] {
+            let mut selected = joined.clone();
+            assert_eq!(
+                selected.assume(&outer_guard, outer, &policy),
+                CheckResult::MayBeFeasible
+            );
+            if outer {
+                assert_eq!(
+                    selected.assume(&inner_guard, inner, &policy),
+                    CheckResult::MayBeFeasible
+                );
+            }
+            for expression in [&branch_word, &expected] {
+                assert_eq!(
+                    selected.local_value(expression, &policy),
+                    ValueQuery::Exact(U256::from(value))
+                );
+            }
+            assert_eq!(
+                selected.local_value(&equality, &policy),
+                ValueQuery::Exact(U256::ONE)
+            );
+            assert_eq!(
+                selected.can_equal(&branch_word, U256::from(4), &policy),
+                CheckResult::ProvenImpossible
+            );
+        }
     }
 }
 
