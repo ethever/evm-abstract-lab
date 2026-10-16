@@ -115,6 +115,7 @@ fn touch_may_must_joins_and_summary_widening_keep_both_outcomes() {
     let domain = Domain::default();
     let world = fixture("00", Account::empty());
     let untouched = Store::new_checked(&world, domain).unwrap();
+    assert_eq!(untouched.touched_default(), Some(false));
     let mut touched = untouched.clone();
     touched.touch_account(address(0x200));
     for (left, right) in [(&touched, &untouched), (&untouched, &touched)] {
@@ -147,6 +148,7 @@ fn touch_may_must_joins_and_summary_widening_keep_both_outcomes() {
     assert_eq!(must.touched_in_transaction(address(0x200)), Some(true));
     let mut all_may = untouched.clone();
     all_may.may_touch_all();
+    assert_eq!(all_may.touched_default(), None);
     let replay = all_may
         .summary_projection(domain)
         .unwrap()
@@ -159,6 +161,8 @@ fn touch_may_must_joins_and_summary_widening_keep_both_outcomes() {
     );
     let joined = untouched.join(&replay, domain);
     assert_eq!(joined.touched_in_transaction(address(0x999)), None);
+    assert_eq!(replay.touched_default(), None);
+    assert_eq!(joined.touched_default(), None);
 }
 
 #[test]

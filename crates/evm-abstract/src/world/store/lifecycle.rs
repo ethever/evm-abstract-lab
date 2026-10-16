@@ -37,6 +37,12 @@ fn is_zero(value: &AbstractValue) -> Option<bool> {
 }
 
 impl Store {
+    /// Transaction touch guarantee for every address without an explicit entry.
+    /// None includes both touched and untouched accounts, even when unlisted.
+    pub fn touched_default(&self) -> Option<bool> {
+        self.touched_default
+    }
+
     /// Some(true) means every represented path touched the account; Some(false)
     /// means none did; None retains both possibilities. Missing keys use the
     /// transaction default, independently of account-presence observations.
