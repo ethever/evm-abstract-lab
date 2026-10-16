@@ -1,5 +1,6 @@
 //! Preserve branch proofs in numeric views of conditional byte and slot roots.
 
+#[cfg(test)]
 mod active;
 mod guards;
 
@@ -147,15 +148,12 @@ pub(super) fn refine(
             }
         }
     }
-    if !guards::refine(
+    guards::refine(
         payload,
         relations,
         context,
         diagnostics,
         pc,
         (domain, limits),
-    )? {
-        return Ok(false);
-    }
-    active::refine(payload, relations, context, diagnostics, pc)
+    )
 }

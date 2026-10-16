@@ -3,6 +3,7 @@
 //! Joins retain only the changed facts below their selector. Shared subtrees are
 //! immutable; lookup follows determined guards and never scans byte-state roots.
 
+#[cfg(test)]
 mod active;
 mod context;
 pub(super) use context::Context;
