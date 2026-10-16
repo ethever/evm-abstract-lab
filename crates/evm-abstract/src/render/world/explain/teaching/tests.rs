@@ -310,7 +310,7 @@ fn native_boundaries_and_closed_unknown_code_keep_their_distinct_coverage() {
         native
             .states()
             .iter()
-            .any(|state| state.active().code == FrameCode::Precompile(address(4)))
+            .any(|state| state.active().mode == FrameCode::Precompile(address(4)))
     );
     let missing = run(
         World::new(Fork::Osaka, "missing code boundary"),

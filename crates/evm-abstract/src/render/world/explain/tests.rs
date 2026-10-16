@@ -170,7 +170,7 @@ fn partial_native_frame_has_frontiers_without_invented_bytecode_or_ssa() {
         analysis
             .states()
             .iter()
-            .any(|state| state.active().code == FrameCode::Precompile(address(4)))
+            .any(|state| state.active().mode == FrameCode::Precompile(address(4)))
     );
     assert!(analysis.states()[0].program().is_none());
     let output = render(&analysis).unwrap();
