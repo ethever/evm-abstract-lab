@@ -3,7 +3,7 @@
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
-    domain::{AbstractValue, Domain},
+    domain::{AbstractValue, Domain, provenance::Origin},
     world::{Account, ByteArray, Entry, World},
 };
 use revm_bytecode::opcode;
@@ -182,7 +182,15 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
             bounded(&returned);
             let balance = outcome.store.read_balance(address(CHILD));
             assert_eq!(returned.numeric(), balance.numeric());
-            assert_eq!(returned.provenance(), balance.provenance());
+            // Opcode results add source categories; the stored account bound
+            // itself still has the observation's unknown provenance.
+            let sources = returned
+                .provenance()
+                .origins()
+                .sources()
+                .expect("forwarding preserves a complete source summary");
+            assert!(sources.contains(&Origin::Balance));
+            assert!(sources.contains(&Origin::Memory));
         }
     }
 }
