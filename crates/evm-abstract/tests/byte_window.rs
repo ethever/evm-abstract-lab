@@ -20,25 +20,25 @@ fn word(n: u64) -> AbstractValue {
     AbstractValue::constant(U256::from(n))
 }
 
-fn push(code: &mut Vec<u8>, n: impl Into<U256>) {
+fn push(code: &mut Vec<u8>, n: U256) {
     code.push(opcode::PUSH32);
-    code.extend(n.into().to_be_bytes::<32>());
+    code.extend(n.to_be_bytes::<32>());
 }
 
 fn mstore(code: &mut Vec<u8>, at: u64) {
-    push(code, at);
+    push(code, U256::from(at));
     code.push(opcode::MSTORE);
 }
 
 fn finish(code: &mut Vec<u8>, at: u64, len: u64, op: u8) {
-    push(code, len);
-    push(code, at);
+    push(code, U256::from(len));
+    push(code, U256::from(at));
     code.push(op);
 }
 
 fn call(code: &mut Vec<u8>, at: u64, len: u64) {
     for n in [len, at, 0, 0, 0, CHILD, 1_000_000] {
-        push(code, n);
+        push(code, U256::from(n));
     }
     code.push(opcode::CALL);
 }
@@ -119,10 +119,10 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
         parent.push(opcode::POP);
         // MCOPY(0, 64, 32); MSTORE(32, MLOAD(0)); RETURN(32, 32).
         for n in [32_u64, 64, 0] {
-            push(&mut parent, n);
+            push(&mut parent, U256::from(n));
         }
         parent.push(opcode::MCOPY);
-        push(&mut parent, 0_u64);
+        push(&mut parent, U256::ZERO);
         parent.push(opcode::MLOAD);
         mstore(&mut parent, 32);
         finish(&mut parent, 32, 32, opcode::RETURN);
@@ -170,7 +170,7 @@ fn label(code: &mut Vec<u8>, fixup: usize) {
 #[test]
 fn unknown_one_byte_continuation_preserves_every_uncopied_suffix_byte() {
     let mut code = vec![opcode::CALLER];
-    push(&mut code, CALLER);
+    push(&mut code, U256::from(CALLER));
     code.extend([opcode::EQ, opcode::ISZERO]);
     let callback = conditional_jump(&mut code);
     push(&mut code, U256::from_be_bytes([0xaa; 32]));
@@ -179,7 +179,7 @@ fn unknown_one_byte_continuation_preserves_every_uncopied_suffix_byte() {
     mstore(&mut code, 64);
     call(&mut code, 32, 16);
     code.extend([opcode::POP, opcode::RETURNDATASIZE, opcode::DUP1]);
-    push(&mut code, 1_u64);
+    push(&mut code, U256::ONE);
     code.extend([opcode::EQ, opcode::ISZERO]);
     let wrong_length = conditional_jump(&mut code);
     mstore(&mut code, 96);
