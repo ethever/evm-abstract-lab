@@ -205,12 +205,12 @@ fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query()
         remainder
             .relations
             .can_equal(&expression, U256::from(0x301), &config.analysis.relations),
-        crate::domain::relational::CheckResult::Unsat
+        crate::domain::relational::CheckResult::ProvenImpossible
     );
     assert_eq!(
         remainder
             .relations
             .can_equal(&expression, U256::from(0x302), &config.analysis.relations),
-        crate::domain::relational::CheckResult::Sat
+        crate::domain::relational::CheckResult::MayBeFeasible
     );
 }
