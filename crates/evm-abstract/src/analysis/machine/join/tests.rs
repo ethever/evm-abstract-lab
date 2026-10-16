@@ -1,3 +1,5 @@
+mod conditional_normalization;
+
 use super::{EntryAlternatives, JoinBoundary, MachineError};
 use crate::{
     analysis::{Continuation, FrontierReason, OutcomeKind, RootFrame, Status, machine::fixtures},

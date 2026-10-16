@@ -249,12 +249,12 @@ impl ConditionalFacts {
                 &ExprId,
                 Option<&AbstractValue>,
             ) -> Result<(ExprId, Option<AbstractValue>), RangeError>,
-            memo: &mut BTreeMap<*const Branch, Arc<Branch>>,
+            memo: &mut BTreeMap<*const Branch, ConditionalFacts>,
         ) -> Result<ConditionalFacts, RangeError> {
             let mut branches = Vec::new();
             for branch in &source.branches {
                 if let Some(old) = memo.get(&Arc::as_ptr(branch)) {
-                    branches.push(Arc::clone(old));
+                    branches.extend(old.branches.iter().map(Arc::clone));
                     continue;
                 }
                 let condition = map(&branch.condition, None)?.0;
@@ -280,13 +280,40 @@ impl ConditionalFacts {
                         conditional: mapped(&source.conditional, map, memo)?,
                     })
                 };
-                let out = Arc::new(Branch {
-                    condition,
-                    then_facts: scope(&branch.then_facts)?,
-                    else_facts: scope(&branch.else_facts)?,
-                });
-                memo.insert(Arc::as_ptr(branch), Arc::clone(&out));
-                branches.push(out);
+                let out = if let Some(value) = condition.as_constant() {
+                    // A selected scope is the whole implication now. Do not map
+                    // the inactive subtree: its retired selectors and errors
+                    // cannot participate in this projected state.
+                    let selected = scope(if value == U256::ZERO {
+                        &branch.else_facts
+                    } else {
+                        &branch.then_facts
+                    })?;
+                    if selected.facts.is_empty() {
+                        // Avoid accumulating constant wrappers around a shared
+                        // active subtree across repeated joins/projections.
+                        selected.conditional
+                    } else {
+                        // Keep selected guarantees scoped; do not promote them
+                        // into the separate unconditional must-fact table.
+                        ConditionalFacts::from_branches(vec![Arc::new(Branch {
+                            condition: ExprId::constant(U256::ONE),
+                            then_facts: selected,
+                            else_facts: Scope {
+                                facts: Facts::new(),
+                                conditional: ConditionalFacts::default(),
+                            },
+                        })])
+                    }
+                } else {
+                    ConditionalFacts::from_branches(vec![Arc::new(Branch {
+                        condition,
+                        then_facts: scope(&branch.then_facts)?,
+                        else_facts: scope(&branch.else_facts)?,
+                    })])
+                };
+                branches.extend(out.branches.iter().map(Arc::clone));
+                memo.insert(Arc::as_ptr(branch), out);
             }
             Ok(ConditionalFacts::from_branches(branches))
         }
