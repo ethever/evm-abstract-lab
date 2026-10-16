@@ -8,7 +8,7 @@ use crate::{
     analysis::{FrontierReason, OutcomeKind},
     domain::{
         AbstractValue, Domain,
-        symbolic::{ByteStateKind, ExprLimits},
+        symbolic::{ByteStateKind, ExprId, ExprLimits, StateError},
     },
     world::{ByteArray, RangeError},
 };
@@ -210,9 +210,22 @@ fn success_data(
     let length = match id {
         PrecompileId::Identity => return Ok(input.clone()),
         PrecompileId::EcRec | PrecompileId::P256Verify => {
-            // Invalid signatures can successfully return no bytes. Intermediate
-            // lengths are harmless extra possibilities in this coarse summary.
-            AbstractValue::unsigned_range(U256::ZERO, U256::from(32)).expect("ordered bounds")
+            // These native successes return either no bytes or a full word.
+            // Slice accepts concrete sizes, so join the two complete buffers
+            // instead of asking it to enumerate a numeric range of lengths.
+            let word = ByteArray::unknown_checked()?.slice(
+                &AbstractValue::constant(U256::ZERO),
+                &AbstractValue::constant(U256::from(32)),
+                32,
+                domain,
+            )?;
+            let selector = ExprId::fresh().ok_or(StateError::IdentityExhausted)?;
+            return ByteArray::empty().join_guarded(
+                &word,
+                domain,
+                selector,
+                domain.spec().relations().expressions(),
+            );
         }
         PrecompileId::Sha256
         | PrecompileId::Ripemd160

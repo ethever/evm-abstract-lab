@@ -286,6 +286,32 @@ fn finite_abstract_inputs_cover_both_valid_and_invalid_native_cases() {
 }
 
 #[test]
+fn signature_success_buffers_cover_empty_and_word_and_report_typed_limits() {
+    let config = config();
+    let input = ByteArray::unknown();
+    for id in [PrecompileId::EcRec, PrecompileId::P256Verify] {
+        let data = success_data(&input, &id, config.domain().unwrap()).unwrap();
+        assert!(data.len().contains(U256::ZERO));
+        assert!(data.len().contains(U256::from(32)));
+        assert_contains(&data, &[], config.domain().unwrap());
+        assert_contains(&data, &[255; 32], config.domain().unwrap());
+        let mut limited = config.clone();
+        limited.analysis.relations.max_nodes = 1;
+        let (_, _, payload) = fixture(address(1), input.clone(), Fork::Cancun, &config);
+        let mut result = empty_execution(payload);
+        summarize(
+            &mut result,
+            &id,
+            &mut context(&limited, &mut WorkBudget::new(limited.max_work)),
+        );
+        assert_boundary(
+            &result,
+            FrontierReason::Relations(QueryReason::ExpressionLimit),
+        );
+    }
+}
+
+#[test]
 fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() {
     let config = ExecutionConfig {
         max_memory_bytes: 8,
