@@ -709,16 +709,28 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         } else if !selector.may_be_nonzero() {
             false
         } else {
-            let (lower, upper) = result.interval().unsigned_bounds();
-            if lower == U256::ZERO && upper == U256::MAX {
-                return Ok(());
-            }
             let root = self.root(expression)?;
-            let (then_lower, then_upper) = self.branch_bounds(then_value, &root)?;
-            let (else_lower, else_upper) = self.branch_bounds(else_value, &root)?;
-            self.work.charge(1)?;
-            let then_excluded = then_lower > then_upper || then_upper < lower || upper < then_lower;
-            let else_excluded = else_lower > else_upper || else_upper < lower || upper < else_lower;
+            // Non-interval guarantees can exclude an independently exact arm
+            // even when the result's unsigned interval spans every word.
+            let mut then_excluded = self
+                .independent_known(then_value, &root)?
+                .singleton()
+                .is_some_and(|value| !result.contains(value));
+            let mut else_excluded = self
+                .independent_known(else_value, &root)?
+                .singleton()
+                .is_some_and(|value| !result.contains(value));
+            if !then_excluded && !else_excluded {
+                let (lower, upper) = result.interval().unsigned_bounds();
+                if lower == U256::ZERO && upper == U256::MAX {
+                    return Ok(());
+                }
+                let (then_lower, then_upper) = self.branch_bounds(then_value, &root)?;
+                let (else_lower, else_upper) = self.branch_bounds(else_value, &root)?;
+                self.work.charge(1)?;
+                then_excluded = then_lower > then_upper || then_upper < lower || upper < then_lower;
+                else_excluded = else_lower > else_upper || else_upper < lower || upper < else_lower;
+            }
             let nonzero = match (then_excluded, else_excluded) {
                 (true, true) => return Err(Stop::Bottom),
                 (true, false) => false,

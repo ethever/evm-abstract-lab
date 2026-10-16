@@ -245,6 +245,72 @@ fn retained_ite_bounds_select_disjoint_branches_and_keep_paired_roots_and_guaran
 }
 
 #[test]
+fn nonzero_ite_result_excludes_exact_zero_without_booleanizing_the_selector() {
+    let limits = RelationLimits::default();
+    let states = limits.expressions().into();
+    let selector = ExprId::fresh().unwrap();
+    let chosen = ExprId::fresh().unwrap();
+    let selected =
+        ExprId::ite(selector.clone(), chosen.clone(), c(0), limits.expressions()).unwrap();
+    let nonzero = NumericValue {
+        nonzero: true,
+        ..NumericValue::top()
+    };
+    assert_eq!(
+        nonzero.interval().unsigned_bounds(),
+        (U256::ZERO, U256::MAX)
+    );
+    let mut unknown = RelationState::default();
+    assert_eq!(
+        unknown.assume(&chosen, true, &limits),
+        CheckResult::MayBeFeasible
+    );
+    let mut state = unknown.clone();
+    state.observe(&selected, &nonzero, &limits).unwrap();
+    let before = state.clone();
+    for expression in [&selector, &chosen] {
+        let answer = state.local_value(expression, &limits);
+        let ValueQuery::Bounds(bounds) = answer else {
+            panic!("nonzero words retain their full range: {answer:?}");
+        };
+        assert!(!bounds.contains(U256::ZERO));
+        for candidate in [U256::ONE, U256::from(2), U256::MAX] {
+            assert!(bounds.contains(candidate));
+        }
+    }
+    let yes = ByteStateId::zero().write_word(c(0), c(7), states).unwrap();
+    let no = ByteStateId::zero().write_word(c(0), c(9), states).unwrap();
+    let bytes = yes.join_guarded(&no, selector.clone(), states).unwrap();
+    let read = ExprId::word_read(
+        ByteView::new(bytes, c(0), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    assert_eq!(
+        state.local_value(&read, &limits),
+        ValueQuery::Exact(U256::from(7))
+    );
+    let ValueQuery::Bounds(bounds) = unknown.local_value(&selector, &limits) else {
+        panic!("an unknown result leaves the selector unknown");
+    };
+    assert!(bounds.contains(U256::ZERO));
+    assert!(bounds.contains(U256::ONE));
+    for (truth, expected) in [(true, 7), (false, 9)] {
+        let mut direct = unknown.clone();
+        assert_eq!(
+            direct.assume(&selector, truth, &limits),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            direct.local_value(&read, &limits),
+            ValueQuery::Exact(U256::from(expected))
+        );
+    }
+    assert_eq!(state, before);
+}
+
+#[test]
 fn overlapping_ite_branch_bounds_do_not_select_or_narrow_either_branch() {
     let limits = RelationLimits::default();
     let selector = ExprId::fresh().unwrap();
