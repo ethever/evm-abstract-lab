@@ -483,7 +483,13 @@ impl Workbench {
         let bounds = egui::PanelState::load(&self.context, Id::new("world_inspector"))
             .unwrap()
             .outer_rect;
-        let row = 21.0_f32.max(self.context.style().spacing.interact_size.y);
+        let row = 21.0_f32.max(
+            self.context
+                .style_of(self.context.theme())
+                .spacing
+                .interact_size
+                .y,
+        );
         for _ in 0..=(bounds.height() / row).ceil() as usize {
             let target = drawn
                 .iter()

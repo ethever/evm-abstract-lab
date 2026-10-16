@@ -210,7 +210,7 @@ fn viewport_widget_budget(panel: &Panel<'_>) -> usize {
             -1_000_000.0,
         );
         assert_eq!(drawn.slots(), rows, "reference rows must actually paint");
-        let style = context.style();
+        let style = context.style_of(context.theme());
         let font = egui::TextStyle::Monospace.resolve(&style);
         let height = 21.0_f32
             .max(context.fonts_mut(|fonts| fonts.row_height(&font)))
