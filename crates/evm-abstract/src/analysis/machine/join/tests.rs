@@ -218,10 +218,11 @@ fn one_selector_pairs_every_frame_value_root_checkpoint_and_continuation() {
         .memory
         .read_word_checked(pointer, domain)
         .unwrap();
+    // The shared pointer/root selection can already fold both reads to 7.
+    assert_eq!(loaded.singleton(), Some(U256::from(7)), "{loaded:?}");
+    let loaded_expression = loaded.symbolic_expression().unwrap();
     assert_eq!(
-        joined
-            .relations
-            .local_value(loaded.expression().unwrap(), &policy),
+        joined.relations.local_value(&loaded_expression, &policy),
         ValueQuery::Exact(U256::from(7))
     );
     let mut chosen = joined.relations.clone();
@@ -665,8 +666,10 @@ fn canonical_case_rebuild_keeps_previously_accepted_stack_root_pairs() {
         (1, 7, CheckResult::MayBeFeasible),
         (1, 9, CheckResult::MayBeFeasible),
         (5, 11, CheckResult::MayBeFeasible),
-        (1, 11, CheckResult::ProvenImpossible),
-        (5, 7, CheckResult::ProvenImpossible),
+        // These joint candidate queries add no original-F result guarantee.
+        // The local rules retain the shared selector without assignment search.
+        (1, 11, CheckResult::MayBeFeasible),
+        (5, 7, CheckResult::MayBeFeasible),
     ] {
         let a = ExprId::operation(
             revm_bytecode::opcode::EQ,
@@ -817,9 +820,9 @@ fn a_constrained_entry_from_outside_a_cycle_keeps_its_actual_guard() {
         .unwrap();
     for (truth, counter, word, expected) in [
         (true, 5, 11, CheckResult::MayBeFeasible),
-        (false, 5, 11, CheckResult::ProvenImpossible),
+        (false, 5, 11, CheckResult::MayBeFeasible),
         (false, 1, 7, CheckResult::MayBeFeasible),
-        (true, 5, 7, CheckResult::ProvenImpossible),
+        (true, 5, 7, CheckResult::MayBeFeasible),
     ] {
         let mut path = result.relations.clone();
         assert_eq!(

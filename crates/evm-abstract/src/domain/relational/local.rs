@@ -149,6 +149,12 @@ pub(super) fn project(
         for atom in &state.constraints {
             engine.validate(atom)?;
         }
+        if engine.determined_ite {
+            // An observed result can determine a selector after common facts
+            // were imported. Follow only now-determined paths once, without
+            // another inverse pass or revisiting unknown alternatives.
+            engine.determined_path(&state.path)?;
+        }
         engine.memo.clear(engine.work)?;
         engine.terms.clear(engine.work)?;
         let Some(expression) = expression else {
@@ -180,6 +186,7 @@ struct Engine<'a, 'ledger> {
     memo: KeyMap<NumericValue>,
     terms: KeyMap<ExprId>,
     check_definitions: bool,
+    determined_ite: bool,
     has_source_bytes: bool,
     source_words: Vec<state::SourceWord>,
 }
@@ -195,6 +202,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             memo: KeyMap::default(),
             terms: KeyMap::default(),
             check_definitions: false,
+            determined_ite: false,
             has_source_bytes: false,
             source_words: Vec::new(),
         }
@@ -608,8 +616,137 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         Ok(())
     }
 
+    fn determined_path(&mut self, path: &RelationPath) -> LocalResult<()> {
+        self.work.charge(1)?;
+        match path.kind() {
+            RelationPathKind::False => return Err(Stop::Bottom),
+            RelationPathKind::Atoms(atoms) => {
+                for atom in atoms {
+                    self.atom(atom)?;
+                    for expression in atom.expressions() {
+                        self.source_facts(expression)?;
+                    }
+                }
+            }
+            RelationPathKind::And(paths) => {
+                for path in paths {
+                    self.determined_path(path)?;
+                }
+            }
+            RelationPathKind::Ite {
+                selector,
+                then_path,
+                else_path,
+            } => {
+                let selector = self.known(selector)?;
+                if !selector.may_be_zero() {
+                    self.determined_path(then_path)?;
+                } else if !selector.may_be_nonzero() {
+                    self.determined_path(else_path)?;
+                }
+            }
+            RelationPathKind::True => {}
+        }
+        Ok(())
+    }
+
+    fn independent_known(
+        &mut self,
+        expression: &ExprId,
+        result_root: &ExprId,
+    ) -> LocalResult<NumericValue> {
+        if let Some(value) = expression.as_constant() {
+            return Ok(NumericValue::constant(value));
+        }
+        let root = self.root(expression)?;
+        if self.work.same_expression(&root, result_root)? {
+            // The imported ITE result cannot supply its own branch bound.
+            return Ok(NumericValue::top());
+        }
+        self.known(&root)
+    }
+
+    fn branch_bounds(
+        &mut self,
+        expression: &ExprId,
+        result_root: &ExprId,
+    ) -> LocalResult<(U256, U256)> {
+        self.work.charge(1)?;
+        let known = self.independent_known(expression, result_root)?;
+        // One immediate numeric transfer only: no recursive eval, memoized
+        // result, conditional alternatives or operand assignments are used.
+        let defined = match expression.kind() {
+            ExprKind::Operation { opcode, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.independent_known(arg, result_root))
+                    .collect::<LocalResult<Vec<_>>>()?;
+                self.apply(*opcode, &args)?
+            }
+            ExprKind::ByteRead { .. } => NumericValue::unknown_byte(),
+            _ => NumericValue::top(),
+        };
+        let (lower, upper) = known.interval().unsigned_bounds();
+        let (defined_lower, defined_upper) = defined.interval().unsigned_bounds();
+        Ok((lower.max(defined_lower), upper.min(defined_upper)))
+    }
+
+    fn inverse_ite(
+        &mut self,
+        expression: &ExprId,
+        result: &NumericValue,
+        condition: &ExprId,
+        then_value: &ExprId,
+        else_value: &ExprId,
+    ) -> LocalResult<()> {
+        self.work.charge(1)?;
+        if result.is_top() {
+            return Ok(());
+        }
+        let selector = self.known(condition)?;
+        let nonzero = if !selector.may_be_zero() {
+            true
+        } else if !selector.may_be_nonzero() {
+            false
+        } else {
+            let (lower, upper) = result.interval().unsigned_bounds();
+            if lower == U256::ZERO && upper == U256::MAX {
+                return Ok(());
+            }
+            let root = self.root(expression)?;
+            let (then_lower, then_upper) = self.branch_bounds(then_value, &root)?;
+            let (else_lower, else_upper) = self.branch_bounds(else_value, &root)?;
+            self.work.charge(1)?;
+            let then_excluded = then_lower > then_upper || then_upper < lower || upper < then_lower;
+            let else_excluded = else_lower > else_upper || else_upper < lower || upper < else_lower;
+            let nonzero = match (then_excluded, else_excluded) {
+                (true, true) => return Err(Stop::Bottom),
+                (true, false) => false,
+                (false, true) => true,
+                (false, false) => return Ok(()),
+            };
+            self.determined_ite = true;
+            nonzero
+        };
+        self.direct_truth(condition, nonzero)?;
+        let chosen = if nonzero { then_value } else { else_value };
+        self.learn(chosen, result)?;
+        self.memo.clear(self.work)?;
+        self.terms.clear(self.work)?;
+        self.source_facts(chosen)
+    }
+
     fn inverse(&mut self, expression: &ExprId) -> LocalResult<()> {
-        let Some(exact) = self.known(expression)?.singleton() else {
+        let result = self.known(expression)?;
+        if let ExprKind::Ite {
+            condition,
+            then_value,
+            else_value,
+        } = expression.kind()
+        {
+            return self.inverse_ite(expression, &result, condition, then_value, else_value);
+        }
+        let Some(exact) = result.singleton() else {
             return Ok(());
         };
         let ExprKind::Operation { opcode: op, args } = expression.kind() else {

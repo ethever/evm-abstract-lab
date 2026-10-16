@@ -117,26 +117,31 @@ fn symbolic_policy_partition_retains_both_domains_and_pre_effect_state() {
     ] {
         let word = U256::from(length);
         assert_eq!(
+            super::memory_condition(
+                &value(U256::ZERO),
+                &value(word),
+                config.max_memory_bytes,
+                Domain::default(),
+            )
+            .singleton(),
+            Some(U256::from(u8::from(legal))),
+            "known sizes retain the exact policy decision"
+        );
+        // The retained OR/AND guard keeps both partitions. A candidate is not
+        // imported into F to search its compound Boolean alternatives.
+        assert_eq!(
             result
                 .payload
                 .relations
                 .can_equal(&source, word, &config.analysis.relations),
-            if legal {
-                CheckResult::MayBeFeasible
-            } else {
-                CheckResult::ProvenImpossible
-            }
+            CheckResult::MayBeFeasible
         );
         assert_eq!(
             pending
                 .payload
                 .relations
                 .can_equal(&source, word, &config.analysis.relations),
-            if legal {
-                CheckResult::ProvenImpossible
-            } else {
-                CheckResult::MayBeFeasible
-            }
+            CheckResult::MayBeFeasible
         );
     }
 }
