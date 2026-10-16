@@ -122,6 +122,9 @@ impl ByteArray {
             root: self.root.clone(),
             allocations: Default::default(),
             operands: retained_facts(pending, &self.operands, limits)?,
+            // Keep the bounded conditional provenance tree; pruning it once per
+            // materialized location would repeat the complete root traversal.
+            conditional: self.conditional.clone(),
             failure: None,
         };
         refresh_constant(&mut out.length);

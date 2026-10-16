@@ -1,9 +1,9 @@
 //! Sound numeric evaluation of the shared foundation content graph.
 //!
 //! This is an upper-bound evaluator, not a second content DAG or alias solver.
-//! Unknown aliasing joins both alternatives; SMT consumes the original read term.
+//! Unknown aliasing joins both alternatives; reads retain their original terms.
 
-use super::{constant, zero};
+use super::{conditional::Context, constant, zero};
 use crate::domain::{
     AbstractValue, Domain,
     symbolic::{ByteStateId, ByteStateKind, ByteView, ExprId, ExprKind},
@@ -19,12 +19,16 @@ pub(in crate::world) fn scalar(
     facts: &Facts,
     domain: Domain,
 ) -> AbstractValue {
-    if let Some(v) = facts.get(expression) {
+    scalar_in(expression, &Context::new(facts, None), domain)
+}
+
+fn scalar_in(expression: &ExprId, context: &Context<'_>, domain: Domain) -> AbstractValue {
+    if let Some(v) = context.value(expression, domain) {
         if let Some(constant) = expression.as_constant() {
             // A constant-key source union is not a unique input occurrence.
             // Drop its must-alias identity while retaining every possible source.
             return domain
-                .join(v, &AbstractValue::constant(constant))
+                .join(&v, &AbstractValue::constant(constant))
                 .with_numeric(crate::domain::NumericValue::constant(constant));
         }
         if let ExprKind::Ite {
@@ -36,16 +40,17 @@ pub(in crate::world) fn scalar(
             // A retained minimum/copy-length bound can precede a later proof
             // selecting this ITE. Keep its sources, but do not let the older
             // bound hide a now-exact selected value of the same expression.
-            let condition = scalar(condition, facts, domain);
-            let selected = if !condition.may_be_nonzero() {
-                Some(else_value)
-            } else if !condition.may_be_zero() {
-                Some(then_value)
+            let c = scalar_in(condition, context, domain);
+            let selected = if !c.may_be_nonzero() {
+                Some((else_value, false))
+            } else if !c.may_be_zero() {
+                Some((then_value, true))
             } else {
                 None
             };
-            if let Some(exact) = selected.and_then(|value| scalar(value, facts, domain).singleton())
-                && v.contains(exact)
+            if let Some(exact) = selected.and_then(|(value, nonzero)| {
+                scalar_in(value, &context.branch(condition, nonzero), domain).singleton()
+            }) && v.contains(exact)
             {
                 return v
                     .clone()
@@ -62,7 +67,7 @@ pub(in crate::world) fn scalar(
             *opcode,
             &args
                 .iter()
-                .map(|a| scalar(a, facts, domain))
+                .map(|a| scalar_in(a, context, domain))
                 .collect::<Vec<_>>(),
         ),
         ExprKind::Ite {
@@ -70,15 +75,15 @@ pub(in crate::world) fn scalar(
             then_value,
             else_value,
         } => {
-            let c = scalar(condition, facts, domain);
+            let c = scalar_in(condition, context, domain);
             if !c.may_be_nonzero() {
-                scalar(else_value, facts, domain)
+                scalar_in(else_value, &context.branch(condition, false), domain)
             } else if !c.may_be_zero() {
-                scalar(then_value, facts, domain)
+                scalar_in(then_value, &context.branch(condition, true), domain)
             } else {
                 domain.join(
-                    &scalar(then_value, facts, domain),
-                    &scalar(else_value, facts, domain),
+                    &scalar_in(then_value, &context.branch(condition, true), domain),
+                    &scalar_in(else_value, &context.branch(condition, false), domain),
                 )
             }
         }
@@ -114,7 +119,7 @@ const WORD_CACHE_WORK: usize = 8 * 1024;
 /// A batch of reads using exactly the same immutable facts and numeric policy.
 /// Cached values keep all metadata and never escape this evaluator's lifetime.
 pub(super) struct Reader<'a> {
-    facts: &'a Facts,
+    context: Context<'a>,
     domain: Domain,
     word_bytes: BTreeMap<ExprId, AbstractValue>,
     retained_work: usize,
@@ -122,8 +127,12 @@ pub(super) struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     pub(super) fn new(facts: &'a Facts, domain: Domain) -> Self {
+        Self::with_context(Context::new(facts, None), domain)
+    }
+
+    pub(super) fn with_context(context: Context<'a>, domain: Domain) -> Self {
         Self {
-            facts,
+            context,
             domain: numeric_domain(domain),
             word_bytes: BTreeMap::new(),
             retained_work: 0,
@@ -136,7 +145,7 @@ impl<'a> Reader<'a> {
         }
         // The old evaluator repeated this scalar lookup for all 32 positions.
         // Evaluate it once; BYTE and the ordered joins retain their semantics.
-        let scalar = scalar(expression, self.facts, self.domain);
+        let scalar = scalar_in(expression, &self.context, self.domain);
         let value = (0..32)
             .fold(None, |out, j| {
                 Some(join(
@@ -159,19 +168,19 @@ impl<'a> Reader<'a> {
 
     pub(super) fn read(&mut self, state: &ByteStateId, index: &ExprId) -> AbstractValue {
         let domain = self.domain;
-        let facts = self.facts;
-        let state = demanded_state(state, index, 1, facts);
+        let context = self.context.clone();
+        let state = demanded_state(state, index, 1, &context, domain);
         match state.kind() {
-            ByteStateKind::Zero => scalar(&ExprId::constant(U256::ZERO), facts, domain),
+            ByteStateKind::Zero => scalar_in(&ExprId::constant(U256::ZERO), &context, domain),
             ByteStateKind::Exact(bytes) => {
-                let index = scalar(index, facts, domain);
+                let index = scalar_in(index, &context, domain);
                 if let Some(indices) = index.constants() {
                     indices
                         .iter()
                         .fold(None, |out, i| {
                             Some(join(
                                 out,
-                                scalar(
+                                scalar_in(
                                     &ExprId::constant(U256::from(
                                         usize::try_from(*i)
                                             .ok()
@@ -179,7 +188,7 @@ impl<'a> Reader<'a> {
                                             .copied()
                                             .unwrap_or(0),
                                     )),
-                                    facts,
+                                    &context,
                                     domain,
                                 ),
                                 domain,
@@ -195,8 +204,8 @@ impl<'a> Reader<'a> {
             ByteStateKind::Input {
                 length, bindings, ..
             } => {
-                let i = scalar(index, facts, domain);
-                let len = scalar(length, facts, domain);
+                let i = scalar_in(index, &context, domain);
+                let len = scalar_in(length, &context, domain);
                 let (_, hi) = len.interval().unsigned_bounds();
                 if i.interval().unsigned_bounds().0 >= hi {
                     return zero();
@@ -205,12 +214,13 @@ impl<'a> Reader<'a> {
                     indices
                         .iter()
                         .fold(None, |out, i| {
-                            let cell = bindings
-                                .iter()
-                                .find(|b| b.index == *i)
-                                .map_or_else(AbstractValue::unknown_byte, |b| {
-                                    scalar(&b.value, facts, domain).with_numeric(b.numeric.clone())
-                                });
+                            let cell = bindings.iter().find(|b| b.index == *i).map_or_else(
+                                AbstractValue::unknown_byte,
+                                |b| {
+                                    scalar_in(&b.value, &context, domain)
+                                        .with_numeric(b.numeric.clone())
+                                },
+                            );
                             Some(join(out, cell, domain))
                         })
                         .unwrap_or_else(AbstractValue::unknown_byte)
@@ -228,12 +238,15 @@ impl<'a> Reader<'a> {
                 offset,
                 value,
             } => {
-                let val = domain.apply(opcode::AND, &[scalar(value, facts, domain), constant(255)]);
+                let val = domain.apply(
+                    opcode::AND,
+                    &[scalar_in(value, &context, domain), constant(255)],
+                );
                 if index == offset {
                     return val;
                 }
-                let i = scalar(index, facts, domain);
-                let at = scalar(offset, facts, domain);
+                let i = scalar_in(index, &context, domain);
+                let at = scalar_in(offset, &context, domain);
                 if let (Some(i), Some(at)) = (i.singleton(), at.singleton()) {
                     return if i == at {
                         val
@@ -252,8 +265,8 @@ impl<'a> Reader<'a> {
                 offset,
                 value,
             } => {
-                let i = scalar(index, facts, domain);
-                let at = scalar(offset, facts, domain);
+                let i = scalar_in(index, &context, domain);
+                let at = scalar_in(offset, &context, domain);
                 if let (Some(indices), Some(offsets)) = (i.constants(), at.constants()) {
                     let mut out = None;
                     for i in indices {
@@ -263,7 +276,7 @@ impl<'a> Reader<'a> {
                                     opcode::BYTE,
                                     &[
                                         AbstractValue::constant(*i - *at),
-                                        scalar(value, facts, domain),
+                                        scalar_in(value, &context, domain),
                                     ],
                                 )
                             } else {
@@ -292,9 +305,9 @@ impl<'a> Reader<'a> {
                 source,
                 length,
             } => {
-                let i = scalar(index, facts, domain);
-                let dst = scalar(destination, facts, domain);
-                let len = scalar(length, facts, domain);
+                let i = scalar_in(index, &context, domain);
+                let dst = scalar_in(destination, &context, domain);
+                let len = scalar_in(length, &context, domain);
                 if let (Some(indices), Some(destinations), Some(lengths)) =
                     (i.constants(), dst.constants(), len.constants())
                 {
@@ -343,24 +356,31 @@ impl<'a> Reader<'a> {
                 then_state,
                 else_state,
             } => {
-                let c = scalar(condition, facts, domain);
+                let c = scalar_in(condition, &context, domain);
                 if !c.may_be_zero() {
-                    self.read(then_state, index)
+                    Self::with_context(context.branch(condition, true), domain)
+                        .read(then_state, index)
                 } else if !c.may_be_nonzero() {
-                    self.read(else_state, index)
+                    Self::with_context(context.branch(condition, false), domain)
+                        .read(else_state, index)
                 } else {
-                    domain.join(&self.read(then_state, index), &self.read(else_state, index))
+                    domain.join(
+                        &Self::with_context(context.branch(condition, true), domain)
+                            .read(then_state, index),
+                        &Self::with_context(context.branch(condition, false), domain)
+                            .read(else_state, index),
+                    )
                 }
             }
         }
     }
 
     fn view_read(&mut self, view: &ByteView, relative: &ExprId) -> AbstractValue {
-        let facts = self.facts;
+        let context = self.context.clone();
         let domain = self.domain;
-        let rel = scalar(relative, facts, domain);
-        let off = scalar(&view.offset, facts, domain);
-        let len = scalar(&view.length, facts, domain);
+        let rel = scalar_in(relative, &context, domain);
+        let off = scalar_in(&view.offset, &context, domain);
+        let len = scalar_in(&view.length, &context, domain);
         if let (Some(relatives), Some(offsets), Some(lengths)) =
             (rel.constants(), off.constants(), len.constants())
         {
@@ -407,83 +427,88 @@ pub(super) fn read(
     Reader::new(facts, domain).read(state, index)
 }
 
-pub(super) fn word(
-    state: &ByteStateId,
-    offset: &ExprId,
-    facts: &Facts,
-    domain: Domain,
-) -> AbstractValue {
-    let domain = numeric_domain(domain);
-    let state = demanded_state(state, offset, 32, facts);
-    if offset.as_constant().is_some()
-        && let ByteStateKind::Ite {
-            condition,
-            then_state,
-            else_state,
+impl Reader<'_> {
+    pub(super) fn word(&mut self, state: &ByteStateId, offset: &ExprId) -> AbstractValue {
+        let domain = self.domain;
+        let context = self.context.clone();
+        let state = demanded_state(state, offset, 32, &context, domain);
+        if offset.as_constant().is_some()
+            && let ByteStateKind::Ite {
+                condition,
+                then_state,
+                else_state,
+            } = state.kind()
+        {
+            // Joining bytes separately mixes alternatives from different snapshots.
+            // The same selector chooses every byte of this concrete word demand.
+            let c = scalar_in(condition, &context, domain);
+            if !c.may_be_zero() {
+                return Self::with_context(context.branch(condition, true), domain)
+                    .word(then_state, offset);
+            }
+            if !c.may_be_nonzero() {
+                return Self::with_context(context.branch(condition, false), domain)
+                    .word(else_state, offset);
+            }
+            return domain.join(
+                &Self::with_context(context.branch(condition, true), domain)
+                    .word(then_state, offset),
+                &Self::with_context(context.branch(condition, false), domain)
+                    .word(else_state, offset),
+            );
+        }
+        if let ByteStateKind::WriteWord {
+            offset: written,
+            value,
+            ..
         } = state.kind()
-    {
-        // Joining bytes separately mixes alternatives from different snapshots.
-        // The same selector chooses every byte of this concrete word demand.
-        let condition = scalar(condition, facts, domain);
-        if !condition.may_be_zero() {
-            return word(then_state, offset, facts, domain);
+            && written == offset
+            && scalar_in(offset, &context, domain)
+                .interval()
+                .unsigned_bounds()
+                .1
+                <= U256::MAX - U256::from(31)
+        {
+            return scalar_in(value, &context, domain);
         }
-        if !condition.may_be_nonzero() {
-            return word(else_state, offset, facts, domain);
-        }
-        return domain.join(
-            &word(then_state, offset, facts, domain),
-            &word(else_state, offset, facts, domain),
-        );
-    }
-    if let ByteStateKind::WriteWord {
-        offset: written,
-        value,
-        ..
-    } = state.kind()
-        && written == offset
-        && scalar(offset, facts, domain).interval().unsigned_bounds().1
-            <= U256::MAX - U256::from(31)
-    {
-        return scalar(value, facts, domain);
-    }
-    let offsets = scalar(offset, facts, domain);
-    let Some(offsets) = offsets.constants() else {
-        return if matches!(state.kind(), ByteStateKind::Zero) {
-            scalar(&ExprId::constant(U256::ZERO), facts, domain)
-        } else {
-            AbstractValue::top()
+        let offsets = scalar_in(offset, &context, domain);
+        let Some(offsets) = offsets.constants() else {
+            return if matches!(state.kind(), ByteStateKind::Zero) {
+                scalar_in(&ExprId::constant(U256::ZERO), &context, domain)
+            } else {
+                AbstractValue::top()
+            };
         };
-    };
-    let mut out = None;
-    for offset in offsets {
-        let bytes = (0..32)
-            .map(|j| {
-                offset
-                    .checked_add(U256::from(j))
-                    .map_or_else(zero, |i| read(state, &ExprId::constant(i), facts, domain))
-            })
-            .collect::<Vec<_>>();
-        let mut parts = bytes
-            .into_iter()
-            .enumerate()
-            .map(|(j, b)| domain.apply(opcode::SHL, &[constant((31 - j) * 8), b]))
-            .collect::<Vec<_>>();
-        while parts.len() > 1 {
-            parts = parts
-                .chunks(2)
-                .map(|p| {
-                    if p.len() == 2 {
-                        domain.apply(opcode::OR, p)
-                    } else {
-                        p[0].clone()
-                    }
+        let mut out = None;
+        for offset in offsets {
+            let bytes = (0..32)
+                .map(|j| {
+                    offset
+                        .checked_add(U256::from(j))
+                        .map_or_else(zero, |i| self.read(state, &ExprId::constant(i)))
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            let mut parts = bytes
+                .into_iter()
+                .enumerate()
+                .map(|(j, b)| domain.apply(opcode::SHL, &[constant((31 - j) * 8), b]))
+                .collect::<Vec<_>>();
+            while parts.len() > 1 {
+                parts = parts
+                    .chunks(2)
+                    .map(|p| {
+                        if p.len() == 2 {
+                            domain.apply(opcode::OR, p)
+                        } else {
+                            p[0].clone()
+                        }
+                    })
+                    .collect();
+            }
+            out = Some(join(out, parts.pop().expect("word"), domain));
         }
-        out = Some(join(out, parts.pop().expect("word"), domain));
+        out.unwrap_or_else(AbstractValue::top)
     }
-    out.unwrap_or_else(AbstractValue::top)
 }
 
 // The symbolic constructor has already checked retention/cancellation. Numeric
@@ -493,7 +518,8 @@ fn demanded_state<'a>(
     state: &'a ByteStateId,
     index: &ExprId,
     width: usize,
-    facts: &Facts,
+    context: &Context<'_>,
+    domain: Domain,
 ) -> &'a ByteStateId {
     let Some(start) = index.as_constant() else {
         return state;
@@ -502,7 +528,7 @@ fn demanded_state<'a>(
     let mut cursor = state;
     while let Some(previous) =
         cursor.prior_to_disjoint_write_with_bound(start, end, &|destination| {
-            super::reads::write_lower_bound(destination, facts)
+            context.write_lower_bound(destination, domain)
         })
     {
         cursor = previous;

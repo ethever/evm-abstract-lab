@@ -156,7 +156,10 @@ impl ByteArray {
                     keys.sort_unstable();
                     keys.dedup();
                     let mut cells = BTreeMap::new();
-                    let mut reader = super::numeric::Reader::new(&self.operands, domain);
+                    let mut reader = super::numeric::Reader::with_context(
+                        super::conditional::Context::new(&self.operands, Some(&self.conditional)),
+                        domain,
+                    );
                     for index in keys.into_iter().take(COPY_FACT_LIMIT) {
                         if analysis_control::current_cancellation().is_cancelled() {
                             return Err(ExprError::Cancelled.into());
@@ -303,6 +306,7 @@ impl ByteArraySummary {
             root: ByteStateId::zero(),
             allocations: Default::default(),
             operands: BTreeMap::new(),
+            conditional: Default::default(),
             failure: None,
         };
         match &self.content {

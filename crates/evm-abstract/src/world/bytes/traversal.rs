@@ -126,6 +126,14 @@ impl ByteArray {
                 limits,
             )?;
         }
+        out.conditional = self.conditional.map(&mut |expression, value| {
+            let mut value = value.cloned();
+            if let Some(value) = &mut value {
+                rename_value(value, map, limits)?;
+            }
+            Ok((expression.rename_fresh(map, limits)?, value))
+        })?;
+        out.conditional.check(limits)?;
         *self = out;
         Ok(())
     }
@@ -135,6 +143,14 @@ impl ByteArray {
         for v in self.bytes.values().chain(self.operands.values()) {
             visit(v);
         }
+        self.conditional.visit(&mut |expression, value| {
+            if value.is_none_or(|value| value.expression() != Some(expression)) {
+                visit(&AbstractValue::top().with_expression(expression.clone()));
+            }
+            if let Some(value) = value {
+                visit(value);
+            }
+        });
         for (at, size) in &self.allocations {
             visit(&AbstractValue::top().with_expression(at.clone()));
             visit(&AbstractValue::top().with_expression(size.clone()));
@@ -143,8 +159,10 @@ impl ByteArray {
             visit(&AbstractValue::top().with_expression(e));
         }
     }
-    /// Numeric/provenance projections may update materialized values. Symbolic
-    /// source identity requires rename_fresh; it is deliberately not guessed here.
+    /// Update unconditional materialized values. A callback may reject the whole
+    /// payload, so branch-local operands must stay outside this API. Their bounds
+    /// remain scoped; reads consult retained selector truths through Context.
+    /// Symbolic source identity changes require rename_fresh.
     pub(crate) fn update_values(&mut self, update: &mut impl FnMut(&mut AbstractValue)) {
         let length_expression = self.length.symbolic_expression();
         update(&mut self.length);
@@ -161,6 +179,8 @@ impl ByteArray {
     /// Refine retained numeric guarantees against their original source terms.
     /// Operand values deliberately forget source identity; the map key keeps
     /// the expression needed to refine copy offsets, lengths, and selectors.
+    /// Only unconditional entries participate: a contradiction with an inactive
+    /// conditional source cannot justify rejecting the entire payload.
     pub(crate) fn refine_operands(&mut self, update: &mut impl FnMut(&ExprId, &mut AbstractValue)) {
         for (expression, value) in &mut self.operands {
             update(expression, value);

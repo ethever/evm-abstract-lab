@@ -10,6 +10,7 @@ impl ByteArray {
         self.bytes
             .len()
             .saturating_add(self.operands.len())
+            .saturating_add(self.conditional.len())
             .saturating_add(self.allocations.len())
             .saturating_add(2)
     }

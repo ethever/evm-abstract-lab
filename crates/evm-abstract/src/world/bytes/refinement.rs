@@ -310,6 +310,16 @@ pub(in crate::world) fn refresh_scalar(
 }
 
 impl ByteArray {
+    /// A content join can fold equal roots while its operand bounds still differ.
+    /// Such selectors remain guards even without an ITE in the content graph.
+    pub(in crate::world) fn extend_conditional_guards(&self, out: &mut BTreeSet<ExprId>) {
+        self.conditional.visit(&mut |expression, value| {
+            if value.is_none() {
+                out.insert(expression.clone());
+            }
+        });
+    }
+
     /// Collect distinct ITE selectors under the existing retention and traversal
     /// limits without changing this wrapper. Proofs apply to this same frozen
     /// state; the owning set can be moved into the serial refinement loop.
@@ -324,7 +334,9 @@ impl ByteArray {
                 pending.push(Node::Expression(e.clone()));
             }
         });
-        guards(pending, limits).map_err(RangeError::from)
+        let mut out = guards(pending, limits).map_err(RangeError::from)?;
+        self.extend_conditional_guards(&mut out);
+        Ok(out)
     }
 
     /// Apply only caller-proved guard truth. None retains both alternatives;

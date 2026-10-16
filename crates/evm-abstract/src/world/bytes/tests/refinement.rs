@@ -361,6 +361,113 @@ fn call_result_guard_keeps_local_precision_gap_and_direct_selector_refines_outpu
 }
 
 #[test]
+fn global_refinement_callbacks_do_not_reject_inactive_conditional_sources() {
+    let domain = Domain::default();
+    let limits = policy();
+    let x = ExprId::fresh().unwrap();
+    let guard = ExprId::fresh().unwrap();
+    let bounded = AbstractValue::unsigned_range(U256::ONE, U256::from(9))
+        .unwrap()
+        .with_expression(x.clone());
+    let mut yes = ByteArray::memory();
+    yes.write_word(&v(0), &bounded, 128, domain).unwrap();
+    let mut no = ByteArray::memory();
+    no.write_word(
+        &v(0),
+        &AbstractValue::top().with_expression(x.clone()),
+        128,
+        domain,
+    )
+    .unwrap();
+    let joined = yes
+        .join_guarded(&no, domain, guard.clone(), limits.expressions())
+        .unwrap();
+    let snapshot = joined.clone();
+    let mut relations = RelationState::default();
+    assert_eq!(
+        relations.assume(&guard, false, &limits),
+        CheckResult::MayBeFeasible
+    );
+    relations.observe(&x, v(20).numeric(), &limits).unwrap();
+    assert_eq!(relations.check(&limits), CheckResult::MayBeFeasible);
+    // This is the real caller's rejection condition. It is correct for a
+    // conjunction, but this bound holds only on the inactive true branch.
+    assert_eq!(
+        relations.refine_numeric(&x, bounded.numeric(), domain, &limits),
+        ScalarQuery::Infeasible
+    );
+    for keyed in [false, true] {
+        let mut current = joined.clone();
+        let mut failed = false;
+        let mut visited_x = false;
+        let mut refine = |expression: &ExprId, value: &mut AbstractValue| {
+            if failed || value.singleton().is_some() || !relations.relevant(expression) {
+                return;
+            }
+            visited_x |= expression == &x;
+            match relations.refine_numeric(expression, value.numeric(), domain, &limits) {
+                ScalarQuery::Refined { numeric, .. } => {
+                    *value = value.clone().with_numeric(*numeric);
+                }
+                ScalarQuery::Infeasible => failed = true,
+                ScalarQuery::Unchanged => {}
+                other => panic!("unexpected global refinement result: {other:?}"),
+            }
+        };
+        if keyed {
+            current.refine_operands(&mut refine);
+        } else {
+            current.update_values(&mut |value| {
+                if let Some(expression) = value.expression().cloned()
+                    && !matches!(
+                        expression.kind(),
+                        crate::domain::symbolic::ExprKind::ByteRead { .. }
+                            | crate::domain::symbolic::ExprKind::WordRead { .. }
+                            | crate::domain::symbolic::ExprKind::Keccak { .. }
+                    )
+                {
+                    refine(&expression, value);
+                }
+            });
+        }
+        assert!(visited_x, "the unconditional source must still be refined");
+        assert!(!failed, "an inactive branch must not reject the wrapper");
+        assert_eq!(
+            current.operands.get(&x).unwrap().singleton(),
+            Some(U256::from(20))
+        );
+        assert_eq!(current.conditional, joined.conditional);
+        let mut retained_bound = false;
+        current.conditional.visit(&mut |expression, value| {
+            if expression == &x
+                && let Some(value) = value
+            {
+                assert_eq!(value, &bounded);
+                retained_bound = true;
+            }
+        });
+        assert!(retained_bound, "the inactive source bound must survive");
+        assert!(
+            current
+                .refine_guards(domain, limits.expressions(), &mut |condition| {
+                    prove(&relations, condition)
+                })
+                .unwrap()
+        );
+        assert_eq!(
+            current.operands.get(&guard).unwrap().singleton(),
+            Some(U256::ZERO)
+        );
+        let read = current.read_word_checked(&v(0), domain).unwrap();
+        assert_eq!(read.singleton(), Some(U256::from(20)));
+        assert_eq!(read.expression(), Some(&x));
+        assert_eq!(current.state_root(), joined.state_root());
+        assert_eq!(current.conditional, joined.conditional);
+    }
+    assert_eq!(joined, snapshot);
+}
+
+#[test]
 fn retained_operand_keys_refine_short_return_copy_and_preserve_its_suffix() {
     let domain = Domain::default();
     let returndata = ByteArray::unknown()

@@ -93,10 +93,7 @@ fn guarded_word_reads_keep_whole_word_correlation_and_scoped_sources() {
     assert!(
         matches!(read.expression().unwrap().kind(), ExprKind::Ite { condition, .. } if condition == &guard)
     );
-    let mut facts = RelationState::default();
-    for (expression, value) in memory.symbolic_facts() {
-        facts.observe(expression, value.numeric(), &limits).unwrap();
-    }
+    let facts = memory.symbolic_relations(&limits).unwrap();
     for (yes, expected) in [(true, 0x0100), (false, 0xff01)] {
         let mut relations = facts.clone();
         assert_eq!(
@@ -139,7 +136,7 @@ fn guarded_equal_numbers_keep_independent_sources_and_identity_meet() {
     let domain = Domain::from_spec(Domain::default().spec().with_relations(limits));
     let a = observed(993, 7, Origin::Calldata);
     let b = observed(994, 7, Origin::Returndata);
-    let (memory, _) = joined(&a, &b, domain, limits);
+    let (memory, guard) = joined(&a, &b, domain, limits);
     let read = memory.read_word_checked(&constant(64), domain).unwrap();
     assert_eq!(read.singleton(), Some(U256::from(7)));
     assert!(matches!(
@@ -162,24 +159,135 @@ fn guarded_equal_numbers_keep_independent_sources_and_identity_meet() {
         &memory,
         &memory.widening_form(domain, limits.expressions()).unwrap(),
     ] {
-        let mut relations = RelationState::default();
-        for (expression, value) in current.symbolic_facts() {
-            relations
-                .observe(expression, value.numeric(), &limits)
-                .unwrap();
-        }
-        for original in [&a, &b] {
+        let mut relations = current.symbolic_relations(&limits).unwrap();
+        for (nonzero, original) in [(true, &a), (false, &b)] {
+            // The complete source record survives below its guard, never as a
+            // one-sided unconditional guarantee of this input expression.
+            assert!(
+                !current
+                    .operands
+                    .contains_key(original.expression().unwrap())
+            );
+            let context = conditional::Context::new(&current.operands, Some(&current.conditional))
+                .branch(&guard, nonzero);
             assert_eq!(
-                current.operands.get(original.expression().unwrap()),
-                Some(original)
+                context.value(original.expression().unwrap(), domain),
+                Some(original.clone())
+            );
+            assert_eq!(
+                conditional::Context::new(&current.operands, Some(&current.conditional))
+                    .branch(&guard, !nonzero)
+                    .value(original.expression().unwrap(), domain),
+                None
+            );
+            let mut selected = relations.clone();
+            selected.assume(&guard, nonzero, &limits);
+            assert_eq!(
+                selected.local_value(original.expression().unwrap(), &limits),
+                ValueQuery::Exact(U256::from(7))
             );
         }
         let read = current.read_word_checked(&constant(64), domain).unwrap();
+        // The World evaluator proves this whole read without splitting byte
+        // choices. Retain its numeric consequence for the scalar consumer,
+        // whose unknown-guard rule keeps only common syntactic atoms.
+        relations
+            .observe(&expr(&read).unwrap(), read.numeric(), &limits)
+            .unwrap();
         assert_eq!(
             relations.local_value(&expr(&read).unwrap(), &limits),
             ValueQuery::Exact(U256::from(7))
         );
     }
+}
+
+#[test]
+fn conditional_sources_survive_copy_slice_rename_and_atomic_limits() {
+    let limits = policy();
+    let domain = Domain::from_spec(Domain::default().spec().with_relations(limits));
+    let a = observed(995, 7, Origin::Calldata).with_expression(ExprId::fresh().unwrap());
+    let b = observed(996, 7, Origin::Returndata).with_expression(ExprId::fresh().unwrap());
+    let (memory, guard) = joined(&a, &b, domain, limits);
+    let snapshot = memory.clone();
+    let old = memory.read_word_checked(&constant(64), domain).unwrap();
+    let slice = memory
+        .slice(&constant(64), &constant(32), 4096, domain)
+        .unwrap();
+    let mut copied = ByteArray::memory();
+    copied
+        .copy_from(&zero(), &slice, &zero(), &constant(32), 4096, domain)
+        .unwrap();
+    let new_guard = ExprId::fresh().unwrap();
+    let new_a = ExprId::fresh().unwrap();
+    copied
+        .rename_fresh(
+            &BTreeMap::from([
+                (guard.clone(), new_guard.clone()),
+                (a.expression().unwrap().clone(), new_a.clone()),
+            ]),
+            limits.expressions(),
+        )
+        .unwrap();
+    let read = copied.read_word_checked(&zero(), domain).unwrap();
+    assert_eq!(read.singleton(), Some(U256::from(7)));
+    assert!(!read.same_identity(&a));
+    assert!(!read.same_identity(&b));
+    for origin in [Origin::Calldata, Origin::Returndata] {
+        assert!(
+            read.provenance()
+                .origins()
+                .sources()
+                .unwrap()
+                .contains(&origin)
+        );
+    }
+    let leaves = copied.fresh_leaves();
+    assert!(leaves.contains(&new_guard));
+    assert!(leaves.contains(&new_a));
+    assert!(!leaves.contains(&guard));
+    assert!(!leaves.contains(a.expression().unwrap()));
+    for (nonzero, source) in [(true, &new_a), (false, b.expression().unwrap())] {
+        let mut facts = copied.symbolic_relations(&limits).unwrap();
+        assert_eq!(
+            facts.assume(&new_guard, nonzero, &limits),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            facts.local_value(source, &limits),
+            ValueQuery::Exact(U256::from(7))
+        );
+        assert_eq!(
+            facts.local_value(read.expression().unwrap(), &limits),
+            ValueQuery::Exact(U256::from(7))
+        );
+    }
+    let before_error = copied.clone();
+    assert!(
+        copied
+            .rename_fresh(
+                &BTreeMap::new(),
+                ExprLimits {
+                    max_nodes: 1,
+                    ..limits.expressions()
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(copied, before_error);
+    let cancellation = analysis_control::Cancellation::new();
+    cancellation.cancel();
+    analysis_control::with_cancellation(&cancellation, || {
+        assert_eq!(
+            copied.symbolic_relations(&limits),
+            Err(crate::domain::relational::QueryReason::Cancelled)
+        );
+    });
+    assert_eq!(copied, before_error);
+    assert_eq!(memory, snapshot);
+    assert_eq!(
+        memory.read_word_checked(&constant(64), domain).unwrap(),
+        old
+    );
 }
 
 #[test]

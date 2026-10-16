@@ -612,16 +612,13 @@ fn copies_at_distinct_addresses_hash_to_the_same_storage_key_under_range_guard()
     relations
         .observe(size.expression().unwrap(), size.numeric(), &p)
         .unwrap();
-    // The local SlotRead evaluator does not normalize two unknown hashes before
-    // alias comparison. Its direct result must still cover the written seven.
-    let ValueQuery::Bounds(bounds) = relations.local_value(read.expression().unwrap(), &p) else {
-        panic!("expected the documented hash-alias closure precision gap");
-    };
-    assert!(bounds.contains(U256::from(7)));
-    assert!(
-        bounds.contains(U256::ZERO),
-        "local bounds retain a spurious nonalias"
-    );
+    // The direct query can benefit from local same-content normalization.
+    // Either an exact proof or conservative bounds must retain the real seven.
+    match relations.local_value(read.expression().unwrap(), &p) {
+        ValueQuery::Exact(actual) => assert_eq!(actual, U256::from(7)),
+        ValueQuery::Bounds(bounds) => assert!(bounds.contains(U256::from(7))),
+        other => panic!("same-content hash read lost its concrete seven: {other:?}"),
+    }
     // Same-content hash normalization is a supported local equality proof.
     // Retaining that proved fact supplies the alias without a hash-injectivity premise.
     let equal = ExprId::operation(

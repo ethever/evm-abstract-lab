@@ -3,6 +3,7 @@
 //! The root is the content model. Sparse facts and operand summaries provide
 //! numeric upper bounds and bounded presentation; COPY never expands its range.
 
+mod conditional;
 mod metadata;
 pub(super) mod native;
 pub(super) mod numeric;
@@ -47,6 +48,8 @@ pub struct ByteArray {
     allocations: BTreeSet<(ExprId, ExprId)>,
     #[serde(serialize_with = "native::serialize_facts")]
     operands: BTreeMap<ExprId, AbstractValue>,
+    // Implications retain source bounds without asserting them on other paths.
+    conditional: conditional::ConditionalFacts,
     #[serde(serialize_with = "native::serialize_failure")]
     failure: Option<RangeError>,
 }
@@ -183,6 +186,7 @@ impl ByteArray {
             root: ByteStateId::exact(Arc::from(input)),
             allocations: BTreeSet::new(),
             operands: BTreeMap::new(),
+            conditional: Default::default(),
             failure: None,
         }
     }
@@ -204,6 +208,7 @@ impl ByteArray {
             memory: false,
             allocations: BTreeSet::new(),
             operands: BTreeMap::new(),
+            conditional: Default::default(),
             failure: None,
         })
     }
@@ -272,7 +277,7 @@ impl ByteArray {
     pub fn stored_bytes(&self) -> impl ExactSizeIterator<Item = (usize, &AbstractValue)> {
         self.bytes.iter().map(|(i, v)| (*i, v))
     }
-    /// Numeric operand guarantees paired with their immutable expression identity.
+    /// Unconditional numeric guarantees paired with immutable expression identity.
     pub fn symbolic_facts(&self) -> impl ExactSizeIterator<Item = (&ExprId, &AbstractValue)> {
         self.operands.iter()
     }
@@ -294,6 +299,7 @@ impl ByteArray {
                 self.root
                     .work_size()
                     .saturating_add(traversal::exact_work(&self.root))
+                    .saturating_add(self.conditional.work_size())
                     .saturating_add(self.allocations.iter().fold(0usize, |n, (at, size)| {
                         n.saturating_add(at.nodes()).saturating_add(size.nodes())
                     })),
@@ -302,6 +308,7 @@ impl ByteArray {
     }
     pub(crate) fn symbolic_limit_reached(&self) -> bool {
         self.failure.is_some()
+            || self.conditional.symbolic_limit_reached()
             || self
                 .bytes
                 .values()
@@ -328,13 +335,15 @@ impl ByteArray {
             domain,
             limits(domain),
         )?;
+        self.conditional.check(limits(domain))?;
+        let context = conditional::Context::new(&facts, Some(&self.conditional));
         let expression = ExprId::byte_read_with_write_bound(
             self.root.clone(),
             offset_expr.clone(),
             limits(domain),
-            &|destination| reads::write_lower_bound(destination, &facts),
+            &|destination| context.write_lower_bound(destination, domain),
         )?;
-        let numeric = numeric::read(&self.root, &offset_expr, &facts, domain);
+        let numeric = numeric::Reader::with_context(context, domain).read(&self.root, &offset_expr);
         Ok(numeric::attach(numeric, expression))
     }
     /// Read one byte; retention failure is marked for the analysis boundary.
@@ -365,6 +374,8 @@ impl ByteArray {
             domain,
             limits(domain),
         )?;
+        self.conditional.check(limits(domain))?;
+        let context = conditional::Context::new(&facts, Some(&self.conditional));
         let view = if self.memory {
             ByteView::new(
                 self.root.clone(),
@@ -379,13 +390,14 @@ impl ByteArray {
                 limits(domain).into(),
             )?
         };
-        let expression = ExprId::word_read_with_write_bound(
+        let expression = reads::word_expression(
             view,
             ExprId::constant(U256::ZERO),
+            &context,
+            domain,
             limits(domain),
-            &|destination| reads::write_lower_bound(destination, &facts),
         )?;
-        let numeric = numeric::word(&self.root, &offset_expr, &facts, domain);
+        let numeric = numeric::Reader::with_context(context, domain).word(&self.root, &offset_expr);
         Ok(numeric::attach(numeric, expression))
     }
     /// Read one word; retention failure is marked for the analysis boundary.
@@ -433,6 +445,7 @@ impl ByteArray {
             root,
             allocations: BTreeSet::new(),
             operands,
+            conditional: self.conditional.clone(),
             bytes: BTreeMap::new(),
             default: if offset.singleton().is_some() && self.bytes.len() <= COPY_FACT_LIMIT {
                 self.default.clone()
@@ -600,6 +613,8 @@ impl ByteArray {
         for (expression, value) in &source.operands {
             out.remember(expression.clone(), value, domain)?;
         }
+        out.conditional
+            .extend(&source.conditional, limits(domain))?;
         out.remember(dst.clone(), target_offset, domain)?;
         out.remember(at.clone(), source_offset, domain)?;
         out.remember(len.clone(), size, domain)?;
@@ -669,6 +684,7 @@ impl ByteArray {
         }
         self.root
             .join_guarded(&self.root, ExprId::constant(U256::ZERO), limits.into())?;
+        self.conditional.check(limits)?;
         let mut result = Ok(());
         self.visit_values(&mut |value| {
             if result.is_ok() {
@@ -690,6 +706,14 @@ impl ByteArray {
         if self == other {
             return Ok(self.clone());
         }
+        let operands = operands::join_common(&self.operands, &other.operands, domain);
+        let conditional = conditional::ConditionalFacts::join(
+            (&self.operands, &self.conditional),
+            (&other.operands, &other.conditional),
+            &operands,
+            selector.clone(),
+            expression_limits,
+        )?;
         let mut out = Self {
             length: self.length.join_guarded(
                 &other.length,
@@ -708,7 +732,8 @@ impl ByteArray {
             root: self
                 .root
                 .join_guarded(&other.root, selector, expression_limits.into())?,
-            operands: operands::join_common(&self.operands, &other.operands, domain),
+            operands,
+            conditional,
             failure: self.failure.clone().or_else(|| other.failure.clone()),
         };
         for index in self.bytes.keys().chain(other.bytes.keys()) {
@@ -787,17 +812,17 @@ impl ByteArray {
         }
         let mut output = Vec::new();
         output.try_reserve_exact(length).ok()?;
+        let mut reader = numeric::Reader::with_context(
+            conditional::Context::new(&self.operands, Some(&self.conditional)),
+            Domain::default(),
+        );
         for i in 0..length {
             if i % 256 == 0 && analysis_control::current_cancellation().is_cancelled() {
                 return None;
             }
-            let byte = numeric::read(
-                &self.root,
-                &ExprId::constant(U256::from(i)),
-                &self.operands,
-                Domain::default(),
-            )
-            .singleton()?;
+            let byte = reader
+                .read(&self.root, &ExprId::constant(U256::from(i)))
+                .singleton()?;
             if byte > U256::from(255) {
                 return None;
             }
@@ -839,10 +864,14 @@ impl ByteArray {
             self.bytes.insert(i, self.byte_at(i, domain));
         }
     }
-    pub(crate) fn word_numeric_work(&self, _offset: &AbstractValue, _domain: Domain) -> usize {
+    pub(crate) fn word_numeric_work(&self, _offset: &AbstractValue, domain: Domain) -> usize {
+        // Scalar and write-bound lookups repeat during a word walk. Charge
+        // their map probes and meets from cached metadata, without a root scan.
         self.root
             .work_size()
             .saturating_mul(32)
+            .saturating_mul(self.conditional.lookup_work(domain).saturating_add(1))
+            .saturating_add(self.conditional.work_size().saturating_mul(32))
             .saturating_add(256 * 32)
     }
     pub(crate) fn project(&self, domain: Domain) -> Self {
@@ -859,15 +888,32 @@ impl ByteArray {
         for value in out.bytes.values_mut().chain(out.operands.values_mut()) {
             project(value);
         }
+        out.conditional = self
+            .conditional
+            .map(&mut |expression, value| {
+                let mut value = value.cloned();
+                if let Some(value) = &mut value {
+                    project(value);
+                }
+                Ok((expression.clone(), value))
+            })
+            .expect("numeric projection is infallible");
         out
     }
     pub(crate) fn projection_work(&self, domain: Domain) -> usize {
-        self.bytes
+        let mut work = self
+            .bytes
             .values()
             .chain(self.operands.values())
             .chain([&self.length, &self.default])
             .fold(self.root.work_size(), |n, v| {
                 n.saturating_add(domain.projection_work(v))
-            })
+            });
+        self.conditional.visit(&mut |_, value| {
+            if let Some(value) = value {
+                work = work.saturating_add(domain.projection_work(value));
+            }
+        });
+        work
     }
 }

@@ -41,11 +41,7 @@ fn destinations(domain: Domain, limits: RelationLimits) -> AbstractValue {
 }
 
 fn relations(memory: &ByteArray, limits: RelationLimits) -> RelationState {
-    let mut out = RelationState::default();
-    for (expression, value) in memory.symbolic_facts() {
-        out.observe(expression, value.numeric(), &limits).unwrap();
-    }
-    out
+    memory.symbolic_relations(&limits).unwrap()
 }
 
 fn prove_raw_snapshot_read(
@@ -54,17 +50,13 @@ fn prove_raw_snapshot_read(
     source: &ExprId,
     limits: RelationLimits,
 ) {
-    // Direct byte evaluation requires an exact copy destination. It does not use
-    // the disjoint interval rewrite used by local expression equality, so this
-    // previously captured raw term retains a documented exact-value gap.
-    let ValueQuery::Bounds(bounds) = facts.local_value(read, &limits) else {
-        panic!("expected the documented raw-read precision gap");
-    };
-    assert!(bounds.contains(U256::from(7)));
-    assert!(
-        bounds.contains(U256::ZERO),
-        "local bounds retain a spurious zero"
-    );
+    // A local forwarding improvement may already prove the raw read. Retain
+    // concrete inclusion if it only derives bounds; do not require imprecision.
+    match facts.local_value(read, &limits) {
+        ValueQuery::Exact(actual) => assert_eq!(actual, U256::from(7)),
+        ValueQuery::Bounds(bounds) => assert!(bounds.contains(U256::from(7))),
+        other => panic!("raw historical read lost its concrete seven: {other:?}"),
+    }
 
     // Compose two local queries without importing any new input premise: first
     // prove forwarding to the original source, then retain that proved equality.
