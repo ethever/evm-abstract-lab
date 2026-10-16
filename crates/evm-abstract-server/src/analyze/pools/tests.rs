@@ -103,6 +103,99 @@ fn assert_buffer_roundtrip(pools: &Pools<'_>, id: usize) {
 }
 
 #[test]
+fn range_projection_preserves_kinds_word_limits_and_expression_references_through_json() {
+    use evm_abstract::{
+        analysis::{self, Config, RangeKind, RangeRequest, RangeWitness},
+        bytecode::Program,
+    };
+    use std::sync::Arc;
+
+    // Construct the witness directly to test transport independently of the
+    // engine's range classifier.
+    let analysis = analysis::analyze(Program::from_hex("00").unwrap(), Config::default()).unwrap();
+    let payload = Arc::new(analysis.execution().states()[0].entry.clone());
+    let word = format!("0x{:x}", U256::MAX);
+    let offset = AbstractValue::top()
+        .with_expression(ExprId::input(u64::MAX, Symbol::CalldataWord(U256::MAX)));
+    let condition = AbstractValue::unsigned_range(U256::ZERO, U256::ONE)
+        .unwrap()
+        .with_expression(ExprId::input(78, Symbol::CallValue));
+    let control = Control::default();
+    let mut pools = Pools::new(&control);
+    for (kind, expected_kind, limit) in [
+        (
+            RangeKind::MemoryPolicy,
+            api::RangeKind::MemoryPolicy,
+            U256::from(1024),
+        ),
+        (
+            RangeKind::LogicalMemory,
+            api::RangeKind::LogicalMemory,
+            U256::MAX & !U256::from(31),
+        ),
+        (RangeKind::ReturnData, api::RangeKind::ReturnData, U256::MAX),
+    ] {
+        let source = RangeWitness {
+            request: RangeRequest {
+                kind,
+                offset: offset.clone(),
+                size: AbstractValue::constant(U256::MAX),
+                limit: AbstractValue::constant(limit),
+            },
+            condition: condition.clone(),
+            nonzero: Some(false),
+            payload: Arc::clone(&payload),
+        };
+        let projected = pools.range(&source).unwrap();
+        assert_eq!(projected.request.kind, expected_kind);
+        assert_eq!(projected.request.size.constants, Some(vec![word.clone()]));
+        let limit = format!("0x{limit:x}");
+        assert_eq!(projected.request.limit.constants, Some(vec![limit.clone()]));
+        assert_eq!(projected.request.limit.unsigned.lower, limit);
+        assert_eq!(projected.request.limit.unsigned.upper, limit);
+        let reference = projected.request.offset.expression.unwrap();
+        assert_eq!(
+            pools.symbolic.graph.nodes[reference.node],
+            api::Expression::Input(api::InputIdentity {
+                scope: u64::MAX,
+                symbol: api::InputSymbol {
+                    kind: api::InputSymbolKind::CalldataWord,
+                    index: Some(word.clone()),
+                },
+            })
+        );
+        assert_eq!(
+            projected.condition.expression,
+            Some(
+                pools
+                    .symbolic
+                    .expression(condition.expression().unwrap())
+                    .unwrap()
+            )
+        );
+        assert_ne!(projected.condition.expression, Some(reference));
+        assert_eq!(projected.nonzero, Some(false));
+        assert_eq!(projected.payload, 0);
+        assert_eq!(pools.pending.len(), 1);
+        pools.symbolic.graph.validate().unwrap();
+        let snapshot = (&projected, &pools.symbolic.graph, &pools.pending);
+        let decoded: (
+            api::RangeWitness,
+            api::SymbolicGraph,
+            Vec<api::MachineSnapshot>,
+        ) = serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        assert_eq!(
+            decoded,
+            (
+                projected,
+                pools.symbolic.graph.clone(),
+                pools.pending.clone()
+            )
+        );
+    }
+}
+
+#[test]
 fn complete_buffer_clones_reuse_one_snapshot_without_repaying_expanded_cells() {
     let source = deep_buffer();
     let original = source.clone();

@@ -430,15 +430,18 @@ record! {
         pub offset: crate::ValueInfo,
         /// Original requested size, including zero.
         pub size: crate::ValueInfo,
-        /// Logical memory bound or complete returndata length.
+        /// Historical memory policy, representable logical end, or complete returndata length.
         pub limit: crate::ValueInfo,
     }
 }
 choice! {
-    /// Distinguishes resource policy from returndata semantics.
+    /// Distinguishes logical representability, host policy, and returndata semantics.
     pub enum RangeKind {
-        /// Declared word-rounded logical memory footprint.
+        /// Historical configured word-rounded memory footprint policy.
         MemoryPolicy,
+        /// Nonempty access requires a representable, word-rounded U256 end.
+        /// Its limit is U256::MAX & !31, independent of host materialization policy.
+        LogicalMemory,
         /// Complete returned sequence length.
         ReturnData,
     }

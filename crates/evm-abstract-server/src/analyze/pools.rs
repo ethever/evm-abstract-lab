@@ -431,6 +431,9 @@ impl<'a> Pools<'a> {
             request: api::RangeRequest {
                 kind: match request.kind {
                     evm_abstract::analysis::RangeKind::MemoryPolicy => api::RangeKind::MemoryPolicy,
+                    evm_abstract::analysis::RangeKind::LogicalMemory => {
+                        api::RangeKind::LogicalMemory
+                    }
                     evm_abstract::analysis::RangeKind::ReturnData => api::RangeKind::ReturnData,
                 },
                 offset: self.symbolic.value(&request.offset)?,

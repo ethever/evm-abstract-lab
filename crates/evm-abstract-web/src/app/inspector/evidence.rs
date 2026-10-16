@@ -139,14 +139,29 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
             };
         }
         if let Some(range) = &frontier.range {
-            ui.label(RichText::new(match range.request.kind {
-                api::RangeKind::MemoryPolicy => "Logical memory policy leaves these inputs unexpanded; EVM failure is not established.",
-                api::RangeKind::ReturnData => "Returndata range semantics remain pending for these inputs.",
-            }).color(palette::WARNING));
+            let (evidence, limit_label, help) = match range.request.kind {
+                api::RangeKind::MemoryPolicy => (
+                    "Host memory materialization policy leaves these inputs unexpanded; EVM failure is not established.",
+                    "Materialization policy limit",
+                    "The historical max_memory_bytes policy bounds host materialization. Exceeding it does not exclude EVM success or establish EVM failure.",
+                ),
+                api::RangeKind::LogicalMemory => (
+                    "Logical memory representability leaves these inputs unexpanded.",
+                    "Word-rounded U256 end limit",
+                    "For a nonempty access, offset + size and its rounding up to 32 bytes must fit in U256; the end limit is U256::MAX & !31. Empty accesses do not expand memory. This bound is independent of host materialization policy.",
+                ),
+                api::RangeKind::ReturnData => (
+                    "Returndata range semantics remain pending for these inputs.",
+                    "Returndata length",
+                    "The bound is the complete returned sequence length.",
+                ),
+            };
+            ui.label(RichText::new(evidence).color(palette::WARNING))
+                .on_hover_text(help);
             errors::fields(ui, |ui| {
                 value::named(ui, "Requested offset", &range.request.offset);
                 value::named(ui, "Requested size", &range.request.size);
-                value::named(ui, "Range limit", &range.request.limit);
+                value::named(ui, limit_label, &range.request.limit);
                 value::named(ui, "In-range condition", &range.condition);
                 value::text(
                     ui,
