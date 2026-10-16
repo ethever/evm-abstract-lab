@@ -214,7 +214,33 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         root.as_constant()
             .map(NumericValue::constant)
             .or_else(|| self.facts.get(&root).cloned())
-            .unwrap_or_else(NumericValue::top)
+            .unwrap_or_else(|| match root.kind() {
+                ExprKind::Input(input)
+                    if matches!(
+                        input.symbol,
+                        crate::domain::identity::Symbol::To
+                            | crate::domain::identity::Symbol::Caller
+                            | crate::domain::identity::Symbol::Origin
+                            | crate::domain::identity::Symbol::Coinbase
+                    ) =>
+                {
+                    NumericValue::unknown_address()
+                }
+                ExprKind::Operation { opcode, .. }
+                    if matches!(
+                        *opcode,
+                        opcode::EQ
+                            | opcode::ISZERO
+                            | opcode::LT
+                            | opcode::GT
+                            | opcode::SLT
+                            | opcode::SGT
+                    ) =>
+                {
+                    NumericValue::unsigned_range(U256::ZERO, U256::ONE).unwrap()
+                }
+                _ => NumericValue::top(),
+            })
     }
 
     fn learn(&mut self, expression: &ExprId, value: &NumericValue) -> LocalResult<()> {
@@ -266,6 +292,11 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         let bv = self.known(&b);
         if let (Some(a), Some(b)) = (av.singleton(), bv.singleton()) {
             return Some(a == b);
+        }
+        if (av.nonzero && bv.singleton() == Some(U256::ZERO))
+            || (bv.nonzero && av.singleton() == Some(U256::ZERO))
+        {
+            return Some(false);
         }
         let (al, au) = av.interval().unsigned_bounds();
         let (bl, bu) = bv.interval().unsigned_bounds();
@@ -477,6 +508,14 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         let ExprKind::Operation { opcode: op, args } = expression.kind() else {
             return Ok(());
         };
+        // Observed comparison results carry the same direct guard guarantee
+        // as assume(). In particular EQ=0 must exclude a later equal target.
+        if matches!(*op, opcode::EQ | opcode::ISZERO) {
+            if exact > U256::ONE {
+                return Err(Stop::Bottom);
+            }
+            return self.direct_truth(expression, exact != U256::ZERO);
+        }
         let a = self.known(&args[0]).singleton();
         let b = args.get(1).and_then(|arg| self.known(arg).singleton());
         let inferred = match (*op, a, b) {
@@ -579,7 +618,10 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             }
             ExprKind::SlotRead { state, key } => self.slot(state, key)?,
             ExprKind::ByteRead { state, index } => self.byte(state, index)?,
-            ExprKind::WordRead { view, offset } => self.word(view, offset)?,
+            ExprKind::WordRead { view, offset } => match self.word_term(view, offset)? {
+                Some(forwarded) if forwarded != *expression => self.eval(&forwarded)?,
+                _ => self.word(view, offset)?,
+            },
             // Equality of hashes follows expression identity; no injectivity or
             // equality of different unknown byte ranges is assumed.
             ExprKind::Keccak { input } => self.hash(input)?,

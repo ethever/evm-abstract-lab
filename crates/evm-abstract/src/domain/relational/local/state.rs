@@ -53,7 +53,11 @@ impl Engine<'_, '_> {
                 let written = self.eval(stored)?;
                 let equal = match (queried.singleton(), written.singleton()) {
                     (Some(a), Some(b)) => Some(a == b),
-                    _ => self.same(key, stored),
+                    _ => {
+                        let key = self.term(key)?;
+                        let stored = self.term(stored)?;
+                        self.same(&key, &stored)
+                    }
                 };
                 match equal {
                     Some(true) => self.eval(value),

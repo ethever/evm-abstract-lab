@@ -184,7 +184,11 @@ impl Engine<'_, '_> {
         }
     }
 
-    fn word_term(&mut self, view: &ByteView, relative: &ExprId) -> LocalResult<Option<ExprId>> {
+    pub(super) fn word_term(
+        &mut self,
+        view: &ByteView,
+        relative: &ExprId,
+    ) -> LocalResult<Option<ExprId>> {
         self.work.charge(1)?;
         let Some(relative) = self.exact(relative)? else {
             return Ok(None);
@@ -206,7 +210,18 @@ impl Engine<'_, '_> {
         } else {
             return Ok(None);
         };
-        self.forward_word(&view.state, &at)
+        if let Some(forwarded) = self.forward_word(&view.state, &at)? {
+            return Ok(Some(forwarded));
+        }
+        // The full requested word fits this view. A canonical 32-byte window
+        // keeps direct source-word facts shared with longer copied views.
+        ExprId::word_read(
+            ByteView::new(view.state.clone(), at, ExprId::constant(U256::from(32))),
+            ExprId::constant(U256::ZERO),
+            self.limits.expressions(),
+        )
+        .map(Some)
+        .map_err(denied)
     }
 
     fn relative_byte(&mut self, at: &ExprId, written: &ExprId) -> LocalResult<Option<usize>> {

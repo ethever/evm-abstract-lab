@@ -5,7 +5,7 @@ use super::super::{
 use crate::{
     domain::{
         NumericValue,
-        symbolic::{ByteStateId, ByteView, ExprId, SlotStateId},
+        symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId},
     },
     resource::WorkBudget,
 };
@@ -69,6 +69,93 @@ fn masks_exclude_impossible_bits_and_keep_every_unproved_high_bit() {
     ] {
         assert!(includes(&state.local_value(&x, &limits), value));
     }
+}
+
+#[test]
+fn observed_zero_comparison_retains_the_target_exclusion() {
+    let limits = RelationLimits::default();
+    let target = ExprId::fresh().unwrap();
+    let comparison = op(opcode::EQ, &[target.clone(), c(7)]);
+    let mut state = RelationState::default();
+    state
+        .observe(&comparison, &NumericValue::constant(U256::ZERO), &limits)
+        .unwrap();
+    assert_eq!(
+        state.local_value(&comparison, &limits),
+        ValueQuery::Exact(U256::ZERO)
+    );
+    assert_eq!(
+        state.can_equal(&target, U256::from(7), &limits),
+        CheckResult::ProvenImpossible
+    );
+    assert_eq!(
+        state.can_equal(&target, U256::from(8), &limits),
+        CheckResult::MayBeFeasible
+    );
+}
+
+#[test]
+fn nonzero_symbolic_storage_key_cannot_alias_zero() {
+    let limits = RelationLimits::default();
+    let key = ExprId::fresh().unwrap();
+    let slots = SlotStateId::zero()
+        .store(c(0), c(7), limits.expressions().into())
+        .unwrap()
+        .store(key.clone(), c(9), limits.expressions().into())
+        .unwrap();
+    let read = ExprId::slot_read(slots, c(0), limits.expressions()).unwrap();
+    let guard = op(opcode::ISZERO, &[key]);
+    for (zero, expected) in [(false, 7), (true, 9)] {
+        let mut state = RelationState::default();
+        assert_eq!(
+            state.assume(&guard, zero, &limits),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            state.local_value(&read, &limits),
+            ValueQuery::Exact(U256::from(expected))
+        );
+    }
+}
+
+#[test]
+fn copied_long_view_reuses_the_original_full_word_fact() {
+    let limits = RelationLimits::default();
+    let length = ExprId::fresh().unwrap();
+    let source = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
+    let original = ExprId::word_read(
+        ByteView::new(source.clone(), c(0), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let copied = ByteStateId::zero()
+        .copy(
+            c(128),
+            ByteView::new(source, c(0), length.clone()),
+            length.clone(),
+            limits.expressions().into(),
+        )
+        .unwrap();
+    let read = ExprId::word_read(
+        ByteView::new(copied, c(128), length.clone()),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let mut state = RelationState::default();
+    assert_eq!(
+        state.add_unsigned_bounds(&length, U256::from(32), U256::from(64), &limits),
+        CheckResult::MayBeFeasible
+    );
+    assert_eq!(
+        state.add_equal(&original, &c(7), &limits),
+        CheckResult::MayBeFeasible
+    );
+    assert_eq!(
+        state.local_value(&read, &limits),
+        ValueQuery::Exact(U256::from(7))
+    );
 }
 
 #[test]
