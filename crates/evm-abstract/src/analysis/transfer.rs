@@ -37,6 +37,8 @@ mod precompile;
 pub(super) mod procedure;
 mod ranges;
 mod relations;
+#[cfg(test)]
+mod scalar_retention_tests;
 
 pub(super) use crate::resource::WorkBudget;
 use budget::{byte_work, operation_work};
@@ -520,6 +522,9 @@ fn execute_inner(
                 FrontierReason::Relations(crate::domain::relational::QueryReason::ExpressionLimit),
             );
         }
+        // Refinement can make a flagged operand singleton. Its inherited
+        // refusal must still be distinguished from this result's optional term.
+        let inherited_symbolic_limit = args.iter().any(AbstractValue::symbolic_limit_reached);
         for value in &mut args {
             match relations::refine(value, &result.payload.relations, context) {
                 Ok(false) => return result,
@@ -1208,18 +1213,32 @@ fn execute_inner(
                         if !matches!(op, 0x01..=0x0b | 0x10..=0x1e) {
                             result.diagnostics.push((pc, DiagnosticKind::OpaqueResult));
                         }
-                        let reduction = domain.apply_detailed(op, &args);
+                        let mut reduction = domain.apply_detailed(op, &args);
                         if matches!(
                             reduction.symbolic_error,
                             Some(crate::domain::symbolic::ExprError::Limit { .. })
                         ) {
-                            boundary(
-                                &mut result,
-                                pc,
-                                FrontierReason::Relations(
-                                    crate::domain::relational::QueryReason::ExpressionLimit,
-                                ),
-                            );
+                            if matches!(op, 0x01..=0x0b | 0x10..=0x1e) && !inherited_symbolic_limit
+                            {
+                                // Numeric transfer succeeded; only the current
+                                // optional correlation failed to fit. Ordinary
+                                // identify below gives this result its own leaf.
+                                reduction.value.forget_expression_after_limit();
+                                result.diagnostics.push((
+                                    pc,
+                                    DiagnosticKind::RelationalPrecisionLost(
+                                        crate::domain::relational::QueryReason::ExpressionLimit,
+                                    ),
+                                ));
+                            } else {
+                                boundary(
+                                    &mut result,
+                                    pc,
+                                    FrontierReason::Relations(
+                                        crate::domain::relational::QueryReason::ExpressionLimit,
+                                    ),
+                                );
+                            }
                         }
                         if matches!(
                             reduction.status,
