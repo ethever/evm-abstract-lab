@@ -95,6 +95,53 @@ fn observed_zero_comparison_retains_the_target_exclusion() {
 }
 
 #[test]
+fn finite_exclusion_preserves_ite_identity_and_every_unexcluded_candidate() {
+    let limits = RelationLimits::default();
+    let selector = ExprId::fresh().unwrap();
+    let value = ExprId::ite(selector.clone(), c(128), c(192), limits.expressions()).unwrap();
+    for (excluded, expected) in [(192, Some(128u64)), (128, Some(192u64)), (7, None)] {
+        let mut state = RelationState::default();
+        state
+            .observe(
+                &value,
+                &NumericValue::unsigned_range(U256::from(128), U256::from(192)).unwrap(),
+                &limits,
+            )
+            .unwrap();
+        assert_eq!(
+            state.assume(
+                &op(opcode::EQ, &[value.clone(), c(excluded)]),
+                false,
+                &limits
+            ),
+            CheckResult::MayBeFeasible
+        );
+        let before = state.clone();
+        let answer = state.local_value(&value, &limits);
+        if let Some(expected) = expected {
+            assert_eq!(answer, ValueQuery::Exact(U256::from(expected)));
+            let mut budget = WorkBudget::new(20_000_000);
+            assert_eq!(
+                state.local_value_budgeted(&value, &limits, &mut budget),
+                answer
+            );
+            assert!(!budget.exhausted());
+        } else {
+            for candidate in [128, 192] {
+                assert!(includes(&answer, U256::from(candidate)));
+            }
+        }
+        for candidate in [0, 1] {
+            assert!(includes(
+                &state.local_value(&selector, &limits),
+                U256::from(candidate)
+            ));
+        }
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
 fn candidate_equality_cannot_supply_its_own_compound_value() {
     let limits = RelationLimits::default();
     let base = ExprId::fresh().unwrap();

@@ -9,7 +9,7 @@ use super::{
     Constraint, QueryReason, RelationLimits, RelationPath, RelationPathKind, RelationState,
 };
 use crate::domain::{
-    AbstractValue, Domain, NumericValue,
+    AbstractValue, Domain, FiniteConstantSet, NumericValue,
     facts::{Fact, FactError, FactLattice},
     symbolic::{ExprId, ExprKind},
 };
@@ -670,18 +670,56 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             .clone())
     }
 
+    fn exclude_finite(
+        &mut self,
+        expression: &ExprId,
+        mut value: NumericValue,
+    ) -> LocalResult<NumericValue> {
+        let Some(constants) = value.constants() else {
+            return Ok(value);
+        };
+        if self.unequal.is_empty() {
+            return Ok(value);
+        }
+        self.work.charge(constants.len())?;
+        let mut retained = constants.clone();
+        let subject = self.root(expression)?;
+        for index in 0..self.unequal.len() {
+            self.work.charge(1)?;
+            let (left, right) = self.unequal[index].clone();
+            let left = self.root(&left)?;
+            let right = self.root(&right)?;
+            let excluded = if self.work.same_expression(&subject, &left)? {
+                self.known(&right)?.singleton()
+            } else if self.work.same_expression(&subject, &right)? {
+                self.known(&left)?.singleton()
+            } else {
+                None
+            };
+            if let Some(excluded) = excluded {
+                self.work.charge(retained.len().saturating_add(1))?;
+                retained.remove(&excluded);
+            }
+        }
+        // This is set difference over an already bounded numeric component.
+        // No candidate is assumed, and no conditional path is selected.
+        value.finite = FiniteConstantSet::try_from_values(retained).map_err(|_| Stop::Bottom)?;
+        Ok(value)
+    }
+
     fn eval(&mut self, expression: &ExprId) -> LocalResult<NumericValue> {
         self.work.charge(1)?;
         let known = self.known(expression)?;
         // Imported exact guarantees also cover compound terms. Reconstructing
         // a whole known word cannot add information; feasibility stays unproved.
         if known.singleton().is_some() {
-            return Ok(known);
+            return self.exclude_finite(expression, known);
         }
         if let Some(value) = self.memo.get(expression, self.work)? {
             self.work.prepay(value.work_size())?;
             let value = value.clone();
-            return self.meet(&known, &value);
+            let value = self.meet(&known, &value)?;
+            return self.exclude_finite(expression, value);
         }
         let numeric = match expression.kind() {
             ExprKind::Constant(value) => NumericValue::constant(*value),
@@ -734,6 +772,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             ExprKind::Keccak { input } => self.hash(input)?,
         };
         let value = self.meet(&known, &numeric)?;
+        let value = self.exclude_finite(expression, value)?;
         self.work.prepay(value.work_size())?;
         self.memo
             .insert(expression.clone(), value.clone(), self.work)?;
