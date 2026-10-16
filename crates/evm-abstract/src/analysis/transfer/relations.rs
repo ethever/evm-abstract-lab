@@ -164,6 +164,19 @@ fn finish_refine(
             }
         }
         ValueQuery::Bounds(bounds) => {
+            // Equality can traverse finite candidates. Pay before comparing, and
+            // leave every value layer intact when the meet adds no numeric facts.
+            if !context.budget.charge(
+                value
+                    .numeric()
+                    .work_size()
+                    .saturating_add(bounds.work_size()),
+            ) {
+                return Err(FrontierReason::Work);
+            }
+            if bounds.is_top() || value.numeric() == bounds.as_ref() {
+                return Ok(true);
+            }
             if !context
                 .budget
                 .charge(context.domain.refinement_work(value, 1))

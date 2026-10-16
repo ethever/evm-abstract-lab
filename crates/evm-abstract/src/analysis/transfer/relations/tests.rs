@@ -1,5 +1,7 @@
 //! Guard rejection and shared work remain coverage boundaries.
 
+mod noop_bounds;
+
 use crate::{
     Fork,
     analysis::{
