@@ -32,6 +32,11 @@ impl WorkBudget {
         self.consumed += amount;
         true
     }
+    /// 只读检查可选精确操作能否完整执行；拒绝时允许保留已有的可靠近似。
+    /// 不预留额度，也不清除之前的耗尽或取消状态。
+    pub fn can_afford(&self, amount: usize) -> bool {
+        !self.exhausted() && amount <= self.maximum.saturating_sub(self.consumed)
+    }
     /// 是否有操作因额度不足被拒绝。
     pub fn exhausted(&self) -> bool {
         self.exhausted || self.cancellation.is_cancelled()
