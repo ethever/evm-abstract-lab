@@ -64,9 +64,46 @@ impl Engine<'_, '_> {
             ExprKind::WordRead { view, offset } => {
                 self.source_facts(offset)?;
                 self.view_sources(view)?;
+                self.word_source_facts(expression, view, offset)?;
             }
             ExprKind::Keccak { input } => self.view_sources(input)?,
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn word_source_facts(
+        &mut self,
+        expression: &ExprId,
+        view: &ByteView,
+        relative: &ExprId,
+    ) -> LocalResult<()> {
+        if !matches!(view.state.kind(), ByteStateKind::Input { .. }) {
+            return Ok(());
+        }
+        let Some(word) = self.known(expression)?.singleton() else {
+            return Ok(());
+        };
+        let (Some(relative), Some(start)) = (self.exact(relative)?, self.exact(&view.offset)?)
+        else {
+            return Ok(());
+        };
+        let lower = self.eval(&view.length)?.interval().unsigned_bounds().0;
+        // Only bytes inside the guaranteed view prefix constrain its backing
+        // source. Short-view padding and mathematical overflow bind no cell.
+        self.work.charge(32)?;
+        for i in 0..32usize {
+            self.work.charge(1)?;
+            let Some(at) = relative.checked_add(U256::from(i)).filter(|at| *at < lower) else {
+                break;
+            };
+            let Some(at) = start.checked_add(at) else {
+                break;
+            };
+            let byte = (word >> ((31 - i) * 8)) & U256::from(255);
+            let read = self.initial_byte(&view.state, &ExprId::constant(at))?;
+            self.learn(&read, &NumericValue::constant(byte))?;
+            self.has_source_bytes = true;
         }
         Ok(())
     }
@@ -268,6 +305,12 @@ impl Engine<'_, '_> {
                 if self.has_source_bytes {
                     let initial = self.initial_byte(state, &ExprId::constant(at))?;
                     let observed = self.known(&initial)?;
+                    if observed
+                        .singleton()
+                        .is_some_and(|byte| byte <= U256::from(255))
+                    {
+                        return Ok(observed);
+                    }
                     if !observed.is_top() {
                         return self.meet(&observed, &NumericValue::unknown_byte());
                     }

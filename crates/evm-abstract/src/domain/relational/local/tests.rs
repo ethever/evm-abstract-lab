@@ -379,6 +379,105 @@ fn shared_byte_overlay_preserves_the_original_word_selection() {
 }
 
 #[test]
+fn overlapping_source_words_reuse_only_their_guaranteed_initial_bytes() {
+    let limits = RelationLimits::default();
+    let states = limits.expressions().into();
+    let length = ExprId::fresh().unwrap();
+    let source = SourceId::fresh().unwrap();
+    let initial = ByteStateId::input(source, length.clone());
+    let original = ExprId::word_read(
+        ByteView::new(initial.clone(), c(0), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let copied = ByteStateId::zero()
+        .copy(
+            c(128),
+            ByteView::new(initial.clone(), c(0), length.clone()),
+            length.clone(),
+            states,
+        )
+        .unwrap();
+    let shifted = ExprId::word_read(
+        ByteView::new(copied, c(129), length.clone()),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let mut state = RelationState::default();
+    assert_eq!(
+        state.add_unsigned_bounds(&length, U256::from(33), U256::from(128), &limits),
+        CheckResult::MayBeFeasible
+    );
+    assert_eq!(
+        state.add_equal(&original, &c(7), &limits),
+        CheckResult::MayBeFeasible
+    );
+    let before = state.clone();
+    let answer = state.local_value(&shifted, &limits);
+    let ValueQuery::Bounds(bounds) = answer else {
+        panic!("shifted byte remains unknown: {answer:?}");
+    };
+    assert_eq!(
+        bounds.interval().unsigned_bounds(),
+        (U256::from(0x700), U256::from(0x7ff))
+    );
+    assert_eq!(
+        state.can_equal(&shifted, U256::from(7), &limits),
+        CheckResult::ProvenImpossible
+    );
+    assert_eq!(
+        state.can_equal(&shifted, U256::from(0x7aa), &limits),
+        CheckResult::MayBeFeasible
+    );
+    let independent = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
+    let independent = ExprId::word_read(
+        ByteView::new(independent, c(1), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    assert!(includes(
+        &state.local_value(&independent, &limits),
+        U256::from(7)
+    ));
+    assert_eq!(state, before);
+
+    let short = ExprId::word_read(
+        ByteView::new(initial.clone(), c(0), c(31)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let last = ExprId::byte_read(initial.clone(), c(31), limits.expressions()).unwrap();
+    let mut short_state = RelationState::default();
+    assert_eq!(
+        short_state.add_equal(&short, &c(0), &limits),
+        CheckResult::MayBeFeasible
+    );
+    let answer = short_state.local_value(&last, &limits);
+    assert!(matches!(answer, ValueQuery::Bounds(_)));
+    assert!(includes(&answer, U256::from(255)));
+    let written = initial.write_word(c(0), c(7), states).unwrap();
+    let written = ExprId::word_read(
+        ByteView::new(written, c(0), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let mut written_state = RelationState::default();
+    assert_eq!(
+        written_state.add_equal(&written, &c(7), &limits),
+        CheckResult::MayBeFeasible
+    );
+    assert!(includes(
+        &written_state.local_value(&original, &limits),
+        U256::from(42)
+    ));
+}
+
+#[test]
 fn candidate_equality_cannot_supply_its_own_compound_value() {
     let limits = RelationLimits::default();
     let base = ExprId::fresh().unwrap();
