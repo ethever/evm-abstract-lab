@@ -180,6 +180,7 @@ struct Engine<'a, 'ledger> {
     memo: KeyMap<NumericValue>,
     terms: KeyMap<ExprId>,
     check_definitions: bool,
+    has_source_bytes: bool,
 }
 impl<'a, 'ledger> Engine<'a, 'ledger> {
     fn new(work: &'a mut Work<'ledger>, limits: &'a RelationLimits, domain: Domain) -> Self {
@@ -193,6 +194,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             memo: KeyMap::default(),
             terms: KeyMap::default(),
             check_definitions: false,
+            has_source_bytes: false,
         }
     }
 
@@ -410,6 +412,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
     fn validate(&mut self, atom: &Constraint) -> LocalResult<()> {
         for expression in atom.expressions() {
             self.work.charge(1)?;
+            self.source_facts(expression)?;
             self.inverse(expression)?;
             // Equality-to-a-constant imports a fact for an operation's result;
             // its operands may be invertible even when the atom itself is EQ.

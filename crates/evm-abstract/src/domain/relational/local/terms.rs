@@ -6,7 +6,7 @@ use crate::domain::symbolic::{ByteStateId, ByteStateKind, ByteView, ExprError, E
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
-fn denied(error: ExprError) -> Stop {
+pub(super) fn denied(error: ExprError) -> Stop {
     Stop::Pending(if error == ExprError::Cancelled {
         QueryReason::Cancelled
     } else {

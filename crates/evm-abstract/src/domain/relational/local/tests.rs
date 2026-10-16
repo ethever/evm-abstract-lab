@@ -5,7 +5,7 @@ use super::super::{
 use crate::{
     domain::{
         NumericValue,
-        symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId},
+        symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId, StateBinding},
     },
     resource::WorkBudget,
 };
@@ -200,6 +200,105 @@ fn determined_copy_lengths_preserve_hash_identity_without_fixing_unknown_selecto
         ValueQuery::Exact(U256::ONE)
     );
     assert_eq!(state, before);
+}
+
+#[test]
+fn initial_source_observations_keep_namespace_length_writes_and_guards() {
+    let limits = RelationLimits::default();
+    let states = limits.expressions().into();
+    let token = ExprId::fresh().unwrap();
+    let source = SourceId::scoped(token.clone(), U256::ONE);
+    let initial = ByteStateId::input(source.clone(), c(2));
+    let observed = ByteStateId::observed(
+        source.clone(),
+        c(2),
+        [0xaau8, 0xbbu8]
+            .into_iter()
+            .enumerate()
+            .map(|(index, byte)| StateBinding {
+                index: U256::from(index),
+                value: ExprId::fresh().unwrap(),
+                numeric: NumericValue::constant(U256::from(byte)),
+            })
+            .collect(),
+        states,
+    )
+    .unwrap();
+    let hash = |state, length| {
+        ExprId::keccak(ByteView::new(state, c(0), c(length)), limits.expressions()).unwrap()
+    };
+    let digest = U256::from_be_bytes(alloy_primitives::keccak256([0xaa, 0xbb]).0);
+    let mut state = RelationState::default();
+    assert_eq!(
+        state.add_equal(
+            &hash(observed.clone(), 2),
+            &ExprId::constant(digest),
+            &limits
+        ),
+        CheckResult::MayBeFeasible
+    );
+    assert_eq!(
+        state.local_value(&hash(initial.clone(), 2), &limits),
+        ValueQuery::Exact(digest)
+    );
+    for unrelated in [
+        ByteStateId::input(SourceId::scoped(token, U256::from(2)), c(2)),
+        ByteStateId::input(source, c(1)),
+    ] {
+        assert!(matches!(
+            state.local_value(&hash(unrelated, 2), &limits),
+            ValueQuery::Bounds(_)
+        ));
+    }
+    assert_eq!(
+        state.local_value(&hash(initial.clone(), 3), &limits),
+        ValueQuery::Exact(U256::from_be_bytes(
+            alloy_primitives::keccak256([0xaa, 0xbb, 0]).0
+        ))
+    );
+    let written = initial.clone().write_byte(c(0), c(0x11), states).unwrap();
+    assert_eq!(
+        state.local_value(&hash(written, 2), &limits),
+        ValueQuery::Exact(U256::from_be_bytes(
+            alloy_primitives::keccak256([0x11, 0xbb]).0
+        ))
+    );
+    let selector = ExprId::fresh().unwrap();
+    let alternative = ByteStateId::input(SourceId::fresh().unwrap(), c(2));
+    let guarded = ExprId::ite(
+        selector.clone(),
+        hash(observed, 2),
+        hash(alternative, 2),
+        limits.expressions(),
+    )
+    .unwrap();
+    let mut guarded_state = RelationState::default();
+    assert_eq!(
+        guarded_state.add_equal(&guarded, &ExprId::constant(digest), &limits),
+        CheckResult::MayBeFeasible
+    );
+    let old_hash = hash(initial, 2);
+    assert!(matches!(
+        guarded_state.local_value(&old_hash, &limits),
+        ValueQuery::Bounds(_)
+    ));
+    let mut unselected = guarded_state.clone();
+    assert_eq!(
+        unselected.assume(&selector, false, &limits),
+        CheckResult::MayBeFeasible
+    );
+    assert!(matches!(
+        unselected.local_value(&old_hash, &limits),
+        ValueQuery::Bounds(_)
+    ));
+    assert_eq!(
+        guarded_state.assume(&selector, true, &limits),
+        CheckResult::MayBeFeasible
+    );
+    assert_eq!(
+        guarded_state.local_value(&old_hash, &limits),
+        ValueQuery::Exact(digest)
+    );
 }
 
 #[test]

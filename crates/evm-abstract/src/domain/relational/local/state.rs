@@ -1,18 +1,162 @@
 //! Demand-local reads of immutable snapshots. Unknown aliases retain both
 //! possibilities; index arithmetic checks mathematical bounds before wrapping.
 
-use super::{Engine, LocalResult};
+use super::{Engine, LocalResult, terms::denied};
 use crate::domain::{
     NumericValue,
     congruence::Congruence,
     interval::Interval,
     known_bits::KnownBits,
-    symbolic::{ByteStateId, ByteStateKind, ByteView, ExprId, SlotStateId, SlotStateKind},
+    symbolic::{
+        ByteStateId, ByteStateKind, ByteView, ExprId, ExprKind, SlotStateId, SlotStateKind,
+    },
 };
 use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;
 
 impl Engine<'_, '_> {
+    fn initial_byte(&mut self, state: &ByteStateId, index: &ExprId) -> LocalResult<ExprId> {
+        let ByteStateKind::Input { source, length, .. } = state.kind() else {
+            unreachable!("initial byte identity requires an input state");
+        };
+        let length = self.term(length)?;
+        self.work.charge(
+            source
+                .token()
+                .work_size()
+                .saturating_add(length.work_size()),
+        )?;
+        let initial = ByteStateId::input(source.clone(), length);
+        self.work
+            .charge(initial.nodes().saturating_add(index.work_size()))?;
+        ExprId::byte_read(initial, index.clone(), self.limits.expressions()).map_err(denied)
+    }
+
+    // Observations constrain initial content, not the written state above it.
+    // Visit only active expressions/states; unknown ITE arms keep their facts.
+    pub(super) fn source_facts(&mut self, expression: &ExprId) -> LocalResult<()> {
+        self.work.charge(1)?;
+        if !expression.has_state_semantics() {
+            return Ok(());
+        }
+        match expression.kind() {
+            ExprKind::Operation { args, .. } => {
+                for arg in args {
+                    self.source_facts(arg)?;
+                }
+            }
+            ExprKind::Ite {
+                condition,
+                then_value,
+                else_value,
+            } => {
+                self.source_facts(condition)?;
+                match self.choose(condition)? {
+                    Some(true) => self.source_facts(then_value)?,
+                    Some(false) => self.source_facts(else_value)?,
+                    None => {}
+                }
+            }
+            ExprKind::ByteRead { state, index } => {
+                self.source_facts(index)?;
+                self.byte_sources(state)?;
+            }
+            ExprKind::WordRead { view, offset } => {
+                self.source_facts(offset)?;
+                self.view_sources(view)?;
+            }
+            ExprKind::Keccak { input } => self.view_sources(input)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn view_sources(&mut self, view: &ByteView) -> LocalResult<()> {
+        self.source_facts(&view.offset)?;
+        self.source_facts(&view.length)?;
+        self.byte_sources(&view.state)
+    }
+
+    fn byte_sources(&mut self, state: &ByteStateId) -> LocalResult<()> {
+        self.work.charge(1)?;
+        match state.kind() {
+            ByteStateKind::Input {
+                length, bindings, ..
+            } => {
+                self.source_facts(length)?;
+                if bindings.is_empty() {
+                    return Ok(());
+                }
+                let length = self.eval(length)?;
+                let (lower, upper) = length.interval().unsigned_bounds();
+                for binding in bindings {
+                    self.work.charge(1)?;
+                    self.source_facts(&binding.value)?;
+                    let value = self.eval(&binding.value)?;
+                    let value = self.meet(&value, &binding.numeric)?;
+                    let byte = if let Some(value) = value.singleton() {
+                        NumericValue::constant(value & U256::from(255))
+                    } else {
+                        self.apply(
+                            opcode::AND,
+                            &[value, NumericValue::constant(U256::from(255))],
+                        )?
+                    };
+                    let byte = if binding.index >= upper {
+                        NumericValue::constant(U256::ZERO)
+                    } else if binding.index < lower {
+                        byte
+                    } else {
+                        self.join(byte, NumericValue::constant(U256::ZERO))?
+                    };
+                    let read = self.initial_byte(state, &ExprId::constant(binding.index))?;
+                    self.learn(&read, &byte)?;
+                    self.has_source_bytes = true;
+                }
+            }
+            ByteStateKind::WriteByte {
+                previous,
+                offset,
+                value,
+            }
+            | ByteStateKind::WriteWord {
+                previous,
+                offset,
+                value,
+            } => {
+                self.byte_sources(previous)?;
+                self.source_facts(offset)?;
+                self.source_facts(value)?;
+            }
+            ByteStateKind::Copy {
+                previous,
+                destination,
+                source,
+                length,
+            } => {
+                self.byte_sources(previous)?;
+                self.source_facts(destination)?;
+                self.source_facts(length)?;
+                self.view_sources(source)?;
+            }
+            ByteStateKind::Slice { source } => self.view_sources(source)?,
+            ByteStateKind::Ite {
+                condition,
+                then_state,
+                else_state,
+            } => {
+                self.source_facts(condition)?;
+                match self.choose(condition)? {
+                    Some(true) => self.byte_sources(then_state)?,
+                    Some(false) => self.byte_sources(else_state)?,
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(super) fn choose(&mut self, condition: &ExprId) -> LocalResult<Option<bool>> {
         let value = self.eval(condition)?;
         Ok(if !value.may_be_zero() {
@@ -120,6 +264,13 @@ impl Engine<'_, '_> {
                 let (lower, upper) = length.interval().unsigned_bounds();
                 if at >= upper {
                     return Ok(NumericValue::constant(U256::ZERO));
+                }
+                if self.has_source_bytes {
+                    let initial = self.initial_byte(state, &ExprId::constant(at))?;
+                    let observed = self.known(&initial)?;
+                    if !observed.is_top() {
+                        return self.meet(&observed, &NumericValue::unknown_byte());
+                    }
                 }
                 for binding in bindings {
                     self.work.charge(1)?;
