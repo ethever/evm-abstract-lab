@@ -613,10 +613,12 @@ fn local_facts_preserve_exactness_path_relations_and_evm_wrapping() {
     }
 }
 
-/// Nonexact results must include each independently known concrete alternative.
+/// Completed exact or numeric results must include every known concrete sample.
 fn bounds_include(answer: ValueQuery, samples: &[u64]) {
-    let ValueQuery::Bounds(bounds) = answer else {
-        panic!("expected nonexact local bounds: {answer:?}");
+    let bounds = match answer {
+        ValueQuery::Exact(value) => crate::domain::NumericValue::constant(value),
+        ValueQuery::Bounds(bounds) => *bounds,
+        other => panic!("expected completed local bounds: {other:?}"),
     };
     for sample in samples {
         assert!(
