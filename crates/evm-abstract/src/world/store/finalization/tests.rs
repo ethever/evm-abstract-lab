@@ -209,7 +209,9 @@ fn may_delete_retention_refusal_is_typed_and_never_installs_the_numeric_fallback
     };
 
     let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 1,
+        // An unobserved slot root includes its source token (two nodes).
+        // Its MAY-delete ITE adds a selector and the zero-state alternative.
+        max_nodes: 2,
         ..RelationLimits::default()
     }));
     let limits = domain.spec().relations().expressions();

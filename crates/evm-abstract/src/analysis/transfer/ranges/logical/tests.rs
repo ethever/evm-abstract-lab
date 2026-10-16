@@ -426,7 +426,8 @@ fn root_return_revert_and_failure_plan_the_correct_prefix_and_sticky_touch() {
 fn root_may_delete_retention_refusal_emits_a_typed_frontier_without_an_outcome() {
     let (mut world, entry) = fixture(&[(0x101, "00")]);
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_nodes = 1;
+    // Keep the source-token + input root valid; refuse only its deletion ITE.
+    config.analysis.relations.max_nodes = 2;
     let domain = config.domain().unwrap();
     world
         .insert(
