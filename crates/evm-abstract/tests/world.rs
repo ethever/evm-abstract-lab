@@ -43,11 +43,10 @@ fn assert_state_value_eq(actual: &AbstractValue, expected: &AbstractValue) {
     }
 }
 
-fn solver_policy() -> RelationLimits {
+fn local_policy() -> RelationLimits {
     RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     }
 }
@@ -156,19 +155,19 @@ fn store_join_includes_missing_slots_defaults_and_balances() {
         );
         assert_eq!(candidate.nonce(address(1)), original.nonce(address(1)));
         for (slot, expected_transient, expected_balance) in [(0, 0, 0), (42, 19, 10)] {
-            let policy = solver_policy();
+            let policy = local_policy();
             let mut relations = RelationState::default();
             relations
                 .observe(persistent.expression().unwrap(), v(slot).numeric(), &policy)
                 .unwrap();
-            assert_eq!(relations.check(&policy), CheckResult::Sat);
+            assert_eq!(relations.check(&policy), CheckResult::MayBeFeasible);
             assert_eq!(
-                relations.unique_value(transient.expression().unwrap(), &policy),
-                ValueQuery::Unique(U256::from(expected_transient)),
+                relations.local_value(transient.expression().unwrap(), &policy),
+                ValueQuery::Exact(U256::from(expected_transient)),
             );
             assert_eq!(
-                relations.unique_value(balance.expression().unwrap(), &policy),
-                ValueQuery::Unique(U256::from(expected_balance)),
+                relations.local_value(balance.expression().unwrap(), &policy),
+                ValueQuery::Exact(U256::from(expected_balance)),
             );
         }
     }
@@ -426,7 +425,7 @@ fn unknown_memory_offset_is_conservative_without_allocating_a_range() {
     }
     assert!(!word.contains(U256::ONE));
     assert_eq!(word.known_bits().zero(), !U256::from_be_bytes([42; 32]),);
-    let policy = solver_policy();
+    let policy = local_policy();
     for (at, expected) in [
         (0, U256::from(42) << 248),
         (31, U256::from(42)),
@@ -437,13 +436,13 @@ fn unknown_memory_offset_is_conservative_without_allocating_a_range() {
             .observe(offset.expression().unwrap(), v(at).numeric(), &policy)
             .unwrap();
         assert_eq!(
-            relations.unique_value(word.expression().unwrap(), &policy),
-            ValueQuery::Unique(expected),
+            relations.local_value(word.expression().unwrap(), &policy),
+            ValueQuery::Exact(expected),
         );
     }
     assert_eq!(
         RelationState::default().can_equal(word.expression().unwrap(), U256::from(0x2a2a), &policy),
-        CheckResult::Unsat,
+        CheckResult::ProvenImpossible,
     );
     assert!(memory.stored_bytes().next().is_none());
     assert!(memory.work_size() < 1000);

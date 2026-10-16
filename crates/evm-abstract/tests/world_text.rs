@@ -190,10 +190,10 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
             .expect("RETURN retains its completed payload")
             .relations;
         let limits = &analysis.config().analysis.relations;
-        assert_eq!(relations.check(limits), CheckResult::Sat);
+        assert_eq!(relations.check(limits), CheckResult::MayBeFeasible);
         assert_eq!(
-            relations.unique_value(&value.symbolic_expression().unwrap(), limits),
-            ValueQuery::Unique(U256::from(1))
+            relations.local_value(&value.symbolic_expression().unwrap(), limits),
+            ValueQuery::Exact(U256::from(1))
         );
     }
     let text = render::world::text(&analysis);
