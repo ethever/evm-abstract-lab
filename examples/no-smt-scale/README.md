@@ -92,6 +92,16 @@ harness exit 0 只表示所有计划 sample 交付了 config 匹配的有效 Rep
 
 基线为native8/wire13/cost2，候选为native9/wire14/cost3。Cost3删除SMT额度预收费，新旧logical work不能直接比率换算成性能。候选实际source/ELF和命令profile仍须在集成release后冻结；本stage没有宣称候选可执行或跑过基准。
 
+候选的实际 CLI 保留 `analyze --world` 和原本地域/状态限制参数，删除 `--smt.provider`、`--smt.rlimit`。可在选定的集成源码提交上生成独立 command profile：
+
+```sh
+python3 scripts/generate-no-smt-scale-commands.py \
+  --interface-source "$CHECKED_CANDIDATE_SOURCE" \
+  --output "$CANDIDATE_COMMAND_PROFILE"
+```
+
+生成器只删除原 profile 的两项原生求解器策略及 argv，完整保留每个 case 的输入 hash、world、block header、未知输入和其它限制。它检查源码 native9/wire14/cost3 与本地关系参数，记录 CLI/版本文件 hash 和当前 interface commit；不运行构建或分析。最终 ELF 冻结后需针对该构建的实际 source commit 重新生成，交由原 runner 校验 build metadata/source/ELF。开发构建可作单独标记的诊断 screen，不能与 release 数字混比为加速。
+
 ## 默认未知输入下的保守续行需求（只读设计，未实施）
 
 1. **符号预编译输入。** 当前 `analysis/transfer/precompile.rs` 先要求输入和工作界可具体化，失败停在 `PrecompileInput`。若默认未知calldata在WETH/USDC路径反复到达这些点，SMT移除后仍可能只得到更早Partial。一个待审slice应同时覆盖原生成功、失败、returndata长度和内容：固定宽度原生有按fork明确的结果长度；identity应保留输入view/长度关系；modexp等可变长度不能猜统一小上界。现有 `ByteArray::unknown_checked` 与summary length可表达宽上界，`copy_return_data`/CALL续行仍须遵守原有失败和未覆盖前沿；它们目前没有自动建立各预编译的语义包络。须按实际热点和验收决定实现，不能把未知输入当空串。
