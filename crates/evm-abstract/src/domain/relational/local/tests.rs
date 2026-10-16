@@ -302,6 +302,83 @@ fn initial_source_observations_keep_namespace_length_writes_and_guards() {
 }
 
 #[test]
+fn concrete_slot_alias_reuses_guarded_history_without_choosing_its_selector() {
+    let limits = RelationLimits::default();
+    let states = limits.expressions().into();
+    let selector = ExprId::fresh().unwrap();
+    let key = ExprId::fresh().unwrap();
+    let left = SlotStateId::zero().store(c(0), c(7), states).unwrap();
+    let right = SlotStateId::zero().store(c(0), c(9), states).unwrap();
+    let history = left.join_guarded(&right, selector.clone(), states).unwrap();
+    let old = ExprId::slot_read(history.clone(), c(0), limits.expressions()).unwrap();
+    let updated = history.store(key.clone(), c(13), states).unwrap();
+    let latest = ExprId::slot_read(updated, c(0), limits.expressions()).unwrap();
+    for alias in [0, 1] {
+        let mut state = RelationState::default();
+        assert_eq!(
+            state.add_equal(&key, &c(alias), &limits),
+            CheckResult::MayBeFeasible
+        );
+        let expected = if alias == 0 { c(13) } else { old.clone() };
+        assert_eq!(
+            state.local_value(&op(opcode::EQ, &[latest.clone(), expected]), &limits),
+            ValueQuery::Exact(U256::ONE)
+        );
+        for candidate in [U256::ZERO, U256::ONE] {
+            assert!(includes(&state.local_value(&selector, &limits), candidate));
+        }
+    }
+    let answer = RelationState::default().local_value(&op(opcode::EQ, &[latest, old]), &limits);
+    assert!(matches!(answer, ValueQuery::Bounds(_)));
+    assert!(includes(&answer, U256::ZERO));
+    assert!(includes(&answer, U256::ONE));
+}
+
+#[test]
+fn shared_byte_overlay_preserves_the_original_word_selection() {
+    let limits = RelationLimits::default();
+    let states = limits.expressions().into();
+    let selector = ExprId::fresh().unwrap();
+    let left = ByteStateId::zero()
+        .write_word(c(0), c(0x1107), states)
+        .unwrap();
+    let right = ByteStateId::zero()
+        .write_word(c(0), c(0x2209), states)
+        .unwrap();
+    let history = left.join_guarded(&right, selector.clone(), states).unwrap();
+    let overlaid = history.write_byte(c(31), c(0xaa), states).unwrap();
+    let word = ExprId::word_read(
+        ByteView::new(overlaid, c(0), c(64)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    for (guard, exact) in [(selector.clone(), true), (ExprId::fresh().unwrap(), false)] {
+        let expected = ExprId::ite(guard, c(0x11aa), c(0x22aa), limits.expressions()).unwrap();
+        let answer = RelationState::default()
+            .local_value(&op(opcode::EQ, &[word.clone(), expected]), &limits);
+        if exact {
+            assert_eq!(answer, ValueQuery::Exact(U256::ONE));
+        } else {
+            assert!(matches!(answer, ValueQuery::Bounds(_)));
+            assert!(includes(&answer, U256::ZERO));
+            assert!(includes(&answer, U256::ONE));
+        }
+    }
+    for (branch, expected) in [(true, 0x11aau64), (false, 0x22aau64)] {
+        let mut state = RelationState::default();
+        assert_eq!(
+            state.assume(&selector, branch, &limits),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            state.local_value(&word, &limits),
+            ValueQuery::Exact(U256::from(expected))
+        );
+    }
+}
+
+#[test]
 fn candidate_equality_cannot_supply_its_own_compound_value() {
     let limits = RelationLimits::default();
     let base = ExprId::fresh().unwrap();

@@ -2,7 +2,9 @@
 //! mathematical non-overflow; unknown overlap keeps the original expression.
 
 use super::{Engine, LocalResult, QueryReason, Stop};
-use crate::domain::symbolic::{ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprKind};
+use crate::domain::symbolic::{
+    ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprKind, SlotStateId, SlotStateKind,
+};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
@@ -60,6 +62,14 @@ impl Engine<'_, '_> {
             ExprKind::WordRead { view, offset } => self
                 .word_term(view, offset)?
                 .unwrap_or_else(|| expression.clone()),
+            ExprKind::SlotRead { state, key } => {
+                let forwarded = self.slot_term(state, key)?;
+                if self.work.same_expression(expression, &forwarded)? {
+                    forwarded
+                } else {
+                    self.term(&forwarded)?
+                }
+            }
             ExprKind::Keccak { input } => {
                 let view = self.hash_view(input)?;
                 ExprId::keccak(view, self.limits.expressions()).map_err(denied)?
@@ -69,6 +79,27 @@ impl Engine<'_, '_> {
         self.terms
             .insert(expression.clone(), term.clone(), self.work)?;
         Ok(term)
+    }
+
+    fn slot_term(&mut self, state: &SlotStateId, key: &ExprId) -> LocalResult<ExprId> {
+        self.work.charge(1)?;
+        let key = self.term(key)?;
+        if let SlotStateKind::Store {
+            previous,
+            key: written,
+            value,
+        } = state.kind()
+        {
+            let written = self.term(written)?;
+            match self.same(&key, &written)? {
+                Some(true) => return self.term(value),
+                Some(false) => return self.slot_term(previous, &key),
+                None => {}
+            }
+        }
+        self.work
+            .charge(state.nodes().saturating_add(key.work_size()))?;
+        ExprId::slot_read(state.clone(), key, self.limits.expressions()).map_err(denied)
     }
 
     fn fits(&mut self, offset: &ExprId, length: &ExprId) -> LocalResult<bool> {
@@ -308,15 +339,8 @@ impl Engine<'_, '_> {
                 if let Some(relative) = self.relative_byte(at, offset)?
                     && let Some(old) = self.forward_word(previous, at)?
                 {
-                    let shift = (31 - relative) * 8;
                     let value = self.term(value)?;
-                    let byte =
-                        self.operation(opcode::AND, &[value, ExprId::constant(U256::from(255))])?;
-                    let byte =
-                        self.operation(opcode::SHL, &[ExprId::constant(U256::from(shift)), byte])?;
-                    let mask = U256::MAX ^ (U256::from(255) << shift);
-                    let old = self.operation(opcode::AND, &[old, ExprId::constant(mask)])?;
-                    return self.operation(opcode::OR, &[old, byte]).map(Some);
+                    return self.overlay_byte(&old, &value, relative).map(Some);
                 }
                 if self.disjoint(at, &word_length, offset, &ExprId::constant(U256::ONE))? {
                     self.forward_word(previous, at)
@@ -356,9 +380,60 @@ impl Engine<'_, '_> {
             } => match self.choose(condition)? {
                 Some(true) => self.forward_word(then_state, at),
                 Some(false) => self.forward_word(else_state, at),
-                None => Ok(None),
+                None => {
+                    let Some(yes) = self.forward_word(then_state, at)? else {
+                        return Ok(None);
+                    };
+                    let Some(no) = self.forward_word(else_state, at)? else {
+                        return Ok(None);
+                    };
+                    self.work.charge(
+                        yes.work_size()
+                            .saturating_add(no.work_size())
+                            .saturating_add(condition.work_size()),
+                    )?;
+                    ExprId::ite(condition.clone(), yes, no, self.limits.expressions())
+                        .map(Some)
+                        .map_err(denied)
+                }
             },
             _ => Ok(None),
         }
+    }
+
+    fn overlay_byte(
+        &mut self,
+        old: &ExprId,
+        value: &ExprId,
+        relative: usize,
+    ) -> LocalResult<ExprId> {
+        self.work.charge(1)?;
+        if let ExprKind::Ite {
+            condition,
+            then_value,
+            else_value,
+        } = old.kind()
+        {
+            // Map this one shared write over the retained word selection. No
+            // branch assumption or branch-local fact enters the current F.
+            let yes = self.overlay_byte(then_value, value, relative)?;
+            let no = self.overlay_byte(else_value, value, relative)?;
+            self.work.charge(
+                yes.work_size()
+                    .saturating_add(no.work_size())
+                    .saturating_add(condition.work_size()),
+            )?;
+            return ExprId::ite(condition.clone(), yes, no, self.limits.expressions())
+                .map_err(denied);
+        }
+        let shift = (31 - relative) * 8;
+        let byte = self.operation(
+            opcode::AND,
+            &[value.clone(), ExprId::constant(U256::from(255))],
+        )?;
+        let byte = self.operation(opcode::SHL, &[ExprId::constant(U256::from(shift)), byte])?;
+        let mask = U256::MAX ^ (U256::from(255) << shift);
+        let old = self.operation(opcode::AND, &[old.clone(), ExprId::constant(mask)])?;
+        self.operation(opcode::OR, &[old, byte])
     }
 }
