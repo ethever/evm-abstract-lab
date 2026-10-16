@@ -132,7 +132,7 @@ fn main() {
 
 观察中的 `address` 始终是对应事实的所有者。`DELEGATECALL` / `CALLCODE` 可以执行实现账户的代码，却读取调用方的 storage；补入实现账户的同号槽不能代替代理账户的槽。Persistent、transient、历史读取和 rollback 根继续遵守各自的 EVM 生命周期，分层接口没有合并这些身份。
 
-`SessionAnalysis::dependencies()` 返回 `FactDependencies`。它记录可能读取的代码、余额、nonce、存在性、storage 和输入，也包含未观察到的事实、空代码或不存在等负观察，以及保守通配依赖。`FactDependency` 中的 `None` 表示通配，不表示地址或槽为零。目前块级 storage 索引通常保留 owner 并使用通配 slot；交互、摘要和终结状态还可以依赖 `AllInitialState`。`affected_states()` 从直接读取者沿实际图边传播到后继，包括调用与返回。
+`SessionAnalysis::dependencies()` 返回 `FactDependencies`。它记录可能读取的代码、余额、nonce、存在性、storage 和输入，也包含未观察到的事实、空代码或不存在等负观察，以及保守通配依赖。`FactDependency` 中的 `None` 表示通配，不表示地址或槽为零。目前块级 storage 索引通常保留 owner 并使用通配 slot；交互、摘要和终结状态还可以依赖 `AllInitialState`。普通循环经 `LoopBound` 抽象状态根后也记录 `AllInitialState`，不再仅依赖原先有限的槽观察。`affected_states()` 从直接读取者沿实际图边传播到后继，包括调用与返回。
 
 这份索引用于解释和计算失效范围。当前没有据此恢复任意“未受影响状态”的有状态继续执行，也不把旧 `Store` 载荷搬到新执行中。通用选择性续跑仍需要另外设计并验证其状态、历史和回滚契约。
 
@@ -155,7 +155,7 @@ memo 保存栈与控制增量，应用时从**新执行的当前载荷**出发�
 
 等待这些事实时，`MissingCode` / `MissingStorage` frontier 可以使状态为 `Incomplete`。调用者可取得可信观察，通过 `refine` 注入，再调用 `analyze_with_demands()`。新增 runtime 字节先用 `supply_runtime(program)` 编入目录，再用 `Observation::Code` 绑定到相应地址。只补充代码字节不会自动声明某个账户拥有它。
 
-无法完整枚举的调用目标或槽键继续走保守抽象，不会捏造一个具体 demand。`demands()` 为空也不能单独证明分析完成：预编译输入、未知 initcode、状态合并或资源额度仍可能留下其他 frontier。判断完成情况应同时查看 `analysis().status()` 与 `frontiers()`。
+无法完整枚举的调用目标或槽键继续走保守抽象，不会捏造一个具体 demand。`demands()` 只从 `MissingCode` / `MissingStorage` 提取事实请求；为空不能单独证明分析完成。例如，状态额度用尽仍会产生 `Budget(Limit::States)`，CREATE 无法具体化 initcode 仍可产生 `Creation(UnknownInitCode)`，两者都不会生成上述 demand。未知预编译输入通常使用保守摘要继续执行，不能仅凭输入未知推断存在 frontier。判断完成情况应同时查看 `analysis().status()` 与 `frontiers()`，具体生产路径见 [`Engine::successor`](../crates/evm-abstract/src/analysis/engine.rs)、[`create.rs`](../crates/evm-abstract/src/analysis/transfer/create.rs) 和 [`precompile.rs`](../crates/evm-abstract/src/analysis/transfer/precompile.rs)。
 
 ## CLI、单程序、world 与 RPC 走同一引擎
 

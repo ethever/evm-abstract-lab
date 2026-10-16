@@ -67,10 +67,10 @@ flowchart TD
 对本课的局部视图，状态键为：
 
 ```text
-(基本块编号, 入口栈高, 最近 k 个跳转来源块的起始 pc)
+(基本块编号, 入口栈高, 最近 k 个不同跳转来源块的起始 pc)
 ```
 
-同一个键的输入允许 join；不同键保存为不同节点。节点创建后键保持不变，更新的是它的入口摘要。本课 [diamond](../examples/diamond.hex) 与 [loop](../examples/loop.hex) 显式设置 `k=0`，历史为空；未指定参数时默认为 `k=128`。历史由 JUMP/JUMPI 所在块的起始 pc 构成，不是跳转指令自身的 pc，也不是外部 CALL 的调用栈。
+同一个键的输入允许 join；不同键保存为不同节点。节点创建后键保持不变，更新的是它的入口摘要。本课 [diamond](../examples/diamond.hex) 与 [loop](../examples/loop.hex) 显式设置 `k=0`，历史为空；未指定参数时默认为 `k=128`。历史按最近出现的顺序保存不同来源：经过一次 JUMP/JUMPI，先删掉该来源的旧记录，再追加到末尾，最后保留最近 k 项。例如 `[0x10,0x20]` 再次经过来源 `0x10`，得到 `[0x20,0x10]`，不会靠重复迭代填满窗口。来源是 JUMP/JUMPI 所在块的起始 pc，不是跳转指令自身的 pc，也不是外部 CALL 的调用栈。
 
 为什么栈高也要进键？运行：
 
@@ -94,7 +94,7 @@ flowchart TD
     B --> C[得到每个正常后继的状态键与输入]
     C --> D{该键已有节点吗？}
     D -->|没有| E[创建节点、保存输入、加入队列]
-    D -->|已有| F[把新输入 join 到旧入口摘要；按策略扩大区间]
+    D -->|已有| F[把新输入 join 到旧入口摘要；循环反馈时可扩大整机上界]
     F --> G{摘要扩大了吗？}
     G -->|是| H[更新输入；尚未排队则加入队列]
     G -->|否| I[无须再次执行]
@@ -118,7 +118,7 @@ flowchart TD
 
 σᵖ₃ 收到第二条路径时已经排队，所以不重复加入；等它真正被取出时，会使用最新的 `{1,2}`。若一个汇合状态先执行、后来才收到新值，则必须再次入队并传播。这是为什么“一个节点在队列中最多一份”不等于“一个块只能执行一次”。
 
-join 扩大入口所代表的可能性，已有边只增加。只有操作数栈变化、其余完整载荷不变时，引擎还可用数值 widening 加速重复增长；byte/slot 根也变化时需要另查完整状态替代与边界，见[第 17 课](17-symbolic-state.md#汇合固定点与摘要来源)。已经处理过一个状态，不能成为忽略新输入的理由。
+join 扩大入口所代表的可能性，已有边只增加。普通传播在图中形成回路并出现重复增长时，可将入口提升为固定布局的数值整机上界 `LoopBound`；后续输入先投影到这个布局，比较完整上界，再决定是否生成新的执行载荷并重新排队。它也概括变化的 byte/slot 根和回滚保存点，不能一边扩大地址一边继续沿用依赖旧地址的窄状态，详见[第 17 课](17-symbolic-state.md#汇合固定点与摘要来源)。已经处理过一个状态，不能成为忽略新输入的理由。
 
 ## 4. 循环的固定点长什么样
 
@@ -130,36 +130,22 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations
 
 这个程序先设 `i=0`，然后重复 `i=i+1`，在 `i<10` 时跳回 pc=`0x02`。具体执行的 i 依次为 0、1、2……，最后到 10 时退出。
 
-抽象分析先在循环入口汇合初始值和回边值。这个例子不改变 memory、Store、来源或调用继续信息，满足栈 widening 的完整载荷不变条件：
+抽象分析先在循环入口汇合初始值和回边值。这个例子只改变计数器，便于手算 widening 对数值的影响；实际入口更新仍需处理完整机器载荷。下面是数值组件的示意过程：
 
 ```text
 入口 {0}        执行后得到 {1}       join → {0,1}
 入口 {0,1}      执行后得到 {1,2}     出现重复增长
-栈 widening     覆盖旧值和新值       本例数值扩大为 ⊤
+数值 widening   覆盖旧值和新值       constants-only 可扩大为 ⊤
 入口 ⊤          后续摘要仍被 ⊤ 覆盖   不再新增信息
 ```
 
-容量 8 限制有限常量列表；它不要求引擎一定逐个收集到第 9 个值才扩大。widening 可以提前放弃细节，以完成安全的固定点。
+容量 8 限制有限常量列表；它不要求引擎一定逐个收集到第 9 个值才扩大。widening 可以提前放弃细节；只有完整上界覆盖后续输入，相关传播也已完成，才能据此讨论固定点。
 
-关键输出片段为（`domain` 行确认本次使用 ConstantsOnly）：
-
-```text
-status=Converged fork=osaka states=3 edges=3 transfers=6 context_depth=0
-domain=ConstantsOnly | domain schema=2 | reduction rounds=16 | fact atoms=4096
-relations=false | SMT=in-process z3 | rlimit=10000000 | resource unit=z3 resource units | expression nodes=16384 | depth=256 | constraints=2048
-σᵖ₁ | B₁ @ 0x0002 | stack height=1 | context=[]
-  relations in=0 out=0
-  stack in  [⊤]
-  stack out [⊤]
-  → σᵖ₁ BranchTrue
-  → σᵖ₂ BranchFalse
-```
-
-本次命令有 3 个状态、6 次块转换：循环节点确实被重访。`σᵖ₁ → σᵖ₁` 是回边；`σᵖ₁ → σᵖ₂` 是可能退出的边。出口的 `⊤` 表示整值为 Top，即本次数值摘要没有保留任何固定位或其他数值约束。
+阅读命令输出时，先用 `domain=ConstantsOnly` 确认数值 profile，用 `relations=false | local propagation` 确认关系配置，再查看循环节点的入口、出口、回边和可能退出的边。`transfers` 记录实际块转换次数，包含重访；它不是循环次数。栈槽若显示 `⊤`，表示整个数值为 Top，没有保留固定位或其他数值约束。完成情况须同时核对 `status` 与未完成前沿。
 
 本实验显式关闭关系传播，没有在非零分支上给 i 附加 `i<10` 的约束，因此摘要会包含实际循环中不会出现的值。`Converged` 表示已完成当前抽象模型的传播，不表示每个数值都已精确，也不表示合约安全。增大 `--max-constants` 只改变保存常量的容量，不会自动加入分支约束。
 
-去掉 `--domain constants-only` 比较默认 product。本例两种 profile 都观察到 3 个状态、3 条边、6 次 transfer，最终循环槽位仍为 Top；变化中的 word 在 scoped widening 中放弃不断增长的细节。这个计数只对应上述命令，不是任意循环的收敛或成本保证。增加数值组件会改善某些程序，不能保证每个循环的最终答案更精确。
+去掉 `--domain constants-only` 可以比较默认 product。比较时记录各自的状态、边、transfer、前沿和最终数值；widening 可能放弃组件刚刚得到的细节，增加数值组件不能保证每个循环的最终答案更精确，也不能据此保证任意循环的收敛或成本。
 
 ## 5. 数值精度怎样改变候选边
 
@@ -188,7 +174,7 @@ nix run . -- cfg --hex 5f356001018018600b57005b00 --no-relations --context-depth
 
 派生运算不保留原 calldata 输入身份，但 DUP 仍复制同一个当前定义。临时复制身份属于共用的 AbstractValue，两种数值 profile 即使在 `--no-relations` 下也只保留 false 边；不能把复制语义当作 product 独有的数值性质。
 
-这两种精度都发生在分支**之前**：先计算条件，再查询“零是否仍可能、非零是否仍可能”。本节关闭关系层，因此 JUMPI 不保留原值的分支假设。默认开启的关系模式则会在 true/false 后继各自记录条件，按进程内位向量查询的证明收窄后续值或排除矛盾分支；未知结果保留对应前沿，见[第 15 课](15-symbolic-relations.md)。临时复制关系会在块边界失效；同一环境中身份一致的固定输入符号可跨块保留。更多组件的含义见[第 12 课](12-product-domains-facts.md)，跨路径如何少合并见[第 05 课](05-sensitivity.md)。
+这两种精度都发生在分支**之前**：先计算条件，再查询“零是否仍可能、非零是否仍可能”。本节关闭关系层，因此 JUMPI 不保留原值的分支假设。默认开启的关系模式则会在 true/false 后继各自记录条件，按有界局部传播已证明的事实收窄后续值或排除矛盾分支；未证明矛盾时保留该后继，无法保留条件或继续执行时才留下未完成前沿，见[第 15 课](15-symbolic-relations.md)。临时复制关系会在块边界失效；同一环境中身份一致的固定输入符号可跨块保留。更多组件的含义见[第 12 课](12-product-domains-facts.md)，跨路径如何少合并见[第 05 课](05-sensitivity.md)。
 
 ## 6. 跳转目标未知时，仍须保留后续行为
 
@@ -264,10 +250,10 @@ nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relati
 1. [`config.rs`](../crates/evm-abstract/src/analysis/config.rs)：原始 `Config` 中的数字先经过验证，成功后得到字段私有的 `ValidatedConfig`，并把容量转为 `NonZeroUsize`。配置与域在这里一起构造。
 2. [`engine.rs`](../crates/evm-abstract/src/analysis/engine.rs) 的 `run_world` 初始化入口节点，再看 `Engine::run` 怎样取队列项、检查预算和调用 `transfer::execute`。
 3. [`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) 的 `execute` 及 JUMP/JUMPI 分支：弹出目标与条件，枚举合法后继；开启关系模式时，[`transfer/relations.rs`](../crates/evm-abstract/src/analysis/transfer/relations.rs) 为后继应用条件、查询矛盾并精化数值。
-4. 回到 [`Engine::execution`](../crates/evm-abstract/src/analysis/engine.rs) 收集块转换的证据，再读 [`Engine::successor`](../crates/evm-abstract/src/analysis/engine.rs)：按键查找节点，join 输入，决定是否入队并保存边。随后回到 [`run`](../crates/evm-abstract/src/analysis/engine.rs) 看下一次调度。
+4. 回到 [`Engine::execution`](../crates/evm-abstract/src/analysis/engine.rs) 收集块转换的证据，再读 [`Engine::successor`](../crates/evm-abstract/src/analysis/engine.rs)：按键查找节点，join 输入，决定是否入队并保存边。循环入口沿 [`EntryAlternatives::join_loop`](../crates/evm-abstract/src/analysis/machine/join.rs) 进入 [`LoopBound`](../crates/evm-abstract/src/analysis/transfer/procedure/loop_bound.rs)，核对布局、上界比较与执行载荷构造的顺序。随后回到 [`run`](../crates/evm-abstract/src/analysis/engine.rs) 看下一次调度。
 5. [`single.rs`](../crates/evm-abstract/src/analysis/single.rs)：把同一世界分析核心投影为本课看到的局部 σᵖᵢ/Bᵢ 视图。
 
-阅读时核对五条规则：不同栈高不合并；同键 join 覆盖完整输入，widening 遵守完整载荷条件和声明的遗忘规则；入口变化需要重访；旧边不删除；任何未完成展开都保留前沿。相关样例由 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 与 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 核对。
+阅读时核对五条规则：不同栈高不合并；同键 join 与 widening 需要覆盖完整输入，包括布局外默认值和保存的状态版本；入口变化需要重访；旧边不删除；任何未完成展开都保留前沿。相关样例见 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 与 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs)，具体运行条件与结果须分别核对。
 
 `Engine` 的私有字段分担不同职责，不能把“状态表”与“待处理队列”混为一谈：
 
