@@ -131,13 +131,18 @@ impl Engine<'_, '_> {
                     source,
                     length,
                 } => {
-                    if self.same(&view.offset, destination)? == Some(true)
-                        && self.same(&view.length, length)? == Some(true)
-                        && self.same(length, &source.length)? == Some(true)
-                        && self.fits(destination, length)?
+                    // A determined selector may occur independently in these
+                    // fields. Compare their selected terms under the same F.
+                    let destination = self.term(destination)?;
+                    let length = self.term(length)?;
+                    let source_length = self.term(&source.length)?;
+                    if self.same(&view.offset, &destination)? == Some(true)
+                        && self.same(&view.length, &length)? == Some(true)
+                        && self.same(&length, &source_length)? == Some(true)
+                        && self.fits(&destination, &length)?
                     {
                         Some(source.clone())
-                    } else if self.disjoint(&view.offset, &view.length, destination, length)? {
+                    } else if self.disjoint(&view.offset, &view.length, &destination, &length)? {
                         Some(ByteView::new(
                             previous.clone(),
                             view.offset.clone(),

@@ -142,6 +142,67 @@ fn finite_exclusion_preserves_ite_identity_and_every_unexcluded_candidate() {
 }
 
 #[test]
+fn determined_copy_lengths_preserve_hash_identity_without_fixing_unknown_selectors() {
+    let limits = RelationLimits::default();
+    let states = limits.expressions().into();
+    let length = ExprId::fresh().unwrap();
+    let selector = ExprId::fresh().unwrap();
+    let source = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
+    let selected = ByteStateId::zero()
+        .join_guarded(&source, selector.clone(), states)
+        .unwrap();
+    let selected_length =
+        ExprId::ite(selector.clone(), c(0), length.clone(), limits.expressions()).unwrap();
+    let copied = ByteStateId::zero()
+        .copy(
+            c(1024),
+            ByteView::new(selected, c(0), selected_length.clone()),
+            selected_length.clone(),
+            states,
+        )
+        .unwrap();
+    let copied_hash = ExprId::keccak(
+        ByteView::new(copied, c(1024), selected_length),
+        limits.expressions(),
+    )
+    .unwrap();
+    let source_hash = ExprId::keccak(
+        ByteView::new(source, c(0), length.clone()),
+        limits.expressions(),
+    )
+    .unwrap();
+    let equality = op(opcode::EQ, &[copied_hash.clone(), source_hash]);
+    let mut state = RelationState::default();
+    assert_eq!(
+        state.add_unsigned_bounds(&length, U256::from(32), U256::from(512), &limits),
+        CheckResult::MayBeFeasible
+    );
+    let unknown = state.local_value(&equality, &limits);
+    assert!(matches!(unknown, ValueQuery::Bounds(_)));
+    assert!(includes(&unknown, U256::ZERO));
+    assert!(includes(&unknown, U256::ONE));
+    let mut empty = state.clone();
+    assert_eq!(
+        empty.assume(&selector, true, &limits),
+        CheckResult::MayBeFeasible
+    );
+    assert_eq!(
+        empty.local_value(&copied_hash, &limits),
+        ValueQuery::Exact(U256::from_be_bytes(alloy_primitives::keccak256([]).0))
+    );
+    assert_eq!(
+        state.assume(&selector, false, &limits),
+        CheckResult::MayBeFeasible
+    );
+    let before = state.clone();
+    assert_eq!(
+        state.local_value(&equality, &limits),
+        ValueQuery::Exact(U256::ONE)
+    );
+    assert_eq!(state, before);
+}
+
+#[test]
 fn candidate_equality_cannot_supply_its_own_compound_value() {
     let limits = RelationLimits::default();
     let base = ExprId::fresh().unwrap();
