@@ -160,6 +160,79 @@ fn unknown_candidate_queries_keep_typed_interruption_without_a_witness() {
 }
 
 #[test]
+fn assumptions_check_definitions_instead_of_their_own_imported_truth() {
+    let limits = RelationLimits::default();
+    let base = ExprId::fresh().unwrap();
+    let square = op(opcode::EXP, &[base.clone(), c(2)]);
+    let product = op(opcode::MUL, &[base.clone(), base.clone()]);
+    let slots = SlotStateId::zero()
+        .store(c(0), c(9), limits.expressions().into())
+        .unwrap();
+    let read = ExprId::slot_read(slots, c(0), limits.expressions()).unwrap();
+    let bytes = ByteStateId::exact(std::sync::Arc::from([0u8; 32]));
+    let word = ExprId::word_read(
+        ByteView::new(bytes, c(0), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    for (condition, truth) in [
+        (op(opcode::EQ, &[square.clone(), product]), false),
+        (op(opcode::EQ, &[square, c(10)]), true),
+        (op(opcode::EQ, &[read, c(10)]), true),
+        (op(opcode::EQ, &[word.clone(), c(1)]), true),
+        (word, true),
+    ] {
+        let mut state = RelationState::default();
+        assert_eq!(
+            state.add_equal(&base, &c(3), &limits),
+            CheckResult::MayBeFeasible
+        );
+        let mut budgeted = state.clone();
+        let mut budget = WorkBudget::new(20_000_000);
+        assert_eq!(
+            state.assume_checked(&condition, truth, &limits),
+            Ok(CheckResult::ProvenImpossible)
+        );
+        assert_eq!(
+            budgeted.assume_checked_budgeted(&condition, truth, &limits, &mut budget),
+            Ok(CheckResult::ProvenImpossible)
+        );
+        assert!(!budget.exhausted());
+    }
+}
+
+#[test]
+fn check_rejects_an_observed_compound_result_only_from_its_definition() {
+    let limits = RelationLimits::default();
+    let base = ExprId::fresh().unwrap();
+    let product = op(opcode::MUL, &[base.clone(), base.clone()]);
+    for (result, expected) in [
+        (9, CheckResult::MayBeFeasible),
+        (10, CheckResult::ProvenImpossible),
+    ] {
+        let mut state = RelationState::default();
+        state
+            .observe(&base, &NumericValue::constant(U256::from(3)), &limits)
+            .unwrap();
+        state
+            .observe(
+                &product,
+                &NumericValue::constant(U256::from(result)),
+                &limits,
+            )
+            .unwrap();
+        // Ordinary projection may trust an explicit result guarantee. Only a
+        // feasibility check needs to compare that guarantee to its definition.
+        assert_eq!(
+            state.local_value(&product, &limits),
+            ValueQuery::Exact(U256::from(result))
+        );
+        assert_eq!(state.check(&limits), expected);
+    }
+}
+
+#[test]
 fn nonzero_symbolic_storage_key_cannot_alias_zero() {
     let limits = RelationLimits::default();
     let key = ExprId::fresh().unwrap();

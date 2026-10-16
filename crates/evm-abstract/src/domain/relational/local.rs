@@ -137,6 +137,9 @@ pub(super) fn project(
         ledger,
     };
     let mut engine = Engine::new(&mut work, limits, Domain::default());
+    // Value projection trusts retained guarantees. Feasibility additionally
+    // compares their immediate definitions without rebuilding the shared F.
+    engine.check_definitions = expression.is_none();
     let run = (|| {
         for atom in &state.constraints {
             engine.atom(atom)?;
@@ -176,6 +179,7 @@ struct Engine<'a, 'ledger> {
     facts: KeyMap<NumericValue>,
     memo: KeyMap<NumericValue>,
     terms: KeyMap<ExprId>,
+    check_definitions: bool,
 }
 impl<'a, 'ledger> Engine<'a, 'ledger> {
     fn new(work: &'a mut Work<'ledger>, limits: &'a RelationLimits, domain: Domain) -> Self {
@@ -188,6 +192,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             facts: KeyMap::default(),
             memo: KeyMap::default(),
             terms: KeyMap::default(),
+            check_definitions: false,
         }
     }
 
@@ -421,6 +426,58 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         {
             self.truth(expression, *nonzero)?;
         }
+        if self.check_definitions {
+            for expression in atom.expressions() {
+                self.validate_definition(expression)?;
+                if let ExprKind::Operation { args, .. } = expression.kind() {
+                    for arg in args {
+                        self.validate_definition(arg)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_definition(&mut self, expression: &ExprId) -> LocalResult<()> {
+        self.work.charge(1)?;
+        let known = self.known(expression)?;
+        if known.is_top() {
+            return Ok(());
+        }
+        // A proof check must inspect the immediate definition. In particular,
+        // neither an imported result nor EQ's own unequal pair can establish
+        // that definition's value. Operands still use the shared original F.
+        let defined = match expression.kind() {
+            ExprKind::Operation { opcode, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.eval(arg))
+                    .collect::<LocalResult<Vec<_>>>()?;
+                self.apply(*opcode, &args)?
+            }
+            ExprKind::SlotRead { state, key } => self.slot(state, key)?,
+            ExprKind::ByteRead { state, index } => self.byte(state, index)?,
+            // word_term() may forward its own imported exact guarantee. The
+            // direct byte read checks concrete content independently instead.
+            ExprKind::WordRead { view, offset } => self.word(view, offset)?,
+            ExprKind::Keccak { input } => self.hash(input)?,
+            ExprKind::Ite {
+                condition,
+                then_value,
+                else_value,
+            } => match self.choose(condition)? {
+                Some(true) => self.eval(then_value)?,
+                Some(false) => self.eval(else_value)?,
+                None => {
+                    let yes = self.eval(then_value)?;
+                    let no = self.eval(else_value)?;
+                    self.join(yes, no)?
+                }
+            },
+            ExprKind::Constant(_) | ExprKind::Input(_) | ExprKind::Fresh(_) => return Ok(()),
+        };
+        self.meet(&known, &defined)?;
         Ok(())
     }
 
