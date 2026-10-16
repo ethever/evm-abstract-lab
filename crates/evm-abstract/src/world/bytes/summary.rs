@@ -14,6 +14,8 @@ use crate::domain::{
 use alloy_primitives::U256;
 use std::{collections::BTreeMap, sync::Arc};
 
+mod layout;
+
 pub(in crate::world) fn scalar(value: &AbstractValue, domain: Domain) -> AbstractValue {
     let projected = domain.project(value);
     if let Some(constant) = projected.singleton() {
@@ -138,7 +140,7 @@ impl ByteArray {
             return Err(ExprError::Cancelled.into());
         }
         // Projection consumes an existing complete graph; it does not retain
-        // that history in the output. New SMT-read retention limits apply when
+        // that history in the output. Local symbolic-read retention limits apply when
         // the numerical summary is instantiated, not to its discarded input.
         let content = match self.root.kind() {
             ByteStateKind::Zero => Content::Zero,

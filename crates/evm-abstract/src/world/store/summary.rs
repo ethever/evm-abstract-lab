@@ -22,6 +22,8 @@ use crate::{
 use alloy_primitives::{Address, U256};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod layout;
+
 pub(super) fn join_flag(left: Option<bool>, right: Option<bool>) -> Option<bool> {
     if left == right { left } else { None }
 }

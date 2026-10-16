@@ -8,6 +8,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 mod decided_cache;
+mod loop_bound;
 
 #[test]
 fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {

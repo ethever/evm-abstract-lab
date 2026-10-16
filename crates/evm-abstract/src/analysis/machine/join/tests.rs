@@ -633,6 +633,7 @@ fn canonical_case_rebuild_keeps_previously_accepted_stack_root_pairs() {
     let mut alternatives = EntryAlternatives {
         represented: cases,
         cycle_widened: true,
+        loop_bound: None,
     };
     let mut incoming = entry.clone();
     incoming.active_mut().stack = vec![fixtures::word(1)];

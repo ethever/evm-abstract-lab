@@ -271,6 +271,7 @@ impl MachinePayload {
 pub(crate) struct EntryAlternatives {
     represented: Vec<Arc<MachinePayload>>,
     cycle_widened: bool,
+    loop_bound: Option<crate::analysis::transfer::procedure::LoopBound>,
 }
 
 impl EntryAlternatives {
@@ -279,13 +280,59 @@ impl EntryAlternatives {
         Self {
             represented: vec![Arc::new(payload.clone())],
             cycle_widened: false,
+            loop_bound: None,
         }
     }
 
     pub(crate) fn work_size(&self) -> usize {
-        self.represented.iter().fold(1usize, |cost, payload| {
-            cost.saturating_add(payload.work_size())
-        })
+        self.represented.iter().fold(
+            self.loop_bound
+                .as_ref()
+                .map_or(1, |bound| bound.work_size()),
+            |cost, payload| cost.saturating_add(payload.work_size()),
+        )
+    }
+
+    pub(crate) fn has_loop_bound(&self) -> bool {
+        self.loop_bound.is_some()
+    }
+
+    pub(crate) fn can_widen_loop(&self) -> bool {
+        self.has_loop_bound() || self.represented.len() >= 2
+    }
+
+    /// Called only for actual feedback, or an already promoted header. Retain
+    /// one canonical bound instead of all historical complete root alternatives.
+    pub(crate) fn join_loop(
+        &mut self,
+        entry: &MachinePayload,
+        incoming: &MachinePayload,
+        environment: &crate::world::Entry,
+        domain: Domain,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<MachinePayload>, MachineError> {
+        let updated = if let Some(bound) = &self.loop_bound {
+            bound.update(incoming, environment, domain, budget)?
+        } else {
+            Some(crate::analysis::transfer::procedure::LoopBound::new(
+                entry,
+                incoming,
+                environment,
+                domain,
+                budget,
+            )?)
+        };
+        let Some((bound, payload)) = updated else {
+            return Ok(None);
+        };
+        if payload.key() != entry.key() {
+            return Err(MachineError::Shape);
+        }
+        checkpoint()?;
+        self.loop_bound = Some(bound);
+        self.represented.clear();
+        self.cycle_widened = false;
+        Ok(Some(payload))
     }
 
     /// None means the whole incoming payload is already covered. Metadata is
@@ -398,7 +445,7 @@ impl EntryAlternatives {
     }
 
     pub(crate) fn retain(&mut self, incoming: MachinePayload) {
-        if !self.cycle_widened {
+        if !self.cycle_widened && !self.has_loop_bound() {
             self.represented.push(Arc::new(incoming));
         }
     }

@@ -33,6 +33,7 @@ use std::sync::Arc;
 mod context;
 mod cycles;
 mod environment;
+mod loop_bound;
 mod payload;
 mod projection;
 mod recursion;
@@ -42,6 +43,7 @@ mod storage_observations;
 #[cfg(test)]
 mod tests;
 
+pub(in crate::analysis) use loop_bound::LoopBound;
 use payload::{form, instantiate, join, semantic_eq};
 pub(in crate::analysis) use recursion::is_recursive_entry;
 
