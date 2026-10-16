@@ -348,24 +348,70 @@ fn bounded_loop() -> Fixture {
 }
 
 #[test]
-fn loop_fixed_point_retains_immutable_input_identity_without_unbounded_unrolling() {
+fn loop_fixed_point_forgets_cross_field_equality_without_rebinding_immutable_inputs() {
     let fixture = bounded_loop();
-    let result = analyze(&fixture.code, Profile::Product, EvmEnvironment::default());
-    complete(&result);
-    assert!(reachable(&result, fixture.labels["body"]));
-    assert!(reachable(&result, fixture.labels["exit"]));
-    assert!(
-        result.transfers() <= 256,
-        "finite counter loop needs widening or a finite fixed point"
-    );
-    for state in result.states().iter().filter(|state| {
-        result.program().blocks()[state.key.basic_block_index].start_pc == fixture.labels["exit"]
-    }) {
+    let environment = EvmEnvironment::default();
+    let no_loop = analyze("34341400", Profile::Product, environment.clone());
+    complete(&no_loop);
+    assert!(no_loop.frontiers().is_empty());
+    assert!(no_loop.execution().frontiers().is_empty());
+    for state in no_loop.states() {
         assert_eq!(
             state.exit_stack.last().unwrap().singleton(),
-            Some(U256::from(1)),
-            "re-read immutable CALLVALUE equals its pre-loop input"
+            Some(U256::ONE),
+            "CALLVALUE; CALLVALUE; EQ remains exact without a loop"
         );
+    }
+    // Loop projection forgets the equality between the stack and frame call
+    // value. Their independent bounds still contain every original (v, v)
+    // pair; the historical immutable input is not rebound to another value.
+    for value in [None, Some(U256::ZERO), Some(U256::ONE), Some(U256::MAX)] {
+        let mut input = environment.clone();
+        if let Some(value) = value {
+            input.value = AbstractValue::constant(value);
+        }
+        // All cases use the original loop, default policy and actual widening.
+        let result = analyze(&fixture.code, Profile::Product, input);
+        complete(&result);
+        assert!(result.frontiers().is_empty());
+        assert!(result.execution().frontiers().is_empty());
+        assert!(reachable(&result, fixture.labels["body"]));
+        assert!(reachable(&result, fixture.labels["exit"]));
+        assert!(
+            result.transfers() <= 256,
+            "finite counter loop needs widening or a finite fixed point"
+        );
+        assert!(
+            result.states().len() <= 256,
+            "loop state count must remain bounded"
+        );
+        let exits = result
+            .states()
+            .iter()
+            .filter(|state| {
+                result.program().blocks()[state.key.basic_block_index].start_pc
+                    == fixture.labels["exit"]
+            })
+            .collect::<Vec<_>>();
+        assert!(!exits.is_empty());
+        for state in exits {
+            let equality = state.exit_stack.last().unwrap();
+            assert!(
+                equality.contains(U256::ONE),
+                "loop abstraction must retain the true equality: CALLVALUE={value:?}"
+            );
+            assert!(
+                equality.interval().unsigned_bounds().1 <= U256::ONE,
+                "EQ must retain a Boolean numeric bound"
+            );
+            if value.is_some() {
+                assert_eq!(
+                    equality.singleton(),
+                    Some(U256::ONE),
+                    "concrete CALLVALUE={value:?} stays equal through the loop"
+                );
+            }
+        }
     }
 }
 
