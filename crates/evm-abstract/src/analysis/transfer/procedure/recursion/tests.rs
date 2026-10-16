@@ -35,7 +35,16 @@ fn check_entry_gas_failure(
         "only the existing entry gas-failure seed is allowed"
     );
     assert_eq!(outcome.data.len().singleton(), Some(U256::ZERO));
-    assert_eq!(outcome.store, result.states()[0].entry.store);
+    assert_eq!(
+        &outcome.store,
+        result.states()[0]
+            .entry
+            .call_stack
+            .root()
+            .state
+            .saved_store
+            .state()
+    );
 }
 
 mod admission;
