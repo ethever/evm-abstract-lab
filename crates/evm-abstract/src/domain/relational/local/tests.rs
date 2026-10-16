@@ -236,6 +236,68 @@ fn copied_long_view_reuses_the_original_full_word_fact() {
 }
 
 #[test]
+fn unconstrained_word_and_concrete_padding_need_no_generic_numeric_operations() {
+    let limits = RelationLimits::default();
+    let state = RelationState::default();
+    for (source, expected) in [
+        (ByteStateId::input(SourceId::fresh().unwrap(), c(32)), None),
+        (
+            ByteStateId::exact(std::sync::Arc::from([0xabu8])),
+            Some(U256::from(0xab) << 248usize),
+        ),
+        (ByteStateId::zero(), Some(U256::ZERO)),
+    ] {
+        let read = ExprId::word_read(
+            ByteView::new(source, c(0), c(32)),
+            c(0),
+            limits.expressions(),
+        )
+        .unwrap();
+        // Less than one generic operation reservation in the measured trace.
+        let mut budget = WorkBudget::new(30_000);
+        let answer = state.local_value_budgeted(&read, &limits, &mut budget);
+        match expected {
+            Some(value) => assert_eq!(answer, ValueQuery::Exact(value)),
+            None => {
+                let ValueQuery::Bounds(bounds) = answer else {
+                    panic!("unknown bytes should complete as ordinary bounds");
+                };
+                assert!(bounds.is_top());
+            }
+        }
+        assert!(!budget.exhausted());
+    }
+}
+
+#[test]
+fn unknown_byte_with_padding_keeps_its_word_bits_and_both_signs() {
+    let limits = RelationLimits::default();
+    let source = ByteStateId::input(SourceId::fresh().unwrap(), c(1));
+    let read = ExprId::word_read(
+        ByteView::new(source, c(0), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let mut budget = WorkBudget::new(30_000);
+    let ValueQuery::Bounds(bounds) =
+        RelationState::default().local_value_budgeted(&read, &limits, &mut budget)
+    else {
+        panic!("one unknown byte should keep its complete padded-word bounds");
+    };
+    for byte in 0u64..=255 {
+        assert!(bounds.contains(U256::from(byte) << 248usize));
+    }
+    assert!(!bounds.contains(U256::ONE));
+    assert_eq!(bounds.known_bits().zero(), U256::MAX >> 8usize);
+    assert_eq!(
+        bounds.interval().unsigned_bounds(),
+        (U256::ZERO, U256::from(255) << 248usize)
+    );
+    assert!(!budget.exhausted());
+}
+
+#[test]
 fn symbolic_slot_alias_and_guarded_history_keep_the_original_key_identity() {
     let limits = RelationLimits::default();
     let x = ExprId::fresh().unwrap();

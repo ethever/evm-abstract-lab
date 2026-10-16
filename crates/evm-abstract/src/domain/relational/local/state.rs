@@ -4,6 +4,9 @@
 use super::{Engine, LocalResult};
 use crate::domain::{
     NumericValue,
+    congruence::Congruence,
+    interval::Interval,
+    known_bits::KnownBits,
     symbolic::{ByteStateId, ByteStateKind, ByteView, ExprId, SlotStateId, SlotStateKind},
 };
 use alloy_primitives::{U256, keccak256};
@@ -281,12 +284,63 @@ impl Engine<'_, '_> {
                 return self.eval(value);
             }
         }
-        let mut word = NumericValue::constant(U256::ZERO);
+        // Whole-word forwarding above preserves correlations and explicit
+        // source facts. Independent unconstrained bytes add no information to
+        // generic SHL/OR; pack their masks directly, keeping concrete padding.
+        self.work.prepay(32)?;
+        let mut bytes = Vec::with_capacity(32);
+        let mut simple = true;
+        let mut zero = U256::ZERO;
+        let mut one = U256::ZERO;
         for i in 0..32usize {
+            self.work.charge(1)?;
             let byte = match relative.checked_add(U256::from(i)) {
                 Some(at) => self.view_byte(view, at)?,
                 None => NumericValue::constant(U256::ZERO),
             };
+            self.work.prepay(byte.work_size())?;
+            let shift = (31 - i) * 8;
+            if let Some(value) = byte.singleton() {
+                zero |= (!value & U256::from(255)) << shift;
+                one |= (value & U256::from(255)) << shift;
+            } else if byte != NumericValue::unknown_byte() {
+                simple = false;
+            }
+            bytes.push(byte);
+        }
+        if simple {
+            let bits = KnownBits::new(zero, one).expect("disjoint byte positions");
+            if let Some(value) = bits.singleton() {
+                return Ok(NumericValue::constant(value));
+            }
+            let sign = U256::ONE << 255usize;
+            let biased_one = (one & !sign) | (zero & sign);
+            let biased_zero = (zero & !sign) | (one & sign);
+            let interval = Interval::new_unsigned(one, !zero)
+                .and_then(|unsigned| {
+                    unsigned.meet(&Interval::new_signed(biased_one, !biased_zero)?)
+                })
+                .expect("byte mask endpoints are included");
+            let fixed_low = (zero | one).trailing_ones();
+            let congruence = if fixed_low == 0 {
+                Congruence::top()
+            } else {
+                let modulus = U256::ONE << fixed_low;
+                Congruence::new(modulus, one & (modulus - U256::ONE))
+                    .expect("nonzero byte mask modulus")
+            };
+            return Ok(NumericValue {
+                bits,
+                interval,
+                congruence,
+                nonzero: one != U256::ZERO,
+                ..NumericValue::top()
+            });
+        }
+        // Informative finite/range/congruence bytes retain the existing scalar
+        // transfer; the direct packing rule does not discard their guarantees.
+        let mut word = NumericValue::constant(U256::ZERO);
+        for (i, byte) in bytes.into_iter().enumerate() {
             let shifted = self.apply(
                 opcode::SHL,
                 &[NumericValue::constant(U256::from((31 - i) * 8)), byte],
