@@ -12,6 +12,7 @@ use snapshot_state::SharedCheckpoint;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod effects;
+mod finalization;
 mod lifecycle;
 mod refinement;
 mod slots;
@@ -896,21 +897,12 @@ impl Store {
     /// Uncertain deletion joins retained/deleted states; untouched empty accounts
     /// and accounts proven nonempty remain intact.
     pub fn finalize_transaction(&mut self, domain: Domain) {
-        for address in self.addresses() {
-            let delete = lifecycle::or(
-                self.pending_destruction(address),
-                lifecycle::and(self.touched_in_transaction(address), self.is_empty(address)),
-            );
-            match delete {
-                Some(false) => {}
-                Some(true) => self.delete_account(address),
-                None => {
-                    let mut deleted = self.clone();
-                    deleted.delete_account(address);
-                    *self = self.join(&deleted, domain);
-                }
-            }
-        }
+        finalization::Plan::new(self)
+            .apply(self, domain, &mut || Ok(()))
+            .expect("unmetered finalization cannot be interrupted");
+    }
+
+    fn clear_transaction(&mut self) {
         // These flags describe an active transaction, never the next transaction.
         self.created.clear();
         self.created_default = Some(false);

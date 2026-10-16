@@ -2,10 +2,13 @@ use crate::{
     analysis::{
         ChildFrame, Continuation, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind,
         machine::fixtures::{address, fixture, word},
-        transfer::{TransferContext, WorkBudget, empty_execution, initial},
+        transfer::{
+            StorageReadPolicy, TransferContext, WorkBudget, empty_execution, execute, finish,
+            initial,
+        },
     },
     domain::{Domain, relational::QueryReason},
-    world::{AbstractLog, ByteArray, LogKey, LogSourceKind},
+    world::{AbstractLog, Account, ByteArray, Existence, LogKey, LogSourceKind},
 };
 
 fn context<'a>(config: &'a ExecutionConfig, budget: &'a mut WorkBudget) -> TransferContext<'a> {
@@ -223,4 +226,246 @@ fn rejected_work_and_cancellation_leave_the_pre_instruction_state_intact() {
             }
         );
     }
+}
+
+#[test]
+fn large_deployed_code_first_mstore_keeps_failure_and_success_at_default_budget() {
+    for (bytes, helper_bytes) in [(3_124, 0), (23_464, 2_186)] {
+        // The observed deployed-code prefix executes its first MSTORE at pc 4.
+        // Padding is unreachable after STOP; it only grows shared runtime code.
+        let code = format!("608060405200{}", "00".repeat(bytes - 6));
+        let helper = "00".repeat(helper_bytes);
+        let accounts = if helper_bytes == 0 {
+            vec![(0x101, code.as_str())]
+        } else {
+            vec![(0x101, code.as_str()), (0x200, helper.as_str())]
+        };
+        let (world, entry) = fixture(&accounts);
+        let config = ExecutionConfig::default();
+        assert_eq!(config.max_work, 20_000_000);
+        let domain = config.domain().unwrap();
+        let input = initial(&world, &entry, domain).unwrap();
+        assert_eq!(input.store.addresses().len(), accounts.len());
+        let mut budget = WorkBudget::new(config.max_work);
+        let result = execute(
+            &world,
+            &entry,
+            input.clone(),
+            &config,
+            domain,
+            &mut budget,
+            StorageReadPolicy::Abstract,
+        );
+        assert!(result.frontiers.is_empty(), "{:?}", result.frontiers);
+        assert_eq!(result.executed_pcs, [0, 2, 4, 5]);
+        assert_eq!(result.outcomes.len(), 2);
+        assert!(
+            result
+                .outcomes
+                .iter()
+                .any(|o| o.kind == OutcomeKind::Return)
+        );
+        let failed = result
+            .outcomes
+            .iter()
+            .find(|o| o.kind == OutcomeKind::Failure)
+            .unwrap();
+        assert_eq!(
+            failed.store.code(address(0x101)),
+            input.store.code(address(0x101))
+        );
+        assert_eq!(failed.data.len().singleton(), Some(crate::U256::ZERO));
+        assert_eq!(
+            result
+                .payload
+                .active()
+                .memory
+                .read_word_checked(&word(64), domain)
+                .unwrap()
+                .singleton(),
+            Some(crate::U256::from(128))
+        );
+        assert!(budget.used() < config.max_work);
+    }
+}
+
+#[test]
+fn root_return_revert_and_failure_plan_the_correct_prefix_and_sticky_touch() {
+    for kind in [
+        OutcomeKind::Return,
+        OutcomeKind::Revert,
+        OutcomeKind::Failure,
+    ] {
+        let (mut world, entry) = fixture(&[(0x101, "00")]);
+        world.insert(address(3), Account::empty()).unwrap();
+        world.insert(address(0x200), Account::empty()).unwrap();
+        let domain = Domain::default();
+        let mut payload = initial(&world, &entry, domain).unwrap();
+        let saved = payload.active().saved_store.clone();
+        payload.store.touch_account(address(3));
+        payload.store.touch_account(address(0x200));
+        payload.store.write_balance(address(3), word(9));
+        payload
+            .store
+            .write(address(0x101), &word(1), &word(7), domain);
+        payload
+            .store
+            .write_transient(address(0x101), &word(2), &word(8), domain);
+        let code_hash = payload.active().key.code_hash;
+        payload
+            .store
+            .emit_log(
+                LogKey {
+                    address: address(0x101),
+                    code_address: address(0x101),
+                    code_hash,
+                    source_kind: LogSourceKind::Runtime,
+                    pc: 1,
+                },
+                AbstractLog {
+                    topics: vec![word(3)],
+                    data: ByteArray::exact(&[0xaa]),
+                },
+                domain,
+            )
+            .unwrap();
+        let data = if kind == OutcomeKind::Failure {
+            ByteArray::empty()
+        } else {
+            ByteArray::exact(&[0xbb])
+        };
+        let config = ExecutionConfig::default();
+        let mut budget = WorkBudget::new(config.max_work);
+        let mut transfer = context(&config, &mut budget);
+        transfer.procedure = false;
+        let mut result = empty_execution(payload.clone());
+        finish(
+            &mut result,
+            payload.clone(),
+            kind,
+            data.clone(),
+            &mut transfer,
+            9,
+        );
+        assert!(result.frontiers.is_empty());
+        assert_eq!(result.payload, payload);
+        assert_eq!(result.outcomes.len(), 1);
+        let outcome = &result.outcomes[0];
+        assert_eq!(outcome.kind, kind);
+        assert_eq!(outcome.data, data);
+        if kind == OutcomeKind::Return {
+            assert_eq!(outcome.store.existence(address(3)), Existence::Present);
+            assert_eq!(outcome.store.read_balance(address(3)), word(9));
+            assert_eq!(outcome.store.existence(address(0x200)), Existence::Absent);
+            assert_eq!(
+                outcome.store.read(address(0x101), &word(1), domain),
+                word(7)
+            );
+            assert_eq!(outcome.store.possible_logs().len(), 1);
+        } else {
+            assert_eq!(outcome.store.existence(address(3)), Existence::Absent);
+            assert_eq!(outcome.store.existence(address(0x200)), Existence::Present);
+            assert_eq!(
+                outcome.store.read(address(0x101), &word(1), domain),
+                saved.state().read(address(0x101), &word(1), domain)
+            );
+            assert!(outcome.store.possible_logs().is_empty());
+        }
+        assert_eq!(
+            outcome
+                .store
+                .read_transient(address(0x101), &word(2), domain),
+            word(0)
+        );
+        assert_eq!(
+            outcome.store.touched_in_transaction(address(3)),
+            Some(false)
+        );
+
+        // Refuse the execution reservation after staging/rollback/planning.
+        // No semantic outcome or closed lifecycle flags may escape that scratch.
+        for cancelled in [false, true] {
+            let cancellation = analysis_control::Cancellation::new();
+            let mut refused = empty_execution(payload.clone());
+            analysis_control::with_cancellation(&cancellation, || {
+                let mut small = WorkBudget::new(if cancelled {
+                    config.max_work
+                } else {
+                    budget.used() - 1
+                });
+                if cancelled {
+                    cancellation.cancel();
+                }
+                let mut transfer = context(&config, &mut small);
+                transfer.procedure = false;
+                finish(
+                    &mut refused,
+                    payload.clone(),
+                    kind,
+                    data.clone(),
+                    &mut transfer,
+                    9,
+                );
+            });
+            assert_eq!(refused.payload, payload);
+            assert!(refused.outcomes.is_empty());
+            assert_eq!(refused.frontiers.len(), 1);
+            assert_eq!(
+                refused.frontiers[0].reason,
+                if cancelled {
+                    FrontierReason::Relations(QueryReason::Cancelled)
+                } else {
+                    FrontierReason::Work
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn root_may_delete_retention_refusal_emits_a_typed_frontier_without_an_outcome() {
+    let (mut world, entry) = fixture(&[(0x101, "00")]);
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.max_nodes = 1;
+    let domain = config.domain().unwrap();
+    world
+        .insert(
+            address(0x200),
+            Account {
+                code: crate::world::Code::Empty,
+                nonce: word(0),
+                balance: domain.join(&word(0), &word(1)),
+                existence: Existence::Present,
+                ..Account::unknown()
+            },
+        )
+        .unwrap();
+    let mut payload = initial(&world, &entry, domain).unwrap();
+    payload.store.touch_account(address(0x200));
+    payload
+        .store
+        .check_existing(domain.spec().relations().expressions())
+        .unwrap();
+    let mut result = empty_execution(payload.clone());
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut transfer = context(&config, &mut budget);
+    transfer.domain = domain;
+    transfer.procedure = false;
+    finish(
+        &mut result,
+        payload.clone(),
+        OutcomeKind::Return,
+        ByteArray::empty(),
+        &mut transfer,
+        0,
+    );
+    assert_eq!(result.payload, payload);
+    assert!(result.outcomes.is_empty());
+    assert!(result.successors.is_empty());
+    assert_eq!(result.frontiers.len(), 1);
+    assert_eq!(
+        result.frontiers[0].reason,
+        FrontierReason::Relations(QueryReason::ExpressionLimit)
+    );
+    assert!(!budget.exhausted());
 }

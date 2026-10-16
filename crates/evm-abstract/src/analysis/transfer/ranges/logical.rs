@@ -22,9 +22,9 @@ use alloy_primitives::U256;
 
 pub(super) const MAX_END: U256 = U256::from_limbs([u64::MAX - 31, u64::MAX, u64::MAX, u64::MAX]);
 
-/// Reserve cloning, rollback and finalization before invoking the normal frame
-/// completion path. Child completion additionally reserves its output-copy
-/// work in calls::finish, before changing the continuation's memory.
+/// Reserve the failure envelope's payload copies before normal frame completion.
+/// Root completion meters rollback and its actual finalization plan in
+/// calls::finish; child completion retains its output-copy reservation there.
 pub(super) fn failure(
     result: &mut Execution,
     context: &mut TransferContext<'_>,
@@ -34,29 +34,7 @@ pub(super) fn failure(
     // Input + completed-call snapshots, restored store, output-store snapshot,
     // normalization and their retained scalar/state terms are covered by these
     // passes over the complete payload (including every saved checkpoint).
-    let mut cost = payload.work_size().saturating_mul(8).saturating_add(1);
-    if payload.call_stack.active_child().is_none() && !context.procedure {
-        // finalize_transaction may join one deleted variant per known account.
-        // Account count and each joined representation are bounded by retained
-        // store metadata, with finite-domain products paid explicitly.
-        let store = payload
-            .call_stack
-            .root()
-            .state
-            .saved_store
-            .state()
-            .work_size()
-            .saturating_add(1);
-        cost = cost.saturating_add(
-            store.saturating_mul(store).saturating_mul(
-                context
-                    .domain
-                    .capacity()
-                    .saturating_mul(context.domain.capacity())
-                    .saturating_add(1),
-            ),
-        );
-    }
+    let cost = payload.work_size().saturating_mul(8).saturating_add(1);
     if !context.budget.charge(cost) {
         super::super::boundary(result, pc, crate::analysis::FrontierReason::Work);
         return false;

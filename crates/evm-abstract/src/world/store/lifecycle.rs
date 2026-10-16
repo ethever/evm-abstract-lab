@@ -82,11 +82,15 @@ impl Store {
             Some(Code::Delegation(_)) => Some(false),
             Some(Code::Unknown) | None => None,
         };
+        if code_empty == Some(false) {
+            return Some(false);
+        }
+        let unknown = AbstractValue::top();
         and(
             code_empty,
             and(
-                is_zero(&self.nonce(address)),
-                is_zero(&self.read_balance(address)),
+                is_zero(self.nonces.get(&address).unwrap_or(&unknown)),
+                is_zero(self.balances.get(&address).unwrap_or(&self.balance_default)),
             ),
         )
     }

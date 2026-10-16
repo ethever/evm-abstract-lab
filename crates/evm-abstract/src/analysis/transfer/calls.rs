@@ -177,13 +177,28 @@ pub(super) fn finish(
         }
     }
     let Some(child) = payload.call_stack.pop_child() else {
-        if kind != OutcomeKind::Return {
+        if !context.procedure {
+            let rollback =
+                (kind != OutcomeKind::Return).then(|| &payload.call_stack.root().state.saved_store);
+            if let Err(error) =
+                payload
+                    .store
+                    .finalize_transaction_checked(domain, rollback, context.budget)
+            {
+                let reason = if error.is_cancelled() {
+                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+                } else if let Some(error) = error.into_store_error() {
+                    super::errors::store(error)
+                } else {
+                    FrontierReason::Work
+                };
+                boundary_on(result, pc, reason, payload.key());
+                return;
+            }
+        } else if kind != OutcomeKind::Return {
             payload
                 .store
                 .restore(payload.call_stack.root().state.saved_store.clone());
-        }
-        if !context.procedure {
-            payload.store.finalize_transaction(domain);
         }
         result.outcomes.push(Outcome {
             kind,
