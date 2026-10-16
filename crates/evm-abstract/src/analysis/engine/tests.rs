@@ -122,6 +122,7 @@ fn engine<'a>(
         completed_calls: vec![Vec::new(); count],
         cache: None,
         procedures: super::transfer::procedure::Table::default(),
+        reuse: None,
     }
 }
 

@@ -17,6 +17,7 @@
 mod config;
 pub mod control;
 mod engine;
+pub mod layers;
 mod machine;
 pub mod progress;
 mod rpc;
@@ -45,10 +46,10 @@ pub use rpc::{
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use transfer::create::CreationBoundary;
 
-/// Serialized native analysis format. Version 8 generalizes procedure summaries
-/// to known recursion and unknown interactions, with explicit entry provenance.
+/// Serialized EVM analysis format. Version 9 removes solver/provider policy
+/// fields; retained relation bounds describe local symbolic state only.
 /// The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 8;
+pub const SCHEMA_VERSION: u16 = 9;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

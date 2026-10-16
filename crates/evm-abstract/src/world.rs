@@ -7,6 +7,7 @@
 
 mod bytes;
 pub mod environment;
+mod initial;
 pub mod rpc;
 mod snapshot;
 pub use environment::{AddressInput, BlobHashes, EvmEnvironment, GasInput, InputScope, Symbol};

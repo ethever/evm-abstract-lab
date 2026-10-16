@@ -43,6 +43,10 @@ use std::{
     sync::Arc,
 };
 
+mod reuse;
+pub(super) use reuse::ExecutionReuse;
+pub use reuse::ReuseStats;
+
 /// 从固定世界、入口上下文和执行策略建立初始机器，并运行同一事务的工作表。
 ///
 /// 配置不合法返回 `ConfigError`；缺少入口代码等模型边界则返回带 frontier 的
@@ -61,16 +65,7 @@ pub(super) fn run_world_with_observer(
     config: ExecutionConfig,
     observer: &super::progress::Observer,
 ) -> Result<WorldAnalysis, ConfigError> {
-    let mut budget = WorkBudget::new(config.max_work);
-    let mut counters = Counters::with_observer(observer);
-    run_metered(
-        world,
-        entry,
-        config,
-        &mut budget,
-        &mut counters,
-        transfer::StorageReadPolicy::Abstract,
-    )
+    super::layers::AnalysisSession::from_world(world, entry, config)?.execute_base(observer)
 }
 
 /// Allocations and transfers remain charged when RPC refinement discards a graph.
@@ -99,14 +94,35 @@ impl Counters {
 }
 
 /// Execute one fixed snapshot under the caller's cumulative resource ledger.
+#[cfg(test)]
 pub(super) fn run_metered(
+    world: World,
+    entry: Entry,
+    config: ExecutionConfig,
+    budget: &mut WorkBudget,
+    counters: &mut Counters,
+    storage_reads: transfer::StorageReadPolicy,
+) -> Result<WorldAnalysis, ConfigError> {
+    run_reusing(world, entry, config, budget, counters, storage_reads, None)
+}
+
+/// Immutable-fact sessions retain pure computation while every run creates a
+/// fresh Store and rollback namespace. Existing callers need no reuse state.
+pub(super) fn run_reusing(
     world: World,
     mut entry: Entry,
     config: ExecutionConfig,
     budget: &mut WorkBudget,
     counters: &mut Counters,
     storage_reads: transfer::StorageReadPolicy,
+    mut reuse: Option<&mut ExecutionReuse>,
 ) -> Result<WorldAnalysis, ConfigError> {
+    if let Some(reuse) = &mut reuse {
+        reuse.begin();
+        reuse
+            .dependencies
+            .add(0, super::layers::FactDependency::Code(Some(entry.address)));
+    }
     counters.observer.phase(super::progress::Phase::Analyzing);
     world.apply_snapshot_environment(&mut entry.environment);
     entry.environment.validate()?;
@@ -204,6 +220,9 @@ pub(super) fn run_metered(
         return Ok(result);
     }
     let alternatives = EntryAlternatives::new(&initial);
+    if let Some(reuse) = &mut reuse {
+        reuse.record_dependencies(0, &initial);
+    }
     if storage_reads == transfer::StorageReadPolicy::Discover
         && initial.active().code == super::FrameCode::Unknown
     {
@@ -257,9 +276,13 @@ pub(super) fn run_metered(
         alternatives: vec![alternatives],
         selectors: BTreeSet::new(),
         procedures: transfer::procedure::Table::default(),
+        reuse,
     };
     engine.run();
     engine.counters.report(engine.budget.used());
+    if let Some(reuse) = &mut engine.reuse {
+        reuse.dependencies.finish(&engine.result.edges);
+    }
     Ok(engine.result)
 }
 
@@ -301,6 +324,8 @@ struct Engine<'a> {
     cache: Option<Cache>,
     /// Known/unknown procedure inputs, outputs and retained return continuations.
     procedures: transfer::procedure::Table,
+    /// Session-owned pure deltas and conservative initial-read index.
+    reuse: Option<&'a mut ExecutionReuse>,
 }
 
 /// 当前节点尝试使用摘要后的调度决定，而非子调用的 Return/Revert/Failure。
@@ -447,8 +472,21 @@ impl Engine<'_> {
             // 每条继续/中断路径都放回同一缓存；take 不是清空或重置分析结果。
             let mut cache = self.cache.take();
             let entry = &self.result.states[id].entry;
+            if let Some(reuse) = &mut self.reuse {
+                reuse.record_dependencies(id, entry);
+            }
             let relative_procedure = entry.active().code == super::FrameCode::Unknown
                 || transfer::procedure::is_recursive_entry(entry);
+            if (relative_procedure
+                || cache
+                    .as_ref()
+                    .is_some_and(|cache| cache.call_entries.contains(&id)))
+                && let Some(reuse) = &mut self.reuse
+            {
+                reuse
+                    .dependencies
+                    .add(id, super::layers::FactDependency::AllInitialState);
+            }
             let attempt = if !relative_procedure && let Some(cache) = &mut cache {
                 self.try_summary(id, cache)
             } else {
@@ -479,15 +517,14 @@ impl Engine<'_> {
                 } else {
                     self.result.transfers += 1;
                     self.counters.transfers += 1;
-                    transfer::execute(
-                        &self.result.world,
-                        &self.result.entry,
-                        self.result.states[id].entry.clone(),
-                        &self.result.config,
-                        self.domain,
-                        self.budget,
-                        self.storage_reads,
-                    )
+                    match self.ordinary_execution(id) {
+                        Ok(execution) => execution,
+                        Err(error) => {
+                            self.cache = cache;
+                            self.stop_pending(id, error.frontier_reason());
+                            break;
+                        }
+                    }
                 };
                 self.execution(id, execution, cache.as_mut());
             }
@@ -529,6 +566,28 @@ impl Engine<'_> {
         self.result.edges = std::mem::take(&mut self.edges).into_iter().collect();
         self.result.diagnostics = std::mem::take(&mut self.diagnostics).into_iter().collect();
         self.result.work = self.budget.used();
+    }
+
+    fn ordinary_execution(&mut self, id: usize) -> Result<transfer::Execution, MachineError> {
+        let input = &self.result.states[id].entry;
+        if let Some(reuse) = &mut self.reuse
+            && let Some(execution) = reuse.lookup(input, self.budget)?
+        {
+            return Ok(execution);
+        }
+        let execution = transfer::execute(
+            &self.result.world,
+            &self.result.entry,
+            input.clone(),
+            &self.result.config,
+            self.domain,
+            self.budget,
+            self.storage_reads,
+        );
+        if let Some(reuse) = &mut self.reuse {
+            reuse.remember(input, &execution, self.budget);
+        }
+        Ok(execution)
     }
 
     /// 只在普通子调用入口尝试完整图证书；CREATE initcode 不走此复用途径。
@@ -1019,6 +1078,7 @@ impl Engine<'_> {
             completed_calls: self.completed_calls.clone(),
             cache: None,
             procedures: transfer::procedure::Table::default(),
+            reuse: None,
         };
         for (old, new) in &prepared.renaming {
             if staged.selectors.contains(old) {
