@@ -22,7 +22,11 @@ pub(in crate::world) fn scalar(
     scalar_in(expression, &Context::new(facts, None), domain)
 }
 
-fn scalar_in(expression: &ExprId, context: &Context<'_>, domain: Domain) -> AbstractValue {
+pub(super) fn scalar_in(
+    expression: &ExprId,
+    context: &Context<'_>,
+    domain: Domain,
+) -> AbstractValue {
     if let Some(v) = context.value(expression, domain) {
         if let Some(constant) = expression.as_constant() {
             // A constant-key source union is not a unique input occurrence.
@@ -432,15 +436,14 @@ impl Reader<'_> {
         let domain = self.domain;
         let context = self.context.clone();
         let state = demanded_state(state, offset, 32, &context, domain);
-        if offset.as_constant().is_some()
-            && let ByteStateKind::Ite {
-                condition,
-                then_state,
-                else_state,
-            } = state.kind()
+        if let ByteStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = state.kind()
         {
             // Joining bytes separately mixes alternatives from different snapshots.
-            // The same selector chooses every byte of this concrete word demand.
+            // The same selector chooses every byte of this word demand.
             let c = scalar_in(condition, &context, domain);
             if !c.may_be_zero() {
                 return Self::with_context(context.branch(condition, true), domain)
@@ -462,7 +465,7 @@ impl Reader<'_> {
             value,
             ..
         } = state.kind()
-            && written == offset
+            && super::reads::same_offset(written, offset, &context, domain)
             && scalar_in(offset, &context, domain)
                 .interval()
                 .unsigned_bounds()
@@ -470,6 +473,33 @@ impl Reader<'_> {
                 <= U256::MAX - U256::from(31)
         {
             return scalar_in(value, &context, domain);
+        }
+        // A view/copy forwards a value only when every demanded byte belongs
+        // to the same nonwrapping source window. Partial windows keep the
+        // ordinary byte evaluator, including its padding and previous bytes.
+        let forwarded = match state.kind() {
+            ByteStateKind::Slice { source } => {
+                super::reads::view_word_offset(source, offset, &context, domain)
+                    .map(|at| (&source.state, at))
+            }
+            ByteStateKind::Copy {
+                destination,
+                source,
+                length,
+                ..
+            } => super::reads::copy_word_offset(
+                destination,
+                source,
+                length,
+                offset,
+                &context,
+                domain,
+            )
+            .map(|at| (&source.state, at)),
+            _ => None,
+        };
+        if let Some((source, at)) = forwarded {
+            return self.word(source, &at);
         }
         let offsets = scalar_in(offset, &context, domain);
         let Some(offsets) = offsets.constants() else {
@@ -552,3 +582,5 @@ fn disjoint(a: &AbstractValue, b: &AbstractValue) -> bool {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod windows;
