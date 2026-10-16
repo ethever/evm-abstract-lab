@@ -1,0 +1,15 @@
+{
+  "fork": "osaka",
+  "identity": {
+    "kind": "offline",
+    "label": "no-smt-scale-v1/unknown-callback"
+  },
+  "provenance": "Fixed runtime code only; every unobserved chain account/slot/field remains unknown.",
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000101",
+      "code": "0x60015f555f5fa05f5f5f5f5f5f355af1505f545f5260205ff3",
+      "storage_unknown": true
+    }
+  ]
+}
