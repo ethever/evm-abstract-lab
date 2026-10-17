@@ -4,6 +4,7 @@
 //! numeric upper bounds and bounded presentation; COPY never expands its range.
 
 mod conditional;
+mod copy;
 mod metadata;
 pub(super) mod native;
 pub(super) mod numeric;
@@ -613,38 +614,11 @@ impl ByteArray {
         out.remember(len.clone(), size, domain)?;
         let view = ByteView::new(source.root.clone(), at, len.clone());
         out.root = out.root.copy(dst, view, len, limits(domain).into())?;
-        // Map existing finite source facts only; logical size adds no entries.
-        if let (Some(dst), Some(src)) = (
-            target_offset
-                .singleton()
-                .and_then(|v| usize::try_from(v).ok()),
-            source_offset
-                .singleton()
-                .and_then(|v| usize::try_from(v).ok()),
-        ) {
-            let remaining = COPY_FACT_LIMIT.saturating_sub(out.bytes.len());
-            for delta in source
-                .bytes
-                .keys()
-                .filter_map(|i| i.checked_sub(src))
-                .take(remaining)
-            {
-                if U256::from(delta) < size.interval().unsigned_bounds().1
-                    && let Some(index) = dst.checked_add(delta)
-                {
-                    out.bytes.entry(index).or_insert_with(zero);
-                }
-            }
-        }
-        out.default = if target_offset.singleton().is_some()
-            && source_offset.singleton().is_some()
-            && source.bytes.len() <= COPY_FACT_LIMIT.saturating_sub(self.bytes.len())
-        {
-            domain.join(&self.default, &source.default)
-        } else {
-            domain.join(&self.default, &source.byte_upper(domain))
-        };
-        out.refresh(domain);
+        // Presentation is bounded and never recursively reads the new root.
+        // Keep coordinates even without a display certificate: procedure
+        // summaries reread these positions using the complete root/context.
+        out.bytes = copy::project(self, source, target_offset, source_offset, size, &out)?;
+        out.default = AbstractValue::unknown_byte();
         *self = out;
         Ok(())
     }
@@ -824,20 +798,6 @@ impl ByteArray {
             output.push(byte.to::<u8>());
         }
         Some(output)
-    }
-    fn byte_upper(&self, domain: Domain) -> AbstractValue {
-        if self.bytes.len() > COPY_FACT_LIMIT {
-            return AbstractValue::unknown_byte();
-        }
-        self.bytes.values().fold(
-            AbstractValue::from_numeric(self.default.numeric().clone()),
-            |upper, value| {
-                domain.join(
-                    &upper,
-                    &AbstractValue::from_numeric(value.numeric().clone()),
-                )
-            },
-        )
     }
     fn remember(
         &mut self,

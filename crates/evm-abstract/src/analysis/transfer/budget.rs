@@ -68,6 +68,34 @@ pub(super) fn operation_work(
         // coordinates. Its cheap precharge does not census unrelated arrays.
         return frame.memory.slice_work(&args[0], &args[1], domain);
     }
+    if matches!(
+        op,
+        opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY
+    ) {
+        // Quote from cached counts before any whole-array/root census. COPY
+        // retains its complete graph but no longer refreshes every coordinate.
+        return if op == opcode::CODECOPY {
+            frame
+                .memory
+                .copy_code_work(program.byte_len(), 1, &args[0], &args[1], &args[2], domain)
+        } else {
+            let source = match op {
+                opcode::CALLDATACOPY => &frame.calldata,
+                opcode::RETURNDATACOPY => &frame.returndata,
+                _ => &frame.memory,
+            };
+            frame
+                .memory
+                .copy_work(source, &args[0], &args[1], &args[2], domain)
+        };
+    }
+    if op == opcode::EXTCODECOPY {
+        let (bytes, accounts) = external_code_shape(&result.payload.store, &args[0], entry);
+        return frame
+            .memory
+            .copy_code_work(bytes, accounts, &args[1], &args[2], &args[3], domain)
+            .saturating_add(external_code_fee(bytes, accounts, domain, true));
+    }
     let array_size = frame
         .memory
         .work_size()
@@ -121,43 +149,6 @@ pub(super) fn operation_work(
                 args[1].clone(),
                 AbstractValue::constant(crate::U256::from(255)),
             ])),
-        opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY => {
-            let source_facts = match op {
-                opcode::CALLDATACOPY => frame.calldata.stored_bytes().len(),
-                opcode::CODECOPY => program.byte_len(),
-                opcode::RETURNDATACOPY => frame.returndata.stored_bytes().len(),
-                _ => frame.memory.stored_bytes().len(),
-            };
-            let old_facts = frame.memory.stored_bytes().len();
-            let cached =
-                old_facts.saturating_add(source_facts.min(256usize.saturating_sub(old_facts)));
-            // COPY captures a root and refreshes only retained sparse facts.
-            // The 256 ceiling matches COPY_FACT_LIMIT, independently of L.
-            // Each refreshed fact can walk the retained source/target graphs.
-            byte_work(
-                &args.iter().collect::<Vec<_>>(),
-                cached,
-                array_size
-                    .saturating_mul(cached.saturating_add(2))
-                    .saturating_mul(
-                        domain
-                            .capacity()
-                            .saturating_mul(domain.capacity())
-                            .saturating_add(1),
-                    ),
-                domain,
-            )
-            .saturating_add(if op == opcode::CODECOPY {
-                program.byte_len()
-            } else {
-                0
-            })
-        }
-        opcode::EXTCODECOPY => {
-            byte_work(&args.iter().collect::<Vec<_>>(), 0, array_size, domain).saturating_add(
-                external_code_work(&result.payload.store, &args[0], domain, true, entry),
-            )
-        }
         opcode::EXTCODEHASH => {
             external_code_work(&result.payload.store, &args[0], domain, false, entry)
         }
@@ -191,6 +182,15 @@ fn external_code_work(
     copied: bool,
     entry: &crate::world::Entry,
 ) -> usize {
+    let (bytes, accounts) = external_code_shape(store, targets, entry);
+    external_code_fee(bytes, accounts, domain, copied)
+}
+
+fn external_code_shape(
+    store: &Store,
+    targets: &AbstractValue,
+    entry: &crate::world::Entry,
+) -> (usize, usize) {
     let actual;
     let targets = if entry.environment.to.as_concrete().is_none()
         && targets.identity().same_identity(
@@ -205,7 +205,7 @@ fn external_code_work(
         targets
     };
     let Some(targets) = targets.constants() else {
-        return 1;
+        return (0, 0);
     };
     let source_bytes = targets.iter().fold(0usize, |cost, target| {
         let size = match store.code(address(*target)) {
@@ -215,21 +215,21 @@ fn external_code_work(
         };
         cost.saturating_add(size)
     });
+    (source_bytes, targets.len())
+}
+
+fn external_code_fee(source_bytes: usize, accounts: usize, domain: Domain, copied: bool) -> usize {
     // Copy constructs source byte maps and joins possible accounts; hash visits
     // every source byte even if no memory output is requested.
     let factor = if copied {
-        targets
-            .len()
+        accounts
             .saturating_mul(domain.capacity())
             .saturating_mul(domain.capacity())
             .saturating_add(2)
     } else {
         2
     };
-    source_bytes.saturating_mul(factor).saturating_add(
-        targets
-            .len()
-            .saturating_mul(domain.capacity())
-            .saturating_add(1),
-    )
+    source_bytes
+        .saturating_mul(factor)
+        .saturating_add(accounts.saturating_mul(domain.capacity()).saturating_add(1))
 }

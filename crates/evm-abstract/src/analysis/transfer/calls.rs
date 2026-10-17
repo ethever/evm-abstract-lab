@@ -165,10 +165,10 @@ pub(super) fn finish(
     if let Some(child) = payload.call_stack.active_child() {
         let continuation = &child.continuation;
         let parent = payload.call_stack.parent().expect("a child has a parent");
-        let cost = byte_work(
-            &[&continuation.output_offset, &continuation.output_size],
-            0,
-            parent.memory.work_size().saturating_add(data.work_size()),
+        let cost = parent.memory.copy_return_data_work(
+            &data,
+            &continuation.output_offset,
+            &continuation.output_size,
             domain,
         );
         if !context.budget.charge(cost) {
