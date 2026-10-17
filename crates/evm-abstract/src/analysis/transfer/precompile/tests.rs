@@ -394,32 +394,43 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
     let unknown = ByteArray::unknown();
     let huge = unknown
         .slice(&value(0), &value(usize::MAX), usize::MAX, domain)
-        .unwrap();
-    let mut observed = unknown.slice(&value(0), &value(3), 3, domain).unwrap();
+        .expect("huge: construct the original symbolic slice");
+    let mut observed = unknown
+        .slice(&value(0), &value(3), 3, domain)
+        .expect("observed: construct the original three-byte slice");
     observed
         .write_byte(&value(1), &value(42), 3, domain)
-        .unwrap();
-    for input in [
-        unknown,
-        huge,
-        observed,
-        ByteArray::exact(b"known but above extraction cap"),
+        .expect("observed: retain the original byte fact");
+    for (case, input) in [
+        ("unknown", unknown),
+        ("huge", huge),
+        ("observed", observed),
+        (
+            "known-over-cap",
+            ByteArray::exact(b"known but above extraction cap"),
+        ),
     ] {
+        eprintln!("identity case={case}");
         let (world, entry, payload) = fixture(address(4), input, Fork::Osaka, &config);
         let expected = payload.active().calldata.clone();
         let mut budget = WorkBudget::new(config.max_work);
         let result = run(&world, &entry, payload, &config, &mut budget);
-        assert!(result.frontiers.is_empty());
+        let diagnostics = format!(
+            "{case}: budget={budget:?}, frontiers={:?}",
+            result.frontiers
+        );
+        eprintln!("{diagnostics}");
+        assert!(result.frontiers.is_empty(), "{diagnostics}");
         let returned = result
             .outcomes
             .iter()
             .find(|o| o.kind == OutcomeKind::Return)
-            .unwrap();
+            .unwrap_or_else(|| panic!("{diagnostics}: expected Return"));
         assert_eq!(
             returned.data, expected,
-            "preserve source, length and all facts"
+            "{diagnostics}: preserve source, length and all facts"
         );
-        assert!(budget.used() < 50_000);
+        assert!(budget.used() < 50_000, "{diagnostics}");
     }
 }
 

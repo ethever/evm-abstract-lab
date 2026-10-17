@@ -15,6 +15,17 @@ fn word(number: u64) -> AbstractValue {
     AbstractValue::constant(U256::from(number))
 }
 
+fn no_delete_owners(plan: &Plan) -> &[OwnerCleanupFootprint] {
+    match &plan.fee {
+        PlanFee::NoDelete { owners } => owners,
+        PlanFee::Legacy { .. } => panic!("expected a no-definite-deletion plan"),
+    }
+}
+
+fn measure(store: &Store) -> Footprint {
+    Footprint::measure(store, &mut WorkBudget::new(usize::MAX)).unwrap()
+}
+
 #[test]
 fn nonempty_code_has_no_deletion_join_fee_or_candidate_capacity_product() {
     let mut fees = Vec::new();
@@ -287,7 +298,10 @@ fn restored_ripemd_may_touch_changes_only_addr3_and_not_saved_or_other_owners() 
             (address(0x201), Deletion::Retain),
         ]
     );
-    assert_eq!(plan.join_fields, restored.maybe_delete_fields(address(3)));
+    assert_eq!(
+        no_delete_owners(&plan),
+        &[restored.owner_cleanup_footprint(address(3), tree_work)]
+    );
     let mut budget = WorkBudget::new(20_000_000);
     current
         .finalize_transaction_checked(domain, Some(&saved), &mut budget)
@@ -344,13 +358,19 @@ fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
                 .count(),
             1
         );
-        fields.push(plan.join_fields);
+        let owner = no_delete_owners(&plan)[0];
+        fields.push(owner);
         let mut extended = store.clone();
         extended
             .write_checked(address(3), &word(1), &word(9), domain)
             .unwrap();
         extended.check_existing(limits).unwrap();
-        assert!(extended.maybe_delete_fields(address(3)) > plan.join_fields);
+        assert!(
+            extended
+                .owner_cleanup_footprint(address(3), tree_work)
+                .local_work()
+                > owner.local_work()
+        );
     }
     assert_eq!(fields[0], fields[1]);
 }
@@ -424,4 +444,274 @@ fn may_delete_does_not_erase_a_transient_retention_failure_during_cleanup() {
         fallback.check_existing(domain.spec().relations().expressions()),
         Err(error)
     );
+}
+
+#[test]
+fn no_delete_receipt_separates_retains_from_may_work() {
+    let mut store = Store::new(&World::new(Fork::Osaka, "no-delete receipt classes"));
+    // An explicit untouched owner still contributes an action, but performs no
+    // MAY validation, map mutation or local preparation.
+    store.touched.insert(address(3), Some(false));
+    let retain = Plan::new(&store);
+    assert!(no_delete_owners(&retain).is_empty());
+    let retained = retain.no_delete_work(measure(&store), no_delete_owners(&retain));
+    assert!(retained.setup > 0);
+    assert_eq!(retained.validation, 0);
+    assert_eq!(retained.local, 0);
+    assert_eq!(retained.maps, 0);
+    assert_eq!(retained.cow, 0);
+
+    store.may_touch_account(address(3));
+    let may = Plan::new(&store);
+    let owners = no_delete_owners(&may);
+    assert_eq!(owners.len(), 1);
+    let joined = may.no_delete_work(measure(&store), owners);
+    assert_eq!(joined.setup, retained.setup);
+    assert!(joined.validation > 0);
+    assert!(joined.local > 0);
+    assert!(joined.maps > 0);
+    // Every modified map starts empty; new local nodes are not old-map COW.
+    assert_eq!(joined.cow, 0);
+    assert_eq!(joined.code_drop, 0);
+}
+
+#[test]
+fn old_map_cow_is_paid_once_per_batch_and_selected_slots_only() {
+    let mut world = World::new(Fork::Osaka, "MAY COW receipt ownership");
+    let mut account = Account::unknown();
+    for key in 0..64 {
+        account.storage.insert(U256::from(key), word(key + 7));
+    }
+    world.insert(address(0x900), account).unwrap();
+    let base = Store::new(&world);
+    let mut receipts = Vec::new();
+    for count in [1, 8, 32] {
+        let mut store = base.clone();
+        for number in 0..count {
+            store.may_touch_account(address(0x1000 + number));
+        }
+        let plan = Plan::new(&store);
+        let owners = no_delete_owners(&plan);
+        assert_eq!(owners.len(), count as usize);
+        assert!(owners.iter().all(|owner| owner.planes[0].cells == 0));
+        let footprint = measure(&store);
+        let receipt = plan.no_delete_work(footprint, owners);
+        assert_eq!(receipt.validation, footprint.validation_work);
+        receipts.push(receipt);
+    }
+    // More MAY owners do not repay the same unrelated nonempty maps' COW.
+    assert_eq!(receipts[0].cow, receipts[1].cow);
+    assert_eq!(receipts[0].cow, receipts[2].cow);
+    assert!(receipts[2].local > receipts[0].local);
+    assert!(receipts[2].maps > receipts[0].maps);
+    #[cfg(not(feature = "imbl"))]
+    assert_eq!(receipts[0].cow, 0);
+    #[cfg(feature = "imbl")]
+    assert!(receipts[0].cow > 0);
+
+    let mut selected = base;
+    selected.may_touch_account(address(0x900));
+    let plan = Plan::new(&selected);
+    let owners = no_delete_owners(&plan);
+    assert_eq!(owners[0].planes[0].cells, 64);
+    let selected = plan.no_delete_work(measure(&selected), owners);
+    #[cfg(not(feature = "imbl"))]
+    assert_eq!(selected.cow, 0);
+    #[cfg(feature = "imbl")]
+    assert!(selected.cow > receipts[0].cow);
+}
+
+#[test]
+fn unrelated_root_weight_belongs_to_validation_and_not_map_height_or_handle_cow() {
+    use crate::domain::symbolic::{ExprId, ExprLimits, SlotStateId};
+
+    let mut root = SlotStateId::zero();
+    let mut receipts = Vec::new();
+    let mut maps = Vec::new();
+    for writes in [0, 32] {
+        for key in 0..writes {
+            root = root
+                .store(
+                    ExprId::constant(U256::from(key)),
+                    ExprId::constant(U256::from(key + 7)),
+                    ExprLimits::default().into(),
+                )
+                .unwrap();
+        }
+        let mut store = Store::new(&World::new(Fork::Osaka, "root weight versus map entries"));
+        store.persistent.roots.insert(address(0x900), root.clone());
+        store.may_touch_account(address(3));
+        let footprint = measure(&store);
+        maps.push(footprint.maps);
+        let plan = Plan::new(&store);
+        receipts.push(plan.no_delete_work(footprint, no_delete_owners(&plan)));
+    }
+    assert_eq!(maps[0], maps[1]);
+    assert!(receipts[1].validation > receipts[0].validation);
+    assert_eq!(receipts[0].local, receipts[1].local);
+    assert_eq!(receipts[0].maps, receipts[1].maps);
+    assert_eq!(receipts[0].cow, receipts[1].cow);
+}
+
+#[test]
+fn implicit_may_owners_each_pay_for_and_preserve_recursive_base_scoping() {
+    use crate::domain::symbolic::{ExprId, ExprLimits, SlotStateId, SlotStateKind, SourceId};
+
+    let domain = Domain::default();
+    let plain = Store::new(&World::new(Fork::Osaka, "plain implicit owner"));
+    let mut store = Store::new(&World::new(Fork::Osaka, "recursive implicit owner base"));
+    let base = SlotStateId::input(SourceId::fresh().unwrap())
+        .join_guarded(
+            &SlotStateId::input(SourceId::fresh().unwrap()),
+            ExprId::fresh().unwrap(),
+            ExprLimits::default().into(),
+        )
+        .unwrap();
+    store.persistent.base = base.clone();
+    for number in [3, 4] {
+        store.may_touch_account(address(number));
+    }
+    let plan = Plan::new(&store);
+    let owners = no_delete_owners(&plan);
+    assert_eq!(owners.len(), 2);
+    for owner in owners {
+        assert_eq!(owner.planes[0].root_work, base.nodes());
+        assert!(owner.planes[0].new_root);
+        assert!(
+            owner.local_work()
+                > plain
+                    .owner_cleanup_footprint(address(3), tree_work)
+                    .local_work()
+        );
+    }
+    store
+        .finalize_transaction_checked(domain, None, &mut WorkBudget::new(usize::MAX))
+        .unwrap();
+    assert_eq!(store.persistent.base, base);
+    for number in [3, 4] {
+        let root = store.slot_root(address(number), false).unwrap();
+        let SlotStateKind::Ite { then_state, .. } = root.kind() else {
+            panic!("expected the owner's MAY-deletion alternative");
+        };
+        let SlotStateKind::Ite {
+            then_state,
+            else_state,
+            ..
+        } = then_state.kind()
+        else {
+            panic!("expected the scoped old ITE base");
+        };
+        for alternative in [then_state, else_state] {
+            let SlotStateKind::Input { source, .. } = alternative.kind() else {
+                panic!("expected a scoped input alternative");
+            };
+            assert_eq!(source.namespace(), U256::from(number) << 8);
+        }
+    }
+}
+
+#[test]
+fn definite_and_mixed_deletion_keep_the_prechange_prices() {
+    for (with_may, expected_fields, expected_fee) in [(false, 62, 39_960), (true, 63, 144_720)] {
+        let mut store = Store::new(&World::new(Fork::Osaka, "legacy deletion price"));
+        store.pending_destruction.insert(address(1), Some(true));
+        if with_may {
+            store.may_touch_account(address(2));
+        }
+        let footprint = measure(&store);
+        assert_eq!(footprint.fields, expected_fields);
+        assert_eq!(footprint.reset_growth, 159);
+        let plan = Plan::new(&store);
+        let PlanFee::Legacy { join_fields } = &plan.fee else {
+            panic!("any definite Delete must retain legacy pricing");
+        };
+        assert_eq!(*join_fields, if with_may { 187 } else { 0 });
+        // Pinned to the original source: pure Delete has grown=221, H=9,
+        // passes=20; mixed has grown=409, H=10, passes=28 and J=187.
+        assert_eq!(plan.work(footprint), expected_fee);
+    }
+}
+
+#[test]
+fn no_delete_late_work_refusal_is_atomic_across_both_planes() {
+    let domain = Domain::default();
+    let mut before = Store::new(&World::new(Fork::Osaka, "no-delete atomic work refusal"));
+    before
+        .write_checked(address(0x900), &word(1), &word(7), domain)
+        .unwrap();
+    before
+        .write_transient_checked(address(0x900), &word(2), &word(9), domain)
+        .unwrap();
+    before.may_touch_account(address(3));
+    assert_eq!(no_delete_owners(&Plan::new(&before)).len(), 1);
+    let saved = before.snapshot();
+    let mut complete = before.clone();
+    let mut full = WorkBudget::new(usize::MAX);
+    complete
+        .finalize_transaction_checked(domain, None, &mut full)
+        .unwrap();
+    assert_eq!(complete.existence(address(3)), Existence::Unknown);
+    assert_eq!(complete.read(address(0x900), &word(1), domain), word(7));
+    assert_eq!(
+        complete.read_transient(address(0x900), &word(2), domain),
+        word(0)
+    );
+    for maximum in [0, 1, full.used() - 1] {
+        let mut refused = before.clone();
+        assert_eq!(
+            refused.finalize_transaction_checked(domain, None, &mut WorkBudget::new(maximum)),
+            Err(FinalizationError::Work)
+        );
+        assert_eq!(refused, before, "maximum={maximum}");
+        assert_eq!(saved.state(), &before);
+    }
+}
+
+#[test]
+fn no_delete_checks_oversized_unrelated_roots_before_transient_cleanup() {
+    use crate::domain::{
+        relational::RelationLimits,
+        symbolic::{ExprId, ExprLimits, SlotStateId, StateError},
+    };
+
+    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
+        max_nodes: 6,
+        ..RelationLimits::default()
+    }));
+    let mut oversized = SlotStateId::zero();
+    for key in [1, 2] {
+        oversized = oversized
+            .store(
+                ExprId::constant(U256::from(key)),
+                ExprId::constant(U256::from(7)),
+                ExprLimits::default().into(),
+            )
+            .unwrap();
+    }
+    assert!(oversized.nodes() > domain.spec().relations().max_nodes);
+    for transient in [false, true] {
+        let mut store = Store::new(&World::new(Fork::Osaka, "invalid old root before MAY"));
+        store.may_touch_account(address(3));
+        let plane = if transient {
+            &mut store.transient
+        } else {
+            &mut store.persistent
+        };
+        plane.roots.insert(address(0x900), oversized.clone());
+        let expected = store
+            .check_existing(domain.spec().relations().expressions())
+            .unwrap_err();
+        assert!(matches!(
+            expected,
+            StoreError::State(StateError::Limit { .. })
+        ));
+        let before = store.clone();
+        let mut budget = WorkBudget::new(usize::MAX);
+        assert_eq!(
+            store.finalize_transaction_checked(domain, None, &mut budget),
+            Err(FinalizationError::Store(expected))
+        );
+        assert_eq!(store, before, "transient={transient}");
+        assert!(!budget.exhausted());
+    }
 }

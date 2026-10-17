@@ -7,7 +7,117 @@ use crate::domain::{
 };
 use alloy_primitives::{Address, U256};
 
+/// A cached old value and the separate cost of constructing its union with zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CleanupValue {
+    pub(super) work: usize,
+    pub(super) zero_union: usize,
+    pub(super) new_entry: bool,
+}
+
+impl CleanupValue {
+    fn new(
+        value: &AbstractValue,
+        new_entry: bool,
+        union_work: impl Fn(usize) -> usize + Copy,
+    ) -> Self {
+        Self {
+            work: value.work_size(),
+            // collect_bounded inserts at most n + 1 candidates into a fresh
+            // BTreeSet. This height belongs to that set, not to a Store map.
+            zero_union: value
+                .finite_constants()
+                .cardinality()
+                .map_or(0, |n| union_work(n.saturating_add(1))),
+            new_entry,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PlaneCleanupFootprint {
+    pub(super) root_work: usize,
+    pub(super) new_root: bool,
+    pub(super) default: CleanupValue,
+    pub(super) cells: usize,
+    pub(super) cell_work: usize,
+    pub(super) cell_unions: usize,
+}
+
+/// Discovery is part of the already prepaid Plan classification pass. Counts
+/// describe map entries; cached weights describe retained values/graphs only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct OwnerCleanupFootprint {
+    pub(super) balance: CleanupValue,
+    pub(super) nonce: CleanupValue,
+    pub(super) new_code: bool,
+    pub(super) new_existence: bool,
+    pub(super) planes: [PlaneCleanupFootprint; 2],
+}
+
+impl OwnerCleanupFootprint {
+    /// Exact projection of the old maybe_delete_fields receipt. Delete/mixed
+    /// plans retain its old values and the complete legacy charging formula.
+    pub(super) fn legacy_fields(self) -> usize {
+        self.planes.into_iter().fold(
+            128usize
+                .saturating_add(self.balance.work)
+                .saturating_add(self.nonce.work),
+            |fields, plane| {
+                fields
+                    .saturating_add(plane.root_work)
+                    .saturating_add(plane.default.work)
+                    .saturating_add(plane.cell_work)
+                    .saturating_add(plane.cells.saturating_mul(2))
+            },
+        )
+    }
+
+    pub(super) fn local_work(self) -> usize {
+        self.planes.into_iter().fold(
+            self.legacy_fields()
+                .saturating_add(self.balance.zero_union)
+                .saturating_add(self.nonce.zero_union),
+            |work, plane| {
+                work.saturating_add(plane.default.zero_union)
+                    .saturating_add(plane.cell_unions)
+            },
+        )
+    }
+}
+
 impl Plane {
+    fn cleanup_footprint(
+        &self,
+        address: Address,
+        union_work: impl Fn(usize) -> usize + Copy,
+    ) -> PlaneCleanupFootprint {
+        let root = self.roots.get(&address);
+        let default = self.defaults.get(&address);
+        let mut footprint = PlaneCleanupFootprint {
+            root_work: root.unwrap_or(&self.base).work_size(),
+            new_root: root.is_none(),
+            default: CleanupValue::new(
+                default.unwrap_or(&self.global_default),
+                default.is_none(),
+                union_work,
+            ),
+            cells: 0,
+            cell_work: 0,
+            cell_unions: 0,
+        };
+        for (_, value) in self
+            .slots
+            .range((address, U256::ZERO)..=(address, U256::MAX))
+        {
+            let value = CleanupValue::new(value, false, union_work);
+            footprint.cells = footprint.cells.saturating_add(1);
+            footprint.cell_work = footprint.cell_work.saturating_add(value.work);
+            footprint.cell_unions = footprint.cell_unions.saturating_add(value.zero_union);
+        }
+        footprint
+    }
+
     fn deleted_root(
         &self,
         address: Address,
@@ -47,38 +157,33 @@ impl Plane {
 }
 
 impl Store {
-    /// Cached graph/value sizes for only the fields visited by one MAY action.
-    /// The fixed allowance covers owner keys, zero alternatives and ITE nodes,
-    /// including materializing roots/defaults/scalars for an implicit owner.
-    pub(super) fn maybe_delete_fields(&self, address: Address) -> usize {
-        [&self.persistent, &self.transient].into_iter().fold(
-            128usize
-                .saturating_add(
-                    self.balances
-                        .get(&address)
-                        .unwrap_or(&self.balance_default)
-                        .work_size(),
-                )
-                .saturating_add(self.nonces.get(&address).map_or_else(
-                    || AbstractValue::top().work_size(),
-                    AbstractValue::work_size,
-                )),
-            |fields, plane| {
-                plane
-                    .slots
-                    .range((address, U256::ZERO)..=(address, U256::MAX))
-                    .fold(
-                        fields
-                            .saturating_add(
-                                plane.roots.get(&address).unwrap_or(&plane.base).work_size(),
-                            )
-                            .saturating_add(plane.default_at(address).work_size()),
-                        |fields, (_, value)| {
-                            fields.saturating_add(value.work_size()).saturating_add(2)
-                        },
-                    )
-            },
-        )
+    // Finalization supplies the finite-union price during the existing scan;
+    // owner execution does not depend on its sibling's pricing implementation.
+    pub(super) fn owner_cleanup_footprint(
+        &self,
+        address: Address,
+        union_work: impl Fn(usize) -> usize + Copy,
+    ) -> OwnerCleanupFootprint {
+        let balance = self.balances.get(&address);
+        let nonce = self.nonces.get(&address);
+        OwnerCleanupFootprint {
+            balance: CleanupValue::new(
+                balance.unwrap_or(&self.balance_default),
+                balance.is_none(),
+                union_work,
+            ),
+            nonce: CleanupValue::new(
+                nonce.unwrap_or(&AbstractValue::top()),
+                nonce.is_none(),
+                union_work,
+            ),
+            new_code: self.codes.get(&address).is_none(),
+            new_existence: self.existence.get(&address).is_none(),
+            planes: [
+                self.persistent.cleanup_footprint(address, union_work),
+                self.transient.cleanup_footprint(address, union_work),
+            ],
+        }
     }
 
     fn join_deleted_fields(&mut self, address: Address, domain: Domain) {

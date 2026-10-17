@@ -4,7 +4,7 @@
 //! Store is installed only after all work is reserved and cancellation checked.
 //! The ordinary Store API uses the same classification and execution order.
 
-use super::{Code, Snapshot, Store, StoreError, lifecycle};
+use super::{Code, Snapshot, Store, StoreError, lifecycle, owner_deletion::OwnerCleanupFootprint};
 use crate::{domain::Domain, resource::WorkBudget};
 use alloy_primitives::Address;
 
@@ -92,20 +92,30 @@ impl Deletion {
 
 pub(super) struct Plan {
     actions: Vec<(Address, Deletion)>,
-    join_fields: usize,
+    fee: PlanFee,
     removed_code_bytes: usize,
+}
+
+enum PlanFee {
+    Legacy { join_fields: usize },
+    NoDelete { owners: Vec<OwnerCleanupFootprint> },
 }
 
 impl Plan {
     pub(super) fn new(store: &Store) -> Self {
         let mut actions = Vec::new();
+        let mut owners = Vec::new();
+        let mut has_delete = false;
         let mut join_fields = 0usize;
         let mut removed_code_bytes = 0usize;
         for address in store.addresses() {
             let action = Deletion::at(store, address);
             if action == Deletion::Join {
-                join_fields = join_fields.saturating_add(store.maybe_delete_fields(address));
+                let owner = store.owner_cleanup_footprint(address, tree_work);
+                join_fields = join_fields.saturating_add(owner.legacy_fields());
+                owners.push(owner);
             }
+            has_delete |= action == Deletion::Delete;
             if action != Deletion::Retain
                 && let Some(Code::Runtime(program)) = store.code(address)
             {
@@ -115,12 +125,23 @@ impl Plan {
         }
         Self {
             actions,
-            join_fields,
+            fee: if has_delete {
+                PlanFee::Legacy { join_fields }
+            } else {
+                PlanFee::NoDelete { owners }
+            },
             removed_code_bytes,
         }
     }
 
     fn work(&self, footprint: Footprint) -> usize {
+        match &self.fee {
+            PlanFee::Legacy { join_fields } => self.legacy_work(footprint, *join_fields),
+            PlanFee::NoDelete { owners } => self.no_delete_work(footprint, owners).total(),
+        }
+    }
+
+    fn legacy_work(&self, footprint: Footprint, join_fields: usize) -> usize {
         let deletes = self
             .actions
             .iter()
@@ -137,7 +158,7 @@ impl Plan {
         // metadata. No other owner's defaults/scalars are materialized.
         let grown = footprint
             .fields
-            .saturating_add(self.join_fields)
+            .saturating_add(join_fields)
             .saturating_add(deletes.saturating_mul(footprint.reset_growth));
 
         // Four cleanup/drop passes; sixteen per definite reset retain the old
@@ -156,13 +177,90 @@ impl Plan {
             // Graph/value sizes and the grown map height bound those operations;
             // unrelated fields are paid once above, not once per MAY owner.
             .saturating_add(
-                self.join_fields
+                join_fields
                     .saturating_mul(tree_height(grown))
                     .saturating_mul(16),
             )
             // Only removed Program handles can release decoded code. There are
             // no whole-Store equality checks or runtime-byte comparisons here.
             .saturating_add(self.removed_code_bytes.saturating_mul(4))
+    }
+
+    fn no_delete_work(
+        &self,
+        footprint: Footprint,
+        owners: &[OwnerCleanupFootprint],
+    ) -> NoDeleteWork {
+        let mut receipt = NoDeleteWork {
+            // Empty-plane/flag setup and action iteration/interrupt/consumption.
+            setup: 32usize.saturating_add(self.actions.len().saturating_mul(2)),
+            validation: if owners.is_empty() {
+                0
+            } else {
+                footprint.validation_work
+            },
+            code_drop: self.removed_code_bytes.saturating_mul(4),
+            ..NoDeleteWork::default()
+        };
+        let mut additions = [0usize; CleanupMap::COUNT];
+        let mut touched = TouchedMaps::default();
+        for owner in owners {
+            receipt.local = receipt
+                .local
+                .saturating_add(owner.local_work().saturating_mul(16));
+            // A late guarded preparation may fail, then use the ordinary
+            // numeric fallback. Across both paths: <= 12 gets, 8 inserts.
+            for (map, gets, new_entry) in [
+                (CleanupMap::Balances, 2usize, owner.balance.new_entry),
+                (CleanupMap::Nonces, 2, owner.nonce.new_entry),
+                (CleanupMap::Codes, 1, owner.new_code),
+                (CleanupMap::Existence, 1, owner.new_existence),
+                (CleanupMap::PersistentRoots, 1, owner.planes[0].new_root),
+                (CleanupMap::TransientRoots, 1, owner.planes[1].new_root),
+                (
+                    CleanupMap::PersistentDefaults,
+                    2,
+                    owner.planes[0].default.new_entry,
+                ),
+                (
+                    CleanupMap::TransientDefaults,
+                    2,
+                    owner.planes[1].default.new_entry,
+                ),
+            ] {
+                let index = map as usize;
+                additions[index] = additions[index].saturating_add(usize::from(new_entry));
+                let entries = footprint.maps[index]
+                    .entries
+                    .saturating_add(additions[index]);
+                receipt.maps = receipt.maps.saturating_add(
+                    gets.saturating_add(1)
+                        .saturating_mul(tree_height(entries))
+                        .saturating_mul(4),
+                );
+                touched.insert(map);
+            }
+            for (plane, map) in owner
+                .planes
+                .iter()
+                .zip([CleanupMap::PersistentSlots, CleanupMap::TransientSlots])
+            {
+                let height = tree_height(footprint.maps[map as usize].entries);
+                // One old-value range and one numeric-update range. imbl also
+                // collects the selected keys and performs one get_mut per key.
+                let mut ranges = height.saturating_add(plane.cells).saturating_mul(2);
+                if cfg!(feature = "imbl") {
+                    ranges =
+                        ranges.saturating_add(plane.cells.saturating_mul(height.saturating_add(1)));
+                }
+                receipt.maps = receipt.maps.saturating_add(ranges.saturating_mul(4));
+                if plane.cells != 0 {
+                    touched.insert(map);
+                }
+            }
+        }
+        receipt.cow = touched.cow_work(&footprint.maps);
+        receipt
     }
 
     pub(super) fn apply(
@@ -203,6 +301,91 @@ impl Plan {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CleanupMap {
+    Balances,
+    Nonces,
+    Codes,
+    Existence,
+    PersistentRoots,
+    PersistentDefaults,
+    PersistentSlots,
+    TransientRoots,
+    TransientDefaults,
+    TransientSlots,
+}
+
+impl CleanupMap {
+    const COUNT: usize = 10;
+}
+
+/// Cardinality controls map height; clone_units controls key/value copying.
+/// A retained DAG's expanded node count must never inflate map cardinality.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MapFootprint {
+    entries: usize,
+    clone_units: usize,
+}
+
+impl MapFootprint {
+    fn new(entries: usize, key_handles: usize) -> Self {
+        Self {
+            entries,
+            clone_units: entries.saturating_mul(key_handles),
+        }
+    }
+}
+
+#[derive(Default)]
+struct TouchedMaps(u16);
+
+impl TouchedMaps {
+    fn insert(&mut self, map: CleanupMap) {
+        self.0 |= 1 << map as usize;
+    }
+
+    fn cow_work(&self, maps: &[MapFootprint; CleanupMap::COUNT]) -> usize {
+        if !cfg!(feature = "imbl") {
+            // The existing staging reservation already pays std map cloning.
+            return 0;
+        }
+        maps.iter()
+            .enumerate()
+            .filter(|(index, map)| self.0 & (1u16 << *index) != 0 && map.entries != 0)
+            .fold(0usize, |work, (_, map)| {
+                work.saturating_add(
+                    tree_work(map.entries)
+                        .saturating_add(map.clone_units)
+                        .saturating_mul(4),
+                )
+            })
+        // apply holds one private map version, with no intermediate snapshots:
+        // each original shared node can be copied once. New-node splits/searches
+        // and new-content drops belong to the per-owner local/map receipts.
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct NoDeleteWork {
+    setup: usize,
+    validation: usize,
+    cow: usize,
+    local: usize,
+    maps: usize,
+    code_drop: usize,
+}
+
+impl NoDeleteWork {
+    fn total(&self) -> usize {
+        self.setup
+            .saturating_add(self.validation)
+            .saturating_add(self.cow)
+            .saturating_add(self.local)
+            .saturating_add(self.maps)
+            .saturating_add(self.code_drop)
+    }
+}
+
 /// Expanded retained fields, separate from account count and raw code bytes.
 /// Root/AbstractValue work sizes are cached; discovering them visits entries,
 /// not their graphs. Log work_size also walks a graph, prepaid separately below.
@@ -211,6 +394,8 @@ struct Footprint {
     fields: usize,
     code_bytes: usize,
     reset_growth: usize,
+    maps: [MapFootprint; CleanupMap::COUNT],
+    validation_work: usize,
 }
 
 impl Store {
@@ -301,23 +486,66 @@ impl Footprint {
         // Two passes cover outer metadata discovery and temporary traversal
         // storage. No uncharged work_size()/addresses() scan discovers this fee.
         reserve(budget, tree_work(entries).saturating_mul(2))?;
+        let mut maps = [MapFootprint::default(); CleanupMap::COUNT];
+        let mut validation_work = tree_work(entries);
         let mut fields = entries.saturating_add(store.balance_default.work_size());
-        for value in store.balances.values().chain(store.nonces.values()) {
-            fields = fields.saturating_add(value.work_size());
+        for (kind, map) in [
+            (CleanupMap::Balances, &store.balances),
+            (CleanupMap::Nonces, &store.nonces),
+        ] {
+            let receipt = &mut maps[kind as usize];
+            *receipt = MapFootprint::new(map.len(), 1);
+            for value in map.values() {
+                let work = value.work_size();
+                fields = fields.saturating_add(work);
+                receipt.clone_units = receipt.clone_units.saturating_add(work);
+            }
         }
+        maps[CleanupMap::Codes as usize] = MapFootprint::new(store.codes.len(), 2);
+        maps[CleanupMap::Existence as usize] = MapFootprint::new(store.existence.len(), 2);
         let mut reset_growth = 128usize;
-        for plane in [&store.persistent, &store.transient] {
+        for (plane, roots, defaults, slots) in [
+            (
+                &store.persistent,
+                CleanupMap::PersistentRoots,
+                CleanupMap::PersistentDefaults,
+                CleanupMap::PersistentSlots,
+            ),
+            (
+                &store.transient,
+                CleanupMap::TransientRoots,
+                CleanupMap::TransientDefaults,
+                CleanupMap::TransientSlots,
+            ),
+        ] {
+            maps[roots as usize] = MapFootprint::new(plane.roots.len(), 2);
+            maps[defaults as usize] = MapFootprint::new(plane.defaults.len(), 1);
+            maps[slots as usize] = MapFootprint::new(plane.slots.len(), 2);
             reset_growth = reset_growth
                 .saturating_add(plane.base.work_size())
                 .saturating_add(plane.global_default.work_size());
             fields = fields
                 .saturating_add(plane.base.work_size())
                 .saturating_add(plane.global_default.work_size());
+            // Store::visit_values calls slots::expressions separately for every
+            // root occurrence, each with its own ordered visited set. Expanded
+            // cached nodes bound that walk; the check itself is not O(1).
+            validation_work = validation_work.saturating_add(tree_work(plane.base.work_size()));
             for root in plane.roots.values() {
                 fields = fields.saturating_add(root.work_size());
+                validation_work = validation_work.saturating_add(tree_work(root.work_size()));
             }
-            for value in plane.slots.values().chain(plane.defaults.values()) {
-                fields = fields.saturating_add(value.work_size());
+            for value in plane.slots.values() {
+                let work = value.work_size();
+                fields = fields.saturating_add(work);
+                maps[slots as usize].clone_units =
+                    maps[slots as usize].clone_units.saturating_add(work);
+            }
+            for value in plane.defaults.values() {
+                let work = value.work_size();
+                fields = fields.saturating_add(work);
+                maps[defaults as usize].clone_units =
+                    maps[defaults as usize].clone_units.saturating_add(work);
             }
             for (expression, value) in &plane.operands {
                 fields = fields
@@ -339,7 +567,12 @@ impl Footprint {
                 .saturating_add(log.data.state_root().work_size())
                 .saturating_add(log.topics.len());
             reserve(budget, tree_work(scan).saturating_mul(2))?;
-            fields = fields.saturating_add(log.data.work_size());
+            let data_work = log.data.work_size();
+            fields = fields.saturating_add(data_work);
+            // The already prepaid log walk supplies this bound; do not run
+            // another DAG census to discover the initial validation charge.
+            validation_work = validation_work
+                .saturating_add(tree_work(data_work.saturating_add(log.topics.len())));
             for topic in &log.topics {
                 fields = fields.saturating_add(topic.work_size());
             }
@@ -349,6 +582,10 @@ impl Footprint {
             fields,
             code_bytes,
             reset_growth,
+            maps,
+            // Duplicate value visits, root discovery/visited sets, log checks
+            // and their temporary disposal are bounded by four allowances.
+            validation_work: validation_work.saturating_mul(4),
         })
     }
 }
