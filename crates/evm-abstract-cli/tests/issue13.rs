@@ -64,13 +64,6 @@ fn contains(value: &Json, expected: U256) -> bool {
     })
 }
 
-fn byte_contains(data: &Json, offset: usize, expected: u8) -> bool {
-    let value = data["bytes"]
-        .get(offset.to_string())
-        .unwrap_or(&data["default"]);
-    contains(value, U256::from(expected))
-}
-
 fn account<'a>(store: &'a Json, address: &str) -> Option<&'a Json> {
     store["account_observations"]
         .as_array()?
@@ -95,6 +88,8 @@ fn slot_contains(store: &Json, address: &str, slot: u64, expected: U256) -> bool
 
 #[path = "support/native.rs"]
 mod native;
+#[path = "support/native_bytes.rs"]
+mod native_bytes;
 
 fn relations(analysis: &Json) -> BTreeSet<String> {
     let outcomes = native::canonical(&analysis["outcomes"]);
@@ -161,8 +156,7 @@ fn summary_switch_preserves_real_graph_ssa_identity_and_joint_outcomes() {
             .unwrap()
             .iter()
             .any(|outcome| outcome["kind"] == "Return"
-                && contains(&outcome["data"]["length"], U256::from(32))
-                && byte_contains(&outcome["data"], 31, 7))
+                && native_bytes::word_matches(&outcome["data"], U256::from(7)))
     );
     let disabled = fixture("summary-reuse", &["--ssa", "--no-summaries"]);
     let baseline = verify_export(&disabled);
@@ -218,8 +212,7 @@ fn creation_exports_initcode_captured_runtime_and_one_correlated_commit() {
                         U256::from_be_slice(CREATED.parse::<Address>().unwrap().as_slice()),
                     )
                     && slot_contains(store, ENTRY, 1, U256::from(1))
-                    && contains(&outcome["data"]["length"], U256::from(32))
-                    && byte_contains(&outcome["data"], 31, 42)
+                    && native_bytes::word_matches(&outcome["data"], U256::from(42))
             }),
         "no correlated created runtime/nonce/storage/return commit: {}",
         analysis["outcomes"]
@@ -241,8 +234,7 @@ fn native_identity_call_exports_its_frame_return_data_and_effect_ssa() {
             .iter()
             .any(|outcome| {
                 outcome["kind"] == "Return"
-                    && contains(&outcome["data"]["length"], U256::from(32))
-                    && byte_contains(&outcome["data"], 31, 42)
+                    && native_bytes::word_matches(&outcome["data"], U256::from(42))
             })
     );
 }
