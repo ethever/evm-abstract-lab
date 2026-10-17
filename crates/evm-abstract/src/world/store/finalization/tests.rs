@@ -504,9 +504,6 @@ fn old_map_cow_is_paid_once_per_batch_and_selected_slots_only() {
     assert_eq!(receipts[0].cow, receipts[2].cow);
     assert!(receipts[2].local > receipts[0].local);
     assert!(receipts[2].maps > receipts[0].maps);
-    #[cfg(not(feature = "imbl"))]
-    assert_eq!(receipts[0].cow, 0);
-    #[cfg(feature = "imbl")]
     assert!(receipts[0].cow > 0);
 
     let mut selected = base;
@@ -515,10 +512,9 @@ fn old_map_cow_is_paid_once_per_batch_and_selected_slots_only() {
     let owners = no_delete_owners(&plan);
     assert_eq!(owners[0].planes[0].cells, 64);
     let selected = plan.no_delete_work(measure(&selected), owners);
-    #[cfg(not(feature = "imbl"))]
-    assert_eq!(selected.cow, 0);
-    #[cfg(feature = "imbl")]
     assert!(selected.cow > receipts[0].cow);
+    // Pin the common range tariff, including selected-key collection/get_mut.
+    assert_eq!(selected.maps, 3_048);
 }
 
 #[test]

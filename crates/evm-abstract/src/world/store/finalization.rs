@@ -246,13 +246,13 @@ impl Plan {
                 .zip([CleanupMap::PersistentSlots, CleanupMap::TransientSlots])
             {
                 let height = tree_height(footprint.maps[map as usize].entries);
-                // One old-value range and one numeric-update range. imbl also
-                // collects the selected keys and performs one get_mut per key.
+                // One old-value range and one numeric-update range, plus imbl's
+                // selected-key collection/get_mut bound. This shared logical
+                // upper bound keeps Work backend-independent; std may perform
+                // fewer physical steps.
                 let mut ranges = height.saturating_add(plane.cells).saturating_mul(2);
-                if cfg!(feature = "imbl") {
-                    ranges =
-                        ranges.saturating_add(plane.cells.saturating_mul(height.saturating_add(1)));
-                }
+                ranges =
+                    ranges.saturating_add(plane.cells.saturating_mul(height.saturating_add(1)));
                 receipt.maps = receipt.maps.saturating_add(ranges.saturating_mul(4));
                 if plane.cells != 0 {
                     touched.insert(map);
@@ -345,10 +345,9 @@ impl TouchedMaps {
     }
 
     fn cow_work(&self, maps: &[MapFootprint; CleanupMap::COUNT]) -> usize {
-        if !cfg!(feature = "imbl") {
-            // The existing staging reservation already pays std map cloning.
-            return 0;
-        }
+        // Use one conservative logical policy so report Work is independent of
+        // the backend. Existing staging already pays std map cloning; reserving
+        // the same first-write bound here is deliberate.
         maps.iter()
             .enumerate()
             .filter(|(index, map)| self.0 & (1u16 << *index) != 0 && map.entries != 0)
