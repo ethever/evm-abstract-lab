@@ -96,11 +96,10 @@ impl ByteArray {
             None
         };
         let fallback_work = self.word_numeric_work(offset, domain);
-        let full_work = preparation.as_ref().map_or(fallback_work, |prepared| {
+        let full_work = preparation.as_ref().map_or(fallback_work, |_| {
             self.root
                 .work_size()
                 .saturating_mul(32)
-                .saturating_add(prepared.work)
                 .saturating_add(256 * 32)
         });
         if !charge(budget, full_work)? {
@@ -174,13 +173,16 @@ impl Plan {
             // The entire Context/Memo/Reader graph dies in this block, ending
             // the original budget borrow before a complete fallback can pay.
             let (value, work_exhausted) = {
-                let context = conditional::Context::budgeted(
+                let Some(context) = conditional::Context::budgeted(
                     &self.facts,
                     &self.conditional,
                     self.domain,
                     &preparation,
                     budget,
-                );
+                )?
+                else {
+                    return Ok(None);
+                };
                 let value = evaluate(
                     &self.root,
                     self.length.as_ref(),
@@ -505,7 +507,7 @@ mod tests {
         assert!(!context.cache_refused());
         assert_eq!(context.demand_usage().unwrap().0, 7);
         drop(context);
-        drop(plan);
+        let trial_work = payer_tests::trial_work(plan, &mut probe_budget);
         // The observation probe and the production read each own a paid plan.
         let mut budget = WorkBudget::new(100_000_000);
         let plan = memory
@@ -518,9 +520,10 @@ mod tests {
         assert_eq!(actual.numeric(), expected.numeric());
         assert_eq!(actual.provenance(), expected.provenance());
         assert_eq!(actual.expression(), expected.expression());
+        assert!(trial_work > 0);
         assert_eq!(
             budget.used(),
-            before,
+            before + trial_work,
             "a completed attempt owes no fallback"
         );
 
@@ -586,7 +589,7 @@ mod tests {
             "the metadata allowance is not exhausted"
         );
         drop(context);
-        drop(plan);
+        let trial_work = payer_tests::trial_work(plan, &mut probe_budget);
         let mut budget = WorkBudget::new(usize::MAX);
         let plan = memory
             .prepare_word_read(&zero(), domain, &mut budget)
@@ -596,7 +599,12 @@ mod tests {
         let fallback = memory.word_numeric_work(&zero(), domain);
         assert_eq!(plan.fallback_work, fallback);
         let actual = plan.read_word_budgeted(&mut budget).unwrap().unwrap();
-        assert_eq!(budget.used(), before + fallback);
+        assert!(trial_work > 0);
+        assert_eq!(
+            budget.used(),
+            before + trial_work + fallback,
+            "the refused attempt keeps its exact paid prefix and owes the full fallback"
+        );
         assert_eq!(actual, expected);
         assert_eq!(actual.singleton(), Some(U256::from(7)));
         assert!(!actual.symbolic_limit_reached());
@@ -653,14 +661,21 @@ mod tests {
         memory
             .expand(&constant(96), &constant(32), 4096, domain)
             .unwrap();
+        let mut receipt_budget = WorkBudget::new(usize::MAX);
+        let receipt_plan = memory
+            .prepare_word_read(&zero(), domain, &mut receipt_budget)
+            .unwrap()
+            .unwrap();
+        let trial_work = payer_tests::trial_work(receipt_plan, &mut receipt_budget);
         let before_read = budget.used();
         assert_eq!(
             plan.read_word_budgeted(&mut budget).unwrap(),
             Some(expected.clone())
         );
+        assert!(trial_work > 0);
         assert_eq!(
             budget.used(),
-            before_read,
+            before_read + trial_work,
             "the admitted demand must finish without a retry"
         );
 
@@ -669,13 +684,24 @@ mod tests {
             .unwrap()
             .unwrap();
         plan.preparation.as_mut().unwrap().nodes = 0;
+        let mut receipt_plan = memory
+            .prepare_word_read(&zero(), domain, &mut receipt_budget)
+            .unwrap()
+            .unwrap();
+        receipt_plan.preparation.as_mut().unwrap().nodes = 0;
+        let scratch_work = payer_tests::trial_work(receipt_plan, &mut receipt_budget);
         let before = budget.used();
         let fallback = plan.fallback_work;
         assert_eq!(
             plan.read_word_budgeted(&mut budget).unwrap(),
             Some(expected)
         );
-        assert_eq!(budget.used(), before + fallback);
+        assert!(scratch_work > 0);
+        assert_eq!(
+            budget.used(),
+            before + scratch_work + fallback,
+            "funded fixed setup precedes scratch refusal and the full fallback"
+        );
 
         let mut plan = memory
             .prepare_word_read(&zero(), domain, &mut budget)

@@ -1,5 +1,5 @@
-//! Temporary metadata only. A prepared word demand pays for this entire arena
-//! before construction; its node counter bounds probes, comparisons and copies.
+//! Demand-local metadata: N bounds probes, comparisons and copies independently
+//! of payment. Each admitted action owes the same original WorkBudget first.
 
 use super::Context;
 use crate::domain::{
@@ -14,9 +14,16 @@ use std::{
 
 // The whole demand, including its symbolic and numeric walks, shares these
 // bounds. Arena/context refusal retries the fully paid original algorithm;
-// a failed live numeric payment instead stops the entire read as Work.
+// a failed live metadata or numeric payment stops the entire read as Work.
 pub(in crate::world::bytes) const CONTEXTS: usize = 32;
 const POLICIES: usize = 2;
+
+// Four Rc shell construction/release pairs (choices, initial active, memo,
+// selected active) and four fixed field-handle retention/release pairs. This
+// finite per-Context tariff includes child scaffolding, not payload copies.
+pub(super) const CONTEXT_LIFETIME_WORK: usize = 4 * 4;
+// The shared payer Rc is constructed and released only once per demand.
+pub(super) const DEMAND_LIFETIME_WORK: usize = 2;
 
 enum Payer<'a> {
     Budget(RefCell<&'a mut WorkBudget>),
@@ -41,6 +48,9 @@ pub(super) struct Demand<'a> {
     cancelled: Cell<bool>,
     #[cfg(test)]
     cancel_after_payments: RefCell<Option<(usize, analysis_control::Cancellation)>>,
+    // Accepted action receipts only: true denotes a numeric primitive.
+    #[cfg(test)]
+    payments: RefCell<Vec<(bool, usize)>>,
 }
 
 impl<'a> Demand<'a> {
@@ -97,6 +107,8 @@ impl<'a> Demand<'a> {
             cancelled: Cell::new(false),
             #[cfg(test)]
             cancel_after_payments: RefCell::new(None),
+            #[cfg(test)]
+            payments: RefCell::new(Vec::new()),
         }
     }
 
@@ -146,10 +158,10 @@ impl<'a> Demand<'a> {
         self.work_exhausted.get()
     }
 
-    /// Metadata already belongs to N. Only executed numeric actions borrow
-    /// the original ledger, and that borrow ends before any numeric callback.
-    pub(super) fn pay(&self, work: usize) -> bool {
-        if self.refused() || self.work_exhausted() || self.check().is_err() {
+    /// Borrow only for payment, never across an action or cancellation hook.
+    /// All clones share the original ledger and sticky financial refusal.
+    fn charge(&self, work: usize) -> bool {
+        if self.check().is_err() || self.work_exhausted() || self.refused() {
             return false;
         }
         let paid = match &self.payer {
@@ -160,19 +172,6 @@ impl<'a> Demand<'a> {
             #[cfg(test)]
             Payer::Oracle => true,
         };
-        // Deterministically interrupt an in-flight numeric sequence in tests,
-        // without callbacks or a live payer borrow across the checkpoint.
-        #[cfg(test)]
-        if paid {
-            let mut cancellation = self.cancel_after_payments.borrow_mut();
-            if let Some((remaining, token)) = cancellation.as_mut() {
-                *remaining -= 1;
-                if *remaining == 0 {
-                    token.cancel();
-                    *cancellation = None;
-                }
-            }
-        }
         // A cancellation observed during charge remains a typed interruption.
         if self.check().is_err() {
             return false;
@@ -183,12 +182,56 @@ impl<'a> Demand<'a> {
         paid
     }
 
+    pub(super) fn pay_metadata(&self, work: usize) -> bool {
+        if !self.charge(work) {
+            return false;
+        }
+        #[cfg(test)]
+        self.payments.borrow_mut().push((false, work));
+        true
+    }
+
+    pub(super) fn pay(&self, work: usize) -> bool {
+        if !self.charge(work) {
+            return false;
+        }
+        #[cfg(test)]
+        self.payments.borrow_mut().push((true, work));
+        // Existing controls cancel during numeric work, never an earlier
+        // metadata payment. No live ledger borrow crosses this checkpoint.
+        #[cfg(test)]
+        {
+            let mut cancellation = self.cancel_after_payments.borrow_mut();
+            if let Some((remaining, token)) = cancellation.as_mut() {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    token.cancel();
+                    *cancellation = None;
+                }
+            }
+        }
+        self.check().is_ok()
+    }
+
     pub(super) fn intersect(&self) -> bool {
         self.pay(self.reduction_work)
     }
 
     pub(super) fn reserve(&self, nodes: usize) -> bool {
-        if self.refused() || self.work_exhausted() || self.check().is_err() {
+        self.reserve_priced(nodes, nodes)
+    }
+
+    /// Retained payloads prepay their final release. A replaced negative key
+    /// already owns that release, so its unchanged N term is not paid twice.
+    pub(super) fn reserve_owned(&self, nodes: usize, release: usize, replaced: usize) -> bool {
+        self.reserve_priced(
+            nodes,
+            nodes.saturating_sub(replaced).saturating_add(release),
+        )
+    }
+
+    fn reserve_priced(&self, nodes: usize, work: usize) -> bool {
+        if self.check().is_err() || self.work_exhausted() || self.refused() {
             return false;
         }
         let Some(next) = self.used.get().checked_add(nodes) else {
@@ -197,6 +240,11 @@ impl<'a> Demand<'a> {
         };
         if next > self.maximum {
             self.refuse();
+            return false;
+        }
+        // Optional capacity refusal owes no action payment. Once admitted,
+        // payment must succeed before either the action or used is committed.
+        if !self.pay_metadata(work) {
             return false;
         }
         self.used.set(next);
@@ -234,6 +282,11 @@ impl<'a> Demand<'a> {
             Payer::Budget(budget) => budget.borrow().used(),
             Payer::Oracle => 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn payments(&self) -> Vec<(bool, usize)> {
+        self.payments.borrow().clone()
     }
 
     #[cfg(test)]
@@ -315,7 +368,7 @@ impl Memo<'_> {
         {
             Some(index) => index,
             None if self.policies.len() < POLICIES => {
-                if !reserve(1) {
+                if !demand.reserve_owned(1, 1, 0) {
                     return;
                 }
                 self.policies.push((domain.spec(), Policy::default()));
@@ -328,11 +381,11 @@ impl Memo<'_> {
         };
         let policy = &mut self.policies[index].1;
         let Some(value) = value else {
-            if reserve(
-                expression
-                    .work_size()
-                    .saturating_add(policy.absent.as_ref().map_or(0, ExprId::work_size))
-                    .saturating_add(1),
+            let old = policy.absent.as_ref().map_or(0, ExprId::work_size);
+            if demand.reserve_owned(
+                expression.work_size().saturating_add(old).saturating_add(1),
+                expression.work_size(),
+                old,
             ) {
                 policy.absent = Some(expression.clone());
             }
@@ -342,11 +395,13 @@ impl Memo<'_> {
         // Positive keys belong only to the immutable source maps or
         // bounded choices, so all of them are retained until demand completion.
         if !probe(policy.values.len(), expression, demand, reserve)
-            || !reserve(
+            || !demand.reserve_owned(
                 policy
                     .work
                     .saturating_add(value.work_size())
                     .saturating_add(1),
+                value.work_size().saturating_add(1),
+                0,
             )
         {
             return;
@@ -386,6 +441,8 @@ pub(super) fn probe(
 
 pub(in crate::world::bytes) struct Preparation {
     pub(in crate::world::bytes) nodes: usize,
+    // Retain the capacity receipt independently of the actual payment ledger.
+    #[cfg(test)]
     pub(in crate::world::bytes) work: usize,
     pub(super) reduction_work: usize,
 }
@@ -433,8 +490,8 @@ pub(super) fn join_work(domain: Domain, left: &AbstractValue, right: &AbstractVa
 }
 
 /// Pure size arithmetic, with no fact merges or allocating preparation. The
-/// transfer reserves only the metadata arena before entering the checked read.
-/// The original generic numeric bound is paid at each actual intersection.
+/// node receipt is a hard scratch cap, not an upfront financial reservation.
+/// Metadata and the original numeric bound are paid at their actual actions.
 pub(in crate::world::bytes) fn preparation(
     root_work: usize,
     offset: &AbstractValue,
@@ -462,13 +519,14 @@ pub(in crate::world::bytes) fn preparation(
         // Keep the original generic meet/reduction bound and numeric scratch
         // allowance. Its separate 4096 join gcd now belongs only to join_work.
         // Metadata is a cached upper bound on the numeric operand/result sizes;
-        // Caller-side probes and operand/memo copies still belong only to N;
+        // Caller-side probes and operand/memo copies pay their own N-sized actions;
         // copies internal to numeric primitives belong to their action tariff.
         .saturating_add(metadata.saturating_mul(2))
         .saturating_add(domain.capacity())
         .saturating_add(32);
     Preparation {
         nodes,
+        #[cfg(test)]
         work: nodes,
         reduction_work: reduction,
     }

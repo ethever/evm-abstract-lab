@@ -240,7 +240,7 @@ fn cancellation_is_observed_even_on_a_warm_memo_hit() {
 }
 
 #[test]
-fn guarded_word_preparation_pays_a_bounded_arena_instead_of_every_lookup_reduction() {
+fn guarded_word_preparation_bounds_metadata_separately_from_actual_payments() {
     let domain = Domain::default();
     let guard = ExprId::fresh().unwrap();
     let facts = Facts::from([
@@ -265,8 +265,8 @@ fn guarded_word_preparation_pays_a_bounded_arena_instead_of_every_lookup_reducti
         &conditional,
         domain,
     );
-    // Preparation now prepays only metadata; payer tests cover actual numeric
-    // actions and atomic payment refusal.
+    // Preparation is the unchanged metadata capacity receipt; payer tests cover
+    // actual metadata/numeric actions and atomic payment refusal.
     assert_eq!(prepared.work, prepared.nodes);
     assert!(prepared.work < old);
     assert!(prepared.work < 20_000_000);

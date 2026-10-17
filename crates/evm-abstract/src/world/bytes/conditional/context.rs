@@ -44,25 +44,22 @@ impl<'a> Context<'a> {
         out
     }
 
-    /// The caller prepaid the metadata arena; every numeric action still owes
-    /// the original ledger. Facts and budget share only this trial's lifetime.
+    /// Metadata and numeric actions share the original ledger. Fixed setup is
+    /// funded before constructing its first Rc; refusal creates no Context.
+    /// Facts and budget share only this trial's lifetime.
     pub(in crate::world::bytes) fn budgeted(
         facts: &'a Facts,
         conditional: &'a ConditionalFacts,
         domain: Domain,
         preparation: &Preparation,
         budget: &'a mut WorkBudget,
-    ) -> Self {
-        Self::with_demand(
-            facts,
-            conditional,
-            Rc::new(memo::Demand::new(
-                domain,
-                preparation,
-                conditional.largest_expression,
-                budget,
-            )),
-        )
+    ) -> Result<Option<Self>, ExprError> {
+        let demand = memo::Demand::new(domain, preparation, conditional.largest_expression, budget);
+        if !demand.pay_metadata(memo::DEMAND_LIFETIME_WORK + memo::CONTEXT_LIFETIME_WORK) {
+            demand.check()?;
+            return Ok(None);
+        }
+        Ok(Some(Self::with_demand(facts, conditional, Rc::new(demand))))
     }
 
     /// Compatibility oracle for existing private reference probes. Production
@@ -90,13 +87,6 @@ impl<'a> Context<'a> {
         conditional: &'a ConditionalFacts,
         demand: Rc<memo::Demand<'a>>,
     ) -> Self {
-        // Immutable source keys are sized once, before any prepared lookups.
-        // Conditional keys already have a cached maximum in their owner.
-        if demand.reserve(facts.len().saturating_add(1)) {
-            for key in facts.keys() {
-                demand.source_key(key.work_size());
-            }
-        }
         let mut out = Self {
             facts,
             conditional: Some(conditional),
@@ -105,7 +95,15 @@ impl<'a> Context<'a> {
             memo: Rc::new(RefCell::new(memo::Memo::default())),
             demand: Some(demand),
         };
-        out.select();
+        // Immutable source keys are sized once, before any prepared lookups.
+        // All fixed scaffolding above was funded before its first allocation.
+        let demand = out.demand.as_deref().expect("prepared context");
+        if demand.reserve(facts.len().saturating_add(1)) {
+            for key in facts.keys() {
+                demand.source_key(key.work_size());
+            }
+            out.select();
+        }
         out
     }
 
@@ -140,6 +138,11 @@ impl<'a> Context<'a> {
             .map(|demand| (demand.contexts(), demand.used()))
     }
 
+    #[cfg(test)]
+    pub(in crate::world::bytes) fn demand_payments(&self) -> Vec<(bool, usize)> {
+        self.demand.as_deref().expect("prepared context").payments()
+    }
+
     pub(in crate::world::bytes) fn stopped(&self) -> bool {
         self.check().is_err() || self.cache_refused() || self.work_exhausted()
     }
@@ -150,6 +153,14 @@ impl<'a> Context<'a> {
                 .demand
                 .as_ref()
                 .is_none_or(|demand| demand.reserve(nodes))
+    }
+
+    fn reserve_owned(&self, nodes: usize, release: usize) -> bool {
+        !self.stopped()
+            && self
+                .demand
+                .as_ref()
+                .is_none_or(|demand| demand.reserve_owned(nodes, release, 0))
     }
 
     fn fact<'b>(&self, facts: &'b Facts, expression: &ExprId) -> Option<&'b AbstractValue> {
@@ -227,7 +238,7 @@ impl<'a> Context<'a> {
                     } else {
                         0
                     };
-                    if !context.reserve(growth.saturating_add(1)) {
+                    if !context.reserve_owned(growth.saturating_add(1), 1) {
                         return;
                     }
                     active.push(&scope.facts);
@@ -239,7 +250,9 @@ impl<'a> Context<'a> {
         if let Some(conditional) = self.conditional {
             selected(conditional, self, &mut active);
         }
-        self.active = Rc::new(active);
+        if !self.stopped() {
+            self.active = Rc::new(active);
+        }
     }
 
     pub(in crate::world::bytes) fn branch(&self, condition: &ExprId, nonzero: bool) -> Self {
@@ -270,7 +283,12 @@ impl<'a> Context<'a> {
         {
             return self.clone();
         }
-        if !self.reserve(nodes.saturating_add(super::CONTEXTS)) {
+        if !self.reserve_owned(
+            nodes.saturating_add(super::CONTEXTS),
+            nodes
+                .saturating_add(memo::CONTEXT_LIFETIME_WORK)
+                .saturating_add(1),
+        ) {
             return self.clone();
         }
         if let Some(demand) = &self.demand {

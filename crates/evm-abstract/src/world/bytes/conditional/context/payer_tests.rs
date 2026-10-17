@@ -48,6 +48,57 @@ fn preparation_for(facts: &Facts, conditional: &ConditionalFacts, domain: Domain
     preparation(72, &constant(0), work, facts.len(), conditional, domain)
 }
 
+// Complete paid traces derive exact fixture budgets without arbitrary padding.
+// The oracle is separate: every traced production action still uses WorkBudget.
+fn trace_for(
+    facts: &Facts,
+    conditional: &ConditionalFacts,
+    domain: Domain,
+    quote: &Preparation,
+    action: impl FnOnce(&Context<'_>),
+) -> Vec<(bool, usize)> {
+    let mut budget = WorkBudget::new(usize::MAX);
+    let context = Context::budgeted(facts, conditional, domain, quote, &mut budget)
+        .unwrap()
+        .unwrap();
+    action(&context);
+    assert!(!context.stopped());
+    let trace = context.demand.as_deref().unwrap().payments();
+    drop(context);
+    assert_eq!(budget.used(), total(&trace));
+    trace
+}
+
+fn total(trace: &[(bool, usize)]) -> usize {
+    trace.iter().map(|(_, work)| work).sum()
+}
+
+fn numeric_work(trace: &[(bool, usize)]) -> usize {
+    trace
+        .iter()
+        .filter(|(numeric, _)| *numeric)
+        .map(|(_, work)| work)
+        .sum()
+}
+
+fn prefix(trace: &[(bool, usize)], available: usize) -> usize {
+    let mut paid = 0;
+    for (_, work) in trace {
+        if *work > available - paid {
+            break;
+        }
+        paid += work;
+    }
+    paid
+}
+
+// A complete positive memo hit pays entry, policy search, B-tree comparison
+// envelope and the copied AV, with no retained object or numeric action.
+fn hit_work(key: &ExprId, value: &AbstractValue, len: usize, maximum_key: usize) -> usize {
+    let comparisons = len.min(11 * (len.saturating_add(1).ilog2() as usize + 1));
+    1 + 2 + comparisons * (key.work_size() + maximum_key + 1) + 1 + value.work_size()
+}
+
 #[test]
 fn actual_scope_meet_and_join_keep_the_complete_value_and_memo_receipt() {
     let domain = Domain::default();
@@ -74,10 +125,21 @@ fn actual_scope_meet_and_join_keep_the_complete_value_and_memo_receipt() {
         .branch(&guard, true)
         .value(&key, domain)
         .unwrap();
-    let mut budget = WorkBudget::new(price + 37);
+    let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+        assert_eq!(
+            root.branch(&guard, true).value(&key, domain),
+            Some(expected.clone())
+        );
+    });
+    assert_eq!(numeric_work(&trace), price);
+    let receipt = total(&trace);
+    let hit = hit_work(&key, &expected, 1, key.work_size().max(guard.work_size()));
+    let mut budget = WorkBudget::new(receipt + hit + 37);
     assert!(budget.charge(37));
     {
-        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget);
+        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
         let selected = root.branch(&guard, true);
         let actual = selected.value(&key, domain).unwrap();
         assert_eq!(actual, expected);
@@ -92,16 +154,17 @@ fn actual_scope_meet_and_join_keep_the_complete_value_and_memo_receipt() {
             (U256::from(5), U256::from(20))
         );
         let demand = selected.demand.as_deref().unwrap();
-        assert_eq!(demand.paid_work(), 37 + price);
+        assert_eq!(demand.paid_work(), 37 + receipt);
         assert_eq!(selected.value(&key, domain), Some(expected));
         assert_eq!(
             demand.paid_work(),
-            37 + price,
-            "complete memo hit owes no numeric action"
+            37 + receipt + hit,
+            "complete memo hit pays probes/copy but no new numeric action or lifecycle"
         );
+        assert_eq!(numeric_work(&demand.payments()), price);
         assert!(!selected.stopped());
     }
-    assert_eq!(budget.used(), 37 + price);
+    assert_eq!(budget.used(), 37 + receipt + hit);
     assert!(!budget.exhausted());
     assert_eq!((facts, conditional), frozen);
 }
@@ -132,17 +195,31 @@ fn equal_and_top_scope_shortcuts_still_pay_the_real_metadata_join() {
             .branch(&guard, true)
             .value(&key, domain)
             .unwrap();
-        let mut budget = WorkBudget::new(price);
+        let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+            assert_eq!(
+                root.branch(&guard, true).value(&key, domain),
+                Some(expected.clone())
+            );
+        });
+        assert_eq!(numeric_work(&trace), price);
+        let receipt = total(&trace);
+        let mut budget = WorkBudget::new(receipt);
         {
             let selected = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+                .unwrap()
+                .unwrap()
                 .branch(&guard, true);
             let actual = selected.value(&key, domain).unwrap();
             assert_eq!(actual, expected);
             assert!(!actual.same_identity(&left));
             assert!(!expected.same_identity(&left));
-            assert_eq!(selected.demand.as_deref().unwrap().paid_work(), price);
+            assert_eq!(selected.demand.as_deref().unwrap().paid_work(), receipt);
+            assert_eq!(
+                numeric_work(&selected.demand.as_deref().unwrap().payments()),
+                price
+            );
         }
-        assert_eq!(budget.used(), price);
+        assert_eq!(budget.used(), receipt);
         assert!(!budget.exhausted());
     }
 }
@@ -160,9 +237,19 @@ fn first_scope_value_and_new_guard_truth_need_no_numeric_action() {
         Facts::new(),
     );
     let quote = preparation_for(&facts, &conditional, domain);
-    let mut budget = WorkBudget::new(0);
+    let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+        let selected = root.branch(&guard, true);
+        assert_eq!(selected.value(&key, domain), Some(source.clone()));
+        assert!(selected.value(&guard, domain).is_some());
+    });
+    assert_eq!(numeric_work(&trace), 0);
+    let receipt = total(&trace);
+    assert!(receipt > 0);
+    let mut budget = WorkBudget::new(receipt);
     {
         let selected = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap()
             .branch(&guard, true);
         let actual = selected.value(&key, domain).unwrap();
         assert_eq!(actual, source);
@@ -170,10 +257,14 @@ fn first_scope_value_and_new_guard_truth_need_no_numeric_action() {
         let truth = selected.value(&guard, domain).unwrap();
         let expected = Context::new(&facts, Some(&conditional)).branch(&guard, true);
         assert_eq!(Some(truth), expected.value(&guard, domain));
-        assert_eq!(selected.demand.as_deref().unwrap().paid_work(), 0);
+        assert_eq!(selected.demand.as_deref().unwrap().paid_work(), receipt);
+        assert_eq!(
+            numeric_work(&selected.demand.as_deref().unwrap().payments()),
+            0
+        );
         assert!(!selected.stopped());
     }
-    assert_eq!(budget.used(), 0);
+    assert_eq!(budget.used(), receipt);
     assert!(!budget.exhausted());
 }
 
@@ -189,20 +280,29 @@ fn guard_truth_meets_pay_the_original_bound_and_keep_contradiction_fallback() {
         let expected = Context::new(&facts, Some(&conditional))
             .branch(&guard, true)
             .value(&guard, domain);
-        let mut budget = WorkBudget::new(quote.reduction_work);
+        let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+            assert_eq!(root.branch(&guard, true).value(&guard, domain), expected);
+        });
+        assert_eq!(numeric_work(&trace), quote.reduction_work);
+        let receipt = total(&trace);
+        let hit = hit_work(&guard, expected.as_ref().unwrap(), 1, guard.work_size());
+        let mut budget = WorkBudget::new(receipt + hit);
         {
             let selected = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+                .unwrap()
+                .unwrap()
                 .branch(&guard, true);
             assert_eq!(selected.value(&guard, domain), expected);
             let demand = selected.demand.as_deref().unwrap();
-            assert_eq!(demand.paid_work(), quote.reduction_work);
+            assert_eq!(demand.paid_work(), receipt);
             assert_eq!(selected.value(&guard, domain), expected);
-            assert_eq!(demand.paid_work(), quote.reduction_work);
+            assert_eq!(demand.paid_work(), receipt + hit);
+            assert_eq!(numeric_work(&demand.payments()), quote.reduction_work);
             if value.singleton() == Some(U256::ZERO) {
                 assert_eq!(expected, Some(value));
             }
         }
-        assert_eq!(budget.used(), quote.reduction_work);
+        assert_eq!(budget.used(), receipt + hit);
         assert!(!budget.exhausted());
     }
 }
@@ -223,56 +323,81 @@ fn work_boundaries_preserve_the_prefix_and_never_install_negative_or_partial_res
     );
     let frozen = (facts.clone(), conditional.clone());
     let quote = preparation_for(&facts, &conditional, domain);
-    let meet = quote.reduction_work;
-    let price = meet + memo::join_work(domain, &left, &right);
     let expected = Context::new(&facts, Some(&conditional))
         .branch(&guard, true)
         .value(&key, domain);
-    for available in [0, meet - 1, price - 1, price] {
+    let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+        let selected = root.branch(&guard, true);
+        assert_eq!(selected.value(&cheap, domain), Some(constant(7)));
+        assert_eq!(selected.value(&key, domain), expected);
+    });
+    let numeric_prices: Vec<_> = trace.iter().filter(|(n, _)| *n).map(|(_, w)| *w).collect();
+    assert_eq!(
+        numeric_prices,
+        [quote.reduction_work, memo::join_work(domain, &left, &right)]
+    );
+    let before_meet = total(&trace[..trace.iter().position(|(n, _)| *n).unwrap()]);
+    let before_join = total(&trace[..trace.iter().rposition(|(n, _)| *n).unwrap()]);
+    let receipt = total(&trace);
+    let hit = hit_work(
+        &key,
+        expected.as_ref().unwrap(),
+        2,
+        key.work_size()
+            .max(guard.work_size())
+            .max(cheap.work_size()),
+    );
+    for available in [before_meet, before_join, receipt - 1, receipt + hit] {
         let mut budget = WorkBudget::new(53 + available);
         assert!(budget.charge(53));
         {
-            let selected = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
-                .branch(&guard, true);
-            // An already warm independent key must not escape after Work.
+            let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+                .unwrap()
+                .unwrap();
+            let selected = root.branch(&guard, true);
+            let clone = selected.clone();
             assert_eq!(selected.value(&cheap, domain), Some(constant(7)));
             let actual = selected.value(&key, domain);
             let demand = selected.demand.as_deref().unwrap();
-            if available == price {
+            if available == receipt + hit {
                 assert_eq!(actual, expected);
-                assert_eq!(selected.value(&key, domain), expected);
+                assert_eq!(clone.value(&key, domain), expected);
                 assert!(!selected.work_exhausted());
-                assert_eq!(demand.paid_work(), 53 + price);
+                assert_eq!(demand.paid_work(), 53 + receipt + hit);
+                assert_eq!(numeric_work(&demand.payments()), numeric_work(&trace));
             } else {
                 assert_eq!(actual, None);
                 assert!(selected.work_exhausted());
                 assert!(!selected.cache_refused());
                 selected.check().unwrap();
-                assert_eq!(selected.value(&cheap, domain), None);
-                assert_eq!(selected.value(&key, domain), None);
+                let paid = demand.paid_work();
+                let used = demand.used();
+                for context in [&root, &selected, &clone] {
+                    assert_eq!(context.value(&cheap, domain), None);
+                    assert_eq!(context.value(&key, domain), None);
+                    assert!(context.work_exhausted());
+                }
                 assert!(!demand.pay(0), "a smaller retry cannot clear Work");
+                assert!(!demand.reserve(0));
+                assert_eq!(demand.used(), used);
                 assert_eq!(
                     selected.memo.borrow().get(&key, domain, demand, &|_| true),
                     None,
                     "interrupted resolve is neither a complete value nor a completed absence"
                 );
-                assert_eq!(
-                    demand.paid_work(),
-                    53 + if available >= meet { meet } else { 0 }
-                );
+                assert_eq!(demand.paid_work(), paid);
+                assert_eq!(paid, 53 + prefix(&trace, available));
             }
         }
         assert_eq!(
             budget.used(),
-            53 + if available == price {
-                price
-            } else if available >= meet {
-                meet
+            53 + if available == receipt + hit {
+                receipt + hit
             } else {
-                0
+                prefix(&trace, available)
             }
         );
-        assert_eq!(budget.exhausted(), available != price);
+        assert_eq!(budget.exhausted(), available != receipt + hit);
         assert_eq!((&facts, &conditional), (&frozen.0, &frozen.1));
     }
 }
@@ -302,7 +427,9 @@ fn full_domain_policies_guard_scopes_and_fact_owners_have_separate_complete_memo
     let quote = preparation_for(&facts, &conditional, domain);
     let mut budget = WorkBudget::new(usize::MAX);
     {
-        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget);
+        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
         let demand = root.demand.as_deref().unwrap();
         for (truth, value) in [(true, &yes), (false, &no)] {
             let selected = root.branch(&guard, truth);
@@ -311,14 +438,26 @@ fn full_domain_policies_guard_scopes_and_fact_owners_have_separate_complete_memo
                     .branch(&guard, truth)
                     .value(&key, policy);
                 let before = demand.paid_work();
+                let before_numeric = numeric_work(&demand.payments());
                 assert_eq!(selected.value(&key, policy), expected);
+                assert!(demand.paid_work() > before);
                 assert_eq!(
-                    demand.paid_work(),
-                    before + quote.reduction_work + memo::join_work(policy, &left, value)
+                    numeric_work(&demand.payments()),
+                    before_numeric + quote.reduction_work + memo::join_work(policy, &left, value)
                 );
                 let after = demand.paid_work();
                 assert_eq!(root.branch(&guard, truth).value(&key, policy), expected);
-                assert_eq!(demand.paid_work(), after);
+                let hit = hit_work(
+                    &key,
+                    expected.as_ref().unwrap(),
+                    1,
+                    key.work_size().max(guard.work_size()),
+                );
+                assert_eq!(demand.paid_work(), after + 1 + 1 + memo::CONTEXTS + hit);
+                assert_eq!(
+                    numeric_work(&demand.payments()),
+                    before_numeric + quote.reduction_work + memo::join_work(policy, &left, value)
+                );
             }
         }
         let reversed = root.branch(&guard, true).branch(&guard, false);
@@ -343,7 +482,9 @@ fn full_domain_policies_guard_scopes_and_fact_owners_have_separate_complete_memo
         domain,
         &other_quote,
         &mut other_budget,
-    );
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(other_context.value(&key, domain), Some(range(26, 29)));
 }
 
@@ -358,10 +499,11 @@ fn an_already_exhausted_original_budget_cannot_return_a_cheap_or_cached_value() 
     assert!(budget.charge(3));
     assert!(!budget.charge(5));
     {
-        let context = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget);
-        assert!(context.work_exhausted());
-        assert!(!context.cache_refused());
-        assert_eq!(context.value(&key, domain), None);
+        assert!(
+            Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+                .unwrap()
+                .is_none()
+        );
     }
     assert_eq!(budget.used(), 3);
     assert!(budget.exhausted());
@@ -387,6 +529,8 @@ fn cancellation_during_numeric_payment_is_typed_and_does_not_complete_the_memo()
         assert!(budget.charge(71));
         {
             let selected = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+                .unwrap()
+                .unwrap()
                 .branch(&guard, true);
             let demand = selected.demand.as_deref().unwrap();
             // The meet completes; cancellation arrives during payment for join.
@@ -400,9 +544,11 @@ fn cancellation_during_numeric_payment_is_typed_and_does_not_complete_the_memo()
                 None
             );
             assert_eq!(
-                demand.paid_work(),
-                71 + quote.reduction_work + memo::join_work(domain, &left, &right)
+                numeric_work(&demand.payments()),
+                quote.reduction_work + memo::join_work(domain, &left, &right)
             );
+            assert_eq!(demand.paid_work(), 71 + total(&demand.payments()));
+            assert!(total(&demand.payments()) > numeric_work(&demand.payments()));
         }
         assert!(budget.exhausted());
     });
@@ -427,9 +573,15 @@ fn constants_only_join_pays_finite_insertions_and_numeric_summary_rebuilding() {
     );
     let quote = preparation_for(&facts, &conditional, domain);
     let join = memo::join_work(domain, &left, &right);
-    let mut budget = WorkBudget::new(quote.reduction_work + join);
+    let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+        assert!(root.branch(&guard, true).value(&key, domain).is_some());
+    });
+    assert_eq!(numeric_work(&trace), quote.reduction_work + join);
+    let mut budget = WorkBudget::new(total(&trace));
     {
         let context = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap()
             .branch(&guard, true);
         let expected = Context::new(&facts, Some(&conditional))
             .branch(&guard, true)
@@ -437,6 +589,10 @@ fn constants_only_join_pays_finite_insertions_and_numeric_summary_rebuilding() {
         assert_eq!(context.value(&key, domain), expected);
         assert_eq!(
             context.demand.as_deref().unwrap().paid_work(),
+            total(&trace)
+        );
+        assert_eq!(
+            numeric_work(&context.demand.as_deref().unwrap().payments()),
             quote.reduction_work + join
         );
         assert_eq!(expected.unwrap().singleton(), Some(U256::from(4)));
@@ -454,11 +610,16 @@ fn cancellation_latches_across_all_existing_clones_after_the_cancel_scope_ends()
     let quote = preparation_for(&facts, &conditional, domain);
     let mut budget = WorkBudget::new(usize::MAX);
     assert!(budget.charge(97));
+    let paid;
     {
-        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget);
+        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
         let clone = root.clone();
         let child = root.branch(&ExprId::fresh().unwrap(), true);
         assert_eq!(clone.value(&key, domain), Some(constant(7)));
+        paid = root.demand.as_deref().unwrap().paid_work();
+        assert!(paid > 97);
         let token = analysis_control::Cancellation::new();
         token.cancel();
         analysis_control::with_cancellation(&token, || {
@@ -472,7 +633,7 @@ fn cancellation_latches_across_all_existing_clones_after_the_cancel_scope_ends()
             assert!(!context.work_exhausted());
             assert!(!context.cache_refused());
             let demand = context.demand.as_deref().unwrap();
-            assert_eq!(demand.paid_work(), 97);
+            assert_eq!(demand.paid_work(), paid);
             assert_eq!(
                 context
                     .memo
@@ -482,20 +643,32 @@ fn cancellation_latches_across_all_existing_clones_after_the_cancel_scope_ends()
             );
         }
     }
-    assert_eq!(budget.used(), 97);
+    assert_eq!(budget.used(), paid);
 }
 
 #[test]
-fn budgeted_metadata_keeps_all_source_keys_beyond_the_word_width_without_live_charges() {
+fn budgeted_metadata_keeps_all_source_keys_beyond_the_word_width_with_actual_charges() {
     let domain = Domain::default();
     let facts: Facts = (0..40)
         .map(|i| (ExprId::fresh().unwrap(), constant(i)))
         .collect();
     let conditional = ConditionalFacts::default();
     let quote = preparation_for(&facts, &conditional, domain);
-    let mut budget = WorkBudget::new(0);
+    let trace = trace_for(&facts, &conditional, domain, &quote, |context| {
+        for _ in 0..2 {
+            for (key, value) in &facts {
+                assert_eq!(context.value(key, domain), Some(value.clone()));
+            }
+        }
+    });
+    assert_eq!(numeric_work(&trace), 0);
+    let receipt = total(&trace);
+    assert!(receipt > 0);
+    let mut budget = WorkBudget::new(receipt);
     {
-        let context = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget);
+        let context = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
         for _ in 0..2 {
             for (key, value) in &facts {
                 assert_eq!(context.value(key, domain), Some(value.clone()));
@@ -503,10 +676,11 @@ fn budgeted_metadata_keeps_all_source_keys_beyond_the_word_width_without_live_ch
         }
         let demand = context.demand.as_deref().unwrap();
         assert_eq!(demand.source_key_visits(), 40);
-        assert_eq!(demand.paid_work(), 0);
+        assert_eq!(demand.paid_work(), receipt);
+        assert_eq!(numeric_work(&demand.payments()), 0);
         assert!(!context.stopped());
     }
-    assert_eq!(budget.used(), 0);
+    assert_eq!(budget.used(), receipt);
     assert!(!budget.exhausted());
 }
 
@@ -531,8 +705,10 @@ fn choice_node_and_depth_refusals_are_optional_and_do_not_create_negative_memos(
         if node_limit {
             assert!(large.nodes() > domain.spec().relations().max_nodes);
         }
-        let mut budget = WorkBudget::new(0);
-        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget);
+        let mut budget = WorkBudget::new(usize::MAX);
+        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
         let selected = if node_limit {
             root.branch(&large, true)
         } else {
@@ -545,10 +721,246 @@ fn choice_node_and_depth_refusals_are_optional_and_do_not_create_negative_memos(
         selected.check().unwrap();
         assert_eq!(selected.value(&key, domain), None);
         let demand = selected.demand.as_deref().unwrap();
-        assert_eq!(demand.paid_work(), 0);
+        assert!(demand.paid_work() > 0);
+        assert_eq!(numeric_work(&demand.payments()), 0);
+        let paid = demand.paid_work();
+        assert!(!demand.reserve(1));
+        assert_eq!(demand.paid_work(), paid);
         assert_eq!(
             selected.memo.borrow().get(&key, domain, demand, &|_| true),
             None
         );
     }
+}
+
+#[test]
+fn metadata_payment_failure_is_shared_and_never_publishes_a_completed_absence() {
+    let domain = Domain::default();
+    let key = ExprId::fresh().unwrap();
+    let missing = ExprId::fresh().unwrap();
+    let guard = ExprId::fresh().unwrap();
+    let value = source(constant(7), Origin::Storage).with_identity(993_120, 1);
+    let facts = Facts::from([(key.clone(), value.clone())]);
+    let conditional = ConditionalFacts::default();
+    let quote = preparation_for(&facts, &conditional, domain);
+    let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+        root.branch(&guard, true);
+        assert_eq!(root.value(&key, domain), Some(value.clone()));
+    });
+    assert_eq!(numeric_work(&trace), 0);
+    let receipt = total(&trace);
+    let mut budget = WorkBudget::new(109 + receipt);
+    assert!(budget.charge(109));
+    {
+        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
+        let clone = root.clone();
+        let child = root.branch(&guard, true);
+        let actual = clone.value(&key, domain).unwrap();
+        assert_eq!(actual, value);
+        assert_eq!(actual.identity(), value.identity());
+        assert!(actual.same_identity(&value));
+        let demand = root.demand.as_deref().unwrap();
+        let used = demand.used();
+        assert_eq!(demand.paid_work(), 109 + receipt);
+        // The first real metadata action for this miss cannot be paid.
+        assert_eq!(child.value(&missing, domain), None);
+        assert_eq!(demand.used(), used, "an unpaid action commits no N usage");
+        for context in [&root, &clone, &child] {
+            assert!(context.work_exhausted());
+            assert!(!context.cache_refused());
+            context.check().unwrap();
+            assert_eq!(
+                context.value(&key, domain),
+                None,
+                "warm values cannot escape shared Work"
+            );
+            assert_eq!(context.value(&missing, domain), None);
+        }
+        assert!(!demand.reserve(0));
+        assert!(!demand.pay(0));
+        assert_eq!(
+            child.memo.borrow().get(&missing, domain, demand, &|_| true),
+            None
+        );
+        assert_eq!(
+            root.memo.borrow().get(&key, domain, demand, &|_| true),
+            Some(Some(value))
+        );
+        assert_eq!(demand.paid_work(), 109 + receipt);
+        assert_eq!(demand.used(), used);
+    }
+    assert_eq!(budget.used(), 109 + receipt);
+    assert!(budget.exhausted());
+}
+
+#[test]
+fn scratch_admission_precedes_payment_and_unpaid_usage_never_commits() {
+    let domain = Domain::default();
+    let conditional = ConditionalFacts::default();
+    let facts = Facts::new();
+    let mut quote = preparation_for(&facts, &conditional, domain);
+    quote.nodes = 3;
+    quote.work = quote.nodes;
+    let mut budget = WorkBudget::new(0);
+    {
+        let demand = memo::Demand::new(domain, &quote, 0, &mut budget);
+        assert!(!demand.reserve(4));
+        assert!(demand.refused());
+        assert!(!demand.work_exhausted());
+        assert_eq!(demand.used(), 0);
+        assert_eq!(demand.paid_work(), 0);
+        assert!(demand.payments().is_empty());
+    }
+    assert!(
+        !budget.exhausted(),
+        "unexecuted optional work never reaches the ledger"
+    );
+
+    quote.nodes = 8;
+    quote.work = quote.nodes;
+    let mut budget = WorkBudget::new(5);
+    {
+        let demand = memo::Demand::new(domain, &quote, 0, &mut budget);
+        assert!(demand.reserve(2));
+        assert!(!demand.reserve(4));
+        assert!(demand.work_exhausted());
+        assert!(!demand.refused());
+        assert_eq!(demand.used(), 2);
+        assert_eq!(demand.paid_work(), 2);
+        assert!(!demand.reserve(1));
+        assert_eq!(demand.payments(), [(false, 2)]);
+    }
+    assert_eq!(budget.used(), 2);
+    assert!(budget.exhausted());
+
+    // This reference probe reaches checked_add overflow without huge objects.
+    let demand = memo::Demand::oracle(domain, usize::MAX, 0);
+    assert!(demand.reserve(usize::MAX));
+    assert!(!demand.reserve(1));
+    assert!(demand.refused());
+    assert!(!demand.work_exhausted());
+    assert_eq!(demand.used(), usize::MAX);
+    assert_eq!(demand.payments(), [(false, usize::MAX)]);
+}
+
+#[test]
+fn fixed_setup_is_paid_before_construction_and_cancellation_stays_typed() {
+    let domain = Domain::default();
+    let facts = Facts::new();
+    let conditional = ConditionalFacts::default();
+    let quote = preparation_for(&facts, &conditional, domain);
+    let setup = memo::CONTEXT_LIFETIME_WORK + memo::DEMAND_LIFETIME_WORK;
+    let mut budget = WorkBudget::new(113 + setup - 1);
+    assert!(budget.charge(113));
+    assert!(
+        Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(budget.used(), 113);
+    assert!(budget.exhausted());
+    let mut budget = WorkBudget::new(setup);
+    {
+        let context = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
+        assert!(context.work_exhausted());
+        assert!(!context.cache_refused());
+        assert_eq!(context.demand_usage(), Some((1, 0)));
+        assert_eq!(
+            context.demand.as_deref().unwrap().payments(),
+            [(false, setup)]
+        );
+    }
+    assert_eq!(budget.used(), setup);
+    let token = analysis_control::Cancellation::new();
+    token.cancel();
+    analysis_control::with_cancellation(&token, || {
+        let mut budget = WorkBudget::new(usize::MAX);
+        assert!(matches!(
+            Context::budgeted(&facts, &conditional, domain, &quote, &mut budget),
+            Err(ExprError::Cancelled)
+        ));
+        assert_eq!(budget.used(), 0);
+    });
+}
+
+#[test]
+fn negative_replacement_and_positive_memo_hits_pay_each_owned_lifecycle_once() {
+    let domain = Domain::default();
+    let facts = Facts::new();
+    let conditional = ConditionalFacts::default();
+    let quote = preparation_for(&facts, &conditional, domain);
+    let first = ExprId::fresh().unwrap();
+    let next = ExprId::operation(
+        revm_bytecode::opcode::ADD,
+        &[ExprId::fresh().unwrap(), ExprId::constant(U256::ONE)],
+        domain.spec().relations().expressions(),
+    )
+    .unwrap();
+    let mut budget = WorkBudget::new(usize::MAX);
+    let expected;
+    {
+        let demand = memo::Demand::new(domain, &quote, next.work_size(), &mut budget);
+        let mut memo = memo::Memo::default();
+        memo.insert(&first, &None, domain, &demand, &|n| demand.reserve(n));
+        let first_fee = 2 + 2 + 2 * first.work_size() + 1;
+        let first_nodes = 2 + 1 + first.work_size() + 1;
+        assert_eq!(demand.paid_work(), first_fee);
+        assert_eq!(demand.used(), first_nodes);
+        memo.insert(&next, &None, domain, &demand, &|n| demand.reserve(n));
+        let next_fee = 2 + 2 * next.work_size() + 1;
+        assert_eq!(
+            demand.paid_work(),
+            first_fee + next_fee,
+            "old negative release was already prepaid"
+        );
+        assert_eq!(
+            demand.used(),
+            first_nodes + 2 + next.work_size() + first.work_size() + 1
+        );
+        let negative_hit = 2 + next.comparison_work(&next);
+        assert_eq!(
+            memo.get(&next, domain, &demand, &|n| demand.reserve(n)),
+            Some(None)
+        );
+        assert_eq!(demand.paid_work(), first_fee + next_fee + negative_hit);
+
+        let value = source(constant(7), Origin::Storage).with_identity(993_121, 1);
+        let before = demand.paid_work();
+        memo.insert(&first, &Some(value.clone()), domain, &demand, &|n| {
+            demand.reserve(n)
+        });
+        // Policy search2, empty tree probe1, copy/insertion V+1, release V+1.
+        assert_eq!(
+            demand.paid_work() - before,
+            2 + 1 + 2 * (value.work_size() + 1)
+        );
+        let before = demand.paid_work();
+        let actual = memo
+            .get(&first, domain, &demand, &|n| demand.reserve(n))
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual, value);
+        assert_eq!(actual.identity(), value.identity());
+        assert!(actual.same_identity(&value));
+        // Memo::get omits Context's entry1; the retained negative is compared.
+        let hit = 2
+            + first.comparison_work(&next)
+            + first.work_size()
+            + next.work_size()
+            + 1
+            + 1
+            + value.work_size();
+        assert_eq!(demand.paid_work(), before + hit);
+        assert_eq!(numeric_work(&demand.payments()), 0);
+        expected = demand.paid_work();
+    }
+    assert_eq!(
+        budget.used(),
+        expected,
+        "drop is prepaid and never charges again"
+    );
 }
