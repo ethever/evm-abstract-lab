@@ -138,9 +138,13 @@ fn main() {
 
 ### 当前确实可以复用的计算
 
-会话保留有界的纯栈块 memo。候选块必须来自匹配的 runtime 程序、只使用许可的栈与控制指令、输入栈均为常量，且输入关系为空；执行后还要检查除活动栈和控制位置外的载荷保持一致。读取初始状态、memory、调用和账户生命周期指令不属于这个复用范围。
+会话保留有界的纯栈块 memo，fork、入口环境与执行策略固定。候选块必须与 catalog 中的实际 runtime `Program` 全等、只使用许可的栈与控制指令、输入栈均为常量，且输入关系为空；命中还要匹配完整帧 key 和完整 `AbstractValue` 栈，包括 provenance。录入须有后继，且不得含 outcomes、frontiers、诊断或完成调用；执行后还要检查除活动栈和控制位置外的载荷保持一致，输出栈仍为常量。读取初始状态、memory、调用和账户生命周期指令不属于这个复用范围。
 
-memo 保存栈与控制增量，应用时从**新执行的当前载荷**出发。新 `Store`、挂起帧和回滚检查点继续由新执行持有。缓存数量、保留载荷与维护工作均有界，查找、比较和复制也计入工作账本。`SessionAnalysis::reuse()` 的 `hits`、`misses`、`entries` 描述这种复用；它们不证明完整请求已经更快。一次性 world 入口会关闭无法在后续版本使用的 memo。
+查找与录入在构造完整签名前，都先支付廉价资格检查，通过后再独立预付当前 `Store` 的 touch 查询费用：只有 `touched_in_transaction(0x03) == Some(false)` 才可复用。`Some(true)` 或 `None` 都拒绝复用并走普通 transfer，避免漏掉 [`late_failure::at_block_entry`](../crates/evm-abstract/src/analysis/transfer/late_failure.rs) 的额外 `Failure` 分支。`Memo::apply` 不携带 outcomes，因此静态 `stack_only` 不足以允许复用，memo 仍依赖这个运行时 Store 条件。touch 标志来自这次执行的交易元数据，不是向 `StateFacts` 注入的初始链上观察。检查顺序与完整保护条件见 [`ExecutionReuse::{lookup, remember}` 和 `Memo::apply`](../crates/evm-abstract/src/analysis/engine/reuse.rs)。
+
+memo 保存栈与控制增量，不保留原始 `Store`；应用时从**新执行的当前载荷**出发。其他 owner 的运行时写入、当前 `Store`、挂起帧和已保存的回滚检查点都取自新载荷。缓存数量、保留载荷与维护工作均有界，完整 key、比较、复制与录入检查继续计入工作账本。`SessionAnalysis::reuse()` 的 `hits`、`misses`、`entries` 描述这种复用；它们不证明完整请求已经更快。一次性 world 入口会关闭无法在后续版本使用的 memo。
+
+这项局部保护及[对应回归](../crates/evm-abstract/src/analysis/engine/reuse/tests.rs) 不构成任意 gas / OOG 覆盖证明。[现有 Lean 模型](proofs/README.md#snapshot-truth-history-and-rollback) 未验证 Rust memo 或依赖失效算法，这项保护也不扩大已检查定理的范围。
 
 ## 普通执行与等待事实的模式
 
