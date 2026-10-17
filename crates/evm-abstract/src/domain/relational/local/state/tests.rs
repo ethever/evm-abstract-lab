@@ -99,7 +99,7 @@ fn joined_echo(bytes: &[u8], returned: ByteStateId) -> Echo {
 
 fn full_f(length: &ExprId) -> RelationState {
     let mut state = RelationState::default();
-    let guard = op(opcode::ISZERO, &[length.clone()]);
+    let guard = op(opcode::ISZERO, std::slice::from_ref(length));
     assert_eq!(
         state.assume(&guard, false, &limits()),
         CheckResult::MayBeFeasible
