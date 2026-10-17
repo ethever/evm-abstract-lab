@@ -120,22 +120,76 @@ fn local_constant_proofs_survive_an_unrelated_call_depth_frontier() {
 #[test]
 fn incomplete_memory_step_never_acquires_a_value_or_folded_result() {
     let mut input = request("60015f510100");
+    // The input root fits three nodes; the mandatory MLOAD expression needs
+    // five (zero state, view offset/length, relative offset and read node).
     input.limits.max_memory_bytes = 1;
+    input.limits.max_expression_nodes = 3;
     let report = analyze(input).unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
-    assert!(
-        report
-            .frontiers
-            .iter()
-            .any(|frontier| frontier.kind == api::FrontierKind::Memory)
+    assert!(!report.ssa.complete);
+    assert_eq!(report.metadata.limits.max_memory_bytes, 1);
+    assert_eq!(report.metadata.limits.max_expression_nodes, 3);
+    let [frontier] = report.frontiers.as_slice() else {
+        panic!("expected only the mandatory MLOAD expression refusal")
+    };
+    assert_eq!(frontier.kind, api::FrontierKind::Relations);
+    assert_eq!(
+        frontier.reason,
+        api::FrontierDetails::Relations(api::QueryBoundary::ExpressionLimit)
     );
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(3)));
+    assert!(frontier.range.is_none());
+    let state = &report.states[0];
+    let exit = state.exit.as_ref().unwrap();
+    assert_eq!(exit.store, state.entry.store);
+    let frame = exit.frames.last().unwrap();
+    assert_eq!(frame.stack.len(), 1);
+    assert_eq!(frame.stack[0].constants, Some(vec!["0x1".into()]));
+    let memory = &report.byte_arrays[frame.memory];
+    assert_eq!(memory.length.constants, Some(vec!["0x20".into()]));
+    let api::Expression::View(view) = &report.symbolic.nodes[memory.symbolic.node] else {
+        panic!("logical expansion keeps the original zero content root")
+    };
+    assert!(matches!(
+        report.symbolic.nodes[view.state.node],
+        api::Expression::BytesZero
+    ));
+    assert_eq!(report.cfg[0].executed_pcs, [0, 2, 3]);
     let load = instruction(&report, 0x51);
     assert_eq!(load.progress, api::InstructionProgress::OperandsConsumed);
     assert!(load.results.is_empty());
+    assert_eq!(load.operands.len(), 1);
+    let operand = &report.ssa.values[load.operands[0]];
+    assert!(matches!(&operand.origin, api::SsaValueOrigin::Instruction(origin) if origin.pc == 2));
+    assert!(operand.facts.iter().any(|fact| {
+        fact.status == api::SsaFactStatus::Current && fact.constant.as_deref() == Some("0x0")
+    }));
+    assert!(load.effect_result.is_some());
+    assert_ne!(load.effect_result, Some(load.effect_input));
     assert!(matches!(load.operation, api::SsaOperation::Opcode(_)));
     assert!(
         !report.ssa.values.iter().any(|value| matches!(&value.origin,
         api::SsaValueOrigin::Instruction(origin) if origin.pc == load.pc))
+    );
+    assert!(
+        !report
+            .ssa
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instruction| instruction.pc > load.pc)
+    );
+    assert!(
+        report
+            .outcomes
+            .iter()
+            .all(|outcome| outcome.kind == api::OutcomeKind::Failure)
+    );
+    report.validate().unwrap();
+    let wire = serde_json::to_vec(&report).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<api::AnalysisReport>(&wire).unwrap(),
+        report
     );
 }
 

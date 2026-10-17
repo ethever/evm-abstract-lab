@@ -20,6 +20,128 @@ fn request(bytecode: &str) -> AnalyzeRequest {
     request
 }
 
+fn byte_contains(value: &evm_abstract_protocol::ValueInfo, byte: u8) -> bool {
+    use alloy_primitives::U256;
+    use evm_abstract_protocol::CongruenceValue;
+    let word = |text: &str| text.parse::<U256>().unwrap();
+    let byte = U256::from(byte);
+    let sign = U256::from(1) << 255;
+    value
+        .constants
+        .as_ref()
+        .is_none_or(|values| values.iter().any(|value| word(value) == byte))
+        && byte & word(&value.known_zero) == U256::ZERO
+        && byte & word(&value.known_one) == word(&value.known_one)
+        && (!value.nonzero || byte != U256::ZERO)
+        && word(&value.unsigned.lower) <= byte
+        && byte <= word(&value.unsigned.upper)
+        && word(&value.unsigned.upper) <= U256::from(255)
+        && (word(&value.signed.lower) ^ sign) <= (byte ^ sign)
+        && (byte ^ sign) <= (word(&value.signed.upper) ^ sign)
+        && match &value.congruence {
+            CongruenceValue::Any => true,
+            CongruenceValue::Exact(exact) => byte == word(exact),
+            CongruenceValue::Modulo(class) => byte % word(&class.modulus) == word(&class.residue),
+        }
+}
+
+// The protocol exports stored numeric upper bounds separately from its exact
+// immutable root. Decode only the concrete constructors used by these fixtures;
+// an unsupported or unknown root cannot satisfy the full-content assertion.
+fn buffer_matches(
+    report: &evm_abstract_protocol::AnalysisReport,
+    bytes: &evm_abstract_protocol::ByteArraySnapshot,
+    expected: &[u8],
+) -> bool {
+    use evm_abstract::domain::symbolic::{ByteStateId, ByteView, ExprId, ExprLimits};
+    use evm_abstract_protocol::{Expression, SymbolicGraph};
+    fn scalar(graph: &SymbolicGraph, node: usize) -> Option<ExprId> {
+        let Expression::Constant(value) = graph.nodes.get(node)? else {
+            return None;
+        };
+        Some(ExprId::constant(value.parse().ok()?))
+    }
+    fn view(graph: &SymbolicGraph, node: usize, limits: ExprLimits) -> Option<ByteView> {
+        let Expression::View(view) = graph.nodes.get(node)? else {
+            return None;
+        };
+        Some(ByteView::new(
+            state(graph, view.state.node, limits)?,
+            scalar(graph, view.offset.node)?,
+            scalar(graph, view.length.node)?,
+        ))
+    }
+    fn state(graph: &SymbolicGraph, node: usize, limits: ExprLimits) -> Option<ByteStateId> {
+        match graph.nodes.get(node)? {
+            Expression::BytesZero => Some(ByteStateId::zero()),
+            Expression::BytesExact(hex) => Some(ByteStateId::exact(
+                alloy_primitives::hex::decode(hex).ok()?.into(),
+            )),
+            Expression::WriteWord(write) => state(graph, write.previous.node, limits)?
+                .write_word(
+                    scalar(graph, write.offset.node)?,
+                    scalar(graph, write.value.node)?,
+                    limits.into(),
+                )
+                .ok(),
+            Expression::Copy(copy) => state(graph, copy.previous.node, limits)?
+                .copy(
+                    scalar(graph, copy.destination.node)?,
+                    view(graph, copy.source.node, limits)?,
+                    scalar(graph, copy.length.node)?,
+                    limits.into(),
+                )
+                .ok(),
+            Expression::Slice(source) => {
+                let source = view(graph, source.node, limits)?;
+                source
+                    .state
+                    .slice(source.offset, source.length, limits.into())
+                    .ok()
+            }
+            _ => None,
+        }
+    }
+    let limits = ExprLimits {
+        max_nodes: report
+            .metadata
+            .limits
+            .max_expression_nodes
+            .try_into()
+            .unwrap(),
+        max_depth: report
+            .metadata
+            .limits
+            .max_expression_depth
+            .try_into()
+            .unwrap(),
+    };
+    bytes.length.constants == Some(vec![format!("0x{:x}", expected.len())])
+        && view(&report.symbolic, bytes.symbolic.node, limits)
+            .and_then(|view| view.canonicalize().known_bytes(limits).ok().flatten())
+            .as_deref()
+            == Some(expected)
+        && bytes
+            .cells
+            .windows(2)
+            .all(|pair| pair[0].offset < pair[1].offset)
+        && bytes.cells.iter().all(|cell| {
+            expected.get(cell.offset).is_some_and(|byte| {
+                bytes
+                    .values
+                    .get(cell.value)
+                    .is_some_and(|value| byte_contains(value, *byte))
+            })
+        })
+        && expected.iter().enumerate().all(|(offset, byte)| {
+            bytes
+                .cells
+                .binary_search_by_key(&offset, |cell| cell.offset)
+                .is_ok()
+                || byte_contains(&bytes.default, *byte)
+        })
+}
+
 #[test]
 fn invalid_opcode_report_preserves_original_bytes_names_causes_and_closure() {
     use evm_abstract_protocol::{
@@ -357,8 +479,16 @@ fn world_payload_keeps_exact_memory_storage_transient_and_terminal_bytes() {
     input.environment.calldata = CalldataInput::Exact("0xaabb".into());
     input.environment.call_value = WordInput::Concrete("0".into());
     let report = analyze(input).unwrap();
+    assert_eq!(report.status, AnalysisStatus::Converged);
+    assert!(report.frontiers.is_empty());
+    assert!(report.ssa.complete);
     assert_eq!(report.states.len(), report.cfg.len());
     let root = &report.states[0].entry.frames[0];
+    assert!(buffer_matches(
+        &report,
+        &report.byte_arrays[root.calldata],
+        &[0xaa, 0xbb]
+    ));
     assert_eq!(
         report.byte_arrays[root.calldata]
             .length
@@ -373,10 +503,20 @@ fn world_payload_keeps_exact_memory_storage_transient_and_terminal_bytes() {
         .expect("a committing execution remains possible");
     let data = &report.byte_arrays[outcome.data];
     assert_eq!(data.length.constants.as_deref(), Some(&["0x20".into()][..]));
-    assert!(
-        data.cells.iter().any(|cell| cell.offset == 31
-            && data.values[cell.value].constants == Some(vec!["0x2a".into()]))
-    );
+    let mut word = [0; 32];
+    word[31] = 42;
+    assert!(buffer_matches(&report, data, &word));
+    assert_eq!(data.cells.len(), word.len());
+    for (offset, cell) in data.cells.iter().enumerate() {
+        assert_eq!(cell.offset, offset);
+    }
+    let mut wrong = word;
+    wrong[15] = 1;
+    assert!(!buffer_matches(&report, data, &wrong));
+    let mut excluded = data.clone();
+    let value = excluded.cells[31].value;
+    excluded.values[value].constants = Some(vec!["0x2b".into()]);
+    assert!(!buffer_matches(&report, &excluded, &word));
     let account = report.stores[outcome.store]
         .accounts
         .iter()
@@ -396,19 +536,19 @@ fn world_payload_keeps_exact_memory_storage_transient_and_terminal_bytes() {
         report.symbolic.nodes[account.transient_root.node],
         evm_abstract_protocol::Expression::SlotsZero
     ));
+    let exit = report.states[outcome.state].exit.as_ref().unwrap();
+    assert!(buffer_matches(
+        &report,
+        &report.byte_arrays[exit.frames[0].memory],
+        &word
+    ));
     assert!(
-        report
-            .states
-            .iter()
-            .filter_map(|state| state.exit.as_ref())
-            .any(|machine| {
-                report.stores[machine.store].accounts.iter().any(|account| {
-                    account.address == root.storage_address
-                        && account.transient.iter().any(|slot| {
-                            slot.slot == "0x0" && slot.value.constants == Some(vec!["0x7".into()])
-                        })
+        report.stores[exit.store].accounts.iter().any(|account| {
+            account.address == root.storage_address
+                && account.transient.iter().any(|slot| {
+                    slot.slot == "0x0" && slot.value.constants == Some(vec!["0x7".into()])
                 })
-            }),
+        }),
         "the executed write remains visible before transaction finalization"
     );
     assert!(
@@ -480,6 +620,10 @@ fn dense_input_and_lazy_copy_share_complete_values_without_losing_content() {
     input.environment.calldata =
         evm_abstract_protocol::CalldataInput::Exact(format!("0x{}", "aa".repeat(1024)));
     let report = analyze(input).unwrap();
+    assert_eq!(report.status, AnalysisStatus::Converged);
+    assert!(report.frontiers.is_empty());
+    assert!(report.ssa.complete);
+    let expected = vec![0xaa; 1024];
     let dense: Vec<_> = report
         .byte_arrays
         .iter()
@@ -489,7 +633,8 @@ fn dense_input_and_lazy_copy_share_complete_values_without_losing_content() {
         !dense.is_empty(),
         "the exact input retains every observed byte cell"
     );
-    for bytes in dense {
+    for bytes in &dense {
+        assert!(buffer_matches(&report, bytes, &expected));
         assert_eq!(
             bytes.values.len(),
             1,
@@ -511,11 +656,57 @@ fn dense_input_and_lazy_copy_share_complete_values_without_losing_content() {
         memory.cells.len() < 1024,
         "the concrete fast path is a bounded observation cache, not a full copy expansion"
     );
-    for cell in &memory.cells {
+    assert!(!memory.cells.is_empty());
+    assert!(buffer_matches(&report, memory, &expected));
+    for (offset, cell) in memory.cells.iter().enumerate() {
+        assert_eq!(cell.offset, offset);
         let value = &memory.values[cell.value];
-        assert_eq!(value.constants, Some(vec!["0xaa".into()]));
-        assert!(value.origins.is_some());
+        assert!(byte_contains(value, expected[offset]));
+        // The presentation has no literal certificate while the length's
+        // calldata provenance is retained in operand facts and the source view.
+        assert_eq!(value.origins, None);
+        assert_eq!(value.expression, None);
+        assert!(!value.symbolic_limit);
     }
+    let returned = report
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.kind == evm_abstract_protocol::OutcomeKind::Return)
+        .unwrap();
+    assert!(buffer_matches(
+        &report,
+        &report.byte_arrays[returned.data],
+        &expected
+    ));
+    for offset in [0, 511, 512, 1023] {
+        let mut wrong = expected.clone();
+        wrong[offset] = 0xab;
+        assert!(!buffer_matches(&report, memory, &wrong));
+        assert!(!buffer_matches(
+            &report,
+            &report.byte_arrays[returned.data],
+            &wrong
+        ));
+    }
+    let mut excluded = (*dense[0]).clone();
+    excluded.values[0].constants = Some(vec!["0xab".into()]);
+    assert!(!buffer_matches(&report, &excluded, &expected));
+    let mut invalid = memory.clone();
+    invalid.cells[0].value = invalid.values.len();
+    assert!(!buffer_matches(&report, &invalid, &expected));
+    let mut invalid_offset = memory.clone();
+    invalid_offset.cells[0].offset = expected.len();
+    assert!(!buffer_matches(&report, &invalid_offset, &expected));
+    let mut invalid_length = memory.clone();
+    invalid_length.length.constants = Some(vec!["0x3ff".into()]);
+    assert!(!buffer_matches(&report, &invalid_length, &expected));
+    let mut excluded_bound = memory.clone();
+    let value = excluded_bound.cells[0].value;
+    excluded_bound.values[value].unsigned.lower = "0xab".into();
+    assert!(!buffer_matches(&report, &excluded_bound, &expected));
+    let mut missing = (*dense[0]).clone();
+    missing.cells.pop();
+    assert!(!buffer_matches(&report, &missing, &expected));
     let evm_abstract_protocol::Expression::View(view) =
         &report.symbolic.nodes[memory.symbolic.node]
     else {
@@ -533,6 +724,12 @@ fn dense_input_and_lazy_copy_share_complete_values_without_losing_content() {
         report.symbolic.nodes[copy.length.node],
         evm_abstract_protocol::Expression::Constant("0x400".into())
     );
+    assert!(memory.symbolic_facts.iter().any(|fact| {
+        fact.expression == copy.length
+            && fact.value.origins.as_ref().is_some_and(|origins| {
+                origins.contains(&evm_abstract_protocol::ValueOrigin::Calldata)
+            })
+    }));
     let evm_abstract_protocol::Expression::View(source) = &report.symbolic.nodes[copy.source.node]
     else {
         panic!("copy captures the input view")
@@ -562,19 +759,60 @@ fn dense_input_and_lazy_copy_share_complete_values_without_losing_content() {
 
 #[test]
 fn user_budget_above_old_state_ceiling_builds_a_complete_graph_and_ssa() {
-    // Retaining 4096 jump sources gives this tiny self-loop 4097 distinct
-    // contexts before its history stabilizes. Each is a real native state.
-    let mut input = request("5b5f56");
+    // Each JUMPDEST starts a different source block. Fallthrough has no jump
+    // history, so the 4097 states remain distinct under idempotent histories.
+    let code = format!("{}00", "5b".repeat(4_097));
+    let mut input = request(&code);
     input.limits.context_depth = 4_096;
     input.limits.max_states = 4_100;
     input.limits.max_transfers = 4_100;
     let selected_limits = input.limits.clone();
     let report = analyze(input).unwrap();
     assert_eq!(report.cfg.len(), 4_097);
+    assert_eq!(report.states.len(), 4_097);
+    assert_eq!(report.transfers, 4_097);
+    assert_eq!(report.disassembly.len(), 4_097);
     assert_eq!(report.status, AnalysisStatus::Converged);
     assert!(report.frontiers.is_empty());
     assert!(report.ssa.complete);
     assert_eq!(report.ssa.blocks.len(), report.cfg.len());
+    for (id, block) in report.cfg.iter().enumerate() {
+        assert_eq!(block.id, id);
+        assert_eq!(block.basic_block, id);
+        assert_eq!(block.start_pc, Some(id));
+        assert!(block.context.is_empty());
+        assert_eq!(report.disassembly[id].id, id);
+        assert_eq!(report.disassembly[id].start_pc, id);
+        let ssa = &report.ssa.blocks[id];
+        assert_eq!(ssa.state, id);
+        assert_eq!(ssa.coverage, BlockCoverage::Current);
+        assert!(ssa.incoming_complete);
+        assert!(ssa.open_incoming.is_empty());
+        assert_eq!(ssa.instructions.len(), if id == 4_096 { 2 } else { 1 });
+        assert!(ssa.instructions.iter().all(|instruction| {
+            instruction.progress
+                == if instruction.opcode == 0x00 {
+                    InstructionProgress::Dispatched
+                } else {
+                    InstructionProgress::Completed
+                }
+        }));
+    }
+    assert_eq!(report.edges.len(), 4_096);
+    for (id, edge) in report.edges.iter().enumerate() {
+        assert_eq!((edge.id, edge.from, edge.to), (id, id, id + 1));
+        assert_eq!(edge.kind, evm_abstract_protocol::EdgeKind::Fallthrough);
+    }
+    assert_eq!(report.ssa.transitions.len(), report.edges.len());
+    for (id, transition) in report.ssa.transitions.iter().enumerate() {
+        assert_eq!(transition.edge, id);
+        assert_eq!(
+            transition.kind,
+            evm_abstract_protocol::EdgeKind::Fallthrough
+        );
+    }
+    assert!(report.ssa.deferred_edges.is_empty());
+    report.validate().unwrap();
     assert_eq!(report.metadata.limits, selected_limits);
 }
 
@@ -610,25 +848,99 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
         .unwrap();
     let bytes = &report.byte_arrays[returned.data];
     assert_eq!(bytes.length.constants, Some(vec!["0x20".into()]));
-    assert!(
-        bytes.cells.iter().any(|cell| cell.offset == 31
-            && bytes.values[cell.value].constants == Some(vec!["0x2a".into()]))
-    );
-    for (max_work, max_memory, frontier) in [
+    let mut word = [0; 32];
+    word[31] = 42;
+    assert!(buffer_matches(&report, bytes, &word));
+    assert_eq!(bytes.cells.len(), 32);
+    // One logical guard costs (14 + 14 + 2) * 16 * (512^2 + 1)
+    // = 125,829,600, so 100 million stops the first MSTORE before expansion.
+    // The old smaller memory cap still admits lazy expansion; three expression
+    // nodes instead reject its four-node WriteWord after that expansion.
+    for (max_work, max_memory, max_nodes, reason, memory_length) in [
         (
             100_000_000,
             selected_limits.max_memory_bytes,
-            FrontierKind::Work,
+            selected_limits.max_expression_nodes,
+            evm_abstract_protocol::FrontierDetails::Work,
+            "0x0",
         ),
-        (selected_limits.max_work, 1_048_576, FrontierKind::Memory),
+        (
+            selected_limits.max_work,
+            1_048_576,
+            3,
+            evm_abstract_protocol::FrontierDetails::Relations(
+                evm_abstract_protocol::QueryBoundary::ExpressionLimit,
+            ),
+            "0x100020",
+        ),
     ] {
         let mut bounded = input.clone();
         bounded.limits.max_work = max_work;
         bounded.limits.max_memory_bytes = max_memory;
+        bounded.limits.max_expression_nodes = max_nodes;
+        let limits = bounded.limits.clone();
         let partial = analyze(bounded).unwrap();
+        assert_eq!(partial.metadata.limits, limits);
         assert_eq!(partial.status, AnalysisStatus::Incomplete);
         assert!(!partial.ssa.complete);
-        assert!(partial.frontiers.iter().any(|item| item.kind == frontier));
+        let [frontier] = partial.frontiers.as_slice() else {
+            panic!(
+                "expected only the first MSTORE refusal: {:?}",
+                partial.frontiers
+            )
+        };
+        assert_eq!(frontier.reason, reason);
+        assert_eq!(
+            frontier.kind,
+            if max_work == 100_000_000 {
+                FrontierKind::Work
+            } else {
+                FrontierKind::Relations
+            }
+        );
+        assert_eq!((frontier.from, frontier.pc), (Some(0), Some(6)));
+        assert!(frontier.range.is_none());
+        let block = &partial.ssa.blocks[0];
+        let store = block.instructions.last().unwrap();
+        assert_eq!((store.pc, store.opcode), (6, 0x52));
+        assert_eq!(store.progress, InstructionProgress::OperandsConsumed);
+        assert_eq!(store.operands.len(), 2);
+        for (operand, constant) in store.operands.iter().zip(["0x100000", "0x2a"]) {
+            assert!(partial.ssa.values[*operand].facts.iter().any(|fact| {
+                fact.status == evm_abstract_protocol::SsaFactStatus::Current
+                    && fact.constant.as_deref() == Some(constant)
+            }));
+        }
+        assert!(store.results.is_empty());
+        assert!(store.effect_result.is_some());
+        assert!(matches!(
+            store.operation,
+            evm_abstract_protocol::SsaOperation::Opcode(_)
+        ));
+        let state = &partial.states[0];
+        assert_eq!(partial.cfg[0].executed_pcs, [0, 2, 6]);
+        let exit = state.exit.as_ref().unwrap();
+        assert_eq!(exit.store, state.entry.store);
+        let frame = exit.frames.last().unwrap();
+        assert!(frame.stack.is_empty());
+        let memory = &partial.byte_arrays[frame.memory];
+        assert_eq!(memory.length.constants, Some(vec![memory_length.into()]));
+        let evm_abstract_protocol::Expression::View(view) =
+            &partial.symbolic.nodes[memory.symbolic.node]
+        else {
+            panic!("refused write retains memory view")
+        };
+        assert!(matches!(
+            partial.symbolic.nodes[view.state.node],
+            evm_abstract_protocol::Expression::BytesZero
+        ));
+        assert!(
+            partial
+                .outcomes
+                .iter()
+                .all(|outcome| { outcome.kind == evm_abstract_protocol::OutcomeKind::Failure })
+        );
+        partial.validate().unwrap();
     }
 }
 
