@@ -119,6 +119,7 @@ fn model_frontier_key_retains_the_current_stack_height() {
     let analysis =
         analyze_world(world(Fork::Osaka, "602a60075f5200"), entry(0x101), config).unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
+    assert_eq!(analysis.config().analysis.relations.max_nodes, 2);
     let [frontier] = analysis.frontiers() else {
         panic!("expected exactly the mandatory MSTORE root refusal")
     };
@@ -165,12 +166,11 @@ fn model_frontier_key_retains_the_current_stack_height() {
         memory.state_root(),
         state.entry.active().memory.state_root()
     );
+    // This observer must be able to construct its read expression; it does not
+    // change the two-node retention policy used for actual execution above.
     assert_eq!(
         memory
-            .read_word_checked(
-                &AbstractValue::constant(U256::ZERO),
-                Domain::from_spec(analysis.domain_spec()),
-            )
+            .read_word_checked(&AbstractValue::constant(U256::ZERO), Domain::default(),)
             .unwrap()
             .singleton(),
         Some(U256::ZERO),
