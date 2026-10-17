@@ -21,6 +21,7 @@ use keys::KeyMap;
 
 mod import_work;
 mod keys;
+mod singleton_meet;
 mod state;
 mod terms;
 #[cfg(test)]
@@ -227,6 +228,9 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         }
         if left.is_top() {
             return Ok(right.clone());
+        }
+        if let Some(value) = singleton_meet::meet(left, right, self.domain, self.work)? {
+            return Ok(value);
         }
         let cost = self
             .domain
