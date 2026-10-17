@@ -470,3 +470,320 @@ fn root_may_delete_retention_refusal_emits_a_typed_frontier_without_an_outcome()
     );
     assert!(!budget.exhausted());
 }
+
+#[test]
+fn literal_boundary_keeps_pre_effect_gas_failure_and_live_payload_on_either_decision() {
+    use crate::{U256, domain::AbstractValue};
+
+    let (world, entry) = fixture(&[(0x101, "00")]);
+    let config = ExecutionConfig::default();
+    let domain = config.domain().unwrap();
+    let mut payload = initial(&world, &entry, domain).unwrap();
+    let saved = payload.active().saved_store.state().clone();
+    payload
+        .active_mut()
+        .memory
+        .write_word(&word(0), &word(0x1234), config.max_memory_bytes, domain)
+        .unwrap();
+    payload
+        .store
+        .write(address(0x101), &word(1), &word(99), domain);
+    payload.store.write_balance(address(0x101), word(7));
+    let bound = super::MAX_END;
+    let mut covered = empty_execution(payload.clone());
+    let mut gas_budget = WorkBudget::new(config.max_work);
+    let mut transfer = context(&config, &mut gas_budget);
+    transfer.procedure = false;
+    assert!(super::failure(&mut covered, &mut transfer, 9));
+    let gas_work = gas_budget.used();
+    for (offset, size, allowed) in [
+        (U256::ZERO, bound, true),
+        (bound - U256::ONE, U256::ONE, true),
+        (bound - U256::ONE, U256::from(2), false),
+        (bound, U256::ONE, false),
+        (U256::MAX - U256::ONE, U256::from(2), false),
+        (U256::MAX, U256::ONE, false),
+        (U256::MAX, U256::ZERO, true),
+    ] {
+        let mut result = empty_execution(payload.clone());
+        let mut budget = WorkBudget::new(config.max_work);
+        let mut transfer = context(&config, &mut budget);
+        transfer.procedure = false;
+        assert_eq!(
+            super::super::memory(
+                &mut result,
+                &AbstractValue::constant(offset),
+                &AbstractValue::constant(size),
+                &mut transfer,
+                9,
+            ),
+            allowed
+        );
+        assert_eq!(result.payload, payload);
+        assert_eq!(
+            budget.used(),
+            gas_work + if size == U256::ZERO { 736 } else { 1_600 }
+        );
+        assert!(!budget.exhausted());
+        assert!(result.frontiers.is_empty());
+        assert!(result.diagnostics.is_empty());
+        assert!(result.successors.is_empty());
+        assert!(result.completed_calls.is_empty());
+        assert_eq!(result.outcomes.len(), 1);
+        let failed = &result.outcomes[0];
+        assert_eq!(failed.kind, OutcomeKind::Failure);
+        assert_eq!(failed.data, ByteArray::empty());
+        assert_eq!(
+            failed.store.read(address(0x101), &word(1), domain),
+            saved.read(address(0x101), &word(1), domain)
+        );
+        assert_eq!(
+            failed.store.read_balance(address(0x101)),
+            saved.read_balance(address(0x101))
+        );
+    }
+}
+
+#[test]
+fn preflight_refusal_preserves_the_already_emitted_gas_failure() {
+    let (world, entry) = fixture(&[(0x101, "00")]);
+    let config = ExecutionConfig::default();
+    let payload = initial(&world, &entry, config.domain().unwrap()).unwrap();
+    let mut covered = empty_execution(payload.clone());
+    let mut full = WorkBudget::new(config.max_work);
+    assert!(super::failure(
+        &mut covered,
+        &mut context(&config, &mut full),
+        9
+    ));
+    assert!(covered.frontiers.is_empty());
+    assert_eq!(covered.outcomes.len(), 1);
+    let gas_work = full.used();
+    for cancelled in [false, true] {
+        let cancellation = analysis_control::Cancellation::new();
+        analysis_control::with_cancellation(&cancellation, || {
+            let mut result = empty_execution(payload.clone());
+            let mut budget = WorkBudget::new(if cancelled {
+                config.max_work
+            } else {
+                gas_work + super::super::LITERAL_MEMORY_METADATA_WORK + 608 - 1
+            });
+            if cancelled {
+                assert!(super::failure(
+                    &mut result,
+                    &mut context(&config, &mut budget),
+                    9,
+                ));
+                cancellation.cancel();
+                assert!(!super::super::allow_memory(
+                    &mut result,
+                    &word(0),
+                    &word(0),
+                    &mut context(&config, &mut budget),
+                    9,
+                ));
+            } else {
+                assert!(!super::super::memory(
+                    &mut result,
+                    &word(0),
+                    &word(0),
+                    &mut context(&config, &mut budget),
+                    9,
+                ));
+            }
+            assert_eq!(
+                budget.used(),
+                gas_work
+                    + if cancelled {
+                        0
+                    } else {
+                        super::super::LITERAL_MEMORY_METADATA_WORK
+                    }
+            );
+            assert!(budget.exhausted());
+            assert_eq!(result.payload, payload);
+            assert!(result.successors.is_empty());
+            assert!(result.completed_calls.is_empty());
+            assert_eq!(result.outcomes.len(), 1);
+            assert_eq!(result.outcomes[0].kind, OutcomeKind::Failure);
+            assert_eq!(result.outcomes[0].data, ByteArray::empty());
+            assert_eq!(result.outcomes[0].store, covered.outcomes[0].store);
+            assert_eq!(result.frontiers.len(), 1);
+            assert_eq!(
+                result.frontiers[0].reason,
+                if cancelled {
+                    FrontierReason::Relations(QueryReason::Cancelled)
+                } else {
+                    FrontierReason::Work
+                }
+            );
+        });
+    }
+}
+
+#[test]
+fn nonwrapping_literal_return_range_stops_without_a_return_or_successor() {
+    use crate::{U256, analysis::InstructionProgress, domain::AbstractValue};
+
+    let (world, entry) = fixture(&[(0x101, "f3")]);
+    let config = ExecutionConfig::default();
+    let domain = config.domain().unwrap();
+    for (offset, size) in [
+        (super::MAX_END - U256::ONE, U256::from(2)),
+        (U256::MAX - U256::ONE, U256::from(2)),
+        (U256::MAX, U256::ONE),
+    ] {
+        let mut payload = initial(&world, &entry, domain).unwrap();
+        let saved = payload.active().saved_store.state().clone();
+        payload
+            .store
+            .write(address(0x101), &word(1), &word(99), domain);
+        payload.active_mut().stack = vec![
+            AbstractValue::constant(size),
+            AbstractValue::constant(offset),
+        ];
+        let before = payload.clone();
+        let mut budget = WorkBudget::new(config.max_work);
+        let result = execute(
+            &world,
+            &entry,
+            payload,
+            &config,
+            domain,
+            &mut budget,
+            StorageReadPolicy::Abstract,
+        );
+        assert!(!budget.exhausted());
+        assert_eq!(result.executed_pcs, [0]);
+        assert_eq!(
+            result.instruction_progress,
+            [InstructionProgress::OperandsConsumed]
+        );
+        assert!(result.payload.active().stack.is_empty());
+        assert_eq!(result.payload.active().memory, before.active().memory);
+        assert_eq!(result.payload.store, before.store);
+        assert!(result.frontiers.is_empty());
+        assert!(result.successors.is_empty());
+        assert!(result.completed_calls.is_empty());
+        assert_eq!(result.outcomes.len(), 1);
+        assert_eq!(result.outcomes[0].kind, OutcomeKind::Failure);
+        assert_eq!(result.outcomes[0].data, ByteArray::empty());
+        assert_eq!(
+            result.outcomes[0]
+                .store
+                .read(address(0x101), &word(1), domain),
+            saved.read(address(0x101), &word(1), domain)
+        );
+    }
+}
+
+#[test]
+fn zero_length_return_does_not_clear_an_inherited_literal_expression_limit() {
+    let (world, entry) = fixture(&[(0x101, "f3")]);
+    let config = ExecutionConfig::default();
+    let domain = config.domain().unwrap();
+    let mut payload = initial(&world, &entry, domain).unwrap();
+    payload.active_mut().stack = vec![word(0), word(0).with_symbolic_limit()];
+    let mut budget = WorkBudget::new(config.max_work);
+    let result = execute(
+        &world,
+        &entry,
+        payload,
+        &config,
+        domain,
+        &mut budget,
+        StorageReadPolicy::Abstract,
+    );
+    assert!(!budget.exhausted());
+    assert_eq!(result.frontiers.len(), 1);
+    assert_eq!(result.frontiers[0].pc, 0);
+    assert_eq!(
+        result.frontiers[0].reason,
+        FrontierReason::Relations(QueryReason::ExpressionLimit)
+    );
+    assert_eq!(
+        result
+            .outcomes
+            .iter()
+            .map(|outcome| outcome.kind)
+            .collect::<Vec<_>>(),
+        [OutcomeKind::Failure, OutcomeKind::Return]
+    );
+}
+
+#[test]
+fn empty_returndata_copy_still_checks_the_original_source_bound() {
+    let (world, entry) = fixture(&[(0x101, "00")]);
+    let config = ExecutionConfig::default();
+    let domain = config.domain().unwrap();
+    let payload = initial(&world, &entry, domain).unwrap();
+    for (offset, allowed) in [
+        (word(0), true),
+        (word(1), false),
+        (
+            crate::domain::AbstractValue::constant(crate::U256::MAX),
+            false,
+        ),
+    ] {
+        let mut result = empty_execution(payload.clone());
+        let mut budget = WorkBudget::new(config.max_work);
+        assert_eq!(
+            super::super::returndata(
+                &mut result,
+                &offset,
+                &word(0),
+                &word(0),
+                &mut context(&config, &mut budget),
+                9,
+            ),
+            allowed
+        );
+        assert_eq!(result.payload, payload);
+        assert!(result.frontiers.is_empty());
+        assert!(result.successors.is_empty());
+        assert_eq!(result.outcomes.len(), usize::from(!allowed));
+        if !allowed {
+            assert_eq!(result.outcomes[0].kind, OutcomeKind::Failure);
+            assert_eq!(result.outcomes[0].data, ByteArray::empty());
+        }
+    }
+}
+
+#[test]
+fn zero_size_literal_does_not_bypass_an_invalid_root_in_failure_completion() {
+    let (world, entry) = fixture(&[(0x101, "00")]);
+    let payload = initial(&world, &entry, Domain::default()).unwrap();
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.max_nodes = 1;
+    let domain = config.domain().unwrap();
+    // Source token + captured input root needs two nodes. The normal range is
+    // empty, but its preceding root rollback/finalization still owns this check.
+    assert!(
+        payload
+            .store
+            .check_existing(domain.spec().relations().expressions())
+            .is_err()
+    );
+    let mut result = empty_execution(payload.clone());
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut transfer = context(&config, &mut budget);
+    transfer.domain = domain;
+    transfer.procedure = false;
+    assert!(!super::super::memory(
+        &mut result,
+        &crate::domain::AbstractValue::constant(crate::U256::MAX),
+        &word(0),
+        &mut transfer,
+        9,
+    ));
+    assert_eq!(result.payload, payload);
+    assert!(!budget.exhausted());
+    assert!(result.outcomes.is_empty());
+    assert!(result.successors.is_empty());
+    assert!(result.completed_calls.is_empty());
+    assert_eq!(result.frontiers.len(), 1);
+    assert_eq!(
+        result.frontiers[0].reason,
+        FrontierReason::Relations(QueryReason::ExpressionLimit)
+    );
+}

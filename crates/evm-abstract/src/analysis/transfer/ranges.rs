@@ -67,6 +67,87 @@ pub(super) fn memory_copy(
         && allow_memory(result, destination, size, context, pc)
 }
 
+// Four-limb Word256: metadata covers cached root checks and one scalar quote;
+// bounds cover two ordered comparisons and the short-circuited subtraction.
+const LITERAL_MEMORY_METADATA_WORK: usize = 32 * 4;
+const LITERAL_MEMORY_BOUNDS_WORK: usize = 32 * 4;
+
+/// Quote the original singleton query from metadata only, after paying for this
+/// quote. No candidate, set iteration, expression traversal or operand copy.
+fn literal_memory_singleton_work(value: &AbstractValue) -> usize {
+    let limbs = 4;
+    let finite = value.finite_constants().cardinality().map_or(0, |len| {
+        // A nonleaf root has >= 2 children; other internal nodes have >= 6
+        // (hence >= 4). For h levels, len >= 2 * 4^(h-1) - 1. Use ceil(len/2)
+        // without overflowing len+1; its base-4 log bounds the height. Below
+        // eleven keys the tree must be a leaf. len=1 visits one level/one key.
+        let levels = if len < 11 {
+            1
+        } else {
+            1 + (len / 2 + len % 2).ilog2() as usize / 2
+        };
+        // NumericValue::singleton uses first() only at len=1, then contains()
+        // validates the candidate, including when another component supplied it.
+        let first = if len == 1 { 8 * limbs } else { 0 };
+        let contains = levels * (len.min(11) * (6 * limbs + 8) + 8 * limbs);
+        first + contains
+    });
+    // Top returns Some((1, 0)); Exact returns None. Only Modulo executes `%`.
+    let modulo = !value.congruence().is_top() && value.congruence().modulus_residue().is_some();
+    // 128 actions/limb cover all other singleton selection/validation, copied
+    // scalar words and the zero test. Each tree comparison costs <= 6/limb + 8,
+    // plus 8/limb per node. Only Modulo needs the pinned ruint 256*limbs^2
+    // remainder bound (normalization, reciprocal, quotient/carry corrections).
+    128 * limbs + finite + usize::from(modulo) * 256 * limbs * limbs
+}
+
+/// Inspect only bounded scalar facts; retained graphs and payloads stay shared.
+/// Inherited refusals and invalid operand roots keep their original guard path.
+fn literal_memory_range(
+    offset: &AbstractValue,
+    size: &AbstractValue,
+    context: &mut TransferContext<'_>,
+) -> Result<Option<bool>, FrontierReason> {
+    if context.budget.exhausted() || !context.budget.charge(LITERAL_MEMORY_METADATA_WORK) {
+        return Err(FrontierReason::Work);
+    }
+    let limits = context.config.analysis.relations;
+    if [offset, size].into_iter().any(|value| {
+        value.symbolic_limit_reached()
+            || value.expression().is_some_and(|expression| {
+                expression.nodes() > limits.max_nodes || expression.depth() > limits.max_depth
+            })
+    }) {
+        return Ok(None);
+    }
+    if !context.budget.charge(literal_memory_singleton_work(size)) {
+        return Err(FrontierReason::Work);
+    }
+    let Some(size) = size.singleton() else {
+        return Ok(None);
+    };
+    if size == crate::U256::ZERO {
+        return Ok(Some(true));
+    }
+    // A proven empty access never quotes or queries unrelated offset facts.
+    // Refusal in a later phase retains every earlier successful reservation.
+    if !context.budget.charge(LITERAL_MEMORY_METADATA_WORK) {
+        return Err(FrontierReason::Work);
+    }
+    if !context.budget.charge(literal_memory_singleton_work(offset)) {
+        return Err(FrontierReason::Work);
+    }
+    let Some(offset) = offset.singleton() else {
+        return Ok(None);
+    };
+    if !context.budget.charge(LITERAL_MEMORY_BOUNDS_WORK) {
+        return Err(FrontierReason::Work);
+    }
+    Ok(Some(
+        offset <= logical::MAX_END && size <= logical::MAX_END - offset,
+    ))
+}
+
 fn allow_memory(
     result: &mut Execution,
     offset: &AbstractValue,
@@ -74,6 +155,14 @@ fn allow_memory(
     context: &mut TransferContext<'_>,
     pc: usize,
 ) -> bool {
+    match literal_memory_range(offset, size, context) {
+        Ok(Some(allowed)) => return allowed,
+        Ok(None) => {}
+        Err(reason) => {
+            super::boundary(result, pc, reason);
+            return false;
+        }
+    }
     // Eight pure predicates/arithmetic operations, their argument copies and
     // retained expressions. Pay from operand metadata before constructing the
     // guard; neither a logical byte count nor a host-size conversion is work.
