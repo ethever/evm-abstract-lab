@@ -130,6 +130,146 @@ fn meet_and_filter_report_empty_results_without_saving_bottom() {
 }
 
 #[test]
+fn filter_without_removals_shares_the_original_candidates() {
+    let set = finite(&[9, 2, 7, 4]);
+    let original = set.as_values().unwrap().clone();
+    let mut visited = Vec::new();
+    let filtered = set
+        .filter(|value| {
+            visited.push(value);
+            true
+        })
+        .unwrap();
+
+    assert_eq!(visited, original.iter().copied().collect::<Vec<_>>());
+    assert_eq!(set.as_values(), Some(&original));
+    assert_eq!(filtered, set);
+    let (Kind::Finite(original), Kind::Finite(shared)) = (&set.0, &filtered.0) else {
+        panic!("unchanged candidates must remain finite");
+    };
+    assert!(Arc::ptr_eq(original, shared));
+}
+
+#[test]
+fn filter_removals_preserve_the_prefix_and_visit_each_candidate_once_in_order() {
+    let set = finite(&[5, 1, 4, 2, 3]);
+    let sibling = set.clone();
+    let original = set.as_values().unwrap().clone();
+    let ordered: Vec<_> = original.iter().copied().collect();
+
+    for removed_index in [0, 2, 4] {
+        let mut visited = Vec::new();
+        let filtered = set
+            .filter(|value| {
+                let index = visited.len();
+                assert_eq!(value, ordered[index]);
+                visited.push(value);
+                index != removed_index
+            })
+            .unwrap();
+        let expected: BTreeSet<_> = ordered
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, value)| (index != removed_index).then_some(value))
+            .collect();
+
+        assert_eq!(visited, ordered);
+        assert_eq!(filtered.as_values(), Some(&expected));
+        assert_eq!(set.as_values(), Some(&original));
+        assert_eq!(sibling.as_values(), Some(&original));
+        let (Kind::Finite(original), Kind::Finite(shared), Kind::Finite(changed)) =
+            (&set.0, &sibling.0, &filtered.0)
+        else {
+            panic!("removing one of five candidates must leave finite sets");
+        };
+        assert!(Arc::ptr_eq(original, shared));
+        assert!(!Arc::ptr_eq(original, changed));
+    }
+}
+
+#[test]
+fn filter_top_and_singletons_preserve_the_callback_contract() {
+    let mut calls = 0;
+    assert_eq!(
+        FiniteConstantSet::top().filter(|_| {
+            calls += 1;
+            false
+        }),
+        Ok(FiniteConstantSet::top())
+    );
+    assert_eq!(calls, 0);
+
+    let singleton = FiniteConstantSet::constant(U256::MAX);
+    let mut visited = Vec::new();
+    let retained = singleton
+        .filter(|value| {
+            visited.push(value);
+            true
+        })
+        .unwrap();
+    assert_eq!(visited, [U256::MAX]);
+    assert_eq!(retained, singleton);
+    let (Kind::Finite(original), Kind::Finite(shared)) = (&singleton.0, &retained.0) else {
+        panic!("a retained singleton must remain finite");
+    };
+    assert!(Arc::ptr_eq(original, shared));
+
+    visited.clear();
+    assert_eq!(
+        singleton.filter(|value| {
+            visited.push(value);
+            false
+        }),
+        Err(EmptyFiniteConstantSet)
+    );
+    assert_eq!(visited, [U256::MAX]);
+    assert_eq!(singleton.singleton(), Some(U256::MAX));
+}
+
+#[test]
+fn filter_matches_collect_for_all_small_sets_and_predicate_masks() {
+    for set_mask in 1_u8..16 {
+        let values: BTreeSet<_> = (0_u8..4)
+            .filter(|bit| set_mask & (1 << bit) != 0)
+            .map(U256::from)
+            .collect();
+        let set = FiniteConstantSet::try_from_values(values.clone()).unwrap();
+        for predicate_mask in 0_u8..16 {
+            let accepts = |value: U256| predicate_mask & (1 << value.to::<u8>()) != 0;
+            let expected = FiniteConstantSet::try_from_values(
+                values
+                    .iter()
+                    .copied()
+                    .filter(|value| accepts(*value))
+                    .collect(),
+            );
+            let mut visited = Vec::new();
+            let filtered = set.filter(|value| {
+                visited.push(value);
+                accepts(value)
+            });
+
+            assert_eq!(
+                filtered, expected,
+                "set mask {set_mask:04b}, predicate mask {predicate_mask:04b}"
+            );
+            assert_eq!(visited, values.iter().copied().collect::<Vec<_>>());
+            assert_eq!(set.as_values(), Some(&values));
+            if let Ok(filtered) = filtered {
+                let (Kind::Finite(original), Kind::Finite(result)) = (&set.0, &filtered.0) else {
+                    panic!("a nonempty filtered set must remain finite");
+                };
+                assert_eq!(
+                    Arc::ptr_eq(original, result),
+                    set_mask & !predicate_mask == 0
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn bounded_join_is_commutative_associative_idempotent_and_sound() {
     for bound in 1..=4 {
         let cap = capacity(bound);

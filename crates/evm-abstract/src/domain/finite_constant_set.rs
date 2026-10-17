@@ -20,7 +20,7 @@ enum Kind {
 #[error("finite constant set must be nonempty")]
 pub struct EmptyFiniteConstantSet;
 
-/// Top 或非空的有限常量集合；克隆共享不可变候选，派生操作构造独立集合。
+/// Top 或非空的有限常量集合；克隆及未改变候选的过滤共享不可变集合。
 ///
 /// ```compile_fail
 /// use evm_abstract::domain::FiniteConstantSet;
@@ -146,6 +146,7 @@ impl FiniteConstantSet {
     /// 根据约束过滤有限候选；候选全部被排除时返回矛盾错误。
     ///
     /// Top 无法枚举，保持 Top；其他组件仍可保存过滤谓词表达的约束。
+    /// 有限候选按排序各调用谓词一次；无候选被排除时复用原集合。
     pub fn filter(
         &self,
         mut predicate: impl FnMut(U256) -> bool,
@@ -153,11 +154,17 @@ impl FiniteConstantSet {
         let Some(values) = self.as_values() else {
             return Ok(Self::top());
         };
+        let mut remaining = values.iter().copied();
+        let Some(prefix_len) = remaining.position(|value| !predicate(value)) else {
+            return Ok(self.clone());
+        };
+        // 只重扫已通过的前缀来复制候选，不再调用可能有状态的谓词。
         Self::try_from_values(
             values
                 .iter()
+                .take(prefix_len)
                 .copied()
-                .filter(|value| predicate(*value))
+                .chain(remaining.filter(|value| predicate(*value)))
                 .collect(),
         )
     }
