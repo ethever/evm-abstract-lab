@@ -628,8 +628,64 @@ fn incomplete_child_chain_never_publishes_a_complete_relation() {
     assert!(analysis.summary_stats().rejected_incomplete > 0);
 }
 
+// Reconstruct the full guard from an actual call entry, including its rollback
+// checkpoint. Both publications and reuse sites must bind to this callee.
+fn read_only_summary_input_at(
+    analysis: &WorldAnalysis,
+    state_id: usize,
+) -> evm_abstract::analysis::SummaryInput {
+    let source = &analysis.states()[state_id];
+    assert_eq!(source.id, state_id);
+    assert!(source.execution_evidence().unwrap().is_current());
+    assert!(source.exit.is_some());
+    assert!(
+        analysis
+            .edges()
+            .iter()
+            .any(|edge| edge.to == state_id && edge.kind == MachineEdgeKind::Call)
+    );
+    let payload = &source.entry;
+    let (frame, _) = payload
+        .call_stack
+        .active_child()
+        .unwrap()
+        .clone()
+        .into_root();
+    assert_eq!(frame.state.key.code_address, address(0x200));
+    assert_eq!(frame.state.key.basic_block_index, 0);
+    assert_eq!(&frame.state.key, source.active());
+    let evm_abstract::world::Code::Runtime(program) =
+        &analysis.world().account(address(0x200)).unwrap().code
+    else {
+        panic!("the read-only callee must have runtime bytecode")
+    };
+    assert_eq!(frame.state.program.as_ref(), Some(program));
+    let config = analysis.config();
+    evm_abstract::analysis::SummaryInput {
+        fork: analysis.world().fork(),
+        snapshot: analysis.world().identity().clone(),
+        world_fingerprint: analysis.world().fingerprint().unwrap(),
+        code_hash: payload
+            .store
+            .raw_account_code(frame.state.key.code_address)
+            .map(alloy_primitives::keccak256),
+        frame,
+        store: payload.store.clone(),
+        environment: analysis.entry().environment.clone(),
+        relations: payload.relations.clone(),
+        remaining_call_depth: config
+            .max_call_depth
+            .saturating_sub(payload.call_stack.depth()),
+        max_call_depth: config.max_call_depth,
+        context_depth: config.analysis.context_depth,
+        max_constants: config.analysis.max_constants,
+        domain_spec: analysis.domain_spec(),
+        max_memory_bytes: config.max_memory_bytes,
+    }
+}
+
 #[test]
-fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
+fn rollback_touch_preconditions_keep_the_original_two_call_sequence_as_misses() {
     let caller = format!(
         "{}50{}{}5000",
         call(0xf1, 0x200, 0, 32),
@@ -637,7 +693,167 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
         call(0xf1, 0x200, 0, 32)
     );
     let (world, entry) = fixture(&[(0x101, &caller), (0x200, "6003565b5f545f5260205ff3")]);
+    let analysis = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    assert_eq!(analysis.status(), Status::Converged);
+    assert!(analysis.frontiers().is_empty());
+    assert_eq!(analysis.summary_stats().hits, 0);
+    assert_eq!(analysis.summary_stats().misses, 2);
+    assert_eq!(analysis.summary_stats().published, 2);
+    assert_eq!(analysis.summary_stats().rejected_incomplete, 0);
+    assert_eq!(analysis.summary_stats().imported_states, 0);
+    assert_eq!(
+        oracle::compare(&world, &entry, &analysis),
+        OutcomeKind::Return
+    );
+    ssa::build_world(&analysis)
+        .unwrap()
+        .verify(&analysis)
+        .unwrap();
+
+    let mut records: Vec<_> = analysis.summaries().iter().collect();
+    records.sort_unstable_by_key(|record| record.source_state);
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(
+            record.input,
+            read_only_summary_input_at(&analysis, record.source_state)
+        );
+        assert!(record.state_count > 1);
+        assert!(record.edge_count > 0);
+        assert!(
+            record
+                .outputs
+                .iter()
+                .any(|output| output.kind == OutcomeKind::Return)
+        );
+        assert!(record.reused_at.is_empty());
+        assert_eq!(
+            record.input.store.touched_in_transaction(address(0x200)),
+            Some(true)
+        );
+        assert_eq!(
+            record
+                .input
+                .frame
+                .state
+                .saved_store
+                .state()
+                .touched_default(),
+            Some(false)
+        );
+    }
+    let first = &records[0].input;
+    let second = &records[1].input;
+    assert_ne!(records[0].source_state, records[1].source_state);
+    assert_ne!(first, second);
+    assert_eq!(
+        analysis.states()[0]
+            .entry
+            .active()
+            .saved_store
+            .state()
+            .touched_in_transaction(address(0x200)),
+        Some(false)
+    );
+    assert_eq!(
+        first
+            .frame
+            .state
+            .saved_store
+            .state()
+            .touched_in_transaction(address(0x200)),
+        Some(false)
+    );
+    assert_eq!(
+        second
+            .frame
+            .state
+            .saved_store
+            .state()
+            .touched_in_transaction(address(0x200)),
+        None
+    );
+
+    // A missing key inherits false; an explicit null retains may-touch. Check
+    // membership separately because JSON indexing maps both cases to null.
+    let first_json = serde_json::to_value(first).unwrap();
+    let second_json = serde_json::to_value(second).unwrap();
+    let touch_key = address(0x200).to_string();
+    let first_touched = first_json
+        .pointer("/frame/state/saved_store/touched")
+        .unwrap()
+        .as_object()
+        .unwrap();
+    let second_touched = second_json
+        .pointer("/frame/state/saved_store/touched")
+        .unwrap()
+        .as_object()
+        .unwrap();
+    assert!(!first_touched.contains_key(&touch_key));
+    assert!(second_touched.contains_key(&touch_key));
+    assert_eq!(
+        second_touched.get(&touch_key),
+        Some(&serde_json::Value::Null)
+    );
+
+    // CALL checkpoints before touching the target. After rejection and success
+    // join, only that saved touch changes; every other input field stays exact.
+    let mut expected = (*first).clone();
+    let mut saved_store = expected.frame.state.saved_store.state().clone();
+    saved_store.may_touch_account(address(0x200));
+    expected.frame.state.saved_store = saved_store.snapshot();
+    assert_eq!(&expected, second);
+}
+
+#[test]
+fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
+    // Warm the rollback touch guard, then retain the same POP/JUMPDEST
+    // separation between the two calls that can share a complete certificate.
+    let caller = format!(
+        "{}50{}{}50{}{}5000",
+        call(0xf1, 0x200, 0, 32),
+        "5b".repeat(12),
+        call(0xf1, 0x200, 0, 32),
+        "5b".repeat(12),
+        call(0xf1, 0x200, 0, 32)
+    );
+    let (world, entry) = fixture(&[(0x101, &caller), (0x200, "6003565b5f545f5260205ff3")]);
     let complete = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    assert_eq!(complete.status(), Status::Converged);
+    assert!(complete.frontiers().is_empty());
+    assert_eq!(complete.summary_stats().misses, 2);
+    assert_eq!(complete.summary_stats().published, 2);
+    let reused = complete
+        .summaries()
+        .iter()
+        .find(|record| !record.reused_at.is_empty())
+        .unwrap();
+    assert!(reused.state_count > 1);
+    assert_eq!(
+        reused.input,
+        read_only_summary_input_at(&complete, reused.source_state)
+    );
+    assert_eq!(
+        reused.input.store.touched_in_transaction(address(0x200)),
+        Some(true)
+    );
+    assert_eq!(
+        reused
+            .input
+            .frame
+            .state
+            .saved_store
+            .state()
+            .touched_in_transaction(address(0x200)),
+        None
+    );
+    for &state_id in &reused.reused_at {
+        assert_ne!(state_id, reused.source_state);
+        assert_eq!(
+            reused.input,
+            read_only_summary_input_at(&complete, state_id)
+        );
+    }
     assert!(complete.summary_stats().hits > 0);
     let certified_states = complete
         .summaries()
