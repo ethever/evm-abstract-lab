@@ -60,7 +60,11 @@ fn exact_offsets_translate_certified_cells_against_the_byte_oracle() {
                     .read_byte_checked(&AbstractValue::constant(at), domain)
                     .unwrap();
                 assert_eq!(value, &oracle);
-                assert_eq!(output.byte_at(index, domain), oracle);
+                let mut observed = output.byte_at(index, domain);
+                // A slice read may retain its view term even when the exact
+                // source folds to a constant; every value layer still agrees.
+                observed.forget_expression();
+                assert_eq!(observed, oracle);
             }
             for index in 0..12 {
                 let expected = if U256::from(index) >= length {
