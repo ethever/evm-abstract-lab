@@ -227,7 +227,7 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
         assert!(header.contains(&format!("{}", Symbol::State(outcome.state)).as_str()));
         assert!(header.contains(&format!("{:?}", outcome.kind).as_str()));
         assert!(report.contains(&format!("length={}", outcome.data.len())));
-        assert!(report.contains("default={0x0}"));
+        assert!(report.contains(&format!("default={}", outcome.data.default_byte())));
         if let Some(bytes) = outcome.data.exact_bytes()
             && !bytes.is_empty()
         {
