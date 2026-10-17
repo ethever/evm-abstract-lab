@@ -216,7 +216,7 @@ struct Footprint {
 impl Store {
     /// O(1) container lengths only. This includes every map visited by planning,
     /// cloning, deletion, joins and cleanup, not merely the account maps.
-    fn finalization_entries(&self) -> usize {
+    pub(crate) fn finalization_entries(&self) -> usize {
         [&self.persistent, &self.transient].into_iter().fold(
             self.balances
                 .len()
