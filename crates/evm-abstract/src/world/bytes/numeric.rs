@@ -5,7 +5,7 @@
 
 use super::{conditional::Context, constant, zero};
 use crate::domain::{
-    AbstractValue, Domain,
+    AbstractValue, Domain, Profile,
     symbolic::{ByteStateId, ByteStateKind, ByteView, ExprId, ExprKind},
 };
 use alloy_primitives::U256;
@@ -163,16 +163,36 @@ impl<'a> Reader<'a> {
         // The old evaluator repeated this scalar lookup for all 32 positions.
         // Evaluate it once; BYTE and the ordered joins retain their semantics.
         let scalar = scalar_in(expression, &self.context, self.domain);
-        let value = (0..32)
-            .fold(None, |out, j| {
-                Some(join(
-                    out,
-                    self.domain
-                        .apply(opcode::BYTE, &[constant(j), scalar.clone()]),
-                    self.domain,
-                ))
-            })
-            .expect("32 bytes");
+        let value = if scalar.numeric().is_top()
+            && self.domain.spec().profile() == Profile::Product
+            && !self.domain.spec().relations().enabled
+        {
+            // Every position has the same complete BYTE result for numeric Top.
+            // Keep the ordinary transfer's finite facts, metadata and limits.
+            #[cfg(test)]
+            tests::WORD_BYTE_UNION_CALLS.with(|calls| {
+                let (apply, join) = calls.get();
+                calls.set((apply + 1, join));
+            });
+            self.domain.apply(opcode::BYTE, &[constant(0), scalar])
+        } else {
+            (0..32)
+                .fold(None, |out, j| {
+                    #[cfg(test)]
+                    tests::WORD_BYTE_UNION_CALLS.with(|calls| {
+                        let (apply, joins) = calls.get();
+                        // The first None step does not call Domain::join.
+                        calls.set((apply + 1, joins + usize::from(out.is_some())));
+                    });
+                    Some(join(
+                        out,
+                        self.domain
+                            .apply(opcode::BYTE, &[constant(j), scalar.clone()]),
+                        self.domain,
+                    ))
+                })
+                .expect("32 bytes")
+        };
         let work = expression.work_size().saturating_add(value.work_size());
         if self.word_bytes.len() < WORD_CACHE_ENTRIES
             && work <= WORD_CACHE_WORK.saturating_sub(self.retained_work)
