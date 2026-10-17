@@ -1,8 +1,7 @@
 # Kernel-checked local state obligations
 
-These Std-only Lean 4.30.0 models formalize concrete state operations and include
-executable counterexamples. The LateFailure supplement is source-only and has
-not been compiled or checked. The proof-to-production relation is a manually
+These Std-only Lean 4.30.0 models prove concrete state operations and include
+executable counterexamples. The proof-to-production relation is a manually
 reviewed contract in [correspondence.md](correspondence.md). The Rust executor,
 its worklist, and the richer numeric domain have not been translated into Lean.
 
@@ -22,8 +21,8 @@ LEAN_BIN=/absolute/path/to/lean-4.30.0/bin/lean \
   bash proofs/check.sh /absolute/path/to/proof-evidence
 ```
 
-The script compiles project modules into the evidence directory, checks each
-public theorem and regression target with `#print axioms`, and writes `audit.json`
+The script compiles project modules into the evidence directory, checks 242
+public theorem and regression targets with `#print axioms`, and writes `audit.json`
 with source hashes, theorem dependencies and the actual expected-rejection exit.
 Warnings are errors.
 The deliberately false [OldJoinRejected.lean](../../proofs/counterexamples/OldJoinRejected.lean)
@@ -33,15 +32,13 @@ Facts import was successfully compiled. An import failure is not accepted.
 [audit.py](../../proofs/audit.py) rejects source `sorry`, `admit`, axiomatic target
 declarations, `native_decide`, compiler-trust shortcuts, missing theorem prints,
 `sorryAx`, and dependencies outside the documented Lean core primitives. The
-models disable implicit parameter invention. Existing checked modules use `propext`
+models disable implicit parameter invention. Current proofs use `propext`
 (propositional extensionality) and `Quot.sound` (quotient soundness, including
 function extensionality derived through quotients). The audit also permits
-Lean's foundational `Classical.choice`, but the existing checked targets do not
+Lean's foundational `Classical.choice`, but the current targets do not
 use it.
 There is no assumed target-soundness axiom. Lean's kernel, the installed Std
 library/checker, and the dependency-report audit remain trusted infrastructure.
-The new supplement's dependencies and results require a fresh checker run;
-source declarations and theorem prints alone are not checked evidence.
 
 ## Model scope
 
@@ -55,7 +52,7 @@ source declarations and theorem prints alone are not checked evidence.
 | [Effects](../../proofs/NoSmt/Effects.lean) | The protected-owner field envelope; local havoc inclusion, idempotence and closure for any finite allowed local-write trace; proved executable callback store/add/sequence/indirect-call rules and every finite allowed mixed trace, including a repeated indirect-call instance. |
 | [Engine](../../proofs/NoSmt/Engine.lean) | Generic forward simulation and postfixed finite-prefix coverage; proved local Word256 register, load/store, zero-branch, unknown-envelope, checkpoint, touch and rollback transitions; a checked finite certificate for a looping program containing unknown writes and repeated indirect callbacks, with a protected-code invariant and an empty-queue counterexample. |
 | [Lifecycle](../../proofs/NoSmt/Lifecycle.lean) | Three-valued AND/OR, nonce/balance/code emptiness, pending-destruction OR touched-empty decision, definite and optional touch, flag joins, EIP-161 existence projection, static optional-touch completion, ordinary rollback and owner-3 sticky-touch rollback. |
-| [LateFailure](../../proofs/NoSmt/LateFailure.lean) (source-only, NOT CHECKED) | Exact entry-only Failure counterexample after an owner-3 touch; saved/current rollback plus account cleanup; may-touch and ordinary-owner controls; Effects word-write restoration before cleanup; finite register ADD/jump suffix identity with normal and failure alternatives. |
+| [LateFailure](../../proofs/NoSmt/LateFailure.lean) | Exact entry-only Failure counterexample after an owner-3 touch; saved/current rollback plus account cleanup; may-touch and ordinary-owner controls; Effects word-write restoration before cleanup; finite register ADD/jump suffix identity with normal and failure alternatives. |
 | [Logs](../../proofs/NoSmt/Logs.lean) | Address/code-address/captured-code-hash/mode/PC source identity; old init/runtime collision; separate-source differing arities accepted, equal-source arity mismatch refused, repeated-source payloads aggregated. |
 
 Facts and Snapshots use `Nat` as labels for keys and word values: membership and
@@ -156,7 +153,7 @@ and current touchedness. `rollback_inclusion` proves this explicit exception.
 It does not prove every protocol touch site or the full account/storage/log
 reset in `Store::delete_account`.
 
-## Late failure supplement (source only)
+## Late failure
 
 `LateFailure.entry_only_counterexample` starts with an exactly present,
 untouched, empty account and a late current account whose touch is true. Entry
@@ -178,8 +175,7 @@ deletion. Transient-state cleanup and logs are outside this minimal projection.
 `runPure` is an explicit finite register ADD/jump semantics. Its projection
 identity induction supports suffix failure inclusion, while `alternatives`
 retains normal execution and adds failure when the selected account's touch is
-may/must. Production selects owner `3`. These source statements have not been
-checked and do not establish actual EVM gas behavior or all paths.
+may/must. Production selects owner `3`. These theorems do not establish actual EVM gas behavior or all paths.
 
 The production binding is `analysis::transfer::late_failure::at_block_entry`,
 `transfer::execute_inner`, `calls::{failure,finish}` and `Store::restore`.
@@ -189,8 +185,15 @@ actual opcode/touch-site coverage, instruction-local touch/exception ordering
 (including SELFDESTRUCT beneficiary touches), frame-relative versus root
 continuation, all Store deletion fields, logs/transient behavior, fees, typed
 cancellation, frontiers and Rust-to-model simulation remain manual obligations.
-The supplement does not establish that block-entry alternatives cover an
-exception following a touch within the same instruction.
+The finite suffix theorem does not establish that block-entry alternatives
+cover an exception following a touch within the same instruction. The Rust
+implementation separately uses `late_failure::after_selfdestruct` to retain a
+Failure alternative after a possible beneficiary touch. The
+`selfdestruct_dynamic_gas_failure_restores_value_but_keeps_ripemd_touch`
+regression contrasts dynamic OutOfGas with sufficient gas and zero-balance
+execution across forks and both summary settings. This instruction-local
+implementation and concrete regression do not discharge its Lean-to-Rust
+opcode, touch-order and gas correspondence obligations.
 
 ## Engine certificate scope
 
