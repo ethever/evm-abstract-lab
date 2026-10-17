@@ -60,6 +60,14 @@ pub(super) fn operation_work(
 ) -> usize {
     let frame = result.payload.active();
     let environment = &entry.environment;
+    if matches!(
+        op,
+        opcode::RETURN | opcode::REVERT | opcode::LOG0..=opcode::LOG4
+    ) {
+        // Slice retains the graph and translates only certified presentation
+        // coordinates. Its cheap precharge does not census unrelated arrays.
+        return frame.memory.slice_work(&args[0], &args[1], domain);
+    }
     let array_size = frame
         .memory
         .work_size()
@@ -160,24 +168,6 @@ pub(super) fn operation_work(
             .saturating_add(1),
         opcode::CALLDATALOAD => byte_work(&[&args[0]], 32, array_size, domain),
         opcode::KECCAK256 => byte_work(&[&args[0], &args[1]], range_size(1), array_size, domain),
-        opcode::RETURN | opcode::REVERT | opcode::LOG0..=opcode::LOG4 => {
-            // These consumers retain a view; logical bytes are charged only
-            // when a concrete consumer actually materializes them.
-            let cached = frame.memory.stored_bytes().len().min(256);
-            byte_work(
-                &[&args[0], &args[1]],
-                cached,
-                array_size
-                    .saturating_mul(cached.saturating_add(2))
-                    .saturating_mul(
-                        domain
-                            .capacity()
-                            .saturating_mul(domain.capacity())
-                            .saturating_add(1),
-                    ),
-                domain,
-            )
-        }
         opcode::SLOAD | opcode::SSTORE | opcode::TLOAD | opcode::TSTORE => result
             .payload
             .store

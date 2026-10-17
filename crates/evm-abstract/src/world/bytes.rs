@@ -12,6 +12,7 @@ pub(super) mod refinement;
 pub use refinement::GuardRefinementError;
 mod ranges;
 mod reads;
+mod slice;
 pub(in crate::world) mod summary;
 pub use summary::ByteArraySummary;
 #[cfg(test)]
@@ -429,39 +430,31 @@ impl ByteArray {
             domain,
             limits(domain),
         )?;
+        let bytes = slice::project(
+            self,
+            offset,
+            size,
+            &offset_expr,
+            &size_expr,
+            &operands,
+            domain,
+        );
         let root = self
             .root
             .slice(offset_expr, size_expr.clone(), limits(domain).into())?;
-        let mut out = Self {
+        Ok(Self {
             length: size.clone().with_expression(size_expr),
             root,
             allocations: BTreeSet::new(),
             operands,
             conditional: self.conditional.clone(),
-            bytes: BTreeMap::new(),
-            default: if offset.singleton().is_some() && self.bytes.len() <= COPY_FACT_LIMIT {
-                self.default.clone()
-            } else {
-                self.byte_upper(domain)
-            },
+            bytes,
+            // Omitted/uncertified presentation cells and every padding branch
+            // are covered without evaluating the authoritative graph.
+            default: AbstractValue::unknown_byte(),
             memory: false,
             failure: None,
-        };
-        // Retain only already materialized source facts; do not walk the range.
-        if let Some(start) = offset.singleton().and_then(|v| usize::try_from(v).ok()) {
-            for index in self
-                .bytes
-                .keys()
-                .copied()
-                .filter_map(|i| i.checked_sub(start))
-                .take(COPY_FACT_LIMIT)
-            {
-                if size.interval().unsigned_bounds().1 > U256::from(index) {
-                    out.bytes.insert(index, out.byte_at(index, domain));
-                }
-            }
-        }
-        Ok(out)
+        })
     }
     /// Expand U256 logical memory after transfer has constrained symbolic ranges.
     /// The compatible max_bytes argument does not cap this lazy allocation.
