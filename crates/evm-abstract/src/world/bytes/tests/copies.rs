@@ -203,18 +203,55 @@ fn guarded_copy_and_overlapping_mcopy_keep_full_values_history_and_atomic_contro
         memory.read_word_checked(&constant(64), domain).unwrap(),
         overlapped
     );
-    for denied in [
-        RelationLimits {
-            max_nodes: saved_target.root.nodes(),
-            ..limits
-        },
-        RelationLimits {
-            max_depth: saved_target.root.depth(),
-            ..limits
-        },
+    // Wrapper metadata can reject before COPY construction. Check both
+    // contracts separately under the same node and depth policies.
+    for (denied, state_limit, wrapper_limit) in [
+        (
+            RelationLimits {
+                max_nodes: saved_target.root.nodes(),
+                ..limits
+            },
+            StateError::Limit {
+                nodes: yes.nodes(),
+                depth: yes.depth(),
+            },
+            RangeError::Expression(ExprError::Limit {
+                // Three facts per branch, two entries per fact, plus a guard.
+                nodes: 13,
+                depth: 2,
+            }),
+        ),
+        (
+            RelationLimits {
+                max_depth: saved_target.root.depth(),
+                ..limits
+            },
+            StateError::Limit {
+                nodes: expected.nodes(),
+                depth: expected.depth(),
+            },
+            RangeError::State(StateError::Limit {
+                nodes: expected.nodes(),
+                depth: expected.depth(),
+            }),
+        ),
     ] {
+        let len = ExprId::constant(U256::from(32));
+        assert_eq!(
+            saved_target.root.copy(
+                ExprId::constant(U256::from(64)),
+                ByteView::new(
+                    saved_source.root.clone(),
+                    ExprId::constant(U256::ZERO),
+                    len.clone(),
+                ),
+                len,
+                denied.expressions().into(),
+            ),
+            Err(state_limit)
+        );
         let mut refused = saved_target.clone();
-        assert!(matches!(
+        assert_eq!(
             refused.copy_from(
                 &constant(64),
                 &saved_source,
@@ -223,8 +260,8 @@ fn guarded_copy_and_overlapping_mcopy_keep_full_values_history_and_atomic_contro
                 256,
                 self::domain(denied)
             ),
-            Err(RangeError::State(StateError::Limit { .. }))
-        ));
+            Err(wrapper_limit)
+        );
         assert_eq!(refused, saved_target);
     }
     let mut refused = saved_target.clone();
