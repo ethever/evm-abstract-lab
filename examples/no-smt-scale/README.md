@@ -1,34 +1,36 @@
-# 固定离线规模检查草稿
+# 固定离线规模检查
 
-本阶段只准备输入、命令和验收方法，没有运行 native、SMT、RPC、构建或规模实验。分析源码基线固定为 `e3251ffc9009dd751b4d0d998e31e1830908828a`；它仍含 SMT，`commands-e325-native.json` 明确保留该基线的实际参数。未来 Layer1/Layer2 的名字和入口由对应实现确定，再添加独立命令 profile；这里不预设新 CLI flag。
+本目录固定输入、命令策略、外部资源 guard 和报告验收边界，用于比较已有 SMT 基线与当前 no-SMT 分层抽象解释实现。[命令生成器](../../scripts/generate-no-smt-scale-commands.py)生成当前 CLI profile；[benchmark](../../scripts/benchmark-no-smt-scale.py)默认只核对输入，显式传入 `--execute` 才顺序启动已有 ELF。两者都不构建、不访问 RPC；benchmark 不翻译策略、不调用 shell、不计算速度倍数。
 
-`scripts/benchmark-no-smt-scale.py` 复用已有 `benchmark_known_recursion` 的进程组 guard、资源采样和 Report 统计。默认只做纯 Python 输入检查；只有显式传入 `--execute` 才启动 ELF。它不构建、不访问 RPC、不调用 shell，也不计算速度倍数。本阶段的执行和编译由协调者取得单一 validation lane 后安排。
+基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**；当前接口为 **native9 / wire14 / cost3**。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。Cost3 移除了 SMT 额度预收费，**不能把 Cost2 与 Cost3 的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
 
-## 输入与 profile
+## 固定输入与事实边界
 
-`manifest.json` 固定 world 原始字节 SHA256、每份 runtime bytecode 的 SHA256、账户地址、fork、entry、完整环境边界和初始 facts。`null` balance/nonce 表示未观察，`storage_unknown: true` 表示未列出的槽未知；缺少账户也未知。EVM 新帧的空栈、初始内存以及新交易的 transient 初始化属于执行规则，与初始链上事实分开记录。所有 entry 的 caller、value、calldata 内容和长度保持 Unknown；origin 使用基线的 caller 别名规则，entry 非 static，gas 上界未知。
+[`manifest.json`](manifest.json)固定 world 原始字节 SHA256、每份 runtime bytecode 的 SHA256、账户地址、fork、entry、完整环境和初始 facts。所有 case 使用 Osaka、Runtime 入口。`null` balance/nonce 表示未观察，`storage_unknown: true` 表示未列出的槽未知；缺少账户也未知，不能读成零、空代码或不存在。新帧的空栈、零长度且零填充的 memory、空 returndata，以及新交易的 transient 初始化属于执行规则，与初始链上事实分开记录。
 
-| case | 固定输入 | 后续首轮外部 screen 计划 |
+所有 entry 的 caller、value、calldata 内容和长度保持 Unknown；origin 使用 caller 别名规则，entry 非 static，gas 上界未知。五个 `code-only` case 的入口地址为 `0x0000000000000000000000000000000000000101`；WETH 入口为 `0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2`，USDC 为 `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`。code-only 的区块字段未知，fixedstate 使用捕获的 header 和父区块 BLOCKHASH。
+
+| case | 固定输入 | manifest 中的 wall / RSS guard |
 | --- | --- | --- |
-| `unknown-input` | 12 字节 runtime；未知 calldata 首字写入 slot0 后读回返回 | 30s / 2 GiB RSS |
-| `dynamic-jump` | 21 字节 runtime；未知目标，JUMPDEST PC3/12 返回 42/99，其他目标失败 | 30s / 2 GiB RSS |
-| `loop` | 倒计数循环；每步增加初始未知的 slot0，最终读回 | 30s / 2 GiB RSS |
-| `unknown-callback` | slot0 写入、LOG0、未知目标 CALL、读回；允许未知执行重复、间接、嵌套 callback | 30s / 2 GiB RSS |
-| `memory-copy` | 未知长度 CALLDATACOPY + 可重叠 MCOPY，返回全部 calldata | 30s / 2 GiB RSS |
-| `weth-fixedstate` | 已有捕获代码 3124 字节，1 个账户，4 个已观察槽 | 60s / 8 GiB RSS |
-| `usdc-fixedstate` | 2186 字节 proxy + 23464 字节 implementation，2 个账户，2 个已观察槽 | 120s / 8 GiB RSS |
+| `unknown-input` | 12 字节 runtime；未知 calldata 首字写入 slot0 后读回返回 | 30s / 2 GiB |
+| `dynamic-jump` | 21 字节 runtime；未知目标，JUMPDEST PC3/12 返回 42/99，其他目标失败 | 30s / 2 GiB |
+| `loop` | 倒计数循环；每步增加初始未知的 slot0，最终读回 | 30s / 2 GiB |
+| `unknown-callback` | slot0 写入、LOG0、未知目标 CALL、读回；允许重复、间接、嵌套 callback | 30s / 2 GiB |
+| `memory-copy` | 未知长度 CALLDATACOPY + 可重叠 MCOPY，返回全部 calldata | 30s / 2 GiB |
+| `weth-fixedstate` | 捕获代码 3124 字节，1 个账户，4 个已观察槽 | 60s / 8 GiB |
+| `usdc-fixedstate` | 2186 字节 proxy + 23464 字节 implementation，2 个账户，2 个已观察槽 | 120s / 8 GiB |
 
-以上都是计划值，没有测量结果。guard 还包括 host MemAvailable 至少 20 GiB、每 0.25s 采样、停止后至多 5s 的 SIGTERM 宽限期，以及独立的 64 MiB Python Report 解析上限。后者不改 native 分析策略；超过时保留原始 stdout，记录未验证输出，`nativefinal` 为 null。RSS guard 为已有工具的单个 ELF 进程采样和 `wait4` 峰值，不是 cgroup 硬上限；此命令 contract 要求 ELF 不派生工作进程。CPU 选择复用已有工具的显式 affinity 规则，至多 8 个允许的 CPU，并留出至少 5 个可用 CPU；记录实际集合。
+这些是 guard 配置，不是测量结果。另有 host MemAvailable 至少 20 GiB、每 0.25s 采样、SIGTERM 后 5s 仍未退出则 SIGKILL，以及独立的 64 MiB Python Report 解析 guard。RSS 来自单个 ELF 进程的采样和 `wait4` 峰值，不是 cgroup 硬上限；运行契约要求 ELF 不派生工作进程。显式 CPU affinity 至多选择 8 个允许的 CPU，并留出至少 5 个可用 CPU，证据记录实际集合。
 
-`loop` 的固定指令顺序为 `PUSH0 CALLDATALOAD; loop: JUMPDEST DUP1 ISZERO PUSH1 exit JUMPI; PUSH0 DUP1 SLOAD PUSH1 1 ADD SWAP1 SSTORE; PUSH1 1 SWAP1 SUB PUSH1 loop JUMP; exit: JUMPDEST POP PUSH0 SLOAD PUSH0 MSTORE PUSH1 32 PUSH0 RETURN`。fixture 的 loop/exit 地址必须由字节偏移检查，不能把汇编说明当作执行证据。manifest 中的 concrete completions 只是后续 witness 计划，不注入抽象初始 world，也没有执行。
+`loop` 的固定指令顺序为 `PUSH0 CALLDATALOAD; loop: JUMPDEST DUP1 ISZERO PUSH1 exit JUMPI; PUSH0 DUP1 SLOAD PUSH1 1 ADD SWAP1 SSTORE; PUSH1 1 SWAP1 SUB PUSH1 loop JUMP; exit: JUMPDEST POP PUSH0 SLOAD PUSH0 MSTORE PUSH1 32 PUSH0 RETURN`。loop/exit 地址须按 fixture 的字节偏移核对，不能把汇编说明当作执行证据。manifest 的 `planned_witnesses` 是独立 concrete completion，不注入抽象初始 world，也不替换 Unknown 输入。
 
-WETH/USDC 使用 `../known-recursion/captured/` 已提交的文件，不从历史最终 Store 重建输入。两份 world 和两份原请求复用已提交捕获文件，由 manifest 校验其完整原始字节 SHA256。snapshot 固定为 Ethereum chain 1、block 26180958、hash `0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499`。manifest 保留原捕获说明所列的 source report 路径/hash；本阶段没有重新验证这些历史 report 或重新采集状态。固定文件明确枚举 balance、nonce、existence、code 和读到的槽，其他事实保持未知。
+WETH/USDC 使用 [`../known-recursion/captured/`](../known-recursion/captured/)已提交的初始 world 和原请求，不从最终 Store 重建输入。snapshot 固定为 Ethereum chain 1、block 26180958、hash `0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499`。manifest 校验两份 world 和两份原请求的完整原始字节 SHA256；其中历史 source report 路径/hash 仅作捕获溯源，不能代替当前运行报告。固定文件明确枚举 balance、nonce、existence、code 和读到的槽，其他事实保持未知。
 
-`cases` 中的 `fixed-offline-snapshot` 与 `acquisition_profiles` 中的 `original-rpc-acquisition` 是两个独立边界。后者保留原请求字节 hash、固定区块和原 RPC 策略，仅供溯源，本 harness 不执行它。离线 case 使用已捕获的 header/environment，不含之后的获取或 refinement 轮次；不能将其耗时与历史 RPC acquisition 耗时直接比较。新增离线观察、最终 world facts 或不同 transaction 输入时必须形成新的输入身份。
+`cases` 的 `fixed-offline-snapshot` 与 `acquisition_profiles` 的 `original-rpc-acquisition` 是两个边界。离线 case 不含后续获取或 refinement，不能与历史 RPC acquisition 耗时直接比较。新增离线观察、最终 world facts 或不同 transaction 输入，必须形成新的输入身份。
 
-## 纯输入检查与后续运行
+## 生成与核对命令
 
-在仓库根目录检查 manifest 和基线命令，只解析 JSON 和 bytecode，不启动分析进程：
+在仓库根目录核对固定输入及历史基线 profile；不传 `--execute` 时只解析 JSON 和 bytecode，不启动分析进程：
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
@@ -36,75 +38,81 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
   --commands examples/no-smt-scale/commands-e325-native.json
 ```
 
-命令 profile 提供每个 case 的完整 `argv`，唯一的两个占位符为第一个参数 `BINARY` 和一个 `WORLD`。它还绑定 input identity、实际 interface source commit、完整 policy、policy 到参数的映射、预期 native `config` 和允许交付最终 Report 的退出码。基线参数来自当前源码和已有捕获 manifest；所有未知输入相关 flag 都省略。harness 不翻译 policy。候选实现应新增 profile，写出真实参数与输入绑定，更新其 source commit 和预期 config，明确哪些策略已移除、变粗或不可比；不能把基线 `--no-relations` 当作完成 SMT 移除。
+[`commands-e325-native.json`](commands-e325-native.json)保留 e325 的真实 SMT 参数，不能直接交给当前 no-SMT CLI。当前 CLI 保留 `analyze --world`、域/状态/表示限制及有界本地关系传播，删除 `--smt.provider`、`--smt.rlimit`；`--no-relations` 会改变策略，不能用它冒充 SMT 移除。
 
-当前 `native-world-v1` adapter 只支持已有 native world Report JSON。候选若改变 schema，应先审查并适配 adapter；未适配输出保留原文并记未交付已验证 Report，不猜字段、不拿 progress 代替 final。`input_mapping` 是待审查声明，harness 无法证明任意 argv 正确实现该语义边界，协调者需要用入口/事实回归验证。
-
-root 后续先构建并记录真实 ELF，提供 `evm-no-smt-scale-build-v1` JSON：`source_commit`、`source_tree`、`source_dirty`、`artifact_sha256`、实际 `build_command` argv 数组。dirty 构建还须提供完整匹配的 `benchmark_known_recursion.identity.source(root)` 为 `source_identity`，并显式使用 `--allow-dirty`；其证据始终标为 preliminary。ELF hash 与这些构建来源声明分别记录；后者由构建者提供，文件 hash 本身不证明编译来源。
-
-取得 validation lane 后，使用已经存在的 artifact 和 build metadata，显式选择 case：
+对选定源码 checkout 生成独立 profile，再做输入检查。`CHECKED_SOURCE` 指向实际构建使用的源码，`COMMAND_PROFILE` 放在该 checkout 之外：
 
 ```sh
-python3 scripts/benchmark-no-smt-scale.py \
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate-no-smt-scale-commands.py \
+  --interface-source "$CHECKED_SOURCE" \
+  --output "$COMMAND_PROFILE"
+
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
   --manifest examples/no-smt-scale/manifest.json \
-  --commands examples/no-smt-scale/commands-e325-native.json \
+  --commands "$COMMAND_PROFILE"
+```
+
+生成器检查 native9/wire14/cost3 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它只删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，保留每个 case 的输入 hash、world、header、未知输入及其余限制。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
+
+每份 profile 提供完整 `argv`；仅有首参数 `BINARY` 和一个 `WORLD` 两个占位符，同时绑定 input identity、interface commit、完整 policy、policy 到参数的映射、`expected_native_config` 和允许的 Report 退出码。`input_mapping` 仍须对照入口与事实语义审核；harness 不证明任意 argv 实现了声明边界。生成器也不证明 ELF 来源或源码干净，最终构建提交确定后须重新生成匹配 profile。
+
+## 使用已有 ELF 运行
+
+构建 metadata JSON 的 `schema` 为 `evm-no-smt-scale-build-v1`，另包含实际 `source_commit`、`source_tree`、`source_dirty`、`artifact_sha256` 和 `build_command` argv 数组。`--binary` 必须是已有可执行 ELF，不能是构建命令或 wrapper。ELF hash 与构建来源声明分别记录；文件 hash 本身不证明编译来源。
+
+填写实际路径、CPU 和主机/cgroup 说明，显式选择 case：
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
+  --manifest examples/no-smt-scale/manifest.json \
+  --commands "$COMMAND_PROFILE" \
   --case unknown-input --execute \
   --binary "$BUILT_ELF" --build-metadata "$BUILD_METADATA" \
   --root "$CHECKED_SOURCE" --output "$NEW_EVIDENCE_DIRECTORY" \
   --cpus "$ASSIGNED_CPUS" --environment-note "$FROZEN_HOST_AND_CGROUP_DESCRIPTION"
 ```
 
-这些变量由协调者填入真实路径/CPU；不是本阶段已执行的命令。输出目录须为不存在且位于 `--root` 之外的目录。runner 顺序运行，使用复制并核 hash 的 world；运行前后核对源码、未跟踪文件内容、脚本、输入、命令、ELF、build metadata。源码必须匹配 build 声明，command profile 也须匹配该 interface commit。多次测量另用 `--runs`，不同 artifact/profile 分目录；当前脚本不负责 A/B 调度或统计推断。
+`--root` 的 commit/tree/dirty 必须匹配 build metadata，profile 的 interface commit 必须匹配 build 的 source commit，ELF SHA256 必须匹配 `artifact_sha256`。dirty 构建还须提供完整匹配的 [`identity.source(root)`](../../scripts/benchmark_known_recursion/identity.py)为 `source_identity`，并显式加 `--allow-dirty`；这类证据始终为 preliminary，不能作为冻结构建比较。
 
-## 结果与语义验收
+输出目录必须尚不存在且位于 `--root` 之外。runner 复制并核 hash 后使用 world，运行前后核对源码、未跟踪文件内容、脚本、输入、profile、ELF 和 build metadata。多次测量用 `--runs`，多个 case 重复传 `--case`；不同 artifact/profile 使用独立目录。复现基线时换用 e325 checkout、对应 ELF/build metadata 和历史 profile。工具不负责 A/B 调度或统计推断。
 
-每个 sample 保存实际 argv/guard 及 hash、输入身份、process 启止记录、原始 stdout/stderr/resources 和 SHA256、实际 `wait4` exit（信号为负数）、CPU/wall/peak RSS，以及 harness 可观察的 phase。`native_phase` 始终 null，表示引擎内部阶段未观测。进程计时包括 ELF 执行和 native 序列化，排除构建、输入检查、Python Report 解析与 RPC acquisition；guard 停止时间包含实际回收所需的宽限期。
+## 当前语义实现范围
 
-只有正常/错误退出、退出码在 profile 声明集合中、完整 stdout 是符合 adapter 的最终 JSON，才置 `report_delivered: true` 并填入 `nativefinal`。其余情况保留原始失败证据；外部 timeout、RSS/host guard、interrupt、monitor error 的 `nativefinal` 必须为 null，即使 stdout 恰有完整 JSON。stdout 有字节不等于交付 Report，stderr/progress 不参加最终状态统计。有效的 Incomplete Report 仍是交付，其 status、frontiers、reason 和失败输出全部保留；交付不代表闭合。
+**符号预编译已有保守包络。** [`precompile.rs`](../../crates/evm-abstract/src/analysis/transfer/precompile.rs)按固定 fork 的 provider 表选择实现。输入可物化且可选计算获准时执行 native；输入未知、超过具体提取上限或可选 crypto 计算过大时可走摘要，不再仅因符号输入而停在 `PrecompileInput`。成功包络中 identity 保留完整输入 source view、长度和 facts；EcRec/P256Verify 保留 0 或 32 字节；其他已列固定输出使用 32/64/128/256 字节未知内容；ModExp 等可变输出不套用 `max_memory_bytes` 或虚构小上界。
 
-交付后统计复用已有 `metrics`：status、states/transfers/work、summary/procedure/reuse/propagation、summary stats、frontiers/reasons、diagnostics 和导出图大小，并补充 outcome kind、完整 outcome hash、entry/world/config hash、policy 是否匹配和闭合 flags。无 Report 时这些 native 统计为 null，资源与实际退出证据仍保留。summary flags 为空时 `all_closed` 为 null；flags 为 true 也不证明 root 的完整输出/效果覆盖。导出图计数是重复序列化观察，不是唯一 live DAG 节点数；opaque identity 可能跨进程变化，raw/outcome hash 不是语义等价判据。
+包络同时保留任意长度/内容 returndata 的 Revert 和空 returndata 的 Failure；预编译本身是纯操作，touch、root/child rollback 由公共调用结束路径处理。父帧保存完整 returndata，CALL 输出只复制 `min(requested, actual)`，未覆盖后缀保留。摘要按保留的表示计费，不按符号逻辑字节数分配或收费；实际 Work、表示保留、内存或 backend 边界仍须报告。对应回归定义见 [`precompile/tests.rs`](../../crates/evm-abstract/src/analysis/transfer/precompile/tests.rs)，调用完成见 [`calls.rs`](../../crates/evm-abstract/src/analysis/transfer/calls.rs)。
 
-harness exit 0 只表示所有计划 sample 交付了 config 匹配的有效 Report 且身份未变化，允许 Report 本身为 Incomplete；它不是语义验收或整个目标完成的判定。unit/fixture 检查的接入与实际 native/语义 focused 验证，须由协调者接管后按完整 checks 约定安排。
+**逻辑内存已有 lazy 范围表示。** [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs)用 U256 长度、捕获的 source view 和有序 Write/Copy/Slice/ITE 根表达读写、别名与重叠复制，不逐字节展开大范围；展示 facts 的上限不截断完整根。CALLDATACOPY、MCOPY、RETURN/REVERT、调用输入/输出等使用这条路径。`max_memory_bytes` 限制具体内容提取，不是逻辑足迹、EVM 协议最大内存或 host RSS；需要具体 initcode 等内容的操作仍有各自边界。
 
-预先验收按 soundness、再 scalability 排序：
+[`ranges.rs`](../../crates/evm-abstract/src/analysis/transfer/ranges.rs)先保留 size=0 不扩容分支，非空正常范围要求 `offset <= B`、`size <= B - offset`，其中 `B = U256::MAX & !31`，避免终点和 word-rounded MSIZE 回绕。`LogicalMemory` 域内保留正常执行与可能的 gas Failure，不精算可负担性；域外非空访问的 Failure 依据见 [`ranges/logical.rs`](../../crates/evm-abstract/src/analysis/transfer/ranges/logical.rs)，范围限于固定 fork 的默认 gas 规则。普通访问不再因超过 `max_memory_bytes` 产生 `MemoryPolicy`；RETURNDATACOPY 的源越界仍是指令 Failure。真实 Work、Relations、ByteRange、StateJoin、Memory 或 guard 保留失败仍可留下 frontier；有 range witness 时保留原操作数、条件及效果前载荷。详见[内存模型](../../docs/14-memory-model.md)与[逻辑内存回归定义](../../crates/evm-abstract/tests/logical_memory.rs)。
 
-1. 未观察事实未知。区分 unknown、known-zero、empty、nonexistent；callback、CALL-family、owner、rollback 的回归全部保留。
-2. 每个 concrete witness 的终止种类、全部 returndata、storage/transient、账户生命周期/余额及有序日志，须由**同一个** abstract outcome 联合覆盖；有限 witness 不构成整个实现的 soundness 证明。
-3. 检查所有普通输出、效果、失败分支、原始 frontier 及 closure，不能通过删除效果、忽略未完成工作或只比 root 成功值宣称完成。
-4. 允许更粗精度，但须记录扩大了哪些结果/效果集合。状态数、work、时间减少本身不证明改进；不同工作记账单位、输入/策略或 delivery 边界不能混为同一比较。没有已验证 Report 时不给速度倍数。
+分层库接口已提供 `CodeCatalog`、固定 snapshot 的 `StateFacts` 和 `AnalysisSession`：补事实生成不可变版本并从入口重建执行，复用目前限于受保护的纯栈块 memo。CLI/world/RPC 共用同一引擎；本 harness 测量一次离线 CLI 调用，不度量跨轮复用收益。用法和边界见[分层分析](../../docs/18-layered-analysis.md)。
 
-`scripts/test_benchmark_no_smt_scale.py` 准备了仅用合成 JSON 的 adapter 回归，覆盖 timeout/progress/无效退出、解析失败、Incomplete、policy mismatch 和 hash/fact 身份拒绝。它没有运行分析器，也不替代语义回归；本 worker 只做输入和语法检查，focused 测试留给协调者。
+## HTTP / Web 与请求派生
 
-## 基线源码的三个规模风险
+[`wire14/weth-original-request.json`](wire14/weth-original-request.json)和 [`wire14/usdc-original-request.json`](wire14/usdc-original-request.json)是原捕获请求的显式 schema 派生。仅移除 `/limits/smt_provider`、`/limits/smt_rlimit`，保留 RPC 的 `input.Rpc.provider_id`、固定 block、accounts、caller/value 及任意长度/内容的 Unknown calldata。manifest 记录原始/派生 raw SHA256 和删除 pointer；默认输入检查验证除这两项外请求完全相同。它们仍是 RPC acquisition 请求，不是 offline CLI 输入。
 
-以下是 `e325` 的只读机制审查和待测假设，没有推断实测收益；对应源码接口若被候选重构，需更新观测映射。
+当前 server/Web 使用 wire14，旧请求的 SMT 字段会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
 
-| 风险 | 具体机制与源码 | 可测指标与输入 | soundness 约束 |
-| --- | --- | --- | --- |
-| structural key 与控制流分区增加 | `analysis/machine.rs: FrameKey/MachineKey` 保留 code、owner、caller、jump history；`analysis/engine.rs: ids` 和 `transfer/procedure.rs: Procedure.nodes` 保留首个 CALL continuation 的 success/failure 分区。去掉约束剪枝后，更多动态目标/loop 路径可能抵达这些 key。 | `dynamic-jump`、`loop`、USDC：states、transfers、summary state_count、frontier reason、是否在相同 guard 内交付。精确 key/partition 分布目前未直接导出，不能填 0。 | 不能合并代码/owner/回滚身份或删失败分区来降低计数；合并需证明完整 payload 覆盖。 |
-| payload/immutable DAG 与普通工作仍占成本 | `transfer/procedure/payload.rs: form/semantic_eq/measure_work` 比较 frame、continuation、store 和 observation；`procedure/solver.rs: form/publish` 做 projection/join，`engine.rs` 继续对保留 payload/evidence 记账。移除求解器并未移除这些遍历或数据。 | `loop`、`memory-copy`、USDC：work、CPU、peak RSS、raw stdout bytes、`graph_sizes.serialized_nodes/largest_serialized_graph`。live unique DAG、各操作耗时无现成证据，保持未观测。 | graph export 不是活跃图规模；不能丢初始源、saved store 或有序效果换取较小 DAG。记账变化需单列，不能称同单位 work 加速。 |
-| unknown callback 与输出传播组合 | `transfer/procedure/environment.rs` 先保留 Return/Revert/Failure，再枚举 protected owner 的普通 callback；`procedure/solver.rs: publish/deliver` 将 output generation 传播给 subscribers，允许下一轮 callback。分支增多可增加关系更新与返回传播。 | `unknown-callback`、WETH/USDC：summary/procedure kinds、relation_states、propagations/reused、summary_closed、outcome kind、frontier/reason、wall/RSS。实际 subscriber fanout/代数未导出，需 root 授权后另加观测。 | 不能限定 callback 一次、遗漏间接/嵌套调用或将失败强制成功；owner effects、日志及 rollback 必须联合覆盖，closure 必须真实达到。 |
+## 报告交付、计时与验收
 
+每个 sample 保存实际 argv/guard 及 hash、输入身份、进程启止记录、原始 stdout/stderr/resources 及 SHA256、实际 `wait4` exit（信号为负数）、CPU/wall/peak RSS。计时包括 ELF 执行和 native 序列化，排除构建、输入检查、Python Report 解析及 RPC acquisition；外部停止包含实际回收时间。`phase` 只是 harness 观察，`native_phase` 始终为 null，不能据此推断引擎内部热点。
 
-## Wire14 请求派生与成本版本
+| 观察到的结果 | harness 记录与解释 |
+| --- | --- |
+| 正常/错误退出，退出码获 profile 接受，完整 stdout 通过最终 JSON adapter | `report_delivered: true`，填入 `nativefinal`；另核对 config 是否匹配 policy。Incomplete 仍可交付，交付不代表闭合。 |
+| 进程退出获接受，但 stdout 超过 64 MiB Python 解析 guard | `phase: output_unvalidated_parse_guard`、`report_delivered: false`、`nativefinal: null`；保留原始 stdout/hash，分析 status 尚未由 harness 验证。 |
+| timeout、RSS/host guard、interrupt、monitor error、无效退出或无效 JSON | 保留失败和资源证据，`nativefinal: null`；即使外部停止时 stdout 恰有完整 JSON，也不视为交付。 |
 
-`wire14/{weth,usdc}-original-request.json` 是原捕获请求的显式schema派生，不改历史文件。仅移除 `/limits/smt_provider`、`/limits/smt_rlimit`；RPC 的 `input.Rpc.provider_id` 原样保留。manifest逐一记录两份原始raw SHA、派生raw SHA和删除pointer，默认plan检查会验证全请求除这两项外完全相同。它保持固定block、accounts、caller/value以及任意长度/内容的Unknown calldata。此处没有执行请求，也不把该HTTP profile伪装成offline CLI输入。
+64 MiB guard 属于这个 Python consumer，与 `max_memory_bytes` 无关，也不是 native JSON 总大小限制。[原生 JSON 编码器](../../crates/evm-abstract/src/render/json.rs)不设置整份输出字节上限；表示导出仍有节点、深度、exact payload 与取消边界。超过解析 guard 不能推出分析 Incomplete 或 Converged；须校验保存的完整原报告及有效 config，才可给出分析状态或性能结论。未适配 schema、stdout 有字节或 progress 都不能替代最终 Report。
 
-基线为native8/wire13/cost2，候选为native9/wire14/cost3。Cost3删除SMT额度预收费，新旧logical work不能直接比率换算成性能。候选实际source/ELF和命令profile仍须在集成release后冻结；本stage没有宣称候选可执行或跑过基准。
+交付后的统计包括 status、states/transfers/work、summary/procedure/reuse/propagation、summary stats、原始 frontiers/reasons、diagnostics、导出图大小、outcome kind、完整 outcome hash、entry/world/config hash、policy 是否匹配及 closure flags。无 Report 时 native 统计为 null，资源和实际退出证据仍保留。summary flags 为空时 `closure.all_closed` 为 null；全 true 也不能单独证明 root 的完整输出/效果覆盖。图计数是重复序列化观察，不是唯一 live DAG 节点数；opaque identity 可跨进程变化，raw/outcome hash 不证明语义等价。
 
-候选的实际 CLI 保留 `analyze --world` 和原本地域/状态限制参数，删除 `--smt.provider`、`--smt.rlimit`。可在选定的集成源码提交上生成独立 command profile：
+**wall/RSS 必须伴随经校验的原报告、Converged/Incomplete、全部 frontier、summary closure 和完整 effects 一起审阅。** 早停、少交付效果或更早 Incomplete 不能称为提速；无已验证 Report 不给速度倍数。wall/RSS 比较须使用相同输入与交付边界，说明完整策略和精度差异；跨 cost 版本的 work 分列，不能按同单位换算。harness exit 0 只表示计划 sample 均交付了 config 匹配的有效 Report 且身份未变，允许 Report 为 Incomplete，不是语义验收结论。
 
-```sh
-python3 scripts/generate-no-smt-scale-commands.py \
-  --interface-source "$CHECKED_CANDIDATE_SOURCE" \
-  --output "$CANDIDATE_COMMAND_PROFILE"
-```
+语义验收先于 scalability：
 
-生成器只删除原 profile 的两项原生求解器策略及 argv，完整保留每个 case 的输入 hash、world、block header、未知输入和其它限制。它检查源码 native9/wire14/cost3 与本地关系参数，记录 CLI/版本文件 hash 和当前 interface commit；不运行构建或分析。最终 ELF 冻结后需针对该构建的实际 source commit 重新生成，交由原 runner 校验 build metadata/source/ELF。开发构建可作单独标记的诊断 screen，不能与 release 数字混比为加速。
-
-## 默认未知输入下的保守续行需求（只读设计，未实施）
-
-1. **符号预编译输入。** 当前 `analysis/transfer/precompile.rs` 先要求输入和工作界可具体化，失败停在 `PrecompileInput`。若默认未知calldata在WETH/USDC路径反复到达这些点，SMT移除后仍可能只得到更早Partial。一个待审slice应同时覆盖原生成功、失败、returndata长度和内容：固定宽度原生有按fork明确的结果长度；identity应保留输入view/长度关系；modexp等可变长度不能猜统一小上界。现有 `ByteArray::unknown_checked` 与summary length可表达宽上界，`copy_return_data`/CALL续行仍须遵守原有失败和未覆盖前沿；它们目前没有自动建立各预编译的语义包络。须按实际热点和验收决定实现，不能把未知输入当空串。
-2. **逻辑内存与物化分离。** 现有ByteState的Copy/Slice/Ite及持久root可保留大符号范围，`COPY_FACT_LIMIT`只限制展示facts；但 transfer/ranges.rs 会把memory policy之外的输入留成frontier。若要不经早Partial而可伸缩，需要显式区分逻辑足迹、有限观测cells/序列化上限和真实EVM失败。不得将策略cap当成协议最大内存、丢掉copy/alias/overlap/overflow效果，或直接删除超限分支。待授权方案可在物化预算不足时维持保守默认+逻辑写入/区间效果，但还需证明读写与后续返回覆盖；此stage不改core。
-
-这些是使默认未知输入能继续的候选语义需求，不是已测热点或性能收益。只有集成候选在固定输入上真正交付Report、保留完整效果/失败/前沿，并通过联合包含性验收，才有资格比较wall/CPU。当前harness仅支持CLI stdout；现有matching server需独立private HTTP/fixture adapter后才能测，不能用server ELF冒充CLI或把网络获取与offline耗时混比。
+1. 区分 unknown、known-zero、empty、nonexistent；保留 CALL-family、storage owner、persistent/transient、历史读取与 rollback 身份。
+2. 每个 concrete witness 的终止种类、全部 returndata、storage/transient、账户生命周期/余额及有序日志，须由**同一个 abstract outcome 联合覆盖**，不能分别挑选互不相容的投影。
+3. 未知调用须覆盖重复、间接、嵌套重入，不能限定一次 callback、把失败强制成功或遗漏回滚。保守局部效果及 protected-owner callback 路径见 [`procedure/environment.rs`](../../crates/evm-abstract/src/analysis/transfer/procedure/environment.rs)；普通输出、失败、完整效果、原始 frontier 与 closure 都要检查。
+4. 允许更粗精度，但须记录扩大了哪些结果/效果集合；不能通过删除效果或忽略未完成工作降低计数。有限 witness 和局部回归不构成整个 EVM 实现的 soundness 证明。[Lean 证明文档](../../docs/proofs/README.md)限定已检查的局部模型及其[生产对应契约](../../docs/proofs/correspondence.md)，Rust 执行器、worklist 和更丰富的数值域仍有独立对应义务。
