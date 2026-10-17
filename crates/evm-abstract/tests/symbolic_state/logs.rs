@@ -66,18 +66,8 @@ fn captured_log<'a>(
     fixture: &Fixture,
 ) -> (&'a MachineOutcome, &'a AbstractLog, &'a MachinePayload) {
     complete(analysis);
-    // Pre-entry gas failure restores the checkpoint captured before the root
-    // recipient touch. The entered root Store already includes that touch;
-    // every executed route in this fixture completes normally.
-    let failures: Vec<_> = analysis
-        .outcomes()
-        .iter()
-        .filter(|outcome| outcome.kind != OutcomeKind::Return)
-        .collect();
-    assert_eq!(failures.len(), 1);
-    assert_eq!(failures[0].kind, OutcomeKind::Failure);
-    assert_eq!(failures[0].state, 0);
-    assert_eq!(failures[0].data.len().singleton(), Some(U256::ZERO));
+    // Pre-entry failure preserves the untouched checkpoint. Memory operations
+    // can also fail after entry, restoring it before transaction finalization.
     let entered = &analysis.states()[0].entry;
     let checkpoint = entered.call_stack.root().state.saved_store.state();
     assert_eq!(
@@ -88,13 +78,46 @@ fn captured_log<'a>(
         checkpoint.touched_in_transaction(address(ROOT)),
         Some(false)
     );
-    assert_eq!(
-        serde_json::to_value(&failures[0].store).unwrap(),
-        serde_json::to_value(checkpoint).unwrap()
-    );
+    let mut finalized = checkpoint.clone();
+    finalized.finalize_transaction(Domain::from_spec(analysis.domain_spec()));
+    assert_eq!(&finalized, checkpoint, "no sticky RIPEMD touch here");
+    let entry_failure = analysis.outcomes().first().unwrap();
+    assert_eq!(entry_failure.kind, OutcomeKind::Failure);
+    assert_eq!(entry_failure.state, 0);
+    for failure in analysis
+        .outcomes()
+        .iter()
+        .filter(|outcome| outcome.kind != OutcomeKind::Return)
+    {
+        assert_eq!(failure.kind, OutcomeKind::Failure);
+        let source = analysis
+            .states()
+            .get(failure.state)
+            .expect("failure has no source state");
+        assert_eq!(source.id, failure.state);
+        assert_eq!(source.key, source.entry.key());
+        assert_eq!(failure.data.len().singleton(), Some(U256::ZERO));
+        assert_eq!(
+            &failure.store, checkpoint,
+            "root failure leaked LOG effects"
+        );
+    }
     let log_pc = executed_opcode(analysis, fixture, "log", opcode::LOG0);
     executed_opcode(analysis, fixture, "copy", opcode::CALLDATACOPY);
-    executed_opcode(analysis, fixture, "write", opcode::MSTORE);
+    let write_pc = executed_opcode(analysis, fixture, "write", opcode::MSTORE);
+    assert!(
+        analysis.outcomes().iter().any(|outcome| {
+            let source = &analysis.states()[outcome.state];
+            outcome.kind == OutcomeKind::Failure
+                && source
+                    .execution_evidence()
+                    .is_some_and(|evidence| evidence.is_current())
+                && source.executed_pcs.contains(&write_pc)
+                && source.entry.store.possible_logs().len() == 1
+                && !source.entry.store.logs_unknown()
+        }),
+        "retain the MSTORE failure after LOG, with its log rolled back"
+    );
     executed_opcode(analysis, fixture, "done", opcode::STOP);
     assert!(reachable(analysis, ROOT, fixture.labels["outside"]));
     assert!(
