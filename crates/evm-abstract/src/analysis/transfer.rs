@@ -33,6 +33,7 @@ mod calls;
 pub(super) mod create;
 mod errors;
 mod hash;
+mod late_failure;
 mod precompile;
 pub(super) mod procedure;
 mod ranges;
@@ -376,6 +377,9 @@ fn execute_inner(
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
     };
+    if !late_failure::at_block_entry(&mut result, context) {
+        return result;
+    }
     let scope = identity_scope();
     let mut definition = 0_u32;
     for value in &mut result.payload.active_mut().stack {

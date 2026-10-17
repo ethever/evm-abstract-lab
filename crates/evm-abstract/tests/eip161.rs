@@ -6,11 +6,14 @@ use evm_abstract::{
     Address, Fork, U256,
     analysis::{ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
     domain::{AbstractValue, Domain},
-    world::{Account, AddressInput, ByteArray, Entry, Existence, Store, World},
+    world::{Account, AddressInput, ByteArray, Code, Entry, Existence, Store, World},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
-    context::{TxEnv, result::ExecutionResult},
+    context::{
+        TxEnv,
+        result::{ExecutionResult, HaltReason, ResultAndState},
+    },
     database::InMemoryDB,
     interpreter::{Interpreter, interpreter::EthInterpreter, interpreter_types::Jumps},
     primitives::{Bytes, TxKind},
@@ -389,6 +392,48 @@ impl<CTX> Inspector<CTX, EthInterpreter> for Trace {
     }
 }
 
+fn concrete(world: &World, expected_calls: usize) -> ResultAndState {
+    let mut db = InMemoryDB::default();
+    for (owner, account) in world.accounts() {
+        let bytecode = Bytecode::new_raw(Bytes::from(world.raw_account_code(*owner).unwrap()));
+        db.insert_account_info(
+            *owner,
+            AccountInfo::new(
+                account.balance.singleton().unwrap(),
+                account.nonce.singleton().unwrap().to::<u64>(),
+                bytecode.hash_slow(),
+                bytecode,
+            ),
+        );
+    }
+    db.insert_account_info(
+        address(0x1000),
+        AccountInfo {
+            balance: U256::from(100_000_000),
+            ..AccountInfo::default()
+        },
+    );
+    let context = Context::mainnet()
+        .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(world.fork().spec_id()))
+        .with_db(db);
+    let mut evm = context.build_mainnet_with_inspector(Trace::default());
+    let concrete = evm
+        .inspect_tx(
+            TxEnv::builder()
+                .caller(address(0x1000))
+                .kind(TxKind::Call(address(0x101)))
+                .gas_limit(10_000_000)
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        evm.inspector.calls, expected_calls,
+        "oracle must execute every witness CALL"
+    );
+    concrete
+}
+
 #[test]
 fn revm_touch_and_rollback_agree_with_eip161_abstract_outcomes() {
     for (code, target, expected_touch) in [
@@ -404,44 +449,7 @@ fn revm_touch_and_rollback_agree_with_eip161_abstract_outcomes() {
         if target != 0x200 {
             world.insert(address(target), Account::empty()).unwrap();
         }
-        let mut db = InMemoryDB::default();
-        for (owner, account) in world.accounts() {
-            let bytecode = Bytecode::new_raw(Bytes::from(world.raw_account_code(*owner).unwrap()));
-            db.insert_account_info(
-                *owner,
-                AccountInfo::new(
-                    account.balance.singleton().unwrap(),
-                    account.nonce.singleton().unwrap().to::<u64>(),
-                    bytecode.hash_slow(),
-                    bytecode,
-                ),
-            );
-        }
-        db.insert_account_info(
-            address(0x1000),
-            AccountInfo {
-                balance: U256::from(100_000_000),
-                ..AccountInfo::default()
-            },
-        );
-        let context = Context::mainnet()
-            .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(world.fork().spec_id()))
-            .with_db(db);
-        let mut evm = context.build_mainnet_with_inspector(Trace::default());
-        let concrete = evm
-            .inspect_tx(
-                TxEnv::builder()
-                    .caller(address(0x1000))
-                    .kind(TxKind::Call(address(0x101)))
-                    .gas_limit(10_000_000)
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
-        assert_eq!(
-            evm.inspector.calls, 1,
-            "oracle must execute the witness CALL"
-        );
+        let concrete = concrete(&world, 1);
         let recipient = concrete.state.get(&address(target)).unwrap();
         assert_eq!(recipient.is_touched(), expected_touch);
         assert!(recipient.info.is_empty());
@@ -455,14 +463,130 @@ fn revm_touch_and_rollback_agree_with_eip161_abstract_outcomes() {
             ExecutionResult::Revert { .. } => OutcomeKind::Revert,
             ExecutionResult::Halt { .. } => OutcomeKind::Failure,
         };
-        let analysis = run(world, true);
+        for summaries in [false, true] {
+            let analysis = run(world.clone(), summaries);
+            assert!(
+                analysis
+                    .outcomes()
+                    .iter()
+                    .any(|outcome| outcome.kind == kind
+                        && outcome.store.existence(address(target)) == expected),
+                "code={code}, summaries={summaries}, concrete={kind:?}/{expected:?}"
+            );
+        }
+    }
+}
+
+// Absence is included by Unknown after a may-touch join. Keep the remaining
+// concrete account fields too: a lifecycle flag alone cannot admit a funded or
+// definitely nonempty RIPEMD account as this oracle's empty recipient.
+fn includes_cleared_empty(store: &Store, target: Address) -> bool {
+    matches!(
+        store.existence(target),
+        Existence::Absent | Existence::Unknown
+    ) && store.read_balance(target).contains(U256::ZERO)
+        && store.nonce(target).contains(U256::ZERO)
+        && match store.code(target) {
+            None | Some(Code::Empty | Code::Unknown) => true,
+            Some(Code::Runtime(program)) => program.byte_len() == 0,
+            Some(Code::Delegation(_)) => false,
+        }
+}
+
+#[test]
+fn revm_ripemd_then_pure_loop_oog_is_included_in_failure_outcomes() {
+    // Exact demonstrated witness: CALL3, then a memory-free JUMP loop. Entry
+    // and memory Failure cannot represent its later sticky-touch state.
+    let mut world = fixture("5f5f5f5f5f600361fffff1505b600c56", Account::empty());
+    world.insert(address(3), Account::empty()).unwrap();
+    let concrete = concrete(&world, 1);
+    assert!(matches!(
+        concrete.result,
+        ExecutionResult::Halt {
+            reason: HaltReason::OutOfGas(_),
+            ..
+        }
+    ));
+    let recipient = concrete.state.get(&address(3)).unwrap();
+    assert!(recipient.is_touched() && recipient.info.is_empty());
+    for summaries in [false, true] {
+        let analysis = run(world.clone(), summaries);
         assert!(
-            analysis
-                .outcomes()
-                .iter()
-                .any(|outcome| outcome.kind == kind
-                    && outcome.store.existence(address(target)) == expected)
+            analysis.outcomes().iter().any(|outcome| {
+                outcome.kind == OutcomeKind::Failure
+                    && includes_cleared_empty(&outcome.store, address(3))
+            }),
+            "summaries={summaries}: Failure must include the oracle's cleared RIPEMD account"
         );
+    }
+}
+
+#[test]
+fn child_ripemd_then_loop_failure_resumes_parent_and_rolls_back_ordinary_effects() {
+    // Child writes slot 0, touches an ordinary empty recipient, calls RIPEMD,
+    // then loops at PC 0x1d. Only RIPEMD's touch survives the child's OOG.
+    let child = Account::from_hex(
+        "60075f555f5f5f5f5f61030061fffff1505f5f5f5f5f600361fffff1505b601d56",
+        Fork::Osaka,
+    )
+    .unwrap();
+    // Parent records the CALL status at slot 0 and then writes a continuation
+    // marker at slot 1. EIP-150 leaves it enough gas after the child's OOG.
+    let mut world = fixture("5f5f5f5f5f61020062fffffff15f55600160015500", child);
+    world.insert(address(3), Account::empty()).unwrap();
+    let concrete = concrete(&world, 3);
+    assert!(matches!(concrete.result, ExecutionResult::Success { .. }));
+    let ripemd = concrete.state.get(&address(3)).unwrap();
+    assert!(ripemd.is_touched() && ripemd.info.is_empty());
+    let ordinary = concrete.state.get(&address(0x300)).unwrap();
+    assert!(!ordinary.is_touched() && ordinary.info.is_empty());
+    let parent = concrete.state.get(&address(0x101)).unwrap();
+    assert_eq!(
+        parent.storage.get(&U256::ZERO).unwrap().present_value(),
+        U256::ZERO
+    );
+    assert_eq!(
+        parent.storage.get(&U256::ONE).unwrap().present_value(),
+        U256::ONE
+    );
+    let child = concrete.state.get(&address(0x200)).unwrap();
+    assert_eq!(
+        child
+            .storage
+            .get(&U256::ZERO)
+            .map_or(U256::ZERO, |slot| slot.present_value()),
+        U256::ZERO
+    );
+    for summaries in [false, true] {
+        let analysis = run(world.clone(), summaries);
+        let matching: Vec<_> = returns(&analysis)
+            .filter(|store| includes_cleared_empty(store, address(3)))
+            .collect();
+        assert!(
+            !matching.is_empty(),
+            "summaries={summaries}: parent must catch late Failure"
+        );
+        for store in matching {
+            assert_eq!(store.existence(address(0x300)), Existence::Present);
+            assert_eq!(
+                store
+                    .read(address(0x200), &word(0), Domain::default())
+                    .singleton(),
+                Some(U256::ZERO)
+            );
+            assert_eq!(
+                store
+                    .read(address(0x101), &word(0), Domain::default())
+                    .singleton(),
+                Some(U256::ZERO)
+            );
+            assert_eq!(
+                store
+                    .read(address(0x101), &word(1), Domain::default())
+                    .singleton(),
+                Some(U256::ONE)
+            );
+        }
     }
 }
 
