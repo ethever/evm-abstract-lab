@@ -56,14 +56,73 @@ fn default_single_ssa_folds_and_copies_without_losing_bytecode_identity() {
 
 #[test]
 fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() {
+    const CODE: &str = "602a60405100";
+    let complete = report(
+        &[
+            "ssa",
+            "--hex",
+            CODE,
+            "--max-memory-bytes",
+            "32",
+            "--format",
+            "json",
+        ],
+        0,
+    );
+    assert_eq!(complete["ssa"]["complete"], true);
+    assert_eq!(
+        complete["machine_analysis"]["config"]["max_memory_bytes"],
+        32
+    );
+    assert_eq!(complete["machine_analysis"]["frontiers"], json!([]));
+    assert_eq!(
+        complete["analysis"]["states"][0]["exit_stack"][0]["Constants"],
+        json!(["0x2a"])
+    );
+    assert_eq!(
+        complete["analysis"]["states"][0]["exit_stack"][1]["Constants"],
+        json!(["0x0"])
+    );
+    assert_eq!(
+        complete["ssa"]["blocks"][0]["instructions"][2]["results"],
+        json!([2])
+    );
+    assert!(
+        complete["ssa"]["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|fact| {
+                fact["value"] == 2 && fact["scope"] == "Definition" && fact["constant"] == "0x0"
+            })
+    );
+    let work = super::work_limit_visiting_pc(4, |limit| {
+        let work = limit.map(|limit| limit.to_string());
+        let mut args = vec![
+            if limit.is_none() { "ssa" } else { "cfg" },
+            "--hex",
+            CODE,
+            "--max-memory-bytes",
+            "32",
+            "--format",
+            "json",
+        ];
+        if let Some(work) = &work {
+            args.extend(["--max-work", work.as_str()]);
+        }
+        run_concrete(&args)
+    })
+    .to_string();
     let report = report(
         &[
             "ssa",
             "--hex",
-            "602a60405100",
+            CODE,
             "--allow-partial-ssa",
             "--max-memory-bytes",
             "32",
+            "--max-work",
+            &work,
             "--format",
             "json",
         ],
@@ -72,17 +131,46 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
     assert!(report.get("ssa").is_none());
     let ir = &report["partial_ssa"];
     assert_eq!(ir["complete"], false);
+    assert_eq!(ir["blocks"][0]["coverage"], "Current");
     let pending = &ir["blocks"][0]["instructions"][2];
+    assert_eq!(pending["pc"], 4);
     assert_eq!(pending["opcode"], 0x51);
     assert_eq!(pending["progress"], "OperandsConsumed");
+    assert_eq!(pending["operands"], json!([1]));
     assert!(pending["results"].as_array().unwrap().is_empty());
     assert!(pending["operation"]["Opcode"].is_object());
+    assert_eq!(ir["blocks"][0]["exit_frames"], json!([[0]]));
+    assert_eq!(ir["blocks"][0]["instructions"].as_array().unwrap().len(), 3);
+    let machine = &report["machine_analysis"];
+    assert_eq!(machine["states"][0]["executed_pcs"], json!([0, 2, 4]));
+    assert_eq!(
+        machine["states"][0]["exit_stack"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        machine["states"][0]["exit_stack"][0]["Constants"],
+        json!(["0x2a"])
+    );
+    let outcomes = machine["outcomes"].as_array().unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert!(outcomes.iter().all(|outcome| outcome["kind"] == "Failure"));
+    assert_eq!(ir["frontiers"], machine["frontiers"]);
+    let frontiers = ir["frontiers"].as_array().unwrap();
+    assert_eq!(frontiers.len(), 1);
+    assert_eq!(frontiers[0]["reason"], "Work");
+    assert_eq!(frontiers[0]["from"], 0);
+    assert_eq!(frontiers[0]["pc"], 4);
     assert!(ir["facts"].as_array().unwrap().iter().any(|fact| {
         fact["source"] == "Instruction"
             && fact["scope"] == json!({"State":{"state":0}})
             && fact["validity"] == "Current"
     }));
+    assert!(ir["facts"].as_array().unwrap().iter().all(|fact| {
+        fact["value"] != 2
+            && (fact["source"] != "Instruction" || fact["scope"] == json!({"State":{"state":0}}))
+    }));
     assert_eq!(ir["value_count"], 2);
+    assert_eq!(ir["mappings"].as_array().unwrap().len(), 2);
     assert!(!ir["frontiers"].as_array().unwrap().is_empty());
 }
 

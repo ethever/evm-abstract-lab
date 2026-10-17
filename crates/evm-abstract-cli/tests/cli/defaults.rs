@@ -135,7 +135,9 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
 #[test]
 fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_frontiers() {
     // MSTORE touches bytes 65536..65568, just beyond the former implicit budget.
-    let code = "6001620100005200";
+    // A following MLOAD checks the actual write under the exact-byte cap.
+    let code = "60016201000052620100005100";
+    assert_eq!(AnalysisLimits::default().max_memory_bytes, 64 * 1024 * 1024);
     for command in ["cfg", "ssa", "explain"] {
         let default = run_concrete(&[command, "--hex", code]);
         assert!(
@@ -144,8 +146,24 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
             String::from_utf8_lossy(&default.stderr)
         );
         let bounded = run_concrete(&[command, "--hex", code, "--max-memory-bytes", "65536"]);
-        assert_eq!(bounded.status.code(), Some(2), "{command}");
-        let text = String::from_utf8(bounded.stdout).unwrap();
+        assert!(
+            bounded.status.success(),
+            "{command}: {}",
+            String::from_utf8_lossy(&bounded.stderr)
+        );
+        // Two nodes admit the Store Input root. The mandatory WriteWord root
+        // needs more, retaining a real refusal after MSTORE consumes operands.
+        let refused = run_concrete(&[
+            command,
+            "--hex",
+            code,
+            "--max-memory-bytes",
+            "65536",
+            "--max-symbolic-nodes",
+            "2",
+        ]);
+        assert_eq!(refused.status.code(), Some(2), "{command}");
+        let text = String::from_utf8(refused.stdout).unwrap();
         if command == "ssa" {
             assert!(
                 text.is_empty(),
@@ -153,11 +171,67 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
             );
         } else {
             assert!(
-                text.contains("Incomplete") && text.contains("Memory"),
+                text.contains("Incomplete")
+                    && text.contains("Relations")
+                    && text.contains("ExpressionLimit"),
                 "{command}: {text}"
             );
         }
     }
+    for explicit in [None, Some("65536")] {
+        let mut args = vec!["ssa", "--hex", code, "--format", "json"];
+        if let Some(cap) = explicit {
+            args.extend(["--max-memory-bytes", cap]);
+        }
+        let complete = report(run_concrete(&args));
+        let machine = &complete["machine_analysis"];
+        assert_eq!(
+            machine["config"]["max_memory_bytes"],
+            explicit.map_or(64 * 1024 * 1024, |cap| cap.parse::<usize>().unwrap())
+        );
+        assert_eq!(machine["status"], "Converged");
+        assert_eq!(machine["frontiers"], serde_json::json!([]));
+        assert_eq!(
+            machine["states"][0]["exit_stack"][0]["Constants"],
+            serde_json::json!(["0x1"])
+        );
+        let load = complete["ssa"]["blocks"][0]["instructions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["opcode"] == 0x51)
+            .unwrap();
+        assert_eq!(load["progress"], "Completed");
+        assert_eq!(load["results"].as_array().unwrap().len(), 1);
+    }
+    let refused = run_concrete(&[
+        "cfg",
+        "--hex",
+        code,
+        "--max-memory-bytes",
+        "65536",
+        "--max-symbolic-nodes",
+        "2",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(refused.status.code(), Some(2));
+    let refused: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(refused["config"]["relations"]["max_nodes"], 2);
+    assert_eq!(
+        refused["states"][0]["executed_pcs"],
+        serde_json::json!([0, 2, 6])
+    );
+    assert!(
+        refused["frontiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|frontier| {
+                frontier["from"] == 0
+                    && frontier["reason"] == serde_json::json!({"Relations":"ExpressionLimit"})
+            })
+    );
 }
 
 #[test]

@@ -159,8 +159,9 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
         ("call-return-branch", vec!["--max-work", "1"], "Work"),
         (
             "call-return-branch",
-            vec!["--max-memory-bytes", "1"],
-            "Memory",
+            // Admit the two-node Input root; refuse a mandatory retained effect.
+            vec!["--max-symbolic-nodes", "2"],
+            "ExpressionLimit",
         ),
         ("reentry", vec!["--max-call-depth", "2"], "CallDepth"),
         ("call-return-branch", vec!["--max-states", "1"], "States"),
@@ -181,6 +182,25 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
             assert!(!disassembly.contains("Captured instruction list"));
         }
         assert!(explanation.contains("Incomplete") && explanation.contains(frontier));
+        if extra == ["--max-symbolic-nodes", "2"] {
+            let mut query = extra.clone();
+            query.extend(["--format", "json"]);
+            let report = world_command("analyze", name, &query);
+            assert_eq!(report.status.code(), Some(2));
+            let report: Json = serde_json::from_slice(&report.stdout).unwrap();
+            assert_eq!(report["config"]["analysis"]["relations"]["max_nodes"], 2);
+            assert!(
+                report["frontiers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|frontier| {
+                        frontier["reason"] == json!({"Relations":"ExpressionLimit"})
+                            && frontier["from"].is_u64()
+                            && frontier["pc"].is_u64()
+                    })
+            );
+        }
         assert!(explanation.contains("SSA unavailable"));
         assert!(!explanation.contains(VERIFIED));
     }

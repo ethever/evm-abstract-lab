@@ -401,7 +401,16 @@ fn world_and_both_explain_views_keep_partial_frontiers_and_default_contracts() {
 
 #[test]
 fn blocked_memory_instruction_is_pending_without_a_normal_result() {
-    let world = WorldCode::new("5f5100");
+    let world = WorldCode::new("602a60405100");
+    let work = super::work_limit_visiting_pc(4, |limit| {
+        let work = limit.map(|limit| limit.to_string());
+        let mut args = vec!["--format", "json", "--max-memory-bytes", "32"];
+        if let Some(work) = &work {
+            args.extend(["--max-work", work.as_str()]);
+        }
+        world.run("analyze", &args)
+    })
+    .to_string();
     let json = report(&world.run(
         "analyze",
         &[
@@ -410,25 +419,57 @@ fn blocked_memory_instruction_is_pending_without_a_normal_result() {
             "--format",
             "json",
             "--max-memory-bytes",
-            "1",
+            "32",
+            "--max-work",
+            &work,
         ],
     ));
-    let instructions = json["partial_ssa"]["blocks"][0]["instructions"]
+    let partial = &json["partial_ssa"];
+    assert_eq!(partial["complete"], false);
+    assert_eq!(partial["blocks"][0]["coverage"], "Current");
+    assert_eq!(partial["frontiers"], json["analysis"]["frontiers"]);
+    let frontiers = partial["frontiers"].as_array().unwrap();
+    assert_eq!(frontiers.len(), 1);
+    assert_eq!(frontiers[0]["reason"], "Work");
+    assert_eq!(frontiers[0]["from"], 0);
+    assert_eq!(frontiers[0]["pc"], 4);
+    assert_eq!(
+        json["analysis"]["states"][0]["executed_pcs"],
+        json!([0, 2, 4])
+    );
+    let stack = json["analysis"]["states"][0]["exit_stack"]
         .as_array()
         .unwrap();
+    assert_eq!(stack.len(), 1);
+    assert_eq!(stack[0]["Constants"], json!(["0x2a"]));
+    let outcomes = json["analysis"]["outcomes"].as_array().unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert!(outcomes.iter().all(|outcome| outcome["kind"] == "Failure"));
+    let instructions = partial["blocks"][0]["instructions"].as_array().unwrap();
     let load = instructions
         .iter()
         .find(|item| item["opcode"] == 0x51)
         .unwrap();
+    assert_eq!(load["pc"], 4);
     assert_eq!(load["progress"], "OperandsConsumed");
+    assert_eq!(load["operands"], json!([1]));
     assert!(load["results"].as_array().unwrap().is_empty());
+    assert!(load["operation"]["Opcode"].is_object());
+    assert_eq!(partial["blocks"][0]["exit_frames"], json!([[0]]));
+    assert_eq!(partial["value_count"], 2);
     assert!(!instructions.iter().any(|item| item["opcode"] == 0x00));
     for extra in [vec![], vec!["--verbose"]] {
         let verbose = extra.contains(&"--verbose");
-        let mut args = vec!["--allow-partial-ssa", "--max-memory-bytes", "1"];
+        let mut args = vec![
+            "--allow-partial-ssa",
+            "--max-memory-bytes",
+            "32",
+            "--max-work",
+            &work,
+        ];
         args.extend(extra);
         let rendered = text(&world.run("explain", &args), 2);
-        assert_partial(&rendered, "Memory");
+        assert_partial(&rendered, "Work");
         assert!(rendered.contains("progress=OperandsConsumed; pending operation"));
         if verbose {
             assert_verbose(&rendered);
@@ -441,6 +482,15 @@ fn blocked_memory_instruction_is_pending_without_a_normal_result() {
 #[test]
 fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
     let world = WorldCode::new("600160020160030100");
+    let work = super::work_limit_visiting_pc(4, |limit| {
+        let work = limit.map(|limit| limit.to_string());
+        let mut args = vec!["--format", "json"];
+        if let Some(work) = &work {
+            args.extend(["--max-work", work.as_str()]);
+        }
+        world.run("analyze", &args)
+    })
+    .to_string();
     let json = report(&world.run(
         "analyze",
         &[
@@ -449,10 +499,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "--format",
             "json",
             "--max-work",
-            // Checked source/state initialization is charged before opcodes.
-            // 1800 retains three completed/pending instructions; 1500 admits
-            // the state but no instruction prefix (survey in task evidence).
-            "1800",
+            &work,
         ],
     ));
     let instructions = json["partial_ssa"]["blocks"][0]["instructions"]
@@ -464,6 +511,32 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             .iter()
             .any(|item| item["progress"] == "Completed")
     );
+    assert_eq!(json["partial_ssa"]["blocks"][0]["coverage"], "Current");
+    assert_eq!(
+        json["analysis"]["states"][0]["executed_pcs"],
+        json!([0, 2, 4])
+    );
+    assert!(
+        json["analysis"]["frontiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|frontier| frontier["reason"] == "Work")
+    );
+    let zero = world.run(
+        "analyze",
+        &[
+            "--ssa",
+            "--allow-partial-ssa",
+            "--format",
+            "json",
+            "--max-work",
+            "0",
+        ],
+    );
+    assert_eq!(zero.status.code(), Some(1));
+    assert!(zero.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&zero.stderr).contains("positive"));
     let empty = report(&world.run(
         "analyze",
         &[
@@ -475,6 +548,11 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "1",
         ],
     ));
+    assert_eq!(empty["analysis"]["config"]["max_work"], 1);
+    let frontiers = empty["analysis"]["frontiers"].as_array().unwrap();
+    assert_eq!(frontiers.len(), 1);
+    assert_eq!(frontiers[0]["reason"], "Work");
+    assert!(frontiers[0]["from"].is_null() && frontiers[0]["pc"].is_null());
     assert!(empty["analysis"]["states"].as_array().unwrap().is_empty());
     assert!(
         empty["partial_ssa"]["blocks"]
@@ -501,6 +579,16 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
         .find(|block| block["coverage"] == "Unexecuted")
         .unwrap();
     assert!(unprocessed["instructions"].as_array().unwrap().is_empty());
+    assert!(
+        json["analysis"]["frontiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|frontier| frontier["reason"] == json!({"Budget":"Transfers"}))
+    );
+    let state = unprocessed["state"].as_u64().unwrap() as usize;
+    assert_eq!(json["analysis"]["states"][state]["executed_pcs"], json!([]));
+    assert!(json["analysis"]["states"][state]["exit"].is_null());
     let rendered = text(
         &jump.run("explain", &["--allow-partial-ssa", "--max-transfers", "1"]),
         2,

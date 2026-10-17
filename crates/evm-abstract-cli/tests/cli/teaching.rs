@@ -297,7 +297,7 @@ fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
     for (name, extra) in [
         ("missing-code", vec!["--max-call-depth", "1"]),
         ("call-return-branch", vec!["--max-work", "1"]),
-        ("call-return-branch", vec!["--max-memory-bytes", "1"]),
+        ("call-return-branch", vec!["--max-symbolic-nodes", "2"]),
         ("reentry", vec!["--max-call-depth", "2"]),
         ("call-return-branch", vec!["--max-states", "1"]),
         ("call-return-branch", vec!["--max-transfers", "1"]),
@@ -312,6 +312,21 @@ fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
         let report = world("analyze", name, &query);
         assert_eq!(report.status.code(), Some(2));
         let report: Json = serde_json::from_slice(&report.stdout).unwrap();
+        assert!(!report["frontiers"].as_array().unwrap().is_empty());
+        if extra == ["--max-symbolic-nodes", "2"] {
+            assert_eq!(report["config"]["analysis"]["relations"]["max_nodes"], 2);
+            assert!(
+                report["frontiers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|frontier| {
+                        frontier["reason"] == serde_json::json!({"Relations":"ExpressionLimit"})
+                            && frontier["from"].is_u64()
+                            && frontier["pc"].is_u64()
+                    })
+            );
+        }
         let frontiers = explanation.split_once("\nFrontiers\n").unwrap().1;
         let rows = frontiers
             .lines()
