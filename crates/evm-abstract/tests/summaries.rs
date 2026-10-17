@@ -17,7 +17,7 @@ use evm_abstract::{
     world::{Account, ByteArray, Entry, World},
 };
 use oracle::address;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Compare observable numeric/provenance unions independently of immutable
 /// execution-history graph layout. Snapshot roots and actual read semantics
@@ -81,7 +81,106 @@ fn relations(analysis: &WorldAnalysis) -> BTreeSet<String> {
         .collect()
 }
 
-fn compare(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
+// Only outcome membership is unordered. Replay may rename runtime leaves, but
+// one injective map must preserve aliases across every row and conditional graph.
+fn same_observable_relations(
+    left: &BTreeSet<String>,
+    right: &BTreeSet<String>,
+    captured_leaves: &BTreeSet<u64>,
+) -> bool {
+    fn match_value(
+        left: &serde_json::Value,
+        right: &serde_json::Value,
+        forward: &mut BTreeMap<u64, u64>,
+        reverse: &mut BTreeMap<u64, u64>,
+    ) -> bool {
+        match (left, right) {
+            (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
+                if left.len() == 1 && left.contains_key("Fresh") {
+                    if right.len() != 1 {
+                        return false;
+                    }
+                    let (Some(left), Some(right)) = (
+                        left["Fresh"].as_u64(),
+                        right.get("Fresh").and_then(serde_json::Value::as_u64),
+                    ) else {
+                        return false;
+                    };
+                    return match (forward.get(&left), reverse.get(&right)) {
+                        (Some(mapped), Some(original)) => *mapped == right && *original == left,
+                        (None, None) => {
+                            forward.insert(left, right);
+                            reverse.insert(right, left);
+                            true
+                        }
+                        _ => false,
+                    };
+                }
+                left.len() == right.len()
+                    && left.iter().all(|(key, value)| {
+                        right
+                            .get(key)
+                            .is_some_and(|other| match_value(value, other, forward, reverse))
+                    })
+            }
+            (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right)
+                        .all(|(value, other)| match_value(value, other, forward, reverse))
+            }
+            _ => left == right,
+        }
+    }
+    fn match_rows(
+        left: &[serde_json::Value],
+        right: &[serde_json::Value],
+        used: &mut [bool],
+        forward: &BTreeMap<u64, u64>,
+        reverse: &BTreeMap<u64, u64>,
+    ) -> bool {
+        let Some((row, remaining)) = left.split_first() else {
+            return true;
+        };
+        for (index, candidate) in right.iter().enumerate() {
+            if used[index] {
+                continue;
+            }
+            // A rejected pairing must not leak its tentative leaf assignments.
+            let mut next_forward = forward.clone();
+            let mut next_reverse = reverse.clone();
+            if match_value(row, candidate, &mut next_forward, &mut next_reverse) {
+                used[index] = true;
+                if match_rows(remaining, right, used, &next_forward, &next_reverse) {
+                    return true;
+                }
+                used[index] = false;
+            }
+        }
+        false
+    }
+    if left.len() != right.len() {
+        return false;
+    }
+    let parse = |rows: &BTreeSet<String>| -> Vec<serde_json::Value> {
+        rows.iter()
+            .map(|row| serde_json::from_str(row).unwrap())
+            .collect()
+    };
+    let left = parse(left);
+    let right = parse(right);
+    let anchors = captured_leaves.iter().map(|id| (*id, *id)).collect();
+    match_rows(
+        &left,
+        &right,
+        &mut vec![false; right.len()],
+        &anchors,
+        &anchors,
+    )
+}
+
+fn checked_analyses(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
     let (world, entry) = fixture(accounts);
     let enabled = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
     let disabled = analyze_world(
@@ -109,10 +208,190 @@ fn compare(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
             OutcomeKind::Return
         );
     }
-    assert_eq!(relations(&enabled), relations(&disabled));
     assert!(disabled.summaries().is_empty());
     assert_eq!(disabled.summary_stats().hits, 0);
     (enabled, disabled)
+}
+
+fn compare(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
+    let (enabled, disabled) = checked_analyses(accounts);
+    assert_eq!(relations(&enabled), relations(&disabled));
+    (enabled, disabled)
+}
+
+fn compare_full_store(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
+    let (enabled, disabled) = checked_analyses(accounts);
+    // The fixture clones one World and concrete Entry. Its saved input sources
+    // stay fixed; only later private runtime leaves may be renamed.
+    let captured = |analysis: &WorldAnalysis| -> BTreeSet<u64> {
+        analysis.states()[0]
+            .entry
+            .active()
+            .saved_store
+            .state()
+            .fresh_leaves()
+            .into_iter()
+            .map(|leaf| {
+                let evm_abstract::domain::symbolic::ExprKind::Fresh(id) = leaf.kind() else {
+                    panic!("fresh_leaves must contain only Fresh source leaves")
+                };
+                *id
+            })
+            .collect()
+    };
+    let captured_leaves = captured(&enabled);
+    assert_eq!(captured_leaves, captured(&disabled));
+    assert!(same_observable_relations(
+        &relations(&enabled),
+        &relations(&disabled),
+        &captured_leaves,
+    ));
+    (enabled, disabled)
+}
+
+#[test]
+fn observable_relation_bijection_preserves_conditional_aliases_and_inputs() {
+    fn row(first: u64, second: u64, length: u64) -> serde_json::Value {
+        let condition = |leaf| {
+            serde_json::json!({
+                "identity_scope": "producer",
+                "nodes": [
+                    {"Fresh": leaf},
+                    {"Input": {"scope": 7, "symbol": "CallValue"}},
+                    {"SlotsInput": {"source": {"token": 1, "namespace": "0x101"}, "bindings": []}},
+                    {"Constant": "0x7"},
+                    {"SlotRead": {"state": 2, "key": 3}},
+                    {"Operation": {"opcode": 0x14, "args": [0, 4]}},
+                    {"Fresh": 99},
+                    {"SlotsInput": {"source": {"token": 6, "namespace": "0x999"}, "bindings": []}},
+                    {"SlotRead": {"state": 7, "key": 3}},
+                    {"Operation": {"opcode": 0x14, "args": [5, 8]}}
+                ]
+            })
+        };
+        let scope = |number| {
+            serde_json::json!({
+                "facts": [{"value": AbstractValue::constant(U256::from(number))}],
+                "conditional": []
+            })
+        };
+        let repeated = serde_json::json!({
+            "condition": condition(second),
+            "then_facts": scope(7_u64),
+            "else_facts": scope(9_u64)
+        });
+        let mut then_facts = scope(7_u64);
+        then_facts["conditional"] = serde_json::json!([repeated.clone()]);
+        let mut else_facts = scope(9_u64);
+        else_facts["conditional"] = serde_json::json!([repeated.clone()]);
+        serde_json::json!(["Return", {
+            "length": AbstractValue::constant(U256::from(length)),
+            "conditional": [{
+                "condition": condition(first), "then_facts": then_facts, "else_facts": else_facts
+            }, repeated]
+        }, {}])
+    }
+    let set = |rows: &[serde_json::Value]| -> BTreeSet<String> {
+        rows.iter()
+            .map(|row| {
+                let mut row = row.clone();
+                observable(&mut row);
+                serde_json::to_string(&row).unwrap()
+            })
+            .collect()
+    };
+    let failure = serde_json::json!(["Failure", {"conditional": []}, {}]);
+    let left = set(&[row(1, 2, 32), row(2, 1, 64), failure.clone()]);
+    // Renaming reverses the raw set order of the Return rows.
+    let right = [row(20, 10, 32), row(10, 20, 64), failure];
+    let captured = BTreeSet::from([99]);
+    let matches =
+        |rows: &[serde_json::Value]| same_observable_relations(&left, &set(rows), &captured);
+    assert!(matches(&right));
+    assert!(same_observable_relations(&set(&right), &left, &captured));
+    fn rename_source(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if fields.len() == 1
+                    && fields.get("Fresh").and_then(serde_json::Value::as_u64) == Some(99)
+                {
+                    fields.insert("Fresh".to_owned(), serde_json::json!(199));
+                } else {
+                    fields.values_mut().for_each(rename_source);
+                }
+            }
+            serde_json::Value::Array(values) => values.iter_mut().for_each(rename_source),
+            _ => {}
+        }
+    }
+    let mut changed_source = right.clone();
+    changed_source.iter_mut().for_each(rename_source);
+    assert!(same_observable_relations(
+        &left,
+        &set(&changed_source),
+        &BTreeSet::new()
+    ));
+    assert!(
+        !matches(&changed_source),
+        "a captured source is not a private runtime leaf"
+    );
+    // Consistent many-to-one renaming must fail even when one leaf is unchanged.
+    assert!(!matches(&[row(1, 1, 32), row(1, 1, 64), right[2].clone()]));
+
+    for (index, pointer) in [
+        (
+            0,
+            "/1/conditional/0/else_facts/conditional/0/condition/nodes/0/Fresh",
+        ),
+        (1, "/1/conditional/0/condition/nodes/0/Fresh"),
+    ] {
+        let mut split = right.clone();
+        *split[index].pointer_mut(pointer).unwrap() = serde_json::json!(30);
+        assert!(!matches(&split), "split alias at {index}:{pointer}");
+    }
+    for (pointer, replacement) in [
+        ("/nodes/5/Operation/opcode", serde_json::json!(0x18)),
+        ("/nodes/1/Input/scope", serde_json::json!(8)),
+        ("/nodes/1/Input/symbol", serde_json::json!("Caller")),
+        (
+            "/nodes/2/SlotsInput/source/namespace",
+            serde_json::json!("0x202"),
+        ),
+        ("/nodes/2/SlotsInput/source/token", serde_json::json!(0)),
+        ("/identity_scope", serde_json::json!("other-producer")),
+    ] {
+        let mut changed = right.clone();
+        *changed[0][1]["conditional"][0]["condition"]
+            .pointer_mut(pointer)
+            .unwrap() = replacement;
+        assert!(!matches(&changed), "condition changed at {pointer}");
+    }
+    let mut numeric = right.clone();
+    numeric[0][1]["length"] =
+        serde_json::to_value(AbstractValue::constant(U256::from(33))).unwrap();
+    assert!(!matches(&numeric));
+    let mut polarity = right.clone();
+    let branch = &mut polarity[0][1]["conditional"][0];
+    let then_facts = branch["then_facts"].clone();
+    branch["then_facts"] = branch["else_facts"].clone();
+    branch["else_facts"] = then_facts;
+    assert!(!matches(&polarity));
+    let mut order = right.clone();
+    order[0][1]["conditional"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    assert!(!matches(&order));
+    let mut operands = right.clone();
+    operands[0][1]["conditional"][0]["condition"]["nodes"][5]["Operation"]["args"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    assert!(!matches(&operands));
+    let mut failure_kind = right.clone();
+    failure_kind[2][0] = serde_json::json!("Return");
+    assert!(!matches(&failure_kind));
+    assert!(!matches(&right[..2]));
 }
 
 #[test]
@@ -201,7 +480,7 @@ fn full_store_value_caller_and_mode_preconditions_produce_misses() {
             call(0xf1, 0x200, 0, 32)
         };
         let caller = format!("{}50{between}{second}5060205ff3", call(0xf1, 0x200, 0, 32));
-        let (enabled, _) = compare(&[(0x101, &caller), (0x200, "345f5260205ff3")]);
+        let (enabled, _) = compare_full_store(&[(0x101, &caller), (0x200, "345f5260205ff3")]);
         let distinct: BTreeSet<_> = enabled
             .summaries()
             .iter()
@@ -220,7 +499,7 @@ fn full_store_value_caller_and_mode_preconditions_produce_misses() {
         call(0xf1, 0x200, 0, 32),
         call(0xf4, 0x200, 0, 32)
     );
-    let (enabled, _) = compare(&[(0x101, &caller), (0x200, "335f5260205ff3")]);
+    let (enabled, _) = compare_full_store(&[(0x101, &caller), (0x200, "335f5260205ff3")]);
     let callers: BTreeSet<_> = enabled
         .summaries()
         .iter()

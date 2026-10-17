@@ -6,7 +6,7 @@ use evm_abstract::{
         AbstractValue, Domain,
         provenance::Origin,
         relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
-        symbolic::{ExprId, ExprKind},
+        symbolic::{ExprId, ExprKind, SlotStateKind},
     },
     world::{
         AbstractLog, Account, ByteArray, Code, LogError, LogKey, RangeError, Store, World,
@@ -138,9 +138,15 @@ fn store_join_includes_missing_slots_defaults_and_balances() {
     assert_eq!(joined.addresses(), reversed.addresses());
     assert_eq!(joined.slots(), reversed.slots());
     assert_eq!(joined.transient_slots(), reversed.transient_slots());
+    let independent = original.join(&changed, domain);
+    let independent_read = independent.read(address(1), &v(7), domain);
+    let unrelated_source =
+        Store::new(&World::new(Fork::Osaka, "fixture")).read(address(2), &v(7), domain);
+    let unrelated_selector = ExprId::fresh().unwrap();
     // Independent union selectors need not be syntactically equal. Both orders
     // must have the same complete alternatives, with one selector across planes.
     for candidate in [&joined, &reversed] {
+        let policy = local_policy();
         let persistent = candidate.read(address(1), &v(7), domain);
         let transient = candidate.read_transient(address(1), &v(8), domain);
         let balance = candidate.read_balance(address(1));
@@ -148,65 +154,186 @@ fn store_join_includes_missing_slots_defaults_and_balances() {
         assert_state_value_eq(&transient, &domain.join(&v(0), &v(19)));
         assert_state_value_eq(&balance, &domain.join(&v(0), &v(10)));
         assert_state_value_eq(&candidate.read(address(1), &v(99), domain), &v(0));
-        assert_eq!(candidate.code(address(1)), original.code(address(1)));
-        assert_eq!(
-            candidate.existence(address(1)),
-            original.existence(address(1))
+        for owner in [address(1), address(2)] {
+            for input in [&original, &changed] {
+                assert_eq!(candidate.code(owner), input.code(owner));
+                assert_eq!(candidate.existence(owner), input.existence(owner));
+                assert_eq!(candidate.nonce(owner), input.nonce(owner));
+            }
+        }
+        let ExprKind::Ite {
+            condition,
+            then_value,
+            else_value,
+        } = balance.expression().unwrap().kind()
+        else {
+            panic!("the joined balance must retain its branch selector");
+        };
+        let then_balance = then_value.as_constant().unwrap();
+        let else_balance = else_value.as_constant().unwrap();
+        assert!(
+            (then_balance == U256::ZERO && else_balance == U256::from(10))
+                || (then_balance == U256::from(10) && else_balance == U256::ZERO)
         );
-        assert_eq!(candidate.nonce(address(1)), original.nonce(address(1)));
-        for (slot, expected_transient, expected_balance) in [(0, 0, 0), (42, 19, 10)] {
-            let policy = local_policy();
+        let (then_input, else_input) = if then_balance == U256::ZERO {
+            (&original, &changed)
+        } else {
+            (&changed, &original)
+        };
+        for plane in [false, true] {
+            let root = candidate.slot_root(address(1), plane).unwrap();
+            let SlotStateKind::Ite {
+                condition: slot_condition,
+                then_state,
+                else_state,
+            } = root.kind()
+            else {
+                panic!("both storage planes must retain the whole-store alternatives");
+            };
+            assert_eq!(slot_condition, condition);
+            assert_eq!(
+                then_state,
+                &then_input.slot_root(address(1), plane).unwrap()
+            );
+            assert_eq!(
+                else_state,
+                &else_input.slot_root(address(1), plane).unwrap()
+            );
+            assert_eq!(
+                candidate.slot_root(address(2), plane).unwrap(),
+                original.slot_root(address(2), plane).unwrap()
+            );
+        }
+        let values = [&persistent, &transient, &balance];
+        let alternatives = [[0_u64, 42], [0, 19], [0, 10]];
+        let assert_unselected = |relations: &RelationState| {
+            assert_eq!(relations.check(&policy), CheckResult::MayBeFeasible);
+            for (value, possible) in values.iter().zip(alternatives) {
+                let expression = value.expression().unwrap();
+                let ValueQuery::Bounds(bounds) = relations.local_value(expression, &policy) else {
+                    panic!("an undetermined selector must retain both store alternatives");
+                };
+                for number in possible {
+                    assert!(bounds.contains(U256::from(number)));
+                    assert_eq!(
+                        relations.can_equal(expression, U256::from(number), &policy),
+                        CheckResult::MayBeFeasible
+                    );
+                }
+            }
+        };
+        let assert_selected = |relations: &RelationState, expected: [u64; 3]| {
+            assert_eq!(relations.check(&policy), CheckResult::MayBeFeasible);
+            for (value, number) in values.iter().zip(expected) {
+                assert_eq!(
+                    relations.local_value(value.expression().unwrap(), &policy),
+                    ValueQuery::Exact(U256::from(number))
+                );
+                assert_eq!(
+                    relations.can_equal(value.expression().unwrap(), U256::from(number), &policy),
+                    CheckResult::MayBeFeasible
+                );
+            }
+        };
+        assert_unselected(&RelationState::default());
+        let mut unknown = RelationState::default();
+        unknown
+            .observe(
+                persistent.expression().unwrap(),
+                persistent.numeric(),
+                &policy,
+            )
+            .unwrap();
+        assert_unselected(&unknown);
+
+        let unrelated_owner = candidate.read(address(2), &v(7), domain);
+        assert_ne!(unrelated_owner.expression(), unrelated_source.expression());
+        assert_ne!(persistent.expression(), independent_read.expression());
+        for expression in [
+            unrelated_owner.expression().unwrap(),
+            unrelated_source.expression().unwrap(),
+            independent_read.expression().unwrap(),
+            &unrelated_selector,
+        ] {
+            for number in [0, 42] {
+                let mut relations = RelationState::default();
+                relations
+                    .observe(expression, v(number).numeric(), &policy)
+                    .unwrap();
+                assert_unselected(&relations);
+            }
+        }
+
+        for expected @ [slot, expected_transient, expected_balance] in [[0, 0, 0], [42, 19, 10]] {
             let mut relations = RelationState::default();
             relations
                 .observe(persistent.expression().unwrap(), v(slot).numeric(), &policy)
                 .unwrap();
-            assert_eq!(relations.check(&policy), CheckResult::MayBeFeasible);
-            // A fact about the persistent read does not invert its state ITE in
-            // the local evaluator. Both other-plane alternatives remain covered.
-            for (expression, candidates) in [
-                (transient.expression().unwrap(), [0, 19]),
-                (balance.expression().unwrap(), [0, 10]),
+            // Independent literal arms let the observed read determine the
+            // shared selector, including the other two planes.
+            assert_selected(&relations, expected);
+            for (value, wrong) in [
+                (&transient, 19 - expected_transient),
+                (&balance, 10 - expected_balance),
             ] {
-                let ValueQuery::Bounds(bounds) = relations.local_value(expression, &policy) else {
-                    panic!("expected the documented cross-plane selector precision gap");
-                };
-                for possible in candidates {
-                    assert!(bounds.contains(U256::from(possible)));
-                }
+                assert_eq!(
+                    relations.can_equal(value.expression().unwrap(), U256::from(wrong), &policy),
+                    CheckResult::ProvenImpossible
+                );
             }
-            // The actual shared selector, when supplied, still selects the
-            // complete correlated store in either join order. No new selector
-            // or replacement store is introduced by this positive control.
-            let ExprKind::Ite {
-                condition,
-                then_value,
-                else_value,
-            } = balance.expression().unwrap().kind()
-            else {
-                panic!("the joined balance must retain its branch selector");
-            };
-            let then_balance = then_value.as_constant().unwrap();
-            let else_balance = else_value.as_constant().unwrap();
-            assert!(
-                (then_balance == U256::ZERO && else_balance == U256::from(10))
-                    || (then_balance == U256::from(10) && else_balance == U256::ZERO)
-            );
+            let mut contradictory = relations.clone();
+            contradictory
+                .observe(
+                    persistent.expression().unwrap(),
+                    v(42 - slot).numeric(),
+                    &policy,
+                )
+                .unwrap();
+            assert_eq!(contradictory.check(&policy), CheckResult::ProvenImpossible);
             assert_eq!(
-                relations.assume(
+                contradictory.local_value(transient.expression().unwrap(), &policy),
+                ValueQuery::ProvenImpossible
+            );
+            let mut explicit = RelationState::default();
+            assert_eq!(
+                explicit.assume(
                     condition,
                     then_balance == U256::from(expected_balance),
                     &policy,
                 ),
                 CheckResult::MayBeFeasible
             );
+            assert_selected(&explicit, expected);
             assert_eq!(
-                relations.local_value(transient.expression().unwrap(), &policy),
-                ValueQuery::Exact(U256::from(expected_transient)),
+                relations.assume(
+                    condition,
+                    then_balance != U256::from(expected_balance),
+                    &policy
+                ),
+                CheckResult::ProvenImpossible
             );
-            assert_eq!(
-                relations.local_value(balance.expression().unwrap(), &policy),
-                ValueQuery::Exact(U256::from(expected_balance)),
-            );
+        }
+        for slot in [0, 42] {
+            for transient in [0, 19] {
+                for balance in [0, 10] {
+                    let triple = [slot, transient, balance];
+                    let mut relations = RelationState::default();
+                    for (value, number) in values.iter().zip(triple) {
+                        relations
+                            .observe(value.expression().unwrap(), v(number).numeric(), &policy)
+                            .unwrap();
+                    }
+                    assert_eq!(
+                        relations.check(&policy),
+                        if matches!(triple, [0, 0, 0] | [42, 19, 10]) {
+                            CheckResult::MayBeFeasible
+                        } else {
+                            CheckResult::ProvenImpossible
+                        },
+                        "whole-store alternative {triple:?}"
+                    );
+                }
+            }
         }
     }
 }
