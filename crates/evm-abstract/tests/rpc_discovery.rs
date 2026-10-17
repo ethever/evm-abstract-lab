@@ -1011,6 +1011,11 @@ fn discovery_rounds_share_work_transfer_and_state_limits_without_rewriting_confi
         assert_eq!(full.status(), Status::Converged);
         let cumulative_states = full.rpc_acquisition().unwrap().states_created;
         assert!(cumulative_states > full.states().len());
+        assert!(full.rpc_acquisition().unwrap().rounds > 1);
+        assert_eq!(
+            full.rpc_acquisition().unwrap().fetched_accounts,
+            [address(0x200), address(0x300)]
+        );
         let final_only = analysis::analyze_world(full.world().clone(), entry(), config()).unwrap();
         assert!(full.transfers() > final_only.transfers());
         assert!(full.work() > final_only.work());
@@ -1023,10 +1028,53 @@ fn discovery_rounds_share_work_transfer_and_state_limits_without_rewriting_confi
                 _ => unreachable!(),
             }
             server.clear_requests();
-            let result = analysis::analyze_rpc(&input, entry(), bounded.clone())
+            let mut result = analysis::analyze_rpc(&input, entry(), bounded.clone())
                 .unwrap()
                 .into_analysis();
+            if limit == Limit::Work && result.status() == Status::Converged {
+                // A final optional memo fee can be declined without stopping
+                // execution. Preserve that complete multi-round control, then
+                // interrupt below its actual paid prefix, not a guessed fee.
+                assert!(result.frontiers().is_empty());
+                assert!(result.work() < full.work());
+                assert_eq!(result.transfers(), full.transfers());
+                assert_eq!(result.states().len(), full.states().len());
+                assert_eq!(
+                    serde_json::to_value(result.rpc_acquisition()).unwrap(),
+                    serde_json::to_value(full.rpc_acquisition()).unwrap()
+                );
+                assert_eq!(result.world().accounts(), full.world().accounts());
+                assert_eq!(
+                    serde_json::to_value(result.config()).unwrap(),
+                    serde_json::to_value(&bounded).unwrap()
+                );
+                ssa::build_world(&result).unwrap().verify(&result).unwrap();
+                let work = result.work().checked_sub(1).unwrap();
+                assert!(work > 0 && work < bounded.max_work);
+                bounded.max_work = work;
+                server.clear_requests();
+                result = analysis::analyze_rpc(&input, entry(), bounded.clone())
+                    .unwrap()
+                    .into_analysis();
+            }
+            if limit == Limit::Work {
+                // The refusal must follow acquisition, not replace this test
+                // with a zero-budget interruption before discovery begins.
+                assert_eq!(
+                    result.rpc_acquisition().unwrap().rounds,
+                    full.rpc_acquisition().unwrap().rounds
+                );
+                assert_eq!(
+                    result.rpc_acquisition().unwrap().fetched_accounts,
+                    full.rpc_acquisition().unwrap().fetched_accounts
+                );
+                assert_eq!(result.world().accounts(), full.world().accounts());
+            }
             assert_eq!(result.status(), Status::Incomplete, "budget {limit:?}");
+            assert_eq!(
+                serde_json::to_value(result.config()).unwrap(),
+                serde_json::to_value(&bounded).unwrap()
+            );
             assert_eq!(result.config().max_work, bounded.max_work);
             assert_eq!(
                 result.config().analysis.max_transfers,
