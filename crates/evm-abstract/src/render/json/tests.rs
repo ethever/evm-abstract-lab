@@ -126,23 +126,72 @@ fn cancellation_before_and_during_output_is_typed_and_does_not_poison_other_expo
 
 #[test]
 fn real_native_frontier_and_streamed_account_evidence_retain_the_native_shape() {
+    use crate::{
+        analysis::{FrontierReason, InstructionProgress, RangeKind, Status},
+        domain::relational::QueryReason,
+    };
+
     let address = Address::repeat_byte(0x11);
     let program = Program::from_hex("366000803700").unwrap();
     let mut world = World::new(Fork::Osaka, "native export");
     let mut account = Account::empty();
     account.code = Code::Runtime(program);
     world.insert(address, account).unwrap();
+    let calldata = ByteArray::unknown();
+    let mut config = ExecutionConfig::default();
+    // Admit the complete input root (source token and length), while refusing
+    // the larger compound logical-range guard before CALLDATACOPY's effect.
+    config.analysis.relations.max_nodes = calldata.state_root().nodes();
     let analysis = analyze_world(
         world,
         Entry::concrete(
             address,
             address,
             AbstractValue::constant(U256::ZERO),
-            ByteArray::unknown(),
+            calldata,
         ),
-        ExecutionConfig::default(),
+        config,
     )
     .unwrap();
+    assert_eq!(analysis.status(), Status::Incomplete);
+    let [frontier] = analysis.frontiers() else {
+        panic!("expected exactly the logical-range guard retention refusal")
+    };
+    assert_eq!(
+        frontier.reason,
+        FrontierReason::Relations(QueryReason::ExpressionLimit)
+    );
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(4)));
+    let range = frontier.range.as_ref().unwrap();
+    assert_eq!(range.request.kind, RangeKind::LogicalMemory);
+    assert_eq!(range.request.offset.singleton(), Some(U256::ZERO));
+    assert_eq!(
+        range.request.size.numeric(),
+        range.payload.active().calldata.len().numeric()
+    );
+    assert_eq!(
+        range.request.size.expression(),
+        range.payload.active().calldata.len().expression()
+    );
+    assert_eq!(
+        range.request.limit.singleton(),
+        Some(U256::MAX - U256::from(31))
+    );
+    assert_eq!(range.nonzero, None);
+    assert!(range.condition.may_be_zero() && range.condition.may_be_nonzero());
+    assert!(range.payload.active().stack.is_empty());
+    let state = &analysis.states()[0];
+    assert_eq!(state.executed_pcs, [0, 1, 3, 4]);
+    assert_eq!(
+        state.execution_evidence().unwrap().instructions().last(),
+        Some(&InstructionProgress::OperandsConsumed)
+    );
+    assert_eq!(range.payload.active().memory, state.entry.active().memory);
+    assert_eq!(
+        state.exit.as_ref().unwrap().active().memory,
+        state.entry.active().memory
+    );
+    assert!(!analysis.outcomes().is_empty());
     let native = serde_json::to_value(&analysis).unwrap();
     let serialized = pretty(&crate::render::world::evidence(&analysis).unwrap()).unwrap();
     let mut augmented: serde_json::Value = serde_json::from_str(&serialized).unwrap();
@@ -170,12 +219,9 @@ fn real_native_frontier_and_streamed_account_evidence_retain_the_native_shape() 
         );
     }
     assert_eq!(augmented, native);
-    assert!(
-        native["frontiers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|f| !f["range"].is_null())
+    assert_eq!(
+        native["frontiers"][0]["range"],
+        serde_json::to_value(range).unwrap()
     );
     let control = Control::new(Default::default());
     control.cancellation().cancel();

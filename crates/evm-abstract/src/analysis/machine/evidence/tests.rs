@@ -49,6 +49,35 @@ fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
     analysis::analyze_world(world, entry, config).unwrap()
 }
 
+fn pending_mload() -> WorldAnalysis {
+    const CODE: &str = "602a60405100";
+    let mut config = config();
+    config.max_memory_bytes = 32;
+    let complete = run(CODE, config.clone());
+    assert_eq!(complete.status(), Status::Converged);
+    assert_eq!(complete.states()[0].executed_pcs, [0, 2, 4, 5]);
+    // Locate the first budget that visits MLOAD in this acyclic prefix. Its
+    // visit consumes the offset, then the positive read-scan fee is refused.
+    // The upper bound is measured under the unchanged successful policy.
+    let (mut minimum, mut maximum) = (1, complete.work());
+    while minimum < maximum {
+        let midpoint = minimum + (maximum - minimum) / 2;
+        config.max_work = midpoint;
+        let candidate = run(CODE, config.clone());
+        if candidate
+            .states()
+            .iter()
+            .any(|state| state.executed_pcs.contains(&4))
+        {
+            maximum = midpoint;
+        } else {
+            minimum = midpoint + 1;
+        }
+    }
+    config.max_work = minimum;
+    run(CODE, config)
+}
+
 #[test]
 fn popped_intermediate_definitions_retain_numeric_constraints_and_sources() {
     let analysis = run("600260030150345000", config());
@@ -105,24 +134,35 @@ fn stack_aliases_do_not_allocate_definition_observations() {
 
 #[test]
 fn pending_memory_and_faulted_instructions_have_no_normal_result() {
-    let mut memory_config = config();
-    memory_config.max_memory_bytes = 32;
-    for (code, config, expected_phase, expected_indices) in [
+    let pending = pending_mload();
+    assert_eq!(pending.status(), Status::Incomplete);
+    assert_eq!(pending.states()[0].executed_pcs, [0, 2, 4]);
+    assert_eq!(pending.states()[0].exit_stack.len(), 1);
+    assert_eq!(
+        pending.states()[0].exit_stack[0].singleton(),
+        Some(U256::from(42))
+    );
+    let [frontier] = pending.frontiers() else {
+        panic!("expected exactly the refused MLOAD read scan")
+    };
+    assert_eq!(frontier.reason, FrontierReason::Work);
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(4)));
+    assert_eq!(pending.outcomes().len(), 1);
+    assert!(
+        pending
+            .outcomes()
+            .iter()
+            .all(|o| o.kind == OutcomeKind::Failure)
+    );
+    for (analysis, expected_phase, expected_indices) in [
+        (pending, InstructionProgress::OperandsConsumed, vec![0, 1]),
         (
-            "602a60405100",
-            memory_config,
-            InstructionProgress::OperandsConsumed,
-            vec![0, 1],
-        ),
-        (
-            "5f01600100",
-            config(),
+            run("5f01600100", config()),
             InstructionProgress::Faulted,
             vec![0],
         ),
-        ("fe", config(), InstructionProgress::Faulted, vec![]),
+        (run("fe", config()), InstructionProgress::Faulted, vec![]),
     ] {
-        let analysis = run(code, config);
         let evidence = analysis.states()[0].execution_evidence().unwrap();
         assert_eq!(evidence.instructions().last(), Some(&expected_phase));
         assert_eq!(
