@@ -35,7 +35,8 @@ pub struct ExecutionConfig {
     pub max_work: usize,
     /// Maximum unfolded active/suspended frames, including entry, before recursive folding.
     pub max_call_depth: usize,
-    /// Maximum modeled memory footprint and extracted byte-array length.
+    /// Exact-byte extraction cap for checked consumers, not a logical-memory
+    /// bound or a process-wide allocation limit.
     pub max_memory_bytes: usize,
     /// Reuse complete callee graph certificates and procedure relations between
     /// outer entries. Recursive closure remains enabled either way.
