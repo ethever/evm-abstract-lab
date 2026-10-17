@@ -188,13 +188,14 @@ fn calldata_is_copied_from_callers_memory_and_returned_bytes_feed_parent() {
         .calldata
         .read_word(&AbstractValue::constant(U256::ZERO), Domain::default());
     assert_numeric_eq(&loaded, &AbstractValue::constant(U256::from(7)));
-    assert!(
-        loaded
+    // read_word forwards this complete Slice/WriteWord window to the caller's
+    // PUSH constant without arithmetic reconstruction. MLOAD and CALLDATALOAD
+    // assign their own origins only during opcode transfer.
+    assert_eq!(
+        loaded.provenance().origins(),
+        AbstractValue::constant(U256::from(7))
             .provenance()
             .origins()
-            .sources()
-            .unwrap()
-            .contains(&Origin::Arithmetic)
     );
     let resumed: Vec<_> = analysis
         .states()
