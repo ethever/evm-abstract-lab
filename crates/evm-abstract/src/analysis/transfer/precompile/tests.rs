@@ -855,36 +855,59 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         .metadata_len()
         .saturating_add(payload.active().calldata.state_root().work_size());
     let retained_input = scan.saturating_add(payload.active().calldata.work_size());
-    // The root finishes pay separately after atomic summary admission. Remove
-    // their production ledger receipts to locate admission, without duplicating
-    // its reservation formula or charging the symbolic input's logical length.
+    // Production quote receipts locate each root phase. Finalization retains
+    // its own ledger after all three buffers have been fully validated.
+    let receipts = root::tests::admission_receipts(&payload, &PrecompileId::Bn254Add, &config);
     let finalization_work = kinds
         .iter()
         .map(|kind| root_finalization_work(&payload, *kind, &config))
         .sum::<usize>();
-    let admitted = full_budget
-        .used()
-        .checked_sub(entry_work)
-        .unwrap()
-        .checked_sub(finalization_work)
-        .unwrap();
+    let prefix = entry_work + retained_input;
+    assert_eq!(
+        full_budget.used(),
+        prefix + receipts.validation_ready + finalization_work
+    );
     assert!(retained_input > scan);
-    assert!(admitted > retained_input);
-    for (limit, used, entry_admitted) in [
-        (0, 0, false),
-        (entry_work - 1, 0, false),
-        (entry_work, entry_work, true),
-        (entry_work + scan, entry_work + scan, true),
-        (entry_work + admitted - 1, entry_work + retained_input, true),
-    ] {
+    let original_key = Some(payload.key());
+    let mut refusals = vec![
+        (0, 0, None),
+        (entry_work - 1, 0, None),
+        // Input preflight precedes the optimized summary and keeps its receipt.
+        (entry_work, entry_work, original_key.clone()),
+        (entry_work + scan, entry_work + scan, original_key.clone()),
+        (prefix + receipts.key_census - 1, prefix, None),
+        (
+            prefix + receipts.key_admitted - 1,
+            prefix + receipts.key_census,
+            None,
+        ),
+        (
+            prefix + receipts.completion_census - 1,
+            prefix + receipts.key_admitted,
+            original_key.clone(),
+        ),
+        (
+            prefix + receipts.construction_ready - 1,
+            prefix + receipts.completion_census,
+            original_key.clone(),
+        ),
+    ];
+    let mut paid = receipts.construction_ready;
+    for discovery in receipts.buffer_discovery {
+        refusals.push((prefix + discovery - 1, prefix + paid, original_key.clone()));
+        paid = discovery;
+    }
+    refusals.push((
+        prefix + receipts.validation_ready - 1,
+        prefix + paid,
+        original_key.clone(),
+    ));
+    for (limit, used, target) in refusals {
         let mut budget = WorkBudget::new(limit);
         let result = run(&world, &entry, payload.clone(), &config, &mut budget);
         assert_boundary(&result, FrontierReason::Work);
         assert_eq!(result.frontiers[0].pc, 0);
-        assert_eq!(
-            result.frontiers[0].target,
-            entry_admitted.then(|| payload.key())
-        );
+        assert_eq!(result.frontiers[0].target, target);
         assert_eq!(result.frontiers[0].range, None);
         assert_eq!(result.frontiers[0].payload, None);
         assert_eq!(result.payload, payload);
@@ -896,6 +919,30 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         assert_eq!(budget.used(), used);
         assert!(budget.used() <= limit);
     }
+    // At the exact buffer admission price, only the first finalization census
+    // is refused. A complete admitted run still has the full three outcomes.
+    let mut budget = WorkBudget::new(prefix + receipts.validation_ready);
+    let result = run(&world, &entry, payload.clone(), &config, &mut budget);
+    assert_boundary(&result, FrontierReason::Work);
+    assert_eq!(result.frontiers[0].target, original_key);
+    assert_eq!(result.payload, payload);
+    assert!(result.executed_pcs.is_empty());
+    assert!(result.instruction_progress.is_empty());
+    assert!(result.instruction_values.is_empty());
+    assert!(result.diagnostics.is_empty());
+    assert!(budget.exhausted());
+    assert_eq!(budget.used(), prefix + receipts.validation_ready);
+    let price = full_budget.used();
+    let mut budget = WorkBudget::new(price);
+    let result = run(&world, &entry, payload.clone(), &config, &mut budget);
+    assert!(result.frontiers.is_empty());
+    assert_bn254_summary_outcomes(&result, &kinds, domain);
+    for outcome in &result.outcomes {
+        assert_finalized_root_store(&outcome.store, &payload, outcome.kind, &config);
+    }
+    assert_eq!(result.payload, payload);
+    assert!(!budget.exhausted());
+    assert_eq!(budget.used(), price);
     let mut limited = config.clone();
     limited.analysis.relations.max_nodes = 1;
     let input_error = payload
@@ -928,7 +975,8 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         FrontierReason::Relations(QueryReason::ExpressionLimit),
     );
     assert_eq!(result.payload, payload);
-    assert_eq!(budget.used(), admitted - retained_input);
+    assert_eq!(budget.used(), receipts.construction_ready);
+    assert_eq!(result.frontiers[0].target, Some(payload.key()));
     assert!(!budget.exhausted());
 
     let control = Control::new(Default::default());

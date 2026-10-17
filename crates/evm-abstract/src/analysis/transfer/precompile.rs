@@ -23,6 +23,7 @@ use revm_precompile::{
 const MAX_EXACT_PRECOMPILE_WORK: usize = 16 * 1024 * 1024;
 const MAX_MATERIALIZATION_WORK: usize = 16 * 1024 * 1024;
 
+mod root;
 #[cfg(test)]
 mod tests;
 
@@ -264,6 +265,12 @@ fn success_data(
 }
 
 fn summarize(result: &mut Execution, id: &PrecompileId, context: &mut TransferContext<'_>) {
+    // Outcomes retain only Store/data. An actual native root has no creation
+    // continuation, so its frames and relations need no completion copies.
+    if root::applicable(&result.payload) {
+        root::summarize(result, id, context);
+        return;
+    }
     // Each of three alternatives retains at most four payload-sized copies:
     // input, completion receipt, resumed payload and output store/data. The
     // fixed allowance pays for fresh roots, one bounded slice and empty data.

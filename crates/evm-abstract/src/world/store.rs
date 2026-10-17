@@ -504,6 +504,17 @@ impl Store {
             .chain(std::iter::once(&self.balance_default))
     }
 
+    /// O(1) census of the owner maps actually visited by `code_identity`.
+    /// Duplicate owners intentionally count once per map; no scalar/header
+    /// entries or unrelated transaction maps enter an error-key quote.
+    pub(crate) fn code_identity_entries(&self) -> usize {
+        self.codes
+            .len()
+            .saturating_add(self.existence.len())
+            .saturating_add(self.created.len())
+            .saturating_add(self.pending_destruction.len())
+    }
+
     /// Raw runtime bytes hashed by code_identity, independently of cheap Code
     /// cloning. Consumers must prepay the flat code-entry scan first.
     pub(crate) fn code_identity_bytes(&self) -> usize {

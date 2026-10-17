@@ -11,7 +11,7 @@ use crate::{
     },
     bytecode::Program,
     domain::{AbstractValue, Domain},
-    world::{AddressInput, ByteArray, Code, Entry, Store, World},
+    world::{AddressInput, ByteArray, Code, Entry, Snapshot, Store, World},
 };
 use alloy_primitives::{Address, B256, U256, keccak256};
 use revm_bytecode::opcode;
@@ -142,6 +142,34 @@ pub(super) fn initial(
     })
 }
 
+/// Complete a root's Store without retaining frame data that outcomes discard.
+/// Creation completion stays with `finish`: callers may bypass it only for an
+/// actual native root with no child, where `finish_creation` is a no-op.
+pub(super) fn finish_root_store(
+    store: &mut Store,
+    saved_store: &Snapshot,
+    kind: OutcomeKind,
+    context: &mut TransferContext<'_>,
+) -> Result<(), FrontierReason> {
+    if !context.procedure {
+        let rollback = (kind != OutcomeKind::Return).then_some(saved_store);
+        store
+            .finalize_transaction_checked(context.domain, rollback, context.budget)
+            .map_err(|error| {
+                if error.is_cancelled() {
+                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+                } else if let Some(error) = error.into_store_error() {
+                    super::errors::store(error)
+                } else {
+                    FrontierReason::Work
+                }
+            })?;
+    } else if kind != OutcomeKind::Return {
+        store.restore(saved_store.clone());
+    }
+    Ok(())
+}
+
 pub(super) fn finish(
     result: &mut Execution,
     mut payload: MachinePayload,
@@ -177,28 +205,14 @@ pub(super) fn finish(
         }
     }
     let Some(child) = payload.call_stack.pop_child() else {
-        if !context.procedure {
-            let rollback =
-                (kind != OutcomeKind::Return).then(|| &payload.call_stack.root().state.saved_store);
-            if let Err(error) =
-                payload
-                    .store
-                    .finalize_transaction_checked(domain, rollback, context.budget)
-            {
-                let reason = if error.is_cancelled() {
-                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
-                } else if let Some(error) = error.into_store_error() {
-                    super::errors::store(error)
-                } else {
-                    FrontierReason::Work
-                };
-                boundary_on(result, pc, reason, payload.key());
-                return;
-            }
-        } else if kind != OutcomeKind::Return {
-            payload
-                .store
-                .restore(payload.call_stack.root().state.saved_store.clone());
+        if let Err(reason) = finish_root_store(
+            &mut payload.store,
+            &payload.call_stack.root().state.saved_store,
+            kind,
+            context,
+        ) {
+            boundary_on(result, pc, reason, payload.key());
+            return;
         }
         result.outcomes.push(Outcome {
             kind,
