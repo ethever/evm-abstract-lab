@@ -3,7 +3,10 @@
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
-    domain::{AbstractValue, Domain, provenance::Origin},
+    domain::{
+        AbstractValue, Domain,
+        provenance::{Origin, Provenance},
+    },
     world::{Account, ByteArray, Entry, World},
 };
 use revm_bytecode::opcode;
@@ -147,6 +150,9 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
         world.insert(address(PARENT), caller).unwrap();
         world.insert(address(CHILD), callee).unwrap();
         let analysis = run(world);
+        // Direct opcode receipts carry precise observation labels.
+        assert_instruction_provenance(&analysis, PARENT, opcode::MLOAD, Origin::Memory);
+        assert_instruction_provenance(&analysis, CHILD, opcode::SELFBALANCE, Origin::Balance);
         let refusals: Vec<_> = analysis
             .outcomes()
             .iter()
@@ -189,15 +195,14 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
             // upper bound or any real balance/return combination.
             assert!(value.numeric().interval().unsigned_bounds().1 <= U256::from(9));
             assert!(!value.contains(U256::from(10)), "{value:?}");
-            // Provenance records the current observation: MLOAD replaces the
-            // earlier SELFBALANCE category with Memory, not an ancestor trace.
+            // Later wrapper metadata is keyed by shared expressions and can
+            // join category upper bounds from separate observations.
             let sources = value
                 .provenance()
                 .origins()
                 .sources()
-                .expect("MLOAD has a known observation category");
+                .expect("returned buffer has known source categories");
             assert!(sources.contains(&Origin::Memory));
-            assert_eq!(sources.len(), 1);
         }
         for n in 3_u64..=9 {
             let n = U256::from(n);
@@ -214,6 +219,46 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
             );
         }
     }
+}
+
+fn assert_instruction_provenance(
+    analysis: &WorldAnalysis,
+    account: u64,
+    instruction: u8,
+    origin: Origin,
+) {
+    let account = address(account);
+    let mut observations = 0;
+    for state in analysis
+        .states()
+        .iter()
+        .filter(|state| state.active().address == account && state.active().code_address == account)
+    {
+        let Some(values) = state
+            .execution_evidence()
+            .and_then(|evidence| evidence.instruction_values())
+        else {
+            continue;
+        };
+        let program = state
+            .program()
+            .expect("instruction observations have a captured program");
+        for value in values {
+            let pc = state.executed_pcs[value.instruction_index()];
+            if program.bytes()[pc] == instruction {
+                assert_eq!(
+                    value.provenance(),
+                    &Provenance::source(origin),
+                    "opcode {instruction:#x} at {pc} for {account:?}"
+                );
+                observations += 1;
+            }
+        }
+    }
+    assert!(
+        observations > 0,
+        "opcode {instruction:#x} must be observed for {account:?}"
+    );
 }
 
 fn conditional_jump(code: &mut Vec<u8>) -> usize {
