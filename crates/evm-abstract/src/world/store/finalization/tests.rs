@@ -317,7 +317,14 @@ fn restored_ripemd_may_touch_changes_only_addr3_and_not_saved_or_other_owners() 
 
 #[test]
 fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
-    let domain = Domain::default();
+    use crate::domain::relational::RelationLimits;
+
+    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
+        max_nodes: 4_096,
+        max_depth: 256,
+        ..RelationLimits::default()
+    }));
+    let limits = domain.spec().relations().expressions();
     let mut fields = Vec::new();
     for cells in [2, 64] {
         let mut world = World::new(Fork::Osaka, "local deletion field discovery");
@@ -326,8 +333,9 @@ fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
             account.storage.insert(U256::from(key), word(key + 7));
         }
         world.insert(address(0x101), account).unwrap();
-        let mut store = Store::new(&world);
+        let mut store = Store::new_checked(&world, domain).unwrap();
         store.may_touch_account(address(3));
+        store.check_existing(limits).unwrap();
         let plan = Plan::new(&store);
         assert_eq!(
             plan.actions
@@ -341,6 +349,7 @@ fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
         extended
             .write_checked(address(3), &word(1), &word(9), domain)
             .unwrap();
+        extended.check_existing(limits).unwrap();
         assert!(extended.maybe_delete_fields(address(3)) > plan.join_fields);
     }
     assert_eq!(fields[0], fields[1]);
@@ -348,7 +357,14 @@ fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
 
 #[test]
 fn may_delete_batch_fee_avoids_owner_count_times_unrelated_fields() {
-    let domain = Domain::default();
+    use crate::domain::relational::RelationLimits;
+
+    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
+        max_nodes: 4_096,
+        max_depth: 256,
+        ..RelationLimits::default()
+    }));
+    let limits = domain.spec().relations().expressions();
     let mut fees = Vec::new();
     for owners in [8u64, 32] {
         let mut world = World::new(Fork::Osaka, "MAY deletion work scaling");
@@ -363,15 +379,17 @@ fn may_delete_batch_fee_avoids_owner_count_times_unrelated_fields() {
                 .insert(address(0x1000 + number), Account::unknown())
                 .unwrap();
         }
-        let mut store = Store::new(&world);
+        let mut store = Store::new_checked(&world, domain).unwrap();
         for number in 0..owners {
             store.may_touch_account(address(0x1000 + number));
         }
+        store.check_existing(limits).unwrap();
         let before = store.slot_root(address(0x900), false);
         let mut budget = WorkBudget::new(usize::MAX);
         store
             .finalize_transaction_checked(domain, None, &mut budget)
             .unwrap();
+        store.check_existing(limits).unwrap();
         assert_eq!(store.slot_root(address(0x900), false), before);
         fees.push(budget.used());
     }
