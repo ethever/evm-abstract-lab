@@ -202,6 +202,34 @@ fn quote_and_execution_admit_the_same_shape_before_and_after_touch() {
 }
 
 #[test]
+fn numeric_only_length_expression_nodes_match_cached_quote_bound() {
+    let domain = Domain::default();
+    let value = source(NumericValue::top(), 82);
+    let lengths = [
+        AbstractValue::unsigned_range(U256::ZERO, U256::from(64)).unwrap(),
+        AbstractValue::top()
+            .with_numeric(domain.join(&constant(0), &constant(16)).numeric().clone()),
+    ];
+    assert!(lengths[0].finite_constants().is_top());
+    assert_eq!(lengths[1].constants().unwrap().len(), 2);
+    for length in lengths {
+        assert!(length.expression().is_none());
+        assert!(!length.numeric().is_top());
+        assert_eq!(
+            super::super::expr(&length).unwrap().nodes(),
+            length.numeric().work_size().saturating_add(5)
+        );
+        let mut memory = ByteArray::memory();
+        memory.length = length;
+        assert!(
+            memory
+                .uniform_word_write_work(&constant(0), &value, domain)
+                .is_some()
+        );
+    }
+}
+
+#[test]
 fn nonliteral_msize_and_allocation_history_keep_quote_touch_and_write_in_agreement() {
     let domain = Domain::default();
     let value = source(NumericValue::top(), 82);

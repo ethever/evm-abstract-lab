@@ -104,10 +104,18 @@ impl ByteArray {
                 && self.length.congruence().singleton() == Some(n)
                 && self.length.finite_constants().singleton() == Some(n)
         });
-        let length_nodes = self
-            .length
-            .expression()
-            .map_or(if exact_length { 1 } else { 16 }, ExprId::nodes);
+        // A synthesized numeric-only source adds five nodes: observed root,
+        // fresh source token, fresh binding value, constant key and SlotRead.
+        let length_nodes = self.length.expression().map_or_else(
+            || {
+                if exact_length {
+                    1
+                } else {
+                    self.length.numeric().work_size().saturating_add(5)
+                }
+            },
+            ExprId::nodes,
+        );
         let candidates = if exact_length {
             0
         } else {
@@ -138,7 +146,7 @@ impl ByteArray {
             .saturating_add(allocation_probes.saturating_mul(16).saturating_mul(2));
         // Expanded uses only constant candidates/joins and checked scalar
         // terms here, never Domain::apply. Four old-expression copies bound
-        // its maximum/guard terms; 16 bounds a synthesized numeric-only source.
+        // its maximum/guard terms.
         let expand_root = nodes
             .saturating_add(length_nodes.saturating_mul(4))
             .saturating_add(28)
