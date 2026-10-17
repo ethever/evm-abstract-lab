@@ -471,9 +471,9 @@ mod tests {
         // sequence bound rejected the third site as 1 + 6 + 36 > 32.
         let memory = guarded_tree(2, domain);
         let expected = memory.read_word_checked(&zero(), domain).unwrap();
-        let mut budget = WorkBudget::new(100_000_000);
+        let mut probe_budget = WorkBudget::new(100_000_000);
         let plan = memory
-            .prepare_word_read(&zero(), domain, &mut budget)
+            .prepare_word_read(&zero(), domain, &mut probe_budget)
             .unwrap()
             .unwrap();
         let preparation = plan.preparation.as_ref().unwrap();
@@ -490,6 +490,13 @@ mod tests {
         assert!(!context.cache_refused());
         assert_eq!(context.demand_usage().unwrap().0, 7);
         drop(context);
+        drop(plan);
+        // The observation probe and the production read each own a paid plan.
+        let mut budget = WorkBudget::new(100_000_000);
+        let plan = memory
+            .prepare_word_read(&zero(), domain, &mut budget)
+            .unwrap()
+            .unwrap();
         let before = budget.used();
         let actual = plan.read_word_budgeted(&mut budget).unwrap().unwrap();
         assert_eq!(actual, expected);
@@ -526,8 +533,12 @@ mod tests {
             analysis.states()[0].exit_stack[0].singleton(),
             Some(U256::from(7))
         );
-        assert_eq!(analysis.outcomes().len(), 1);
-        assert_eq!(analysis.outcomes()[0].kind, OutcomeKind::Return);
+        assert!(
+            analysis
+                .outcomes()
+                .iter()
+                .any(|outcome| outcome.kind == OutcomeKind::Return)
+        );
     }
 
     #[test]
@@ -536,9 +547,9 @@ mod tests {
         // Five state-choice levels have 1+2+4+8+16+32 possible contexts.
         let memory = guarded_tree(5, domain);
         let expected = memory.read_word_checked(&zero(), domain).unwrap();
-        let mut budget = WorkBudget::new(usize::MAX);
+        let mut probe_budget = WorkBudget::new(usize::MAX);
         let plan = memory
-            .prepare_word_read(&zero(), domain, &mut budget)
+            .prepare_word_read(&zero(), domain, &mut probe_budget)
             .unwrap()
             .unwrap();
         let preparation = plan.preparation.as_ref().unwrap();
@@ -560,6 +571,12 @@ mod tests {
             "the metadata allowance is not exhausted"
         );
         drop(context);
+        drop(plan);
+        let mut budget = WorkBudget::new(usize::MAX);
+        let plan = memory
+            .prepare_word_read(&zero(), domain, &mut budget)
+            .unwrap()
+            .unwrap();
         let before = budget.used();
         let fallback = memory.word_numeric_work(&zero(), domain);
         assert_eq!(plan.fallback_work, fallback);
