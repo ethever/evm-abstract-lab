@@ -265,7 +265,9 @@ fn guarded_word_preparation_pays_a_bounded_arena_instead_of_every_lookup_reducti
         &conditional,
         domain,
     );
-    assert!(prepared.work > prepared.nodes);
+    // Preparation now prepays only metadata; payer tests cover actual numeric
+    // actions and atomic payment refusal.
+    assert_eq!(prepared.work, prepared.nodes);
     assert!(prepared.work < old);
     assert!(prepared.work < 20_000_000);
 }
