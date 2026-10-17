@@ -1213,7 +1213,15 @@ fn optional_state_read_projection_reports_precision_loss_without_unexpanded_path
 
 #[test]
 fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
-    use evm_abstract::domain::relational::{QueryReason, RelationLimits};
+    use evm_abstract::{
+        analysis::{FrameCode, OutcomeKind},
+        domain::{
+            Domain,
+            relational::{QueryReason, RelationLimits},
+            symbolic::{ExprId, SlotStateKind},
+        },
+        world::{Store, Symbol},
+    };
     let fixture = one_symbolic_guard();
     for limits in [
         RelationLimits {
@@ -1232,11 +1240,15 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
             relations: limits,
             ..Config::default()
         };
-        let environment = EvmEnvironment {
-            // Calldata is unused; keep the initial root within the tiny
-            // policy so the derived CALLVALUE branch is what exhausts it.
+        let symbolic_environment = EvmEnvironment {
             calldata: evm_abstract::world::ByteArray::empty(),
             ..EvmEnvironment::default()
+        };
+        let environment = EvmEnvironment {
+            // Keep mandatory recipient cleanup out of the optional scalar
+            // control; CALLVALUE stays unknown and the bytecode stays identical.
+            to: address(0x101).into(),
+            ..symbolic_environment.clone()
         };
         let result = analysis::analyze_with_environment(
             Program::from_hex(&fixture.code).unwrap(),
@@ -1261,6 +1273,102 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
             }),
             "optional expression exhaustion must report precision loss"
         );
+        let execution = result.execution();
+        let source = &execution.states()[0];
+        let owner = address(0x101);
+        assert_eq!(result.environment(), &environment);
+        assert_eq!(execution.entry().address, owner);
+        assert_eq!(source.id, 0);
+        assert_eq!(source.key.frames.len(), 1);
+        assert_eq!(source.key, source.entry.key());
+        assert_eq!(source.program(), Some(result.program()));
+        assert_eq!(source.active().code_address, owner);
+        assert_eq!(source.active().address, owner);
+        assert_eq!(source.active().address_value, environment.to);
+        assert_eq!(source.active().basic_block_index, 0);
+        assert!(source.active().jump_history.is_empty());
+        let input_store = Store::new_checked(
+            execution.world(),
+            Domain::from_spec(execution.domain_spec()),
+        )
+        .unwrap();
+        let input_root = input_store.slot_root(owner, false).unwrap();
+        assert!(matches!(
+            input_root.kind(),
+            SlotStateKind::Input { bindings, .. } if bindings.is_empty()
+        ));
+        for value in [U256::ZERO, U256::ONE] {
+            assert!(input_store.storage_default(owner).contains(value));
+        }
+        let mut entered_store = input_store.clone();
+        entered_store.touch_account(owner);
+        assert_eq!(source.entry.store, entered_store);
+        assert_eq!(source.entry.active().saved_store.state(), &input_store);
+        let call_value = &source.entry.active().call_value;
+        let input = call_value.identity().input().expect("the CALLVALUE input");
+        assert_eq!(input.symbol(), Symbol::CallValue);
+        assert_eq!(call_value.numeric(), environment.value.numeric());
+        assert_eq!(
+            call_value.expression(),
+            Some(&ExprId::input(input.scope(), Symbol::CallValue))
+        );
+        assert_eq!(
+            source.exit.as_ref().unwrap().active().call_value,
+            *call_value
+        );
+        let comparison_index = result.program().blocks()[0]
+            .instructions
+            .iter()
+            .position(|instruction| instruction.opcode == opcode::EQ)
+            .unwrap();
+        let comparison = source
+            .execution_evidence()
+            .unwrap()
+            .instruction_values()
+            .unwrap()
+            .iter()
+            .find(|value| value.instruction_index() == comparison_index)
+            .expect("the original source executed the comparison");
+        assert_eq!(
+            source.executed_pcs[comparison_index],
+            result.program().blocks()[0].instructions[comparison_index].pc
+        );
+        for (value, branch) in [(U256::ONE, "true"), (U256::ZERO, "false")] {
+            assert!(comparison.numeric().contains(value));
+            let branch = execution
+                .edges()
+                .iter()
+                .filter(|edge| edge.from == source.id)
+                .map(|edge| &execution.states()[edge.to])
+                .find(|state| {
+                    result.program().blocks()[state.active().basic_block_index].start_pc
+                        == fixture.labels[branch]
+                })
+                .expect("the same source reaches this feasible branch");
+            let mut expected_key = source.key.clone();
+            expected_key.frames[0].basic_block_index = branch.active().basic_block_index;
+            assert_eq!(branch.key, expected_key);
+            assert_eq!(branch.entry.key(), expected_key);
+            assert_eq!(branch.entry.active().call_value, *call_value);
+            assert_eq!(branch.entry.active().saved_store.state(), &input_store);
+            assert_eq!(branch.entry.store, entered_store);
+            let returned = execution
+                .outcomes()
+                .iter()
+                .find(|outcome| outcome.state == branch.id && outcome.kind == OutcomeKind::Return)
+                .expect("this branch completes successfully");
+            // Compare the current numeric facts together with their original
+            // immutable source, rather than accepting an unrelated top value.
+            for store in [&branch.entry.store, &returned.store] {
+                assert_eq!(
+                    (
+                        store.slot_root(owner, false).unwrap(),
+                        store.storage_default(owner),
+                    ),
+                    (input_root.clone(), input_store.storage_default(owner)),
+                );
+            }
+        }
         for (value, selected, excluded) in [(1, "true", "false"), (0, "false", "true")] {
             let witness = analysis::analyze_with_environment(
                 Program::from_hex(&fixture.code).unwrap(),
@@ -1280,6 +1388,130 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
                 "CALLVALUE={value} witnesses only the {selected} branch"
             );
         }
+
+        // The original symbolic recipient needs a mandatory lifecycle root
+        // before the first opcode, independently of optional scalar precision.
+        let boundary = analysis::analyze_with_environment(
+            Program::from_hex(&fixture.code).unwrap(),
+            config.clone(),
+            symbolic_environment.clone(),
+        )
+        .unwrap();
+        assert_eq!(boundary.status(), Status::Incomplete);
+        assert_eq!(boundary.environment(), &symbolic_environment);
+        let execution = boundary.execution();
+        assert_eq!(execution.status(), Status::Incomplete);
+        let [frontier] = execution.frontiers() else {
+            panic!("exactly one mandatory retention boundary is required");
+        };
+        assert_eq!(
+            frontier.reason,
+            FrontierReason::Relations(QueryReason::ExpressionLimit)
+        );
+        assert_eq!(frontier.pc, Some(0));
+        assert_eq!(frontier.from, Some(0));
+        assert!(frontier.range.is_none());
+        assert!(frontier.payload.is_none());
+        let source = &execution.states()[frontier.from.unwrap()];
+        assert_eq!(execution.states().len(), 1);
+        assert_eq!(source.id, 0);
+        assert_eq!(frontier.target.as_ref(), Some(&source.key));
+        assert_eq!(source.key, source.entry.key());
+        assert_eq!(source.key.frames.len(), 1);
+        let owner = execution.entry().address;
+        assert_eq!(owner, Address::repeat_byte(0x11));
+        let frame = source.entry.active();
+        assert_eq!(frame.key.address, owner);
+        assert_eq!(frame.key.code_address, owner);
+        assert_eq!(frame.key.address_value, AddressInput::unknown_to());
+        assert_eq!(frame.key.caller, symbolic_environment.caller);
+        assert_eq!(frame.key.is_static, symbolic_environment.is_static);
+        assert_eq!(frame.key.mode, FrameCode::Runtime);
+        assert_eq!(frame.key.basic_block_index, 0);
+        assert_eq!(frame.key.stack_height, 0);
+        assert!(frame.key.jump_history.is_empty());
+        assert_eq!(frame.program.as_ref(), Some(boundary.program()));
+        assert_eq!(frame.calldata, symbolic_environment.calldata);
+        assert!(frame.stack.is_empty());
+        assert!(source.executed_pcs.is_empty());
+        assert!(source.exit_stack.is_empty());
+        assert_eq!(source.exit.as_ref(), Some(&source.entry));
+        assert!(execution.edges().is_empty());
+        let [projected] = boundary.frontiers() else {
+            panic!("the learning view must retain the same boundary");
+        };
+        assert_eq!(projected.reason, frontier.reason);
+        assert_eq!(projected.limit, Limit::Model);
+        assert_eq!(projected.from, Some(0));
+        assert_eq!(boundary.execution_state_id(0), Some(source.id));
+        assert_eq!(projected.target, boundary.states()[0].key);
+
+        let input_store = Store::new_checked(
+            execution.world(),
+            Domain::from_spec(execution.domain_spec()),
+        )
+        .unwrap();
+        let mut entered_store = input_store.clone();
+        entered_store.may_touch_all();
+        assert_eq!(source.entry.store, entered_store);
+        assert_eq!(frame.saved_store.state(), &input_store);
+        assert_eq!(source.entry.store.touched_default(), None);
+        assert_eq!(frame.saved_store.state().touched_default(), Some(false));
+        assert_eq!(&frame.call_value, call_value);
+        let input = frame
+            .call_value
+            .identity()
+            .input()
+            .expect("retained CALLVALUE");
+        assert_eq!(input.symbol(), Symbol::CallValue);
+        assert_eq!(
+            frame.call_value.numeric(),
+            symbolic_environment.value.numeric()
+        );
+        assert_eq!(
+            frame.call_value.expression(),
+            Some(&ExprId::input(input.scope(), Symbol::CallValue))
+        );
+        for value in [U256::ZERO, U256::ONE] {
+            assert!(frame.call_value.contains(value));
+        }
+        let ripemd = address(3);
+        assert_ne!(
+            input_store.slot_root(owner, false).unwrap(),
+            input_store.slot_root(ripemd, false).unwrap()
+        );
+        for owner in [owner, ripemd] {
+            let input_root = input_store.slot_root(owner, false).unwrap();
+            assert!(matches!(
+                input_root.kind(),
+                SlotStateKind::Input { source, bindings }
+                    if bindings.is_empty()
+                        && source.namespace() == U256::from_be_slice(owner.as_slice()) << 8
+            ));
+            for value in [U256::ZERO, U256::ONE] {
+                assert!(input_store.storage_default(owner).contains(value));
+            }
+            assert_eq!(
+                (
+                    source.entry.store.slot_root(owner, false).unwrap(),
+                    source.entry.store.storage_default(owner),
+                ),
+                (input_root, input_store.storage_default(owner)),
+            );
+            assert_eq!(source.entry.store.touched_in_transaction(owner), None);
+            assert_eq!(
+                frame.saved_store.state().touched_in_transaction(owner),
+                Some(false)
+            );
+        }
+        // Initialization already records pre-entry gas failure. It keeps the
+        // untouched checkpoint and must not be mistaken for opcode execution.
+        let [failure] = execution.outcomes() else {
+            panic!("only the pre-entry failure survives mandatory retention refusal");
+        };
+        assert_eq!(failure.state, source.id);
+        assert_eq!(failure.kind, OutcomeKind::Failure);
+        assert_eq!(&failure.store, frame.saved_store.state());
     }
 }
 
