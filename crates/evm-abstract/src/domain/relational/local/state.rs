@@ -1,7 +1,7 @@
 //! Demand-local reads of immutable snapshots. Unknown aliases retain both
 //! possibilities; index arithmetic checks mathematical bounds before wrapping.
 
-use super::{Engine, LocalResult, terms::denied};
+use super::{Engine, LocalResult, QueryReason, Stop, terms::denied};
 use crate::domain::{
     NumericValue,
     congruence::Congruence,
@@ -14,6 +14,9 @@ use crate::domain::{
 };
 use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;
+
+#[cfg(test)]
+mod tests;
 
 /// A directly guaranteed initial word, retained only for this query. The prefix
 /// excludes view padding; checked subtraction matches its nonwrapping window.
@@ -774,6 +777,60 @@ impl Engine<'_, '_> {
         Ok(word)
     }
 
+    /// Only empty or terminal literal/zero views enter this bulk path. All address,
+    /// boundary and selector proofs belong to the same-F hash_view rewrite.
+    /// Quote the complete allocation/copy/hash envelope from cached metadata;
+    /// refusal publishes no bytes, hash, or memo entry.
+    pub(super) fn literal_hash(&mut self, view: &ByteView) -> LocalResult<Option<U256>> {
+        self.work.charge(1)?;
+        let Some(length) = view
+            .length
+            .as_constant()
+            .and_then(|length| usize::try_from(length).ok())
+        else {
+            return Ok(None);
+        };
+        let source = if length == 0 {
+            &[][..]
+        } else {
+            let Some(offset) = view.offset.as_constant() else {
+                return Ok(None);
+            };
+            match view.state.kind() {
+                ByteStateKind::Zero => &[][..],
+                ByteStateKind::Exact(bytes) => usize::try_from(offset)
+                    .ok()
+                    .and_then(|start| bytes.get(start..))
+                    .unwrap_or_default(),
+                _ => return Ok(None),
+            }
+        };
+        // Literal cells beyond the backing allocation, including mathematical
+        // U256 address overflow, are zero. A bounded prefix needs no DAG walk.
+        let copied = source.len().min(length);
+        let refused = || Stop::Pending(QueryReason::ExpressionLimit);
+        let steps = length
+            .checked_add(copied)
+            .and_then(|steps| steps.checked_add(1))
+            .ok_or_else(refused)?;
+        let remaining = self.work.remaining.checked_sub(steps).ok_or_else(refused)?;
+        let fee = length
+            .checked_mul(24)
+            .and_then(|hash| hash.checked_add(24))
+            .and_then(|hash| hash.checked_add(steps))
+            .ok_or_else(refused)?;
+        // Keep local materialization steps separate from the scalar Keccak
+        // reservation, but admit the entire shared fee transactionally.
+        self.work.prepay(fee)?;
+        self.work.remaining = remaining;
+        let mut bytes = vec![0; length];
+        bytes[..copied].copy_from_slice(&source[..copied]);
+        self.work.charge(0)?;
+        let hash = U256::from_be_bytes(keccak256(bytes).0);
+        self.work.charge(0)?;
+        Ok(Some(hash))
+    }
+
     pub(super) fn hash(&mut self, view: &ByteView) -> LocalResult<NumericValue> {
         let Some(length) = self.exact(&view.length)? else {
             return Ok(NumericValue::top());
@@ -785,6 +842,15 @@ impl Engine<'_, '_> {
         // ordinary unknown hash is a useful retained symbolic value, not failure.
         if length > self.work.remaining {
             return Ok(NumericValue::top());
+        }
+        // Resolve joined lengths/selectors once under the full current F.
+        // Ineligible histories still use the original demand-local byte reads.
+        // Empty content needs no history/offset traversal, as in the fallback.
+        if length != 0 {
+            let normalized = self.hash_view(view)?;
+            if let Some(hash) = self.literal_hash(&normalized)? {
+                return Ok(NumericValue::constant(hash));
+            }
         }
         let mut bytes = Vec::new();
         for i in 0..length {

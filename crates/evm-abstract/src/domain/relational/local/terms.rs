@@ -72,7 +72,58 @@ impl Engine<'_, '_> {
             }
             ExprKind::Keccak { input } => {
                 let view = self.hash_view(input)?;
-                ExprId::keccak(view, self.limits.expressions()).map_err(denied)?
+                if let Some(hash) = self.literal_hash(&view)? {
+                    ExprId::constant(hash)
+                } else {
+                    if matches!(view.state.kind(), ByteStateKind::Exact(_))
+                        && let Some(length) = view
+                            .length
+                            .as_constant()
+                            .and_then(|length| usize::try_from(length).ok())
+                            .filter(|length| {
+                                length.saturating_mul(view.nodes().saturating_add(1))
+                                    <= self.limits.max_nodes
+                            })
+                    {
+                        // Only an unresolved offset remains: known_bytes will
+                        // reserve capacity, then stop at its first view check,
+                        // before reading a cell or hashing. Pay that attempt
+                        // while preserving the normalized symbolic hash identity.
+                        self.work.charge(1)?;
+                        self.work.prepay(
+                            length
+                                .checked_add(1)
+                                .ok_or(Stop::Pending(QueryReason::ExpressionLimit))?,
+                        )?;
+                    }
+                    // hash_view has already visited every forwarding edge.
+                    // Its terminal has no structural COPY/SLICE forwarding
+                    // either: those tests are weaker than the same-F rules.
+                    // Prepay canonicalize's one final set of EQ checks using
+                    // cached comparison bounds, including fingerprint collisions.
+                    let comparisons = match view.state.kind() {
+                        ByteStateKind::Copy {
+                            destination,
+                            source,
+                            length,
+                            ..
+                        } => view
+                            .offset
+                            .comparison_work(destination)
+                            .saturating_add(view.length.comparison_work(length))
+                            .saturating_add(length.comparison_work(&source.length)),
+                        ByteStateKind::Slice { source } => {
+                            view.length.comparison_work(&source.length)
+                        }
+                        _ => 0,
+                    };
+                    self.work.charge(comparisons.saturating_add(1))?;
+                    // Successful materialization was handled by literal_hash;
+                    // any failed literal attempt was paid above. No Keccak
+                    // computation remains in this constructor call.
+                    self.work.prepay(view.nodes())?;
+                    ExprId::keccak(view, self.limits.expressions()).map_err(denied)?
+                }
             }
             _ => expression.clone(),
         };
@@ -130,7 +181,7 @@ impl Engine<'_, '_> {
             || rh.checked_add(rl - U256::ONE).is_some_and(|end| end < lo))
     }
 
-    fn hash_view(&mut self, input: &ByteView) -> LocalResult<ByteView> {
+    pub(super) fn hash_view(&mut self, input: &ByteView) -> LocalResult<ByteView> {
         let mut view = input.clone();
         loop {
             self.work.charge(1)?;
@@ -142,16 +193,17 @@ impl Engine<'_, '_> {
                     then_state,
                     else_state,
                 } => self.choose(condition)?.map(|nonzero| {
-                    view.branch_view(
+                    // The scalar operands above were selected under this same
+                    // F already; no separate unmetered branch_view walk is needed.
+                    ByteView::new(
                         if nonzero {
                             then_state.clone()
                         } else {
                             else_state.clone()
                         },
-                        condition,
-                        nonzero,
+                        view.offset.clone(),
+                        view.length.clone(),
                     )
-                    .0
                 }),
                 ByteStateKind::Copy {
                     previous,
@@ -180,11 +232,17 @@ impl Engine<'_, '_> {
                         None
                     }
                 }
-                ByteStateKind::Slice { source }
+                ByteStateKind::Slice { source } => {
+                    // Like COPY lengths, the saved slice boundary can retain
+                    // an ITE whose selected term is exact only under this F.
+                    let source_length = self.term(&source.length)?;
                     if self.same(&view.offset, &ExprId::constant(U256::ZERO))? == Some(true)
-                        && self.same(&view.length, &source.length)? == Some(true) =>
-                {
-                    Some(source.clone())
+                        && self.same(&view.length, &source_length)? == Some(true)
+                    {
+                        Some(source.clone())
+                    } else {
+                        None
+                    }
                 }
                 ByteStateKind::WriteByte {
                     previous, offset, ..
@@ -213,7 +271,9 @@ impl Engine<'_, '_> {
             };
             match next {
                 Some(next) => view = next,
-                None => return Ok(view.canonicalize()),
+                // The loop covers canonical copy/slice forwarding itself, with
+                // a charge on every edge. Do not walk the history again here.
+                None => return Ok(view),
             }
         }
     }
