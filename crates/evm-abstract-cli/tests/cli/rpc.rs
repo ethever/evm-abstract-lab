@@ -16,6 +16,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "../support/native_bytes.rs"]
+mod native_bytes;
+
 #[path = "rpc/environment.rs"]
 mod environment;
 
@@ -837,7 +840,7 @@ fn discovered_repeated_read_only_callee_reuses_a_summary_with_identical_outcomes
                         && summary["outputs"].as_array().unwrap().iter().any(|output| {
                             output["kind"] == "Return"
                                 && contains(&output["data"]["length"], U256::from(32))
-                                && byte_contains(&output["data"], 31, 42)
+                                && native_bytes::word_matches(&output["data"], U256::from(42))
                         })
                 })
         );
@@ -845,13 +848,6 @@ fn discovered_repeated_read_only_callee_reuses_a_summary_with_identical_outcomes
         assert!(disabled["summaries"].as_array().unwrap().is_empty());
         assert_eq!(relations(enabled), relations(disabled));
     });
-}
-
-fn byte_contains(data: &Json, offset: usize, expected: u8) -> bool {
-    let byte = data["bytes"]
-        .get(offset.to_string())
-        .unwrap_or(&data["default"]);
-    contains(byte, U256::from(expected))
 }
 
 fn slot_contains(store: &Json, address: &str, slot: u64, expected: U256) -> bool {
@@ -967,7 +963,7 @@ fn deployed_runtime_overlay_is_used_without_refetching_snapshot_empty_code() {
                         && slot_contains(store, ENTRY, 0, address_word(CREATED))
                         && slot_contains(store, ENTRY, 1, U256::from(1))
                         && contains(&outcome["data"]["length"], U256::from(32))
-                        && byte_contains(&outcome["data"], 31, 42)
+                        && native_bytes::word_matches(&outcome["data"], U256::from(42))
                 })
         );
         assert!(
