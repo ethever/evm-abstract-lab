@@ -134,32 +134,62 @@ fn concrete_fast_path_matches_every_pinned_fork_table_entry() {
                 let expected = native.execute(&input, u64::MAX, 0).unwrap();
                 let (world, entry, payload) =
                     fixture(*native.address(), ByteArray::exact(&input), fork, &config);
+                let post_touch_failure = *native.address() == address(3);
+                assert_eq!(
+                    payload.store.touched_in_transaction(address(3)),
+                    Some(post_touch_failure)
+                );
                 let result = run(
                     &world,
                     &entry,
-                    payload,
+                    payload.clone(),
                     &config,
                     &mut WorkBudget::new(config.max_work),
                 );
                 assert!(result.frontiers.is_empty(), "{fork} {:?}", native.id());
-                assert_eq!(result.outcomes.len(), 1);
+                assert_eq!(
+                    result.outcomes.len(),
+                    if post_touch_failure { 2 } else { 1 }
+                );
+                assert_eq!(result.payload, payload);
+                assert!(result.executed_pcs.is_empty());
+                assert!(result.instruction_progress.is_empty());
+                assert!(result.instruction_values.is_empty());
+                assert!(result.successors.is_empty());
+                assert!(result.completed_calls.is_empty());
+                assert!(result.diagnostics.is_empty());
+                if post_touch_failure {
+                    let failed = &result.outcomes[0];
+                    assert_eq!(failed.kind, OutcomeKind::Failure);
+                    assert_eq!(failed.data.exact_bytes(), Some(Vec::new()));
+                    assert_finalized_root_store(
+                        &failed.store,
+                        &payload,
+                        OutcomeKind::Failure,
+                        &config,
+                    );
+                    assert_eq!(failed.store.touched_in_transaction(address(3)), Some(false));
+                    assert!(failed.store.transient_slots().is_empty());
+                }
                 let expected_kind = match expected.status {
                     PrecompileStatus::Success => OutcomeKind::Return,
                     PrecompileStatus::Revert => OutcomeKind::Revert,
                     PrecompileStatus::Halt(_) => OutcomeKind::Failure,
                 };
-                assert_eq!(result.outcomes[0].kind, expected_kind);
+                let observed = &result.outcomes[usize::from(post_touch_failure)];
+                assert_eq!(observed.kind, expected_kind);
                 let expected_bytes: &[u8] = if expected_kind == OutcomeKind::Failure {
                     &[]
                 } else {
                     &expected.bytes
                 };
                 assert_eq!(
-                    result.outcomes[0].data.exact_bytes().as_deref(),
+                    observed.data.exact_bytes().as_deref(),
                     Some(expected_bytes),
                     "{fork} {:?}",
                     native.id()
                 );
+                assert_finalized_root_store(&observed.store, &payload, expected_kind, &config);
             }
         }
     }
@@ -173,10 +203,15 @@ fn symbolic_outputs_include_provider_successes_and_invalid_inputs_for_all_forks(
         for native in table(fork).inner().values() {
             let (world, entry, payload) =
                 fixture(*native.address(), ByteArray::unknown(), fork, &config);
+            let post_touch_failure = *native.address() == address(3);
+            assert_eq!(
+                payload.store.touched_in_transaction(address(3)),
+                Some(post_touch_failure)
+            );
             let result = run(
                 &world,
                 &entry,
-                payload,
+                payload.clone(),
                 &config,
                 &mut WorkBudget::new(config.max_work),
             );
@@ -186,19 +221,56 @@ fn symbolic_outputs_include_provider_successes_and_invalid_inputs_for_all_forks(
                 native.id(),
                 result.frontiers
             );
-            assert_eq!(result.outcomes.len(), 3);
-            let returned = result
-                .outcomes
+            let kinds = if post_touch_failure {
+                vec![
+                    OutcomeKind::Failure,
+                    OutcomeKind::Return,
+                    OutcomeKind::Revert,
+                    OutcomeKind::Failure,
+                ]
+            } else {
+                vec![
+                    OutcomeKind::Return,
+                    OutcomeKind::Revert,
+                    OutcomeKind::Failure,
+                ]
+            };
+            assert_eq!(
+                result
+                    .outcomes
+                    .iter()
+                    .map(|outcome| outcome.kind)
+                    .collect::<Vec<_>>(),
+                kinds
+            );
+            assert_eq!(result.payload, payload);
+            assert!(result.executed_pcs.is_empty());
+            assert!(result.instruction_progress.is_empty());
+            assert!(result.instruction_values.is_empty());
+            assert!(result.successors.is_empty());
+            assert!(result.completed_calls.is_empty());
+            assert!(result.diagnostics.is_empty());
+            for outcome in &result.outcomes {
+                assert_finalized_root_store(&outcome.store, &payload, outcome.kind, &config);
+                if outcome.kind == OutcomeKind::Failure {
+                    assert_eq!(outcome.data.exact_bytes(), Some(Vec::new()));
+                    assert_eq!(
+                        outcome.store.touched_in_transaction(address(3)),
+                        Some(false)
+                    );
+                    assert!(outcome.store.transient_slots().is_empty());
+                }
+            }
+            let summary = &result.outcomes[usize::from(post_touch_failure)..];
+            let returned = summary
                 .iter()
                 .find(|o| o.kind == OutcomeKind::Return)
                 .unwrap();
-            let reverted = result
-                .outcomes
+            let reverted = summary
                 .iter()
                 .find(|o| o.kind == OutcomeKind::Revert)
                 .unwrap();
-            let failed = result
-                .outcomes
+            let failed = summary
                 .iter()
                 .find(|o| o.kind == OutcomeKind::Failure)
                 .unwrap();
@@ -649,6 +721,71 @@ fn assert_bn254_summary_outcomes(result: &Execution, kinds: &[OutcomeKind], doma
     }
 }
 
+fn assert_finalized_root_store(
+    observed: &crate::world::Store,
+    payload: &MachinePayload,
+    kind: OutcomeKind,
+    config: &ExecutionConfig,
+) {
+    assert_eq!(payload.call_stack.depth(), 1);
+    // Start from the captured input, not a reported outcome. Checked cleanup
+    // must restore the saved checkpoint for Failure/Revert, preserve RIPEMD's
+    // sticky touch, then finalize transaction-local effects before comparison.
+    let rollback =
+        (kind != OutcomeKind::Return).then(|| &payload.call_stack.root().state.saved_store);
+    let mut store = payload.store.clone();
+    let mut budget = WorkBudget::new(config.max_work);
+    store
+        .finalize_transaction_checked(config.domain().unwrap(), rollback, &mut budget)
+        .unwrap();
+    assert!(!budget.exhausted());
+    assert!(budget.used() > 0);
+
+    // These original fixtures leave the native account unobserved. MAY-empty
+    // cleanup allocates one fresh selector for a live recipient or sticky
+    // RIPEMD touch. Rename only that new selector; all captured input leaves
+    // and every Store field must match the independently finalized checkpoint.
+    let mut bound = payload.store.fresh_leaves();
+    bound.extend(
+        payload
+            .call_stack
+            .root()
+            .state
+            .saved_store
+            .state()
+            .fresh_leaves(),
+    );
+    let expected_selectors = store
+        .fresh_leaves()
+        .difference(&bound)
+        .cloned()
+        .collect::<Vec<_>>();
+    let observed_selectors = observed
+        .fresh_leaves()
+        .difference(&bound)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected_selectors.len(),
+        usize::from(
+            kind == OutcomeKind::Return
+                || payload.store.touched_in_transaction(address(3)) == Some(true)
+        )
+    );
+    assert_eq!(observed_selectors.len(), expected_selectors.len());
+    let renaming = expected_selectors
+        .into_iter()
+        .zip(observed_selectors)
+        .collect::<std::collections::BTreeMap<_, _>>();
+    store
+        .rename_fresh(
+            &renaming,
+            config.domain().unwrap().spec().relations().expressions(),
+        )
+        .unwrap();
+    assert_eq!(*observed, store);
+}
+
 fn root_finalization_work(
     payload: &MachinePayload,
     kind: OutcomeKind,
@@ -672,6 +809,24 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
     let config = config();
     let domain = config.domain().unwrap();
     let (world, entry, payload) = fixture(address(6), ByteArray::unknown(), Fork::Osaka, &config);
+    let mut entry_execution = empty_execution(payload.clone());
+    let mut entry_budget = WorkBudget::new(config.max_work);
+    assert!(super::super::late_failure::at_block_entry(
+        &mut entry_execution,
+        &mut context(&config, &mut entry_budget),
+    ));
+    assert_eq!(entry_execution.payload, payload);
+    assert!(entry_execution.frontiers.is_empty());
+    assert!(entry_execution.outcomes.is_empty());
+    assert!(entry_execution.successors.is_empty());
+    assert!(entry_execution.completed_calls.is_empty());
+    assert!(entry_execution.executed_pcs.is_empty());
+    assert!(entry_execution.instruction_progress.is_empty());
+    assert!(entry_execution.instruction_values.is_empty());
+    assert!(entry_execution.diagnostics.is_empty());
+    assert!(!entry_budget.exhausted());
+    let entry_work = entry_budget.used();
+    assert!(entry_work > 0);
     let mut full_budget = WorkBudget::new(config.max_work);
     let full = run(&world, &entry, payload.clone(), &config, &mut full_budget);
     let kinds = [
@@ -696,16 +851,36 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         .iter()
         .map(|kind| root_finalization_work(&payload, *kind, &config))
         .sum::<usize>();
-    let admitted = full_budget.used().checked_sub(finalization_work).unwrap();
+    let admitted = full_budget
+        .used()
+        .checked_sub(entry_work)
+        .unwrap()
+        .checked_sub(finalization_work)
+        .unwrap();
     assert!(retained_input > scan);
     assert!(admitted > retained_input);
-    for (limit, used) in [(0, 0), (scan, scan), (admitted - 1, retained_input)] {
+    for (limit, used, entry_admitted) in [
+        (0, 0, false),
+        (entry_work - 1, 0, false),
+        (entry_work, entry_work, true),
+        (entry_work + scan, entry_work + scan, true),
+        (entry_work + admitted - 1, entry_work + retained_input, true),
+    ] {
         let mut budget = WorkBudget::new(limit);
         let result = run(&world, &entry, payload.clone(), &config, &mut budget);
         assert_boundary(&result, FrontierReason::Work);
         assert_eq!(result.frontiers[0].pc, 0);
-        assert_eq!(result.frontiers[0].target, Some(payload.key()));
+        assert_eq!(
+            result.frontiers[0].target,
+            entry_admitted.then(|| payload.key())
+        );
+        assert_eq!(result.frontiers[0].range, None);
+        assert_eq!(result.frontiers[0].payload, None);
         assert_eq!(result.payload, payload);
+        assert!(result.executed_pcs.is_empty());
+        assert!(result.instruction_progress.is_empty());
+        assert!(result.instruction_values.is_empty());
+        assert!(result.diagnostics.is_empty());
         assert!(budget.exhausted());
         assert_eq!(budget.used(), used);
         assert!(budget.used() <= limit);
@@ -728,7 +903,7 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         FrontierReason::Relations(QueryReason::ExpressionLimit),
     );
     assert_eq!(result.payload, payload);
-    assert_eq!(budget.used(), retained_input);
+    assert_eq!(budget.used(), entry_work + retained_input);
     assert!(!budget.exhausted());
     let mut result = empty_execution(payload.clone());
     let mut budget = WorkBudget::new(limited.max_work);

@@ -199,12 +199,71 @@ fn changed_joined_entry_hides_the_old_receipt_values() {
 fn result_observations_preserve_small_work_budget_receipts() {
     let config = config();
     let domain = config.domain().unwrap();
+    let admission_work = |world: &World, entry: &Entry, input: &analysis::MachinePayload| {
+        assert_eq!(input.store.touched_in_transaction(address(3)), Some(false));
+        let probe = |maximum| {
+            let mut budget = WorkBudget::new(maximum);
+            let execution = transfer::execute(
+                world,
+                entry,
+                input.clone(),
+                &config,
+                domain,
+                &mut budget,
+                StorageReadPolicy::Abstract,
+            );
+            (execution, budget)
+        };
+        // The first PUSH visit costs exactly one semantic unit. Locate its
+        // admission boundary under the original policy, without copying the
+        // private entry reservation formula into this receipt regression.
+        let (full, _) = probe(config.max_work);
+        assert_eq!(full.executed_pcs.first(), Some(&0));
+        let (mut minimum, mut maximum) = (1, config.max_work);
+        while minimum < maximum {
+            let midpoint = minimum + (maximum - minimum) / 2;
+            if probe(midpoint).0.executed_pcs.is_empty() {
+                minimum = midpoint + 1;
+            } else {
+                maximum = midpoint;
+            }
+        }
+        let admission = minimum.checked_sub(1).unwrap();
+        assert!(admission > 0);
+        for maximum in [0, admission - 1, admission] {
+            let (execution, budget) = probe(maximum);
+            let admitted = maximum == admission;
+            assert!(budget.exhausted());
+            assert_eq!(budget.used(), if admitted { admission } else { 0 });
+            assert_eq!(execution.payload, *input);
+            assert!(execution.executed_pcs.is_empty());
+            assert!(execution.instruction_progress.is_empty());
+            assert!(execution.instruction_values.is_empty());
+            assert!(execution.completed_calls.is_empty());
+            assert!(execution.successors.is_empty());
+            assert!(execution.outcomes.is_empty());
+            assert!(execution.diagnostics.is_empty());
+            assert_eq!(
+                execution.frontiers,
+                vec![transfer::ExecutionFrontier {
+                    pc: 0,
+                    reason: FrontierReason::Work,
+                    target: admitted.then(|| input.key()),
+                    range: None,
+                    payload: None,
+                }]
+            );
+        }
+        admission
+    };
+
     let (world, entry) = fixture(&[(0x101, "600200")]);
     let initial = transfer::initial(&world, &entry, domain).unwrap();
-    // These are the original transfer boundaries: PUSH costs one visit, STOP
-    // costs one visit plus its operation. Recording the result consumes no
-    // semantic work and must not move any of those boundaries.
-    for (maximum, expected_pcs, expected_progress) in [
+    let admission = admission_work(&world, &entry, &initial);
+    // Keep the original semantic deltas separate from entry admission: PUSH
+    // costs one visit, STOP one visit plus its operation. Its dispatch still
+    // needs checked transaction finalization before it can install an outcome.
+    for (semantic_work, expected_pcs, expected_progress) in [
         (0, vec![], vec![]),
         (1, vec![0], vec![InstructionProgress::Completed]),
         (
@@ -224,6 +283,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
             ],
         ),
     ] {
+        let maximum = admission + semantic_work;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
@@ -234,40 +294,136 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &mut budget,
             StorageReadPolicy::Abstract,
         );
+        assert!(budget.exhausted());
         assert_eq!(budget.used(), maximum);
+        assert_eq!(budget.used() - admission, semantic_work);
         assert_eq!(execution.executed_pcs, expected_pcs);
         assert_eq!(execution.instruction_progress, expected_progress);
         assert!(execution.successors.is_empty());
+        assert!(execution.completed_calls.is_empty());
         assert!(execution.diagnostics.is_empty());
-        if maximum < 3 {
+        assert!(execution.outcomes.is_empty());
+        assert_eq!(
+            execution.frontiers,
+            vec![transfer::ExecutionFrontier {
+                pc: if semantic_work == 0 { 0 } else { 2 },
+                reason: FrontierReason::Work,
+                target: Some(execution.payload.key()),
+                range: None,
+                payload: None,
+            }]
+        );
+        assert_eq!(
+            execution
+                .instruction_values
+                .iter()
+                .map(|value| (value.instruction_index(), value.numeric().singleton()))
+                .collect::<Vec<_>>(),
+            if semantic_work == 0 {
+                vec![]
+            } else {
+                vec![(0, Some(U256::from(2)))]
+            }
+        );
+        assert_eq!(
+            execution
+                .payload
+                .active()
+                .stack
+                .iter()
+                .map(AbstractValue::singleton)
+                .collect::<Vec<_>>(),
+            if semantic_work == 0 {
+                vec![]
+            } else {
+                vec![Some(U256::from(2))]
+            }
+        );
+        assert_eq!(execution.payload.store, initial.store);
+    }
+
+    // Derive the cleanup fee from the checked lifecycle path used by STOP,
+    // independently of any successful transfer budget. Test both sides of its
+    // final reservation as well as the zero-cleanup dispatch refusal above.
+    let mut finalized_store = initial.store.clone();
+    let mut finalization_budget = WorkBudget::new(config.max_work);
+    finalized_store
+        .finalize_transaction_checked(domain, None, &mut finalization_budget)
+        .unwrap();
+    assert!(!finalization_budget.exhausted());
+    let finalization_work = finalization_budget.used();
+    assert!(finalization_work > 0);
+    for remaining in [finalization_work - 1, finalization_work] {
+        let mut expected_store = initial.store.clone();
+        let mut cleanup_budget = WorkBudget::new(remaining);
+        let completed = expected_store
+            .finalize_transaction_checked(domain, None, &mut cleanup_budget)
+            .is_ok();
+        assert_eq!(completed, remaining == finalization_work);
+        let mut budget = WorkBudget::new(admission + 3 + remaining);
+        let execution = transfer::execute(
+            &world,
+            &entry,
+            initial.clone(),
+            &config,
+            domain,
+            &mut budget,
+            StorageReadPolicy::Abstract,
+        );
+        assert_eq!(budget.used(), admission + 3 + cleanup_budget.used());
+        assert_eq!(budget.exhausted(), !completed);
+        assert_eq!(execution.executed_pcs, vec![0, 2]);
+        assert_eq!(
+            execution.instruction_progress,
+            vec![
+                InstructionProgress::Completed,
+                InstructionProgress::Dispatched
+            ]
+        );
+        assert_eq!(execution.instruction_values.len(), 1);
+        assert_eq!(execution.instruction_values[0].instruction_index(), 0);
+        assert_eq!(
+            execution.instruction_values[0].numeric().singleton(),
+            Some(U256::from(2))
+        );
+        assert_eq!(execution.payload.active().stack.len(), 1);
+        assert_eq!(
+            execution.payload.active().stack[0].singleton(),
+            Some(U256::from(2))
+        );
+        assert_eq!(execution.payload.store, initial.store);
+        assert!(execution.successors.is_empty());
+        assert!(execution.completed_calls.is_empty());
+        assert!(execution.diagnostics.is_empty());
+        if completed {
+            assert!(execution.frontiers.is_empty());
+            assert_eq!(execution.outcomes.len(), 1);
+            assert_eq!(execution.outcomes[0].kind, OutcomeKind::Return);
+            assert_eq!(execution.outcomes[0].data.exact_bytes(), Some(Vec::new()));
+            assert_eq!(execution.outcomes[0].store, finalized_store);
+        } else {
+            assert_eq!(expected_store, initial.store);
             assert!(execution.outcomes.is_empty());
             assert_eq!(
                 execution.frontiers,
-                vec![crate::analysis::transfer::ExecutionFrontier {
-                    pc: if maximum == 0 { 0 } else { 2 },
+                vec![transfer::ExecutionFrontier {
+                    pc: 2,
                     reason: FrontierReason::Work,
                     target: Some(execution.payload.key()),
                     range: None,
                     payload: None,
                 }]
             );
-        } else {
-            assert!(execution.frontiers.is_empty());
-            assert_eq!(execution.outcomes.len(), 1);
-            assert_eq!(execution.outcomes[0].kind, OutcomeKind::Return);
         }
-        assert_eq!(execution.instruction_values.len(), usize::from(maximum > 0));
-        assert_eq!(
-            execution.payload.active().stack.len(),
-            usize::from(maximum > 0)
-        );
     }
 
     let (world, entry) = fixture(&[(0x101, "6003565b00")]);
     let initial = transfer::initial(&world, &entry, domain).unwrap();
+    let admission = admission_work(&world, &entry, &initial);
     // JUMP pays its history-navigation work before dispatch, then reserves a
     // separate successor visit. Neither refusal may invent a completed edge.
-    for maximum in [3, 4, 5] {
+    for semantic_work in [3, 4, 5] {
+        let maximum = admission + semantic_work;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
@@ -279,12 +435,14 @@ fn result_observations_preserve_small_work_budget_receipts() {
             StorageReadPolicy::Abstract,
         );
         assert_eq!(budget.used(), maximum);
+        assert_eq!(budget.used() - admission, semantic_work);
+        assert_eq!(budget.exhausted(), semantic_work < 5);
         assert_eq!(execution.executed_pcs, vec![0, 2]);
         assert_eq!(
             execution.instruction_progress,
             vec![
                 InstructionProgress::Completed,
-                if maximum == 3 {
+                if semantic_work == 3 {
                     InstructionProgress::OperandsConsumed
                 } else {
                     InstructionProgress::Dispatched
@@ -292,9 +450,16 @@ fn result_observations_preserve_small_work_budget_receipts() {
             ]
         );
         assert!(execution.outcomes.is_empty());
+        assert!(execution.completed_calls.is_empty());
+        assert!(execution.diagnostics.is_empty());
         assert_eq!(execution.instruction_values.len(), 1);
+        assert_eq!(execution.instruction_values[0].instruction_index(), 0);
+        assert_eq!(
+            execution.instruction_values[0].numeric().singleton(),
+            Some(U256::from(3))
+        );
         assert!(execution.payload.active().stack.is_empty());
-        if maximum < 5 {
+        if semantic_work < 5 {
             assert!(execution.successors.is_empty());
             assert_eq!(
                 execution.frontiers,
@@ -326,17 +491,19 @@ fn result_observations_preserve_small_work_budget_receipts() {
 
     let (world, entry) = fixture(&[(0x101, "5f3500")]);
     let initial = transfer::initial(&world, &entry, domain).unwrap();
+    let admission = admission_work(&world, &entry, &initial);
     let initial_snapshots = serde_json::to_value((
         &initial.store,
         &initial.active().calldata,
         &initial.active().memory,
     ))
     .unwrap();
-    // One unit stops before the load's visit and preserves its operand. The
-    // larger allowance pays the scalar scan and byte operation but cannot pay
-    // the complete word plan. Its real receipt must retain the popped operand
-    // phase, without an output value or any installed state change.
-    for maximum in [1, 10_000] {
+    // One semantic unit stops before the load's visit and preserves its operand.
+    // The original 10,000-unit allowance pays the scalar scan and byte operation
+    // but cannot pay the complete word plan. Retain its popped-operand phase,
+    // without an output value or any installed state change.
+    for semantic_work in [1, 10_000] {
+        let maximum = admission + semantic_work;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
@@ -347,14 +514,14 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &mut budget,
             StorageReadPolicy::Abstract,
         );
-        let before_load = maximum == 1;
+        let before_load = semantic_work == 1;
         assert!(budget.exhausted());
         if before_load {
-            assert_eq!(budget.used(), 1);
+            assert_eq!(budget.used() - admission, 1);
         } else {
             let scalar_scan = 32 * (domain.capacity() + 32);
-            assert!(budget.used() > 2 + scalar_scan);
-            assert!(budget.used() <= maximum);
+            assert!(budget.used() - admission > 2 + scalar_scan);
+            assert!(budget.used() - admission <= semantic_work);
         }
         assert_eq!(
             execution.executed_pcs,
@@ -372,6 +539,11 @@ fn result_observations_preserve_small_work_budget_receipts() {
             }
         );
         assert_eq!(execution.instruction_values.len(), 1);
+        assert_eq!(execution.instruction_values[0].instruction_index(), 0);
+        assert_eq!(
+            execution.instruction_values[0].numeric().singleton(),
+            Some(U256::ZERO)
+        );
         assert_eq!(
             execution.payload.active().stack.len(),
             usize::from(before_load)
@@ -383,6 +555,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
             );
         }
         assert!(execution.successors.is_empty());
+        assert!(execution.completed_calls.is_empty());
         assert!(execution.outcomes.is_empty());
         assert!(execution.diagnostics.is_empty());
         assert_eq!(

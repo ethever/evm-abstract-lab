@@ -1358,12 +1358,12 @@ mod tests {
         let input = initial(&world, &entry, domain).unwrap();
         for cancelled in [false, true] {
             let control = crate::analysis::control::Control::new(Default::default());
-            let result = control.scope(|| {
+            let (result, budget) = control.scope(|| {
                 let mut budget = WorkBudget::new(if cancelled { config.max_work } else { 0 });
                 if cancelled {
                     control.cancellation().cancel();
                 }
-                execute(
+                let result = execute(
                     &world,
                     &entry,
                     input.clone(),
@@ -1371,23 +1371,32 @@ mod tests {
                     domain,
                     &mut budget,
                     StorageReadPolicy::Abstract,
-                )
+                );
+                (result, budget)
             });
+            assert!(budget.exhausted());
+            assert_eq!(budget.used(), 0);
             assert_eq!(result.payload, input);
             assert!(result.executed_pcs.is_empty());
             assert!(result.instruction_progress.is_empty());
+            assert!(result.instruction_values.is_empty());
+            assert!(result.completed_calls.is_empty());
+            assert!(result.diagnostics.is_empty());
             assert!(result.successors.is_empty());
             assert!(result.outcomes.is_empty());
-            assert_eq!(result.frontiers.len(), 1);
-            assert_eq!(result.frontiers[0].pc, 0);
-            assert_eq!(result.frontiers[0].target, Some(input.key()));
             assert_eq!(
-                result.frontiers[0].reason,
-                if cancelled {
-                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
-                } else {
-                    FrontierReason::Work
-                }
+                result.frontiers,
+                vec![ExecutionFrontier {
+                    pc: 0,
+                    reason: if cancelled {
+                        FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+                    } else {
+                        FrontierReason::Work
+                    },
+                    target: None,
+                    range: None,
+                    payload: None,
+                }]
             );
         }
     }
