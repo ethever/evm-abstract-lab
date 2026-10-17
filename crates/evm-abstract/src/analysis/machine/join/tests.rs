@@ -575,25 +575,156 @@ fn growing_loop_bound_contains_the_concrete_counter_and_memory_pair() {
         AbstractValue::unknown_byte().numeric()
     );
     let initial = &analysis.states()[0].entry;
-    assert_eq!(
-        header
-            .entry
-            .active()
-            .saved_store
-            .state()
-            .summary_projection(domain)
-            .unwrap(),
-        initial
-            .active()
-            .saved_store
-            .state()
-            .summary_projection(domain)
-            .unwrap()
-    );
-    assert_eq!(
-        header.entry.store.summary_projection(domain).unwrap(),
-        initial.store.summary_projection(domain).unwrap()
-    );
+    for (actual, input) in [
+        (
+            header.entry.active().saved_store.state(),
+            initial.active().saved_store.state(),
+        ),
+        (&header.entry.store, &initial.store),
+    ] {
+        let summary = actual.summary_projection(domain).unwrap();
+        // initial <= header: covers joins every numerical/default, lifecycle
+        // and log field. Must-independence joins by AND, so the header may
+        // forget true -> false when LoopBound projects to its fixed layout.
+        assert!(summary.covers(&input.summary_projection(domain).unwrap(), domain));
+
+        // Bound that relaxation to must-independence: all public transaction
+        // coordinates remain exact, including unlisted-account defaults.
+        let owner = fixtures::address(0x101);
+        let unlisted = fixtures::address(0x202);
+        assert_eq!(input.addresses(), BTreeSet::from([owner]));
+        assert_eq!(actual.addresses(), input.addresses());
+        assert!(input.slots().is_empty() && input.transient_slots().is_empty());
+        assert_eq!(actual.slots(), input.slots());
+        assert_eq!(actual.transient_slots(), input.transient_slots());
+        assert_eq!(
+            actual.global_storage_default().numeric(),
+            input.global_storage_default().numeric()
+        );
+        assert_eq!(
+            actual.global_transient_default().numeric(),
+            input.global_transient_default().numeric()
+        );
+        assert_eq!(
+            actual.balance_default().numeric(),
+            input.balance_default().numeric()
+        );
+        for address in [owner, unlisted] {
+            assert_eq!(
+                actual.storage_default(address).numeric(),
+                input.storage_default(address).numeric()
+            );
+            assert_eq!(
+                actual.transient_default(address).numeric(),
+                input.transient_default(address).numeric()
+            );
+            assert_eq!(
+                actual.read_balance(address).numeric(),
+                input.read_balance(address).numeric()
+            );
+            assert_eq!(
+                actual.nonce(address).numeric(),
+                input.nonce(address).numeric()
+            );
+            assert_eq!(actual.code(address), input.code(address));
+            assert_eq!(actual.existence(address), input.existence(address));
+            assert_eq!(
+                actual.created_in_transaction(address),
+                input.created_in_transaction(address)
+            );
+            assert_eq!(
+                actual.pending_destruction(address),
+                input.pending_destruction(address)
+            );
+            assert_eq!(
+                actual.touched_in_transaction(address),
+                input.touched_in_transaction(address)
+            );
+            assert_eq!(
+                actual.slot_root(address, true).unwrap().kind(),
+                &SlotStateKind::Zero
+            );
+        }
+        assert_eq!(actual.touched_default(), input.touched_default());
+        assert!(input.possible_logs().is_empty() && !input.logs_unknown());
+        assert_eq!(actual.possible_logs(), input.possible_logs());
+        assert_eq!(actual.logs_unknown(), input.logs_unknown());
+        assert_eq!(
+            actual.slot_root(owner, false).unwrap().kind(),
+            &SlotStateKind::Zero
+        );
+        let mut unlisted_source = None;
+        for address in [fixtures::address(0), unlisted] {
+            let root = actual.slot_root(address, false).unwrap();
+            let SlotStateKind::Input { source, bindings } = root.kind() else {
+                panic!("unlisted persistent accounts retain an unconstrained input");
+            };
+            assert!(bindings.is_empty());
+            assert!(matches!(source.token().kind(), ExprKind::Fresh(_)));
+            assert_eq!(
+                source.namespace(),
+                U256::from_be_slice(address.as_slice()) << 8
+            );
+            if let Some(token) = &unlisted_source {
+                assert_eq!(source.token(), token);
+            } else {
+                unlisted_source = Some(source.token().clone());
+            }
+        }
+        assert!(actual.symbolic_facts(false).next().is_none());
+        assert!(actual.symbolic_facts(true).next().is_none());
+
+        // Each alternative starts at the original captured store, changing
+        // one transaction coordinate. Full coverage must still reject it.
+        let reject = |alternative: crate::world::Store| {
+            assert!(!summary.covers(&alternative.summary_projection(domain).unwrap(), domain));
+        };
+        let mut alternative = input.clone();
+        alternative
+            .write_checked(owner, &fixtures::word(0), &fixtures::word(1), domain)
+            .unwrap();
+        reject(alternative);
+        for address in [owner, unlisted] {
+            let mut alternative = input.clone();
+            alternative
+                .write_transient_checked(address, &fixtures::word(0), &fixtures::word(1), domain)
+                .unwrap();
+            reject(alternative);
+        }
+        let mut alternative = input.clone();
+        alternative.write_balance(owner, fixtures::word(1_000_001));
+        reject(alternative);
+        let mut alternative = input.clone();
+        alternative.write_nonce(owner, fixtures::word(1));
+        reject(alternative);
+        let mut alternative = input.clone();
+        alternative.deploy_code(owner, crate::bytecode::Program::from_hex("00").unwrap());
+        reject(alternative);
+        let mut alternative = input.clone();
+        alternative.touch_account(unlisted);
+        reject(alternative);
+        let mut alternative = input.clone();
+        alternative.may_touch_all();
+        reject(alternative);
+        let mut alternative = input.clone();
+        alternative
+            .emit_log(
+                crate::world::LogKey {
+                    address: owner,
+                    code_address: owner,
+                    code_hash: header.entry.active().key.code_hash,
+                    source_kind: crate::world::LogSourceKind::Runtime,
+                    pc: 0,
+                },
+                crate::world::AbstractLog {
+                    topics: vec![fixtures::word(1)],
+                    data: ByteArray::empty(),
+                },
+                domain,
+            )
+            .unwrap();
+        reject(alternative);
+    }
     assert!(!analysis.outcomes().is_empty());
     assert!(
         analysis
@@ -713,12 +844,23 @@ fn scalar_counter_widening_retains_the_unchanged_immutable_input() {
     let mut config = fixtures::config();
     config.analysis.relations = crate::domain::relational::RelationLimits::default();
     config.max_work = crate::analysis::ExecutionConfig::default().max_work;
+    let domain = config.domain().unwrap();
     // Original CALLVALUE is below an increasing counter throughout the loop.
     let (world, mut entry) = fixtures::fixture(&[(0x101, "345f5b600101600256")]);
     entry.environment.value = AbstractValue::top();
     let analysis = crate::analysis::analyze_world(world, entry, config).unwrap();
     assert_eq!(analysis.status(), Status::Converged);
-    assert!(analysis.transfers() <= 5);
+    assert!(analysis.frontiers().is_empty());
+    // One entry transfer, then header inputs {0}, {0,1}, {0,1,2},
+    // [0,2^255-1], and Top. EntryAlternatives retains two inputs before
+    // LoopBound; widen_procedure retains at most widening_after_updates()+1
+    // (three) constants. The fourth constant widens the positive signed hull;
+    // the next ADD crosses the sign boundary and widens to the full word.
+    // The final Top transfer is the cyclic postfixpoint check: update returns
+    // None on semantic equality, so Engine does not queue another transfer.
+    assert_eq!(domain.spec().widening_after_updates(), 2);
+    assert!(analysis.transfers() <= 6);
+    assert_eq!(analysis.states().len(), 2);
     let initial = analysis.states()[0].exit.as_ref().unwrap();
     let header = analysis
         .states()
@@ -728,18 +870,165 @@ fn scalar_counter_widening_retains_the_unchanged_immutable_input() {
     let original = &initial.active().stack[0];
     let preserved = &header.entry.active().stack[0];
     assert_eq!(preserved.numeric(), original.numeric());
-    assert_eq!(preserved.expression(), original.expression());
-    assert!(preserved.same_identity(original));
+    assert!(original.numeric().is_top());
+    let original_input = original
+        .identity()
+        .input()
+        .expect("immutable CALLVALUE input");
+    assert_eq!(original_input.symbol(), crate::world::Symbol::CallValue);
+    let original_expression = original.expression().expect("original scoped input");
+    let ExprKind::Input(atom) = original_expression.kind() else {
+        panic!("the original CALLVALUE must retain its input metadata");
+    };
+    assert_eq!(atom.scope, original_input.scope());
+    assert_eq!(atom.symbol, original_input.symbol());
+    assert_eq!(
+        original.provenance(),
+        &crate::domain::provenance::Provenance::source(
+            crate::domain::provenance::Origin::CallValue
+        )
+    );
+    assert!(original.same_identity(&initial.active().call_value));
+
+    // Generic LoopBound independently instantiates scalar roots. Preserve the
+    // concrete CALLVALUE=7, counter=3 assignment without claiming a must-alias
+    // between the new scalar and the historical immutable input.
+    let counter = &header.entry.active().stack[1];
+    let mut independent = BTreeSet::new();
+    for value in [preserved, counter] {
+        let expression = value.expression().expect("independent scalar root");
+        assert!(matches!(expression.kind(), ExprKind::Fresh(_)));
+        assert!(expression.inputs().is_empty());
+        assert_eq!(
+            value,
+            &AbstractValue::top().with_expression(expression.clone())
+        );
+        assert!(!value.same_identity(original));
+        assert!(independent.insert(expression.clone()));
+    }
+    assert!(original.contains(U256::from(7)));
+    assert!(preserved.contains(U256::from(7)));
+    assert!(counter.contains(U256::from(3)));
+    assert!(header.entry.relations.is_empty());
+    assert_eq!(header.entry.call_stack.depth(), 1);
+    assert_eq!(header.entry.active().stack.len(), 2);
+    assert_eq!(
+        header.program().unwrap().blocks()[header.active().basic_block_index].start_pc,
+        2
+    );
+    assert!(
+        analysis
+            .edges()
+            .iter()
+            .any(|edge| edge.from == header.id && edge.to == header.id)
+    );
+    let mut outside_stack = header.entry.clone();
+    outside_stack.active_mut().stack.clear();
+    // This traversal includes frame scalars, byte sources, current/saved stores,
+    // all continuations and the path. Neither assigned Fresh occurs elsewhere,
+    // so no retained equality, guard or numeric root can rule out the pair.
+    assert!(outside_stack.fresh_leaves().is_disjoint(&independent));
+    assert_eq!(
+        header.entry.active().call_value.numeric(),
+        original.numeric()
+    );
+    let call_value = &header.entry.active().call_value;
+    let call_value_expression = call_value
+        .expression()
+        .expect("independent frame CALLVALUE");
+    assert!(matches!(call_value_expression.kind(), ExprKind::Fresh(_)));
+    assert_eq!(
+        call_value,
+        &AbstractValue::top().with_expression(call_value_expression.clone())
+    );
+    for (operand, value) in [
+        (&header.entry.active().address_operand, 0x101u64),
+        (&header.entry.active().caller_operand, 0x900),
+    ] {
+        let operand = operand.as_ref().expect("canonical frame operand");
+        assert_eq!(operand.singleton(), Some(U256::from(value)));
+        assert!(
+            operand
+                .expression()
+                .is_none_or(|expression| expression.as_constant() == Some(U256::from(value)))
+        );
+    }
     assert!(header.entry.active().stack[1].contains(U256::ZERO));
     assert!(header.entry.active().stack[1].contains(U256::MAX));
     assert_eq!(
         header.entry.active().memory.state_root(),
         initial.active().memory.state_root()
     );
-    assert_eq!(
-        header.entry.active().saved_store,
-        initial.active().saved_store
-    );
+    for bytes in [
+        &header.entry.active().memory,
+        &header.entry.active().calldata,
+        &header.entry.active().returndata,
+    ] {
+        assert_eq!(bytes.len().singleton(), Some(U256::ZERO));
+        assert_eq!(bytes.state_root().kind(), &ByteStateKind::Zero);
+        assert!(
+            bytes
+                .guard_conditions(domain.spec().relations().expressions())
+                .unwrap()
+                .is_empty()
+        );
+    }
+    for (actual, input) in [
+        (
+            header.entry.active().saved_store.state(),
+            initial.active().saved_store.state(),
+        ),
+        (&header.entry.store, &initial.store),
+    ] {
+        let summary = actual.summary_projection(domain).unwrap();
+        // input <= header, including the saved rollback content; independently
+        // sampled roots may forget must-independence, whose join is AND.
+        assert!(summary.covers(&input.summary_projection(domain).unwrap(), domain));
+        let owner = fixtures::address(0x101);
+        assert_eq!(actual.addresses(), BTreeSet::from([owner]));
+        assert_eq!(
+            actual.slot_root(owner, false).unwrap().kind(),
+            &SlotStateKind::Zero
+        );
+        let unlisted = fixtures::address(0x202);
+        for address in [owner, unlisted] {
+            assert_eq!(
+                actual.slot_root(address, true).unwrap().kind(),
+                &SlotStateKind::Zero
+            );
+        }
+        let mut unlisted_source = None;
+        for address in [fixtures::address(0), unlisted] {
+            let root = actual.slot_root(address, false).unwrap();
+            let SlotStateKind::Input { source, bindings } = root.kind() else {
+                panic!("unlisted persistent accounts retain an unconstrained input");
+            };
+            assert!(bindings.is_empty());
+            assert!(matches!(source.token().kind(), ExprKind::Fresh(_)));
+            assert_eq!(
+                source.namespace(),
+                U256::from_be_slice(address.as_slice()) << 8
+            );
+            if let Some(token) = &unlisted_source {
+                assert_eq!(source.token(), token);
+            } else {
+                unlisted_source = Some(source.token().clone());
+            }
+        }
+        assert!(actual.symbolic_facts(false).next().is_none());
+        assert!(actual.symbolic_facts(true).next().is_none());
+        let mut alternative = input.clone();
+        alternative
+            .write_checked(owner, &fixtures::word(0), &fixtures::word(1), domain)
+            .unwrap();
+        assert!(!summary.covers(&alternative.summary_projection(domain).unwrap(), domain));
+        let mut alternative = input.clone();
+        alternative.write_balance(owner, fixtures::word(1_000_001));
+        assert!(!summary.covers(&alternative.summary_projection(domain).unwrap(), domain));
+        let mut alternative = input.clone();
+        alternative.touch_account(fixtures::address(0x202));
+        assert!(!summary.covers(&alternative.summary_projection(domain).unwrap(), domain));
+    }
     crate::ssa::build_world(&analysis)
         .unwrap()
         .verify(&analysis)
