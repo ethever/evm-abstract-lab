@@ -72,6 +72,11 @@ impl Serialize for ConditionalFacts {
 }
 
 impl ConditionalFacts {
+    /// Only these handles are copied by Clone; nested scopes remain shared.
+    pub(super) fn cloned_branches(&self) -> usize {
+        self.branches.len()
+    }
+
     fn from_branches(branches: Vec<Arc<Branch>>) -> Self {
         let mut out = Self {
             branches,

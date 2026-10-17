@@ -748,7 +748,7 @@ impl RelationState {
         &self.path
     }
     /// Guarantees true on every retained path, suitable for scalar consumers.
-    pub fn constraints(&self) -> impl Iterator<Item = &Constraint> {
+    pub fn constraints(&self) -> impl ExactSizeIterator<Item = &Constraint> {
         self.constraints.iter()
     }
     /// Widen by forgetting any guarantee absent from the previous state.

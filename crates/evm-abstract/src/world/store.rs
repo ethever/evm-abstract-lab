@@ -485,6 +485,36 @@ pub struct Store {
 pub type Snapshot = SharedCheckpoint<Store>;
 
 impl Store {
+    /// Directly owned scalar values copied by Clone. Logs are counted by their
+    /// own topics/data containers; slot roots and saved histories stay shared.
+    /// Consumers must prepay finalization_entries before scanning these values.
+    pub(crate) fn cloned_values(&self) -> impl Iterator<Item = &AbstractValue> {
+        [&self.persistent, &self.transient]
+            .into_iter()
+            .flat_map(|plane| {
+                plane
+                    .slots
+                    .values()
+                    .chain(plane.defaults.values())
+                    .chain(plane.operands.values())
+                    .chain(std::iter::once(&plane.global_default))
+            })
+            .chain(self.balances.values())
+            .chain(self.nonces.values())
+            .chain(std::iter::once(&self.balance_default))
+    }
+
+    /// Raw runtime bytes hashed by code_identity, independently of cheap Code
+    /// cloning. Consumers must prepay the flat code-entry scan first.
+    pub(crate) fn code_identity_bytes(&self) -> usize {
+        self.codes.values().fold(0usize, |bytes, code| {
+            bytes.saturating_add(match code {
+                Code::Runtime(program) => program.byte_len(),
+                _ => 0,
+            })
+        })
+    }
+
     pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&AbstractValue)) {
         for plane in [&self.persistent, &self.transient] {
             for value in plane.slots.values().chain(plane.defaults.values()) {
