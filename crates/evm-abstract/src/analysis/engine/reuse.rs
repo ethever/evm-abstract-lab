@@ -3,7 +3,8 @@
 //! A memo never owns a Store, rollback snapshot, call frame or outcome. Its
 //! positive opcode list excludes initial reads, memory, calls and lifecycle.
 //! Constant stacks and an empty relation input avoid allocating or equating
-//! independent symbolic choices. Applying a delta clones the *new* payload and
+//! independent symbolic choices. RIPEMD must be untouched to exclude the
+//! input-dependent late Failure. Applying a delta clones the *new* payload and
 //! changes only its active stack/control key. Stateful dependencies therefore
 //! enter through exact input values, rather than by patching historical roots.
 
@@ -19,7 +20,19 @@ use crate::{
     domain::AbstractValue,
     resource::WorkBudget,
 };
+use alloy_primitives::Address;
 use std::{collections::BTreeMap, sync::Arc};
+
+// Sixteen units cover scalar/empty checks, including remember's result vectors.
+// One fixed-width CodeId lookup needs at most 16 comparisons per ordered-tree
+// level (std/imbl); usize::BITS + 1 bounds the depth without counting sources.
+// This prepaid metadata allowance never replaces any full-signature fee.
+const ELIGIBILITY_WORK: usize = 16 + 16 * (usize::BITS as usize + 1);
+
+// Match late_failure's bound for this same fixed-width Store query: at most
+// usize::BITS + 1 levels, 11 comparisons per node, rounded up for bookkeeping.
+// Pay independently before the getter, even when a full signature cannot fit.
+const TOUCH_QUERY_WORK: usize = (usize::BITS as usize + 1) * 16;
 
 /// Cumulative optional computation reuse, separate from logical block transfers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -186,6 +199,28 @@ impl ExecutionReuse {
         self.dependencies.record(id, input, &self.catalog);
     }
 
+    /// Read metadata only, after paying ELIGIBILITY_WORK. The original paid key
+    /// still checks full Program equality, frame identity and every stack value.
+    fn eligible(&self, input: &MachinePayload) -> bool {
+        let frame = input.active();
+        frame.code == FrameCode::Runtime
+            && input.relations.is_empty()
+            && frame.program.is_some()
+            && self
+                .catalog
+                .source(frame.key.code_hash, CodeMode::Runtime)
+                .and_then(|compiled| compiled.blocks().get(frame.key.basic_block_index))
+                .is_some_and(|block| block.stack_only)
+    }
+
+    /// After paying TOUCH_QUERY_WORK, exclude the input-dependent Failure that
+    /// ordinary transfer emits alongside normal execution for Some(true)/None.
+    /// Memo::apply has no outcomes, so only known-untouched inputs are reusable.
+    fn untouched_ripemd(input: &MachinePayload) -> bool {
+        let ripemd = Address::from_word(U256::from(3).into());
+        input.store.touched_in_transaction(ripemd) == Some(false)
+    }
+
     fn key(&self, input: &MachinePayload) -> Option<Key> {
         let frame = input.active();
         if frame.code != FrameCode::Runtime || !input.relations.is_empty() {
@@ -326,6 +361,28 @@ impl ExecutionReuse {
         if self.max_entries == 0 {
             return Ok(None);
         }
+        if ELIGIBILITY_WORK > self.max_work.saturating_sub(budget.used())
+            || !budget.can_afford(ELIGIBILITY_WORK)
+        {
+            return Ok(None);
+        }
+        if !budget.charge(ELIGIBILITY_WORK) {
+            return Err(MachineError::work_failure());
+        }
+        if !self.eligible(input) {
+            return Ok(None);
+        }
+        if TOUCH_QUERY_WORK > self.max_work.saturating_sub(budget.used())
+            || !budget.can_afford(TOUCH_QUERY_WORK)
+        {
+            return Ok(None);
+        }
+        if !budget.charge(TOUCH_QUERY_WORK) {
+            return Err(MachineError::work_failure());
+        }
+        if !Self::untouched_ripemd(input) {
+            return Ok(None);
+        }
         let signature_work = self.signature_work(input);
         // Optional lookup must not consume the remaining execution budget just
         // to discover that constructing/comparing its signature cannot fit.
@@ -382,6 +439,24 @@ impl ExecutionReuse {
         if self.max_entries == 0 {
             return;
         }
+        if !budget.can_afford(ELIGIBILITY_WORK) || !self.optional_charge(budget, ELIGIBILITY_WORK) {
+            return;
+        }
+        if execution.successors.is_empty()
+            || !execution.frontiers.is_empty()
+            || !execution.outcomes.is_empty()
+            || !execution.completed_calls.is_empty()
+            || !execution.diagnostics.is_empty()
+            || !self.eligible(input)
+        {
+            return;
+        }
+        if !budget.can_afford(TOUCH_QUERY_WORK)
+            || !self.optional_charge(budget, TOUCH_QUERY_WORK)
+            || !Self::untouched_ripemd(input)
+        {
+            return;
+        }
         if !self.optional_charge(budget, self.signature_work(input)) {
             return;
         }
@@ -389,13 +464,6 @@ impl ExecutionReuse {
             return;
         };
         if self.memo.len() >= self.max_entries && !self.memo.contains_key(&key) {
-            return;
-        }
-        if !execution.frontiers.is_empty()
-            || !execution.outcomes.is_empty()
-            || !execution.completed_calls.is_empty()
-            || !execution.diagnostics.is_empty()
-        {
             return;
         }
         let retained_bytes = Self::retained_bound(input, execution);
