@@ -451,7 +451,10 @@ fn a_counter_loop_reaches_a_stored_postfixpoint_and_verifies_ssa() {
 
 #[test]
 fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
-    use evm_abstract::domain::{relational::CheckResult, symbolic::ExprId};
+    use evm_abstract::{
+        analysis::OutcomeKind,
+        domain::{relational::CheckResult, symbolic::ExprId},
+    };
 
     let call = |offset: u8| format!("602060{offset:02x}5f5f5f6102006207a120f1");
     let counter_caller = format!("{}50{}50{}506020516040511800", call(0), call(32), call(64));
@@ -508,7 +511,10 @@ fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
                     .filter(|record| !record.reused_at.is_empty())
                     .collect();
                 assert_eq!(reused.len(), 1);
-                assert_eq!(&reused[0].input.store, initial);
+                // CALL snapshots rollback state before touching the callee.
+                let mut entered = initial.clone();
+                entered.touch_account(address(0x200));
+                assert_eq!(reused[0].input.store, entered);
                 assert_eq!(reused[0].input.frame.state.saved_store.state(), initial);
                 assert_eq!(
                     graph.states()[reused[0].source_state].key.frames[0].basic_block_index,
@@ -531,13 +537,31 @@ fn summary_replay_does_not_turn_separate_return_reads_into_copy_identity() {
                 assert_eq!(admitted_sites, std::collections::BTreeSet::from([0, 1, 2]));
                 for record in graph.summaries() {
                     assert!(!record.outputs.is_empty());
+                    let mut has_return = false;
+                    let mut has_failure = false;
                     for output in &record.outputs {
-                        assert_eq!(output.kind, evm_abstract::analysis::OutcomeKind::Return);
-                        assert_ne!(
-                            output.store.slot_root(address(0x200), false).unwrap(),
-                            record.input.store.slot_root(address(0x200), false).unwrap()
-                        );
+                        match output.kind {
+                            OutcomeKind::Return => {
+                                has_return = true;
+                                assert_ne!(
+                                    output.store.slot_root(address(0x200), false).unwrap(),
+                                    record.input.store.slot_root(address(0x200), false).unwrap()
+                                );
+                            }
+                            OutcomeKind::Failure => {
+                                has_failure = true;
+                                // Memory gas failures restore the full pre-entry Store.
+                                assert_eq!(
+                                    &output.store,
+                                    record.input.frame.state.saved_store.state()
+                                );
+                                assert_eq!(output.data, ByteArray::empty());
+                            }
+                            OutcomeKind::Revert => panic!("counter callee cannot revert"),
+                        }
                     }
+                    assert!(has_return, "counter summary must retain a Return");
+                    assert!(has_failure, "counter summary must retain a Failure");
                 }
                 for pair in graph.summaries().windows(2) {
                     assert_ne!(pair[0].input.store, pair[1].input.store);
