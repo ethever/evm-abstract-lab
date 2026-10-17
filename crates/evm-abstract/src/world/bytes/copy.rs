@@ -349,8 +349,9 @@ impl ByteArray {
             )
     }
 
-    /// CALL's requested allocation, checked minimum and extra staged wrapper
-    /// clone precede the same COPY. Bound minimum's term before constructing it.
+    /// CALL's requested allocation precedes COPY unless either size is proved
+    /// zero. Quote only normalization for a zero request; an empty source still
+    /// needs the complete target expansion/retention envelope.
     pub(crate) fn copy_return_data_work(
         &self,
         source: &Self,
@@ -358,6 +359,35 @@ impl ByteArray {
         requested: &AbstractValue,
         domain: Domain,
     ) -> usize {
+        if requested.singleton() == Some(U256::ZERO) {
+            // Both normalizations still run, including numeric-only sources.
+            return scalar_work(destination)
+                .saturating_add(scalar_work(requested))
+                .saturating_add(8)
+                .saturating_mul(4);
+        }
+        if source.length.singleton() == Some(U256::ZERO) {
+            let ranges = scalar_work(requested)
+                .saturating_add(scalar_work(&self.length))
+                .saturating_add(scalar_work(destination))
+                .saturating_add(8)
+                .saturating_mul(4);
+            let branches = alternatives(&self.length)
+                .saturating_mul(alternatives(destination))
+                .saturating_mul(alternatives(requested));
+            // minimum(right=0) and copy_from(size=0) skip all source work and
+            // the second wrapper clone. Keep work's target checks unchanged:
+            // an existing allocation calls check_existing on the whole target.
+            let source = SourceWork {
+                bytes: 0,
+                operands: 0,
+                allocations: 0,
+                conditional: 0,
+                conditional_work: 0,
+                nodes: 0,
+            };
+            return work(self, source, ranges, branches, domain);
+        }
         let ranges = scalar_work(requested)
             .saturating_add(scalar_work(&source.length))
             .saturating_add(scalar_work(&self.length))

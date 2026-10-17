@@ -249,3 +249,315 @@ fn mandatory_retention_and_cancel_refusals_leave_all_copy_state_unchanged() {
         assert_eq!(memory, before);
     });
 }
+
+fn conditional_return_data_fixture(domain: Domain, entries: usize) -> ByteArray {
+    let branch = |byte| {
+        let mut array = ByteArray::exact(&vec![byte; entries]);
+        let value = AbstractValue::top()
+            .with_expression(ExprId::fresh().unwrap())
+            .with_numeric(constant(0x77).numeric().clone());
+        array
+            .write_byte(&constant(entries / 2), &value, 0, domain)
+            .unwrap();
+        array
+    };
+    branch(0x11)
+        .join_guarded(
+            &branch(0x22),
+            domain,
+            ExprId::fresh().unwrap(),
+            limits(domain),
+        )
+        .unwrap()
+}
+
+#[test]
+fn zero_requested_return_data_preserves_large_conditional_memory_and_quote() {
+    let domain = Domain::default();
+    let source = conditional_return_data_fixture(domain, 4096);
+    assert!(source.conditional.len() > 0);
+    let source_before = source.clone();
+    let mut target = ByteArray::memory();
+    target
+        .copy_from(&zero(), &source, &zero(), &constant(4096), 0, domain)
+        .unwrap();
+    target
+        .expand(
+            &AbstractValue::constant(U256::from(1) << 192),
+            &constant(64),
+            0,
+            domain,
+        )
+        .unwrap();
+    assert!(target.conditional.len() > 0);
+    assert!(target.len().singleton().unwrap() > U256::from(usize::MAX));
+    let before = target.clone();
+    let historical = before.read_word_checked(&zero(), domain).unwrap();
+    let destination = AbstractValue::constant(U256::MAX);
+    let fee = target.copy_return_data_work(&source, &destination, &zero(), domain);
+    assert!(fee > 0);
+    for smaller in [
+        ByteArray::empty(),
+        conditional_return_data_fixture(domain, 16),
+    ] {
+        assert_eq!(
+            target.copy_return_data_work(&smaller, &destination, &zero(), domain),
+            fee
+        );
+    }
+    assert_eq!(
+        ByteArray::memory().copy_return_data_work(
+            &ByteArray::empty(),
+            &destination,
+            &zero(),
+            domain
+        ),
+        fee
+    );
+    target
+        .copy_return_data(&destination, &source, &zero(), 0, domain)
+        .unwrap();
+    assert_eq!(target, before);
+    assert_eq!(target.root, before.root);
+    assert_eq!(target.metadata_len(), before.metadata_len());
+    assert_eq!(
+        target.read_word_checked(&zero(), domain).unwrap(),
+        historical
+    );
+    assert_eq!(source, source_before);
+}
+
+#[test]
+fn zero_requested_return_data_keeps_normalization_errors_before_noop() {
+    let domain = Domain::default();
+    let mut target = ByteArray::memory();
+    let poison = RangeError::Expression(ExprError::Limit {
+        nodes: usize::MAX,
+        depth: usize::MAX,
+    });
+    target.failure = Some(poison.clone());
+    let mut source = ByteArray::unknown();
+    source.failure = Some(poison);
+    let before = target.clone();
+    let cancellation = analysis_control::Cancellation::new();
+    cancellation.cancel();
+    analysis_control::with_cancellation(&cancellation, || {
+        // A numeric-only bounded destination really constructs an observed
+        // term. Cancellation must still fail there, before the zero shortcut.
+        assert_eq!(
+            target.copy_return_data(&AbstractValue::unknown_byte(), &source, &zero(), 0, domain),
+            Err(RangeError::State(StateError::Cancelled))
+        );
+        assert_eq!(target, before);
+        // Literal normalization succeeds without inspecting either poisoned
+        // array, overflowing target extents, or a zero request's limit marker.
+        target
+            .copy_return_data(
+                &AbstractValue::constant(U256::MAX),
+                &source,
+                &zero().with_symbolic_limit(),
+                0,
+                domain,
+            )
+            .unwrap();
+        assert_eq!(target, before);
+    });
+}
+
+#[test]
+fn empty_actual_return_data_keeps_expansion_and_atomic_typed_refusals() {
+    let domain = Domain::default();
+    let possible_length = domain.join(&zero(), &constant(1));
+    let mut source = conditional_return_data_fixture(domain, 4096)
+        .slice(&zero(), &possible_length, 0, domain)
+        .unwrap();
+    // Constrain this captured slice's own length, retaining its root/history.
+    let length_term = source.len().expression().unwrap().clone();
+    source.length = source.length.clone().with_numeric(zero().numeric().clone());
+    source.remember(length_term, &zero(), domain).unwrap();
+    assert!(source.conditional.len() > 0);
+    assert!(source.root.nodes() > ByteArray::empty().root.nodes());
+    let source_before = source.clone();
+    let mut target = ByteArray::memory();
+    let old_byte = AbstractValue::top()
+        .with_expression(ExprId::fresh().unwrap())
+        .with_numeric(constant(0xaa).numeric().clone());
+    target.write_byte(&zero(), &old_byte, 0, domain).unwrap();
+    let before = target.clone();
+    let historical = before.read_byte_checked(&zero(), domain).unwrap();
+    let destination = constant(32);
+    let requested = constant(64);
+    let fee = target.copy_return_data_work(&source, &destination, &requested, domain);
+    assert_eq!(
+        fee,
+        target.copy_return_data_work(&ByteArray::empty(), &destination, &requested, domain)
+    );
+    assert!(fee > target.copy_return_data_work(&source, &destination, &zero(), domain));
+    assert!(
+        fee > ByteArray::memory().copy_return_data_work(&source, &destination, &requested, domain)
+    );
+    let mut expected = before.clone();
+    expected
+        .expand(&destination, &requested, 0, domain)
+        .unwrap();
+    target
+        .copy_return_data(&destination, &source, &requested, 0, domain)
+        .unwrap();
+    assert_eq!(target, expected);
+    assert_eq!(target.root, before.root);
+    assert_eq!(target.bytes, before.bytes);
+    assert_eq!(target.len().singleton(), Some(U256::from(96)));
+    assert_eq!(target.allocations.len(), before.allocations.len() + 1);
+    assert_eq!(
+        target.byte_at(0, domain).singleton(),
+        Some(U256::from(0xaa))
+    );
+    assert_eq!(target.byte_at(32, domain).singleton(), Some(U256::ZERO));
+    assert_eq!(
+        before.read_byte_checked(&zero(), domain).unwrap(),
+        historical
+    );
+    assert_eq!(source, source_before);
+    let expanded = target.clone();
+    target
+        .copy_return_data(&destination, &source, &requested, 0, domain)
+        .unwrap();
+    assert_eq!(target, expanded);
+    let tight = Domain::from_spec(domain.spec().with_relations(
+        crate::domain::relational::RelationLimits {
+            max_depth: 1,
+            ..crate::domain::relational::RelationLimits::default()
+        },
+    ));
+    // Reusing the allocation must still validate the retained target root.
+    assert!(target.root.depth() > 1);
+    assert!(matches!(
+        target.copy_return_data(&destination, &source, &requested, 0, tight),
+        Err(RangeError::State(StateError::Limit { .. }))
+    ));
+    assert_eq!(target, expanded);
+    assert_eq!(
+        target.copy_return_data(
+            &AbstractValue::constant(U256::MAX),
+            &source,
+            &requested,
+            0,
+            domain
+        ),
+        Err(RangeError::OffsetTooLarge(U256::MAX))
+    );
+    assert_eq!(target, expanded);
+    assert_eq!(
+        target.copy_return_data(
+            &constant(128),
+            &source,
+            &requested.clone().with_symbolic_limit(),
+            0,
+            domain
+        ),
+        Err(RangeError::Expression(ExprError::Limit {
+            nodes: usize::MAX,
+            depth: usize::MAX
+        }))
+    );
+    assert_eq!(target, expanded);
+    let mut poisoned = expanded.clone();
+    let poison = RangeError::State(StateError::Limit {
+        nodes: 99,
+        depth: 3,
+    });
+    poisoned.failure = Some(poison.clone());
+    let poisoned_before = poisoned.clone();
+    assert_eq!(
+        poisoned.copy_return_data(&destination, &source, &requested, 0, domain),
+        Err(poison)
+    );
+    assert_eq!(poisoned, poisoned_before);
+    let cancellation = analysis_control::Cancellation::new();
+    cancellation.cancel();
+    analysis_control::with_cancellation(&cancellation, || {
+        assert_eq!(
+            target.copy_return_data(&destination, &source, &requested, 0, domain),
+            Err(RangeError::Expression(ExprError::Cancelled))
+        );
+        assert_eq!(target, expanded);
+    });
+}
+
+#[test]
+fn maybe_zero_and_nonzero_return_data_keep_complete_copy_and_fee() {
+    let domain = Domain::default();
+    let finite = domain.join(&zero(), &constant(1));
+    let interval = AbstractValue::unsigned_range(U256::ZERO, U256::ONE).unwrap();
+    let source = ByteArray::exact(&[0x11]);
+    for (source, requested, exact) in [
+        (source.clone(), finite.clone(), false),
+        (source.clone(), interval.clone(), false),
+        (source.clone(), constant(1), true),
+        (
+            source.slice(&zero(), &finite, 0, domain).unwrap(),
+            constant(1),
+            false,
+        ),
+        (
+            source.slice(&zero(), &interval, 0, domain).unwrap(),
+            constant(1),
+            false,
+        ),
+        (ByteArray::unknown(), constant(1), false),
+    ] {
+        let mut target = ByteArray::memory();
+        target
+            .copy_from(
+                &zero(),
+                &ByteArray::exact(&[0xaa, 0xbb]),
+                &zero(),
+                &constant(2),
+                0,
+                domain,
+            )
+            .unwrap();
+        let previous = target.root.clone();
+        // The existing complete quotation must remain exact for every case
+        // which scalar singleton checks do not prove to be empty.
+        let ranges = super::scalar_work(&requested)
+            .saturating_add(super::scalar_work(&source.length))
+            .saturating_add(super::scalar_work(&target.length))
+            .saturating_add(super::scalar_work(&zero()))
+            .saturating_add(8)
+            .saturating_mul(4);
+        let branches = super::alternatives(&target.length)
+            .saturating_mul(super::alternatives(&zero()))
+            .saturating_mul(super::alternatives(&requested))
+            .saturating_mul(super::alternatives(&source.length));
+        let complete = super::work(&target, (&source).into(), ranges, branches, domain)
+            .saturating_add(
+                target
+                    .metadata_len()
+                    .saturating_mul(12 + crate::domain::provenance::MAX_ORIGINS + 4),
+            );
+        assert_eq!(
+            target.copy_return_data_work(&source, &zero(), &requested, domain),
+            complete
+        );
+        assert!(complete > target.copy_return_data_work(&source, &zero(), &zero(), domain));
+        target
+            .copy_return_data(&zero(), &source, &requested, 0, domain)
+            .unwrap();
+        assert!(matches!(
+            target.root.kind(),
+            ByteStateKind::Copy { previous: old, .. } if old == &previous
+        ));
+        assert_eq!(
+            target.byte_at(1, domain).singleton(),
+            Some(U256::from(0xbb))
+        );
+        let first = target.byte_at(0, domain);
+        if exact {
+            assert_eq!(first.singleton(), Some(U256::from(0x11)));
+        } else {
+            assert!(first.contains(U256::from(0xaa)));
+            assert!(first.contains(U256::from(0x11)));
+        }
+    }
+}

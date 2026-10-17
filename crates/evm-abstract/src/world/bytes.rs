@@ -633,6 +633,11 @@ impl ByteArray {
     ) -> Result<(), RangeError> {
         let target_offset = &ranges::normalized(target_offset)?;
         let requested = &ranges::normalized(requested)?;
+        // Keep both fallible normalizations before skipping the staged clone;
+        // expand, minimum and copy_from already do nothing for this size.
+        if requested.singleton() == Some(U256::ZERO) {
+            return Ok(());
+        }
         let mut out = self.clone();
         out.expand(target_offset, requested, max_bytes, domain)?;
         let copied = ranges::minimum(requested, returndata.len(), domain)?;
