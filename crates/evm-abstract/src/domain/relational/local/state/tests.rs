@@ -105,9 +105,10 @@ fn full_f(length: &ExprId) -> RelationState {
         CheckResult::MayBeFeasible
     );
     assert_eq!(state.len(), 1);
+    assert_eq!(state.constraints.len(), 1);
     assert!(matches!(
-        &state.constraints[0],
-        Constraint::Truth { expression, nonzero: false } if *expression == guard
+        state.constraints.iter().next().unwrap(),
+        Constraint::Truth { expression, nonzero: false } if expression == &guard
     ));
     state
 }
