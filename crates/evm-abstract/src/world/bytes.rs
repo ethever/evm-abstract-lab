@@ -639,8 +639,12 @@ impl ByteArray {
         let dst = expr(target_offset)?;
         let at = expr(source_offset)?;
         let len = expr(size)?;
-        for (expression, value) in &source.operands {
-            out.remember(expression.clone(), value, domain)?;
+        if out.operands.is_empty() {
+            out.operands = operands::import_empty(&source.operands, domain, limits(domain))?;
+        } else {
+            for (expression, value) in &source.operands {
+                out.remember(expression.clone(), value, domain)?;
+            }
         }
         out.conditional
             .extend(&source.conditional, limits(domain))?;

@@ -649,3 +649,124 @@ fn maybe_zero_and_nonzero_return_data_keep_complete_copy_and_fee() {
         }
     }
 }
+
+#[test]
+fn empty_import_quote_avoids_policy_comparisons_only_for_empty_targets() {
+    let domain = Domain::default();
+    let larger = Domain::from_spec(domain.spec().with_relations(
+        crate::domain::relational::RelationLimits {
+            max_nodes: limits(domain).max_nodes.saturating_mul(2),
+            ..domain.spec().relations()
+        },
+    ));
+    let mut source = ByteArray::exact(&[0x11]);
+    for n in 0..8 {
+        source
+            .operands
+            .insert(ExprId::constant(U256::from(n)), constant(n));
+    }
+    let empty = ByteArray::memory();
+    let quote = |target: &ByteArray, source: &ByteArray, domain| {
+        [
+            target.copy_work(source, &zero(), &zero(), &constant(1), domain),
+            target.copy_return_data_work(source, &zero(), &constant(1), domain),
+        ]
+    };
+    assert_eq!(
+        quote(&empty, &source, domain),
+        quote(&empty, &source, larger)
+    );
+    // Range operands need no literal/provenance certificate for the import.
+    let symbolic = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    assert_eq!(
+        empty.copy_work(&source, &symbolic, &symbolic, &symbolic, domain),
+        empty.copy_work(&source, &symbolic, &symbolic, &symbolic, larger)
+    );
+    let mut nonempty = empty.clone();
+    nonempty
+        .operands
+        .insert(ExprId::fresh().unwrap(), constant(0));
+    let facts = nonempty.operands.len() + source.operands.len() + 3;
+    let old_comparison_delta = source.operands.len()
+        * 2
+        * (limits(larger).max_nodes - limits(domain).max_nodes)
+        * (super::probes(facts) * 2 + 4);
+    for (before, after) in quote(&nonempty, &source, domain)
+        .into_iter()
+        .zip(quote(&nonempty, &source, larger))
+    {
+        assert_eq!(after - before, old_comparison_delta);
+    }
+    // Equal cached counts quote equally even when values need literal cleanup
+    // or keys carry larger (but currently valid) expression shapes.
+    let mut other = source.clone();
+    let complex = expr(&AbstractValue::unknown_byte()).unwrap();
+    other.operands.remove(&ExprId::constant(U256::ZERO));
+    other
+        .operands
+        .insert(complex.clone(), constant(7).with_expression(complex));
+    assert_eq!(
+        quote(&empty, &source, domain),
+        quote(&empty, &other, domain)
+    );
+}
+
+#[test]
+fn empty_import_quote_pays_clone_and_height_based_retain_even_for_neutral_facts() {
+    let domain = Domain::default();
+    let target = ByteArray::memory();
+    // Isolate import/clone costs: no logical ranges, source cells or branches.
+    // These cached counts also cover a source whose every fact will be removed.
+    let quote = |operands| {
+        super::work(
+            &target,
+            super::SourceWork {
+                bytes: 0,
+                operands,
+                allocations: 0,
+                conditional: 0,
+                conditional_work: 0,
+                nodes: 1,
+            },
+            0,
+            0,
+            domain,
+        )
+    };
+    let value_copy = 12 + crate::domain::provenance::MAX_ORIGINS + 4;
+    // One caller source clone plus the additional ordered import clone, with
+    // a cloned key handle as well as each value. Cleanup costs remain on top.
+    assert!(quote(6) - quote(0) > 6 * (value_copy * 2 + 1));
+    let step = quote(8) - quote(7);
+    assert!(step > quote(7) - quote(6));
+    assert!(step > quote(9) - quote(8));
+}
+
+#[test]
+fn code_source_estimates_cover_empty_operand_joins_and_import() {
+    let domain = Domain::default();
+    let exact = ByteArray::exact(&[0x11, 0x22]);
+    let unknown = ByteArray::unknown();
+    let selected = exact.join(&unknown, domain);
+    assert!(selected.failure.is_none());
+    assert!(selected.operands.is_empty());
+    assert_eq!(selected.conditional.len(), 0);
+    assert!(selected.allocations.is_empty());
+    for occupied in [false, true] {
+        let mut target = ByteArray::memory();
+        if occupied {
+            target
+                .operands
+                .insert(ExprId::fresh().unwrap(), constant(1));
+        }
+        assert!(
+            target.copy_code_work(2, 2, &zero(), &zero(), &constant(1), domain)
+                >= target.copy_work(&selected, &zero(), &zero(), &constant(1), domain)
+        );
+        let mut copied = target.clone();
+        copied
+            .copy_from(&zero(), &selected, &zero(), &constant(1), 64, domain)
+            .unwrap();
+        assert_eq!(copied.operands, target.operands);
+    }
+}

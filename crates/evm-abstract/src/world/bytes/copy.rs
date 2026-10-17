@@ -205,19 +205,38 @@ fn work(
                 .saturating_mul(3),
         )
         .saturating_add(source.conditional.saturating_add(target.conditional.len()));
-    // Arbitrary source keys are checked against this policy before map lookup.
-    // Pay their allowed comparison shape per actual merge, without scanning
-    // keys to quote a fee. New range queries use their actual scalar bound.
-    // State handles compare immutable IDs; they never compare root histories.
-    let source_merges = source.operands.saturating_mul(
-        limits(domain)
-            .max_nodes
-            .saturating_mul(2)
-            .saturating_add(1)
-            .saturating_mul(probes(facts).saturating_mul(2).saturating_add(4))
-            .saturating_add(union.saturating_mul(4))
-            .saturating_add(value_copy.saturating_mul(4)),
-    );
+    let source_merges = if target.operands.is_empty() {
+        // expand only changes length/allocations; source import still sees an
+        // empty operand map. Clone its ordered tree, validate cached key/value
+        // bounds and normalize owned values, without per-key search/reinsert.
+        // Retain may move two nodes' entries per level when deleting a key.
+        // Pay key/value moves plus the additional clone, keeping the original
+        // numeric/provenance union and value-copy envelopes for cleanup.
+        let entry_copy = value_copy.saturating_add(1);
+        source.operands.saturating_mul(
+            height(source.operands)
+                .saturating_mul(12)
+                .saturating_mul(2)
+                .saturating_add(1)
+                .saturating_mul(entry_copy)
+                .saturating_add(8)
+                .saturating_add(union.saturating_mul(4))
+                .saturating_add(value_copy.saturating_mul(4)),
+        )
+    } else {
+        // Arbitrary source keys are checked before map lookup. Pay their
+        // policy-sized comparison shape without an unpaid census of keys.
+        // State handles compare immutable IDs, never root histories.
+        source.operands.saturating_mul(
+            limits(domain)
+                .max_nodes
+                .saturating_mul(2)
+                .saturating_add(1)
+                .saturating_mul(probes(facts).saturating_mul(2).saturating_add(4))
+                .saturating_add(union.saturating_mul(4))
+                .saturating_add(value_copy.saturating_mul(4)),
+        )
+    };
     let ranges_work = ranges
         .saturating_mul(probes(facts).saturating_mul(12).saturating_add(32))
         .saturating_add(
@@ -314,6 +333,8 @@ impl ByteArray {
     ) -> usize {
         let source = SourceWork {
             bytes,
+            // Exact/unknown code starts with no operands. Selected joins only
+            // intersect those maps; refreshing byte cells does not add facts.
             operands: 0,
             allocations: 0,
             conditional: 0,
