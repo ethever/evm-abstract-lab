@@ -11,7 +11,7 @@ use crate::{
     world::bytes::conditional::{Branch, ConditionalFacts, Scope},
 };
 use alloy_primitives::U256;
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
 fn constant(value: usize) -> AbstractValue {
     AbstractValue::constant(U256::from(value))
@@ -97,6 +97,313 @@ fn prefix(trace: &[(bool, usize)], available: usize) -> usize {
 fn hit_work(key: &ExprId, value: &AbstractValue, len: usize, maximum_key: usize) -> usize {
     let comparisons = len.min(11 * (len.saturating_add(1).ilog2() as usize + 1));
     1 + 2 + comparisons * (key.work_size() + maximum_key + 1) + 1 + value.work_size()
+}
+
+// Persistent Eq omits runtime identity. A runtime-only probe also detects its
+// preservation or loss without an immutable input masking the alias result.
+fn assert_complete_value(
+    actual: &AbstractValue,
+    expected: &AbstractValue,
+    runtime_probe: &AbstractValue,
+) {
+    assert_eq!(actual, expected);
+    assert_eq!(actual.numeric(), expected.numeric());
+    assert_eq!(actual.finite_constants(), expected.finite_constants());
+    assert_eq!(actual.known_bits(), expected.known_bits());
+    assert_eq!(actual.interval(), expected.interval());
+    assert_eq!(actual.congruence(), expected.congruence());
+    assert_eq!(actual.provenance(), expected.provenance());
+    assert_eq!(actual.identity(), expected.identity());
+    assert_eq!(actual.expression(), expected.expression());
+    assert_eq!(
+        actual.symbolic_limit_reached(),
+        expected.symbolic_limit_reached()
+    );
+    assert!(runtime_probe.identity().input().is_none());
+    assert_eq!(
+        actual.same_identity(runtime_probe),
+        expected.same_identity(runtime_probe)
+    );
+}
+
+#[test]
+fn more_than_thirty_two_same_parent_guards_keep_exact_paid_values_without_refusal() {
+    let domain = Domain::default();
+    let key = ExprId::fresh().unwrap();
+    let cases: Vec<_> = (0..memo::CONTEXTS + 8)
+        .map(|index| {
+            let guard = ExprId::fresh().unwrap();
+            let yes = source(range(index * 4 + 1, index * 4 + 3), Origin::Storage)
+                .with_expression(key.clone())
+                .with_symbolic_limit()
+                .with_identity(993_122, index as u32);
+            let no = source(range(index * 4 + 2, index * 4 + 4), Origin::Calldata)
+                .with_expression(key.clone())
+                .with_identity(993_123, index as u32);
+            (guard, yes, no)
+        })
+        .collect();
+    let facts = Facts::new();
+    let conditional = ConditionalFacts::from_branches(
+        cases
+            .iter()
+            .map(|(guard, yes, no)| {
+                Arc::new(Branch {
+                    condition: guard.clone(),
+                    then_facts: Scope {
+                        facts: Facts::from([(key.clone(), yes.clone())]),
+                        conditional: ConditionalFacts::default(),
+                    },
+                    else_facts: Scope {
+                        facts: Facts::from([(key.clone(), no.clone())]),
+                        conditional: ConditionalFacts::default(),
+                    },
+                })
+            })
+            .collect(),
+    );
+    let frozen = (facts.clone(), conditional.clone());
+    let quote = preparation_for(&facts, &conditional, domain);
+    let mut budget = WorkBudget::new(usize::MAX);
+    let receipt;
+    {
+        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
+        let demand = root.demand.as_deref().unwrap();
+        assert_eq!(root.value(&key, domain), None);
+        for (index, (guard, value, _)) in cases.iter().enumerate() {
+            let selected = root.branch(guard, true);
+            let oracle = Context::new(&facts, Some(&conditional)).branch(guard, true);
+            assert_eq!(selected.choices.len(), 1);
+            assert_eq!(selected.choices.get(guard), Some(&true));
+            assert_eq!(selected.active.len(), 1);
+            assert!(std::ptr::eq(
+                selected.active[0],
+                &conditional.branches[index].then_facts.facts
+            ));
+            assert!(!Rc::ptr_eq(&selected.memo, &root.memo));
+            let actual = selected.value(&key, domain).unwrap();
+            let expected = oracle.value(&key, domain).unwrap();
+            assert_complete_value(&actual, &expected, value);
+            assert!(actual.same_identity(value));
+            assert!(actual.symbolic_limit_reached());
+            assert_complete_value(
+                &selected.value(guard, domain).unwrap(),
+                &oracle.value(guard, domain).unwrap(),
+                value,
+            );
+            assert_eq!(demand.retained_contexts(), (index + 2).min(memo::CONTEXTS));
+            assert_eq!(
+                root.memo.borrow().branches.len(),
+                (index + 1).min(memo::CONTEXTS - 1)
+            );
+            assert!(
+                !selected.stopped(),
+                "retention capacity alone cannot refuse a legal child"
+            );
+        }
+        let (guard, _, value) = cases.last().unwrap();
+        let selected = root.branch(guard, false);
+        let expected = Context::new(&facts, Some(&conditional)).branch(guard, false);
+        assert_complete_value(
+            &selected.value(&key, domain).unwrap(),
+            &expected.value(&key, domain).unwrap(),
+            value,
+        );
+        assert_eq!(selected.choices.get(guard), Some(&false));
+        assert!(std::ptr::eq(
+            selected.active[0],
+            &conditional.branches.last().unwrap().else_facts.facts
+        ));
+        assert_eq!(demand.retained_contexts(), memo::CONTEXTS);
+        assert!(root.choices.is_empty());
+        assert_eq!(root.value(&key, domain), None);
+        for ((pointer, _), (guard, _)) in &root.memo.borrow().branches {
+            assert_eq!(
+                *pointer,
+                guard.immutable_node_key(),
+                "retained strong key owns the pointer"
+            );
+        }
+        assert_eq!(
+            Rc::strong_count(&root.memo),
+            1,
+            "children do not retain their parent"
+        );
+        assert!(!root.stopped());
+        assert!(demand.used() <= quote.nodes);
+        assert_eq!(numeric_work(&demand.payments()), 0);
+        receipt = total(&demand.payments());
+        assert_eq!(demand.paid_work(), receipt);
+    }
+    assert_eq!(budget.used(), receipt);
+    assert!(!budget.exhausted());
+    assert_eq!((facts, conditional), frozen);
+}
+
+#[test]
+fn full_retention_keeps_warm_hits_and_repeats_uncached_actions_for_both_full_policies() {
+    let domain = Domain::default();
+    let numeric = Domain::from_spec(domain.spec().with_relations(RelationLimits {
+        enabled: false,
+        ..domain.spec().relations()
+    }));
+    let key = ExprId::fresh().unwrap();
+    let warm_guard = ExprId::fresh().unwrap();
+    let cold_guard = ExprId::operation(
+        revm_bytecode::opcode::ADD,
+        &[ExprId::fresh().unwrap(), ExprId::constant(U256::ONE)],
+        domain.spec().relations().expressions(),
+    )
+    .unwrap();
+    let left = source(range(0, 30), Origin::Calldata)
+        .with_identity(993_124, 1)
+        .with_expression(key.clone());
+    let right = source(range(5, 20), Origin::Storage)
+        .with_identity(993_124, 1)
+        .with_expression(key.clone())
+        .with_symbolic_limit();
+    let facts = Facts::from([(key.clone(), left.clone())]);
+    let conditional = ConditionalFacts::from_branches(
+        [&warm_guard, &cold_guard]
+            .into_iter()
+            .map(|guard| {
+                Arc::new(Branch {
+                    condition: guard.clone(),
+                    then_facts: Scope {
+                        facts: Facts::from([(key.clone(), right.clone())]),
+                        conditional: ConditionalFacts::default(),
+                    },
+                    else_facts: Scope {
+                        facts: Facts::new(),
+                        conditional: ConditionalFacts::default(),
+                    },
+                })
+            })
+            .collect(),
+    );
+    let quote = preparation_for(&facts, &conditional, domain);
+    let mut budget = WorkBudget::new(usize::MAX);
+    let receipt;
+    {
+        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
+        let demand = root.demand.as_deref().unwrap();
+        let warm = root.branch(&warm_guard, true);
+        for policy in [domain, numeric] {
+            let before = numeric_work(&demand.payments());
+            let expected = Context::new(&facts, Some(&conditional))
+                .branch(&warm_guard, true)
+                .value(&key, policy)
+                .unwrap();
+            let actual = warm.value(&key, policy).unwrap();
+            assert_complete_value(&actual, &expected, &left);
+            assert!(
+                !actual.same_identity(&left),
+                "the real metadata join drops runtime identity"
+            );
+            assert_eq!(
+                numeric_work(&demand.payments()),
+                before + quote.reduction_work + memo::join_work(policy, &left, &right)
+            );
+        }
+        for _ in 2..memo::CONTEXTS {
+            root.branch(&ExprId::fresh().unwrap(), true);
+        }
+        assert_eq!(demand.retained_contexts(), memo::CONTEXTS);
+        // This longer guard is absent from the source maps. Its temporary choice
+        // must enlarge subsequent comparison envelopes even though not retained.
+        let large = ExprId::operation(
+            revm_bytecode::opcode::ADD,
+            &[cold_guard.clone(), ExprId::fresh().unwrap()],
+            domain.spec().relations().expressions(),
+        )
+        .unwrap();
+        assert!(large.work_size() > conditional.largest_expression);
+        let temporary = root.branch(&large, true);
+        assert!(!temporary.stopped());
+        assert_eq!(temporary.choices.get(&large), Some(&true));
+        for policy in [domain, numeric] {
+            let before = demand.paid_work();
+            let before_numeric = numeric_work(&demand.payments());
+            let hit = root.branch(&warm_guard, true);
+            assert!(Rc::ptr_eq(&hit.memo, &warm.memo));
+            let expected = Context::new(&facts, Some(&conditional))
+                .branch(&warm_guard, true)
+                .value(&key, policy)
+                .unwrap();
+            assert_complete_value(&hit.value(&key, policy).unwrap(), &expected, &left);
+            assert_eq!(
+                demand.paid_work(),
+                before + 1 + 1 + memo::CONTEXTS + hit_work(&key, &expected, 1, large.work_size())
+            );
+            assert_eq!(numeric_work(&demand.payments()), before_numeric);
+        }
+        let mut previous: Option<Context<'_>> = None;
+        let mut previous_trace = None;
+        for _ in 0..2 {
+            let start = demand.payments().len();
+            let selected = root.branch(&cold_guard, true);
+            if let Some(previous) = &previous {
+                assert!(!Rc::ptr_eq(&selected.memo, &previous.memo));
+            }
+            assert!(!Rc::ptr_eq(&selected.memo, &warm.memo));
+            assert_eq!(selected.choices.len(), 1);
+            assert_eq!(selected.active.len(), 1);
+            assert!(std::ptr::eq(
+                selected.active[0],
+                &conditional.branches[1].then_facts.facts
+            ));
+            for policy in [domain, numeric] {
+                let before = numeric_work(&demand.payments());
+                let expected = Context::new(&facts, Some(&conditional))
+                    .branch(&cold_guard, true)
+                    .value(&key, policy)
+                    .unwrap();
+                assert_complete_value(&selected.value(&key, policy).unwrap(), &expected, &left);
+                assert_eq!(
+                    numeric_work(&demand.payments()),
+                    before + quote.reduction_work + memo::join_work(policy, &left, &right)
+                );
+                let paid = demand.paid_work();
+                assert_complete_value(&selected.value(&key, policy).unwrap(), &expected, &left);
+                assert_eq!(
+                    demand.paid_work(),
+                    paid + hit_work(&key, &expected, 1, large.work_size())
+                );
+                assert_eq!(
+                    numeric_work(&demand.payments()),
+                    before + quote.reduction_work + memo::join_work(policy, &left, &right)
+                );
+            }
+            let trace = demand.payments()[start..].to_vec();
+            if let Some(previous_trace) = previous_trace {
+                assert_eq!(
+                    trace, previous_trace,
+                    "an unretained child repeats its complete paid work"
+                );
+            }
+            previous_trace = Some(trace);
+            previous = Some(selected);
+            assert_eq!(demand.retained_contexts(), memo::CONTEXTS);
+            assert_eq!(root.memo.borrow().branches.len(), memo::CONTEXTS - 1);
+            assert!(
+                !root
+                    .memo
+                    .borrow()
+                    .branches
+                    .contains_key(&(cold_guard.immutable_node_key(), true))
+            );
+            assert!(!root.stopped());
+        }
+        receipt = total(&demand.payments());
+        assert_eq!(demand.paid_work(), receipt);
+        assert!(demand.used() <= quote.nodes);
+    }
+    assert_eq!(budget.used(), receipt);
+    assert!(!budget.exhausted());
 }
 
 #[test]
@@ -616,10 +923,17 @@ fn cancellation_latches_across_all_existing_clones_after_the_cancel_scope_ends()
             .unwrap()
             .unwrap();
         let clone = root.clone();
+        for _ in 1..memo::CONTEXTS {
+            root.branch(&ExprId::fresh().unwrap(), true);
+        }
         let child = root.branch(&ExprId::fresh().unwrap(), true);
+        assert_eq!(root.demand_usage().unwrap().0, memo::CONTEXTS);
+        assert_eq!(root.memo.borrow().branches.len(), memo::CONTEXTS - 1);
         assert_eq!(clone.value(&key, domain), Some(constant(7)));
         paid = root.demand.as_deref().unwrap().paid_work();
         assert!(paid > 97);
+        let used = root.demand.as_deref().unwrap().used();
+        let payments = root.demand_payments();
         let token = analysis_control::Cancellation::new();
         token.cancel();
         analysis_control::with_cancellation(&token, || {
@@ -628,12 +942,17 @@ fn cancellation_latches_across_all_existing_clones_after_the_cancel_scope_ends()
         assert!(!analysis_control::current_cancellation().is_cancelled());
         for context in [&root, &clone, &child] {
             assert_eq!(context.check(), Err(ExprError::Cancelled));
+            let stopped_branch = context.branch(&ExprId::fresh().unwrap(), true);
+            assert!(Rc::ptr_eq(&stopped_branch.memo, &context.memo));
+            assert_eq!(stopped_branch.demand_usage().unwrap().0, memo::CONTEXTS);
             assert_eq!(context.value(&key, domain), None);
             assert_eq!(context.value(&missing, domain), None);
             assert!(!context.work_exhausted());
             assert!(!context.cache_refused());
             let demand = context.demand.as_deref().unwrap();
             assert_eq!(demand.paid_work(), paid);
+            assert_eq!(demand.used(), used);
+            assert_eq!(demand.payments(), payments);
             assert_eq!(
                 context
                     .memo
@@ -718,6 +1037,11 @@ fn choice_node_and_depth_refusals_are_optional_and_do_not_create_negative_memos(
         };
         assert!(selected.cache_refused());
         assert!(!selected.work_exhausted());
+        assert_eq!(
+            selected.demand_usage().unwrap().0,
+            if node_limit { 1 } else { 3 }
+        );
+        assert!(selected.memo.borrow().branches.is_empty());
         selected.check().unwrap();
         assert_eq!(selected.value(&key, domain), None);
         let demand = selected.demand.as_deref().unwrap();
@@ -743,7 +1067,13 @@ fn metadata_payment_failure_is_shared_and_never_publishes_a_completed_absence() 
     let facts = Facts::from([(key.clone(), value.clone())]);
     let conditional = ConditionalFacts::default();
     let quote = preparation_for(&facts, &conditional, domain);
+    let retained_guards: Vec<_> = (1..memo::CONTEXTS)
+        .map(|_| ExprId::fresh().unwrap())
+        .collect();
     let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+        for guard in &retained_guards {
+            root.branch(guard, true);
+        }
         root.branch(&guard, true);
         assert_eq!(root.value(&key, domain), Some(value.clone()));
     });
@@ -756,7 +1086,18 @@ fn metadata_payment_failure_is_shared_and_never_publishes_a_completed_absence() 
             .unwrap()
             .unwrap();
         let clone = root.clone();
+        for guard in &retained_guards {
+            root.branch(guard, true);
+        }
         let child = root.branch(&guard, true);
+        assert_eq!(root.demand_usage().unwrap().0, memo::CONTEXTS);
+        assert!(
+            !root
+                .memo
+                .borrow()
+                .branches
+                .contains_key(&(guard.immutable_node_key(), true))
+        );
         let actual = clone.value(&key, domain).unwrap();
         assert_eq!(actual, value);
         assert_eq!(actual.identity(), value.identity());
@@ -770,6 +1111,9 @@ fn metadata_payment_failure_is_shared_and_never_publishes_a_completed_absence() 
         for context in [&root, &clone, &child] {
             assert!(context.work_exhausted());
             assert!(!context.cache_refused());
+            let stopped_branch = context.branch(&ExprId::fresh().unwrap(), true);
+            assert!(Rc::ptr_eq(&stopped_branch.memo, &context.memo));
+            assert_eq!(stopped_branch.demand_usage().unwrap().0, memo::CONTEXTS);
             context.check().unwrap();
             assert_eq!(
                 context.value(&key, domain),

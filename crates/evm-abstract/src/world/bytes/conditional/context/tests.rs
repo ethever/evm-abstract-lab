@@ -187,7 +187,7 @@ fn prepared_cache_keeps_every_source_fact_beyond_the_word_width() {
 }
 
 #[test]
-fn metadata_walk_and_context_capacity_refuse_only_the_private_attempt() {
+fn metadata_capacity_refuses_but_full_retention_keeps_complete_temporary_contexts() {
     let domain = Domain::default();
     let key = ExprId::fresh().unwrap();
     let facts = Facts::from([(key.clone(), constant(7))]);
@@ -195,6 +195,7 @@ fn metadata_walk_and_context_capacity_refuse_only_the_private_attempt() {
     let short = Context::prepared(&facts, &conditional, domain, 1);
     assert_eq!(short.value(&key, domain), None);
     assert!(short.cache_refused());
+    assert_eq!(short.demand_usage(), Some((1, 0)));
     short.check().unwrap();
     assert_eq!(
         short
@@ -209,10 +210,18 @@ fn metadata_walk_and_context_capacity_refuse_only_the_private_attempt() {
         context = context.branch(&ExprId::fresh().unwrap(), true);
         context.check().unwrap();
     }
-    context = context.branch(&ExprId::fresh().unwrap(), true);
-    assert!(context.cache_refused());
-    context.check().unwrap();
-    assert!(root.cache_refused());
+    assert_eq!(context.demand_usage().unwrap().0, memo::CONTEXTS);
+    for _ in 0..4 {
+        let parent = context;
+        context = parent.branch(&ExprId::fresh().unwrap(), true);
+        assert!(!Rc::ptr_eq(&context.memo, &parent.memo));
+        assert!(parent.memo.borrow().branches.is_empty());
+        assert!(!context.cache_refused());
+        assert_eq!(context.demand_usage().unwrap().0, memo::CONTEXTS);
+        assert_eq!(context.value(&key, domain), Some(constant(7)));
+        context.check().unwrap();
+    }
+    assert!(!root.cache_refused());
     root.check().unwrap();
 }
 

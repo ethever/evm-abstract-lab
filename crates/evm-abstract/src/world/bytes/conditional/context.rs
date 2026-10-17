@@ -135,7 +135,7 @@ impl<'a> Context<'a> {
     pub(in crate::world::bytes) fn demand_usage(&self) -> Option<(usize, usize)> {
         self.demand
             .as_ref()
-            .map(|demand| (demand.contexts(), demand.used()))
+            .map(|demand| (demand.retained_contexts(), demand.used()))
     }
 
     #[cfg(test)]
@@ -305,11 +305,21 @@ impl<'a> Context<'a> {
             demand: self.demand.as_ref().map(Rc::clone),
         };
         out.select();
-        if self.demand.is_some() && !self.stopped() {
-            self.memo
+        // The unchanged construction envelope above already funded this
+        // complete child's shells, choices and release, even when not retained.
+        // Cache capacity skips only retention; N/node/depth and Work still bound
+        // every temporary child's construction and all of its later actions.
+        if let Some(demand) = &self.demand
+            && !self.stopped()
+            && demand.can_retain_context()
+            && self
+                .memo
                 .borrow_mut()
                 .branches
-                .insert(key, (condition.clone(), out.clone()));
+                .insert(key, (condition.clone(), out.clone()))
+                .is_none()
+        {
+            demand.record_retained_context();
         }
         out
     }

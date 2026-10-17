@@ -560,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn more_than_thirty_two_contexts_use_the_complete_original_word_read() {
+    fn more_than_thirty_two_contexts_complete_with_bounded_retention() {
         let domain = Domain::default();
         // Five state-choice levels have 1+2+4+8+16+32 possible contexts.
         let memory = guarded_tree(5, domain);
@@ -579,14 +579,14 @@ mod tests {
         );
         assert_eq!(
             evaluate(&plan.root, None, &expr(&zero()).unwrap(), &context, domain).unwrap(),
-            None
+            Some(expected.clone())
         );
-        assert!(context.cache_refused());
+        assert!(!context.cache_refused());
         let (contexts, used) = context.demand_usage().unwrap();
         assert_eq!(contexts, conditional::CONTEXTS);
         assert!(
-            used < preparation.nodes,
-            "the metadata allowance is not exhausted"
+            used <= preparation.nodes,
+            "temporary work stays within the original metadata allowance"
         );
         drop(context);
         let trial_work = payer_tests::trial_work(plan, &mut probe_budget);
@@ -602,10 +602,14 @@ mod tests {
         assert!(trial_work > 0);
         assert_eq!(
             budget.used(),
-            before + trial_work + fallback,
-            "the refused attempt keeps its exact paid prefix and owes the full fallback"
+            before + trial_work,
+            "full retention alone owes no fallback"
         );
         assert_eq!(actual, expected);
+        assert_eq!(actual.numeric(), expected.numeric());
+        assert_eq!(actual.provenance(), expected.provenance());
+        assert_eq!(actual.identity(), expected.identity());
+        assert_eq!(actual.expression(), expected.expression());
         assert_eq!(actual.singleton(), Some(U256::from(7)));
         assert!(!actual.symbolic_limit_reached());
     }

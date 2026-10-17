@@ -13,8 +13,10 @@ use std::{
 };
 
 // The whole demand, including its symbolic and numeric walks, shares these
-// bounds. Arena/context refusal retries the fully paid original algorithm;
+// bounds. Arena/node/depth refusal retries the fully paid original algorithm;
 // a failed live metadata or numeric payment stops the entire read as Work.
+// The initial root counts once; at most 31 children are retained per demand.
+// Complete temporary children still pay every action under the same N bound.
 pub(in crate::world::bytes) const CONTEXTS: usize = 32;
 const POLICIES: usize = 2;
 
@@ -37,7 +39,7 @@ pub(super) struct Demand<'a> {
     policies: [DomainSpec; POLICIES],
     maximum: usize,
     used: Cell<usize>,
-    contexts: Cell<usize>,
+    retained_contexts: Cell<usize>,
     maximum_key_work: Cell<usize>,
     #[cfg(test)]
     source_key_visits: Cell<usize>,
@@ -96,7 +98,7 @@ impl<'a> Demand<'a> {
             ],
             maximum,
             used: Cell::new(0),
-            contexts: Cell::new(1),
+            retained_contexts: Cell::new(1),
             maximum_key_work: Cell::new(maximum_key_work),
             #[cfg(test)]
             source_key_visits: Cell::new(0),
@@ -251,19 +253,25 @@ impl<'a> Demand<'a> {
         true
     }
 
+    /// Every temporary child owes the original admission work independently of
+    /// whether its complete Context can also be retained in a branch memo.
     pub(super) fn context(&self, nodes: usize, depth: usize) -> bool {
-        if self.contexts.get() >= CONTEXTS
-            || nodes > self.limits.max_nodes
-            || depth > self.limits.max_depth
-        {
+        if nodes > self.limits.max_nodes || depth > self.limits.max_depth {
             self.refuse();
             return false;
         }
-        if !self.reserve(nodes.saturating_add(1)) {
-            return false;
-        }
-        self.contexts.set(self.contexts.get() + 1);
-        true
+        self.reserve(nodes.saturating_add(1))
+    }
+
+    pub(super) fn can_retain_context(&self) -> bool {
+        self.retained_contexts.get() < CONTEXTS
+    }
+
+    /// Called only after a complete child was successfully inserted. Demand
+    /// owns no Context, so the retained parent-to-child memo graph stays acyclic.
+    pub(super) fn record_retained_context(&self) {
+        debug_assert!(self.can_retain_context());
+        self.retained_contexts.set(self.retained_contexts.get() + 1);
     }
 
     #[cfg(test)]
@@ -272,8 +280,8 @@ impl<'a> Demand<'a> {
     }
 
     #[cfg(test)]
-    pub(super) fn contexts(&self) -> usize {
-        self.contexts.get()
+    pub(super) fn retained_contexts(&self) -> usize {
+        self.retained_contexts.get()
     }
 
     #[cfg(test)]
@@ -416,7 +424,7 @@ impl Memo<'_> {
 /// Reserve a B-tree search from cached key sizes, without visiting its keys.
 /// Rust 1.99's B-tree has at most eleven keys per node. Its height is at most
 /// one plus log2(len + 1); scanning all keys is a second independent upper bound.
-/// The frozen demand's maximum covers source keys and newly retained choices,
+/// The frozen demand's maximum covers source keys and every constructed choice,
 /// including structural comparisons when expression fingerprints collide.
 /// Taking a length instead of a map makes a planning key scan impossible here.
 pub(super) fn probe(

@@ -76,7 +76,7 @@ fn prepare(memory: &ByteArray, domain: Domain, budget: &mut WorkBudget) -> Plan 
 struct Trial {
     value: Option<AbstractValue>,
     payments: Vec<(bool, usize)>,
-    contexts: usize,
+    retained_contexts: usize,
     nodes: usize,
     refused: bool,
     work: bool,
@@ -125,11 +125,11 @@ fn trial(mut plan: Plan, budget: &mut WorkBudget) -> Trial {
     )
     .unwrap();
     context.check().unwrap();
-    let (contexts, nodes) = context.demand_usage().unwrap();
+    let (retained_contexts, nodes) = context.demand_usage().unwrap();
     Trial {
         value,
         payments: context.demand_payments(),
-        contexts,
+        retained_contexts,
         nodes,
         refused: context.cache_refused(),
         work: context.work_exhausted(),
@@ -349,7 +349,7 @@ fn scratch_refusal_after_numeric_work_keeps_that_work_and_pays_the_full_fallback
 }
 
 #[test]
-fn thirty_two_context_refusal_drops_the_graph_and_pays_the_full_original_fallback() {
+fn scratch_refusal_after_full_retention_drops_the_graph_and_pays_the_original_fallback() {
     let domain = Domain::default();
     let memory = context_tree(5, domain);
     let frozen = memory.clone();
@@ -359,25 +359,49 @@ fn thirty_two_context_refusal_drops_the_graph_and_pays_the_full_original_fallbac
     let preparation = setup.used();
     let maximum = plan.preparation.as_ref().unwrap().nodes;
     let fallback = plan.fallback_work;
+    let full = trial(plan, &mut setup);
+    assert_eq!(full.value, Some(expected.clone()));
+    assert!(!full.refused && !full.work);
+    assert_eq!(full.retained_contexts, conditional::CONTEXTS);
+    assert!(full.nodes <= maximum);
+    assert_eq!(setup.used(), preparation + full.paid());
+
+    // Refuse the last N action, after retention has filled, independently of
+    // the number of temporary contexts. The original quote is never enlarged.
+    let mut plan = prepare(&memory, domain, &mut setup);
+    plan.preparation.as_mut().unwrap().nodes = full.nodes - 1;
+    let before_trial = setup.used();
     let refused = trial(plan, &mut setup);
     assert_eq!(refused.value, None);
     assert!(refused.refused);
     assert!(!refused.work);
-    assert_eq!(refused.contexts, conditional::CONTEXTS);
-    assert!(refused.nodes < maximum);
+    assert_eq!(refused.retained_contexts, conditional::CONTEXTS);
+    assert!(refused.nodes < full.nodes);
+    assert_eq!(refused.payments, full.payments[..full.payments.len() - 1]);
     let prefix = refused.paid();
     assert!(prefix > 0);
-    assert_eq!(setup.used(), preparation + prefix);
+    assert_eq!(setup.used(), before_trial + prefix);
     for available in [prefix + fallback - 1, prefix + fallback] {
         let mut budget = WorkBudget::new(83 + preparation + available);
         assert!(budget.charge(83));
-        let plan = prepare(&memory, domain, &mut budget);
+        let mut plan = prepare(&memory, domain, &mut budget);
+        plan.preparation.as_mut().unwrap().nodes = full.nodes - 1;
         let result = plan.read_word_budgeted(&mut budget).unwrap();
         if available == prefix + fallback {
-            assert_eq!(result, Some(expected.clone()));
+            let actual = result.unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual.numeric(), expected.numeric());
+            assert_eq!(actual.provenance(), expected.provenance());
+            assert_eq!(actual.identity(), expected.identity());
+            assert_eq!(actual.expression(), expected.expression());
+            assert_eq!(
+                actual.symbolic_limit_reached(),
+                expected.symbolic_limit_reached()
+            );
             assert_eq!(budget.used(), 83 + preparation + prefix + fallback);
+            assert!(!budget.exhausted());
         } else {
-            assert_eq!(result, None);
+            assert_eq!(result, None, "the refused trial publishes no partial value");
             assert_eq!(budget.used(), 83 + preparation + prefix);
             assert!(budget.exhausted());
         }
