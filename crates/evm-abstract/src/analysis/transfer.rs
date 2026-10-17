@@ -806,6 +806,9 @@ fn execute_inner(
                     payload
                         .store
                         .selfdestruct(owner, address(*beneficiary), domain);
+                    if !late_failure::after_selfdestruct(&mut result, &payload, context, pc) {
+                        break;
+                    }
                     finish(
                         &mut result,
                         payload,

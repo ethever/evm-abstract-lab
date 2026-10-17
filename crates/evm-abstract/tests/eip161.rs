@@ -393,6 +393,10 @@ impl<CTX> Inspector<CTX, EthInterpreter> for Trace {
 }
 
 fn concrete(world: &World, expected_calls: usize) -> ResultAndState {
+    concrete_with_gas(world, expected_calls, 10_000_000)
+}
+
+fn concrete_with_gas(world: &World, expected_calls: usize, gas_limit: u64) -> ResultAndState {
     let mut db = InMemoryDB::default();
     for (owner, account) in world.accounts() {
         let bytecode = Bytecode::new_raw(Bytes::from(world.raw_account_code(*owner).unwrap()));
@@ -422,7 +426,7 @@ fn concrete(world: &World, expected_calls: usize) -> ResultAndState {
             TxEnv::builder()
                 .caller(address(0x1000))
                 .kind(TxKind::Call(address(0x101)))
-                .gas_limit(10_000_000)
+                .gas_limit(gas_limit)
                 .build()
                 .unwrap(),
         )
@@ -491,6 +495,61 @@ fn includes_cleared_empty(store: &Store, target: Address) -> bool {
             Some(Code::Runtime(program)) => program.byte_len() == 0,
             Some(Code::Delegation(_)) => false,
         }
+}
+
+#[test]
+fn selfdestruct_dynamic_gas_failure_restores_value_but_keeps_ripemd_touch() {
+    for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
+        for (balance, gas_limit, fails) in
+            [(1, 29_003, true), (1, 100_000, false), (0, 29_003, false)]
+        {
+            let mut world = World::new(fork, "SELFDESTRUCT instruction-local failure");
+            let mut root = Account::from_hex("6003ff", fork).unwrap();
+            root.balance = word(balance);
+            world.insert(address(0x101), root).unwrap();
+            world.insert(address(3), Account::empty()).unwrap();
+            let concrete = concrete_with_gas(&world, 0, gas_limit);
+            let recipient = concrete.state.get(&address(3)).unwrap();
+            assert!(recipient.is_touched());
+            let kind = if fails {
+                assert!(matches!(
+                    concrete.result,
+                    ExecutionResult::Halt {
+                        reason: HaltReason::OutOfGas(_),
+                        ..
+                    }
+                ));
+                assert!(recipient.info.is_empty());
+                OutcomeKind::Failure
+            } else {
+                assert!(matches!(concrete.result, ExecutionResult::Success { .. }));
+                assert_eq!(recipient.info.balance, U256::from(balance));
+                OutcomeKind::Return
+            };
+            for summaries in [false, true] {
+                let analysis = run(world.clone(), summaries);
+                assert!(
+                    analysis.outcomes().iter().any(|outcome| {
+                        outcome.kind == kind
+                            && outcome
+                                .store
+                                .read_balance(address(0x101))
+                                .contains(U256::from(if fails { balance } else { 0 }))
+                            && if fails || balance == 0 {
+                                includes_cleared_empty(&outcome.store, address(3))
+                            } else {
+                                outcome.store.existence(address(3)) != Existence::Absent
+                                    && outcome
+                                        .store
+                                        .read_balance(address(3))
+                                        .contains(U256::from(balance))
+                            }
+                    }),
+                    "fork={fork:?}, balance={balance}, gas={gas_limit}, summaries={summaries}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

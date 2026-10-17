@@ -1,12 +1,12 @@
 //! Exceptional gas termination can follow a sticky RIPEMD touch in any frame.
 //!
-//! CALL/CREATE end blocks, so block entry sees every possible change to this
-//! rollback exception. One conservative Failure covers later pure instructions
-//! too; ordinary execution continues, without attempting to model EVM gas.
+//! CALL/CREATE end blocks, so their continuations expose new sticky touches.
+//! SELFDESTRUCT also has an instruction-local failure point: its host effects
+//! precede the dynamic gas charge. Both envelopes retain normal execution.
 
 use super::{Execution, ExecutionFrontier, TransferContext, WorkBudget, boundary_reason, calls};
 use crate::{
-    analysis::{FrontierReason, MachinePayload},
+    analysis::{FrontierReason, MachinePayload, OutcomeKind},
     domain::relational::Constraint,
     world::{ByteArray, Store},
 };
@@ -141,6 +141,43 @@ pub(super) fn at_block_entry(result: &mut Execution, context: &mut TransferConte
     }
     let frontiers = result.frontiers.len();
     calls::failure(result, context, pc);
+    if result.frontiers.len() != frontiers {
+        return false;
+    }
+    if context.budget.exhausted() {
+        return refused(result, pc);
+    }
+    true
+}
+
+/// The host may touch RIPEMD before SELFDESTRUCT's dynamic gas charge fails.
+/// Restore through the ordinary completion path so only that sticky touch,
+/// not the transferred balance or destruction effects, survives failure.
+pub(super) fn after_selfdestruct(
+    result: &mut Execution,
+    payload: &MachinePayload,
+    context: &mut TransferContext<'_>,
+    pc: usize,
+) -> bool {
+    if reserve(context.budget, TOUCH_QUERY_WORK).is_none() {
+        return refused(result, pc);
+    }
+    let ripemd = Address::from_word(U256::from(3).into());
+    if payload.store.touched_in_transaction(ripemd) == Some(false) {
+        return true;
+    }
+    if reserve_failure(payload, context.procedure, context.budget).is_none() {
+        return refused(result, pc);
+    }
+    let frontiers = result.frontiers.len();
+    calls::finish(
+        result,
+        payload.clone(),
+        OutcomeKind::Failure,
+        ByteArray::empty(),
+        context,
+        pc,
+    );
     if result.frontiers.len() != frontiers {
         return false;
     }
