@@ -9,6 +9,8 @@ mod bytes;
 pub mod environment;
 mod initial;
 pub mod rpc;
+#[cfg(test)]
+mod runtime_code_tests;
 mod snapshot;
 pub use environment::{AddressInput, BlobHashes, EvmEnvironment, GasInput, InputScope, Symbol};
 mod store;
@@ -21,7 +23,7 @@ pub use store::{
 };
 
 use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::AbstractValue};
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{Address, B256, U256, hex, keccak256};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -30,13 +32,33 @@ use thiserror::Error;
 #[derive(Clone, Debug, Serialize)]
 pub enum Code {
     /// Ordinary EVM runtime bytecode decoded under the world's fork.
-    Runtime(Program),
+    Runtime(#[serde(serialize_with = "serialize_runtime_code")] Program),
     /// [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)'s account code pointer; execution retains the delegating account.
     Delegation(Address),
     /// Code was observed to be empty.
     Empty,
     /// The snapshot does not establish the code at this account.
     Unknown,
+}
+
+// Account observations retain their captured bytes, including historical Store
+// versions. Decoded blocks remain the global Program and frame JSON contract.
+fn serialize_runtime_code<S: serde::Serializer>(
+    program: &Program,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    struct RuntimeCode {
+        fork: Fork,
+        byte_len: usize,
+        bytecode: String,
+    }
+    RuntimeCode {
+        fork: program.fork(),
+        byte_len: program.byte_len(),
+        bytecode: hex::encode_prefixed(program.bytes()),
+    }
+    .serialize(serializer)
 }
 
 impl PartialEq for Code {
