@@ -297,8 +297,14 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         let av = self.known(&a)?;
         let bv = self.known(&b)?;
         let value = self.meet(&av, &bv)?;
-        // Roots strictly decrease, including for x == f(x); no recursive rewrite.
-        let (root, child) = if self.work.order_expression(&a, &b)? == std::cmp::Ordering::Less {
+        let order = self.work.order_expression(&a, &b)?;
+        // Pay for two kind checks and their rank comparison before inspecting.
+        self.work.charge(3)?;
+        let a_rank = !matches!(a.kind(), ExprKind::Constant(_));
+        let b_rank = !matches!(b.kind(), ExprKind::Constant(_));
+        let order = a_rank.cmp(&b_rank).then(order);
+        // Roots decrease by (nonliteral, ExprId), even for x == f(x).
+        let (root, child) = if order == std::cmp::Ordering::Less {
             (a, b)
         } else {
             (b, a)

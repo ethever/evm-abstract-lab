@@ -5,6 +5,7 @@ use super::super::{
 use crate::{
     domain::{
         NumericValue,
+        identity::Symbol,
         symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId, StateBinding},
     },
     resource::WorkBudget,
@@ -1378,4 +1379,223 @@ fn retained_inconsistent_bits_are_a_real_local_contradiction() {
         state.check(&RelationLimits::default()),
         CheckResult::ProvenImpossible
     );
+}
+
+#[test]
+fn literal_representatives_override_both_real_fingerprint_orderings() {
+    use std::cmp::Ordering;
+
+    let limits = RelationLimits::default();
+    let mut pairs = [None, None];
+    'search: for scope in 0..64 {
+        let input = ExprId::input(scope, Symbol::CallValue);
+        for value in [0, 1, 7, 31, 64, 255] {
+            let literal = c(value);
+            let slot = match literal
+                .cached_fingerprint()
+                .cmp(&input.cached_fingerprint())
+            {
+                Ordering::Less => 0,
+                Ordering::Greater => 1,
+                Ordering::Equal => continue,
+            };
+            if pairs[slot].is_none() {
+                pairs[slot] = Some((literal, input.clone()));
+            }
+            if pairs.iter().all(Option::is_some) {
+                break 'search;
+            }
+        }
+    }
+    for (pair, order) in pairs.into_iter().zip([Ordering::Less, Ordering::Greater]) {
+        let (literal, input) = pair.expect("bounded real terms must exercise both orderings");
+        assert_eq!(literal.cmp(&input), order);
+        for (left, right) in [(&literal, &input), (&input, &literal)] {
+            let mut work = super::Work {
+                remaining: limits.max_nodes,
+                cancellation: analysis_control::current_cancellation(),
+                ledger: None,
+            };
+            let mut engine =
+                super::Engine::new(&mut work, &limits, crate::domain::Domain::default());
+            engine.equal(left, right).unwrap();
+            assert_eq!(engine.root(&input).unwrap(), literal);
+            assert_eq!(engine.root(&literal).unwrap(), literal);
+            assert_eq!(
+                engine.parents.get(&input, engine.work).unwrap(),
+                Some(&literal)
+            );
+            assert!(engine.parents.get(&literal, engine.work).unwrap().is_none());
+            assert_eq!(
+                engine.known(&input).unwrap().singleton(),
+                literal.as_constant()
+            );
+        }
+    }
+}
+
+#[test]
+fn equality_root_chains_decrease_by_literal_rank_then_existing_order() {
+    let limits = RelationLimits::default();
+    let mut terms = [100, 101, 102].map(|scope| ExprId::input(scope, Symbol::CallValue));
+    terms.sort();
+    let literal = c(7);
+    let mut work = super::Work {
+        remaining: limits.max_nodes,
+        cancellation: analysis_control::current_cancellation(),
+        ledger: None,
+    };
+    let mut engine = super::Engine::new(&mut work, &limits, crate::domain::Domain::default());
+    // A numeric singleton is still a nonliteral and keeps the old ExprId order.
+    engine
+        .learn(&terms[2], &NumericValue::constant(U256::from(7)))
+        .unwrap();
+    engine.equal(&terms[2], &terms[1]).unwrap();
+    assert_eq!(engine.root(&terms[2]).unwrap(), terms[1]);
+    // Union through an old child must link its resolved root, preserving the chain.
+    engine.equal(&terms[2], &terms[0]).unwrap();
+    assert_eq!(engine.root(&terms[2]).unwrap(), terms[0]);
+    engine.equal(&terms[2], &literal).unwrap();
+    for _ in 0..2 {
+        for term in &terms {
+            assert_eq!(engine.root(term).unwrap(), literal);
+        }
+    }
+    engine.equal(&terms[2], &terms[1]).unwrap();
+    engine.equal(&literal, &c(7)).unwrap();
+    // root() currently walks without compression; inspect every actual edge.
+    for (child, parent) in [
+        (&terms[2], &terms[1]),
+        (&terms[1], &terms[0]),
+        (&terms[0], &literal),
+    ] {
+        assert_eq!(
+            engine.parents.get(child, engine.work).unwrap(),
+            Some(parent)
+        );
+        assert!((parent.as_constant().is_none(), parent) < (child.as_constant().is_none(), child));
+    }
+    assert!(engine.parents.get(&literal, engine.work).unwrap().is_none());
+    assert_eq!(
+        engine.known(&terms[2]).unwrap().singleton(),
+        Some(U256::from(7))
+    );
+}
+
+#[test]
+fn literal_root_conflicts_remain_impossible_in_both_argument_orders() {
+    let limits = RelationLimits::default();
+    let input = ExprId::input(200, Symbol::CallValue);
+    for reversed in [false, true] {
+        let zero = c(0);
+        let one = c(1);
+        let mut direct = RelationState::default();
+        let (left, right) = if reversed {
+            (&one, &zero)
+        } else {
+            (&zero, &one)
+        };
+        assert_eq!(
+            direct.add_equal(left, right, &limits),
+            CheckResult::ProvenImpossible
+        );
+        let mut indirect = RelationState::default();
+        assert_eq!(
+            indirect.add_equal(&input, &zero, &limits),
+            CheckResult::MayBeFeasible
+        );
+        let (left, right) = if reversed {
+            (&one, &input)
+        } else {
+            (&input, &one)
+        };
+        assert_eq!(
+            indirect.add_equal(left, right, &limits),
+            CheckResult::ProvenImpossible
+        );
+    }
+}
+
+#[test]
+fn literal_source_length_aliases_use_only_the_current_complete_facts() {
+    let limits = RelationLimits::default();
+    let length = ExprId::input(300, Symbol::CalldataLength);
+    let source = SourceId::scoped(ExprId::input(301, Symbol::CallValue), U256::ONE);
+    let original = ExprId::word_read(
+        ByteView::new(ByteStateId::input(source.clone(), c(64)), c(0), c(32)),
+        c(0),
+        limits.expressions(),
+    )
+    .unwrap();
+    let alias = ExprId::byte_read(
+        ByteStateId::input(source, length.clone()),
+        c(31),
+        limits.expressions(),
+    )
+    .unwrap();
+    // Reuse the exact expressions under changed, missing and then restored F.
+    for (bound, value, expected) in [
+        (Some(64), 7, Some(7u64)),
+        (Some(64), 9, Some(9)),
+        (Some(63), 7, None),
+        (None, 7, None),
+        (Some(64), 7, Some(7)),
+    ] {
+        let mut state = RelationState::default();
+        if let Some(bound) = bound {
+            assert_eq!(
+                state.add_equal(&length, &c(bound), &limits),
+                CheckResult::MayBeFeasible
+            );
+        }
+        assert_eq!(
+            state.add_equal(&original, &c(value), &limits),
+            CheckResult::MayBeFeasible
+        );
+        let before = state.clone();
+        for _ in 0..2 {
+            let answer = state.local_value(&alias, &limits);
+            if let Some(expected) = expected {
+                assert_eq!(answer, ValueQuery::Exact(U256::from(expected)));
+            } else {
+                let ValueQuery::Bounds(bounds) = answer else {
+                    panic!("a different or unproved length must keep byte bounds: {answer:?}");
+                };
+                for candidate in [0u64, 7, 9, 255] {
+                    assert!(bounds.contains(U256::from(candidate)));
+                }
+            }
+        }
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn literal_rank_work_refuses_before_linking_and_preserves_cancellation_priority() {
+    let limits = RelationLimits::default();
+    let input = ExprId::input(400, Symbol::CallValue);
+    let literal = c(0);
+    assert_eq!(input.comparison_work(&literal), 1);
+    let mut work = super::Work {
+        // The unchanged empty-map path pays 10 steps and two ExprId comparisons.
+        // Its remaining two units cannot prepay both kind checks and rank order.
+        remaining: 14,
+        cancellation: analysis_control::Cancellation::new(),
+        ledger: None,
+    };
+    let mut engine = super::Engine::new(&mut work, &limits, crate::domain::Domain::default());
+    assert!(matches!(
+        engine.equal(&input, &literal),
+        Err(super::Stop::Pending(QueryReason::ExpressionLimit))
+    ));
+    assert_eq!(engine.work.remaining, 2);
+    assert!(engine.parents.get(&input, engine.work).unwrap().is_none());
+    assert!(engine.parents.get(&literal, engine.work).unwrap().is_none());
+    assert!(engine.facts.get(&literal, engine.work).unwrap().is_none());
+    engine.work.cancellation.cancel();
+    assert!(matches!(
+        engine.equal(&input, &literal),
+        Err(super::Stop::Pending(QueryReason::Cancelled))
+    ));
+    assert_eq!(engine.work.remaining, 2);
 }
