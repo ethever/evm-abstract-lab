@@ -86,6 +86,13 @@ impl<'a> Context<'a> {
         self.demand.as_ref().is_some_and(|demand| demand.refused())
     }
 
+    #[cfg(test)]
+    pub(in crate::world::bytes) fn demand_usage(&self) -> Option<(usize, usize)> {
+        self.demand
+            .as_ref()
+            .map(|demand| (demand.contexts(), demand.used()))
+    }
+
     pub(in crate::world::bytes) fn stopped(&self) -> bool {
         self.cache_refused() || self.check().is_err()
     }
@@ -194,7 +201,7 @@ impl<'a> Context<'a> {
         }
         let key = (condition.immutable_node_key(), nonzero);
         if self.demand.is_some() {
-            if !self.reserve(memo::CONTEXTS) {
+            if !self.reserve(super::CONTEXTS) {
                 return self.clone();
             }
             if let Some((_, old)) = self.memo.borrow().branches.get(&key) {
@@ -216,7 +223,7 @@ impl<'a> Context<'a> {
         {
             return self.clone();
         }
-        if !self.reserve(nodes.saturating_add(memo::CONTEXTS)) {
+        if !self.reserve(nodes.saturating_add(super::CONTEXTS)) {
             return self.clone();
         }
         if let Some(demand) = &self.demand {

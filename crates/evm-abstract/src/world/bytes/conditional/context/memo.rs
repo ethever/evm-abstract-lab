@@ -122,6 +122,11 @@ impl Demand {
     pub(super) fn used(&self) -> usize {
         self.used.get()
     }
+
+    #[cfg(test)]
+    pub(super) fn contexts(&self) -> usize {
+        self.contexts.get()
+    }
 }
 
 #[derive(Default)]

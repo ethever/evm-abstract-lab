@@ -17,7 +17,6 @@ use std::collections::BTreeMap;
 // This quantum bounds only the decision to use an optional cache. It is never
 // an expression policy or a boundary of the complete word-read algorithm.
 const PLANNING_QUANTUM: usize = 4096;
-const CONTEXTS: usize = conditional::CONTEXTS;
 
 /// Non-Clone and demand-local: the same owned source, offset and entire domain
 /// policy determine admission, payment and execution. No pointer-only owner key
@@ -257,9 +256,10 @@ pub(super) fn evaluate(
     Ok(Some(numeric::attach(numeric, expression)))
 }
 
-// Occurrences, not unique DAG nodes: a shared child reached below different
-// parent choices must count again. Source views, scalar offsets and bindings
-// are included even where today's numeric evaluator treats a read as opaque.
+// Bound the paid preflight scan by occurrences, including source views, scalar
+// offsets and bindings even where the numeric evaluator treats a read as opaque.
+// Admission allows an attempt; the shared runtime demand bounds actual contexts
+// and metadata work, and refusal still requires the complete original word fee.
 enum Node<'a> {
     Expr(&'a ExprId),
     Bytes(&'a ByteStateId),
@@ -271,7 +271,6 @@ enum Node<'a> {
 struct Census<'a> {
     remaining: usize,
     pending: Vec<Node<'a>>,
-    guards: usize,
 }
 
 impl<'a> Census<'a> {
@@ -279,7 +278,6 @@ impl<'a> Census<'a> {
         Self {
             remaining,
             pending: Vec::new(),
-            guards: 0,
         }
     }
 
@@ -296,24 +294,6 @@ impl<'a> Census<'a> {
             return false;
         }
         self.pending.push(node);
-        true
-    }
-
-    fn guard(&mut self) -> bool {
-        self.guards += 1;
-        // A context chain nests state ITEs and then scalar ITEs along a source
-        // path. Its length is <= the expanded ITE occurrence count K. Counting
-        // every sequence over 2*K signed sites (even impossible repetitions)
-        // gives 1 + (2K) + ... + (2K)^K. Branch memo hits create no new context.
-        let mut level = 1usize;
-        let mut contexts = 1usize;
-        for _ in 0..self.guards {
-            level = level.saturating_mul(self.guards.saturating_mul(2));
-            contexts = contexts.saturating_add(level);
-            if contexts > CONTEXTS {
-                return false;
-            }
-        }
         true
     }
 
@@ -348,8 +328,7 @@ impl<'a> Census<'a> {
                         then_value,
                         else_value,
                     } => {
-                        self.guard()
-                            && self.push(Node::Expr(condition))
+                        self.push(Node::Expr(condition))
                             && self.push(Node::Expr(then_value))
                             && self.push(Node::Expr(else_value))
                     }
@@ -406,8 +385,7 @@ impl<'a> Census<'a> {
                         then_state,
                         else_state,
                     } => {
-                        self.guard()
-                            && self.push(Node::Expr(condition))
+                        self.push(Node::Expr(condition))
                             && self.push(Node::Bytes(then_state))
                             && self.push(Node::Bytes(else_state))
                     }
@@ -431,8 +409,7 @@ impl<'a> Census<'a> {
                         then_state,
                         else_state,
                     } => {
-                        self.guard()
-                            && self.push(Node::Expr(condition))
+                        self.push(Node::Expr(condition))
                             && self.push(Node::Slots(then_state))
                             && self.push(Node::Slots(else_state))
                     }
@@ -458,9 +435,15 @@ impl<'a> Census<'a> {
 mod tests {
     use super::*;
     use crate::{
+        Fork,
+        analysis::{ExecutionConfig, OutcomeKind, Status, analyze_world},
         domain::{provenance::Origin, symbolic::SourceId},
-        world::bytes::{constant, zero},
+        world::{
+            Account, Entry, World,
+            bytes::{constant, zero},
+        },
     };
+    use alloy_primitives::Address;
 
     fn guarded_tree(depth: usize, domain: Domain) -> ByteArray {
         if depth == 0 {
@@ -482,6 +465,72 @@ mod tests {
     }
 
     #[test]
+    fn three_retained_ites_complete_the_paid_plan_and_native_calldataload() {
+        let domain = Domain::default();
+        // Three retained state ITEs need seven actual contexts. The former
+        // sequence bound rejected the third site as 1 + 6 + 36 > 32.
+        let memory = guarded_tree(2, domain);
+        let expected = memory.read_word_checked(&zero(), domain).unwrap();
+        let mut budget = WorkBudget::new(100_000_000);
+        let plan = memory
+            .prepare_word_read(&zero(), domain, &mut budget)
+            .unwrap()
+            .unwrap();
+        let preparation = plan.preparation.as_ref().unwrap();
+        let context = conditional::Context::prepared(
+            &plan.facts,
+            &plan.conditional,
+            domain,
+            preparation.nodes,
+        );
+        assert_eq!(
+            evaluate(&plan.root, None, &expr(&zero()).unwrap(), &context, domain).unwrap(),
+            Some(expected.clone())
+        );
+        assert!(!context.cache_refused());
+        assert_eq!(context.demand_usage().unwrap().0, 7);
+        drop(context);
+        let before = budget.used();
+        let actual = plan.read_word_budgeted(&mut budget).unwrap().unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.numeric(), expected.numeric());
+        assert_eq!(actual.provenance(), expected.provenance());
+        assert_eq!(actual.expression(), expected.expression());
+        assert_eq!(
+            budget.used(),
+            before,
+            "a completed attempt owes no fallback"
+        );
+
+        let calldata = memory.slice(&zero(), &constant(32), 4096, domain).unwrap();
+        let owner = Address::repeat_byte(0x11);
+        let mut world = World::new(Fork::Osaka, "word-plan:three-retained-ites");
+        world
+            .insert(owner, Account::from_hex("5f3500", Fork::Osaka).unwrap())
+            .unwrap();
+        let analysis = analyze_world(
+            world,
+            Entry::concrete(owner, Address::repeat_byte(0x22), zero(), calldata),
+            ExecutionConfig {
+                max_work: 100_000_000,
+                ..ExecutionConfig::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(analysis.config().max_work, 100_000_000);
+        assert_eq!(analysis.status(), Status::Converged);
+        assert!(analysis.frontiers().is_empty());
+        assert_eq!(analysis.states().len(), 1);
+        assert_eq!(analysis.states()[0].exit_stack.len(), 1);
+        assert_eq!(
+            analysis.states()[0].exit_stack[0].singleton(),
+            Some(U256::from(7))
+        );
+        assert_eq!(analysis.outcomes().len(), 1);
+        assert_eq!(analysis.outcomes()[0].kind, OutcomeKind::Return);
+    }
+
+    #[test]
     fn more_than_thirty_two_contexts_use_the_complete_original_word_read() {
         let domain = Domain::default();
         // Five state-choice levels have 1+2+4+8+16+32 possible contexts.
@@ -492,9 +541,30 @@ mod tests {
             .prepare_word_read(&zero(), domain, &mut budget)
             .unwrap()
             .unwrap();
-        assert!(plan.preparation.is_none());
-        assert!(budget.used() >= memory.word_numeric_work(&zero(), domain));
+        let preparation = plan.preparation.as_ref().unwrap();
+        let context = conditional::Context::prepared(
+            &plan.facts,
+            &plan.conditional,
+            domain,
+            preparation.nodes,
+        );
+        assert_eq!(
+            evaluate(&plan.root, None, &expr(&zero()).unwrap(), &context, domain).unwrap(),
+            None
+        );
+        assert!(context.cache_refused());
+        let (contexts, used) = context.demand_usage().unwrap();
+        assert_eq!(contexts, conditional::CONTEXTS);
+        assert!(
+            used < preparation.nodes,
+            "the metadata allowance is not exhausted"
+        );
+        drop(context);
+        let before = budget.used();
+        let fallback = memory.word_numeric_work(&zero(), domain);
+        assert_eq!(plan.fallback_work, fallback);
         let actual = plan.read_word_budgeted(&mut budget).unwrap().unwrap();
+        assert_eq!(budget.used(), before + fallback);
         assert_eq!(actual, expected);
         assert_eq!(actual.singleton(), Some(U256::from(7)));
         assert!(!actual.symbolic_limit_reached());
@@ -537,7 +607,7 @@ mod tests {
             )
             .unwrap();
         assert!(
-            memory.root.nodes() > CONTEXTS,
+            memory.root.nodes() > conditional::CONTEXTS,
             "source definitions are not guard sites"
         );
         let expected = memory.read_word_checked(&zero(), domain).unwrap();
