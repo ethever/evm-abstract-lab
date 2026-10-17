@@ -119,7 +119,7 @@ pub(super) fn reservation(domain: Domain, input: &AbstractValue, fact: &Fact) ->
     let fixed = COMMON
         + if shape.singleton { SINGLETON_EXTRA } else { 0 }
         + if shape.binary { BINARY_EXTRA } else { 0 };
-    fixed.checked_add(input.work_size()).unwrap_or(usize::MAX)
+    fixed.saturating_add(input.work_size())
 }
 
 // Only tags and fixed-size fields: never enumerate candidates to obtain a fee.
