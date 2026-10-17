@@ -840,7 +840,7 @@ fn new_unknown_source_does_not_match_old_unknown_content() {
 }
 
 #[test]
-fn scalar_counter_widening_retains_the_unchanged_immutable_input() {
+fn scalar_counter_widening_covers_immutable_input_with_independent_roots() {
     let mut config = fixtures::config();
     config.analysis.relations = crate::domain::relational::RelationLimits::default();
     config.max_work = crate::analysis::ExecutionConfig::default().max_work;
