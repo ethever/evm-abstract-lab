@@ -827,7 +827,8 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
     use alloy_primitives::U256;
     use evm_abstract::domain::symbolic::{ByteStateKind, ExprId, ExprLimits};
     use evm_abstract_protocol::{
-        Expression, FrontierDetails, SsaFactStatus, SsaOperand, SsaOperation, SsaValueOrigin,
+        AddressValue, AnalysisInput, Expression, FrontierDetails, InputSymbol, InputSymbolKind,
+        SsaFactStatus, SsaOperand, SsaOperation, SsaValueOrigin,
     };
 
     // Repeated sparse MSTORE at 1 MiB needs a span beyond the old memory ceiling.
@@ -1148,15 +1149,26 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
     }
     partial.validate().unwrap();
 
-    // The old smaller memory cap still admits lazy expansion; three expression
-    // nodes instead reject its four-node WriteWord after that expansion.
+    // Isolate the mandatory four-node WriteWord from unknown-recipient cleanup:
+    // a concrete non-precompile owner leaves RIPEMD definitely untouched, so
+    // late_failure does not attempt its unrelated MAY-deletion at block entry.
+    // The old smaller memory cap still admits lazy expansion before the refusal.
     {
         let mut bounded = input.clone();
         bounded.limits.max_memory_bytes = 1_048_576;
         bounded.limits.max_expression_nodes = 3;
+        let owner = "0x1111111111111111111111111111111111111111";
+        let AnalysisInput::Bytecode(source) = &mut bounded.input else {
+            panic!("expected the original bytecode input")
+        };
+        source.address = Some(owner.into());
         let limits = bounded.limits.clone();
         let partial = analyze(bounded).unwrap();
         assert_eq!(partial.metadata.limits, limits);
+        assert_eq!(
+            partial.metadata.environment.to,
+            AddressValue::Concrete(owner.into())
+        );
         assert_eq!(partial.status, AnalysisStatus::Incomplete);
         assert!(!partial.ssa.complete);
         let [frontier] = partial.frontiers.as_slice() else {
@@ -1174,11 +1186,42 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
         assert_eq!(frontier.kind, FrontierKind::Relations);
         assert_eq!((frontier.from, frontier.pc), (Some(0), Some(6)));
         assert!(frontier.range.is_none());
-        let block = &partial.ssa.blocks[0];
-        let store = block.instructions.last().unwrap();
+        assert!(frontier.payload.is_none());
+        let [block] = partial.ssa.blocks.as_slice() else {
+            panic!("expected only the root SSA block")
+        };
+        assert_eq!(block.state, 0);
+        assert_eq!(block.coverage, BlockCoverage::Current);
+        assert!(!block.incoming_complete);
+        assert!(block.phis.is_empty());
+        assert!(block.effect_inputs.is_empty());
+        assert!(block.open_incoming.is_empty());
+        let [value, offset, store] = block.instructions.as_slice() else {
+            panic!("expected the two PUSHes and pending first MSTORE")
+        };
+        for (push, pc, opcode) in [(value, 0, 0x60), (offset, 2, 0x62)] {
+            assert_eq!((push.pc, push.opcode), (pc, opcode));
+            assert_eq!(push.progress, InstructionProgress::Completed);
+            assert!(push.operands.is_empty());
+            assert_eq!(push.results.len(), 1);
+        }
+        let mut effect = block.effect;
+        for step in &block.instructions {
+            assert!(!step.fault);
+            assert_eq!(step.effect_input, effect);
+            let next = step
+                .effect_result
+                .expect("each observed step has an effect");
+            assert_ne!(next, effect);
+            effect = next;
+        }
+        assert_eq!(block.exit_effect, effect);
+        assert_eq!(partial.ssa.effect_count, 4);
+        assert_eq!(partial.ssa.value_count, 2);
+        assert_eq!(partial.ssa.values.len(), 2);
         assert_eq!((store.pc, store.opcode), (6, 0x52));
         assert_eq!(store.progress, InstructionProgress::OperandsConsumed);
-        assert_eq!(store.operands.len(), 2);
+        assert_eq!(store.operands, [offset.results[0], value.results[0]]);
         for (operand, constant) in store.operands.iter().zip(["0x100000", "0x2a"]) {
             assert!(partial.ssa.values[*operand].facts.iter().any(|fact| {
                 fact.status == evm_abstract_protocol::SsaFactStatus::Current
@@ -1187,33 +1230,192 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
         }
         assert!(store.results.is_empty());
         assert!(store.effect_result.is_some());
-        assert!(matches!(
-            store.operation,
-            evm_abstract_protocol::SsaOperation::Opcode(_)
-        ));
-        let state = &partial.states[0];
-        assert_eq!(partial.cfg[0].executed_pcs, [0, 2, 6]);
+        let SsaOperation::Opcode(operation) = &store.operation else {
+            panic!("pending MSTORE cannot acquire a folded result")
+        };
+        assert_eq!(operation.opcode, 0x52);
+        assert_eq!(
+            operation.operands,
+            [
+                SsaOperand::Constant("0x100000".into()),
+                SsaOperand::Constant("0x2a".into()),
+            ]
+        );
+        assert_eq!(block.exit_frames, [Vec::<usize>::new()]);
+        let [state] = partial.states.as_slice() else {
+            panic!("expected only the root state")
+        };
+        let [cfg] = partial.cfg.as_slice() else {
+            panic!("expected only the root CFG block")
+        };
+        assert_eq!((state.state, cfg.id), (0, 0));
+        assert_eq!(cfg.executed_pcs, [0, 2, 6]);
+        assert!(cfg.entry_stack.is_empty());
+        assert!(cfg.exit_stack.is_empty());
+        assert!(partial.edges.is_empty());
+        assert!(partial.ssa.transitions.is_empty());
+        assert!(partial.ssa.deferred_edges.is_empty());
         let exit = state.exit.as_ref().unwrap();
         assert_eq!(exit.store, state.entry.store);
-        let frame = exit.frames.last().unwrap();
+        assert_eq!(exit.path, state.entry.path);
+        let [entry] = state.entry.frames.as_slice() else {
+            panic!("expected the original root frame")
+        };
+        assert_eq!(entry.address_value, partial.metadata.environment.to);
+        let [frame] = exit.frames.as_slice() else {
+            panic!("pending MSTORE must retain the root frame")
+        };
         assert!(frame.stack.is_empty());
+        let mut unchanged = entry.clone();
+        unchanged.memory = frame.memory;
+        assert_eq!(frame, &unchanged);
+        let initial_memory = &partial.byte_arrays[entry.memory];
+        assert!(buffer_matches(&partial, initial_memory, &[]));
         let memory = &partial.byte_arrays[frame.memory];
+        assert!(memory.memory);
         assert_eq!(memory.length.constants, Some(vec!["0x100020".into()]));
-        let evm_abstract_protocol::Expression::View(view) =
-            &partial.symbolic.nodes[memory.symbolic.node]
-        else {
+        assert!(memory.cells.is_empty());
+        assert_eq!(memory.default, initial_memory.default);
+        assert_eq!(memory.default.constants, Some(vec!["0x0".into()]));
+        let Expression::View(view) = &partial.symbolic.nodes[memory.symbolic.node] else {
             panic!("refused write retains memory view")
         };
         assert!(matches!(
             partial.symbolic.nodes[view.state.node],
-            evm_abstract_protocol::Expression::BytesZero
+            Expression::BytesZero
         ));
+        let captured = native_view(
+            &partial.symbolic,
+            memory.symbolic.node,
+            ExprLimits {
+                max_nodes: limits.max_expression_nodes.try_into().unwrap(),
+                max_depth: limits.max_expression_depth.try_into().unwrap(),
+            },
+        )
+        .unwrap();
+        assert_eq!(captured.offset.as_constant(), Some(U256::ZERO));
+        assert_eq!(captured.length.as_constant(), Some(U256::from(0x100020)));
+        assert!(matches!(captured.state.kind(), ByteStateKind::Zero));
+        assert!(
+            partial
+                .symbolic
+                .nodes
+                .iter()
+                .all(|node| !matches!(node, Expression::WriteWord(_)))
+        );
         assert!(
             partial
                 .outcomes
                 .iter()
                 .all(|outcome| { outcome.kind == evm_abstract_protocol::OutcomeKind::Failure })
         );
+        partial.validate().unwrap();
+    }
+
+    // Keep the original symbolic recipient as an independent entry-boundary
+    // control. Its optional RIPEMD touch requires a five-node rollback MAY root,
+    // so this three-node policy refuses before any submitted instruction runs.
+    {
+        let mut bounded = input.clone();
+        bounded.limits.max_memory_bytes = 1_048_576;
+        bounded.limits.max_expression_nodes = 3;
+        let AnalysisInput::Bytecode(source) = &bounded.input else {
+            panic!("expected the original symbolic bytecode input")
+        };
+        assert!(source.address.is_none());
+        assert_eq!(source.bytecode, code);
+        let limits = bounded.limits.clone();
+        let partial = analyze(bounded).unwrap();
+        assert_eq!(partial.metadata.limits, limits);
+        assert_eq!(
+            partial.metadata.environment.to,
+            AddressValue::Symbolic(InputSymbol {
+                kind: InputSymbolKind::To,
+                index: None,
+            })
+        );
+        assert_eq!(partial.status, AnalysisStatus::Incomplete);
+        assert!(!partial.ssa.complete);
+        let [frontier] = partial.frontiers.as_slice() else {
+            panic!(
+                "expected only the symbolic entry refusal: {:?}",
+                partial.frontiers
+            )
+        };
+        assert_eq!(
+            frontier.reason,
+            FrontierDetails::Relations(evm_abstract_protocol::QueryBoundary::ExpressionLimit)
+        );
+        assert_eq!(frontier.kind, FrontierKind::Relations);
+        assert_eq!((frontier.from, frontier.pc), (Some(0), Some(0)));
+        assert!(frontier.range.is_none());
+        assert!(frontier.payload.is_none());
+        let [state] = partial.states.as_slice() else {
+            panic!("expected only the symbolic root state")
+        };
+        let [cfg] = partial.cfg.as_slice() else {
+            panic!("expected only the symbolic root CFG block")
+        };
+        let [block] = partial.ssa.blocks.as_slice() else {
+            panic!("expected only the symbolic root SSA block")
+        };
+        assert_eq!((state.state, cfg.id, block.state), (0, 0, 0));
+        assert!(cfg.executed_pcs.is_empty());
+        assert!(cfg.entry_stack.is_empty());
+        assert!(cfg.exit_stack.is_empty());
+        assert_eq!(block.coverage, BlockCoverage::Current);
+        assert!(!block.incoming_complete);
+        assert!(block.instructions.is_empty());
+        assert!(block.phis.is_empty());
+        assert!(block.effect_inputs.is_empty());
+        assert!(block.open_incoming.is_empty());
+        assert_eq!(block.exit_frames, [Vec::<usize>::new()]);
+        assert_eq!(block.exit_effect, block.effect);
+        assert_eq!(partial.ssa.value_count, 0);
+        assert!(partial.ssa.values.is_empty());
+        assert!(partial.edges.is_empty());
+        assert!(partial.ssa.transitions.is_empty());
+        assert!(partial.ssa.deferred_edges.is_empty());
+        assert_eq!(state.exit.as_ref(), Some(&state.entry));
+        assert_eq!(partial.stores[state.entry.store].touched_default, None);
+        let [frame] = state.entry.frames.as_slice() else {
+            panic!("expected the original symbolic root frame")
+        };
+        assert!(frame.stack.is_empty());
+        assert_eq!(frame.address_value, partial.metadata.environment.to);
+        assert_eq!(
+            partial.stores[frame.rollback_store].touched_default,
+            Some(false)
+        );
+        let memory = &partial.byte_arrays[frame.memory];
+        assert!(memory.memory);
+        assert!(buffer_matches(&partial, memory, &[]));
+        assert!(memory.cells.is_empty());
+        assert_eq!(memory.default.constants, Some(vec!["0x0".into()]));
+        let Expression::View(view) = &partial.symbolic.nodes[memory.symbolic.node] else {
+            panic!("symbolic entry retains its initial memory view")
+        };
+        assert!(matches!(
+            partial.symbolic.nodes[view.state.node],
+            Expression::BytesZero
+        ));
+        let root = partial.metadata.root_program.unwrap();
+        assert_eq!(frame.program, Some(root));
+        assert_eq!(cfg.program, Some(root));
+        let program = &partial.programs[root];
+        assert_eq!(program.bytecode, format!("0x{code}"));
+        assert_eq!(program.code_address, frame.code_address);
+        assert_eq!(program.code_hash, frame.code_hash);
+        assert_eq!(partial.disassembly, program.blocks);
+        let [source] = program.blocks.as_slice() else {
+            panic!("expected the complete original source block")
+        };
+        assert_eq!((source.id, source.start_pc), (0, 0));
+        assert_eq!(cfg.instructions, source.instructions);
+        assert_eq!(source.instructions.len(), 20 * 3 + 3);
+        assert!(partial.outcomes.iter().all(|outcome| {
+            outcome.state == 0 && outcome.kind == evm_abstract_protocol::OutcomeKind::Failure
+        }));
         partial.validate().unwrap();
     }
 }
