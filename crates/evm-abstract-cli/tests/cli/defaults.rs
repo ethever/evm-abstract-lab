@@ -151,8 +151,8 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
             "{command}: {}",
             String::from_utf8_lossy(&bounded.stderr)
         );
-        // Two nodes admit the Store Input root. The mandatory WriteWord root
-        // needs more, retaining a real refusal after MSTORE consumes operands.
+        // The default symbolic calldata Input needs three retained nodes.
+        // This two-node control refuses initialization before MSTORE executes.
         let refused = run_concrete(&[
             command,
             "--hex",
@@ -169,6 +169,7 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
                 text.is_empty(),
                 "closed SSA must still refuse incomplete execution"
             );
+            assert!(String::from_utf8_lossy(&refused.stderr).contains("SSA unavailable"));
         } else {
             assert!(
                 text.contains("Incomplete")
@@ -218,20 +219,62 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
     assert_eq!(refused.status.code(), Some(2));
     let refused: Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert_eq!(refused["config"]["relations"]["max_nodes"], 2);
+    assert_eq!(refused["status"], "Incomplete");
+    assert_eq!(refused["states"], serde_json::json!([]));
+    assert_eq!(refused["edges"], serde_json::json!([]));
+    assert_eq!(refused["diagnostics"], serde_json::json!([]));
     assert_eq!(
-        refused["states"][0]["executed_pcs"],
-        serde_json::json!([0, 2, 6])
+        refused["frontiers"],
+        serde_json::json!([{
+            "from": null,
+            "target": {"basic_block_index": 0, "stack_height": 0, "context": []},
+            "reason": {"Relations": "ExpressionLimit"},
+            "limit": "Model"
+        }])
     );
-    assert!(
-        refused["frontiers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|frontier| {
-                frontier["from"] == 0
-                    && frontier["reason"] == serde_json::json!({"Relations":"ExpressionLimit"})
-            })
+    let partial = run_concrete(&[
+        "ssa",
+        "--hex",
+        code,
+        "--max-memory-bytes",
+        "65536",
+        "--max-symbolic-nodes",
+        "2",
+        "--allow-partial-ssa",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(partial.status.code(), Some(2));
+    let partial: Value = serde_json::from_slice(&partial.stdout).unwrap();
+    assert!(partial.get("ssa").is_none());
+    assert_eq!(partial["analysis"]["config"], refused["config"]);
+    assert_eq!(partial["analysis"]["states"], refused["states"]);
+    assert_eq!(partial["analysis"]["edges"], refused["edges"]);
+    assert_eq!(partial["analysis"]["frontiers"], refused["frontiers"]);
+    assert_eq!(partial["state_mapping"], serde_json::json!([]));
+    let machine = &partial["machine_analysis"];
+    assert_eq!(machine["status"], "Incomplete");
+    assert_eq!(machine["config"]["max_memory_bytes"], 65536);
+    assert_eq!(machine["config"]["analysis"]["relations"]["max_nodes"], 2);
+    assert_eq!(machine["states"], serde_json::json!([]));
+    assert_eq!(machine["edges"], serde_json::json!([]));
+    assert_eq!(machine["outcomes"], serde_json::json!([]));
+    assert_eq!(
+        machine["frontiers"],
+        serde_json::json!([{
+            "from": null,
+            "target": null,
+            "pc": null,
+            "reason": {"Relations": "ExpressionLimit"},
+            "range": null
+        }])
     );
+    let ir = &partial["partial_ssa"];
+    assert_eq!(ir["complete"], false);
+    assert_eq!(ir["blocks"], serde_json::json!([]));
+    assert_eq!(ir["frontiers"], machine["frontiers"]);
+    assert_eq!(ir["value_count"], 0);
+    assert_eq!(ir["mappings"], serde_json::json!([]));
 }
 
 #[test]

@@ -141,6 +141,15 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
     assert!(pending["operation"]["Opcode"].is_object());
     assert_eq!(ir["blocks"][0]["exit_frames"], json!([[0]]));
     assert_eq!(ir["blocks"][0]["instructions"].as_array().unwrap().len(), 3);
+    let mut effect = ir["blocks"][0]["effect"]["result"].as_u64().unwrap();
+    for instruction in ir["blocks"][0]["instructions"].as_array().unwrap() {
+        assert_eq!(instruction["effect_input"], effect);
+        let next = instruction["effect_result"].as_u64().unwrap();
+        assert_ne!(next, effect);
+        effect = next;
+    }
+    assert_eq!(ir["blocks"][0]["exit_effect"], effect);
+    assert_eq!(ir["effect_count"], 4);
     let machine = &report["machine_analysis"];
     assert_eq!(machine["states"][0]["executed_pcs"], json!([0, 2, 4]));
     assert_eq!(
@@ -152,8 +161,80 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
         json!(["0x2a"])
     );
     let outcomes = machine["outcomes"].as_array().unwrap();
-    assert_eq!(outcomes.len(), 1);
-    assert!(outcomes.iter().all(|outcome| outcome["kind"] == "Failure"));
+    let [pre_entry, post_touch] = outcomes.as_slice() else {
+        panic!("expected the pre-entry and block-entry Failure alternatives: {outcomes:?}")
+    };
+    assert_eq!(machine["states"].as_array().unwrap().len(), 1);
+    let state = &machine["states"][0];
+    assert_eq!(state["id"], 0);
+    assert_eq!(ir["blocks"][0]["state"], state["id"]);
+    let frame = &state["entry"]["call_stack"]["root"]["state"];
+    let saved = &frame["saved_store"];
+    assert!(saved.is_object());
+    assert_eq!(frame["returndata"]["length"]["Constants"], json!(["0x0"]));
+    assert_eq!(frame["returndata"]["bytes"], json!({}));
+    for outcome in outcomes {
+        assert_eq!(outcome["state"], state["id"]);
+        assert_eq!(outcome["kind"], "Failure");
+        assert_eq!(outcome["data"], frame["returndata"]);
+    }
+    // engine::run_reusing records the untouched pre-entry checkpoint first.
+    // A symbolic recipient then may-touches all accounts, enabling the separate
+    // late_failure::at_block_entry envelope before either PUSH executes.
+    assert_eq!(pre_entry["store"], *saved);
+    let mut entered = state["entry"]["store"].clone();
+    assert!(entered.get("touched_default").unwrap().is_null());
+    entered["touched_default"] = json!(false);
+    assert_eq!(entered, *saved);
+    // MLOAD's positive read-scan fee stops this prefix before ranges::memory.
+    // The second Failure restores the checkpoint, retaining only RIPEMD's
+    // sticky MAY touch through finalization. Only owner 3 may gain join entries.
+    let ripemd = "0x0000000000000000000000000000000000000003";
+    let mut restored = post_touch["store"].clone();
+    assert_ne!(restored, *saved);
+    for (field, expected) in [
+        ("balances", json!("Top")),
+        ("nonces", json!("Top")),
+        ("codes", json!("Unknown")),
+        ("existence", json!("unknown")),
+    ] {
+        assert_eq!(
+            restored[field].as_object_mut().unwrap().remove(ripemd),
+            Some(expected),
+            "{field}"
+        );
+    }
+    assert_eq!(
+        restored["persistent"]["defaults"]
+            .as_object_mut()
+            .unwrap()
+            .remove(ripemd),
+        Some(json!("Top"))
+    );
+    let retained = restored["persistent"]["roots"]
+        .as_object_mut()
+        .unwrap()
+        .remove(ripemd)
+        .unwrap();
+    let nodes = retained["nodes"].as_array().unwrap();
+    let merge = &nodes[usize::try_from(retained["root"].as_u64().unwrap()).unwrap()]["SlotsIte"];
+    assert!(merge.is_object());
+    let node = |field: &str| &nodes[usize::try_from(merge[field].as_u64().unwrap()).unwrap()];
+    assert!(node("condition")["Fresh"].is_u64());
+    assert_eq!(*node("else_state"), json!("SlotsZero"));
+    let kept = &node("then_state")["SlotsInput"];
+    assert_eq!(kept["bindings"], json!([]));
+    assert_eq!(kept["source"]["namespace"], "0x300");
+    let original = &saved["persistent"]["base"];
+    let original_nodes = original["nodes"].as_array().unwrap();
+    let original_source = &original_nodes
+        [usize::try_from(original["root"].as_u64().unwrap()).unwrap()]["SlotsInput"]["source"];
+    assert_eq!(retained["identity_scope"], original["identity_scope"]);
+    assert_eq!(
+        nodes[usize::try_from(kept["source"]["token"].as_u64().unwrap()).unwrap()],
+        original_nodes[usize::try_from(original_source["token"].as_u64().unwrap()).unwrap()]
+    );
+    assert_eq!(restored, *saved);
     assert_eq!(ir["frontiers"], machine["frontiers"]);
     let frontiers = ir["frontiers"].as_array().unwrap();
     assert_eq!(frontiers.len(), 1);
