@@ -618,49 +618,274 @@ fn whole_engine_closes_symbolic_native_roots_and_executes_the_parent_continuatio
     }));
 }
 
+fn assert_bn254_summary_outcomes(result: &Execution, kinds: &[OutcomeKind], domain: Domain) {
+    assert_eq!(
+        result
+            .outcomes
+            .iter()
+            .map(|outcome| outcome.kind)
+            .collect::<Vec<_>>(),
+        kinds
+    );
+    assert!(result.successors.is_empty());
+    assert!(result.completed_calls.is_empty());
+    let limits = domain.spec().relations().expressions();
+    for outcome in &result.outcomes {
+        outcome.data.check_existing(limits).unwrap();
+        outcome.store.check_existing(limits).unwrap();
+        match outcome.kind {
+            OutcomeKind::Return => {
+                assert_eq!(outcome.data.len().singleton(), Some(U256::from(64)));
+                assert_contains(&outcome.data, &[0; 64], domain);
+                assert_contains(&outcome.data, &[255; 64], domain);
+            }
+            OutcomeKind::Revert => {
+                assert!(outcome.data.len().contains(U256::ZERO));
+                assert!(outcome.data.len().contains(U256::MAX));
+                assert_contains(&outcome.data, &[255; 64], domain);
+            }
+            OutcomeKind::Failure => assert_eq!(outcome.data.exact_bytes(), Some(Vec::new())),
+        }
+    }
+}
+
+fn root_finalization_work(
+    payload: &MachinePayload,
+    kind: OutcomeKind,
+    config: &ExecutionConfig,
+) -> usize {
+    assert_eq!(payload.call_stack.depth(), 1);
+    let rollback =
+        (kind != OutcomeKind::Return).then(|| &payload.call_stack.root().state.saved_store);
+    let mut store = payload.store.clone();
+    let mut budget = WorkBudget::new(config.max_work);
+    store
+        .finalize_transaction_checked(config.domain().unwrap(), rollback, &mut budget)
+        .unwrap();
+    assert!(!budget.exhausted());
+    assert!(budget.used() > 0);
+    budget.used()
+}
+
 #[test]
 fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
     let config = config();
+    let domain = config.domain().unwrap();
     let (world, entry, payload) = fixture(address(6), ByteArray::unknown(), Fork::Osaka, &config);
     let mut full_budget = WorkBudget::new(config.max_work);
     let full = run(&world, &entry, payload.clone(), &config, &mut full_budget);
-    assert_eq!(full.outcomes.len(), 3);
+    let kinds = [
+        OutcomeKind::Return,
+        OutcomeKind::Revert,
+        OutcomeKind::Failure,
+    ];
+    assert!(full.frontiers.is_empty());
+    assert_bn254_summary_outcomes(&full, &kinds, domain);
+    assert_eq!(full.payload, payload);
+    assert!(!full_budget.exhausted());
     let scan = payload
         .active()
         .calldata
         .metadata_len()
         .saturating_add(payload.active().calldata.state_root().work_size());
-    for limit in [0, scan, full_budget.used() - 1] {
+    let retained_input = scan.saturating_add(payload.active().calldata.work_size());
+    // The root finishes pay separately after atomic summary admission. Remove
+    // their production ledger receipts to locate admission, without duplicating
+    // its reservation formula or charging the symbolic input's logical length.
+    let finalization_work = kinds
+        .iter()
+        .map(|kind| root_finalization_work(&payload, *kind, &config))
+        .sum::<usize>();
+    let admitted = full_budget.used().checked_sub(finalization_work).unwrap();
+    assert!(retained_input > scan);
+    assert!(admitted > retained_input);
+    for (limit, used) in [(0, 0), (scan, scan), (admitted - 1, retained_input)] {
         let mut budget = WorkBudget::new(limit);
         let result = run(&world, &entry, payload.clone(), &config, &mut budget);
         assert_boundary(&result, FrontierReason::Work);
+        assert_eq!(result.frontiers[0].pc, 0);
+        assert_eq!(result.frontiers[0].target, Some(payload.key()));
         assert_eq!(result.payload, payload);
         assert!(budget.exhausted());
+        assert_eq!(budget.used(), used);
         assert!(budget.used() <= limit);
     }
     let mut limited = config.clone();
     limited.analysis.relations.max_nodes = 1;
-    let result = run(
-        &world,
-        &entry,
-        payload.clone(),
-        &limited,
-        &mut WorkBudget::new(limited.max_work),
+    let input_error = payload
+        .active()
+        .calldata
+        .check_existing(limited.domain().unwrap().spec().relations().expressions())
+        .unwrap_err();
+    assert_eq!(
+        super::super::errors::bytes(input_error),
+        FrontierReason::Relations(QueryReason::ExpressionLimit)
     );
+    let mut budget = WorkBudget::new(limited.max_work);
+    let result = run(&world, &entry, payload.clone(), &limited, &mut budget);
     assert_boundary(
         &result,
         FrontierReason::Relations(QueryReason::ExpressionLimit),
     );
-    let mut result = empty_execution(payload);
+    assert_eq!(result.payload, payload);
+    assert_eq!(budget.used(), retained_input);
+    assert!(!budget.exhausted());
+    let mut result = empty_execution(payload.clone());
+    let mut budget = WorkBudget::new(limited.max_work);
     summarize(
         &mut result,
         &PrecompileId::Bn254Add,
-        &mut context(&limited, &mut WorkBudget::new(limited.max_work)),
+        &mut context(&limited, &mut budget),
     );
     assert_boundary(
         &result,
         FrontierReason::Relations(QueryReason::ExpressionLimit),
     );
+    assert_eq!(result.payload, payload);
+    assert_eq!(budget.used(), admitted - retained_input);
+    assert!(!budget.exhausted());
+
+    let control = Control::new(Default::default());
+    control.cancellation().cancel();
+    control.scope(|| {
+        let mut budget = WorkBudget::new(config.max_work);
+        let mut result = empty_execution(payload.clone());
+        summarize(
+            &mut result,
+            &PrecompileId::Bn254Add,
+            &mut context(&config, &mut budget),
+        );
+        assert_boundary(&result, FrontierReason::Relations(QueryReason::Cancelled));
+        assert_eq!(result.payload, payload);
+        assert_eq!(budget.used(), 0);
+    });
+}
+
+#[test]
+fn summary_completion_refusal_keeps_only_the_finalized_root_prefix() {
+    use crate::world::Existence;
+
+    let config = config();
+    let domain = config.domain().unwrap();
+    let owner = address(0x101);
+    let empty = address(0x102);
+    let created = address(0x103);
+    let (mut world, entry, _) = fixture(address(6), ByteArray::unknown(), Fork::Osaka, &config);
+    world
+        .insert(
+            owner,
+            Account {
+                balance: value(1),
+                storage: [(U256::ZERO, value(7))].into(),
+                ..Account::empty()
+            },
+        )
+        .unwrap();
+    world.insert(empty, Account::empty()).unwrap();
+    world.insert(created, Account::absent()).unwrap();
+    let mut payload = initial(&world, &entry, domain).unwrap();
+    payload
+        .store
+        .write_checked(owner, &value(0), &value(11), domain)
+        .unwrap();
+    payload
+        .store
+        .write_transient_checked(owner, &value(0), &value(9), domain)
+        .unwrap();
+    payload.store.touch_account(empty);
+    payload.store.begin_creation(created);
+    assert_eq!(
+        payload.store.read(owner, &value(0), domain).singleton(),
+        Some(U256::from(11))
+    );
+    assert_eq!(
+        payload
+            .store
+            .read_transient(owner, &value(0), domain)
+            .singleton(),
+        Some(U256::from(9))
+    );
+    assert_eq!(payload.store.touched_in_transaction(empty), Some(true));
+    assert_eq!(payload.store.created_in_transaction(created), Some(true));
+    let saved = payload.call_stack.root().state.saved_store.state();
+    assert_eq!(
+        saved.read(owner, &value(0), domain).singleton(),
+        Some(U256::from(7))
+    );
+    assert_eq!(saved.existence(empty), Existence::Present);
+    assert_eq!(saved.existence(created), Existence::Absent);
+
+    let assert_lifecycle = |result: &Execution| {
+        for outcome in &result.outcomes {
+            let returned = outcome.kind == OutcomeKind::Return;
+            assert_eq!(
+                outcome.store.read(owner, &value(0), domain).singleton(),
+                Some(U256::from(if returned { 11 } else { 7 }))
+            );
+            assert_eq!(
+                outcome.store.existence(empty),
+                if returned {
+                    Existence::Absent
+                } else {
+                    Existence::Present
+                }
+            );
+            assert_eq!(
+                outcome.store.existence(created),
+                if returned {
+                    Existence::Present
+                } else {
+                    Existence::Absent
+                }
+            );
+            assert_eq!(
+                outcome.store.read_balance(owner).singleton(),
+                Some(U256::from(1))
+            );
+            assert_eq!(
+                outcome
+                    .store
+                    .read_transient(owner, &value(0), domain)
+                    .singleton(),
+                Some(U256::ZERO)
+            );
+            assert!(outcome.store.transient_slots().is_empty());
+            for account in [address(6), owner, empty, created] {
+                assert_eq!(outcome.store.touched_in_transaction(account), Some(false));
+                assert_eq!(outcome.store.created_in_transaction(account), Some(false));
+                assert_eq!(outcome.store.pending_destruction(account), Some(false));
+            }
+        }
+    };
+    let mut full_budget = WorkBudget::new(config.max_work);
+    let full = run(&world, &entry, payload.clone(), &config, &mut full_budget);
+    let kinds = [
+        OutcomeKind::Return,
+        OutcomeKind::Revert,
+        OutcomeKind::Failure,
+    ];
+    assert!(full.frontiers.is_empty());
+    assert_bn254_summary_outcomes(&full, &kinds, domain);
+    assert_lifecycle(&full);
+    assert_eq!(full.payload, payload);
+    assert!(!full_budget.exhausted());
+
+    // Only the final Failure's root cleanup is unaffordable. Return and Revert
+    // must already be complete, including their different checkpoint effects.
+    let limit = full_budget.used() - 1;
+    let mut budget = WorkBudget::new(limit);
+    let partial = run(&world, &entry, payload.clone(), &config, &mut budget);
+    assert_eq!(partial.frontiers.len(), 1);
+    assert_eq!(partial.frontiers[0].reason, FrontierReason::Work);
+    assert_eq!(partial.frontiers[0].pc, 0);
+    assert_eq!(partial.frontiers[0].target, Some(payload.key()));
+    assert_bn254_summary_outcomes(&partial, &kinds[..2], domain);
+    assert_lifecycle(&partial);
+    assert_eq!(partial.payload, payload);
+    assert!(budget.exhausted());
+    assert!(budget.used() <= limit);
+    let failure_work = root_finalization_work(&payload, OutcomeKind::Failure, &config);
+    assert!(budget.used() >= full_budget.used().checked_sub(failure_work).unwrap());
 }
 
 #[test]
