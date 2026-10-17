@@ -21,6 +21,7 @@ mod tests;
 mod traversal;
 pub(super) mod widening;
 mod word_plan;
+mod write;
 
 use crate::domain::{
     AbstractValue, Domain,
@@ -325,6 +326,16 @@ impl ByteArray {
         offset: &AbstractValue,
         domain: Domain,
     ) -> Result<AbstractValue, RangeError> {
+        self.read_byte_with_numeric(offset, domain, None)
+    }
+    // Only A1's writer may share the complete numeric projection. Preparation,
+    // authoritative expression construction and checks still run for each byte.
+    fn read_byte_with_numeric(
+        &self,
+        offset: &AbstractValue,
+        domain: Domain,
+        numeric: Option<&mut Option<AbstractValue>>,
+    ) -> Result<AbstractValue, RangeError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -347,8 +358,15 @@ impl ByteArray {
             &|destination| context.write_lower_bound(destination, domain),
         )?;
         context.check()?;
-        let numeric =
-            numeric::Reader::with_context(context.clone(), domain).read(&self.root, &offset_expr);
+        let read = || {
+            #[cfg(test)]
+            write::NUMERIC_READS.with(|calls| calls.set(calls.get() + 1));
+            numeric::Reader::with_context(context.clone(), domain).read(&self.root, &offset_expr)
+        };
+        let numeric = match numeric {
+            Some(shared) => shared.get_or_insert_with(read).clone(),
+            None => read(),
+        };
         context.check()?;
         Ok(numeric::attach(numeric, expression))
     }
@@ -522,6 +540,25 @@ impl ByteArray {
         max_bytes: usize,
         domain: Domain,
     ) -> Result<(), RangeError> {
+        let uniform = write::eligible(self, offset, value, width, domain);
+        let mut out = self.staged_write(offset, value, width, max_bytes, domain)?;
+        if uniform {
+            write::refresh(&mut out, domain);
+        } else {
+            out.refresh(domain);
+        }
+        *self = out;
+        Ok(())
+    }
+    // Original staging is shared by both refreshes and the full-value oracle.
+    fn staged_write(
+        &self,
+        offset: &AbstractValue,
+        value: &AbstractValue,
+        width: usize,
+        max_bytes: usize,
+        domain: Domain,
+    ) -> Result<Self, RangeError> {
         let offset = &ranges::normalized(offset)?;
         let mut out = self.clone();
         out.expand(offset, &constant(width), max_bytes, domain)?;
@@ -576,9 +613,7 @@ impl ByteArray {
             };
             out.default = domain.join(&out.default, &upper);
         }
-        out.refresh(domain);
-        *self = out;
-        Ok(())
+        Ok(out)
     }
     /// One range node, capturing source before destination mutation (MCOPY).
     pub fn copy_from(

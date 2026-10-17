@@ -9,6 +9,9 @@ use crate::{
 };
 use revm_bytecode::opcode;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn arithmetic_work(args: &[AbstractValue]) -> usize {
     args.iter()
         .try_fold(1usize, |size, value| {
@@ -95,6 +98,13 @@ pub(super) fn operation_work(
             .memory
             .copy_code_work(bytes, accounts, &args[1], &args[2], &args[3], domain)
             .saturating_add(external_code_fee(bytes, accounts, domain, true));
+    }
+    if op == opcode::MSTORE
+        && let Some(work) = frame
+            .memory
+            .uniform_word_write_work(&args[0], &args[1], domain)
+    {
+        return work;
     }
     let array_size = frame
         .memory
