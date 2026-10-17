@@ -30,21 +30,37 @@ fn check_entry_gas_failure(
     outcome: &crate::analysis::MachineOutcome,
 ) {
     assert_eq!(outcome.kind, OutcomeKind::Failure);
-    assert_eq!(
-        outcome.state, 0,
-        "only the existing entry gas-failure seed is allowed"
-    );
+    let source = result
+        .states()
+        .get(outcome.state)
+        .expect("Failure must name a real source state");
+    assert_eq!(source.id, outcome.state);
+    assert_eq!(source.key, source.entry.key());
     assert_eq!(outcome.data.len().singleton(), Some(U256::ZERO));
+    let checkpoint = &result.states()[0].entry.call_stack.root().state.saved_store;
     assert_eq!(
-        &outcome.store,
-        result.states()[0]
-            .entry
-            .call_stack
-            .root()
-            .state
-            .saved_store
-            .state()
+        &source.entry.call_stack.root().state.saved_store,
+        checkpoint,
+        "every source retains the complete transaction checkpoint"
     );
+    let seed = result
+        .outcomes()
+        .first()
+        .expect("pre-entry gas-failure seed");
+    assert_eq!(seed.kind, OutcomeKind::Failure);
+    assert_eq!(seed.state, 0);
+    if std::ptr::eq(outcome, seed) {
+        // The engine's first outcome precedes root entry and finalization.
+        assert_eq!(&outcome.store, checkpoint.state());
+    } else {
+        assert!(source.exit.is_some(), "post-entry Failure has executed");
+        // Entered failures restore every Store field, then perform transaction
+        // cleanup. These fixtures never touch RIPEMD, so no sticky exception
+        // may distinguish their rollback from the finalized root checkpoint.
+        let mut expected = checkpoint.state().clone();
+        expected.finalize_transaction(Domain::from_spec(result.domain_spec()));
+        assert_eq!(outcome.store, expected);
+    }
 }
 
 mod admission;
@@ -190,24 +206,45 @@ fn no_base_return_recursion_derives_revert_and_rollback_from_call_rejection() {
 }
 
 #[test]
-fn recursive_component_without_any_terminal_retains_an_explicit_frontier() {
-    // A CALL followed by an unconditional loop has no modeled terminal even
-    // after maximum-depth admission fails. Gas exhaustion is not silently lost.
+fn recursive_component_with_call_memory_failures_closes_without_a_return() {
+    // The zero-length CALL still admits a modeled memory gas Failure before
+    // its continuation loops. Those real failures can close this procedure.
     let code = "5f5f5f5f5f6101016207a120f15b600d56";
     let (world, entry) = fixture(&[(0x101, code)]);
     let result = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
-    assert_eq!(result.status(), Status::Incomplete);
-    assert!(
-        result
-            .frontiers()
-            .iter()
-            .any(|frontier| frontier.reason == FrontierReason::RecursiveNoTerminal)
+    assert_eq!(
+        result.status(),
+        Status::Converged,
+        "{:?}",
+        result.frontiers()
     );
+    assert!(result.frontiers().is_empty());
+    assert!(!result.procedure_summaries().is_empty());
     assert!(
         result
             .procedure_summaries()
             .iter()
-            .all(|record| !record.closed)
+            .all(|record| record.closed
+                && record.kind == ProcedureSummaryKind::KnownRecursion
+                && record.root_procedure.is_some())
+    );
+    for record in result.procedure_summaries() {
+        for procedure in &record.procedures {
+            assert!(!procedure.outputs.is_empty());
+            for output in &procedure.outputs {
+                assert_eq!(output.kind, OutcomeKind::Failure);
+                assert_eq!(output.data.len().singleton(), Some(U256::ZERO));
+            }
+        }
+    }
+    assert!(!result.outcomes().is_empty());
+    assert!(
+        result
+            .outcomes()
+            .iter()
+            .skip(1)
+            .any(|outcome| outcome.kind == OutcomeKind::Failure),
+        "CALL memory checks produce a root Failure beyond the pre-entry seed"
     );
     assert!(
         result
@@ -218,6 +255,63 @@ fn recursive_component_without_any_terminal_retains_an_explicit_frontier() {
     for outcome in result.outcomes() {
         check_entry_gas_failure(&result, outcome);
     }
+}
+
+#[test]
+fn procedure_table_without_any_terminal_retains_an_explicit_frontier() {
+    use crate::{
+        analysis::{engine::Counters, transfer},
+        resource::WorkBudget,
+    };
+
+    // A pure JUMP loop has neither memory checks nor terminals. This private
+    // Table seam tests the actual solver's no-terminal mechanism on bytecode;
+    // it deliberately does not claim admission by a repeated recursive CALL.
+    let (world, entry) = fixture(&[(0x101, "5b5f56")]);
+    let config = ExecutionConfig::default();
+    let domain = config.domain().unwrap();
+    let input = transfer::initial(&world, &entry, domain).unwrap();
+    assert!(!super::is_recursive_entry(&input));
+    let key = input.key();
+    let program = input.active().program.clone().expect("real loop bytecode");
+    let mut table = super::super::Table::default();
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut counters = Counters::default();
+    let (execution, record) = table.execute(
+        0,
+        &world,
+        &entry,
+        input,
+        &config,
+        domain,
+        &mut budget,
+        &mut counters,
+        transfer::StorageReadPolicy::Abstract,
+    );
+    assert_eq!(record.kind, ProcedureSummaryKind::KnownRecursion);
+    assert!(!record.closed);
+    let root = record.root_procedure.expect("the bytecode was admitted");
+    assert_eq!(record.procedures.len(), 1);
+    assert_eq!(record.procedures[root].covered_blocks, [0]);
+    assert!(record.procedures[root].outputs.is_empty());
+    assert!(record.transfers > 0);
+    assert!(table.procedures[root].local_cycle);
+    assert!(!table.procedures[root].recursive);
+    assert!(execution.outcomes.is_empty());
+    assert!(execution.successors.is_empty());
+    assert!(execution.completed_calls.is_empty());
+    assert_eq!(execution.frontiers.len(), 1);
+    let frontier = &execution.frontiers[0];
+    assert_eq!(frontier.reason, FrontierReason::RecursiveNoTerminal);
+    let pending = frontier
+        .payload
+        .as_ref()
+        .expect("actual current loop bound");
+    assert_eq!(frontier.target.as_ref(), Some(&pending.key()));
+    assert_eq!(pending.key(), key);
+    assert_eq!(pending.active().program.as_ref(), Some(&program));
+    assert!(pending.active().stack.is_empty());
+    assert_eq!(pending.active().memory.len().singleton(), Some(U256::ZERO));
 }
 
 #[test]

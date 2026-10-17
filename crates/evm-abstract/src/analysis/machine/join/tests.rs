@@ -444,14 +444,184 @@ fn repeated_two_storage_slots_reach_a_whole_machine_fixed_point() {
 }
 
 #[test]
-fn growing_loop_preserves_the_uncovered_incoming_state_at_its_policy_boundary() {
+fn growing_loop_bound_contains_the_concrete_counter_and_memory_pair() {
     let mut config = fixtures::config();
     config.analysis.relations.max_constraints = 2;
     config.analysis.relations.enabled = false;
-    // Both the counter and its stored word change. Scalar-only widening cannot
-    // discard the root/counter pairing to close this whole-state loop.
+    let domain = config.domain().unwrap();
+    // After two iterations the actual header input is (counter=3, word=2).
+    // LoopBound may forget their pairing, but must include that joint state.
     let analysis = fixtures::run("60015b805f52600101600256", config);
+    assert_eq!(
+        analysis.status(),
+        Status::Converged,
+        "{:?}",
+        analysis.frontiers()
+    );
+    assert!(analysis.frontiers().is_empty());
+    let header = analysis
+        .states()
+        .iter()
+        .find(|state| {
+            state.program().unwrap().blocks()[state.active().basic_block_index].start_pc == 2
+        })
+        .expect("the real loop header");
+    assert!(
+        analysis
+            .edges()
+            .iter()
+            .any(|edge| edge.from == header.id && edge.to == header.id)
+    );
+    assert_eq!(header.entry.active().stack.len(), 1);
+    let counter = &header.entry.active().stack[0];
+    assert!(counter.contains(U256::from(3)));
+    assert_eq!(
+        counter,
+        &AbstractValue::from_numeric(counter.numeric().clone())
+    );
+    assert!(header.entry.relations.is_empty());
+    let memory = &header.entry.active().memory;
+    assert!(memory.is_memory());
+    assert_eq!(
+        memory.len().interval().unsigned_bounds(),
+        (U256::ZERO, U256::from(32))
+    );
+    assert!(memory.len().contains(U256::from(32)));
+    assert!(
+        memory
+            .read_word_checked(&fixtures::word(0), domain)
+            .unwrap()
+            .contains(U256::from(2))
+    );
+
+    // These checks establish a joint assignment, rather than relying on two
+    // marginal contains() answers: the counter has no persistent identity/term,
+    // the path is empty, and canonical memory has only independent input cells.
+    // Its length's sole binding is a read of that same unobserved source.
+    let length = memory
+        .len()
+        .expression()
+        .expect("canonical non-singleton length");
+    let ExprKind::SlotRead { state, key } = length.kind() else {
+        panic!("canonical length must be a transparent observed input");
+    };
+    assert_eq!(key.as_constant(), Some(U256::ZERO));
+    let SlotStateKind::Input {
+        source: length_source,
+        bindings: length_bindings,
+    } = state.kind()
+    else {
+        panic!("canonical length source");
+    };
+    assert!(matches!(length_source.token().kind(), ExprKind::Fresh(_)));
+    assert_eq!(length_bindings.len(), 1);
+    let binding = &length_bindings[0];
+    assert_eq!(binding.index, U256::ZERO);
+    assert_eq!(&binding.numeric, memory.len().numeric());
+    let ExprKind::SlotRead { state: raw, key } = binding.value.kind() else {
+        panic!("length binding must not impose a cross-field equality");
+    };
+    assert_eq!(key.as_constant(), Some(U256::ZERO));
+    assert_eq!(
+        raw.kind(),
+        &SlotStateKind::Input {
+            source: length_source.clone(),
+            bindings: vec![]
+        }
+    );
+    let ByteStateKind::Input {
+        source,
+        length: input_length,
+        bindings,
+    } = memory.state_root().kind()
+    else {
+        panic!("the fixed point must retain independent canonical memory");
+    };
+    assert_eq!(input_length, length);
+    assert!(matches!(source.token().kind(), ExprKind::Fresh(_)));
+    let mut independent = BTreeSet::from([length_source.token().clone()]);
+    assert!(independent.insert(source.token().clone()));
+    let bytes = U256::from(2).to_be_bytes::<32>();
+    for binding in bindings {
+        let index = usize::try_from(binding.index).unwrap();
+        assert!(index < bytes.len());
+        assert!(matches!(binding.value.kind(), ExprKind::Fresh(_)));
+        assert!(independent.insert(binding.value.clone()));
+        assert!(
+            AbstractValue::from_numeric(binding.numeric.clone()).contains(U256::from(bytes[index]))
+        );
+    }
+    assert_eq!(memory.fresh_leaves(), independent);
+    // Inspect the rest of this same payload for accidental shared sources.
+    let mut outside_memory = header.entry.clone();
+    outside_memory.active_mut().memory = ByteArray::memory();
+    assert!(outside_memory.fresh_leaves().is_disjoint(&independent));
+    assert!(
+        memory
+            .guard_conditions(domain.spec().relations().expressions())
+            .unwrap()
+            .is_empty()
+    );
+    for (expression, value) in memory.symbolic_facts() {
+        assert_eq!(expression, length);
+        assert_eq!(value.numeric(), memory.len().numeric());
+    }
+    for (index, value) in memory.stored_bytes() {
+        assert!(value.expression().is_none());
+        assert!(value.contains(U256::from(bytes.get(index).copied().unwrap_or(0))));
+    }
+    assert_eq!(
+        memory.default_byte().numeric(),
+        AbstractValue::unknown_byte().numeric()
+    );
+    let initial = &analysis.states()[0].entry;
+    assert_eq!(
+        header
+            .entry
+            .active()
+            .saved_store
+            .state()
+            .summary_projection(domain)
+            .unwrap(),
+        initial
+            .active()
+            .saved_store
+            .state()
+            .summary_projection(domain)
+            .unwrap()
+    );
+    assert_eq!(
+        header.entry.store.summary_projection(domain).unwrap(),
+        initial.store.summary_projection(domain).unwrap()
+    );
+    assert!(!analysis.outcomes().is_empty());
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .all(|outcome| outcome.kind == OutcomeKind::Failure)
+    );
+    crate::ssa::build_world(&analysis)
+        .unwrap()
+        .verify(&analysis)
+        .unwrap();
+}
+
+#[test]
+fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() {
+    let mut config = fixtures::config();
+    config.analysis.relations.max_constraints = 2;
+    config.analysis.relations.enabled = false;
+    let domain = config.domain().unwrap();
+    // Three acyclic arms write and retain 1, 2 or 3, then meet at PC 39.
+    // Changing memory rules out scalar-only widening; no feedback admits a
+    // LoopBound before the third genuinely uncovered whole-state input.
+    let code = "348015601457600114601e576003805f526027565b506001805f526027565b6002805f526027565b00";
+    let (world, mut entry) = fixtures::fixture(&[(0x101, code)]);
+    entry.environment.value = AbstractValue::top();
+    let analysis = crate::analysis::analyze_world(world, entry, config).unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
+    assert_eq!(analysis.frontiers().len(), 1);
     let frontier = analysis
         .frontiers()
         .iter()
@@ -468,7 +638,16 @@ fn growing_loop_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
         .expect("unmerged incoming payload");
     assert_eq!(frontier.target.as_ref(), Some(&incoming.key()));
     assert_eq!(incoming.active().stack.len(), 1);
-    assert!(incoming.active().stack[0].contains(U256::from(3)));
+    assert_eq!(incoming.active().stack[0].singleton(), Some(U256::from(3)));
+    assert_eq!(
+        incoming
+            .active()
+            .memory
+            .read_word_checked(&fixtures::word(0), domain)
+            .unwrap()
+            .singleton(),
+        Some(U256::from(3))
+    );
     let covered = analysis
         .states()
         .iter()
@@ -476,10 +655,26 @@ fn growing_loop_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
         .unwrap();
     assert!(!covered.entry.active().stack[0].contains(U256::from(3)));
     assert!(
+        !covered
+            .entry
+            .active()
+            .memory
+            .read_word_checked(&fixtures::word(0), domain)
+            .unwrap()
+            .contains(U256::from(3))
+    );
+    assert_eq!(
+        covered.program().unwrap().blocks()[covered.active().basic_block_index].start_pc,
+        39
+    );
+    assert!(!analysis.edges().iter().any(|edge| edge.from == covered.id));
+    assert!(frontier.from.is_some());
+    assert!(
         analysis
             .outcomes()
             .iter()
-            .all(|outcome| outcome.kind == OutcomeKind::Failure)
+            .any(|outcome| outcome.kind == OutcomeKind::Return),
+        "accepted arms still execute their real STOP"
     );
 }
 
