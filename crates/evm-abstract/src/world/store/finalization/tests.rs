@@ -257,3 +257,153 @@ fn may_delete_retention_refusal_is_typed_and_never_installs_the_numeric_fallback
     assert_eq!(store, before);
     assert!(!budget.exhausted());
 }
+
+#[test]
+fn restored_ripemd_may_touch_changes_only_addr3_and_not_saved_or_other_owners() {
+    let domain = Domain::default();
+    let mut world = World::new(Fork::Osaka, "restored RIPEMD MAY touch");
+    for number in [0x101, 0x201] {
+        let mut account = Account::from_hex("00", world.fork()).unwrap();
+        account.storage.insert(U256::ONE, word(number));
+        world.insert(address(number), account).unwrap();
+    }
+    let mut current = Store::new(&world);
+    let saved = current.snapshot();
+    let saved_state = saved.state().clone();
+    current.may_touch_account(address(3));
+    current
+        .write_checked(address(0x101), &word(1), &word(99), domain)
+        .unwrap();
+    let frozen = current.clone();
+    let mut restored = current.clone();
+    restored.restore(saved.clone());
+    assert_eq!(restored.touched_in_transaction(address(3)), None);
+    let plan = Plan::new(&restored);
+    assert_eq!(
+        plan.actions,
+        vec![
+            (address(3), Deletion::Join),
+            (address(0x101), Deletion::Retain),
+            (address(0x201), Deletion::Retain),
+        ]
+    );
+    assert_eq!(plan.join_fields, restored.maybe_delete_fields(address(3)));
+    let mut budget = WorkBudget::new(20_000_000);
+    current
+        .finalize_transaction_checked(domain, Some(&saved), &mut budget)
+        .unwrap();
+    for number in [0x101, 0x201] {
+        let owner = address(number);
+        assert_eq!(
+            current.slot_root(owner, false),
+            saved.state().slot_root(owner, false)
+        );
+        assert_eq!(
+            current.read_checked(owner, &word(1), domain),
+            saved.state().read_checked(owner, &word(1), domain)
+        );
+        assert_eq!(
+            current.read_balance(owner),
+            saved.state().read_balance(owner)
+        );
+        assert_eq!(current.nonce(owner), saved.state().nonce(owner));
+        assert_eq!(current.code(owner), saved.state().code(owner));
+    }
+    assert_eq!(current.touched_in_transaction(address(3)), Some(false));
+    assert_eq!(current.existence(address(3)), Existence::Unknown);
+    assert_eq!(saved.state(), &saved_state);
+    assert_eq!(frozen.read(address(0x101), &word(1), domain), word(99));
+}
+
+#[test]
+fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
+    let domain = Domain::default();
+    let mut fields = Vec::new();
+    for cells in [2, 64] {
+        let mut world = World::new(Fork::Osaka, "local deletion field discovery");
+        let mut account = Account::from_hex("00", world.fork()).unwrap();
+        for key in 0..cells {
+            account.storage.insert(U256::from(key), word(key + 7));
+        }
+        world.insert(address(0x101), account).unwrap();
+        let mut store = Store::new(&world);
+        store.may_touch_account(address(3));
+        let plan = Plan::new(&store);
+        assert_eq!(
+            plan.actions
+                .iter()
+                .filter(|(_, a)| *a == Deletion::Join)
+                .count(),
+            1
+        );
+        fields.push(plan.join_fields);
+        let mut extended = store.clone();
+        extended
+            .write_checked(address(3), &word(1), &word(9), domain)
+            .unwrap();
+        assert!(extended.maybe_delete_fields(address(3)) > plan.join_fields);
+    }
+    assert_eq!(fields[0], fields[1]);
+}
+
+#[test]
+fn may_delete_batch_fee_avoids_owner_count_times_unrelated_fields() {
+    let domain = Domain::default();
+    let mut fees = Vec::new();
+    for owners in [8u64, 32] {
+        let mut world = World::new(Fork::Osaka, "MAY deletion work scaling");
+        let mut unrelated = Account::from_hex("00", world.fork()).unwrap();
+        unrelated.storage_unknown = true;
+        for key in 0..owners * 4 {
+            unrelated.storage.insert(U256::from(key), word(key + 1));
+        }
+        world.insert(address(0x900), unrelated).unwrap();
+        for number in 0..owners {
+            world
+                .insert(address(0x1000 + number), Account::unknown())
+                .unwrap();
+        }
+        let mut store = Store::new(&world);
+        for number in 0..owners {
+            store.may_touch_account(address(0x1000 + number));
+        }
+        let before = store.slot_root(address(0x900), false);
+        let mut budget = WorkBudget::new(usize::MAX);
+        store
+            .finalize_transaction_checked(domain, None, &mut budget)
+            .unwrap();
+        assert_eq!(store.slot_root(address(0x900), false), before);
+        fees.push(budget.used());
+    }
+    assert!(fees[1] > fees[0]);
+    // Quadrupling both populations must stay below quadratic (16x) growth.
+    // This checks the real ledger, not elapsed time or a mirrored fee formula.
+    assert!(fees[1] < fees[0] * 8, "{fees:?}");
+}
+
+#[test]
+fn may_delete_does_not_erase_a_transient_retention_failure_during_cleanup() {
+    use crate::domain::symbolic::ExprError;
+
+    let domain = Domain::default();
+    let mut store = Store::new(&World::new(Fork::Osaka, "transient refusal before cleanup"));
+    store.may_touch_account(address(3));
+    let error = StoreError::Expression(ExprError::Limit {
+        nodes: usize::MAX,
+        depth: 1,
+    });
+    store.transient.failure = Some(error.clone());
+    let before = store.clone();
+    let mut budget = WorkBudget::new(20_000_000);
+    assert_eq!(
+        store.finalize_transaction_checked(domain, None, &mut budget),
+        Err(FinalizationError::Store(error.clone()))
+    );
+    assert_eq!(store, before);
+    let mut fallback = before;
+    fallback.finalize_transaction(domain);
+    assert_eq!(
+        fallback.check_existing(domain.spec().relations().expressions()),
+        Err(error)
+    );
+}

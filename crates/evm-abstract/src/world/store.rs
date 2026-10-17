@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod effects;
 mod finalization;
 mod lifecycle;
+mod owner_deletion;
 mod refinement;
 mod slots;
 mod summary;

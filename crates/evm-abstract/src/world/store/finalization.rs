@@ -51,8 +51,13 @@ fn reserve(budget: &mut WorkBudget, work: usize) -> Result<(), FinalizationError
 
 /// Upper bound on ordered-container steps, including empty containers.
 fn tree_work(entries: usize) -> usize {
-    let height = (usize::BITS - entries.leading_zeros()) as usize + 1;
-    entries.saturating_add(1).saturating_mul(height)
+    entries
+        .saturating_add(1)
+        .saturating_mul(tree_height(entries))
+}
+
+fn tree_height(entries: usize) -> usize {
+    (usize::BITS - entries.leading_zeros()) as usize + 1
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,16 +92,31 @@ impl Deletion {
 
 pub(super) struct Plan {
     actions: Vec<(Address, Deletion)>,
+    join_fields: usize,
+    removed_code_bytes: usize,
 }
 
 impl Plan {
     pub(super) fn new(store: &Store) -> Self {
+        let mut actions = Vec::new();
+        let mut join_fields = 0usize;
+        let mut removed_code_bytes = 0usize;
+        for address in store.addresses() {
+            let action = Deletion::at(store, address);
+            if action == Deletion::Join {
+                join_fields = join_fields.saturating_add(store.maybe_delete_fields(address));
+            }
+            if action != Deletion::Retain
+                && let Some(Code::Runtime(program)) = store.code(address)
+            {
+                removed_code_bytes = removed_code_bytes.saturating_add(program.byte_len());
+            }
+            actions.push((address, action));
+        }
         Self {
-            actions: store
-                .addresses()
-                .into_iter()
-                .map(|address| (address, Deletion::at(store, address)))
-                .collect(),
+            actions,
+            join_fields,
+            removed_code_bytes,
         }
     }
 
@@ -104,7 +124,7 @@ impl Plan {
         let deletes = self
             .actions
             .iter()
-            .filter(|(_, action)| *action != Deletion::Retain)
+            .filter(|(_, action)| *action == Deletion::Delete)
             .count();
         let joins = self
             .actions
@@ -112,50 +132,37 @@ impl Plan {
             .filter(|(_, action)| *action == Deletion::Join)
             .count();
 
-        // No address or slot key is invented. One whole-Store join can make
-        // every known address explicit in the account maps, including copies of
-        // balance_default. Deleting a previously implicit owner can add a root,
-        // default and independence default per plane. A joined root is the old
-        // root (or account-scoped base) plus zero, selector and ITE; balance and
-        // nonce add at most four expression nodes and one zero candidate each.
-        // 128 covers those fixed fields/nodes, keys and zero scalar metadata.
-        // Existing slots gain at most one zero candidate and Constant origin,
-        // once per owner; operand intersections and log joins add no fields.
-        let materialized = if joins == 0 {
-            0
-        } else {
-            self.actions
-                .len()
-                .saturating_mul(footprint.balance_default.saturating_add(64))
-                .saturating_add(footprint.slots.saturating_mul(2))
-        };
+        // Definite resets can add owner roots/defaults/independence entries.
+        // MAY growth is bounded by its own old fields plus fixed ITE/key/zero
+        // metadata. No other owner's defaults/scalars are materialized.
         let grown = footprint
             .fields
-            .saturating_add(materialized)
+            .saturating_add(self.join_fields)
             .saturating_add(deletes.saturating_mul(footprint.reset_growth));
 
-        // Four cleanup/drop passes; sixteen passes per reset cover four retain
-        // loops (slots and independence slots in both planes), ten ordered-map
-        // updates and their COW/drop overhead. A MAY branch additionally pays
-        // 64 complete passes: branch clone/drop, repeated numeric-cache joins,
-        // existing-value/graph checks, ordered key unions, guarded plane/account
-        // joins and unchanged log checks/joins. Numeric joins enumerate unions,
-        // not candidate Cartesian products; candidate and graph sizes are in F.
-        // Runtime equality can inspect bytes in four Store/code comparisons per
-        // MAY branch. Code is Arc-backed in clones and is never an account count.
+        // Four cleanup/drop passes; sixteen per definite reset retain the old
+        // bound for its four whole-map retain loops and ordered-map updates.
+        // MAY actions never clone the Store. Eight shared passes cover the
+        // first MAY input validation, first-write COW node/value copies and
+        // their drops. Private map versions stay live for subsequent updates.
         let passes = 4usize
             .saturating_add(deletes.saturating_mul(16))
-            .saturating_add(joins.saturating_mul(64));
+            .saturating_add(if joins == 0 { 0 } else { 8 });
         tree_work(grown)
             .saturating_mul(passes)
-            .saturating_add(footprint.code_bytes.saturating_mul(joins).saturating_mul(4))
-            // A final Program Arc may release decoded blocks/jumpdest entries;
-            // their count is bounded by byte length. Clones alone cannot do so.
-            .saturating_add(if deletes == 0 {
-                0
-            } else {
-                footprint.code_bytes.saturating_mul(4)
-            })
+            // Sixteen local passes cover old-value validation, two plane root
+            // preparations, numeric cell/default joins, scalar guarded joins,
+            // selected-key collection, map updates and failed-preparation drops.
+            // Graph/value sizes and the grown map height bound those operations;
+            // unrelated fields are paid once above, not once per MAY owner.
+            .saturating_add(
+                self.join_fields
+                    .saturating_mul(tree_height(grown))
+                    .saturating_mul(16),
+            )
+            // Only removed Program handles can release decoded code. There are
+            // no whole-Store equality checks or runtime-byte comparisons here.
+            .saturating_add(self.removed_code_bytes.saturating_mul(4))
     }
 
     pub(super) fn apply(
@@ -164,18 +171,29 @@ impl Plan {
         domain: Domain,
         interrupt: &mut impl FnMut() -> Result<(), FinalizationError>,
     ) -> Result<(), FinalizationError> {
+        let mut checked_join_input = false;
         for (address, action) in self.actions {
             interrupt()?;
-            // A deletion changes only this address's numeric/lifecycle facts.
-            // Joins can materialize other owners' defaults but preserve those
-            // facts, so classifications of the remaining addresses stay valid.
+            // Both updates affect only this owner; other classifications stay
+            // valid and their roots/metadata retain their existing identities.
             match action {
                 Deletion::Retain => {}
                 Deletion::Delete => store.delete_account(address),
                 Deletion::Join => {
-                    let mut deleted = store.clone();
-                    deleted.delete_account(address);
-                    *store = store.join(&deleted, domain);
+                    if !checked_join_input {
+                        // Preserve existing refusal of invalid old alternatives,
+                        // including transient facts cleared at transaction end.
+                        // Later MAY preparations validate their changed fields;
+                        // final checked installation validates the complete result.
+                        if let Err(error) =
+                            store.check_existing(domain.spec().relations().expressions())
+                        {
+                            store.persistent.failure = Some(error.clone());
+                            store.transient.failure = Some(error);
+                        }
+                        checked_join_input = true;
+                    }
+                    store.maybe_delete_account(address, domain);
                 }
             }
         }
@@ -192,8 +210,6 @@ impl Plan {
 struct Footprint {
     fields: usize,
     code_bytes: usize,
-    slots: usize,
-    balance_default: usize,
     reset_growth: usize,
 }
 
@@ -267,7 +283,7 @@ impl Store {
         let plan = Plan::new(&staged);
         reserve(budget, plan.work(footprint))?;
         plan.apply(&mut staged, domain, &mut check_cancelled)?;
-        // Store::join preserves a numerical upper fallback when retaining its
+        // MAY deletion preserves a numerical upper fallback when retaining its
         // complete symbolic state fails. That is not a completed transaction.
         // Discover and reserve validation work before checking the staged state;
         // refusal or a typed retention error leaves the live Store unchanged.
@@ -289,10 +305,8 @@ impl Footprint {
         for value in store.balances.values().chain(store.nonces.values()) {
             fields = fields.saturating_add(value.work_size());
         }
-        let mut slots = 0usize;
         let mut reset_growth = 128usize;
         for plane in [&store.persistent, &store.transient] {
-            slots = slots.saturating_add(plane.slots.len());
             reset_growth = reset_growth
                 .saturating_add(plane.base.work_size())
                 .saturating_add(plane.global_default.work_size());
@@ -334,8 +348,6 @@ impl Footprint {
         Ok(Self {
             fields,
             code_bytes,
-            slots,
-            balance_default: store.balance_default.work_size(),
             reset_growth,
         })
     }
