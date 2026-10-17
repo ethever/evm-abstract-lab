@@ -48,11 +48,11 @@ fn byte_contains(value: &evm_abstract_protocol::ValueInfo, byte: u8) -> bool {
 // The protocol exports stored numeric upper bounds separately from its exact
 // immutable root. Decode only the concrete constructors used by these fixtures;
 // an unsupported or unknown root cannot satisfy the full-content assertion.
-fn buffer_matches(
-    report: &evm_abstract_protocol::AnalysisReport,
-    bytes: &evm_abstract_protocol::ByteArraySnapshot,
-    expected: &[u8],
-) -> bool {
+fn native_view(
+    graph: &evm_abstract_protocol::SymbolicGraph,
+    node: usize,
+    limits: evm_abstract::domain::symbolic::ExprLimits,
+) -> Option<evm_abstract::domain::symbolic::ByteView> {
     use evm_abstract::domain::symbolic::{ByteStateId, ByteView, ExprId, ExprLimits};
     use evm_abstract_protocol::{Expression, SymbolicGraph};
     fn scalar(graph: &SymbolicGraph, node: usize) -> Option<ExprId> {
@@ -60,16 +60,6 @@ fn buffer_matches(
             return None;
         };
         Some(ExprId::constant(value.parse().ok()?))
-    }
-    fn view(graph: &SymbolicGraph, node: usize, limits: ExprLimits) -> Option<ByteView> {
-        let Expression::View(view) = graph.nodes.get(node)? else {
-            return None;
-        };
-        Some(ByteView::new(
-            state(graph, view.state.node, limits)?,
-            scalar(graph, view.offset.node)?,
-            scalar(graph, view.length.node)?,
-        ))
     }
     fn state(graph: &SymbolicGraph, node: usize, limits: ExprLimits) -> Option<ByteStateId> {
         match graph.nodes.get(node)? {
@@ -87,13 +77,13 @@ fn buffer_matches(
             Expression::Copy(copy) => state(graph, copy.previous.node, limits)?
                 .copy(
                     scalar(graph, copy.destination.node)?,
-                    view(graph, copy.source.node, limits)?,
+                    native_view(graph, copy.source.node, limits)?,
                     scalar(graph, copy.length.node)?,
                     limits.into(),
                 )
                 .ok(),
             Expression::Slice(source) => {
-                let source = view(graph, source.node, limits)?;
+                let source = native_view(graph, source.node, limits)?;
                 source
                     .state
                     .slice(source.offset, source.length, limits.into())
@@ -102,6 +92,22 @@ fn buffer_matches(
             _ => None,
         }
     }
+    let Expression::View(view) = graph.nodes.get(node)? else {
+        return None;
+    };
+    Some(ByteView::new(
+        state(graph, view.state.node, limits)?,
+        scalar(graph, view.offset.node)?,
+        scalar(graph, view.length.node)?,
+    ))
+}
+
+fn buffer_matches(
+    report: &evm_abstract_protocol::AnalysisReport,
+    bytes: &evm_abstract_protocol::ByteArraySnapshot,
+    expected: &[u8],
+) -> bool {
+    use evm_abstract::domain::symbolic::ExprLimits;
     let limits = ExprLimits {
         max_nodes: report
             .metadata
@@ -117,7 +123,7 @@ fn buffer_matches(
             .unwrap(),
     };
     bytes.length.constants == Some(vec![format!("0x{:x}", expected.len())])
-        && view(&report.symbolic, bytes.symbolic.node, limits)
+        && native_view(&report.symbolic, bytes.symbolic.node, limits)
             .and_then(|view| view.canonicalize().known_bytes(limits).ok().flatten())
             .as_deref()
             == Some(expected)
@@ -818,6 +824,12 @@ fn user_budget_above_old_state_ceiling_builds_a_complete_graph_and_ssa() {
 
 #[test]
 fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() {
+    use alloy_primitives::U256;
+    use evm_abstract::domain::symbolic::{ByteStateKind, ExprId, ExprLimits};
+    use evm_abstract_protocol::{
+        Expression, FrontierDetails, SsaFactStatus, SsaOperand, SsaOperation, SsaValueOrigin,
+    };
+
     // Repeated sparse MSTORE at 1 MiB needs a span beyond the old memory ceiling.
     // The configured finite domain makes this account for >100 million units,
     // while only 32 concrete memory bytes need storing.
@@ -852,32 +864,296 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
     word[31] = 42;
     assert!(buffer_matches(&report, bytes, &word));
     assert_eq!(bytes.cells.len(), 32);
-    // One logical guard costs (14 + 14 + 2) * 16 * (512^2 + 1)
-    // = 125,829,600, so 100 million stops the first MSTORE before expansion.
+    let mut wrong = word;
+    wrong[15] = 1;
+    assert!(!buffer_matches(&report, bytes, &wrong));
+    let mut excluded = bytes.clone();
+    let value = excluded.cells[31].value;
+    excluded.values[value].constants = Some(vec!["0x2b".into()]);
+    assert!(!buffer_matches(&report, &excluded, &word));
+
+    // Price changes can move the refusal to a later MSTORE. Require its exact
+    // current receipt and committed prefix rather than fixing a guard fee/PC.
+    let mut bounded = input.clone();
+    bounded.limits.max_work = 100_000_000;
+    let work_limits = bounded.limits.clone();
+    let partial = analyze(bounded).unwrap();
+    assert_eq!(partial.metadata.limits, work_limits);
+    assert_eq!(partial.status, AnalysisStatus::Incomplete);
+    assert!(!partial.ssa.complete);
+    assert!(partial.metadata.work > 0 && partial.metadata.work <= work_limits.max_work);
+    let [frontier] = partial.frontiers.as_slice() else {
+        panic!(
+            "expected one pending MSTORE Work refusal: {:?}",
+            partial.frontiers
+        )
+    };
+    assert_eq!(frontier.reason, FrontierDetails::Work);
+    assert_eq!(frontier.kind, FrontierKind::Work);
+    assert_eq!(frontier.from, Some(0));
+    assert!(frontier.range.is_none());
+    assert!(frontier.payload.is_none());
+    let pc = frontier.pc.expect("Work must name the attempted MSTORE");
+    assert!(
+        (6..7 * 20).contains(&pc),
+        "Work outside the write prefix: {pc}"
+    );
+    assert_eq!((pc - 6) % 7, 0, "Work must stop at an original MSTORE");
+    let completed_writes = (pc - 6) / 7;
+    assert!(completed_writes < 20);
+    let phase = if completed_writes == 0 {
+        "before the first committed MSTORE"
+    } else {
+        "after a committed MSTORE prefix"
+    };
+    let [state] = partial.states.as_slice() else {
+        panic!("expected only the root state {phase}")
+    };
+    let [cfg] = partial.cfg.as_slice() else {
+        panic!("expected only the root CFG block {phase}")
+    };
+    let [block] = partial.ssa.blocks.as_slice() else {
+        panic!("expected only the root SSA block {phase}")
+    };
+    assert_eq!(
+        (state.state, cfg.id, block.state, cfg.basic_block),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(cfg.start_pc, Some(0));
+    assert_eq!(cfg.frame_depth, 1);
+    assert_eq!(block.coverage, BlockCoverage::Current);
+    assert!(!block.incoming_complete);
+    assert!(block.phis.is_empty());
+    assert!(block.effect_inputs.is_empty());
+    assert!(block.open_incoming.is_empty());
+    let [entry] = state.entry.frames.as_slice() else {
+        panic!("expected the original root frame")
+    };
+    assert_eq!(entry.basic_block, 0);
+    assert!(entry.context.is_empty());
+    assert!(entry.stack.is_empty());
+    assert!(cfg.entry_stack.is_empty());
+    assert_eq!(cfg.program, entry.program);
+    let program = &partial.programs[entry.program.unwrap()];
+    assert_eq!(program.bytecode, format!("0x{code}"));
+    assert_eq!(program.code_address, entry.code_address);
+    assert_eq!(program.code_hash, entry.code_hash);
+    let [source] = program.blocks.as_slice() else {
+        panic!("expected one original source block")
+    };
+    assert_eq!((source.id, source.start_pc), (0, 0));
+    assert_eq!(cfg.instructions, source.instructions);
+    let prefix: Vec<_> = (0..=completed_writes)
+        .flat_map(|write| [7 * write, 7 * write + 2, 7 * write + 6])
+        .collect();
+    assert_eq!(cfg.executed_pcs, prefix);
+    assert_eq!(block.instructions.len(), prefix.len());
+    assert_eq!(
+        source
+            .instructions
+            .iter()
+            .take_while(|item| item.pc <= pc)
+            .map(|item| item.pc)
+            .collect::<Vec<_>>(),
+        prefix
+    );
+    let mut effects = vec![block.effect];
+    for (index, (step, original)) in block
+        .instructions
+        .iter()
+        .zip(&source.instructions)
+        .enumerate()
+    {
+        assert_eq!((step.pc, step.opcode), (prefix[index], original.opcode));
+        assert_eq!(step.immediate, original.immediate);
+        assert!(!step.fault);
+        assert_eq!(
+            step.progress,
+            if index + 1 == prefix.len() {
+                InstructionProgress::OperandsConsumed
+            } else {
+                InstructionProgress::Completed
+            },
+            "instruction {} {phase}",
+            step.pc
+        );
+        assert_eq!(step.effect_input, *effects.last().unwrap());
+        let effect = step
+            .effect_result
+            .expect("each observed step has an effect name");
+        assert!(!effects.contains(&effect));
+        effects.push(effect);
+        if index % 3 == 2 {
+            assert_eq!(step.opcode, 0x52);
+            assert_eq!(
+                step.operands,
+                [
+                    block.instructions[index - 1].results[0],
+                    block.instructions[index - 2].results[0],
+                ]
+            );
+            assert!(step.results.is_empty());
+            let SsaOperation::Opcode(operation) = &step.operation else {
+                panic!("MSTORE cannot acquire a folded result")
+            };
+            assert_eq!(operation.opcode, 0x52);
+            assert_eq!(
+                operation.operands,
+                [
+                    SsaOperand::Constant("0x100000".into()),
+                    SsaOperand::Constant("0x2a".into()),
+                ]
+            );
+            for (operand, constant) in step.operands.iter().zip(["0x100000", "0x2a"]) {
+                assert!(partial.ssa.values[*operand].facts.iter().any(|fact| {
+                    fact.status == SsaFactStatus::Current
+                        && fact.constant.as_deref() == Some(constant)
+                }));
+            }
+        } else {
+            assert_eq!(step.opcode, if index % 3 == 0 { 0x60 } else { 0x62 });
+            assert!(step.operands.is_empty());
+            let [result] = step.results.as_slice() else {
+                panic!("every prefix PUSH must retain its original definition")
+            };
+            let SsaValueOrigin::Instruction(origin) = &partial.ssa.values[*result].origin else {
+                panic!("PUSH result must retain its instruction origin")
+            };
+            assert_eq!(
+                (origin.state, origin.instruction_index, origin.pc),
+                (0, index, step.pc)
+            );
+        }
+    }
+    let pending = block.instructions.last().unwrap();
+    assert_eq!((pending.pc, pending.opcode), (pc, 0x52));
+    assert_eq!(block.exit_effect, pending.effect_result.unwrap());
+    assert_eq!(partial.ssa.effect_count, effects.len());
+    assert_eq!(partial.ssa.value_count, 2 * (completed_writes + 1));
+    assert_eq!(partial.ssa.values.len(), partial.ssa.value_count);
+    assert!(!partial.ssa.values.iter().any(|value| {
+        matches!(&value.origin, SsaValueOrigin::Instruction(origin)
+            if origin.state == 0 && (origin.pc >= pc || origin.instruction_index >= prefix.len() - 1))
+    }));
+    assert_eq!(
+        block
+            .instructions
+            .iter()
+            .filter(|step| {
+                step.opcode == 0x52 && step.progress == InstructionProgress::Completed
+            })
+            .count(),
+        completed_writes
+    );
+    assert_eq!(block.exit_frames, [Vec::<usize>::new()]);
+    assert!(cfg.exit_stack.is_empty());
+    assert!(partial.edges.is_empty());
+    assert!(partial.ssa.transitions.is_empty());
+    assert!(partial.ssa.deferred_edges.is_empty());
+    assert!(partial.outcomes.iter().all(|outcome| {
+        outcome.state == 0 && outcome.kind == evm_abstract_protocol::OutcomeKind::Failure
+    }));
+    let exit = state
+        .exit
+        .as_ref()
+        .expect("a current prefix must retain its real state");
+    assert_eq!(exit.store, state.entry.store);
+    assert_eq!(exit.path, state.entry.path);
+    let [frame] = exit.frames.as_slice() else {
+        panic!("pending MSTORE must retain the root frame")
+    };
+    let mut unchanged = entry.clone();
+    unchanged.memory = frame.memory;
+    assert_eq!(frame, &unchanged);
+    let initial_memory = &partial.byte_arrays[entry.memory];
+    assert!(initial_memory.memory);
+    assert!(buffer_matches(&partial, initial_memory, &[]));
+    assert!(initial_memory.cells.is_empty());
+    assert_eq!(initial_memory.default.constants, Some(vec!["0x0".into()]));
+    assert!(byte_contains(&initial_memory.default, 0));
+    let limits = ExprLimits {
+        max_nodes: work_limits.max_expression_nodes.try_into().unwrap(),
+        max_depth: work_limits.max_expression_depth.try_into().unwrap(),
+    };
+    let initial = native_view(&partial.symbolic, initial_memory.symbolic.node, limits).unwrap();
+    assert_eq!(initial.offset.as_constant(), Some(U256::ZERO));
+    assert_eq!(initial.length.as_constant(), Some(U256::ZERO));
+    assert!(matches!(initial.state.kind(), ByteStateKind::Zero));
+    let Expression::View(initial_view) = &partial.symbolic.nodes[initial_memory.symbolic.node]
+    else {
+        panic!("entry memory must retain its original view")
+    };
+    assert!(matches!(
+        partial.symbolic.nodes[initial_view.state.node],
+        Expression::BytesZero
+    ));
+    let memory = &partial.byte_arrays[frame.memory];
+    assert!(memory.memory);
+    assert_eq!(memory.default, initial_memory.default);
+    let captured = native_view(&partial.symbolic, memory.symbolic.node, limits).unwrap();
+    assert_eq!(captured.offset.as_constant(), Some(U256::ZERO));
+    let Expression::View(view) = &partial.symbolic.nodes[memory.symbolic.node] else {
+        panic!("pending MSTORE must retain its captured memory view")
+    };
+    // Identical writes are idempotent in the physical root. Only the complete
+    // current receipt above counts writes and distinguishes the pending effect.
+    // Check raw structure too: native decoding can normalize equivalent writes.
+    if completed_writes == 0 {
+        assert_eq!(memory, initial_memory, "{phase}");
+        assert_eq!(view.state, initial_view.state);
+        assert!(matches!(captured.state.kind(), ByteStateKind::Zero));
+        assert!(buffer_matches(&partial, memory, &[]));
+    } else {
+        assert_eq!(memory.length.constants, Some(vec!["0x100020".into()]));
+        assert_eq!(captured.length.as_constant(), Some(U256::from(0x100020)));
+        let Expression::WriteWord(write) = &partial.symbolic.nodes[view.state.node] else {
+            panic!("committed prefix must retain its raw WriteWord")
+        };
+        assert_eq!(write.previous, initial_view.state);
+        for (operand, constant) in [(write.offset, "0x100000"), (write.value, "0x2a")] {
+            assert_eq!(
+                partial.symbolic.nodes[operand.node],
+                Expression::Constant(constant.into())
+            );
+        }
+        let ByteStateKind::WriteWord {
+            previous,
+            offset,
+            value,
+        } = captured.state.kind()
+        else {
+            panic!("committed prefix must retain exactly its one effective WriteWord")
+        };
+        assert_eq!(previous, &initial.state);
+        assert_eq!(offset.as_constant(), Some(U256::from(0x100000)));
+        assert_eq!(value.as_constant(), Some(U256::from(42)));
+        // The sole WriteWord over the unchanged zero root proves every unwritten
+        // byte is zero. Extract only its full word, under the reported limits.
+        let written = captured
+            .slice(
+                ExprId::constant(U256::from(0x100000)),
+                ExprId::constant(U256::from(32)),
+                limits.into(),
+            )
+            .unwrap();
+        assert_eq!(
+            written.known_bytes(limits).unwrap().as_deref(),
+            Some(word.as_slice())
+        );
+        assert_eq!(memory.cells.len(), 32);
+        for (index, cell) in memory.cells.iter().enumerate() {
+            assert_eq!(cell.offset, 0x100000 + index);
+            assert!(byte_contains(&memory.values[cell.value], word[index]));
+        }
+    }
+    partial.validate().unwrap();
+
     // The old smaller memory cap still admits lazy expansion; three expression
     // nodes instead reject its four-node WriteWord after that expansion.
-    for (max_work, max_memory, max_nodes, reason, memory_length) in [
-        (
-            100_000_000,
-            selected_limits.max_memory_bytes,
-            selected_limits.max_expression_nodes,
-            evm_abstract_protocol::FrontierDetails::Work,
-            "0x0",
-        ),
-        (
-            selected_limits.max_work,
-            1_048_576,
-            3,
-            evm_abstract_protocol::FrontierDetails::Relations(
-                evm_abstract_protocol::QueryBoundary::ExpressionLimit,
-            ),
-            "0x100020",
-        ),
-    ] {
+    {
         let mut bounded = input.clone();
-        bounded.limits.max_work = max_work;
-        bounded.limits.max_memory_bytes = max_memory;
-        bounded.limits.max_expression_nodes = max_nodes;
+        bounded.limits.max_memory_bytes = 1_048_576;
+        bounded.limits.max_expression_nodes = 3;
         let limits = bounded.limits.clone();
         let partial = analyze(bounded).unwrap();
         assert_eq!(partial.metadata.limits, limits);
@@ -889,15 +1165,13 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
                 partial.frontiers
             )
         };
-        assert_eq!(frontier.reason, reason);
         assert_eq!(
-            frontier.kind,
-            if max_work == 100_000_000 {
-                FrontierKind::Work
-            } else {
-                FrontierKind::Relations
-            }
+            frontier.reason,
+            evm_abstract_protocol::FrontierDetails::Relations(
+                evm_abstract_protocol::QueryBoundary::ExpressionLimit,
+            )
         );
+        assert_eq!(frontier.kind, FrontierKind::Relations);
         assert_eq!((frontier.from, frontier.pc), (Some(0), Some(6)));
         assert!(frontier.range.is_none());
         let block = &partial.ssa.blocks[0];
@@ -924,7 +1198,7 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
         let frame = exit.frames.last().unwrap();
         assert!(frame.stack.is_empty());
         let memory = &partial.byte_arrays[frame.memory];
-        assert_eq!(memory.length.constants, Some(vec![memory_length.into()]));
+        assert_eq!(memory.length.constants, Some(vec!["0x100020".into()]));
         let evm_abstract_protocol::Expression::View(view) =
             &partial.symbolic.nodes[memory.symbolic.node]
         else {
