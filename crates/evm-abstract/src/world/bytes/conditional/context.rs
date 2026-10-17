@@ -6,6 +6,7 @@ use crate::domain::{
     relational::intersect_numeric,
     symbolic::{ExprError, ExprId},
 };
+use crate::resource::WorkBudget;
 use alloy_primitives::U256;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
@@ -23,7 +24,7 @@ pub(in crate::world::bytes) struct Context<'a> {
     choices: Rc<BTreeMap<ExprId, bool>>,
     active: Rc<Vec<&'a Facts>>,
     memo: Rc<RefCell<memo::Memo<'a>>>,
-    demand: Option<Rc<memo::Demand>>,
+    demand: Option<Rc<memo::Demand<'a>>>,
 }
 
 impl<'a> Context<'a> {
@@ -43,18 +44,52 @@ impl<'a> Context<'a> {
         out
     }
 
-    /// The caller has reserved preparation.work before any demand allocations.
+    /// The caller prepaid the metadata arena; every numeric action still owes
+    /// the original ledger. Facts and budget share only this trial's lifetime.
+    pub(in crate::world::bytes) fn budgeted(
+        facts: &'a Facts,
+        conditional: &'a ConditionalFacts,
+        domain: Domain,
+        preparation: &Preparation,
+        budget: &'a mut WorkBudget,
+    ) -> Self {
+        Self::with_demand(
+            facts,
+            conditional,
+            Rc::new(memo::Demand::new(
+                domain,
+                preparation,
+                conditional.largest_expression,
+                budget,
+            )),
+        )
+    }
+
+    /// Compatibility oracle for existing private reference probes. Production
+    /// prepared reads can only use budgeted, which installs the original payer.
+    #[cfg(test)]
     pub(in crate::world::bytes) fn prepared(
         facts: &'a Facts,
         conditional: &'a ConditionalFacts,
         domain: Domain,
         nodes: usize,
     ) -> Self {
-        let demand = Rc::new(memo::Demand::new(
-            domain,
-            nodes,
-            conditional.largest_expression,
-        ));
+        Self::with_demand(
+            facts,
+            conditional,
+            Rc::new(memo::Demand::oracle(
+                domain,
+                nodes,
+                conditional.largest_expression,
+            )),
+        )
+    }
+
+    fn with_demand(
+        facts: &'a Facts,
+        conditional: &'a ConditionalFacts,
+        demand: Rc<memo::Demand<'a>>,
+    ) -> Self {
         // Immutable source keys are sized once, before any prepared lookups.
         // Conditional keys already have a cached maximum in their owner.
         if demand.reserve(facts.len().saturating_add(1)) {
@@ -75,15 +110,27 @@ impl<'a> Context<'a> {
     }
 
     pub(in crate::world::bytes) fn check(&self) -> Result<(), ExprError> {
-        if analysis_control::current_cancellation().is_cancelled() {
-            return Err(ExprError::Cancelled);
+        if let Some(demand) = &self.demand {
+            // Latch cancellation in the shared trial before its dynamic scope
+            // can end; every existing Context/Reader clone then stays stopped.
+            demand.check()
+        } else if analysis_control::current_cancellation().is_cancelled() {
+            Err(ExprError::Cancelled)
+        } else {
+            Ok(())
         }
-        self.demand.as_ref().map_or(Ok(()), |demand| demand.check())
     }
 
     /// A private cache refusal is separate from source validation/cancellation.
     pub(in crate::world::bytes) fn cache_refused(&self) -> bool {
         self.demand.as_ref().is_some_and(|demand| demand.refused())
+    }
+
+    /// Work is mandatory and must never enter the optional cache fallback.
+    pub(in crate::world::bytes) fn work_exhausted(&self) -> bool {
+        self.demand
+            .as_ref()
+            .is_some_and(|demand| demand.work_exhausted())
     }
 
     #[cfg(test)]
@@ -94,7 +141,7 @@ impl<'a> Context<'a> {
     }
 
     pub(in crate::world::bytes) fn stopped(&self) -> bool {
-        self.cache_refused() || self.check().is_err()
+        self.check().is_err() || self.cache_refused() || self.work_exhausted()
     }
 
     fn reserve(&self, nodes: usize) -> bool {
@@ -320,11 +367,25 @@ impl<'a> Context<'a> {
                     } else if old.numeric().is_top() {
                         value.numeric().clone()
                     } else {
+                        if self
+                            .demand
+                            .as_ref()
+                            .is_some_and(|demand| !demand.intersect())
+                        {
+                            return None;
+                        }
                         // A contradictory branch is unreachable. Keeping its
                         // previous upper bound cannot remove a concrete state.
                         intersect_numeric(old.numeric(), value.numeric(), domain)
                             .unwrap_or_else(|| old.numeric().clone())
                     };
+                    if self
+                        .demand
+                        .as_ref()
+                        .is_some_and(|demand| !demand.pay(memo::join_work(domain, &old, value)))
+                    {
+                        return None;
+                    }
                     domain.join(&old, value).with_numeric(numeric)
                 }
                 None => value.clone(),
@@ -347,6 +408,13 @@ impl<'a> Context<'a> {
             };
             out = Some(match out {
                 Some(value) => {
+                    if self
+                        .demand
+                        .as_ref()
+                        .is_some_and(|demand| !demand.intersect())
+                    {
+                        return None;
+                    }
                     let numeric = intersect_numeric(value.numeric(), truth.numeric(), domain)
                         .unwrap_or_else(|| value.numeric().clone());
                     value.with_numeric(numeric)
@@ -369,3 +437,6 @@ impl<'a> Context<'a> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod payer_tests;

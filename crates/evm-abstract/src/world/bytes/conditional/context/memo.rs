@@ -3,18 +3,29 @@
 
 use super::Context;
 use crate::domain::{
-    AbstractValue, Domain, DomainSpec,
+    AbstractValue, Domain, DomainSpec, Profile,
     symbolic::{ExprError, ExprId, ExprLimits},
 };
-use std::{cell::Cell, collections::BTreeMap};
+use crate::resource::WorkBudget;
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+};
 
 // The whole demand, including its symbolic and numeric walks, shares these
-// bounds. Exhaustion refuses only this optional attempt; the paid caller
-// retries with the complete unprepared algorithm before returning a value.
+// bounds. Arena/context refusal retries the fully paid original algorithm;
+// a failed live numeric payment instead stops the entire read as Work.
 pub(in crate::world::bytes) const CONTEXTS: usize = 32;
 const POLICIES: usize = 2;
 
-pub(super) struct Demand {
+enum Payer<'a> {
+    Budget(RefCell<&'a mut WorkBudget>),
+    // Existing private probes remain unmetered reference oracles only.
+    #[cfg(test)]
+    Oracle,
+}
+
+pub(super) struct Demand<'a> {
     pub(super) limits: ExprLimits,
     policies: [DomainSpec; POLICIES],
     maximum: usize,
@@ -24,10 +35,45 @@ pub(super) struct Demand {
     #[cfg(test)]
     source_key_visits: Cell<usize>,
     refused: Cell<bool>,
+    payer: Payer<'a>,
+    reduction_work: usize,
+    work_exhausted: Cell<bool>,
+    cancelled: Cell<bool>,
+    #[cfg(test)]
+    cancel_after_payments: RefCell<Option<(usize, analysis_control::Cancellation)>>,
 }
 
-impl Demand {
-    pub(super) fn new(domain: Domain, maximum: usize, maximum_key_work: usize) -> Self {
+impl<'a> Demand<'a> {
+    pub(super) fn new(
+        domain: Domain,
+        preparation: &Preparation,
+        maximum_key_work: usize,
+        budget: &'a mut WorkBudget,
+    ) -> Self {
+        let exhausted = budget.exhausted();
+        let out = Self::with_payer(
+            domain,
+            preparation.nodes,
+            maximum_key_work,
+            preparation.reduction_work,
+            Payer::Budget(RefCell::new(budget)),
+        );
+        out.work_exhausted.set(exhausted);
+        out
+    }
+
+    #[cfg(test)]
+    pub(super) fn oracle(domain: Domain, maximum: usize, maximum_key_work: usize) -> Self {
+        Self::with_payer(domain, maximum, maximum_key_work, 0, Payer::Oracle)
+    }
+
+    fn with_payer(
+        domain: Domain,
+        maximum: usize,
+        maximum_key_work: usize,
+        reduction_work: usize,
+        payer: Payer<'a>,
+    ) -> Self {
         let spec = domain.spec();
         Self {
             limits: spec.relations().expressions(),
@@ -45,6 +91,12 @@ impl Demand {
             #[cfg(test)]
             source_key_visits: Cell::new(0),
             refused: Cell::new(false),
+            payer,
+            reduction_work,
+            work_exhausted: Cell::new(false),
+            cancelled: Cell::new(false),
+            #[cfg(test)]
+            cancel_after_payments: RefCell::new(None),
         }
     }
 
@@ -69,11 +121,14 @@ impl Demand {
             self.refuse();
             return false;
         }
-        !self.refused() && self.check().is_ok()
+        !self.refused() && !self.work_exhausted() && self.check().is_ok()
     }
 
     pub(super) fn check(&self) -> Result<(), ExprError> {
         if analysis_control::current_cancellation().is_cancelled() {
+            self.cancelled.set(true);
+        }
+        if self.cancelled.get() {
             return Err(ExprError::Cancelled);
         }
         Ok(())
@@ -87,8 +142,53 @@ impl Demand {
         self.refused.get()
     }
 
+    pub(super) fn work_exhausted(&self) -> bool {
+        self.work_exhausted.get()
+    }
+
+    /// Metadata already belongs to N. Only executed numeric actions borrow
+    /// the original ledger, and that borrow ends before any numeric callback.
+    pub(super) fn pay(&self, work: usize) -> bool {
+        if self.refused() || self.work_exhausted() || self.check().is_err() {
+            return false;
+        }
+        let paid = match &self.payer {
+            Payer::Budget(budget) => {
+                let mut budget = budget.borrow_mut();
+                !budget.exhausted() && budget.charge(work)
+            }
+            #[cfg(test)]
+            Payer::Oracle => true,
+        };
+        // Deterministically interrupt an in-flight numeric sequence in tests,
+        // without callbacks or a live payer borrow across the checkpoint.
+        #[cfg(test)]
+        if paid {
+            let mut cancellation = self.cancel_after_payments.borrow_mut();
+            if let Some((remaining, token)) = cancellation.as_mut() {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    token.cancel();
+                    *cancellation = None;
+                }
+            }
+        }
+        // A cancellation observed during charge remains a typed interruption.
+        if self.check().is_err() {
+            return false;
+        }
+        if !paid {
+            self.work_exhausted.set(true);
+        }
+        paid
+    }
+
+    pub(super) fn intersect(&self) -> bool {
+        self.pay(self.reduction_work)
+    }
+
     pub(super) fn reserve(&self, nodes: usize) -> bool {
-        if self.refused() || self.check().is_err() {
+        if self.refused() || self.work_exhausted() || self.check().is_err() {
             return false;
         }
         let Some(next) = self.used.get().checked_add(nodes) else {
@@ -127,6 +227,24 @@ impl Demand {
     pub(super) fn contexts(&self) -> usize {
         self.contexts.get()
     }
+
+    #[cfg(test)]
+    pub(super) fn paid_work(&self) -> usize {
+        match &self.payer {
+            Payer::Budget(budget) => budget.borrow().used(),
+            Payer::Oracle => 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn cancel_after_payments(
+        &self,
+        count: usize,
+        token: analysis_control::Cancellation,
+    ) {
+        assert!(count > 0);
+        *self.cancel_after_payments.borrow_mut() = Some((count, token));
+    }
 }
 
 #[derive(Default)]
@@ -151,7 +269,7 @@ impl Memo<'_> {
         &self,
         expression: &ExprId,
         domain: Domain,
-        demand: &Demand,
+        demand: &Demand<'_>,
         reserve: &impl Fn(usize) -> bool,
     ) -> Option<Option<AbstractValue>> {
         if !reserve(POLICIES) {
@@ -184,7 +302,7 @@ impl Memo<'_> {
         expression: &ExprId,
         value: &Option<AbstractValue>,
         domain: Domain,
-        demand: &Demand,
+        demand: &Demand<'_>,
         reserve: &impl Fn(usize) -> bool,
     ) {
         if !reserve(POLICIES) {
@@ -249,7 +367,7 @@ impl Memo<'_> {
 pub(super) fn probe(
     len: usize,
     expression: &ExprId,
-    demand: &Demand,
+    demand: &Demand<'_>,
     reserve: &impl Fn(usize) -> bool,
 ) -> bool {
     let levels = (len.saturating_add(1).ilog2() as usize).saturating_add(1);
@@ -269,17 +387,59 @@ pub(super) fn probe(
 pub(in crate::world::bytes) struct Preparation {
     pub(in crate::world::bytes) nodes: usize,
     pub(in crate::world::bytes) work: usize,
+    pub(super) reduction_work: usize,
+}
+
+/// A real join still runs after the equal/Top meet shortcuts. Use the same
+/// fixed-width gcd and B-tree insertion tariff as the byte writer, plus
+/// expression comparisons and materialization of joined components. The caller
+/// and memo's own AV snapshots remain arena work. Constants-only joins rebuild
+/// numeric summaries, including one congruence fold per retained candidate.
+pub(super) fn join_work(domain: Domain, left: &AbstractValue, right: &AbstractValue) -> usize {
+    let candidates = match (left.constants(), right.constants()) {
+        (Some(left), Some(right)) => left.len().saturating_add(right.len()),
+        _ => 0,
+    };
+    // The sum also covers the first capacity-overflow insertion before Top.
+    let height = (usize::BITS - candidates.leading_zeros()) as usize + 1;
+    let origins = match (
+        left.provenance().origins().sources(),
+        right.provenance().origins().sources(),
+    ) {
+        (Some(left), Some(right)) => left.len().saturating_add(right.len()),
+        _ => 0,
+    };
+    let origin_height = (usize::BITS - origins.leading_zeros()) as usize + 1;
+    let retained = candidates.min(domain.capacity());
+    let (congruence_joins, summaries) = if domain.spec().profile() == Profile::ConstantsOnly {
+        (
+            retained.saturating_sub(1).max(1),
+            retained.saturating_mul(256),
+        )
+    } else {
+        (1, 0)
+    };
+    4096usize
+        .saturating_mul(congruence_joins)
+        .saturating_add(candidates.saturating_mul(height).saturating_mul(256))
+        .saturating_add(origins.saturating_mul(origin_height))
+        .saturating_add(summaries)
+        .saturating_add(
+            left.work_size()
+                .saturating_add(right.work_size())
+                .saturating_mul(2),
+        )
+        .saturating_add(32)
 }
 
 /// Pure size arithmetic, with no fact merges or allocating preparation. The
-/// transfer reserves `work` before entering the checked read. Numeric meets
-/// are bounded separately from the metered metadata walk: for a key with n
-/// source facts there are at most n-1 scope meets plus one guard-truth meet.
+/// transfer reserves only the metadata arena before entering the checked read.
+/// The original generic numeric bound is paid at each actual intersection.
 pub(in crate::world::bytes) fn preparation(
     root_work: usize,
     offset: &AbstractValue,
     fact_work: usize,
-    fact_count: usize,
+    _fact_count: usize,
     conditional: &super::ConditionalFacts,
     domain: Domain,
 ) -> Preparation {
@@ -297,20 +457,19 @@ pub(in crate::world::bytes) fn preparation(
                 .saturating_add(domain.capacity())
                 .saturating_add(32),
         );
-    let facts = fact_count
-        .saturating_add(1)
-        .saturating_add(conditional.fact_entries);
-    let meets = CONTEXTS.saturating_mul(POLICIES).saturating_mul(facts);
     let reduction = domain
         .refinement_work(&AbstractValue::top(), 1)
-        // Scope merging also preserves the original numeric/metadata join;
-        // its fixed-width congruence gcd is separate from the meet/reduction.
-        .saturating_add(4096)
+        // Keep the original generic meet/reduction bound and numeric scratch
+        // allowance. Its separate 4096 join gcd now belongs only to join_work.
+        // Metadata is a cached upper bound on the numeric operand/result sizes;
+        // Caller-side probes and operand/memo copies still belong only to N;
+        // copies internal to numeric primitives belong to their action tariff.
         .saturating_add(metadata.saturating_mul(2))
         .saturating_add(domain.capacity())
         .saturating_add(32);
     Preparation {
         nodes,
-        work: nodes.saturating_add(meets.saturating_mul(reduction)),
+        work: nodes,
+        reduction_work: reduction,
     }
 }

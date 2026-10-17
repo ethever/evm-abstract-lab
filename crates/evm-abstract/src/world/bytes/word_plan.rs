@@ -171,19 +171,30 @@ impl Plan {
         )?;
         self.conditional.check(limits(self.domain))?;
         if let Some(preparation) = self.preparation {
-            let context = conditional::Context::prepared(
-                &self.facts,
-                &self.conditional,
-                self.domain,
-                preparation.nodes,
-            );
-            if let Some(value) = evaluate(
-                &self.root,
-                self.length.as_ref(),
-                &offset,
-                &context,
-                self.domain,
-            )? {
+            // The entire Context/Memo/Reader graph dies in this block, ending
+            // the original budget borrow before a complete fallback can pay.
+            let (value, work_exhausted) = {
+                let context = conditional::Context::budgeted(
+                    &self.facts,
+                    &self.conditional,
+                    self.domain,
+                    &preparation,
+                    budget,
+                );
+                let value = evaluate(
+                    &self.root,
+                    self.length.as_ref(),
+                    &offset,
+                    &context,
+                    self.domain,
+                )?;
+                context.check()?;
+                (value, context.work_exhausted())
+            };
+            if work_exhausted {
+                return Ok(None);
+            }
+            if let Some(value) = value {
                 return Ok(Some(value));
             }
             // Nothing from a refused attempt escapes. Pay the entire original
@@ -204,7 +215,8 @@ impl Plan {
 }
 
 /// Shared complete symbolic/numeric algorithm. Only a private prepared Context
-/// can return None; true expression limits and cancellation remain errors.
+/// can return None for mandatory Work or optional refusal; true expression
+/// limits and cancellation remain errors.
 pub(super) fn evaluate(
     root: &ByteStateId,
     length: Option<&AbstractValue>,
@@ -213,7 +225,7 @@ pub(super) fn evaluate(
     domain: Domain,
 ) -> Result<Option<AbstractValue>, RangeError> {
     context.check()?;
-    if context.cache_refused() {
+    if context.stopped() {
         return Ok(None);
     }
     let view = if let Some(length) = length {
@@ -244,17 +256,20 @@ pub(super) fn evaluate(
         limits(domain),
     );
     context.check()?;
-    if context.cache_refused() {
+    if context.stopped() {
         return Ok(None);
     }
     let expression = expression?;
     let numeric = numeric::Reader::with_context(context.clone(), domain).word(root, offset);
     context.check()?;
-    if context.cache_refused() {
+    if context.stopped() {
         return Ok(None);
     }
     Ok(Some(numeric::attach(numeric, expression)))
 }
+
+#[cfg(test)]
+mod payer_tests;
 
 // Bound the paid preflight scan by occurrences, including source views, scalar
 // offsets and bindings even where the numeric evaluator treats a read as opaque.
