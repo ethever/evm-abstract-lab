@@ -70,9 +70,14 @@ fn guarded_copy_and_overlapping_mcopy_keep_full_values_history_and_atomic_contro
     assert_eq!(memory.root.copy_leaves(), 2);
     let saved_target = memory.clone();
     let historical = memory.read_word_checked(&zero(), domain).unwrap();
-    let mut source = array(&scoped(913, Origin::Calldata, 11));
+    // The 31-byte MCOPY excludes the last byte; keep copied bytes 28..=30
+    // nonzero so the overlap checks exercise data as well as leading zeros.
+    let source_word = 0x1122_3344;
+    let mut source = array(&scoped(913, Origin::Calldata, source_word));
     let saved_source = source.clone();
     let copied = source.read_word_checked(&zero(), domain).unwrap();
+    assert_eq!(copied.singleton(), Some(U256::from(source_word)));
+    let copied_bytes = copied.singleton().unwrap().to_be_bytes::<32>();
     let dst = ExprId::constant(U256::from(64));
     let len = ExprId::constant(U256::from(32));
     let view = ByteView::new(
@@ -115,6 +120,19 @@ fn guarded_copy_and_overlapping_mcopy_keep_full_values_history_and_atomic_contro
     );
     assert_eq!(source, saved_source);
     let captured = memory.clone();
+    let saved_captured = captured.clone();
+    let mcopy_dst = ExprId::constant(U256::from(65));
+    let mcopy_src = ExprId::constant(U256::from(64));
+    let mcopy_len = ExprId::constant(U256::from(31));
+    let expected_mcopy = captured
+        .root
+        .copy(
+            mcopy_dst,
+            ByteView::new(captured.root.clone(), mcopy_src, mcopy_len.clone()),
+            mcopy_len,
+            limits.expressions().into(),
+        )
+        .unwrap();
     memory
         .copy_from(
             &constant(65),
@@ -125,18 +143,41 @@ fn guarded_copy_and_overlapping_mcopy_keep_full_values_history_and_atomic_contro
             domain,
         )
         .unwrap();
+    assert_eq!(memory.root, expected_mcopy);
+    assert_eq!(captured, saved_captured);
     assert!(
         matches!(memory.root.kind(), ByteStateKind::Copy { previous, source, .. }
         if previous == &captured.root && source.state == captured.root)
     );
-    for at in [0, 1, 30] {
+    for at in [0, 1, 28, 29, 30] {
+        let source_index = ExprId::constant(U256::from(64 + at));
+        let target_index = ExprId::constant(U256::from(65 + at));
+        let source_value = captured
+            .read_byte_checked(&constant(64 + at), domain)
+            .unwrap();
+        let actual = memory
+            .read_byte_checked(&constant(65 + at), domain)
+            .unwrap();
+        // In-range byte observers retain their snapshot and address, unlike
+        // whole-word windows that can forward the captured source expression.
+        assert!(matches!(
+            source_value.expression().map(ExprId::kind),
+            Some(ExprKind::ByteRead { state, index })
+            if state == &captured.root && index == &source_index
+        ));
+        assert!(matches!(
+            actual.expression().map(ExprId::kind),
+            Some(ExprKind::ByteRead { state, index })
+            if state == &expected_mcopy && index == &target_index
+        ));
+        let expected_target_expr =
+            ExprId::byte_read(expected_mcopy.clone(), target_index, limits.expressions()).unwrap();
+        assert_eq!(source_value.singleton(), Some(U256::from(copied_bytes[at])));
+        // Rebase only the observation expression; numeric facts, provenance,
+        // identity and symbolic-limit markers must all remain exactly equal.
         assert_eq!(
-            memory
-                .read_byte_checked(&constant(65 + at), domain)
-                .unwrap(),
-            captured
-                .read_byte_checked(&constant(64 + at), domain)
-                .unwrap()
+            actual,
+            source_value.clone().with_expression(expected_target_expr)
         );
     }
     let overlapped = memory.read_word_checked(&constant(64), domain).unwrap();
