@@ -11,7 +11,10 @@ use crate::{
     world::{ByteArray, RangeError},
 };
 use alloy_primitives::U256;
-use std::{collections::BTreeSet, num::NonZeroUsize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+};
 
 fn constant(n: usize) -> AbstractValue {
     AbstractValue::constant(U256::from(n))
@@ -259,6 +262,14 @@ fn nonliteral_msize_and_allocation_history_keep_quote_touch_and_write_in_agreeme
         actual.write_word(&constant(0), &value, 96, domain).unwrap();
         assert_complete(&actual, &expected, domain);
         // The standalone writer also pays/executes the original expansion.
+        // Share the intended MSIZE source before independent staging creates
+        // observed-slot identities. MSIZE does not participate in eligibility.
+        before.length = super::super::ranges::normalized(&before.length).unwrap();
+        assert!(
+            before
+                .uniform_word_write_work(&constant(0), &value, domain)
+                .is_some()
+        );
         let mut direct = before.clone();
         original(&mut before, &constant(0), &value, 32, domain).unwrap();
         direct.write_word(&constant(0), &value, 96, domain).unwrap();
@@ -345,11 +356,84 @@ fn nonuniform_sources_and_nonfresh_or_guarded_shapes_keep_the_original_path() {
         ),
         finite,
         ite,
-        AbstractValue::top(),
         value.clone().with_expression(ExprId::constant(U256::ZERO)),
     ] {
         fallback(ByteArray::memory(), constant(0), rejected, 32, domain);
     }
+
+    // Keep missing-Expr rejection: prebinding this input would enable A1.
+    // Independent staging instead creates one source leaf per invocation.
+    let unbound = AbstractValue::top();
+    let before = ByteArray::memory();
+    let offset = constant(0);
+    let canonical_source = ExprId::fresh().unwrap();
+    assert!(unbound.expression().is_none());
+    assert!(!eligible(&before, &offset, &unbound, 32, domain));
+    assert_eq!(
+        before.uniform_word_write_work(&offset, &unbound, domain),
+        None
+    );
+    assert!(eligible(
+        &before,
+        &offset,
+        &unbound.clone().with_expression(canonical_source.clone()),
+        32,
+        domain,
+    ));
+    assert!(before.fresh_leaves().is_empty());
+    let mut actual = before.clone();
+    let mut expected = before.clone();
+    NUMERIC_READS.set(0);
+    actual.write_word(&offset, &unbound, 96, domain).unwrap();
+    assert_eq!(NUMERIC_READS.get(), 32);
+    NUMERIC_READS.set(0);
+    original(&mut expected, &offset, &unbound, 32, domain).unwrap();
+    assert_eq!(NUMERIC_READS.get(), 32);
+    for array in [&mut actual, &mut expected] {
+        let leaves = array.fresh_leaves();
+        assert_eq!(leaves.len(), 1);
+        let generated = leaves.into_iter().next().unwrap();
+        let ByteStateKind::WriteWord {
+            previous,
+            offset,
+            value: written,
+        } = array.root.kind()
+        else {
+            panic!("the unbound source must retain the original word root")
+        };
+        assert_eq!(previous, before.state_root());
+        assert_eq!(offset.as_constant(), Some(U256::ZERO));
+        assert_eq!(written, &generated);
+        assert_eq!(array.operands.len(), 1);
+        assert_eq!(array.operands.get(&generated), Some(&unbound));
+        assert_eq!(array.bytes.len(), 32);
+        for byte in array.bytes.values() {
+            assert!(
+                matches!(byte.expression().unwrap().kind(), ExprKind::ByteRead { state, .. }
+                if state == array.state_root())
+            );
+        }
+        // One bijection spans every root, value, fact and allocation. Exact
+        // inverse equality also guards against metadata loss during renaming.
+        let saved = array.clone();
+        array
+            .rename_fresh(
+                &BTreeMap::from([(generated.clone(), canonical_source.clone())]),
+                super::super::limits(domain),
+            )
+            .unwrap();
+        let mut restored = array.clone();
+        restored
+            .rename_fresh(
+                &BTreeMap::from([(canonical_source.clone(), generated)]),
+                super::super::limits(domain),
+            )
+            .unwrap();
+        assert_eq!(restored, saved);
+    }
+    assert_complete(&actual, &expected, domain);
+    assert_eq!(before, ByteArray::memory());
+
     for offset in [
         constant(1),
         constant(0).with_origin(Origin::Storage),
