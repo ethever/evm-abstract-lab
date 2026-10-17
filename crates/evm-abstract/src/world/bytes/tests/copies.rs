@@ -45,6 +45,183 @@ fn return_length(limits: RelationLimits) -> (ExprId, ExprId) {
 }
 
 #[test]
+fn guarded_copy_and_overlapping_mcopy_keep_full_values_history_and_atomic_controls() {
+    let limits = policy();
+    let domain = domain(limits);
+    let scoped = |scope, origin, number| {
+        let mut value = AbstractValue::top();
+        value.set_origin(origin);
+        value
+            .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(scope))
+            .with_numeric(constant(number).numeric().clone())
+    };
+    let array = |value: &AbstractValue| {
+        let mut array = ByteArray::memory();
+        array.write_word(&zero(), value, 256, domain).unwrap();
+        array
+    };
+    let left = array(&scoped(911, Origin::Calldata, 7));
+    let right = array(&scoped(912, Origin::Returndata, 9));
+    let guard = ExprId::fresh().unwrap();
+    let mut memory = left
+        .join_guarded(&right, domain, guard.clone(), limits.expressions())
+        .unwrap();
+    assert!(matches!(memory.root.kind(), ByteStateKind::Ite { .. }));
+    assert_eq!(memory.root.copy_leaves(), 2);
+    let saved_target = memory.clone();
+    let historical = memory.read_word_checked(&zero(), domain).unwrap();
+    let mut source = array(&scoped(913, Origin::Calldata, 11));
+    let saved_source = source.clone();
+    let copied = source.read_word_checked(&zero(), domain).unwrap();
+    let dst = ExprId::constant(U256::from(64));
+    let len = ExprId::constant(U256::from(32));
+    let view = ByteView::new(
+        source.root.clone(),
+        ExprId::constant(U256::ZERO),
+        len.clone(),
+    );
+    let yes = left
+        .root
+        .copy(
+            dst.clone(),
+            view.clone(),
+            len.clone(),
+            limits.expressions().into(),
+        )
+        .unwrap();
+    let no = right
+        .root
+        .copy(dst, view, len, limits.expressions().into())
+        .unwrap();
+    let expected = yes
+        .join_guarded(&no, guard, limits.expressions().into())
+        .unwrap();
+    memory
+        .copy_from(&constant(64), &source, &zero(), &constant(32), 256, domain)
+        .unwrap();
+    assert_eq!(memory.root, expected);
+    assert!(
+        matches!(memory.root.kind(), ByteStateKind::Copy { previous, source, .. }
+        if previous == &saved_target.root && source.state == saved_source.root)
+    );
+    assert_eq!(memory.root.copy_leaves(), 1);
+    assert_eq!(
+        memory.read_word_checked(&zero(), domain).unwrap(),
+        historical
+    );
+    assert_eq!(
+        memory.read_word_checked(&constant(64), domain).unwrap(),
+        copied
+    );
+    assert_eq!(source, saved_source);
+    let captured = memory.clone();
+    memory
+        .copy_from(
+            &constant(65),
+            &captured,
+            &constant(64),
+            &constant(31),
+            256,
+            domain,
+        )
+        .unwrap();
+    assert!(
+        matches!(memory.root.kind(), ByteStateKind::Copy { previous, source, .. }
+        if previous == &captured.root && source.state == captured.root)
+    );
+    for at in [0, 1, 30] {
+        assert_eq!(
+            memory
+                .read_byte_checked(&constant(65 + at), domain)
+                .unwrap(),
+            captured
+                .read_byte_checked(&constant(64 + at), domain)
+                .unwrap()
+        );
+    }
+    let overlapped = memory.read_word_checked(&constant(64), domain).unwrap();
+    source
+        .write_word(&zero(), &constant(99), 256, domain)
+        .unwrap();
+    memory
+        .write_word(&zero(), &constant(77), 256, domain)
+        .unwrap();
+    assert_eq!(
+        saved_target.read_word_checked(&zero(), domain).unwrap(),
+        historical
+    );
+    assert_eq!(
+        saved_source.read_word_checked(&zero(), domain).unwrap(),
+        copied
+    );
+    assert_eq!(
+        captured.read_word_checked(&constant(64), domain).unwrap(),
+        copied
+    );
+    assert_eq!(
+        memory.read_word_checked(&constant(64), domain).unwrap(),
+        overlapped
+    );
+    for denied in [
+        RelationLimits {
+            max_nodes: saved_target.root.nodes(),
+            ..limits
+        },
+        RelationLimits {
+            max_depth: saved_target.root.depth(),
+            ..limits
+        },
+    ] {
+        let mut refused = saved_target.clone();
+        assert!(matches!(
+            refused.copy_from(
+                &constant(64),
+                &saved_source,
+                &zero(),
+                &constant(32),
+                256,
+                self::domain(denied)
+            ),
+            Err(RangeError::State(StateError::Limit { .. }))
+        ));
+        assert_eq!(refused, saved_target);
+    }
+    let mut refused = saved_target.clone();
+    let fee = refused.copy_work(&saved_source, &constant(64), &zero(), &constant(32), domain);
+    let mut budget = crate::resource::WorkBudget::new(fee - 1);
+    let admitted = budget.charge(fee).then(|| {
+        refused.copy_from(
+            &constant(64),
+            &saved_source,
+            &zero(),
+            &constant(32),
+            256,
+            domain,
+        )
+    });
+    assert!(admitted.is_none());
+    assert_eq!(budget.used(), 0);
+    assert!(budget.exhausted());
+    assert_eq!(refused, saved_target);
+    let cancellation = analysis_control::Cancellation::new();
+    cancellation.cancel();
+    analysis_control::with_cancellation(&cancellation, || {
+        assert_eq!(
+            refused.copy_from(
+                &constant(64),
+                &saved_source,
+                &zero(),
+                &constant(32),
+                256,
+                domain
+            ),
+            Err(RangeError::Expression(ExprError::Cancelled))
+        );
+        assert_eq!(refused, saved_target);
+    });
+}
+
+#[test]
 fn free_pointer_reads_across_calldata_and_return_copies_stay_bounded() {
     let limits = policy();
     let domain = domain(limits);

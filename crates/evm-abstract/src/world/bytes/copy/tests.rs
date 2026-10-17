@@ -1,6 +1,94 @@
 use super::super::*;
 
 #[test]
+fn copy_quotes_change_only_the_selected_occurrence_factor_and_keep_history_fees() {
+    let domain = Domain::default();
+    let policy = limits(domain).into();
+    let c = |n| ExprId::constant(U256::from(n));
+    let a = ByteStateId::zero();
+    let b = ByteStateId::exact(Arc::from([0x22]));
+    let pair = a
+        .join_guarded(&b, ExprId::fresh().unwrap(), policy)
+        .unwrap();
+    let nested = pair
+        .join_guarded(&a, ExprId::fresh().unwrap(), policy)
+        .unwrap();
+    let shared = pair
+        .join_guarded(&nested, ExprId::fresh().unwrap(), policy)
+        .unwrap();
+    let mut history = pair;
+    let mut branch = a;
+    for at in 0u64..3 {
+        history = history.write_byte(c(at), c(at + 1), policy).unwrap();
+        branch = branch.write_byte(c(at), c(at + 1), policy).unwrap();
+    }
+    let two = branch
+        .join_guarded(&b, ExprId::fresh().unwrap(), policy)
+        .unwrap();
+    let source = ByteArray::unknown(); // No presentation candidates in any lane.
+    let flat = ByteArray::memory();
+    let destination = constant(64);
+    let offset = zero();
+    let size = constant(1);
+    let accounts = 2usize;
+    let quotes = |target: &ByteArray| {
+        [
+            target.copy_work(&source, &destination, &offset, &size, domain),
+            target.copy_code_work(0, accounts, &destination, &offset, &size, domain),
+            target.copy_return_data_work(&source, &destination, &size, domain),
+        ]
+    };
+    let ranges = super::scalar_work(&flat.length)
+        + super::scalar_work(&destination)
+        + super::scalar_work(&offset)
+        + super::scalar_work(&size)
+        + 8;
+    let return_ranges = (super::scalar_work(&size)
+        + super::scalar_work(&source.length)
+        + super::scalar_work(&flat.length)
+        + super::scalar_work(&destination)
+        + 8)
+        * 4;
+    let units = [
+        (source.root.nodes() + 1) * ranges * 8,
+        (accounts * 6 + 3 + 1) * ranges * 8,
+        (source.root.nodes() + 1) * return_ranges * 8,
+    ];
+    let mut one = flat.clone();
+    one.root = history;
+    assert!(matches!(one.root.kind(), ByteStateKind::WriteByte { .. }));
+    assert_eq!(one.root.copy_leaves(), 1); // Ite history is below an update.
+    let history_fee = |nodes| nodes * super::height(nodes) * 4;
+    let baseline = quotes(&flat);
+    let nonselected = quotes(&one);
+    for lane in 0..3 {
+        // Both legacy and new non-Ite factors are one. Retained history still
+        // contributes exactly its original independent fee, with no candidates.
+        assert_eq!(
+            nonselected[lane] - baseline[lane],
+            history_fee(13) - history_fee(1)
+        );
+    }
+    for (root, leaves) in [(two, 2), (shared, 5)] {
+        assert_eq!(root.nodes(), 13);
+        assert_eq!(root.copy_leaves(), leaves);
+        let mut selected = one.clone();
+        selected.root = root;
+        let selected_quotes = quotes(&selected);
+        for lane in 0..3 {
+            // Identical metadata and retention counts isolate this one factor;
+            // reconstruct the old N-leaf quote from the unchanged one-leaf case.
+            let legacy = nonselected[lane] + (selected.root.nodes() - 1) * units[lane];
+            assert_eq!(
+                selected_quotes[lane] - nonselected[lane],
+                (leaves - 1) * units[lane]
+            );
+            assert_eq!(legacy - selected_quotes[lane], (13 - leaves) * units[lane]);
+        }
+    }
+}
+
+#[test]
 fn uncertified_cells_keep_coordinates_for_authoritative_scoped_summary_reads() {
     let domain = Domain::default();
     let selector = ExprId::fresh().unwrap();

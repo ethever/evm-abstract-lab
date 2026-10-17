@@ -235,14 +235,12 @@ fn work(
         .saturating_add(source.conditional_work)
         .saturating_add(target.conditional.work_size())
         .saturating_mul(4);
-    let copies = if matches!(target.root.kind(), ByteStateKind::Ite { .. }) {
-        target.root.nodes()
-    } else {
-        1
-    };
+    let copies = target.root.copy_leaves();
     // Capture/canonicalize views and construct checked ordered updates. Only
     // a selected destination can distribute COPY over multiple root branches.
-    // Reused allocation checks also traverse retained metadata/root handles.
+    // Guarded reassembly can recursively factor matching previous updates in
+    // join_update; the separate target-history term below still covers that
+    // work and reused allocation checks over retained metadata/root handles.
     let roots = copies
         .saturating_mul(source.nodes.saturating_add(1))
         .saturating_mul(ranges)
