@@ -13,7 +13,7 @@ use crate::{
     world::{AbstractLog, Account, Code, Entry, Existence, LogKey, LogSourceKind, Symbol, World},
 };
 use alloy_primitives::{Address, U256, keccak256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const KINDS: [OutcomeKind; 3] = [
     OutcomeKind::Return,
@@ -128,6 +128,9 @@ fn joined_payload(target: u64, config: &ExecutionConfig) -> MachinePayload {
     maybe.balance = domain
         .join(&word(0), &word(1))
         .with_expression(ExprId::fresh().unwrap());
+    // EIP-161 ignores storage. A nonzero cell keeps the cleanup selector live
+    // even when projection has erased the uncertain balance's expression.
+    maybe.storage.insert(U256::ZERO, word(7));
     world.insert(maybe_empty, maybe).unwrap();
     world.insert(address(3), Account::empty()).unwrap();
     world.insert(address(0x203), Account::absent()).unwrap();
@@ -263,6 +266,8 @@ fn assert_ordinary_root_reference(
         bound.extend(outcome.data.fresh_leaves());
     }
     let mut renaming = BTreeMap::new();
+    let mut expected_selectors = BTreeSet::new();
+    let mut observed_selectors = BTreeSet::new();
     for (expected, observed) in expected.outcomes.iter().zip(&observed.outcomes) {
         let left = expected
             .store
@@ -283,8 +288,17 @@ fn assert_ordinary_root_reference(
             usize::from(!procedure && expected.kind == OutcomeKind::Return),
         );
         assert_eq!(left.len(), right.len());
+        expected_selectors.extend(left.iter().cloned());
+        observed_selectors.extend(right.iter().cloned());
         renaming.extend(left.into_iter().zip(right));
     }
+    let domain = renaming.keys().cloned().collect::<BTreeSet<_>>();
+    let range = renaming.values().cloned().collect::<BTreeSet<_>>();
+    assert_eq!(domain, expected_selectors);
+    assert_eq!(range, observed_selectors);
+    assert_eq!(renaming.len(), range.len());
+    assert!(domain.is_disjoint(&bound));
+    assert!(range.is_disjoint(&bound));
     // Use one map across all three complete Stores and their data, keeping
     // captured Input/Fresh leaves and cross-field guarded correlations fixed.
     for (mut expected, observed) in expected.outcomes.into_iter().zip(&observed.outcomes) {
@@ -293,6 +307,18 @@ fn assert_ordinary_root_reference(
         assert_eq!(expected.kind, observed.kind);
         assert_eq!(expected.data, observed.data);
         assert_eq!(expected.store, observed.store);
+        if !procedure && expected.kind == OutcomeKind::Return {
+            // Forcing deletion or aliasing its selector to a captured Fresh must
+            // fail the same complete Store comparison as a bad completion.
+            let selector = renaming.values().next().unwrap();
+            for replacement in [ExprId::constant(U256::ZERO), bound.first().unwrap().clone()] {
+                let mut corrupted = expected.store.clone();
+                corrupted
+                    .rename_fresh(&BTreeMap::from([(selector.clone(), replacement)]), limits)
+                    .unwrap();
+                assert_ne!(corrupted, observed.store);
+            }
+        }
     }
 }
 
