@@ -168,6 +168,7 @@ proptest! {
 
 fn covers_trace(analysis: &Analysis, ir: &ssa::Ssa, trace: &Trace) {
     let mut context = Vec::new();
+    let mut jump_sources = Vec::new();
     let mut current: Option<usize> = None;
     let mut previous: Option<&Step> = None;
     let mut values = std::collections::BTreeMap::new();
@@ -182,14 +183,21 @@ fn covers_trace(analysis: &Analysis, ir: &ssa::Ssa, trace: &Trace) {
             if let (Some(from), Some(last)) = (current, previous)
                 && matches!(last.opcode, 0x56 | 0x57)
             {
-                context.push(
+                jump_sources.push(
                     analysis.program().blocks()[analysis.states()[from].key.basic_block_index]
                         .start_pc,
                 );
-                let discard = context
-                    .len()
-                    .saturating_sub(analysis.config().context_depth);
-                context.drain(..discard);
+                // Reconstruct recency from the full concrete source trace,
+                // independently of the producer's context update algorithm.
+                let mut seen = std::collections::BTreeSet::new();
+                context = jump_sources
+                    .iter()
+                    .rev()
+                    .copied()
+                    .filter(|source| seen.insert(*source))
+                    .take(analysis.config().context_depth)
+                    .collect();
+                context.reverse();
                 incoming_kind = if last.opcode == 0x56 {
                     EdgeKind::Jump
                 } else if last.before[last.before.len() - 2] == U256::ZERO {

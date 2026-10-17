@@ -325,6 +325,8 @@ fn summaries_guard_the_entire_frozen_domain_policy() {
 
 #[test]
 fn a_counter_loop_reaches_a_stored_postfixpoint_and_verifies_ssa() {
+    use evm_abstract::analysis::{EdgeKind, MachineEdgeKind};
+
     let (world, entry) = fixture("5f5b600101600156");
     let graph = analyze_world(
         world,
@@ -339,6 +341,7 @@ fn a_counter_loop_reaches_a_stored_postfixpoint_and_verifies_ssa() {
     )
     .unwrap();
     assert_complete(&graph);
+    assert!(graph.frontiers().is_empty());
     let loop_state = graph
         .states()
         .iter()
@@ -346,16 +349,100 @@ fn a_counter_loop_reaches_a_stored_postfixpoint_and_verifies_ssa() {
             state.program().unwrap().blocks()[state.active().basic_block_index].start_pc == 1
         })
         .unwrap();
+    let block = &loop_state.program().unwrap().blocks()[loop_state.active().basic_block_index];
+    assert_eq!(
+        block
+            .instructions
+            .iter()
+            .map(|instruction| instruction.opcode)
+            .collect::<Vec<_>>(),
+        [
+            opcode::JUMPDEST,
+            opcode::PUSH1,
+            opcode::ADD,
+            opcode::PUSH1,
+            opcode::JUMP
+        ]
+    );
+    assert_eq!(block.instructions[1].immediate, Some(U256::ONE));
+    assert_eq!(block.instructions[3].immediate, Some(U256::ONE));
+    assert_eq!(
+        loop_state.program().unwrap().jumpdest_blocks().get(&1),
+        Some(&loop_state.active().basic_block_index)
+    );
+    assert_eq!(
+        loop_state.executed_pcs,
+        block
+            .instructions
+            .iter()
+            .map(|instruction| instruction.pc)
+            .collect::<Vec<_>>()
+    );
+    assert!(loop_state.active().jump_history.is_empty());
+    let backedge_kind = MachineEdgeKind::Intraprocedural(EdgeKind::Jump);
+    assert!(graph.edges().iter().any(|edge| edge.from == loop_state.id
+        && edge.to == loop_state.id
+        && edge.kind == backedge_kind));
+    let evidence = loop_state.execution_evidence().unwrap();
+    assert!(evidence.is_current());
+    assert!(
+        evidence
+            .successors()
+            .contains(&(loop_state.id, backedge_kind))
+    );
+
+    assert_eq!(loop_state.entry.active().stack.len(), 1);
     let input = &loop_state.entry.active().stack[0];
+    let exit = loop_state.exit.as_ref().unwrap();
+    assert_eq!(exit.key(), loop_state.key);
+    assert_eq!(exit.store, loop_state.entry.store);
+    assert_eq!(exit.active().stack, loop_state.exit_stack);
+    assert_eq!(exit.active().stack.len(), 1);
+    let transferred = &exit.active().stack[0];
+    let add_result = evidence
+        .instruction_values()
+        .unwrap()
+        .iter()
+        .find(|value| {
+            loop_state.executed_pcs[value.instruction_index()] == block.instructions[2].pc
+        })
+        .unwrap();
+    assert_eq!(add_result.numeric(), transferred.numeric());
+
     let domain = Domain::from_spec(graph.domain_spec());
     let next = domain.apply(opcode::ADD, &[word(1), input.clone()]);
-    assert_eq!(
-        domain.join(input, &next),
-        *input,
-        "stored entry must cover its own backedge transfer"
-    );
+    assert_eq!(transferred.numeric(), next.numeric());
+    // Loop closure orders numeric bounds; independent runtime expression roots
+    // need not survive a join with the expression produced by ADD.
+    let alpha = |value: &AbstractValue| AbstractValue::from_numeric(value.numeric().clone());
+    let bound = alpha(input);
+    for successor in [&next, transferred] {
+        assert_eq!(
+            domain.join(&bound, &alpha(successor)).numeric(),
+            bound.numeric(),
+            "stored numeric entry must cover its actual backedge transfer"
+        );
+    }
     assert!(input.contains(U256::ZERO));
     assert!(input.contains(U256::MAX));
+    for counter in [
+        U256::ZERO,
+        U256::ONE,
+        U256::from(255),
+        U256::MAX - U256::ONE,
+        U256::MAX,
+    ] {
+        let successor = counter.wrapping_add(U256::ONE);
+        assert!(input.contains(counter));
+        assert!(transferred.contains(successor));
+        assert!(bound.contains(successor));
+        assert_eq!(
+            domain
+                .apply(opcode::ADD, &[word(1), AbstractValue::constant(counter)])
+                .singleton(),
+            Some(successor)
+        );
+    }
     assert_eq!(
         domain.join(&word(1), &word(2)).interval().unsigned_bounds(),
         (U256::from(1), U256::from(2))

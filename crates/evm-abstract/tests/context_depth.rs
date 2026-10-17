@@ -4,15 +4,153 @@ use alloy_primitives::Address;
 use evm_abstract::{
     Fork, U256,
     analysis::{
-        self, Config, ExecutionConfig, FrontierReason, Limit, Status, WorldAnalysis, analyze_world,
+        self, Config, EdgeKind, ExecutionConfig, FrontierReason, Limit, Status, WorldAnalysis,
+        analyze_world,
     },
     bytecode::Program,
     domain::AbstractValue,
     ssa,
     world::{Account, ByteArray, Entry, World},
 };
+use revm_bytecode::opcode;
+use std::collections::BTreeSet;
 
 const SELF_LOOP: &str = "5b600056";
+
+// Work backwards through the complete trace, independently of transfer's
+// remove/append/truncate implementation.
+fn latest_distinct(sources: &[usize], depth: usize) -> Vec<usize> {
+    let mut seen = BTreeSet::new();
+    let mut newest: Vec<_> = sources
+        .iter()
+        .rev()
+        .copied()
+        .filter(|source| seen.insert(*source))
+        .take(depth)
+        .collect();
+    newest.reverse();
+    newest
+}
+
+fn jump_chain(source_count: u8, backedge: Option<u8>) -> Program {
+    assert!(source_count > 0);
+    assert!(backedge.is_none_or(|target| target < source_count));
+    let count = usize::from(source_count);
+    let stop_pc = count.checked_mul(5).unwrap();
+    u16::try_from(stop_pc).unwrap();
+    let mut bytes = Vec::with_capacity(stop_pc.checked_add(2).unwrap());
+    for index in 0..count {
+        let next = index.checked_add(1).unwrap();
+        let target = if next == count {
+            backedge.map_or(count, usize::from)
+        } else {
+            next
+        };
+        let target = u16::try_from(target.checked_mul(5).unwrap())
+            .unwrap()
+            .to_be_bytes();
+        bytes.extend([
+            opcode::JUMPDEST,
+            opcode::PUSH2,
+            target[0],
+            target[1],
+            opcode::JUMP,
+        ]);
+    }
+    bytes.extend([opcode::JUMPDEST, opcode::STOP]);
+    let program = Program::decode(&bytes).unwrap();
+    assert_eq!(program.blocks().len(), count.checked_add(1).unwrap());
+    assert_eq!(program.blocks()[count].start_pc, stop_pc);
+    assert_eq!(
+        program.blocks()[count]
+            .instructions
+            .iter()
+            .map(|i| i.opcode)
+            .collect::<Vec<_>>(),
+        [opcode::JUMPDEST, opcode::STOP]
+    );
+    for (index, block) in program.blocks()[..count].iter().enumerate() {
+        assert_eq!(block.start_pc, index.checked_mul(5).unwrap());
+        assert_eq!(
+            block
+                .instructions
+                .iter()
+                .map(|i| i.opcode)
+                .collect::<Vec<_>>(),
+            [opcode::JUMPDEST, opcode::PUSH2, opcode::JUMP]
+        );
+        let next = index.checked_add(1).unwrap();
+        let target = if next == count {
+            backedge.map_or(count, usize::from)
+        } else {
+            next
+        };
+        let target_pc = program.blocks()[target].start_pc;
+        assert_eq!(block.instructions[1].immediate, Some(U256::from(target_pc)));
+        assert_eq!(program.jumpdest_blocks().get(&target_pc), Some(&target));
+    }
+    program
+}
+
+fn state_after_sources<'a>(
+    graph: &'a analysis::Analysis,
+    pc: usize,
+    sources: &[usize],
+    depth: usize,
+) -> &'a analysis::State {
+    let context = latest_distinct(sources, depth);
+    graph
+        .states()
+        .iter()
+        .find(|state| {
+            graph.program().blocks()[state.key.basic_block_index].start_pc == pc
+                && state.key.context == context
+        })
+        .unwrap()
+}
+
+fn assert_distinct_contexts(graph: &analysis::Analysis, depth: usize) {
+    for state in graph.states() {
+        assert!(state.key.context.len() <= depth);
+        assert_eq!(
+            state.key.context,
+            latest_distinct(&state.key.context, depth)
+        );
+        for source in &state.key.context {
+            let block = graph
+                .program()
+                .blocks()
+                .iter()
+                .find(|b| b.start_pc == *source)
+                .unwrap();
+            assert!(matches!(
+                block.instructions.last().unwrap().opcode,
+                opcode::JUMP | opcode::JUMPI
+            ));
+        }
+    }
+}
+
+fn assert_jump_trace(graph: &analysis::Analysis, pcs: &[usize], depth: usize) -> Vec<usize> {
+    let mut sources = Vec::new();
+    let mut states = Vec::new();
+    for pc in pcs {
+        let state = state_after_sources(graph, *pc, &sources, depth);
+        let block = &graph.program().blocks()[state.key.basic_block_index];
+        assert_eq!(
+            state.executed_pcs,
+            block.instructions.iter().map(|i| i.pc).collect::<Vec<_>>()
+        );
+        if let Some(previous) = states.last() {
+            assert!(graph.edges().iter().any(|edge| {
+                edge.from == *previous && edge.to == state.id && edge.kind == EdgeKind::Jump
+            }));
+        }
+        states.push(state.id);
+        sources.push(*pc);
+    }
+    states
+}
 
 fn native(code: &str, config: ExecutionConfig) -> WorldAnalysis {
     let address = Address::repeat_byte(0x11);
@@ -39,7 +177,7 @@ fn native(code: &str, config: ExecutionConfig) -> WorldAnalysis {
 }
 
 #[test]
-fn depth_ten_retains_ten_sources_and_then_closes_a_self_loop() {
+fn depth_ten_retains_distinct_sources_and_closes_a_self_loop() {
     let graph = analysis::analyze(
         Program::from_hex(SELF_LOOP).unwrap(),
         Config {
@@ -50,30 +188,95 @@ fn depth_ten_retains_ten_sources_and_then_closes_a_self_loop() {
     .unwrap();
     assert_eq!(graph.status(), Status::Converged);
     assert!(graph.frontiers().is_empty());
-    let mut histories: Vec<_> = graph.states().iter().map(|s| &s.key.context).collect();
+    let mut histories: Vec<_> = graph
+        .states()
+        .iter()
+        .map(|s| s.key.context.clone())
+        .collect();
     histories.sort();
-    assert_eq!(histories.len(), 11);
-    for (length, history) in histories.into_iter().enumerate() {
-        assert_eq!(*history, vec![0; length]);
-    }
+    assert_eq!(histories, [vec![], vec![0]]);
     let saturated = graph
         .states()
         .iter()
-        .find(|state| state.key.context.len() == 10)
+        .find(|state| state.key.context == [0])
         .unwrap();
-    assert!(
-        graph
-            .edges()
-            .iter()
-            .any(|edge| edge.from == saturated.id && edge.to == saturated.id)
-    );
+    assert!(graph.edges().iter().any(|edge| edge.from == saturated.id
+        && edge.to == saturated.id
+        && edge.kind == EdgeKind::Jump));
+    assert_distinct_contexts(&graph, 10);
+    assert_jump_trace(&graph, &[0, 0, 0], 10);
+    ssa::build(&graph).unwrap().verify(&graph).unwrap();
+
+    for depth in [0, 10, usize::MAX] {
+        for backedge in [None, Some(4)] {
+            let program = jump_chain(12, backedge);
+            let source_pcs: Vec<_> = program.blocks()[..12]
+                .iter()
+                .map(|block| block.start_pc)
+                .collect();
+            assert_eq!(
+                source_pcs.iter().copied().collect::<BTreeSet<_>>().len(),
+                12
+            );
+            let mut path = source_pcs.clone();
+            if let Some(target) = backedge {
+                let cycle = &source_pcs[usize::from(target)..];
+                path.extend_from_slice(cycle);
+                path.extend_from_slice(cycle);
+                path.push(cycle[0]);
+            } else {
+                path.push(program.blocks()[12].start_pc);
+            }
+            let graph = analysis::analyze(
+                program,
+                Config {
+                    context_depth: depth,
+                    ..Config::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(graph.config().context_depth, depth);
+            assert_eq!(graph.status(), Status::Converged);
+            assert!(graph.frontiers().is_empty());
+            assert_distinct_contexts(&graph, depth);
+            let trace = assert_jump_trace(&graph, &path, depth);
+            assert_eq!(
+                trace.iter().copied().collect::<BTreeSet<_>>().len(),
+                graph.states().len()
+            );
+            assert!(
+                graph
+                    .states()
+                    .iter()
+                    .all(|state| state.entry_stack.is_empty() && state.exit_stack.is_empty())
+            );
+            let saturated = state_after_sources(&graph, path[12], &source_pcs, depth);
+            assert_eq!(saturated.key.context.len(), depth.min(source_pcs.len()));
+            if backedge.is_some() {
+                let mut revisited = source_pcs.clone();
+                revisited.push(source_pcs[4]);
+                let updated = state_after_sources(&graph, source_pcs[5], &revisited, depth);
+                if depth > 0 {
+                    assert_eq!(updated.key.context.last(), Some(&source_pcs[4]));
+                    assert_ne!(updated.key.context, saturated.key.context);
+                }
+            }
+            ssa::build(&graph).unwrap().verify(&graph).unwrap();
+        }
+    }
 }
 
 #[test]
-fn large_requested_depth_does_not_preallocate_or_bypass_state_and_transfer_limits() {
+fn large_requested_depth_obeys_state_and_transfer_limits() {
+    let program = jump_chain(12, None);
+    let pcs: Vec<_> = program
+        .blocks()
+        .iter()
+        .map(|block| block.start_pc)
+        .collect();
     for (max_states, max_transfers, limit) in [(8, 64, Limit::States), (64, 8, Limit::Transfers)] {
         let graph = analysis::analyze(
-            Program::from_hex(SELF_LOOP).unwrap(),
+            program.clone(),
             Config {
                 context_depth: usize::MAX,
                 max_states,
@@ -86,20 +289,72 @@ fn large_requested_depth_does_not_preallocate_or_bypass_state_and_transfer_limit
         assert_eq!(graph.status(), Status::Incomplete);
         assert!(graph.states().len() <= max_states);
         assert!(graph.transfers() <= max_transfers);
-        assert!(
-            graph
-                .states()
-                .iter()
-                .any(|state| state.key.context.len() > 3)
-        );
-        assert!(
-            graph
-                .frontiers()
-                .iter()
-                .any(|frontier| frontier.limit == limit)
-        );
+        assert_eq!(graph.transfers(), 8);
+        assert_distinct_contexts(&graph, usize::MAX);
+        assert_jump_trace(&graph, &pcs[..8], usize::MAX);
+        let source = state_after_sources(&graph, pcs[7], &pcs[..7], usize::MAX);
+        assert_eq!(source.key.context.len(), 7);
+        assert_eq!(graph.frontiers().len(), 1);
+        let frontier = &graph.frontiers()[0];
+        assert_eq!(frontier.limit, limit);
+        assert_eq!(frontier.reason, FrontierReason::Budget(limit));
+        assert_eq!(frontier.target.basic_block_index, 8);
+        assert_eq!(frontier.target.stack_height, 0);
+        assert_eq!(frontier.target.context, pcs[..8]);
+
+        let native = graph.execution();
+        assert_eq!(native.transfers(), graph.transfers());
+        assert_eq!(native.states().len(), graph.states().len());
+        assert_eq!(native.frontiers().len(), 1);
+        let native_source = &native.states()[graph.execution_state_id(source.id).unwrap()];
+        assert_eq!(native_source.entry.key(), native_source.key);
+        let source_exit = native_source.exit.as_ref().unwrap();
+        assert_eq!(native_source.exit_stack, source_exit.active().stack);
+        let native_frontier = &native.frontiers()[0];
+        assert_eq!(native_frontier.reason, FrontierReason::Budget(limit));
+        assert_eq!(native_frontier.pc, None);
+        let target = native_frontier.target.as_ref().unwrap();
+        assert_eq!(target.frames.len(), 1);
+        assert_eq!(target.frames[0].basic_block_index, 8);
+        assert_eq!(target.frames[0].jump_history, pcs[..8]);
+        let incoming = match limit {
+            Limit::States => {
+                assert_eq!(graph.states().len(), max_states);
+                assert!(graph.transfers() < max_transfers);
+                assert_eq!(frontier.from, Some(source.id));
+                assert_eq!(native_frontier.from, Some(native_source.id));
+                native_frontier.payload.as_deref().unwrap()
+            }
+            Limit::Transfers => {
+                assert_eq!(graph.transfers(), max_transfers);
+                assert_eq!(graph.states().len(), 9);
+                assert!(graph.states().len() < max_states);
+                assert_eq!(frontier.from, None);
+                assert_eq!(native_frontier.from, None);
+                assert!(native_frontier.payload.is_none());
+                let pending = state_after_sources(&graph, pcs[8], &pcs[..8], usize::MAX);
+                assert!(pending.executed_pcs.is_empty());
+                assert!(graph.edges().iter().any(|edge| edge.from == source.id
+                    && edge.to == pending.id
+                    && edge.kind == EdgeKind::Jump));
+                let pending = &native.states()[graph.execution_state_id(pending.id).unwrap()];
+                assert!(pending.exit.is_none());
+                &pending.entry
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(incoming.key(), *target);
+        let mut expected_frame = source_exit.active().clone();
+        expected_frame.key.basic_block_index = 8;
+        assert_eq!(incoming.active(), &expected_frame);
+        assert_eq!(incoming.store, source_exit.store);
+        assert_eq!(incoming.relations, source_exit.relations);
         assert!(matches!(
             ssa::build(&graph),
+            Err(ssa::SsaError::IncompleteAnalysis)
+        ));
+        assert!(matches!(
+            ssa::build_world(native),
             Err(ssa::SsaError::IncompleteAnalysis)
         ));
     }
@@ -119,31 +374,93 @@ fn large_requested_depth_also_obeys_the_shared_work_limit() {
         ..ExecutionConfig::default()
     };
     let graph = native(SELF_LOOP, config.clone());
+    assert_eq!(graph.config().analysis.context_depth, usize::MAX);
     assert_eq!(graph.status(), Status::Incomplete);
     assert!(graph.work() <= config.max_work);
+    assert!(graph.work() > 0);
+    assert!(graph.transfers() > 0);
     assert!(graph.states().len() < config.analysis.max_states);
     assert!(graph.transfers() < config.analysis.max_transfers);
-    assert!(
-        graph
-            .states()
-            .iter()
-            .any(|state| state.active().jump_history.len() > 3)
-    );
+    for state in graph.states() {
+        assert_eq!(state.key.frames.len(), 1);
+        assert_eq!(state.active().basic_block_index, 0);
+        assert!(state.active().jump_history.is_empty() || state.active().jump_history == [0]);
+    }
     assert!(
         graph
             .frontiers()
             .iter()
             .any(|frontier| frontier.reason == FrontierReason::Work)
     );
-    assert!(ssa::build_world(&graph).is_err());
+    assert!(matches!(
+        ssa::build_world(&graph),
+        Err(ssa::SsaError::IncompleteAnalysis)
+    ));
+
+    let chain = analysis::analyze(
+        jump_chain(12, None),
+        Config {
+            context_depth: usize::MAX,
+            ..Config::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(chain.config().context_depth, usize::MAX);
+    assert_eq!(chain.status(), Status::Converged);
+    assert!(chain.frontiers().is_empty());
+    let pcs: Vec<_> = chain
+        .program()
+        .blocks()
+        .iter()
+        .map(|block| block.start_pc)
+        .collect();
+    assert_distinct_contexts(&chain, usize::MAX);
+    assert_jump_trace(&chain, &pcs, usize::MAX);
+    assert_eq!(
+        state_after_sources(&chain, pcs[12], &pcs[..12], usize::MAX)
+            .key
+            .context
+            .len(),
+        12
+    );
+    ssa::build(&chain).unwrap().verify(&chain).unwrap();
 }
 
 #[test]
 fn finite_internal_calls_accept_depth_ten_and_maximum_usize() {
     let code = include_str!("../../../examples/internal-calls.hex");
+    let program = Program::from_hex(code).unwrap();
+    assert_eq!(
+        program
+            .blocks()
+            .iter()
+            .map(|block| block.start_pc)
+            .collect::<Vec<_>>(),
+        [0, 5, 12, 14]
+    );
+    for (source, return_pc) in [(0, 5), (1, 12)] {
+        let block = &program.blocks()[source];
+        let pushes: Vec<_> = block
+            .instructions
+            .iter()
+            .filter_map(|i| i.immediate)
+            .collect();
+        assert_eq!(pushes, [U256::from(return_pc), U256::from(14)]);
+        assert!(program.jumpdest_blocks().contains_key(&return_pc));
+        assert_eq!(block.instructions.last().unwrap().opcode, opcode::JUMP);
+    }
+    assert_eq!(
+        program.blocks()[3]
+            .instructions
+            .iter()
+            .map(|i| i.opcode)
+            .collect::<Vec<_>>(),
+        [opcode::JUMPDEST, opcode::PUSH1, opcode::SWAP1, opcode::JUMP]
+    );
+    assert_eq!(program.jumpdest_blocks().get(&14), Some(&3));
     for depth in [10, usize::MAX] {
         let graph = analysis::analyze(
-            Program::from_hex(code).unwrap(),
+            program.clone(),
             Config {
                 context_depth: depth,
                 ..Config::default()
@@ -153,13 +470,65 @@ fn finite_internal_calls_accept_depth_ten_and_maximum_usize() {
         assert_eq!(graph.config().context_depth, depth);
         assert_eq!(graph.status(), Status::Converged);
         assert!(graph.frontiers().is_empty());
-        assert!(
-            graph
-                .states()
+        assert_distinct_contexts(&graph, depth);
+        let trace = assert_jump_trace(&graph, &[0, 14, 5, 14, 12], depth);
+        assert_eq!(latest_distinct(&[0, 14, 5, 14], depth), [0, 5, 14]);
+        assert_eq!(graph.states()[trace[4]].key.context, [0, 5, 14]);
+        let expected: [&[u64]; 5] = [&[], &[5], &[42], &[12], &[42]];
+        for (id, values) in trace.iter().zip(expected) {
+            let state = &graph.states()[*id];
+            assert_eq!(state.key.stack_height, values.len());
+            assert_eq!(
+                state
+                    .entry_stack
+                    .iter()
+                    .map(AbstractValue::singleton)
+                    .collect::<Vec<_>>(),
+                values
+                    .iter()
+                    .map(|value| Some(U256::from(*value)))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let ssa = ssa::build(&graph).unwrap();
+        ssa.verify(&graph).unwrap();
+        for pair in trace.windows(2) {
+            let from = &graph.states()[pair[0]];
+            let to = &graph.states()[pair[1]];
+            assert_eq!(from.exit_stack, to.entry_stack);
+            let from_ssa = ssa
+                .blocks()
                 .iter()
-                .any(|state| state.key.context == [0, 14, 5, 14])
-        );
-        ssa::build(&graph).unwrap();
+                .find(|block| block.state == from.id)
+                .unwrap();
+            let to_ssa = ssa
+                .blocks()
+                .iter()
+                .find(|block| block.state == to.id)
+                .unwrap();
+            let jump = from_ssa.instructions.last().unwrap();
+            assert_eq!(jump.opcode, opcode::JUMP);
+            assert_eq!(jump.operands.len(), 1);
+            if graph.program().blocks()[from.key.basic_block_index].start_pc == 14 {
+                assert_eq!(jump.operands, [from_ssa.phis[0].result]);
+                let returned = from_ssa.instructions.iter().find(|i| i.pc == 15).unwrap();
+                assert_eq!(returned.immediate, Some(U256::from(42)));
+                assert_eq!(from_ssa.exit_stack, returned.results);
+            } else {
+                let pushes: Vec<_> = from_ssa
+                    .instructions
+                    .iter()
+                    .filter(|i| i.opcode == opcode::PUSH1)
+                    .collect();
+                assert_eq!(jump.operands, pushes[1].results);
+                assert_eq!(from_ssa.exit_stack, pushes[0].results);
+            }
+            assert_eq!(to_ssa.phis.len(), to.entry_stack.len());
+            for phi in &to_ssa.phis {
+                assert!(phi.inputs.iter().any(|input| input.predecessor == from.id
+                    && input.value == from_ssa.exit_stack[phi.slot]));
+            }
+        }
     }
 }
 
