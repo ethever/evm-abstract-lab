@@ -9,9 +9,9 @@ nix develop --no-update-lock-file
 cargo check --workspace --all-targets --locked
 ```
 
-开发环境显式提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、Wasm target、wasm-bindgen、C/C++ 编译与构建工具、libclang、pkg-config、Z3、Bitwuzla、cvc5、OpenSSL、Graphviz、字体、jq、Taplo、nixfmt、lychee、cargo-nextest 和 Dylint。Python 用于真实的语言服务器协议回归和可选的性能采样报告，浏览器检查另使用 Nix 提供的 Playwright 和 Chromium。
+开发环境显式提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、Wasm target、wasm-bindgen、C/C++ 编译与构建工具、libclang、pkg-config、OpenSSL、Graphviz、字体、jq、Taplo、nixfmt、lychee、cargo-nextest 和 Dylint。Python 用于真实的语言服务器协议回归和可选的性能采样报告，浏览器检查另使用 Nix 提供的 Playwright 和 Chromium。
 
-原生库通过 Nix 的构建环境暴露给 Cargo，包括 `PKG_CONFIG_PATH`、cvc5 头文件/库路径和 libclang。Rust 语言服务器与命令行构建使用同一个开发环境；不要把某次构建产生的 `/nix/store/...` 路径手工写入工作区设置。
+依赖清单见 [`nix/dependencies.nix`](../nix/dependencies.nix)：构建工具包括 CMake、pkg-config 和 bindgen hook，OpenSSL 用于 Dylint UI 检查的 git2 依赖；原生 SMT 库已移除。Rust 语言服务器与命令行构建使用同一个开发环境；不要把某次构建产生的 `/nix/store/...` 路径手工写入工作区设置。
 
 ## 接入现有 VS Code，包括 Remote SSH
 
@@ -23,7 +23,7 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 
 命令面板中的 `Tasks: Run Task` 提供[工作区任务](../.vscode/tasks.json)：`Nix: build`、默认测试 `Nix: check affected`、`Nix: test workspace (Cargo)`、`Nix: clippy` 和 `Nix: full merge gate`。默认构建任务也使用 Nix。手动终端命令应先执行 `nix develop`；插件自身的 Run/Test 按钮行为由插件配置决定，需要固定项目环境时使用这些 Nix 任务。
 
-安装插件或更新工作区设置后，执行 `Developer: Reload Window`。若出现 `Package bitwuzla was not found` 或原生库构建脚本失败，核对工作区设置已生效，再执行 `rust-analyzer: Restart server`。仅在终端里进入 `nix develop` 不会改变已运行语言服务器的环境。
+安装插件或更新工作区设置后，执行 `Developer: Reload Window`。若 Cargo metadata 或原生库构建脚本失败，核对工作区设置已生效，再执行 `rust-analyzer: Restart server`。仅在终端里进入 `nix develop` 不会改变已运行语言服务器的环境。
 
 修改锁文件后，重新进入开发环境并重启 rust-analyzer。编辑器和插件版本由用户管理；项目锁文件管理下表中的工具和依赖。
 
@@ -90,7 +90,7 @@ nix profile add .
 nix run --no-update-lock-file .#web -- --bind 127.0.0.1:8080
 ```
 
-安装、开发环境和应用运行的构建依赖图中没有工作区测试、Dylint 检查或浏览器测试。项目定制的 Z3、Bitwuzla、cvc5 和 CaDiCaL 也使用不运行自测的安装构建，其上游自测在完整门禁中单独执行。安装成功只表示产物已生成；发布前的验证入口是 `nix flake check`。
+安装、开发环境和应用运行的构建依赖图中没有工作区测试、Dylint 检查或浏览器测试。当前依赖图也不包含原生 SMT 库及其上游自测。安装成功只表示产物已生成；发布前的验证入口是 `nix flake check`。
 
 仓库没有 `jobs=8`、固定测试线程数或 CPU 预留。普通 Cargo 使用可用 CPU 的默认并发；Nix 调度遵循调用者的配置，项目清除 Crane 自动注入的 Cargo jobs 和测试线程变量，让每个工具自动选择并发。需要手动选择并发时，可以设置 Cargo 的 `--jobs` / `CARGO_BUILD_JOBS`，或者 Nix 的 `max-jobs` / `cores`；项目不添加额外上限。`DYLINT_JOBS` 和 `STATE_BACKEND_JOBS` 仅在显式设置时覆盖 Cargo 的默认选择。
 

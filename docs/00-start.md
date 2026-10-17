@@ -110,12 +110,12 @@ B₀ @ 0x0000:
 
 单程序 CLI 的状态写作 `σᵖᵢ`，上标 p 表示局部投影；世界／RPC 与浏览器使用原生 `σᵢ`。完整符号表见[统一符号](notation.md)。
 
-**CFG**（Control Flow Graph，控制流图）用节点表示执行位置，用边表示下一步可以到哪里。输出片段：
+**CFG**（Control Flow Graph，控制流图）用节点表示执行位置，用边表示下一步可以到哪里。下面按当前渲染器格式示意字段，不作为运行测量记录：
 
 ```text
 status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=128
 domain=Product | domain schema=2 | reduction rounds=16 | fact atoms=4096
-relations=true | SMT=in-process z3 | rlimit=10000000 | resource unit=z3 resource units | expression nodes=16384 | depth=256 | constraints=2048
+relations=true | local propagation | expression nodes=16384 | depth=256 | constraints=2048
 
 EVM inputs
   to=symbolic(To) | caller=symbolic(Caller) | origin=symbolic(Caller) (same as caller)
@@ -138,7 +138,7 @@ EVM inputs
 | `context=[]` | 尚未经过 JUMP/JUMPI，所以历史为空；默认最多保留 128 个最近来源，[第 05 课](05-sensitivity.md) 再比较 |
 | `Converged` | 本抽象模型的待处理工作已经完成；不是合约安全结论 |
 | `domain=Product` | 默认数值层保存位、范围等性质；本例常量仍显示为 `{0x...}` |
-| `relations=true` / `rlimit=10000000` | 两种数值 profile 都默认开启独立关系层；SMT 只使用确定性资源上限 |
+| `relations=true` / `local propagation` | 两种数值 profile 都默认开启独立关系层；当前关系精化使用受节点、深度和约束容量限制的局部传播 |
 | `relations in=0 out=0` | 本状态入口/出口没有额外路径约束；本例不需要关系推理 |
 
 `stack in` / `stack out` 在这里表示**栈状态**，不是调用的输入字节和返回字节。

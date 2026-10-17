@@ -114,7 +114,7 @@ SSA 在静态表示中给每个值定义分配一个唯一名字，让使用者�
 
 源码看 [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs) 的根、view 与读写，以及 [`Store` 的 slot 转换](../../crates/evm-abstract/src/world/store/slots.rs)。`select(store(S,k,7),k)=7` 表达当前有序状态模型利用的同址规则；它无需先求出 k 的数值。EVM 的账户归属、写序、byte 长度、零补和范围仍由分析器定义，局部数值推理不能替代这些语义。
 
-**完成问题：**同一个 k 的写后读为何是 7，改读固定 slot 0 又为何需要别名条件？只看两个 slot 的独立候选与看完整根，分别能证明到哪一步？增大常量容量是否会自动补上未完成的 solver 查询？
+**完成问题：**同一个 k 的写后读为何是 7，改读固定 slot 0 又为何需要别名条件？只看两个 slot 的独立候选与看完整根，分别能证明到哪一步？增大常量容量是否会自动补上未完成的局部查询？
 
 下一步检查关系层怎样帮助、又不能自动补回哪些信息；对照[实现路线的 memory/storage 读写](implementation.md#memory-storage)。
 

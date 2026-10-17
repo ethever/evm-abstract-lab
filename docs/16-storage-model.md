@@ -310,7 +310,7 @@ stack out [{0x4, 0x9}, {0x7, 0x9}]
 
 ## 6. 无法列出 slot 候选：同址读写关系
 
-对同一账户，`SSTORE(k,7); SLOAD(k)` 在正常执行中得到 7，无需先枚举 k。当前 SlotStateId 保存初始来源、Store(previous,k,7) 和 SlotRead(root,k)，规范化与 SMT 使用同一组符号地址关系。
+对同一账户，`SSTORE(k,7); SLOAD(k)` 在正常执行中得到 7，无需先枚举 k。当前 SlotStateId 保存初始来源、Store(previous,k,7) 和 SlotRead(root,k)，结构规范化与有界局部传播使用同一组符号地址关系；同址转发保留写后根与同一个 k。
 
 ```bash
 nix run . -- explain --world examples/storage-symbolic-key.json \

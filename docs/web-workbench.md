@@ -94,7 +94,7 @@ V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路�
 
 选择预置示例只把对应地址写入草稿；也可选择 **Custom** 手工编辑地址，重新打开表单会保留草稿。提供者、区块、环境和预算设置不变。切换下拉选项不会自动提交，点击 **Analyze** 或按 **Ctrl+Enter** 才开始新的分析。
 
-**Execution budget**、**Precision and solver**、**RPC acquisition budget** 保留全部预算与精度设置。CLI 的 `cfg`、`ssa`、`analyze`、`explain` 与 Web 共用下表中的较大默认值；可以在十进制文本框中继续调大，前端与后端都不另设业务最大值。输入、请求与报告保留原始整数，超过 `2^53` 的值也不会经过浮点数舍入。
+**Execution budget**、**Precision**、**RPC acquisition budget** 保留全部预算与精度设置。CLI 的 `cfg`、`ssa`、`analyze`、`explain` 与 Web 共用下表中的较大默认值；可以在十进制文本框中继续调大，前端与后端都不另设业务最大值。输入、请求与报告保留原始整数，超过 `2^53` 的值也不会经过浮点数舍入。
 
 | 参数 | CLI / Web 默认值 |
 | --- | --- |

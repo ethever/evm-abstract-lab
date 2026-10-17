@@ -107,7 +107,7 @@ flowchart TD
 
 接着沿 [`world/store/slots.rs`](../../crates/evm-abstract/src/world/store/slots.rs) 和 [`world/bytes.rs`](../../crates/evm-abstract/src/world/bytes.rs) 分两条线追踪写入：数值表对唯一位置作强更新，对多个候选作弱更新；内容根保存一次使用同一符号地址的有序更新，不为每个位置另选一条路径。用 [`memory-write-alias.hex`](../../examples/memory-write-alias.hex) 和 [`storage-finite-alias.json`](../../examples/storage-finite-alias.json) 比较[内存读取](../14-memory-model.md#6-地址确定时覆盖地址有几个候选时合并)与[两个 slot 的候选](../16-storage-model.md#5-有两个可能的-slot为什么要保留旧值)，指出数值投影看不到哪些配对。
 
-理论约束是：一次可能写入不能抹去“本次写了别处”的执行。完整 roots 与整机共享 selector 保留这次选择；SMT 只检查实际编码的关系。继续做[关联 word 往返](../14-memory-model.md#8-为什么刚存进去再读出来会多出候选)和[未知键同址写后读](../16-storage-model.md#6-无法列出-slot-候选刚写入再读为什么是-07)：默认模式分别得到两个完整 word 和 7。地址或候选数值仍宽不表示有序更新已经丢失，也不保证所有复杂别名查询都能完成。
+理论约束是：一次可能写入不能抹去“本次写了别处”的执行。完整 roots 与整机共享 selector 保留这次选择；结构规范化与有界局部传播只利用已保留的关系，未证明矛盾不能排除路径。继续做[关联 word 往返](../14-memory-model.md#8-为什么刚存进去再读出来会多出候选)和[未知键同址写后读](../16-storage-model.md#6-无法列出-slot-候选刚写入再读为什么是-07)：默认模式分别得到两个完整 word 和 7。地址或候选数值仍宽不表示有序更新已经丢失，也不保证所有复杂别名查询都能完成。
 
 **核对问题：**未知 k 的 `SSTORE(k,7); SLOAD(k)` 为什么得到 7，而写后改读固定 slot 0 可能得到 `{0,7}`？从账户根、读取键和写序说明差别，再说明为何不能直接用两个 slot 的独立候选证明一组具体结果可行。
 
@@ -161,7 +161,7 @@ flowchart TD
 
 ## 回到 JUMPI：什么证据允许删掉一条边？
 
-本主题的独立模块：[符号关系与 SMT](../modules/relations.md)。
+本主题的独立模块：[符号关系与局部推理](../modules/relations.md)。
 
 运行 [`symbolic-conflicting-guards.hex`](../../examples/symbolic-conflicting-guards.hex) 的[矛盾条件实验](../15-symbolic-relations.md#1-先看同一个输入不能同时等于-1-和-2)，对照关闭和开启关系层的 JSON，定位关闭时保留、开启后消失的状态或边。再从 `transfer::execute` 的 JUMPI 分支进入 [`relations::branch`](../../crates/evm-abstract/src/analysis/transfer/relations.rs#L128)：输入是当前机器载荷、条件值和真假方向；正常情况下输出附有分支假设的后继载荷，证明不可行时则不生成后继。工作预算耗尽也可停止该分支并记录 `Work` 前沿，此时没有后继并不表示已证明不可达。
 
