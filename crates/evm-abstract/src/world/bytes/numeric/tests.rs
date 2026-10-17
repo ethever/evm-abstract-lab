@@ -537,7 +537,9 @@ mod top_word_byte_union {
         let guard = expression();
         let mut yes = AbstractValue::top();
         yes.set_origin(Origin::Calldata);
-        let mut no = AbstractValue::top().with_symbolic_limit();
+        // ConditionalFacts requires retained values; refusal flags are covered
+        // separately by the direct full-value transfer controls above.
+        let mut no = AbstractValue::top();
         no.set_origin(Origin::Storage);
         let then_facts = Facts::from([(key.clone(), yes)]);
         let else_facts = Facts::from([(key.clone(), no)]);
