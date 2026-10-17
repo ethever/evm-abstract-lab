@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 
 use keys::KeyMap;
 
+mod import_work;
 mod keys;
 mod state;
 mod terms;
@@ -353,7 +354,8 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
     fn import(&mut self, expression: &ExprId, fact: Fact) -> LocalResult<()> {
         let known = self.known(expression)?;
         let input = AbstractValue::from_numeric(known);
-        self.work.prepay(self.domain.refinement_work(&input, 1))?;
+        self.work
+            .prepay(import_work::reservation(self.domain, &input, &fact))?;
         let mut lattice = FactLattice::new(self.domain.spec().fact_limit());
         lattice.insert(fact)?;
         let value = crate::domain::reduce::import(&input, &lattice)?;
