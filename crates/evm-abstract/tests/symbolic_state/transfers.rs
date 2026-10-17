@@ -276,10 +276,91 @@ fn delegate_echo_fixture(revert: bool) -> (Fixture, Fixture) {
 }
 
 fn delegate_echo(revert: bool) {
+    use super::support::word;
+    use evm_abstract::{analysis::FrameCode, domain::Domain, world::Store};
+
     let (root, child) = delegate_echo_fixture(revert);
     let world = construct_world(Fork::Osaka, &[(ROOT, &root.code), (0x200, &child.code)]);
     let analysis = run_world(world.clone(), entry(ByteArray::unknown()), config());
     complete(&analysis);
+    let domain = Domain::from_spec(analysis.domain_spec());
+    let initial = &analysis.states()[0].entry;
+    assert_eq!(initial.call_stack.depth(), 1);
+    let checkpoint = initial.active().saved_store.clone();
+    let captured = checkpoint.state().clone();
+    assert!(!captured.symbolic_limit_reached());
+    assert_eq!(captured.touched_in_transaction(address(ROOT)), Some(false));
+    assert_eq!(
+        initial.store.touched_in_transaction(address(ROOT)),
+        Some(true)
+    );
+
+    // Initial entry has already touched ROOT. Restore the independent pre-entry
+    // checkpoint before the public transaction cleanup, just as root Failure does.
+    // This fixture only delegates to literal 0x200, with storage owner ROOT;
+    // neither account is RIPEMD and neither bytecode can add a sticky touch.
+    let mut failure_store = initial.store.clone();
+    failure_store.restore(checkpoint.clone());
+    assert_eq!(failure_store, captured);
+    failure_store.finalize_transaction(domain);
+    assert!(!failure_store.symbolic_limit_reached());
+    // No pending deletion, uncertain touch or transient effect survives restore.
+    // Cleanup therefore preserves every field and captured input identity, so
+    // the pre-entry seed and entered failures have the same full Store oracle.
+    assert_eq!(failure_store, captured);
+    let empty = ByteArray::empty();
+    let failure_matches =
+        |data: &ByteArray, store: &Store| data == &empty && store == &failure_store;
+    assert!(failure_matches(&empty, &captured));
+    assert!(!failure_matches(&ByteArray::exact(&[0]), &failure_store));
+    assert!(!failure_matches(&ByteArray::memory(), &failure_store));
+    assert!(!failure_matches(&empty, &initial.store));
+    let mut wrong_store = captured.clone();
+    wrong_store
+        .write_transient_checked(address(ROOT), &word(0), &word(1), domain)
+        .unwrap();
+    assert!(!failure_matches(&empty, &wrong_store));
+
+    for state in analysis.states() {
+        for payload in std::iter::once(&state.entry).chain(state.exit.iter()) {
+            let root_frame = &payload.call_stack.root().state;
+            assert_eq!(root_frame.key.code_address, address(ROOT));
+            assert_eq!(root_frame.saved_store, checkpoint);
+            for frame in payload.call_stack.iter() {
+                assert_eq!(frame.code, FrameCode::Runtime);
+                assert!(
+                    [address(ROOT), address(0x200)].contains(&frame.key.code_address),
+                    "the literal delegate target must not become an unknown callee"
+                );
+                assert_eq!(frame.key.address, address(ROOT));
+            }
+            assert_eq!(
+                payload.store.touched_in_transaction(address(3)),
+                Some(false)
+            );
+        }
+    }
+    let entry_failure = analysis.outcomes().first().unwrap();
+    assert_eq!(entry_failure.kind, OutcomeKind::Failure);
+    assert_eq!(entry_failure.state, 0);
+    for outcome in analysis.outcomes() {
+        let source = analysis
+            .states()
+            .get(outcome.state)
+            .expect("outcome must name a real source state");
+        assert_eq!(source.id, outcome.state);
+        assert_eq!(source.key, source.entry.key());
+        if outcome.kind == OutcomeKind::Failure {
+            assert!(
+                failure_matches(&outcome.data, &outcome.store),
+                "Failure from state {} must have exactly empty data and the full finalized root checkpoint: {outcome:?}",
+                outcome.state
+            );
+            if !std::ptr::eq(outcome, entry_failure) {
+                assert!(source.exit.is_some(), "entered Failure has executed");
+            }
+        }
+    }
     no_bad_branch(&analysis, &child, 0x200);
     for label in ["bad_length", "bad_word"] {
         assert!(
@@ -299,9 +380,13 @@ fn delegate_echo(revert: bool) {
         .outcomes()
         .iter()
         .filter(|outcome| {
-            analysis.states()[outcome.state]
-                .executed_pcs
-                .contains(&root.labels["forwarded"])
+            // RETURN/REVERT's memory admission also emits Failure from this
+            // same state. Every Failure was checked above; other forwarded
+            // kinds still reach the strict expected-kind assertion below.
+            outcome.kind != OutcomeKind::Failure
+                && analysis.states()[outcome.state]
+                    .executed_pcs
+                    .contains(&root.labels["forwarded"])
         })
         .collect();
     assert!(!forwarded.is_empty(), "the full data route must complete");
@@ -328,6 +413,12 @@ fn delegate_echo(revert: bool) {
                 OutcomeKind::Return
             }
         );
+        let source = &analysis.states()[outcome.state];
+        assert_eq!(source.entry.call_stack.depth(), 1);
+        let frame = source.exit.as_ref().unwrap().active();
+        assert_eq!(frame.key.code_address, address(ROOT));
+        assert_eq!(frame.key.address, address(ROOT));
+        assert_eq!(outcome.store, failure_store, "echo has no Store effects");
     }
     for length in [32, 33, 64, 255, 511, 512] {
         let mut calldata = vec![0; length];
@@ -349,6 +440,8 @@ fn delegate_echo(revert: bool) {
         );
         assert_eq!(observed.output, calldata);
     }
+    assert_eq!(checkpoint.state(), &captured);
+    assert_eq!(initial.active().saved_store, checkpoint);
 }
 
 #[test]
