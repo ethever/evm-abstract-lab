@@ -361,8 +361,8 @@ fn result_exports_are_deterministic() {
     ));
 }
 
-// Each distinct private leaf gets a distinct report-wide canonical label. Only
-// RelationState's conjunction set is unordered; all other arrays retain order.
+// Each distinct private leaf gets a distinct report-wide canonical label.
+// Only RelationState constraints and path Atoms may be reordered.
 fn native_exports_equal_with_fresh_bijection(
     left: &serde_json::Value,
     right: &serde_json::Value,
@@ -406,6 +406,33 @@ fn native_exports_equal_with_fresh_bijection(
                         .and_then(serde_json::Value::as_array_mut)
                 {
                     atoms.sort_by_cached_key(|atom| serde_json::to_string(atom).unwrap());
+                    if let Some(path) = object
+                        .get_mut("path")
+                        .and_then(serde_json::Value::as_object_mut)
+                        && path.len() == 2
+                        && let Some(nodes) = path.get("nodes").and_then(serde_json::Value::as_array)
+                        && path
+                            .get("root")
+                            .and_then(serde_json::Value::as_u64)
+                            .is_some_and(|root| root < nodes.len() as u64)
+                        && let Some(nodes) = path
+                            .get_mut("nodes")
+                            .and_then(serde_json::Value::as_array_mut)
+                    {
+                        // Sort whole conjuncts, preserving duplicates and every DAG reference.
+                        for node in nodes {
+                            if let Some(node) = node.as_object_mut()
+                                && node.len() == 1
+                                && let Some(atoms) = node
+                                    .get_mut("Atoms")
+                                    .and_then(serde_json::Value::as_array_mut)
+                            {
+                                atoms.sort_by_cached_key(|atom| {
+                                    serde_json::to_string(atom).unwrap()
+                                });
+                            }
+                        }
+                    }
                 }
             }
             serde_json::Value::Array(values) => {
@@ -523,4 +550,207 @@ fn result_export_fresh_bijection_preserves_aliasing_and_model_fields() {
         &first,
         &reordered_history
     ));
+}
+
+#[test]
+fn result_export_orders_only_complete_relation_path_atoms() {
+    let [first, mut second] = [(1_u64, 2_u64), (11, 12)].map(|(a, b)| {
+        let leaf = serde_json::json!({
+            "identity_scope": "producer", "root": 0, "nodes": [{"Fresh": a}]
+        });
+        let expression = serde_json::json!({
+            "identity_scope": "producer", "root": 4, "nodes": [
+                {"Fresh": a},
+                {"Fresh": b},
+                {"Input": {"scope": 7, "symbol": "CallValue"}},
+                {"Operation": {"opcode": 1, "args": [0, 1]}},
+                {"Ite": {"condition": 2, "then_value": 3, "else_value": 1}}
+            ]
+        });
+        let truth = serde_json::json!({"Truth": {"expression": expression, "nonzero": true}});
+        // Opaque Fact-shaped sentinels check that key/value associations stay intact.
+        let facts = serde_json::json!([
+            {"Fact": {"key": "a", "value": [7, 8]}},
+            {"Fact": {"key": "b", "value": [9, 10]}}
+        ]);
+        serde_json::json!({
+            // Ordered anchors establish both private identities before any conjunction.
+            "anchors": expression,
+            "branches": [{"outcome": 0}, {"outcome": 1}],
+            "lookalike": {
+                "Atoms": facts,
+                "path": {"root": 0, "nodes": [{"Atoms": facts}]}
+            },
+            "outcomes": [
+                {"expression": leaf, "value": 7},
+                {"expression": expression, "value": 8}
+            ],
+            "relation": {
+                "constraints": [], "bottom": false,
+                "path": {"root": 3, "nodes": [
+                    {"Atoms": [
+                        truth,
+                        {"Range": {"expression": leaf, "lower": "0x3", "upper": "0x5"}},
+                        facts[0], facts[1], truth
+                    ]},
+                    "False",
+                    {"Ite": {"selector": leaf, "then_path": 0, "else_path": 1}},
+                    {"And": [0, 2]}
+                ]}
+            },
+            "source": {"token": 0, "namespace": "0x101"},
+            "diagnostics": [],
+            "work": {"transfers": 7, "cost_version": 3}
+        })
+    });
+    second["relation"]["path"]["nodes"][0]["Atoms"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    assert!(native_exports_equal_with_fresh_bijection(&first, &second));
+
+    for (pointer, value) in [
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/nonzero",
+            serde_json::json!(false),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/expression/root",
+            serde_json::json!(3),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/expression/nodes/3/Operation/opcode",
+            serde_json::json!(2),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/expression/nodes/4/Ite/condition",
+            serde_json::json!(0),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/expression/nodes/4/Ite",
+            serde_json::json!({"condition": 2, "then_value": 1, "else_value": 3}),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/expression/nodes/1/Fresh",
+            serde_json::json!(11),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/expression/nodes/0/Fresh",
+            serde_json::json!(13),
+        ),
+        (
+            "/outcomes/0/expression/nodes/0/Fresh",
+            serde_json::json!(13),
+        ),
+        (
+            "/relation/path/nodes/2/Ite/selector/nodes/0/Fresh",
+            serde_json::json!(12),
+        ),
+        (
+            "/relation/path/nodes/2/Ite",
+            serde_json::json!({
+                "selector": second["relation"]["path"]["nodes"][2]["Ite"]["selector"],
+                "then_path": 1, "else_path": 0
+            }),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/1/Fact/key",
+            serde_json::json!("a"),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/1/Fact/value",
+            serde_json::json!([7, 8]),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/expression/identity_scope",
+            serde_json::json!("another producer"),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/expression/nodes/2/Input/scope",
+            serde_json::json!(8),
+        ),
+        (
+            "/relation/path/nodes/0/Atoms/0/Truth/expression/nodes/2/Input/symbol",
+            serde_json::json!("Origin"),
+        ),
+        ("/source/token", serde_json::json!(1)),
+        ("/source/namespace", serde_json::json!("0x102")),
+        ("/diagnostics", serde_json::json!(["changed diagnostic"])),
+        ("/work/transfers", serde_json::json!(8)),
+        ("/work/cost_version", serde_json::json!(4)),
+    ] {
+        let mut changed = second.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            !native_exports_equal_with_fresh_bijection(&first, &changed),
+            "changed {pointer}"
+        );
+    }
+
+    // A missing distinct atom and a missing duplicate must both remain observable.
+    for index in [1, 4] {
+        let mut missing = second.clone();
+        missing["relation"]["path"]["nodes"][0]["Atoms"]
+            .as_array_mut()
+            .unwrap()
+            .remove(index);
+        assert!(!native_exports_equal_with_fresh_bijection(&first, &missing));
+    }
+    let mut extra = second.clone();
+    let atoms = extra["relation"]["path"]["nodes"][0]["Atoms"]
+        .as_array_mut()
+        .unwrap();
+    atoms.push(atoms[0].clone());
+    assert!(!native_exports_equal_with_fresh_bijection(&first, &extra));
+    let mut replaced = second.clone();
+    replaced["relation"]["path"]["nodes"][0]["Atoms"][1] =
+        second["relation"]["path"]["nodes"][0]["Atoms"][2].clone();
+    assert!(!native_exports_equal_with_fresh_bijection(
+        &first, &replaced
+    ));
+
+    for pointer in [
+        "/anchors/nodes",
+        "/branches",
+        "/outcomes",
+        "/relation/path/nodes",
+        "/relation/path/nodes/3/And",
+        "/relation/path/nodes/0/Atoms/0/Truth/expression/nodes",
+        "/relation/path/nodes/0/Atoms/0/Truth/expression/nodes/3/Operation/args",
+        "/relation/path/nodes/0/Atoms/1/Fact/value",
+        "/lookalike/Atoms",
+        "/lookalike/path/nodes/0/Atoms",
+    ] {
+        let mut reordered = second.clone();
+        reordered
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+            .swap(0, 1);
+        assert!(
+            !native_exports_equal_with_fresh_bijection(&first, &reordered),
+            "reordered {pointer}"
+        );
+    }
+
+    // A path-shaped object needs the enclosing RelationState schema and a valid root.
+    for (pointer, value) in [
+        ("/relation/extra", serde_json::json!(true)),
+        ("/relation/bottom", serde_json::json!(null)),
+        ("/relation/constraints", serde_json::json!(null)),
+        ("/relation/path/root", serde_json::json!(4)),
+        ("/relation/path/extra", serde_json::json!(true)),
+        ("/relation/path/nodes/0/extra", serde_json::json!(true)),
+    ] {
+        let mut left = first.clone();
+        let mut right = second.clone();
+        let (parent, key) = pointer.rsplit_once('/').unwrap();
+        left.pointer_mut(parent).unwrap()[key] = value.clone();
+        right.pointer_mut(parent).unwrap()[key] = value;
+        assert!(
+            !native_exports_equal_with_fresh_bijection(&left, &right),
+            "invalid relation path at {pointer}"
+        );
+    }
 }
