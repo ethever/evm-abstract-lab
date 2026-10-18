@@ -142,7 +142,8 @@ fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_inpu
         .unwrap()
         .code;
     let entry = Entry::concrete(a, address(0x900), word(0), ByteArray::empty());
-    let config = ExecutionConfig::default();
+    let mut config = ExecutionConfig::default();
+    config.root_terminal_coverage = false;
     assert!(!config.root_terminal_coverage);
     assert_eq!(config.max_work, 20_000_000);
     let report = analysis::analyze_world(world, entry, config).unwrap();

@@ -41,7 +41,7 @@ pub struct ExecutionConfig {
     /// Reuse complete callee graph certificates and procedure relations between
     /// outer entries. Recursive closure remains enabled either way.
     pub use_summaries: bool,
-    /// Prepare a separate conservative root terminal relation before detail.
+    /// Prepare a separate conservative root terminal relation before detail (enabled by default).
     /// Detailed status, graph, frontiers and observed outcomes remain independent.
     pub root_terminal_coverage: bool,
 }
@@ -54,7 +54,7 @@ impl Default for ExecutionConfig {
             max_call_depth: 32,
             max_memory_bytes: 65_536,
             use_summaries: true,
-            root_terminal_coverage: false,
+            root_terminal_coverage: true,
         }
     }
 }

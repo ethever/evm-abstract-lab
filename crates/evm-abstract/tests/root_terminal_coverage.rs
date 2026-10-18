@@ -147,6 +147,7 @@ impl JointWitness {
 #[test]
 fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     let (world, entry, mut config) = fixture(Fork::Osaka);
+    config.root_terminal_coverage = false;
     assert!(!config.root_terminal_coverage);
     assert_eq!(config.max_work, 20_000_000);
     let ordinary = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
@@ -267,6 +268,90 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
         native["status"],
         serde_json::to_value(Status::Incomplete).unwrap()
     );
+    assert_eq!(native["outcomes"].as_array().unwrap().len(), 1);
+    assert_eq!(native["root_terminal_coverage"]["scope"], "AllInputStates");
+    assert_eq!(
+        native["root_terminal_coverage"]["outcomes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn default_on_public_contract_preserves_incomplete_detail_at_the_transfer_cap() {
+    let (world, entry, config) = fixture(Fork::Osaka);
+    assert!(config.root_terminal_coverage);
+    assert_eq!(config.max_work, 20_000_000);
+    assert_eq!(config.analysis.max_transfers, 1);
+    let mut session =
+        AnalysisSession::from_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let snapshot = session.facts().snapshot().clone();
+    let revision = session.facts().revision();
+    let report = session.analyze().unwrap();
+    let covered = report.analysis();
+    assert_eq!(covered.status(), Status::Incomplete);
+    assert_eq!(covered.transfers(), 1);
+    assert_eq!(covered.states().len(), 2);
+    assert_eq!(covered.states()[0].executed_pcs, [0, 2]);
+    assert!(covered.states()[0].execution_evidence().is_some());
+    assert!(covered.states()[1].executed_pcs.is_empty());
+    assert!(covered.states()[1].execution_evidence().is_none());
+    assert_eq!(covered.frontiers().len(), 1);
+    assert_eq!(
+        covered.frontiers()[0].reason,
+        FrontierReason::Budget(Limit::Transfers)
+    );
+    assert_eq!(covered.outcomes().len(), 1);
+    assert_eq!(covered.outcomes()[0].kind, OutcomeKind::Failure);
+
+    let coverage = covered.root_terminal_coverage().unwrap();
+    assert_eq!(coverage.scope(), RootTerminalScope::AllInputStates);
+    assert_eq!(coverage.trigger(), &RootTerminalTrigger::Transfers);
+    assert_eq!(
+        coverage.outcomes().each_ref().map(|outcome| outcome.kind()),
+        [
+            OutcomeKind::Return,
+            OutcomeKind::Revert,
+            OutcomeKind::Failure
+        ]
+    );
+    let input = coverage.input();
+    assert_eq!(input.snapshot(), &snapshot);
+    assert_eq!(input.snapshot(), report.snapshot());
+    assert_eq!(input.revision(), revision);
+    assert_eq!(input.revision(), report.revision());
+    assert_eq!(input.entry(), &entry);
+    assert_eq!(input.entry(), covered.entry());
+    assert_eq!(input.fork(), world.fork());
+    assert_eq!(input.domain_spec(), covered.domain_spec());
+    assert_eq!(input.frame(), covered.states()[0].active());
+    assert_eq!(input.initial_store(), &covered.states()[0].entry.store);
+    assert_eq!(
+        serde_json::to_value(input.config()).unwrap(),
+        serde_json::to_value(&config).unwrap()
+    );
+
+    let partial = ssa::build_partial_world(covered).unwrap();
+    partial.verify(covered).unwrap();
+    assert_eq!(partial.status(), Status::Incomplete);
+    assert_eq!(partial.frontiers().len(), 1);
+    assert_eq!(partial.blocks().len(), 2);
+    assert_eq!(partial.blocks()[0].instructions.len(), 2);
+    assert_eq!(
+        partial.blocks()[1].coverage,
+        PartialBlockCoverage::Unexecuted
+    );
+    assert!(partial.blocks()[1].instructions.is_empty());
+    assert!(ssa::build_world(covered).is_err());
+
+    let native = serde_json::to_value(covered).unwrap();
+    assert_eq!(
+        native["status"],
+        serde_json::to_value(Status::Incomplete).unwrap()
+    );
+    assert_eq!(native["frontiers"].as_array().unwrap().len(), 1);
     assert_eq!(native["outcomes"].as_array().unwrap().len(), 1);
     assert_eq!(native["root_terminal_coverage"]["scope"], "AllInputStates");
     assert_eq!(
@@ -584,6 +669,8 @@ fn unsupported_precompile_preparation_keeps_its_paid_prefix_and_real_return() {
         ByteArray::exact(b"identity"),
     );
     let mut config = ExecutionConfig::default();
+    // The exact +1 refusal fee is relative to execution without preparation.
+    config.root_terminal_coverage = false;
     let ordinary = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
     config.root_terminal_coverage = true;
     let covered = analysis::analyze_world(world, entry, config).unwrap();

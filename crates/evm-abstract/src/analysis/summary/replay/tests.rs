@@ -401,6 +401,8 @@ fn budget_interrupted_import_is_atomic_and_keeps_all_input_paths_recoverable() {
     let (world, entry) =
         fixtures::fixture(&[(0x101, &caller), (0x200, "6003565b60075f5260205ff3")]);
     let mut config = fixtures::config();
+    // Bisect detailed import admission without optional preparation fees.
+    config.root_terminal_coverage = false;
     config.use_summaries = true;
     let complete = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
     assert_eq!(

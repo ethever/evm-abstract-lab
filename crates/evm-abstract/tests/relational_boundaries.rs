@@ -91,6 +91,8 @@ fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() 
     entry.environment.value = AbstractValue::top();
     entry.environment.calldata = ByteArray::empty();
     let mut config = ExecutionConfig {
+        // complete.work() - 1 must isolate the mandatory STOP finalization fee.
+        root_terminal_coverage: false,
         use_summaries: false,
         ..ExecutionConfig::default()
     };

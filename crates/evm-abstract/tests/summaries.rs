@@ -818,7 +818,12 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
         call(0xf1, 0x200, 0, 32)
     );
     let (world, entry) = fixture(&[(0x101, &caller), (0x200, "6003565b5f545f5260205ff3")]);
-    let complete = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    // Bisect detailed import admission without optional preparation fees.
+    let config = ExecutionConfig {
+        root_terminal_coverage: false,
+        ..ExecutionConfig::default()
+    };
+    let complete = analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
     assert_eq!(complete.status(), Status::Converged);
     assert!(complete.frontiers().is_empty());
     assert_eq!(complete.summary_stats().misses, 2);
@@ -875,7 +880,7 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
             entry.clone(),
             ExecutionConfig {
                 max_work: budget,
-                ..ExecutionConfig::default()
+                ..config.clone()
             },
         )
         .unwrap();
@@ -890,7 +895,7 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
         entry,
         ExecutionConfig {
             max_work: lo - 1,
-            ..ExecutionConfig::default()
+            ..config
         },
     )
     .unwrap();

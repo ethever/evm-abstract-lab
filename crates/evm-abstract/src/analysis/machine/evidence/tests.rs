@@ -52,6 +52,8 @@ fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
 fn pending_mload() -> WorldAnalysis {
     const CODE: &str = "602a60405100";
     let mut config = config();
+    // Bisect the detailed MLOAD receipt without optional preparation fees.
+    config.root_terminal_coverage = false;
     config.max_memory_bytes = 32;
     let complete = run(CODE, config.clone());
     assert_eq!(complete.status(), Status::Converged);

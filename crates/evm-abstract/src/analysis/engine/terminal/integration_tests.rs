@@ -52,11 +52,11 @@ fn assert_same_detail(expected: &WorldAnalysis, actual: &WorldAnalysis) {
 }
 
 #[test]
-fn default_off_keeps_existing_detail_and_native_omission() {
-    assert!(!ExecutionConfig::default().root_terminal_coverage);
+fn explicitly_disabled_keeps_existing_detail_and_native_omission() {
     let (world, entry) = fixtures::fixture(&[(0x101, TWO_BLOCK_RETURN)]);
     let mut config = fixtures::config();
     config.analysis.max_transfers = 1;
+    config.root_terminal_coverage = false;
     let ordinary = run(&world, &entry, config.clone());
     config.root_terminal_coverage = false;
     let explicitly_disabled = run(&world, &entry, config);
@@ -73,6 +73,59 @@ fn default_off_keeps_existing_detail_and_native_omission() {
 }
 
 #[test]
+fn default_on_keeps_state_and_transfer_caps_separate_from_terminal_coverage() {
+    let (world, entry) = fixtures::fixture(&[(0x101, TWO_BLOCK_RETURN)]);
+    for (max_states, max_transfers, limit, trigger) in [
+        (1, 1024, Limit::States, RootTerminalTrigger::States),
+        (256, 1, Limit::Transfers, RootTerminalTrigger::Transfers),
+    ] {
+        let mut config = ExecutionConfig::default();
+        assert!(config.root_terminal_coverage);
+        assert_eq!(config.max_work, 20_000_000);
+        config.analysis.max_states = max_states;
+        config.analysis.max_transfers = max_transfers;
+        let mut disabled = config.clone();
+        disabled.root_terminal_coverage = false;
+        let ordinary = run(&world, &entry, disabled);
+        let covered = run(&world, &entry, config.clone());
+        assert_same_detail(&ordinary, &covered);
+        assert_eq!(covered.status(), Status::Incomplete);
+        assert_eq!(covered.transfers(), 1);
+        assert_eq!(covered.frontiers().len(), 1);
+        assert_eq!(covered.frontiers()[0].reason, FrontierReason::Budget(limit));
+        assert_eq!(covered.states()[0].executed_pcs, [0, 2]);
+        assert!(covered.states()[0].execution_evidence().is_some());
+        assert_eq!(covered.outcomes().len(), 1);
+        assert_eq!(covered.outcomes()[0].kind, OutcomeKind::Failure);
+
+        let coverage = covered.root_terminal_coverage().unwrap();
+        assert_eq!(coverage.scope(), RootTerminalScope::AllInputStates);
+        assert_eq!(coverage.trigger(), &trigger);
+        assert_eq!(
+            coverage.outcomes().each_ref().map(|outcome| outcome.kind()),
+            [
+                OutcomeKind::Return,
+                OutcomeKind::Revert,
+                OutcomeKind::Failure
+            ]
+        );
+        assert_eq!(coverage.input().entry(), &entry);
+        assert_eq!(coverage.input().frame(), covered.states()[0].active());
+        assert_eq!(
+            serde_json::to_value(coverage.input().config()).unwrap(),
+            serde_json::to_value(&config).unwrap()
+        );
+        let partial = ssa::build_partial_world(&covered).unwrap();
+        partial.verify(&covered).unwrap();
+        assert_eq!(partial.status(), Status::Incomplete);
+        assert_eq!(partial.frontiers().len(), covered.frontiers().len());
+        assert_eq!(partial.blocks().len(), covered.states().len());
+        assert_eq!(partial.blocks()[0].instructions.len(), 2);
+        assert!(ssa::build_world(&covered).is_err());
+    }
+}
+
+#[test]
 fn actual_state_and_transfer_caps_attach_only_separate_terminal_coverage() {
     let (world, entry) = fixtures::fixture(&[(0x101, TWO_BLOCK_RETURN)]);
     for (max_states, max_transfers, limit, trigger) in [
@@ -83,6 +136,7 @@ fn actual_state_and_transfer_caps_attach_only_separate_terminal_coverage() {
         config.max_work = usize::MAX;
         config.analysis.max_states = max_states;
         config.analysis.max_transfers = max_transfers;
+        config.root_terminal_coverage = false;
         let ordinary = run(&world, &entry, config.clone());
         config.root_terminal_coverage = true;
         let covered = run(&world, &entry, config);
@@ -145,6 +199,7 @@ fn actual_work_refusal_keeps_the_original_pending_mload_and_partial_ssa() {
     let (world, entry) = fixtures::fixture(&[(0x101, "602a60405100")]);
     let mut config = fixtures::config();
     config.max_work = usize::MAX;
+    config.root_terminal_coverage = false;
     let complete = run(&world, &entry, config.clone());
     assert_eq!(complete.status(), Status::Converged);
     config.root_terminal_coverage = true;
@@ -210,6 +265,7 @@ fn exact_return_42_retains_its_strict_detailed_outcomes_without_coverage() {
     let (world, entry) = fixtures::fixture(&[(0x101, "602a5f5260205ff3")]);
     let mut config = fixtures::config();
     config.max_work = usize::MAX;
+    config.root_terminal_coverage = false;
     let ordinary = run(&world, &entry, config.clone());
     config.root_terminal_coverage = true;
     let domain = config.domain().unwrap();

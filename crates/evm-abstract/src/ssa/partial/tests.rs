@@ -55,6 +55,8 @@ fn run_with_value(code: &str, config: ExecutionConfig, value: AbstractValue) -> 
 fn pending_mload() -> WorldAnalysis {
     const CODE: &str = "602a60405100";
     let mut config = config();
+    // Bisect the detailed MLOAD receipt without optional preparation fees.
+    config.root_terminal_coverage = false;
     config.max_memory_bytes = 32;
     let complete = run(CODE, config.clone());
     assert_eq!(complete.status(), Status::Converged);
@@ -318,6 +320,8 @@ fn budget_pending_state_has_entry_parameters_and_no_unexecuted_body() {
 #[test]
 fn a_fresh_shorter_retry_does_not_reuse_an_older_completed_backedge() {
     let mut first_config = config();
+    // Measure the original detailed retry ledger for the stale-edge sweep.
+    first_config.root_terminal_coverage = false;
     first_config.analysis.max_transfers = 2;
     let first = run("5f5b600101600156", first_config);
     let base_work = first.work();
@@ -326,6 +330,7 @@ fn a_fresh_shorter_retry_does_not_reuse_an_older_completed_backedge() {
         .step_by(step)
         .find_map(|extra| {
             let mut config = config();
+            config.root_terminal_coverage = false;
             config.max_work = base_work.saturating_add(extra);
             let analysis = run("5f5b600101600156", config);
             let prefix = analysis
@@ -385,6 +390,8 @@ fn completed_fault_has_no_fabricated_operands_or_results() {
 #[test]
 fn optional_expression_limit_preserves_completion_and_a_separate_real_work_frontier() {
     let mut config = config();
+    // complete.work() - 1 must isolate the mandatory STOP finalization fee.
+    config.root_terminal_coverage = false;
     config.analysis.relations.enabled = true;
     config.analysis.relations.max_nodes = 2;
     // CALLVALUE provides an unknown word with an input leaf. The bound admits
