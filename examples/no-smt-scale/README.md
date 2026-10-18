@@ -119,8 +119,40 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 3. 未知调用须覆盖重复、间接、嵌套重入，不能限定一次 callback、把失败强制成功或遗漏回滚。保守局部效果及 protected-owner callback 路径见 [`procedure/environment.rs`](../../crates/evm-abstract/src/analysis/transfer/procedure/environment.rs)；普通输出、失败、完整效果、原始 frontier 与 closure 都要检查。
 4. 允许更粗精度，但须记录扩大了哪些结果/效果集合；不能通过删除效果或忽略未完成工作降低计数。有限 witness 和局部回归不构成整个 EVM 实现的 soundness 证明。[Lean 证明文档](../../docs/proofs/README.md)限定已检查的局部模型及其[生产对应契约](../../docs/proofs/correspondence.md)，Rust 执行器、worklist 和更丰富的数值域仍有独立对应义务。
 
-## 当前结果与未完成事项
+## Screen16 实测结果（2026-10-18）
 
-2026-10-18 的 Root Screen14 基线绑定源码 `062b8e18e2f4326100af442ea7d7fb0e124600d1`、原七 case 策略和原始输入。WETH 报告为 Converged；USDC 在 1T work 配置下仍为 Incomplete，保留 **803 个 Work 与 22 个 SummaryWork** 前沿。Root 的严格 JSON 补充验证退出 0 只说明相应交付/结构检查完成；原 runner 的 64 MiB 解析 guard、报告身份和图语义验证范围须继续分别记录。它不构成 USDC 详细闭合，也不能作为新增 root coverage 的运行或性能证据。
+冻结源码为干净提交 `e5f13b82c16798431ad0bf7cbb7cfdb7ef3dc2f3`（native10 / wire15 / cost3），CLI ELF SHA256 为 `e52e1086610c290347cf44f66e06b012baeecdca51dde088399a20730c774f7a`；输入 [`manifest.json`](manifest.json) 的原始字节 SHA256 为 `fba0c9099319e6dbe8d646731912e22ca9777885d496679a737f61f8e3ae51f0`。复现时将 `CHECKED_SOURCE` 固定到该提交，按上文使用[命令生成器](../../scripts/generate-no-smt-scale-commands.py)和[离线 runner](../../scripts/benchmark-no-smt-scale.py)，分别保存 OFF 与 ON profile。沿用原 captured world、请求和事实边界：WETH/USDC 分别仅有 1/2 个已观察账户，caller/value/calldata 保持 Unknown，无额外 RPC 或事实注入。
 
-Runtime2 的数值精度损失与尚未恢复的 Multicall self-call 细节继续单列为已知问题。浏览器 oracle 从历史 250/50 状态/源码最低数和 5 个 Memory 前沿转向当前 Product 域的执行、联合结果及 typed pending 语义，不等于修复这些问题；Router 仍须保留实际非空 typed pending 的覆盖检查。129 原生状态和 64 个不同源块的独立图压力回归继续负责 UI 规模，不以生产 runtime 当前状态数替代。新增证书的 opt-in 运行尚需 Root 使用匹配构建验证；这里不报告性能收益，也不据此关闭 Issue #134 的全部工作。
+每行均为同一 ELF 在 CPU 40 上顺序执行的一次离线 screen，无并行的所属 native、构建或浏览器任务。wall 从 ELF exec 到进程回收，包含 native JSON 序列化，排除 acquisition、网络、排队、构建及之后的 Python 解析、流式校验、传输和浏览器处理。原 wall/RSS、host free、轮询和报告 guard 均不变，所有运行均无外部停止。
+
+**OFF 七项。** OFF 指覆盖开关默认关闭，固定 profile 仍显式设置 `max_work=1T` 等原限制，并非全部 CLI 参数取默认值。
+
+| case | native exit | wall（s） | peak RSS（KiB） | 原 64 MiB whole-report harness 验收 |
+| --- | --- | --- | --- | --- |
+| `unknown-input` | 0 | 0.0107106 | 22508 | 已交付；Converged，0 frontier |
+| `dynamic-jump` | 0 | 0.0116429 | 22508 | 已交付；Converged，0 frontier |
+| `loop` | 0 | 0.0243218 | 22508 | 已交付；Converged，0 frontier |
+| `unknown-callback` | 0 | 0.1070145 | 38088 | 已交付；Converged，0 frontier |
+| `memory-copy` | 0 | 0.0064634 | 47348 | 已交付；Converged，0 frontier |
+| `weth-fixedstate` | 0 | 3.469958 | 357956 | parse guard 拒绝；`report_delivered=false` |
+| `usdc-fixedstate` | 2 | 99.600695 | 1278392 | parse guard 拒绝；`report_delivered=false` |
+
+原七项 harness 汇总退出 1，保留上述两项 guard 失败；大型 OFF 报告的严格流式补充校验仍待完成，不能借用下表 ON 的已验证状态。CLI 的 exit 2 是 Incomplete 约定，不是崩溃；退出码本身不能替代完整 JSON 校验。
+
+**ON 五项。** 固定策略比较仅向原 argv 追加 `--root-terminal-coverage`，对应有效 config 为 true；USDC 预算曲线另仅将 `max_work` 改为 20M / 200M / 2B，其余输入、限制（含 `max_transfers=10M`）和 guards 不变。下表详细结果来自独立的严格流式补充：五份 native10 JSON 均完整校验至 EOF。补充 runner 实际退出 0 表示交付/结构检查完成；原 whole-report 标志保持原值，V2 scanner 的每记录 64 MiB 上限与整份报告 guard 分别记录。
+
+| case | max_work | wall（s） | peak RSS（KiB） | native exit / 详细 status | states / transfers / frontier | 根覆盖附件 | 原 whole-report 交付 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `usdc-fixedstate` | 1T | 100.294006 | 1275448 | 2 / Incomplete | 231 / 13714 / 833 | Some（Work） | false |
+| `weth-fixedstate` | 1T | 3.511306 | 357536 | 0 / Converged | 137 / 482 / 0 | None | false |
+| `usdc-fixedstate` | 20M | 0.023174 | 55016 | 2 / Incomplete | 1 / 1 / 2 | Some（Work） | true |
+| `usdc-fixedstate` | 200M | 0.050982 | 55016 | 2 / Incomplete | 13 / 10 / 4 | Some（Work） | true |
+| `usdc-fixedstate` | 2B | 0.789721 | 210100 | 2 / Incomplete | 138 / 126 / 14 | Some（Work） | false |
+
+USDC 1T 的 833 个 frontier 为 **811 Work + 22 SummaryWork**，1 个 procedure summary 的 `closed=false`；三个小预算的 frontier 均为 Work。WETH 独立的详细报告为 Converged，1 个 procedure summary 的 `closed=true`，未附根覆盖记录。
+
+四份 USDC 附件均为 `AllInputStates`、Work 触发，固定包含 Return / Revert / Failure 三个联合上界。完整附件只在 `/input/config/max_work` 和一致、单射的图 `identity_scope` UUID 重命名后相同（各 31 份图记录、各 1 个 SerializationScope）；没有删除字段、表达式、fact、source ID、数组或字节。这支持所发出上界独立于已访问状态子集；上界有意较宽，可允许不可达 tuple，与详细执行观察到的 outcomes 分开，不增加状态、PC、SSA 或改变 status。语义依据仍是[实际构造器](../../crates/evm-abstract/src/analysis/engine/terminal.rs)、回归定义及[局部证明模型与手工对应](../../docs/proofs/correspondence.md)，JSON 校验及附件一致性不证明 Rust Γ 包含关系或完整 EVM 语义。
+
+不同预算的耗时体现精度与预算的取舍，不能解释为执行器加速或同精度收益；探索更多状态时 frontier 增多也不能单独说明精度下降。20M 的约 0.023s 仅是上述完整进程边界，USDC 仍为 Incomplete，不表示整个 CFG 闭合或 RPC/Web 响应时间。OFF/ON 的单次 WETH 差异同样不支持统计加速结论。
+
+Runtime2 的数值精度损失与尚未恢复的 Multicall self-call 细节仍单列为已知问题；Router 的非空 typed pending 覆盖及独立 UI 图压力回归也由各自用例验收。
