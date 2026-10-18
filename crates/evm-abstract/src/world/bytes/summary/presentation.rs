@@ -57,6 +57,11 @@ fn refresh_with(
         let at = U256::from(index);
         let value = input
             .and_then(|(bindings, (lower, upper))| {
+                // Ambiguous bounds already require Reader; avoid searching
+                // bindings or validating a carrier on that fallback path.
+                if lower <= at && at < upper {
+                    return None;
+                }
                 let binding = &bindings[bindings.binary_search_by_key(&at, |b| b.index).ok()?];
                 if !matches!(binding.value.kind(), ExprKind::Fresh(_))
                     || binding.numeric.interval().unsigned_bounds().1 > U256::from(255)
@@ -65,12 +70,10 @@ fn refresh_with(
                 }
                 if at >= upper {
                     Some(zero())
-                } else if at < lower {
+                } else {
                     // Q is the actual emitted carrier, including every numeric
                     // component. Final scalar below discards all read metadata.
                     Some(AbstractValue::from_numeric(binding.numeric.clone()))
-                } else {
-                    None
                 }
             })
             .unwrap_or_else(|| read(&out.root, &ExprId::constant(at), &out.operands, domain));
