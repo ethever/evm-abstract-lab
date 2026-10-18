@@ -479,6 +479,23 @@
         "cargo-bindgen-environment",
         "lean-proofs"
       ]
+    },
+    {
+      "name": "browser-wire-helper-isolation",
+      "description": "A private wire oracle edit changes its three exact browser consumers, the registry validator, and browser aggregate only.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_wire_bytes.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-browser-rpc-world",
+        "web-browser-known-recursion",
+        "web-browser-unknown-world",
+        "web-browser-registry",
+        "web-browser"
+      ]
     }
   ]
 }
