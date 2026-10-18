@@ -109,7 +109,160 @@ fn counter_route(
 
 #[test]
 fn shared_implementation_transient_storage_is_isolated_between_proxies() {
-    use evm_abstract::domain::relational::RelationState;
+    use evm_abstract::domain::{
+        identity::Symbol,
+        symbolic::{ExprError, ExprLimits, SourceId},
+    };
+    use std::collections::BTreeMap;
+
+    // Only ITE denotation is used here. All other terms retain their complete
+    // identity, including word-valued guards and captured source snapshots.
+    fn specialize_ites(
+        term: &ExprId,
+        choices: &BTreeMap<ExprId, bool>,
+        limits: ExprLimits,
+    ) -> Result<ExprId, ExprError> {
+        fn visit(
+            term: &ExprId,
+            choices: &BTreeMap<ExprId, bool>,
+            limits: ExprLimits,
+            original: ExprLimits,
+            visits: &mut usize,
+            depth: usize,
+        ) -> Result<ExprId, ExprError> {
+            *visits += 1;
+            if *visits > original.max_nodes || depth > original.max_depth {
+                return Err(ExprError::Limit {
+                    nodes: *visits,
+                    depth,
+                });
+            }
+            let ExprKind::Ite {
+                condition,
+                then_value,
+                else_value,
+            } = term.kind()
+            else {
+                return Ok(term.clone());
+            };
+            let mut descend = |value| visit(value, choices, limits, original, visits, depth + 1);
+            if let Some(nonzero) = choices.get(condition) {
+                descend(if *nonzero { then_value } else { else_value })
+            } else {
+                let yes = descend(then_value)?;
+                let no = descend(else_value)?;
+                ExprId::ite(condition.clone(), yes, no, limits)
+            }
+        }
+        let original = ExprLimits {
+            max_nodes: term.nodes(),
+            max_depth: term.depth(),
+        };
+        if original.max_nodes > limits.max_nodes || original.max_depth > limits.max_depth {
+            return Err(ExprError::Limit {
+                nodes: term.nodes(),
+                depth: term.depth(),
+            });
+        }
+        let result = visit(term, choices, limits, original, &mut 0, 1)?;
+        if result.nodes() > original.max_nodes || result.depth() > original.max_depth {
+            return Err(ExprError::Limit {
+                nodes: result.nodes(),
+                depth: result.depth(),
+            });
+        }
+        Ok(result)
+    }
+
+    let proof_limits = Domain::default().spec().relations().expressions();
+    let first_guard = ExprId::fresh().unwrap();
+    let second_guard = ExprId::fresh().unwrap();
+    let nested = |yes, no| {
+        ExprId::ite(
+            second_guard.clone(),
+            ExprId::constant(U256::from(yes)),
+            ExprId::constant(U256::from(no)),
+            proof_limits,
+        )
+        .unwrap()
+    };
+    let choices_tree = ExprId::ite(
+        first_guard.clone(),
+        nested(2, 3),
+        nested(4, 5),
+        proof_limits,
+    )
+    .unwrap();
+    let original_tree = choices_tree.clone();
+    assert_eq!(
+        specialize_ites(&choices_tree, &BTreeMap::new(), proof_limits).unwrap(),
+        choices_tree
+    );
+    for (first, second, expected) in [
+        (true, true, 2),
+        (true, false, 3),
+        (false, true, 4),
+        (false, false, 5),
+    ] {
+        let choices =
+            BTreeMap::from([(first_guard.clone(), first), (second_guard.clone(), second)]);
+        assert_eq!(
+            specialize_ites(&choices_tree, &choices, proof_limits)
+                .unwrap()
+                .as_constant(),
+            Some(U256::from(expected))
+        );
+    }
+    let true_guard = BTreeMap::from([(first_guard.clone(), true)]);
+    let data = ExprId::operation(
+        opcode::ADD,
+        &[first_guard.clone(), ExprId::constant(U256::from(1))],
+        proof_limits,
+    )
+    .unwrap();
+    for term in [&first_guard, &data] {
+        assert_eq!(
+            specialize_ites(term, &true_guard, proof_limits).unwrap(),
+            *term
+        );
+    }
+    let input = ExprId::input(13, Symbol::CallValue);
+    let other_input = ExprId::input(14, Symbol::CallValue);
+    let source_read = |namespace| {
+        ExprId::slot_read(
+            SlotStateId::input(SourceId::scoped(input.clone(), U256::from(namespace))),
+            ExprId::constant(U256::ZERO),
+            proof_limits,
+        )
+        .unwrap()
+    };
+    for (left, right) in [
+        (input.clone(), other_input),
+        (source_read(1), source_read(2)),
+    ] {
+        let left = AbstractValue::unknown_byte().with_expression(left);
+        let right = AbstractValue::unknown_byte().with_expression(right);
+        assert_eq!(left.numeric(), right.numeric());
+        assert_ne!(
+            specialize_ites(left.expression().unwrap(), &true_guard, proof_limits).unwrap(),
+            specialize_ites(right.expression().unwrap(), &true_guard, proof_limits).unwrap()
+        );
+    }
+    assert_eq!(
+        specialize_ites(
+            &choices_tree,
+            &true_guard,
+            ExprLimits {
+                max_nodes: choices_tree.nodes() - 1,
+                ..proof_limits
+            },
+        ),
+        Err(ExprError::Limit {
+            nodes: choices_tree.nodes(),
+            depth: choices_tree.depth(),
+        })
+    );
+    assert_eq!(choices_tree, original_tree);
 
     let root = format!(
         "{}505f515f55{}505f51600155{}505f5160025500",
@@ -415,6 +568,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 .unwrap();
             assert!(persistent_root.nodes() <= limits.max_nodes);
             assert!(persistent_root.depth() <= limits.max_depth);
+            assert!(matches!(initial_root.kind(), SlotStateKind::Zero));
             // Separate CALL results retain real historical ITE roots. Every
             // branch must still contain descending writes to 2, 1, 0 and end
             // at the exact initial zero root; canonical zero writes can vanish.
@@ -429,58 +583,59 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                             )
                         });
                 assert!(read.expression() == Some(&expression));
-                let prove_equal = |qualified: &RelationState,
+                let prove_equal = |choices: &BTreeMap<ExprId, bool>,
                                    left: &ExprId,
                                    right: &ExprId,
                                    leaf: &SlotStateId,
                                    obligation: &str| {
-                    let equality = ExprId::operation(
-                        opcode::EQ,
-                        &[left.clone(), right.clone()],
-                        limits.expressions(),
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "{fork:?} state{} slot {slot} leaf{} {obligation}: EQ construction: {error:?}",
-                            outcome.state, leaf.id()
-                        )
-                    });
-                    // Refute only the counterexample; never assume the desired
-                    // equality or import an optional operand guarantee into F.
-                    let mut counterexample = qualified.clone();
-                    let checked = counterexample
-                        .assume_checked(&equality, false, &limits)
-                        .unwrap_or_else(|reason| {
+                    let specialize = |term: &ExprId| {
+                        specialize_ites(term, choices, limits.expressions()).unwrap_or_else(|error| {
                             panic!(
-                                "{fork:?} state{} slot {slot} leaf{} {obligation}: disequality retention: {reason:?}",
-                                outcome.state, leaf.id()
+                                "{fork:?} state{} slot {slot} root{} leaf{} {obligation}: ITE specialization: {error:?}; guards={} nodes={} depth={} limits={:?}",
+                                outcome.state, persistent_root.id(), leaf.id(), choices.len(), term.nodes(), term.depth(), limits.expressions()
                             )
-                        });
+                        })
+                    };
                     assert_eq!(
-                        checked,
-                        CheckResult::ProvenImpossible,
-                        "{fork:?} state{} slot {slot} root{} leaf{} {obligation}; EQ nodes={} depth={} atoms={} work={}",
+                        specialize(left),
+                        specialize(right),
+                        "{fork:?} state{} slot {slot} root{} leaf{} {obligation}: structural mismatch; guards={} left nodes={} depth={} right nodes={} depth={}",
                         outcome.state,
                         persistent_root.id(),
                         leaf.id(),
-                        equality.nodes(),
-                        equality.depth(),
-                        qualified.len(),
-                        qualified.work_size()
+                        choices.len(),
+                        left.nodes(),
+                        left.depth(),
+                        right.nodes(),
+                        right.depth()
                     );
                 };
                 // A1's common must-table is not a historical value archive.
                 // Independently pair each leaf with the actual complete root
-                // under the payload guarantees and its entire selector path.
-                let mut pending = vec![(&persistent_root, 3, payload.relations.clone())];
+                // by ITE denotation under its entire exact selector path. No
+                // payload facts or desired equality are assumed by this proof.
+                let mut pending = vec![(
+                    &persistent_root,
+                    3,
+                    BTreeMap::<ExprId, bool>::new(),
+                    None::<(ExprId, bool, bool)>,
+                    None::<(&SlotStateId, ExprId)>,
+                )];
                 let mut visited = 0;
                 let mut leaves = 0;
-                while let Some((state, upper, qualified)) = pending.pop() {
+                while let Some((state, upper, choices, conflict, selected)) = pending.pop() {
                     // Count expanded visits: equal nodes reached by different
                     // selector paths must never discard each other's guards.
                     visited += 1;
-                    assert!(visited <= limits.max_nodes, "persistent path-visit limit");
-                    let value = match state.kind() {
+                    assert!(
+                        visited <= persistent_root.nodes(),
+                        "{fork:?} state{} slot {slot} root{}: persistent path visits={visited} nodes={} depth={}",
+                        outcome.state,
+                        persistent_root.id(),
+                        persistent_root.nodes(),
+                        persistent_root.depth()
+                    );
+                    match state.kind() {
                         SlotStateKind::Store {
                             previous,
                             key,
@@ -491,12 +646,16 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                             if written == 0 {
                                 assert_eq!(previous, &initial_root);
                             }
-                            if written == slot {
-                                value.clone()
+                            let selected = if written == slot {
+                                assert!(selected.is_none(), "duplicate persistent slot write");
+                                Some((state, value.clone()))
                             } else {
-                                pending.push((previous, written, qualified));
-                                continue;
-                            }
+                                selected
+                            };
+                            // Validate the remaining order and initial root
+                            // even after finding this slot's authoritative write.
+                            pending.push((previous, written, choices, conflict, selected));
+                            continue;
                         }
                         SlotStateKind::Ite {
                             condition,
@@ -504,29 +663,39 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                             else_state,
                         } => {
                             for (next, nonzero) in [(then_state, true), (else_state, false)] {
-                                let mut branch = qualified.clone();
-                                branch
-                                    .assume_checked(condition, nonzero, &limits)
-                                    .unwrap_or_else(|reason| {
-                                        panic!(
-                                            "{fork:?} state{} slot {slot} ITE{} guard={nonzero}: retention: {reason:?}",
-                                            outcome.state, state.id()
-                                        )
-                                    });
-                                // Even Undetermined retains the guard. Keep all
-                                // branches, including structurally impossible ones.
-                                pending.push((next, upper, branch));
+                                let mut branch = choices.clone();
+                                let mut conflict = conflict.clone();
+                                if let Some(previous) = branch.get(condition) {
+                                    if *previous != nonzero && conflict.is_none() {
+                                        conflict = Some((condition.clone(), *previous, nonzero));
+                                    }
+                                } else {
+                                    branch.insert(condition.clone(), nonzero);
+                                }
+                                // Keep the first opposite choices as an exact
+                                // no-model witness; never overwrite a guard.
+                                pending.push((next, upper, branch, conflict, selected.clone()));
                             }
                             continue;
                         }
                         SlotStateKind::Zero => {
                             assert_eq!(state, &initial_root);
-                            ExprId::constant(U256::ZERO)
                         }
                         SlotStateKind::Input { .. } => panic!("lost initial persistent root"),
-                    };
+                    }
+                    if let Some((condition, previous, nonzero)) = conflict {
+                        assert_ne!(previous, nonzero);
+                        assert_eq!(choices.get(&condition), Some(&previous));
+                        eprintln!(
+                            "{fork:?} state{} slot {slot} root{}: exact contradictory path guard={condition:?}, choices={previous}/{nonzero}",
+                            outcome.state,
+                            persistent_root.id()
+                        );
+                        continue;
+                    }
+                    let (leaf, value) = selected.unwrap_or((state, ExprId::constant(U256::ZERO)));
                     leaves += 1;
-                    prove_equal(&qualified, &expression, &value, state, "root/leaf value");
+                    prove_equal(&choices, &expression, &value, leaf, "root/leaf value");
                     for term in [&key, &value] {
                         if let Some((_, guarantee)) = payload
                             .store
@@ -552,43 +721,30 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                             // the table key remains authoritative when absent.
                             if let Some(retained) = guarantee.expression() {
                                 prove_equal(
-                                    &qualified,
+                                    &choices,
                                     term,
                                     retained,
-                                    state,
+                                    leaf,
                                     "optional operand expression",
                                 );
                             }
                             if let Some(constant) = term.as_constant() {
                                 assert!(guarantee.contains(constant));
-                            } else if !qualified.is_bottom() {
-                                // The independently proved root/leaf equality
-                                // bounds this term by the actual finite read.
-                                // Require coverage of every candidate that the
-                                // qualified query cannot exclude, not a model.
-                                let mut candidates = 0;
-                                for candidate in read.constants().unwrap() {
-                                    match qualified.can_equal(term, *candidate, &limits) {
-                                        CheckResult::ProvenImpossible => {}
-                                        CheckResult::MayBeFeasible => {
-                                            candidates += 1;
-                                            assert!(
-                                                guarantee.contains(*candidate),
-                                                "{fork:?} state{} slot {slot} leaf{}: optional operand excludes {candidate}",
-                                                outcome.state,
-                                                state.id()
-                                            );
-                                        }
-                                        CheckResult::Undetermined(reason) => panic!(
-                                            "{fork:?} state{} slot {slot} leaf{}: optional operand numeric query: {reason:?}",
-                                            outcome.state,
-                                            state.id()
-                                        ),
-                                    }
-                                }
+                            } else {
+                                // The structural witness equates this term and
+                                // the read on this path. Intersect their numeric
+                                // product bounds over the complete finite read;
+                                // a surviving word is not a path model.
                                 assert!(
-                                    candidates > 0,
-                                    "optional operand lost all read candidates"
+                                    read.constants().unwrap().iter().any(|candidate| {
+                                        read.contains(*candidate) && guarantee.contains(*candidate)
+                                    }),
+                                    "{fork:?} state{} slot {slot} root{} leaf{}: disjoint optional/read numeric products: {:?} / {:?}",
+                                    outcome.state,
+                                    persistent_root.id(),
+                                    leaf.id(),
+                                    guarantee.numeric(),
+                                    read.numeric()
                                 );
                             }
                         }
