@@ -289,10 +289,8 @@ fn real_summary_projection_matches_all_original_byte_bounds() {
     assert_eq!(summary, restored.summary_projection(domain).unwrap());
 }
 
-std::thread_local! {
-    pub(super) static WORD_BYTE_UNION_CALLS: std::cell::Cell<(usize, usize)> =
-        const { std::cell::Cell::new((0, 0)) };
-}
+pub(super) static WORD_BYTE_UNION_CALLS: crate::test_instrumentation::Counter<(usize, usize)> =
+    crate::test_instrumentation::Counter::new((0, 0));
 
 mod top_word_byte_union {
     use super::super::{Context, scalar_in};
@@ -330,6 +328,7 @@ mod top_word_byte_union {
         expected: &AbstractValue,
         calls: (usize, usize),
     ) -> AbstractValue {
+        let _calls = WORD_BYTE_UNION_CALLS.scope();
         WORD_BYTE_UNION_CALLS.set((0, 0));
         let actual = reader.word_byte_union(expression);
         assert_eq!(WORD_BYTE_UNION_CALLS.replace((0, 0)), calls);

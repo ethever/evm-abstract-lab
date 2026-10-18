@@ -3,17 +3,15 @@ use super::{
     FactLattice, FiniteSet, OperationRelation, RelationalFact, ScalarFacts, Symbol, Term,
     UnaryFact, UnaryPredicate, WordBounds,
 };
-use crate::domain::provenance::{Origin, OriginSet};
-use alloy_primitives::U256;
-use std::{
-    cell::Cell,
-    collections::{BTreeMap, BTreeSet},
+use crate::{
+    domain::provenance::{Origin, OriginSet},
+    test_instrumentation::Counter,
 };
+use alloy_primitives::U256;
+use std::collections::{BTreeMap, BTreeSet};
 
-thread_local! {
-    pub(super) static SCALAR_MEETS: Cell<usize> = const { Cell::new(0) };
-    pub(super) static SCALAR_VALIDATIONS: Cell<usize> = const { Cell::new(0) };
-}
+pub(super) static SCALAR_MEETS: Counter<usize> = Counter::new(0);
+pub(super) static SCALAR_VALIDATIONS: Counter<usize> = Counter::new(0);
 
 fn reset_scalar_work() {
     SCALAR_MEETS.set(0);
@@ -241,6 +239,8 @@ fn unary_default_cleanup_preserves_pre_cleanup_identity_representatives() {
 
 #[test]
 fn unary_normalization_skips_meets_and_revalidation_but_keeps_apply_validation() {
+    let _meets = SCALAR_MEETS.scope();
+    let _validations = SCALAR_VALIDATIONS.scope();
     let mut lattice = FactLattice::new(8);
     lattice
         .insert(unary(UnaryPredicate::Exact(U256::from(4))))
@@ -274,6 +274,8 @@ fn unary_normalization_skips_meets_and_revalidation_but_keeps_apply_validation()
 
 #[test]
 fn binary_and_operation_relations_keep_general_normalization_without_equality_edges() {
+    let _meets = SCALAR_MEETS.scope();
+    let _validations = SCALAR_VALIDATIONS.scope();
     let a = Symbol::THIS;
     let b = Symbol::new(1);
     for fact in [

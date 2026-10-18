@@ -360,7 +360,7 @@ impl ByteArray {
         context.check()?;
         let read = || {
             #[cfg(test)]
-            write::NUMERIC_READS.with(|calls| calls.set(calls.get() + 1));
+            write::NUMERIC_READS.update(|calls| *calls += 1);
             numeric::Reader::with_context(context.clone(), domain).read(&self.root, &offset_expr)
         };
         let numeric = match numeric {

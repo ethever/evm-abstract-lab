@@ -505,7 +505,7 @@ impl ScalarFacts {
 
     fn validate(&mut self, subject: Symbol) -> Result<(), FactError> {
         #[cfg(test)]
-        tests::SCALAR_VALIDATIONS.with(|count| count.set(count.get() + 1));
+        tests::SCALAR_VALIDATIONS.update(|count| *count += 1);
         self.finite = self
             .finite
             .filter(|value| self.contains_other_constraints(value))
@@ -544,7 +544,7 @@ impl ScalarFacts {
 
     fn meet(&mut self, other: &Self, subject: Symbol) -> Result<(), FactError> {
         #[cfg(test)]
-        tests::SCALAR_MEETS.with(|count| count.set(count.get() + 1));
+        tests::SCALAR_MEETS.update(|count| *count += 1);
         let contradiction = || FactError::Contradiction { subject };
         // 来源错误先于候选最终校验；暂存交集结果以保留原来的错误优先级。
         let finite = (!other.finite.is_top()).then(|| self.finite.meet(&other.finite));

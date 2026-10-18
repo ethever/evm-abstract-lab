@@ -426,35 +426,19 @@ fn disqualified_results_return_before_full_signature_or_key() {
     let domain = Domain::default();
     let input = transfer::initial(&world, &entry, domain).unwrap();
     let mut reuse = ExecutionReuse::new(catalog, 4, config.max_work, config.max_memory_bytes);
-    let disqualify: [fn(&mut Execution); 5] = [
-        |execution| execution.successors.clear(),
-        |execution| {
-            execution.frontiers.push(transfer::ExecutionFrontier {
-                pc: 0,
-                reason: FrontierReason::Work,
-                target: None,
-                range: None,
-                payload: None,
-            });
-        },
-        |execution| {
-            execution.outcomes.push(transfer::Outcome {
-                kind: OutcomeKind::Return,
-                data: ByteArray::empty(),
-                store: execution.payload.store.clone(),
-            });
-        },
-        |execution| {
-            execution.completed_calls.push(transfer::CompletedCall {
-                payload: execution.payload.clone(),
-                kind: OutcomeKind::Return,
-                data: ByteArray::empty(),
-                output_store: execution.payload.store.clone(),
-                output_kind: OutcomeKind::Return,
-                output_data: ByteArray::empty(),
-            });
-        },
-        |execution| execution.diagnostics.push((0, DiagnosticKind::InvalidJump)),
+    enum Disqualify {
+        Successors,
+        Frontier,
+        Outcome,
+        CompletedCall,
+        Diagnostic,
+    }
+    let disqualify = [
+        Disqualify::Successors,
+        Disqualify::Frontier,
+        Disqualify::Outcome,
+        Disqualify::CompletedCall,
+        Disqualify::Diagnostic,
     ];
     for disqualify in disqualify {
         let mut preparation = WorkBudget::new(config.max_work);
@@ -468,7 +452,38 @@ fn disqualified_results_return_before_full_signature_or_key() {
             transfer::StorageReadPolicy::Abstract,
         );
         assert!(!execution.successors.is_empty());
-        disqualify(&mut execution);
+        match disqualify {
+            Disqualify::Successors => execution.successors.clear(),
+            Disqualify::Frontier => {
+                execution.frontiers.push(transfer::ExecutionFrontier {
+                    pc: 0,
+                    reason: FrontierReason::Work,
+                    target: None,
+                    range: None,
+                    payload: None,
+                });
+            }
+            Disqualify::Outcome => {
+                execution.outcomes.push(transfer::Outcome {
+                    kind: OutcomeKind::Return,
+                    data: ByteArray::empty(),
+                    store: execution.payload.store.clone(),
+                });
+            }
+            Disqualify::CompletedCall => {
+                execution.completed_calls.push(transfer::CompletedCall {
+                    payload: execution.payload.clone(),
+                    kind: OutcomeKind::Return,
+                    data: ByteArray::empty(),
+                    output_store: execution.payload.store.clone(),
+                    output_kind: OutcomeKind::Return,
+                    output_data: ByteArray::empty(),
+                });
+            }
+            Disqualify::Diagnostic => {
+                execution.diagnostics.push((0, DiagnosticKind::InvalidJump));
+            }
+        }
         let mut ledger = WorkBudget::new(config.max_work);
         reuse.remember(&input, &execution, &mut ledger);
         assert_eq!(ledger.used(), ELIGIBILITY_WORK);

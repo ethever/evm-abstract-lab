@@ -13,10 +13,9 @@ use alloy_primitives::U256;
 mod tests;
 
 #[cfg(test)]
-std::thread_local! {
-    // A test-only count of actual Reader evaluations, separate from byte reads.
-    pub(super) static NUMERIC_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+// A test-only count of actual Reader evaluations, separate from byte reads.
+pub(super) static NUMERIC_READS: crate::test_instrumentation::Counter<usize> =
+    crate::test_instrumentation::Counter::new(0);
 
 fn literal(value: &AbstractValue, n: U256) -> bool {
     // Canonical inline components avoid a whole-product singleton query's

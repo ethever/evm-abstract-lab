@@ -89,6 +89,7 @@ fn assert_complete(actual: &ByteArray, expected: &ByteArray, domain: Domain) {
 
 #[test]
 fn a1_matches_entire_original_arrays_and_reads_under_the_same_policy() {
+    let _reads = NUMERIC_READS.scope();
     // These fixtures deliberately retain Top finite/bits even for a bounded
     // range or a nontrivial odd congruence, matching probe16's admitted shape.
     let constrained = Domain::default()
@@ -333,6 +334,7 @@ fn fallback(
 
 #[test]
 fn nonuniform_sources_and_nonfresh_or_guarded_shapes_keep_the_original_path() {
+    let _reads = NUMERIC_READS.scope();
     let domain = Domain::default();
     let value = source(NumericValue::top(), 91);
     let finite = domain

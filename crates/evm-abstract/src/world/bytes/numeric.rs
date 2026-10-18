@@ -189,10 +189,7 @@ impl<'a> Reader<'a> {
                 .apply(self.domain, opcode::BYTE, &[constant(0), scalar]);
             #[cfg(test)]
             if !self.context.stopped() {
-                tests::WORD_BYTE_UNION_CALLS.with(|calls| {
-                    let (apply, join) = calls.get();
-                    calls.set((apply + 1, join));
-                });
+                tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
             }
             value
         } else {
@@ -205,20 +202,14 @@ impl<'a> Reader<'a> {
                     );
                     #[cfg(test)]
                     if !self.context.stopped() {
-                        tests::WORD_BYTE_UNION_CALLS.with(|calls| {
-                            let (apply, joins) = calls.get();
-                            calls.set((apply + 1, joins));
-                        });
+                        tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
                     }
                     #[cfg(test)]
                     let joins = out.is_some();
                     let value = join(out, byte, self.domain, &self.context);
                     #[cfg(test)]
                     if joins && !self.context.stopped() {
-                        tests::WORD_BYTE_UNION_CALLS.with(|calls| {
-                            let (apply, joins) = calls.get();
-                            calls.set((apply, joins + 1));
-                        });
+                        tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.1 += 1);
                     }
                     Some(value)
                 })
