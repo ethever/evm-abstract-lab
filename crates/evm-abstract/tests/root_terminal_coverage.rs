@@ -645,3 +645,94 @@ fn invalid_or_cancelled_requests_cannot_return_a_certificate() {
         &RootTerminalTrigger::Transfers
     );
 }
+
+#[test]
+fn static_return_covers_cleanup_of_an_empty_unlisted_owner_under_the_same_input() {
+    let fork = Fork::Osaka;
+    let mut world = World::new(fork, "unlisted static-call cleanup");
+    // The second block can STATICCALL the calldata-selected owner. A zero-value
+    // static call may touch an empty account, whose persistent storage is then
+    // cleared by transaction finalization even though execution was static.
+    let mut root = Account::from_hex("6003565b5f5f5f5f5f3561fffffa00", fork).unwrap();
+    root.balance = word(10);
+    root.nonce = word(1);
+    root.storage_unknown = true;
+    world.insert(address(0x101), root).unwrap();
+    let unlisted = address(0x999);
+    assert!(!world.accounts().contains_key(&unlisted));
+    let mut entry = Entry::concrete(
+        address(0x101),
+        address(0x900),
+        word(0),
+        ByteArray::exact(&U256::from(0x999).to_be_bytes::<32>()),
+    );
+    entry.environment.is_static = true;
+    let mut config = ExecutionConfig::default();
+    config.analysis.max_transfers = 1;
+    config.root_terminal_coverage = true;
+    assert_eq!(config.max_work, 20_000_000);
+    let report = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(report.status(), Status::Incomplete);
+    assert_eq!(report.transfers(), 1);
+    assert_eq!(report.states()[0].executed_pcs, [0, 2]);
+    assert_eq!(report.frontiers().len(), 1);
+    assert_eq!(
+        report.frontiers()[0].reason,
+        FrontierReason::Budget(Limit::Transfers)
+    );
+    let coverage = report.root_terminal_coverage().unwrap();
+    assert!(coverage.input().frame().is_static);
+    let input = coverage.input();
+    let domain = Domain::from_spec(input.domain_spec());
+    let [returned, reverted, failed] = coverage.outcomes();
+    // One admissible whole initial owner is Present/Empty/balance0/nonce0 with
+    // slot8=7. Storage does not participate in EIP-161's emptiness predicate.
+    for store in [input.initial_store(), input.saved_store().state()] {
+        assert_eq!(store.existence(unlisted), Existence::Unknown);
+        assert!(matches!(store.code(unlisted), None | Some(Code::Unknown)));
+        assert!(store.read_balance(unlisted).contains(U256::ZERO));
+        assert!(store.nonce(unlisted).contains(U256::ZERO));
+    }
+    let initial_root = input.initial_store().slot_root(unlisted, false).unwrap();
+    let returned_root = returned.store().slot_root(unlisted, false).unwrap();
+    for post in [0, 7] {
+        let mut joint = JointWitness::default();
+        assert!(joint.storage(input.initial_store(), unlisted, 7, domain));
+        assert!(joint.storage(input.saved_store().state(), unlisted, 7, domain));
+        assert!(joint.storage(reverted.store(), unlisted, 7, domain));
+        assert!(joint.storage(failed.store(), unlisted, 7, domain));
+        assert!(
+            joint.storage(returned.store(), unlisted, post, domain),
+            "static cleanup must cover input7 -> output{post}; original_root_reused={}",
+            initial_root == returned_root
+        );
+        assert!(joint.data(returned.data(), &[]));
+        assert!(joint.data(reverted.data(), &[]));
+        assert!(joint.data(failed.data(), &[]));
+        assert!(!joint.storage(reverted.store(), unlisted, 0, domain));
+        assert!(!joint.storage(failed.store(), unlisted, 0, domain));
+        for outcome in coverage.outcomes() {
+            assert_eq!(
+                outcome
+                    .store()
+                    .read_transient(unlisted, &word(8), domain)
+                    .singleton(),
+                Some(U256::ZERO)
+            );
+            assert_eq!(outcome.store().created_in_transaction(unlisted), Some(false));
+            assert_eq!(outcome.store().pending_destruction(unlisted), Some(false));
+            assert_eq!(outcome.store().touched_in_transaction(unlisted), Some(false));
+        }
+    }
+    assert_ne!(returned_root, initial_root);
+    assert_eq!(returned.store().existence(unlisted), Existence::Unknown);
+    assert!(matches!(returned.store().code(unlisted), None | Some(Code::Unknown)));
+    assert!(returned.store().read_balance(unlisted).contains(U256::ZERO));
+    assert!(returned.store().nonce(unlisted).contains(U256::ZERO));
+    assert!(returned.store().logs_unknown());
+    assert!(returned.store().possible_logs().is_empty());
+    for outcome in [reverted, failed] {
+        assert!(!outcome.store().logs_unknown());
+        assert!(outcome.store().possible_logs().is_empty());
+    }
+}
