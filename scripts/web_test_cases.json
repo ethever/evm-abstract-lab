@@ -158,7 +158,8 @@
         "scripts/web_test_registry.py",
         "scripts/web_test_rpc.py",
         "scripts/web_test_rpc_helpers.py",
-        "scripts/web_test_rpc_world.py"
+        "scripts/web_test_rpc_world.py",
+        "scripts/web_test_wire_bytes.py"
       ]
     },
     {
@@ -298,7 +299,8 @@
         "scripts/web_test_layout_helpers.py",
         "scripts/web_test_pixels.py",
         "scripts/web_test_registry.py",
-        "scripts/web_test_unknown_world.py"
+        "scripts/web_test_unknown_world.py",
+        "scripts/web_test_wire_bytes.py"
       ]
     },
     {
@@ -314,7 +316,8 @@
         "scripts/web_test_known_recursion.py",
         "scripts/web_test_layout_helpers.py",
         "scripts/web_test_pixels.py",
-        "scripts/web_test_registry.py"
+        "scripts/web_test_registry.py",
+        "scripts/web_test_wire_bytes.py"
       ]
     },
     {

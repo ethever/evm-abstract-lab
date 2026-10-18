@@ -9,6 +9,7 @@ from web_test_harness import complete_submission, observe_webgpu, rendered_frame
 from web_test_inspector_helpers import hide_inspector, inspector_block_entry_control, select_inspector_tab
 from web_test_pixels import node_snapshot
 from web_test_rpc_helpers import RPC_PROVIDERS, RPC_TEST_TOKEN, automatic_rpc_entry, configured_rpc_server, submit_rpc
+from web_test_wire_bytes import assert_child_bytes
 
 
 def world_graph_scopes(page, canvas, report, child, child_state, output: Path):
@@ -106,13 +107,13 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     assert any(state["exit"] and len(state["exit"]["frames"]) == 2 for state in report["states"])
     child = next(program for program in report["programs"] if program["code_address"] == rpc.child_address)
     child_state = next(block for block in report["cfg"] if block["program"] == child["id"])
-    child_frames = [frame for state in report["states"] for point in (state["entry"], state["exit"]) if point for frame in point["frames"] if frame["program"] == child["id"]]
+    child_snapshot = next(state for state in report["states"] if state["state"] == child_state["id"])
+    assert child_snapshot["exit"] and len(child_snapshot["exit"]["frames"]) == 2
+    child_frame = child_snapshot["exit"]["frames"][-1]
+    assert child_frame["kind"] == "Runtime" and child_frame["program"] == child["id"]
+    assert_child_bytes(report, child_frame)
     def contains(value, number):
         return value["constants"] is not None and number in [int(word, 16) for word in value["constants"]]
-    def byte_at(array, offset, number):
-        return any(cell["offset"] == offset and contains(array["values"][cell["value"]], number) for cell in array["cells"])
-    assert any(contains(report["byte_arrays"][frame["calldata"]]["length"], 1) and byte_at(report["byte_arrays"][frame["calldata"]], 0, 0xab) for frame in child_frames)
-    assert any(byte_at(report["byte_arrays"][frame["memory"]], 0, 0xab) for frame in child_frames)
     child_accounts = [account for store in report["stores"] for account in store["accounts"] if account["address"] == rpc.child_address]
     assert any(any(int(entry["slot"], 16) == 3 and contains(entry["value"], 99) for entry in account["storage"]) for account in child_accounts)
     assert any(any(int(entry["slot"], 16) == 2 and contains(entry["value"], 7) for entry in account["transient"]) for account in child_accounts)
