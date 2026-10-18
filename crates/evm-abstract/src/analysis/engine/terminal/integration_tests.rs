@@ -3,8 +3,9 @@
 use crate::{
     U256,
     analysis::{
-        ExecutionConfig, FrontierReason, InstructionProgress, Limit, OutcomeKind, RootTerminalScope,
-        RootTerminalTrigger, Status, WorldAnalysis, analyze_world, machine::fixtures,
+        ExecutionConfig, FrontierReason, InstructionProgress, Limit, OutcomeKind,
+        RootTerminalScope, RootTerminalTrigger, Status, WorldAnalysis, analyze_world,
+        machine::fixtures,
     },
     ssa,
     world::{Entry, World},
@@ -159,7 +160,11 @@ fn actual_state_and_transfer_caps_attach_only_separate_terminal_coverage() {
         assert_eq!(coverage.trigger(), &trigger);
         assert_eq!(
             coverage.outcomes().each_ref().map(|outcome| outcome.kind()),
-            [OutcomeKind::Return, OutcomeKind::Revert, OutcomeKind::Failure]
+            [
+                OutcomeKind::Return,
+                OutcomeKind::Revert,
+                OutcomeKind::Failure
+            ]
         );
         let partial = ssa::build_partial_world(&covered).unwrap();
         partial.verify(&covered).unwrap();
@@ -238,7 +243,10 @@ fn actual_work_refusal_keeps_the_original_pending_mload_and_partial_ssa() {
     assert_eq!(covered.states()[0].executed_pcs, [0, 2, 4]);
     assert_eq!(covered.outcomes().len(), 1);
     assert_eq!(covered.outcomes()[0].kind, OutcomeKind::Failure);
-    assert_eq!(covered.work().checked_sub(ordinary.work()), Some(preparation));
+    assert_eq!(
+        covered.work().checked_sub(ordinary.work()),
+        Some(preparation)
+    );
     assert!(covered.frontiers().iter().any(|frontier| {
         frontier.from == Some(0)
             && frontier.pc == Some(4)
@@ -282,8 +290,14 @@ fn exact_return_42_retains_its_strict_detailed_outcomes_without_coverage() {
     assert_eq!(returns.len(), 1);
     assert_eq!(returns[0].data.len().singleton(), Some(U256::from(32)));
     assert_eq!(
-        returns[0].data.read_word(&fixtures::word(0), domain).singleton(),
+        returns[0]
+            .data
+            .read_word(&fixtures::word(0), domain)
+            .singleton(),
         Some(U256::from(42))
     );
-    ssa::build_world(&covered).unwrap().verify(&covered).unwrap();
+    ssa::build_world(&covered)
+        .unwrap()
+        .verify(&covered)
+        .unwrap();
 }

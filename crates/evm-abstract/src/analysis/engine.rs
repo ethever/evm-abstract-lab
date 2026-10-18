@@ -45,9 +45,9 @@ use std::{
 
 mod reuse;
 mod terminal;
-use terminal::boundary::Boundary as TerminalBoundary;
 pub(super) use reuse::ExecutionReuse;
 pub use reuse::ReuseStats;
+use terminal::boundary::Boundary as TerminalBoundary;
 
 /// 从固定世界、入口上下文和执行策略建立初始机器，并运行同一事务的工作表。
 ///
@@ -106,7 +106,14 @@ pub(super) fn run_metered(
     storage_reads: transfer::StorageReadPolicy,
 ) -> Result<WorldAnalysis, ConfigError> {
     run_reusing(
-        world, entry, config, budget, counters, storage_reads, None, None,
+        world,
+        entry,
+        config,
+        budget,
+        counters,
+        storage_reads,
+        None,
+        None,
     )
 }
 

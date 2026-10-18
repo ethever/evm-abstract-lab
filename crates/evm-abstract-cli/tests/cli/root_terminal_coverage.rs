@@ -276,7 +276,12 @@ fn fixed_rpc_forwards_default_and_explicit_coverage_with_and_without_discovery()
                             assert!(report["analysis"].get("root_terminal_coverage").is_none());
                         }
                         assert_eq!(report["analysis"]["status"], "Incomplete");
-                        assert!(!report["analysis"]["frontiers"].as_array().unwrap().is_empty());
+                        assert!(
+                            !report["analysis"]["frontiers"]
+                                .as_array()
+                                .unwrap()
+                                .is_empty()
+                        );
                         assert_eq!(
                             report["analysis"]["config"]["root_terminal_coverage"],
                             enabled

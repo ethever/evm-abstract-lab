@@ -55,27 +55,26 @@ impl PreparationWork {
         // Three old-owner queries; roots/defaults/independence each have one
         // new insertion and one disposal. Sparse cells add membership + update
         // + disposal, and independence.set_slot also queries its new default.
-        let maps = owners
-            .saturating_mul(
-                tree_height(plane.roots.len())
-                    .saturating_add(tree_height(plane.defaults.len()))
-                    .saturating_add(tree_height(plane.initial_independence.defaults.len()))
-                    .saturating_add(owner_height.saturating_mul(6)),
-            )
-            .saturating_add(
-                slots.saturating_mul(
+        let maps =
+            owners
+                .saturating_mul(
+                    tree_height(plane.roots.len())
+                        .saturating_add(tree_height(plane.defaults.len()))
+                        .saturating_add(tree_height(plane.initial_independence.defaults.len()))
+                        .saturating_add(owner_height.saturating_mul(6)),
+                )
+                .saturating_add(slots.saturating_mul(
                     owner_height.saturating_add(tree_height(slots).saturating_mul(2)),
-                ),
-            )
-            .saturating_add(
-                independent_slots.saturating_mul(
-                    owner_height
-                        .saturating_mul(2)
-                        .saturating_add(tree_height(independent_slots).saturating_mul(2)),
-                ),
-            )
-            // BTreeMap clone/drop includes its expression keys as handles.
-            .saturating_add(tree_work(plane.operands.len()).saturating_mul(2));
+                ))
+                .saturating_add(
+                    independent_slots.saturating_mul(
+                        owner_height
+                            .saturating_mul(2)
+                            .saturating_add(tree_height(independent_slots).saturating_mul(2)),
+                    ),
+                )
+                // BTreeMap clone/drop includes its expression keys as handles.
+                .saturating_add(tree_work(plane.operands.len()).saturating_mul(2));
         Self {
             // Fresh identity, checked input root, Top and empty containers.
             setup: 32,

@@ -85,8 +85,14 @@ fn cfg_ssa_and_world_json_use_the_protocol_web_defaults_in_the_real_engine() {
                 &expected,
             );
             if command == "ssa" {
-                assert_eq!(json["machine_analysis"]["config"]["max_work"], 2_000_000_000);
-                assert_eq!(json["machine_analysis"]["config"]["root_terminal_coverage"], true);
+                assert_eq!(
+                    json["machine_analysis"]["config"]["max_work"],
+                    2_000_000_000
+                );
+                assert_eq!(
+                    json["machine_analysis"]["config"]["root_terminal_coverage"],
+                    true
+                );
             }
         }
     }

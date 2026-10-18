@@ -275,7 +275,8 @@ fn explain_forwards_default_enable_and_disable_to_raw_and_world_execution() {
             assert!(text.contains("Incomplete") && text.contains("Transfers"));
             assert!(text.contains("SSA unavailable"));
             assert_eq!(
-                text.matches("Root terminal coverage (conservative)").count(),
+                text.matches("Root terminal coverage (conservative)")
+                    .count(),
                 usize::from(enabled),
                 "{text}"
             );

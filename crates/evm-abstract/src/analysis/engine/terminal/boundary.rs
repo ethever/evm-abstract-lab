@@ -83,10 +83,6 @@ impl Boundary {
     }
 
     pub(in crate::analysis::engine) fn into_trigger(self) -> Option<RootTerminalTrigger> {
-        if self.blocked {
-            None
-        } else {
-            self.trigger
-        }
+        if self.blocked { None } else { self.trigger }
     }
 }

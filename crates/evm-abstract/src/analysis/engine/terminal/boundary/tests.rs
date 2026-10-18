@@ -3,7 +3,8 @@
 use super::Boundary;
 use crate::{
     analysis::{
-        FrontierReason, JoinBoundary, Limit, MachineError, RootTerminalRetention, RootTerminalTrigger,
+        FrontierReason, JoinBoundary, Limit, MachineError, RootTerminalRetention,
+        RootTerminalTrigger,
         machine::fixtures,
         transfer::{Execution, ExecutionFrontier, RetentionCause},
     },
@@ -61,8 +62,14 @@ fn acquisition_failure() -> FrontierReason {
 fn work_reasons_require_refusal_on_the_original_ledger() {
     for (reason, expected) in [
         (FrontierReason::Work, RootTerminalTrigger::Work),
-        (FrontierReason::Budget(Limit::Work), RootTerminalTrigger::Work),
-        (FrontierReason::SummaryWork, RootTerminalTrigger::SummaryWork),
+        (
+            FrontierReason::Budget(Limit::Work),
+            RootTerminalTrigger::Work,
+        ),
+        (
+            FrontierReason::SummaryWork,
+            RootTerminalTrigger::SummaryWork,
+        ),
     ] {
         let mut budget = WorkBudget::new(1);
         let mut boundary = Boundary::new(true);
@@ -86,8 +93,16 @@ fn counter_reasons_require_the_corresponding_reached_counter() {
     let mut transfers = Boundary::new(true);
     transfers.observe(&FrontierReason::Budget(Limit::Transfers), true, true, false);
     assert!(transfers.trigger.is_none());
-    transfers.observe(&FrontierReason::Budget(Limit::Transfers), false, false, true);
-    assert_eq!(transfers.into_trigger(), Some(RootTerminalTrigger::Transfers));
+    transfers.observe(
+        &FrontierReason::Budget(Limit::Transfers),
+        false,
+        false,
+        true,
+    );
+    assert_eq!(
+        transfers.into_trigger(),
+        Some(RootTerminalTrigger::Transfers)
+    );
 }
 
 #[test]
@@ -98,7 +113,10 @@ fn only_raw_mandatory_retention_retains_finite_failure_identity() {
     public_reason_only.retention(17, &flattened);
     assert!(public_reason_only.into_trigger().is_none());
     for (raw, kind) in [
-        (RetentionCause::Expression, RootTerminalRetention::Expression),
+        (
+            RetentionCause::Expression,
+            RootTerminalRetention::Expression,
+        ),
         (RetentionCause::State, RootTerminalRetention::State),
     ] {
         let mut boundary = Boundary::new(true);

@@ -31,7 +31,11 @@ fn fixture_with_code(
 ) -> (World, Entry, ExecutionConfig, layers::StateFacts) {
     let mut world = World::new(fork, "original root terminal preparation");
     for owner in [address(0x101), address(0x202)] {
-        let code = if owner == address(0x101) { root_code } else { "00" };
+        let code = if owner == address(0x101) {
+            root_code
+        } else {
+            "00"
+        };
         let mut account = Account::from_hex(code, fork).unwrap();
         account.storage_unknown = true;
         account.balance = word(10);
@@ -574,8 +578,7 @@ fn raw_code_and_offline_label_growth_are_linear_fee_terms() {
     for bytes in [1usize, 1025] {
         // World observations are immutable. Construct the intended code once
         // while retaining exactly the same balance, nonce and storage facts.
-        let (world, entry, config, _) =
-            fixture_with_code(Fork::Osaka, false, &"00".repeat(bytes));
+        let (world, entry, config, _) = fixture_with_code(Fork::Osaka, false, &"00".repeat(bytes));
         let original = transfer::initial(&world, &entry, config.domain().unwrap()).unwrap();
         for label_len in [8usize, 8192] {
             let facts = layers::StateFacts::new(layers::SnapshotId::offline("x".repeat(label_len)));

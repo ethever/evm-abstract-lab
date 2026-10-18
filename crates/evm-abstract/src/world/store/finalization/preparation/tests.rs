@@ -38,7 +38,9 @@ fn every_explicit_map_and_both_log_address_roles_protect_the_original_owner() {
     store.nonces.insert(address(0x203), word(4));
     store.existence.insert(address(0x204), Existence::Present);
     store.created.insert(address(0x205), Some(false));
-    store.pending_destruction.insert(address(0x206), Some(false));
+    store
+        .pending_destruction
+        .insert(address(0x206), Some(false));
     store.touched.insert(address(0x207), Some(false));
     store.persistent.defaults.insert(address(0x208), word(9));
     store.transient.defaults.insert(address(0x209), word(0));
@@ -120,7 +122,10 @@ fn checked_fresh_refusal_and_late_protected_root_refusal_are_atomic() {
 
     // The first protected owner fits. A later observed root does not, after
     // fresh-base construction, operand copying and an earlier staged insert.
-    store.persistent.roots.insert(address(1), SlotStateId::zero());
+    store
+        .persistent
+        .roots
+        .insert(address(1), SlotStateId::zero());
     let protected = store.addresses();
     let before = store.persistent.clone();
     let small = crate::domain::symbolic::ExprLimits {
@@ -185,9 +190,11 @@ fn cancellation_refuses_helper_and_both_finalizers_without_replacing_roots() {
         let limits = Domain::default().spec().relations().expressions();
         cancellation.cancel();
         assert_eq!(
-            store.persistent.havoc_except_with_fresh(&protected, limits, || {
-                panic!("cancelled preparation must not allocate a source")
-            }),
+            store
+                .persistent
+                .havoc_except_with_fresh(&protected, limits, || {
+                    panic!("cancelled preparation must not allocate a source")
+                }),
             Err(StoreError::State(StateError::Cancelled))
         );
         assert_eq!(store, before);
@@ -239,7 +246,9 @@ fn refusal_before_discovery_or_preparation_preserves_the_original_source() {
 
     let mut completed = before.clone();
     let mut full = WorkBudget::new(20_000_000);
-    completed.finalize_transaction_checked(domain, None, &mut full).unwrap();
+    completed
+        .finalize_transaction_checked(domain, None, &mut full)
+        .unwrap();
     let mut refused = before.clone();
     assert_eq!(
         refused.finalize_transaction_checked(domain, None, &mut WorkBudget::new(full.used() - 1)),

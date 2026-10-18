@@ -171,7 +171,11 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     assert_eq!(coverage.trigger(), &RootTerminalTrigger::Transfers);
     assert_eq!(
         coverage.outcomes().each_ref().map(|outcome| outcome.kind()),
-        [OutcomeKind::Return, OutcomeKind::Revert, OutcomeKind::Failure]
+        [
+            OutcomeKind::Return,
+            OutcomeKind::Revert,
+            OutcomeKind::Failure
+        ]
     );
 
     let input = coverage.input();
@@ -245,7 +249,10 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
         covered.frontiers()[0].reason,
         FrontierReason::Budget(Limit::Transfers)
     );
-    assert_eq!(covered.frontiers()[0].reason, ordinary.frontiers()[0].reason);
+    assert_eq!(
+        covered.frontiers()[0].reason,
+        ordinary.frontiers()[0].reason
+    );
     assert_eq!(covered.frontiers()[0].pc, ordinary.frontiers()[0].pc);
     assert_eq!(covered.outcomes().len(), 1);
     assert_eq!(covered.outcomes()[0].kind, OutcomeKind::Failure);
@@ -257,7 +264,10 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     assert_eq!(partial.frontiers().len(), 1);
     assert_eq!(partial.blocks().len(), 2);
     assert_eq!(partial.blocks()[0].instructions.len(), 2);
-    assert_eq!(partial.blocks()[1].coverage, PartialBlockCoverage::Unexecuted);
+    assert_eq!(
+        partial.blocks()[1].coverage,
+        PartialBlockCoverage::Unexecuted
+    );
     assert!(partial.blocks()[1].instructions.is_empty());
     assert!(ssa::build_world(covered).is_err());
 
@@ -404,7 +414,10 @@ fn one_certificate_admits_two_whole_input_valuations_and_independent_return_effe
                 returned.store().code(address(owner)),
                 None | Some(Code::Unknown)
             ));
-            assert_eq!(returned.store().existence(address(owner)), Existence::Unknown);
+            assert_eq!(
+                returned.store().existence(address(owner)),
+                Existence::Unknown
+            );
             for outcome in coverage.outcomes() {
                 assert_eq!(
                     outcome
@@ -610,7 +623,9 @@ fn revised_facts_and_independent_requests_capture_fresh_bindings() {
         new_coverage.outcomes()[1].store(),
         new_coverage.outcomes()[2].store(),
     ] {
-        let value = store.read_checked(address(0x202), &word(8), domain).unwrap();
+        let value = store
+            .read_checked(address(0x202), &word(8), domain)
+            .unwrap();
         assert_eq!(value.singleton(), Some(U256::from(7)));
         assert!(!value.contains(U256::from(1)));
     }
@@ -647,7 +662,10 @@ fn revised_facts_and_independent_requests_capture_fresh_bindings() {
         other_input.storage_source(),
         old_coverage.input().storage_source()
     );
-    assert_ne!(other_input.input_scope(), old_coverage.input().input_scope());
+    assert_ne!(
+        other_input.input_scope(),
+        old_coverage.input().input_scope()
+    );
     assert_eq!(other_input.entry(), &other_entry);
     assert_eq!(other_input.fork(), Fork::Cancun);
     assert_eq!(other_input.program().fork(), Fork::Cancun);
@@ -695,7 +713,10 @@ fn unsupported_precompile_preparation_keeps_its_paid_prefix_and_real_return() {
         returns[0].data.exact_bytes().as_deref(),
         Some(&b"identity"[..])
     );
-    ssa::build_world(&covered).unwrap().verify(&covered).unwrap();
+    ssa::build_world(&covered)
+        .unwrap()
+        .verify(&covered)
+        .unwrap();
 }
 
 #[test]
@@ -806,14 +827,23 @@ fn static_return_covers_cleanup_of_an_empty_unlisted_owner_under_the_same_input(
                     .singleton(),
                 Some(U256::ZERO)
             );
-            assert_eq!(outcome.store().created_in_transaction(unlisted), Some(false));
+            assert_eq!(
+                outcome.store().created_in_transaction(unlisted),
+                Some(false)
+            );
             assert_eq!(outcome.store().pending_destruction(unlisted), Some(false));
-            assert_eq!(outcome.store().touched_in_transaction(unlisted), Some(false));
+            assert_eq!(
+                outcome.store().touched_in_transaction(unlisted),
+                Some(false)
+            );
         }
     }
     assert_ne!(returned_root, initial_root);
     assert_eq!(returned.store().existence(unlisted), Existence::Unknown);
-    assert!(matches!(returned.store().code(unlisted), None | Some(Code::Unknown)));
+    assert!(matches!(
+        returned.store().code(unlisted),
+        None | Some(Code::Unknown)
+    ));
     assert!(returned.store().read_balance(unlisted).contains(U256::ZERO));
     assert!(returned.store().nonce(unlisted).contains(U256::ZERO));
     assert!(returned.store().logs_unknown());

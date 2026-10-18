@@ -3,7 +3,8 @@
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{
-        self, ExecutionConfig, FrameCode, MachineEdgeKind, OutcomeKind, ProcedureSummaryKind, Status,
+        self, ExecutionConfig, FrameCode, MachineEdgeKind, OutcomeKind, ProcedureSummaryKind,
+        Status,
     },
     domain::{
         AbstractValue, Domain,
@@ -62,9 +63,7 @@ impl JointWitness {
                 condition,
                 then_value,
                 ..
-            } => {
-                self.expression(condition, U256::from(1)) && self.expression(then_value, expected)
-            }
+            } => self.expression(condition, U256::from(1)) && self.expression(then_value, expected),
             _ => false,
         }
     }
@@ -79,9 +78,7 @@ impl JointWitness {
                 condition,
                 then_state,
                 ..
-            } => {
-                self.expression(condition, U256::from(1)) && self.slot(then_state, key, expected)
-            }
+            } => self.expression(condition, U256::from(1)) && self.slot(then_state, key, expected),
             // This fixture has no writes or observed initial cells. Refuse
             // other grammars rather than guessing their complete valuation.
             _ => false,
@@ -138,9 +135,7 @@ fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_inpu
     // This is one allowed unknown initial implementation, never a World fact.
     // It STATICCALLs C, POPs the success flag, then STOPs. C may be empty with
     // nonzero storage: storage is not part of the empty-account predicate.
-    let unknown_code = Account::from_hex(UNKNOWN_CODE_WITNESS, fork)
-        .unwrap()
-        .code;
+    let unknown_code = Account::from_hex(UNKNOWN_CODE_WITNESS, fork).unwrap().code;
     let entry = Entry::concrete(a, address(0x900), word(0), ByteArray::empty());
     let mut config = ExecutionConfig::default();
     config.root_terminal_coverage = false;
@@ -198,7 +193,9 @@ fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_inpu
 
     let initial = &original.store;
     let saved = original.active().saved_store.state();
-    let history = initial.read_checked(c, &word(8), Domain::default()).unwrap();
+    let history = initial
+        .read_checked(c, &word(8), Domain::default())
+        .unwrap();
     assert!(history.expression().is_some());
     let root_history = initial.slot_root(a, false).unwrap();
     let root_code = &report.world().accounts()[&a].code;
@@ -241,8 +238,14 @@ fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_inpu
                     || !store.possible_logs().is_empty()
                     || !joint.scalar(store.balance_default(), 0)
                     || !joint.scalar(&store.nonce_default(), 0)
-                    || !matches!(store.code_default(), None | Some(Code::Unknown | Code::Empty))
-                    || !matches!(store.existence_default(), Existence::Unknown | Existence::Absent)
+                    || !matches!(
+                        store.code_default(),
+                        None | Some(Code::Unknown | Code::Empty)
+                    )
+                    || !matches!(
+                        store.existence_default(),
+                        Existence::Unknown | Existence::Absent
+                    )
                     || store.addresses().into_iter().any(|owner| {
                         ![a, u, c].contains(&owner)
                             && !joint.account(store, owner, &Code::Empty, Existence::Absent, [0; 3])

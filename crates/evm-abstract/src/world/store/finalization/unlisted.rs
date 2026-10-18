@@ -183,17 +183,32 @@ fn explicit_nonempty_owner_and_historical_facts_survive_global_base_forgetting()
     let before = current.clone();
     current.prepare_unlisted_finalization(domain).unwrap();
     let known = address(0x101);
-    assert_eq!(current.slot_root(known, false), before.slot_root(known, false));
-    assert_eq!(current.storage_default(known), before.storage_default(known));
+    assert_eq!(
+        current.slot_root(known, false),
+        before.slot_root(known, false)
+    );
+    assert_eq!(
+        current.storage_default(known),
+        before.storage_default(known)
+    );
     assert_eq!(current.slots(), before.slots());
     assert_eq!(current.persistent.operands, before.persistent.operands);
     assert_eq!(
-        current.persistent.initial_independence.at(known, U256::from(9)),
-        before.persistent.initial_independence.at(known, U256::from(9))
+        current
+            .persistent
+            .initial_independence
+            .at(known, U256::from(9)),
+        before
+            .persistent
+            .initial_independence
+            .at(known, U256::from(9))
     );
     assert!(current.persistent.initial_independence.global_default);
     assert!(!before.persistent.initial_independence.global_default);
-    assert_ne!(current.global_storage_state(), before.global_storage_state());
+    assert_ne!(
+        current.global_storage_state(),
+        before.global_storage_state()
+    );
     let mut other_fields = current.clone();
     other_fields.persistent = before.persistent.clone();
     assert_eq!(other_fields, before);
@@ -201,8 +216,14 @@ fn explicit_nonempty_owner_and_historical_facts_survive_global_base_forgetting()
     current
         .finalize_transaction_checked(domain, None, &mut WorkBudget::new(20_000_000))
         .unwrap();
-    assert_eq!(current.slot_root(known, false), before.slot_root(known, false));
-    assert_eq!(current.storage_default(known), before.storage_default(known));
+    assert_eq!(
+        current.slot_root(known, false),
+        before.slot_root(known, false)
+    );
+    assert_eq!(
+        current.storage_default(known),
+        before.storage_default(known)
+    );
     assert_eq!(current.slots(), before.slots());
     assert_eq!(current.persistent.operands, before.persistent.operands);
     let mut witness = fixture.initial_valuation();

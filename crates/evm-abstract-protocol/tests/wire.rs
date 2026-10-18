@@ -81,16 +81,26 @@ fn all_request_and_limit_fields_are_required_on_the_wire() {
         assert!(missing.as_object_mut().unwrap().remove(field).is_some());
         let error = serde_json::from_value::<AnalyzeRequest>(missing).unwrap_err();
         assert!(
-            error.to_string().contains(&format!("missing field: {field}")),
+            error
+                .to_string()
+                .contains(&format!("missing field: {field}")),
             "{error}"
         );
     }
     for field in encoded["limits"].as_object().unwrap().keys() {
         let mut missing = encoded.clone();
-        assert!(missing["limits"].as_object_mut().unwrap().remove(field).is_some());
+        assert!(
+            missing["limits"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field)
+                .is_some()
+        );
         let error = serde_json::from_value::<AnalyzeRequest>(missing).unwrap_err();
         assert!(
-            error.to_string().contains(&format!("missing field: {field}")),
+            error
+                .to_string()
+                .contains(&format!("missing field: {field}")),
             "{error}"
         );
     }
