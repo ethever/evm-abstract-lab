@@ -163,7 +163,7 @@ Runtime2 的数值精度损失与尚未恢复的 Multicall self-call 细节仍�
 
 2026-10-18，producer 为干净提交 `9a1a0903345ab695a0471846c0625a5b56c0da93`，tree 为 `d69fc764e7cf58d6d701e8336bbe5e9b5b82a534`（native10 / wire15 / cost3），运行前后均干净；同一冻结 CLI ELF 的 SHA256 为 `6209803ece98e1a92109ba633ffdd681efb21c64cc4900b400bdbb332778b77a`。汇总 `acceptance-summary.json` 的 SHA256 为 `c0b02cce31ae0d4b8ea3901c3dc5745a60c531179eb4dac0cb0ee0c45e5863e8`，绑定完整运行记录及原报告 hash。
 
-CPU 40 独占、顺序执行，共 **9 个独立 native 进程**：五个 code-only 仅复测固定 1T/OFF，未测其默认策略；WETH/USDC 各测当前默认 2B/ON 与固定 1T/OFF。原始 world 字节、caller/value/calldata 的 Unknown 边界及初始 facts 不变。wall 包含 native JSON 输出，排除后续解析、RPC、Web 与构建；补充校验不新增 native 测量，也不重复计入 wall。
+各进程绑定 CPU 40 并顺序执行；期间未并行本任务的构建、浏览器或分析进程，共 **9 个独立 native 进程**：五个 code-only 仅复测固定 1T/OFF，未测其默认策略；WETH/USDC 各测当前默认 2B/ON 与固定 1T/OFF。原始 world 字节、caller/value/calldata 的 Unknown 边界及初始 facts 不变。wall 包含 native JSON 输出，排除后续解析、RPC、Web 与构建；补充校验不新增 native 测量，也不重复计入 wall。
 
 | case | policy | native wall（s） | peak RSS（KiB） | status / native exit | states | transfers | frontiers | 根覆盖附件 | 报告字节数 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -179,6 +179,6 @@ CPU 40 独占、顺序执行，共 **9 个独立 native 进程**：五个 code-o
 
 默认两项的 frontier 全为 Work（USDC 14、WETH 10）；详细分析仍为 Incomplete，附件固定为 Return / Revert / Failure 三个联合上界，不隐藏 frontier，不增加已执行 PC、状态或 SSA 覆盖。固定 1T/OFF 的 USDC 保留 825 个 frontier（803 Work + 22 SummaryWork）且无证书；WETH 为 Converged、0 frontier、无证书。
 
-五份 code-only 报告通过原 64 MiB whole-report guard。四份 WETH/USDC 原报告均超过该 guard，原 whole-report guard 与 `report_delivered` 仍为 **false**；四份独立严格流式校验均为 `strict_stream_valid=true`、实际退出 0，保持每条顶层记录 64 MiB 上限。补充 runner 的退出 0 不代表原 consumer 通过，也不证明 Rust/EVM 数学语义。导出仍大，原交付边界未改变。
+五份 code-only 报告通过原 64 MiB whole-report guard。四份 WETH/USDC 原报告均超过该 guard，原 whole-report guard 与 `report_delivered` 仍为 **false**；四份均为 `strict_stream_valid=true`；执行这四项的补充 runner 实际退出 0，保持每条顶层记录 64 MiB 上限。补充 runner 的退出 0 不代表原 consumer 通过，也不证明 Rust/EVM 数学语义。导出仍大，原交付边界未改变。
 
 这些是单次离线 screen；默认 2B/ON 与固定 1T/OFF 是不同精度策略，不能据此声称同精度加速或详细执行闭合。

@@ -87,7 +87,7 @@ Terminal(Γ(I)) ⊆ Γ(Return, dataR, storeR)
 
 这些[局部 Lean 模型](proofs/README.md)证明 finalized whole-world 构造、共享原始输入见证的回滚与未来 owner-3 touch、历史扩展，以及带输入/取消守卫的一次性预付发布状态机。证书 `denotes` 使用 `finalizedTerminalEnvelope`/`FinalizedGamma`；旧 Return=True 构造原语不构成这份证书证明。守卫来自调用方 Bool 观察，真实 Rust Gamma、source/owner/log/ByteArray 表示、计费、allocator 资源上界与 EVM step/callback/CFG 闭包仍需[手工生产对应](proofs/correspondence.md)，不能据此声称完整 Rust/EVM soundness 或 A2 已全部证明。
 
-2026-10-18，干净的最终集成提交 `9a1a0903345ab695a0471846c0625a5b56c0da93` 完整执行 `nix flake check --print-build-logs --no-update-lock-file --keep-going`，实际退出 **0**，耗时 **551.799297467 s**。匹配 server、Wasm/JS 资源的浏览器回归 **38/38** 全部通过，包含 `root-terminal-coverage`：实际表单 POST 的默认开启与 2B work、显式关闭、详细 `Converged` 且无证书、三项 pool 引用及输入绑定、原有未完成详情和独立 tuple 浏览。该门禁结果属于上述集成提交；最终文档提交的完整门禁与产品 derivation 一致性由 Root 另行复核。
+2026-10-18，干净的最终集成提交 `9a1a0903345ab695a0471846c0625a5b56c0da93` 完整执行 `nix flake check --print-build-logs --no-update-lock-file --keep-going`，实际退出 **0**，耗时 **551.799297467 s**。匹配 server、Wasm/JS 资源的浏览器回归 **38/38** 全部通过，包含 `root-terminal-coverage`：实际表单 POST 的默认开启与 2B work、显式关闭、详细 `Converged` 且无证书、三项 pool 引用及输入绑定、原有未完成详情和独立 tuple 浏览。该结果绑定此实测提交；合并前按[本地检查流程](local-ci.md)核对最终提交与产物（PR 记录最终结果）。
 
 同提交、同一冻结 CLI ELF 的九次最终离线 native 测量见[最终集成实测](../examples/no-smt-scale/README.md#最终集成实测)。默认 2B/ON 的 WETH/USDC 详细分析仍为 `Incomplete`、native exit 2，保留全部原始 frontier；所附 `AllInputStates` / Work 记录固定包含 Return / Revert / Failure 三个联合上界，不改变详细 status、pending 或 SSA 覆盖。固定 1T/OFF 对照与原 whole-report guard、独立流式校验的边界分别列明。
 
