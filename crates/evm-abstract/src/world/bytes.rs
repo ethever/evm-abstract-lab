@@ -13,6 +13,7 @@ pub(super) mod refinement;
 pub use refinement::GuardRefinementError;
 mod ranges;
 mod reads;
+mod refresh;
 mod slice;
 pub(in crate::world) mod summary;
 pub use summary::ByteArraySummary;
@@ -336,6 +337,27 @@ impl ByteArray {
         domain: Domain,
         numeric: Option<&mut Option<AbstractValue>>,
     ) -> Result<AbstractValue, RangeError> {
+        let (offset_expr, facts) = self.prepare_byte_read(offset, domain)?;
+        let context = conditional::Context::new(&facts, Some(&self.conditional));
+        self.read_byte_prepared(&offset_expr, &context, domain, || {
+            let read = || {
+                #[cfg(test)]
+                write::NUMERIC_READS.update(|calls| *calls += 1);
+                numeric::Reader::with_context(context.clone(), domain)
+                    .read(&self.root, &offset_expr)
+            };
+            match numeric {
+                Some(shared) => shared.get_or_insert_with(read).clone(),
+                None => read(),
+            }
+        })
+    }
+    // Both refresh paths keep the original checked snapshot and literal remember.
+    fn prepare_byte_read(
+        &self,
+        offset: &AbstractValue,
+        domain: Domain,
+    ) -> Result<(ExprId, BTreeMap<ExprId, AbstractValue>), RangeError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -350,7 +372,15 @@ impl ByteArray {
             limits(domain),
         )?;
         self.conditional.check(limits(domain))?;
-        let context = conditional::Context::new(&facts, Some(&self.conditional));
+        Ok((offset_expr, facts))
+    }
+    fn read_byte_prepared(
+        &self,
+        offset_expr: &ExprId,
+        context: &conditional::Context<'_>,
+        domain: Domain,
+        read: impl FnOnce() -> AbstractValue,
+    ) -> Result<AbstractValue, RangeError> {
         let expression = ExprId::byte_read_with_write_bound(
             self.root.clone(),
             offset_expr.clone(),
@@ -358,15 +388,7 @@ impl ByteArray {
             &|destination| context.write_lower_bound(destination, domain),
         )?;
         context.check()?;
-        let read = || {
-            #[cfg(test)]
-            write::NUMERIC_READS.update(|calls| *calls += 1);
-            numeric::Reader::with_context(context.clone(), domain).read(&self.root, &offset_expr)
-        };
-        let numeric = match numeric {
-            Some(shared) => shared.get_or_insert_with(read).clone(),
-            None => read(),
-        };
+        let numeric = read();
         context.check()?;
         Ok(numeric::attach(numeric, expression))
     }
@@ -531,6 +553,53 @@ impl ByteArray {
         domain: Domain,
     ) -> Result<(), RangeError> {
         self.write(offset, value, 1, max_bytes, domain)
+    }
+    /// The transfer keeps its original bulk fee; refresh pays its added work
+    /// on that same ledger. False is mandatory Work, with no staged publication.
+    pub(crate) fn write_word_budgeted(
+        &mut self,
+        offset: &AbstractValue,
+        value: &AbstractValue,
+        max_bytes: usize,
+        domain: Domain,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, RangeError> {
+        self.write_budgeted(offset, value, 32, max_bytes, domain, budget)
+    }
+    pub(crate) fn write_byte_budgeted(
+        &mut self,
+        offset: &AbstractValue,
+        value: &AbstractValue,
+        max_bytes: usize,
+        domain: Domain,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, RangeError> {
+        self.write_budgeted(offset, value, 1, max_bytes, domain, budget)
+    }
+    fn write_budgeted(
+        &mut self,
+        offset: &AbstractValue,
+        value: &AbstractValue,
+        width: usize,
+        max_bytes: usize,
+        domain: Domain,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, RangeError> {
+        if !refresh::charge(budget, 0)? {
+            return Ok(false);
+        }
+        let uniform = write::eligible(self, offset, value, width, domain);
+        let mut out = self.staged_write(offset, value, width, max_bytes, domain)?;
+        if uniform {
+            write::refresh(&mut out, domain);
+        } else if !refresh::run(&mut out, domain, budget)? {
+            return Ok(false);
+        }
+        if !refresh::charge(budget, 0)? {
+            return Ok(false);
+        }
+        *self = out;
+        Ok(true)
     }
     fn write(
         &mut self,

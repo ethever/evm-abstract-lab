@@ -877,13 +877,32 @@ fn execute_inner(
                 }
                 let memory = &mut result.payload.active_mut().memory;
                 let write = if op == opcode::MSTORE {
-                    memory.write_word(&args[0], &args[1], config.max_memory_bytes, domain)
+                    memory.write_word_budgeted(
+                        &args[0],
+                        &args[1],
+                        config.max_memory_bytes,
+                        domain,
+                        context.budget,
+                    )
                 } else {
-                    memory.write_byte(&args[0], &args[1], config.max_memory_bytes, domain)
+                    memory.write_byte_budgeted(
+                        &args[0],
+                        &args[1],
+                        config.max_memory_bytes,
+                        domain,
+                        context.budget,
+                    )
                 };
-                if let Err(error) = write {
-                    boundary_bytes(&mut result, pc, error);
-                    return result;
+                match write {
+                    Err(error) => {
+                        boundary_bytes(&mut result, pc, error);
+                        return result;
+                    }
+                    Ok(false) => {
+                        boundary(&mut result, pc, FrontierReason::Work);
+                        return result;
+                    }
+                    Ok(true) => {}
                 }
                 if memory.symbolic_limit_reached() {
                     boundary(
