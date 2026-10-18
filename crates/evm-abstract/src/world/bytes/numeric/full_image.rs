@@ -38,7 +38,7 @@ pub(super) fn proves(value: &NumericValue) -> bool {
     if unsigned_lo > one || !zero > unsigned_hi {
         return false;
     }
-    let sign = U256::from(1) << 255;
+    let sign = U256::from(1) << 255usize;
     let biased_one = (one & !sign) | (zero & sign);
     let biased_zero = (zero & !sign) | (one & sign);
     let (signed_lo, signed_hi) = value.interval().signed_bounds();
