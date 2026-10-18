@@ -648,7 +648,8 @@ fn shared_branch_scalar_and_state_limits_and_cancellation_leave_inputs_unchanged
             Err(StateError::Limit { .. })
         ));
     }
-    // The scalar constructor itself must refuse before a final state is built.
+    // A rejected optional factor falls back to the original complete shape.
+    // Its actual raw state bound, not the skipped guard's bound, is reported.
     for denied in [
         StateLimits {
             max_nodes: 12,
@@ -659,17 +660,19 @@ fn shared_branch_scalar_and_state_limits_and_cancellation_leave_inputs_unchanged
             ..limits()
         },
     ] {
-        let expected = StateError::Limit {
-            nodes: 13,
-            depth: 4,
-        };
         assert_eq!(
             inner.join_guarded(&a, deep_s.clone(), denied),
-            Err(expected.clone())
+            Err(StateError::Limit {
+                nodes: 16,
+                depth: 4
+            })
         );
         assert_eq!(
             scalar_slots.join_guarded(&SlotStateId::zero(), deep_s.clone(), denied),
-            Err(expected)
+            Err(StateError::Limit {
+                nodes: 17,
+                depth: 4
+            })
         );
     }
     let cancellation = analysis_control::Cancellation::new();
@@ -702,5 +705,102 @@ fn shared_branch_scalar_and_state_limits_and_cancellation_leave_inputs_unchanged
     assert_eq!(
         (normalized_slots.nodes(), normalized_slots.depth()),
         (19, 4)
+    );
+}
+
+#[test]
+fn optional_factoring_preserves_valid_original_depth_three_and_four_shapes() {
+    let a = ByteStateId::exact(Arc::from([7, 11]));
+    let b = ByteStateId::exact(Arc::from([7, 12]));
+    let outer = ExprId::ite(ExprId::fresh().unwrap(), c(1), c(2), limits().into()).unwrap();
+    assert_eq!(outer.depth(), 2);
+    let t = ExprId::fresh().unwrap();
+    let h = ExprId::fresh().unwrap();
+    let left = a.join_guarded(&b, t.clone(), limits()).unwrap();
+    let right = a.join_guarded(&b, h.clone(), limits()).unwrap();
+    let original = (
+        a.kind().clone(),
+        b.kind().clone(),
+        left.kind().clone(),
+        right.kind().clone(),
+    );
+    // Every raw shape has depth 3; its factored scalar guard would have depth
+    // 3, making the replacement state depth 4. Decline only the optimization.
+    for (yes, no) in [
+        (&left, &a),
+        (&left, &b),
+        (&a, &left),
+        (&b, &left),
+        (&left, &right),
+    ] {
+        let result = yes
+            .join_guarded(
+                no,
+                outer.clone(),
+                StateLimits {
+                    max_depth: 3,
+                    ..limits()
+                },
+            )
+            .unwrap();
+        assert_eq!(result.depth(), 3);
+        assert!(
+            matches!(result.kind(), ByteStateKind::Ite { condition, then_state, else_state }
+            if condition == &outer && then_state == yes && else_state == no)
+        );
+    }
+    assert_eq!(
+        (
+            a.kind().clone(),
+            b.kind().clone(),
+            left.kind().clone(),
+            right.kind().clone()
+        ),
+        original
+    );
+
+    let sa = SlotStateId::zero().store(c(1), c(7), limits()).unwrap();
+    let sb = SlotStateId::zero().store(c(1), c(8), limits()).unwrap();
+    let slot_outer = ExprId::ite(ExprId::fresh().unwrap(), outer, c(0), limits().into()).unwrap();
+    assert_eq!(slot_outer.depth(), 3);
+    let left = sa.join_guarded(&sb, t, limits()).unwrap();
+    let right = sa.join_guarded(&sb, h, limits()).unwrap();
+    let original = (
+        sa.kind().clone(),
+        sb.kind().clone(),
+        left.kind().clone(),
+        right.kind().clone(),
+    );
+    for (yes, no) in [
+        (&left, &sa),
+        (&left, &sb),
+        (&sa, &left),
+        (&sb, &left),
+        (&left, &right),
+    ] {
+        let result = yes
+            .join_guarded(
+                no,
+                slot_outer.clone(),
+                StateLimits {
+                    max_depth: 4,
+                    ..limits()
+                },
+            )
+            .unwrap();
+        assert_eq!(result.depth(), 4);
+        assert!(
+            matches!(result.kind(), SlotStateKind::Ite { condition, then_state, else_state }
+            if condition == &slot_outer && then_state == yes && else_state == no)
+        );
+    }
+    assert_eq!(
+        (
+            sa.kind().clone(),
+            sb.kind().clone(),
+            left.kind().clone(),
+            right.kind().clone()
+        ),
+        original
     );
 }
