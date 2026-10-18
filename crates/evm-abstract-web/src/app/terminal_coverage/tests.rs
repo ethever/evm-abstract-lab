@@ -77,6 +77,8 @@ pub(crate) fn report() -> AnalysisReport {
         report.symbolic.nodes[known.storage_root.node],
         api::Expression::SlotsInput(owner_source)
     );
+    let mut pre_entry_failures = 0;
+    let mut late_failures = 0;
     for outcome in &report.outcomes {
         assert_eq!(outcome.kind, api::OutcomeKind::Failure);
         assert_eq!(outcome.state, entry.state);
@@ -88,6 +90,12 @@ pub(crate) fn report() -> AnalysisReport {
         assert!(!data.memory);
         assert_eq!(data, &report.byte_arrays[coverage.outcomes[2].data]);
         let store = &report.stores[outcome.store];
+        // Engine's pre-entry Failure clones the whole saved Store before any
+        // sticky owner-3 touch or transaction finalization.
+        if store == saved {
+            pre_entry_failures += 1;
+            continue;
+        }
         // Unknown To may touch owner 3; restore retains that sticky touch.
         // Finalization joins its original storage with deletion under its own
         // guard, independently of the prepared future Failure's finalization.
@@ -194,7 +202,11 @@ pub(crate) fn report() -> AnalysisReport {
                 api::Expression::SlotsZero
             );
         }
+        late_failures += 1;
     }
+    assert!(pre_entry_failures > 0);
+    assert!(late_failures > 0);
+    assert_eq!(pre_entry_failures + late_failures, report.outcomes.len());
     let wire = serde_json::to_vec(&api::AnalyzeReply {
         result: Ok(report.clone()),
     })
