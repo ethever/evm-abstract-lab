@@ -74,6 +74,29 @@ fn consumer_defaults_enable_fast_conservative_coverage() {
 }
 
 #[test]
+fn all_request_and_limit_fields_are_required_on_the_wire() {
+    let encoded = serde_json::to_value(AnalyzeRequest::default()).unwrap();
+    for field in encoded.as_object().unwrap().keys() {
+        let mut missing = encoded.clone();
+        assert!(missing.as_object_mut().unwrap().remove(field).is_some());
+        let error = serde_json::from_value::<AnalyzeRequest>(missing).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!("missing field: {field}")),
+            "{error}"
+        );
+    }
+    for field in encoded["limits"].as_object().unwrap().keys() {
+        let mut missing = encoded.clone();
+        assert!(missing["limits"].as_object_mut().unwrap().remove(field).is_some());
+        let error = serde_json::from_value::<AnalyzeRequest>(missing).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!("missing field: {field}")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn cumulative_counters_preserve_u64_values_above_wasm_and_javascript_integer_ranges() {
     for count in [u64::from(u32::MAX) + 1, 9_007_199_254_740_993, u64::MAX] {
         let progress = AnalysisProgress {

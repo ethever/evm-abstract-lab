@@ -1,7 +1,7 @@
 // The engine's no_dyn boundary also covers serde's error paths. These visitors
 // report concrete errors through Error::custom instead of serde's dyn Expected.
 macro_rules! record {
-    ($(#[$meta:meta])* pub struct $name:ident { $($(#[$field_meta:meta])* pub $field:ident: $ty:ty $(= $default:expr)?),* $(,)? }) => {
+    ($(#[$meta:meta])* pub struct $name:ident { $($(#[$field_meta:meta])* pub $field:ident: $ty:ty),* $(,)? }) => {
         $(#[$meta])*
         #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
         pub struct $name { $($(#[$field_meta])* pub $field: $ty),* }
@@ -26,20 +26,12 @@ macro_rules! record {
                                 _ => return Err(serde::de::Error::custom(format!("unknown {} field: {key}", stringify!($name)))),
                             }
                         }
-                        Ok($name { $($field: record!(@field $field $(, $default)?)),* })
+                        Ok($name { $($field: $field.ok_or_else(|| serde::de::Error::custom(concat!("missing field: ", stringify!($field))))?),* })
                     }
                 }
                 deserializer.deserialize_map(RecordVisitor)
             }
         }
-    };
-    (@field $field:ident) => {
-        $field.ok_or_else(|| serde::de::Error::custom(concat!("missing field: ", stringify!($field))))?
-    };
-    // Only explicitly defaulted request fields accept omission; Some(false)
-    // stays distinct from absence, and duplicate/unknown fields remain errors.
-    (@field $field:ident, $default:expr) => {
-        $field.unwrap_or_else(|| $default)
     };
 }
 

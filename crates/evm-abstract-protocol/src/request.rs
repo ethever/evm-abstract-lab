@@ -177,8 +177,7 @@ record! {
         /// Constants per abstract value.
         pub max_constants: u64,
         /// Maximum cumulative logical execution work.
-        /// Omission uses the consumer default.
-        pub max_work: u64 = AnalysisLimits::default().max_work,
+        pub max_work: u64,
         /// Maximum simultaneously retained frames.
         pub max_call_depth: u64,
         /// Maximum modeled byte-array span.
@@ -186,9 +185,8 @@ record! {
         /// Enable complete callee summary reuse.
         pub use_summaries: bool,
         /// Request separate native terminal coverage for the original root input.
-        /// Omission uses the enabled consumer default.
         /// True does not guarantee that a certificate can be attached.
-        pub root_terminal_coverage: bool = AnalysisLimits::default().root_terminal_coverage,
+        pub root_terminal_coverage: bool,
         /// Numeric abstraction.
         pub domain_profile: DomainProfile,
         /// Fact reduction rounds.
