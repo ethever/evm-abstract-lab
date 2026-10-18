@@ -14,7 +14,7 @@ from playwright.sync_api import expect
 
 from web_test_harness import (complete_submission, observe_webgpu, open_input,
                               rendered_frame, resize_view, settle_gesture, webgpu_evidence)
-from web_test_inspector_helpers import (inspector_selected_tab, inspector_title_action,
+from web_test_inspector_helpers import (inspector_painted_controls, inspector_selected_tab, inspector_title_action,
                                         select_inspector_tab)
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_modal
 from web_test_pixels import text_pixels, workspace_content_bottom
@@ -365,8 +365,13 @@ def _panel_snapshot(page, canvas, output, name):
     # CollapsingHeader's real animation must finish before row targeting.
     page.wait_for_timeout(200)
     toolbar = inspector_selected_tab(page, canvas, "Outcomes")
+    observations = [rect for rect in inspector_painted_controls(page, canvas)["selected"]
+                    if 20 <= rect[0] <= 50 and 70 <= rect[2] - rect[0] <= 85
+                    and 0 <= rect[1] - toolbar[3] <= 10 and 14 <= rect[3] - rect[1] <= 20]
+    assert len(observations) == 1, f"expected one selected Block entry control, got {observations}"
     png = canvas.screenshot(path=str(output / f"{name}.png"))
-    region = (8, toolbar[3] + 3, 400, workspace_content_bottom(page, png))
+    # Outcomes content follows the native observation bar and its separator gap.
+    region = (8, observations[0][3] + 6, 400, workspace_content_bottom(page, png))
     pixels = text_pixels(page, png, region)
     assert pixels["white_pixels"] > 100 and len(pixels["rows"]) >= 8, pixels
     return pixels
