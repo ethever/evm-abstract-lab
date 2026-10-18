@@ -19,6 +19,7 @@ use crate::{
     },
     resource::WorkBudget,
 };
+use revm_bytecode::opcode;
 
 fn context<'a>(config: &'a ExecutionConfig, budget: &'a mut WorkBudget) -> TransferContext<'a> {
     TransferContext {
