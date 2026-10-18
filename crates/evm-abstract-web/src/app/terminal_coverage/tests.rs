@@ -52,6 +52,31 @@ pub(crate) fn report() -> AnalysisReport {
         panic!("expected original persistent storage source");
     };
     assert_eq!(source.source.token, coverage.input.storage_source);
+    assert_eq!(source.source.namespace, "0x0");
+    assert!(source.bindings.is_empty());
+    let [known] = saved.accounts.as_slice() else {
+        panic!("expected one saved runtime account");
+    };
+    assert_eq!(known.address, coverage.input.entry_address);
+    assert_eq!(known.code_kind, api::CodeKind::Runtime);
+    assert_eq!(known.program, root.program);
+    assert_eq!(known.code_hash.as_ref(), Some(&root.code_hash));
+    assert_eq!(
+        report.programs[coverage.input.program].bytecode,
+        format!("0x{TWO_BLOCK_RETURN}")
+    );
+    let mut owner_source = source.clone();
+    owner_source.source.namespace = format!(
+        "0x{}00",
+        known
+            .address
+            .trim_start_matches("0x")
+            .trim_start_matches('0')
+    );
+    assert_eq!(
+        report.symbolic.nodes[known.storage_root.node],
+        api::Expression::SlotsInput(owner_source)
+    );
     for outcome in &report.outcomes {
         assert_eq!(outcome.kind, api::OutcomeKind::Failure);
         assert_eq!(outcome.state, entry.state);
@@ -63,9 +88,90 @@ pub(crate) fn report() -> AnalysisReport {
         assert!(!data.memory);
         assert_eq!(data, &report.byte_arrays[coverage.outcomes[2].data]);
         let store = &report.stores[outcome.store];
-        // Compare every checkpoint field, including code, logs and operand facts.
-        // This entry failure has no effects requiring rollback or account deletion.
-        assert_eq!(store, saved);
+        // Unknown To may touch owner 3; restore retains that sticky touch.
+        // Finalization joins its original storage with deletion under its own
+        // guard, independently of the prepared future Failure's finalization.
+        let ripemd = "0x0000000000000000000000000000000000000003";
+        let cleanup = store
+            .accounts
+            .iter()
+            .find(|row| row.address == ripemd)
+            .unwrap();
+        let api::Expression::SlotsIte(deletion) = &report.symbolic.nodes[cleanup.storage_root.node]
+        else {
+            panic!("expected owner-3 guarded cleanup");
+        };
+        let guard = &report.symbolic.nodes[deletion.condition.node];
+        assert!(matches!(guard, api::Expression::Fresh(_)));
+        assert_ne!(
+            guard,
+            &report.symbolic.nodes[coverage.input.storage_source.node]
+        );
+        let mut original = source.clone();
+        original.source.namespace = "0x300".into();
+        assert_eq!(
+            report.symbolic.nodes[deletion.then_state.node],
+            api::Expression::SlotsInput(original)
+        );
+        assert_eq!(
+            report.symbolic.nodes[deletion.else_state.node],
+            api::Expression::SlotsZero
+        );
+        for index in [
+            coverage.input.environment.calldata,
+            coverage.input.calldata,
+            coverage.outcomes[0].data,
+            coverage.outcomes[1].data,
+        ] {
+            let api::Expression::View(view) =
+                &report.symbolic.nodes[report.byte_arrays[index].symbolic.node]
+            else {
+                panic!("expected fixture byte view");
+            };
+            let api::Expression::BytesInput(input) = &report.symbolic.nodes[view.state.node] else {
+                panic!("expected independent fixture byte source");
+            };
+            for token in [view.length, input.source.token] {
+                assert_ne!(guard, &report.symbolic.nodes[token.node]);
+            }
+        }
+        let mut expected = saved.clone();
+        expected.created_default = Some(false);
+        expected.pending_destruction_default = Some(false);
+        expected.touched_default = Some(false);
+        expected.transient_facts.clear();
+        for account in &mut expected.accounts {
+            account.created = Some(false);
+            account.pending_destruction = Some(false);
+            account.touched = Some(false);
+            account.transient_default = saved.transient_default.clone();
+            account.transient_root = saved.transient_root;
+            account.transient.clear();
+        }
+        expected.accounts.insert(
+            0,
+            api::AccountState {
+                address: ripemd.into(),
+                existence: api::AccountExistence::Unknown,
+                balance: saved.balance_default.clone(),
+                nonce: saved.nonce_default.clone(),
+                code_kind: api::CodeKind::Unknown,
+                code_hash: None,
+                program: None,
+                delegation_target: None,
+                storage_default: saved.storage_default.clone(),
+                storage_root: cleanup.storage_root,
+                transient_root: saved.transient_root,
+                storage: vec![],
+                transient_default: saved.transient_default.clone(),
+                transient: vec![],
+                created: Some(false),
+                touched: Some(false),
+                pending_destruction: Some(false),
+            },
+        );
+        // Preserve complete values, all accounts, logs, facts and source IDs.
+        assert_eq!(store, &expected);
         assert_eq!(store.created_default, Some(false));
         assert_eq!(store.pending_destruction_default, Some(false));
         assert_eq!(store.touched_default, Some(false));
