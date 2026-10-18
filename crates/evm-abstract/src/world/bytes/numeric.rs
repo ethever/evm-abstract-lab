@@ -344,7 +344,7 @@ impl<'a> Reader<'a> {
                 offset,
                 value,
             } => {
-                let val = context.apply(
+                let val = context.observe_byte(
                     domain,
                     opcode::AND,
                     &[scalar_in(value, &context, domain), constant(255)],
@@ -379,7 +379,7 @@ impl<'a> Reader<'a> {
                     for i in indices {
                         for at in offsets {
                             let val = if *i >= *at && *i - *at < U256::from(32) {
-                                context.apply(
+                                context.observe_byte(
                                     domain,
                                     opcode::BYTE,
                                     &[

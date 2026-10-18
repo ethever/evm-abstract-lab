@@ -16,6 +16,146 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::{num::NonZeroUsize, sync::Arc};
 
+#[test]
+fn exact_reader_byte_observations_pay_their_original_operand_quotes() {
+    let domain = numeric_domain(Domain::default());
+    let key = ExprId::fresh().unwrap();
+    let value = sourced(1, 9, &key);
+    let facts = Facts::from([(key.clone(), value.clone())]);
+    let at = ExprId::constant(U256::from(8));
+    for word in [false, true] {
+        let state = if word {
+            ByteStateId::zero()
+                .write_word(at.clone(), key.clone(), StateLimits::default())
+                .unwrap()
+        } else {
+            ByteStateId::zero()
+                .write_byte(at.clone(), key.clone(), StateLimits::default())
+                .unwrap()
+        };
+        let (index, op, args) = if word {
+            (
+                ExprId::constant(U256::from(39)),
+                opcode::BYTE,
+                [constant(31), value.clone()],
+            )
+        } else {
+            (at.clone(), opcode::AND, [value.clone(), constant(255)])
+        };
+        let expected = domain.observe_byte(op, &args);
+        let mut reader = Reader::new(&facts, domain);
+        assert_complete(&reader.read(&state, &index), &expected, &value);
+        assert_eq!(reader.cache_stats(), (0, 0));
+        check(
+            state.work_size(),
+            &facts,
+            domain,
+            &value,
+            &[(false, domain.operation_work(&args))],
+            |context| Reader::with_context(context.clone(), domain).read(&state, &index),
+        );
+    }
+}
+
+#[test]
+fn stopped_byte_observations_leave_warm_reader_caches_unpublished_and_sticky() {
+    let domain = numeric_domain(Domain::default());
+    let key = ExprId::fresh().unwrap();
+    let warm = ExprId::fresh().unwrap();
+    let facts = Facts::from([
+        (key.clone(), sourced(1, 9, &key)),
+        (warm.clone(), AbstractValue::top()),
+    ]);
+    let frozen = facts.clone();
+    let conditional = ConditionalFacts::default();
+    let at = ExprId::constant(U256::from(8));
+    for word in [false, true] {
+        let state = if word {
+            ByteStateId::zero()
+                .write_word(at.clone(), key.clone(), StateLimits::default())
+                .unwrap()
+        } else {
+            ByteStateId::zero()
+                .write_byte(at.clone(), key.clone(), StateLimits::default())
+                .unwrap()
+        };
+        let index = if word {
+            ExprId::constant(U256::from(39))
+        } else {
+            at.clone()
+        };
+        let preparation = quote(state.work_size(), &facts, domain);
+        let mut pilot = WorkBudget::new(usize::MAX);
+        let trace;
+        {
+            let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut pilot)
+                .unwrap()
+                .unwrap();
+            let mut reader = Reader::with_context(root.clone(), domain);
+            reader.word_byte_union(&warm);
+            assert_ne!(reader.read(&state, &index), AbstractValue::top());
+            assert!(!root.stopped());
+            assert_eq!(root.reader_calls(), (2, 0));
+            trace = root.demand_payments();
+        }
+        let position = trace.iter().rposition(|(numeric, _)| *numeric).unwrap();
+        assert_eq!(position + 1, trace.len());
+        for cancel in [false, true] {
+            let available = if cancel {
+                usize::MAX
+            } else {
+                total(&trace[..position]) + trace[position].1 - 1
+            };
+            let mut budget = WorkBudget::new(available);
+            let paid;
+            {
+                let root =
+                    Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
+                        .unwrap()
+                        .unwrap();
+                let clone = root.clone();
+                let mut reader = Reader::with_context(root.clone(), domain);
+                assert_ne!(reader.word_byte_union(&warm), AbstractValue::top());
+                let cache = reader.cache_stats();
+                assert_eq!(cache.0, 1);
+                if cancel {
+                    let token = analysis_control::Cancellation::new();
+                    root.cancel_after_numeric_payments(1, token.clone());
+                    analysis_control::with_cancellation(&token, || {
+                        assert_eq!(reader.read(&state, &index), AbstractValue::top());
+                        assert_eq!(root.check(), Err(ExprError::Cancelled));
+                    });
+                    assert_eq!(clone.check(), Err(ExprError::Cancelled));
+                    assert_eq!(root.demand_payments(), trace);
+                } else {
+                    assert_eq!(reader.read(&state, &index), AbstractValue::top());
+                    assert!(root.work_exhausted());
+                    assert_eq!(root.demand_payments(), trace[..position]);
+                }
+                assert!(!root.cache_refused());
+                assert_eq!(root.work_exhausted(), !cancel);
+                assert_eq!(root.reader_calls(), (1, 0));
+                let payments = root.demand_payments();
+                let usage = root.demand_usage();
+                assert_eq!(reader.read(&state, &index), AbstractValue::top());
+                assert_eq!(reader.word_byte_union(&warm), AbstractValue::top());
+                assert_eq!(
+                    clone.observe_byte(domain, opcode::AND, &[constant(9), constant(255)]),
+                    AbstractValue::top()
+                );
+                assert_eq!(root.demand_payments(), payments);
+                assert_eq!(root.demand_usage(), usage);
+                assert_eq!(root.reader_calls(), (1, 0));
+                assert_eq!(reader.cache_stats(), cache);
+                paid = total(&payments);
+            }
+            assert_eq!(budget.used(), paid);
+            assert_eq!(budget.exhausted(), !cancel);
+        }
+    }
+    assert_eq!(facts, frozen);
+}
+
 fn quote(root_work: usize, facts: &Facts, domain: Domain) -> conditional::Preparation {
     let work = facts.iter().fold(0usize, |work, (key, value)| {
         work + key.work_size() + value.work_size()

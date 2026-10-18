@@ -15,6 +15,127 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
 
+#[test]
+fn literal_and_complete_finite_writes_keep_exact_bytes_and_untouched_suffixes() {
+    let domain = numeric_domain(Domain::default());
+    for value in [
+        constant(0x1122),
+        domain.join(&constant(0x1122), &constant(0x3344)),
+    ] {
+        let key = expression();
+        let value = value
+            .with_origin(Origin::Storage)
+            .with_identity(982_137, 1)
+            .with_symbolic_limit();
+        let facts = Facts::from([(key.clone(), value.clone())]);
+        let previous = ByteStateId::exact(std::sync::Arc::from([0xa5_u8; 72]));
+        let at = ExprId::constant(U256::from(8));
+        for word in [false, true] {
+            let state = if word {
+                previous
+                    .write_word(at.clone(), key.clone(), StateLimits::default())
+                    .unwrap()
+            } else {
+                previous
+                    .write_byte(at.clone(), key.clone(), StateLimits::default())
+                    .unwrap()
+            };
+            let mut reader = Reader::new(&facts, domain);
+            for index in 0..80 {
+                let expected = if word && (8..40).contains(&index) {
+                    domain.apply(opcode::BYTE, &[constant(index - 8), value.clone()])
+                } else if !word && index == 8 {
+                    domain.apply(opcode::AND, &[value.clone(), constant(255)])
+                } else {
+                    constant(if index < 72 { 0xa5 } else { 0 })
+                };
+                let actual = reader.read(&state, &ExprId::constant(U256::from(index)));
+                assert_eq!(actual, expected, "word={word}, index={index}");
+                assert_eq!(actual.constants(), expected.constants());
+                assert!(!actual.same_identity(&value));
+            }
+            assert_eq!(reader.cache_stats(), (0, 0));
+        }
+    }
+}
+
+#[test]
+fn open_word_suffixes_remain_exact_through_reader_byte_observations() {
+    use crate::domain::facts::{BitConstraints, UnaryPredicate};
+    let domain = numeric_domain(Domain::default());
+    let mut suffix = domain
+        .from_facts(&[UnaryPredicate::KnownBits(
+            BitConstraints::new(U256::from(0xffff ^ 0x1122), U256::from(0x1122)).unwrap(),
+        )])
+        .unwrap()
+        .with_symbolic_limit();
+    suffix.set_origin(Origin::Storage);
+    assert!(suffix.constants().is_none());
+    assert!(suffix.singleton().is_none());
+    let key = expression();
+    let facts = Facts::from([(key.clone(), suffix)]);
+    let previous = ByteStateId::exact(std::sync::Arc::from([0xa5_u8; 72]));
+    let at = ExprId::constant(U256::from(8));
+    let word = previous
+        .write_word(at.clone(), key.clone(), StateLimits::default())
+        .unwrap();
+    let byte = previous
+        .write_byte(at.clone(), key, StateLimits::default())
+        .unwrap();
+    let mut reader = Reader::new(&facts, domain);
+    for (state, index, expected) in [(&word, 38, 0x11), (&word, 39, 0x22), (&byte, 8, 0x22)] {
+        let actual = reader.read(state, &ExprId::constant(U256::from(index)));
+        assert_eq!(actual.numeric(), constant(expected).numeric());
+        assert!(!actual.symbolic_limit_reached());
+        let sources = actual.provenance().origins().sources().unwrap();
+        assert!(sources.contains(&Origin::Storage));
+        assert!(sources.contains(&Origin::Constant));
+        assert!(sources.contains(&Origin::Arithmetic));
+    }
+    for (state, index) in [(&word, 40), (&byte, 9)] {
+        assert_eq!(
+            reader.read(state, &ExprId::constant(U256::from(index))),
+            constant(0xa5)
+        );
+    }
+    for high in [U256::ZERO, U256::ONE, U256::MAX >> 16usize] {
+        let concrete = ((high << 16usize) | U256::from(0x1122)).to_be_bytes::<32>();
+        for (index, expected) in concrete.into_iter().enumerate() {
+            assert!(
+                reader
+                    .read(&word, &ExprId::constant(U256::from(index + 8)))
+                    .contains(U256::from(expected))
+            );
+        }
+    }
+}
+
+#[test]
+fn ordinary_scalar_byte_operations_keep_the_generic_transfer() {
+    let domain = numeric_domain(Domain::default());
+    let key = expression();
+    let value = AbstractValue::unsigned_range(U256::from(1), U256::from(9)).unwrap();
+    let facts = Facts::from([(key.clone(), value.clone())]);
+    for (op, args, numeric) in [
+        (
+            opcode::AND,
+            [key.clone(), ExprId::constant(U256::from(255))],
+            [value.clone(), constant(255)],
+        ),
+        (
+            opcode::BYTE,
+            [ExprId::constant(U256::from(31)), key],
+            [constant(31), value],
+        ),
+    ] {
+        let expression = ExprId::operation(op, &args, ExprLimits::default()).unwrap();
+        assert_eq!(
+            scalar(&expression, &facts, domain),
+            domain.apply(op, &numeric)
+        );
+    }
+}
+
 fn expression() -> ExprId {
     ExprId::fresh().unwrap()
 }

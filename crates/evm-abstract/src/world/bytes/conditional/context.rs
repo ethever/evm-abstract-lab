@@ -156,18 +156,40 @@ impl<'a> Context<'a> {
         op: u8,
         args: &[AbstractValue],
     ) -> AbstractValue {
+        if !self.pay_apply(domain, args) {
+            return AbstractValue::top();
+        }
+        domain.apply(op, args)
+    }
+
+    /// Byte observations keep the same complete policy guard, original quote
+    /// and stop/call ordering as ordinary Reader transfers. No reduced fee or
+    /// alternate payer is introduced when the domain omits optional reduction.
+    pub(in crate::world::bytes) fn observe_byte(
+        &self,
+        domain: Domain,
+        op: u8,
+        args: &[AbstractValue],
+    ) -> AbstractValue {
+        if !self.pay_apply(domain, args) {
+            return AbstractValue::top();
+        }
+        domain.observe_byte(op, args)
+    }
+
+    fn pay_apply(&self, domain: Domain, args: &[AbstractValue]) -> bool {
         if self.stopped()
             || self.demand.as_ref().is_some_and(|demand| {
                 !demand.policy(domain) || !demand.pay_reader(|| domain.operation_work(args))
             })
         {
-            return AbstractValue::top();
+            return false;
         }
         #[cfg(test)]
         if let Some(demand) = &self.demand {
             demand.record_reader_call(false);
         }
-        domain.apply(op, args)
+        true
     }
 
     /// Prepay the fixed byte-image mask proof and inline numeric replacement.

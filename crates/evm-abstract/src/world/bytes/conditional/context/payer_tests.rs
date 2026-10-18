@@ -13,6 +13,183 @@ use crate::{
 use alloy_primitives::U256;
 use std::{rc::Rc, sync::Arc};
 
+#[test]
+fn byte_observations_and_fallbacks_keep_the_original_transfer_payment() {
+    use revm_bytecode::opcode;
+    let numeric = crate::world::bytes::numeric::numeric_domain(Domain::default());
+    for domain in [
+        Domain::default(),
+        numeric,
+        Domain::new(std::num::NonZeroUsize::new(8).unwrap()),
+    ] {
+        let facts = Facts::new();
+        let conditional = ConditionalFacts::default();
+        let quote = preparation_for(&facts, &conditional, domain);
+        let scalar = AbstractValue::unknown_address().with_symbolic_limit();
+        for (op, args) in [
+            (opcode::BYTE, vec![constant(31), scalar.clone()]),
+            (opcode::AND, vec![scalar.clone(), constant(255)]),
+            (opcode::AND, vec![scalar.clone(), constant(254)]),
+            (opcode::BYTE, vec![constant(0), scalar.clone(), constant(0)]),
+        ] {
+            let expected = domain.observe_byte(op, &args);
+            assert_eq!(
+                Context::new(&facts, None).observe_byte(domain, op, &args),
+                expected
+            );
+            let oracle = Context::prepared(&facts, &conditional, domain, quote.nodes);
+            assert_eq!(oracle.observe_byte(domain, op, &args), expected);
+            assert_eq!(numeric_work(&oracle.demand_payments()), 0);
+            assert_eq!(oracle.reader_calls(), (1, 0));
+            let price = domain.operation_work(&args);
+            let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+                let usage = root.demand_usage();
+                assert_eq!(root.observe_byte(domain, op, &args), expected);
+                assert_eq!(root.apply(domain, op, &args), domain.apply(op, &args));
+                assert_eq!(root.reader_calls(), (2, 0));
+                assert_eq!(root.demand_usage(), usage);
+            });
+            assert_eq!(
+                trace
+                    .iter()
+                    .filter(|(number, _)| *number)
+                    .map(|(_, work)| *work)
+                    .collect::<Vec<_>>(),
+                [price, price]
+            );
+        }
+    }
+}
+
+#[test]
+fn byte_observation_checks_the_complete_frozen_policy_before_any_evaluation() {
+    use crate::domain::{DomainSpec, Profile};
+    use revm_bytecode::opcode;
+    use std::num::NonZeroUsize;
+    let domain = crate::world::bytes::numeric::numeric_domain(Domain::default());
+    let spec = domain.spec();
+    let changed = |capacity, rounds, facts, relations| {
+        Domain::from_spec(
+            DomainSpec::new(
+                Profile::Product,
+                NonZeroUsize::new(capacity).unwrap(),
+                NonZeroUsize::new(rounds).unwrap(),
+                NonZeroUsize::new(facts).unwrap(),
+            )
+            .with_relations(relations),
+        )
+    };
+    let policies = [
+        Domain::from_spec(
+            DomainSpec::new(
+                Profile::ConstantsOnly,
+                NonZeroUsize::new(spec.capacity()).unwrap(),
+                NonZeroUsize::new(spec.reduction_rounds()).unwrap(),
+                NonZeroUsize::new(spec.fact_limit()).unwrap(),
+            )
+            .with_relations(spec.relations()),
+        ),
+        changed(
+            spec.capacity() + 1,
+            spec.reduction_rounds(),
+            spec.fact_limit(),
+            spec.relations(),
+        ),
+        changed(
+            spec.capacity(),
+            spec.reduction_rounds() + 1,
+            spec.fact_limit(),
+            spec.relations(),
+        ),
+        changed(
+            spec.capacity(),
+            spec.reduction_rounds(),
+            spec.fact_limit() + 1,
+            spec.relations(),
+        ),
+        changed(
+            spec.capacity(),
+            spec.reduction_rounds(),
+            spec.fact_limit(),
+            RelationLimits {
+                max_nodes: spec.relations().max_nodes + 1,
+                ..spec.relations()
+            },
+        ),
+    ];
+    let facts = Facts::new();
+    let conditional = ConditionalFacts::default();
+    let quote = preparation_for(&facts, &conditional, domain);
+    for changed in policies {
+        let mut budget = WorkBudget::new(usize::MAX);
+        let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+            .unwrap()
+            .unwrap();
+        let trace = root.demand_payments();
+        let usage = root.demand_usage();
+        let args = [constant(31), AbstractValue::unknown_address()];
+        assert_eq!(
+            root.observe_byte(changed, opcode::BYTE, &args),
+            AbstractValue::top()
+        );
+        assert!(root.cache_refused());
+        assert!(!root.work_exhausted());
+        let clone = root.clone();
+        assert_eq!(
+            clone.observe_byte(domain, opcode::BYTE, &args),
+            AbstractValue::top()
+        );
+        assert_eq!(
+            clone.apply(domain, opcode::BYTE, &args),
+            AbstractValue::top()
+        );
+        assert_eq!(root.reader_calls(), (0, 0));
+        assert_eq!(root.demand_payments(), trace);
+        assert_eq!(root.demand_usage(), usage);
+    }
+}
+
+#[test]
+fn cancellation_before_a_byte_observation_precedes_payment_and_finite_fallback() {
+    use revm_bytecode::opcode;
+    let domain = crate::world::bytes::numeric::numeric_domain(Domain::default());
+    let facts = Facts::new();
+    let conditional = ConditionalFacts::default();
+    let quote = preparation_for(&facts, &conditional, domain);
+    let mut budget = WorkBudget::new(usize::MAX);
+    let root = Context::budgeted(&facts, &conditional, domain, &quote, &mut budget)
+        .unwrap()
+        .unwrap();
+    let clone = root.clone();
+    let unmetered = Context::new(&facts, None);
+    let trace = root.demand_payments();
+    let usage = root.demand_usage();
+    let token = analysis_control::Cancellation::new();
+    token.cancel();
+    let args = [constant(31), constant(0x1122)];
+    analysis_control::with_cancellation(&token, || {
+        assert_eq!(
+            root.observe_byte(domain, opcode::BYTE, &args),
+            AbstractValue::top()
+        );
+        assert_eq!(
+            unmetered.observe_byte(domain, opcode::BYTE, &args),
+            AbstractValue::top()
+        );
+        assert_eq!(root.check(), Err(ExprError::Cancelled));
+    });
+    assert_eq!(clone.check(), Err(ExprError::Cancelled));
+    assert_eq!(
+        clone.observe_byte(domain, opcode::BYTE, &args),
+        AbstractValue::top()
+    );
+    assert_eq!(root.demand_payments(), trace);
+    assert_eq!(root.demand_usage(), usage);
+    assert_eq!(root.reader_calls(), (0, 0));
+    assert!(!root.work_exhausted());
+    assert!(!root.cache_refused());
+}
+
 fn constant(value: usize) -> AbstractValue {
     AbstractValue::constant(U256::from(value))
 }
