@@ -7,6 +7,8 @@ fn process_identities_are_canonical_decimal_strings_over_the_full_u64_interval()
         0,
         1,
         u64::from(u32::MAX) + 1,
+        9_007_199_254_740_991,
+        9_007_199_254_740_992,
         9_007_199_254_740_993,
         u64::MAX,
     ] {
@@ -30,6 +32,31 @@ fn process_identities_are_canonical_decimal_strings_over_the_full_u64_interval()
             serde_json::from_str::<InputIdentity>(&encoded).unwrap(),
             input
         );
+    }
+    let adjacent = [
+        9_007_199_254_740_991,
+        9_007_199_254_740_992,
+        9_007_199_254_740_993,
+    ]
+    .map(|value| InputIdentity {
+        scope: DecimalU64(value),
+        symbol: InputSymbol {
+            kind: InputSymbolKind::CallValue,
+            index: None,
+        },
+    });
+    let encoded = adjacent
+        .each_ref()
+        .map(|input| serde_json::to_string(input).unwrap());
+    for first in 0..adjacent.len() {
+        for second in first + 1..adjacent.len() {
+            assert_ne!(adjacent[first], adjacent[second]);
+            assert_ne!(encoded[first], encoded[second]);
+            assert_ne!(
+                serde_json::from_str::<InputIdentity>(&encoded[first]).unwrap(),
+                serde_json::from_str::<InputIdentity>(&encoded[second]).unwrap()
+            );
+        }
     }
     for invalid in [
         "0",

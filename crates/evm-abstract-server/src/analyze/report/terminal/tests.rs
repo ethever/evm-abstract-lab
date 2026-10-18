@@ -235,6 +235,221 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
 }
 
 #[test]
+fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_code() {
+    let mut request = api::AnalyzeRequest::default();
+    request.input = api::AnalysisInput::Bytecode(api::BytecodeInput {
+        bytecode: TWO_BLOCK_RETURN.into(),
+        address: None,
+    });
+    request.limits.max_transfers = 1;
+    request.limits.root_terminal_coverage = true;
+    let report = crate::analyze::analyze(request).unwrap();
+    report.validate().unwrap();
+    let coverage = report.root_terminal_coverage.as_ref().unwrap();
+    assert_eq!(coverage.trigger, api::RootTerminalTrigger::Transfers);
+    let input = &coverage.input;
+    assert_eq!(
+        input.environment.to,
+        api::AddressValue::Symbolic(value::symbol(evm_abstract::domain::identity::Symbol::To))
+    );
+    assert_eq!(input.frame.address_value, input.environment.to);
+    assert_eq!(input.frame.address, input.entry_address);
+    let program = report
+        .programs
+        .iter()
+        .find(|program| program.id == input.program)
+        .unwrap();
+    assert_eq!(program.kind, api::CodeKind::Runtime);
+    assert_eq!(program.code_hash, input.frame.code_hash);
+    assert_eq!(program.bytecode, format!("0x{TWO_BLOCK_RETURN}"));
+    let returned = &report.stores[coverage.outcomes[0].store];
+    assert!(returned.code_default.is_none());
+    assert!(returned.accounts.is_empty());
+}
+
+#[test]
+fn original_root_frame_requires_the_admitted_runtime_entry_shape() {
+    let (native, request) = fixture(true, false, false);
+    let report = project(&native, &request);
+    let input = &report.root_terminal_coverage.as_ref().unwrap().input;
+    let blocks = report
+        .programs
+        .iter()
+        .find(|program| program.id == input.program)
+        .unwrap()
+        .blocks
+        .len();
+    assert!(blocks > 1);
+    assert_eq!(input.frame.mode, api::RootTerminalFrameCode::Runtime);
+    assert_eq!(input.frame.basic_block_index, 0);
+    assert_eq!(input.frame.stack_height, 0);
+    assert!(input.frame.jump_history.is_empty());
+    for (basic_block_index, stack_height, jump_history) in [
+        (blocks, 0, vec![]),
+        (1, 0, vec![]),
+        (0, 1, vec![]),
+        (0, 0, vec![0]),
+    ] {
+        let mut invalid = report.clone();
+        let frame = &mut invalid.root_terminal_coverage.as_mut().unwrap().input.frame;
+        frame.basic_block_index = basic_block_index;
+        frame.stack_height = stack_height;
+        frame.jump_history = jump_history;
+        assert_eq!(
+            invalid.validate(),
+            Err(api::ReportValidationFailure::RootTerminal(
+                api::RootTerminalValidationFailure::Frame
+            ))
+        );
+    }
+    for (mode, kind) in [
+        (
+            api::RootTerminalFrameCode::InitCode,
+            api::CodeKind::Initcode,
+        ),
+        (api::RootTerminalFrameCode::Empty, api::CodeKind::Empty),
+        (
+            api::RootTerminalFrameCode::Precompile("0x1".into()),
+            api::CodeKind::Precompile,
+        ),
+        (
+            api::RootTerminalFrameCode::InvalidDelegation,
+            api::CodeKind::InvalidDelegation,
+        ),
+        (
+            api::RootTerminalFrameCode::Unknown,
+            api::CodeKind::AbstractEnvironment,
+        ),
+    ] {
+        let mut invalid = report.clone();
+        let input = &mut invalid.root_terminal_coverage.as_mut().unwrap().input;
+        input.frame.mode = mode;
+        // Matching a non-runtime program kind cannot admit a different root.
+        invalid
+            .programs
+            .iter_mut()
+            .find(|program| program.id == input.program)
+            .unwrap()
+            .kind = kind;
+        assert_eq!(
+            invalid.validate(),
+            Err(api::ReportValidationFailure::RootTerminal(
+                api::RootTerminalValidationFailure::Frame
+            ))
+        );
+    }
+}
+
+#[test]
+fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
+    // Disjoint writes grow the actual complete memory root past its finite
+    // bound. The initial JUMP leaves a second real state for the mismatch case.
+    let mut bytecode = String::from("6003565b");
+    for offset in 0..32 {
+        bytecode.push_str(&format!("3461{:04x}52", offset * 32));
+    }
+    bytecode.push_str("00");
+    let owner = Address::repeat_byte(0x11);
+    let mut world = World::offline(Fork::Osaka, "raw retention site", "wire fixture");
+    world
+        .insert(owner, Account::from_hex(&bytecode, Fork::Osaka).unwrap())
+        .unwrap();
+    let mut request = api::AnalyzeRequest::default();
+    request.input = api::AnalysisInput::Bytecode(api::BytecodeInput {
+        bytecode,
+        address: None,
+    });
+    request.limits.root_terminal_coverage = true;
+    request.limits.max_expression_nodes = 64;
+    let native = analysis::analyze_world(
+        world,
+        Entry {
+            address: owner,
+            environment: input::environment(&request.environment).unwrap(),
+        },
+        input::config(&request.limits).unwrap(),
+    )
+    .unwrap();
+    // Obtain the cause only from the immutable native attachment, never from
+    // a flattened frontier category or a manually constructed certificate.
+    let analysis::RootTerminalTrigger::MandatoryRetention { state, pc, kind } =
+        native.root_terminal_coverage().unwrap().trigger()
+    else {
+        panic!("expected actual mandatory retention")
+    };
+    assert!(
+        native
+            .frontiers()
+            .iter()
+            .any(|frontier| frontier.from == Some(*state) && frontier.pc == Some(*pc))
+    );
+    let report = project(&native, &request);
+    assert_eq!(report.status, api::AnalysisStatus::Incomplete);
+    let expected = api::RootTerminalRetentionTrigger {
+        state: *state,
+        pc: *pc,
+        kind: match kind {
+            analysis::RootTerminalRetention::Expression => api::RootTerminalRetention::Expression,
+            analysis::RootTerminalRetention::State => api::RootTerminalRetention::State,
+        },
+    };
+    assert_eq!(
+        report.root_terminal_coverage.as_ref().unwrap().trigger,
+        api::RootTerminalTrigger::MandatoryRetention(expected.clone())
+    );
+    let other_state = report
+        .states
+        .iter()
+        .find(|state| state.state != expected.state)
+        .unwrap()
+        .state;
+    for which in 0..3 {
+        let mut invalid = report.clone();
+        let api::RootTerminalTrigger::MandatoryRetention(trigger) =
+            &mut invalid.root_terminal_coverage.as_mut().unwrap().trigger
+        else {
+            unreachable!()
+        };
+        match which {
+            0 => trigger.pc = usize::MAX,
+            1 => invalid.frontiers.retain(|frontier| {
+                frontier.from != Some(expected.state) || frontier.pc != Some(expected.pc)
+            }),
+            _ => trigger.state = other_state,
+        }
+        assert!(
+            invalid
+                .states
+                .iter()
+                .any(|state| state.state == expected.state)
+        );
+        assert_eq!(
+            invalid.validate(),
+            Err(api::ReportValidationFailure::RootTerminal(
+                api::RootTerminalValidationFailure::RetentionSite
+            ))
+        );
+    }
+    let mut invalid = report;
+    let api::RootTerminalTrigger::MandatoryRetention(trigger) =
+        &mut invalid.root_terminal_coverage.as_mut().unwrap().trigger
+    else {
+        unreachable!()
+    };
+    trigger.state = usize::MAX;
+    assert!(matches!(
+        invalid.validate(),
+        Err(api::ReportValidationFailure::Pool(
+            api::PoolReferenceFailure {
+                kind: api::PoolReferenceKind::MachineState,
+                index: usize::MAX,
+                ..
+            }
+        ))
+    ));
+}
+
+#[test]
 fn chain_identity_and_static_nonselected_account_state_survive_projection() {
     let (native, request) = fixture(true, true, true);
     let report = project(&native, &request);

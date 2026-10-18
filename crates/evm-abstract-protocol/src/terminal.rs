@@ -288,6 +288,8 @@ choice! {
         Fork,
         /// Original physical/logical frame or source binding disagrees.
         Frame,
+        /// Raw retention state/PC has no matching exported frontier.
+        RetentionSite,
         /// Original effective environment disagrees with report metadata.
         Environment,
         /// Native execution settings disagree with effective report settings.

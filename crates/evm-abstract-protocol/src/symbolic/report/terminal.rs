@@ -54,18 +54,27 @@ impl Validation<'_> {
         self.store(input.initial_store)?;
         self.value(&input.call_value)?;
         self.environment(&input.environment)?;
-        if let crate::RootTerminalTrigger::MandatoryRetention(trigger) = &source.trigger
-            && !self
+        if let crate::RootTerminalTrigger::MandatoryRetention(trigger) = &source.trigger {
+            if !self
                 .report
                 .states
                 .iter()
                 .any(|state| state.state == trigger.state)
-        {
-            return Err(ReportValidationFailure::Pool(crate::PoolReferenceFailure {
-                kind: crate::PoolReferenceKind::MachineState,
-                index: trigger.state,
-                length: self.report.states.len(),
-            }));
+            {
+                return Err(ReportValidationFailure::Pool(crate::PoolReferenceFailure {
+                    kind: crate::PoolReferenceKind::MachineState,
+                    index: trigger.state,
+                    length: self.report.states.len(),
+                }));
+            }
+            // Core captures this exact exported site before flattening. A
+            // procedure site need not name an opcode in the root program;
+            // public frontier categories cannot reconstruct the raw cause.
+            if !self.report.frontiers.iter().any(|frontier| {
+                frontier.from == Some(trigger.state) && frontier.pc == Some(trigger.pc)
+            }) {
+                return Err(invalid(Failure::RetentionSite));
+            }
         }
         let metadata = &self.report.metadata;
         match (&input.snapshot, &metadata.snapshot) {
@@ -145,14 +154,6 @@ impl Validation<'_> {
         if programs.next().is_some() {
             return Err(invalid(Failure::Frame));
         }
-        let kind = match frame.mode {
-            RootTerminalFrameCode::Runtime => crate::CodeKind::Runtime,
-            RootTerminalFrameCode::InitCode => crate::CodeKind::Initcode,
-            RootTerminalFrameCode::Empty => crate::CodeKind::Empty,
-            RootTerminalFrameCode::Precompile(_) => crate::CodeKind::Precompile,
-            RootTerminalFrameCode::InvalidDelegation => crate::CodeKind::InvalidDelegation,
-            RootTerminalFrameCode::Unknown => crate::CodeKind::AbstractEnvironment,
-        };
         if input.entry_address != metadata.entry_address
             || frame.address != input.entry_address
             || frame.address_value != input.environment.to
@@ -160,10 +161,13 @@ impl Validation<'_> {
             || frame.is_static != input.environment.is_static
             || program.code_address != frame.code_address
             || program.code_hash != frame.code_hash
-            || program.kind != kind
+            || frame.mode != RootTerminalFrameCode::Runtime
+            || program.kind != crate::CodeKind::Runtime
             || metadata.root_program != Some(input.program)
-            || frame.basic_block_index > program.blocks.len()
-            || frame.jump_history.len() as u64 > config.context_depth
+            || program.blocks.is_empty()
+            || frame.basic_block_index != 0
+            || frame.stack_height != 0
+            || !frame.jump_history.is_empty()
         {
             return Err(invalid(Failure::Frame));
         }
