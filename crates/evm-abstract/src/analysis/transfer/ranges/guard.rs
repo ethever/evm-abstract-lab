@@ -8,7 +8,10 @@ use super::{
     AbstractValue, Domain, GuardRetention, RangeKind, RangeRequest, TransferContext,
     literal_memory_singleton_work, logical,
 };
-use crate::{domain::WorkExhausted, resource::WorkBudget};
+use crate::{
+    domain::{WorkExhausted, symbolic::ExprId},
+    resource::WorkBudget,
+};
 use revm_bytecode::opcode;
 
 // A fixed tariff for at most two operands' cached metadata and scalar quotes:
@@ -41,7 +44,8 @@ impl Builder<'_> {
         &mut self,
         value: &AbstractValue,
         enabled: bool,
-    ) -> Result<AbstractValue, WorkExhausted> {
+        fresh: impl FnOnce() -> Option<ExprId>,
+    ) -> Result<(AbstractValue, bool), WorkExhausted> {
         self.pay(QUOTE_WORK)?;
         // The extra leaf covers identify's possible fresh expression. This
         // reservation includes the copy's release on every later exit path.
@@ -51,7 +55,7 @@ impl Builder<'_> {
             0
         });
         self.pay(work)?;
-        Ok(super::super::relations::identify(value.clone(), enabled))
+        Ok(identify(value.clone(), enabled, fresh))
     }
 
     fn copied(
@@ -80,6 +84,22 @@ impl Builder<'_> {
         self.retention.record(reduction.symbolic_error.as_ref());
         Ok(reduction.value)
     }
+}
+
+// Keep relations::identify's query order and returned value, but retain the
+// otherwise unmarked identity refusal without repeating its singleton query.
+fn identify(
+    value: AbstractValue,
+    enabled: bool,
+    fresh: impl FnOnce() -> Option<ExprId>,
+) -> (AbstractValue, bool) {
+    if enabled && value.singleton().is_none() && value.expression().is_none() {
+        return match fresh() {
+            Some(expression) => (value.with_expression(expression), false),
+            None => (value, true),
+        };
+    }
+    (value, false)
 }
 
 fn release_work(work: usize) -> usize {
@@ -132,6 +152,15 @@ pub(super) fn build(
     size: &AbstractValue,
     context: &mut TransferContext<'_>,
 ) -> Result<PreparedGuard, WorkExhausted> {
+    build_with_allocator(offset, size, context, ExprId::fresh)
+}
+
+fn build_with_allocator(
+    offset: &AbstractValue,
+    size: &AbstractValue,
+    context: &mut TransferContext<'_>,
+    mut fresh: impl FnMut() -> Option<ExprId>,
+) -> Result<PreparedGuard, WorkExhausted> {
     // Pay before reading operand metadata or constructing any local value.
     if context.budget.exhausted() || !context.budget.charge(QUOTE_WORK) {
         return Err(WorkExhausted);
@@ -142,11 +171,14 @@ pub(super) fn build(
         retention: GuardRetention::new(offset, size),
     };
     let enabled = context.config.analysis.relations.enabled;
-    let offset = builder.identify(offset, enabled)?;
-    let size = builder.identify(size, enabled)?;
-    // Identification can itself lose a fresh identity; do not attribute that
-    // inherited refusal to a later finite operation in this guard.
+    let (offset, offset_identity_failed) = builder.identify(offset, enabled, &mut fresh)?;
+    let (size, size_identity_failed) = builder.identify(size, enabled, &mut fresh)?;
     builder.retention = GuardRetention::new(&offset, &size);
+    // A declined fresh identity leaves the value unmarked. Its explicit veto
+    // must survive any later finite operation error in this guard.
+    if offset_identity_failed || size_identity_failed {
+        builder.retention.veto_identity_failure();
+    }
     builder.pay(copy_work(CONSTANT_WORK_SIZE).saturating_mul(2))?;
     let request = RangeRequest {
         kind: RangeKind::LogicalMemory,

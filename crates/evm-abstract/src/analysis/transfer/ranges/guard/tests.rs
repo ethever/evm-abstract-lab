@@ -414,3 +414,185 @@ fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fall
         assert!(result.retention_failures.is_empty());
     });
 }
+
+#[test]
+fn identification_outcomes_preserve_value_layers_and_the_same_payment() {
+    for flagged in [false, true] {
+        let mut original = inputs().0;
+        original.forget_expression();
+        if flagged {
+            original = original.with_symbolic_limit();
+        }
+        for expression in [None, Some(ExprId::input(83, Symbol::Timestamp))] {
+            let expected_failure = expression.is_none();
+            let expected = expression.as_ref().map_or_else(
+                || original.clone(),
+                |expression| original.clone().with_expression(expression.clone()),
+            );
+            let mut budget = WorkBudget::new(usize::MAX);
+            let mut builder = Builder {
+                domain: Domain::default(),
+                budget: &mut budget,
+                retention: GuardRetention::new(&original, &original),
+            };
+            let mut allocations = 0;
+            let (actual, identity_failed) = builder
+                .identify(&original, true, || {
+                    allocations += 1;
+                    expression
+                })
+                .unwrap();
+            assert_eq!(allocations, 1);
+            assert_eq!(identity_failed, expected_failure);
+            assert_same_value(&actual, &expected);
+            assert_eq!(actual.identity(), original.identity());
+            assert_eq!(actual.provenance(), original.provenance());
+            assert_eq!(actual.symbolic_limit_reached(), flagged);
+            assert_eq!(
+                budget.used(),
+                QUOTE_WORK
+                    + copy_work(original.work_size() + 1)
+                    + literal_memory_singleton_work(&original)
+            );
+            assert!(!budget.exhausted());
+        }
+    }
+}
+
+#[test]
+fn identification_short_circuits_without_calling_the_allocator() {
+    for (original, enabled) in [
+        (AbstractValue::top(), false),
+        (inputs().0.with_symbolic_limit(), true),
+        (word(7), true),
+        (
+            AbstractValue::unsigned_range(U256::from(7), U256::from(7)).unwrap(),
+            true,
+        ),
+        (
+            word(7).with_expression(ExprId::input(83, Symbol::Timestamp)),
+            true,
+        ),
+    ] {
+        let (actual, identity_failed) = super::identify(original.clone(), enabled, || {
+            panic!("identification must not allocate on a short-circuited path")
+        });
+        assert_same_value(&actual, &original);
+        assert!(!identity_failed);
+    }
+}
+
+#[test]
+fn unmarked_offset_identity_failure_vetoes_the_real_finite_guard_error() {
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.max_nodes = 1;
+    let domain = config.domain().unwrap();
+    let offset = AbstractValue::top();
+    let size = inputs().1;
+    let steps = reference(&offset, &size, domain);
+    assert_eq!(
+        steps[0].2.symbolic_error,
+        Some(ExprError::Limit { nodes: 2, depth: 2 })
+    );
+    assert!(
+        steps[1..]
+            .iter()
+            .all(|step| step.2.symbolic_error.is_none())
+    );
+
+    let mut allocations = 0;
+    let mut budget = WorkBudget::new(usize::MAX);
+    let mut built =
+        super::build_with_allocator(&offset, &size, &mut context(&config, &mut budget), || {
+            allocations += 1;
+            None
+        })
+        .unwrap();
+    assert_eq!(allocations, 1);
+    assert_same_value(&built.request.offset, &offset);
+    assert!(!built.request.offset.symbolic_limit_reached());
+    assert_same_value(&built.request.size, &size);
+    assert_same_value(&built.condition, &steps[7].2.value);
+    assert!(built.condition.singleton().is_none());
+    assert!(built.condition.symbolic_expression().is_none());
+    assert!(built.condition.may_be_zero() && built.condition.may_be_nonzero());
+    let (prefix, cost) = *operation_refusals(&offset, &size, domain).last().unwrap();
+    assert_eq!(
+        budget.used(),
+        prefix + cost + QUOTE_WORK + literal_memory_singleton_work(&built.condition)
+    );
+    assert!(!budget.exhausted());
+    assert_eq!(built.retention.cause(), None);
+    built.retention.record(None);
+    built.retention.record(steps[0].2.symbolic_error.as_ref());
+    assert_eq!(built.retention.cause(), None);
+
+    let mut previously_eligible = GuardRetention::new(&offset, &size);
+    previously_eligible.record(steps[0].2.symbolic_error.as_ref());
+    assert_eq!(
+        previously_eligible.cause(),
+        Some(RetentionCause::Expression)
+    );
+    previously_eligible.veto_identity_failure();
+    previously_eligible.record(steps[0].2.symbolic_error.as_ref());
+    assert_eq!(previously_eligible.cause(), None);
+
+    let (world, entry) = fixture(&[(0x101, "00")]);
+    let mut result = empty_execution(initial(&world, &entry, domain).unwrap());
+    let before = result.payload.clone();
+    assert!(
+        super::super::partition(
+            &mut result,
+            &built.request,
+            &built.condition,
+            Some(&built.retention),
+            &mut context(&config, &mut budget),
+            19,
+        )
+        .is_none()
+    );
+    assert_eq!(result.payload, before);
+    assert_eq!(result.frontiers.len(), 1);
+    assert_eq!(result.frontiers[0].pc, 19);
+    assert_eq!(
+        result.frontiers[0].reason,
+        FrontierReason::Relations(QueryReason::ExpressionLimit)
+    );
+    assert!(result.retention_failures.is_empty());
+    assert!(result.outcomes.is_empty());
+    assert!(result.successors.is_empty());
+    assert!(!budget.exhausted());
+    let witness = result.frontiers[0].range.as_ref().unwrap();
+    assert_same_value(&witness.request.offset, &offset);
+    assert_same_value(&witness.request.size, &size);
+    assert_same_value(&witness.condition, &built.condition);
+    assert_eq!(*witness.payload, before);
+}
+
+#[test]
+fn unmarked_size_identity_failure_also_vetoes_finite_guard_evidence() {
+    let mut config = ExecutionConfig::default();
+    config.analysis.relations.max_nodes = 1;
+    let offset = inputs().0;
+    let size = AbstractValue::top();
+    let steps = reference(&offset, &size, config.domain().unwrap());
+    assert_eq!(
+        steps[1].2.symbolic_error,
+        Some(ExprError::Limit { nodes: 3, depth: 2 })
+    );
+    let mut allocations = 0;
+    let mut budget = WorkBudget::new(usize::MAX);
+    let built =
+        super::build_with_allocator(&offset, &size, &mut context(&config, &mut budget), || {
+            allocations += 1;
+            None
+        })
+        .unwrap();
+    assert_eq!(allocations, 1);
+    assert_same_value(&built.request.offset, &offset);
+    assert_same_value(&built.request.size, &size);
+    assert!(!built.request.size.symbolic_limit_reached());
+    assert_same_value(&built.condition, &steps[7].2.value);
+    assert_eq!(built.retention.cause(), None);
+    assert!(!budget.exhausted());
+}

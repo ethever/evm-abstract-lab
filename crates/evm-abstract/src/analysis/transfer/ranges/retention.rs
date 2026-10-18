@@ -24,6 +24,12 @@ impl GuardRetention {
         }
     }
 
+    /// A declined identity is independent of this guard's finite retention cap.
+    pub(super) fn veto_identity_failure(&mut self) {
+        self.cause = None;
+        self.blocked = true;
+    }
+
     /// Record each original guard operation once. No new error preserves the
     /// earlier cause; an ineligible raw error permanently clears it.
     pub(super) fn record(&mut self, error: Option<&ExprError>) {
