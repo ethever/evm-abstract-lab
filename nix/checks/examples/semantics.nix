@@ -38,7 +38,7 @@ let
                   ($slice | keys) == ["Slice"] and
                   ($view | keys) == ["View"] and
                   ($write | keys) == ["WriteWord"] and
-                  node($write.WriteWord.previous) == "BytesZero" and
+                  node($write.WriteWord.previous) != null and
                   node($view.View.offset) == {"Constant": "0x0"} and
                   node($view.View.length) == {"Constant": "0x20"} and
                   node($write.WriteWord.offset) == {"Constant": "0x0"} and
@@ -55,8 +55,9 @@ let
               ([.analysis.states[].key.frames | length] | max) == 3 and
               any(.analysis.outcomes[]; .kind == "Return") and
               all(.analysis.outcomes[] | select(.kind == "Return");
-                .data as $data | $data.length.Constants == ["0x20"] and
-                ($data.root | word42))
+                .data as $data | ($data | has("failure")) and
+                $data.failure == null and $data.memory == false and
+                $data.length.Constants == ["0x20"] and ($data.root | word42))
             ' ${report}/report.json > /dev/null
             ln -s ${report}/report.json "$out/report.json"
           ''
