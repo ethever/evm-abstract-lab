@@ -265,13 +265,15 @@ def storage_table_interactions(browser, url: str, output: Path):
                   "changed_tail_columns":[min(changed),max(changed)],"rejection":str(error)}
     else:
         raise AssertionError("reviewed complete Value accepted an incorrect last glyph")
-    # The same real analysis also changed the Slot's final digit. Restore its
-    # full width so the complete Slot oracle sees all 66 glyphs, not a suffix.
-    drag_storage_separator(page,wrong,results["storage"]["initial"]["separator"])
+    # The same real analysis also changed the Slot's final digit. Reuse the
+    # measured wide column, already checked to fit the complete Slot in this
+    # viewport: the initial auto-fit width can still elide a manually sized galley.
+    drag_storage_separator(page,wrong,results["storage"]["wide"]["separator"])
     wrong_full=storage_table_snapshot(page,canvas,output,"storage-table-wrong-last-slot-glyph",tab[3],len(slots))
     wrong_slot=wrong_full["rows"][-1]["slot"]
     assert len(storage_glyph_cells(wrong_slot))==len(word),storage_pixel_report(wrong_slot)
     assert wrong_slot["bounds"][2]-wrong_slot["bounds"][0]>500,storage_pixel_report(wrong_slot)
+    assert all(glyph["mask_size"][1]>3 for glyph in storage_glyph_cells(wrong_slot)[:3]),"full Slot negative has a leading ellipsis"
     try:
         assert_storage_literal_pixels(wrong_slot,word)
     except AssertionError as error:
