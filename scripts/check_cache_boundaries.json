@@ -365,16 +365,119 @@
       ]
     },
     {
-      "name": "no-smt-scale-fixture-isolation",
-      "description": "A scale fixture input changes only the independent scripts/JSON contract check, never an engine build or browser check.",
+      "name": "no-smt-scale-corpus-isolation",
+      "description": "Benchmark-only fixtures, manifest, commands and captured requests change only the independent scripts/JSON contract check, preserving every Rust and browser closure.",
+      "mutations": [
+        {
+          "path": "examples/no-smt-scale/code-only/unknown-callback.json",
+          "append": "\n"
+        },
+        {
+          "path": "examples/no-smt-scale/manifest.json",
+          "append": "\n"
+        },
+        {
+          "path": "examples/no-smt-scale/commands-e325-native.json",
+          "append": "\n"
+        },
+        {
+          "path": "examples/no-smt-scale/wire14/usdc-original-request.json",
+          "append": "\n"
+        },
+        {
+          "path": "examples/no-smt-scale/wire14/weth-original-request.json",
+          "append": "\n"
+        }
+      ],
+      "only_changed": [
+        "no-smt-scale-contracts"
+      ]
+    },
+    {
+      "name": "no-smt-scale-memory-copy-test-fixture",
+      "description": "A compile-time core test fixture reaches core tests and all-target Clippy/Dylint in every feature configuration while preserving production, formatting and browser inputs.",
+      "mutations": [
+        {
+          "path": "examples/no-smt-scale/code-only/memory-copy.json",
+          "append": "\n"
+        }
+      ],
+      "changed": [
+        "*tests-evm-abstract",
+        "*clippy-evm-abstract",
+        "*no-dyn-evm-abstract",
+        "no-smt-scale-contracts"
+      ],
+      "unchanged": [
+        "*release-build*",
+        "*docs*",
+        "fmt",
+        "no-dyn-fmt",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser*",
+        "cargo-context-*",
+        "cargo-bindgen-environment",
+        "lean-proofs"
+      ]
+    },
+    {
+      "name": "no-smt-scale-loop-test-fixture",
+      "description": "A compile-time core test fixture reaches core tests and all-target Clippy/Dylint in every feature configuration while preserving production, formatting and browser inputs.",
+      "mutations": [
+        {
+          "path": "examples/no-smt-scale/code-only/loop.json",
+          "append": "\n"
+        }
+      ],
+      "changed": [
+        "*tests-evm-abstract",
+        "*clippy-evm-abstract",
+        "*no-dyn-evm-abstract",
+        "no-smt-scale-contracts"
+      ],
+      "unchanged": [
+        "*release-build*",
+        "*docs*",
+        "fmt",
+        "no-dyn-fmt",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser*",
+        "cargo-context-*",
+        "cargo-bindgen-environment",
+        "lean-proofs"
+      ]
+    },
+    {
+      "name": "no-smt-scale-unknown-input-test-fixture",
+      "description": "A compile-time core test fixture reaches core tests and all-target Clippy/Dylint in every feature configuration while preserving production, formatting and browser inputs.",
       "mutations": [
         {
           "path": "examples/no-smt-scale/code-only/unknown-input.json",
           "append": "\n"
         }
       ],
-      "only_changed": [
+      "changed": [
+        "*tests-evm-abstract",
+        "*clippy-evm-abstract",
+        "*no-dyn-evm-abstract",
         "no-smt-scale-contracts"
+      ],
+      "unchanged": [
+        "*release-build*",
+        "*docs*",
+        "fmt",
+        "no-dyn-fmt",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser*",
+        "cargo-context-*",
+        "cargo-bindgen-environment",
+        "lean-proofs"
       ]
     }
   ]
