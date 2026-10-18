@@ -121,11 +121,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 
 ## Screen16 实测结果（2026-10-18）
 
+最终默认选择为快速保守分析：CLI/Web 的 `max_work=2B`，库的 `max_work=20M`，两者均启用根终结覆盖；需要单独验收详细分析时使用显式 OFF。下面保留的是 Screen16 冻结源码和原固定 profile 的结果，不是最终默认配置的同输入验收。表中的 2B 仅改变原 profile 的工作预算，其他分析限制仍是捕获值，不能当作新 CLI/Web 默认的实测数据。最终接口的固定策略 OFF 复测须显式传 `--no-root-terminal-coverage`，不改原始捕获或历史 argv。
+
 冻结源码为干净提交 `e5f13b82c16798431ad0bf7cbb7cfdb7ef3dc2f3`（native10 / wire15 / cost3），CLI ELF SHA256 为 `e52e1086610c290347cf44f66e06b012baeecdca51dde088399a20730c774f7a`；输入 [`manifest.json`](manifest.json) 的原始字节 SHA256 为 `fba0c9099319e6dbe8d646731912e22ca9777885d496679a737f61f8e3ae51f0`。复现时将 `CHECKED_SOURCE` 固定到该提交，按上文使用[命令生成器](../../scripts/generate-no-smt-scale-commands.py)和[离线 runner](../../scripts/benchmark-no-smt-scale.py)，分别保存 OFF 与 ON profile。沿用原 captured world、请求和事实边界：WETH/USDC 分别仅有 1/2 个已观察账户，caller/value/calldata 保持 Unknown，无额外 RPC 或事实注入。
 
 每行均为同一 ELF 在 CPU 40 上顺序执行的一次离线 screen，无并行的所属 native、构建或浏览器任务。wall 从 ELF exec 到进程回收，包含 native JSON 序列化，排除 acquisition、网络、排队、构建及之后的 Python 解析、流式校验、传输和浏览器处理。原 wall/RSS、host free、轮询和报告 guard 均不变，所有运行均无外部停止。
 
-**OFF 七项。** OFF 指覆盖开关默认关闭，固定 profile 仍显式设置 `max_work=1T` 等原限制，并非全部 CLI 参数取默认值。
+**OFF 七项。** OFF 是 Screen16 源码的旧默认，固定 profile 仍显式设置 `max_work=1T` 等原限制，并非全部 CLI 参数取默认值。
 
 | case | native exit | wall（s） | peak RSS（KiB） | 原 64 MiB whole-report harness 验收 |
 | --- | --- | --- | --- | --- |
