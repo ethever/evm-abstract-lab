@@ -538,7 +538,7 @@ fn unmarked_offset_identity_failure_vetoes_the_real_finite_guard_error() {
     assert_eq!(previously_eligible.cause(), None);
 
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut result = empty_execution(initial(&world, &entry, domain).unwrap());
+    let mut result = empty_execution(initial(&world, &entry, Domain::default()).unwrap());
     let before = result.payload.clone();
     assert!(
         super::super::partition(
