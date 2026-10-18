@@ -909,17 +909,22 @@ fn failed_and_acquired_accounts_remain_paired_when_the_next_round_stops_early() 
             BTreeSet::from([address(0x200)]),
         );
         let input = server.input();
+        // Measure the detailed ledger cutoff without optional coverage preparation.
+        let detail_config = ExecutionConfig {
+            root_terminal_coverage: false,
+            ..config()
+        };
         // Measure the discovery-mode first round, keeping acquisition disabled
         // by its own account cap. Offline execution now covers missing code
         // through abstract interactions and is a different execution policy.
         let mut first_input = input.clone();
         first_input.max_accounts = 1;
-        let first_round = analysis::analyze_rpc(&first_input, entry(), config())
+        let first_round = analysis::analyze_rpc(&first_input, entry(), detail_config.clone())
             .unwrap()
             .into_analysis();
         assert_eq!(first_round.status(), Status::Incomplete);
         for limit in [Limit::States, Limit::Work] {
-            let mut bounded = config();
+            let mut bounded = detail_config.clone();
             match limit {
                 Limit::States => bounded.analysis.max_states = first_round.states().len() + 1,
                 Limit::Work => bounded.max_work = first_round.work() * 2,
