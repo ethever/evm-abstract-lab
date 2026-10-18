@@ -31,7 +31,7 @@ fn word(number: u64) -> AbstractValue {
 /// Full source identities include owner namespaces; word identities include
 /// input scopes. Retention ITEs always select nonzero, without branch search.
 /// Unobserved scalar fields are independent Cartesian bounds. Storage always
-/// needs a checked immutable expression, never just a numerical top/cache.
+/// needs a checked immutable expression or a proved singleton, never bare top.
 #[derive(Default)]
 struct JointWitness {
     words: BTreeMap<ExprId, U256>,
@@ -102,7 +102,8 @@ impl JointWitness {
         let value = store
             .read_checked(owner, &word(8), Domain::default())
             .unwrap();
-        value.expression().is_some() && self.scalar(&value, expected)
+        (value.expression().is_some() || value.singleton().is_some())
+            && self.scalar(&value, expected)
     }
 
     fn account(
