@@ -2,8 +2,8 @@
 //! 四个输入来源互斥；世界/RPC 复用 analyze 的准入、采集与执行规则。
 
 use crate::{
-    AnalysisArgs, DomainProfile, Input, StorageSlot, WorldArgs, defaults, error::CliError,
-    evm::EvmArgs, number, parse_slot,
+    AnalysisArgs, DomainProfile, Input, RootTerminalCoverageArgs, StorageSlot, WorldArgs, defaults,
+    error::CliError, evm::EvmArgs, number, parse_slot, text_with_root_terminal_coverage,
 };
 use clap::{ArgGroup, Args};
 use evm_abstract::{Fork, analysis::Status, render, ssa};
@@ -34,6 +34,8 @@ pub(crate) struct ExplainArgs {
     /// Emit recorded partial SSA when frontiers remain; the exit code stays 2.
     #[arg(long)]
     allow_partial_ssa: bool,
+    #[command(flatten)]
+    coverage: RootTerminalCoverageArgs,
     /// Disable on-demand acquisition of missing RPC code and storage slots.
     #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     no_rpc_discovery: bool,
@@ -120,6 +122,7 @@ impl ExplainArgs {
                 slot: self.slot,
                 fork: self.fork,
                 no_summaries: self.no_summaries,
+                coverage: self.coverage,
                 evm: self.evm,
                 max_call_depth: self.max_call_depth,
                 max_work: self.max_work,
@@ -145,9 +148,13 @@ impl ExplainArgs {
             } else {
                 render::world::explain(&analysis)?
             };
-            return Ok((output, complete));
+            return Ok((
+                text_with_root_terminal_coverage(output, analysis.root_terminal_coverage()),
+                complete,
+            ));
         }
         let args = AnalysisArgs {
+            coverage: self.coverage,
             max_work: self.max_work,
             max_call_depth: self.max_call_depth,
             max_memory_bytes: self.max_memory_bytes,
@@ -185,6 +192,9 @@ impl ExplainArgs {
         } else {
             text.push_str("SSA unavailable: analysis frontiers remain\n");
         }
-        Ok((text, complete))
+        Ok((
+            text_with_root_terminal_coverage(text, analysis.root_terminal_coverage()),
+            complete,
+        ))
     }
 }

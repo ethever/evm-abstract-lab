@@ -7,7 +7,8 @@
 use super::{
     ConfigError, ExecutionConfig, FrontierReason, Limit, MachineFrontier, Status, WorldAnalysis,
     control::{Cancelled, Control},
-    engine::{self, Counters},
+    engine::Counters,
+    layers::SessionError,
     progress::{Observer, Phase},
     transfer::StorageReadPolicy,
 };
@@ -92,6 +93,9 @@ impl RpcAnalysis {
 /// Invalid configuration or failure acquiring the initial fixed world.
 #[derive(Debug, Error)]
 pub enum RpcAnalysisError {
+    /// Typed immutable observation/catalogue projection failed before execution.
+    #[error("{0}")]
+    Session(SessionError),
     /// Analysis did not start because its parameters were invalid.
     #[error("{0}")]
     Config(ConfigError),
@@ -101,6 +105,12 @@ pub enum RpcAnalysisError {
     /// No valid initial RPC world could be established.
     #[error("{0}")]
     Rpc(RpcError),
+}
+
+impl From<SessionError> for RpcAnalysisError {
+    fn from(error: SessionError) -> Self {
+        Self::Session(error)
+    }
 }
 
 impl From<Cancelled> for RpcAnalysisError {
@@ -200,6 +210,7 @@ fn analyze_controlled(
     let initial = Session::load_with_control(&input, control);
     control.checkpoint()?;
     let mut session = initial?;
+    let mut layered = session.layered(entry.clone(), config.clone())?;
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::with_observer(control.observer());
     let mut discovery = Discovery::default();
@@ -217,26 +228,12 @@ fn analyze_controlled(
             .saturating_add(entry.environment.work_size());
         if !budget.charge(copy_work) {
             let acquisition = discovery.acquisition(session.requests(), counters.states);
-            let world = session.into_world();
-            analysis = engine::run_metered(
-                world,
-                entry,
-                config,
-                &mut budget,
-                &mut counters,
-                StorageReadPolicy::Discover,
-            )?;
+            analysis =
+                layered.run_metered(&mut budget, &mut counters, StorageReadPolicy::Discover)?;
             control.checkpoint()?;
             return Ok(finish(analysis, acquisition, discovery));
         }
-        analysis = engine::run_metered(
-            session.world().clone(),
-            entry.clone(),
-            config.clone(),
-            &mut budget,
-            &mut counters,
-            StorageReadPolicy::Discover,
-        )?;
+        analysis = layered.run_metered(&mut budget, &mut counters, StorageReadPolicy::Discover)?;
         control.checkpoint()?;
         let mut accounts = BTreeSet::new();
         let mut storage: BTreeMap<Address, BTreeSet<U256>> = BTreeMap::new();
@@ -273,6 +270,7 @@ fn analyze_controlled(
                 Ok(installed) => {
                     progress |= installed;
                     if installed {
+                        session.refine_layered(&mut layered, [address])?;
                         discovery.fetched_accounts.insert(address);
                     }
                 }
@@ -298,6 +296,9 @@ fn analyze_controlled(
             control.checkpoint()?;
             match acquired {
                 Ok(installed) => {
+                    if !installed.is_empty() {
+                        session.refine_layered(&mut layered, [address])?;
+                    }
                     progress |= !installed.is_empty();
                     discovery.fetched_storage.extend(
                         installed
@@ -410,6 +411,12 @@ fn finish(
     acquisition: RpcAcquisition,
     mut discovery: Discovery,
 ) -> RpcAnalysis {
+    // A previous acquisition failure remains authoritative even if a later
+    // execution round stops before revisiting its demand. Disposal was prepaid
+    // by root preparation; provider failures never publish terminal coverage.
+    if !discovery.account_failures.is_empty() || !discovery.storage_failures.is_empty() {
+        analysis.root_terminal_coverage = None;
+    }
     for frontier in &mut analysis.frontiers {
         let failure = match frontier.reason {
             FrontierReason::MissingCode(address) => discovery

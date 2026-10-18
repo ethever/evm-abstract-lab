@@ -37,10 +37,12 @@ mod normalized;
 mod numbers;
 #[path = "cli/partial_ssa.rs"]
 mod partial_ssa;
+#[path = "cli/relations.rs"]
+mod relations;
+#[path = "cli/root_terminal_coverage.rs"]
+mod root_terminal_coverage;
 #[path = "cli/rpc.rs"]
 mod rpc;
-#[path = "cli/smt.rs"]
-mod smt;
 
 fn run_concrete(args: &[&str]) -> std::process::Output {
     let mut scoped = args.to_vec();
@@ -59,6 +61,67 @@ fn run_concrete(args: &[&str]) -> std::process::Output {
         .args(scoped)
         .output()
         .unwrap()
+}
+
+// These fixtures have one fixed, acyclic prefix. Visiting a given PC is
+// monotone in Work, so the full native run bounds at most usize::BITS bisections.
+// The first MLOAD visit consumes its offset before its positive read-scan fee;
+// callers still assert the actual phase/result rather than infer it here.
+fn work_limit_visiting_pc(
+    pc: usize,
+    mut run: impl FnMut(Option<usize>) -> std::process::Output,
+) -> usize {
+    let native = |output: std::process::Output| {
+        let exit = output.status.code();
+        assert!(
+            matches!(exit, Some(0 | 2)),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        if report.get("machine_analysis").is_some() {
+            report = report["machine_analysis"].take();
+        }
+        assert_eq!(report["status"] == "Converged", exit == Some(0));
+        report
+    };
+    let visited = |report: &serde_json::Value| {
+        report["states"].as_array().unwrap().iter().any(|state| {
+            state["executed_pcs"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(pc))
+        })
+    };
+    let complete = native(run(None));
+    assert_eq!(complete["status"], "Converged");
+    assert!(visited(&complete));
+    let mut upper = usize::try_from(complete["work"].as_u64().unwrap()).unwrap();
+    assert!(upper > 0);
+    let mut lower = 1;
+    for _ in 0..usize::BITS {
+        if lower == upper {
+            break;
+        }
+        let midpoint = lower + (upper - lower) / 2;
+        if visited(&native(run(Some(midpoint)))) {
+            upper = midpoint;
+        } else {
+            lower = midpoint + 1;
+        }
+    }
+    assert_eq!(lower, upper, "Work calibration must be bounded");
+    let boundary = native(run(Some(lower)));
+    assert_eq!(boundary["status"], "Incomplete");
+    assert!(visited(&boundary));
+    assert!(
+        boundary["frontiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|frontier| frontier["reason"] == "Work")
+    );
+    lower
 }
 
 #[test]
@@ -112,6 +175,22 @@ fn cfg_json_includes_status_contexts_and_unknown_jump_diagnostic() {
 
 #[test]
 fn cfg_file_preserves_default_128_and_explicit_context_depths() {
+    use std::collections::BTreeSet;
+
+    // Independent of transfer's remove/append/truncate implementation.
+    fn latest_distinct(sources: &[usize], depth: usize) -> Vec<usize> {
+        let mut seen = BTreeSet::new();
+        let mut newest: Vec<_> = sources
+            .iter()
+            .rev()
+            .copied()
+            .filter(|source| seen.insert(*source))
+            .take(depth)
+            .collect();
+        newest.reverse();
+        newest
+    }
+
     let path = format!(
         "{}/../../examples/internal-calls.hex",
         env!("CARGO_MANIFEST_DIR")
@@ -154,12 +233,9 @@ fn cfg_file_preserves_default_128_and_explicit_context_depths() {
                 .iter()
                 .all(|state| state["key"]["context"].as_array().unwrap().len() <= depth)
         );
-        // The finite execution performs jumps from blocks 0, 14, 5 and 14.
-        // Assert the actual suffix, including depth 0/1/2, rather than only
-        // echoing an admitted CLI argument or requiring a history longer than k.
+        // The second visit to source 14 moves it to the newest position.
         let complete_history = [0, 14, 5, 14];
-        let expected_history =
-            serde_json::json!(&complete_history[complete_history.len().saturating_sub(depth)..]);
+        let expected_history = serde_json::json!(latest_distinct(&complete_history, depth));
         assert!(
             states
                 .iter()
@@ -185,6 +261,192 @@ fn cfg_file_preserves_default_128_and_explicit_context_depths() {
                 if depth == 0 { 2 } else { 1 }
             );
         }
+    }
+
+    // 130 distinct sources exercise the default 128-entry bound and explicit
+    // depths without allocating from the requested depth (including usize::MAX).
+    for backedge in [None, Some(126usize)] {
+        let count = 130usize;
+        let stop_pc = count.checked_mul(5).unwrap();
+        let mut bytes = Vec::with_capacity(stop_pc.checked_add(2).unwrap());
+        for index in 0..count {
+            let next = index.checked_add(1).unwrap();
+            let target = if next == count {
+                backedge.unwrap_or(count)
+            } else {
+                next
+            };
+            let target = u16::try_from(target.checked_mul(5).unwrap())
+                .unwrap()
+                .to_be_bytes();
+            bytes.extend([0x5b, 0x61, target[0], target[1], 0x56]);
+        }
+        bytes.extend([0x5b, 0x00]);
+        let program = evm_abstract::bytecode::Program::decode(&bytes).unwrap();
+        assert_eq!(program.blocks().len(), count.checked_add(1).unwrap());
+        let source_pcs: Vec<_> = program.blocks()[..count]
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                assert_eq!(block.start_pc, index.checked_mul(5).unwrap());
+                let next = index.checked_add(1).unwrap();
+                let target = if next == count {
+                    backedge.unwrap_or(count)
+                } else {
+                    next
+                };
+                assert_eq!(block.instructions[0].opcode, 0x5b);
+                assert_eq!(block.instructions[1].opcode, 0x61);
+                assert_eq!(block.instructions[2].opcode, 0x56);
+                assert_eq!(
+                    block.instructions[1].immediate,
+                    Some(alloy_primitives::U256::from(
+                        program.blocks()[target].start_pc
+                    ))
+                );
+                block.start_pc
+            })
+            .collect();
+        assert_eq!(program.blocks()[count].start_pc, stop_pc);
+        assert_eq!(
+            source_pcs.iter().copied().collect::<BTreeSet<_>>().len(),
+            count
+        );
+        let mut trace = source_pcs.clone();
+        if let Some(target) = backedge {
+            for _ in 0..2 {
+                trace.extend_from_slice(&source_pcs[target..]);
+            }
+            trace.push(source_pcs[target]);
+        } else {
+            trace.push(stop_pc);
+        }
+        let path = std::env::temp_dir().join(format!(
+            "evm-cli-context-{}-{backedge:?}.hex",
+            std::process::id()
+        ));
+        std::fs::write(&path, alloy_primitives::hex::encode(&bytes)).unwrap();
+        for explicit in [
+            None,
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(8),
+            Some(10),
+            Some(128),
+            Some(usize::MAX),
+        ] {
+            let depth = explicit.unwrap_or(128);
+            let depth_arg = explicit.map(|depth| depth.to_string());
+            let mut args = vec!["cfg", "--file", path.to_str().unwrap(), "--format", "json"];
+            if let Some(depth_arg) = &depth_arg {
+                args.extend(["--context-depth", depth_arg.as_str()]);
+            }
+            let output = run_concrete(&args);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let cfg: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(cfg["config"]["context_depth"], depth);
+            assert_eq!(cfg["status"], "Converged");
+            assert_eq!(cfg["frontiers"], serde_json::json!([]));
+            let states = cfg["states"].as_array().unwrap();
+            for state in states {
+                let history: Vec<_> = state["key"]["context"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|pc| usize::try_from(pc.as_u64().unwrap()).unwrap())
+                    .collect();
+                assert_eq!(history, latest_distinct(&history, depth));
+                assert!(history.iter().all(|pc| source_pcs.contains(pc)));
+            }
+            if backedge.is_none() {
+                assert_eq!(states.len(), count.checked_add(1).unwrap());
+                assert_eq!(cfg["edges"].as_array().unwrap().len(), count);
+            }
+            let mut sources = Vec::new();
+            let mut previous = None;
+            let mut trace_states = BTreeSet::new();
+            for pc in &trace {
+                let block = program
+                    .blocks()
+                    .iter()
+                    .position(|block| block.start_pc == *pc)
+                    .unwrap();
+                let context = serde_json::json!(latest_distinct(&sources, depth));
+                let state = states
+                    .iter()
+                    .find(|state| {
+                        state["key"]["basic_block_index"] == block
+                            && state["key"]["context"] == context
+                    })
+                    .unwrap();
+                assert_eq!(state["entry_stack"], serde_json::json!([]));
+                assert_eq!(state["exit_stack"], serde_json::json!([]));
+                assert_eq!(
+                    state["executed_pcs"],
+                    serde_json::json!(
+                        program.blocks()[block]
+                            .instructions
+                            .iter()
+                            .map(|item| item.pc)
+                            .collect::<Vec<_>>()
+                    )
+                );
+                if let Some(previous) = previous {
+                    assert!(cfg["edges"].as_array().unwrap().iter().any(|edge| {
+                        edge["from"] == previous
+                            && edge["to"] == state["id"]
+                            && edge["kind"] == "Jump"
+                    }));
+                }
+                previous = state["id"].as_u64();
+                trace_states.insert(previous.unwrap());
+                sources.push(*pc);
+            }
+            assert_eq!(trace_states.len(), states.len());
+            // The real CLI invokes both the closed and normalized SSA verifiers.
+            args[0] = "ssa";
+            let output = run_concrete(&args);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let ssa: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(ssa["ssa"]["complete"], true);
+            for mapping in ssa["state_mapping"].as_array().unwrap() {
+                let local = mapping["local_state"].as_u64().unwrap() as usize;
+                let machine = mapping["machine_state"].as_u64().unwrap() as usize;
+                let state = &ssa["analysis"]["states"][local];
+                let native = &ssa["machine_analysis"]["states"][machine];
+                let frames = native["key"]["frames"].as_array().unwrap();
+                assert_eq!(frames.len(), 1);
+                assert_eq!(
+                    frames[0]["basic_block_index"],
+                    state["key"]["basic_block_index"]
+                );
+                assert_eq!(frames[0]["jump_history"], state["key"]["context"]);
+                assert_eq!(frames[0]["stack_height"], 0);
+                let block = state["key"]["basic_block_index"].as_u64().unwrap() as usize;
+                let body = ssa["ssa"]["blocks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|body| body["state"] == machine)
+                    .unwrap();
+                let rows = body["instructions"].as_array().unwrap();
+                assert_eq!(rows.len(), program.blocks()[block].instructions.len());
+                for (row, source) in rows.iter().zip(&program.blocks()[block].instructions) {
+                    assert_eq!(row["pc"], source.pc);
+                    assert_eq!(row["opcode"], source.opcode);
+                }
+            }
+        }
+        std::fs::remove_file(path).unwrap();
     }
 }
 
@@ -419,29 +681,51 @@ fn world_ssa_verifies_complete_calls_and_is_not_built_for_frontiers() {
 
 #[test]
 fn shared_budgets_keep_typed_frontiers_and_exit_two() {
+    let bounded = analyze(
+        "call-return-branch",
+        &["--format", "json", "--max-memory-bytes", "1"],
+    );
+    assert!(
+        bounded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&bounded.stderr)
+    );
+    let bounded: serde_json::Value = serde_json::from_slice(&bounded.stdout).unwrap();
+    assert_eq!(bounded["config"]["max_memory_bytes"], 1);
+    assert_eq!(bounded["status"], "Converged");
+    assert_eq!(bounded["frontiers"], serde_json::json!([]));
+    assert!(
+        bounded["outcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|outcome| outcome["kind"] == "Return")
+    );
     for (name, args, reason) in [
         (
             "missing-code",
             vec!["--format", "json", "--max-call-depth", "1"],
-            "CallDepth",
+            serde_json::json!("CallDepth"),
         ),
         (
             "reentry",
             vec!["--format", "json", "--max-call-depth", "2"],
-            "CallDepth",
+            serde_json::json!("CallDepth"),
         ),
         (
             "call-return-branch",
             vec!["--format", "json", "--max-work", "1"],
-            "Work",
+            serde_json::json!("Work"),
         ),
         (
             "call-return-branch",
-            vec!["--format", "json", "--max-memory-bytes", "1"],
-            "Memory",
+            vec!["--format", "json", "--max-symbolic-nodes", "2"],
+            serde_json::json!({"Relations":"ExpressionLimit"}),
         ),
     ] {
-        let output = analyze(name, &args);
+        let mut detail = args.clone();
+        detail.push("--no-root-terminal-coverage");
+        let output = analyze(name, &detail);
         assert_eq!(
             output.status.code(),
             Some(2),
@@ -455,8 +739,22 @@ fn shared_budgets_keep_typed_frontiers_and_exit_two() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|frontier| frontier["reason"].to_string().contains(reason))
+                .any(|frontier| frontier["reason"] == reason)
         );
+        if args.contains(&"--max-symbolic-nodes") {
+            assert_eq!(json["config"]["analysis"]["relations"]["max_nodes"], 2);
+            assert!(
+                json["frontiers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|frontier| {
+                        frontier["reason"] == reason
+                            && frontier["from"].is_u64()
+                            && frontier["pc"].is_u64()
+                    })
+            );
+        }
     }
 }
 

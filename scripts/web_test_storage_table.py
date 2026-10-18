@@ -265,6 +265,46 @@ def storage_table_interactions(browser, url: str, output: Path):
                   "changed_tail_columns":[min(changed),max(changed)],"rejection":str(error)}
     else:
         raise AssertionError("reviewed complete Value accepted an incorrect last glyph")
+    # The same real analysis also changed the Slot's final digit. Reuse the
+    # measured wide column, already checked to fit the complete Slot in this
+    # viewport: the initial auto-fit width can still elide a manually sized galley.
+    drag_storage_separator(page,wrong,results["storage"]["wide"]["separator"])
+    wrong_full=storage_table_snapshot(page,canvas,output,"storage-table-wrong-last-slot-glyph",tab[3],len(slots))
+    wrong_slot=wrong_full["rows"][-1]["slot"]
+    assert len(storage_glyph_cells(wrong_slot))==len(word),storage_pixel_report(wrong_slot)
+    assert wrong_slot["bounds"][2]-wrong_slot["bounds"][0]>500,storage_pixel_report(wrong_slot)
+    assert all(glyph["mask_size"][1]>3 for glyph in storage_glyph_cells(wrong_slot)[:3]),"full Slot negative has a leading ellipsis"
+    try:
+        assert_storage_literal_pixels(wrong_slot,word)
+    except AssertionError as error:
+        negative["slot"]={"actual_text":wrong_word,"expected_text":word,
+                          "mask_size":wrong_slot["mask_size"],"rejection":str(error)}
+    else:
+        raise AssertionError("reviewed complete Slot accepted an incorrect last glyph")
+    # Reuse this same real analysis to reject the incorrect tail in every
+    # suffix context; no additional report or synthetic browser glyph is used.
+    negative["suffixes"]={}
+    for title,kind in [("Storage","storage"),("Transient","transient")]:
+        select_inspector_tab(page,canvas,title,toolbar_y)
+        current=wrong_full if kind=="storage" else storage_table_snapshot(page,canvas,output,
+            "storage-table-wrong-last-transient-glyph",tab[3],len(slots))
+        rejected=[]
+        for retained,fraction in [(6,0.25),(13,0.625),(8 if kind=="storage" else 11,0.375)]:
+            target=current["header"]["slot"]["bounds"][0]+(retained+1.5)*advance+4+2.5+fraction
+            drag_storage_separator(page,current,target)
+            current=storage_table_snapshot(page,canvas,output,
+                f"storage-table-{kind}-wrong-last-suffix-{retained}",tab[3],len(slots))
+            actual=current["rows"][-1]["slot"]
+            assert len(storage_glyph_cells(actual))==retained+3,storage_pixel_report(actual)
+            try:
+                assert_storage_suffix(actual,word,retained)
+            except AssertionError as error:
+                rejected.append({"actual_text":"…"+wrong_word[-retained:],"expected_text":"…"+word[-retained:],
+                                 "mask_size":actual["mask_size"],"mask_sha256":actual["mask_sha256"],
+                                 "rejection":str(error)})
+            else:
+                raise AssertionError(f"reviewed {kind} suffix-{retained} accepted an incorrect last glyph")
+        negative["suffixes"][kind]=rejected
     assert len(posts)==5,"expected exactly one additional real negative analysis"
     assert not errors,errors
     result=storage_pixel_report({"stores":results,"wrong_last_glyph":negative,

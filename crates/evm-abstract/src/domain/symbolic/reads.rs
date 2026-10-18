@@ -288,7 +288,7 @@ impl ExprId {
         Self::retained(ExprKind::Keccak { input }, nodes, depth, limits)
     }
     /// State read/hash axioms can refine a word even without path constraints.
-    /// Consumers must not skip SMT merely because RelationState is empty.
+    /// Consumers must not skip local state interpretation merely because RelationState is empty.
     pub fn has_state_semantics(&self) -> bool {
         self.0.state_semantics
     }

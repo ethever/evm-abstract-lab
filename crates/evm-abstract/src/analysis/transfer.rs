@@ -11,7 +11,10 @@ use super::{
 use super::{InstructionProgress, InstructionValue};
 use crate::{
     domain::{AbstractValue, Domain, provenance::Origin},
-    world::{AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, Store, Symbol, World},
+    world::{
+        AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, LogSourceKind, Store, Symbol,
+        World,
+    },
 };
 use alloy_primitives::{Address, U256, keccak256};
 use revm_bytecode::opcode;
@@ -30,10 +33,13 @@ mod calls;
 pub(super) mod create;
 mod errors;
 mod hash;
+mod late_failure;
 mod precompile;
 pub(super) mod procedure;
 mod ranges;
 mod relations;
+#[cfg(test)]
+mod scalar_retention_tests;
 
 pub(super) use crate::resource::WorkBudget;
 use budget::{byte_work, operation_work};
@@ -86,6 +92,15 @@ pub(super) struct Execution {
     pub frontiers: Vec<ExecutionFrontier>,
     pub outcomes: Vec<Outcome>,
     pub completed_calls: Vec<CompletedCall>,
+    /// Raw finite retention failures, indexed into this execution's frontiers.
+    /// Public reasons alone cannot distinguish identity exhaustion or semantics.
+    pub retention_failures: Vec<(usize, RetentionCause)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RetentionCause {
+    Expression,
+    State,
 }
 
 fn empty_execution(payload: MachinePayload) -> Execution {
@@ -99,6 +114,7 @@ fn empty_execution(payload: MachinePayload) -> Execution {
         frontiers: Vec::new(),
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
+        retention_failures: Vec::new(),
     }
 }
 
@@ -162,6 +178,7 @@ fn resume_summary_inner(
         frontiers: Vec::new(),
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
+        retention_failures: Vec::new(),
     };
     let mut context = TransferContext {
         config,
@@ -201,7 +218,7 @@ fn boundary_reason(reason: FrontierReason) -> FrontierReason {
     // The shared ledger declines both exhausted work and cancellation. Keep
     // the actual interruption distinct at every transfer frontier, including
     // callers that return a raw Work error before a frontier is constructed.
-    if reason == FrontierReason::Work && embedded_smt::current_cancellation().is_cancelled() {
+    if reason == FrontierReason::Work && analysis_control::current_cancellation().is_cancelled() {
         FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
     } else {
         reason
@@ -216,6 +233,24 @@ fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target
         range: None,
         payload: None,
     });
+}
+
+fn boundary_bytes(result: &mut Execution, pc: usize, error: crate::world::RangeError) {
+    let cause = errors::retention_bytes(&error);
+    let index = result.frontiers.len();
+    boundary(result, pc, errors::bytes(error));
+    if let Some(cause) = cause {
+        result.retention_failures.push((index, cause));
+    }
+}
+
+fn boundary_store(result: &mut Execution, pc: usize, error: crate::world::StoreError) {
+    let cause = errors::retention_store(&error);
+    let index = result.frontiers.len();
+    boundary(result, pc, errors::store(error));
+    if let Some(cause) = cause {
+        result.retention_failures.push((index, cause));
+    }
 }
 
 fn successor(
@@ -242,6 +277,16 @@ fn touch_memory(
     if !ranges::memory(result, offset, size, context, pc) {
         return false;
     }
+    expand_memory(result, offset, size, context, pc)
+}
+
+fn expand_memory(
+    result: &mut Execution,
+    offset: &AbstractValue,
+    size: &AbstractValue,
+    context: &mut TransferContext<'_>,
+    pc: usize,
+) -> bool {
     let config = context.config;
     let domain = context.domain;
     if !context.budget.charge(byte_work(
@@ -260,7 +305,7 @@ fn touch_memory(
             .memory
             .expand(offset, size, config.max_memory_bytes, domain)
     {
-        boundary(result, pc, errors::bytes(error));
+        boundary_bytes(result, pc, error);
         return false;
     }
     true
@@ -360,7 +405,11 @@ fn execute_inner(
         frontiers: Vec::new(),
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
+        retention_failures: Vec::new(),
     };
+    if !late_failure::at_block_entry(&mut result, context) {
+        return result;
+    }
     let scope = identity_scope();
     let mut definition = 0_u32;
     for value in &mut result.payload.active_mut().stack {
@@ -507,6 +556,9 @@ fn execute_inner(
                 FrontierReason::Relations(crate::domain::relational::QueryReason::ExpressionLimit),
             );
         }
+        // Refinement can make a flagged operand singleton. Its inherited
+        // refusal must still be distinguished from this result's optional term.
+        let inherited_symbolic_limit = args.iter().any(AbstractValue::symbolic_limit_reached);
         for value in &mut args {
             match relations::refine(value, &result.payload.relations, context) {
                 Ok(false) => return result,
@@ -587,8 +639,27 @@ fn execute_inner(
         }
         match op {
             opcode::JUMP | opcode::JUMPI => {
+                let history_work = result
+                    .payload
+                    .active()
+                    .key
+                    .jump_history
+                    .len()
+                    .saturating_mul(2)
+                    .saturating_add(1);
+                if !context.budget.charge(history_work) {
+                    boundary(&mut result, pc, FrontierReason::Work);
+                    return result;
+                }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let frame = result.payload.active_mut();
+                // Only the most recent occurrence partitions analysis contexts.
+                // Repeated loop sources must reach the same key before the
+                // configured history window fills with duplicate iterations.
+                frame
+                    .key
+                    .jump_history
+                    .retain(|source| *source != block.start_pc);
                 frame.key.jump_history.push(block.start_pc);
                 let discard = frame
                     .key
@@ -713,7 +784,7 @@ fn execute_inner(
                 ) {
                     Ok(data) => data,
                     Err(error) => {
-                        boundary(&mut result, pc, errors::bytes(error));
+                        boundary_bytes(&mut result, pc, error);
                         return result;
                     }
                 };
@@ -765,6 +836,9 @@ fn execute_inner(
                     payload
                         .store
                         .selfdestruct(owner, address(*beneficiary), domain);
+                    if !late_failure::after_selfdestruct(&mut result, &payload, context, pc) {
+                        break;
+                    }
                     finish(
                         &mut result,
                         payload,
@@ -792,7 +866,7 @@ fn execute_inner(
                     )
                 };
                 if let Err(error) = write {
-                    boundary(&mut result, pc, errors::store(error));
+                    boundary_store(&mut result, pc, error);
                     return result;
                 }
             }
@@ -803,13 +877,32 @@ fn execute_inner(
                 }
                 let memory = &mut result.payload.active_mut().memory;
                 let write = if op == opcode::MSTORE {
-                    memory.write_word(&args[0], &args[1], config.max_memory_bytes, domain)
+                    memory.write_word_budgeted(
+                        &args[0],
+                        &args[1],
+                        config.max_memory_bytes,
+                        domain,
+                        context.budget,
+                    )
                 } else {
-                    memory.write_byte(&args[0], &args[1], config.max_memory_bytes, domain)
+                    memory.write_byte_budgeted(
+                        &args[0],
+                        &args[1],
+                        config.max_memory_bytes,
+                        domain,
+                        context.budget,
+                    )
                 };
-                if let Err(error) = write {
-                    boundary(&mut result, pc, errors::bytes(error));
-                    return result;
+                match write {
+                    Err(error) => {
+                        boundary_bytes(&mut result, pc, error);
+                        return result;
+                    }
+                    Ok(false) => {
+                        boundary(&mut result, pc, FrontierReason::Work);
+                        return result;
+                    }
+                    Ok(true) => {}
                 }
                 if memory.symbolic_limit_reached() {
                     boundary(
@@ -841,12 +934,14 @@ fn execute_inner(
                     result.mark_instruction(InstructionProgress::Dispatched);
                     return result;
                 }
-                if op == opcode::MCOPY
-                    && !touch_memory(&mut result, &args[1], &args[2], context, pc)
-                {
-                    return result;
-                }
-                if !touch_memory(&mut result, &args[0], &args[2], context, pc) {
+                let admitted = if op == opcode::MCOPY {
+                    ranges::memory_copy(&mut result, &args[1], &args[0], &args[2], context, pc)
+                        && expand_memory(&mut result, &args[1], &args[2], context, pc)
+                        && expand_memory(&mut result, &args[0], &args[2], context, pc)
+                } else {
+                    touch_memory(&mut result, &args[0], &args[2], context, pc)
+                };
+                if !admitted {
                     return result;
                 }
                 if let Err(error) = result.payload.active_mut().memory.copy_from(
@@ -857,7 +952,7 @@ fn execute_inner(
                     config.max_memory_bytes,
                     domain,
                 ) {
-                    boundary(&mut result, pc, errors::bytes(error));
+                    boundary_bytes(&mut result, pc, error);
                     return result;
                 }
             }
@@ -907,7 +1002,7 @@ fn execute_inner(
                             match joined {
                                 Ok(source) => source,
                                 Err(error) => {
-                                    boundary(&mut result, pc, errors::bytes(error));
+                                    boundary_bytes(&mut result, pc, error);
                                     return result;
                                 }
                             }
@@ -923,7 +1018,7 @@ fn execute_inner(
                     config.max_memory_bytes,
                     domain,
                 ) {
-                    boundary(&mut result, pc, errors::bytes(error));
+                    boundary_bytes(&mut result, pc, error);
                     return result;
                 }
             }
@@ -939,7 +1034,7 @@ fn execute_inner(
                 ) {
                     Ok(data) => data,
                     Err(error) => {
-                        boundary(&mut result, pc, errors::bytes(error));
+                        boundary_bytes(&mut result, pc, error);
                         return result;
                     }
                 };
@@ -947,6 +1042,12 @@ fn execute_inner(
                 let source = LogKey {
                     address: frame.key.address,
                     code_address: frame.key.code_address,
+                    code_hash: frame.key.code_hash,
+                    source_kind: if frame.key.mode == FrameCode::InitCode {
+                        LogSourceKind::Init
+                    } else {
+                        LogSourceKind::Runtime
+                    },
                     pc,
                 };
                 if result
@@ -1030,10 +1131,29 @@ fn execute_inner(
                     opcode::RETURNDATASIZE => frame.returndata.len().clone(),
                     opcode::MSIZE => frame.memory.len().clone(),
                     opcode::CALLDATALOAD => {
-                        match frame.calldata.read_word_checked(&args[0], domain) {
-                            Ok(value) => value,
+                        let plan =
+                            match frame
+                                .calldata
+                                .prepare_word_read(&args[0], domain, context.budget)
+                            {
+                                Ok(Some(plan)) => plan,
+                                Ok(None) => {
+                                    boundary(&mut result, pc, FrontierReason::Work);
+                                    return result;
+                                }
+                                Err(error) => {
+                                    boundary_bytes(&mut result, pc, error);
+                                    return result;
+                                }
+                            };
+                        match plan.read_word_budgeted(context.budget) {
+                            Ok(Some(value)) => value,
+                            Ok(None) => {
+                                boundary(&mut result, pc, FrontierReason::Work);
+                                return result;
+                            }
                             Err(error) => {
-                                boundary(&mut result, pc, errors::bytes(error));
+                                boundary_bytes(&mut result, pc, error);
                                 return result;
                             }
                         }
@@ -1054,7 +1174,7 @@ fn execute_inner(
                         match read {
                             Ok(value) => value,
                             Err(error) => {
-                                boundary(&mut result, pc, errors::store(error));
+                                boundary_store(&mut result, pc, error);
                                 return result;
                             }
                         }
@@ -1095,18 +1215,32 @@ fn execute_inner(
                             .unwrap_or_else(AbstractValue::top)
                     }),
                     opcode::MLOAD => {
+                        let plan =
+                            match frame
+                                .memory
+                                .prepare_word_read(&args[0], domain, context.budget)
+                            {
+                                Ok(Some(plan)) => plan,
+                                Ok(None) => {
+                                    boundary(&mut result, pc, FrontierReason::Work);
+                                    return result;
+                                }
+                                Err(error) => {
+                                    boundary_bytes(&mut result, pc, error);
+                                    return result;
+                                }
+                            };
                         if !touch_memory(&mut result, &args[0], &constant(32), context, pc) {
                             return result;
                         }
-                        match result
-                            .payload
-                            .active()
-                            .memory
-                            .read_word_checked(&args[0], domain)
-                        {
-                            Ok(value) => value,
+                        match plan.read_word_budgeted(context.budget) {
+                            Ok(Some(value)) => value,
+                            Ok(None) => {
+                                boundary(&mut result, pc, FrontierReason::Work);
+                                return result;
+                            }
                             Err(error) => {
-                                boundary(&mut result, pc, errors::bytes(error));
+                                boundary_bytes(&mut result, pc, error);
                                 return result;
                             }
                         }
@@ -1126,7 +1260,7 @@ fn execute_inner(
                                 None => return result,
                             },
                             Err(error) => {
-                                boundary(&mut result, pc, errors::bytes(error));
+                                boundary_bytes(&mut result, pc, error);
                                 return result;
                             }
                         }
@@ -1135,18 +1269,32 @@ fn execute_inner(
                         if !matches!(op, 0x01..=0x0b | 0x10..=0x1e) {
                             result.diagnostics.push((pc, DiagnosticKind::OpaqueResult));
                         }
-                        let reduction = domain.apply_detailed(op, &args);
+                        let mut reduction = domain.apply_detailed(op, &args);
                         if matches!(
                             reduction.symbolic_error,
                             Some(crate::domain::symbolic::ExprError::Limit { .. })
                         ) {
-                            boundary(
-                                &mut result,
-                                pc,
-                                FrontierReason::Relations(
-                                    crate::domain::relational::QueryReason::ExpressionLimit,
-                                ),
-                            );
+                            if matches!(op, 0x01..=0x0b | 0x10..=0x1e) && !inherited_symbolic_limit
+                            {
+                                // Numeric transfer succeeded; only the current
+                                // optional correlation failed to fit. Ordinary
+                                // identify below gives this result its own leaf.
+                                reduction.value.forget_expression_after_limit();
+                                result.diagnostics.push((
+                                    pc,
+                                    DiagnosticKind::RelationalPrecisionLost(
+                                        crate::domain::relational::QueryReason::ExpressionLimit,
+                                    ),
+                                ));
+                            } else {
+                                boundary(
+                                    &mut result,
+                                    pc,
+                                    FrontierReason::Relations(
+                                        crate::domain::relational::QueryReason::ExpressionLimit,
+                                    ),
+                                );
+                            }
                         }
                         if matches!(
                             reduction.status,
@@ -1259,12 +1407,12 @@ mod tests {
         let input = initial(&world, &entry, domain).unwrap();
         for cancelled in [false, true] {
             let control = crate::analysis::control::Control::new(Default::default());
-            let result = control.scope(|| {
+            let (result, budget) = control.scope(|| {
                 let mut budget = WorkBudget::new(if cancelled { config.max_work } else { 0 });
                 if cancelled {
                     control.cancellation().cancel();
                 }
-                execute(
+                let result = execute(
                     &world,
                     &entry,
                     input.clone(),
@@ -1272,23 +1420,32 @@ mod tests {
                     domain,
                     &mut budget,
                     StorageReadPolicy::Abstract,
-                )
+                );
+                (result, budget)
             });
+            assert!(budget.exhausted());
+            assert_eq!(budget.used(), 0);
             assert_eq!(result.payload, input);
             assert!(result.executed_pcs.is_empty());
             assert!(result.instruction_progress.is_empty());
+            assert!(result.instruction_values.is_empty());
+            assert!(result.completed_calls.is_empty());
+            assert!(result.diagnostics.is_empty());
             assert!(result.successors.is_empty());
             assert!(result.outcomes.is_empty());
-            assert_eq!(result.frontiers.len(), 1);
-            assert_eq!(result.frontiers[0].pc, 0);
-            assert_eq!(result.frontiers[0].target, Some(input.key()));
             assert_eq!(
-                result.frontiers[0].reason,
-                if cancelled {
-                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
-                } else {
-                    FrontierReason::Work
-                }
+                result.frontiers,
+                vec![ExecutionFrontier {
+                    pc: 0,
+                    reason: if cancelled {
+                        FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+                    } else {
+                        FrontierReason::Work
+                    },
+                    target: None,
+                    range: None,
+                    payload: None,
+                }]
             );
         }
     }

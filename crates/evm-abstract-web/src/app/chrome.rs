@@ -1,6 +1,6 @@
 //! Compact global navigation and task status; configuration lives in a modal.
 
-use super::{Command, View, Workspace, directory, inspector};
+use super::{Command, View, Workspace, directory, inspector, terminal_coverage};
 use crate::{
     controls::{self, Density},
     notation, palette,
@@ -134,7 +134,7 @@ impl Workspace {
                     ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
                 } else if let Some(report)=&self.report {
                     let complete=report.status==AnalysisStatus::Converged&&report.ssa.complete;
-                    let label=if complete{"Model converged"}else{"Incomplete / partial SSA"};
+                    let label=terminal_coverage::detail_status(report);
                     ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
                     if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),report.metadata.work));}
                     if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Regular)
@@ -152,6 +152,17 @@ impl Workspace {
                 }
             });
         });
+        if let Some(report) = &self.report
+            && let Some(status) = terminal_coverage::status(report)
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(status).color(palette::ACCENT));
+                if controls::action(ui, "Inspect terminal coverage", Density::Compact).clicked() {
+                    self.inspector.expanded = true;
+                    self.inspector.tab = inspector::Tab::Outcomes;
+                }
+            });
+        }
         command
     }
 }

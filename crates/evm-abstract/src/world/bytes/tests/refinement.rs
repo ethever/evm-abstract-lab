@@ -14,7 +14,6 @@ fn policy() -> RelationLimits {
     RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     }
 }
@@ -25,13 +24,24 @@ fn prove(relations: &RelationState, condition: &ExprId) -> Result<Option<bool>, 
         std::slice::from_ref(condition),
         p.expressions(),
     )
-    .unwrap();
-    match relations.unique_value(&zero, &p) {
-        ValueQuery::Unique(v) if v == U256::ZERO => Ok(Some(true)),
-        ValueQuery::Unique(v) if v == U256::ONE => Ok(Some(false)),
-        ValueQuery::Multiple => Ok(None),
-        ValueQuery::Unknown(reason) => Err(reason),
-        result => panic!("reachable Boolean proof expected: {result:?}"),
+    .map_err(|error| match error {
+        ExprError::Cancelled => QueryReason::Cancelled,
+        ExprError::Limit { .. } => QueryReason::ExpressionLimit,
+        error => panic!("ISZERO construction failed: {error:?}"),
+    })?;
+    match relations.local_value(&zero, &p) {
+        ValueQuery::Exact(v) if v == U256::ZERO => Ok(Some(true)),
+        ValueQuery::Exact(v) if v == U256::ONE => Ok(Some(false)),
+        ValueQuery::Bounds(bounds) => {
+            // ISZERO is intrinsically Boolean. Bounds preserve both truth
+            // candidates; they do not claim two satisfying selector witnesses.
+            assert!(bounds.contains(U256::ZERO));
+            assert!(bounds.contains(U256::ONE));
+            Ok(None)
+        }
+        ValueQuery::Undetermined(reason) => Err(reason),
+        ValueQuery::ProvenImpossible => panic!("guard query requires a reachable relation state"),
+        ValueQuery::Exact(value) => panic!("ISZERO produced a non-Boolean word: {value}"),
     }
 }
 fn call_output() -> (ByteArray, ExprId, ExprId) {
@@ -175,11 +185,14 @@ fn collected_serial_proofs_match_native_refinement_on_the_same_frozen_call_outpu
                     policy().expressions(),
                 )
                 .unwrap();
-                assert_eq!(relations.assume(&equal, true, &policy()), CheckResult::Sat);
+                assert_eq!(
+                    relations.assume(&equal, true, &policy()),
+                    CheckResult::MayBeFeasible
+                );
             }
             assert_eq!(
-                relations.unique_value(&byte_guard, &policy()),
-                ValueQuery::Unique(U256::from(value)),
+                relations.local_value(&byte_guard, &policy()),
+                ValueQuery::Exact(U256::from(value)),
             );
         }
         let mut prepared = frozen.clone();
@@ -254,12 +267,12 @@ fn collected_serial_proofs_match_native_refinement_on_the_same_frozen_call_outpu
         failed.refine_guards(domain, policy().expressions(), &mut |condition| {
             error_calls.push(condition.clone());
             if error_calls.len() == 2 {
-                Err(QueryReason::ResourceLimit)
+                Err(QueryReason::ExpressionLimit)
             } else {
                 Ok(Some(true))
             }
         }),
-        Err(GuardRefinementError::Proof(QueryReason::ResourceLimit)),
+        Err(GuardRefinementError::Proof(QueryReason::ExpressionLimit)),
     );
     assert_eq!(error_calls, expected_order[..2]);
     assert_eq!(failed, frozen);
@@ -267,7 +280,7 @@ fn collected_serial_proofs_match_native_refinement_on_the_same_frozen_call_outpu
 }
 
 #[test]
-fn native_success_and_failure_guard_refine_call_output_without_rewriting_history() {
+fn call_result_guard_derives_selector_truth_and_refines_the_full_output() {
     let (joined, selector, branch) = call_output();
     let domain = Domain::default();
     let before = joined.read_word(&v(0x400), domain);
@@ -277,25 +290,36 @@ fn native_success_and_failure_guard_refine_call_output_without_rewriting_history
         let mut relations = RelationState::default();
         assert_eq!(
             relations.assume(&branch, failure, &policy()),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
-        if !failure {
+        // ISZERO(ITE(selector, 1, 0)) determines truth, not the
+        // particular nonzero word used as a selector.
+        if failure {
             assert_eq!(
-                relations.unique_value(&selector, &policy()),
-                ValueQuery::Multiple
+                relations.local_value(&selector, &policy()),
+                ValueQuery::Exact(U256::ZERO)
             );
+        } else {
+            let ValueQuery::Bounds(bounds) = relations.local_value(&selector, &policy()) else {
+                panic!("the nonzero selector still includes different words");
+            };
+            assert!(bounds.contains(U256::ONE));
+            assert!(bounds.contains(U256::from(2)));
+            assert!(!bounds.contains(U256::ZERO));
         }
-        let mut selected = joined.clone();
+        assert_eq!(prove(&relations, &selector), Ok(Some(!failure)));
+        assert_eq!(prove(&relations, &branch), Ok(Some(failure)));
+        let mut derived = joined.clone();
         assert!(
-            selected
+            derived
                 .refine_guards(domain, policy().expressions(), &mut |e| prove(
                     &relations, e
                 ))
                 .unwrap()
         );
-        assert_eq!(selected.state_root(), joined.state_root());
-        assert_eq!(selected.fresh_leaves(), joined.fresh_leaves());
-        let output = selected.slice(&v(0x400), &v(192), 2048, domain).unwrap();
+        assert_eq!(derived.state_root(), joined.state_root());
+        assert_eq!(derived.fresh_leaves(), joined.fresh_leaves());
+        let output = derived.slice(&v(0x400), &v(192), 2048, domain).unwrap();
         assert_eq!(
             output.read_word(&v(0), domain).singleton(),
             Some(U256::from(expected))
@@ -304,9 +328,132 @@ fn native_success_and_failure_guard_refine_call_output_without_rewriting_history
             output.exact_bytes().unwrap()[..32],
             U256::from(expected).to_be_bytes::<32>()
         );
+
+        // The explicit selector premise independently gives the same full
+        // projection; it cannot make the already derived proof stronger.
+        assert_eq!(
+            relations.assume(&selector, !failure, &policy()),
+            CheckResult::MayBeFeasible
+        );
+        let mut explicit = joined.clone();
+        assert!(
+            explicit
+                .refine_guards(domain, policy().expressions(), &mut |e| prove(
+                    &relations, e
+                ))
+                .unwrap()
+        );
+        assert_eq!(explicit, derived);
         assert!(before.singleton().is_none());
         assert_eq!(joined.read_word(&v(0x400), domain), before);
     }
+}
+
+#[test]
+fn global_refinement_callbacks_do_not_reject_inactive_conditional_sources() {
+    let domain = Domain::default();
+    let limits = policy();
+    let x = ExprId::fresh().unwrap();
+    let guard = ExprId::fresh().unwrap();
+    let bounded = AbstractValue::unsigned_range(U256::ONE, U256::from(9))
+        .unwrap()
+        .with_expression(x.clone());
+    let mut yes = ByteArray::memory();
+    yes.write_word(&v(0), &bounded, 128, domain).unwrap();
+    let mut no = ByteArray::memory();
+    no.write_word(
+        &v(0),
+        &AbstractValue::top().with_expression(x.clone()),
+        128,
+        domain,
+    )
+    .unwrap();
+    let joined = yes
+        .join_guarded(&no, domain, guard.clone(), limits.expressions())
+        .unwrap();
+    let snapshot = joined.clone();
+    let mut relations = RelationState::default();
+    assert_eq!(
+        relations.assume(&guard, false, &limits),
+        CheckResult::MayBeFeasible
+    );
+    relations.observe(&x, v(20).numeric(), &limits).unwrap();
+    assert_eq!(relations.check(&limits), CheckResult::MayBeFeasible);
+    // This is the real caller's rejection condition. It is correct for a
+    // conjunction, but this bound holds only on the inactive true branch.
+    assert_eq!(
+        relations.refine_numeric(&x, bounded.numeric(), domain, &limits),
+        ScalarQuery::Infeasible
+    );
+    for keyed in [false, true] {
+        let mut current = joined.clone();
+        let mut failed = false;
+        let mut visited_x = false;
+        let mut refine = |expression: &ExprId, value: &mut AbstractValue| {
+            if failed || value.singleton().is_some() || !relations.relevant(expression) {
+                return;
+            }
+            visited_x |= expression == &x;
+            match relations.refine_numeric(expression, value.numeric(), domain, &limits) {
+                ScalarQuery::Refined { numeric, .. } => {
+                    *value = value.clone().with_numeric(*numeric);
+                }
+                ScalarQuery::Infeasible => failed = true,
+                ScalarQuery::Unchanged => {}
+                other => panic!("unexpected global refinement result: {other:?}"),
+            }
+        };
+        if keyed {
+            current.refine_operands(&mut refine);
+        } else {
+            current.update_values(&mut |value| {
+                if let Some(expression) = value.expression().cloned()
+                    && !matches!(
+                        expression.kind(),
+                        crate::domain::symbolic::ExprKind::ByteRead { .. }
+                            | crate::domain::symbolic::ExprKind::WordRead { .. }
+                            | crate::domain::symbolic::ExprKind::Keccak { .. }
+                    )
+                {
+                    refine(&expression, value);
+                }
+            });
+        }
+        assert!(visited_x, "the unconditional source must still be refined");
+        assert!(!failed, "an inactive branch must not reject the wrapper");
+        assert_eq!(
+            current.operands.get(&x).unwrap().singleton(),
+            Some(U256::from(20))
+        );
+        assert_eq!(current.conditional, joined.conditional);
+        let mut retained_bound = false;
+        current.conditional.visit(&mut |expression, value| {
+            if expression == &x
+                && let Some(value) = value
+            {
+                assert_eq!(value, &bounded);
+                retained_bound = true;
+            }
+        });
+        assert!(retained_bound, "the inactive source bound must survive");
+        assert!(
+            current
+                .refine_guards(domain, limits.expressions(), &mut |condition| {
+                    prove(&relations, condition)
+                })
+                .unwrap()
+        );
+        assert_eq!(
+            current.operands.get(&guard).unwrap().singleton(),
+            Some(U256::ZERO)
+        );
+        let read = current.read_word_checked(&v(0), domain).unwrap();
+        assert_eq!(read.singleton(), Some(U256::from(20)));
+        assert_eq!(read.expression(), Some(&x));
+        assert_eq!(current.state_root(), joined.state_root());
+        assert_eq!(current.conditional, joined.conditional);
+    }
+    assert_eq!(joined, snapshot);
 }
 
 #[test]
@@ -347,7 +494,10 @@ fn retained_operand_keys_refine_short_return_copy_and_preserve_its_suffix() {
     )
     .unwrap();
     let mut relations = RelationState::default();
-    assert_eq!(relations.assume(&equal, true, &policy()), CheckResult::Sat);
+    assert_eq!(
+        relations.assume(&equal, true, &policy()),
+        CheckResult::MayBeFeasible
+    );
     memory.refine_operands(&mut |expression, value| match relations.refine_numeric(
         expression,
         value.numeric(),
@@ -390,7 +540,7 @@ fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
     let domain = Domain::default();
     assert_eq!(
         joined.guard_conditions(policy().expressions()).unwrap(),
-        BTreeSet::from([selector]),
+        BTreeSet::from([selector.clone()]),
     );
     assert_eq!(joined, original);
     let mut calls = 0;
@@ -408,9 +558,9 @@ fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
     assert_eq!(
         joined.refine_guards(domain, policy().expressions(), &mut |_| {
             calls += 1;
-            Err(QueryReason::ResourceLimit)
+            Err(QueryReason::ExpressionLimit)
         }),
-        Err(GuardRefinementError::Proof(QueryReason::ResourceLimit)),
+        Err(GuardRefinementError::Proof(QueryReason::ExpressionLimit)),
     );
     assert_eq!(calls, 1);
     assert_eq!(joined, original);
@@ -431,10 +581,14 @@ fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
     );
     assert_eq!(calls, 0);
     assert_eq!(joined, original);
-    let cancel = embedded_smt::Cancellation::new();
+    let cancel = analysis_control::Cancellation::new();
     cancel.cancel();
     calls = 0;
-    embedded_smt::with_cancellation(&cancel, || {
+    analysis_control::with_cancellation(&cancel, || {
+        assert_eq!(
+            prove(&RelationState::default(), &selector),
+            Err(QueryReason::Cancelled)
+        );
         assert!(joined.guard_conditions(policy().expressions()).is_err());
         assert_eq!(joined, original);
         assert!(
@@ -470,7 +624,10 @@ fn guard_projection_for_large_lazy_copy_visits_metadata_only_and_renames_facts()
         .unwrap();
     let mut calls = 0;
     let mut relations = RelationState::default();
-    assert_eq!(relations.assume(&guard, true, &policy()), CheckResult::Sat);
+    assert_eq!(
+        relations.assume(&guard, true, &policy()),
+        CheckResult::MayBeFeasible
+    );
     assert!(
         joined
             .refine_guards(domain, policy().expressions(), &mut |e| {

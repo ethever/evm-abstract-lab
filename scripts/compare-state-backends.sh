@@ -58,6 +58,7 @@ import tempfile
 root = Path(sys.argv[1])
 sys.path.insert(0, str(root / "scripts"))
 from normalize_identity_scopes import canonical_json
+from verify_logical_memory import assert_logical_memory, assert_retained_partial
 
 sizes = list(dict.fromkeys(int(size) for size in sys.argv[2].split(",")))
 iterations, repeats = map(int, sys.argv[3:5])
@@ -107,19 +108,21 @@ metadata = {
 }
 (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
 print(json.dumps({"run_started": True, "output": str(output)}), flush=True)
+
+
 entry = "0x0000000000000000000000000000000000000101"
 cases = []
 for fixture in sorted((root / "examples").glob("*.hex")):
     for command in ("disasm", "cfg", "ssa"):
-        # CALLDATALOAD supplies a full-width MSTORE/MLOAD offset in this fixture;
-        # inputs outside the memory policy remain typed incomplete frontiers.
-        memory_policy = fixture.stem == "memory-symbolic-offset" and command != "disasm"
-        expected = 2 if memory_policy else 0
+        # Logical MSTORE/MLOAD completes even with a full-width calldata offset.
+        expected = 0
         arguments = [command, "--file", str(fixture), "--format", "json"]
-        if memory_policy and command == "ssa":
-            arguments.append("--allow-partial-ssa")
         cases.append((f"{fixture.stem}-{command}",
                       arguments, expected))
+# Keep exit-2 and retained partial SSA coverage on an actual expression refusal.
+cases.append(("expression-limit-ssa",
+              ["ssa", "--hex", "600160005200", "--evm.to", entry, "--evm.calldata", "0x",
+               "--max-symbolic-nodes", "2", "--format", "json", "--allow-partial-ssa"], 2))
 for fixture in sorted((root / "examples/worlds").glob("*.json")):
     expected = 0
     arguments = ["analyze", "--world", str(fixture), "--evm.to", entry, "--evm.caller", "0x0000000000000000000000000000000000001000", "--evm.value", "0", "--evm.calldata", "0x", "--format", "json"]
@@ -146,25 +149,8 @@ for label, arguments, expected in cases:
             canonical[backend] = canonical_json(result.stdout)
         except ValueError as error:
             sys.exit(f"{label}/{backend}: invalid JSON: {error}")
-        if expected == 2 and arguments[0] in ("cfg", "ssa"):
-            analysis = payload.get("analysis", {}) if arguments[0] == "ssa" else payload
-            frontiers = analysis.get("frontiers", [])
-            if analysis.get("status") != "Incomplete" or not frontiers or not all(
-                frontier.get("reason") == "Memory" and frontier.get("limit") == "Memory"
-                for frontier in frontiers
-            ):
-                sys.exit(f"{label}/{backend}: missing typed Memory frontier")
-            if arguments[0] == "ssa":
-                machine = payload.get("machine_analysis", {})
-                partial = payload.get("partial_ssa", {})
-                frontiers = machine.get("frontiers", [])
-                if (machine.get("status") != "Incomplete" or not frontiers or not all(
-                    frontier.get("reason") == "Memory" and
-                    (frontier.get("range") or {}).get("request", {}).get("kind") == "MemoryPolicy"
-                    for frontier in frontiers
-                ) or partial.get("status") != "Incomplete" or partial.get("complete") is not False
-                        or partial.get("frontiers") != frontiers or "ssa" in payload):
-                    sys.exit(f"{label}/{backend}: missing typed MemoryPolicy partial SSA")
+        if label == "expression-limit-ssa":
+            assert_retained_partial(payload)
         elif arguments[0] != "disasm":
             wrapped = arguments[0] == "ssa" or "--ssa" in arguments
             analysis = payload.get("analysis", {}) if wrapped else payload
@@ -180,6 +166,8 @@ for label, arguments, expected in cases:
                                             and summary.get("procedures")
                                             for summary in summaries):
                     sys.exit(f"{label}/{backend}: expected nonempty closed unknown relations")
+        if label in ("memory-symbolic-offset-cfg", "memory-symbolic-offset-ssa"):
+            assert_logical_memory(payload)
         # Whole-report producer renaming retains every other identity and member/array order.
     if canonical["std"] != canonical["imbl"]:
         sys.exit(f"{label}: ordered JSON differs; see {output}")

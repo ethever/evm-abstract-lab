@@ -290,10 +290,18 @@ def assert_storage_literal_pixels(cell, text: str):
         "{0x205f}": ([61,12], "01a9f16f529282cffa2f49e72b9c1686e9ca3d452e2ce788636eaa5c83592176"),
     }
     size,expected=reviewed[text]
+    if text==STORAGE_SLOT_WORD:
+        # The original Slot galley differs by at most one RGB step in the saved
+        # current capture; its red127->128 sample changes the thresholded mask.
+        return assert_storage_reviewed_pixels(cell,"full_slot",text,size,expected)
     if text=="{"+STORAGE_SLOT_WORD+"}":
         # One historical red127 sample rounds to128 in current Chromium.
         # Compare the complete independent raster with the existing <=2 bound.
         return assert_storage_reviewed_pixels(cell,"full_value",text,size,expected)
+    if text.startswith("…"):
+        # Fixed whole-galley dimensions and ordered RGB bind every tail glyph
+        # to its reviewed position even when red127 rounds to128 in the mask.
+        return assert_storage_reviewed_pixels(cell,f"suffix_{len(text)-1}",text,size,expected)
     if text in ("{0x105f}", "{0x205f}"):
         # Moving the scroll viewport can round a 127 sample to128. Verify every
         # RGB sample against the original short-literal raster, including braces.
@@ -311,7 +319,7 @@ def assert_storage_suffix(narrowed, word: str, retained: int):
     assert all(dot["mask_size"][1]<=3 for dot in dots),"omission marker is not three dots"
     assert max(dot["bounds"][3] for dot in dots)-min(dot["bounds"][1] for dot in dots)<=3,"ellipsis dots have different baselines"
     assert min(dot["bounds"][1] for dot in dots)>=narrowed["bounds"][3]-4,"omission marker is not a leading baseline ellipsis"
-    return {**literal,"retained_characters":retained,
+    return {**literal,"mask_sha256":narrowed["mask_sha256"],"retained_characters":retained,
             "tail_glyph_mask_sha256":[glyph["mask_sha256"] for glyph in actual[3:]],
             "leading_ellipsis_components":[dot["bounds"] for dot in dots]}
 

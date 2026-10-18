@@ -85,7 +85,7 @@ PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中�
 
 ### 在 JSON 中查输入范围
 
-分析结果格式的 `schema_version` 是 8，数值域策略中的 `domain_spec.schema_version` 是 2。输入环境所在位置随输出入口变化：
+分析结果格式的 `schema_version` 是 10，数值域策略中的 `domain_spec.schema_version` 是 2。输入环境所在位置随输出入口变化：
 
 | 命令 | 环境路径 |
 | --- | --- |
@@ -161,12 +161,10 @@ jq '.program.blocks as $blocks | [.states[].key.basic_block_index | $blocks[.].s
 | 参数 | 默认值 | 控制的范围 |
 | --- | --- | --- |
 | `--no-relations` | 不传则开启 | 禁止表达式传播与持久路径约束；保留输入身份和数值语义 |
-| `--max-symbolic-nodes` | 1024 | 表达式与一次查询可处理的节点上限 |
-| `--max-symbolic-depth` | 64 | 表达式嵌套深度 |
-| `--max-relations` | 128 | 一个状态可保留的约束数 |
-| `--smt.provider` | `z3` | 进程内求解器，可选 `z3`、`bitwuzla`、`cvc5` |
-| `--smt.rlimit` | 100000 | 每次求解检查的工作额度，各求解器的单位不同 |
+| `--max-symbolic-nodes` | 16384 | 表达式与局部遍历可处理的节点上限 |
+| `--max-symbolic-depth` | 256 | 表达式嵌套深度 |
+| `--max-relations` | 2048 | 一个状态可保留的约束数 |
 
-求解器只使用 `rlimit`，没有墙钟 timeout。资源不足、表达式不能编码或 solver 未给出证明时，保留未知结果和对应前沿；只有已证实 UNSAT 才能剪掉分支。关系查询与表达式工作还使用整次分析共享的 `--max-work`。库模型、求解流程、摘要重命名和完整回归见[第 15 课](15-symbolic-relations.md)。
+只有局部推理证明矛盾时才剪掉分支；未被排除的路径继续保留。表达式、约束容量、配置和取消原因仍类型化记录；无法收窄的正常数值保持保守上界。表达式工作还使用整次分析共享的 `--max-work`。CLI 和 Web 已移除 provider 与 `rlimit` 配置，旧参数会报错。库模型、局部推理、摘要重命名和回归入口见[第 15 课](15-symbolic-relations.md)。
 
 相关主题：[EVM内存与抽象字节数组](14-memory-model.md)。从 MSTORE/MLOAD 的字节读写开始，再看未知输入与偏移如何影响内存结果。

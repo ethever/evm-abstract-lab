@@ -31,7 +31,7 @@ fn reserve(budget: &mut WorkBudget, cost: usize) -> bool {
 }
 
 pub(super) fn summary_boundary() -> FrontierReason {
-    if embedded_smt::current_cancellation().is_cancelled() {
+    if analysis_control::current_cancellation().is_cancelled() {
         FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
     } else {
         FrontierReason::SummaryWork
@@ -233,7 +233,7 @@ impl Cache {
         state: usize,
         budget: &mut WorkBudget,
     ) -> Result<Option<SummaryInput>, FrontierReason> {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(summary_boundary());
         }
         if self.fingerprint_unavailable {

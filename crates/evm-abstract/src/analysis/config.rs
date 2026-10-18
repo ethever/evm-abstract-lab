@@ -18,7 +18,7 @@ pub struct Config {
     pub reduction_rounds: usize,
     /// 一次交换的语义事实原子上限；不按上限预分配。
     pub max_facts: usize,
-    /// Symbolic expressions and state relations, including in-process solver limits.
+    /// Symbolic expression retention and bounded local relation propagation.
     pub relations: crate::domain::relational::RelationLimits,
     /// 每个槽位最多保留的常量数；任意正 usize，默认 8，不按上限预分配。
     pub max_constants: usize,
@@ -61,8 +61,8 @@ pub enum ConfigError {
     /// 交换精度策略必须允许至少一个原子和一轮传播。
     #[error("reduction_rounds and max_facts must be positive")]
     Facts,
-    /// Symbolic and solver resource bounds must be positive.
-    #[error("symbolic node/depth, relation and SMT resource limits must be positive")]
+    /// Symbolic expression and relation bounds must be positive.
+    #[error("symbolic node/depth and relation limits must be positive")]
     Relations,
 }
 
@@ -108,7 +108,6 @@ impl Config {
         if self.relations.max_nodes == 0
             || self.relations.max_depth == 0
             || self.relations.max_constraints == 0
-            || self.relations.rlimit == 0
         {
             return Err(ConfigError::Relations);
         }

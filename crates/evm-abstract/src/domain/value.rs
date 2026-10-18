@@ -90,6 +90,12 @@ impl AbstractValue {
     pub fn forget_expression(&mut self) {
         self.expression = None;
     }
+    /// Forget a result's optional expression after handling its retention limit.
+    /// The caller must rule out inherited limits; all other value layers survive.
+    pub(crate) fn forget_expression_after_limit(&mut self) {
+        self.expression = None;
+        self.symbolic_limit = false;
+    }
     /// Obtain the value's exact expression. Numeric singletons need no stored
     /// expression handle; unknown values can only use an existing trusted term.
     pub fn symbolic_expression(&self) -> Option<ExprId> {

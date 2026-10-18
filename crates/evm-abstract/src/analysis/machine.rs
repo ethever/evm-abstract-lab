@@ -35,11 +35,15 @@ pub struct ExecutionConfig {
     pub max_work: usize,
     /// Maximum unfolded active/suspended frames, including entry, before recursive folding.
     pub max_call_depth: usize,
-    /// Maximum modeled memory footprint and extracted byte-array length.
+    /// Exact-byte extraction cap for checked consumers, not a logical-memory
+    /// bound or a process-wide allocation limit.
     pub max_memory_bytes: usize,
     /// Reuse complete callee graph certificates and procedure relations between
     /// outer entries. Recursive closure remains enabled either way.
     pub use_summaries: bool,
+    /// Prepare a separate conservative root terminal relation before detail (enabled by default).
+    /// Detailed status, graph, frontiers and observed outcomes remain independent.
+    pub root_terminal_coverage: bool,
 }
 
 impl Default for ExecutionConfig {
@@ -50,6 +54,7 @@ impl Default for ExecutionConfig {
             max_call_depth: 32,
             max_memory_bytes: 65_536,
             use_summaries: true,
+            root_terminal_coverage: true,
         }
     }
 }
@@ -279,7 +284,7 @@ pub enum FrontierReason {
     Memory,
     /// A checked byte-array range cannot be retained in its declared representation.
     ByteRange(ByteRangeBoundary),
-    /// A relational query could not finish within the declared symbolic/SMT policy.
+    /// A relational query could not complete under the declared local reasoning policy.
     Relations(crate::domain::relational::QueryReason),
     /// A complete incoming machine alternative could not be merged safely.
     StateJoin(JoinBoundary),
@@ -355,7 +360,7 @@ pub struct MachineOutcome {
 }
 
 /// One numerical output of a caller-independent procedure relation.
-/// Templates are instantiated with independent SMT roots before execution.
+/// Templates are instantiated with independent symbolic state roots before execution.
 #[derive(Clone, Debug, Serialize)]
 pub struct ProcedureSummaryOutput {
     /// Relative frame termination; failure effects are rolled back at each caller.
@@ -430,6 +435,8 @@ pub struct WorldAnalysis {
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) frontiers: Vec<MachineFrontier>,
     pub(crate) outcomes: Vec<MachineOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) root_terminal_coverage: Option<super::RootTerminalCoverage>,
     pub(crate) status: Status,
     pub(crate) transfers: usize,
     pub(crate) work: usize,
@@ -441,6 +448,10 @@ pub struct WorldAnalysis {
 }
 
 impl WorldAnalysis {
+    /// Separately prepaid terminal relation for the original entered root.
+    pub fn root_terminal_coverage(&self) -> Option<&super::RootTerminalCoverage> {
+        self.root_terminal_coverage.as_ref()
+    }
     /// Cumulative discovery evidence when this result was acquired through RPC.
     pub fn rpc_acquisition(&self) -> Option<&super::RpcAcquisition> {
         self.rpc_acquisition.as_ref()

@@ -212,7 +212,7 @@ choice! {
         CallDepth,
         /// Memory modeling cap.
         Memory,
-        /// Symbolic or SMT bound.
+        /// Symbolic representation or local path reasoning bound.
         Relations,
         /// Call destination is not covered by supplied code.
         UnknownTarget,
@@ -302,6 +302,9 @@ record! {
         pub stores: Vec<crate::StoreSnapshot>,
         /// Terminal root results and state changes.
         pub outcomes: Vec<crate::Outcome>,
+        /// Native all-input terminal relation, independent of detailed coverage.
+        /// None means no certificate was attached, including when requested.
+        pub root_terminal_coverage: Option<crate::RootTerminalCoverage>,
         /// Recursive known/unknown execution evidence, separate from CFG traces.
         pub abstract_summaries: Vec<crate::AbstractSummary>,
         /// Fixed-snapshot account/storage acquisition evidence.

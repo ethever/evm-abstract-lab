@@ -1,4 +1,4 @@
-//! Exact native answers for one immutable relation snapshot within a transfer.
+//! Bounded local answers for one immutable relation snapshot within a transfer.
 
 use crate::domain::{
     relational::{RelationLimits, RelationState, ValueQuery},
@@ -13,9 +13,9 @@ struct Snapshot {
     limits: RelationLimits,
 }
 
-/// Retention and lookup work are bounded independently of native solver fuel.
-/// No numeric approximation is cached: each caller applies the proof to its
-/// current value, including its own finite candidates and containment checks.
+/// Retention and lookup work are bounded independently of propagation work.
+/// A cached upper approximation is independent of the caller; each caller uses its
+/// own finite candidates and containment checks when intersecting the result.
 #[derive(Default)]
 pub(in crate::analysis::transfer) struct QueryCache {
     snapshot: Option<Snapshot>,
@@ -68,7 +68,7 @@ impl QueryCache {
         answer: &ValueQuery,
     ) {
         self.scope(state, limits);
-        if matches!(answer, ValueQuery::Unknown(_)) || !limits.enabled || !limits.valid() {
+        if matches!(answer, ValueQuery::Undetermined(_)) || !limits.enabled || !limits.valid() {
             return;
         }
         let state_work = state.work_size();
@@ -90,7 +90,7 @@ impl QueryCache {
             || self.retained_work.saturating_add(entry_work) > limits.max_nodes
         {
             // Eviction only forgets an optional proof; the next query still
-            // follows the complete native encoding and unchanged allowance.
+            // runs bounded local propagation under the same policy.
             self.values.clear();
             self.retained_work = state_work;
         }

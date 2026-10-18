@@ -9,9 +9,9 @@ nix develop --no-update-lock-file
 cargo check --workspace --all-targets --locked
 ```
 
-开发环境显式提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、Wasm target、wasm-bindgen、C/C++ 编译与构建工具、libclang、pkg-config、Z3、Bitwuzla、cvc5、OpenSSL、Graphviz、字体、jq、Taplo、nixfmt、lychee、cargo-nextest 和 Dylint。Python 用于真实的语言服务器协议回归和可选的性能采样报告，浏览器检查另使用 Nix 提供的 Playwright 和 Chromium。
+开发环境显式提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、Wasm target、wasm-bindgen、C/C++ 编译与构建工具、libclang、pkg-config、OpenSSL、Graphviz、字体、jq、Taplo、nixfmt、lychee、cargo-nextest 和 Dylint。Python 用于真实的语言服务器协议回归和可选的性能采样报告，浏览器检查另使用 Nix 提供的 Playwright 和 Chromium。
 
-原生库通过 Nix 的构建环境暴露给 Cargo，包括 `PKG_CONFIG_PATH`、cvc5 头文件/库路径和 libclang。Rust 语言服务器与命令行构建使用同一个开发环境；不要把某次构建产生的 `/nix/store/...` 路径手工写入工作区设置。
+依赖清单见 [`nix/dependencies.nix`](../nix/dependencies.nix)：构建工具包括 CMake、pkg-config 和 bindgen hook，OpenSSL 用于 Dylint UI 检查的 git2 依赖；原生 SMT 库已移除。Rust 语言服务器与命令行构建使用同一个开发环境；不要把某次构建产生的 `/nix/store/...` 路径手工写入工作区设置。
 
 ## 接入现有 VS Code，包括 Remote SSH
 
@@ -23,7 +23,7 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 
 命令面板中的 `Tasks: Run Task` 提供[工作区任务](../.vscode/tasks.json)：`Nix: build`、默认测试 `Nix: check affected`、`Nix: test workspace (Cargo)`、`Nix: clippy` 和 `Nix: full merge gate`。默认构建任务也使用 Nix。手动终端命令应先执行 `nix develop`；插件自身的 Run/Test 按钮行为由插件配置决定，需要固定项目环境时使用这些 Nix 任务。
 
-安装插件或更新工作区设置后，执行 `Developer: Reload Window`。若出现 `Package bitwuzla was not found` 或原生库构建脚本失败，核对工作区设置已生效，再执行 `rust-analyzer: Restart server`。仅在终端里进入 `nix develop` 不会改变已运行语言服务器的环境。
+安装插件或更新工作区设置后，执行 `Developer: Reload Window`。若 Cargo metadata 或原生库构建脚本失败，核对工作区设置已生效，再执行 `rust-analyzer: Restart server`。仅在终端里进入 `nix develop` 不会改变已运行语言服务器的环境。
 
 修改锁文件后，重新进入开发环境并重启 rust-analyzer。编辑器和插件版本由用户管理；项目锁文件管理下表中的工具和依赖。
 
@@ -58,7 +58,6 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 | [`nix/check-inputs.nix`](../nix/check-inputs.nix) | 检查的独立文件与文件集输入，避免带入整个仓库 |
 | [`nix/check-aggregate.nix`](../nix/check-aggregate.nix) | 纯汇总节点及其叶子依赖，开发入口只构建受影响成员 |
 | [`nix/shell.nix`](../nix/shell.nix) | 开发环境及其显式依赖 |
-| [`nix/smt.nix`](../nix/smt.nix)、[`nix/smt/`](../nix/smt/) | 三个求解器所需原生包、编译/链接设置和共存检查 |
 | [`nix/dylint.nix`](../nix/dylint.nix)、[`nix/dylint/`](../nix/dylint/) | lint 工具链、可复用插件构建、命令和检查 |
 | [`nix/checks.nix`](../nix/checks.nix)、[`nix/checks/`](../nix/checks/) | Rust、格式、文档、安装后示例和后端对照检查 |
 | [`nix/commands.nix`](../nix/commands.nix) | 自动受影响检查与可选实验的 Nix 入口 |
@@ -67,7 +66,6 @@ Even Better TOML 默认使用插件自带的 Taplo，其版本随用户安装的
 | [`nix/checks/tooling/sources.nix`](../nix/checks/tooling/sources.nix) | 格式器所需内容、文档内容与链接目标名的独立缓存边界 |
 | [`nix/tests/`](../nix/tests/) | feature 矩阵、解析上下文、前置库缓存和 Wasm 隔离回归 |
 
-Bitwuzla 和 cvc5 从锁定源码构建，使各自嵌入的 CaDiCaL 符号保持私有。cvc5 使用系统默认链接器，避免该版本 gold 生成的符号版本表与 Rust 的 LLD 不兼容。这里通过编译和链接设置解决问题，不再用 Python 修改已生成的 ELF。首次构建这两个原生包可能较慢，之后可以复用 Nix 产物。
 
 保留的脚本有明确边界：极短的编辑器/命令兼容入口负责调用 Nix；文档链接反例、Taplo LSP 协议检查和性能采样是真实验证逻辑。依赖安装与版本选择由 Nix 模块承担，不在这些测试里另建一套环境。
 
@@ -92,7 +90,7 @@ nix profile add .
 nix run --no-update-lock-file .#web -- --bind 127.0.0.1:8080
 ```
 
-安装、开发环境和应用运行的构建依赖图中没有工作区测试、Dylint 检查或浏览器测试。项目定制的 Z3、Bitwuzla、cvc5 和 CaDiCaL 也使用不运行自测的安装构建，其上游自测在完整门禁中单独执行。安装成功只表示产物已生成；发布前的验证入口是 `nix flake check`。
+安装、开发环境和应用运行的构建依赖图中没有工作区测试、Dylint 检查或浏览器测试。当前依赖图也不包含原生 SMT 库及其上游自测。安装成功只表示产物已生成；发布前的验证入口是 `nix flake check`。
 
 仓库没有 `jobs=8`、固定测试线程数或 CPU 预留。普通 Cargo 使用可用 CPU 的默认并发；Nix 调度遵循调用者的配置，项目清除 Crane 自动注入的 Cargo jobs 和测试线程变量，让每个工具自动选择并发。需要手动选择并发时，可以设置 Cargo 的 `--jobs` / `CARGO_BUILD_JOBS`，或者 Nix 的 `max-jobs` / `cores`；项目不添加额外上限。`DYLINT_JOBS` 和 `STATE_BACKEND_JOBS` 仅在显式设置时覆盖 Cargo 的默认选择。
 
@@ -100,7 +98,7 @@ Nix 使用以下缓存层（[Crane 的依赖缓存](https://crane.dev/API.html#c
 
 | 层 | 缓存内容 | 何时重新生成 |
 | --- | --- | --- |
-| 工具链与原生库 | Rust、Dylint 工具、SMT 库 | 对应锁定输入、版本或原生构建设置变化 |
+| 工具链与原生库 | Rust、Dylint 工具、预编译与传输依赖 | 对应锁定输入、版本或原生构建设置变化 |
 | Vendored 源码 | 同一份 Cargo.lock 的第三方 crate 源码 | 锁文件或 registry 配置变化 |
 | Rust 依赖产物 | 各 profile、features、target、编译器下，按包依赖图共享的第三方和本地库产物 | 对应工具链、profile、features、target、依赖或编译环境变化 |
 | 应用产物 | CLI、分析服务、原生前端和优化后的 Wasm | 相关 Rust、C++、manifest 或编译期 fixture 变化 |
@@ -128,7 +126,7 @@ Cargo 解析回归对照原始根包与分包构建的实际 unit graph，检查
 
 bindgen 解析参数中去除 Nix 为当前产物生成的随机种子，其余参数按完整 token 保留，包括调用者设置的种子和带引号的宏。实际 C/C++ 编译继续使用 Nix 的编译参数；两个真实构建的环境回归保护这项边界。
 
-TOML 回归使用 Nix 提供的 Taplo，向真实 LSP 发送格式化请求并与同版本 CLI 比较结果，验证项目的格式配置。原生求解器共存和安装后分析示例也保留在完整门禁中。编辑器和插件的安装由用户负责。
+TOML 回归使用 Nix 提供的 Taplo，向真实 LSP 发送格式化请求并与同版本 CLI 比较结果，验证项目的格式配置。安装后分析示例与独立 Lean 形式化模型检查也保留在完整门禁中。编辑器和插件的安装由用户负责。
 
 缓存边界可用实际 derivation 回归验证：
 

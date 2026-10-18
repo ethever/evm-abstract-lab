@@ -37,49 +37,169 @@ fn shared_reachable_graph_is_iterative_and_unique() {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installation() {
-    for code in ["366000803700", "5f3580600790555400"] {
-        let request = api::AnalyzeRequest {
+    for (code, max_nodes) in [
+        ("366000803700", None),
+        ("366000803700", Some(3)),
+        ("5f3580600790555400", None),
+    ] {
+        let mut request = api::AnalyzeRequest {
             input: api::AnalysisInput::Bytecode(api::BytecodeInput {
                 bytecode: code.into(),
                 address: Some(format!("0x{}", "11".repeat(20))),
             }),
             ..api::AnalyzeRequest::default()
         };
+        if let Some(max_nodes) = max_nodes {
+            // Keep the strict three-node range-refusal fixture independent of
+            // optional terminal preparation and its prepaid expression work.
+            request.limits.root_terminal_coverage = false;
+            request.limits.max_expression_nodes = max_nodes;
+        }
         let report = evm_abstract_server::analyze::analyze(request).unwrap();
         let wire = serde_json::to_vec(&api::AnalyzeReply { result: Ok(report) }).unwrap();
         let reply: api::AnalyzeReply = serde_json::from_slice(&wire).unwrap();
         let parsed = reply.result.as_ref().unwrap();
         parsed.validate().unwrap();
+        let expected = parsed.clone();
         let mut workspace = crate::Workspace::default();
         workspace.receive(Ok(reply));
         let installed = workspace
             .report
             .as_ref()
             .expect("validated report must enter frontend model");
+        assert_eq!(installed, &expected);
         if code.starts_with("36") {
-            let copy = installed
-                .symbolic
-                .nodes
-                .iter()
-                .find(|node| matches!(node, api::Expression::Copy(_)))
-                .unwrap();
-            assert!(label(copy).contains("captured source"));
-            let range = installed
-                .frontiers
-                .iter()
-                .find_map(|f| f.range.as_ref())
-                .unwrap();
-            assert!(installed.pending_machines.get(range.payload).is_some());
+            let state = &installed.states[0];
+            let exit = state.exit.as_ref().unwrap();
+            let frame = exit.frames.last().unwrap();
+            let input = &installed.byte_arrays[frame.calldata];
+            let length = input.length.expression.unwrap();
             assert!(
-                installed
-                    .ssa
-                    .blocks
-                    .iter()
-                    .flat_map(|block| &block.instructions)
-                    .any(|instruction| instruction.opcode == 0x37
-                        && instruction.progress == api::InstructionProgress::Completed)
+                matches!(&installed.symbolic.nodes[length.node], api::Expression::Input(identity)
+                if identity.symbol.kind == api::InputSymbolKind::CalldataLength)
             );
+            let instruction = installed.ssa.blocks[0]
+                .instructions
+                .iter()
+                .find(|instruction| instruction.pc == 4)
+                .unwrap();
+            assert_eq!(instruction.opcode, 0x37);
+            assert_eq!(instruction.operands.len(), 3);
+            assert!(instruction.results.is_empty());
+            assert!(instruction.effect_result.is_some());
+            if max_nodes.is_none() {
+                assert_eq!(installed.status, api::AnalysisStatus::Converged);
+                assert!(installed.frontiers.is_empty());
+                assert!(installed.ssa.complete);
+                let api::Expression::View(memory) =
+                    &installed.symbolic.nodes[installed.byte_arrays[frame.memory].symbolic.node]
+                else {
+                    panic!("installed memory retains its view")
+                };
+                let copy = &installed.symbolic.nodes[memory.state.node];
+                assert!(label(copy).contains("captured source"));
+                let api::Expression::Copy(copy) = copy else {
+                    panic!("installed success commits the lazy copy")
+                };
+                assert_eq!(copy.length, length);
+                assert!(matches!(
+                    installed.symbolic.nodes[copy.previous.node],
+                    api::Expression::BytesZero
+                ));
+                assert_eq!(
+                    installed.symbolic.nodes[copy.destination.node],
+                    api::Expression::Constant("0x0".into())
+                );
+                let api::Expression::View(source) = &installed.symbolic.nodes[copy.source.node]
+                else {
+                    panic!("installed copy retains its captured source")
+                };
+                let api::Expression::View(input) = &installed.symbolic.nodes[input.symbolic.node]
+                else {
+                    panic!("installed calldata retains its input view")
+                };
+                assert_eq!(source.state, input.state);
+                assert_eq!(source.offset, input.offset);
+                assert_eq!(source.length, length);
+                assert!(matches!(
+                    installed.symbolic.nodes[exit.path.node],
+                    api::Expression::PathAnd(_)
+                ));
+                assert_eq!(instruction.progress, api::InstructionProgress::Completed);
+            } else {
+                // Three nodes admit calldata but cannot retain the complete
+                // logical-memory guard. Its mandatory partition stays pending.
+                assert_eq!(installed.status, api::AnalysisStatus::Incomplete);
+                assert!(!installed.ssa.complete);
+                let [frontier] = installed.frontiers.as_slice() else {
+                    panic!("expected exactly the installed logical range refusal")
+                };
+                assert_eq!(frontier.kind, api::FrontierKind::Relations);
+                assert_eq!(
+                    frontier.reason,
+                    api::FrontierDetails::Relations(api::QueryBoundary::ExpressionLimit)
+                );
+                assert_eq!((frontier.from, frontier.pc), (Some(0), Some(4)));
+                let range = frontier.range.as_ref().unwrap();
+                assert_eq!(range.request.kind, api::RangeKind::LogicalMemory);
+                assert_eq!(range.request.offset.constants, Some(vec!["0x0".into()]));
+                assert_eq!(range.request.size.expression, Some(length));
+                assert!(range.request.size.constants.is_none());
+                assert_eq!(
+                    range.request.limit.constants,
+                    Some(vec![format!("0x{}e0", "ff".repeat(31))])
+                );
+                assert_eq!(range.nonzero, None);
+                assert!(range.condition.expression.is_none());
+                let pending = &installed.pending_machines[range.payload];
+                assert_eq!(pending.frames, exit.frames);
+                assert_eq!(pending.store, exit.store);
+                assert_eq!(exit.store, state.entry.store);
+                assert!(frame.stack.is_empty());
+                let memory = &installed.byte_arrays[frame.memory];
+                assert_eq!(memory.length.constants, Some(vec!["0x0".into()]));
+                let api::Expression::View(view) = &installed.symbolic.nodes[memory.symbolic.node]
+                else {
+                    panic!("installed refusal retains the pre-effect memory view")
+                };
+                assert!(matches!(
+                    installed.symbolic.nodes[view.state.node],
+                    api::Expression::BytesZero
+                ));
+                assert_eq!(
+                    instruction.progress,
+                    api::InstructionProgress::OperandsConsumed
+                );
+                assert!(matches!(
+                    instruction.operation,
+                    api::SsaOperation::Opcode(_)
+                ));
+                assert!(!installed.ssa.values.iter().any(|value| {
+                    matches!(&value.origin, api::SsaValueOrigin::Instruction(origin) if origin.pc == 4)
+                }));
+                assert!(
+                    !installed.ssa.blocks[0]
+                        .instructions
+                        .iter()
+                        .any(|instruction| instruction.pc > 4)
+                );
+                assert!(
+                    installed
+                        .symbolic
+                        .nodes
+                        .iter()
+                        .all(|node| !matches!(node, api::Expression::Copy(_)))
+                );
+                assert!(
+                    installed
+                        .outcomes
+                        .iter()
+                        .all(|outcome| outcome.kind == api::OutcomeKind::Failure)
+                );
+            }
         } else {
+            assert_eq!(installed.status, api::AnalysisStatus::Converged);
+            assert!(installed.frontiers.is_empty());
             assert!(
                 installed
                     .states

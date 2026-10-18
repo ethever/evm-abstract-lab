@@ -187,7 +187,7 @@ impl World {
 }
 
 fn checkpoint() -> Result<(), FingerprintError> {
-    if embedded_smt::current_cancellation().is_cancelled() {
+    if analysis_control::current_cancellation().is_cancelled() {
         Err(FingerprintError::Cancelled)
     } else {
         Ok(())
@@ -223,7 +223,7 @@ fn encode(
 ) -> Result<(), FingerprintError> {
     checkpoint()?;
     serde_json::to_writer(&mut *writer, value).map_err(|error| {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             FingerprintError::Cancelled
         } else if writer.overflow {
             FingerprintError::LengthOverflow
@@ -258,7 +258,7 @@ impl FingerprintWriter<'_> {
 
 impl Write for FingerprintWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             // Write::write_all retries Interrupted forever. Cancellation must
             // leave serde's write immediately; encode maps it to Cancelled.
             return Err(io::ErrorKind::Other.into());
@@ -278,7 +278,7 @@ impl Write for FingerprintWriter<'_> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             Err(io::ErrorKind::Other.into())
         } else {
             Ok(())
@@ -292,9 +292,9 @@ mod writer_tests {
 
     #[test]
     fn cancellation_does_not_enter_write_all_interrupted_retry() {
-        let cancellation = embedded_smt::Cancellation::new();
+        let cancellation = analysis_control::Cancellation::new();
         cancellation.cancel();
-        embedded_smt::with_cancellation(&cancellation, || {
+        analysis_control::with_cancellation(&cancellation, || {
             let mut writer = FingerprintWriter::counting();
             let error = serde_json::to_writer(&mut writer, &U256::ONE).unwrap_err();
             assert!(error.is_io());

@@ -1,6 +1,6 @@
 //! Optional complete-payload coverage proofs. Immutable roots and numeric
-//! shape must agree first; SMT then proves all scalar bindings and old path
-//! guarantees. A failed/unknown proof never removes the incoming alternative.
+//! shape must agree first; local impossibility establishes required scalar
+//! bindings and old path guarantees when these cheap rules suffice. A failed/unknown proof never removes the incoming alternative.
 
 use super::{MachineError, checkpoint};
 use crate::{
@@ -25,6 +25,40 @@ fn reserve(budget: &mut WorkBudget, cost: usize) -> Result<(), MachineError> {
     } else {
         Ok(())
     }
+}
+
+/// These roots survive both content normalization and coverage's scalar erase.
+/// A mismatch rules out either comparison; agreement grants no coverage proof.
+pub(super) fn same_byte_roots(
+    previous: &MachinePayload,
+    incoming: &MachinePayload,
+    budget: &mut WorkBudget,
+) -> Result<bool, MachineError> {
+    if budget.exhausted() {
+        return Err(MachineError::work_failure());
+    }
+    // Pay for both cached frame counts before reading them, then for all three
+    // root-ID comparisons per frame before starting the borrowed frame walk.
+    reserve(budget, 2)?;
+    checkpoint()?;
+    let depth = previous.call_stack.depth();
+    if depth != incoming.call_stack.depth() {
+        checkpoint()?;
+        return Ok(false);
+    }
+    reserve(budget, depth.saturating_mul(3))?;
+    for (old, new) in previous.call_stack.iter().zip(incoming.call_stack.iter()) {
+        checkpoint()?;
+        if old.memory.state_root() != new.memory.state_root()
+            || old.calldata.state_root() != new.calldata.state_root()
+            || old.returndata.state_root() != new.returndata.state_root()
+        {
+            checkpoint()?;
+            return Ok(false);
+        }
+    }
+    checkpoint()?;
+    Ok(true)
 }
 
 fn shape(payload: &MachinePayload) -> Result<(MachinePayload, Vec<Option<ExprId>>), MachineError> {
@@ -261,6 +295,9 @@ pub(super) fn covers(
     if !policy.enabled {
         return Ok(false);
     }
+    if !same_byte_roots(previous, incoming, budget)? {
+        return Ok(false);
+    }
     reserve(
         budget,
         previous
@@ -308,25 +345,21 @@ pub(super) fn covers(
     let query_fee = incoming
         .relations
         .work_size()
-        .saturating_add(predicate.work_size())
-        .saturating_add(policy.rlimit as usize);
+        .saturating_add(predicate.work_size());
     reserve(budget, query_fee)?;
-    Ok(
-        match incoming.relations.can_equal_cached(
-            &predicate,
-            U256::ZERO,
-            &policy,
-            &mut budget
-                .smt_cache_query(policy.cache_scope())
-                .with_allowance(query_fee / 4),
-        ) {
-            CheckResult::Unsat => true,
-            CheckResult::Unknown(QueryReason::Cancelled) => {
-                return Err(MachineError::Relations(QueryReason::Cancelled));
-            }
-            CheckResult::Sat | CheckResult::Unknown(_) => false,
-        },
-    )
+    let answer = incoming
+        .relations
+        .can_equal_budgeted(&predicate, U256::ZERO, &policy, budget);
+    if budget.exhausted() {
+        return Err(MachineError::work_failure());
+    }
+    Ok(match answer {
+        CheckResult::ProvenImpossible => true,
+        CheckResult::Undetermined(QueryReason::Cancelled) => {
+            return Err(MachineError::Relations(QueryReason::Cancelled));
+        }
+        CheckResult::MayBeFeasible | CheckResult::Undetermined(_) => false,
+    })
 }
 
 #[cfg(test)]

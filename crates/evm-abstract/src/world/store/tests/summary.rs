@@ -4,7 +4,7 @@ use super::super::*;
 use crate::{
     Fork,
     domain::{
-        relational::{CheckResult, RelationLimits, RelationState},
+        relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
         symbolic::ExprLimits,
     },
     world::Account,
@@ -53,9 +53,9 @@ fn numerical_projection_compresses_storage_history_under_a_smaller_replay_limit(
     });
     store.persistent.failure = Some(failure.clone());
     assert_eq!(store.summary_projection(smaller), Err(failure));
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
             replay.summary_projection(smaller),
             Err(StoreError::Expression(ExprError::Cancelled))
@@ -125,12 +125,14 @@ fn ordinary_unknown_steps_protect_full_known_storage_and_cover_omitted_world() {
             .is_empty()
     );
     store.restore(checkpoint);
-    assert_eq!(store, before);
+    let mut reverted = before;
+    reverted.may_touch_account(Address::from_word(U256::from(3).into()));
+    assert_eq!(store, reverted);
     assert_eq!(store.created_in_transaction(other), Some(false));
 }
 
 #[test]
-fn storage_capability_keeps_account_facts_and_static_effect_is_identity() {
+fn storage_capability_and_static_effect_preserve_values_and_track_possible_touches() {
     let (world, a, _) = fixture();
     let mut store = Store::new(&world);
     let before = store.clone();
@@ -146,11 +148,12 @@ fn storage_capability_keeps_account_facts_and_static_effect_is_identity() {
     assert_eq!(store.read_balance(a), before.read_balance(a));
     assert_eq!(store.created_in_transaction(a), Some(false));
     assert!(!store.logs_unknown());
-    let before = store.clone();
+    let mut expected = store.clone();
+    expected.may_touch_all();
     store
         .apply_unknown_effects(&BTreeSet::new(), Some(a), true, Fork::Osaka)
         .unwrap();
-    assert_eq!(store, before);
+    assert_eq!(store, expected);
 }
 
 #[test]
@@ -178,7 +181,7 @@ fn delegate_nonce_and_new_owner_deletion_are_covered_at_transaction_end() {
             store.read(c, &word(0), Domain::default()).singleton(),
             Some(U256::from(5))
         );
-        store.finalize_transaction(Domain::default());
+        store.finalize_transaction(Domain::default()).unwrap();
         assert_eq!(store.code(a), Some(&Code::Unknown));
         assert_eq!(store.existence(a), Existence::Unknown);
         assert_eq!(store.created_in_transaction(a), Some(false));
@@ -330,11 +333,19 @@ fn complete_coverage_checks_defaults_lifecycle_code_balance_nonce_transient_and_
     value.pending_destruction_default = None;
     variants.push(value);
     let mut value = base.clone();
+    value.touch_account(a);
+    variants.push(value);
+    let mut value = base.clone();
+    value.touched_default = None;
+    variants.push(value);
+    let mut value = base.clone();
     value
         .emit_log(
             LogKey {
                 address: a,
                 code_address: a,
+                code_hash: alloy_primitives::B256::ZERO,
+                source_kind: crate::world::LogSourceKind::Runtime,
                 pc: 0,
             },
             AbstractLog {
@@ -387,7 +398,7 @@ fn projected_overwrites_keep_rpc_dependencies_and_historical_reads_separate() {
 }
 
 #[test]
-fn instantiated_bounded_cells_are_smt_constraints_with_independent_slot_values() {
+fn instantiated_bounded_cells_are_local_constraints_with_independent_slot_values() {
     let (world, a, _) = fixture();
     let domain = Domain::default();
     let bounds = AbstractValue::unsigned_range(U256::from(7), U256::from(8)).unwrap();
@@ -401,10 +412,18 @@ fn instantiated_bounded_cells_are_smt_constraints_with_independent_slot_values()
         .unwrap();
     let first = replay.read(a, &word(2), domain);
     let second = replay.read(a, &word(3), domain);
-    let policy = RelationLimits {
-        rlimit: 1_000_000,
-        ..RelationLimits::default()
-    };
+    let policy = RelationLimits::default();
+    for read in [&first, &second] {
+        let ValueQuery::Bounds(bounds) =
+            RelationState::default().local_value(read.expression().unwrap(), &policy)
+        else {
+            panic!("both concrete slot candidates must survive projection and fresh replay");
+        };
+        for candidate in [7, 8] {
+            assert!(read.contains(U256::from(candidate)));
+            assert!(bounds.contains(U256::from(candidate)));
+        }
+    }
     let equal = ExprId::operation(
         opcode::EQ,
         &[
@@ -416,8 +435,27 @@ fn instantiated_bounded_cells_are_smt_constraints_with_independent_slot_values()
     .unwrap();
     assert_eq!(
         RelationState::default().assume(&equal, false, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
+    for (left, right) in [(7, 8), (8, 7)] {
+        let mut independent = RelationState::default();
+        for (read, expected) in [(&first, left), (&second, right)] {
+            independent
+                .observe(
+                    read.expression().unwrap(),
+                    word(expected).numeric(),
+                    &policy,
+                )
+                .unwrap();
+        }
+        assert_eq!(independent.check(&policy), CheckResult::MayBeFeasible);
+        for (read, expected) in [(&first, left), (&second, right)] {
+            assert_eq!(
+                independent.local_value(read.expression().unwrap(), &policy),
+                ValueQuery::Exact(U256::from(expected))
+            );
+        }
+    }
     let invalid = ExprId::operation(
         opcode::EQ,
         &[
@@ -429,7 +467,7 @@ fn instantiated_bounded_cells_are_smt_constraints_with_independent_slot_values()
     .unwrap();
     assert_eq!(
         RelationState::default().assume(&invalid, true, &policy),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
 }
 
@@ -451,6 +489,8 @@ fn canonical_work_covers_rebuilt_roots_scalars_and_event_payloads() {
             LogKey {
                 address: a,
                 code_address: a,
+                code_hash: alloy_primitives::B256::ZERO,
+                source_kind: crate::world::LogSourceKind::Runtime,
                 pc: 1,
             },
             AbstractLog {
@@ -468,4 +508,30 @@ fn canonical_work_covers_rebuilt_roots_scalars_and_event_payloads() {
         summary.work_size(),
         replay.work_size()
     );
+}
+
+#[test]
+fn static_touch_summary_preserves_data_roots_and_existing_must_touches() {
+    let (world, a, b) = fixture();
+    let domain = Domain::default();
+    let mut input = Store::new_checked(&world, domain).unwrap();
+    input.write_checked(a, &word(0), &word(42), domain).unwrap();
+    input.touch_account(a);
+    let root = input.slot_root(a, false).unwrap();
+    let mut generic = Store::new_checked(&world, domain).unwrap();
+    generic.may_touch_all();
+    generic.touch_account(b);
+    let summary = generic.summary_projection(domain).unwrap();
+    let applied = summary.apply_static_touches(&input);
+    let mut expected = input.clone();
+    expected.may_touch_all();
+    expected.touch_account(b);
+    assert_eq!(applied, expected);
+    assert_eq!(applied.slot_root(a, false).unwrap(), root);
+    assert_eq!(
+        applied.read(a, &word(0), domain).singleton(),
+        Some(U256::from(42))
+    );
+    assert_eq!(applied.touched_in_transaction(a), Some(true));
+    assert_eq!(applied.touched_in_transaction(b), Some(true));
 }

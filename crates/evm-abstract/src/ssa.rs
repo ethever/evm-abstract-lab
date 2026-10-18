@@ -111,7 +111,7 @@ pub enum SsaError {
 }
 
 pub(crate) fn checkpoint() -> Result<(), SsaError> {
-    if embedded_smt::current_cancellation().is_cancelled() {
+    if analysis_control::current_cancellation().is_cancelled() {
         Err(SsaError::Cancelled)
     } else {
         Ok(())

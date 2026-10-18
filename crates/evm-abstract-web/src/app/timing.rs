@@ -190,7 +190,7 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, details: &Details) {
         }
     }
     ui.separator();
-    ui.label("Backend phases are server measurements. RPC combines snapshot pinning and cumulative acquisition; abstract analysis includes its solver work.");
+    ui.label("Backend phases are server measurements. RPC combines snapshot pinning and cumulative acquisition; abstract analysis includes local relation propagation.");
     ui.label("Backend processing excludes queueing and result transfer. Total wait runs from submission through the first visible view, including polling and connection delays.");
     ui.label("First view setup includes report installation and actual initial layout/drawing preparation. Hidden views remain lazy; later navigation and GPU presentation are not included.");
 }

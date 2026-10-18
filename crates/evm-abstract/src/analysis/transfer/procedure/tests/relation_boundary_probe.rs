@@ -216,11 +216,10 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
                     .contains(U256::from(expected))
         }));
         println!(
-            "RELATION_BOUNDARY_PROBE case={case} mode=ordinary closed={} frontiers={:?} work={} transfers=1 cache_stats={:?}",
+            "RELATION_BOUNDARY_PROBE case={case} mode=ordinary closed={} frontiers={:?} work={} transfers=1",
             ordinary.frontiers.is_empty(),
             ordinary.frontiers,
             budget.used(),
-            budget.smt_cache_stats(),
         );
         for mode in ["shared-table", "fresh-table"] {
             let mut fresh = Table::default();
@@ -253,7 +252,7 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
                         .contains(U256::from(expected))
             }));
             println!(
-                "RELATION_BOUNDARY_PROBE case={case} mode={mode} closed={} frontiers={:?} procedures={} states={} work={} transfers={} reused={} cache_stats={:?}",
+                "RELATION_BOUNDARY_PROBE case={case} mode={mode} closed={} frontiers={:?} procedures={} states={} work={} transfers={} reused={}",
                 record.closed,
                 execution.frontiers,
                 record.procedures.len(),
@@ -261,7 +260,6 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
                 budget.used(),
                 record.transfers,
                 record.reused,
-                budget.smt_cache_stats(),
             );
         }
     }

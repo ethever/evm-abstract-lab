@@ -34,12 +34,12 @@ fn policy(report: &Value, world: bool, expected: &AnalysisLimits) {
         ("max_nodes", expected.max_expression_nodes),
         ("max_depth", expected.max_expression_depth),
         ("max_constraints", expected.max_constraints),
-        ("rlimit", u64::from(expected.smt_rlimit)),
     ] {
         assert_eq!(config["relations"][name], value, "{name}: {config}");
     }
     assert_eq!(config["relations"]["enabled"], expected.relations_enabled);
-    assert_eq!(config["relations"]["provider"], "z3");
+    assert!(config["relations"].get("provider").is_none());
+    assert!(config["relations"].get("rlimit").is_none());
     assert_eq!(config["domain_profile"], "product");
     assert_eq!(report["domain_spec"]["capacity"], expected.max_constants);
     assert_eq!(
@@ -56,12 +56,18 @@ fn policy(report: &Value, world: bool, expected: &AnalysisLimits) {
             assert_eq!(report["config"][name], value, "{name}");
         }
         assert_eq!(report["config"]["use_summaries"], expected.use_summaries);
+        assert_eq!(
+            report["config"]["root_terminal_coverage"],
+            expected.root_terminal_coverage
+        );
     }
 }
 
 #[test]
 fn cfg_ssa_and_world_json_use_the_protocol_web_defaults_in_the_real_engine() {
     let expected = AnalysisLimits::default();
+    assert_eq!(expected.max_work, 2_000_000_000);
+    assert!(expected.root_terminal_coverage);
     let path = format!(
         "{}/../../examples/straight-line.hex",
         env!("CARGO_MANIFEST_DIR")
@@ -78,6 +84,16 @@ fn cfg_ssa_and_world_json_use_the_protocol_web_defaults_in_the_real_engine() {
                 false,
                 &expected,
             );
+            if command == "ssa" {
+                assert_eq!(
+                    json["machine_analysis"]["config"]["max_work"],
+                    2_000_000_000
+                );
+                assert_eq!(
+                    json["machine_analysis"]["config"]["root_terminal_coverage"],
+                    true
+                );
+            }
         }
     }
     let world = report(analyze("call-return-branch", &["--format", "json"]));
@@ -93,12 +109,12 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
         max_states: 4096,
         max_transfers: 100_000,
         max_work: 20_000_000,
+        root_terminal_coverage: false,
         max_call_depth: 32,
         max_memory_bytes: 65_536,
         max_expression_nodes: 1024,
         max_expression_depth: 64,
         max_constraints: 128,
-        smt_rlimit: 100_000,
         ..AnalysisLimits::default()
     };
     let world = report(analyze(
@@ -118,6 +134,7 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
             "100000",
             "--max-work",
             "20000000",
+            "--no-root-terminal-coverage",
             "--max-call-depth",
             "32",
             "--max-memory-bytes",
@@ -128,8 +145,6 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
             "64",
             "--max-relations",
             "128",
-            "--smt.rlimit",
-            "100000",
         ],
     ));
     policy(&world, true, &expected);
@@ -138,7 +153,9 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
 #[test]
 fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_frontiers() {
     // MSTORE touches bytes 65536..65568, just beyond the former implicit budget.
-    let code = "6001620100005200";
+    // A following MLOAD checks the actual write under the exact-byte cap.
+    let code = "60016201000052620100005100";
+    assert_eq!(AnalysisLimits::default().max_memory_bytes, 64 * 1024 * 1024);
     for command in ["cfg", "ssa", "explain"] {
         let default = run_concrete(&[command, "--hex", code]);
         assert!(
@@ -147,20 +164,138 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
             String::from_utf8_lossy(&default.stderr)
         );
         let bounded = run_concrete(&[command, "--hex", code, "--max-memory-bytes", "65536"]);
-        assert_eq!(bounded.status.code(), Some(2), "{command}");
-        let text = String::from_utf8(bounded.stdout).unwrap();
+        assert!(
+            bounded.status.success(),
+            "{command}: {}",
+            String::from_utf8_lossy(&bounded.stderr)
+        );
+        // The default symbolic calldata Input needs three retained nodes.
+        // This two-node control refuses initialization before MSTORE executes.
+        let refused = run_concrete(&[
+            command,
+            "--hex",
+            code,
+            "--max-memory-bytes",
+            "65536",
+            "--max-symbolic-nodes",
+            "2",
+            "--no-root-terminal-coverage",
+        ]);
+        assert_eq!(refused.status.code(), Some(2), "{command}");
+        let text = String::from_utf8(refused.stdout).unwrap();
         if command == "ssa" {
             assert!(
                 text.is_empty(),
                 "closed SSA must still refuse incomplete execution"
             );
+            assert!(String::from_utf8_lossy(&refused.stderr).contains("SSA unavailable"));
         } else {
             assert!(
-                text.contains("Incomplete") && text.contains("Memory"),
+                text.contains("Incomplete")
+                    && text.contains("Relations")
+                    && text.contains("ExpressionLimit"),
                 "{command}: {text}"
             );
         }
     }
+    for explicit in [None, Some("65536")] {
+        let mut args = vec!["ssa", "--hex", code, "--format", "json"];
+        if let Some(cap) = explicit {
+            args.extend(["--max-memory-bytes", cap]);
+        }
+        let complete = report(run_concrete(&args));
+        let machine = &complete["machine_analysis"];
+        assert_eq!(
+            machine["config"]["max_memory_bytes"],
+            explicit.map_or(64 * 1024 * 1024, |cap| cap.parse::<usize>().unwrap())
+        );
+        assert_eq!(machine["status"], "Converged");
+        assert_eq!(machine["frontiers"], serde_json::json!([]));
+        assert_eq!(
+            machine["states"][0]["exit_stack"][0]["Constants"],
+            serde_json::json!(["0x1"])
+        );
+        let load = complete["ssa"]["blocks"][0]["instructions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["opcode"] == 0x51)
+            .unwrap();
+        assert_eq!(load["progress"], "Completed");
+        assert_eq!(load["results"].as_array().unwrap().len(), 1);
+    }
+    let refused = run_concrete(&[
+        "cfg",
+        "--hex",
+        code,
+        "--max-memory-bytes",
+        "65536",
+        "--max-symbolic-nodes",
+        "2",
+        "--no-root-terminal-coverage",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(refused.status.code(), Some(2));
+    let refused: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(refused["config"]["relations"]["max_nodes"], 2);
+    assert_eq!(refused["status"], "Incomplete");
+    assert_eq!(refused["states"], serde_json::json!([]));
+    assert_eq!(refused["edges"], serde_json::json!([]));
+    assert_eq!(refused["diagnostics"], serde_json::json!([]));
+    assert_eq!(
+        refused["frontiers"],
+        serde_json::json!([{
+            "from": null,
+            "target": {"basic_block_index": 0, "stack_height": 0, "context": []},
+            "reason": {"Relations": "ExpressionLimit"},
+            "limit": "Model"
+        }])
+    );
+    let partial = run_concrete(&[
+        "ssa",
+        "--hex",
+        code,
+        "--max-memory-bytes",
+        "65536",
+        "--max-symbolic-nodes",
+        "2",
+        "--no-root-terminal-coverage",
+        "--allow-partial-ssa",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(partial.status.code(), Some(2));
+    let partial: Value = serde_json::from_slice(&partial.stdout).unwrap();
+    assert!(partial.get("ssa").is_none());
+    assert_eq!(partial["analysis"]["config"], refused["config"]);
+    assert_eq!(partial["analysis"]["states"], refused["states"]);
+    assert_eq!(partial["analysis"]["edges"], refused["edges"]);
+    assert_eq!(partial["analysis"]["frontiers"], refused["frontiers"]);
+    assert_eq!(partial["state_mapping"], serde_json::json!([]));
+    let machine = &partial["machine_analysis"];
+    assert_eq!(machine["status"], "Incomplete");
+    assert_eq!(machine["config"]["max_memory_bytes"], 65536);
+    assert_eq!(machine["config"]["analysis"]["relations"]["max_nodes"], 2);
+    assert_eq!(machine["states"], serde_json::json!([]));
+    assert_eq!(machine["edges"], serde_json::json!([]));
+    assert_eq!(machine["outcomes"], serde_json::json!([]));
+    assert_eq!(
+        machine["frontiers"],
+        serde_json::json!([{
+            "from": null,
+            "target": null,
+            "pc": null,
+            "reason": {"Relations": "ExpressionLimit"},
+            "range": null
+        }])
+    );
+    let ir = &partial["partial_ssa"];
+    assert_eq!(ir["complete"], false);
+    assert_eq!(ir["blocks"], serde_json::json!([]));
+    assert_eq!(ir["frontiers"], machine["frontiers"]);
+    assert_eq!(ir["value_count"], 0);
+    assert_eq!(ir["mappings"], serde_json::json!([]));
 }
 
 #[test]
@@ -215,7 +350,6 @@ fn raw_and_world_verbose_explanations_report_the_same_web_precision_policy() {
         for expected in [
             format!("reduction rounds={}", expected.reduction_rounds),
             format!("fact atoms={}", expected.max_facts),
-            format!("rlimit={}", expected.smt_rlimit),
             format!("expression nodes={}", expected.max_expression_nodes),
             format!("depth={}", expected.max_expression_depth),
             format!("constraints={}", expected.max_constraints),

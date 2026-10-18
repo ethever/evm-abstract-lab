@@ -384,3 +384,61 @@ fn standalone_receive_does_not_inherit_the_previous_server_result_id() {
             .any(|(_, item)| item.galley.text() == "Result Job ID: unavailable")
     );
 }
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn requested_certificate_absence_is_quiet_only_when_detail_has_converged() {
+    use crate::app::terminal_coverage::{self, COVERED, NOT_ATTACHED};
+
+    for incomplete in [false, true] {
+        let mut request = api::AnalyzeRequest::default();
+        request.limits.root_terminal_coverage = true;
+        if incomplete {
+            // Entry work cannot prepare a certificate under this ledger. Keep
+            // the producer's actual frontier and absence, without editing it.
+            request.limits.max_work = 1;
+        }
+        let report = evm_abstract_server::analyze::analyze(request).unwrap();
+        report.validate().unwrap();
+        assert!(report.metadata.limits.root_terminal_coverage);
+        assert!(report.root_terminal_coverage.is_none());
+        assert_eq!(report.ssa.complete, !incomplete);
+        let expected_detail = if incomplete {
+            assert_eq!(report.status, api::AnalysisStatus::Incomplete);
+            assert!(!report.frontiers.is_empty());
+            assert_eq!(terminal_coverage::status(&report), Some(NOT_ATTACHED));
+            "Incomplete / partial SSA"
+        } else {
+            assert_eq!(report.status, api::AnalysisStatus::Converged);
+            assert!(report.frontiers.is_empty());
+            assert_eq!(terminal_coverage::status(&report), None);
+            "Model converged"
+        };
+        assert_eq!(terminal_coverage::detail_status(&report), expected_detail);
+
+        let mut workspace = workspace();
+        workspace.receive(Ok(api::AnalyzeReply {
+            result: Ok(report.clone()),
+        }));
+        let context = Context::default();
+        crate::palette::configure(&context);
+        let mut time = 0.0;
+        frame(&context, &mut workspace, &mut time, 1440.0, vec![]);
+        let output = frame(&context, &mut workspace, &mut time, 1440.0, vec![]);
+        let text = painted(&output);
+        assert!(
+            text.iter()
+                .any(|(_, item)| item.galley.text() == expected_detail)
+        );
+        assert_eq!(
+            text.iter()
+                .any(|(_, item)| item.galley.text() == NOT_ATTACHED),
+            incomplete
+        );
+        assert!(!text.iter().any(|(_, item)| item.galley.text() == COVERED));
+        let live = workspace.accessible_status();
+        assert_eq!(live.contains(NOT_ATTACHED), incomplete);
+        assert!(!live.contains(COVERED));
+        assert_eq!(workspace.report.as_ref().unwrap(), &report);
+    }
+}

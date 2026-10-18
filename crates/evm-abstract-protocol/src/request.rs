@@ -163,17 +163,6 @@ choice! {
         ConstantsOnly,
     }
 }
-choice! {
-    /// Explicit native SMT provider; no silent provider fallback.
-    pub enum SmtProvider {
-        /// Z3.
-        Z3,
-        /// Bitwuzla.
-        Bitwuzla,
-        /// cvc5.
-        Cvc5,
-    }
-}
 record! {
     /// Execution, precision and acquisition controls with platform-independent integers.
     /// Values have no application-defined maximum; the native host validates
@@ -195,24 +184,23 @@ record! {
         pub max_memory_bytes: u64,
         /// Enable complete callee summary reuse.
         pub use_summaries: bool,
+        /// Request separate native terminal coverage for the original root input.
+        /// True does not guarantee that a certificate can be attached.
+        pub root_terminal_coverage: bool,
         /// Numeric abstraction.
         pub domain_profile: DomainProfile,
         /// Fact reduction rounds.
         pub reduction_rounds: u64,
         /// Maximum retained scalar facts.
         pub max_facts: u64,
-        /// Enable relational SMT queries.
+        /// Enable local path and scalar-fact reasoning.
         pub relations_enabled: bool,
         /// Maximum retained relational constraints.
         pub max_constraints: u64,
-        /// Expression and encoding node bound.
+        /// Retained expression and local traversal node bound.
         pub max_expression_nodes: u64,
         /// Expression nesting bound.
         pub max_expression_depth: u64,
-        /// Explicit solver provider.
-        pub smt_provider: SmtProvider,
-        /// Per-check provider resource allowance, not milliseconds.
-        pub smt_rlimit: u32,
         /// Maximum acquired accounts.
         pub rpc_max_accounts: u64,
         /// Maximum cumulative HTTP requests.
@@ -230,10 +218,11 @@ impl Default for AnalysisLimits {
             max_transfers: 10_000_000,
             context_depth: 128,
             max_constants: 512,
-            max_work: 1_000_000_000_000,
+            max_work: 2_000_000_000,
             max_call_depth: 1025,
             max_memory_bytes: 64 * 1024 * 1024,
             use_summaries: true,
+            root_terminal_coverage: true,
             domain_profile: DomainProfile::Product,
             reduction_rounds: 16,
             max_facts: 4096,
@@ -241,8 +230,6 @@ impl Default for AnalysisLimits {
             max_constraints: 2048,
             max_expression_nodes: 16_384,
             max_expression_depth: 256,
-            smt_provider: SmtProvider::Z3,
-            smt_rlimit: 10_000_000,
             rpc_max_accounts: 4096,
             rpc_max_requests: 1_000_000,
             rpc_max_response_bytes: 64 * 1024 * 1024,

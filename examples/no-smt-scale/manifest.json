@@ -1,0 +1,896 @@
+{
+  "schema": "evm-no-smt-scale-inputs-v1",
+  "baseline_source": {
+    "commit": "e3251ffc9009dd751b4d0d998e31e1830908828a",
+    "tree": "8ad3889b17ed9833626d40d3b56f397ae0ab8465"
+  },
+  "measurement_status": "planned only; no native/SMT/RPC/build/benchmark run in this stage",
+  "semantic_acceptance": [
+    "Unknown facts cannot be read as zero, empty, or absent.",
+    "Compare each concrete witness against ONE abstract outcome jointly covering termination, complete returndata, persistent/transient state, account effects, and ordered logs.",
+    "Keep gas/depth/resource/exceptional failures and rollback branches; Incomplete/frontiers are not successful closure.",
+    "Any precision loss must be stated as a larger sound output/effect envelope; fewer states alone do not establish improvement."
+  ],
+  "cases": {
+    "unknown-input": {
+      "profile": "code-only",
+      "world": {
+        "path": "code-only/unknown-input.json",
+        "sha256": "d61ea8cb154ddc2091fbe4cd633c2631426d081db088659b9b783cabcb676203"
+      },
+      "fork": "osaka",
+      "programs": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "mode": "Runtime",
+          "bytecode_bytes": 12,
+          "raw_sha256": "1bdf7736bb11da069da274e4d5c3a28d3fa0107bb58a76f773415d1bce26d715",
+          "declared_code_hash": null
+        }
+      ],
+      "initial_facts": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "balance": null,
+          "nonce": null,
+          "existence": "unknown",
+          "storage": {},
+          "storage_unknown": true
+        }
+      ],
+      "entry": {
+        "address": "0x0000000000000000000000000000000000000101",
+        "mode": "Runtime"
+      },
+      "environment": {
+        "caller": "Unknown",
+        "origin": null,
+        "call_value": "Unknown",
+        "calldata": "Unknown",
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": null,
+        "timestamp": null,
+        "number": null,
+        "prevrandao": null,
+        "gas_limit": null,
+        "chain_id": null,
+        "base_fee": null,
+        "blob_base_fee": null,
+        "block_hashes": [],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "fact_boundary": {
+        "missing_accounts": "unknown",
+        "unobserved_storage": "unknown",
+        "unobserved_account_fields": "unknown; no implicit zero, empty code, or absence",
+        "calldata_unknown": "arbitrary bytes AND arbitrary length; not empty calldata",
+        "origin_null": "aliases the entry caller, as in the baseline EVM environment",
+        "frame_initialization": "EVM empty stack, zero-length zero-backed memory, empty returndata",
+        "transaction_transient_storage": "EVM fresh transaction semantics, not an observed chain fact",
+        "acquisition": "none; no additional facts after the fixed input is loaded",
+        "runtime_writes": "must survive any later observation/refinement except actual EVM rollback"
+      },
+      "planned_guard": {
+        "timeout_seconds": 30,
+        "rss_limit_kib": 2097152,
+        "host_available_floor_kib": 20971520,
+        "poll_seconds": 0.25,
+        "report_parse_limit_bytes": 67108864
+      },
+      "program_notes": "CALLDATALOAD(0) -> SSTORE(0), SLOAD(0) -> 32-byte RETURN. Missing calldata is not zero.",
+      "semantic_obligations": [
+        "Returned word and final slot 0 must agree in the SAME successful outcome; include write failure/rollback branches."
+      ],
+      "planned_witnesses": [
+        {
+          "calldata": "0x",
+          "expected_return_word": "0x0"
+        },
+        {
+          "calldata": "0x000000000000000000000000000000000000000000000000000000000000002a",
+          "expected_return_word": "0x2a"
+        }
+      ]
+    },
+    "dynamic-jump": {
+      "profile": "code-only",
+      "world": {
+        "path": "code-only/dynamic-jump.json",
+        "sha256": "f54f6a29996b826ab0242b91d95d0f2e2ab5f25ea5443b2ef66ed27c16cce874"
+      },
+      "fork": "osaka",
+      "programs": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "mode": "Runtime",
+          "bytecode_bytes": 21,
+          "raw_sha256": "2f1622a666a8d21a3ce9ed1e449523503d675b7b013151f500c6048bc43be259",
+          "declared_code_hash": null
+        }
+      ],
+      "initial_facts": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "balance": null,
+          "nonce": null,
+          "existence": "unknown",
+          "storage": {},
+          "storage_unknown": true
+        }
+      ],
+      "entry": {
+        "address": "0x0000000000000000000000000000000000000101",
+        "mode": "Runtime"
+      },
+      "environment": {
+        "caller": "Unknown",
+        "origin": null,
+        "call_value": "Unknown",
+        "calldata": "Unknown",
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": null,
+        "timestamp": null,
+        "number": null,
+        "prevrandao": null,
+        "gas_limit": null,
+        "chain_id": null,
+        "base_fee": null,
+        "blob_base_fee": null,
+        "block_hashes": [],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "fact_boundary": {
+        "missing_accounts": "unknown",
+        "unobserved_storage": "unknown",
+        "unobserved_account_fields": "unknown; no implicit zero, empty code, or absence",
+        "calldata_unknown": "arbitrary bytes AND arbitrary length; not empty calldata",
+        "origin_null": "aliases the entry caller, as in the baseline EVM environment",
+        "frame_initialization": "EVM empty stack, zero-length zero-backed memory, empty returndata",
+        "transaction_transient_storage": "EVM fresh transaction semantics, not an observed chain fact",
+        "acquisition": "none; no additional facts after the fixed input is loaded",
+        "runtime_writes": "must survive any later observation/refinement except actual EVM rollback"
+      },
+      "planned_guard": {
+        "timeout_seconds": 30,
+        "rss_limit_kib": 2097152,
+        "host_available_floor_kib": 20971520,
+        "poll_seconds": 0.25,
+        "report_parse_limit_bytes": 67108864
+      },
+      "program_notes": "Unknown JUMP destination; valid JUMPDEST PCs 3 and 12 return 42 and 99; other destinations fail.",
+      "semantic_obligations": [
+        "Both valid target return branches and the invalid-jump failure domain must remain covered."
+      ],
+      "planned_witnesses": [
+        {
+          "calldata": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "jump_pc": 0,
+          "expected": "InvalidJump"
+        },
+        {
+          "calldata": "0x0000000000000000000000000000000000000000000000000000000000000003",
+          "jump_pc": 3,
+          "expected": "Return42"
+        },
+        {
+          "calldata": "0x000000000000000000000000000000000000000000000000000000000000000c",
+          "jump_pc": 12,
+          "expected": "Return99"
+        },
+        {
+          "calldata": "0x0000000000000000000000000000000000000000000000000000000000000004",
+          "jump_pc": 4,
+          "expected": "InvalidJump"
+        }
+      ]
+    },
+    "loop": {
+      "profile": "code-only",
+      "world": {
+        "path": "code-only/loop.json",
+        "sha256": "03704f72446f3c74cf73b4f3b98ba5e9f442b218636e71fd585a2d4747109f85"
+      },
+      "fork": "osaka",
+      "programs": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "mode": "Runtime",
+          "bytecode_bytes": 33,
+          "raw_sha256": "ffde59da28662cb7e4541947587554bfbe10d945b2bacb27b9ce930e4d6fba24",
+          "declared_code_hash": null
+        }
+      ],
+      "initial_facts": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "balance": null,
+          "nonce": null,
+          "existence": "unknown",
+          "storage": {},
+          "storage_unknown": true
+        }
+      ],
+      "entry": {
+        "address": "0x0000000000000000000000000000000000000101",
+        "mode": "Runtime"
+      },
+      "environment": {
+        "caller": "Unknown",
+        "origin": null,
+        "call_value": "Unknown",
+        "calldata": "Unknown",
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": null,
+        "timestamp": null,
+        "number": null,
+        "prevrandao": null,
+        "gas_limit": null,
+        "chain_id": null,
+        "base_fee": null,
+        "blob_base_fee": null,
+        "block_hashes": [],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "fact_boundary": {
+        "missing_accounts": "unknown",
+        "unobserved_storage": "unknown",
+        "unobserved_account_fields": "unknown; no implicit zero, empty code, or absence",
+        "calldata_unknown": "arbitrary bytes AND arbitrary length; not empty calldata",
+        "origin_null": "aliases the entry caller, as in the baseline EVM environment",
+        "frame_initialization": "EVM empty stack, zero-length zero-backed memory, empty returndata",
+        "transaction_transient_storage": "EVM fresh transaction semantics, not an observed chain fact",
+        "acquisition": "none; no additional facts after the fixed input is loaded",
+        "runtime_writes": "must survive any later observation/refinement except actual EVM rollback"
+      },
+      "planned_guard": {
+        "timeout_seconds": 30,
+        "rss_limit_kib": 2097152,
+        "host_available_floor_kib": 20971520,
+        "poll_seconds": 0.25,
+        "report_parse_limit_bytes": 67108864
+      },
+      "program_notes": "Countdown from CALLDATALOAD(0); JUMPDEST loop at PC2, exit at PC23. Each iteration increments slot0; return final slot0. See README for bytecode validation.",
+      "semantic_obligations": [
+        "Must cover 0/1/2-iteration witnesses and arbitrary loop counts; widening cannot erase effects or their rollback."
+      ],
+      "planned_witnesses": [
+        {
+          "calldata": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "slot0_completion": "0x5",
+          "expected_return_word": "0x5"
+        },
+        {
+          "calldata": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "slot0_completion": "0x5",
+          "expected_return_word": "0x6"
+        },
+        {
+          "calldata": "0x0000000000000000000000000000000000000000000000000000000000000002",
+          "slot0_completion": "0x5",
+          "expected_return_word": "0x7"
+        }
+      ]
+    },
+    "unknown-callback": {
+      "profile": "code-only",
+      "world": {
+        "path": "code-only/unknown-callback.json",
+        "sha256": "67f9c7312780d3c8d7e6274be723052ffc26809701ccacdba79974723f80a738"
+      },
+      "fork": "osaka",
+      "programs": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "mode": "Runtime",
+          "bytecode_bytes": 25,
+          "raw_sha256": "2c368ca3ee0657d20d9238ad15a56acbe3e54c47b0a52ed6288fab22c8417b8e",
+          "declared_code_hash": null
+        }
+      ],
+      "initial_facts": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "balance": null,
+          "nonce": null,
+          "existence": "unknown",
+          "storage": {},
+          "storage_unknown": true
+        }
+      ],
+      "entry": {
+        "address": "0x0000000000000000000000000000000000000101",
+        "mode": "Runtime"
+      },
+      "environment": {
+        "caller": "Unknown",
+        "origin": null,
+        "call_value": "Unknown",
+        "calldata": "Unknown",
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": null,
+        "timestamp": null,
+        "number": null,
+        "prevrandao": null,
+        "gas_limit": null,
+        "chain_id": null,
+        "base_fee": null,
+        "blob_base_fee": null,
+        "block_hashes": [],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "fact_boundary": {
+        "missing_accounts": "unknown",
+        "unobserved_storage": "unknown",
+        "unobserved_account_fields": "unknown; no implicit zero, empty code, or absence",
+        "calldata_unknown": "arbitrary bytes AND arbitrary length; not empty calldata",
+        "origin_null": "aliases the entry caller, as in the baseline EVM environment",
+        "frame_initialization": "EVM empty stack, zero-length zero-backed memory, empty returndata",
+        "transaction_transient_storage": "EVM fresh transaction semantics, not an observed chain fact",
+        "acquisition": "none; no additional facts after the fixed input is loaded",
+        "runtime_writes": "must survive any later observation/refinement except actual EVM rollback"
+      },
+      "planned_guard": {
+        "timeout_seconds": 30,
+        "rss_limit_kib": 2097152,
+        "host_available_floor_kib": 20971520,
+        "poll_seconds": 0.25,
+        "report_parse_limit_bytes": 67108864
+      },
+      "program_notes": "Write slot0=1, emit LOG0, CALL arbitrary CALLDATALOAD(0) target with empty payload/value0, ignore flag, return slot0. The entry input and account facts remain unknown.",
+      "semantic_obligations": [
+        "Unknown code may return/revert/fail or call back repeatedly, indirectly, or nested into this known runtime.",
+        "Preserve storage ownership, initial LOG0 ordering, callee effects, rollback, returndata, and CALL result branches together."
+      ],
+      "planned_witnesses": [
+        {
+          "callee_completion": "empty-runtime",
+          "planned_only": true
+        },
+        {
+          "callee_completion": "return-without-callback",
+          "planned_only": true
+        },
+        {
+          "callee_completion": "callback-once",
+          "planned_only": true
+        },
+        {
+          "callee_completion": "callback-twice",
+          "planned_only": true
+        },
+        {
+          "callee_completion": "indirect-callback",
+          "planned_only": true
+        },
+        {
+          "callee_completion": "nested-callback-then-revert",
+          "planned_only": true
+        }
+      ]
+    },
+    "memory-copy": {
+      "profile": "code-only",
+      "world": {
+        "path": "code-only/memory-copy.json",
+        "sha256": "5bded55902525a22950ee4edb86c10de1add61f7cb21c9a10fa0cd79294c9d10"
+      },
+      "fork": "osaka",
+      "programs": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "mode": "Runtime",
+          "bytecode_bytes": 13,
+          "raw_sha256": "48b67a46e338b0888ef769f34f3bea38f154bd65b7500d77b674ed1fbaa4caa8",
+          "declared_code_hash": null
+        }
+      ],
+      "initial_facts": [
+        {
+          "address": "0x0000000000000000000000000000000000000101",
+          "balance": null,
+          "nonce": null,
+          "existence": "unknown",
+          "storage": {},
+          "storage_unknown": true
+        }
+      ],
+      "entry": {
+        "address": "0x0000000000000000000000000000000000000101",
+        "mode": "Runtime"
+      },
+      "environment": {
+        "caller": "Unknown",
+        "origin": null,
+        "call_value": "Unknown",
+        "calldata": "Unknown",
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": null,
+        "timestamp": null,
+        "number": null,
+        "prevrandao": null,
+        "gas_limit": null,
+        "chain_id": null,
+        "base_fee": null,
+        "blob_base_fee": null,
+        "block_hashes": [],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "fact_boundary": {
+        "missing_accounts": "unknown",
+        "unobserved_storage": "unknown",
+        "unobserved_account_fields": "unknown; no implicit zero, empty code, or absence",
+        "calldata_unknown": "arbitrary bytes AND arbitrary length; not empty calldata",
+        "origin_null": "aliases the entry caller, as in the baseline EVM environment",
+        "frame_initialization": "EVM empty stack, zero-length zero-backed memory, empty returndata",
+        "transaction_transient_storage": "EVM fresh transaction semantics, not an observed chain fact",
+        "acquisition": "none; no additional facts after the fixed input is loaded",
+        "runtime_writes": "must survive any later observation/refinement except actual EVM rollback"
+      },
+      "planned_guard": {
+        "timeout_seconds": 30,
+        "rss_limit_kib": 2097152,
+        "host_available_floor_kib": 20971520,
+        "poll_seconds": 0.25,
+        "report_parse_limit_bytes": 67108864
+      },
+      "program_notes": "CALLDATACOPY length=CALLDATASIZE to memory32; MCOPY memory32 to memory0 with possible overlap; RETURN complete calldata length from memory0.",
+      "semantic_obligations": [
+        "For successful executions return ALL calldata bytes, including overlapping MCOPY when size>32.",
+        "Keep memory-policy/overflow/gas failure partitions for arbitrary unknown length."
+      ],
+      "planned_witnesses": [
+        {
+          "calldata": "0x",
+          "expected_return": "same complete calldata"
+        },
+        {
+          "calldata": "0x00",
+          "expected_return": "same complete calldata"
+        },
+        {
+          "calldata": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+          "expected_return": "same complete calldata"
+        },
+        {
+          "calldata": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+          "expected_return": "same complete calldata"
+        }
+      ]
+    },
+    "weth-fixedstate": {
+      "profile": "fixed-offline-snapshot",
+      "world": {
+        "path": "../known-recursion/captured/weth-26180958-observed-world.json",
+        "sha256": "79838f0ea7279ec12cd1f80f85f41c9b76117bc64f881c96b9262d192fc76f69"
+      },
+      "fork": "osaka",
+      "programs": [
+        {
+          "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+          "mode": "Runtime",
+          "bytecode_bytes": 3124,
+          "raw_sha256": "5566bf50796faf93c9b6f6adacd3b32c70bfe16b48ffc59db6cd144cbdc89739",
+          "declared_code_hash": "0xd0a06b12ac47863b5c7be4185c2deaad1c61557033f56c7d4ea74429cbb25e23"
+        }
+      ],
+      "initial_facts": [
+        {
+          "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+          "balance": "0x1cf26b1f0504c1e2b7033",
+          "nonce": "0x1",
+          "existence": "present",
+          "storage": {
+            "0x0": "0x577261707065642045746865720000000000000000000000000000000000001a",
+            "0x1": "0x5745544800000000000000000000000000000000000000000000000000000008",
+            "0x2": "0x12",
+            "0x67aa9b7d2b6d14f3837d07b1073399a41e4104b1d98f169f02cc04f44f14f4b0": "0x29755b74b022eef3d6"
+          },
+          "storage_unknown": true
+        }
+      ],
+      "entry": {
+        "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+        "mode": "Runtime"
+      },
+      "environment": {
+        "caller": "Unknown",
+        "origin": null,
+        "call_value": "Unknown",
+        "calldata": "Unknown",
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+        "timestamp": "0x6acda8f3",
+        "number": "0x18f7d5e",
+        "prevrandao": "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+        "gas_limit": "0x3938700",
+        "chain_id": "0x1",
+        "base_fee": "0x40800d1",
+        "blob_base_fee": "0x3d73da",
+        "block_hashes": [
+          {
+            "index": "0x18f7d5d",
+            "hash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a"
+          }
+        ],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "fact_boundary": {
+        "missing_accounts": "unknown",
+        "unobserved_storage": "unknown",
+        "unobserved_account_fields": "unknown; no implicit zero, empty code, or absence",
+        "calldata_unknown": "arbitrary bytes AND arbitrary length; not empty calldata",
+        "origin_null": "aliases the entry caller, as in the baseline EVM environment",
+        "frame_initialization": "EVM empty stack, zero-length zero-backed memory, empty returndata",
+        "transaction_transient_storage": "EVM fresh transaction semantics, not an observed chain fact",
+        "acquisition": "none; no additional facts after the fixed input is loaded",
+        "runtime_writes": "must survive any later observation/refinement except actual EVM rollback"
+      },
+      "snapshot": {
+        "chain_id": "0x1",
+        "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+        "number": "0x18f7d5e",
+        "parent_hash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+        "timestamp": "0x6acda8f3",
+        "coinbase": "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+        "prevrandao": "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+        "gas_limit": "0x3938700",
+        "base_fee": "0x40800d1",
+        "blob_base_fee": "0x3d73da",
+        "excess_blob_gas": "0xa979acd",
+        "blob_gas_used": "0x0"
+      },
+      "planned_guard": {
+        "timeout_seconds": 60,
+        "rss_limit_kib": 8388608,
+        "host_available_floor_kib": 20971520,
+        "poll_seconds": 0.25,
+        "report_parse_limit_bytes": 67108864
+      },
+      "provenance_files": [
+        {
+          "path": "../known-recursion/captured/weth-original-request.json",
+          "sha256": "48f304b0790176ae9549ae8c183dbc09a9a1b47a36889caefb3b4a1c78cc28ae"
+        },
+        {
+          "path": "../known-recursion/captured/manifest.json",
+          "sha256": "ad5d60d40953777a9c444dbcbad01082b1aea677e59c3b70e7d828b61b689336"
+        }
+      ],
+      "observation_origin": {
+        "capture_baseline_commit": "eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+        "historical_source_report": "/home/ethever/projects/evm-abstract-lab-worktrees/.evidence/perf119-20261013/final-fix-weth/report.json",
+        "historical_source_report_sha256": "b71bb3746aab441f78b718790f4c5807d7b0122af5ad139272bb773ee671451f",
+        "selection": "Only committed captured INITIAL observations; no final outcome/store facts injected.",
+        "temporary_preparation_bytes": "world and original request verified byte-identical to the narrow preparation/ copies",
+        "historical_report_verification": "Historical source report hash is provenance from the preparation manifest; not revalidated in this stage."
+      },
+      "semantic_obligations": [
+        "Jointly cover all outputs/effects for the original unknown caller/value/calldata boundary; preserve open reasons and resource failures.",
+        "The USDC 100-byte witness is a separate planned concrete completion, never a replacement for Unknown input."
+      ]
+    },
+    "usdc-fixedstate": {
+      "profile": "fixed-offline-snapshot",
+      "world": {
+        "path": "../known-recursion/captured/usdc-26180958-observed-world.json",
+        "sha256": "d579a6062e03a353cfe419bae1afcd7b12a062a5e38b46c9a6b58fc4bcc287b6"
+      },
+      "fork": "osaka",
+      "programs": [
+        {
+          "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+          "mode": "Runtime",
+          "bytecode_bytes": 23464,
+          "raw_sha256": "21a831a7cff1a353b295490f43a66e48e55d1c76c60cd89b24138efd8e8b7c8a",
+          "declared_code_hash": "0xcdfb7d322961af3acae7a8f7ee8b69c205b36f576cc5b077f170c7eb8ecbe3ea"
+        },
+        {
+          "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "mode": "Runtime",
+          "bytecode_bytes": 2186,
+          "raw_sha256": "c1bcd4dc4f30c4dcf6c9fe462abeaf2efefc065dcb4dec74996e471f1ce219b4",
+          "declared_code_hash": "0xd80d4b7c890cb9d6a4893e6b52bc34b56b25335cb13716e0d1d31383e6b41505"
+        }
+      ],
+      "initial_facts": [
+        {
+          "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+          "balance": "0x0",
+          "nonce": "0x1",
+          "existence": "present",
+          "storage": {},
+          "storage_unknown": true
+        },
+        {
+          "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "balance": "0x0",
+          "nonce": "0x1",
+          "existence": "present",
+          "storage": {
+            "0x10d6a54a4754c8869d6886b5f5d7fbfa5b4522237ea5c60d11bc4e7a1ff9390b": "0x807a96288a1a408dbc13de2b1d087d10356395d2",
+            "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd"
+          },
+          "storage_unknown": true
+        }
+      ],
+      "entry": {
+        "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "mode": "Runtime"
+      },
+      "environment": {
+        "caller": "Unknown",
+        "origin": null,
+        "call_value": "Unknown",
+        "calldata": "Unknown",
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+        "timestamp": "0x6acda8f3",
+        "number": "0x18f7d5e",
+        "prevrandao": "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+        "gas_limit": "0x3938700",
+        "chain_id": "0x1",
+        "base_fee": "0x40800d1",
+        "blob_base_fee": "0x3d73da",
+        "block_hashes": [
+          {
+            "index": "0x18f7d5d",
+            "hash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a"
+          }
+        ],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "fact_boundary": {
+        "missing_accounts": "unknown",
+        "unobserved_storage": "unknown",
+        "unobserved_account_fields": "unknown; no implicit zero, empty code, or absence",
+        "calldata_unknown": "arbitrary bytes AND arbitrary length; not empty calldata",
+        "origin_null": "aliases the entry caller, as in the baseline EVM environment",
+        "frame_initialization": "EVM empty stack, zero-length zero-backed memory, empty returndata",
+        "transaction_transient_storage": "EVM fresh transaction semantics, not an observed chain fact",
+        "acquisition": "none; no additional facts after the fixed input is loaded",
+        "runtime_writes": "must survive any later observation/refinement except actual EVM rollback"
+      },
+      "snapshot": {
+        "chain_id": "0x1",
+        "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+        "number": "0x18f7d5e",
+        "parent_hash": "0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+        "timestamp": "0x6acda8f3",
+        "coinbase": "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+        "prevrandao": "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+        "gas_limit": "0x3938700",
+        "base_fee": "0x40800d1",
+        "blob_base_fee": "0x3d73da",
+        "excess_blob_gas": "0xa979acd",
+        "blob_gas_used": "0x0"
+      },
+      "planned_guard": {
+        "timeout_seconds": 120,
+        "rss_limit_kib": 8388608,
+        "host_available_floor_kib": 20971520,
+        "poll_seconds": 0.25,
+        "report_parse_limit_bytes": 67108864
+      },
+      "provenance_files": [
+        {
+          "path": "../known-recursion/captured/usdc-original-request.json",
+          "sha256": "df1a7eae163963b18e83c7413eb77d6da65381d19b3d2232f02d2f0ad90c6c4e"
+        },
+        {
+          "path": "../known-recursion/captured/manifest.json",
+          "sha256": "ad5d60d40953777a9c444dbcbad01082b1aea677e59c3b70e7d828b61b689336"
+        }
+      ],
+      "observation_origin": {
+        "capture_baseline_commit": "eb86cb5661b77b5be2960ac4b1909c1b36cf6871",
+        "historical_source_report": "/home/ethever/projects/evm-abstract-lab-worktrees/.evidence/perf119-20261013/oldmain-usdc/report.json",
+        "historical_source_report_sha256": "170be2eef509f9d0640d02883235fa9e7657071890fecaf895879153068e3ee2",
+        "selection": "Only committed captured INITIAL observations; no final outcome/store facts injected.",
+        "temporary_preparation_bytes": "world and original request verified byte-identical to the narrow preparation/ copies",
+        "historical_report_verification": "Historical source report hash is provenance from the preparation manifest; not revalidated in this stage."
+      },
+      "semantic_obligations": [
+        "Jointly cover all outputs/effects for the original unknown caller/value/calldata boundary; preserve open reasons and resource failures.",
+        "The USDC 100-byte witness is a separate planned concrete completion, never a replacement for Unknown input."
+      ]
+    }
+  },
+  "acquisition_profiles": {
+    "weth-original-rpc": {
+      "profile": "original-rpc-acquisition",
+      "request": {
+        "path": "../known-recursion/captured/weth-original-request.json",
+        "sha256": "48f304b0790176ae9549ae8c183dbc09a9a1b47a36889caefb3b4a1c78cc28ae"
+      },
+      "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+      "chain_id": "0x1",
+      "entry_environment": {
+        "caller": "Unknown",
+        "origin": null,
+        "call_value": "Unknown",
+        "calldata": "Unknown",
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": null,
+        "timestamp": null,
+        "number": null,
+        "prevrandao": null,
+        "gas_limit": null,
+        "chain_id": null,
+        "base_fee": null,
+        "blob_base_fee": null,
+        "block_hashes": [],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "original_limits": {
+        "max_states": 100000,
+        "max_transfers": 10000000,
+        "context_depth": 128,
+        "max_constants": 512,
+        "max_work": 1000000000000,
+        "max_call_depth": 1025,
+        "max_memory_bytes": 67108864,
+        "use_summaries": true,
+        "domain_profile": "Product",
+        "reduction_rounds": 16,
+        "max_facts": 4096,
+        "relations_enabled": true,
+        "max_constraints": 2048,
+        "max_expression_nodes": 16384,
+        "max_expression_depth": 256,
+        "smt_provider": "Z3",
+        "smt_rlimit": 10000000,
+        "rpc_max_accounts": 4096,
+        "rpc_max_requests": 1000000,
+        "rpc_max_response_bytes": 67108864,
+        "rpc_timeout_ms": 120000
+      },
+      "status": "identity/provenance only; not executable by the offline harness; no RPC authorized here",
+      "timing_boundary": "Original request includes network acquisition/refinement; not comparable to fixed-offline-snapshot time.",
+      "planned_guard": {
+        "timeout_seconds": 120,
+        "rss_limit_kib": 8388608,
+        "host_available_floor_kib": 20971520,
+        "poll_seconds": 0.25,
+        "report_parse_limit_bytes": 67108864
+      }
+    },
+    "usdc-original-rpc": {
+      "profile": "original-rpc-acquisition",
+      "request": {
+        "path": "../known-recursion/captured/usdc-original-request.json",
+        "sha256": "df1a7eae163963b18e83c7413eb77d6da65381d19b3d2232f02d2f0ad90c6c4e"
+      },
+      "block_hash": "0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499",
+      "chain_id": "0x1",
+      "entry_environment": {
+        "caller": "Unknown",
+        "origin": null,
+        "call_value": "Unknown",
+        "calldata": "Unknown",
+        "is_static": false,
+        "gas_upper_bound": null,
+        "gas_price": "Unknown",
+        "coinbase": null,
+        "timestamp": null,
+        "number": null,
+        "prevrandao": null,
+        "gas_limit": null,
+        "chain_id": null,
+        "base_fee": null,
+        "blob_base_fee": null,
+        "block_hashes": [],
+        "blob_hashes": [],
+        "blob_count": "Unknown"
+      },
+      "original_limits": {
+        "max_states": 100000,
+        "max_transfers": 10000000,
+        "context_depth": 128,
+        "max_constants": 512,
+        "max_work": 1000000000000,
+        "max_call_depth": 1025,
+        "max_memory_bytes": 67108864,
+        "use_summaries": true,
+        "domain_profile": "Product",
+        "reduction_rounds": 16,
+        "max_facts": 4096,
+        "relations_enabled": true,
+        "max_constraints": 2048,
+        "max_expression_nodes": 16384,
+        "max_expression_depth": 256,
+        "smt_provider": "Z3",
+        "smt_rlimit": 10000000,
+        "rpc_max_accounts": 4096,
+        "rpc_max_requests": 1000000,
+        "rpc_max_response_bytes": 67108864,
+        "rpc_timeout_ms": 120000
+      },
+      "status": "identity/provenance only; not executable by the offline harness; no RPC authorized here",
+      "timing_boundary": "Original request includes network acquisition/refinement; not comparable to fixed-offline-snapshot time.",
+      "planned_guard": {
+        "timeout_seconds": 120,
+        "rss_limit_kib": 8388608,
+        "host_available_floor_kib": 20971520,
+        "poll_seconds": 0.25,
+        "report_parse_limit_bytes": 67108864
+      }
+    }
+  },
+  "baseline_versions": {
+    "native": 8,
+    "wire": 13,
+    "cost": 2
+  },
+  "candidate_versions": {
+    "native": 9,
+    "wire": 14,
+    "cost": 3
+  },
+  "logical_work_comparison": "Cost2 includes SMT allowance prepayment; Cost3 removes it. Compare wall/CPU/coverage, not work-number ratios.",
+  "request_derivations": {
+    "weth-wire14": {
+      "original": {
+        "path": "../known-recursion/captured/weth-original-request.json",
+        "sha256": "48f304b0790176ae9549ae8c183dbc09a9a1b47a36889caefb3b4a1c78cc28ae"
+      },
+      "derived": {
+        "path": "wire14/weth-original-request.json",
+        "sha256": "3ca15ba86734a6c9b0a13229373a11d95fff60d91d79a49bebb0a98e2cb85099"
+      },
+      "removed_json_pointers": [
+        "/limits/smt_provider",
+        "/limits/smt_rlimit"
+      ],
+      "versions": {
+        "native": 9,
+        "wire": 14,
+        "cost": 3
+      },
+      "scope": "Schema-only draft; raw original preserved. RPC provider_id, block, account requests, caller/value/calldata boundaries and every other field unchanged. Not executed."
+    },
+    "usdc-wire14": {
+      "original": {
+        "path": "../known-recursion/captured/usdc-original-request.json",
+        "sha256": "df1a7eae163963b18e83c7413eb77d6da65381d19b3d2232f02d2f0ad90c6c4e"
+      },
+      "derived": {
+        "path": "wire14/usdc-original-request.json",
+        "sha256": "7395e0886e9c08f1b9ffa9a0ae447d94d4649fe537ad6adae0310b39337658de"
+      },
+      "removed_json_pointers": [
+        "/limits/smt_provider",
+        "/limits/smt_rlimit"
+      ],
+      "versions": {
+        "native": 9,
+        "wire": 14,
+        "cost": 3
+      },
+      "scope": "Schema-only draft; raw original preserved. RPC provider_id, block, account requests, caller/value/calldata boundaries and every other field unchanged. Not executed."
+    }
+  }
+}

@@ -22,8 +22,29 @@ let
         lib.nameValuePair "example-known-recursion-${reuse}" (
           mkCheck "known-recursion-${reuse}" [ ] { } ''
             test "$(cat ${report}/exit-code)" = 0
+            # The canonical root carries semantics; the sparse byte cache is presentation.
+            # Require the exact 32-byte word 42 without relaxing production precision.
             jq -e '
-              .analysis.schema_version == 8 and .analysis.status == "Converged" and
+              def word42:
+                try (
+                  . as $graph | .nodes as $nodes |
+                  def node($id):
+                    if ($nodes | type) == "array" and ($id | type) == "number" and
+                      $id >= 0 and $id == ($id | floor) and $id < ($nodes | length)
+                    then $nodes[$id] else null end;
+                  node($graph.root) as $slice |
+                  node($slice.Slice.source) as $view |
+                  node($view.View.state) as $write |
+                  ($slice | keys) == ["Slice"] and
+                  ($view | keys) == ["View"] and
+                  ($write | keys) == ["WriteWord"] and
+                  node($write.WriteWord.previous) != null and
+                  node($view.View.offset) == {"Constant": "0x0"} and
+                  node($view.View.length) == {"Constant": "0x20"} and
+                  node($write.WriteWord.offset) == {"Constant": "0x0"} and
+                  node($write.WriteWord.value) == {"Constant": "0x2a"}
+                ) catch false;
+              .analysis.schema_version == 10 and .analysis.status == "Converged" and
               .analysis.frontiers == [] and .ssa.complete and
               (.analysis.procedure_summaries | length) > 0 and
               all(.analysis.procedure_summaries[];
@@ -34,9 +55,9 @@ let
               ([.analysis.states[].key.frames | length] | max) == 3 and
               any(.analysis.outcomes[]; .kind == "Return") and
               all(.analysis.outcomes[] | select(.kind == "Return");
-                .data as $data | $data.length.Constants == ["0x20"] and
-                $data.bytes["31"].Constants == ["0x2a"] and
-                all(range(0; 31); $data.bytes[tostring].Constants == ["0x0"]))
+                .data as $data | ($data | has("failure")) and
+                $data.failure == null and $data.memory == false and
+                $data.length.Constants == ["0x20"] and ($data.root | word42))
             ' ${report}/report.json > /dev/null
             ln -s ${report}/report.json "$out/report.json"
           ''
@@ -93,7 +114,39 @@ let
     ln -s ${
       fixtures.worldReport { world = "examples/worlds/identity-precompile.json"; }
     }/analysis.json native.json
-    jq -e 'any(.states[]; .key.frames[-1].mode == {"Precompile":"0x0000000000000000000000000000000000000004"}) and any(.outcomes[]; .kind == "Return" and ((.data.bytes["31"].Constants // []) | index("0x2a")) != null)' native.json > /dev/null
+    # The complete output root is authoritative; byte caches are presentation.
+    # A CALL failure may also return zero, so require a native success witness.
+    jq -e '
+      def word42:
+        try (
+          . as $graph |
+          ($graph.identity_scope | type) == "string" and
+          ($graph.identity_scope | length) > 0 and
+          ($graph.nodes | type) == "array" and
+          ($graph.root | type) == "number" and
+          $graph.root >= 0 and $graph.root == ($graph.root | floor) and
+          $graph.root < ($graph.nodes | length) and
+          $graph.nodes[$graph.root] == {"BytesExact": ([range(31) | 0] + [42])}
+        ) catch false;
+      . as $report |
+      {"Precompile": "0x0000000000000000000000000000000000000004"} as $native |
+      .schema_version == 10 and .status == "Converged" and .frontiers == [] and
+      any(.states[]; .key.frames[-1].mode == $native) and
+      any(.outcomes[];
+        . as $outcome |
+        .kind == "Return" and (.data | has("failure")) and
+        .data.failure == null and .data.memory == false and
+        (.data.length | type) == "object" and
+        .data.length.Constants == ["0x20"] and (.data.root | word42) and
+        # Bind this output to the caller buffer supplied by the native Return.
+        any($report.states[];
+          .id == $outcome.state and .key.frames[-1].mode == "Runtime" and
+          .entry.call_stack.root.state.returndata.root == $outcome.data.root and
+          any($report.edges[];
+            .to == $outcome.state and .kind == "Return" and
+            (.from as $from | any($report.states[];
+              .id == $from and .key.frames[-1].mode == $native)))))
+    ' native.json > /dev/null
     cp -a native.json "$out/"
   '';
 in

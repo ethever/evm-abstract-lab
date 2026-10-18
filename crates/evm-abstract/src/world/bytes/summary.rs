@@ -14,6 +14,11 @@ use crate::domain::{
 use alloy_primitives::U256;
 use std::{collections::BTreeMap, sync::Arc};
 
+mod layout;
+mod presentation;
+#[cfg(test)]
+mod retention_tests;
+
 pub(in crate::world) fn scalar(value: &AbstractValue, domain: Domain) -> AbstractValue {
     let projected = domain.project(value);
     if let Some(constant) = projected.singleton() {
@@ -21,6 +26,19 @@ pub(in crate::world) fn scalar(value: &AbstractValue, domain: Domain) -> Abstrac
     } else {
         AbstractValue::from_numeric(projected.numeric().clone())
     }
+}
+
+// The root is authoritative. A stale presentation cell can supply only a dense
+// finite allocation proved redundant by the newly evaluated interval; no old
+// masks, bounds, congruence, nonzero or metadata enter the current scalar.
+fn restore_presentation(value: AbstractValue, previous: Option<&AbstractValue>) -> AbstractValue {
+    let Some(previous) = previous else {
+        return value;
+    };
+    let numeric = value
+        .numeric()
+        .restore_redundant_finite_from(previous.numeric());
+    value.with_numeric(numeric)
 }
 
 pub(in crate::world) fn join_scalar(
@@ -134,11 +152,11 @@ impl ByteArray {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled.into());
         }
         // Projection consumes an existing complete graph; it does not retain
-        // that history in the output. New SMT-read retention limits apply when
+        // that history in the output. Local symbolic-read retention limits apply when
         // the numerical summary is instantiated, not to its discarded input.
         let content = match self.root.kind() {
             ByteStateKind::Zero => Content::Zero,
@@ -156,15 +174,19 @@ impl ByteArray {
                     keys.sort_unstable();
                     keys.dedup();
                     let mut cells = BTreeMap::new();
-                    let mut reader = super::numeric::Reader::new(&self.operands, domain);
+                    let mut reader = super::numeric::Reader::with_context(
+                        super::conditional::Context::new(&self.operands, Some(&self.conditional)),
+                        domain,
+                    );
                     for index in keys.into_iter().take(COPY_FACT_LIMIT) {
-                        if embedded_smt::current_cancellation().is_cancelled() {
+                        if analysis_control::current_cancellation().is_cancelled() {
                             return Err(ExprError::Cancelled.into());
                         }
-                        let value = scalar(
-                            &reader.read(&self.root, &ExprId::constant(U256::from(index))),
-                            domain,
-                        );
+                        let value = reader.read(&self.root, &ExprId::constant(U256::from(index)));
+                        let value = restore_presentation(value, self.bytes.get(&index));
+                        // Apply the caller's profile/capacity last, including
+                        // when the presentation came from a larger old policy.
+                        let value = scalar(&value, domain);
                         if value.numeric() != AbstractValue::unknown_byte().numeric() {
                             cells.insert(index, value);
                         }
@@ -173,7 +195,7 @@ impl ByteArray {
                 }
             }
         };
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled.into());
         }
         Ok(ByteArraySummary {
@@ -303,8 +325,10 @@ impl ByteArraySummary {
             root: ByteStateId::zero(),
             allocations: Default::default(),
             operands: BTreeMap::new(),
+            conditional: Default::default(),
             failure: None,
         };
+        let mut bare_cells = false;
         match &self.content {
             Content::Zero => out.default = scalar(&zero(), domain),
             Content::Exact(bytes) => {
@@ -343,7 +367,17 @@ impl ByteArraySummary {
                             // component. A nested read would repeat the complete
                             // length/source graph without adding a guarantee.
                             value: ExprId::fresh().ok_or(StateError::IdentityExhausted)?,
-                            numeric: value.numeric().clone(),
+                            // Keep the canonical/presentation cell intact; only
+                            // its executable carrier drops a proved redundant
+                            // finite component, before observed checks its size.
+                            // The original full summary work is still prepaid.
+                            numeric: if domain.spec().profile() == crate::domain::Profile::Product {
+                                value.numeric().compact_for_retention()
+                            } else {
+                                // ConstantsOnly joins inspect finite alone;
+                                // retain its existing executable representation.
+                                value.numeric().clone()
+                            },
                         })
                     })
                     .collect::<Result<Vec<_>, RangeError>>()?;
@@ -395,30 +429,13 @@ impl ByteArraySummary {
                             .slice(ExprId::constant(U256::ZERO), len, limits(domain).into())?;
                 }
                 out.bytes = cells.clone();
+                bare_cells = !has_constants;
             }
         }
         if let Some(expression) = out.length.expression() {
             out.operands.insert(expression.clone(), out.length.clone());
         }
-        // A numerical presentation cache needs no second copy of the root in
-        // every byte expression. Actual reads attach their state term on demand.
-        for index in out.bytes.keys().copied().collect::<Vec<_>>() {
-            if embedded_smt::current_cancellation().is_cancelled() {
-                return Err(ExprError::Cancelled.into());
-            }
-            out.bytes.insert(
-                index,
-                scalar(
-                    &super::numeric::read(
-                        &out.root,
-                        &ExprId::constant(U256::from(index)),
-                        &out.operands,
-                        domain,
-                    ),
-                    domain,
-                ),
-            );
-        }
+        presentation::refresh(&mut out, bare_cells, domain)?;
         out.check_existing(limits(domain))?;
         Ok(out)
     }

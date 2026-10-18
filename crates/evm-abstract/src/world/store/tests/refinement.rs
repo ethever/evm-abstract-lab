@@ -16,19 +16,30 @@ fn policy() -> RelationLimits {
     RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     }
 }
 fn truth(relations: &RelationState, e: &ExprId) -> Result<Option<bool>, QueryReason> {
     let p = policy();
-    let zero = ExprId::operation(opcode::ISZERO, std::slice::from_ref(e), p.expressions()).unwrap();
-    match relations.unique_value(&zero, &p) {
-        ValueQuery::Unique(v) if v == U256::ZERO => Ok(Some(true)),
-        ValueQuery::Unique(v) if v == U256::ONE => Ok(Some(false)),
-        ValueQuery::Multiple => Ok(None),
-        ValueQuery::Unknown(reason) => Err(reason),
-        result => panic!("reachable Boolean proof expected: {result:?}"),
+    let zero = ExprId::operation(opcode::ISZERO, std::slice::from_ref(e), p.expressions())
+        .map_err(|error| match error {
+            ExprError::Cancelled => QueryReason::Cancelled,
+            ExprError::Limit { .. } => QueryReason::ExpressionLimit,
+            error => panic!("ISZERO construction failed: {error:?}"),
+        })?;
+    match relations.local_value(&zero, &p) {
+        ValueQuery::Exact(v) if v == U256::ZERO => Ok(Some(true)),
+        ValueQuery::Exact(v) if v == U256::ONE => Ok(Some(false)),
+        ValueQuery::Bounds(bounds) => {
+            // ISZERO is intrinsically Boolean, even when e is an arbitrary
+            // nonzero EVM word rather than the canonical word one.
+            assert!(bounds.contains(U256::ZERO));
+            assert!(bounds.contains(U256::ONE));
+            Ok(None)
+        }
+        ValueQuery::Undetermined(reason) => Err(reason),
+        ValueQuery::ProvenImpossible => panic!("guard query requires a reachable relation state"),
+        ValueQuery::Exact(value) => panic!("ISZERO produced a non-Boolean word: {value}"),
     }
 }
 
@@ -62,6 +73,8 @@ fn native_guard_projection_pairs_slots_balances_logs_and_restores_old_snapshot()
     let site = LogKey {
         address,
         code_address: address,
+        code_hash: alloy_primitives::B256::ZERO,
+        source_kind: crate::world::LogSourceKind::Runtime,
         pc: 7,
     };
     let old = logged_store(&world, &site, 3, ByteArray::exact(&[3]), domain);
@@ -87,7 +100,7 @@ fn native_guard_projection_pairs_slots_balances_logs_and_restores_old_snapshot()
         let mut relations = RelationState::default();
         assert_eq!(
             relations.assume(&guard, nonzero, &policy()),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
         let mut selected = joined.clone();
         let snapshot = selected.snapshot();
@@ -145,7 +158,10 @@ fn conditional_projection_does_not_create_rpc_observations_and_errors_are_atomic
     let initial_requests = joined.missing_initial_slots(&world, address, &v(7));
     let mut selected = joined.clone();
     let mut relations = RelationState::default();
-    assert_eq!(relations.assume(&guard, true, &policy()), CheckResult::Sat);
+    assert_eq!(
+        relations.assume(&guard, true, &policy()),
+        CheckResult::MayBeFeasible
+    );
     assert!(
         selected
             .refine_guards(domain, policy().expressions(), &mut |e| truth(
@@ -228,6 +244,8 @@ fn collector_fixture() -> CollectorFixture {
     let site = LogKey {
         address: owners[0],
         code_address: code_owner,
+        code_hash: alloy_primitives::B256::ZERO,
+        source_kind: crate::world::LogSourceKind::Runtime,
         pc: 11,
     };
     let mut world = World::new(Fork::Osaka, "guard collector owners");
@@ -468,10 +486,13 @@ fn store_guard_collection_serial_proofs_match_native_projection_on_frozen_wrappe
                 limits,
             )
             .unwrap();
-            assert_eq!(relations.assume(&equal, true, &policy()), CheckResult::Sat);
+            assert_eq!(
+                relations.assume(&equal, true, &policy()),
+                CheckResult::MayBeFeasible
+            );
             assert!(matches!(
-                relations.unique_value(&fixture.selector, &policy()),
-                ValueQuery::Unique(actual) if actual == U256::from(value)
+                relations.local_value(&fixture.selector, &policy()),
+                ValueQuery::Exact(actual) if actual == U256::from(value)
             ));
         }
 

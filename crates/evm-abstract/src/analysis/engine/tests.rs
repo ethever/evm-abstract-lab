@@ -7,7 +7,9 @@ use crate::{
     resource::WorkBudget,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+mod bounded_promotion;
 mod decided_cache;
+mod loop_bound;
 
 #[test]
 fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {
@@ -122,6 +124,8 @@ fn engine<'a>(
         completed_calls: vec![Vec::new(); count],
         cache: None,
         procedures: super::transfer::procedure::Table::default(),
+        reuse: None,
+        terminal_boundary: super::TerminalBoundary::default(),
     }
 }
 
@@ -162,8 +166,8 @@ fn cancelled_summary_and_replay_preserve_the_cause_for_every_queued_input() {
             .map(|state| state.entry.clone())
             .collect();
         let history = result.edges.clone();
-        let token = embedded_smt::Cancellation::new();
-        embedded_smt::with_cancellation(&token, || {
+        let token = analysis_control::Cancellation::new();
+        analysis_control::with_cancellation(&token, || {
             let mut budget = WorkBudget::new(100_000_000);
             let mut counters = Counters::default();
             let mut engine = engine(result, child, &mut budget, &mut counters);
@@ -226,9 +230,9 @@ fn actual_summary_registration_exhaustion_remains_summary_work() {
 #[test]
 fn initial_lift_distinguishes_cancellation_from_real_work_exhaustion() {
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let token = embedded_smt::Cancellation::new();
+    let token = analysis_control::Cancellation::new();
     token.cancel();
-    let cancelled = embedded_smt::with_cancellation(&token, || {
+    let cancelled = analysis_control::with_cancellation(&token, || {
         run_world(world.clone(), entry.clone(), fixtures::config()).unwrap()
     });
     assert_eq!(cancelled.status(), Status::Incomplete);
@@ -266,8 +270,8 @@ fn pending_frames_prefer_deeper_calls_and_keep_fifo_within_a_depth() {
 fn interrupted_queue_scan_retains_every_input_and_its_exact_cause() {
     for cancelled in [false, true] {
         let (result, child) = interrupted_fixture();
-        let token = embedded_smt::Cancellation::new();
-        embedded_smt::with_cancellation(&token, || {
+        let token = analysis_control::Cancellation::new();
+        analysis_control::with_cancellation(&token, || {
             let mut budget = WorkBudget::new(if cancelled { 100_000_000 } else { 0 });
             let mut counters = Counters::default();
             let mut engine = engine(result, child, &mut budget, &mut counters);

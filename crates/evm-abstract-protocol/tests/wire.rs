@@ -34,6 +34,7 @@ fn bytecode_and_rpc_requests_roundtrip() {
 #[test]
 fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
     let count = 9_007_199_254_740_993_u64;
+    assert!(count > u64::from(u32::MAX));
     let limits = AnalysisLimits {
         max_states: count,
         max_transfers: count,
@@ -43,6 +44,7 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         max_call_depth: count,
         max_memory_bytes: count,
         use_summaries: false,
+        root_terminal_coverage: true,
         domain_profile: DomainProfile::ConstantsOnly,
         reduction_rounds: count,
         max_facts: count,
@@ -50,8 +52,6 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         max_constraints: count,
         max_expression_nodes: count,
         max_expression_depth: count,
-        smt_provider: SmtProvider::Cvc5,
-        smt_rlimit: u32::MAX,
         rpc_max_accounts: count,
         rpc_max_requests: count,
         rpc_max_response_bytes: count,
@@ -61,11 +61,49 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         limits,
         ..AnalyzeRequest::default()
     });
+}
+
+#[test]
+fn consumer_defaults_enable_fast_conservative_coverage() {
     let defaults = AnalysisLimits::default();
+    assert!(defaults.root_terminal_coverage);
     assert_eq!(defaults.context_depth, 128);
-    assert_eq!(defaults.max_work, 1_000_000_000_000);
-    assert!(defaults.max_work > u64::from(u32::MAX));
+    assert_eq!(defaults.max_work, 2_000_000_000);
+    assert_eq!(AnalyzeRequest::default().limits, defaults);
     roundtrip(defaults);
+}
+
+#[test]
+fn all_request_and_limit_fields_are_required_on_the_wire() {
+    let encoded = serde_json::to_value(AnalyzeRequest::default()).unwrap();
+    for field in encoded.as_object().unwrap().keys() {
+        let mut missing = encoded.clone();
+        assert!(missing.as_object_mut().unwrap().remove(field).is_some());
+        let error = serde_json::from_value::<AnalyzeRequest>(missing).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field: {field}")),
+            "{error}"
+        );
+    }
+    for field in encoded["limits"].as_object().unwrap().keys() {
+        let mut missing = encoded.clone();
+        assert!(
+            missing["limits"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field)
+                .is_some()
+        );
+        let error = serde_json::from_value::<AnalyzeRequest>(missing).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field: {field}")),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -235,7 +273,7 @@ fn nullable_fields_remain_required_and_duplicate_null_is_rejected() {
 }
 
 #[test]
-fn relational_failures_preserve_fact_coordinates_and_solver_outcomes() {
+fn relational_boundaries_preserve_local_causes_and_fact_coordinates() {
     for cause in [
         QueryBoundary::ScalarFactError(FactFailure::InvalidOperation(FactOperationFailure {
             opcode: 0x01,
@@ -247,14 +285,13 @@ fn relational_failures_preserve_fact_coordinates_and_solver_outcomes() {
             required: 65,
         })),
         QueryBoundary::ScalarFactError(FactFailure::OriginContradiction(7)),
-        QueryBoundary::SolverUnknown(SolverUnknown {
-            provider: SmtProvider::Z3,
-            reason: "theory limitation".into(),
-        }),
-        QueryBoundary::SolverError(SolverFailure {
-            provider: SmtProvider::Cvc5,
-            message: "native binding failure".into(),
-        }),
+        QueryBoundary::Cancelled,
+        QueryBoundary::Disabled,
+        QueryBoundary::Configuration,
+        QueryBoundary::ConstraintLimit,
+        QueryBoundary::ScalarFactLimit,
+        QueryBoundary::ExpressionLimit,
+        QueryBoundary::ScalarFactError(FactFailure::UnsupportedOperation(0xfe)),
     ] {
         roundtrip(Frontier {
             range: None,
@@ -316,7 +353,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 13);
+    assert_eq!(SCHEMA_VERSION, 15);
 }
 
 #[test]
@@ -470,5 +507,211 @@ fn procedure_summary_wire_requires_entry_kind_and_nullable_root() {
         let mut invalid_kind = json;
         invalid_kind["kind"] = serde_json::json!("Runtime");
         assert!(serde_json::from_value::<AbstractSummary>(invalid_kind).is_err());
+    }
+}
+
+#[test]
+fn obsolete_solver_settings_and_causes_are_explicitly_rejected() {
+    for (name, value) in [
+        ("smt_provider", serde_json::json!("z3")),
+        ("smt_rlimit", serde_json::json!(10000000)),
+    ] {
+        let mut request = serde_json::to_value(AnalyzeRequest::default()).unwrap();
+        request["limits"][name] = value;
+        let error = serde_json::from_value::<AnalyzeRequest>(request).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("unknown AnalysisLimits field: {name}")),
+            "{error}"
+        );
+    }
+    for obsolete in [
+        serde_json::json!("ResourceLimit"),
+        serde_json::json!("ModelUnavailable"),
+        serde_json::json!({"SolverUnknown": {"provider": "Z3", "reason": "unknown"}}),
+        serde_json::json!({"SolverError": {"provider": "Cvc5", "message": "failure"}}),
+    ] {
+        assert!(serde_json::from_value::<QueryBoundary>(obsolete).is_err());
+    }
+}
+
+#[test]
+fn log_source_identity_is_required_and_distinguishes_init_runtime_and_code_hashes() {
+    let hash = format!("0x{}", "11".repeat(32));
+    let log = LogSnapshot {
+        address: format!("0x{}", "22".repeat(20)),
+        code_address: format!("0x{}", "33".repeat(20)),
+        code_hash: hash.clone(),
+        source_kind: LogSourceKind::Init,
+        pc: 7,
+        topics: vec![],
+        data: 0,
+    };
+    roundtrip(vec![
+        log.clone(),
+        LogSnapshot {
+            source_kind: LogSourceKind::Runtime,
+            ..log.clone()
+        },
+        LogSnapshot {
+            code_hash: format!("0x{}", "44".repeat(32)),
+            source_kind: LogSourceKind::Runtime,
+            ..log.clone()
+        },
+    ]);
+    for field in ["code_hash", "source_kind"] {
+        let mut missing = serde_json::to_value(&log).unwrap();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<LogSnapshot>(missing)
+                .unwrap_err()
+                .to_string()
+                .contains(field)
+        );
+    }
+    assert_eq!(serde_json::to_value(&log).unwrap()["code_hash"], hash);
+}
+
+fn touch_snapshot(touched: Option<bool>, touched_default: Option<bool>) -> StoreSnapshot {
+    let zero = ValueInfo {
+        summary: "{0x0}".into(),
+        constants: Some(vec!["0x0".into()]),
+        known_zero: format!("0x{}", "f".repeat(64)),
+        known_one: "0x0".into(),
+        nonzero: false,
+        unsigned: WordBounds {
+            lower: "0x0".into(),
+            upper: "0x0".into(),
+        },
+        signed: WordBounds {
+            lower: "0x0".into(),
+            upper: "0x0".into(),
+        },
+        congruence: CongruenceValue::Exact("0x0".into()),
+        origins: Some(vec![ValueOrigin::Constant]),
+        code_address_role: false,
+        identity: None,
+        expression: None,
+        symbolic_limit: false,
+    };
+    let account = AccountState {
+        address: format!("0x{}", "11".repeat(20)),
+        existence: AccountExistence::Present,
+        balance: zero.clone(),
+        nonce: zero.clone(),
+        code_kind: CodeKind::Empty,
+        code_hash: None,
+        program: None,
+        delegation_target: None,
+        storage_default: zero.clone(),
+        storage_root: SlotStateRef { node: 0 },
+        transient_root: SlotStateRef { node: 0 },
+        storage: vec![],
+        transient_default: zero.clone(),
+        transient: vec![],
+        created: Some(false),
+        touched,
+        pending_destruction: Some(false),
+    };
+    StoreSnapshot {
+        storage_default: zero.clone(),
+        transient_default: zero.clone(),
+        storage_root: SlotStateRef { node: 0 },
+        transient_root: SlotStateRef { node: 0 },
+        nonce_default: zero.clone(),
+        code_default: None,
+        existence_default: AccountExistence::Unknown,
+        created_default: Some(false),
+        pending_destruction_default: Some(false),
+        balance_default: zero,
+        touched_default,
+        accounts: vec![account],
+        logs: vec![],
+        logs_unknown: false,
+        storage_facts: vec![],
+        transient_facts: vec![],
+    }
+}
+
+#[test]
+fn transaction_touch_guarantees_and_unlisted_defaults_roundtrip_independently() {
+    for touched in [Some(true), Some(false), None] {
+        for default in [Some(true), Some(false), None] {
+            let snapshot = touch_snapshot(touched, default);
+            let encoded = serde_json::to_value(&snapshot).unwrap();
+            assert_eq!(
+                encoded["accounts"][0]["touched"],
+                serde_json::json!(touched)
+            );
+            assert_eq!(encoded["touched_default"], serde_json::json!(default));
+            let decoded: StoreSnapshot = serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded.accounts[0].touched, touched);
+            assert_eq!(decoded.touched_default, default);
+            roundtrip(decoded);
+        }
+    }
+}
+
+#[test]
+fn missing_touch_fields_are_rejected_instead_of_defaulting_unknown_to_untouched() {
+    let encoded = serde_json::to_value(touch_snapshot(None, None)).unwrap();
+    let mut missing_default = encoded.clone();
+    missing_default
+        .as_object_mut()
+        .unwrap()
+        .remove("touched_default");
+    let error = serde_json::from_value::<StoreSnapshot>(missing_default).unwrap_err();
+    assert!(error.to_string().contains("missing field: touched_default"));
+    let mut missing_account = encoded;
+    missing_account["accounts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("touched");
+    let error = serde_json::from_value::<StoreSnapshot>(missing_account).unwrap_err();
+    assert!(error.to_string().contains("missing field: touched"));
+}
+
+#[test]
+fn all_global_store_templates_and_defaults_are_required_strict_fields() {
+    let snapshot = touch_snapshot(None, None);
+    let encoded = serde_json::to_string(&snapshot).unwrap();
+    for (field, value) in [
+        (
+            "storage_root",
+            serde_json::to_string(&snapshot.storage_root).unwrap(),
+        ),
+        (
+            "transient_root",
+            serde_json::to_string(&snapshot.transient_root).unwrap(),
+        ),
+        (
+            "nonce_default",
+            serde_json::to_string(&snapshot.nonce_default).unwrap(),
+        ),
+        ("code_default", "null".into()),
+        ("existence_default", "\"Unknown\"".into()),
+        ("created_default", "false".into()),
+        ("pending_destruction_default", "false".into()),
+    ] {
+        let missing = encoded.replacen(&format!("\"{field}\":{value},"), "", 1);
+        assert_ne!(missing, encoded, "field was not removed: {field}");
+        let error = serde_json::from_str::<StoreSnapshot>(&missing).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field: {field}")),
+            "{error}"
+        );
+    }
+    for code in [
+        AccountCode::Unknown,
+        AccountCode::Empty,
+        AccountCode::Runtime("0x00".into()),
+        AccountCode::Delegation(format!("0x{}", "22".repeat(20))),
+    ] {
+        let mut store = snapshot.clone();
+        store.code_default = Some(code);
+        roundtrip(store);
     }
 }

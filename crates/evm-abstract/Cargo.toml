@@ -27,7 +27,7 @@ tower.workspace = true
 num-bigint.workspace = true
 num-integer.workspace = true
 num-traits.workspace = true
-embedded-smt = { path = "../embedded-smt" }
+analysis-control = { path = "../analysis-control" }
 revm-precompile = { version = "=43.0.3", default-features = false, features = [
     "std",
     "c-kzg",

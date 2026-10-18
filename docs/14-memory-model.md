@@ -236,7 +236,7 @@ WordRead 捕获有限 view 和符号地址，保留 32 字节大端读取及零�
 
 ### 7.2 不知道写哪儿
 
-WriteByte/WriteWord 保存符号偏移、值和旧根。后续同址或别名读取可以由规范化与 SMT 得到结论；已存的历史读取不会随新写入改变。
+WriteByte/WriteWord 保存符号偏移、值和旧根。后续同址或别名读取可以由结构规范化与有界局部传播得到结论；已存的历史读取不会随新写入改变。
 
 <a id="同一个未知偏移写后再读也未必恢复原值"></a>
 
@@ -258,13 +258,13 @@ jq '.states[0].exit_stack[0].Constants' /tmp/memory-same-address.json
 nix run . -- cfg --file examples/memory-symbolic-offset.hex --format json
 ```
 
-策略内执行的出口也读出 7，同时报告 `Incomplete`、退出码 2，并保留超内存策略的 frontier。问题是还有访问范围未覆盖，不能据此说符号写后读退化成 Top。关闭关系查询、表达式构造超限或 solver 未完成也各有自己的精度与覆盖边界；本例不证明所有地址公式都能被精确求解。
+在正常执行分支上，WriteWord 与 WordRead 仍引用同一个 p 和写后根，所以同址转发可以得到 7。完全无约束的 p 还包含无法表示非回绕内存终点的访问；当前模型用可能的异常 Failure 覆盖这部分，并在逻辑成功域内同时保留正常执行与可能的 gas Failure，不再按主机提取上限截断地址。实际 status、退出码与 frontiers 要读取运行结果；工作量、表达式或状态表示的真实边界仍可能使分析不完整，不能从同址转发推出必定 Converged。
 
 ### 7.3 不知道复制多少字节
 
-`366000803700` 将未知 calldata 完整复制到 memory。输入长度有一个可信表达式，Copy 保存 source view 与同一长度，不要求枚举所有大小，也不展开整个范围。超过配置 logical footprint 的输入保留 MemoryPolicy witness，包括原 offset/size/limit、condition、选中 side 和 pre-effect payload。
+`366000803700` 将未知 calldata 完整复制到 memory。输入长度有一个可信表达式，Copy 保存 source view 与同一长度，不要求枚举所有大小，也不展开整个范围。逻辑成功域由 U256 范围与 32 字节取整决定，不由 `max_memory_bytes` 决定；主机无法具体提取整段内容，不等于这条逻辑 COPY 未被表示。内存访问仍保留可能的 gas Failure，实际表示或资源边界另以 frontier 报告。
 
-普通库调用若只提供没有表达式的 Top size，仍会报告 ByteRange::UnknownSize。这不能与带来源和长度表达式的 EVM COPY 混淆。RETURNDATACOPY 的源边界、MCOPY 的重叠和双向内存扩容另外遵守各自指令规则。
+只有数值 Top 的 size 不携带跨操作的长度身份；当前库包装层可以为 numeric-only 操作数建立 fresh term，不能仅因没有原表达式就断言必报错。若实际得到 `ByteRange::UnknownSize`，仍应按缺少可用大小来源的表示失败处理；不能把这个边界等同于带来源和长度表达式的 EVM COPY。RETURNDATACOPY 的源边界、MCOPY 的重叠和双向内存扩容另外遵守各自指令规则。
 
 <a id="8-为什么刚存进去再读出来会多出候选"></a>
 
@@ -389,7 +389,7 @@ B 用 CALLDATALOAD 把一个输入 word 读到自己的栈上；需要可修改�
 
 例如 A 请求复制 4 字节，B 实际只返回 2 字节，那么前两字节被替换，后两字节保留。返回长度为符号值 L 时，[`copy_return_data`](../crates/evm-abstract/src/world/bytes.rs) 先按完整请求范围扩容，再保存一次长度为 `min(4,L)` 的 Copy；[`minimum`](../crates/evm-abstract/src/world/bytes/ranges.rs) 用比较和 ITE 保留这个长度关系。Copy 捕获完整 returndata 的 source view，未覆盖后缀仍来自旧 memory。
 
-所有位置共用同一个复制长度。例如 L=0 时一个 byte 都不覆盖；L=1 时只覆盖首 byte；L=2 时才覆盖前两个。独立观察每个 byte 可能同时列出旧值与返回值，但完整根没有将每个位置变成彼此无关的开关。具体前缀保留与符号最小长度由[字节状态回归](../crates/evm-abstract/src/world/bytes/tests/state.rs)检查；这项模型关系也不保证所有复杂返回长度的 solver 查询都能完成。
+所有位置共用同一个复制长度。例如 L=0 时一个 byte 都不覆盖；L=1 时只覆盖首 byte；L=2 时才覆盖前两个。独立观察每个 byte 可能同时列出旧值与返回值，但完整根没有将每个位置变成彼此无关的开关。具体前缀保留与符号最小长度由[字节状态回归](../crates/evm-abstract/src/world/bytes/tests/state.rs)检查；这项模型关系也不保证所有复杂返回长度的局部查询都能完成。
 
 改变刚才例子的输出大小，其他前提保持不变：
 
@@ -446,13 +446,13 @@ nix develop -c jq '.states[0].exit.call_stack.root.state.memory | {length, root,
 
 ## 13. 范围上限、错误与分析完成状态
 
-CLI/Web 的 `max_memory_bytes` 默认 64 MiB，库 ExecutionConfig 默认 64 KiB。该策略约束 word-rounded **logical footprint**，不要求逐字节复制或巨量分配；也不是主机峰值 RAM。用 `--max-memory-bytes` 调整输入覆盖范围，不提供未知长度的实际值。
+CLI/Web 的 `max_memory_bytes` 默认 64 MiB，库 ExecutionConfig 默认 64 KiB。它限制需要具体提取内容的操作，不限制 lazy memory 的 U256 逻辑长度，也不是主机峰值 RAM。有限缓存另有表示上限；用 `--max-memory-bytes` 调整具体提取策略，不会提供未知长度的实际值，也不应据此排除较长的逻辑访问。
 
-范围先保留 size=0 分支，再以非回绕算术检查访问及 MSIZE。策略内继续执行；超策略输入保存 MemoryPolicy condition 和 pre-effect 状态，标记 Incomplete，不能显示成真实 EVM out-of-gas。单字节码 `cfg` 的教学投影将这类原因简写为 `Memory`；完整 `analyze --world` 的 `.frontiers[].range` 与 Web 报告另保留范围条件和待处理载荷。RETURNDATACOPY 的源越界属于指令异常语义，另与表示失败 ByteRange 区分。
+范围先保留 size=0 分支，即使 offset 很大也不扩容；非空访问用非回绕条件 `offset <= B`、`size <= B - offset`，其中 `B = U256::MAX & !31`，保证终点与 word-rounded MSIZE 可表示。当前 `LogicalMemory` 在域内保留正常执行与可能的 gas Failure，不精算域内的 gas 可负担性；固定 fork 默认 gas 规则下，域外非空访问由 Failure 覆盖。普通内存访问不再因超过 `max_memory_bytes` 产生 `MemoryPolicy`；该旧种类仅保留兼容报告。实际 guard、工作量或表示保留未完成时仍记录 frontier，必要时在 `.frontiers[].range` 中保留原操作数、条件和效果前载荷。RETURNDATACOPY 的源越界属于指令异常语义，另与表示失败 ByteRange 区分。
 
-`OperandsConsumed` 表示参数已弹出，但效果尚未完成；报告与部分 SSA 不伪造结果。Work、Relations、StateJoin、ByteRange 与 Memory 的 typed 原因分别保留。可选 value 查询的 UNKNOWN 是精度损失；条件未保留或覆盖未完成才是 frontier。
+`OperandsConsumed` 表示参数已弹出，但效果尚未完成；报告与部分 SSA 不伪造结果。可能的 EVM Failure 是带空 returndata 和相应回滚效果的 outcome，不等于分析未完成；Work、Relations、StateJoin、ByteRange 与 Memory 的真实 typed 边界分别保留。可选 value 查询未完成可以记录精度损失；条件未保留或覆盖未完成则保留 frontier。
 
-构造和求解沿用各自的节点、深度与 work 预算。报告导出保留节点、深度、exact payload 与取消点，整份 JSON 输出不设置字节上限，累计 projection work 仅作诊断统计，不因总量拒绝导出。原生 graph 默认 exact payload 为 16 MiB；Web 的 `metadata.export_usage.work` 记录实际 projection work，执行分析的 `AnalysisLimits.max_work` 继续生效。限制和错误详见[第 17 课](17-symbolic-state.md)，完整本地测试证据由集成验收记录。
+构造和局部推理沿用各自的节点、深度与 work 预算。报告导出保留节点、深度、exact payload 与取消点，整份 JSON 输出不设置字节上限，累计 projection work 仅作诊断统计，不因总量拒绝导出。原生 graph 默认 exact payload 为 16 MiB；Web 的 `metadata.export_usage.work` 记录实际 projection work，执行分析的 `AnalysisLimits.max_work` 继续生效。限制和错误详见[第 17 课](17-symbolic-state.md)，完整本地测试证据由集成验收记录。
 
 ## 14. 从源码找到每条规则
 
@@ -478,8 +478,8 @@ CLI/Web 的 `max_memory_bytes` 默认 64 MiB，库 ExecutionConfig 默认 64 KiB
 1. 在新 memory 中执行 MSTORE(1, 0x1234)，MSIZE 是 32 还是 64？`12`、`34` 分别在什么偏移？
 2. 对新 memory 执行一次 MSTORE8(p, 0xaa)，其中 p∈{0,1}。合并后两个字节各自有 `{0,0xaa}`，是否证明一次真实执行能同时把两个位置写成 `aa`？
 3. word 只允许 `{0x0101,0x0202}`，为什么独立 byte 候选可拼出四个组合，而第 8 节的完整 MLOAD 只输出两个？Converged 是否要求所有数值都精确？
-4. 有来源与长度表达式的未知 COPY、只有 Top 而没有表达式的 size、超过内存策略的范围，分别应怎样解释？
-5. 同一个符号 p 被保留，MSTORE(p,7) 后 MLOAD(p) 为什么无需枚举地址也能得到 7？完全无约束 p 的例子为什么仍为 Incomplete？
+4. 有来源与长度表达式的未知 COPY、只传数值 Top 的 size、超过主机提取上限但仍在逻辑成功域内的范围，分别应怎样解释？
+5. 同一个符号 p 被保留，MSTORE(p,7) 后 MLOAD(p) 为什么无需枚举地址也能得到 7？正常分支上的这个结论，能否单独证明整个分析 Converged？
 6. A 的 CALL 请求输出大小为 0，B 成功返回 32 字节，A 的 returndata 是否也为空？A 能直接读取 B 的 memory 吗？
 
 <details>
@@ -488,8 +488,8 @@ CLI/Web 的 `max_memory_bytes` 默认 64 MiB，库 ExecutionConfig 默认 64 KiB
 1. 访问 `[1,33)`，向上取整到 64；高 30 个字节为零，`12` 在偏移 31，`34` 在偏移 32。地址无需按 word 对齐。
 2. 不能。一次真实执行只写一个位置；独立候选看不到两者的配对，完整 WriteByte 与共同 guard 另保留这项关系。
 3. 独立 byte 候选允许交叉选择；本例完整 WordWrite/WordRead 保留原 word 的关系，所以得到两个候选。Converged 表示在声明模型与策略下完成传播，允许保守的多余候选，不要求每个查询都精确。
-4. 第一种保存 source view、符号长度与一次 Copy，合法策略内无需逐字节展开。第二种无法建立可信范围，表示层可返回 ByteRange::UnknownSize。第三种保留 MemoryPolicy 条件和效果执行前的状态，表示策略下尚未覆盖的输入；不是已证明的 EVM 失败。
-5. WriteWord 与 WordRead 引用同一地址和写后根，保存了符号索引更新关系。无约束 p 还包含超出 logical footprint 策略的访问，必须保留 frontier；策略内读出 7 不能覆盖那些输入。
+4. 第一种保存 source view、符号长度与一次 Copy，无需逐字节展开。第二种可由包装层建立 fresh term，但不能因此关联两次独立调用的长度；若实际返回 ByteRange::UnknownSize，仍表示缺少可用大小来源。第三种仍可由 lazy 根表示正常执行，具体提取可以不可得；是否有真实表示或资源 frontier，要读实际结果，不能由主机上限直接推出 MemoryPolicy。
+5. WriteWord 与 WordRead 引用同一地址和写后根，保存了符号索引更新关系。这个正常执行结论不证明全部工作已完成；还应检查 Failure 与其回滚，以及真实 Work、Relations 或表示边界。逻辑域外的非空访问由可能的异常 Failure 覆盖，不能把它误读为旧的主机内存策略 frontier。
 6. returndata 仍有完整 32 字节。大小为 0 只关闭这次自动输出复制；A 可以随后 RETURNDATACOPY 到自己的 memory。A 不能直接读取 B 的私有 memory。
 
 </details>

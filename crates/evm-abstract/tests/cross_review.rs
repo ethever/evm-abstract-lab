@@ -3,11 +3,11 @@
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{
-        ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, OutcomeKind, Status,
-        analyze_world,
+        ExecutionConfig, FrameCode, FrontierReason, InstructionProgress, MachineEdgeKind,
+        OutcomeKind, Status, analyze_world,
     },
-    domain::{AbstractValue, Domain},
-    ssa,
+    domain::{AbstractValue, Domain, relational::QueryReason},
+    ssa::{self, SsaError},
     world::{Account, ByteArray, Entry, World},
 };
 use revm::{
@@ -18,6 +18,7 @@ use revm::{
     primitives::{Bytes, TxKind, hex},
     state::{AccountInfo, Bytecode},
 };
+use revm_bytecode::opcode;
 use std::collections::BTreeSet;
 
 fn address(number: u64) -> Address {
@@ -73,25 +74,81 @@ fn osaka_p256_entry_executes_native_code_instead_of_fixture_bytecode() {
 }
 
 #[test]
+fn initialization_expression_limit_has_no_instruction_frontier() {
+    // The global Store Input root includes a Fresh child and needs two nodes,
+    // so this policy refuses initialization before reaching KECCAK.
+    let mut config = ExecutionConfig {
+        max_memory_bytes: 32,
+        ..ExecutionConfig::default()
+    };
+    config.analysis.relations.max_nodes = 1;
+    let analysis =
+        analyze_world(world(Fork::Osaka, "602a602060402000"), entry(0x101), config).unwrap();
+    assert_eq!(analysis.status(), Status::Incomplete);
+    let [frontier] = analysis.frontiers() else {
+        panic!("expected exactly the initialization refusal")
+    };
+    assert_eq!(
+        frontier.reason,
+        FrontierReason::Relations(QueryReason::ExpressionLimit)
+    );
+    assert!(frontier.from.is_none());
+    assert!(frontier.target.is_none());
+    assert!(frontier.pc.is_none());
+    assert!(frontier.range.is_none());
+    assert!(frontier.payload.is_none());
+    assert!(analysis.states().is_empty());
+    assert!(analysis.edges().is_empty());
+    assert!(analysis.outcomes().is_empty());
+    assert!(analysis.diagnostics().is_empty());
+    assert!(matches!(
+        ssa::build_world(&analysis),
+        Err(SsaError::IncompleteAnalysis)
+    ));
+}
+
+#[test]
 fn model_frontier_key_retains_the_current_stack_height() {
-    // A memory boundary consumes its offset; retained 42 stays in the frame.
-    let analysis = analyze_world(
-        world(Fork::Osaka, "602a60405100"),
-        entry(0x101),
-        ExecutionConfig {
-            max_memory_bytes: 32,
-            ..ExecutionConfig::default()
-        },
-    )
-    .unwrap();
-    let frontier = analysis
-        .frontiers()
-        .iter()
-        .find(|frontier| frontier.reason == FrontierReason::Memory)
-        .unwrap();
+    // Two nodes admit the initial Store. MSTORE then needs four nodes for its
+    // mandatory WriteWord root, after consuming offset 0 and value 7.
+    let mut config = ExecutionConfig {
+        max_memory_bytes: 32,
+        ..ExecutionConfig::default()
+    };
+    config.analysis.relations.max_nodes = 2;
+    let analysis =
+        analyze_world(world(Fork::Osaka, "602a60075f5200"), entry(0x101), config).unwrap();
+    assert_eq!(analysis.status(), Status::Incomplete);
+    assert_eq!(analysis.config().analysis.relations.max_nodes, 2);
+    let [frontier] = analysis.frontiers() else {
+        panic!("expected exactly the mandatory MSTORE root refusal")
+    };
+    assert_eq!(
+        frontier.reason,
+        FrontierReason::Relations(QueryReason::ExpressionLimit)
+    );
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(5)));
     let state = &analysis.states()[frontier.from.unwrap()];
+    assert_eq!(analysis.states().len(), 1);
+    assert_eq!(state.id, 0);
+    assert_eq!(state.key, state.entry.key());
+    assert_eq!(state.executed_pcs, [0, 2, 4, 5]);
+    let evidence = state.execution_evidence().unwrap();
+    assert!(evidence.is_current());
+    assert_eq!(
+        evidence.instructions(),
+        [
+            InstructionProgress::Completed,
+            InstructionProgress::Completed,
+            InstructionProgress::Completed,
+            InstructionProgress::OperandsConsumed,
+        ]
+    );
     let payload = state.exit.as_ref().unwrap();
     assert_eq!(payload.active().stack.len(), 1);
+    assert_eq!(payload.active().stack[0].singleton(), Some(U256::from(42)));
+    assert_eq!(state.exit_stack, payload.active().stack);
+    assert_eq!(frontier.target.as_ref(), Some(&payload.key()));
     assert_eq!(
         frontier
             .target
@@ -103,6 +160,59 @@ fn model_frontier_key_retains_the_current_stack_height() {
             .stack_height,
         payload.active().stack.len()
     );
+    let memory = &payload.active().memory;
+    assert_eq!(memory.len().singleton(), Some(U256::from(32)));
+    assert_eq!(
+        memory.state_root(),
+        state.entry.active().memory.state_root()
+    );
+    // This observer must be able to construct its read expression; it does not
+    // change the two-node retention policy used for actual execution above.
+    assert_eq!(
+        memory
+            .read_word_checked(&AbstractValue::constant(U256::ZERO), Domain::default(),)
+            .unwrap()
+            .singleton(),
+        Some(U256::ZERO),
+        "logical expansion must not commit the refused write"
+    );
+    assert!(analysis.edges().is_empty());
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .all(|outcome| outcome.kind == OutcomeKind::Failure)
+    );
+    assert!(matches!(
+        ssa::build_world(&analysis),
+        Err(SsaError::IncompleteAnalysis)
+    ));
+    let ir = ssa::build_partial_world(&analysis).unwrap();
+    let [block] = ir.blocks() else {
+        panic!("expected only the evidenced instruction prefix")
+    };
+    assert_eq!(block.state, state.id);
+    assert_eq!(block.coverage, ssa::PartialBlockCoverage::Current);
+    let write = block.instructions.last().unwrap();
+    assert_eq!(
+        (write.instruction.pc, write.instruction.opcode),
+        (5, opcode::MSTORE)
+    );
+    assert_eq!(write.progress, InstructionProgress::OperandsConsumed);
+    assert_eq!(
+        write.instruction.operands,
+        [
+            block.instructions[2].instruction.results[0],
+            block.instructions[1].instruction.results[0],
+        ]
+    );
+    assert!(write.instruction.results.is_empty());
+    assert_eq!(
+        block.exit_frames,
+        [block.instructions[0].instruction.results.clone()]
+    );
+    assert_eq!(ir.frontiers().len(), 1);
+    ir.verify(&analysis).unwrap();
 }
 
 #[test]

@@ -2,10 +2,10 @@ use super::{PartialBlockCoverage, build_partial_world};
 use crate::{
     Address, Fork, U256,
     analysis::{
-        self, ExecutionConfig, FrameCode, FrontierReason, InstructionProgress, MachineEdgeKind,
-        Status, WorldAnalysis,
+        self, DiagnosticKind, ExecutionConfig, FrameCode, FrontierReason, InstructionProgress,
+        MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
     },
-    domain::AbstractValue,
+    domain::{AbstractValue, relational::QueryReason},
     ssa::{self, SsaError, SsaInvariantKind as Kind},
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
@@ -24,6 +24,10 @@ fn config() -> ExecutionConfig {
 }
 
 fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
+    run_with_value(code, config, AbstractValue::constant(U256::ZERO))
+}
+
+fn run_with_value(code: &str, config: ExecutionConfig, value: AbstractValue) -> WorldAnalysis {
     let mut world = World::new(Fork::Osaka, "partial SSA execution phases");
     world
         .insert(
@@ -38,7 +42,7 @@ fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
             environment: EvmEnvironment {
                 to: address(0x101).into(),
                 caller: address(0x900).into(),
-                value: AbstractValue::constant(U256::ZERO),
+                value,
                 calldata: ByteArray::empty(),
                 ..EvmEnvironment::default()
             },
@@ -46,6 +50,46 @@ fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
         config,
     )
     .unwrap()
+}
+
+fn pending_mload() -> WorldAnalysis {
+    const CODE: &str = "602a60405100";
+    let mut config = config();
+    // Bisect the detailed MLOAD receipt without optional preparation fees.
+    config.root_terminal_coverage = false;
+    config.max_memory_bytes = 32;
+    let complete = run(CODE, config.clone());
+    assert_eq!(complete.status(), Status::Converged);
+    assert_eq!(complete.states()[0].executed_pcs, [0, 2, 4, 5]);
+    // In this acyclic prefix, the first budget admitting MLOAD's visit pays
+    // for operand consumption but cannot also pay its positive read-scan fee.
+    // Derive that cutoff from actual work, including root admission fees.
+    let (mut minimum, mut maximum) = (1, complete.work());
+    while minimum < maximum {
+        let midpoint = minimum + (maximum - minimum) / 2;
+        config.max_work = midpoint;
+        let candidate = run(CODE, config.clone());
+        if candidate
+            .states()
+            .iter()
+            .any(|state| state.executed_pcs.contains(&4))
+        {
+            maximum = midpoint;
+        } else {
+            minimum = midpoint + 1;
+        }
+    }
+    config.max_work = minimum;
+    let analysis = run(CODE, config);
+    assert_eq!(analysis.status(), Status::Incomplete);
+    assert_eq!(analysis.states()[0].executed_pcs, [0, 2, 4]);
+    let [frontier] = analysis.frontiers() else {
+        panic!("expected exactly the refused MLOAD read scan")
+    };
+    assert_eq!(frontier.reason, FrontierReason::Work);
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(4)));
+    assert_eq!(analysis.outcomes().len(), 1);
+    analysis
 }
 
 fn unknown_call() -> WorldAnalysis {
@@ -141,25 +185,100 @@ fn unknown_call_keeps_frontiers_known_candidates_and_deferred_results() {
 
 #[test]
 fn pending_mload_consumes_its_offset_without_inventing_the_loaded_word() {
-    let mut config = config();
-    config.max_memory_bytes = 32;
-    let analysis = run("602a60405100", config);
+    let analysis = pending_mload();
     assert_eq!(analysis.status(), Status::Incomplete);
     let ir = build_partial_world(&analysis).unwrap();
     let block = &ir.blocks()[0];
-    let pending = block.instructions.last().unwrap();
+    assert_eq!(block.coverage, PartialBlockCoverage::Current);
+    let pending = block
+        .instructions
+        .iter()
+        .find(|step| step.instruction.pc == 4)
+        .unwrap();
     assert_eq!(pending.instruction.opcode, opcode::MLOAD);
     assert_eq!(pending.progress, InstructionProgress::OperandsConsumed);
     assert_eq!(pending.instruction.operands.len(), 1);
     assert!(pending.instruction.results.is_empty());
     assert!(pending.effect_result.is_some());
+    assert_eq!(block.exit_effect, pending.effect_result.unwrap());
+    assert_eq!(pending.instruction.operands, vec![1]);
+    assert_eq!(block.exit_frames[0], vec![0]);
     assert_eq!(block.exit_frames[0].len(), 1);
     assert_eq!(ir.value_count(), 2);
-    assert!(
-        ir.frontiers()
+    assert_eq!(
+        analysis.states()[0]
+            .execution_evidence()
+            .unwrap()
+            .instruction_values()
+            .unwrap()
             .iter()
-            .any(|f| f.reason == FrontierReason::Memory)
+            .map(|value| (value.instruction_index(), value.numeric().singleton()))
+            .collect::<Vec<_>>(),
+        [(0, Some(U256::from(42))), (1, Some(U256::from(64)))]
     );
+    assert_eq!(ir.frontiers().len(), 1);
+    assert_eq!(ir.frontiers()[0].reason, FrontierReason::Work);
+    assert_eq!(ir.frontiers()[0].pc, Some(4));
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .all(|o| o.kind == OutcomeKind::Failure)
+    );
+    ir.verify(&analysis).unwrap();
+}
+
+#[test]
+fn legal_logical_mload_beyond_the_host_cap_completes_with_a_real_result() {
+    let mut config = config();
+    config.max_memory_bytes = 32;
+    let analysis = run("602a60405100", config);
+    assert_eq!(analysis.status(), Status::Converged);
+    assert!(analysis.frontiers().is_empty());
+    let state = &analysis.states()[0];
+    assert_eq!(state.executed_pcs, [0, 2, 4, 5]);
+    assert_eq!(state.exit_stack.len(), 2);
+    assert_eq!(state.exit_stack[0].singleton(), Some(U256::from(42)));
+    assert_eq!(state.exit_stack[1].singleton(), Some(U256::ZERO));
+    let values = state
+        .execution_evidence()
+        .unwrap()
+        .instruction_values()
+        .unwrap();
+    assert_eq!(values.len(), 3);
+    assert_eq!(values[2].instruction_index(), 2);
+    assert_eq!(values[2].numeric().singleton(), Some(U256::ZERO));
+    assert_eq!(
+        state
+            .exit
+            .as_ref()
+            .unwrap()
+            .active()
+            .memory
+            .len()
+            .singleton(),
+        Some(U256::from(96))
+    );
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .any(|o| o.kind == OutcomeKind::Return)
+    );
+    let full = ssa::build_world(&analysis).unwrap();
+    let partial = build_partial_world(&analysis).unwrap();
+    let load = &partial.blocks()[0].instructions[2];
+    assert_eq!(load.instruction.pc, 4);
+    assert_eq!(load.instruction.opcode, opcode::MLOAD);
+    assert_eq!(load.progress, InstructionProgress::Completed);
+    assert_eq!(load.instruction.operands, vec![1]);
+    assert_eq!(load.instruction.results, vec![2]);
+    assert_eq!(partial.blocks()[0].exit_frames[0], vec![0, 2]);
+    assert_eq!(partial.value_count(), 3);
+    assert_eq!(partial.value_count(), full.value_count());
+    assert_eq!(partial.effect_count(), full.effect_count());
+    full.verify(&analysis).unwrap();
+    partial.verify(&analysis).unwrap();
 }
 
 #[test]
@@ -201,6 +320,8 @@ fn budget_pending_state_has_entry_parameters_and_no_unexecuted_body() {
 #[test]
 fn a_fresh_shorter_retry_does_not_reuse_an_older_completed_backedge() {
     let mut first_config = config();
+    // Measure the original detailed retry ledger for the stale-edge sweep.
+    first_config.root_terminal_coverage = false;
     first_config.analysis.max_transfers = 2;
     let first = run("5f5b600101600156", first_config);
     let base_work = first.work();
@@ -209,6 +330,7 @@ fn a_fresh_shorter_retry_does_not_reuse_an_older_completed_backedge() {
         .step_by(step)
         .find_map(|extra| {
             let mut config = config();
+            config.root_terminal_coverage = false;
             config.max_work = base_work.saturating_add(extra);
             let analysis = run("5f5b600101600156", config);
             let prefix = analysis
@@ -266,63 +388,104 @@ fn completed_fault_has_no_fabricated_operands_or_results() {
 }
 
 #[test]
-fn relational_frontier_does_not_truncate_a_completed_instruction_or_its_successor() {
+fn optional_expression_limit_preserves_completion_and_a_separate_real_work_frontier() {
     let mut config = config();
+    // complete.work() - 1 must isolate the mandatory STOP finalization fee.
+    config.root_terminal_coverage = false;
     config.analysis.relations.enabled = true;
     config.analysis.relations.max_nodes = 2;
     // CALLVALUE provides an unknown word with an input leaf. The bound admits
-    // initial state roots, while adding 1 exceeds it. Numerical ADD and STOP
-    // still complete, so their execution evidence must remain available.
-    let mut world = World::new(Fork::Osaka, "continued relational frontier");
-    let account = Account::from_hex("3460010100", Fork::Osaka).unwrap();
-    world.insert(address(0x101), account).unwrap();
-    let analysis = analysis::analyze_world(
-        world,
-        Entry {
-            address: address(0x101),
-            environment: EvmEnvironment {
-                to: address(0x101).into(),
-                caller: address(0x900).into(),
-                value: AbstractValue::top(),
-                calldata: ByteArray::empty(),
-                ..EvmEnvironment::default()
-            },
-        },
-        config,
-    )
-    .unwrap();
-    assert_eq!(analysis.status(), Status::Incomplete);
-    assert!(analysis.frontiers().iter().any(|frontier| {
-        matches!(
-            frontier.reason,
-            FrontierReason::Relations(crate::domain::relational::QueryReason::ExpressionLimit)
-        )
-    }));
-    let ir = build_partial_world(&analysis).unwrap();
-    let block = &ir.blocks()[0];
-    let addition = block
-        .instructions
-        .iter()
-        .find(|step| step.instruction.opcode == opcode::ADD)
+    // initial state roots, while adding 1 exceeds optional term retention.
+    let complete = run_with_value("3460010100", config.clone(), AbstractValue::top());
+    assert_eq!(complete.status(), Status::Converged);
+    assert!(complete.frontiers().is_empty());
+    assert!(
+        complete
+            .outcomes()
+            .iter()
+            .any(|o| o.kind == OutcomeKind::Return)
+    );
+    ssa::build_world(&complete)
+        .unwrap()
+        .verify(&complete)
         .unwrap();
-    assert_eq!(addition.progress, InstructionProgress::Completed);
-    assert_eq!(addition.instruction.results.len(), 1);
-    assert_eq!(block.exit_frames[0], addition.instruction.results);
-    let stop = block.instructions.last().unwrap();
-    assert_eq!(stop.instruction.opcode, opcode::STOP);
-    assert_eq!(stop.progress, InstructionProgress::Dispatched);
-    assert!(stop.effect_result.is_some());
-    ir.verify(&analysis).unwrap();
+
+    // Refuse the last root-finalization charge, after ADD and STOP. This is a
+    // genuine coverage gap, separately from ADD's optional precision diagnostic.
+    config.max_work = complete.work().checked_sub(1).unwrap();
+    let refused = run_with_value("3460010100", config, AbstractValue::top());
+    assert_eq!(refused.status(), Status::Incomplete);
+    let [frontier] = refused.frontiers() else {
+        panic!("expected exactly the refused STOP finalization")
+    };
+    assert_eq!(frontier.reason, FrontierReason::Work);
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(4)));
+    assert!(
+        refused
+            .outcomes()
+            .iter()
+            .all(|o| o.kind == OutcomeKind::Failure)
+    );
+    assert!(matches!(
+        ssa::build_world(&refused),
+        Err(SsaError::IncompleteAnalysis)
+    ));
+
+    for analysis in [&complete, &refused] {
+        assert!(analysis.diagnostics().iter().any(|diagnostic| {
+            diagnostic.state == 0
+                && diagnostic.pc == 3
+                && diagnostic.kind
+                    == DiagnosticKind::RelationalPrecisionLost(QueryReason::ExpressionLimit)
+        }));
+        let state = &analysis.states()[0];
+        assert_eq!(state.executed_pcs, [0, 1, 3, 4]);
+        assert_eq!(state.exit_stack.len(), 1);
+        assert!(state.exit_stack[0].numeric().is_top());
+        let values = state
+            .execution_evidence()
+            .unwrap()
+            .instruction_values()
+            .unwrap();
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[2].instruction_index(), 2);
+        assert!(values[2].numeric().is_top());
+        let ir = build_partial_world(analysis).unwrap();
+        let block = &ir.blocks()[0];
+        let addition = block
+            .instructions
+            .iter()
+            .find(|step| step.instruction.opcode == opcode::ADD)
+            .unwrap();
+        assert_eq!(addition.progress, InstructionProgress::Completed);
+        assert_eq!(addition.instruction.results.len(), 1);
+        assert_eq!(block.exit_frames[0], addition.instruction.results);
+        let stop = block.instructions.last().unwrap();
+        assert_eq!(stop.instruction.opcode, opcode::STOP);
+        assert_eq!(stop.progress, InstructionProgress::Dispatched);
+        assert!(stop.effect_result.is_some());
+        assert_eq!(block.exit_effect, stop.effect_result.unwrap());
+        assert_eq!(ir.frontiers().len(), analysis.frontiers().len());
+        ir.verify(analysis).unwrap();
+    }
 }
 
 #[test]
 fn partial_verifier_rejects_phase_result_opcode_and_operand_tampering() {
-    let mut config = config();
-    config.max_memory_bytes = 32;
-    let analysis = run("602a60405100", config);
+    let analysis = pending_mload();
     let ir = build_partial_world(&analysis).unwrap();
+    let pending_index = ir.blocks[0]
+        .instructions
+        .iter()
+        .position(|step| step.instruction.pc == 4)
+        .unwrap();
+    let pending = &ir.blocks[0].instructions[pending_index];
+    assert_eq!(pending.instruction.opcode, opcode::MLOAD);
+    assert_eq!(pending.progress, InstructionProgress::OperandsConsumed);
+    assert_eq!(pending.instruction.operands.len(), 1);
+    assert!(pending.instruction.results.is_empty());
     let mut phase = ir.clone();
-    phase.blocks[0].instructions.last_mut().unwrap().progress = InstructionProgress::Completed;
+    phase.blocks[0].instructions[pending_index].progress = InstructionProgress::Completed;
     let SsaError::Invariant(error) = phase.verify(&analysis).unwrap_err() else {
         panic!("expected invariant")
     };
@@ -330,27 +493,18 @@ fn partial_verifier_rejects_phase_result_opcode_and_operand_tampering() {
     assert_eq!(error.state, Some(0));
     assert_eq!(error.pc, Some(4));
     let mut result = ir.clone();
-    result.blocks[0]
-        .instructions
-        .last_mut()
-        .unwrap()
+    result.blocks[0].instructions[pending_index]
         .instruction
         .results
         .push(0);
     assert!(result.verify(&analysis).is_err());
     let mut opcode = ir.clone();
-    opcode.blocks[0]
-        .instructions
-        .last_mut()
-        .unwrap()
+    opcode.blocks[0].instructions[pending_index]
         .instruction
         .opcode = opcode::ADD;
     assert!(opcode.verify(&analysis).is_err());
     let mut operand = ir.clone();
-    operand.blocks[0]
-        .instructions
-        .last_mut()
-        .unwrap()
+    operand.blocks[0].instructions[pending_index]
         .instruction
         .operands[0] = ir.value_count();
     assert!(operand.verify(&analysis).is_err());

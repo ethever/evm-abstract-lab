@@ -294,8 +294,20 @@ impl Plane {
         let mut facts = self.operands.clone();
         operands::remember(&mut facts, key_expr.clone(), key, domain, limits(domain))?;
         let expr = ExprId::slot_read(root.clone(), key_expr.clone(), limits(domain))?;
-        let numeric = read_numeric(&root, &key_expr, &facts, domain);
-        Ok(numeric::attach(numeric, expr))
+        let mut value = read_numeric(&root, &key_expr, &facts, domain);
+        if key.constants().is_some() && value.identity().input().is_none() {
+            // The pointwise cache keeps possible sources from either branch,
+            // even when A1 drops a one-sided unconditional operand guarantee.
+            // Only merge metadata: every numeric component comes from this
+            // root evaluation. An identified input already has its retained
+            // operand metadata; do not erase that identity with a wider cache.
+            // Finite keys use cache lookups, without another root traversal.
+            let numeric = value.numeric().clone();
+            value = numeric::numeric_domain(domain)
+                .join(&value, &self.read_numeric_cache(address, key, domain))
+                .with_numeric(numeric);
+        }
+        Ok(numeric::attach(value, expr))
     }
     pub(super) fn read(
         &self,
@@ -370,13 +382,7 @@ impl Plane {
         out.base = self
             .base
             .join_guarded(&other.base, selector.clone(), limits.into())?;
-        out.operands = self.operands.clone();
-        for (e, v) in &other.operands {
-            out.operands
-                .entry(e.clone())
-                .and_modify(|old| *old = domain.join(old, v))
-                .or_insert_with(|| v.clone());
-        }
+        out.operands = operands::join_common(&self.operands, &other.operands, domain);
         let addresses = self
             .roots
             .keys()
@@ -394,6 +400,8 @@ impl Plane {
                 )?,
             );
         }
+        // The pointwise numeric-cache union above already covers both inputs.
+        // Do not rewalk each whole root after dropping path-local guarantees.
         Ok(out)
     }
 }

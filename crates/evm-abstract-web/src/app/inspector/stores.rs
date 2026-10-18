@@ -5,7 +5,9 @@ use crate::palette;
 use egui::{RichText, Ui, UiBuilder};
 use egui_extras::{Column, TableBuilder};
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::{AccountState, AnalysisReport, StorageEntry, StoreSnapshot, ValueInfo};
+use evm_abstract_protocol::{
+    AccountCode, AccountState, AnalysisReport, StorageEntry, StoreSnapshot, ValueInfo,
+};
 
 mod slots;
 
@@ -42,6 +44,7 @@ pub(super) fn storage(
         .show(ui, |ui| {
             ui.label(RichText::new(address).monospace());
             if let Some(store) = store {
+                touch_default(ui, store);
                 super::symbolic::facts(
                     ui,
                     if transient {
@@ -88,6 +91,11 @@ pub(super) fn storage(
                                     ui,
                                     "Created in transaction",
                                     certainty(account.created),
+                                );
+                                value::text(
+                                    ui,
+                                    "Touched in transaction",
+                                    touch_status(account.touched),
                                 );
                                 value::text(
                                     ui,
@@ -185,6 +193,8 @@ fn storage_rows(ui: &mut Ui, entries: &[StorageEntry], transient: bool) {
 }
 
 pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapshot) {
+    touch_default(ui, store);
+    defaults(ui, report, store);
     let mut changed = false;
     for account in &store.accounts {
         let initial = report
@@ -224,6 +234,7 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
                             );
                         }
                         value::text(ui, "Created", certainty(account.created));
+                        value::text(ui, "Touched in transaction", touch_status(account.touched));
                         value::text(
                             ui,
                             "Pending destruction",
@@ -312,26 +323,97 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
         .color(palette::MUTED),
     );
     for log in &store.logs {
-        ui.collapsing(
-            format!(
-                "{} · pc 0x{:x} · {} topics",
-                log.address,
-                log.pc,
-                log.topics.len()
-            ),
-            |ui| {
-                ui.monospace(format!("Code account: {}", log.code_address));
-                for (index, topic) in log.topics.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Topic {index}"));
-                        value::cell(ui, topic);
-                    });
-                }
-                ui.allocate_ui(egui::vec2(ui.available_width(), 100.0), |ui| {
-                    super::buffers::show(ui, report, log.data, "Log data")
+        egui::CollapsingHeader::new(format!(
+            "{} · {:?} · pc 0x{:x} · {} topics",
+            log.address,
+            log.source_kind,
+            log.pc,
+            log.topics.len()
+        ))
+        .id_salt((
+            "log_site",
+            &log.address,
+            &log.code_address,
+            &log.code_hash,
+            log.source_kind,
+            log.pc,
+        ))
+        .show(ui, |ui| {
+            ui.monospace(format!("Code account: {}", log.code_address));
+            ui.monospace(format!("Code hash: {}", log.code_hash));
+            for (index, topic) in log.topics.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Topic {index}"));
+                    value::cell(ui, topic);
                 });
-            },
+            }
+            ui.allocate_ui(egui::vec2(ui.available_width(), 100.0), |ui| {
+                super::buffers::show(ui, report, log.data, "Log data")
+            });
+        });
+    }
+}
+
+fn defaults(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapshot) {
+    ui.collapsing("Unlisted accounts and storage bases", |ui| {
+        egui::Grid::new("store_defaults")
+            .num_columns(2)
+            .show(ui, |ui| {
+                value::named(ui, "Persistent slot default", &store.storage_default);
+                value::named(ui, "Transient slot default", &store.transient_default);
+                value::named(ui, "Unlisted account balance", &store.balance_default);
+                value::named(ui, "Unlisted account nonce", &store.nonce_default);
+                value::text(
+                    ui,
+                    "Unlisted account existence",
+                    format!("{:?}", store.existence_default),
+                );
+                match &store.code_default {
+                    None | Some(AccountCode::Unknown) => {
+                        value::text(ui, "Unlisted account code", "Unknown");
+                    }
+                    Some(AccountCode::Empty) => {
+                        value::text(ui, "Unlisted account code", "Empty");
+                    }
+                    Some(AccountCode::Runtime(bytes)) => {
+                        value::text(ui, "Unlisted account code", "Runtime");
+                        value::text(ui, "Runtime bytes", bytes);
+                    }
+                    Some(AccountCode::Delegation(target)) => {
+                        value::text(ui, "Unlisted account code", "Delegation");
+                        value::text(ui, "Delegation implementation", target);
+                    }
+                }
+                value::text(ui, "Unlisted account creation", certainty(store.created_default));
+                value::text(
+                    ui,
+                    "Unlisted account pending destruction",
+                    certainty(store.pending_destruction_default),
+                );
+                value::text(ui, "Unlisted account touch", touch_status(store.touched_default));
+            });
+        ui.label(
+            "Storage bases are scoped by account owner when read. A shared base does not imply equal values for different owners.",
         );
+        super::symbolic::show(ui, report, store.storage_root.node, "Persistent base template");
+        super::symbolic::show(ui, report, store.transient_root.node, "Transient base template");
+        super::symbolic::facts(ui, &store.storage_facts, "Persistent store facts");
+        super::symbolic::facts(ui, &store.transient_facts, "Transient store facts");
+    });
+}
+
+fn touch_default(ui: &mut Ui, store: &StoreSnapshot) {
+    ui.horizontal(|ui| {
+        ui.label("Unlisted account touch");
+        ui.monospace(touch_status(store.touched_default));
+    });
+}
+
+fn touch_status(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "Must be touched",
+        Some(false) => "Untouched",
+        None => "May be touched",
     }
 }
 

@@ -1,6 +1,31 @@
 {
   "source": "Reviewed historical browser PNGs, browser-run-20261012T095843Z-dd60d5e6; fixture pixels only, not current browser validation. Additional final-literal entries record their own independent historical source context.",
   "literals": {
+    "full_slot": {
+      "text": "0x1234567890abcdef234567890abcdef134567890abcdef124567890190abcdef",
+      "source_png": "storage-table-storage-initial-table.png",
+      "source_png_sha256": "90c663009786ef2978fb8c877ea3921f83bec806af64a4acbf3cc32c3d9d7d50",
+      "source_bounds": [
+        5,
+        101,
+        519,
+        111
+      ],
+      "mask_size": [
+        514,
+        10
+      ],
+      "ink_bounds": [
+        0,
+        0,
+        514,
+        10
+      ],
+      "mask_sha256": "7f1ebe5c7ae6c51205b1c0ab84b5f70a7f2d6e0c00c2254e8bfb973e378fb7b0",
+      "rgb_sha256": "1c89442ae3957fc560993d2ea2b23ef4484d974cd26ebc71772d6bc3466246e4",
+      "rgb_zlib_base64": "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",
+      "source_context": "Original reviewed browser-run-20261012T095843Z-dd60d5e6 complete Slot galley, integrated PR132 head e5a6bcdc78fb5afe9be6b518bcef20ac00bef303; production ddb2f190efcba7a28fba80f93705059c565a1f86 is unchanged in that head."
+    },
     "full_value": {
       "text": "{0x1234567890abcdef234567890abcdef134567890abcdef124567890190abcdef}",
       "source_png": "storage-table-storage-initial-table.png",
@@ -98,6 +123,106 @@
       "rgb_sha256": "d83d3f3b59bbc4a7ef7073d6580e78958d2f06e0996329133dbcf2ce910c6fd8",
       "rgb_zlib_base64": "eJzNVfdPk1EU/Q/QMJRgmFYMURDFEZQGRSqyZBVDCIJSokIkgAGZRqtIIqAYSS2ijFaRYY1MFUgoSwRaqoy27FFBwL3+AI998vhskV8xuWned959955373m3BkbmBkbm4VFx8qGpyfnvvkEnDLTIGlp8Mn9wfH568Wdt80uCNLbJRzSfmtr71ptYMj1buwdh1lt3UmSvy5HXas3Uwg/4J2VkrZ6IF5OERHCG4ZRfcATdEpZUjc99RUE6ZCpLlgMBix9VgxWcyW9mzh1mNOXkQv69Mh2G7l5ceAaFRjHBsdkv/Ov5f59dHBidc3HzuZojQHAsVqF9MTPvweMGjvfx3c7u3f3j4EmSJqRcxdlbQrHdDuehiYWWrv4l2jX9o7MrhjKztMMRt6OB+luoTEFpFROZePct9XI2/fQODMPZQx4Bdc1dFiwH1Kqiuhl4YEgkroxfEn945uNDyXOd4KfPJePsngMcrF+9GeuUq3FlcVV9fmEZcJxaoj2nTww04EMMiWqbXjJ334zMiirr6aehqQ18zsalUiTlUjYOYgHCYbxY+HfI1WTrpqAUrcFdnkt7FWrNOmMLndRFZdXITqqNe4mrGgRFFVAOLyaRlIIpEnhCt0xxWts6YsuV46d/qT7ltKS+hTYlN78YnvZObOqQJxSDMBbAE9OzpK8GXg+/XX4IPUPo+MS7r/a72DqRA7TtSL+SSz6hlrsiCUqtmnqPx4JoKALwo8dCnF09jUxtuKFRo5pPbb1KHdoHOf76tGsaO1ExT/9Q1Ip0pFAkYTpAMABZdk4gz4tO7Ee1ZSq6i3eBXUm9VCesl38o/IUllRQZnv7wTNoDeaBfzGozLetGAW5Ku4bK/6Z9ZAXaVraOCIhd9fQHYzNWGj8Xa1SDOvhotX3yTMKzlh60A60k2oaZ22zHbGnuUMAhJCKaHkEB4VYofsJMBG2jTf7HTwnul98ufEi1rSMq4HRurCKS2qZOEEZDDTdaEwT3TUy/xvTBJMGrOezJRVURh+3mS/D2XqVcOYUseUIReGJEAOR4B2MN2eskOp/6Z5LggqNvP9NJkpkj2Mf22LBpS/wFPoSkLxLXlUSiUM2UP21kIkhKBUkMo0Chndt4VpA3AUEAntsc95NPKKdPNYP+1jR20OdPLCwylvgUaOc2kHaZymKzPQG7FCNkaCManjaoLtP+t0ig1dKKOiYiG5zEf5AV4/j/Zqg/Hk5MQgYTjI5PI/+JvtzwNWeoby9aZdAYtGRixiLIL2fSziM=",
       "source_context": "Independent historical browser artifact zg9akxad0n85xgd6ailwg9fdid1lz1lm; original storage-scroll final literal."
+    },
+    "suffix_6": {
+      "text": "\u2026abcdef",
+      "source_png": "storage-table-storage-suffix-6-table.png",
+      "source_png_sha256": "204d02c2cd4144258aae99ce7bbbc0372348eae47eb8098cc4eb7cc689c9935b",
+      "source_bounds": [
+        8,
+        101,
+        62,
+        111
+      ],
+      "mask_size": [
+        54,
+        10
+      ],
+      "ink_bounds": [
+        0,
+        0,
+        54,
+        10
+      ],
+      "mask_sha256": "f3f2b65c34ee7f1d1bd1851b0aeaa7f509d1ccc515cff792b2b718de558c5805",
+      "rgb_sha256": "cd0e41a773b95e22d418c108634a7e9c7a44614261c7e26945e456d9950fa5ef",
+      "rgb_zlib_base64": "eJzjE5blIwVJK2o/ePnF1TuMJF0QVNnQdefpB2JUFpQ3Xr7zHGjRpt1HSbVFBurCUDJcWFHfSaQLr957OXn2Mn4ROTJskVbQosCFRIWhlLwm0AonjyCCKrftOwk08P6Lz0By1qK1fEixDOTefvIeKLV++yEBUXmIlImVy9GzN+4++wgUP335noiUClBQVknnwMkrQJEbD98sX78L2YXAULp2/yVQ6tKtp14BURBBoHag+RAElMIfy/FpBcoaRsCgdnQPBGpMyy2Hx/LZaw819S29g2LuP//UPWkuJGxvPX63//glC1sPBTWDKbOXSciqA8Wnzll+48FroOOtHb2BCuAu7Jw4G+iAuJR8oIHzl288f+Mx3F5FNQOgFfau/gTDsKS69dr9V0BzID6av2wjPJZzi+sgarbuPXHm6gMgA+h+oEpRcLghozNX7k+YsQjCnrt0A9yFwIywYMVmCBsYC/eef1LVMkF2oYNbAH7nmVq7ApXVt0+EBAUwIlZs2A12ISgMfYJiIMrmLdsA9AUkrG4+fINpDtDq0po2CLuhfSLchRCPA0kIArKLKlugLlQ3JCYMa5r74KYBQwZo0apNe+HpMLuoFiK1Ze/x01fuQ8LwwYvPYtKqaOYAY3bCdHgYroebCUyW85dvwmo1WixPm7cSmMb0Teyv3H2x99jF9LwKIDe7sAaYzEAuKaxR1zUHRiWoaNp1FB7LZ68+0NA19/SPAnq/a9IcSI64+ejtgROXLew8gL5o650hLqMGFF+79QDQMQZmDkBx5HQ4fd5KYF4rrWmXlNPQN7UHJmZgFkaJZVdoLC9Zsw3IBaZkoF5gmgEGNZBbXtcJlJo0cwnQUqCDN+8+tmjllgs3n8BdOHvx2jtP3gMDFjkvm9m4HT9/CygIlDp48oqIJChNSsprHjx1BSgINGrJmu1AKXjamz5/FaRAAFoB1AhJTvBYhqdDAI3EG7Q=",
+      "source_context": "Original reviewed browser-run-20261012T095843Z-dd60d5e6 storage Slot suffix-6 complete galley; integrated head e5a6bcdc78fb5afe9be6b518bcef20ac00bef303."
+    },
+    "suffix_13": {
+      "text": "\u20267890190abcdef",
+      "source_png": "storage-table-storage-suffix-13-table.png",
+      "source_png_sha256": "a48d84b7e2f006b41742d6df26917ad41b290c4148e6b04df98e79b9baf9789f",
+      "source_bounds": [
+        8,
+        101,
+        116,
+        111
+      ],
+      "mask_size": [
+        108,
+        10
+      ],
+      "ink_bounds": [
+        0,
+        0,
+        108,
+        10
+      ],
+      "mask_sha256": "8b9dc9c7c872399ea7f0c8aa2c1be3e03610fcb1bd7224af9ffa8b13b9a6dda9",
+      "rgb_sha256": "663dd9425fa0109193cf0c5d4123fc575c118c0c27ccc48947d33f8aa2f781a4",
+      "rgb_zlib_base64": "eJzdlndTlUcUxr8BiTFiYcBLlRqEoIlCdCTWKKKgiApKsYGCJSAwFowIBMjYoqgYNCBRIMRCQFRAQJSuF/DSq9hQ05MPkN+96928YhKIf2Zm553ds7vn3X3O85yzBqONDf53LWJXfO/T395sb0FJdXmtZiQrT2d+1/Xo577B3/9pQfKR08zK1v/sD5yLqeCQiLa+5xibOx8fPpkpjG+PmXgoNaOp8zGH5+s+30u6OnE2t/vxL9gr61snWryn/Ev+jTt4Xr9lp7TM81hRVFbX8+RXtpzLLZT2Ka5z1O0P+WnHwI+RuxOGwzABD2+GYWFpTXnN/WGXmU5y4uQLl64eoVtHlxmsX+63QQy5BT+ytHUJj4jFPvuTZRgTDp6k7+kTYGhkCdqdD396610T7Nuj47AfPpFp6zhN0zN4s6pJuj33bSHAMrthS5QMBBvLaprHGU8CTGYPpKSKqZbeZ02dj9zcF8UlH2MLnX85cOSuhN43xVDLwxFguHXnvv9EdS7b1v9C8kSL1fIAMeTKaRl5dOD/3dYHwsgFWbNm3Vb61Y1d0A9LZm7Bl2nfYJ8w0Qa7nZMrQljhv0nJQ7dZ2o2rA7eIYUWt5l7bAJ1FXn7YZ81b+n1xFUyGY9mXi7Fb2U9taOkXSkEaxFTPQ62Wz1+8zpe/7E8+Ju+CiDgndlpufokwzpzjiXZwAtUBUGrZ0MgKtuBBK6KGNgtbF4zeK9cJYdLEr4cFcJShClkdTcsSwzETLODhtfJ6B2e3nXs+x8PHC7Q8vFR0iwPoj7QE/4mHTtFvf/BDZm7h8fRsddtAUMinAgqxDLKZWk1WYmhm7SzBpwE+56cTHZuMnQ538Q8Oa+x4dLuhjaGJuQOAjzex4VTboj7jMFZ2U3QYJrA+r6DM2Mx+b/xh3U+9dLHwZ03qmRzQQFwyEVXd6wA6ldXkjeExLJY8LKu5r+l+6jproY3jtCp1R1ZekYQlZl/yyNMFMcUtl5WWGbMXg6oIxI6YOGFc4hPIEM/gcL2igX7qmWzsrDyVkQeMrX3Pp7rNxe4XHCZdmVo5KbVMq23uqWnqnjZzgZdvEIiJKJMKhHBYzHkQu+Dn6HFmZy/kowWZtFes2SQxNDZ3ED4R0dnzV+jkXCmWYpENJ+yVCbxB0ycwRC84WRWwWdjxDNXlrujYpJFjiFhKqxrl0NzameukZ12ysHk/ODQCiAi0mEo8eIqUhWcUx6n2xh8SPLxaVouKIQ/rJSVEU73KQyEr5IOT5q4nyIftkoeQh18jRlxV6ngY/8UJVvquDUEsQCFdgbNSYndb+iledKrVnUXldUMuuMQnQAu4mb0YQoDyWi2Gnjr7kMKq0nOJI3H3kQAIjZWxoAlpoB0xvFXXUtvUPWTXslXrWTN/sS/9msYuNA5Lj6dfICFgH29ireDhUAxfCZ+mD5UZ6PNh4MbtwAs9ZD4kpVToc5fn8rVaSodFSR4aqez0PHx+RsfD3PxStY7AyuYyfTaL3ed7i2H9/V7BQ9KCJPbrTallkgN9R5eZFM3SqqaN4dEMN2/fLWYvXq1o11cT0WwnTyciPI0o7qiSv1y+VimmVgaEjhprimDRS72mTxhlXYYtiE5ZlwHQ+UN3ZrdF7af/zlhTA23N8rV2+GCs8SSCxY/YJRZTl3lK8QbIK7gp6zIJmdOSYD9y94Cc2CN3J0oMQcxIZbvnwEH60Bu7h/cafPLW4lFBituf9LLWiAcD1WpdaKQyH8JbdfuAX1AYJOcvcSnH/1bLWXlX2UUsYCZx3xFzgGHU3iQDbVWyRDvwZ0gIYhOOIHCmWnoGc66UGJnKcL9gL55L7qhVivx58uuX78Nb9a0m5i/fh+wSGVU28XZKPvLV63WWNtV1LhTCjrp5uhjoCxxPETwTnZSj6ZxK8BMtY8m/cZv1dJR3J/cCC1vwk5FTIIxERNRlvsWV94SWRZShOjdiiuqWffmGAsO/tPwnGm+6BQ==",
+      "source_context": "Original reviewed browser-run-20261012T095843Z-dd60d5e6 storage Slot suffix-13 complete galley; integrated head e5a6bcdc78fb5afe9be6b518bcef20ac00bef303."
+    },
+    "suffix_8": {
+      "text": "\u202690abcdef",
+      "source_png": "storage-table-storage-suffix-8-table.png",
+      "source_png_sha256": "1bb3c94563974c664e832319c3c02aea0d0904499f544d5b0d50fcd694ac943a",
+      "source_bounds": [
+        8,
+        101,
+        77,
+        111
+      ],
+      "mask_size": [
+        69,
+        10
+      ],
+      "ink_bounds": [
+        0,
+        0,
+        69,
+        10
+      ],
+      "mask_sha256": "400ff596c148f1a88017f63a1ccc0cc31cd655306ba58e6c52950f79415e81b2",
+      "rgb_sha256": "949dbdf8daf157d0501824c3a3b7e4751ec9be066958f3f73b950659fc5a0187",
+      "rgb_zlib_base64": "eJy1VYkzlHEY/g+aGiFqEYvczYRCxlFipCFDmXKkJEepjHPshCkdanQYVFOuDkkzRcqV21r3Wnaxjl05QoeS/oCe3Tdf2zG7TU0z33zz+73fez/P+36r1Fir/udTUctt6x35O9sX9R1NHYMq1bR1TWpbeiVzn6Xzy0rUok6ntPeJoSae+hCXksHIbR3c+oanYDvy+n0854LKcrh/W07lK96flHMqMX1setHYYqsSHeddPpMLX7JyCtXW6XPOZuG8zdGDPg1JFgSjs46ue85m5kC+3dVLaTlt3L5/KKdTdTlPq5rbeoaV61y+cRf9X6tlQNfx2U/3yl7i4OUbiBJc3PdW1HF12ZYTb5YePauD3NDMpkc0SYgPSd/GxKcy6HQKxoGyTC5Z8PYPYUIciYzrlZvAyeOKehI6ufkMjM5CGQQANAw69s6eRBUolzytWa2uC+GtwjJoIh96lJDtZEIaFDTWGzLlNPIGcEhOy4QcB3gOPHxCIJ5p7R7CVYdteTD0OGiMDgB9fDUyt6VyoJ+Ueomlb44z/KzR0KO2IHpefqmhqbWVjdO1vGIKhJwRSM9oc0RMMgypHNiC8FWNXWCUi7vv2MzHkPBTiiBSDkoecAwpoQ/wkHElD555/FHIr+YWURMgwUAhHH94ivQLHpaDw0y79gdFENmEE/Pkk21qLZMHy+Sl5a8Aza9BYe7q4UvXbqGUyBZ9mqNIlYKSCnTmezn1vJYukUpOhkbEYopRFNiClKqbuyFMSpWhg8QA+pGouH7xDPEWJUMzIDhijeZGZAWdo8cTCJ2O/jHGJ7KKSzmPA5pT3dT9U0SffaEwZOlb0LWmpYfQuVVURlxi3sLxOcYKC7BFFTqKD+gBJ9m3H8hJEgRvocdi4URLZxNKePSsFvKqpq7mTiHpe/sfgk74iUQqZ3AltKEcHf/AcEKHPzL9U6AtdjugoICOhMrhnMtCoHUs49+mp0i23PxS9NnK2gn9r28XHItJwhXg4pPfgTB4ABBlzxskb5Y26JuTiUi+2XZ6+j2pbGQ2W+KZi5gLrAhcMVCQ0w4vr23DOTb53PqNZjQ7NMV7/ILRopsFj9kmW0ys7NIvZpNzpNHAE+gYWIRFxTOzg1GCIRqISjVZxgEhkdGxnN+Wc//JS1hZ2++Efo9Qiri4Jp65RFgjonTuM0iOAWTMbRzc+PL/juL/SF2bDbdoxej0Yub1O9hyhBpKaOeLcYW+6MfNBvgAENo+PPmuuLSShA4uuwXyzYb9Vtfa17iy2VBI16BEls/8MvTx7/iRbN9m5ytCQ/lm",
+      "source_context": "Original reviewed browser-run-20261012T095843Z-dd60d5e6 storage Slot suffix-8 complete galley; integrated head e5a6bcdc78fb5afe9be6b518bcef20ac00bef303."
+    },
+    "suffix_11": {
+      "text": "\u202690190abcdef",
+      "source_png": "storage-table-transient-suffix-11-table.png",
+      "source_png_sha256": "dc14467a54091d413efeb4717bf309d900242b72ad4af5c3ad52f66ea8e5075e",
+      "source_bounds": [
+        8,
+        101,
+        101,
+        111
+      ],
+      "mask_size": [
+        93,
+        10
+      ],
+      "ink_bounds": [
+        0,
+        0,
+        93,
+        10
+      ],
+      "mask_sha256": "ff5b7b798e75e4de049ff8445836b31c155ad8d3a08f07e3625c8450b46767cd",
+      "rgb_sha256": "00d70434611d014723b6c560f085777b7bd16f69531a52db66bcf83fd78ec80c",
+      "rgb_zlib_base64": "eJzNVmlTk1cU/ge0HZUCsossKosW2TXAgCyiUGqRWrFFnAIqWFkKKCN2UDql1lZoZBHCJoQAaljLFi3QBJAlCXsChLCI4FKr9gf0eXPjJaWd0HGmM525H8497znnnvuc55z76mwy0vnfr62mO5Srf/ge/PgtfM0sHeDr5hm4oeWXKV+Pza7AuLFDpMXs9PmLomGZ4vEr2cLzpItXqd7J3Xd4cmFu5fXU/LPk9G80XVIzshGWV99JNda2LpV3WhEBcboejplaOtBP+aU1M49+h75ncNJ4m502WMx2MrAEhb0NLFa7/yUs47Mrubcq391iosXG80AIol1nl27SM0/PvA7ZZZ8/+TShWJXKH+3zPpSZzYbewzuI6GPOXVCuvgZcmrAIhBKgt9PBzdrWeXR6uVMoJvqEtEz4/phfbmPvOq5YFYik/ylbXFkB2s30TWxg5u0fqt3su5xiXHCz/jayRVkralsgBIUeh7uX34cNHUITC7vZ5ZfV/A5iMzK9nJF1Y1L5lFffQePAsbS6UR0zl4kJnCH3SaZBEkBaXtOcU3gbMZEY9NdyOfLF32CGyO09Q4RFBJbC8rqZpRdg172fu2lNHV19hMMyGMNgYFRBE8ahUGLlcXiabAEfJuaeID6yDQg+RpTEnSx80tJE5766DBvdrdvp7R70jkBIu8y0CQSkd/xknFS21DMwQWz0jKwZLs090WTLuGKloraZyOAefPe6+0KeUj6tqGlmF3PFU4tRsUkEauhDwiL3uHjj1iAYWrWmgQlFmghbGzvXoNAIHA30CFzyhedIzGW/v+l2e3YRV8/ICnr/w+G43aeRZy1sPugVyyks2TeK4BtxKh4BS6rqJVOL63qN5RusnS2oKSJw77VZ2TpfvZYHF8SH/oebZTgRAjQYOL/0jYonFzQdVWxZg6WwrA6Zh5+I3e3shSaCF/hGClRQWguqAEZnDz/oI6LioPc7FD40MY+jcQqUQ+NKKA1VsJxNvERiNgv6BlX6L+JSoN9iYLEueU5V/a+Dk0Q+cuwUbSIkUMZTUxfI4xSLHY6avcbyDdmwKyNjEoRDU/Dtl85gRLd2Dei8GaqIhntFnU6SyJZoAmuw8NeaCMeV8ZowcjFhmgS98MUwYdgy/6zlfj/aBxFOxiZStkwvvWjq7DVTTWa0p1S+RJuI4MncupIPMCH8VMRFnL9njoQb2oVEBusYtrACCcNJm5AFOfHClTd5MmzBRN0QFrre0zVFkNzCSh1mtkTAPTI6ASXTN7bGQdX8di1s+UsRK/mK5ZdE7pXIweGQsM/ZxdU5BcxsMTCxATMhuHsdVN9uZBYTQAULw5YzCelED9wGx+YgRMelIjHa6XRhgNNifaRiC2kiVKeEW/+Pua1ropscHupu78gCHxAtOj4V2zPn0wn90KogRm3jfVzH0HyXjnpcMC+RT+CRuqYHmi8RDBAc5bvb0oVyv29oCaWDk+d+n8MA9uiJGAwoIEOM6UuE/sKMFYgkFNWqu20YFOhcXBlb2kTDE/N4zgKCP0EtMCWgNzLfBV80MmYLoMv6Pl9XdWh8cgZ8wz+LRRoisYw2ES6LHJLTs1AC+70sDCgD1ZzXaCI1LLfrWrB1dPOBPUqQkHYF25RL3+JTW/cgQ7bHr9DgXn5rLxdmplj137LufwbEpvMci1PFIAA+IDK2MEbLv7PZmNrnlaj/W7ofjuNRI8qY+DSMcSgHxhRk7KM0pIluld+BParGb+2hL5GTxwE8alDiU1f/GJ0zJdwGYlxQVkubCF55JTzy0uEIkVhORjSFhTbRnxzRDIQ=",
+      "source_context": "Original reviewed browser-run-20261012T095843Z-dd60d5e6 transient Slot suffix-11 complete galley; integrated head e5a6bcdc78fb5afe9be6b518bcef20ac00bef303."
     }
   }
 }

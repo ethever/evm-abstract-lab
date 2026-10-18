@@ -17,11 +17,13 @@ mod request;
 mod rpc;
 mod rpc_causes;
 mod rpc_providers;
+mod session_errors;
 mod ssa;
 mod ssa_errors;
 mod state;
 mod summaries;
 mod symbolic;
+mod terminal;
 
 pub use analysis::*;
 pub use boundaries::*;
@@ -33,16 +35,18 @@ pub use request::*;
 pub use rpc::*;
 pub use rpc_causes::*;
 pub use rpc_providers::*;
+pub use session_errors::*;
 pub use ssa::*;
 pub use ssa_errors::*;
 pub use state::*;
 pub use summaries::*;
 pub use symbolic::*;
+pub use terminal::*;
 
 /// Same-origin analysis endpoint.
 pub const API_PATH: &str = "/api/tasks";
 /// Wire schema version, independent of the engine's private JSON formats.
-pub const SCHEMA_VERSION: u16 = 13;
+pub const SCHEMA_VERSION: u16 = 15;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 

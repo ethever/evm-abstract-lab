@@ -180,7 +180,7 @@ fn symbolic_target_covers_current_owner_other_known_and_remaining_addresses_with
                         U256::from(other),
                         &analysis.config().analysis.relations
                     ),
-                    CheckResult::Unsat,
+                    CheckResult::ProvenImpossible,
                     "known {candidate:#x} branch lacks the target equality guard excluding {other:#x}"
                 );
             }
@@ -293,7 +293,7 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
                             U256::from(other),
                             &analysis.config().analysis.relations,
                         ),
-                        CheckResult::Unsat,
+                        CheckResult::ProvenImpossible,
                         "{label} lacks its target guard"
                     );
                 }

@@ -47,7 +47,7 @@ pub(super) fn label(node: &api::Expression) -> String {
         N::Constant(word) => word.clone(),
         N::Input(input) => format!(
             "input {} · {}",
-            WideSymbol::Scope(input.scope),
+            WideSymbol::Scope(input.scope.0),
             value::symbol(&input.symbol)
         ),
         N::Fresh(id) => WideSymbol::Fresh(*id).to_string(),

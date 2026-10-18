@@ -35,7 +35,11 @@ impl Store {
                 pending.push(Node::Expression(expression.clone()));
             }
         });
-        guards(pending, limits).map_err(StoreError::from)
+        let mut out = guards(pending, limits).map_err(StoreError::from)?;
+        for log in self.possible_logs.values() {
+            log.data.extend_conditional_guards(&mut out);
+        }
+        Ok(out)
     }
 
     /// Project caller-proved zero/nonzero selectors through both planes and log

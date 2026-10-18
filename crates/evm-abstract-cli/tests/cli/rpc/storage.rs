@@ -2,7 +2,7 @@
 
 use super::{
     BLOCK, CALLEE, CALLER, ENTRY, Fixture, LEAF, Reply, RpcServer,
-    assert_pinned as assert_account_pinned, byte_contains, call, contains, execute, requests_for,
+    assert_pinned as assert_account_pinned, call, contains, execute, native_bytes, requests_for,
     result, verified_export,
 };
 use alloy_primitives::U256;
@@ -239,7 +239,10 @@ fn child_revert_preserves_fetched_snapshot_and_caller_strong_write() {
                     .unwrap()
                     .iter()
                     .any(|outcome| outcome["kind"] == "Return"
-                        && byte_contains(&outcome["data"], 31, if written { 7 } else { 42 }))
+                        && native_bytes::word_matches(
+                            &outcome["data"],
+                            U256::from(if written { 7 } else { 42 }),
+                        ))
             );
             let requests = server.finish();
             assert_eq!(

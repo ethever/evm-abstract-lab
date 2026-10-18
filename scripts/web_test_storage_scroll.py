@@ -31,6 +31,11 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     account = next(account for account in report["stores"][machine["store"]]["accounts"]
                    if account["address"] == machine["frames"][0]["storage_address"])
     store=report["stores"][machine["store"]]
+    # This fixture paints the default touch prefix and exactly nine account
+    # facts: the captured program is present, with no delegation row.
+    assert store["touched_default"] is None and account["touched"] is None
+    assert account["program"] == 0 and account["delegation_target"] is None
+    assert account["created"] is False and account["pending_destruction"] is False
     graph=report["symbolic"]["nodes"]
     ordered_roots={}
     for kind, value_base in [("storage", 0x1000), ("transient", 0x2000)]:
@@ -102,12 +107,12 @@ def storage_scroll_interactions(browser, url: str, output: Path):
             (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
         assert abs(table["separator"]-134.5)<=1,storage_pixel_report(table)
         assert table["header"]["slot"] and table["header"]["value"],storage_pixel_report(table)
-        # Address, ordered-state root, closed account header and base default
-        # precede the measured table. The new DAG row shifts the old click/crop.
+        # Address, touch default, ordered-state root, closed account header and
+        # base default precede the table, in the order painted by stores.rs.
         collapsed_prefix_region=(4,tab[3]+55,600,table["table_bounds"][1])
         collapsed_prefix=text_pixels(page,collapsed,collapsed_prefix_region)
-        assert len(collapsed_prefix["rows"])==4,"account facts were already expanded or the ordered-state prefix is missing"
-        address_band,root_band,account_band,default_band=collapsed_prefix["rows"]
+        assert len(collapsed_prefix["rows"])==5,"account facts were already expanded or the touch/ordered-state prefix is missing"
+        address_band,touch_band,root_band,account_band,default_band=collapsed_prefix["rows"]
         collapsed_facts_region=(145,account_band[1]+1,650,default_band[0])
         collapsed_facts = text_pixels(page, collapsed, collapsed_facts_region)
         assert not collapsed_facts["rows"], "account facts were already expanded before the header click"
@@ -118,14 +123,14 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         expanded_table=storage_table_pixels(page,expanded,
             (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
         expanded_prefix=text_pixels(page,expanded,(4,tab[3]+55,600,expanded_table["table_bounds"][1]))
-        assert len(expanded_prefix["rows"])==4+8,"header click did not preserve the prefix and reveal all eight account facts"
-        assert expanded_prefix["rows"][:3]==collapsed_prefix["rows"][:3],(collapsed_prefix,expanded_prefix)
+        assert len(expanded_prefix["rows"])==5+9,"header click did not preserve the prefix and reveal all nine account facts"
+        assert expanded_prefix["rows"][:4]==collapsed_prefix["rows"][:4],(collapsed_prefix,expanded_prefix)
         facts_region=(145,account_band[1]+1,650,expanded_prefix["rows"][-1][0])
         expanded_facts = text_pixels(page, expanded, facts_region)
-        assert len(expanded_facts["rows"]) == 8, "header click did not reveal all eight account facts"
+        assert len(expanded_facts["rows"]) == 9, "header click did not reveal all nine account facts"
         prefix_region=(4,address_band[0]-1,600,account_band[1]+1)
         prefix = text_pixels(page, expanded, prefix_region)
-        assert len(prefix["rows"])==3,"account address, ordered-state root and full facts heading were not painted"
+        assert len(prefix["rows"])==4,"account address, touch default, ordered-state root and full facts heading were not painted"
         save_png_crop(page, expanded, prefix_region, output / f"{kind}-prefix-expanded.png")
         # The wheel starts over the facts prefix. One shared scroll must carry
         # it all the way through the slot list, rather than trap it in 80 points.
@@ -165,6 +170,20 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         returned_prefix = text_pixels(page, returned, prefix_region)
         assert prefix["hash"] == returned_prefix["hash"], "returning to the top did not restore account facts"
         save_png_crop(page, returned, prefix_region, output / f"{kind}-prefix-returned.png")
+        returned_facts = text_pixels(page, returned, facts_region)
+        assert returned_facts["hash"] == expanded_facts["hash"], "returning to the top changed the expanded account facts"
+        canvas.click(position={"x":120,"y":sum(account_band)/2})
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        reclosed = canvas.screenshot(path=str(output / f"{kind}-facts-reclosed.png"))
+        reclosed_prefix = text_pixels(page, reclosed, collapsed_prefix_region)
+        assert reclosed_prefix["hash"] == collapsed_prefix["hash"], "closing account facts did not restore the complete collapsed prefix"
+        canvas.click(position={"x":120,"y":sum(account_band)/2})
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        reopened = canvas.screenshot(path=str(output / f"{kind}-facts-reopened.png"))
+        reopened_facts = text_pixels(page, reopened, facts_region)
+        assert reopened_facts["hash"] == expanded_facts["hash"], "reopening account facts changed the nine rendered facts"
         evidence[kind] = {"entries": count, "expected_last_slot": hex(count - 1),
             "expected_last_value": account[kind][-1]["value"]["constants"],
             "expected_last_cell_mask_sha256": {"slot":last_cell_hashes["slot"],"value":last_cell_hashes[kind]},
@@ -172,11 +191,12 @@ def storage_scroll_interactions(browser, url: str, output: Path):
             "facts_region": facts_region, "collapsed_facts": collapsed_facts,
             "collapsed_facts_region":collapsed_facts_region,
             "collapsed_prefix":collapsed_prefix,"expanded_prefix":expanded_prefix,
-            "account_header_band":account_band,"ordered_header_band":root_band,"ordered_state":ordered_roots[kind],
+            "account_header_band":account_band,"touch_default_band":touch_band,"ordered_header_band":root_band,"ordered_state":ordered_roots[kind],
             "expanded_facts": expanded_facts, "last_row_region": last_row_region, "last_row": last_row,
             "default_table":default_table,"table":table,"scrolled_table":scrolled_table,"last_cells":final_cells,
             "prefix_region": prefix_region, "prefix": prefix,
             "scrolled_prefix": scrolled_prefix, "returned_prefix": returned_prefix,
+            "returned_facts":returned_facts,"reclosed_prefix":reclosed_prefix,"reopened_facts":reopened_facts,
             "expanded_screenshot": f"{kind}-facts-expanded.png",
             "scrolled_screenshot": f"{kind}-last-slots.png"}
     assert len(posts) == 2, "storage inspection reran analysis"

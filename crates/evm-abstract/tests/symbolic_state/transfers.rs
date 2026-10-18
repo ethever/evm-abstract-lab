@@ -3,11 +3,7 @@ use super::support::{
     reachable, return_words, run, run_world,
 };
 use alloy_primitives::U256;
-use evm_abstract::{
-    Fork,
-    analysis::{FrontierReason, OutcomeKind, Status},
-    world::ByteArray,
-};
+use evm_abstract::{Fork, analysis::OutcomeKind, world::ByteArray};
 use revm_bytecode::opcode;
 
 /// Bounds come from EVM branches, never from choosing one concrete length.
@@ -61,15 +57,13 @@ fn minimal_unknown_length_copy_keeps_eligible_completion_and_symbolic_length() {
         covers.into_iter().all(|covered| covered),
         "zero and nonzero lengths survive"
     );
-    // A logical-range policy may retain an explicit out-of-policy frontier.
-    if analysis.status() == Status::Incomplete {
-        assert!(
-            analysis
-                .frontiers()
-                .iter()
-                .all(|frontier| frontier.reason == FrontierReason::Memory)
-        );
-    }
+    complete(&analysis);
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .any(|o| o.kind == OutcomeKind::Failure)
+    );
 }
 
 #[test]
@@ -137,7 +131,7 @@ fn bounded_large_logical_copy_does_not_expand_one_byte_at_a_time() {
 }
 
 #[test]
-fn copy_over_policy_retains_a_frontier_and_the_in_policy_paths() {
+fn copy_over_materialization_cap_retains_the_complete_logical_success_domain() {
     let mut code = Assembly::default();
     bounded_input(&mut code, 0, 512);
     copy_all_input(&mut code);
@@ -150,22 +144,26 @@ fn copy_over_policy_retains_a_frontier_and_the_in_policy_paths() {
         entry(ByteArray::unknown()),
         policy,
     );
-    assert_eq!(analysis.status(), Status::Incomplete);
-    assert!(
-        analysis
-            .frontiers()
-            .iter()
-            .any(|frontier| frontier.reason == FrontierReason::Memory)
-    );
+    complete(&analysis);
     assert!(
         analysis.outcomes().iter().any(|outcome| {
             outcome.kind == OutcomeKind::Return
                 && analysis.states()[outcome.state]
                     .exit
                     .as_ref()
-                    .is_some_and(|payload| payload.active().memory.len().contains(U256::from(128)))
+                    .is_some_and(|payload| {
+                        [0, 128, 512]
+                            .into_iter()
+                            .all(|n| payload.active().memory.len().contains(U256::from(n)))
+                    })
         }),
-        "an over-policy possibility must not erase the eligible COPY completion"
+        "the whole requested extent survives beyond the physical extraction cap"
+    );
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .any(|o| o.kind == OutcomeKind::Failure)
     );
 }
 
@@ -235,14 +233,18 @@ fn delegate_echo_fixture(revert: bool) -> (Fixture, Fixture) {
         .op(opcode::CALLDATASIZE)
         .op(opcode::EQ)
         .op(opcode::ISZERO)
-        .jump("bad", true)
+        .jump("bad_length", true)
         .op(opcode::RETURNDATASIZE)
         .op(opcode::PUSH0)
         .push(0x400)
         .op(opcode::RETURNDATACOPY)
         .push(0x400)
         .op(opcode::MLOAD)
-        .require_top(7)
+        .op(opcode::DUP1)
+        .push(7)
+        .op(opcode::EQ)
+        .op(opcode::ISZERO)
+        .jump("bad_word", true)
         .op(opcode::POP)
         .op(opcode::CALLDATASIZE)
         .op(opcode::PUSH0)
@@ -264,28 +266,127 @@ fn delegate_echo_fixture(revert: bool) -> (Fixture, Fixture) {
         .label("outside")
         .return_word(0)
         .label("bad")
-        .return_word(0xffff);
+        .return_word(0xffff)
+        .label("bad_length")
+        .return_word(0xfffe)
+        .label("bad_word")
+        .return_word(0xfffd);
     let root = root.finish();
     (root, child)
 }
 
 fn delegate_echo(revert: bool) {
+    use super::support::word;
+    use evm_abstract::{analysis::FrameCode, domain::Domain, world::Store};
+
     let (root, child) = delegate_echo_fixture(revert);
-    let analysis = run_world(
-        construct_world(Fork::Osaka, &[(ROOT, &root.code), (0x200, &child.code)]),
-        entry(ByteArray::unknown()),
-        config(),
-    );
+    let world = construct_world(Fork::Osaka, &[(ROOT, &root.code), (0x200, &child.code)]);
+    let analysis = run_world(world.clone(), entry(ByteArray::unknown()), config());
     complete(&analysis);
+    let domain = Domain::from_spec(analysis.domain_spec());
+    let initial = &analysis.states()[0].entry;
+    assert_eq!(initial.call_stack.depth(), 1);
+    let checkpoint = initial.active().saved_store.clone();
+    let captured = checkpoint.state().clone();
+    assert!(!captured.symbolic_limit_reached());
+    assert_eq!(captured.touched_in_transaction(address(ROOT)), Some(false));
+    assert_eq!(
+        initial.store.touched_in_transaction(address(ROOT)),
+        Some(true)
+    );
+
+    // Initial entry has already touched ROOT. Restore the independent pre-entry
+    // checkpoint before the public transaction cleanup, just as root Failure does.
+    // This fixture only delegates to literal 0x200, with storage owner ROOT;
+    // neither account is RIPEMD and neither bytecode can add a sticky touch.
+    let mut failure_store = initial.store.clone();
+    failure_store.restore(checkpoint.clone());
+    assert_eq!(failure_store, captured);
+    failure_store.finalize_transaction(domain).unwrap();
+    assert!(!failure_store.symbolic_limit_reached());
+    // No pending deletion, uncertain touch or transient effect survives restore.
+    // Cleanup therefore preserves every field and captured input identity, so
+    // the pre-entry seed and entered failures have the same full Store oracle.
+    assert_eq!(failure_store, captured);
+    let empty = ByteArray::empty();
+    let failure_matches =
+        |data: &ByteArray, store: &Store| data == &empty && store == &failure_store;
+    assert!(failure_matches(&empty, &captured));
+    assert!(!failure_matches(&ByteArray::exact(&[0]), &failure_store));
+    assert!(!failure_matches(&ByteArray::memory(), &failure_store));
+    assert!(!failure_matches(&empty, &initial.store));
+    let mut wrong_store = captured.clone();
+    wrong_store
+        .write_transient_checked(address(ROOT), &word(0), &word(1), domain)
+        .unwrap();
+    assert!(!failure_matches(&empty, &wrong_store));
+
+    for state in analysis.states() {
+        for payload in std::iter::once(&state.entry).chain(state.exit.iter()) {
+            let root_frame = &payload.call_stack.root().state;
+            assert_eq!(root_frame.key.code_address, address(ROOT));
+            assert_eq!(root_frame.saved_store, checkpoint);
+            for frame in payload.call_stack.iter() {
+                assert_eq!(frame.code, FrameCode::Runtime);
+                assert!(
+                    [address(ROOT), address(0x200)].contains(&frame.key.code_address),
+                    "the literal delegate target must not become an unknown callee"
+                );
+                assert_eq!(frame.key.address, address(ROOT));
+            }
+            assert_eq!(
+                payload.store.touched_in_transaction(address(3)),
+                Some(false)
+            );
+        }
+    }
+    let entry_failure = analysis.outcomes().first().unwrap();
+    assert_eq!(entry_failure.kind, OutcomeKind::Failure);
+    assert_eq!(entry_failure.state, 0);
+    for outcome in analysis.outcomes() {
+        let source = analysis
+            .states()
+            .get(outcome.state)
+            .expect("outcome must name a real source state");
+        assert_eq!(source.id, outcome.state);
+        assert_eq!(source.key, source.entry.key());
+        if outcome.kind == OutcomeKind::Failure {
+            assert!(
+                failure_matches(&outcome.data, &outcome.store),
+                "Failure from state {} must have exactly empty data and the full finalized root checkpoint: {outcome:?}",
+                outcome.state
+            );
+            if !std::ptr::eq(outcome, entry_failure) {
+                assert!(source.exit.is_some(), "entered Failure has executed");
+            }
+        }
+    }
     no_bad_branch(&analysis, &child, 0x200);
-    no_bad_branch(&analysis, &root, ROOT);
+    for label in ["bad_length", "bad_word"] {
+        assert!(
+            !reachable(&analysis, ROOT, root.labels[label]),
+            "direct forwarded {label} relation must survive"
+        );
+    }
+    if !revert {
+        no_bad_branch(&analysis, &root, ROOT);
+    }
+    // The REVERT continuation joins nonempty child data with pre-entry failure.
+    // Local projection may forget the equality between its two symbolic hash
+    // views. This permits an extra abstract hash-mismatch branch; it does not
+    // establish a concrete mismatch. Length, known word and child guards above
+    // stay strict, as do all guards for the exact revm witnesses below.
     let forwarded: Vec<_> = analysis
         .outcomes()
         .iter()
         .filter(|outcome| {
-            analysis.states()[outcome.state]
-                .executed_pcs
-                .contains(&root.labels["forwarded"])
+            // RETURN/REVERT's memory admission also emits Failure from this
+            // same state. Every Failure was checked above; other forwarded
+            // kinds still reach the strict expected-kind assertion below.
+            outcome.kind != OutcomeKind::Failure
+                && analysis.states()[outcome.state]
+                    .executed_pcs
+                    .contains(&root.labels["forwarded"])
         })
         .collect();
     assert!(!forwarded.is_empty(), "the full data route must complete");
@@ -312,7 +413,35 @@ fn delegate_echo(revert: bool) {
                 OutcomeKind::Return
             }
         );
+        let source = &analysis.states()[outcome.state];
+        assert_eq!(source.entry.call_stack.depth(), 1);
+        let frame = source.exit.as_ref().unwrap().active();
+        assert_eq!(frame.key.code_address, address(ROOT));
+        assert_eq!(frame.key.address, address(ROOT));
+        assert_eq!(outcome.store, failure_store, "echo has no Store effects");
     }
+    for length in [32, 33, 64, 255, 511, 512] {
+        let mut calldata = vec![0; length];
+        calldata[..32].copy_from_slice(&U256::from(7).to_be_bytes::<32>());
+        for (offset, byte) in calldata.iter_mut().enumerate().skip(32) {
+            *byte = (offset % 251) as u8;
+        }
+        // Match this concrete execution against one unknown-input outcome, so
+        // separate byte/length/store witnesses cannot mask a lost correlation.
+        let observed =
+            super::oracle::compare(&world, &entry(ByteArray::exact(&calldata)), &analysis);
+        assert_eq!(
+            observed.kind,
+            if revert {
+                OutcomeKind::Revert
+            } else {
+                OutcomeKind::Return
+            }
+        );
+        assert_eq!(observed.output, calldata);
+    }
+    assert_eq!(checkpoint.state(), &captured);
+    assert_eq!(initial.active().saved_store, checkpoint);
 }
 
 #[test]
@@ -330,6 +459,14 @@ fn concrete_delegate_echo_witnesses_validate_the_symbolic_fixture_bytecode() {
                 let entry = entry(ByteArray::exact(&input));
                 let analysis = run_world(world.clone(), entry.clone(), config());
                 complete(&analysis);
+                no_bad_branch(&analysis, &root, ROOT);
+                no_bad_branch(&analysis, &child, 0x200);
+                for label in ["bad_length", "bad_word"] {
+                    assert!(
+                        !reachable(&analysis, ROOT, root.labels[label]),
+                        "exact input lost {label}: fork={fork} revert={revert} length={length}"
+                    );
+                }
                 let concrete = super::oracle::compare(&world, &entry, &analysis);
                 assert_eq!(
                     concrete.kind,

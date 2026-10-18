@@ -10,6 +10,7 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
+mod byte_projection;
 mod concrete;
 pub mod congruence;
 pub mod facts;

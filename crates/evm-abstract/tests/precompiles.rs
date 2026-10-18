@@ -167,19 +167,31 @@ fn identity_output_is_copied_back_to_the_callers_requested_range() {
     ssa::build_world(&graph).unwrap();
 }
 #[test]
-fn unknown_native_inputs_and_large_crypto_work_keep_typed_frontiers() {
-    let unknown = abstract_call(
-        4,
-        ByteArray::unknown(),
-        Fork::Osaka,
-        ExecutionConfig::default(),
-    );
-    assert_eq!(unknown.status(), Status::Incomplete);
+fn symbolic_native_inputs_continue_and_large_crypto_work_keeps_typed_frontiers() {
+    let input = ByteArray::unknown();
+    let unknown = abstract_call(4, input.clone(), Fork::Osaka, ExecutionConfig::default());
+    assert_eq!(unknown.status(), Status::Converged);
+    assert!(unknown.frontiers().is_empty());
+    for kind in [
+        OutcomeKind::Return,
+        OutcomeKind::Revert,
+        OutcomeKind::Failure,
+    ] {
+        assert!(
+            unknown
+                .outcomes()
+                .iter()
+                .any(|outcome| outcome.kind == kind)
+        );
+    }
+    // Root entry binds the unobserved source once. Identity must preserve that
+    // complete executed array, rather than the unbound constructor's identity.
+    let bound_input = &unknown.states()[0].entry.active().calldata;
     assert!(
         unknown
-            .frontiers()
+            .outcomes()
             .iter()
-            .any(|f| f.reason == FrontierReason::PrecompileInput(address(4)))
+            .any(|outcome| { outcome.kind == OutcomeKind::Return && &outcome.data == bound_input })
     );
     let mut blake = vec![0u8; 213];
     blake[..4].copy_from_slice(&u32::MAX.to_be_bytes());

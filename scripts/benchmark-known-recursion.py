@@ -15,44 +15,13 @@ from pathlib import Path
 import platform
 import re
 import statistics
-import subprocess
 import sys
 
+from benchmark_known_recursion.identity import source, cpus
 from benchmark_known_recursion.process import ProtectedProcess, available_memory, sha256, utc, write_json
 from benchmark_known_recursion.report import metrics
 from benchmark_known_recursion import workbench
 from benchmark_known_recursion import probe
-
-
-def git(root, *arguments):
-    return subprocess.check_output(["git", "-C", str(root), *arguments], text=True).strip()
-
-
-def source(root):
-    status = git(root, "status", "--porcelain=v1", "--untracked-files=all")
-    return {"commit": git(root, "rev-parse", "HEAD"), "tree": git(root, "rev-parse", "HEAD^{tree}"),
-            "dirty": bool(status), "status": status,
-            "tracked_diff_sha256": hashlib.sha256(subprocess.check_output(
-                ["git", "-C", str(root), "diff", "HEAD", "--binary"])).hexdigest()}
-
-
-def cpus(text):
-    selected = set()
-    for part in text.split(","):
-        bounds = part.split("-")
-        if len(bounds) == 1:
-            selected.add(int(part))
-        elif len(bounds) == 2:
-            low, high = map(int, bounds)
-            if high < low:
-                raise ValueError("descending CPU range")
-            selected.update(range(low, high + 1))
-        else:
-            raise ValueError("invalid CPU list")
-    allowed = os.sched_getaffinity(0)
-    if not selected or not selected <= allowed or len(selected) > 8 or len(allowed - selected) < 5:
-        raise ValueError("choose at most 8 allowed CPUs and leave at least 5 CPUs free")
-    return sorted(selected)
 
 
 def fixture(base, value):

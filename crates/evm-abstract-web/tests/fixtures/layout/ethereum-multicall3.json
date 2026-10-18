@@ -21,9 +21,7 @@
     "calldata": "0x82ad56cb00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000001a0000000000000000000000000000000000000000000000000000000000000024000000000000000000000000000000000000000000000000000000000000002e00000000000000000000000000000000000000000000000000000000000000380000000000000000000000000000000000000000000000000000000000000042000000000000000000000000000000000000000000000000000000000000004c00000000000000000000000000000000000000000000000000000000000000560000000000000000000000000ca11bde05977b3631167028862be2a173976ca110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000043408e47000000000000000000000000000000000000000000000000000000000000000000000000000000000ca11bde05977b3631167028862be2a173976ca110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000043408e47000000000000000000000000000000000000000000000000000000000000000000000000000000000ca11bde05977b3631167028862be2a173976ca110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000043408e47000000000000000000000000000000000000000000000000000000000000000000000000000000000ca11bde05977b3631167028862be2a173976ca110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000043408e47000000000000000000000000000000000000000000000000000000000000000000000000000000000ca11bde05977b3631167028862be2a173976ca110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000043408e47000000000000000000000000000000000000000000000000000000000000000000000000000000000ca11bde05977b3631167028862be2a173976ca110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000043408e47000000000000000000000000000000000000000000000000000000000000000000000000000000000ca11bde05977b3631167028862be2a173976ca110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000043408e47000000000000000000000000000000000000000000000000000000000000000000000000000000000ca11bde05977b3631167028862be2a173976ca110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000043408e47000000000000000000000000000000000000000000000000000000000",
     "address": "0xca11bde05977b3631167028862be2a173976ca11",
     "chain_id": "0x1",
-    "minimum_native_states": 250,
-    "minimum_source_blocks": 50,
-    "scope": "One exact calldata input with eight self-targeted four-byte requests, concrete root address and explicit CHAINID=1. Standalone code with abstract account observations. Two pending machines and one instruction-local MSTORE frontier retain an incomplete abstract graph; the MSTORE has consumed its operands without completing.",
+    "scope": "One exact aggregate3 calldata input with eight self-targeted getChainId requests, concrete root address and CHAINID=1. Validate the captured incomplete graph and its real root MSTORE refusal; missing self-call exploration remains a recorded precision regression.",
     "abi_validation": {
       "method": "eth_call",
       "block_hash": "0x249b266a4b3e71abf93278a2e96938a49099ac2afafa6f8193e28c21872d57dc",
@@ -32,39 +30,176 @@
       "success": true
     },
     "expected_status": "Incomplete",
-    "expected_frontiers": 3,
-    "expected_frontier_reason": "Relations",
-    "expected_frontier_details": {
-      "Relations": "ExpressionLimit"
-    },
-    "expected_pending_machines": 2,
-    "expected_pending_frontiers": [
-      {
-        "source_start_pc": 150,
-        "source_frame_depth": 2,
-        "target_start_pc": 401,
-        "target_frame_depth": 2
+    "fork": "Osaka",
+    "product_oracle": {
+      "boundary": "root_instruction",
+      "instruction_frontiers": [
+        {
+          "source_start_pc": 1765,
+          "source_frame_depth": 1,
+          "pc": 1788,
+          "opcode": 82,
+          "name": "MSTORE",
+          "progress": "OperandsConsumed",
+          "coverage": "Current",
+          "deferred_edge_kinds": [
+            "BranchTrue"
+          ]
+        }
+      ]
+    }
+  },
+  "historical_observations": {
+    "source_commit": "b8e5115ab23eb72143773d0058624f25545dc49c",
+    "artifact_binding_sha256": "dd5a0978e0fd68b7f4bb4d45ef49d96bf36a849d23fcf86d15e990a07f741c74",
+    "request_sha256": "bc02594c1960b5a8243933ac76cb8d4c78b8bd1fef27ebd9ee07f74c07aecef5",
+    "report_sha256": "91e80d4f29d49d4411f104054c561c3cd313d40b6b3bd2d70f2fc546c34e395b",
+    "scope": "Saved b8e native evidence only; this is not acceptance of the candidate source or a claim of restored exploration.",
+    "original_expectations": {
+      "minimum_native_states": 250,
+      "minimum_source_blocks": 50,
+      "expected_frontiers": 3,
+      "expected_frontier_reason": "Relations",
+      "expected_frontier_details": {
+        "Relations": "ExpressionLimit"
       },
-      {
-        "source_start_pc": 194,
-        "source_frame_depth": 2,
-        "target_start_pc": 1965,
-        "target_frame_depth": 1
-      }
+      "expected_pending_machines": 2,
+      "expected_pending_frontiers": [
+        {
+          "source_start_pc": 150,
+          "source_frame_depth": 2,
+          "target_start_pc": 401,
+          "target_frame_depth": 2
+        },
+        {
+          "source_start_pc": 194,
+          "source_frame_depth": 2,
+          "target_start_pc": 1965,
+          "target_frame_depth": 1
+        }
+      ],
+      "expected_instruction_frontiers": [
+        {
+          "source_start_pc": 2016,
+          "source_frame_depth": 1,
+          "pc": 2032,
+          "opcode": 82,
+          "name": "MSTORE",
+          "progress": "OperandsConsumed",
+          "coverage": "Current",
+          "deferred_edge_kinds": [
+            "BranchFalse"
+          ]
+        }
+      ]
+    },
+    "b8e_observed": {
+      "status": "Incomplete",
+      "cfg_states": 21,
+      "native_edges": 21,
+      "known_source_blocks": 20,
+      "pending_machines": 0,
+      "current_ssa_entry_reachable_states": 21,
+      "ssa_deferred_edges": [
+        {
+          "edge": 20,
+          "reason": "NotInExecutionEvidence"
+        }
+      ],
+      "root_return_states": [],
+      "failed_property_names": [
+        "minimum_native_states",
+        "minimum_source_blocks",
+        "expected_frontiers",
+        "expected_pending_machines",
+        "expected_pending_frontiers",
+        "expected_instruction_frontiers"
+      ],
+      "frontiers": [
+        {
+          "frontier": {
+            "from": 20,
+            "pc": 1788,
+            "kind": "Relations",
+            "reason": {
+              "Relations": "ExpressionLimit"
+            },
+            "detail": "Relations(ExpressionLimit)",
+            "range": null,
+            "payload": null
+          },
+          "source": {
+            "id": 20,
+            "program": 0,
+            "basic_block": 130,
+            "start_pc": 1765,
+            "frame_depth": 1,
+            "executed_pcs": [
+              1765,
+              1766,
+              1768,
+              1769,
+              1770,
+              1771,
+              1772,
+              1773,
+              1774,
+              1775,
+              1776,
+              1778,
+              1779,
+              1780,
+              1782,
+              1784,
+              1785,
+              1786,
+              1787,
+              1788
+            ]
+          },
+          "ssa": {
+            "state": 20,
+            "coverage": "Current",
+            "incoming_complete": false,
+            "last_instruction": {
+              "pc": 1788,
+              "opcode": 82,
+              "name": "MSTORE",
+              "progress": "OperandsConsumed",
+              "fault": false
+            },
+            "instructions_count": 20,
+            "calls": []
+          },
+          "ssa_reachable": true,
+          "outgoing_edges": [
+            {
+              "id": 20,
+              "from": 20,
+              "to": 20,
+              "kind": "BranchTrue"
+            }
+          ]
+        }
+      ],
+      "work": 1457423307,
+      "transfers": 24,
+      "timings": {
+        "queue_ns": 34505,
+        "processing_ns": 600823607,
+        "validating_ns": 809872,
+        "pinning_ns": 0,
+        "acquiring_ns": 0,
+        "analyzing_ns": 582973010,
+        "building_ssa_ns": 1302332,
+        "projecting_ns": 15738393
+      },
+      "call_edges": []
+    },
+    "precision_regressions": [
+      "Earlier root Relations(ExpressionLimit) at MSTORE1788 instead of MSTORE2032; no CALL, root Return or pending machine in the saved b8e graph.",
+      "The original three-frontier and two-pending observations remain unmet; self-call exploration is not restored by migrating the graph oracle."
     ],
-    "expected_instruction_frontiers": [
-      {
-        "source_start_pc": 2016,
-        "source_frame_depth": 1,
-        "pc": 2032,
-        "opcode": 82,
-        "name": "MSTORE",
-        "progress": "OperandsConsumed",
-        "coverage": "Current",
-        "deferred_edge_kinds": [
-          "BranchFalse"
-        ]
-      }
-    ]
+    "graph_stress": "The original 250-state/50-block UI scale goal is independently covered by the Root-verified 129/64 distinct stack-height graph cases; no fresh run is claimed here."
   }
 }

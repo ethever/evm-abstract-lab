@@ -103,24 +103,35 @@ impl FrameState {
             &selector,
             limits,
         )?;
-        for (output, left, right) in [
+        for (output, left, right, implicit) in [
             (
                 &mut out.address_operand,
                 &self.address_operand,
                 &incoming.address_operand,
+                self.key.address_value,
             ),
             (
                 &mut out.caller_operand,
                 &self.caller_operand,
                 &incoming.caller_operand,
+                self.key.caller,
             ),
         ] {
             *output = match (left, right) {
                 (None, None) => None,
-                (Some(left), Some(right)) => {
-                    Some(join::join_value(left, right, domain, &selector, limits)?)
+                _ => {
+                    // None uses the key's implicit EVM value. Without the
+                    // environment scope, symbolic keys cover every address;
+                    // the state-owner namespace is never a concrete fallback.
+                    let implicit = implicit.value();
+                    Some(join::join_value(
+                        left.as_ref().unwrap_or(&implicit),
+                        right.as_ref().unwrap_or(&implicit),
+                        domain,
+                        &selector,
+                        limits,
+                    )?)
                 }
-                _ => return Err(MachineError::Shape),
             };
         }
         out.memory =

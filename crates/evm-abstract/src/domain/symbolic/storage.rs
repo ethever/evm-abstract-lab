@@ -194,6 +194,27 @@ impl SlotStateId {
         state::check(self.nodes(), self.depth(), limits)?;
         state::check(other.nodes(), other.depth(), limits)?;
         state::check(selector.nodes(), selector.depth(), limits)?;
+        fn branches(root: &SlotStateId) -> Option<(&ExprId, &SlotStateId, &SlotStateId)> {
+            match root.kind() {
+                SlotStateKind::Ite {
+                    condition,
+                    then_state,
+                    else_state,
+                } => Some((condition, then_state, else_state)),
+                _ => None,
+            }
+        }
+        if let Some((guard, yes, no)) = state::guarded::shared_branch(
+            self,
+            other,
+            selector.clone(),
+            branches(self),
+            branches(other),
+            limits,
+            |state| (state.nodes(), state.depth()),
+        )? {
+            return yes.join_guarded(no, guard, limits);
+        }
         if let (
             SlotStateKind::Store {
                 previous: yes,

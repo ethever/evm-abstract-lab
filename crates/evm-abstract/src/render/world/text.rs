@@ -70,8 +70,12 @@ pub fn render(analysis: &WorldAnalysis) -> String {
     )
     .unwrap();
     let relations = analysis.config().analysis.relations;
-    writeln!(output, "  relations={} | SMT=in-process {} | rlimit={} | resource unit={} | expression nodes={} | depth={} | constraints={}",
-        relations.enabled, relations.provider, relations.rlimit, relations.provider.resource_unit(), relations.max_nodes, relations.max_depth, relations.max_constraints).unwrap();
+    writeln!(
+        output,
+        "  relations={} | local propagation | expression nodes={} | depth={} | constraints={}",
+        relations.enabled, relations.max_nodes, relations.max_depth, relations.max_constraints
+    )
+    .unwrap();
     output.push_str("\nSnapshot\n");
     writeln!(output, "  provenance={:?}", analysis.world().provenance()).unwrap();
     writeln!(
@@ -479,10 +483,12 @@ fn write_store(output: &mut String, store: &Store, refs: &References) {
     for (index, (site, log)) in store.possible_logs().iter().enumerate() {
         writeln!(
             output,
-            "      {} | address={} | code={} | pc=0x{:x}",
+            "      {} | address={} | code={} | hash={} | source={:?} | pc=0x{:x}",
             Symbol::Log(index),
             refs.address(site.address),
             refs.address(site.code_address),
+            refs.hash(site.code_hash),
+            site.source_kind,
             site.pc
         )
         .unwrap();

@@ -741,7 +741,7 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
         assert_eq!(
             exit.relations
                 .can_equal(&call_success, U256::from(1), &inspection),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
         for right in [1, 2] {
             let pair = and(
@@ -753,7 +753,7 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
             );
             assert_eq!(
                 exit.relations.can_equal(&pair, U256::from(1), &inspection),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
         }
         let same = ExprId::operation(
@@ -769,7 +769,7 @@ fn callee_calldata_does_not_alias_root_input_when_summaries_detach_a_relative_ro
         let wrong = and(call_success, wrong);
         assert_eq!(
             exit.relations.can_equal(&wrong, U256::from(1), &inspection),
-            CheckResult::Unsat
+            CheckResult::ProvenImpossible
         );
     }
 }
@@ -806,9 +806,21 @@ fn bytecode_without_a_concrete_creator_retains_a_creation_frontier() {
 }
 
 #[test]
-fn symbolic_targets_are_modeled_while_uncovered_copy_sizes_keep_typed_frontiers() {
+fn symbolic_targets_and_unbounded_lazy_copy_sizes_keep_their_success_domains() {
     for (code, expected_target) in [("5f5f5f5f5f5f356207a120f100", true), ("365f5f3700", false)] {
-        let result = analyze(code, EvmEnvironment::default(), Profile::Product);
+        let result = analysis::analyze_with_execution_config(
+            Program::from_hex(code).unwrap(),
+            ExecutionConfig {
+                analysis: Config {
+                    domain_profile: Profile::Product,
+                    ..Config::default()
+                },
+                root_terminal_coverage: false,
+                ..ExecutionConfig::default()
+            },
+            EvmEnvironment::default(),
+        )
+        .unwrap();
         if expected_target {
             assert_eq!(result.status(), Status::Converged);
             assert!(result.execution().frontiers().is_empty());
@@ -822,13 +834,21 @@ fn symbolic_targets_are_modeled_while_uncovered_copy_sizes_keep_typed_frontiers(
                     .all(|record| record.closed && !record.procedures.is_empty())
             );
         } else {
-            assert_eq!(result.status(), Status::Incomplete);
+            assert_eq!(result.status(), Status::Converged);
+            assert!(result.execution().frontiers().is_empty());
             assert!(
                 result
                     .execution()
-                    .frontiers()
+                    .outcomes()
                     .iter()
-                    .any(|frontier| frontier.reason == FrontierReason::Memory)
+                    .any(|o| o.kind == analysis::OutcomeKind::Return)
+            );
+            assert!(
+                result
+                    .execution()
+                    .outcomes()
+                    .iter()
+                    .any(|o| o.kind == analysis::OutcomeKind::Failure)
             );
         }
     }

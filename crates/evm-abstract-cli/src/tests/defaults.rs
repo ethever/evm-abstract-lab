@@ -2,10 +2,7 @@
 
 use super::{Cli, Command, ENTRY};
 use clap::Parser;
-use evm_abstract::{
-    analysis::ExecutionConfig,
-    domain::{Profile, relational::SmtProvider},
-};
+use evm_abstract::{analysis::ExecutionConfig, domain::Profile};
 use evm_abstract_protocol::{AnalysisLimits, DomainProfile};
 
 fn assert_policy(actual: &ExecutionConfig, expected: &AnalysisLimits) {
@@ -40,6 +37,10 @@ fn assert_policy(actual: &ExecutionConfig, expected: &AnalysisLimits) {
     }
     assert_eq!(actual.use_summaries, expected.use_summaries);
     assert_eq!(
+        actual.root_terminal_coverage,
+        expected.root_terminal_coverage
+    );
+    assert_eq!(
         config.domain_profile,
         match expected.domain_profile {
             DomainProfile::Product => Profile::Product,
@@ -47,19 +48,12 @@ fn assert_policy(actual: &ExecutionConfig, expected: &AnalysisLimits) {
         }
     );
     assert_eq!(config.relations.enabled, expected.relations_enabled);
-    assert_eq!(config.relations.rlimit, expected.smt_rlimit);
-    assert_eq!(
-        config.relations.provider,
-        match expected.smt_provider {
-            evm_abstract_protocol::SmtProvider::Z3 => SmtProvider::Z3,
-            evm_abstract_protocol::SmtProvider::Bitwuzla => SmtProvider::Bitwuzla,
-            evm_abstract_protocol::SmtProvider::Cvc5 => SmtProvider::Cvc5,
-        }
-    );
 }
 
 #[test]
 fn raw_hex_file_and_offline_world_execute_with_web_defaults() {
+    assert_eq!(AnalysisLimits::default().max_work, 2_000_000_000);
+    assert!(AnalysisLimits::default().root_terminal_coverage);
     let file = format!(
         "{}/../../examples/straight-line.hex",
         env!("CARGO_MANIFEST_DIR")
@@ -105,12 +99,12 @@ fn explicit_previous_policy_is_not_replaced_by_larger_defaults() {
         max_states: 4096,
         max_transfers: 100_000,
         max_work: 20_000_000,
+        root_terminal_coverage: false,
         max_call_depth: 32,
         max_memory_bytes: 65_536,
         max_expression_nodes: 1024,
         max_expression_depth: 64,
         max_constraints: 128,
-        smt_rlimit: 100_000,
         ..AnalysisLimits::default()
     };
     for command in ["cfg", "ssa"] {
@@ -131,6 +125,7 @@ fn explicit_previous_policy_is_not_replaced_by_larger_defaults() {
             "100000",
             "--max-work",
             "20000000",
+            "--no-root-terminal-coverage",
             "--max-call-depth",
             "32",
             "--max-memory-bytes",
@@ -141,8 +136,6 @@ fn explicit_previous_policy_is_not_replaced_by_larger_defaults() {
             "64",
             "--max-relations",
             "128",
-            "--smt.rlimit",
-            "100000",
         ])
         .unwrap();
         let args = match parsed.command {

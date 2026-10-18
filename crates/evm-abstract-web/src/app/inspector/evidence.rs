@@ -139,14 +139,29 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
             };
         }
         if let Some(range) = &frontier.range {
-            ui.label(RichText::new(match range.request.kind {
-                api::RangeKind::MemoryPolicy => "Logical memory policy leaves these inputs unexpanded; EVM failure is not established.",
-                api::RangeKind::ReturnData => "Returndata range semantics remain pending for these inputs.",
-            }).color(palette::WARNING));
+            let (evidence, limit_label, help) = match range.request.kind {
+                api::RangeKind::MemoryPolicy => (
+                    "The historical memory-footprint policy leaves these inputs unexpanded; EVM failure is not established.",
+                    "Historical memory policy limit",
+                    "This witness records the configured max_memory_bytes footprint cap of the earlier analysis policy. It does not establish EVM failure. Logical U256 representability is recorded separately.",
+                ),
+                api::RangeKind::LogicalMemory => (
+                    "Logical memory range uses word-rounded U256 representability.",
+                    "Word-rounded U256 end limit",
+                    "For a nonempty access, offset + size and its rounding up to 32 bytes must fit in U256; the end limit is U256::MAX & !31. Empty accesses do not expand memory. This bound is independent of host materialization policy.",
+                ),
+                api::RangeKind::ReturnData => (
+                    "Returndata range semantics remain pending for these inputs.",
+                    "Returndata length",
+                    "The bound is the complete returned sequence length.",
+                ),
+            };
+            ui.label(RichText::new(evidence).color(palette::WARNING))
+                .on_hover_text(help);
             errors::fields(ui, |ui| {
                 value::named(ui, "Requested offset", &range.request.offset);
                 value::named(ui, "Requested size", &range.request.size);
-                value::named(ui, "Range limit", &range.request.limit);
+                value::named(ui, limit_label, &range.request.limit);
                 value::named(ui, "In-range condition", &range.condition);
                 value::text(
                     ui,
@@ -366,28 +381,11 @@ fn query(ui: &mut Ui, reason: &api::QueryBoundary) {
         R::ConstraintLimit => "Retained constraint bound",
         R::ScalarFactLimit => "Scalar fact bound",
         R::ScalarFactError(_) => "Scalar fact interpretation failed",
-        R::ExpressionLimit => "Expression size / encoding work bound",
-        R::Unsupported(0x20) => "Keccak input comparison is not fully modeled",
-        R::Unsupported(_) => "Unsupported pure operation",
-        R::ResourceLimit => "Native solver resource allowance",
-        R::SolverUnknown(_) => "Solver could not decide",
-        R::SolverError(_) => "Solver binding or encoding failed",
-        R::ModelUnavailable => "Model value unavailable",
+        R::ExpressionLimit => "Expression size / local work bound",
     };
     value::text(ui, "Query boundary", label);
-    match reason {
-        R::ScalarFactError(error) => fact(ui, error),
-        R::SolverUnknown(detail) => {
-            value::text(ui, "Provider", format!("{:?}", detail.provider));
-            value::text(ui, "Native reason", &detail.reason);
-        }
-        R::SolverError(detail) => {
-            value::text(ui, "Provider", format!("{:?}", detail.provider));
-            value::text(ui, "Binding diagnostic", &detail.message);
-        }
-        R::Unsupported(0x20) => value::text(ui, "Opcode", "0x20 (KECCAK256)"),
-        R::Unsupported(opcode) => value::text(ui, "Opcode", format!("0x{opcode:02x}")),
-        _ => {}
+    if let R::ScalarFactError(error) = reason {
+        fact(ui, error);
     }
 }
 

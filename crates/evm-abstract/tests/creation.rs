@@ -314,6 +314,31 @@ fn oracle_expect_creation(
                                 == Some(code.original_bytes().as_ref())
                         })
                 })
+            && result.result.logs().iter().all(|log| {
+                outcome
+                    .store
+                    .possible_logs()
+                    .iter()
+                    .any(|(site, abstract_log)| {
+                        site.address == log.address
+                            && abstract_log.topics.len() == log.data.topics().len()
+                            && abstract_log.topics.iter().zip(log.data.topics()).all(
+                                |(abstract_topic, topic)| {
+                                    abstract_topic.contains(U256::from_be_bytes(topic.0))
+                                },
+                            )
+                            && abstract_log
+                                .data
+                                .len()
+                                .contains(U256::from(log.data.data.len()))
+                            && log.data.data.iter().enumerate().all(|(index, byte)| {
+                                abstract_log
+                                    .data
+                                    .byte_at(index, Domain::default())
+                                    .contains(U256::from(*byte))
+                            })
+                    })
+            })
     });
     assert!(
         matching,
@@ -362,6 +387,37 @@ fn creation_and_subsequent_runtime_call_match_revm_for_all_supported_forks() {
                         == word(0).singleton()
             }));
         }
+    }
+}
+
+#[test]
+fn init_and_runtime_logs_with_different_arities_at_one_pc_match_revm() {
+    for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
+        let runtime = hex::decode("60bb5f535f60015fa100").unwrap();
+        let initcode = init(&runtime, &hex::decode("60aa5f535f60015fa0").unwrap());
+        let bytes = factory(&initcode, false, 0, &call_created());
+        let (world, destination) = fixture(fork, &bytes, &initcode, false);
+        let analysis = oracle(world, destination, true, true, false);
+        assert!(returned(&analysis).any(|store| {
+            store.possible_logs().len() == 2
+                && store.possible_logs().iter().any(|(site, log)| {
+                    site.address == destination
+                        && site.pc == 8
+                        && site.code_hash == keccak256(&initcode)
+                        && site.source_kind == evm_abstract::world::LogSourceKind::Init
+                        && log.topics.is_empty()
+                        && log.data.exact_bytes() == Some(vec![0xaa])
+                })
+                && store.possible_logs().iter().any(|(site, log)| {
+                    site.address == destination
+                        && site.pc == 8
+                        && site.code_hash == keccak256(&runtime)
+                        && site.source_kind == evm_abstract::world::LogSourceKind::Runtime
+                        && log.topics.len() == 1
+                        && log.topics[0].contains(U256::ZERO)
+                        && log.data.exact_bytes() == Some(vec![0xbb])
+                })
+        }));
     }
 }
 
@@ -549,7 +605,9 @@ fn unrepresentable_nonce_and_shared_creation_limits_are_explicit() {
                 max_memory_bytes: 1,
                 ..ExecutionConfig::default()
             },
-            FrontierReason::Memory,
+            // Lazy memory stays complete; extracting executable initcode is
+            // a real physical consumer and still obeys the one-byte cap.
+            FrontierReason::Creation(CreationBoundary::UnknownInitCode),
         ),
     ] {
         let analysis = analysis::analyze_world(

@@ -219,12 +219,30 @@ let
             );
       }
     );
+  # Only these scale inputs are compiled into core tests. Keep them out of the
+  # workspace/vendor/dummy and production sources, and retain their ancestors
+  # when test consumers opt in: cleanSourceWith prunes rejected directories.
+  scaleTestFixtures = [
+    "examples/no-smt-scale/code-only/memory-copy.json"
+    "examples/no-smt-scale/code-only/loop.json"
+    "examples/no-smt-scale/code-only/unknown-input.json"
+  ];
   applicationFilter =
-    path: type:
+    coreTests: path: type:
     let
       rel = relative path;
     in
     !(rel == "lints" || lib.hasPrefix "lints/" rel)
+    && (
+      !(rel == "examples/no-smt-scale" || lib.hasPrefix "examples/no-smt-scale/" rel)
+      || (
+        coreTests
+        && (
+          lib.elem rel scaleTestFixtures
+          || (type == "directory" && lib.any (file: lib.hasPrefix "${rel}/" file) scaleTestFixtures)
+        )
+      )
+    )
     && !(lib.elem (baseNameOf path) [
       ".git"
       "target"
@@ -236,7 +254,7 @@ let
     name = "source";
     filter =
       path: type:
-      applicationFilter path type
+      applicationFilter false path type
       && (
         craneLib.filterCargoSources path type
         || lib.hasPrefix "crates/" (relative path)
@@ -246,7 +264,7 @@ let
   formatting = lib.cleanSourceWith {
     src = sourceRoot;
     name = "rust-format-source";
-    filter = path: type: applicationFilter path type && craneLib.filterCargoSources path type;
+    filter = path: type: applicationFilter false path type && craneLib.filterCargoSources path type;
   };
   manifestsOnly = lib.cleanSourceWith {
     src = workspace;
@@ -308,6 +326,7 @@ let
       selected = closure roots mode;
       paths = map (name: packages.${name}.path) selected;
       examples = lib.any (name: usesExamples name mode) selected;
+      coreTests = mode.kind == "test" && lib.elem "evm-abstract" selected;
       real = lib.cleanSourceWith {
         src = sourceRoot;
         name = "selected-cargo-source";
@@ -329,7 +348,7 @@ let
             # HTML is copied by web/assets.nix after the Wasm build. Keeping it
             # out of Rust inputs lets presentation edits reuse compiled assets.
           in
-          applicationFilter path type
+          applicationFilter coreTests path type
           && rel != "${packages.evm-abstract-web.path}/index.html"
           && (
             lib.any (

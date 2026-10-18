@@ -1,4 +1,7 @@
 //! Preserve native admission discriminants and their complete contextual facts.
+mod session;
+pub(super) use session::error as session_error;
+
 use super::value;
 use evm_abstract::{
     analysis::ConfigError, bytecode::DecodeError, world::environment::EnvironmentError,

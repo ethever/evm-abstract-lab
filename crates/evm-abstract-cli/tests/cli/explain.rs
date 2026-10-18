@@ -159,8 +159,9 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
         ("call-return-branch", vec!["--max-work", "1"], "Work"),
         (
             "call-return-branch",
-            vec!["--max-memory-bytes", "1"],
-            "Memory",
+            // Admit the two-node Input root; refuse a mandatory retained effect.
+            vec!["--max-symbolic-nodes", "2"],
+            "ExpressionLimit",
         ),
         ("reentry", vec!["--max-call-depth", "2"], "CallDepth"),
         ("call-return-branch", vec!["--max-states", "1"], "States"),
@@ -170,10 +171,12 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
             "Transfers",
         ),
     ] {
-        let output = world_command("explain", name, &extra);
+        let mut detail = extra.clone();
+        detail.push("--no-root-terminal-coverage");
+        let output = world_command("explain", name, &detail);
         assert_eq!(output.status.code(), Some(2), "{name} {extra:?}");
         let explanation = text(&output);
-        assert_full_report(&explanation, &world_command("analyze", name, &extra));
+        assert_full_report(&explanation, &world_command("analyze", name, &detail));
         let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
         assert!(disassembly.contains("PUSH") || disassembly.contains("CALL"));
         if extra == ["--max-work", "1"] {
@@ -181,6 +184,25 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
             assert!(!disassembly.contains("Captured instruction list"));
         }
         assert!(explanation.contains("Incomplete") && explanation.contains(frontier));
+        if extra == ["--max-symbolic-nodes", "2"] {
+            let mut query = detail.clone();
+            query.extend(["--format", "json"]);
+            let report = world_command("analyze", name, &query);
+            assert_eq!(report.status.code(), Some(2));
+            let report: Json = serde_json::from_slice(&report.stdout).unwrap();
+            assert_eq!(report["config"]["analysis"]["relations"]["max_nodes"], 2);
+            assert!(
+                report["frontiers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|frontier| {
+                        frontier["reason"] == json!({"Relations":"ExpressionLimit"})
+                            && frontier["from"].is_u64()
+                            && frontier["pc"].is_u64()
+                    })
+            );
+        }
         assert!(explanation.contains("SSA unavailable"));
         assert!(!explanation.contains(VERIFIED));
     }
@@ -212,19 +234,10 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
         ("--max-symbolic-nodes", defaults.max_expression_nodes),
         ("--max-symbolic-depth", defaults.max_expression_depth),
         ("--max-relations", defaults.max_constraints),
-        ("--smt.rlimit", u64::from(defaults.smt_rlimit)),
     ]
     .map(|(flag, value)| (flag, value.to_string()));
     let mut args = vec![
-        "explain",
-        "--hex",
-        &code,
-        "--fork",
-        "osaka",
-        "--domain",
-        "product",
-        "--smt.provider",
-        "z3",
+        "explain", "--hex", &code, "--fork", "osaka", "--domain", "product",
     ];
     for (flag, value) in &explicit_values {
         args.extend([*flag, value.as_str()]);

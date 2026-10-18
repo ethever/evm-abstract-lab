@@ -2,7 +2,7 @@
 
 use super::super::*;
 use crate::domain::{
-    relational::{RelationLimits, RelationState, ValueQuery},
+    relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
     symbolic::{ExprKind, StateLimits},
 };
 
@@ -14,22 +14,20 @@ fn symbolic(lo: usize, hi: usize) -> AbstractValue {
         .unwrap()
         .with_expression(ExprId::fresh().unwrap())
 }
-fn prove(value: &AbstractValue, expected: U256) {
+fn prove(relations: &RelationState, value: &AbstractValue, expected: U256) {
     if let Some(v) = value.singleton() {
         assert_eq!(v, expected);
-        return;
     }
     assert_eq!(
-        RelationState::default().unique_value(
-            value.expression().unwrap(),
+        relations.local_value(
+            &value.symbolic_expression().unwrap(),
             &RelationLimits {
                 max_nodes: 100_000,
                 max_depth: 256,
-                rlimit: 1_000_000,
                 ..RelationLimits::default()
             }
         ),
-        ValueQuery::Unique(expected)
+        ValueQuery::Exact(expected)
     );
 }
 #[test]
@@ -143,15 +141,14 @@ fn symbolic_msize_and_zero_length_huge_offset() {
     let policy = RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     };
     relations
         .observe(size.expression().unwrap(), v(33).numeric(), &policy)
         .unwrap();
     assert_eq!(
-        relations.unique_value(expression, &policy),
-        ValueQuery::Unique(U256::from(64))
+        relations.local_value(expression, &policy),
+        ValueQuery::Exact(U256::from(64))
     );
 }
 #[test]
@@ -234,9 +231,30 @@ fn guarded_join_keeps_pointer_state_pairing() {
         .join_guarded(&right, domain, selector.clone(), ExprLimits::default())
         .unwrap();
     let pointer = v(32)
-        .join_guarded(&v(64), domain, selector, ExprLimits::default())
+        .join_guarded(&v(64), domain, selector.clone(), ExprLimits::default())
         .unwrap();
-    prove(&joined.read_word(&pointer, domain), U256::from(7));
+    let read = joined.read_word(&pointer, domain);
+    assert!(read.contains(U256::from(7)));
+    let p = RelationLimits {
+        max_nodes: 100_000,
+        max_depth: 256,
+        ..RelationLimits::default()
+    };
+    // The paired whole-word demand now forwards the same constant from each
+    // selected snapshot. A singleton needs no retained expression handle.
+    assert_eq!(read.singleton(), Some(U256::from(7)));
+    assert_eq!(
+        RelationState::default().local_value(&read.symbolic_expression().unwrap(), &p),
+        ValueQuery::Exact(U256::from(7))
+    );
+    for nonzero in [false, true] {
+        let mut relations = RelationState::default();
+        assert_eq!(
+            relations.assume(&selector, nonzero, &p),
+            CheckResult::MayBeFeasible
+        );
+        prove(&relations, &read, U256::from(7));
+    }
 }
 #[test]
 fn fresh_rename_includes_sources_and_preserves_history() {
@@ -411,9 +429,9 @@ fn checked_self_join_respects_budget_and_cancellation() {
             )
             .is_err()
     );
-    let cancel = embedded_smt::Cancellation::new();
+    let cancel = analysis_control::Cancellation::new();
     cancel.cancel();
-    embedded_smt::with_cancellation(&cancel, || {
+    analysis_control::with_cancellation(&cancel, || {
         assert!(matches!(
             array.join_guarded(&array, Domain::default(), guard, ExprLimits::default()),
             Err(RangeError::State(StateError::Cancelled))
@@ -437,11 +455,17 @@ fn ordinary_union_does_not_absorb_branch_under_an_incompatible_old_guard() {
     let p = RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     };
     let mut relations = RelationState::default();
     relations.observe(&guard, v(0).numeric(), &p).unwrap();
+    let ValueQuery::Bounds(bounds) = relations.local_value(value.expression().unwrap(), &p) else {
+        panic!("ordinary union must retain both alternatives under the old false guard");
+    };
+    for candidate in [7, 9] {
+        assert!(value.contains(U256::from(candidate)));
+        assert!(bounds.contains(U256::from(candidate)));
+    }
     let eq = ExprId::operation(
         opcode::EQ,
         &[
@@ -453,7 +477,7 @@ fn ordinary_union_does_not_absorb_branch_under_an_incompatible_old_guard() {
     .unwrap();
     assert_eq!(
         relations.assume(&eq, true, &p),
-        crate::domain::relational::CheckResult::Sat
+        crate::domain::relational::CheckResult::MayBeFeasible
     );
 }
 
@@ -510,18 +534,36 @@ fn numeric_only_write_offsets_constrain_the_state_read_expression() {
     memory.write_byte(&offset, &v(7), 32, domain).unwrap();
     let read = memory.read_byte(&v(2), domain);
     assert_eq!(read.singleton(), Some(U256::ZERO));
-    assert_eq!(
-        RelationState::default().unique_value(
-            read.expression().unwrap(),
-            &RelationLimits {
-                max_nodes: 100_000,
-                max_depth: 256,
-                rlimit: 1_000_000,
-                ..RelationLimits::default()
-            }
-        ),
-        ValueQuery::Unique(U256::ZERO)
+    let p = RelationLimits {
+        max_nodes: 100_000,
+        max_depth: 256,
+        ..RelationLimits::default()
+    };
+    // The synthesized offset has complete candidates {0,1}. Direct local alias
+    // checks compare equality/singletons, without excluding key 2 from that set.
+    let ValueQuery::Bounds(bounds) =
+        RelationState::default().local_value(read.expression().unwrap(), &p)
+    else {
+        panic!("expected the documented finite-offset alias precision gap");
+    };
+    assert!(bounds.contains(U256::ZERO));
+    assert!(
+        bounds.contains(U256::from(7)),
+        "local bounds retain the spurious alias"
     );
+    let ByteStateKind::WriteByte { offset: stored, .. } = memory.state_root().kind() else {
+        panic!("expected the original byte write");
+    };
+    for candidate in [0, 1] {
+        let mut relations = RelationState::default();
+        relations
+            .observe(stored, v(candidate).numeric(), &p)
+            .unwrap();
+        assert_eq!(
+            relations.local_value(read.expression().unwrap(), &p),
+            ValueQuery::Exact(U256::ZERO)
+        );
+    }
 }
 
 #[test]
@@ -558,16 +600,41 @@ fn copies_at_distinct_addresses_hash_to_the_same_storage_key_under_range_guard()
     let p = RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     };
     let mut relations = RelationState::default();
     relations
         .observe(size.expression().unwrap(), size.numeric(), &p)
         .unwrap();
+    // The direct query can benefit from local same-content normalization.
+    // Either an exact proof or conservative bounds must retain the real seven.
+    match relations.local_value(read.expression().unwrap(), &p) {
+        ValueQuery::Exact(actual) => assert_eq!(actual, U256::from(7)),
+        ValueQuery::Bounds(bounds) => assert!(bounds.contains(U256::from(7))),
+        other => panic!("same-content hash read lost its concrete seven: {other:?}"),
+    }
+    // Same-content hash normalization is a supported local equality proof.
+    // Retaining that proved fact supplies the alias without a hash-injectivity premise.
+    let equal = ExprId::operation(
+        opcode::EQ,
+        &[
+            ka.expression().unwrap().clone(),
+            kb.expression().unwrap().clone(),
+        ],
+        p.expressions(),
+    )
+    .unwrap();
     assert_eq!(
-        relations.unique_value(read.expression().unwrap(), &p),
-        ValueQuery::Unique(U256::from(7))
+        relations.local_value(&equal, &p),
+        ValueQuery::Exact(U256::ONE)
+    );
+    assert_eq!(
+        relations.assume(&equal, true, &p),
+        CheckResult::MayBeFeasible
+    );
+    assert_eq!(
+        relations.local_value(read.expression().unwrap(), &p),
+        ValueQuery::Exact(U256::from(7))
     );
 }
 
@@ -631,7 +698,6 @@ fn finite_host_boundary_offsets_keep_uncached_byte_upper_bounds() {
     let policy = RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     };
     let mut relations = RelationState::default();
@@ -639,8 +705,8 @@ fn finite_host_boundary_offsets_keep_uncached_byte_upper_bounds() {
         .observe(offset.expression().unwrap(), offset.numeric(), &policy)
         .unwrap();
     assert_eq!(
-        relations.unique_value(read.expression().unwrap(), &policy),
-        ValueQuery::Unique(value.singleton().unwrap()),
+        relations.local_value(&read.symbolic_expression().unwrap(), &policy),
+        ValueQuery::Exact(value.singleton().unwrap()),
     );
     assert!(memory.work_size() < 2000);
 }

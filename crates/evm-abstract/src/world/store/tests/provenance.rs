@@ -260,20 +260,78 @@ fn independent_singleton_inputs_remain_separate_in_source_metadata() {
 }
 
 #[test]
+fn guard_projection_keeps_input_identity_when_the_slot_cache_has_joined_it_away() {
+    let (world, address) = world(true);
+    let domain = Domain::default();
+    let left = input(731);
+    let right = input(732).with_origin(Origin::Returndata);
+    let mut a = Store::new(&world);
+    let mut b = a.clone();
+    for transient in [false, true] {
+        for (store, first, second) in [(&mut a, &left, &right), (&mut b, &right, &left)] {
+            for (key, value) in [(0, first), (1, second)] {
+                if transient {
+                    store
+                        .write_transient_checked(address, &v(key), value, domain)
+                        .unwrap();
+                } else {
+                    store
+                        .write_checked(address, &v(key), value, domain)
+                        .unwrap();
+                }
+            }
+        }
+    }
+    let selector = ExprId::fresh().unwrap();
+    let joined = a
+        .join_guarded(&b, domain, selector.clone(), ExprLimits::default())
+        .unwrap();
+    for (truth, original) in [(U256::ONE, &left), (U256::ZERO, &right)] {
+        let mut projected = joined.clone();
+        projected
+            .rename_fresh(
+                &BTreeMap::from([(selector.clone(), ExprId::constant(truth))]),
+                ExprLimits::default(),
+            )
+            .unwrap();
+        let form = projected
+            .widening_form(domain, ExprLimits::default())
+            .unwrap();
+        for transient in [false, true] {
+            for current in [&projected, &form] {
+                let read = if transient {
+                    current.read_transient_checked(address, &v(0), domain)
+                } else {
+                    current.read_checked(address, &v(0), domain)
+                }
+                .unwrap();
+                assert_sources(&read, 7, &[Origin::Calldata]);
+                assert_eq!(read.provenance(), original.provenance());
+                assert!(read.same_identity(original));
+            }
+        }
+    }
+}
+
+#[test]
 fn singleton_guard_projection_retains_whole_case_numbers_sources_and_roots() {
     let (world, address) = world(true);
     let domain = Domain::default();
     let mut a = Store::new(&world);
     let mut b = a.clone();
-    a.write_checked(address, &v(0), &v(7).with_origin(Origin::Calldata), domain)
-        .unwrap();
-    b.write_checked(
-        address,
-        &v(0),
-        &v(9).with_origin(Origin::Returndata),
-        domain,
-    )
-    .unwrap();
+    for transient in [false, true] {
+        let left = v(7).with_origin(Origin::Calldata);
+        let right = v(9).with_origin(Origin::Returndata);
+        if transient {
+            a.write_transient_checked(address, &v(0), &left, domain)
+                .unwrap();
+            b.write_transient_checked(address, &v(0), &right, domain)
+                .unwrap();
+        } else {
+            a.write_checked(address, &v(0), &left, domain).unwrap();
+            b.write_checked(address, &v(0), &right, domain).unwrap();
+        }
+    }
     let selector = ExprId::fresh().unwrap();
     let joined = a
         .join_guarded(&b, domain, selector.clone(), ExprLimits::default())
@@ -292,14 +350,50 @@ fn singleton_guard_projection_retains_whole_case_numbers_sources_and_roots() {
         let form = projected
             .widening_form(domain, ExprLimits::default())
             .unwrap();
-        assert_eq!(
-            form.slot_root(address, false).unwrap(),
-            direct.slot_root(address, false).unwrap()
-        );
-        assert_sources(&form.read(address, &v(0), domain), number, &[origin]);
+        for transient in [false, true] {
+            assert_eq!(
+                form.slot_root(address, transient).unwrap(),
+                direct.slot_root(address, transient).unwrap()
+            );
+            for current in [&projected, &form] {
+                let read = if transient {
+                    current.read_transient_checked(address, &v(0), domain)
+                } else {
+                    current.read_checked(address, &v(0), domain)
+                }
+                .unwrap();
+                assert_sources(&read, number, &[origin]);
+            }
+        }
     }
-    assert!(joined.read(address, &v(0), domain).contains(U256::from(7)));
-    assert!(joined.read(address, &v(0), domain).contains(U256::from(9)));
+    for transient in [false, true] {
+        // May-source retention must not put the one-sided operands back into
+        // the unconditional must-fact table, even for singleton expressions.
+        for number in [7_u64, 9] {
+            assert!(
+                !joined
+                    .symbolic_facts(transient)
+                    .any(|(expression, _)| expression == &ExprId::constant(U256::from(number)))
+            );
+        }
+        let read = if transient {
+            joined.read_transient_checked(address, &v(0), domain)
+        } else {
+            joined.read_checked(address, &v(0), domain)
+        }
+        .unwrap();
+        assert!(read.contains(U256::from(7)));
+        assert!(read.contains(U256::from(9)));
+        for origin in [Origin::Calldata, Origin::Returndata] {
+            assert!(
+                read.provenance()
+                    .origins()
+                    .sources()
+                    .unwrap()
+                    .contains(&origin)
+            );
+        }
+    }
 }
 
 #[test]
@@ -391,9 +485,9 @@ fn singleton_metadata_bound_and_cancellation_reject_slot_writes_atomically() {
         ))
     ));
     assert_eq!(store, snapshot);
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert!(
             store
                 .write_checked(

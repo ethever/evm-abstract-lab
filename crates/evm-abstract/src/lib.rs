@@ -45,6 +45,9 @@ pub mod resource;
 pub mod ssa;
 pub mod world;
 
+#[cfg(test)]
+mod test_instrumentation;
+
 pub use alloy_primitives::Address;
 pub use alloy_primitives::U256;
 pub use fork::Fork;

@@ -66,18 +66,25 @@ fn default_constants_capacity_is_eight() {
 }
 
 #[test]
-fn single_program_execution_policy_controls_actual_memory_and_work() {
-    // MSTORE beyond 64 KiB distinguishes an application policy from the smaller
-    // library defaults used by the existing single-program adapter.
+fn single_program_execution_policy_controls_materialization_and_actual_work() {
+    // MSTORE beyond 64 KiB is a lazy logical write under either host cap.
     let program = Program::from_hex("6001620100005200").unwrap();
     let legacy = analysis::analyze(program.clone(), Config::default()).unwrap();
-    assert_eq!(legacy.status(), Status::Incomplete);
+    assert_eq!(legacy.status(), Status::Converged);
+    assert!(legacy.execution().frontiers().is_empty());
     assert!(
         legacy
             .execution()
-            .frontiers()
+            .outcomes()
             .iter()
-            .any(|frontier| matches!(frontier.reason, FrontierReason::Memory))
+            .any(|o| o.kind == analysis::OutcomeKind::Return)
+    );
+    assert!(
+        legacy
+            .execution()
+            .outcomes()
+            .iter()
+            .any(|o| o.kind == analysis::OutcomeKind::Failure)
     );
     let config = ExecutionConfig {
         max_memory_bytes: 128 * 1024,

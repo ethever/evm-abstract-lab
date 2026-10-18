@@ -120,22 +120,165 @@ fn local_constant_proofs_survive_an_unrelated_call_depth_frontier() {
 #[test]
 fn incomplete_memory_step_never_acquires_a_value_or_folded_result() {
     let mut input = request("60015f510100");
+    // Preserve the original detailed work ledger used by the admission search.
+    input.limits.root_terminal_coverage = false;
+    input.limits.max_work = 1_000_000_000_000;
     input.limits.max_memory_bytes = 1;
+    // Keep the symbolic recipient and the original expression/work policy:
+    // the host materialization cap does not restrict logical MLOAD expansion.
+    let complete = analyze(input.clone()).unwrap();
+    assert_eq!(complete.status, api::AnalysisStatus::Converged);
+    assert!(complete.frontiers.is_empty());
+    assert!(complete.ssa.complete);
+    assert_eq!(complete.metadata.limits, input.limits);
+    assert_eq!(complete.cfg.len(), 1);
+    assert_eq!(complete.cfg[0].executed_pcs, [0, 2, 3, 4, 5]);
+    assert_eq!(complete.ssa.blocks.len(), 1);
+    assert_eq!(complete.ssa.blocks[0].instructions.len(), 5);
+    for opcode in [0x60, 0x5f, 0x51, 0x01] {
+        assert_eq!(
+            instruction(&complete, opcode).progress,
+            api::InstructionProgress::Completed
+        );
+    }
+    assert_eq!(
+        instruction(&complete, 0x00).progress,
+        api::InstructionProgress::Dispatched
+    );
+    assert_eq!(
+        instruction(&complete, 0x51).operation,
+        api::SsaOperation::Constant("0x0".into())
+    );
+    assert_eq!(
+        instruction(&complete, 0x01).operation,
+        api::SsaOperation::Constant("0x1".into())
+    );
+    let completed_frame = complete.states[0]
+        .exit
+        .as_ref()
+        .unwrap()
+        .frames
+        .last()
+        .unwrap();
+    assert_eq!(completed_frame.stack.len(), 1);
+    assert_eq!(completed_frame.stack[0].constants, Some(vec!["0x1".into()]));
+    assert_eq!(
+        complete.byte_arrays[completed_frame.memory]
+            .length
+            .constants,
+        Some(vec!["0x20".into()])
+    );
+    assert!(
+        complete
+            .outcomes
+            .iter()
+            .any(|outcome| outcome.kind == api::OutcomeKind::Return)
+    );
+    complete.validate().unwrap();
+
+    // This acyclic prefix has fixed mandatory charges and no optional word
+    // planning before MLOAD's visit. Find its minimum admission allowance,
+    // bounded by work measured under the unchanged successful policy.
+    let (mut minimum, mut maximum) = (1, complete.metadata.work);
+    while minimum < maximum {
+        let midpoint = minimum + (maximum - minimum) / 2;
+        input.limits.max_work = midpoint;
+        let candidate = analyze(input.clone()).unwrap();
+        if candidate
+            .cfg
+            .iter()
+            .any(|block| block.executed_pcs.contains(&3))
+        {
+            maximum = midpoint;
+        } else {
+            minimum = midpoint + 1;
+        }
+    }
+    assert!(minimum < complete.metadata.work);
+    input.limits.max_work = minimum;
+    let mut selected_limits = complete.metadata.limits.clone();
+    selected_limits.max_work = minimum;
     let report = analyze(input).unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
-    assert!(
-        report
-            .frontiers
-            .iter()
-            .any(|frontier| frontier.kind == api::FrontierKind::Memory)
-    );
+    assert!(!report.ssa.complete);
+    assert_eq!(report.metadata.limits, selected_limits);
+    assert_eq!(report.metadata.limits.max_memory_bytes, 1);
+    assert_eq!(report.metadata.limits.max_work, minimum);
+    // Visiting MLOAD spends the last unit and consumes offset zero. Its next
+    // positive 32 * (capacity + 32) scan is refused before operation_work,
+    // word planning or touch_memory, so no allocation or result can appear.
+    assert_eq!(report.metadata.work, minimum);
+    let [frontier] = report.frontiers.as_slice() else {
+        panic!("expected only the mandatory MLOAD scan refusal")
+    };
+    assert_eq!(frontier.kind, api::FrontierKind::Work);
+    assert_eq!(frontier.reason, api::FrontierDetails::Work);
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(3)));
+    assert!(frontier.range.is_none());
+    assert!(frontier.payload.is_none());
+    let [state] = report.states.as_slice() else {
+        panic!("expected the executed root state")
+    };
+    assert_eq!(state.state, 0);
+    let exit = state.exit.as_ref().unwrap();
+    assert_eq!(exit.store, state.entry.store);
+    let frame = exit.frames.last().unwrap();
+    assert_eq!(frame.stack.len(), 1);
+    assert_eq!(frame.stack[0].constants, Some(vec!["0x1".into()]));
+    assert_eq!(frame.memory, state.entry.frames.last().unwrap().memory);
+    let memory = &report.byte_arrays[frame.memory];
+    assert_eq!(memory.length.constants, Some(vec!["0x0".into()]));
+    let api::Expression::View(view) = &report.symbolic.nodes[memory.symbolic.node] else {
+        panic!("the pending load keeps the initial zero content root")
+    };
+    assert!(matches!(
+        report.symbolic.nodes[view.state.node],
+        api::Expression::BytesZero
+    ));
+    assert_eq!(report.cfg.len(), 1);
+    assert_eq!(report.cfg[0].executed_pcs, [0, 2, 3]);
+    assert_eq!(report.ssa.value_count, 2);
     let load = instruction(&report, 0x51);
+    assert_eq!(load.pc, 3);
     assert_eq!(load.progress, api::InstructionProgress::OperandsConsumed);
     assert!(load.results.is_empty());
+    assert_eq!(load.operands.len(), 1);
+    let operand = &report.ssa.values[load.operands[0]];
+    assert!(matches!(&operand.origin, api::SsaValueOrigin::Instruction(origin) if origin.pc == 2));
+    assert!(operand.facts.iter().any(|fact| {
+        fact.status == api::SsaFactStatus::Current && fact.constant.as_deref() == Some("0x0")
+    }));
+    assert!(load.effect_result.is_some());
+    assert_ne!(load.effect_result, Some(load.effect_input));
+    assert_eq!(
+        Some(load.effect_input),
+        instruction(&report, 0x5f).effect_result
+    );
     assert!(matches!(load.operation, api::SsaOperation::Opcode(_)));
     assert!(
         !report.ssa.values.iter().any(|value| matches!(&value.origin,
         api::SsaValueOrigin::Instruction(origin) if origin.pc == load.pc))
+    );
+    assert!(
+        !report
+            .ssa
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instruction| instruction.pc > load.pc)
+    );
+    assert!(!report.outcomes.is_empty());
+    assert!(
+        report
+            .outcomes
+            .iter()
+            .all(|outcome| outcome.kind == api::OutcomeKind::Failure)
+    );
+    report.validate().unwrap();
+    let wire = serde_json::to_vec(&report).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<api::AnalysisReport>(&wire).unwrap(),
+        report
     );
 }
 

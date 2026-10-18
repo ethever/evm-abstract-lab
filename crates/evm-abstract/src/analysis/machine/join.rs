@@ -86,8 +86,31 @@ impl From<StoreError> for MachineError {
 }
 
 impl MachineError {
+    /// Only complete-state precision refusals admit whole-entry projection.
+    /// Frontier classification is deliberately broader and is not eligibility.
+    fn permits_bounded_promotion(&self) -> bool {
+        matches!(
+            self,
+            Self::Alternatives { .. }
+                | Self::Expression(ExprError::Limit { .. })
+                | Self::Bytes(
+                    RangeError::Expression(ExprError::Limit { .. })
+                        | RangeError::State(StateError::Limit { .. })
+                )
+                | Self::Store(
+                    StoreError::Expression(ExprError::Limit { .. })
+                        | StoreError::State(StateError::Limit { .. })
+                        | StoreError::Bytes(
+                            RangeError::Expression(ExprError::Limit { .. })
+                                | RangeError::State(StateError::Limit { .. })
+                        )
+                )
+                | Self::Relations(QueryReason::ExpressionLimit | QueryReason::ConstraintLimit)
+        )
+    }
+
     pub(crate) fn check_cancelled() -> Result<(), Self> {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             Err(Self::Relations(QueryReason::Cancelled))
         } else {
             Ok(())
@@ -95,7 +118,7 @@ impl MachineError {
     }
 
     pub(crate) fn work_failure() -> Self {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             Self::Relations(QueryReason::Cancelled)
         } else {
             Self::Work
@@ -122,9 +145,18 @@ impl MachineError {
 fn expression_reason(error: ExprError) -> FrontierReason {
     FrontierReason::Relations(match error {
         ExprError::Cancelled => QueryReason::Cancelled,
-        ExprError::Unsupported(op) | ExprError::Arity { opcode: op, .. } => {
-            QueryReason::Unsupported(op)
+        ExprError::Unsupported(op) => {
+            QueryReason::ScalarFactError(crate::domain::facts::FactError::UnsupportedOperation(op))
         }
+        ExprError::Arity {
+            opcode,
+            expected,
+            actual,
+        } => QueryReason::ScalarFactError(crate::domain::facts::FactError::InvalidOperation {
+            opcode,
+            expected,
+            actual,
+        }),
         ExprError::Limit { .. } | ExprError::ExportBytes { .. } => QueryReason::ExpressionLimit,
     })
 }
@@ -262,6 +294,7 @@ impl MachinePayload {
 pub(crate) struct EntryAlternatives {
     represented: Vec<Arc<MachinePayload>>,
     cycle_widened: bool,
+    loop_bound: Option<crate::analysis::transfer::procedure::LoopBound>,
 }
 
 impl EntryAlternatives {
@@ -270,13 +303,89 @@ impl EntryAlternatives {
         Self {
             represented: vec![Arc::new(payload.clone())],
             cycle_widened: false,
+            loop_bound: None,
         }
     }
 
     pub(crate) fn work_size(&self) -> usize {
-        self.represented.iter().fold(1usize, |cost, payload| {
-            cost.saturating_add(payload.work_size())
-        })
+        self.represented.iter().fold(
+            self.loop_bound
+                .as_ref()
+                .map_or(1, |bound| bound.work_size()),
+            |cost, payload| cost.saturating_add(payload.work_size()),
+        )
+    }
+
+    pub(crate) fn has_loop_bound(&self) -> bool {
+        self.loop_bound.is_some()
+    }
+
+    pub(crate) fn can_widen_loop(&self) -> bool {
+        self.has_loop_bound() || self.represented.len() >= 2
+    }
+
+    /// Shared policy for propagation and staged replay. Exact acyclic retention
+    /// gets the first attempt; only a typed precision refusal can promote it.
+    /// Failed attempts keep metadata and both operands intact, but never refund
+    /// work. LoopBound owns the single paid coarse materialization retry.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "whole-entry policy shares the execution environment, selectors and ledger"
+    )]
+    pub(crate) fn join_entry(
+        &mut self,
+        entry: &MachinePayload,
+        incoming: &MachinePayload,
+        environment: &crate::world::Entry,
+        domain: Domain,
+        budget: &mut WorkBudget,
+        selectors: &BTreeSet<ExprId>,
+        cyclic: bool,
+    ) -> Result<Option<MachinePayload>, MachineError> {
+        if self.has_loop_bound() || cyclic && self.can_widen_loop() {
+            return self.join_loop(entry, incoming, environment, domain, budget);
+        }
+        match self.join_cyclic(entry, incoming, domain, budget, selectors, cyclic) {
+            Err(error) if !cyclic && error.permits_bounded_promotion() => {
+                checkpoint()?;
+                self.join_loop(entry, incoming, environment, domain, budget)
+            }
+            result => result,
+        }
+    }
+
+    /// Retain one canonical bound instead of historical complete alternatives.
+    /// Admission belongs to join_entry; publication follows full construction.
+    pub(crate) fn join_loop(
+        &mut self,
+        entry: &MachinePayload,
+        incoming: &MachinePayload,
+        environment: &crate::world::Entry,
+        domain: Domain,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<MachinePayload>, MachineError> {
+        let updated = if let Some(bound) = &self.loop_bound {
+            bound.update(incoming, environment, domain, budget)?
+        } else {
+            Some(crate::analysis::transfer::procedure::LoopBound::new(
+                entry,
+                incoming,
+                environment,
+                domain,
+                budget,
+            )?)
+        };
+        let Some((bound, payload)) = updated else {
+            return Ok(None);
+        };
+        if payload.key() != entry.key() {
+            return Err(MachineError::Shape);
+        }
+        checkpoint()?;
+        self.loop_bound = Some(bound);
+        self.represented.clear();
+        self.cycle_widened = false;
+        Ok(Some(payload))
     }
 
     /// None means the whole incoming payload is already covered. Metadata is
@@ -301,22 +410,11 @@ impl EntryAlternatives {
         selectors: &BTreeSet<ExprId>,
         cyclic: bool,
     ) -> Result<Option<MachinePayload>, MachineError> {
-        let cost = entry
-            .work_size()
-            .saturating_add(incoming.work_size())
-            .saturating_mul(4);
-        if cost == usize::MAX || !budget.charge(cost) {
-            return Err(MachineError::work_failure());
-        }
-        let incoming_content = incoming.content_form()?;
-
-        if entry == incoming || entry.content_form()? == incoming_content {
-            return Ok(None);
-        }
-        if coverage::covers(entry, incoming, domain, budget)? {
-            return Ok(None);
-        }
-        for previous in &self.represented {
+        let mut incoming_content = None;
+        for previous in std::iter::once(entry).chain(self.represented.iter().map(Arc::as_ref)) {
+            if !coverage::same_byte_roots(previous, incoming, budget)? {
+                continue;
+            }
             let cost = previous
                 .work_size()
                 .saturating_add(incoming.work_size())
@@ -324,7 +422,15 @@ impl EntryAlternatives {
             if cost == usize::MAX || !budget.charge(cost) {
                 return Err(MachineError::work_failure());
             }
-            if previous.as_ref() == incoming || previous.content_form()? == incoming_content {
+            // Only a root-matching candidate needs this clone. Reuse it for
+            // later matching candidates; their complete comparisons stay paid.
+            if incoming_content.is_none() {
+                incoming_content = Some(incoming.content_form()?);
+            }
+            let incoming_content = incoming_content
+                .as_ref()
+                .expect("prepared matching content");
+            if previous == incoming || previous.content_form()? == *incoming_content {
                 return Ok(None);
             }
             if coverage::covers(previous, incoming, domain, budget)? {
@@ -389,7 +495,7 @@ impl EntryAlternatives {
     }
 
     pub(crate) fn retain(&mut self, incoming: MachinePayload) {
-        if !self.cycle_widened {
+        if !self.cycle_widened && !self.has_loop_bound() {
             self.represented.push(Arc::new(incoming));
         }
     }

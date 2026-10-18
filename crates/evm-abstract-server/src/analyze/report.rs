@@ -1,10 +1,11 @@
 //! Project the complete world machine while preserving native graph namespaces.
+mod environment;
 mod summaries;
+mod terminal;
 use super::{checkpoint, mapping, pools::Pools, rpc, ssa, value};
 use evm_abstract::{
     analysis::{self, control::Control, progress::Phase},
-    domain::AbstractValue,
-    world::{GasInput, SnapshotIdentity, Store},
+    world::{SnapshotIdentity, Store},
 };
 use evm_abstract_protocol as api;
 
@@ -168,53 +169,15 @@ pub(super) fn report(
             })
         }
     };
-    let environment = &native.entry().environment;
-    pools.symbolic.charge(
-        environment
-            .block_hashes
-            .len()
-            .saturating_add(environment.blob_hashes.hashes.len()),
-    )?;
-    let unknown = AbstractValue::top();
-    let hashes =
-        |table: &std::collections::BTreeMap<evm_abstract::U256, alloy_primitives::B256>| {
-            table
-                .iter()
-                .map(|(index, hash)| api::IndexedHash {
-                    index: value::word(*index),
-                    hash: hash.to_string(),
-                })
-                .collect()
-        };
-    let environment = api::EnvironmentSnapshot {
-        to: value::address(environment.to),
-        caller: value::address(environment.caller),
-        origin: value::address(environment.resolved_origin()),
-        call_value: pools.symbolic.value(&environment.value)?,
-        calldata: pools.buffer(&environment.calldata)?,
-        is_static: environment.is_static,
-        gas_upper_bound: match environment.gas {
-            GasInput::Unknown => None,
-            GasInput::UpperBound(bound) => Some(value::word(bound)),
-        },
-        gas_price: pools.symbolic.value(&environment.gas_price)?,
-        coinbase: value::address(environment.coinbase),
-        timestamp: pools.symbolic.value(&environment.timestamp)?,
-        number: pools.symbolic.value(&environment.number)?,
-        prevrandao: pools.symbolic.value(&environment.prevrandao)?,
-        gas_limit: pools.symbolic.value(&environment.gas_limit)?,
-        chain_id: pools
-            .symbolic
-            .value(environment.chain_id.as_ref().unwrap_or(&unknown))?,
-        base_fee: pools.symbolic.value(&environment.base_fee)?,
-        blob_base_fee: pools.symbolic.value(&environment.blob_base_fee)?,
-        block_hashes: hashes(&environment.block_hashes),
-        blob_hashes: hashes(&environment.blob_hashes.hashes),
-        blob_count: pools.symbolic.value(&environment.blob_hashes.length)?,
-    };
+    let environment = environment::project(&native.entry().environment, &mut pools)?;
     checkpoint(control)?;
     let abstract_summaries = summaries::project(native, control, &mut pools.symbolic)?;
-    Ok(api::AnalysisReport {
+    let root_terminal_coverage = native
+        .root_terminal_coverage()
+        .map(|source| terminal::project(source, &mut pools))
+        .transpose()?;
+    checkpoint(control)?;
+    let report = api::AnalysisReport {
         schema_version: api::SCHEMA_VERSION,
         scope,
         fork: request.fork,
@@ -300,7 +263,10 @@ pub(super) fn report(
         byte_arrays: pools.buffers_dto,
         stores: pools.stores,
         outcomes,
+        root_terminal_coverage,
         abstract_summaries,
         acquisition: native.rpc_acquisition().map(rpc::acquisition),
-    })
+    };
+    checkpoint(control)?;
+    Ok(report)
 }

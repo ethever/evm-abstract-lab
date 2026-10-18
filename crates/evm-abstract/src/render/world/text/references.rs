@@ -137,5 +137,6 @@ fn collect_store(store: &Store, addresses: &mut BTreeSet<Address>, hashes: &mut 
     }
     for (site, _) in store.possible_logs() {
         addresses.extend([site.address, site.code_address]);
+        hashes.insert(site.code_hash);
     }
 }

@@ -110,8 +110,8 @@ fn symbolic_expansion_agrees_with_checked_word_rounding_and_zero_size() {
                             .unwrap();
                     }
                     assert_eq!(
-                        relations.unique_value(&expression, &policy),
-                        ValueQuery::Unique(U256::from(expected))
+                        relations.local_value(&expression, &policy),
+                        ValueQuery::Exact(U256::from(expected))
                     );
                 }
             }
@@ -141,10 +141,11 @@ fn numeric_shortcuts_retain_cancellation_and_allocation_operand_limits() {
     let size = domain
         .join(&word(32), &word(64))
         .with_expression(ExprId::fresh().unwrap());
-    let cancel = embedded_smt::Cancellation::new();
+    let cancel = analysis_control::Cancellation::new();
     cancel.cancel();
-    let result =
-        embedded_smt::with_cancellation(&cancel, || memory.expand(&word(0), &size, 4096, domain));
+    let result = analysis_control::with_cancellation(&cancel, || {
+        memory.expand(&word(0), &size, 4096, domain)
+    });
     assert_eq!(result, Err(RangeError::Expression(ExprError::Cancelled)));
     assert_eq!(memory, before);
     let small = Domain::from_spec(domain.spec().with_relations(RelationLimits {

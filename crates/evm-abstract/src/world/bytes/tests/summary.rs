@@ -1,7 +1,7 @@
 //! Canonical byte payloads cover fresh inputs while retaining length/padding.
 
 use super::super::*;
-use crate::domain::relational::{CheckResult, RelationLimits, RelationState};
+use crate::domain::relational::{CheckResult, RelationLimits, RelationState, ValueQuery};
 
 #[test]
 fn arbitrary_inputs_project_equally_and_instantiate_independently() {
@@ -228,7 +228,6 @@ fn mixed_byte_constraints_use_independent_leaves_and_keep_native_numeric_facts()
     let policy = RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     };
     let equal = |data: &ByteArray, index, value| {
@@ -246,25 +245,44 @@ fn mixed_byte_constraints_use_independent_leaves_and_keep_native_numeric_facts()
         )
         .unwrap()
     };
+    for (data, index) in [(&replay, 0), (&replay, 1), (&sibling, 0)] {
+        let read = data.read_byte_checked(&constant(index), domain).unwrap();
+        let ValueQuery::Bounds(bounds) =
+            RelationState::default().local_value(read.expression().unwrap(), &policy)
+        else {
+            panic!("both concrete byte candidates must survive projection and fresh replay");
+        };
+        for candidate in [7, 9] {
+            assert!(read.contains(U256::from(candidate)));
+            assert!(bounds.contains(U256::from(candidate)));
+        }
+    }
     for forbidden in [0, 6, 8, 10] {
         assert_eq!(
             RelationState::default().assume(&equal(&replay, 0, forbidden), true, &policy),
-            CheckResult::Unsat
+            CheckResult::ProvenImpossible
         );
     }
     let mut independent = RelationState::default();
     assert_eq!(
         independent.assume(&equal(&replay, 0, 7), true, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         independent.assume(&equal(&replay, 1, 9), true, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         independent.assume(&equal(&sibling, 0, 9), true, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
+    for (data, index, expected) in [(&replay, 0, 7), (&replay, 1, 9), (&sibling, 0, 9)] {
+        let read = data.read_byte_checked(&constant(index), domain).unwrap();
+        assert_eq!(
+            independent.local_value(read.expression().unwrap(), &policy),
+            ValueQuery::Exact(U256::from(expected))
+        );
+    }
     assert_ne!(replay.state_root(), sibling.state_root());
 }
 
@@ -276,9 +294,9 @@ fn numerical_projection_preserves_failed_construction_and_cancellation() {
         failed.summary_projection(Domain::default()),
         Err(RangeError::UnknownSize)
     );
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
             ByteArray::exact(&[1]).summary_projection(Domain::default()),
             Err(RangeError::Expression(ExprError::Cancelled))

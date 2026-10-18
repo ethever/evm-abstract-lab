@@ -7,6 +7,7 @@ from web_test_harness import settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector, inspector_frame_tab, inspector_title_action
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import node_snapshot, text_pixels, workspace_content_bottom
+from web_test_wire_bytes import assert_return_word42
 
 
 def known_recursion_interactions(browser, url, output):
@@ -21,7 +22,7 @@ def known_recursion_interactions(browser, url, output):
              "call_value": "0x0", "calldata": "0x"}
     report = layout_submission(page, canvas, code, output, "known-recursion", entry=entry,
                                source_height_offset=-62)
-    assert report["schema_version"] == 13 and report["status"] == "Converged"
+    assert report["schema_version"] == 15 and report["status"] == "Converged"
     assert report["frontiers"] == [] and report["ssa"]["complete"]
     summaries = report["abstract_summaries"]
     assert summaries
@@ -41,11 +42,7 @@ def known_recursion_interactions(browser, url, output):
     returns = [outcome for outcome in report["outcomes"] if outcome["kind"] == "Return"]
     assert returns
     for outcome in returns:
-        data = report["byte_arrays"][outcome["data"]]
-        assert data["length"]["constants"] == ["0x20"]
-        cells = {cell["offset"]: data["values"][cell["value"]] for cell in data["cells"]}
-        for offset in range(32):
-            assert cells[offset]["constants"] == ["0x2a" if offset == 31 else "0x0"]
+        assert_return_word42(report, outcome)
     graph_mode(page, canvas, "States")
     page.keyboard.press("f")
     settle_gesture(page)

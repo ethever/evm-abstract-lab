@@ -3,8 +3,8 @@
 use crate::controls::{self, Density};
 
 use super::AnalysisForm;
-use egui::Ui;
-use evm_abstract_protocol::{DomainProfile, SmtProvider};
+use egui::{RichText, Ui};
+use evm_abstract_protocol::DomainProfile;
 use std::{collections::BTreeMap, str::FromStr};
 
 use crate::{framework, palette};
@@ -77,8 +77,17 @@ impl AnalysisForm {
                 &mut self.limits.use_summaries,
                 "Reuse complete callee summaries",
             );
+            ui.checkbox(
+                &mut self.limits.root_terminal_coverage,
+                "Prepare conservative root terminal coverage",
+            );
+            ui.label(
+                RichText::new("Preparation uses the original logical work budget. Detailed execution and SSA may still be partial.")
+                    .small()
+                    .color(palette::MUTED),
+            );
         });
-        egui::CollapsingHeader::new("Precision and solver").show(ui, |ui| {
+        egui::CollapsingHeader::new("Precision").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Numeric domain");
                 egui::ComboBox::from_id_salt("numeric_domain")
@@ -115,35 +124,7 @@ impl AnalysisForm {
                         self.limit_inputs.number(ui, label, value);
                     }
                 });
-            ui.checkbox(
-                &mut self.limits.relations_enabled,
-                "Relational SMT reasoning",
-            );
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Solver");
-                egui::ComboBox::from_id_salt("smt_provider")
-                    .selected_text(format!("{:?}", self.limits.smt_provider))
-                    .show_ui(ui, |ui| {
-                        for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5]
-                        {
-                            controls::tab_value(
-                                ui,
-                                &mut self.limits.smt_provider,
-                                provider,
-                                format!("{provider:?}"),
-                                Density::Regular,
-                            );
-                        }
-                    });
-            });
-            egui::Grid::new("solver_limit")
-                .num_columns(2)
-                .show(ui, |ui| {
-                    self.limit_inputs
-                        .number(ui, "Resource limit", &mut self.limits.smt_rlimit);
-                })
-                .response
-                .on_hover_text("Provider work allowance; not milliseconds");
+            ui.checkbox(&mut self.limits.relations_enabled, "Local path reasoning");
         });
         egui::CollapsingHeader::new("RPC acquisition budget").show(ui, |ui| {
             egui::Grid::new("rpc_limits").num_columns(2).show(ui, |ui| {

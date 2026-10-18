@@ -112,7 +112,7 @@ pub(super) fn details(ui: &mut Ui, value: &ValueInfo) {
                     "Equality identity",
                     format!(
                         "{} · {}",
-                        WideSymbol::Scope(identity.scope),
+                        WideSymbol::Scope(identity.scope.0),
                         symbol(&identity.symbol)
                     ),
                 );

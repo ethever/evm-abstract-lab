@@ -19,7 +19,7 @@ fn hash(limits: &RelationLimits) -> ExprId {
 }
 
 #[test]
-fn encoder_work_limit_keeps_the_complete_assumption() {
+fn opaque_hash_guards_are_retained_without_claiming_consistency() {
     let limits = RelationLimits {
         max_nodes: 64,
         ..RelationLimits::default()
@@ -29,10 +29,10 @@ fn encoder_work_limit_keeps_the_complete_assumption() {
     assert!(condition.depth() < limits.max_depth);
     for nonzero in [false, true] {
         let mut state = RelationState::default();
-        assert_eq!(state.check(&limits), CheckResult::Sat);
+        assert_eq!(state.check(&limits), CheckResult::MayBeFeasible);
         assert_eq!(
             state.assume_checked(&condition, nonzero, &limits),
-            Ok(CheckResult::Unknown(QueryReason::ExpressionLimit))
+            Ok(CheckResult::MayBeFeasible)
         );
         assert_eq!(state.len(), 1);
         assert!(state.constraints().any(|atom| atom
@@ -50,7 +50,7 @@ fn expression_retention_failure_leaves_the_original_state_unchanged() {
     let input = ExprId::fresh().unwrap();
     assert_eq!(
         state.assume_checked(&input, true, &RelationLimits::default()),
-        Ok(CheckResult::Sat)
+        Ok(CheckResult::MayBeFeasible)
     );
     let condition = ExprId::operation(
         opcode::ISZERO,
@@ -87,7 +87,7 @@ fn constraint_retention_failure_keeps_existing_facts_and_accepts_duplicates() {
     let first = ExprId::fresh().unwrap();
     assert_eq!(
         state.assume_checked(&first, true, &limits),
-        Ok(CheckResult::Sat)
+        Ok(CheckResult::MayBeFeasible)
     );
     let before = state.clone();
     assert_eq!(
@@ -97,7 +97,7 @@ fn constraint_retention_failure_keeps_existing_facts_and_accepts_duplicates() {
     assert_eq!(state, before);
     assert_eq!(
         state.assume_checked(&first, true, &limits),
-        Ok(CheckResult::Sat)
+        Ok(CheckResult::MayBeFeasible)
     );
     assert_eq!(state, before);
 }
@@ -116,7 +116,7 @@ fn disabled_and_invalid_policy_fail_before_retaining_an_atom() {
         ),
         (
             RelationLimits {
-                rlimit: 0,
+                max_nodes: 0,
                 ..RelationLimits::default()
             },
             QueryReason::Configuration,
@@ -131,13 +131,13 @@ fn disabled_and_invalid_policy_fail_before_retaining_an_atom() {
 fn cancellation_after_retention_is_not_a_rejected_assumption() {
     let limits = RelationLimits::default();
     let condition = ExprId::fresh().unwrap();
-    let token = embedded_smt::Cancellation::new();
+    let token = analysis_control::Cancellation::new();
     token.cancel();
     let mut state = RelationState::default();
-    embedded_smt::with_cancellation(&token, || {
+    analysis_control::with_cancellation(&token, || {
         assert_eq!(
             state.assume_checked(&condition, true, &limits),
-            Ok(CheckResult::Unknown(QueryReason::Cancelled))
+            Ok(CheckResult::Undetermined(QueryReason::Cancelled))
         );
     });
     assert!(state.constraints().any(|atom| atom

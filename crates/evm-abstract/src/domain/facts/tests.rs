@@ -1,14 +1,312 @@
 use super::{
     BinaryFact, BinaryPredicate, BitConstraints, BitIndex, Fact, FactChange, FactError,
-    FactLattice, FiniteSet, OperationRelation, RelationalFact, Symbol, Term, UnaryFact,
-    UnaryPredicate, WordBounds,
+    FactLattice, FiniteSet, OperationRelation, RelationalFact, ScalarFacts, Symbol, Term,
+    UnaryFact, UnaryPredicate, WordBounds,
 };
-use crate::domain::provenance::{Origin, OriginSet};
+use crate::{
+    domain::provenance::{Origin, OriginSet},
+    test_instrumentation::Counter,
+};
 use alloy_primitives::U256;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+pub(super) static SCALAR_MEETS: Counter<usize> = Counter::new(0);
+pub(super) static SCALAR_VALIDATIONS: Counter<usize> = Counter::new(0);
+
+fn reset_scalar_work() {
+    SCALAR_MEETS.set(0);
+    SCALAR_VALIDATIONS.set(0);
+}
+
+fn scalar_work() -> (usize, usize) {
+    (SCALAR_MEETS.get(), SCALAR_VALIDATIONS.get())
+}
 
 fn unary(predicate: UnaryPredicate) -> Fact {
     Fact::Unary(UnaryFact::new(Symbol::THIS, predicate))
+}
+
+fn assert_unary_matches_general(lattice: &mut FactLattice, fact: UnaryFact, expected: FactChange) {
+    assert!(lattice.binary.is_empty() && lattice.relations.is_empty());
+    let mut general = lattice.clone();
+    general.apply_unary(fact.clone()).expect("valid unary fact");
+    general
+        .normalize_equalities_general()
+        .expect("general normalization");
+    general.validate_relations().expect("valid relations");
+    assert!(general.atoms() <= general.max_atoms);
+    assert_eq!(lattice.insert(Fact::Unary(fact)), Ok(expected));
+    assert_eq!(
+        *lattice, general,
+        "compare the complete lattice, including representatives"
+    );
+}
+
+#[test]
+fn unary_numeric_updates_preserve_general_normalization_exactly() {
+    let mut lattice = FactLattice::new(32);
+    let candidates = BTreeSet::from([
+        U256::ZERO,
+        U256::from(1),
+        U256::from(3),
+        U256::from(5),
+        U256::from(6),
+        U256::from(9),
+        U256::MAX,
+    ]);
+    assert_unary_matches_general(
+        &mut lattice,
+        UnaryFact::new(
+            Symbol::THIS,
+            UnaryPredicate::MemberOf(FiniteSet::new(candidates).expect("nonempty")),
+        ),
+        FactChange::Strengthened,
+    );
+    let bias = U256::from(1) << 255;
+    let bits = BitConstraints::new(U256::from(2), U256::from(1)).expect("bits");
+    let unsigned = WordBounds::new(U256::from(5), U256::from(9)).expect("bounds");
+    let signed = WordBounds::new(bias + U256::from(6), bias + U256::from(9)).expect("bounds");
+    for (predicate, expected) in [
+        (UnaryPredicate::KnownBits(bits), vec![1u64, 5, 9]),
+        (UnaryPredicate::UnsignedBounds(unsigned), vec![5, 9]),
+        (UnaryPredicate::SignedBounds(signed), vec![9]),
+        (
+            UnaryPredicate::congruent(U256::from(4), U256::from(1)).expect("modulus"),
+            vec![9],
+        ),
+        (UnaryPredicate::NonZero, vec![9]),
+    ] {
+        assert_unary_matches_general(
+            &mut lattice,
+            UnaryFact::new(Symbol::THIS, predicate),
+            FactChange::Strengthened,
+        );
+        assert_eq!(
+            lattice.scalar(Symbol::THIS).expect("scalar").finite(),
+            Some(
+                &expected
+                    .into_iter()
+                    .map(U256::from)
+                    .collect::<BTreeSet<_>>()
+            ),
+        );
+    }
+    let scalar = lattice.scalar(Symbol::THIS).expect("scalar");
+    assert_eq!(scalar.known_bits(), Some(bits));
+    assert_eq!(scalar.unsigned_bounds(), Some(unsigned));
+    assert_eq!(scalar.signed_bounds(), Some(signed));
+    assert_eq!(
+        scalar.congruence().expect("congruence").modulus_residue(),
+        Some((U256::from(4), U256::from(1)))
+    );
+    assert!(scalar.nonzero());
+    assert!(scalar.contains(U256::from(9)));
+    assert!(!scalar.contains(U256::from(5)));
+    assert_unary_matches_general(
+        &mut lattice,
+        UnaryFact::new(Symbol::THIS, UnaryPredicate::Exact(U256::from(9))),
+        FactChange::Unchanged,
+    );
+
+    let mut zero = FactLattice::new(2);
+    for predicate in [
+        UnaryPredicate::MemberOf(
+            FiniteSet::new(BTreeSet::from([U256::ZERO, U256::from(1)])).expect("nonempty"),
+        ),
+        UnaryPredicate::IsZero,
+    ] {
+        assert_unary_matches_general(
+            &mut zero,
+            UnaryFact::new(Symbol::THIS, predicate),
+            FactChange::Strengthened,
+        );
+    }
+    assert_eq!(
+        zero.scalar(Symbol::THIS).expect("zero").finite(),
+        Some(&BTreeSet::from([U256::ZERO]))
+    );
+    assert!(!zero.scalar(Symbol::THIS).expect("zero").nonzero());
+}
+
+#[test]
+fn unary_validation_keeps_singleton_contradictions_atomic_without_finite_candidates() {
+    let bias = U256::from(1) << 255;
+    for predicate in [
+        UnaryPredicate::KnownBits(BitConstraints::new(U256::MAX, U256::ZERO).expect("zero bits")),
+        UnaryPredicate::UnsignedBounds(
+            WordBounds::new(U256::ZERO, U256::ZERO).expect("zero bounds"),
+        ),
+        UnaryPredicate::SignedBounds(WordBounds::new(bias, bias).expect("signed zero bounds")),
+        UnaryPredicate::Congruent(super::Congruence::exact(U256::ZERO)),
+        UnaryPredicate::IsZero,
+    ] {
+        let mut lattice = FactLattice::new(8);
+        lattice
+            .insert(unary(UnaryPredicate::NonZero))
+            .expect("nonzero");
+        let before = lattice.clone();
+        assert_eq!(
+            lattice.insert(unary(predicate)),
+            Err(FactError::Contradiction {
+                subject: Symbol::THIS
+            })
+        );
+        assert_eq!(lattice, before);
+    }
+}
+
+#[test]
+fn unary_top_and_redundant_facts_keep_the_original_change_results() {
+    for predicate in [
+        UnaryPredicate::KnownBits(
+            BitConstraints::new(U256::ZERO, U256::ZERO).expect("unknown bits"),
+        ),
+        UnaryPredicate::UnsignedBounds(
+            WordBounds::new(U256::ZERO, U256::MAX).expect("full bounds"),
+        ),
+        UnaryPredicate::SignedBounds(WordBounds::new(U256::ZERO, U256::MAX).expect("full bounds")),
+        UnaryPredicate::Congruent(super::Congruence::top()),
+        UnaryPredicate::PossibleOrigins(OriginSet::top()),
+    ] {
+        let mut lattice = FactLattice::new(1);
+        let fact = UnaryFact::new(Symbol::THIS, predicate);
+        // Some(Top) remains a stored slot, as in the existing general path.
+        assert_unary_matches_general(&mut lattice, fact.clone(), FactChange::Strengthened);
+        assert_eq!(lattice.atoms(), 1);
+        assert_eq!(lattice.scalar(Symbol::THIS).expect("scalar").finite(), None);
+        assert_unary_matches_general(&mut lattice, fact, FactChange::Unchanged);
+    }
+    let mut lattice = FactLattice::new(1);
+    for (predicate, change) in [
+        (
+            UnaryPredicate::BitSet(BitIndex::new(0).expect("bit")),
+            FactChange::Strengthened,
+        ),
+        (
+            UnaryPredicate::KnownBits(
+                BitConstraints::new(U256::ZERO, U256::ZERO).expect("unknown bits"),
+            ),
+            FactChange::Unchanged,
+        ),
+        (
+            UnaryPredicate::BitSet(BitIndex::new(0).expect("bit")),
+            FactChange::Unchanged,
+        ),
+    ] {
+        assert_unary_matches_general(
+            &mut lattice,
+            UnaryFact::new(Symbol::THIS, predicate),
+            change,
+        );
+    }
+}
+
+#[test]
+fn unary_default_cleanup_preserves_pre_cleanup_identity_representatives() {
+    let removed = Symbol::new(1);
+    let stale = Symbol::new(2);
+    let mut lattice = FactLattice::new(1);
+    lattice
+        .insert(unary(UnaryPredicate::NonZero))
+        .expect("nonzero");
+    lattice.scalars.insert(removed, ScalarFacts::default());
+    lattice.representatives.insert(stale, Symbol::THIS);
+    let mut general = lattice.clone();
+    general
+        .normalize_equalities_general()
+        .expect("general normalization");
+    lattice.normalize_equalities().expect("unary normalization");
+    assert_eq!(lattice, general);
+    assert_eq!(lattice.scalar(removed), None);
+    assert_eq!(
+        lattice.representatives,
+        BTreeMap::from([(Symbol::THIS, Symbol::THIS), (removed, removed)])
+    );
+    assert!(!lattice.equivalent(removed, Symbol::THIS));
+    assert!(!lattice.equivalent(stale, Symbol::THIS));
+    // The next pass drops the removed slot's identity entry, just as before.
+    assert_unary_matches_general(
+        &mut lattice,
+        UnaryFact::new(Symbol::THIS, UnaryPredicate::NonZero),
+        FactChange::Strengthened,
+    );
+    assert_unary_matches_general(
+        &mut lattice,
+        UnaryFact::new(Symbol::THIS, UnaryPredicate::NonZero),
+        FactChange::Unchanged,
+    );
+}
+
+#[test]
+fn unary_normalization_skips_meets_and_revalidation_but_keeps_apply_validation() {
+    let _meets = SCALAR_MEETS.scope();
+    let _validations = SCALAR_VALIDATIONS.scope();
+    let mut lattice = FactLattice::new(8);
+    lattice
+        .insert(unary(UnaryPredicate::Exact(U256::from(4))))
+        .expect("finite");
+    lattice
+        .insert(Fact::Unary(UnaryFact::new(
+            Symbol::new(1),
+            UnaryPredicate::NonZero,
+        )))
+        .expect("second scalar");
+    reset_scalar_work();
+    assert_eq!(
+        lattice.insert(unary(UnaryPredicate::BitClear(
+            BitIndex::new(0).expect("bit")
+        ))),
+        Ok(FactChange::Strengthened)
+    );
+    assert_eq!(scalar_work(), (0, 1), "only apply_unary validates");
+    let mut general = lattice.clone();
+    reset_scalar_work();
+    general
+        .normalize_equalities_general()
+        .expect("general normalization");
+    assert_eq!(
+        scalar_work(),
+        (2, 2),
+        "the old path meets and revalidates both scalars"
+    );
+    assert_eq!(lattice, general);
+}
+
+#[test]
+fn binary_and_operation_relations_keep_general_normalization_without_equality_edges() {
+    let _meets = SCALAR_MEETS.scope();
+    let _validations = SCALAR_VALIDATIONS.scope();
+    let a = Symbol::THIS;
+    let b = Symbol::new(1);
+    for fact in [
+        Fact::Binary(BinaryFact::new(
+            Term::Symbol(a),
+            BinaryPredicate::Ne,
+            Term::Symbol(b),
+        )),
+        Fact::Binary(BinaryFact::new(
+            Term::Symbol(a),
+            BinaryPredicate::Ule,
+            Term::Symbol(b),
+        )),
+        Fact::Relation(RelationalFact::Operation(
+            OperationRelation::new(0x15, b, vec![Term::Symbol(a)]).expect("iszero"),
+        )),
+    ] {
+        let mut lattice = FactLattice::new(8);
+        lattice
+            .insert(unary(UnaryPredicate::NonZero))
+            .expect("nonzero");
+        reset_scalar_work();
+        assert_eq!(lattice.insert(fact.clone()), Ok(FactChange::Strengthened));
+        assert_eq!(scalar_work(), (1, 1), "relations retain the general path");
+        assert!(lattice.facts().contains(&fact));
+        let mut general = lattice.clone();
+        general
+            .normalize_equalities_general()
+            .expect("general normalization");
+        assert_eq!(lattice, general);
+    }
 }
 
 #[test]
@@ -249,6 +547,7 @@ fn capacity_is_a_resource_stop_and_keeps_the_old_complete_table() {
         lattice.insert(unary(UnaryPredicate::MemberOf(large))),
         Err(FactError::Capacity { .. })
     ));
+    assert_eq!(lattice, before);
 }
 
 #[test]
@@ -424,6 +723,35 @@ fn numerical_equality_does_not_merge_lineage_or_usage_roles() {
         lattice.scalar(a).expect("a").possible_origins(),
         lattice.scalar(b).expect("b").possible_origins()
     );
+    let relation = Fact::Relation(RelationalFact::Operation(
+        OperationRelation::new(0x15, Symbol::new(3), vec![Term::Symbol(b)]).expect("iszero"),
+    ));
+    lattice
+        .insert(relation.clone())
+        .expect("operation relation");
+    lattice
+        .insert(Fact::Unary(UnaryFact::new(
+            b,
+            UnaryPredicate::Exact(U256::from(3)),
+        )))
+        .expect("numeric alias propagation");
+    for symbol in [a, b] {
+        assert_eq!(
+            lattice.scalar(symbol).expect("alias").finite(),
+            Some(&BTreeSet::from([U256::from(3)]))
+        );
+    }
+    assert_eq!(
+        lattice.scalar(a).expect("a").possible_origins(),
+        Some(&OriginSet::source(Origin::Calldata))
+    );
+    assert_eq!(
+        lattice.scalar(b).expect("b").possible_origins(),
+        Some(&OriginSet::source(Origin::Storage))
+    );
+    assert!(lattice.scalar(a).expect("a").is_code_address());
+    assert!(!lattice.scalar(b).expect("b").is_code_address());
+    assert!(lattice.facts().contains(&relation));
 }
 
 #[test]

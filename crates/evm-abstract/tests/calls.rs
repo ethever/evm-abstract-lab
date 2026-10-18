@@ -188,13 +188,14 @@ fn calldata_is_copied_from_callers_memory_and_returned_bytes_feed_parent() {
         .calldata
         .read_word(&AbstractValue::constant(U256::ZERO), Domain::default());
     assert_numeric_eq(&loaded, &AbstractValue::constant(U256::from(7)));
-    assert!(
-        loaded
+    // read_word forwards this complete Slice/WriteWord window to the caller's
+    // PUSH constant without arithmetic reconstruction. MLOAD and CALLDATALOAD
+    // assign their own origins only during opcode transfer.
+    assert_eq!(
+        loaded.provenance().origins(),
+        AbstractValue::constant(U256::from(7))
             .provenance()
             .origins()
-            .sources()
-            .unwrap()
-            .contains(&Origin::Arithmetic)
     );
     let resumed: Vec<_> = analysis
         .states()
@@ -508,18 +509,27 @@ fn callbacks_observe_parent_writes_before_call_entry() {
 
 #[test]
 fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
+    use evm_abstract::{
+        analysis::{
+            FrameCode, Limit, RootTerminalScope, RootTerminalTrigger, layers::AnalysisSession,
+        },
+        domain::symbolic::{ByteStateKind, ExprKind, SlotStateId, SlotStateKind},
+        world::{Existence, Store},
+    };
+
     let caller = "5f5f5f5f5f345af100";
+    let world = world(&[(0x101, caller), (0x200, "00")]);
     let mut entry = entry();
     entry.environment.value = AbstractValue::top();
-    let analysis = analyze_world(
-        world(&[(0x101, caller), (0x200, "00")]),
-        entry,
-        ExecutionConfig {
-            max_call_depth: 3,
-            ..ExecutionConfig::default()
-        },
-    )
-    .unwrap();
+    let config = ExecutionConfig {
+        max_call_depth: 3,
+        ..ExecutionConfig::default()
+    };
+    assert!(config.root_terminal_coverage);
+    assert_eq!(config.max_work, 20_000_000);
+    let mut detailed_config = config.clone();
+    detailed_config.root_terminal_coverage = false;
+    let analysis = analyze_world(world.clone(), entry.clone(), detailed_config).unwrap();
     // The known self target now closes through a relative procedure instead
     // of exhausting the physical depth limit while the unknown remainder runs.
     assert_eq!(analysis.status(), Status::Converged);
@@ -537,6 +547,208 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
             .iter()
             .any(|s| s.key.frames.len() == 2 && s.active().code_address == addr(0x200))
     );
+    assert!(!analysis.config().root_terminal_coverage);
+    assert!(analysis.root_terminal_coverage().is_none());
+    let mut detailed_policy = serde_json::to_value(analysis.config()).unwrap();
+    detailed_policy["root_terminal_coverage"] = true.into();
+    assert_eq!(detailed_policy, serde_json::to_value(&config).unwrap());
+
+    // Only the coverage switch differs: its preparation shares the original
+    // 20M ledger, so terminal coverage must leave detailed exhaustion honest.
+    let mut session =
+        AnalysisSession::from_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let snapshot = session.facts().snapshot().clone();
+    let revision = session.facts().revision();
+    let report = session.analyze().unwrap();
+    let covered = report.analysis();
+    assert!(covered.config().root_terminal_coverage);
+    assert_eq!(covered.config().max_call_depth, 3);
+    assert_eq!(covered.config().max_work, 20_000_000);
+    assert_eq!(covered.status(), Status::Incomplete);
+    assert!(covered.frontiers().iter().any(|frontier| matches!(
+        frontier.reason,
+        FrontierReason::Work | FrontierReason::SummaryWork | FrontierReason::Budget(Limit::Work)
+    )));
+    let coverage = covered.root_terminal_coverage().unwrap();
+    assert_eq!(coverage.scope(), RootTerminalScope::AllInputStates);
+    let trigger_reason = match coverage.trigger() {
+        RootTerminalTrigger::Work => FrontierReason::Work,
+        RootTerminalTrigger::SummaryWork => FrontierReason::SummaryWork,
+        trigger => panic!("expected an original-ledger work refusal, got {trigger:?}"),
+    };
+    assert!(
+        covered
+            .frontiers()
+            .iter()
+            .any(|frontier| frontier.reason == trigger_reason)
+    );
+    assert_eq!(
+        coverage.outcomes().each_ref().map(|outcome| outcome.kind()),
+        [
+            OutcomeKind::Return,
+            OutcomeKind::Revert,
+            OutcomeKind::Failure
+        ]
+    );
+    let input = coverage.input();
+    let original = &covered.states()[0].entry;
+    let frame = original.active();
+    assert_eq!(input.snapshot(), &snapshot);
+    assert_eq!(input.snapshot(), report.snapshot());
+    assert_eq!(input.revision(), revision);
+    assert_eq!(input.revision(), report.revision());
+    assert_eq!(input.entry(), &entry);
+    assert_eq!(input.entry(), covered.entry());
+    assert_eq!(input.fork(), world.fork());
+    assert_eq!(input.domain_spec(), covered.domain_spec());
+    assert_eq!(input.domain_spec(), Domain::default().spec());
+    assert_eq!(
+        serde_json::to_value(input.config()).unwrap(),
+        serde_json::to_value(&config).unwrap()
+    );
+    assert_eq!(input.frame(), &frame.key);
+    assert_eq!(input.frame().mode, FrameCode::Runtime);
+    assert_eq!(input.program(), frame.program.as_ref().unwrap());
+    let Code::Runtime(program) = &world.accounts()[&entry.address].code else {
+        panic!("fixture has runtime code");
+    };
+    assert_eq!(input.program(), program);
+    assert_eq!(input.calldata(), &frame.calldata);
+    assert_eq!(input.calldata(), &entry.environment.calldata);
+    assert_eq!(input.call_value(), &frame.call_value);
+    let ExprKind::Input(value) = input.call_value().expression().unwrap().kind() else {
+        panic!("CALLVALUE retains the original scoped input");
+    };
+    assert_eq!(input.input_scope(), Some(value.scope));
+    assert_eq!(input.saved_store(), &frame.saved_store);
+    assert_eq!(input.initial_store(), &original.store);
+    let domain = Domain::from_spec(input.domain_spec());
+    let request_store = Store::new_checked(&world, domain).unwrap();
+    let saved = input.saved_store().state();
+    assert_eq!(saved, &request_store);
+    let SlotStateKind::Input { source, .. } = saved.global_storage_state().kind() else {
+        panic!("saved world retains its immutable source");
+    };
+    assert_eq!(input.storage_source(), source.token());
+    assert_eq!(saved.touched_in_transaction(entry.address), Some(false));
+    assert_eq!(
+        input.initial_store().touched_in_transaction(entry.address),
+        Some(true)
+    );
+
+    let [returned, reverted, failed] = coverage.outcomes();
+    assert_eq!(failed.data(), &ByteArray::empty());
+    // Complete immutable roots bind every slot, including omitted owners;
+    // checking only a few numeric reads would lose this rollback relation.
+    for outcome in [reverted, failed] {
+        let store = outcome.store();
+        assert_eq!(store.global_storage_state(), saved.global_storage_state());
+        assert_eq!(
+            store.global_storage_default(),
+            saved.global_storage_default()
+        );
+        assert_eq!(store.slots(), saved.slots());
+        assert_eq!(store.balance_default(), saved.balance_default());
+        assert_eq!(store.nonce_default(), saved.nonce_default());
+        assert_eq!(store.code_default(), saved.code_default());
+        assert_eq!(store.existence_default(), saved.existence_default());
+        let mut owners = saved.addresses();
+        owners.insert(addr(3));
+        assert_eq!(store.addresses(), owners);
+        for owner in saved.addresses().into_iter().chain([addr(0x999)]) {
+            assert_eq!(store.slot_root(owner, false), saved.slot_root(owner, false));
+            assert_eq!(store.storage_default(owner), saved.storage_default(owner));
+            assert_eq!(store.read_balance(owner), saved.read_balance(owner));
+            assert_eq!(store.nonce(owner), saved.nonce(owner));
+            assert_eq!(store.code(owner), saved.code(owner));
+            assert_eq!(store.existence(owner), saved.existence(owner));
+        }
+        // RIPEMD's optional sticky touch can clear only owner 3. Its retained
+        // alternative must still be the exact original scoped storage root.
+        let ripemd = store.slot_root(addr(3), false).unwrap();
+        let SlotStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = ripemd.kind()
+        else {
+            panic!("optional owner-3 cleanup retains both complete alternatives");
+        };
+        assert!(matches!(condition.kind(), ExprKind::Fresh(_)));
+        assert_eq!(then_state, &saved.slot_root(addr(3), false).unwrap());
+        assert_eq!(else_state, &SlotStateId::zero());
+        assert!(!store.logs_unknown());
+        assert_eq!(store.possible_logs(), saved.possible_logs());
+    }
+
+    // Unbound fresh sources admit independent complete success effects/data
+    // under that same saved input, rather than a freshened rollback history.
+    let SlotStateKind::Input {
+        source: effects,
+        bindings,
+    } = returned.store().global_storage_state().kind()
+    else {
+        panic!("Return has an independent complete effect source");
+    };
+    assert!(bindings.is_empty());
+    assert!(matches!(effects.token().kind(), ExprKind::Fresh(_)));
+    assert_ne!(effects.token(), input.storage_source());
+    for owner in [addr(0x101), addr(0x200), addr(0x999)] {
+        let root = returned.store().slot_root(owner, false).unwrap();
+        let SlotStateKind::Input { source, bindings } = root.kind() else {
+            panic!("success storage remains independently source-backed");
+        };
+        assert!(bindings.is_empty());
+        assert_eq!(source.token(), effects.token());
+        assert_eq!(
+            source.namespace(),
+            U256::from_be_slice(owner.as_slice()) << 8 | effects.namespace()
+        );
+        assert_ne!(root, saved.slot_root(owner, false).unwrap());
+        assert!(returned.store().read_balance(owner).numeric().is_top());
+        assert!(returned.store().nonce(owner).numeric().is_top());
+        assert_eq!(returned.store().code(owner), None);
+        assert_eq!(returned.store().existence(owner), Existence::Unknown);
+    }
+    assert!(returned.store().logs_unknown());
+    assert!(returned.store().possible_logs().is_empty());
+    let data_sources = [returned, reverted].map(|outcome| {
+        let ByteStateKind::Input {
+            source,
+            length,
+            bindings,
+        } = outcome.data().state_root().kind()
+        else {
+            panic!("terminal data retains an entire unconstrained byte source");
+        };
+        assert!(bindings.is_empty());
+        assert!(matches!(source.token().kind(), ExprKind::Fresh(_)));
+        assert!(matches!(length.kind(), ExprKind::Fresh(_)));
+        assert_eq!(outcome.data().len().expression(), Some(length));
+        assert!(outcome.data().len().numeric().is_top());
+        assert_ne!(source.token(), effects.token());
+        assert_ne!(source.token(), input.storage_source());
+        source
+    });
+    assert_ne!(data_sources[0], data_sources[1]);
+    assert_ne!(
+        returned.data().len().expression(),
+        reverted.data().len().expression()
+    );
+    for outcome in coverage.outcomes() {
+        let store = outcome.store();
+        assert_eq!(store.global_transient_state(), &SlotStateId::zero());
+        assert!(store.transient_slots().is_empty());
+        assert_eq!(store.created_default(), Some(false));
+        assert_eq!(store.pending_destruction_default(), Some(false));
+        assert_eq!(store.touched_default(), Some(false));
+        for owner in store.addresses() {
+            assert_eq!(store.slot_root(owner, true).unwrap(), SlotStateId::zero());
+            assert_eq!(store.created_in_transaction(owner), Some(false));
+            assert_eq!(store.pending_destruction(owner), Some(false));
+            assert_eq!(store.touched_in_transaction(owner), Some(false));
+        }
+    }
 }
 
 #[test]
@@ -710,10 +922,18 @@ fn shared_depth_and_work_limits_keep_typed_frontiers() {
         },
     )
     .unwrap();
+    assert_eq!(memory.status(), Status::Converged);
+    assert!(memory.frontiers().is_empty());
     assert!(
         memory
-            .frontiers()
+            .outcomes()
             .iter()
-            .any(|f| f.reason == FrontierReason::Memory)
+            .any(|o| o.kind == OutcomeKind::Return)
+    );
+    assert!(
+        memory
+            .outcomes()
+            .iter()
+            .any(|o| o.kind == OutcomeKind::Failure)
     );
 }

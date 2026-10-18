@@ -1,7 +1,7 @@
 //! Cancellable native JSON output without a whole-output byte limit.
 //! An error preserves the already computed analysis and carries exact usage.
 use crate::analysis::control::Control;
-use embedded_smt::Cancellation;
+use analysis_control::Cancellation;
 use serde::Serialize;
 use std::io::{self, Write};
 use thiserror::Error;
@@ -83,11 +83,11 @@ fn encode<T: Serialize>(
 }
 /// Pretty native output, preserving the current thread's cancellation scope.
 pub fn pretty<T: Serialize>(value: &T) -> Result<String, JsonError> {
-    encode(value, embedded_smt::current_cancellation(), true)
+    encode(value, analysis_control::current_cancellation(), true)
 }
 /// Compact output, preserving the current thread's cancellation scope.
 pub fn compact<T: Serialize>(value: &T) -> Result<String, JsonError> {
-    encode(value, embedded_smt::current_cancellation(), false)
+    encode(value, analysis_control::current_cancellation(), false)
 }
 /// Pretty extraction under an explicit cancellation scope.
 pub fn with_control<T: Serialize>(value: &T, control: &Control) -> Result<String, JsonError> {

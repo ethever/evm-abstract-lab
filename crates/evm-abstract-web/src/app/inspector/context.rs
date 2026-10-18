@@ -4,7 +4,7 @@ use super::value;
 use crate::palette;
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::{AnalysisReport, FrameSnapshot};
+use evm_abstract_protocol::{AnalysisReport, EnvironmentSnapshot, FrameSnapshot};
 
 pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
     egui::Grid::new("frame_context")
@@ -129,7 +129,14 @@ pub(super) fn environment(ui: &mut Ui, report: &AnalysisReport) {
         .small()
         .color(palette::MUTED),
     );
-    let env = &report.metadata.environment;
+    effective_environment(
+        ui,
+        &report.metadata.environment,
+        &report.metadata.fingerprint,
+    );
+}
+
+pub(super) fn effective_environment(ui: &mut Ui, env: &EnvironmentSnapshot, fingerprint: &str) {
     egui::Grid::new("effective_environment")
         .num_columns(2)
         .show(ui, |ui| {
@@ -157,7 +164,7 @@ pub(super) fn environment(ui: &mut Ui, report: &AnalysisReport) {
                 env.gas_upper_bound.as_deref().unwrap_or("Unknown"),
             );
             value::text(ui, "Static", env.is_static.to_string());
-            value::text(ui, "World fingerprint", &report.metadata.fingerprint);
+            value::text(ui, "World fingerprint", fingerprint);
         });
     for (name, hashes) in [
         ("Block hashes", &env.block_hashes),

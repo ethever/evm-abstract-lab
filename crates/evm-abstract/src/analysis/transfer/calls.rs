@@ -11,7 +11,7 @@ use crate::{
     },
     bytecode::Program,
     domain::{AbstractValue, Domain},
-    world::{AddressInput, ByteArray, Code, Entry, Store, World},
+    world::{AddressInput, ByteArray, Code, Entry, Snapshot, Store, World},
 };
 use alloy_primitives::{Address, B256, U256, keccak256};
 use revm_bytecode::opcode;
@@ -95,6 +95,17 @@ pub(super) fn initial(
     calldata
         .check_existing(domain.spec().relations().expressions())
         .map_err(super::errors::bytes)?;
+    // Capture the transaction's pre-entry state first. An entered root is a
+    // message-call recipient, while the separate pre-entry gas failure and
+    // ordinary root rollback must retain this untouched checkpoint.
+    let saved_store = store.snapshot();
+    if let Some(recipient) = entry.environment.to.as_concrete() {
+        store.touch_account(recipient);
+    } else {
+        // Bytecode-only entry uses a synthetic code index, not an observed
+        // recipient. Any account may be touched; no particular one must be.
+        store.may_touch_all();
+    }
     Ok(MachinePayload {
         relations: crate::domain::relational::RelationState::default(),
         call_stack: CallStack::new(RootFrame {
@@ -124,11 +135,39 @@ pub(super) fn initial(
                 )),
                 address_operand: None,
                 caller_operand: None,
-                saved_store: store.snapshot(),
+                saved_store,
             },
         }),
         store,
     })
+}
+
+/// Complete a root's Store without retaining frame data that outcomes discard.
+/// Creation completion stays with `finish`: callers may bypass it only for an
+/// actual native root with no child, where `finish_creation` is a no-op.
+pub(super) fn finish_root_store(
+    store: &mut Store,
+    saved_store: &Snapshot,
+    kind: OutcomeKind,
+    context: &mut TransferContext<'_>,
+) -> Result<(), FrontierReason> {
+    if !context.procedure {
+        let rollback = (kind != OutcomeKind::Return).then_some(saved_store);
+        store
+            .finalize_transaction_checked(context.domain, rollback, context.budget)
+            .map_err(|error| {
+                if error.is_cancelled() {
+                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+                } else if let Some(error) = error.into_store_error() {
+                    super::errors::store(error)
+                } else {
+                    FrontierReason::Work
+                }
+            })?;
+    } else if kind != OutcomeKind::Return {
+        store.restore(saved_store.clone());
+    }
+    Ok(())
 }
 
 pub(super) fn finish(
@@ -154,10 +193,10 @@ pub(super) fn finish(
     if let Some(child) = payload.call_stack.active_child() {
         let continuation = &child.continuation;
         let parent = payload.call_stack.parent().expect("a child has a parent");
-        let cost = byte_work(
-            &[&continuation.output_offset, &continuation.output_size],
-            0,
-            parent.memory.work_size().saturating_add(data.work_size()),
+        let cost = parent.memory.copy_return_data_work(
+            &data,
+            &continuation.output_offset,
+            &continuation.output_size,
             domain,
         );
         if !context.budget.charge(cost) {
@@ -166,13 +205,14 @@ pub(super) fn finish(
         }
     }
     let Some(child) = payload.call_stack.pop_child() else {
-        if kind != OutcomeKind::Return {
-            payload
-                .store
-                .restore(payload.call_stack.root().state.saved_store.clone());
-        }
-        if !context.procedure {
-            payload.store.finalize_transaction(domain);
+        if let Err(reason) = finish_root_store(
+            &mut payload.store,
+            &payload.call_stack.root().state.saved_store,
+            kind,
+            context,
+        ) {
+            boundary_on(result, pc, reason, payload.key());
+            return;
         }
         result.outcomes.push(Outcome {
             kind,
@@ -501,6 +541,7 @@ pub(super) fn call(
             ),
             _ => unreachable!(),
         };
+        let unknown_target = target_operand.is_some();
         let address_operand = if matches!(op, opcode::CALL | opcode::STATICCALL) {
             target_operand
         } else {
@@ -514,6 +555,23 @@ pub(super) fn call(
         let saved_store = input_payload.store.snapshot();
         let code_hash = captured_hash(&program, &input_payload.store, code_address, code);
         let mut payload = input_payload.clone();
+        // revm's CALL checkpoint precedes transfer_loaded: a zero transfer
+        // touches its recipient, and failure restores that touch with the child
+        // store. CALLCODE's self-transfer and DELEGATECALL do not add a touch.
+        if matches!(op, opcode::CALL | opcode::STATICCALL) && target != caller_address {
+            if unknown_target {
+                payload.store.may_touch_all();
+            } else {
+                payload.store.touch_account(target);
+            }
+            if op == opcode::CALL && value.may_be_nonzero() {
+                if value.may_be_zero() {
+                    payload.store.may_touch_account(caller_address);
+                } else {
+                    payload.store.touch_account(caller_address);
+                }
+            }
+        }
         // A proven zero transfer leaves both balances and their input identities
         // unchanged. Rebuilding them with ADD/SUB would add arithmetic metadata
         // and make otherwise identical rollback preconditions look different.

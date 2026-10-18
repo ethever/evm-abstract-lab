@@ -1,4 +1,5 @@
-//! Intern complete immutable buffers, stores and code; references are report-local.
+//! Intern immutable snapshot versions of buffers, transaction stores and code.
+//! References are report-local; transaction touch facts belong to each version.
 mod budget;
 mod values;
 
@@ -8,7 +9,7 @@ use evm_abstract::analysis::control::Control;
 use evm_abstract::{
     analysis::{FrameCode, MachinePayload},
     bytecode::Program,
-    world::{ByteArray, Code, Existence, Store},
+    world::{ByteArray, Code, Existence, LogSourceKind, Store},
 };
 use evm_abstract_protocol as api;
 use std::collections::BTreeMap;
@@ -234,6 +235,7 @@ impl<'a> Pools<'a> {
                 })
                 .collect::<Result<_, api::ApiError>>()?,
             created: source.created_in_transaction(address),
+            touched: source.touched_in_transaction(address),
             pending_destruction: source.pending_destruction(address),
         })
     }
@@ -242,7 +244,11 @@ impl<'a> Pools<'a> {
         for id in 0..self.stores_native.len() {
             self.symbolic.charge(1)?;
             self.symbolic.charge(source.work_size())?;
-            if self.stores_native[id] == *source {
+            // Equal data roots may carry different touch facts and therefore
+            // different EIP-161 completion behavior. Compare the whole store.
+            let equal = self.stores_native[id] == *source;
+            self.symbolic.charge(0)?;
+            if equal {
                 return Ok(id);
             }
         }
@@ -261,6 +267,11 @@ impl<'a> Pools<'a> {
                 Ok(api::LogSnapshot {
                     address: key.address.to_string(),
                     code_address: key.code_address.to_string(),
+                    code_hash: key.code_hash.to_string(),
+                    source_kind: match key.source_kind {
+                        LogSourceKind::Init => api::LogSourceKind::Init,
+                        LogSourceKind::Runtime => api::LogSourceKind::Runtime,
+                    },
                     pc: key.pc,
                     topics: log
                         .topics
@@ -274,7 +285,34 @@ impl<'a> Pools<'a> {
         self.stores.push(api::StoreSnapshot {
             storage_default: self.symbolic.value(source.global_storage_default())?,
             transient_default: self.symbolic.value(source.global_transient_default())?,
+            storage_root: self.symbolic.slots(source.global_storage_state())?,
+            transient_root: self.symbolic.slots(source.global_transient_state())?,
             balance_default: self.symbolic.value(source.balance_default())?,
+            nonce_default: self.symbolic.value(&source.nonce_default())?,
+            code_default: source
+                .code_default()
+                .map(|code| {
+                    Ok::<_, api::ApiError>(match code {
+                        Code::Runtime(program) => {
+                            self.symbolic.payload(program.bytes().len())?;
+                            api::AccountCode::Runtime(hex::encode_prefixed(program.bytes()))
+                        }
+                        Code::Delegation(target) => {
+                            api::AccountCode::Delegation(target.to_string())
+                        }
+                        Code::Empty => api::AccountCode::Empty,
+                        Code::Unknown => api::AccountCode::Unknown,
+                    })
+                })
+                .transpose()?,
+            existence_default: match source.existence_default() {
+                Existence::Unknown => api::AccountExistence::Unknown,
+                Existence::Present => api::AccountExistence::Present,
+                Existence::Absent => api::AccountExistence::Absent,
+            },
+            created_default: source.created_default(),
+            pending_destruction_default: source.pending_destruction_default(),
+            touched_default: source.touched_default(),
             accounts,
             logs,
             logs_unknown: source.logs_unknown(),
@@ -421,6 +459,9 @@ impl<'a> Pools<'a> {
             request: api::RangeRequest {
                 kind: match request.kind {
                     evm_abstract::analysis::RangeKind::MemoryPolicy => api::RangeKind::MemoryPolicy,
+                    evm_abstract::analysis::RangeKind::LogicalMemory => {
+                        api::RangeKind::LogicalMemory
+                    }
                     evm_abstract::analysis::RangeKind::ReturnData => api::RangeKind::ReturnData,
                 },
                 offset: self.symbolic.value(&request.offset)?,

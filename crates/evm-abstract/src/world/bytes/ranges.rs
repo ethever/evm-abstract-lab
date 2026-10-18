@@ -20,57 +20,26 @@ pub(super) fn check_allocation(
     Ok(())
 }
 
-pub(super) fn validate_size(size: &AbstractValue, cap: usize) -> Result<(), RangeError> {
-    if size.constants().is_none() && size.expression().is_none() {
-        return Err(RangeError::UnknownSize);
-    }
-    if let Some(size) = size.singleton()
-        && size > U256::from(cap)
-    {
-        return Err(RangeError::TooLarge {
-            requested: size,
-            limit: cap,
-        });
-    }
-    Ok(())
+/// Bind numeric-only operands once, then reuse the same term for allocation,
+/// roots and length arithmetic. No scalar fact is inferred from a path guard.
+pub(super) fn normalized(value: &AbstractValue) -> Result<AbstractValue, RangeError> {
+    Ok(value.clone().with_expression(expr(value)?))
 }
+
 pub(super) fn validate_target(
     offset: &AbstractValue,
     size: &AbstractValue,
-    cap: usize,
     memory: bool,
 ) -> Result<(), RangeError> {
-    validate_size(size, cap)?;
     if size.singleton() == Some(U256::ZERO) {
         return Ok(());
     }
-    // Nonenumerated symbolic operands retain their expression. The transfer
-    // layer keeps both legal-policy and excluded branches with their conditions.
-    if let (Some(offset), Some(size)) = (offset.singleton(), size.singleton()) {
-        let start = usize::try_from(offset).map_err(|_| RangeError::OffsetTooLarge(offset))?;
-        let count = usize::try_from(size).map_err(|_| RangeError::TooLarge {
-            requested: size,
-            limit: cap,
-        })?;
-        let end = start.checked_add(count).ok_or(RangeError::Overflow {
-            offset: start,
-            size: count,
-        })?;
-        let end = if memory {
-            end.checked_add(31).ok_or(RangeError::Overflow {
-                offset: start,
-                size: count,
-            })? / 32
-                * 32
-        } else {
-            end
-        };
-        if end > cap {
-            return Err(RangeError::TooLarge {
-                requested: U256::from(end),
-                limit: cap,
-            });
-        }
+    // A concrete extent needs a U256 end, never a host index. Symbolic success
+    // is constrained at transfer; expanded() does not invent numeric guard facts.
+    if let (Some(offset), Some(size)) = (offset.singleton(), size.singleton())
+        && checked_end(offset, size, memory).is_none()
+    {
+        return Err(RangeError::OffsetTooLarge(offset));
     }
     Ok(())
 }
@@ -100,7 +69,7 @@ pub(super) fn expanded(
     old: &AbstractValue,
     offset: &AbstractValue,
     size: &AbstractValue,
-    cap: usize,
+    _max_bytes: usize,
     memory: bool,
     domain: Domain,
 ) -> Result<AbstractValue, RangeError> {
@@ -113,21 +82,7 @@ pub(super) fn expanded(
         super::check_value(value, limits(domain))?;
     }
     if let (Some(at), Some(size)) = (offset.singleton(), size.singleton()) {
-        let end = at.checked_add(size).ok_or(RangeError::TooLarge {
-            requested: U256::MAX,
-            limit: cap,
-        })?;
-        let end = if memory {
-            end.checked_add(U256::from(31))
-                .ok_or(RangeError::TooLarge {
-                    requested: U256::MAX,
-                    limit: cap,
-                })?
-                / U256::from(32)
-                * U256::from(32)
-        } else {
-            end
-        };
+        let end = checked_end(at, size, memory).ok_or(RangeError::OffsetTooLarge(at))?;
         if end <= old.interval().unsigned_bounds().0 {
             return Ok(old.clone());
         }
@@ -169,7 +124,7 @@ pub(super) fn expanded(
         }
     }
     // A public wrapper call may lack scalar proof of the transfer guard.
-    // Use operand bounds rather than assuming cap is already a numeric fact.
+    // Use operand bounds rather than importing an inactive relational guard.
     let endpoint_upper = checked_end(
         offset.interval().unsigned_bounds().1,
         size.interval().unsigned_bounds().1,
@@ -180,10 +135,12 @@ pub(super) fn expanded(
         .unsigned_bounds()
         .1
         .max(endpoint_upper.unwrap_or(U256::MAX));
-    let numeric = finite.unwrap_or_else(|| {
-        AbstractValue::unsigned_range(old.interval().unsigned_bounds().0, upper)
-            .unwrap_or_else(AbstractValue::top)
-    });
+    let numeric = finite
+        .filter(|value| !value.numeric().is_top())
+        .unwrap_or_else(|| {
+            AbstractValue::unsigned_range(old.interval().unsigned_bounds().0, upper)
+                .unwrap_or_else(AbstractValue::top)
+        });
     if let Some(value) = numeric.singleton() {
         return Ok(AbstractValue::constant(value));
     }
@@ -192,6 +149,12 @@ pub(super) fn expanded(
     // upper endpoint cannot justify selecting a branch of a wrapped sum.
     if endpoint_upper.is_some_and(|end| end <= old.interval().unsigned_bounds().0) {
         return Ok(old.clone());
+    }
+    if endpoint_upper.is_none() {
+        // A wrapped ADD/round-up is not an exact MSIZE expression. Retain one
+        // bounded source for this allocation's coarse length; ByteArray stores
+        // it, and repeated expansion of the same allocation reuses it.
+        return normalized(&numeric);
     }
     let endpoint_lower = checked_end(
         offset.interval().unsigned_bounds().0,
@@ -256,8 +219,10 @@ pub(super) fn minimum(
     if left.singleton() == Some(U256::ZERO) || right.singleton() == Some(U256::ZERO) {
         return Ok(zero());
     }
-    let condition = op(opcode::LT, &[expr(left)?, expr(right)?], domain)?;
-    let expression = choose(condition, expr(left)?, expr(right)?, domain)?;
+    let left_expr = expr(left)?;
+    let right_expr = expr(right)?;
+    let condition = op(opcode::LT, &[left_expr.clone(), right_expr.clone()], domain)?;
+    let expression = choose(condition, left_expr, right_expr, domain)?;
     let numerical = numeric::numeric_domain(domain);
     let numeric = if let (Some(left), Some(right)) = (left.constants(), right.constants()) {
         let mut out = None;
@@ -278,3 +243,6 @@ pub(super) fn minimum(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod logical_tests;

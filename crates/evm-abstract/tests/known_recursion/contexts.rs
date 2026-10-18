@@ -195,7 +195,14 @@ fn identical_bytecode_at_distinct_owners_keeps_separate_storage() {
     let mut world = new_world();
     insert(&mut world, A, &code, &[(0, 5)]);
     insert(&mut world, B, &code, &[(0, 9)]);
-    let analysis = run(world.clone(), entry(unknown_input()));
+    let analysis = run_config(
+        world.clone(),
+        entry(unknown_input()),
+        ExecutionConfig {
+            root_terminal_coverage: false,
+            ..ExecutionConfig::default()
+        },
+    );
     complete_recursion(&analysis);
     for outcome in returns(&analysis) {
         only(&output_word(outcome, 0), &[5, 9]);

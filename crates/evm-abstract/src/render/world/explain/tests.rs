@@ -1,7 +1,10 @@
 use super::render;
 use crate::{
     Fork,
-    analysis::{ExecutionConfig, FrameCode, Status, WorldAnalysis, analyze_world},
+    analysis::{
+        ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, Status, WorldAnalysis,
+        analyze_world,
+    },
     domain::AbstractValue,
     world::{Account, ByteArray, Entry, World},
 };
@@ -140,12 +143,35 @@ fn shared_delegate_code_is_deduplicated_but_preserves_distinct_state_owners() {
 
 #[test]
 fn partial_native_frame_has_frontiers_without_invented_bytecode_or_ssa() {
-    let analysis = run(
-        World::new(Fork::Osaka, "unknown identity input"),
-        address(4),
-        ByteArray::unknown(),
-    );
+    let world = World::new(Fork::Osaka, "unknown identity input");
+    let native_entry = entry(address(4), ByteArray::unknown());
+    let config = ExecutionConfig::default();
+    let closed = analyze_world(world.clone(), native_entry.clone(), config.clone()).unwrap();
+    assert_eq!(closed.status(), Status::Converged);
+    assert!(closed.frontiers().is_empty());
+    // Measure logical execution work on this exact input, not wall time or an
+    // obsolete native-policy refusal. The second run must stop short of closure.
+    let max_work = closed
+        .work()
+        .checked_sub(1)
+        .expect("native work was charged");
+    assert!(max_work > 0, "the bounded configuration must stay valid");
+    let analysis =
+        analyze_world(world, native_entry, ExecutionConfig { max_work, ..config }).unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
+    assert!(!analysis.frontiers().is_empty());
+    assert!(
+        analysis
+            .frontiers()
+            .iter()
+            .all(|frontier| frontier.reason == FrontierReason::Work)
+    );
+    assert!(
+        analysis
+            .states()
+            .iter()
+            .any(|state| state.active().mode == FrameCode::Precompile(address(4)))
+    );
     assert!(analysis.states()[0].program().is_none());
     let output = render(&analysis).unwrap();
     let codes = code_section(&output);
@@ -153,8 +179,35 @@ fn partial_native_frame_has_frontiers_without_invented_bytecode_or_ssa() {
     assert!(codes.contains("no bytecode instruction list"));
     assert!(!codes.contains("B₀ @"));
     assert!(!codes.contains("Captured instruction list"));
-    assert!(output.contains("PrecompileInput"));
+    assert!(output.contains("Work"));
     assert!(output.ends_with("SSA unavailable: cross-contract frontiers remain\n"));
+
+    assert!(!closed.states().is_empty());
+    assert!(
+        closed
+            .states()
+            .iter()
+            .all(|state| state.program().is_none())
+    );
+    for kind in [
+        OutcomeKind::Return,
+        OutcomeKind::Revert,
+        OutcomeKind::Failure,
+    ] {
+        assert!(closed.outcomes().iter().any(|outcome| outcome.kind == kind));
+    }
+    let ssa = crate::ssa::build_normalized_world(&closed).unwrap();
+    assert!(ssa.complete());
+    assert!(
+        ssa.blocks()
+            .iter()
+            .all(|block| block.instructions.is_empty())
+    );
+    let closed_output = render(&closed).unwrap();
+    let codes = code_section(&closed_output);
+    assert!(codes.contains("Native precompile"));
+    assert!(!codes.contains("B₀ @") && !codes.contains("Captured instruction list"));
+    assert!(!closed_output.contains("SSA unavailable"));
 }
 
 #[test]

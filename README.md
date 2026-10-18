@@ -55,6 +55,8 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 未知目标、重复回调与共享状态的完整例子见 [18：世界未知部分的抽象执行](docs/18-unknown-world.md)。它连接符号状态、已知代码执行、交互摘要和可见的覆盖报告；[已知代码自身递归](docs/18-unknown-world.md#已知代码自身递归也进入同一过程表)也使用共同更新的过程关系。
 
+[代码与初始事实分层](docs/18-layered-analysis.md)介绍如何先只提供代码，再向同一快照注入观察并继续分析。可检查的数学性质及其与生产代码的对应边界见[形式化证明](docs/proofs/README.md)。
+
 ## 从单段代码到多个合约
 
 单段 `.hex` 适合学习局部计算。跨合约的 `explain` 和 `analyze` 入口使用**世界文件**（world JSON）：把多个账户的代码、初始存储和其他已知事实放在一起，通过 `--evm.to` 指定 root frame 的目标。下面显式固定 caller、value 和 calldata 来重放教学场景；省略它们时使用符号输入。
@@ -105,7 +107,7 @@ flowchart TD
 
 `NumericValue` 默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`AbstractValue` 在数值摘要之外保存来源、角色、独立值身份和符号表达式。CLI 与 Web 共用同一套分析配置：`--max-constants` 默认 512，接受运行平台能表示的任意正 `usize`，配置容量不会直接预分配集合。`--reduction-rounds` 默认 16，`--max-facts` 默认 4096，两者限制临时数值事实交换。
 
-机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过进程内 SMT 求解器排除已证明矛盾的路径，并将已证明的数值结论投影回执行值。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。`--smt.provider` 可选 `z3`（默认）、`bitwuzla` 或 `cvc5`。`--smt.rlimit` 默认 10000000，为每次求解检查分配额度，没有墙钟 timeout；不同求解器的资源单位不能直接比较，Bitwuzla 按协作式停止检查的次数计数。表达式节点、深度和关系数量也有独立上限。查询不能完成时保留路径与类型化前沿。`cfg`、`ssa`、`analyze`、`explain` 的 `--max-work` 都默认 1000000000000，覆盖执行、数值、符号及查询预留工作。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
+机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过局部表达式与数值事实推理排除已证明矛盾的路径，并将已证明的数值上界投影回执行值。未证明矛盾的路径继续保留。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。表达式节点、深度和关系数量有独立上限，真实的取消、配置与精度边界仍保留类型化原因。`cfg`、`ssa`、`analyze`、`explain` 与 Web 的 `max_work` 默认 2000000000，覆盖执行、数值与符号工作，并默认启用保守根终止覆盖；仍可显式设置预算。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
 
 CLI 的数量参数 `--evm.value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`；`--block-number` 接受相同进制写法，范围为 `0` 到 `2^64−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--evm.value 1000`（单位 wei）、`--block-number 26000000`、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
 
@@ -152,7 +154,7 @@ nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 | `Incomplete` | 缺少事实、遇到模型无法处理的输入或耗尽预算；输出保留原因与停止位置 | `2` |
 | 输入错误 | JSON、参数或初始 RPC 采集失败，未得到有效分析结果 | `1`；参数语法错误由 clap 报告并退出 `2` |
 
-`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 8，`domain_spec.schema_version` 是 2。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
+`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 10，`domain_spec.schema_version` 是 2。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
 
 RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留下 `RpcAcquisition` 前沿，结果为 `Incomplete`、退出 `2`。采集失败的类型与来源另外保存在累计记录中，后续预算中断也不会丢失。输出中的已完成分支不能替代尚未展开的调用。
 
@@ -164,17 +166,19 @@ gas 不精确计量，一般 hash 和未知环境采用保守近似，有界关�
 
 ## 浏览器工作台
 
+CLI 与 Web 默认采用快速保守策略：`max_work = 2_000_000_000`，`root_terminal_coverage = true`。独立的[根终止覆盖](docs/19-root-terminal-coverage.md)联合覆盖实际原始输入的 Return/Revert/Failure 数据与最终 Store；详细分析仍可为 `Incomplete`，CFG 与 SSA 仍可部分完成，全部 frontier 和退出码 2 继续保留。用 `--allow-partial-ssa` 查看部分 SSA（`analyze` 还需 `--ssa`）；`--no-root-terminal-coverage` 关闭附加覆盖，仅做详细分析，原有不带值的 `--root-terminal-coverage` 仍兼容。详细分析已 `Converged` 时可以不附证书，这不应显示为缺少证书的告警。
+
 ```bash
 nix run .#web
 ```
 
-打开命令打印的本地地址，在 egui 工作台输入运行时字节码，查看自绘的反汇编、SSA 和 CFG。浏览器通过共享 Rust 类型向原生分析服务发送请求；分析和 SMT 求解仍在后端运行。控件操作、开发构建、数据接口及当前输入范围见[Web 前端说明](docs/web-workbench.md)。CFG 在浏览器主线程使用纯 Rust ELK 生成与窗口尺寸无关的分组布局；选型实测、几何边界和当前限制见[Rust ELK 布局说明](docs/elk-layout.md)。
+打开命令打印的本地地址，在 egui 工作台输入运行时字节码，查看自绘的反汇编、SSA 和 CFG。浏览器通过共享 Rust 类型向原生分析服务发送请求；抽象执行与局部关系推理在后端运行。控件操作、开发构建、数据接口及当前输入范围见[Web 前端说明](docs/web-workbench.md)。CFG 在浏览器主线程使用纯 Rust ELK 生成与窗口尺寸无关的分组布局；选型实测、几何边界和当前限制见[Rust ELK 布局说明](docs/elk-layout.md)。
 
 状态栏显示运行中的已用时间，完成后保留用户总等待、后端处理及阶段分解。RPC 补读和抽象执行的多轮耗时累计，前端获取报告、解析与首次视图准备也单独记录；显示范围见[分析耗时](docs/web-workbench.md#分析耗时)。
 
 分析链上账户时，使用 `nix run .#web -- --rpc-config http://127.0.0.1:8545` 直接传入 RPC HTTP(S) URL；后端自动创建 **Default RPC** 提供者，无需 JSON 文件。需要多个提供者或自定义名称时，`--rpc-config` 也接受 JSON 配置文件路径。浏览器同时显示提供者的名称和 RPC URL，分析请求只提交其 ID。首次打开时，有提供者则使用第一项自动分析 Ethereum 主网 USDC；未配置提供者则运行分支字节码示例，RPC 提交不可用。RPC 表单还可选择 WETH、USDT、Multicall3、Uniswap V2 Router02、V2 Pair（USDC/WETH）、V2 Factory、V4 PoolManager 或自定义入口地址，切换示例不会自动提交。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)，预置地址与来源见[入口示例](docs/web-workbench.md#使用控件)。
 
-CLI 与 Web 保留全部预算和精度控件，共用同一套较大默认值，并允许显式覆盖；实际分析仍遵循指定的有限预算。完整默认值和 Web 类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 参数见[精度与预算表](docs/05-sensitivity.md#7-实验时分别调整精度与预算)。直接调用 Rust 库时，`Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 与 `RpcInput::new()` 仍使用库自身的较小默认配置。
+CLI 与 Web 保留全部预算和精度控件，共用同一套默认值，并允许显式覆盖；实际分析仍遵循指定的有限预算。完整默认值和 Web 类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 参数见[精度与预算表](docs/05-sensitivity.md#7-实验时分别调整精度与预算)。直接调用 Rust 库时，`Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 与 `RpcInput::new()` 仍使用库自身的配置；`ExecutionConfig::default()` 的 work 预算仍为 20000000，根终止覆盖默认开启。
 
 ## 开发环境与实现入口
 
@@ -185,7 +189,7 @@ nix develop
 cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.hex
 ```
 
-`nix develop` 显式提供编译工具、原生 SMT 库、语言服务器、格式器和检查工具。VS Code 和插件由用户安装，仓库提供推荐与设置；接入方式、依赖版本来源和 Nix 模块职责见[开发环境说明](docs/development.md)。核心锁定文件负责不同层次：
+`nix develop` 显式提供编译工具、语言服务器、格式器和检查工具。VS Code 和插件由用户安装，仓库提供推荐与设置；接入方式、依赖版本来源和 Nix 模块职责见[开发环境说明](docs/development.md)。核心锁定文件负责不同层次：
 
 | 文件 | 固定什么 |
 | --- | --- |
@@ -201,7 +205,7 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 常量集合的 Top、非空集合与有界运算 | [`finite_constant_set.rs`](crates/evm-abstract/src/domain/finite_constant_set.rs) |
 | 数值组件、合并与算术 | [`numeric.rs`](crates/evm-abstract/src/domain/numeric.rs)、[`domain.rs`](crates/evm-abstract/src/domain.rs) |
 | 机器值、来源与独立身份 | [`value.rs`](crates/evm-abstract/src/domain/value.rs)、[`provenance.rs`](crates/evm-abstract/src/domain/provenance.rs)、[`identity.rs`](crates/evm-abstract/src/domain/identity.rs) |
-| 持久表达式、关系环境与查询 | [`symbolic.rs`](crates/evm-abstract/src/domain/symbolic.rs)、[`relational.rs`](crates/evm-abstract/src/domain/relational.rs)、[`relational/solver.rs`](crates/evm-abstract/src/domain/relational/solver.rs) |
+| 持久表达式、关系环境与查询 | [`symbolic.rs`](crates/evm-abstract/src/domain/symbolic.rs)、[`relational.rs`](crates/evm-abstract/src/domain/relational.rs) |
 | 固定位、区间、同余、来源与事实交换 | [`domain/`](crates/evm-abstract/src/domain) |
 | 调用帧、局部与跨合约工作表 | [`analysis/`](crates/evm-abstract/src/analysis) |
 | 账户事实与账户状态 | [`world/`](crates/evm-abstract/src/world) |
@@ -214,7 +218,7 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 | 原生分析服务与静态资源 | [`evm-abstract-server`](crates/evm-abstract-server) |
 | egui 自绘控件与 Web 适配 | [`evm-abstract-web`](crates/evm-abstract-web) |
 
-本仓库实现抽象 transfer（指令怎样更新抽象状态）、工作表与栈到 SSA 的转换；通用部分复用 `revm-bytecode` 的指令元数据、`alloy-primitives` 的 U256、`petgraph` 的图算法、`revm-precompile` 的原生计算、Axum / Hyper 的 HTTP 服务、Alloy 的 RPC client 与 Ethereum 类型，以及 Z3、Bitwuzla、cvc5 的位向量查询。RPC 的有界传输适配使用 `reqwest`，固定快照和按需采集策略由分析器管理。这三个求解器都是原生链接依赖，Nix 开发环境和完整门禁提供其库；运行时通过进程内接口调用，不启动外部求解进程。测试使用 revm 具体执行和 proptest 性质检查；依赖资料见[参考页](docs/references.md)。
+本仓库实现抽象 transfer（指令怎样更新抽象状态）、工作表、局部关系推理与栈到 SSA 的转换；通用部分复用 `revm-bytecode` 的指令元数据、`alloy-primitives` 的 U256、`petgraph` 的图算法、`revm-precompile` 的原生计算、Axum / Hyper 的 HTTP 服务，以及 Alloy 的 RPC client 与 Ethereum 类型。RPC 的有界传输适配使用 `reqwest`，固定快照和按需采集策略由分析器管理。通用取消作用域由无求解器依赖的 `analysis-control` 提供；测试使用 revm 具体执行和 proptest 性质检查。依赖资料见[参考页](docs/references.md)。
 
 ## 验证与源码导航
 
@@ -229,7 +233,7 @@ nix flake check --print-build-logs --no-update-lock-file
 
 安装与运行生成经过运行性能优化的 release 产物；工作区测试使用快速的 test profile，测试通过与否由 `nix flake check` 验证。构建没有项目固定的并发上限或 CPU 预留，profile 和 Nix 缓存分层见[构建说明](docs/development.md#构建-profile-与缓存)。
 
-完整门禁检查默认、imbl、全部 features 的工作区测试与 doctest（包含 ignored 测试）、Clippy、Rust 格式、Rustdoc、Nix 格式、TOML 语法与格式、离线文档链接、原生求解器自测，以及打包后二进制的例子、图输出和真实浏览器交互。按包、fixture 和浏览器用例缓存检查，等价 feature 配置和重复别名复用同一 derivation。开发时也可以手动指定 Cargo 范围：
+完整门禁检查默认、imbl、全部 features 的工作区测试与 doctest（包含 ignored 测试）、Clippy、Rust 格式、Rustdoc、Nix 格式、TOML 语法与格式、离线文档链接、Lean 形式化模型检查，以及打包后二进制的例子、图输出和真实浏览器交互。按包、fixture 和浏览器用例缓存检查，等价 feature 配置和重复别名复用同一 derivation。开发时也可以手动指定 Cargo 范围：
 
 ```bash
 cargo test --workspace --locked
@@ -268,4 +272,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 [MIT license](LICENSE)。
 
-符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并通过 SMT 使用地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制 logical footprint。Native schema 8 与 Web schema 13 使用 flat typed graphs；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，累计 projection work 仅作诊断统计。模型、guarded join、账户/plane、hash 和 provider 支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
+符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。Native schema 10 与 Web schema 15 使用 flat typed graphs；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，累计 projection work 仅作诊断统计。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。

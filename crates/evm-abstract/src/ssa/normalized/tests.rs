@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     Address, Fork, U256,
-    analysis::{self, ExecutionConfig, InstructionProgress, Status, WorldAnalysis},
+    analysis::{self, ExecutionConfig, FrontierReason, InstructionProgress, Status, WorldAnalysis},
     domain::AbstractValue,
     ssa::{PartialBlockCoverage, SsaError},
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
@@ -49,6 +49,62 @@ fn run_with_calldata(
         config,
     )
     .unwrap()
+}
+
+fn pending_mload(code: &str, pc: usize, value: AbstractValue) -> WorldAnalysis {
+    let mut config = config();
+    // Bisect the detailed MLOAD receipt without optional preparation fees.
+    config.root_terminal_coverage = false;
+    config.max_memory_bytes = 32;
+    let complete = run(code, config.clone(), value.clone());
+    assert_eq!(complete.status(), Status::Converged);
+    assert!(complete.states().iter().any(|state| {
+        state
+            .executed_pcs
+            .iter()
+            .position(|at| *at == pc)
+            .is_some_and(|index| {
+                state.execution_evidence().unwrap().instructions()[index]
+                    == InstructionProgress::Completed
+            })
+    }));
+    // Both fixtures are acyclic. Find the first budget admitting MLOAD's
+    // visit, including all earlier transfers and root admission. The next
+    // positive read-scan charge then refuses after consuming its offset.
+    let (mut minimum, mut maximum) = (1, complete.work());
+    while minimum < maximum {
+        let midpoint = minimum + (maximum - minimum) / 2;
+        config.max_work = midpoint;
+        let candidate = run(code, config.clone(), value.clone());
+        if candidate
+            .states()
+            .iter()
+            .any(|state| state.executed_pcs.contains(&pc))
+        {
+            maximum = midpoint;
+        } else {
+            minimum = midpoint + 1;
+        }
+    }
+    config.max_work = minimum;
+    let analysis = run(code, config, value);
+    assert_eq!(analysis.status(), Status::Incomplete);
+    let state = analysis
+        .states()
+        .iter()
+        .find(|state| state.executed_pcs.contains(&pc))
+        .unwrap();
+    assert_eq!(state.executed_pcs.last(), Some(&pc));
+    assert_eq!(
+        state.execution_evidence().unwrap().instructions().last(),
+        Some(&InstructionProgress::OperandsConsumed)
+    );
+    let [frontier] = analysis.frontiers() else {
+        panic!("expected exactly the refused MLOAD read scan")
+    };
+    assert_eq!(frontier.reason, FrontierReason::Work);
+    assert_eq!((frontier.from, frontier.pc), (Some(state.id), Some(pc)));
+    analysis
 }
 
 #[test]
@@ -146,11 +202,9 @@ fn complete_snapshot_results_fold_environment_reads_with_definition_scopes() {
 
 #[test]
 fn partial_snapshots_do_not_certify_definition_rewrites_but_literals_still_fold() {
-    let mut limited = config();
-    limited.max_memory_bytes = 32;
-    let analysis = run(
+    let analysis = pending_mload(
         "34600301600260030160405100",
-        limited,
+        11,
         AbstractValue::constant(U256::from(7)),
     );
     assert_eq!(analysis.status(), Status::Incomplete);
@@ -181,7 +235,14 @@ fn partial_snapshots_do_not_certify_definition_rewrites_but_literals_still_fold(
     assert!(ir.facts().iter().any(|fact| fact.value == input
         && fact.scope == FactScope::State { state: 0 }
         && fact.constant == Some(U256::from(7))));
+    assert!(
+        ir.facts()
+            .iter()
+            .filter(|fact| fact.value == input)
+            .all(|fact| { fact.scope != FactScope::Definition })
+    );
     let pending = rows.last().unwrap();
+    assert_eq!(pending.origin.pc, 11);
     assert_eq!(pending.progress, InstructionProgress::OperandsConsumed);
     assert!(pending.origin.results.is_empty());
     assert!(matches!(
@@ -191,6 +252,7 @@ fn partial_snapshots_do_not_certify_definition_rewrites_but_literals_still_fold(
             ..
         }
     ));
+    ir.verify(&analysis).unwrap();
 }
 
 #[test]
@@ -399,13 +461,12 @@ fn closed_join_facts_propagate_to_uses_without_replacing_or_simplifying_the_phi(
 
 #[test]
 fn open_phi_observation_cannot_fold_its_consumer_but_self_identity_can() {
-    let mut limited = config();
-    limited.max_memory_bytes = 32;
-    let analysis = run(
+    let analysis = pending_mload(
         "34600556005b600301801860405100",
-        limited,
+        13,
         AbstractValue::constant(U256::from(7)),
     );
+    assert_eq!(analysis.status(), Status::Incomplete);
     let ir = build_normalized_partial_world(&analysis).unwrap();
     let body = ir
         .blocks()
@@ -455,6 +516,14 @@ fn open_phi_observation_cannot_fold_its_consumer_but_self_identity_can() {
                 && fact.scope == FactScope::Definition
                 && fact.source == FactSource::AlgebraicIdentity)
     );
+    let pending = body.instructions.last().unwrap();
+    assert_eq!(
+        (pending.origin.pc, pending.origin.opcode),
+        (13, opcode::MLOAD)
+    );
+    assert_eq!(pending.progress, InstructionProgress::OperandsConsumed);
+    assert!(pending.origin.results.is_empty());
+    ir.verify(&analysis).unwrap();
     // Tampering with the observed scope cannot supply the missing proof.
     let mut wrong = ir.clone();
     let observation = wrong

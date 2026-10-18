@@ -2,10 +2,7 @@
 use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     analysis,
-    domain::{
-        AbstractValue, Profile,
-        relational::{RelationLimits, SmtProvider},
-    },
+    domain::{AbstractValue, Profile, relational::RelationLimits},
     world::{AddressInput, BlobHashes, ByteArray, EvmEnvironment, GasInput, rpc},
 };
 use evm_abstract_protocol as api;
@@ -203,18 +200,13 @@ pub(super) fn config(
                 max_constraints: host_size(input.max_constraints, "max_constraints")?,
                 max_nodes: host_size(input.max_expression_nodes, "max_expression_nodes")?,
                 max_depth: host_size(input.max_expression_depth, "max_expression_depth")?,
-                rlimit: input.smt_rlimit,
-                provider: match input.smt_provider {
-                    api::SmtProvider::Z3 => SmtProvider::Z3,
-                    api::SmtProvider::Bitwuzla => SmtProvider::Bitwuzla,
-                    api::SmtProvider::Cvc5 => SmtProvider::Cvc5,
-                },
             },
         },
         max_work: host_size(input.max_work, "max_work")?,
         max_call_depth: host_size(input.max_call_depth, "max_call_depth")?,
         max_memory_bytes: host_size(input.max_memory_bytes, "max_memory_bytes")?,
         use_summaries: input.use_summaries,
+        root_terminal_coverage: input.root_terminal_coverage,
     })
 }
 pub(super) fn rpc(
@@ -266,6 +258,24 @@ mod tests {
     }
 
     #[test]
+    fn consumer_strategy_defaults_and_explicit_opt_out_reach_native_configuration() {
+        let mut limits = api::AnalysisLimits::default();
+        let native = config(&limits).unwrap();
+        assert_eq!(limits.max_work, 2_000_000_000);
+        assert_eq!(native.max_work, 2_000_000_000);
+        assert!(limits.root_terminal_coverage);
+        assert!(native.root_terminal_coverage);
+        // Core owns a separate library work policy; consumers do not inherit it.
+        assert_eq!(analysis::ExecutionConfig::default().max_work, 20_000_000);
+
+        limits.max_work = 37_000_000;
+        limits.root_terminal_coverage = false;
+        let native = config(&limits).unwrap();
+        assert_eq!(native.max_work, 37_000_000);
+        assert!(!native.root_terminal_coverage);
+    }
+
+    #[test]
     fn values_above_every_former_server_ceiling_reach_the_native_policy_unchanged() {
         let limits = api::AnalysisLimits {
             max_states: 4_097,
@@ -280,7 +290,6 @@ mod tests {
             max_constraints: 4_097,
             max_expression_nodes: 16_385,
             max_expression_depth: 129,
-            smt_rlimit: 10_000_001,
             rpc_max_accounts: 4_097,
             rpc_max_requests: 65_537,
             rpc_max_response_bytes: 67_108_865,
@@ -300,7 +309,6 @@ mod tests {
         assert_eq!(native.analysis.relations.max_constraints, 4_097);
         assert_eq!(native.analysis.relations.max_nodes, 16_385);
         assert_eq!(native.analysis.relations.max_depth, 129);
-        assert_eq!(native.analysis.relations.rlimit, 10_000_001);
         assert!(native.analysis.validate().is_ok());
         let rpc = rpc(
             &source(),
@@ -346,7 +354,6 @@ mod tests {
                 max_constraints: count,
                 max_expression_nodes: count,
                 max_expression_depth: count,
-                smt_rlimit: u32::MAX,
                 rpc_max_accounts: count,
                 rpc_max_requests: count,
                 rpc_max_response_bytes: count,
@@ -366,7 +373,6 @@ mod tests {
             assert_eq!(native.analysis.relations.max_constraints as u64, count);
             assert_eq!(native.analysis.relations.max_nodes as u64, count);
             assert_eq!(native.analysis.relations.max_depth as u64, count);
-            assert_eq!(native.analysis.relations.rlimit, u32::MAX);
             assert!(native.analysis.validate().is_ok());
             let rpc = rpc(
                 &source(),

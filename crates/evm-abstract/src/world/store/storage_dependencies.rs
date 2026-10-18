@@ -213,6 +213,7 @@ fn joins_keep_any_path_baseline_dependency_across_owner_and_global_defaults() {
 #[test]
 fn nested_rollback_restores_dependency_metadata_and_work() {
     let (world, address) = partial_world();
+    let address3 = Address::from_word(U256::from(3).into());
     let domain = Domain::default();
     let mut store = Store::new(&world);
     let initial = store.clone();
@@ -222,16 +223,24 @@ fn nested_rollback_restores_dependency_metadata_and_work() {
     let inner = store.snapshot();
     store.havoc_all();
     store.restore(inner);
-    assert_eq!(store, after_strong);
-    assert_eq!(store.work_size(), after_strong.work_size());
+    // Unknown effects may touch RIPEMD-160; its touch survives both reverts.
+    // Every ordinary value, root and dependency still matches the snapshot.
+    let mut expected = after_strong.clone();
+    expected.may_touch_account(address3);
+    assert_eq!(store, expected);
+    assert_eq!(store.touched_in_transaction(address3), None);
+    assert_eq!(store.work_size(), after_strong.work_size() + 1);
     assert!(
         store
             .missing_initial_slots(&world, address, &word(1))
             .is_empty()
     );
     store.restore(outer);
-    assert_eq!(store, initial);
-    assert_eq!(store.work_size(), initial.work_size());
+    let mut expected = initial.clone();
+    expected.may_touch_account(address3);
+    assert_eq!(store, expected);
+    assert_eq!(store.touched_in_transaction(address3), None);
+    assert_eq!(store.work_size(), initial.work_size() + 1);
     assert_eq!(
         store.missing_initial_slots(&world, address, &word(1)),
         vec![U256::from(1)]

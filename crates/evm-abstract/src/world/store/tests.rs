@@ -1,5 +1,6 @@
 //! Transaction state model behavior tests.
 
+mod identity;
 mod native;
 mod provenance;
 mod refinement;

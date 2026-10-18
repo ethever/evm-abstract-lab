@@ -44,7 +44,7 @@ impl Plane {
         domain: Domain,
         memo: &mut BTreeMap<SlotStateId, AbstractValue>,
     ) -> Result<AbstractValue, StoreError> {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled.into());
         }
         if let Some(value) = memo.get(root) {

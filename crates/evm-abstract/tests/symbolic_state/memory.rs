@@ -1,9 +1,11 @@
 use super::support::{
-    Assembly, ROOT, address, complete, config, executed_opcode, no_bad_branch, possible_lengths,
-    reachable, return_words, run, word,
+    Assembly, ROOT, address, complete, config, conservative_guarded_returns_include,
+    construct_world, entry, executed_opcode, no_bad_branch, possible_lengths, reachable,
+    return_words, run, run_world, word,
 };
 use alloy_primitives::U256;
 use evm_abstract::{
+    Fork,
     analysis::OutcomeKind,
     domain::{
         AbstractValue, Domain,
@@ -11,6 +13,7 @@ use evm_abstract::{
         relational::{CheckResult, ValueQuery},
         symbolic::{ByteStateKind, ExprKind, SlotStateKind},
     },
+    world::ByteArray,
 };
 use revm_bytecode::opcode;
 
@@ -69,7 +72,7 @@ fn symbolic_unaligned_word_partial_overwrite_preserves_old_read() {
 }
 
 #[test]
-fn symbolic_word_byte_overlay_and_historical_read_feed_later_guards() {
+fn symbolic_word_byte_overlay_keeps_history_and_concrete_guard_witnesses() {
     let mut code = Assembly::default();
     code.load_input(32);
     symbolic_offset(&mut code);
@@ -83,7 +86,7 @@ fn symbolic_word_byte_overlay_and_historical_read_feed_later_guards() {
         .load_input(32)
         .op(opcode::EQ)
         .op(opcode::ISZERO)
-        .jump("bad", true);
+        .jump("bad_history", true);
     symbolic_offset(&mut code);
     code.op(opcode::MLOAD)
         .load_input(32)
@@ -96,11 +99,32 @@ fn symbolic_word_byte_overlay_and_historical_read_feed_later_guards() {
         .jump("bad", true)
         .return_word(7)
         .label("bad")
-        .return_word(0xffff);
+        .return_word(0xffff)
+        .label("bad_history")
+        .return_word(0xfffe);
     let fixture = code.finish();
     let analysis = run(&fixture.code);
-    no_bad_branch(&analysis, &fixture, ROOT);
-    return_words(&analysis, &[7]);
+    // The old whole-word read has direct source identity. Only reconstructing
+    // the later symbolic byte overlay may lose its compound correlation.
+    assert!(!reachable(&analysis, ROOT, fixture.labels["bad_history"]));
+    conservative_guarded_returns_include(&analysis, &[7]);
+    let world = construct_world(Fork::Osaka, &[(ROOT, &fixture.code)]);
+    for (offset, original) in [
+        (0u64, U256::ZERO),
+        (31, U256::from(0x1234)),
+        (511, U256::MAX),
+    ] {
+        let mut calldata = U256::from(offset).to_be_bytes::<32>().to_vec();
+        calldata.extend(original.to_be_bytes::<32>());
+        let input = entry(ByteArray::exact(&calldata));
+        let exact = run_world(world.clone(), input.clone(), config());
+        no_bad_branch(&exact, &fixture, ROOT);
+        assert!(!reachable(&exact, ROOT, fixture.labels["bad_history"]));
+        return_words(&exact, &[7]);
+        let observed = super::oracle::compare(&world, &input, &exact);
+        assert_eq!(observed.output, U256::from(7).to_be_bytes::<32>());
+        super::oracle::compare(&world, &input, &analysis);
+    }
 }
 
 #[test]
@@ -345,7 +369,7 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
         payload
             .relations
             .can_equal(length, U256::from(513), &config().analysis.relations),
-        CheckResult::Unsat
+        CheckResult::ProvenImpossible
     );
     assert_eq!(captured_length.expression(), input.len().expression());
     let root = good[0].store.slot_root(address(ROOT), false).unwrap();
@@ -407,11 +431,11 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
             .unwrap()
     );
     assert_eq!(
-        payload.relations.unique_value(
+        payload.relations.local_value(
             &read.symbolic_expression().unwrap(),
             &config().analysis.relations
         ),
-        ValueQuery::Unique(U256::from(7))
+        ValueQuery::Exact(U256::from(7))
     );
     // Capture the actual second KECCAK before RETURN's later memory write.
     // Check the alias independently under its pre-SLOAD relations, before the
@@ -456,10 +480,10 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
         .read_checked(address(ROOT), &second_key, domain)
         .unwrap();
     assert_eq!(
-        hashed_payload.relations.unique_value(
+        hashed_payload.relations.local_value(
             &second_read.symbolic_expression().unwrap(),
             &config().analysis.relations
         ),
-        ValueQuery::Unique(U256::from(7))
+        ValueQuery::Exact(U256::from(7))
     );
 }

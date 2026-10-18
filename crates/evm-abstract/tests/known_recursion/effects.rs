@@ -4,6 +4,7 @@ use evm_abstract::{
     analysis::{ExecutionConfig, OutcomeKind},
     domain::Domain,
 };
+use revm_bytecode::opcode;
 
 #[test]
 fn growing_recursive_storage_and_transient_state_close_without_losing_other_facts() {
@@ -48,12 +49,8 @@ fn growing_recursive_storage_and_transient_state_close_without_losing_other_fact
 
 fn child_rollback(exceptional: bool) {
     let mut world = new_world();
-    insert(
-        &mut world,
-        A,
-        &fixtures::rollback(exceptional, false),
-        &[(0, 1)],
-    );
+    let fixture = fixtures::rollback(exceptional, false);
+    insert(&mut world, A, &fixture, &[(0, 1)]);
     let analysis = run(world.clone(), entry(unknown_input()));
     complete_recursion(&analysis);
     for outcome in terminals(&analysis, OutcomeKind::Return) {
@@ -78,6 +75,40 @@ fn child_rollback(exceptional: bool) {
         only(&log.topics[0], &[700]);
         only(log.data.len(), &[0]);
     }
+    // This unchanged bytecode reaches CALL's memory checks after root storage,
+    // transient, LOG and memory effects. Failure must restore the root, rather
+    // than retain the parent effects of a failed child call.
+    let failed = analysis
+        .outcomes()
+        .iter()
+        .find(|outcome| {
+            let source = &analysis.states()[outcome.state];
+            outcome.kind == OutcomeKind::Failure
+                && source.entry.call_stack.depth() == 1
+                && source
+                    .execution_evidence()
+                    .is_some_and(|evidence| evidence.is_current())
+                && source.executed_pcs.contains(&fixture.labels["outer_call"])
+                && source
+                    .executed_pcs
+                    .iter()
+                    .any(|pc| fixture.bytes[*pc] == opcode::CALL)
+        })
+        .expect("retain a root memory failure after the parent effects");
+    let before_call = &analysis.states()[failed.state].entry;
+    only(before_call.active().memory.len(), &[32]);
+    only(&read(&before_call.store, A, 0), &[5]);
+    only(
+        &before_call
+            .store
+            .read_transient(address(A), &word(0), Domain::default()),
+        &[7],
+    );
+    assert!(!before_call.store.logs_unknown());
+    assert_eq!(before_call.store.possible_logs().len(), 1);
+    let (_, log) = before_call.store.possible_logs().iter().next().unwrap();
+    assert_eq!(log.topics.len(), 1);
+    only(&log.topics[0], &[700]);
     oracle::unchanged(&analysis, &[A]);
     for n in [0, 1, 3, 6] {
         let observed = oracle::execute(&world, &entry(input(n)));

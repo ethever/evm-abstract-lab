@@ -249,6 +249,9 @@ pub(super) fn create(
                                     AbstractValue::constant(*balance),
                                 );
                             }
+                            // The creator's nonce change survives a failed
+                            // initcode child, but rolls back with its own frame.
+                            payload.store.touch_account(caller_address);
                             payload.store.write_nonce(
                                 caller_address,
                                 AbstractValue::constant(*nonce + U256::from(1)),

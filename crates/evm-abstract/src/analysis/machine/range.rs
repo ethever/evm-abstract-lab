@@ -37,6 +37,9 @@ pub enum ByteRangeBoundary {
 pub enum RangeKind {
     /// A nonempty access must fit the configured word-rounded memory footprint.
     MemoryPolicy,
+    /// A nonempty access must have a representable, word-rounded U256 end.
+    /// Host materialization limits do not exclude its EVM-success domain.
+    LogicalMemory,
     /// A returndata read must stay within the complete returned sequence.
     ReturnData,
 }
@@ -50,7 +53,7 @@ pub struct RangeRequest {
     pub offset: AbstractValue,
     /// Requested byte count, including zero.
     pub size: AbstractValue,
-    /// Logical memory policy or actual returndata length.
+    /// Historical memory policy, representable logical end, or actual returndata length.
     pub limit: AbstractValue,
 }
 

@@ -12,7 +12,11 @@ use snapshot_state::SharedCheckpoint;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod effects;
+mod finalization;
+mod lifecycle;
+mod owner_deletion;
 mod refinement;
+mod root_terminal;
 mod slots;
 mod summary;
 #[cfg(test)]
@@ -26,14 +30,30 @@ pub use summary::StoreSummary;
 /// Ordered state observations with the selected snapshot storage backend.
 pub use snapshot_state::OrderedMap;
 
+/// Execution phase of the captured bytecode containing a LOG instruction.
+/// Kept in world so event identities do not depend on analysis frame types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogSourceKind {
+    /// Contract initialization, before returned runtime code is installed.
+    Init,
+    /// Deployed runtime, including delegated execution.
+    Runtime,
+}
+
 /// One possible event source. Code and storage owners differ in delegated calls.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct LogKey {
     /// Emitter address, i.e. the frame's execution/storage account.
     pub address: Address,
-    /// Account whose runtime contains this LOG instruction.
+    /// Account whose captured code contains this LOG instruction.
     pub code_address: Address,
-    /// LOG instruction's byte offset in that runtime.
+    /// Hash of the emitting frame's captured bytes, independent of later writes
+    /// to the account's runtime code in the transaction store.
+    pub code_hash: B256,
+    /// Whether the captured bytes execute as initcode or deployed runtime.
+    pub source_kind: LogSourceKind,
+    /// LOG instruction's byte offset in the captured code.
     pub pc: usize,
 }
 
@@ -100,7 +120,7 @@ fn serialize_logs<S: Serializer>(
     }
     let mut sequence = serializer.serialize_seq(Some(logs.len()))?;
     for (source, payload) in logs {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(serde::ser::Error::custom(
                 "world log serialization cancelled",
             ));
@@ -235,7 +255,7 @@ fn serialize_slots<S: Serializer>(
     }
     let mut sequence = serializer.serialize_seq(Some(slots.len()))?;
     for ((address, slot), value) in slots {
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(serde::ser::Error::custom(
                 "world slot serialization cancelled",
             ));
@@ -452,6 +472,10 @@ pub struct Store {
     created_default: Option<bool>,
     pending_destruction: OrderedMap<Address, Option<bool>>,
     pending_destruction_default: Option<bool>,
+    // Some(true) is must-touch, Some(false) is untouched, None is may-touch.
+    // This is transaction state: joins, summaries and checkpoints must retain it.
+    touched: OrderedMap<Address, Option<bool>>,
+    touched_default: Option<bool>,
     #[serde(serialize_with = "serialize_logs")]
     possible_logs: OrderedMap<LogKey, AbstractLog>,
     logs_unknown: bool,
@@ -462,6 +486,47 @@ pub struct Store {
 pub type Snapshot = SharedCheckpoint<Store>;
 
 impl Store {
+    /// Directly owned scalar values copied by Clone. Logs are counted by their
+    /// own topics/data containers; slot roots and saved histories stay shared.
+    /// Consumers must prepay finalization_entries before scanning these values.
+    pub(crate) fn cloned_values(&self) -> impl Iterator<Item = &AbstractValue> {
+        [&self.persistent, &self.transient]
+            .into_iter()
+            .flat_map(|plane| {
+                plane
+                    .slots
+                    .values()
+                    .chain(plane.defaults.values())
+                    .chain(plane.operands.values())
+                    .chain(std::iter::once(&plane.global_default))
+            })
+            .chain(self.balances.values())
+            .chain(self.nonces.values())
+            .chain(std::iter::once(&self.balance_default))
+    }
+
+    /// O(1) census of the owner maps actually visited by `code_identity`.
+    /// Duplicate owners intentionally count once per map; no scalar/header
+    /// entries or unrelated transaction maps enter an error-key quote.
+    pub(crate) fn code_identity_entries(&self) -> usize {
+        self.codes
+            .len()
+            .saturating_add(self.existence.len())
+            .saturating_add(self.created.len())
+            .saturating_add(self.pending_destruction.len())
+    }
+
+    /// Raw runtime bytes hashed by code_identity, independently of cheap Code
+    /// cloning. Consumers must prepay the flat code-entry scan first.
+    pub(crate) fn code_identity_bytes(&self) -> usize {
+        self.codes.values().fold(0usize, |bytes, code| {
+            bytes.saturating_add(match code {
+                Code::Runtime(program) => program.byte_len(),
+                _ => 0,
+            })
+        })
+    }
+
     pub(crate) fn visit_values(&self, visit: &mut impl FnMut(&AbstractValue)) {
         for plane in [&self.persistent, &self.transient] {
             for value in plane.slots.values().chain(plane.defaults.values()) {
@@ -581,6 +646,8 @@ impl Store {
             created_default: Some(false),
             pending_destruction: OrderedMap::new(),
             pending_destruction_default: Some(false),
+            touched: OrderedMap::new(),
+            touched_default: Some(false),
             possible_logs: OrderedMap::new(),
             logs_unknown: false,
         }
@@ -682,7 +749,13 @@ impl Store {
     /// Current observed code, including runtime deployed earlier in this transaction.
     /// Omitted accounts and joins of different code observations remain unknown.
     pub fn code(&self, address: Address) -> Option<&Code> {
-        self.codes.get(&address)
+        self.codes.get(&address).or_else(|| self.code_default())
+    }
+
+    /// Unobserved code for every account without an explicit code entry.
+    /// `None` permits any runtime code, delegation marker or empty code.
+    pub fn code_default(&self) -> Option<&Code> {
+        None
     }
 
     /// Structural identity for executable account versions and their lifecycle.
@@ -707,6 +780,16 @@ impl Store {
             });
         }
         for address in addresses {
+            // Explicit defaults and an omitted owner denote the same code
+            // state. Touch-only joins can introduce these cache entries; they
+            // must not change a key already used to index the machine state.
+            if matches!(self.code(address), None | Some(Code::Unknown))
+                && self.existence(address) == Existence::Unknown
+                && self.created_in_transaction(address) == self.created_default
+                && self.pending_destruction(address) == self.pending_destruction_default
+            {
+                continue;
+            }
             bytes.extend(address.as_slice());
             match self.code(address) {
                 Some(Code::Runtime(program)) => {
@@ -758,7 +841,12 @@ impl Store {
         self.nonces
             .get(&address)
             .cloned()
-            .unwrap_or_else(AbstractValue::top)
+            .unwrap_or_else(|| self.nonce_default())
+    }
+
+    /// Unconstrained nonce for every account without an explicit nonce entry.
+    pub fn nonce_default(&self) -> AbstractValue {
+        AbstractValue::top()
     }
 
     /// Replace the nonce after a creation attempt or transaction-local update.
@@ -772,7 +860,12 @@ impl Store {
         self.existence
             .get(&address)
             .copied()
-            .unwrap_or(Existence::Unknown)
+            .unwrap_or_else(|| self.existence_default())
+    }
+
+    /// Presence of every account without an explicit existence observation.
+    pub fn existence_default(&self) -> Existence {
+        Existence::Unknown
     }
 
     /// Mark an account present after a value transfer. Zero-value transfers do
@@ -784,6 +877,7 @@ impl Store {
     /// Prepare a collision-free destination for initcode execution. A prefunded
     /// balance survives; persistent and transient slots start at zero.
     pub fn begin_creation(&mut self, address: Address) {
+        self.touch_account(address);
         self.persistent.reset_account(address);
         self.transient.reset_account(address);
         self.codes.insert(address, Code::Empty);
@@ -812,7 +906,13 @@ impl Store {
         self.created
             .get(&address)
             .copied()
-            .unwrap_or(self.created_default)
+            .unwrap_or_else(|| self.created_default())
+    }
+
+    /// Creation fact for every account without an explicit transaction entry.
+    /// `None` permits both preexisting and transaction-created lifecycles.
+    pub fn created_default(&self) -> Option<bool> {
+        self.created_default
     }
 
     /// Whether [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) schedules this account for deletion at transaction end.
@@ -821,7 +921,13 @@ impl Store {
         self.pending_destruction
             .get(&address)
             .copied()
-            .unwrap_or(self.pending_destruction_default)
+            .unwrap_or_else(|| self.pending_destruction_default())
+    }
+
+    /// Deferred-deletion fact for every account without an explicit entry.
+    /// `None` permits both retained and deletion-pending lifecycles.
+    pub fn pending_destruction_default(&self) -> Option<bool> {
+        self.pending_destruction_default
     }
 
     /// [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) balance movement and deferred deletion for all supported forks.
@@ -830,6 +936,7 @@ impl Store {
         let balance = self.read_balance(address);
         let created = self.created_in_transaction(address);
         if address != beneficiary {
+            self.touch_account(beneficiary);
             let recipient = self.read_balance(beneficiary);
             self.write_balance(
                 beneficiary,
@@ -857,45 +964,41 @@ impl Store {
         }
     }
 
-    /// Commit deferred [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) deletion only at outermost completion. A joined
-    /// optional deletion conservatively joins the retained and deleted accounts.
-    pub fn finalize_transaction(&mut self, domain: Domain) {
-        let pending = self
-            .addresses()
-            .into_iter()
-            .map(|address| (address, self.pending_destruction(address)))
-            .collect::<Vec<_>>();
-        self.pending_destruction.clear();
-        self.pending_destruction_default = Some(false);
-        for (address, pending) in pending {
-            if pending == Some(false) {
-                continue;
-            }
-            let mut deleted = self.clone();
-            deleted.persistent.reset_account(address);
-            deleted.transient.reset_account(address);
-            deleted.codes.insert(address, Code::Empty);
-            deleted
-                .nonces
-                .insert(address, AbstractValue::constant(U256::ZERO));
-            deleted
-                .balances
-                .insert(address, AbstractValue::constant(U256::ZERO));
-            deleted.existence.insert(address, Existence::Absent);
-            if pending == Some(true) {
-                *self = deleted;
+    /// Commit deferred EIP-6780 deletion and EIP-161 touched-empty clearing.
+    /// Uncertain deletion joins retained/deleted states; untouched empty accounts
+    /// and accounts proven nonempty remain intact. Retention or cancellation
+    /// errors leave the complete Store unchanged.
+    pub fn finalize_transaction(&mut self, domain: Domain) -> Result<(), StoreError> {
+        let limits = domain.spec().relations().expressions();
+        self.check_existing(limits)?;
+        let mut staged = self.clone();
+        staged.prepare_unlisted_finalization(domain)?;
+        finalization::Plan::new(&staged).apply(&mut staged, domain, &mut || {
+            if analysis_control::current_cancellation().is_cancelled() {
+                Err(StoreError::State(StateError::Cancelled))
             } else {
-                *self = self.join(&deleted, domain);
+                Ok(())
             }
-        }
+        })?;
+        staged.check_existing(limits)?;
+        *self = staged;
+        Ok(())
+    }
+
+    fn clear_transaction(&mut self) {
         // These flags describe an active transaction, never the next transaction.
         self.created.clear();
         self.created_default = Some(false);
+        self.pending_destruction.clear();
+        self.pending_destruction_default = Some(false);
+        self.touched.clear();
+        self.touched_default = Some(false);
         self.transient = Plane::new(AbstractValue::constant(U256::ZERO), true);
     }
 
     /// Forget storage, balance, code, nonce and lifecycle facts at an account.
     pub fn havoc_account(&mut self, address: Address) {
+        self.may_touch_account(address);
         self.persistent.havoc_account(address);
         self.transient.havoc_account(address);
         self.balances.insert(address, AbstractValue::top());
@@ -909,6 +1012,7 @@ impl Store {
 
     /// Unknown external code can reenter and affect any account in this world.
     pub fn havoc_all(&mut self) {
+        self.may_touch_all();
         self.persistent.havoc_all();
         self.transient.havoc_all();
         self.balances.clear();
@@ -1063,6 +1167,13 @@ impl Store {
                 self.pending_destruction_default,
                 other.pending_destruction_default,
             ),
+            touched: summary::join_flags(
+                &self.touched,
+                self.touched_default,
+                &other.touched,
+                other.touched_default,
+            ),
+            touched_default: summary::join_flag(self.touched_default, other.touched_default),
             possible_logs,
             logs_unknown,
         }
@@ -1115,7 +1226,18 @@ impl Store {
 
     /// Roll back a reverted or exceptional child frame.
     pub fn restore(&mut self, snapshot: Snapshot) {
+        // All supported forks retain RIPEMD-160's touch on revert. This narrow
+        // consensus exception does not retain its balance/storage/log effects.
+        // revm 43.0.2 JournalEntry::AccountTouched::revert uses the same rule.
+        let ripemd = Address::from_word(U256::from(3).into());
+        let ripemd_touched = self.touched_in_transaction(ripemd);
         snapshot.restore(self);
+        let restored = lifecycle::or(self.touched_in_transaction(ripemd), ripemd_touched);
+        if restored != self.touched_default {
+            self.touched.insert(ripemd, restored);
+        } else {
+            self.touched.remove(&ripemd);
+        }
     }
 
     /// Explicit current persistent slots, keyed by storage owner and slot.
@@ -1165,6 +1287,18 @@ impl Store {
         &self.transient.global_default
     }
 
+    /// Unscoped immutable persistent input template for omitted owners.
+    /// Account reads scope this template by their actual owner address.
+    pub fn global_storage_state(&self) -> &SlotStateId {
+        &self.persistent.base
+    }
+
+    /// Unscoped immutable transient input template for omitted owners.
+    /// This preserves the source identity without allocating a scoped view.
+    pub fn global_transient_state(&self) -> &SlotStateId {
+        &self.transient.base
+    }
+
     /// Balance of accounts without an explicit entry.
     pub fn balance_default(&self) -> &AbstractValue {
         &self.balance_default
@@ -1180,6 +1314,7 @@ impl Store {
             .chain(self.existence.keys())
             .chain(self.created.keys())
             .chain(self.pending_destruction.keys())
+            .chain(self.touched.keys())
             .chain(self.persistent.defaults.keys())
             .chain(self.transient.defaults.keys())
             .chain(self.persistent.roots.keys())
@@ -1243,7 +1378,8 @@ impl Store {
             .saturating_add(self.existence.len())
             .saturating_add(self.created.len())
             .saturating_add(self.pending_destruction.len())
-            .saturating_add(2);
+            .saturating_add(self.touched.len())
+            .saturating_add(3);
         self.possible_logs.values().fold(
             lifecycle_work
                 .saturating_add(self.persistent.initial_independence.work_size())

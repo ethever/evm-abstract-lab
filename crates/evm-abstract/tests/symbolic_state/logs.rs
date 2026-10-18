@@ -66,25 +66,60 @@ fn captured_log<'a>(
     fixture: &Fixture,
 ) -> (&'a MachineOutcome, &'a AbstractLog, &'a MachinePayload) {
     complete(analysis);
-    // The engine retains one conservative entry gas failure independently of
-    // executed instructions (engine.rs). It must leave the whole store intact;
-    // every executed route in this fixture completes normally.
-    let failures: Vec<_> = analysis
+    // Pre-entry failure preserves the untouched checkpoint. Memory operations
+    // can also fail after entry, restoring it before transaction finalization.
+    let entered = &analysis.states()[0].entry;
+    let checkpoint = entered.call_stack.root().state.saved_store.state();
+    assert_eq!(
+        entered.store.touched_in_transaction(address(ROOT)),
+        Some(true)
+    );
+    assert_eq!(
+        checkpoint.touched_in_transaction(address(ROOT)),
+        Some(false)
+    );
+    let mut finalized = checkpoint.clone();
+    finalized
+        .finalize_transaction(Domain::from_spec(analysis.domain_spec()))
+        .unwrap();
+    assert_eq!(&finalized, checkpoint, "no sticky RIPEMD touch here");
+    let entry_failure = analysis.outcomes().first().unwrap();
+    assert_eq!(entry_failure.kind, OutcomeKind::Failure);
+    assert_eq!(entry_failure.state, 0);
+    for failure in analysis
         .outcomes()
         .iter()
         .filter(|outcome| outcome.kind != OutcomeKind::Return)
-        .collect();
-    assert_eq!(failures.len(), 1);
-    assert_eq!(failures[0].kind, OutcomeKind::Failure);
-    assert_eq!(failures[0].state, 0);
-    assert_eq!(failures[0].data.len().singleton(), Some(U256::ZERO));
-    assert_eq!(
-        serde_json::to_value(&failures[0].store).unwrap(),
-        serde_json::to_value(&analysis.states()[0].entry.store).unwrap()
-    );
+    {
+        assert_eq!(failure.kind, OutcomeKind::Failure);
+        let source = analysis
+            .states()
+            .get(failure.state)
+            .expect("failure has no source state");
+        assert_eq!(source.id, failure.state);
+        assert_eq!(source.key, source.entry.key());
+        assert_eq!(failure.data.len().singleton(), Some(U256::ZERO));
+        assert_eq!(
+            &failure.store, checkpoint,
+            "root failure leaked LOG effects"
+        );
+    }
     let log_pc = executed_opcode(analysis, fixture, "log", opcode::LOG0);
     executed_opcode(analysis, fixture, "copy", opcode::CALLDATACOPY);
-    executed_opcode(analysis, fixture, "write", opcode::MSTORE);
+    let write_pc = executed_opcode(analysis, fixture, "write", opcode::MSTORE);
+    assert!(
+        analysis.outcomes().iter().any(|outcome| {
+            let source = &analysis.states()[outcome.state];
+            outcome.kind == OutcomeKind::Failure
+                && source
+                    .execution_evidence()
+                    .is_some_and(|evidence| evidence.is_current())
+                && source.executed_pcs.contains(&write_pc)
+                && source.entry.store.possible_logs().len() == 1
+                && !source.entry.store.logs_unknown()
+        }),
+        "retain the MSTORE failure after LOG, with its log rolled back"
+    );
     executed_opcode(analysis, fixture, "done", opcode::STOP);
     assert!(reachable(analysis, ROOT, fixture.labels["outside"]));
     assert!(
@@ -108,6 +143,11 @@ fn captured_log<'a>(
     let (key, log) = outcome.store.possible_logs().iter().next().unwrap();
     assert_eq!(key.address, address(ROOT));
     assert_eq!(key.code_address, address(ROOT));
+    assert_eq!(
+        key.code_hash,
+        analysis.states()[outcome.state].active().code_hash
+    );
+    assert_eq!(key.source_kind, evm_abstract::world::LogSourceKind::Runtime);
     assert_eq!(key.pc, log_pc);
     assert!(log.topics.is_empty());
     let before = analysis
@@ -135,7 +175,7 @@ fn verify_history(analysis: &WorldAnalysis, fixture: &Fixture) -> (AbstractValue
                 U256::from(length),
                 &config().analysis.relations
             ),
-            CheckResult::Unsat
+            CheckResult::ProvenImpossible
         );
     }
     // Compare every retained product/source field with the real pre-write slice.
@@ -242,11 +282,11 @@ fn verify_history(analysis: &WorldAnalysis, fixture: &Fixture) -> (AbstractValue
     assert_eq!(current.provenance(), word(9).provenance());
     for (read, expected) in [(&old, 7), (&current, 9)] {
         assert_eq!(
-            payload.relations.unique_value(
+            payload.relations.local_value(
                 &read.symbolic_expression().unwrap(),
                 &config().analysis.relations
             ),
-            ValueQuery::Unique(U256::from(expected))
+            ValueQuery::Exact(U256::from(expected))
         );
     }
     (old, current)
@@ -370,6 +410,11 @@ fn symbolic_log_native_graphs_and_bounded_report_preserve_all_bindings() {
     assert_eq!(exported["topics"], captured["log"]["topics"]);
     assert_eq!(exported["address"], json!(address(ROOT)));
     assert_eq!(exported["code_address"], json!(address(ROOT)));
+    assert_eq!(
+        exported["code_hash"],
+        json!(analysis.states()[outcome.state].active().code_hash)
+    );
+    assert_eq!(exported["source_kind"], json!("runtime"));
     assert_eq!(exported["pc"], json!(fixture.labels["log"] + 1));
     let exported_length = &exported["data"]["length"]["expression"];
     assert_eq!(graph_root(exported_length), graph_root(&length_graph));

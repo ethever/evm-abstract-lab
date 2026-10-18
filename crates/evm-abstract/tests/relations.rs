@@ -1,7 +1,6 @@
 //! EVM-level relational regressions: feasible paths survive and contradictions do not.
 //!
-//! These tests inspect native CFG reachability, rather than asking a particular
-//! solver or relation representation to report the answer it was constructed with.
+//! These tests inspect CFG reachability, concrete controls and local guarantees.
 
 use alloy_primitives::{Address, U256, hex};
 use evm_abstract::{
@@ -257,7 +256,7 @@ fn false_edges_exclude_the_same_equality_on_later_blocks() {
 }
 
 #[test]
-fn joined_paths_keep_the_union_of_one_and_two_and_exclude_a_third_value() {
+fn joined_unknown_paths_include_both_values_and_selected_paths_exclude_a_third() {
     let mut code = Assembly::default();
     code.op(opcode::CALLVALUE)
         .op(opcode::PUSH0)
@@ -303,10 +302,26 @@ fn joined_paths_keep_the_union_of_one_and_two_and_exclude_a_third_value() {
                 "lost feasible {branch}: {profile:?}"
             );
         }
-        assert!(
-            !reachable(&result, fixture.labels["bad"]),
-            "join is x=1 OR x=2, not AND or an unconstrained x"
-        );
+        // The unknown join selector keeps x=1 OR x=2 in the path DAG. Local
+        // projection imports common facts only, so it need not exclude x=3.
+        // Reachability is an overapproximation, never a satisfying valuation.
+        for (selector, selected, excluded) in [(0, "two", "one"), (1, "one", "two")] {
+            let selected_result = analyze(
+                &fixture.code,
+                profile,
+                EvmEnvironment {
+                    calldata: evm_abstract::world::ByteArray::exact(&[selector]),
+                    ..EvmEnvironment::default()
+                },
+            );
+            complete(&selected_result);
+            assert!(reachable(&selected_result, fixture.labels[selected]));
+            assert!(!reachable(&selected_result, fixture.labels[excluded]));
+            assert!(
+                !reachable(&selected_result, fixture.labels["bad"]),
+                "a known selector must retain its guarded value: {profile:?}"
+            );
+        }
     }
 }
 
@@ -333,24 +348,71 @@ fn bounded_loop() -> Fixture {
 }
 
 #[test]
-fn loop_fixed_point_retains_immutable_input_identity_without_unbounded_unrolling() {
+fn loop_fixed_point_forgets_cross_field_equality_without_rebinding_immutable_inputs() {
     let fixture = bounded_loop();
-    let result = analyze(&fixture.code, Profile::Product, EvmEnvironment::default());
-    complete(&result);
-    assert!(reachable(&result, fixture.labels["body"]));
-    assert!(reachable(&result, fixture.labels["exit"]));
-    assert!(
-        result.transfers() <= 256,
-        "finite counter loop needs widening or a finite fixed point"
-    );
-    for state in result.states().iter().filter(|state| {
-        result.program().blocks()[state.key.basic_block_index].start_pc == fixture.labels["exit"]
-    }) {
+    let environment = EvmEnvironment::default();
+    let no_loop = analyze("34341400", Profile::Product, environment.clone());
+    complete(&no_loop);
+    assert!(no_loop.frontiers().is_empty());
+    assert!(no_loop.execution().frontiers().is_empty());
+    assert!(!no_loop.states().is_empty());
+    for state in no_loop.states() {
         assert_eq!(
             state.exit_stack.last().unwrap().singleton(),
-            Some(U256::from(1)),
-            "re-read immutable CALLVALUE equals its pre-loop input"
+            Some(U256::ONE),
+            "CALLVALUE; CALLVALUE; EQ remains exact without a loop"
         );
+    }
+    // Loop projection forgets the equality between the stack and frame call
+    // value. Their independent bounds still contain every original (v, v)
+    // pair; the historical immutable input is not rebound to another value.
+    for value in [None, Some(U256::ZERO), Some(U256::ONE), Some(U256::MAX)] {
+        let mut input = environment.clone();
+        if let Some(value) = value {
+            input.value = AbstractValue::constant(value);
+        }
+        // All cases use the original loop, default policy and actual widening.
+        let result = analyze(&fixture.code, Profile::Product, input);
+        complete(&result);
+        assert!(result.frontiers().is_empty());
+        assert!(result.execution().frontiers().is_empty());
+        assert!(reachable(&result, fixture.labels["body"]));
+        assert!(reachable(&result, fixture.labels["exit"]));
+        assert!(
+            result.transfers() <= 256,
+            "finite counter loop needs widening or a finite fixed point"
+        );
+        assert!(
+            result.states().len() <= 256,
+            "loop state count must remain bounded"
+        );
+        let exits = result
+            .states()
+            .iter()
+            .filter(|state| {
+                result.program().blocks()[state.key.basic_block_index].start_pc
+                    == fixture.labels["exit"]
+            })
+            .collect::<Vec<_>>();
+        assert!(!exits.is_empty());
+        for state in exits {
+            let equality = state.exit_stack.last().unwrap();
+            assert!(
+                equality.contains(U256::ONE),
+                "loop abstraction must retain the true equality: CALLVALUE={value:?}"
+            );
+            assert!(
+                equality.interval().unsigned_bounds().1 <= U256::ONE,
+                "EQ must retain a Boolean numeric bound"
+            );
+            if value.is_some() {
+                assert_eq!(
+                    equality.singleton(),
+                    Some(U256::ONE),
+                    "concrete CALLVALUE={value:?} stays equal through the loop"
+                );
+            }
+        }
     }
 }
 
@@ -919,26 +981,57 @@ fn retained_unknown_branches(result: &analysis::Analysis, fixture: &Fixture) {
 }
 
 #[test]
-fn native_smt_resource_exhaustion_preserves_both_feasible_branches() {
-    use evm_abstract::domain::relational::{QueryReason, RelationLimits};
-    let fixture = one_symbolic_guard();
-    let result = limited(
-        &fixture,
-        RelationLimits {
-            rlimit: 1,
-            ..RelationLimits::default()
-        },
+fn local_work_exhaustion_retains_guards_and_recovers_exact_with_the_default_policy() {
+    use evm_abstract::domain::{
+        relational::{CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery},
+        symbolic::ExprId,
+    };
+    let policy = RelationLimits::default();
+    let input = ExprId::fresh().unwrap();
+    let derived = ExprId::operation(
+        opcode::ADD,
+        &[input.clone(), ExprId::constant(U256::ONE)],
+        policy.expressions(),
+    )
+    .unwrap();
+    let guard = ExprId::operation(
+        opcode::EQ,
+        &[derived, ExprId::constant(U256::from(2))],
+        policy.expressions(),
+    )
+    .unwrap();
+    let mut relations = RelationState::default();
+    assert_eq!(
+        relations.assume(&guard, true, &policy),
+        CheckResult::MayBeFeasible
     );
+    let before = relations.clone();
+    // The obsolete native-fuel fixture now bounds actual local steps. The
+    // complete retained graph fits; importing and validating it needs more work.
+    let bounded = RelationLimits {
+        max_nodes: relations.work_size(),
+        ..policy
+    };
+    assert!(guard.nodes() <= bounded.max_nodes);
+    assert!(guard.depth() <= bounded.max_depth);
+    assert_eq!(
+        relations.local_value(&input, &bounded),
+        ValueQuery::Undetermined(QueryReason::ExpressionLimit)
+    );
+    assert_eq!(relations, before, "interruption must preserve the guard");
+    assert_eq!(
+        relations.local_value(&input, &policy),
+        ValueQuery::Exact(U256::ONE)
+    );
+    assert_eq!(
+        relations.can_equal(&input, U256::ZERO, &policy),
+        CheckResult::ProvenImpossible
+    );
+    let fixture = one_symbolic_guard();
+    let result = limited(&fixture, policy);
     complete(&result);
     assert!(reachable(&result, fixture.labels["true"]));
     assert!(reachable(&result, fixture.labels["false"]));
-    assert!(
-        result.execution().diagnostics().iter().any(|diagnostic| {
-            diagnostic.kind
-                == analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
-        }),
-        "native rlimit exhaustion must remain typed, never UNSAT"
-    );
 }
 
 #[test]
@@ -987,13 +1080,25 @@ fn initial_symbolic_store_uses_the_configured_policy_and_retains_failure() {
 }
 
 #[test]
-fn unknown_range_feasibility_retains_both_outcomes_and_its_precision_reason() {
-    use evm_abstract::{analysis::DiagnosticKind, domain::relational::QueryReason};
+fn cancelled_range_analysis_can_be_retried_without_losing_either_outcome() {
+    use evm_abstract::analysis::{ControlledAnalysisError, control::Control, progress::Observer};
     let (world, mut entry) = world("5f345f3e00", "00");
     entry.environment.value = AbstractValue::top();
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.rlimit = 1;
-    let result = analysis::analyze_world(world, entry, config).unwrap();
+    // Replace the removed fuel knob with an actual cancellation boundary. Both
+    // the retry and concrete controls keep the original execution defaults.
+    let control = Control::new(Observer::default());
+    control.cancellation().cancel();
+    assert!(matches!(
+        analysis::analyze_world_with_control(
+            world.clone(),
+            entry.clone(),
+            ExecutionConfig::default(),
+            &control
+        ),
+        Err(ControlledAnalysisError::Cancelled)
+    ));
+    let result =
+        analysis::analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -1007,20 +1112,38 @@ fn unknown_range_feasibility_retains_both_outcomes_and_its_precision_reason() {
     ] {
         assert!(result.outcomes().iter().any(|outcome| outcome.kind == kind));
     }
-    assert!(result.diagnostics().iter().any(|diagnostic| {
-        diagnostic.pc == 3
-            && diagnostic.kind
-                == DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
-    }));
+    for (size, returns) in [(0u64, true), (1, false)] {
+        let mut concrete = entry.clone();
+        concrete.environment.value = AbstractValue::constant(U256::from(size));
+        let control =
+            analysis::analyze_world(world.clone(), concrete, ExecutionConfig::default()).unwrap();
+        assert_eq!(control.status(), Status::Converged);
+        assert_eq!(
+            control
+                .outcomes()
+                .iter()
+                .any(|outcome| outcome.kind == analysis::OutcomeKind::Return),
+            returns,
+            "empty returndata permits size zero and rejects size one"
+        );
+        assert!(
+            control
+                .outcomes()
+                .iter()
+                .any(|outcome| outcome.kind == analysis::OutcomeKind::Failure)
+        );
+    }
 }
 
 #[test]
 fn optional_state_read_projection_reports_precision_loss_without_unexpanded_paths() {
-    use evm_abstract::domain::relational::QueryReason;
+    use evm_abstract::domain::relational::{QueryReason, ValueQuery};
     let (world, entry) = world("5f3500", "00");
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.rlimit = 1;
-    let analysis = analysis::analyze_world(world, entry, config).unwrap();
+    // This replaces only the obsolete native-fuel fixture. Sixty-four nodes
+    // retain the read graph, but cannot pay the real 32-byte local projection.
+    config.analysis.relations.max_nodes = 64;
+    let analysis = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -1037,7 +1160,7 @@ fn optional_state_read_projection_reports_precision_loss_without_unexpanded_path
     assert!(analysis.diagnostics().iter().any(|diagnostic| {
         matches!(
             diagnostic.kind,
-            analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ResourceLimit)
+            analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ExpressionLimit)
         )
     }));
     assert!(
@@ -1046,11 +1169,59 @@ fn optional_state_read_projection_reports_precision_loss_without_unexpanded_path
             .iter()
             .any(|outcome| outcome.kind == analysis::OutcomeKind::Return)
     );
+    let loaded = &analysis
+        .states()
+        .iter()
+        .find(|state| state.executed_pcs.contains(&1))
+        .unwrap()
+        .exit_stack[0];
+    assert!(loaded.contains(U256::ZERO));
+    assert!(loaded.contains(U256::MAX));
+    let expression = loaded
+        .expression()
+        .expect("interruption retains the input read");
+    assert!(expression.nodes() <= config.analysis.relations.max_nodes);
+    assert!(expression.depth() <= config.analysis.relations.max_depth);
+    assert_eq!(
+        evm_abstract::domain::relational::RelationState::default()
+            .local_value(expression, &config.analysis.relations),
+        ValueQuery::Undetermined(QueryReason::ExpressionLimit)
+    );
+    let ValueQuery::Bounds(bounds) = evm_abstract::domain::relational::RelationState::default()
+        .local_value(expression, &Default::default())
+    else {
+        panic!("the default local policy must complete the same read");
+    };
+    for value in [U256::ZERO, U256::MAX] {
+        assert!(bounds.contains(value), "local read bounds excluded {value}");
+    }
+    let mut concrete = entry;
+    concrete.environment.calldata = evm_abstract::world::ByteArray::exact(&[7; 32]);
+    let exact = analysis::analyze_world(world, concrete, config).unwrap();
+    assert_eq!(exact.status(), Status::Converged);
+    assert_eq!(
+        exact
+            .states()
+            .iter()
+            .find(|state| state.executed_pcs.contains(&1))
+            .unwrap()
+            .exit_stack[0]
+            .singleton(),
+        Some(U256::from_be_bytes([7; 32]))
+    );
 }
 
 #[test]
 fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
-    use evm_abstract::domain::relational::{QueryReason, RelationLimits};
+    use evm_abstract::{
+        analysis::{FrameCode, OutcomeKind},
+        domain::{
+            Domain,
+            relational::{QueryReason, RelationLimits},
+            symbolic::{ExprId, SlotStateKind},
+        },
+        world::{Store, Symbol},
+    };
     let fixture = one_symbolic_guard();
     for limits in [
         RelationLimits {
@@ -1064,28 +1235,283 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
             ..RelationLimits::default()
         },
     ] {
+        let config = Config {
+            context_depth: 0,
+            relations: limits,
+            ..Config::default()
+        };
+        let symbolic_environment = EvmEnvironment {
+            calldata: evm_abstract::world::ByteArray::empty(),
+            ..EvmEnvironment::default()
+        };
+        let environment = EvmEnvironment {
+            // Keep mandatory recipient cleanup out of the optional scalar
+            // control; CALLVALUE stays unknown and the bytecode stays identical.
+            to: address(0x101).into(),
+            ..symbolic_environment.clone()
+        };
         let result = analysis::analyze_with_environment(
             Program::from_hex(&fixture.code).unwrap(),
-            Config {
-                context_depth: 0,
-                relations: limits,
-                ..Config::default()
-            },
-            EvmEnvironment {
-                // Calldata is unused; keep the initial root within the tiny
-                // policy so the derived CALLVALUE branch is what exhausts it.
-                calldata: evm_abstract::world::ByteArray::empty(),
-                ..EvmEnvironment::default()
-            },
+            config.clone(),
+            environment.clone(),
         )
         .unwrap();
-        retained_unknown_branches(&result, &fixture);
+        complete(&result);
+        assert!(result.frontiers().is_empty());
+        assert!(result.execution().frontiers().is_empty());
+        for branch in ["true", "false"] {
+            assert!(reachable(&result, fixture.labels[branch]));
+        }
+        // The numeric result survives; forgetting its optional expression
+        // loses correlation without leaving either branch unexpanded.
         assert!(
-            result.execution().frontiers().iter().any(|frontier| {
-                frontier.reason == FrontierReason::Relations(QueryReason::ExpressionLimit)
+            result.diagnostics().iter().any(|diagnostic| {
+                matches!(
+                    diagnostic.kind,
+                    analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::ExpressionLimit)
+                )
             }),
-            "expression exhaustion must retain its reason"
+            "optional expression exhaustion must report precision loss"
         );
+        let execution = result.execution();
+        let source = &execution.states()[0];
+        let owner = address(0x101);
+        assert_eq!(result.environment(), &environment);
+        assert_eq!(execution.entry().address, owner);
+        assert_eq!(source.id, 0);
+        assert_eq!(source.key.frames.len(), 1);
+        assert_eq!(source.key, source.entry.key());
+        assert_eq!(source.program(), Some(result.program()));
+        assert_eq!(source.active().code_address, owner);
+        assert_eq!(source.active().address, owner);
+        assert_eq!(source.active().address_value, environment.to);
+        assert_eq!(source.active().basic_block_index, 0);
+        assert!(source.active().jump_history.is_empty());
+        let input_store = Store::new_checked(
+            execution.world(),
+            Domain::from_spec(execution.domain_spec()),
+        )
+        .unwrap();
+        let input_root = input_store.slot_root(owner, false).unwrap();
+        assert!(matches!(
+            input_root.kind(),
+            SlotStateKind::Input { bindings, .. } if bindings.is_empty()
+        ));
+        for value in [U256::ZERO, U256::ONE] {
+            assert!(input_store.storage_default(owner).contains(value));
+        }
+        let mut entered_store = input_store.clone();
+        entered_store.touch_account(owner);
+        assert_eq!(source.entry.store, entered_store);
+        assert_eq!(source.entry.active().saved_store.state(), &input_store);
+        let call_value = &source.entry.active().call_value;
+        let input = call_value.identity().input().expect("the CALLVALUE input");
+        assert_eq!(input.symbol(), Symbol::CallValue);
+        assert_eq!(call_value.numeric(), environment.value.numeric());
+        assert_eq!(
+            call_value.expression(),
+            Some(&ExprId::input(input.scope(), Symbol::CallValue))
+        );
+        assert_eq!(
+            source.exit.as_ref().unwrap().active().call_value,
+            *call_value
+        );
+        let comparison_index = result.program().blocks()[0]
+            .instructions
+            .iter()
+            .position(|instruction| instruction.opcode == opcode::EQ)
+            .unwrap();
+        let comparison = source
+            .execution_evidence()
+            .unwrap()
+            .instruction_values()
+            .unwrap()
+            .iter()
+            .find(|value| value.instruction_index() == comparison_index)
+            .expect("the original source executed the comparison");
+        assert_eq!(
+            source.executed_pcs[comparison_index],
+            result.program().blocks()[0].instructions[comparison_index].pc
+        );
+        for (value, branch) in [(U256::ONE, "true"), (U256::ZERO, "false")] {
+            assert!(comparison.numeric().contains(value));
+            let branch = execution
+                .edges()
+                .iter()
+                .filter(|edge| edge.from == source.id)
+                .map(|edge| &execution.states()[edge.to])
+                .find(|state| {
+                    result.program().blocks()[state.active().basic_block_index].start_pc
+                        == fixture.labels[branch]
+                })
+                .expect("the same source reaches this feasible branch");
+            let mut expected_key = source.key.clone();
+            expected_key.frames[0].basic_block_index = branch.active().basic_block_index;
+            assert_eq!(branch.key, expected_key);
+            assert_eq!(branch.entry.key(), expected_key);
+            assert_eq!(branch.entry.active().call_value, *call_value);
+            assert_eq!(branch.entry.active().saved_store.state(), &input_store);
+            assert_eq!(branch.entry.store, entered_store);
+            let returned = execution
+                .outcomes()
+                .iter()
+                .find(|outcome| outcome.state == branch.id && outcome.kind == OutcomeKind::Return)
+                .expect("this branch completes successfully");
+            // Compare the current numeric facts together with their original
+            // immutable source, rather than accepting an unrelated top value.
+            for store in [&branch.entry.store, &returned.store] {
+                assert_eq!(
+                    (
+                        store.slot_root(owner, false).unwrap(),
+                        store.storage_default(owner),
+                    ),
+                    (input_root.clone(), input_store.storage_default(owner)),
+                );
+            }
+        }
+        for (value, selected, excluded) in [(1, "true", "false"), (0, "false", "true")] {
+            let witness = analysis::analyze_with_environment(
+                Program::from_hex(&fixture.code).unwrap(),
+                config.clone(),
+                EvmEnvironment {
+                    value: AbstractValue::constant(U256::from(value)),
+                    ..environment.clone()
+                },
+            )
+            .unwrap();
+            complete(&witness);
+            assert!(witness.frontiers().is_empty());
+            assert!(witness.execution().frontiers().is_empty());
+            assert!(reachable(&witness, fixture.labels[selected]));
+            assert!(
+                !reachable(&witness, fixture.labels[excluded]),
+                "CALLVALUE={value} witnesses only the {selected} branch"
+            );
+        }
+
+        // The original symbolic recipient needs a mandatory lifecycle root
+        // before the first opcode, independently of optional scalar precision.
+        let boundary = analysis::analyze_with_environment(
+            Program::from_hex(&fixture.code).unwrap(),
+            config.clone(),
+            symbolic_environment.clone(),
+        )
+        .unwrap();
+        assert_eq!(boundary.status(), Status::Incomplete);
+        assert_eq!(boundary.environment(), &symbolic_environment);
+        let execution = boundary.execution();
+        assert_eq!(execution.status(), Status::Incomplete);
+        let [frontier] = execution.frontiers() else {
+            panic!("exactly one mandatory retention boundary is required");
+        };
+        assert_eq!(
+            frontier.reason,
+            FrontierReason::Relations(QueryReason::ExpressionLimit)
+        );
+        assert_eq!(frontier.pc, Some(0));
+        assert_eq!(frontier.from, Some(0));
+        assert!(frontier.range.is_none());
+        assert!(frontier.payload.is_none());
+        let source = &execution.states()[frontier.from.unwrap()];
+        assert_eq!(execution.states().len(), 1);
+        assert_eq!(source.id, 0);
+        assert_eq!(frontier.target.as_ref(), Some(&source.key));
+        assert_eq!(source.key, source.entry.key());
+        assert_eq!(source.key.frames.len(), 1);
+        let owner = execution.entry().address;
+        assert_eq!(owner, Address::repeat_byte(0x11));
+        let frame = source.entry.active();
+        assert_eq!(frame.key.address, owner);
+        assert_eq!(frame.key.code_address, owner);
+        assert_eq!(frame.key.address_value, AddressInput::unknown_to());
+        assert_eq!(frame.key.caller, symbolic_environment.caller);
+        assert_eq!(frame.key.is_static, symbolic_environment.is_static);
+        assert_eq!(frame.key.mode, FrameCode::Runtime);
+        assert_eq!(frame.key.basic_block_index, 0);
+        assert_eq!(frame.key.stack_height, 0);
+        assert!(frame.key.jump_history.is_empty());
+        assert_eq!(frame.program.as_ref(), Some(boundary.program()));
+        assert_eq!(frame.calldata, symbolic_environment.calldata);
+        assert!(frame.stack.is_empty());
+        assert!(source.executed_pcs.is_empty());
+        assert!(source.exit_stack.is_empty());
+        assert_eq!(source.exit.as_ref(), Some(&source.entry));
+        assert!(execution.edges().is_empty());
+        let [projected] = boundary.frontiers() else {
+            panic!("the learning view must retain the same boundary");
+        };
+        assert_eq!(projected.reason, frontier.reason);
+        assert_eq!(projected.limit, Limit::Model);
+        assert_eq!(projected.from, Some(0));
+        assert_eq!(boundary.execution_state_id(0), Some(source.id));
+        assert_eq!(projected.target, boundary.states()[0].key);
+
+        let input_store = Store::new_checked(
+            execution.world(),
+            Domain::from_spec(execution.domain_spec()),
+        )
+        .unwrap();
+        let mut entered_store = input_store.clone();
+        entered_store.may_touch_all();
+        assert_eq!(source.entry.store, entered_store);
+        assert_eq!(frame.saved_store.state(), &input_store);
+        assert_eq!(source.entry.store.touched_default(), None);
+        assert_eq!(frame.saved_store.state().touched_default(), Some(false));
+        assert_eq!(&frame.call_value, call_value);
+        let input = frame
+            .call_value
+            .identity()
+            .input()
+            .expect("retained CALLVALUE");
+        assert_eq!(input.symbol(), Symbol::CallValue);
+        assert_eq!(
+            frame.call_value.numeric(),
+            symbolic_environment.value.numeric()
+        );
+        assert_eq!(
+            frame.call_value.expression(),
+            Some(&ExprId::input(input.scope(), Symbol::CallValue))
+        );
+        for value in [U256::ZERO, U256::ONE] {
+            assert!(frame.call_value.contains(value));
+        }
+        let ripemd = address(3);
+        assert_ne!(
+            input_store.slot_root(owner, false).unwrap(),
+            input_store.slot_root(ripemd, false).unwrap()
+        );
+        for owner in [owner, ripemd] {
+            let input_root = input_store.slot_root(owner, false).unwrap();
+            assert!(matches!(
+                input_root.kind(),
+                SlotStateKind::Input { source, bindings }
+                    if bindings.is_empty()
+                        && source.namespace() == U256::from_be_slice(owner.as_slice()) << 8
+            ));
+            for value in [U256::ZERO, U256::ONE] {
+                assert!(input_store.storage_default(owner).contains(value));
+            }
+            assert_eq!(
+                (
+                    source.entry.store.slot_root(owner, false).unwrap(),
+                    source.entry.store.storage_default(owner),
+                ),
+                (input_root, input_store.storage_default(owner)),
+            );
+            assert_eq!(source.entry.store.touched_in_transaction(owner), None);
+            assert_eq!(
+                frame.saved_store.state().touched_in_transaction(owner),
+                Some(false)
+            );
+        }
+        // Initialization already records pre-entry gas failure. It keeps the
+        // untouched checkpoint and must not be mistaken for opcode execution.
+        let [failure] = execution.outcomes() else {
+            panic!("only the pre-entry failure survives mandatory retention refusal");
+        };
+        assert_eq!(failure.state, source.id);
+        assert_eq!(failure.kind, OutcomeKind::Failure);
+        assert_eq!(&failure.store, frame.saved_store.state());
     }
 }
 
@@ -1130,10 +1556,14 @@ fn a_constraint_limit_is_unknown_and_does_not_drop_a_feasible_side() {
 }
 
 #[test]
-fn uncompared_lazy_hash_reports_precision_loss_while_completing_execution() {
-    use evm_abstract::{analysis::DiagnosticKind, domain::relational::QueryReason};
-    // A partial overwrite of a 128-byte symbolic copy cannot currently be
-    // normalized as a complete content array. Its hash still has a sound value.
+fn uncompared_lazy_hash_keeps_concrete_hashes_without_a_precision_failure() {
+    use evm_abstract::{
+        analysis::DiagnosticKind,
+        domain::{Domain, relational::ValueQuery},
+        world::ByteArray,
+    };
+    // A partial overwrite of a 128-byte symbolic copy retains a content term.
+    // Its ordinary unknown value is not an unsupported-provider diagnostic.
     let result = analysis::analyze_with_environment(
         Program::from_hex("60805f5f3760ff5f5360805f205000").unwrap(),
         Config::default(),
@@ -1141,10 +1571,55 @@ fn uncompared_lazy_hash_reports_precision_loss_while_completing_execution() {
     )
     .unwrap();
     complete(&result);
-    assert!(result.execution().diagnostics().iter().any(|diagnostic| {
-        diagnostic.kind
-            == DiagnosticKind::RelationalPrecisionLost(QueryReason::Unsupported(opcode::KECCAK256))
+    assert!(result.execution().diagnostics().iter().all(|diagnostic| {
+        !matches!(diagnostic.kind, DiagnosticKind::RelationalPrecisionLost(_))
     }));
+    // No memory write follows KECCAK256, so the actual terminal memory is its
+    // input snapshot even though POP removes the intermediate stack result.
+    let payload = result
+        .execution()
+        .states()
+        .iter()
+        .find_map(|state| state.exit.as_ref())
+        .unwrap();
+    let domain = Domain::from_spec(result.execution().domain_spec());
+    let materialize_limit = ExecutionConfig::default().max_memory_bytes;
+    let input = payload
+        .active()
+        .memory
+        .slice(
+            &AbstractValue::constant(U256::ZERO),
+            &AbstractValue::constant(U256::from(128)),
+            materialize_limit,
+            domain,
+        )
+        .unwrap();
+    let hash = input.keccak(domain, materialize_limit).unwrap();
+    let answer = payload
+        .relations
+        .local_value(hash.expression().unwrap(), &domain.spec().relations());
+    let ValueQuery::Bounds(bounds) = answer else {
+        panic!("unknown content should retain completed local bounds: {answer:?}");
+    };
+    for fill in [0u8, 7] {
+        let mut bytes = [fill; 128];
+        bytes[0] = 255;
+        let expected = U256::from_be_bytes(alloy_primitives::keccak256(bytes).0);
+        assert!(hash.contains(expected));
+        assert!(
+            bounds.contains(expected),
+            "local bounds excluded concrete hash {expected}"
+        );
+        let exact = ByteArray::exact(&bytes)
+            .keccak(domain, materialize_limit)
+            .unwrap();
+        assert_eq!(exact.singleton(), Some(expected));
+        assert_eq!(
+            evm_abstract::domain::relational::RelationState::default()
+                .local_value(exact.expression().unwrap(), &domain.spec().relations()),
+            ValueQuery::Exact(expected)
+        );
+    }
 }
 
 #[test]

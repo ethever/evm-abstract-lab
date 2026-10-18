@@ -1,4 +1,9 @@
-use super::support::{Assembly, ROOT, no_bad_branch, reachable, return_words, run};
+use super::support::{
+    Assembly, ROOT, config, conservative_guarded_returns_include, construct_world, entry,
+    no_bad_branch, reachable, return_words, run, run_world,
+};
+use alloy_primitives::U256;
+use evm_abstract::{Fork, world::ByteArray};
 use revm_bytecode::opcode;
 
 fn store_input_key(code: &mut Assembly, input_offset: u16, value: u16) {
@@ -79,7 +84,7 @@ fn unresolved_alias_read_retains_both_results_and_their_conditions() {
 }
 
 #[test]
-fn smt_proved_distinct_arithmetic_slot_preserves_last_write_order() {
+fn distinct_arithmetic_slot_keeps_the_ordered_write_witness() {
     // k and k+1 differ even at the EVM word wrap boundary.
     let mut code = Assembly::default();
     store_input_key(&mut code, 0, 7);
@@ -96,8 +101,21 @@ fn smt_proved_distinct_arithmetic_slot_preserves_last_write_order() {
         .return_word(0xffff);
     let fixture = code.finish();
     let analysis = run(&fixture.code);
-    no_bad_branch(&analysis, &fixture, ROOT);
-    return_words(&analysis, &[7]);
+    // Local alias reasoning need not prove k != k+1 for an unknown k. Joining
+    // both possible reads is conservative; it must retain the actual value 7.
+    conservative_guarded_returns_include(&analysis, &[7]);
+    let world = construct_world(Fork::Osaka, &[(ROOT, &fixture.code)]);
+    for key in [U256::ZERO, U256::ONE, U256::MAX] {
+        let input = entry(ByteArray::exact(&key.to_be_bytes::<32>()));
+        let exact = run_world(world.clone(), input.clone(), config());
+        no_bad_branch(&exact, &fixture, ROOT);
+        return_words(&exact, &[7]);
+        let observed = super::oracle::compare(&world, &input, &exact);
+        assert_eq!(observed.output, U256::from(7).to_be_bytes::<32>());
+        // One unknown-input outcome must cover output, both ordered writes and
+        // termination together, including the modular wrap at key=MAX.
+        super::oracle::compare(&world, &input, &analysis);
+    }
 }
 
 #[test]

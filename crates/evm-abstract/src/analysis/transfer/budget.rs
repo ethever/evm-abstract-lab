@@ -9,6 +9,9 @@ use crate::{
 };
 use revm_bytecode::opcode;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn arithmetic_work(args: &[AbstractValue]) -> usize {
     args.iter()
         .try_fold(1usize, |size, value| {
@@ -60,6 +63,49 @@ pub(super) fn operation_work(
 ) -> usize {
     let frame = result.payload.active();
     let environment = &entry.environment;
+    if matches!(
+        op,
+        opcode::RETURN | opcode::REVERT | opcode::LOG0..=opcode::LOG4
+    ) {
+        // Slice retains the graph and translates only certified presentation
+        // coordinates. Its cheap precharge does not census unrelated arrays.
+        return frame.memory.slice_work(&args[0], &args[1], domain);
+    }
+    if matches!(
+        op,
+        opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY
+    ) {
+        // Quote from cached counts before any whole-array/root census. COPY
+        // retains its complete graph but no longer refreshes every coordinate.
+        return if op == opcode::CODECOPY {
+            frame
+                .memory
+                .copy_code_work(program.byte_len(), 1, &args[0], &args[1], &args[2], domain)
+        } else {
+            let source = match op {
+                opcode::CALLDATACOPY => &frame.calldata,
+                opcode::RETURNDATACOPY => &frame.returndata,
+                _ => &frame.memory,
+            };
+            frame
+                .memory
+                .copy_work(source, &args[0], &args[1], &args[2], domain)
+        };
+    }
+    if op == opcode::EXTCODECOPY {
+        let (bytes, accounts) = external_code_shape(&result.payload.store, &args[0], entry);
+        return frame
+            .memory
+            .copy_code_work(bytes, accounts, &args[1], &args[2], &args[3], domain)
+            .saturating_add(external_code_fee(bytes, accounts, domain, true));
+    }
+    if op == opcode::MSTORE
+        && let Some(work) = frame
+            .memory
+            .uniform_word_write_work(&args[0], &args[1], domain)
+    {
+        return work;
+    }
     let array_size = frame
         .memory
         .work_size()
@@ -100,8 +146,7 @@ pub(super) fn operation_work(
         | opcode::GAS => environment
             .work_size()
             .saturating_add(environment.projection_work(domain)),
-        opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain)
-            .saturating_add(frame.memory.word_numeric_work(&args[0], domain)),
+        opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain),
         opcode::MSTORE => byte_work(&args.iter().collect::<Vec<_>>(), 32, array_size, domain)
             .saturating_add(
                 32usize.saturating_mul(domain.operation_work(&[
@@ -114,20 +159,6 @@ pub(super) fn operation_work(
                 args[1].clone(),
                 AbstractValue::constant(crate::U256::from(255)),
             ])),
-        opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY => {
-            byte_work(&args.iter().collect::<Vec<_>>(), 0, array_size, domain).saturating_add(
-                if op == opcode::CODECOPY {
-                    program.byte_len()
-                } else {
-                    0
-                },
-            )
-        }
-        opcode::EXTCODECOPY => {
-            byte_work(&args.iter().collect::<Vec<_>>(), 0, array_size, domain).saturating_add(
-                external_code_work(&result.payload.store, &args[0], domain, true, entry),
-            )
-        }
         opcode::EXTCODEHASH => {
             external_code_work(&result.payload.store, &args[0], domain, false, entry)
         }
@@ -136,14 +167,8 @@ pub(super) fn operation_work(
             .map_or(1, |values| values.len())
             .saturating_mul(domain.capacity())
             .saturating_add(1),
-        opcode::CALLDATALOAD => byte_work(&[&args[0]], 32, array_size, domain)
-            .saturating_add(frame.calldata.word_numeric_work(&args[0], domain)),
+        opcode::CALLDATALOAD => byte_work(&[&args[0]], 32, array_size, domain),
         opcode::KECCAK256 => byte_work(&[&args[0], &args[1]], range_size(1), array_size, domain),
-        opcode::RETURN | opcode::REVERT | opcode::LOG0..=opcode::LOG4 => {
-            // These consumers retain a view; logical bytes are charged only
-            // when a concrete consumer actually materializes them.
-            byte_work(&[&args[0], &args[1]], 0, array_size, domain)
-        }
         opcode::SLOAD | opcode::SSTORE | opcode::TLOAD | opcode::TSTORE => result
             .payload
             .store
@@ -167,6 +192,15 @@ fn external_code_work(
     copied: bool,
     entry: &crate::world::Entry,
 ) -> usize {
+    let (bytes, accounts) = external_code_shape(store, targets, entry);
+    external_code_fee(bytes, accounts, domain, copied)
+}
+
+fn external_code_shape(
+    store: &Store,
+    targets: &AbstractValue,
+    entry: &crate::world::Entry,
+) -> (usize, usize) {
     let actual;
     let targets = if entry.environment.to.as_concrete().is_none()
         && targets.identity().same_identity(
@@ -181,7 +215,7 @@ fn external_code_work(
         targets
     };
     let Some(targets) = targets.constants() else {
-        return 1;
+        return (0, 0);
     };
     let source_bytes = targets.iter().fold(0usize, |cost, target| {
         let size = match store.code(address(*target)) {
@@ -191,21 +225,21 @@ fn external_code_work(
         };
         cost.saturating_add(size)
     });
+    (source_bytes, targets.len())
+}
+
+fn external_code_fee(source_bytes: usize, accounts: usize, domain: Domain, copied: bool) -> usize {
     // Copy constructs source byte maps and joins possible accounts; hash visits
     // every source byte even if no memory output is requested.
     let factor = if copied {
-        targets
-            .len()
+        accounts
             .saturating_mul(domain.capacity())
             .saturating_mul(domain.capacity())
             .saturating_add(2)
     } else {
         2
     };
-    source_bytes.saturating_mul(factor).saturating_add(
-        targets
-            .len()
-            .saturating_mul(domain.capacity())
-            .saturating_add(1),
-    )
+    source_bytes
+        .saturating_mul(factor)
+        .saturating_add(accounts.saturating_mul(domain.capacity()).saturating_add(1))
 }

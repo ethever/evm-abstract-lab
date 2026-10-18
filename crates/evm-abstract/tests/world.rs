@@ -6,7 +6,7 @@ use evm_abstract::{
         AbstractValue, Domain,
         provenance::Origin,
         relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
-        symbolic::ExprId,
+        symbolic::{ExprId, ExprKind, SlotStateKind},
     },
     world::{
         AbstractLog, Account, ByteArray, Code, LogError, LogKey, RangeError, Store, World,
@@ -43,11 +43,10 @@ fn assert_state_value_eq(actual: &AbstractValue, expected: &AbstractValue) {
     }
 }
 
-fn solver_policy() -> RelationLimits {
+fn local_policy() -> RelationLimits {
     RelationLimits {
         max_nodes: 100_000,
         max_depth: 256,
-        rlimit: 1_000_000,
         ..RelationLimits::default()
     }
 }
@@ -139,9 +138,15 @@ fn store_join_includes_missing_slots_defaults_and_balances() {
     assert_eq!(joined.addresses(), reversed.addresses());
     assert_eq!(joined.slots(), reversed.slots());
     assert_eq!(joined.transient_slots(), reversed.transient_slots());
+    let independent = original.join(&changed, domain);
+    let independent_read = independent.read(address(1), &v(7), domain);
+    let unrelated_source =
+        Store::new(&World::new(Fork::Osaka, "fixture")).read(address(2), &v(7), domain);
+    let unrelated_selector = ExprId::fresh().unwrap();
     // Independent union selectors need not be syntactically equal. Both orders
     // must have the same complete alternatives, with one selector across planes.
     for candidate in [&joined, &reversed] {
+        let policy = local_policy();
         let persistent = candidate.read(address(1), &v(7), domain);
         let transient = candidate.read_transient(address(1), &v(8), domain);
         let balance = candidate.read_balance(address(1));
@@ -149,27 +154,186 @@ fn store_join_includes_missing_slots_defaults_and_balances() {
         assert_state_value_eq(&transient, &domain.join(&v(0), &v(19)));
         assert_state_value_eq(&balance, &domain.join(&v(0), &v(10)));
         assert_state_value_eq(&candidate.read(address(1), &v(99), domain), &v(0));
-        assert_eq!(candidate.code(address(1)), original.code(address(1)));
-        assert_eq!(
-            candidate.existence(address(1)),
-            original.existence(address(1))
+        for owner in [address(1), address(2)] {
+            for input in [&original, &changed] {
+                assert_eq!(candidate.code(owner), input.code(owner));
+                assert_eq!(candidate.existence(owner), input.existence(owner));
+                assert_eq!(candidate.nonce(owner), input.nonce(owner));
+            }
+        }
+        let ExprKind::Ite {
+            condition,
+            then_value,
+            else_value,
+        } = balance.expression().unwrap().kind()
+        else {
+            panic!("the joined balance must retain its branch selector");
+        };
+        let then_balance = then_value.as_constant().unwrap();
+        let else_balance = else_value.as_constant().unwrap();
+        assert!(
+            (then_balance == U256::ZERO && else_balance == U256::from(10))
+                || (then_balance == U256::from(10) && else_balance == U256::ZERO)
         );
-        assert_eq!(candidate.nonce(address(1)), original.nonce(address(1)));
-        for (slot, expected_transient, expected_balance) in [(0, 0, 0), (42, 19, 10)] {
-            let policy = solver_policy();
+        let (then_input, else_input) = if then_balance == U256::ZERO {
+            (&original, &changed)
+        } else {
+            (&changed, &original)
+        };
+        for plane in [false, true] {
+            let root = candidate.slot_root(address(1), plane).unwrap();
+            let SlotStateKind::Ite {
+                condition: slot_condition,
+                then_state,
+                else_state,
+            } = root.kind()
+            else {
+                panic!("both storage planes must retain the whole-store alternatives");
+            };
+            assert_eq!(slot_condition, condition);
+            assert_eq!(
+                then_state,
+                &then_input.slot_root(address(1), plane).unwrap()
+            );
+            assert_eq!(
+                else_state,
+                &else_input.slot_root(address(1), plane).unwrap()
+            );
+            assert_eq!(
+                candidate.slot_root(address(2), plane).unwrap(),
+                original.slot_root(address(2), plane).unwrap()
+            );
+        }
+        let values = [&persistent, &transient, &balance];
+        let alternatives = [[0_u64, 42], [0, 19], [0, 10]];
+        let assert_unselected = |relations: &RelationState| {
+            assert_eq!(relations.check(&policy), CheckResult::MayBeFeasible);
+            for (value, possible) in values.iter().zip(alternatives) {
+                let expression = value.expression().unwrap();
+                let ValueQuery::Bounds(bounds) = relations.local_value(expression, &policy) else {
+                    panic!("an undetermined selector must retain both store alternatives");
+                };
+                for number in possible {
+                    assert!(bounds.contains(U256::from(number)));
+                    assert_eq!(
+                        relations.can_equal(expression, U256::from(number), &policy),
+                        CheckResult::MayBeFeasible
+                    );
+                }
+            }
+        };
+        let assert_selected = |relations: &RelationState, expected: [u64; 3]| {
+            assert_eq!(relations.check(&policy), CheckResult::MayBeFeasible);
+            for (value, number) in values.iter().zip(expected) {
+                assert_eq!(
+                    relations.local_value(value.expression().unwrap(), &policy),
+                    ValueQuery::Exact(U256::from(number))
+                );
+                assert_eq!(
+                    relations.can_equal(value.expression().unwrap(), U256::from(number), &policy),
+                    CheckResult::MayBeFeasible
+                );
+            }
+        };
+        assert_unselected(&RelationState::default());
+        let mut unknown = RelationState::default();
+        unknown
+            .observe(
+                persistent.expression().unwrap(),
+                persistent.numeric(),
+                &policy,
+            )
+            .unwrap();
+        assert_unselected(&unknown);
+
+        let unrelated_owner = candidate.read(address(2), &v(7), domain);
+        assert_ne!(unrelated_owner.expression(), unrelated_source.expression());
+        assert_ne!(persistent.expression(), independent_read.expression());
+        for expression in [
+            unrelated_owner.expression().unwrap(),
+            unrelated_source.expression().unwrap(),
+            independent_read.expression().unwrap(),
+            &unrelated_selector,
+        ] {
+            for number in [0, 42] {
+                let mut relations = RelationState::default();
+                relations
+                    .observe(expression, v(number).numeric(), &policy)
+                    .unwrap();
+                assert_unselected(&relations);
+            }
+        }
+
+        for expected @ [slot, expected_transient, expected_balance] in [[0, 0, 0], [42, 19, 10]] {
             let mut relations = RelationState::default();
             relations
                 .observe(persistent.expression().unwrap(), v(slot).numeric(), &policy)
                 .unwrap();
-            assert_eq!(relations.check(&policy), CheckResult::Sat);
+            // Independent literal arms let the observed read determine the
+            // shared selector, including the other two planes.
+            assert_selected(&relations, expected);
+            for (value, wrong) in [
+                (&transient, 19 - expected_transient),
+                (&balance, 10 - expected_balance),
+            ] {
+                assert_eq!(
+                    relations.can_equal(value.expression().unwrap(), U256::from(wrong), &policy),
+                    CheckResult::ProvenImpossible
+                );
+            }
+            let mut contradictory = relations.clone();
+            contradictory
+                .observe(
+                    persistent.expression().unwrap(),
+                    v(42 - slot).numeric(),
+                    &policy,
+                )
+                .unwrap();
+            assert_eq!(contradictory.check(&policy), CheckResult::ProvenImpossible);
             assert_eq!(
-                relations.unique_value(transient.expression().unwrap(), &policy),
-                ValueQuery::Unique(U256::from(expected_transient)),
+                contradictory.local_value(transient.expression().unwrap(), &policy),
+                ValueQuery::ProvenImpossible
             );
+            let mut explicit = RelationState::default();
             assert_eq!(
-                relations.unique_value(balance.expression().unwrap(), &policy),
-                ValueQuery::Unique(U256::from(expected_balance)),
+                explicit.assume(
+                    condition,
+                    then_balance == U256::from(expected_balance),
+                    &policy,
+                ),
+                CheckResult::MayBeFeasible
             );
+            assert_selected(&explicit, expected);
+            assert_eq!(
+                relations.assume(
+                    condition,
+                    then_balance != U256::from(expected_balance),
+                    &policy
+                ),
+                CheckResult::ProvenImpossible
+            );
+        }
+        for slot in [0, 42] {
+            for transient in [0, 19] {
+                for balance in [0, 10] {
+                    let triple = [slot, transient, balance];
+                    let mut relations = RelationState::default();
+                    for (value, number) in values.iter().zip(triple) {
+                        relations
+                            .observe(value.expression().unwrap(), v(number).numeric(), &policy)
+                            .unwrap();
+                    }
+                    assert_eq!(
+                        relations.check(&policy),
+                        if matches!(triple, [0, 0, 0] | [42, 19, 10]) {
+                            CheckResult::MayBeFeasible
+                        } else {
+                            CheckResult::ProvenImpossible
+                        },
+                        "whole-store alternative {triple:?}"
+                    );
+                }
+            }
         }
     }
 }
@@ -381,23 +545,31 @@ fn overlapping_copy_uses_source_snapshot() {
 }
 
 #[test]
-fn range_limits_are_typed_atomic_and_allow_zero_size_at_any_offset() {
+fn logical_ranges_ignore_materialization_caps_and_keep_invalid_updates_atomic() {
     let domain = Domain::default();
     let mut memory = ByteArray::memory();
+    memory.write_word(&v(1), &v(42), 32, domain).unwrap();
+    assert_eq!(memory.len().singleton(), Some(U256::from(64)));
+    assert_eq!(
+        memory.read_word(&v(1), domain).singleton(),
+        Some(U256::from(42))
+    );
+    let unbound = memory
+        .slice(&v(0), &AbstractValue::top(), 32, domain)
+        .unwrap();
+    assert!(unbound.len().numeric().is_top());
+    assert!(unbound.len().expression().is_some());
+    let maximal = memory
+        .slice(&v(0), &AbstractValue::constant(U256::MAX), 32, domain)
+        .unwrap();
+    assert_eq!(maximal.len().singleton(), Some(U256::MAX));
+    assert!(maximal.exact_bytes_bounded(32).is_none());
     let original = memory.clone();
     assert!(matches!(
-        memory.write_word(&v(1), &v(42), 32, domain),
-        Err(RangeError::TooLarge { .. })
+        memory.write_word(&AbstractValue::constant(U256::MAX), &v(42), 32, domain),
+        Err(RangeError::OffsetTooLarge(_))
     ));
     assert_eq!(memory, original);
-    assert!(matches!(
-        memory.slice(&v(0), &AbstractValue::top(), 32, domain),
-        Err(RangeError::UnknownSize)
-    ));
-    assert!(matches!(
-        memory.slice(&v(0), &AbstractValue::constant(U256::MAX), 32, domain),
-        Err(RangeError::TooLarge { .. })
-    ));
     memory
         .expand(&AbstractValue::constant(U256::MAX), &v(0), 32, domain)
         .unwrap();
@@ -426,7 +598,7 @@ fn unknown_memory_offset_is_conservative_without_allocating_a_range() {
     }
     assert!(!word.contains(U256::ONE));
     assert_eq!(word.known_bits().zero(), !U256::from_be_bytes([42; 32]),);
-    let policy = solver_policy();
+    let policy = local_policy();
     for (at, expected) in [
         (0, U256::from(42) << 248),
         (31, U256::from(42)),
@@ -437,13 +609,26 @@ fn unknown_memory_offset_is_conservative_without_allocating_a_range() {
             .observe(offset.expression().unwrap(), v(at).numeric(), &policy)
             .unwrap();
         assert_eq!(
-            relations.unique_value(word.expression().unwrap(), &policy),
-            ValueQuery::Unique(expected),
+            relations.local_value(word.expression().unwrap(), &policy),
+            ValueQuery::Exact(expected),
+        );
+        assert_eq!(
+            relations.can_equal(word.expression().unwrap(), U256::from(0x2a2a), &policy),
+            CheckResult::ProvenImpossible,
+            "a fixed write offset still excludes two nonzero bytes"
         );
     }
+    // Independent per-byte joins lose the fact that only one offset was
+    // written. MayBeFeasible is this precision gap, not a satisfying witness.
+    let ValueQuery::Bounds(bounds) =
+        RelationState::default().local_value(word.expression().unwrap(), &policy)
+    else {
+        panic!("expected the documented unknown-offset correlation precision gap");
+    };
+    assert!(bounds.contains(U256::from(0x2a2a)));
     assert_eq!(
         RelationState::default().can_equal(word.expression().unwrap(), U256::from(0x2a2a), &policy),
-        CheckResult::Unsat,
+        CheckResult::MayBeFeasible,
     );
     assert!(memory.stored_bytes().next().is_none());
     assert!(memory.work_size() < 1000);
@@ -453,6 +638,8 @@ fn log_key() -> LogKey {
     LogKey {
         address: address(1),
         code_address: address(2),
+        code_hash: alloy_primitives::B256::ZERO,
+        source_kind: evm_abstract::world::LogSourceKind::Runtime,
         pc: 17,
     }
 }

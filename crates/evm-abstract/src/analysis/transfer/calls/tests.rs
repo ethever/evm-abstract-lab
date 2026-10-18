@@ -54,7 +54,9 @@ fn entered_call(
         .expect("CALL must actually enter the known callee")
         .payload;
     assert_eq!(child.call_stack.depth(), 2);
-    assert!(child.active().saved_store.state() == &input.store);
+    let mut before_call = input.store.clone();
+    before_call.touch_account(owner);
+    assert_eq!(child.active().saved_store.state(), &before_call);
     (input, child)
 }
 
@@ -65,9 +67,12 @@ fn zero_call_preserves_complete_balances_and_the_rollback_store() {
         .with_expression(ExprId::fresh().unwrap());
     for balance in [word(100), symbolic_balance] {
         let (input, child) = entered_call("5f", word(0), balance);
-        assert!(
-            child.store == input.store,
-            "zero transfer must preserve the full store, including source and expression metadata"
+        let mut expected = input.store.clone();
+        expected.touch_account(address(0x101));
+        expected.touch_account(address(0x200));
+        assert_eq!(
+            child.store, expected,
+            "zero transfer changes only protocol touch facts"
         );
         for account in [address(0x101), address(0x200)] {
             assert_eq!(
@@ -104,6 +109,65 @@ fn positive_and_uncertain_call_values_still_move_balances() {
 }
 
 #[test]
+fn call_family_touches_only_entered_transfer_recipients_inside_their_checkpoint() {
+    for (code, touches_target) in [
+        ("5f5f5f5f5f61020062fffffff100", true),
+        ("5f5f5f5f61020062fffffffa00", true),
+        ("5f5f5f5f5f61020062fffffff200", false),
+        ("5f5f5f5f61020062fffffff400", false),
+    ] {
+        let owner = address(0x101);
+        let target = address(0x200);
+        let mut world = World::new(Fork::Osaka, "issue134:call-touch");
+        world
+            .insert(owner, Account::from_hex(code, world.fork()).unwrap())
+            .unwrap();
+        world.insert(target, Account::empty()).unwrap();
+        let mut entry = Entry::new(owner);
+        entry.environment.value = word(0);
+        let mut config = ExecutionConfig::default();
+        config.analysis.relations.enabled = false;
+        let domain = config.domain().unwrap();
+        let input = initial(&world, &entry, domain).unwrap();
+        let mut before_call = input.store.clone();
+        before_call.touch_account(owner);
+        let result = execute(
+            &world,
+            &entry,
+            input,
+            &config,
+            domain,
+            &mut WorkBudget::new(config.max_work),
+            StorageReadPolicy::Abstract,
+        );
+        assert!(result.frontiers.is_empty());
+        let failed = result
+            .successors
+            .iter()
+            .find(|successor| successor.kind == MachineEdgeKind::Failure)
+            .unwrap();
+        assert_eq!(
+            failed.payload.store, before_call,
+            "failure before entry does not touch the callee"
+        );
+        let child = result
+            .successors
+            .iter()
+            .find(|successor| successor.kind == MachineEdgeKind::Call)
+            .unwrap();
+        assert_eq!(child.payload.active().saved_store.state(), &before_call);
+        let mut entered = before_call.clone();
+        if touches_target {
+            entered.touch_account(target);
+        }
+        assert_eq!(child.payload.store, entered);
+        let mut reverted = child.payload.store.clone();
+        reverted.restore(child.payload.active().saved_store.clone());
+        assert_eq!(reverted, before_call);
+    }
+}
+
+#[test]
 fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query() {
     let (world, entry) = crate::analysis::machine::fixtures::fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
@@ -113,7 +177,7 @@ fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query()
     let projected = AbstractValue::unknown_address().with_expression(expression.clone());
     let candidate = word(0x301);
     let mut result = super::super::empty_execution(payload.clone());
-    let mut budget = WorkBudget::new(config.analysis.relations.rlimit as usize - 1);
+    let mut budget = WorkBudget::new(config.max_work);
     let mut context = TransferContext {
         config: &config,
         domain,
@@ -141,12 +205,12 @@ fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query()
         remainder
             .relations
             .can_equal(&expression, U256::from(0x301), &config.analysis.relations),
-        crate::domain::relational::CheckResult::Unsat
+        crate::domain::relational::CheckResult::ProvenImpossible
     );
     assert_eq!(
         remainder
             .relations
             .can_equal(&expression, U256::from(0x302), &config.analysis.relations),
-        crate::domain::relational::CheckResult::Sat
+        crate::domain::relational::CheckResult::MayBeFeasible
     );
 }

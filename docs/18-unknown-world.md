@@ -111,9 +111,9 @@ A 的 SLOAD 不能直接读取 C.storage；两次读取均由 C 执行。固定�
 
 实现位于 [`analysis/transfer/procedure.rs`](../crates/evm-abstract/src/analysis/transfer/procedure.rs)。它把未知过程和进入的已知过程放在同一张关系表中，输入、块状态、结果和调用依赖共同增长。一次新的递归调用订阅 callee 的结果，并保存自己的 continuation 与回滚检查点；callee 出现新结果后，所有相关调用点重新传播。
 
-摘要的长期表示保留数值上界，不以整段调用栈、旧 Store 表达式树或某个具体 SMT 赋值作为新的过程身份。每次执行时从摘要产生独立的符号数组与值。代价是过程边界处会丢失一部分输入输出关系；这些结果是保守覆盖，不能当作唯一的实际轨迹。
+摘要的长期表示保留数值上界，不以整段调用栈、旧 Store 表达式树或某次执行的具体取值作为新的过程身份。每次执行时从摘要产生独立的符号数组与值。代价是过程边界处会丢失一部分输入输出关系；这些结果是保守覆盖，不能当作唯一的实际轨迹。
 
-静态未知过程可以直接使用状态恒等关系、任意返回／回退数据和异常失败的效果上界。静态限制传递给子调用，因此只读回调不会修改当前建模的 storage、transient storage、余额、代码、生命周期或日志。未知过程可以忽略回调结果并自行选择返回数据，所以这个上界也覆盖零次、多次和嵌套只读回调；无需再展开已知代码来扩大它。报告只记录这份未知过程摘要，不给省略的回调虚构已执行块。
+静态未知过程使用保留数据根和数值内容的效果上界，加上任意返回／回退数据和异常失败。静态限制传递给子调用，因此只读回调保持 storage、transient storage、余额、代码、nonce 和日志的内容及既有读取身份；但零值调用仍可能触及账户，摘要会保守合并 touched 元数据。事务结束时，EIP-161 清理可能据此改变空账户的 existence，不能把整个 Store 或生命周期视为恒等。未知过程可以忽略回调结果并自行选择返回数据，所以这个上界也覆盖零次、多次和嵌套只读回调；无需再展开已知代码来扩大它。报告只记录这份未知过程摘要，不给省略的回调虚构已执行块。
 
 这项简化针对当前建模的状态和返回效果。执行器目前没有逐指令追踪剩余 gas、访问预热和退款，不能据此认为具体静态调用不改变这些资源状态。摘要构造、返回复制、取消和预算检查仍然执行，已经产生的诊断或前沿也不会被删除。非静态未知过程仍需通过已知代码的真实入口约束对受保护账户的修改。
 
@@ -125,7 +125,7 @@ A 的 SLOAD 不能直接读取 C.storage；两次读取均由 C 执行。固定�
 4. join 保留已发现行为；持续增长时采用保守 widening。比较完整摘要，包括数组默认值、未列举账户、生命周期和结果类别，不能只比较稀疏缓存或 x。
 5. 没有未处理依赖或前沿，继续一轮上述传播也不增加摘要。
 
-这给出的是当前抽象域中的归纳上界，不承诺最精确的输入输出关系。有限集合能稳定时，join 就足够；widening 不要求每次调用都发生。SMT 仍负责实际执行中的条件检查和关系推理，UNKNOWN 不会被当成 UNSAT。这个实现使用 worklist 和现有关系域，没有要求引入独立的 Horn 后端。
+这给出的是当前抽象域中的归纳上界，不承诺最精确的输入输出关系。有限集合能稳定时，join 就足够；widening 不要求每次调用都发生。执行中的条件检查与关系精化使用有界局部传播，只有 `ProvenImpossible` 才能排除路径；`MayBeFeasible` 只表示未证明矛盾，不提供满足赋值。`Bounds` 给出数值上界，未完成查询不能作为不可行性证明，资源与取消边界仍显式保留。过程求解器是固定点 worklist，没有原生 SMT 或独立 Horn 后端。
 
 [static-reuse.json](../examples/unknown-world/static-reuse.json) 让 A 连续四次 STATICCALL 未知 U，最后返回未被修改的 slot 0=42，可用于开启／关闭复用的同输入对照。
 
@@ -154,7 +154,7 @@ A 的 SLOAD 不能直接读取 C.storage；两次读取均由 C 执行。固定�
 
 CALL 返回后的第一个基本块按成功位 0 / 1 分开传播，随后恢复普通合并。这样后续指令检查成功位时，成功返回的数据不会被失败路径未覆盖的旧内存污染。这是有限的调用继续状态划分，普通图、递归过程和精确调用证书回放都保留它；不把任意栈值或调用深度放进新的状态键。
 
-这仍不意味着任何符号入口都能立即分析完成。过程输入、结果和调用依赖可能需要多轮传播，实际 bytecode 还会产生分支与 SMT 查询。有限数值集合的 SMT 编码直接使用经过所有数值约束过滤后的成员关系，避免为同一集合再加入昂贵的冗余余数公式；它不删除该集合允许或排除的值。是否改善完整请求耗时，必须用同一输入和策略测量。
+这仍不意味着任何符号入口都能立即分析完成。过程输入、结果和调用依赖可能需要多轮传播，实际 bytecode 还会产生分支与有界局部查询。有限数值集合、位约束、区间与同余仍作为数值保证参与结构规范化和局部传播；超出局部规则的关系可以保留宽上界，不能把未证明矛盾当成已有具体见证，也不能因此删除路径。是否改善完整请求耗时，必须用同一输入和策略测量。
 
 例如一段 A 的代码总是调用自己，随后忽略成功位并返回 42。具体执行中，子调用可能因资源或深度限制被拒绝；A 从真实的 CALL 后续指令继续，仍返回 42。抽象过程保留这个调用失败分支，因此递归结果可以从这些实际指令开始建立，再向调用者传播。不能等所有子调用先算完才发布结果，也不能把尚无返回结果的递归当成已经成功。
 
@@ -172,11 +172,13 @@ CALL 返回后的第一个基本块按成功位 0 / 1 分开传播，随后恢�
 | 摘要内部实际执行的已知块 | procedure `covered_blocks`、代码身份 | 过程级覆盖来源，不冒充主图展开轨迹 |
 | 尚未完成 | `frontiers` 与 `closed: false` | 真实预算／状态／效果缺口 |
 
-协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；这两种报告的 schema 版本分别为 native 8、Web protocol 13。
+协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；当前两种报告的 schema 版本分别为 native 10、Web protocol 15。
 
-native 8 将旧 `unknown_summaries` 统一为 `procedure_summaries`；Web protocol 13 新增摘要的 `kind` 和 `root_procedure`。消费者应按版本同步迁移。Web 的已知递归节点显示 Recursive bytecode summary，Frame inspector 显示 Recursive bytecode；未知过程继续显示 Abstract environment／Abstract interactions。
+历史上，native 8 将旧 `unknown_summaries` 统一为 `procedure_summaries`，Web protocol 13 新增摘要的 `kind` 和 `root_procedure`；当前 native 9／Web protocol 14 移除了原生 SMT 策略与结果字段。消费者应按版本同步迁移。Web 的已知递归节点显示 Recursive bytecode summary，Frame inspector 显示 Recursive bytecode；未知过程继续显示 Abstract environment／Abstract interactions。
 
-下面是 `self-return-42.json` 的真实 Chromium 检查截图。选中的仍是有代码哈希、storage owner 和 caller continuation 的 Runtime frame；下方记录其递归过程已经闭合。这是小型递归语义与界面的验证，USDC 性能须单独测量。
+原生 schema 10 的账户代码采用 `{"Runtime":{"fork":"osaka","byte_len":1,"bytecode":"0x00"}}` 这样的格式；`Runtime` 内仅含 `fork`、`byte_len` 和 `bytecode`。小写、带 `0x` 前缀的 `bytecode` 保留该观测捕获的全部原始字节，包括无效指令、截断 PUSH 数据和不可达尾部；`byte_len` 是原始字节数。消费者使用导出的 fork 调用 `Program::from_hex_with_fork(bytecode, fork)` 重建程序。World、当前 Store、saved_store 与 outcome Store 分别输出各自持有的代码版本，不向当前 World 重新查询历史代码。此前读取账户 `Runtime.blocks` 的消费者须迁移；独立 Program、`FrameState.program` 和单程序 `analysis.program` 仍提供 decoded `blocks`，wire schema 15 的 `programs[].blocks` 也保持原格式。
+
+下面是引入已知递归时留存的 `self-return-42.json` 历史 Chromium 截图，字段与界面按当时版本解读。选中的是有代码哈希、storage owner 和 caller continuation 的 Runtime frame；下方记录当时的闭合过程摘要。这份历史证据不代表当前版本的浏览器验收或 USDC 性能结果。
 
 ![已知递归 Runtime frame 与闭合过程摘要](evidence/known-recursion/summary-inspector.png)
 
@@ -186,13 +188,13 @@ native 8 将旧 `unknown_summaries` 统一为 `procedure_summaries`；Web protoc
 
 [`unknown_world`](../crates/evm-abstract/tests/unknown_world.rs) 同时检查抽象结果、guard、上下文、回滚和报告，并用 revm 执行提供了具体 U bytecode 的有限样本。具体样本包括零次、连续多次、间接和嵌套回调。具体结果落入抽象结果可以发现遗漏，但不能替代前述一般覆盖条件。
 
-基础回调、嵌套回调、C 的变化与禁止写入、回滚和短返回数据用库的默认策略验收。完整符号地址空间还包括各原生目标；目标条件与重复地址身份测试使用显式更大的统一策略，另有默认预算耗尽的前沿测试。两个不同符号 target 的别名例子中，某些原生目标仍要求具体输入，因此报告保留 `PrecompileInput`。如果这种缺口出现在 U 调用的已知代码内部，U 的关系也保持 open；可用的 C→C 别名具体见证并不能证明整个世界已经闭合。
+基础回调、嵌套回调、C 的变化与禁止写入、回滚和短返回数据用库的默认策略验收。完整符号地址空间还包括各原生目标；目标条件与重复地址身份测试使用显式更大的统一策略，另有默认预算耗尽的前沿测试。当前原生目标对不能具体化或不宜执行具体运算的输入使用保守的 Return／Revert／Failure 摘要，不因输入符号化本身留下 `PrecompileInput`。实际工作量、表示容量或取消边界仍须报告；如果这些缺口出现在 U 调用的已知代码内部，依赖的 U 关系也保持 open。可用的 C→C 别名具体见证不能证明整个世界已经闭合。
 
 性能比较必须使用相同输入、行为假设、覆盖范围和精度要求。除了耗时，还要记录累计 work、过程与状态数量、传播／复用次数、frontier、导出体积和峰值内存。基础例子与变化状态的例子需要分开观察；更多 `reused` 不自动意味着整个请求更快，也不能用缩短预算后的提前停止宣称性能修复。
 
-[`benchmark-unknown-world.py`](../scripts/benchmark-unknown-world.py) 在干净提交上交替开启／关闭复用，验证完整覆盖和返回值精度后才记录成功样本。测量包含 CLI 分析和 JSON 导出；要求传入由该提交新构建的 release 二进制，并使用新的输出目录。库测试和 CLI 的求解预算不同，不能直接比较两者的计费 work；work 也不等于求解器实际步数或毫秒。
+[`benchmark-unknown-world.py`](../scripts/benchmark-unknown-world.py) 在干净提交上交替开启／关闭复用，验证完整覆盖和返回值精度后才记录成功样本。测量包含 CLI 分析和 JSON 导出；要求传入由该提交新构建的 release 二进制，并使用新的输出目录。库测试和 CLI 可选择不同的 work 与关系策略；比较计费 work 时还须固定成本版本，旧 SMT 查询额度不能换算为当前局部传播的 work，work 也不等于毫秒。
 
-本次 43 个测试、六份示例、同精度 release 对照和独立原生 SMT 成本记录见 [Issue #124 验收与性能](issue124-validation.md)。其中明确区分库默认预算、CLI 测量策略，以及保留 open 的原生输入和创建边界。
+原始 SMT 版本的历史记录见 [Issue #124 验收与性能](issue124-validation.md)，包含当时的 43 个测试、六份示例、同精度 release 对照和独立原生 SMT 成本。其中的库默认预算、CLI 测量策略、open 原生输入和创建边界描述对应当时实现，不能直接视为当前版本的验收或性能结果。
 
 普通已知递归的具体执行见证、原始 USDC / WETH 请求与独立复现命令见 [已知递归验收与性能](known-recursion-validation.md)。[自调用返回 42 的示例](../examples/known-recursion/README.md)用于理解递归结果如何从实际 CALL 失败后的继续执行开始建立。
 

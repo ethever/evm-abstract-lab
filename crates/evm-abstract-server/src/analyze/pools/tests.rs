@@ -103,6 +103,99 @@ fn assert_buffer_roundtrip(pools: &Pools<'_>, id: usize) {
 }
 
 #[test]
+fn range_projection_preserves_kinds_word_limits_and_expression_references_through_json() {
+    use evm_abstract::{
+        analysis::{self, Config, RangeKind, RangeRequest, RangeWitness},
+        bytecode::Program,
+    };
+    use std::sync::Arc;
+
+    // Construct the witness directly to test transport independently of the
+    // engine's range classifier.
+    let analysis = analysis::analyze(Program::from_hex("00").unwrap(), Config::default()).unwrap();
+    let payload = Arc::new(analysis.execution().states()[0].entry.clone());
+    let word = format!("0x{:x}", U256::MAX);
+    let offset = AbstractValue::top()
+        .with_expression(ExprId::input(u64::MAX, Symbol::CalldataWord(U256::MAX)));
+    let condition = AbstractValue::unsigned_range(U256::ZERO, U256::ONE)
+        .unwrap()
+        .with_expression(ExprId::input(78, Symbol::CallValue));
+    let control = Control::default();
+    let mut pools = Pools::new(&control);
+    for (kind, expected_kind, limit) in [
+        (
+            RangeKind::MemoryPolicy,
+            api::RangeKind::MemoryPolicy,
+            U256::from(1024),
+        ),
+        (
+            RangeKind::LogicalMemory,
+            api::RangeKind::LogicalMemory,
+            U256::MAX & !U256::from(31),
+        ),
+        (RangeKind::ReturnData, api::RangeKind::ReturnData, U256::MAX),
+    ] {
+        let source = RangeWitness {
+            request: RangeRequest {
+                kind,
+                offset: offset.clone(),
+                size: AbstractValue::constant(U256::MAX),
+                limit: AbstractValue::constant(limit),
+            },
+            condition: condition.clone(),
+            nonzero: Some(false),
+            payload: Arc::clone(&payload),
+        };
+        let projected = pools.range(&source).unwrap();
+        assert_eq!(projected.request.kind, expected_kind);
+        assert_eq!(projected.request.size.constants, Some(vec![word.clone()]));
+        let limit = format!("0x{limit:x}");
+        assert_eq!(projected.request.limit.constants, Some(vec![limit.clone()]));
+        assert_eq!(projected.request.limit.unsigned.lower, limit);
+        assert_eq!(projected.request.limit.unsigned.upper, limit);
+        let reference = projected.request.offset.expression.unwrap();
+        assert_eq!(
+            pools.symbolic.graph.nodes[reference.node],
+            api::Expression::Input(api::InputIdentity {
+                scope: api::DecimalU64(u64::MAX),
+                symbol: api::InputSymbol {
+                    kind: api::InputSymbolKind::CalldataWord,
+                    index: Some(word.clone()),
+                },
+            })
+        );
+        assert_eq!(
+            projected.condition.expression,
+            Some(
+                pools
+                    .symbolic
+                    .expression(condition.expression().unwrap())
+                    .unwrap()
+            )
+        );
+        assert_ne!(projected.condition.expression, Some(reference));
+        assert_eq!(projected.nonzero, Some(false));
+        assert_eq!(projected.payload, 0);
+        assert_eq!(pools.pending.len(), 1);
+        pools.symbolic.graph.validate().unwrap();
+        let snapshot = (&projected, &pools.symbolic.graph, &pools.pending);
+        let decoded: (
+            api::RangeWitness,
+            api::SymbolicGraph,
+            Vec<api::MachineSnapshot>,
+        ) = serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        assert_eq!(
+            decoded,
+            (
+                projected,
+                pools.symbolic.graph.clone(),
+                pools.pending.clone()
+            )
+        );
+    }
+}
+
+#[test]
 fn complete_buffer_clones_reuse_one_snapshot_without_repaying_expanded_cells() {
     let source = deep_buffer();
     let original = source.clone();
@@ -592,4 +685,133 @@ fn buffer_export_bounds_and_cache_hit_cancellation_remain_typed_and_lossless() {
     assert_eq!(detail.usage, usage);
     assert_eq!(detail.limits, pools.symbolic.limits);
     assert_eq!(source, retained);
+}
+
+#[test]
+fn log_pool_preserves_captured_hash_and_init_runtime_identity_through_json() {
+    use alloy_primitives::{Address, B256};
+    use evm_abstract::{
+        Fork,
+        world::{AbstractLog, LogKey, LogSourceKind, Store, World},
+    };
+    let owner = Address::from([0x11; 20]);
+    let code_owner = Address::from([0x22; 20]);
+    let hash = B256::from([0x33; 32]);
+    let other_hash = B256::from([0x44; 32]);
+    let mut source = Store::new(&World::new(Fork::Osaka, "log source projection"));
+    let cases = [
+        (hash, LogSourceKind::Init, api::LogSourceKind::Init),
+        (hash, LogSourceKind::Runtime, api::LogSourceKind::Runtime),
+        (
+            other_hash,
+            LogSourceKind::Runtime,
+            api::LogSourceKind::Runtime,
+        ),
+    ];
+    for (index, &(code_hash, source_kind, _)) in cases.iter().enumerate() {
+        source
+            .emit_log(
+                LogKey {
+                    address: owner,
+                    code_address: code_owner,
+                    code_hash,
+                    source_kind,
+                    pc: 7,
+                },
+                AbstractLog {
+                    topics: vec![AbstractValue::constant(U256::from(index)); index],
+                    data: ByteArray::exact(&[index as u8]),
+                },
+                Domain::default(),
+            )
+            .unwrap();
+    }
+    let control = Control::default();
+    let mut pools = Pools::new(&control);
+    let id = pools.store(&source).unwrap();
+    assert_eq!(pools.store(&source.clone()).unwrap(), id);
+    let snapshot = &pools.stores[id];
+    assert_eq!(snapshot.logs.len(), 3);
+    for (index, &(code_hash, _, source_kind)) in cases.iter().enumerate() {
+        let log = snapshot
+            .logs
+            .iter()
+            .find(|log| log.code_hash == code_hash.to_string() && log.source_kind == source_kind)
+            .unwrap();
+        assert_eq!(log.address, owner.to_string());
+        assert_eq!(log.code_address, code_owner.to_string());
+        assert_eq!(log.pc, 7);
+        assert_eq!(log.topics.len(), index);
+    }
+    let encoded = serde_json::to_vec(snapshot).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<api::StoreSnapshot>(&encoded).unwrap(),
+        *snapshot
+    );
+}
+
+#[test]
+fn touch_only_store_versions_project_account_and_unlisted_guarantees_without_intern_merging() {
+    use evm_abstract::{
+        Address, Fork,
+        world::{Account, Store, World},
+    };
+    let owner = Address::repeat_byte(0x11);
+    let other = Address::repeat_byte(0x22);
+    let unlisted = Address::repeat_byte(0x33);
+    let mut world = World::new(Fork::Osaka, "transaction touch projection");
+    for address in [owner, other] {
+        world.insert(address, Account::empty()).unwrap();
+    }
+    let untouched = Store::new(&world);
+    let mut touched = untouched.clone();
+    touched.touch_account(owner);
+    let mut optional = touched.clone();
+    optional.may_touch_all();
+    let control = Control::default();
+    let mut pools = Pools::new(&control);
+    let original_id = pools.store(&untouched).unwrap();
+    let touched_id = pools.store(&touched).unwrap();
+    let optional_id = pools.store(&optional).unwrap();
+    assert_ne!(original_id, touched_id);
+    assert_ne!(touched_id, optional_id);
+    assert_ne!(original_id, optional_id);
+    assert_eq!(pools.store(&touched.clone()).unwrap(), touched_id);
+    let original = pools.stores[original_id].clone();
+    assert_eq!(original.touched_default, Some(false));
+    assert!(
+        original
+            .accounts
+            .iter()
+            .all(|account| account.touched == Some(false))
+    );
+    let mut expected_touched = original;
+    expected_touched
+        .accounts
+        .iter_mut()
+        .find(|account| account.address == owner.to_string())
+        .unwrap()
+        .touched = Some(true);
+    // Full DTO equality also checks unchanged numerical facts and data roots.
+    assert_eq!(pools.stores[touched_id], expected_touched);
+    let mut expected_optional = expected_touched;
+    expected_optional.touched_default = None;
+    expected_optional
+        .accounts
+        .iter_mut()
+        .find(|account| account.address == other.to_string())
+        .unwrap()
+        .touched = None;
+    assert_eq!(pools.stores[optional_id], expected_optional);
+    assert!(
+        !expected_optional
+            .accounts
+            .iter()
+            .any(|account| account.address == unlisted.to_string())
+    );
+    assert_eq!(optional.touched_in_transaction(unlisted), None);
+    assert_eq!(pools.account(&optional, unlisted).unwrap().touched, None);
+    let encoded = serde_json::to_vec(&expected_optional).unwrap();
+    let decoded: api::StoreSnapshot = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, expected_optional);
 }

@@ -5,6 +5,7 @@ use crate::notation;
 use egui::Ui;
 use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol as api;
+mod session;
 
 pub(super) fn fields(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
     egui::Grid::new(ui.next_auto_id())
@@ -106,6 +107,7 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
             );
         }),
         api::ErrorDetails::World(detail) => fields(ui, |ui| world(ui, detail)),
+        api::ErrorDetails::Session(detail) => session::show(ui, detail),
         api::ErrorDetails::Rpc(detail) => rpc(ui, detail),
         api::ErrorDetails::Transport(detail) => fields(ui, |ui| {
             value::text(ui, "Transport", format!("{:?}", detail.kind));

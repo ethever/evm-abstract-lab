@@ -143,40 +143,208 @@ fn consumed_symbolic_memory_address_keeps_complete_non_singleton_numeric_facts()
 #[test]
 fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     let report = roundtrip(analyze_hex("366000803700"));
+    assert_eq!(report.status, api::AnalysisStatus::Converged);
+    assert!(report.frontiers.is_empty());
+    assert!(report.ssa.complete);
+    let state = &report.states[0];
+    let exit = state.exit.as_ref().unwrap();
+    let frame = exit.frames.last().unwrap();
+    let input = &report.byte_arrays[frame.calldata];
+    let length = input.length.expression.unwrap();
     assert!(
-        report
+        matches!(&report.symbolic.nodes[length.node], api::Expression::Input(identity)
+        if identity.symbol.kind == api::InputSymbolKind::CalldataLength)
+    );
+    let api::Expression::View(memory) =
+        &report.symbolic.nodes[report.byte_arrays[frame.memory].symbolic.node]
+    else {
+        panic!("memory retains its typed view")
+    };
+    let api::Expression::Copy(copy) = &report.symbolic.nodes[memory.state.node] else {
+        panic!("the successful side commits the lazy copy")
+    };
+    assert!(matches!(
+        report.symbolic.nodes[copy.previous.node],
+        api::Expression::BytesZero
+    ));
+    assert_eq!(
+        report.symbolic.nodes[copy.destination.node],
+        api::Expression::Constant("0x0".into())
+    );
+    assert_eq!(copy.length, length);
+    let api::Expression::View(source) = &report.symbolic.nodes[copy.source.node] else {
+        panic!("the copy captures the immutable calldata view")
+    };
+    let api::Expression::View(input_view) = &report.symbolic.nodes[input.symbolic.node] else {
+        panic!("calldata retains its input view")
+    };
+    assert_eq!(source.state, input_view.state);
+    assert_eq!(source.offset, input_view.offset);
+    assert_eq!(source.length, length);
+    let api::Expression::PathAnd(paths) = &report.symbolic.nodes[exit.path.node] else {
+        panic!("success retains the logical range assumption")
+    };
+    let guard = paths
+        .iter()
+        .find_map(|path| {
+            let api::Expression::PathAtoms(atoms) = &report.symbolic.nodes[path.node] else {
+                return None;
+            };
+            atoms.iter().find_map(|atom| match atom {
+                api::PathConstraint::Truth(truth) if truth.nonzero => Some(truth.expression),
+                _ => None,
+            })
+        })
+        .unwrap();
+    let api::Expression::Operation(guard) = &report.symbolic.nodes[guard.node] else {
+        panic!("the memory guard retains its empty-or-fitting predicate")
+    };
+    assert_eq!(guard.opcode, 0x17);
+    assert_eq!(guard.arguments.len(), 2);
+    let api::Expression::Operation(empty) = &report.symbolic.nodes[guard.arguments[0].node] else {
+        panic!("the empty branch retains ISZERO(length)")
+    };
+    assert_eq!(empty.opcode, 0x15);
+    assert_eq!(empty.arguments, [length]);
+    let api::Expression::Operation(fits) = &report.symbolic.nodes[guard.arguments[1].node] else {
+        panic!("the nonempty branch retains both endpoint checks")
+    };
+    assert_eq!(fits.opcode, 0x16);
+    assert_eq!(fits.arguments.len(), 2);
+    assert_eq!(
+        report.symbolic.nodes[fits.arguments[0].node],
+        api::Expression::Constant("0x1".into())
+    );
+    let api::Expression::Operation(size_fits) = &report.symbolic.nodes[fits.arguments[1].node]
+    else {
+        panic!("the requested size retains its upper bound")
+    };
+    assert_eq!(size_fits.opcode, 0x15);
+    assert_eq!(size_fits.arguments.len(), 1);
+    let api::Expression::Operation(too_large) = &report.symbolic.nodes[size_fits.arguments[0].node]
+    else {
+        panic!("the size check uses the original calldata length")
+    };
+    assert_eq!(too_large.opcode, 0x11);
+    assert_eq!(too_large.arguments.len(), 2);
+    assert_eq!(too_large.arguments[0], length);
+    assert_eq!(
+        report.symbolic.nodes[too_large.arguments[1].node],
+        api::Expression::Constant(format!("0x{}e0", "ff".repeat(31)))
+    );
+    assert!(frame.stack.is_empty());
+    let copy_instruction = report.ssa.blocks[0]
+        .instructions
+        .iter()
+        .find(|instruction| instruction.pc == 4)
+        .unwrap();
+    assert_eq!(copy_instruction.opcode, 0x37);
+    assert_eq!(
+        copy_instruction.progress,
+        api::InstructionProgress::Completed
+    );
+    assert_eq!(copy_instruction.operands.len(), 3);
+    assert_eq!(copy_instruction.operands[0], copy_instruction.operands[1]);
+    assert!(
+        matches!(&report.ssa.values[copy_instruction.operands[2]].origin,
+        api::SsaValueOrigin::Instruction(origin) if origin.pc == 0)
+    );
+    assert!(copy_instruction.results.is_empty());
+    assert!(copy_instruction.effect_result.is_some());
+
+    // Three nodes retain the original calldata input. The four-node
+    // ISZERO(GT(length, MAX_END)) cannot be retained, so mandatory partitioning
+    // stops before expansion/COPY and records the entire pre-effect input.
+    let mut input = api::AnalyzeRequest {
+        input: api::AnalysisInput::Bytecode(api::BytecodeInput {
+            bytecode: "366000803700".into(),
+            address: Some(Address::repeat_byte(0x11).to_string()),
+        }),
+        ..api::AnalyzeRequest::default()
+    };
+    input.limits.root_terminal_coverage = false;
+    input.limits.max_expression_nodes = 3;
+    let partial = roundtrip(crate::analyze::analyze(input).unwrap());
+    assert_eq!(partial.status, api::AnalysisStatus::Incomplete);
+    assert!(!partial.ssa.complete);
+    assert_eq!(partial.metadata.limits.max_expression_nodes, 3);
+    let [frontier] = partial.frontiers.as_slice() else {
+        panic!("expected only the mandatory logical range refusal")
+    };
+    assert_eq!(frontier.kind, api::FrontierKind::Relations);
+    assert_eq!(
+        frontier.reason,
+        api::FrontierDetails::Relations(api::QueryBoundary::ExpressionLimit)
+    );
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(4)));
+    let range = frontier.range.as_ref().unwrap();
+    assert_eq!(range.request.kind, api::RangeKind::LogicalMemory);
+    assert_eq!(range.request.offset.constants, Some(vec!["0x0".into()]));
+    assert_eq!(
+        range.request.limit.constants,
+        Some(vec![format!("0x{}e0", "ff".repeat(31))])
+    );
+    let length = partial.byte_arrays[partial.states[0].entry.frames[0].calldata]
+        .length
+        .expression
+        .unwrap();
+    assert_eq!(range.request.size.expression, Some(length));
+    assert!(range.request.size.constants.is_none());
+    assert!(
+        range.condition.expression.is_none(),
+        "the refused guard cannot be fabricated"
+    );
+    assert_eq!(range.nonzero, None);
+    let pending = &partial.pending_machines[range.payload];
+    let frame = pending.frames.last().unwrap();
+    let memory = &partial.byte_arrays[frame.memory];
+    assert_eq!(memory.length.constants, Some(vec!["0x0".into()]));
+    let api::Expression::View(view) = &partial.symbolic.nodes[memory.symbolic.node] else {
+        panic!("the pending state retains the unchanged memory view")
+    };
+    assert!(matches!(
+        partial.symbolic.nodes[view.state.node],
+        api::Expression::BytesZero
+    ));
+    assert!(frame.stack.is_empty());
+    let state = &partial.states[0];
+    let exit = state.exit.as_ref().unwrap();
+    assert_eq!(pending.frames, exit.frames);
+    assert_eq!(pending.store, exit.store);
+    assert_eq!(exit.store, state.entry.store);
+    let instruction = partial.ssa.blocks[0].instructions.last().unwrap();
+    assert_eq!((instruction.pc, instruction.opcode), (4, 0x37));
+    assert_eq!(
+        instruction.progress,
+        api::InstructionProgress::OperandsConsumed
+    );
+    assert_eq!(instruction.operands.len(), 3);
+    assert_eq!(instruction.operands[0], instruction.operands[1]);
+    assert!(
+        matches!(&partial.ssa.values[instruction.operands[2]].origin,
+        api::SsaValueOrigin::Instruction(origin) if origin.pc == 0)
+    );
+    assert!(instruction.results.is_empty());
+    assert!(instruction.effect_result.is_some());
+    assert!(matches!(
+        instruction.operation,
+        api::SsaOperation::Opcode(_)
+    ));
+    assert!(!partial.ssa.values.iter().any(|value| {
+        matches!(&value.origin, api::SsaValueOrigin::Instruction(origin) if origin.pc == 4)
+    }));
+    assert!(
+        partial
             .symbolic
             .nodes
             .iter()
-            .any(|node| matches!(node, api::Expression::Copy(_)))
+            .all(|node| !matches!(node, api::Expression::Copy(_)))
     );
-    let range = report
-        .frontiers
-        .iter()
-        .find_map(|frontier| frontier.range.as_ref())
-        .expect("unbounded input must retain the memory-policy side");
-    assert_eq!(range.request.kind, api::RangeKind::MemoryPolicy);
-    assert!(range.condition.expression.is_some());
-    assert_eq!(range.nonzero, Some(false));
-    let pending = &report.pending_machines[range.payload];
-    let frame = pending.frames.last().unwrap();
-    let view = &report.symbolic.nodes[report.byte_arrays[frame.memory].symbolic.node];
-    let api::Expression::View(view) = view else {
-        panic!("memory must retain a typed view")
-    };
-    assert!(matches!(
-        report.symbolic.nodes[view.state.node],
-        api::Expression::BytesZero
-    ));
-    assert!(pending.frames.last().unwrap().stack.is_empty());
     assert!(
-        report
-            .ssa
-            .blocks
+        partial
+            .outcomes
             .iter()
-            .flat_map(|block| &block.instructions)
-            .any(|instruction| instruction.opcode == 0x37
-                && instruction.progress == api::InstructionProgress::Completed)
+            .all(|outcome| outcome.kind == api::OutcomeKind::Failure)
     );
 }
 #[test]

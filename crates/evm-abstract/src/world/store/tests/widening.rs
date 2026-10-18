@@ -29,9 +29,13 @@ fn widening_form_preserves_roots_facts_accounts_logs_and_conservative_rpc_depend
         .unwrap();
     store.write_balance(address, value(11));
     store.write_nonce(address, value(9));
+    store.touch_account(address);
+    store.may_touch_account(Address::repeat_byte(0x48));
     let site = LogKey {
         address,
         code_address: address,
+        code_hash: alloy_primitives::B256::ZERO,
+        source_kind: crate::world::LogSourceKind::Runtime,
         pc: 7,
     };
     store
@@ -60,6 +64,8 @@ fn widening_form_preserves_roots_facts_accounts_logs_and_conservative_rpc_depend
     assert_eq!(widened.existence, store.existence);
     assert_eq!(widened.created, store.created);
     assert_eq!(widened.pending_destruction, store.pending_destruction);
+    assert_eq!(widened.touched, store.touched);
+    assert_eq!(widened.touched_default, store.touched_default);
     assert_eq!(
         widened.possible_logs.values().next().unwrap().topics,
         vec![gas.clone()]
@@ -147,9 +153,9 @@ fn widening_form_refreshes_redundant_slot_cache_and_rejects_errors_atomically() 
             .is_err()
     );
     assert_eq!(store, original);
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert!(matches!(
             store.widening_form(domain, limits),
             Err(StoreError::Expression(ExprError::Cancelled)
@@ -176,6 +182,8 @@ fn widening_form_refreshes_projected_account_and_log_scalar_constants() {
     let site = LogKey {
         address,
         code_address: address,
+        code_hash: alloy_primitives::B256::ZERO,
+        source_kind: crate::world::LogSourceKind::Runtime,
         pc: 5,
     };
     let mut left = Store::new(&world);

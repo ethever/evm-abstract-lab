@@ -157,6 +157,54 @@ fn alias(text: &str, title: &str, next: &str, identity: &str) -> String {
 
 #[test]
 fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
+    // Wrapping adds padding and line breaks; retain every content character.
+    fn compact(cell: &str) -> String {
+        cell.chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    }
+
+    fn logical_rows(table: &str, headers: &[&str]) -> Vec<Vec<String>> {
+        let mut lines = table.lines();
+        if !lines.any(|line| line.split('|').map(str::trim).eq(headers.iter().copied())) {
+            return Vec::new();
+        }
+        let separator: Vec<_> = lines
+            .next()
+            .expect("a table header retains its separator")
+            .split('|')
+            .map(str::trim)
+            .collect();
+        assert_eq!(separator.len(), headers.len());
+        assert!(
+            separator
+                .iter()
+                .all(|cell| { !cell.is_empty() && cell.chars().all(|character| character == '-') })
+        );
+
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for line in lines {
+            if line.trim().is_empty() {
+                break;
+            }
+            // Unlike cells(), retain the leading empty cell: a blank key
+            // continues only the preceding row, in the same table and column.
+            let components: Vec<_> = line.split('|').map(str::trim).collect();
+            assert_eq!(components.len(), headers.len(), "{line}");
+            if !components[0].is_empty() {
+                rows.push(components.into_iter().map(compact).collect());
+            } else {
+                let row = rows
+                    .last_mut()
+                    .expect("a continuation must follow a keyed table row");
+                for (cell, component) in row.iter_mut().zip(components) {
+                    cell.push_str(&compact(component));
+                }
+            }
+        }
+        rows
+    }
+
     let analysis = analyze("returndata-copy", ExecutionConfig::default());
     assert_eq!(analysis.status(), Status::Converged);
     assert!(
@@ -190,10 +238,10 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
             .expect("RETURN retains its completed payload")
             .relations;
         let limits = &analysis.config().analysis.relations;
-        assert_eq!(relations.check(limits), CheckResult::Sat);
+        assert_eq!(relations.check(limits), CheckResult::MayBeFeasible);
         assert_eq!(
-            relations.unique_value(&value.symbolic_expression().unwrap(), limits),
-            ValueQuery::Unique(U256::from(1))
+            relations.local_value(&value.symbolic_expression().unwrap(), limits),
+            ValueQuery::Exact(U256::from(1))
         );
     }
     let text = render::world::text(&analysis);
@@ -221,13 +269,18 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
         analysis.outcomes().len(),
         "each possible completion needs its own numbered report"
     );
+    let mut checked_missing_continuation = false;
     for (index, (outcome, report)) in analysis.outcomes().iter().zip(outcomes).enumerate() {
         let header = cells(report.lines().next().unwrap());
         assert_eq!(header[0], format!("{}", Symbol::Outcome(index)));
         assert!(header.contains(&format!("{}", Symbol::State(outcome.state)).as_str()));
         assert!(header.contains(&format!("{:?}", outcome.kind).as_str()));
-        assert!(report.contains(&format!("length={}", outcome.data.len())));
-        assert!(report.contains("default={0x0}"));
+        let data = report
+            .split_once("\n    Storage\n")
+            .expect("each outcome retains its storage section")
+            .0;
+        assert!(data.contains(&format!("length={}", outcome.data.len())));
+        assert!(data.contains(&format!("default={}", outcome.data.default_byte())));
         if let Some(bytes) = outcome.data.exact_bytes()
             && !bytes.is_empty()
         {
@@ -236,50 +289,90 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>();
             assert!(
-                report.contains(&format!("exact hex: 0x{hex}")),
+                data.contains(&format!("exact hex: 0x{hex}")),
                 "missing full returned bytes:\n{report}"
             );
-            assert!(report.contains("0x001f") && report.contains("01"));
+            assert!(data.contains("0x001f") && data.contains("01"));
         }
+        let byte_headers = ["Offset(s)", "Stored value / hex bytes"];
+        let byte_rows = logical_rows(data, &byte_headers);
         for (offset, value) in outcome.data.stored_bytes() {
             if value.singleton().is_none() {
+                let key = format!("0x{offset:04x}");
+                let expected = compact(&value.to_string());
+                let has_byte = |rows: &[Vec<String>]| {
+                    rows.iter().any(|row| row[0] == key && row[1] == expected)
+                };
                 assert!(
-                    report.lines().any(|line| {
-                        let row = cells(line);
-                        row.contains(&format!("0x{offset:04x}").as_str())
-                            && row.contains(&value.to_string().as_str())
-                    }),
+                    has_byte(&byte_rows),
                     "missing abstract returned byte at {offset}:\n{report}"
                 );
+                if !checked_missing_continuation {
+                    let physical_rows: Vec<_> = data.lines().collect();
+                    let start = physical_rows
+                        .iter()
+                        .position(|line| line.split('|').next().unwrap().trim() == key)
+                        .unwrap();
+                    let continuation = physical_rows
+                        .iter()
+                        .enumerate()
+                        .skip(start + 1)
+                        .take_while(|(_, line)| line.split('|').next().unwrap().trim().is_empty())
+                        .find(|(_, line)| {
+                            line.split('|')
+                                .nth(1)
+                                .is_some_and(|cell| !cell.trim().is_empty())
+                        })
+                        .map(|(index, _)| index);
+                    if let Some(continuation) = continuation {
+                        // Other offsets and the default retain their components;
+                        // none may supply a missing component for this byte.
+                        let mut truncated = physical_rows;
+                        truncated.remove(continuation);
+                        assert!(
+                            !has_byte(&logical_rows(&truncated.join("\n"), &byte_headers)),
+                            "a missing continuation must fail at its own offset"
+                        );
+                        checked_missing_continuation = true;
+                    }
+                }
             }
         }
+        let slots = logical_rows(
+            section(report, "Storage", "Account observations"),
+            &["Address", "Slot", "Value"],
+        );
+        assert_eq!(
+            slots.len(),
+            outcome.store.slots().len(),
+            "all stored slots belong to this outcome"
+        );
         for ((owner, slot), value) in outcome.store.slots() {
             let owner = alias(&text, "Addresses", "Hashes", &owner.to_string());
-            assert!(
-                report.lines().any(|line| {
-                    let row = cells(line);
-                    row.contains(&owner.as_str())
-                        && row.contains(&format!("{slot:#x}").as_str())
-                        && row.contains(&value.to_string().as_str())
-                }),
+            let row = slots
+                .iter()
+                .find(|row| row[0] == owner && row[1] == format!("{slot:#x}"))
+                .unwrap_or_else(|| panic!("missing stored slot in this outcome:\n{report}"));
+            assert_eq!(
+                row[2],
+                compact(&value.to_string()),
                 "missing stored value in this outcome:\n{report}"
             );
         }
         let accounts = section(report, "Account observations", "Possible logs");
-        let rows: Vec<_> = accounts
-            .lines()
-            .map(cells)
-            .filter(|row| {
-                row.first().is_some_and(|cell| {
-                    cell.strip_prefix('A').is_some_and(|suffix| {
-                        !suffix.is_empty()
-                            && normalize_subscripts(suffix)
-                                .bytes()
-                                .all(|byte| byte.is_ascii_digit())
-                    })
-                })
-            })
-            .collect();
+        let rows = logical_rows(
+            accounts,
+            &[
+                "Address",
+                "Balance",
+                "Nonce",
+                "Existence",
+                "Code hash",
+                "Code size",
+                "Created",
+                "Pending destruction",
+            ],
+        );
         assert_eq!(
             rows.len(),
             outcome.store.addresses().len(),
@@ -288,11 +381,27 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
         for address in outcome.store.addresses() {
             let reference = alias(&text, "Addresses", "Hashes", &address.to_string());
             let row = rows.iter().find(|row| row[0] == reference).unwrap();
-            assert!(row.contains(&outcome.store.read_balance(address).to_string().as_str()));
-            assert!(row.contains(&outcome.store.nonce(address).to_string().as_str()));
-            assert!(row.contains(&format!("{:?}", outcome.store.existence(address)).as_str()));
+            assert_eq!(
+                row[1],
+                compact(&outcome.store.read_balance(address).to_string())
+            );
+            assert_eq!(row[2], compact(&outcome.store.nonce(address).to_string()));
+            assert_eq!(row[3], format!("{:?}", outcome.store.existence(address)));
+            for (column, observed) in [
+                (6, outcome.store.created_in_transaction(address)),
+                (7, outcome.store.pending_destruction(address)),
+            ] {
+                assert_eq!(
+                    row[column],
+                    observed.map_or_else(|| "unknown".to_owned(), |flag| flag.to_string())
+                );
+            }
         }
     }
+    assert!(
+        checked_missing_continuation,
+        "the fixture must exercise a wrapped stored byte and its negative control"
+    );
 }
 
 #[test]

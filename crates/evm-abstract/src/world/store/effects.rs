@@ -1,42 +1,101 @@
 //! Capabilities of unknown execution, separated from known-owner callbacks.
 
 use super::{InitialIndependence, OrderedMap, Plane, Store, StoreError};
-use crate::{domain::Domain, world::Code};
-use alloy_primitives::Address;
+use crate::{
+    domain::{
+        AbstractValue, Domain,
+        symbolic::{ExprId, ExprLimits, SlotStateId, SourceId, StateError},
+    },
+    world::Code,
+};
+use alloy_primitives::{Address, U256};
 use std::collections::BTreeSet;
 
 impl Plane {
-    fn havoc_except(&mut self, protected: &BTreeSet<Address>) -> Result<(), StoreError> {
-        let previous = self.clone();
-        self.havoc_all();
+    /// Replace only unprotected current storage. The caller owns work admission
+    /// and whole-Store validation; this helper stages every plane update.
+    pub(super) fn havoc_except_checked(
+        &mut self,
+        protected: &BTreeSet<Address>,
+        limits: ExprLimits,
+    ) -> Result<(), StoreError> {
+        self.havoc_except_with_source(protected, limits, SourceId::fresh)
+    }
+
+    #[cfg(test)]
+    pub(super) fn havoc_except_with_fresh(
+        &mut self,
+        protected: &BTreeSet<Address>,
+        limits: ExprLimits,
+        fresh: impl FnOnce() -> Option<ExprId>,
+    ) -> Result<(), StoreError> {
+        self.havoc_except_with_source(protected, limits, || {
+            fresh()
+                .map(|token| SourceId::scoped(token, U256::ZERO))
+                .ok_or(StateError::IdentityExhausted)
+        })
+    }
+
+    fn havoc_except_with_source(
+        &mut self,
+        protected: &BTreeSet<Address>,
+        limits: ExprLimits,
+        fresh: impl FnOnce() -> Result<SourceId, StateError>,
+    ) -> Result<(), StoreError> {
+        let interrupt = || {
+            if analysis_control::current_cancellation().is_cancelled() {
+                Err(StoreError::State(StateError::Cancelled))
+            } else {
+                Ok(())
+            }
+        };
+        interrupt()?;
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        let base = SlotStateId::input(fresh()?);
+        base.join_guarded(&base, ExprId::constant(U256::ZERO), limits.into())?;
         // Retained roots can refer to operands and snapshot sources that are not
         // visible in the sparse cell cache. Keep their complete interpretation.
-        self.operands = previous.operands.clone();
+        let mut staged = Self {
+            roots: OrderedMap::new(),
+            base,
+            operands: self.operands.clone(),
+            failure: None,
+            slots: OrderedMap::new(),
+            defaults: OrderedMap::new(),
+            global_default: AbstractValue::top(),
+            initial_independence: InitialIndependence::new(true),
+        };
         for address in protected {
-            self.roots.insert(*address, previous.root_at(*address)?);
-            self.defaults
-                .insert(*address, previous.default_at(*address).clone());
-        }
-        self.slots.extend(
-            previous
-                .slots
-                .iter()
-                .filter(|((owner, _), _)| protected.contains(owner))
-                .map(|(key, value)| (*key, value.clone())),
-        );
-        self.initial_independence = InitialIndependence::new(true);
-        for address in protected {
-            let independent = previous.initial_independence.default_at(*address);
+            interrupt()?;
+            let root = self.root_at(*address)?;
+            root.join_guarded(&root, ExprId::constant(U256::ZERO), limits.into())?;
+            staged.roots.insert(*address, root);
+            staged
+                .defaults
+                .insert(*address, self.default_at(*address).clone());
+            let independent = self.initial_independence.default_at(*address);
             if !independent {
-                self.initial_independence.defaults.insert(*address, false);
+                staged.initial_independence.defaults.insert(*address, false);
             }
         }
-        for ((owner, key), independent) in &previous.initial_independence.slots {
+        for ((owner, key), value) in &self.slots {
+            interrupt()?;
             if protected.contains(owner) {
-                self.initial_independence
+                staged.slots.insert((*owner, *key), value.clone());
+            }
+        }
+        for ((owner, key), independent) in &self.initial_independence.slots {
+            interrupt()?;
+            if protected.contains(owner) {
+                staged
+                    .initial_independence
                     .set_slot(*owner, *key, *independent);
             }
         }
+        interrupt()?;
+        *self = staged;
         Ok(())
     }
 }
@@ -68,7 +127,8 @@ impl Store {
     /// Cover unknown internal steps and unknown-to-unknown interactions.
     /// Known executable owners change storage through analyzed callbacks; a
     /// delegated unknown execution additionally writes its current owner.
-    /// Static execution is an exact identity. Errors leave the store unchanged.
+    /// Static execution preserves values but can touch zero-value recipients.
+    /// Errors leave the store unchanged.
     pub(crate) fn unknown_effects(
         &mut self,
         protected: &BTreeSet<Address>,
@@ -77,11 +137,18 @@ impl Store {
         domain: Domain,
     ) -> Result<(), StoreError> {
         if is_static {
+            // STATICCALL (and zero-value CALL under a static parent) still
+            // passes through transfer_loaded in revm. Nested successful calls
+            // can therefore make empty accounts eligible for EIP-161 clearing.
+            self.may_touch_all();
             return Ok(());
         }
         let limits = domain.spec().relations().expressions();
         self.check_existing(limits)?;
         let mut out = self.clone();
+        // Arbitrary successful internal calls may touch any recipient, even
+        // when no balance is transferred. Earlier definite touches persist.
+        out.may_touch_all();
         // Empty/absent accounts can be deployment destinations. Protection is
         // justified by current nonempty code, not merely inclusion in a world.
         let stable: BTreeSet<_> = protected
@@ -93,8 +160,8 @@ impl Store {
                 _ => false,
             })
             .collect();
-        out.persistent.havoc_except(&stable)?;
-        out.transient.havoc_except(&stable)?;
+        out.persistent.havoc_except_checked(&stable, limits)?;
+        out.transient.havoc_except_checked(&stable, limits)?;
         out.balances.clear();
         out.balance_default = crate::domain::AbstractValue::top();
         let addresses = self.addresses();

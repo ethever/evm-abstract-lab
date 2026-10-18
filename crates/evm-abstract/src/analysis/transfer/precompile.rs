@@ -1,14 +1,31 @@
-//! Native calls use the pinned revm implementation for the selected fork. Work
-//! is reserved before crypto or variable-size modular exponentiation begins.
+//! Materializable calls use the pinned fork's native implementation. Symbolic
+//! inputs have a pure, coarse Return/Revert/Failure summary. Admission reserves
+//! retained representation work, never the symbolic logical length or EVM gas.
 
 use super::{Execution, TransferContext, boundary, calls::finish};
 use crate::{
     Fork,
     analysis::{FrontierReason, OutcomeKind},
-    world::ByteArray,
+    domain::{
+        AbstractValue, Domain,
+        symbolic::{ByteStateKind, ExprId, ExprLimits, StateError},
+    },
+    world::{ByteArray, RangeError},
 };
 use alloy_primitives::{Address, U256};
-use revm_precompile::{PrecompileSpecId, PrecompileStatus, Precompiles};
+use revm_precompile::{
+    Precompile, PrecompileId, PrecompileResult, PrecompileSpecId, PrecompileStatus, Precompiles,
+};
+
+// Internal precision quanta, independent of the caller's total work allowance.
+// These limit optional exact computation, never EVM gas or valid buffer sizes.
+// Exceeding either selects the same conservative semantic envelope.
+const MAX_EXACT_PRECOMPILE_WORK: usize = 16 * 1024 * 1024;
+const MAX_MATERIALIZATION_WORK: usize = 16 * 1024 * 1024;
+
+mod root;
+#[cfg(test)]
+mod tests;
 
 fn table(fork: Fork) -> &'static Precompiles {
     Precompiles::new(PrecompileSpecId::from_spec_id(fork.spec_id()))
@@ -69,45 +86,256 @@ pub(super) fn execute(
     address: Address,
     context: &mut TransferContext<'_>,
 ) {
-    let input_cost =
-        result
-            .payload
-            .active()
-            .calldata
-            .work_size()
-            .saturating_add(super::budget::maximum(
-                result.payload.active().calldata.len(),
-            ));
-    if !context.budget.charge(input_cost) {
+    execute_with(result, fork, address, context, |native, input| {
+        native.execute(input, u64::MAX, 0)
+    });
+}
+
+fn execute_with(
+    result: &mut Execution,
+    fork: Fork,
+    address: Address,
+    context: &mut TransferContext<'_>,
+    run_native: impl FnOnce(&Precompile, &[u8]) -> PrecompileResult,
+) {
+    let input = &result.payload.active().calldata;
+    // Cached counts prepay the representation scan, including exact buffers
+    // reachable through views. Logical length contributes only if extracted.
+    if context.budget.exhausted()
+        || !context.budget.charge(
+            input
+                .metadata_len()
+                .saturating_add(input.state_root().work_size()),
+        )
+        || !context.budget.charge(input.work_size())
+    {
         boundary(result, 0, FrontierReason::Work);
         return;
     }
-    let Some(input) = result
-        .payload
-        .active()
-        .calldata
-        .exact_bytes_bounded(context.config.max_memory_bytes)
-    else {
-        boundary(result, 0, FrontierReason::PrecompileInput(address));
-        return;
-    };
-    let Some(cost) = cost(address, &input, context.config.max_memory_bytes) else {
-        boundary(result, 0, FrontierReason::PrecompileInput(address));
-        return;
-    };
-    if !context.budget.charge(cost) {
-        boundary(result, 0, FrontierReason::Work);
+    if let Err(error) = input.check_existing(context.domain.spec().relations().expressions()) {
+        boundary(result, 0, super::errors::bytes(error));
         return;
     }
     let Some(native) = table(fork).get(&address) else {
         boundary(result, 0, FrontierReason::Precompile(address));
         return;
     };
-    let (kind, data) = match native.execute(&input, u64::MAX, 0) {
+    let input = match materialize(input, context) {
+        Ok(Some(input)) => input,
+        Ok(None) => {
+            summarize(result, native.id(), context);
+            return;
+        }
+        Err(reason) => {
+            boundary(result, 0, reason);
+            return;
+        }
+    };
+    let Some(cost) = cost(address, &input, context.config.max_memory_bytes) else {
+        // Native computation is optional: this envelope is also sound for
+        // known input whose crypto cost cannot be bounded by this policy.
+        summarize(result, native.id(), context);
+        return;
+    };
+    if cost > MAX_EXACT_PRECOMPILE_WORK || !context.budget.can_afford(cost) {
+        // Decline before charge so this optional computation cannot exhaust
+        // the ledger or hide an already refused operation.
+        summarize(result, native.id(), context);
+        return;
+    }
+    if !context.budget.charge(cost) {
+        boundary(result, 0, FrontierReason::Work);
+        return;
+    }
+    finish_native(result, address, run_native(native, &input), context);
+}
+
+/// None selects a semantic envelope before an unaffordable optional extraction.
+/// Typed errors from actual work remain analysis boundaries.
+fn materialize(
+    input: &ByteArray,
+    context: &mut TransferContext<'_>,
+) -> Result<Option<Vec<u8>>, FrontierReason> {
+    let Some(length) = input
+        .len()
+        .singleton()
+        .and_then(|n| usize::try_from(n).ok())
+    else {
+        return Ok(None);
+    };
+    if length > context.config.max_memory_bytes {
+        // This policy bounds extraction, not the semantics of a native buffer.
+        return Ok(None);
+    }
+    if context.budget.exhausted() {
+        return Err(FrontierReason::Work);
+    }
+    let per_byte = input
+        .work_size()
+        .saturating_add(context.domain.capacity().saturating_pow(2))
+        .saturating_add(8);
+    if matches!(input.state_root().kind(), ByteStateKind::Exact(_)) {
+        let work = length.saturating_mul(per_byte);
+        if work > MAX_MATERIALIZATION_WORK || !context.budget.can_afford(work) {
+            return Ok(None);
+        }
+        if !context.budget.charge(work) {
+            return Err(FrontierReason::Work);
+        }
+        let view = input.view();
+        let limits = ExprLimits {
+            max_nodes: length
+                .saturating_mul(input.state_root().nodes().saturating_add(2))
+                .max(view.nodes()),
+            max_depth: input.state_root().depth().saturating_add(2),
+        };
+        return view.known_bytes(limits).map_err(super::errors::expression);
+    }
+    // Known length does not imply known content. Charge and examine one byte
+    // at a time: the first unknown byte needs no full-length allocation or fee.
+    // Earlier paid work is never refunded if the result becomes a summary.
+    let mut bytes = Vec::new();
+    let mut materialization_work = 0usize;
+    for index in 0..length {
+        materialization_work = materialization_work.saturating_add(per_byte);
+        if materialization_work > MAX_MATERIALIZATION_WORK || !context.budget.can_afford(per_byte) {
+            return Ok(None);
+        }
+        if !context.budget.charge(per_byte) {
+            return Err(FrontierReason::Work);
+        }
+        let value = input
+            .read_byte_checked(&AbstractValue::constant(U256::from(index)), context.domain)
+            .map_err(super::errors::bytes)?;
+        let Some(byte) = value.singleton().and_then(|n| u8::try_from(n).ok()) else {
+            return Ok(None);
+        };
+        bytes.try_reserve(1).map_err(|_| FrontierReason::Memory)?;
+        bytes.push(byte);
+    }
+    Ok(Some(bytes))
+}
+
+fn success_data(
+    input: &ByteArray,
+    id: &PrecompileId,
+    domain: Domain,
+) -> Result<ByteArray, RangeError> {
+    // Match semantic identifiers, so fork-specific native functions still use
+    // the provider table. All pinned fixed-output variants are covered here.
+    let length = match id {
+        PrecompileId::Identity => return Ok(input.clone()),
+        PrecompileId::EcRec | PrecompileId::P256Verify => {
+            // These native successes return either no bytes or a full word.
+            // Slice accepts concrete sizes, so join the two complete buffers
+            // instead of asking it to enumerate a numeric range of lengths.
+            let word = ByteArray::unknown_checked()?.slice(
+                &AbstractValue::constant(U256::ZERO),
+                &AbstractValue::constant(U256::from(32)),
+                32,
+                domain,
+            )?;
+            let selector = ExprId::fresh().ok_or(StateError::IdentityExhausted)?;
+            return ByteArray::empty().join_guarded(
+                &word,
+                domain,
+                selector,
+                domain.spec().relations().expressions(),
+            );
+        }
+        PrecompileId::Sha256
+        | PrecompileId::Ripemd160
+        | PrecompileId::Bn254Pairing
+        | PrecompileId::Bls12Pairing => AbstractValue::constant(U256::from(32)),
+        PrecompileId::Bn254Add
+        | PrecompileId::Bn254Mul
+        | PrecompileId::Blake2F
+        | PrecompileId::KzgPointEvaluation => AbstractValue::constant(U256::from(64)),
+        PrecompileId::Bls12G1Add | PrecompileId::Bls12G1Msm | PrecompileId::Bls12MapFpToGp1 => {
+            AbstractValue::constant(U256::from(128))
+        }
+        PrecompileId::Bls12G2Add | PrecompileId::Bls12G2Msm | PrecompileId::Bls12MapFp2ToGp2 => {
+            AbstractValue::constant(U256::from(256))
+        }
+        // In particular, pre-Osaka modexp's modulus length is not bounded by
+        // max_memory_bytes. General/future variants get no invented byte cap.
+        _ => return ByteArray::unknown_checked(),
+    };
+    ByteArray::unknown_checked()?.slice(&AbstractValue::constant(U256::ZERO), &length, 256, domain)
+}
+
+fn summarize(result: &mut Execution, id: &PrecompileId, context: &mut TransferContext<'_>) {
+    // Outcomes retain only Store/data. An actual native root has no creation
+    // continuation, so its frames and relations need no completion copies.
+    if root::applicable(&result.payload) {
+        root::summarize(result, id, context);
+        return;
+    }
+    // Each of three alternatives retains at most four payload-sized copies:
+    // input, completion receipt, resumed payload and output store/data. The
+    // fixed allowance pays for fresh roots, one bounded slice and empty data.
+    // No logical bytes are enumerated, allocated or charged by this summary.
+    let work = result
+        .payload
+        .work_size()
+        .saturating_mul(4)
+        .saturating_add(1024)
+        .saturating_mul(3);
+    if context.budget.exhausted() || !context.budget.charge(work) {
+        boundary(result, 0, FrontierReason::Work);
+        return;
+    }
+    // Construct and validate all buffers before publishing any alternative.
+    let data = (|| {
+        let returned = success_data(&result.payload.active().calldata, id, context.domain)?;
+        let reverted = ByteArray::unknown_checked()?;
+        let failed = ByteArray::empty();
+        let limits = context.domain.spec().relations().expressions();
+        for data in [&returned, &reverted, &failed] {
+            data.check_existing(limits)?;
+        }
+        Ok::<_, RangeError>([returned, reverted, failed])
+    })();
+    let data = match data {
+        Ok(data) => data,
+        Err(error) => {
+            boundary(result, 0, super::errors::bytes(error));
+            return;
+        }
+    };
+    for (kind, data) in [
+        OutcomeKind::Return,
+        OutcomeKind::Revert,
+        OutcomeKind::Failure,
+    ]
+    .into_iter()
+    .zip(data)
+    {
+        if context.budget.exhausted() || !context.budget.charge(0) {
+            boundary(result, 0, FrontierReason::Work);
+            return;
+        }
+        // Native operations are pure; the call layer owns touch metadata and
+        // checkpoints. Its common finish handles root and child rollback.
+        finish(result, result.payload.clone(), kind, data, context, 0);
+    }
+}
+
+fn finish_native(
+    result: &mut Execution,
+    address: Address,
+    output: PrecompileResult,
+    context: &mut TransferContext<'_>,
+) {
+    if !context.budget.charge(0) {
+        boundary(result, 0, FrontierReason::Work);
+        return;
+    }
+    let (kind, bytes) = match output {
         Ok(output) => match output.status {
-            PrecompileStatus::Success => (OutcomeKind::Return, ByteArray::exact(&output.bytes)),
-            PrecompileStatus::Revert => (OutcomeKind::Revert, ByteArray::exact(&output.bytes)),
-            PrecompileStatus::Halt(_) => (OutcomeKind::Failure, ByteArray::empty()),
+            PrecompileStatus::Success => (OutcomeKind::Return, output.bytes),
+            PrecompileStatus::Revert => (OutcomeKind::Revert, output.bytes),
+            PrecompileStatus::Halt(_) => (OutcomeKind::Failure, Default::default()),
         },
         // Fatal backend errors are analysis boundaries, rather than invented
         // contract failures. Ordinary invalid input is returned as a Halt above.
@@ -116,8 +344,25 @@ pub(super) fn execute(
             return;
         }
     };
-    if super::budget::maximum(data.len()) > context.config.max_memory_bytes {
+    if bytes.len() > context.config.max_memory_bytes {
         boundary(result, 0, FrontierReason::Memory);
+        return;
+    }
+    // Pay sparse byte-map construction and outcome/completion retention before
+    // copying the provider's already computed output into an executable array.
+    let work = result
+        .payload
+        .work_size()
+        .saturating_mul(4)
+        .saturating_add(bytes.len().saturating_mul(16).saturating_mul(3))
+        .saturating_add(1024);
+    if !context.budget.charge(work) {
+        boundary(result, 0, FrontierReason::Work);
+        return;
+    }
+    let data = ByteArray::exact(&bytes);
+    if let Err(error) = data.check_existing(context.domain.spec().relations().expressions()) {
+        boundary(result, 0, super::errors::bytes(error));
         return;
     }
     let payload = result.payload.clone();

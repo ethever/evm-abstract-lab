@@ -8,6 +8,7 @@ mod job;
 mod layout;
 mod providers;
 mod startup;
+mod terminal_coverage;
 pub(crate) mod timing;
 
 use crate::{palette, widgets};
@@ -591,6 +592,14 @@ impl Workspace {
         }
         if self.report.is_some() && self.report_job_id.is_none() {
             status.push_str("; Result Job ID: unavailable");
+        }
+        if let Some(report) = &self.report
+            && let Some(coverage) = terminal_coverage::status(report)
+        {
+            status.push_str(&format!(
+                "; {}; {coverage}",
+                terminal_coverage::detail_status(report)
+            ));
         }
         status
     }

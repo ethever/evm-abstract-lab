@@ -64,6 +64,23 @@ impl Session {
         &self.world
     }
 
+    pub(crate) fn layered(
+        &self,
+        entry: crate::world::Entry,
+        config: crate::analysis::ExecutionConfig,
+    ) -> Result<crate::analysis::layers::AnalysisSession, crate::analysis::layers::SessionError>
+    {
+        super::layers::start(&self.world, self.loader.world(), entry, config)
+    }
+
+    pub(crate) fn refine_layered(
+        &self,
+        session: &mut crate::analysis::layers::AnalysisSession,
+        addresses: impl IntoIterator<Item = Address>,
+    ) -> Result<(), crate::analysis::layers::SessionError> {
+        super::layers::refine(&self.world, session, addresses)
+    }
+
     /// Acquire a discovered account, or reuse its prior cached observation.
     ///
     /// Returns `true` only when a new account was installed. No storage slots

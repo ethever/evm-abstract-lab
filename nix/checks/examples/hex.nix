@@ -1,7 +1,8 @@
 # One SSA envelope carries each successful program's CFG and SSA assertions.
-# The memory frontier case keeps both CLI exit branches because cfg and
-# allow-partial-ssa deliberately expose different incomplete report shapes.
+# Symbolic memory completes; a separate expression refusal retains exit-2 and
+# partial-SSA coverage in the same installed example check.
 {
+  pkgs,
   lib,
   inputs,
   hexFixtures,
@@ -25,40 +26,18 @@ let
       )
     ) (lib.filter (name: name != "memory-symbolic-offset.hex") hexFixtures)
   );
-  memory = mkCheck "hex-memory-symbolic-offset" [ ] { } ''
+  memory = mkCheck "hex-memory-symbolic-offset" [ pkgs.python3 ] { } ''
     fixture=${inputs.file "examples/memory-symbolic-offset.hex"}
-    if evm-abstract cfg --file "$fixture" --format json > memory-policy.json; then
+    # Preserve linked artifact names; these now contain complete logical memory.
+    evm-abstract cfg --file "$fixture" --format json > memory-policy.json
+    evm-abstract ssa --file "$fixture" --format json > memory-policy-ssa.json
+    if evm-abstract ssa --hex 600160005200 --evm.to 0x0000000000000000000000000000000000000101 --evm.calldata 0x --max-symbolic-nodes 2 --format json --allow-partial-ssa > expression-limit-ssa.json; then
       exit 1
     else
       test "$?" -eq 2
     fi
-    jq -e '.status == "Incomplete" and .program.fork == "osaka" and .states[0].exit_stack[0].Constants == ["0x7"] and .frontiers == [{"reason":"Memory","from":0,"target":{"basic_block_index":0,"stack_height":1,"context":[]},"limit":"Memory"}]' memory-policy.json > /dev/null
-    if evm-abstract ssa --file "$fixture" --format json --allow-partial-ssa > memory-policy-ssa.json; then
-      exit 1
-    else
-      test "$?" -eq 2
-    fi
-    jq -e '
-      .analysis.status == "Incomplete" and .machine_analysis.status == "Incomplete" and
-      .partial_ssa.status == "Incomplete" and .partial_ssa.complete == false and (has("ssa") | not) and
-      (.machine_analysis.frontiers | length) == 1 and
-      .partial_ssa.frontiers == .machine_analysis.frontiers and
-      (.machine_analysis.frontiers[0] as $frontier |
-        $frontier.reason == "Memory" and $frontier.pc == 6 and
-        $frontier.range.request.kind == "MemoryPolicy" and $frontier.range.nonzero == false and
-        ($frontier.range.request.offset | has("Constants") | not) and
-        $frontier.range.request.offset.provenance.origins.Sources == ["Calldata"] and
-        $frontier.range.request.size.Constants == ["0x20"] and
-        $frontier.range.request.limit.Constants == ["0x4000000"] and
-        ($frontier.range.payload.call_stack.root.state.memory as $before |
-          $before.length.Constants == ["0x0"] and $before.root.nodes[$before.root.root] == "BytesZero")) and
-      (.partial_ssa.blocks[0] as $block |
-        ($block.instructions[] | select(.pc == 7 and .opcode == 81)) as $read |
-        $read.progress == "Completed" and $block.exit_frames == [[$read.results[0]]] and
-        any($block.instructions[]; .pc == 6 and .opcode == 82 and .progress == "Completed" and .operands[0] == $read.operands[0]) and
-        any(.partial_ssa.facts[]; .value == $read.results[0] and .scope == {"State":{"state":$block.state}} and .validity == "Current" and .constant == "0x7" and .numeric.Constants == ["0x7"] and .provenance.origins.Sources == ["Memory"]))
-    ' memory-policy-ssa.json > /dev/null
-    cp memory-policy.json memory-policy-ssa.json "$out/"
+    python3 ${inputs.file "scripts/verify_logical_memory.py"} memory-policy.json memory-policy-ssa.json expression-limit-ssa.json
+    cp memory-policy.json memory-policy-ssa.json expression-limit-ssa.json "$out/"
   '';
   unavailableForks = lib.genAttrs [ "cancun" "prague" ] (
     fork:

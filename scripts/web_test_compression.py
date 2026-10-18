@@ -38,7 +38,7 @@ def compression_interactions(browser, url: str, output: Path):
             envelope = response.json()
             report = envelope["result"]["Ok"]
             assert report == completed.json()["result"]["Ok"]
-            assert report["schema_version"] == 13
+            assert report["schema_version"] == 15
             assert "max_output_bytes" not in report["metadata"]["export_limits"]
             assert report["cfg"] and report["ssa"]["blocks"]
             expect(page.locator("#analysis-status")).to_contain_text("Ready:")

@@ -177,14 +177,16 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
                                              min_selected_pixels=1 if scale <= 0.16 else 20)
                     require_selected_complete(measured)
                     fitted_width = fitted["bounds"][2] - fitted["bounds"][0]
-                    actual_width = measured["bounds"][2] - measured["bounds"][0]
+                    fitted_outline = fitted["selected_record"]["outline_bounds"]
+                    actual_outline = measured["selected_record"]["outline_bounds"]
+                    fitted_outline_width = fitted_outline[2] - fitted_outline[0]
+                    actual_outline_width = actual_outline[2] - actual_outline[0]
                     observed_zoom = float(re.search(r"; CFG zoom: ([0-9.]+)%", status.text_content())[1])
                     assert abs(observed_zoom / fitted_zoom - scale) < 0.005, f"incorrect camera zoom at DPR {dpr}: {scale}: {observed_zoom}/{fitted_zoom}"
-                    # The inside stroke and antialiasing retain physical width;
-                    # tiny fill rectangles have a fixed pixel bias, independent of
-                    # their scale. Keep a visible selected fill and compare actual
-                    # pixels as well as the product's precise camera percentage.
-                    assert abs(actual_width - fitted_width * scale) <= 4.0, f"incorrect screenshot zoom at DPR {dpr}: {scale}: {measured}"
+                    # paint.rs uses a fixed 1.5px inside selection stroke. Measure
+                    # the complete selected outline for physical card size; its
+                    # inset fill loses the stroke width even at tiny zoom levels.
+                    assert abs(actual_outline_width - fitted_outline_width * scale) <= 4.0, f"incorrect screenshot zoom at DPR {dpr}: {scale}: {measured}"
                     zoom_screenshots[f"{layout_name}-{name}"] = measured
                     previous = scale
 

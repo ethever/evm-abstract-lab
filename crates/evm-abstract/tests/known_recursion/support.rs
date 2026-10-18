@@ -263,27 +263,52 @@ pub(super) fn returns(analysis: &WorldAnalysis) -> Vec<&MachineOutcome> {
     values
 }
 
-/// The existing gas model seeds one possible failure before the first opcode.
-/// Permit only that unchanged entry outcome in an otherwise single-kind fixture.
+/// Gas failure may precede entry or occur at an executed memory operation.
+/// These fixtures must restore the whole root checkpoint in either case.
 pub(super) fn terminals(analysis: &WorldAnalysis, kind: OutcomeKind) -> Vec<&MachineOutcome> {
+    assert!(matches!(kind, OutcomeKind::Return | OutcomeKind::Revert));
     let initial = Store::new(analysis.world());
+    let checkpoint = analysis.states()[0]
+        .entry
+        .call_stack
+        .root()
+        .state
+        .saved_store
+        .state();
+    assert_eq!(checkpoint, &initial);
+    // Root completion also finalizes transaction state. These fixtures have no
+    // retained RIPEMD touch; that exception cannot excuse other Store changes.
+    let mut finalized = checkpoint.clone();
+    finalized
+        .finalize_transaction(Domain::from_spec(analysis.domain_spec()))
+        .unwrap();
+    assert_eq!(finalized, initial);
+    // The engine seeds this outcome before appending executed completions.
+    let entry_failure = analysis.outcomes().first().unwrap();
+    assert_eq!(entry_failure.kind, OutcomeKind::Failure);
+    assert_eq!(entry_failure.state, 0);
     let mut values = Vec::new();
     for outcome in analysis.outcomes() {
         if outcome.kind == kind {
             values.push(outcome);
         } else {
             assert_eq!(outcome.kind, OutcomeKind::Failure);
-            assert_eq!(outcome.state, 0, "unexpected failure after execution");
+            let source = analysis
+                .states()
+                .get(outcome.state)
+                .expect("failure has no source state");
+            assert_eq!(source.id, outcome.state);
+            assert_eq!(source.key, source.entry.key());
             only(outcome.data.len(), &[0]);
             assert_eq!(
                 outcome.store, initial,
-                "entry gas failure changed transaction effects"
+                "root failure leaked effects or changed the checkpoint"
             );
         }
     }
     assert!(
         !values.is_empty(),
-        "the entry gas failure is not a recursive completion"
+        "gas failure alone is not a recursive completion"
     );
     values
 }

@@ -391,4 +391,5 @@ fn rpc_block_numbers_accept_decimal_and_hex_with_a_u64_bound() {
 }
 
 mod defaults;
+mod root_terminal_coverage;
 mod rpc_limits;

@@ -17,11 +17,13 @@
 mod config;
 pub mod control;
 mod engine;
+pub mod layers;
 mod machine;
 pub mod progress;
 mod rpc;
 mod single;
 mod summary;
+mod terminal;
 mod transfer;
 
 use crate::{bytecode::Program, domain::AbstractValue};
@@ -43,12 +45,16 @@ pub use rpc::{
     analyze_rpc_with_control, analyze_rpc_with_observer,
 };
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
+pub use terminal::{
+    RootTerminalCoverage, RootTerminalInputBinding, RootTerminalOutcome, RootTerminalRetention,
+    RootTerminalScope, RootTerminalTrigger,
+};
 pub use transfer::create::CreationBoundary;
 
-/// Serialized native analysis format. Version 8 generalizes procedure summaries
-/// to known recursion and unknown interactions, with explicit entry provenance.
+/// Serialized EVM analysis format. Version 10 adds optional separate root
+/// terminal coverage with owned original input binding and finalized tuples.
 /// The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 8;
+pub const SCHEMA_VERSION: u16 = 10;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -213,7 +219,7 @@ pub enum Limit {
 /// 无法继续展开的明确前沿，保留其来源和预期状态键。
 #[derive(Clone, Debug, Serialize)]
 pub struct Frontier {
-    /// Full native reason, including symbolic and SMT resource limits.
+    /// Full native reason, including symbolic and relational resource limits.
     pub reason: FrontierReason,
     /// 已知来源状态；最初入口没有来源。
     pub from: Option<usize>,
@@ -254,7 +260,9 @@ pub struct Analysis {
 // cloning input tables outside the shared work budget.
 impl Serialize for Analysis {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut report = serializer.serialize_map(Some(11))?;
+        let mut report = serializer.serialize_map(Some(
+            11 + usize::from(self.root_terminal_coverage().is_some()),
+        ))?;
         report.serialize_entry("program", &self.program)?;
         report.serialize_entry("config", &self.config)?;
         report.serialize_entry("schema_version", &self.schema_version)?;
@@ -266,6 +274,9 @@ impl Serialize for Analysis {
         report.serialize_entry("frontiers", &self.frontiers)?;
         report.serialize_entry("status", &self.status)?;
         report.serialize_entry("transfers", &self.transfers)?;
+        if let Some(coverage) = self.root_terminal_coverage() {
+            report.serialize_entry("root_terminal_coverage", coverage)?;
+        }
         report.end()
     }
 }
@@ -310,6 +321,11 @@ impl Analysis {
     /// Native multi-account result underlying this single-program view.
     pub fn execution(&self) -> &WorldAnalysis {
         &self.execution
+    }
+
+    /// Separate terminal coverage for the original root, preserving partial CFG/SSA.
+    pub fn root_terminal_coverage(&self) -> Option<&RootTerminalCoverage> {
+        self.execution.root_terminal_coverage()
     }
 
     /// Map a local learning-view state to the underlying native machine state.

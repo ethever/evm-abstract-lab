@@ -185,6 +185,22 @@ impl ExprId {
         Arc::as_ptr(&self.0) as usize
     }
 
+    /// Bucket discriminator only; equal fingerprints still require structural equality.
+    pub(crate) fn cached_fingerprint(&self) -> u64 {
+        self.0.fingerprint
+    }
+
+    /// Pointer/fingerprint checks are constant work; a collision can walk both trees.
+    pub(crate) fn comparison_work(&self, other: &Self) -> usize {
+        if Arc::ptr_eq(&self.0, &other.0) || self.0.fingerprint != other.0.fingerprint {
+            1
+        } else {
+            self.work_size()
+                .saturating_add(other.work_size())
+                .saturating_add(1)
+        }
+    }
+
     fn leaf(kind: ExprKind) -> Self {
         let fingerprint = state::fingerprint(&kind);
         Self(Arc::new(Node {

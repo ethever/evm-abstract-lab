@@ -177,9 +177,9 @@ fn fingerprint_cancel_is_explicit_and_does_not_mutate_observations() {
     let world = fixture(Fork::Osaka, true);
     let expected = world.fingerprint().unwrap();
     let before = serde_json::to_value(&world).unwrap();
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert!(matches!(
             world.fingerprint(),
             Err(FingerprintError::Cancelled)

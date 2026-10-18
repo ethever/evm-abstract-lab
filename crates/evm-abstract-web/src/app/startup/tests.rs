@@ -41,6 +41,8 @@ fn assert_usdc(command: Option<Command>) {
         request.limits,
         evm_abstract_protocol::AnalysisLimits::default()
     );
+    assert!(request.limits.root_terminal_coverage);
+    assert_eq!(request.limits.max_work, 2_000_000_000);
 }
 
 #[test]
@@ -88,6 +90,12 @@ fn an_empty_or_failed_catalog_uses_the_offline_branch_example() {
             panic!("unavailable RPC must leave the bytecode example usable")
         };
         assert_eq!(input.bytecode, crate::app::BRANCH_EXAMPLE);
+        assert_eq!(
+            request.limits,
+            evm_abstract_protocol::AnalysisLimits::default()
+        );
+        assert!(request.limits.root_terminal_coverage);
+        assert_eq!(request.limits.max_work, 2_000_000_000);
         assert!(workspace.pending_startup_command().is_none());
     }
 }

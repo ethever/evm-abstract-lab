@@ -52,6 +52,8 @@ CLI 对 `Incomplete` 返回退出码 2，完整 SSA 构建会拒绝未完成图�
 
 还要分清三个层次：整张图可能有前沿；某个块可能已经处理到末尾；另一条指令可能刚取走参数、还没有产生结果。它们可以出现在同一份报告中。[MLOAD 中途停止的逐步实验](04-ssa.md#从块中途停下的实际输出开始)展示了最后一种情况，以及为何剩余栈标为 `recorded prefix stack`。部分 SSA 的这个标签也用于已经走到块末尾的记录，不能只看标签判断是否中途停止；某些关系限制记录前沿后仍能继续保守计算。
 
+默认开启独立的保守根终止覆盖，可用 `--no-root-terminal-coverage` 关闭；原有不带值的 `--root-terminal-coverage` 仍兼容。覆盖记录可以与 `Incomplete` 和部分 SSA 同时出现，不增加普通 outcome 或 CFG 终止计数，也不改变 CLI 退出码 2。详细分析已 `Converged` 时可以没有附加记录，不应因此显示缺少证书的告警；未完成且没有记录时也不能推断未报告的原因。原始输入绑定、三个联合结果及证明范围见[根执行的保守终止覆盖](19-root-terminal-coverage.md)。
+
 ### 实验 C：局部交换停下，整体传播仍然完成
 
 下面的代码计算未知 calldata word 与零的乘积。分别缩小事实容量和交换轮数：
@@ -84,7 +86,7 @@ jq '{status, schema_version, calldata: .environment.calldata.length,
 
 两次都退出 0、得到 `Converged`。符号长度保留 `BranchTrue` 和 `BranchFalse`；明确空 calldata 只保留 `BranchTrue`。提高 `--context-depth` 或 `--max-facts` 不会撤销用户给出的空输入约束，也不会自动把一次具体调用扩大成任意调用。
 
-JSON 的分析 `schema_version` 为 8；文本里的 `domain ... domain schema=2` 对应域策略 `domain_spec.schema_version`，两者不是同一个版本字段。单程序 `cfg --format json` 在 `.environment` 记录输入，`ssa --format json` 在 `.analysis.environment` 记录输入。world/RPC 的 `analyze --format json` 在 `.entry.environment` 记录输入，追加 `--ssa` 后则在 `.analysis.entry.environment`。读取环境和帧的具体路径见[第 10 课](10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
+JSON 的分析 `schema_version` 为 10；文本里的 `domain ... domain schema=2` 对应域策略 `domain_spec.schema_version`，两者不是同一个版本字段。单程序 `cfg --format json` 在 `.environment` 记录输入，`ssa --format json` 在 `.analysis.environment` 记录输入。world/RPC 的 `analyze --format json` 在 `.entry.environment` 记录输入，追加 `--ssa` 后则在 `.analysis.entry.environment`。读取环境和帧的具体路径见[第 10 课](10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
 
 ## 2. 诊断、程序失败和分析前沿分别看
 
@@ -177,13 +179,13 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | 部分 | 已建模的内容 | 阅读结果时保留的限制 |
 | --- | --- | --- |
 | 输入事实 | 多账户 JSON，或自动读取 chain ID 并固定区块 hash 的 RPC 采集；默认按需增加具体 callee 和 SLOAD 有限槽事实并从入口重跑，保存身份、来源与指纹 | 离线输入不联网；未知目标、关闭发现后未观察的初始槽和未判定的账户存在性保持未知；非有限槽键保留符号关系，不能自动 RPC 补查；完全信任 RPC 提供者，不请求证明；固定后不回退到移动标签；不支持 EOF 代码格式 |
-| 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；NumericValue 组合有限常量、KnownBits、Interval、Congruence 和非零保证；AbstractValue 独立保存来源、身份和表达式；按 fork 启用 CLZ | 常量集合及事实交换有局部上限；状态级关系受表达式、约束数量与 SMT rlimit 限制 |
+| 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；NumericValue 组合有限常量、KnownBits、Interval、Congruence 和非零保证；AbstractValue 独立保存来源、身份和表达式；按 fork 启用 CLZ | 常量集合及事实交换有局部上限；状态级关系受表达式、约束数量与共享工作量限制 |
 | 复制与输入身份 | 基本块内的复制身份支持 `x XOR x=0` 等规则；固定输入符号在同一环境内可跨块保持相等，默认 caller/origin 是同一变量 | 临时复制身份在控制流、调用和摘要边界失效；独立环境的同名符号不能据此认作相等；来源标签或数值摘要相同也不证明相等；有界表达式、历史读取和路径假设可跨块保留，整机 join 使用共享 selector；widening 可放弃保证，同一位置在不同历史根上的读取也不能直接认作相同 |
 | 内存与数据 | 每帧独立 ByteStateId，符号地址和有序写入、captured-source Copy、有限 view、长度与零补 | 数值投影或查询仍可较宽；超 logical footprint 策略保留 MemoryPolicy，构造/具体化失败各有 typed 前沿 |
 | JUMP/JUMPI | 有限目标逐个验证；Top 覆盖真实 JUMPDEST；依据数值条件和关系域的分支可行性查询保留边 | 可能有伪边；有界跳转历史不等于内部函数恢复 |
 | 环境、hash、gas | `--evm.*` 描述根调用、交易与区块输入；CALLER、ADDRESS、value 按子调用规则推导；BLOCKHASH/BLOBHASH 检查有效范围，未观察的有效项仍未知；GAS 传播上界 | RPC 固定的是账户状态快照；`--evm.number`、`--evm.chain-id` 等执行环境覆盖不会改变快照身份；环境符号不等于完整符号执行；gas、[EIP-150](https://eips.ethereum.org/EIPS/eip-150)、out-of-gas 与成本不精确 |
 
-SMT 通过进程内接口调用 Z3、Bitwuzla 或 cvc5，默认 Z3；`--smt.provider` 选择后端，CLI/Web 的 `--smt.rlimit` 默认 10000000，不设置墙钟 timeout。各后端的资源单位不同，不能把相同额度理解成相同耗时或相同求解能力。可选 value 查询返回 `ResourceLimit` 或 UNKNOWN，而完整保守状态仍能继续时，记录 `RelationalPrecisionLost`。不能保留必要条件、构造状态或覆盖后续执行时，则留下 `Relations` 或对应 work/状态前沿；取消也保留未完成原因。SAT 只说明当前编码可满足，不证明完整轨迹；同址与部分别名关系已建模，一般 hash 内容比较和复杂查询仍有支持、额度边界。参见[第 15 课](15-symbolic-relations.md)与[第 17 课](17-symbolic-state.md)。
+关系推理使用保留的表达式、分支约束与局部数值事实。证明矛盾才能排除路径；普通的未证明可行性继续保留，正常的宽数值也不伪装成资源故障。取消、配置、约束容量、事实解释和表达式上限仍有类型化原因。可选精化失败但完整保守状态仍能继续时，记录 `RelationalPrecisionLost`；不能保留必要条件、构造状态或覆盖后续执行时，留下 `Relations` 或对应 work/状态前沿。参见[第 15 课](15-symbolic-relations.md)与[第 17 课](17-symbolic-state.md)。
 
 ### 跨账户执行与状态效果
 

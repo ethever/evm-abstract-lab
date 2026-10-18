@@ -3,7 +3,7 @@ use crate::{
     domain::{
         AbstractValue, Domain,
         identity::Symbol,
-        relational::{CheckResult, RelationLimits, RelationState, SmtProvider},
+        relational::{CheckResult, RelationLimits, RelationState},
         symbolic::{ByteStateId, ByteView, ExprError, ExprId, ExprLimits, SlotStateId, SourceId},
     },
     world::ByteArray,
@@ -183,10 +183,12 @@ fn native_history_storage_and_path_keep_shared_leaves_and_sources() {
         .unwrap();
     let mut path = RelationState::default();
     let policy = RelationLimits {
-        provider: SmtProvider::Z3,
         ..RelationLimits::default()
     };
-    assert_eq!(path.add_equal(&value, &c(7), &policy), CheckResult::Sat);
+    assert_eq!(
+        path.add_equal(&value, &c(7), &policy),
+        CheckResult::MayBeFeasible
+    );
     let before_export = serde_json::to_value(&before).unwrap();
     let report = serde_json::to_value(Report {
         before,
@@ -370,9 +372,9 @@ fn native_outer_serialization_propagates_cancellation() {
     let bytes = ByteArray::unknown();
     let view = bytes.view();
     let read = ExprId::word_read(view.clone(), c(0), ExprLimits::default()).unwrap();
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert!(matches!(
             SymbolicGraph::expression(&read, GraphLimits::default()),
             Err(ExprError::Cancelled)
@@ -394,7 +396,6 @@ fn native_outer_serialization_propagates_cancellation() {
 #[test]
 fn exported_distinct_identities_do_not_assert_disequality_or_hash_injectivity() {
     let policy = RelationLimits {
-        provider: SmtProvider::Z3,
         ..RelationLimits::default()
     };
     let a = ExprId::fresh().unwrap();
@@ -432,11 +433,11 @@ fn exported_distinct_identities_do_not_assert_disequality_or_hash_injectivity() 
     let mut collision = RelationState::default();
     assert_eq!(
         collision.assume(&different_content, false, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     assert_eq!(
         collision.assume(&same_hash, true, &policy),
-        CheckResult::Sat
+        CheckResult::MayBeFeasible
     );
     let pairs = [
         (a, b),
@@ -453,7 +454,7 @@ fn exported_distinct_identities_do_not_assert_disequality_or_hash_injectivity() 
         for nonzero in [true, false] {
             assert_eq!(
                 RelationState::default().assume(&equality, nonzero, &policy),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
         }
     }

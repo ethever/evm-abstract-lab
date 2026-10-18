@@ -1,15 +1,120 @@
 use super::super::{
-    ByteStateId, ByteView, ExprError, ExprId, ExprKind, ExprLimits, GraphLimits, HashSupport,
-    SlotStateId, SourceId, StateError, StateLimits, SymbolicGraph, SymbolicGraphNode,
+    ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprKind, ExprLimits, GraphLimits,
+    HashSupport, SlotStateId, SourceId, StateError, StateLimits, SymbolicGraph, SymbolicGraphNode,
+    state,
 };
 use crate::domain::{AbstractValue, Domain, identity::Symbol};
 use alloy_primitives::U256;
 use std::{collections::BTreeMap, sync::Arc};
+
+mod guarded;
+
 fn c(v: u64) -> ExprId {
     ExprId::constant(U256::from(v))
 }
 fn limits() -> StateLimits {
     StateLimits::default()
+}
+
+#[test]
+fn copy_leaves_count_selected_occurrences_without_changing_identity_or_export() {
+    let a = ByteStateId::exact(Arc::from([0x11]));
+    let b = ByteStateId::exact(Arc::from([0x22]));
+    let guard = ExprId::fresh().unwrap();
+    let pair = a.join_guarded(&b, guard.clone(), limits()).unwrap();
+    let nested = pair
+        .join_guarded(&ByteStateId::zero(), ExprId::fresh().unwrap(), limits())
+        .unwrap();
+    // Keep this metric fixture irreducible: the new pair has an independent
+    // guard, and the nested branch's complete alternatives are (pair, zero).
+    let independent_pair = a
+        .join_guarded(&b, ExprId::fresh().unwrap(), limits())
+        .unwrap();
+    let shared = independent_pair
+        .join_guarded(&nested, ExprId::fresh().unwrap(), limits())
+        .unwrap();
+    for (root, leaves, nodes, depth) in [(&pair, 2, 4, 2), (&nested, 3, 7, 3), (&shared, 5, 13, 4)]
+    {
+        assert_eq!(root.copy_leaves(), leaves);
+        // Retention metrics also sum occurrences, including repeated children.
+        assert_eq!((root.nodes(), root.depth()), (nodes, depth));
+        assert!(leaves <= nodes);
+    }
+    let rebuilt = a.join_guarded(&b, guard, limits()).unwrap();
+    assert_eq!(pair.id(), rebuilt.id());
+    assert_eq!(pair.kind(), rebuilt.kind());
+    assert_eq!(state::fingerprint(&pair), state::fingerprint(&pair.id()));
+    assert_eq!(shared.clone().id(), shared.id());
+    assert_eq!(
+        std::mem::size_of::<ByteStateId>(),
+        std::mem::size_of::<Arc<()>>()
+    );
+    let graph = SymbolicGraph::bytes(&shared, GraphLimits::default()).unwrap();
+    assert_eq!(graph.nodes.len(), 11); // Three leaves, four guards, four Ite nodes.
+    assert_eq!(
+        graph
+            .nodes
+            .iter()
+            .filter(|node| matches!(node, SymbolicGraphNode::BytesExact(_)))
+            .count(),
+        2
+    );
+    let encoded = serde_json::to_value(&shared).unwrap();
+    assert_eq!(encoded, serde_json::to_value(&graph).unwrap());
+    assert_eq!(encoded, serde_json::to_value(shared.clone()).unwrap());
+    assert!(
+        !serde_json::to_string(&shared)
+            .unwrap()
+            .contains("copy_leaves")
+    );
+    let map = shared
+        .fresh_leaves()
+        .into_iter()
+        .map(|leaf| (leaf, ExprId::fresh().unwrap()))
+        .collect();
+    let renamed = shared.rename_fresh(&map, ExprLimits::default()).unwrap();
+    assert_eq!(renamed.copy_leaves(), 5);
+    assert_eq!((renamed.nodes(), renamed.depth()), (13, 4));
+    assert_eq!(pair.join_guarded(&pair, c(0), limits()).unwrap(), pair);
+    assert_eq!(a.join_guarded(&b, c(1), limits()).unwrap().copy_leaves(), 1);
+}
+
+#[test]
+fn copy_leaves_stop_at_every_nonselected_kind_even_over_selected_history() {
+    let a = ByteStateId::exact(Arc::from([0x11, 0x22]));
+    let selected = a
+        .join_guarded(&ByteStateId::zero(), ExprId::fresh().unwrap(), limits())
+        .unwrap();
+    let source = ByteView::new(selected.clone(), c(0), c(2));
+    let byte = selected.write_byte(c(8), c(3), limits()).unwrap();
+    let word = selected.write_word(c(32), c(4), limits()).unwrap();
+    let copy = selected.copy(c(64), source, c(2), limits()).unwrap();
+    let slice = selected.slice(c(1), c(1), limits()).unwrap();
+    assert!(
+        matches!(byte.kind(), ByteStateKind::WriteByte { previous, .. } if previous == &selected)
+    );
+    assert!(
+        matches!(word.kind(), ByteStateKind::WriteWord { previous, .. } if previous == &selected)
+    );
+    assert!(matches!(copy.kind(), ByteStateKind::Copy { previous, .. } if previous == &selected));
+    assert!(matches!(slice.kind(), ByteStateKind::Slice { source } if source.state == selected));
+    for root in [
+        ByteStateId::zero(),
+        ByteStateId::input(SourceId::fresh().unwrap(), c(2)),
+        ByteStateId::observed(SourceId::fresh().unwrap(), c(2), Vec::new(), limits()).unwrap(),
+        a,
+        byte,
+        word,
+        copy.clone(),
+        slice,
+    ] {
+        assert_eq!(root.copy_leaves(), 1, "{root:?}");
+    }
+    assert_eq!(
+        copy.copy(c(64), ByteView::new(selected, c(0), c(2)), c(2), limits())
+            .unwrap(),
+        copy
+    );
 }
 
 #[test]
@@ -225,9 +330,9 @@ fn disjoint_write_lookup_preserves_limits_and_cancellation() {
             Err(StateError::Limit { .. })
         ));
     }
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
             slots.store(c(0), c(7), limits()),
             Err(StateError::Cancelled)
@@ -334,9 +439,9 @@ fn normalized_constructions_still_obey_resource_and_cancellation_policy() {
             .is_err()
     );
     assert!(zero.join_guarded(&zero, c(1), denied).is_err());
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
             zero.write_byte(c(0), c(0), limits()),
             Err(StateError::Cancelled)

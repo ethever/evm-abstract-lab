@@ -504,6 +504,8 @@ impl ScalarFacts {
     }
 
     fn validate(&mut self, subject: Symbol) -> Result<(), FactError> {
+        #[cfg(test)]
+        tests::SCALAR_VALIDATIONS.update(|count| *count += 1);
         self.finite = self
             .finite
             .filter(|value| self.contains_other_constraints(value))
@@ -541,6 +543,8 @@ impl ScalarFacts {
     }
 
     fn meet(&mut self, other: &Self, subject: Symbol) -> Result<(), FactError> {
+        #[cfg(test)]
+        tests::SCALAR_MEETS.update(|count| *count += 1);
         let contradiction = || FactError::Contradiction { subject };
         // 来源错误先于候选最终校验；暂存交集结果以保留原来的错误优先级。
         let finite = (!other.finite.is_top()).then(|| self.finite.meet(&other.finite));
@@ -755,6 +759,22 @@ impl FactLattice {
     /// 用每个分量最小编号作代表，将等价边规范成星形树，并共享标量约束。
     /// 总节点数和边数都受 atoms 上限约束，不建立无界反馈队列。
     fn normalize_equalities(&mut self) -> Result<(), FactError> {
+        if self.binary.is_empty() && self.relations.is_empty() {
+            // apply_unary 已校验数值；没有等价边时无需复制、meet 和再次校验。
+            // 必须先记录槽位再清理 default，与通用路径的 identity 映射一致。
+            self.representatives = self
+                .scalars
+                .keys()
+                .map(|&symbol| (symbol, symbol))
+                .collect();
+            let default = ScalarFacts::default();
+            self.scalars.retain(|_, scalar| *scalar != default);
+            return Ok(());
+        }
+        self.normalize_equalities_general()
+    }
+
+    fn normalize_equalities_general(&mut self) -> Result<(), FactError> {
         let mut symbols: BTreeSet<_> = self.scalars.keys().copied().collect();
         for fact in &self.binary {
             for term in [fact.left, fact.right] {

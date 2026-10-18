@@ -2,10 +2,44 @@
 use super::*;
 use evm_abstract::{
     Fork,
+    domain::Profile,
     world::{AddressInput, EvmEnvironment},
 };
 
 fn project_world(world: World, address: Address) -> api::AnalysisReport {
+    // Native world fixtures retain the complete library policy in execution and metadata.
+    let config = analysis::ExecutionConfig::default();
+    let request = api::AnalyzeRequest {
+        limits: api::AnalysisLimits {
+            max_states: config.analysis.max_states as u64,
+            max_transfers: config.analysis.max_transfers as u64,
+            context_depth: config.analysis.context_depth as u64,
+            max_constants: config.analysis.max_constants as u64,
+            max_work: config.max_work as u64,
+            max_call_depth: config.max_call_depth as u64,
+            max_memory_bytes: config.max_memory_bytes as u64,
+            use_summaries: config.use_summaries,
+            root_terminal_coverage: config.root_terminal_coverage,
+            domain_profile: match config.analysis.domain_profile {
+                Profile::Product => api::DomainProfile::Product,
+                Profile::ConstantsOnly => api::DomainProfile::ConstantsOnly,
+            },
+            reduction_rounds: config.analysis.reduction_rounds as u64,
+            max_facts: config.analysis.max_facts as u64,
+            relations_enabled: config.analysis.relations.enabled,
+            max_constraints: config.analysis.relations.max_constraints as u64,
+            max_expression_nodes: config.analysis.relations.max_nodes as u64,
+            max_expression_depth: config.analysis.relations.max_depth as u64,
+            // RPC acquisition limits have no native execution counterpart.
+            ..api::AnalysisLimits::default()
+        },
+        ..api::AnalyzeRequest::default()
+    };
+    assert_eq!(
+        serde_json::to_value(input::config(&request.limits).unwrap()).unwrap(),
+        serde_json::to_value(&config).unwrap(),
+        "native world fixture limits must preserve the full library policy"
+    );
     let graph = analysis::analyze_world(
         world,
         Entry {
@@ -16,12 +50,12 @@ fn project_world(world: World, address: Address) -> api::AnalysisReport {
                 ..EvmEnvironment::default()
             },
         },
-        analysis::ExecutionConfig::default(),
+        config,
     )
     .unwrap();
     report::report(
         &graph,
-        &api::AnalyzeRequest::default(),
+        &request,
         api::AnalysisScope::RpcWorld,
         &Control::default(),
     )
@@ -387,10 +421,10 @@ fn rpc_nested_failure_keeps_native_hashes_and_coordinates_in_json() {
 }
 
 #[test]
-fn relational_frontier_projection_preserves_native_causes_and_provider() {
+fn relational_frontier_projection_preserves_all_local_causes() {
     use evm_abstract::domain::{
         facts::{FactError, Symbol},
-        relational::{QueryReason, SmtError, SmtProvider},
+        relational::QueryReason,
     };
     let cases = [
         (
@@ -413,25 +447,23 @@ fn relational_frontier_projection_preserves_native_causes_and_provider() {
             }),
             api::QueryBoundary::ScalarFactError(api::FactFailure::Contradiction(17)),
         ),
+        (QueryReason::Cancelled, api::QueryBoundary::Cancelled),
+        (QueryReason::Disabled, api::QueryBoundary::Disabled),
         (
-            QueryReason::SolverUnknown {
-                provider: SmtProvider::Bitwuzla,
-                reason: "incomplete theory".into(),
-            },
-            api::QueryBoundary::SolverUnknown(api::SolverUnknown {
-                provider: api::SmtProvider::Bitwuzla,
-                reason: "incomplete theory".into(),
-            }),
+            QueryReason::Configuration,
+            api::QueryBoundary::Configuration,
         ),
         (
-            QueryReason::SolverError(SmtError {
-                provider: SmtProvider::Cvc5,
-                message: "binding rejected term".into(),
-            }),
-            api::QueryBoundary::SolverError(api::SolverFailure {
-                provider: api::SmtProvider::Cvc5,
-                message: "binding rejected term".into(),
-            }),
+            QueryReason::ConstraintLimit,
+            api::QueryBoundary::ConstraintLimit,
+        ),
+        (
+            QueryReason::ScalarFactLimit,
+            api::QueryBoundary::ScalarFactLimit,
+        ),
+        (
+            QueryReason::ExpressionLimit,
+            api::QueryBoundary::ExpressionLimit,
         ),
     ];
     for (native, expected) in cases {

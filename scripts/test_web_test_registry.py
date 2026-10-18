@@ -121,9 +121,16 @@ class BrowserRegistryTests(unittest.TestCase):
     def test_rpc_changes_do_not_invalidate_independent_graph_cases(self):
         for case_id in ["edge-flow", "gestures-dpr1", "gestures-dpr2", "hierarchy-small",
                         "hierarchy-long-chain", "hierarchy-native-projection", "runtime-weth9",
-                        "runtime-router02", "runtime-multicall3"]:
+                        "runtime-router02", "runtime-multicall3", "root-terminal-coverage"]:
             with self.subTest(case=case_id):
                 self.assertFalse(any("web_test_rpc" in dependency for dependency in self.cases[case_id]["dependencies"]))
+
+    def test_terminal_coverage_keeps_the_wire_oracle_consumers_exact(self):
+        consumers = {case["id"] for case in self.manifest["cases"]
+                     if "scripts/web_test_wire_bytes.py" in case["dependencies"]}
+        self.assertEqual(consumers, {"rpc-world", "known-recursion", "unknown-world"})
+        self.assertNotIn("scripts/web_test_runtimes.py",
+                         self.cases["root-terminal-coverage"]["dependencies"])
 
     def test_direct_execution_runs_every_selected_case_once_and_keeps_failure_evidence(self):
         # Exercise the actual CLI orchestration with inert acceptance functions.

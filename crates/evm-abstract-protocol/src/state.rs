@@ -56,7 +56,7 @@ record! {
     #[derive(std::hash::Hash)]
     pub struct InputIdentity {
         /// Equality namespace, meaningful only within this report.
-        pub scope: u64,
+        pub scope: crate::DecimalU64,
         /// Named input in that namespace.
         pub symbol: InputSymbol,
     }
@@ -285,17 +285,34 @@ record! {
         pub transient: Vec<StorageEntry>,
         /// Whether created in this transaction, or None if unknown.
         pub created: Option<bool>,
+        /// Transaction touch guarantee: true means must touch, false untouched,
+        /// and None includes both possibilities.
+        pub touched: Option<bool>,
         /// Whether deletion is pending, or None if unknown.
         pub pending_destruction: Option<bool>,
     }
 }
+choice! {
+    /// Execution phase of the captured bytecode containing a LOG instruction.
+    #[derive(std::hash::Hash)]
+    pub enum LogSourceKind {
+        /// Initialization before returned runtime code is installed.
+        Init,
+        /// Deployed runtime, including delegated execution.
+        Runtime,
+    }
+}
 record! {
-    /// Possible log payload with its native emission site.
+    /// Possible log payload with its complete captured emission identity.
     pub struct LogSnapshot {
         /// Emitting storage owner.
         pub address: String,
         /// Executing code account.
         pub code_address: String,
+        /// Exact hash of the emitting frame's captured code, as hexadecimal text.
+        pub code_hash: String,
+        /// Initialization or deployed runtime of those captured bytes.
+        pub source_kind: LogSourceKind,
         /// Opcode offset.
         pub pc: usize,
         /// Abstract topics.
@@ -311,8 +328,25 @@ record! {
         pub storage_default: ValueInfo,
         /// Global transient default.
         pub transient_default: ValueInfo,
+        /// Actual unscoped persistent base template. Reads scope it by owner;
+        /// equal templates do not equate slots of distinct accounts.
+        pub storage_root: crate::SlotStateRef,
+        /// Actual unscoped transient base template, with the same owner rule.
+        pub transient_root: crate::SlotStateRef,
         /// Default balance of unlisted accounts.
         pub balance_default: ValueInfo,
+        /// Actual nonce of unlisted accounts.
+        pub nonce_default: ValueInfo,
+        /// Actual omitted-account code; None is unobserved, not original code.
+        pub code_default: Option<AccountCode>,
+        /// Actual presence guarantee for unlisted accounts.
+        pub existence_default: AccountExistence,
+        /// Creation guarantee for unlisted accounts.
+        pub created_default: Option<bool>,
+        /// Destruction guarantee for unlisted accounts.
+        pub pending_destruction_default: Option<bool>,
+        /// Touch guarantee for unlisted accounts; None preserves may-touch.
+        pub touched_default: Option<bool>,
         /// Accounts with explicit observations or effects.
         pub accounts: Vec<AccountState>,
         /// Possible logs retained by source site.
@@ -323,6 +357,19 @@ record! {
         pub storage_facts: Vec<crate::SymbolicFact>,
         /// Transient operand facts local to this transaction snapshot.
         pub transient_facts: Vec<crate::SymbolicFact>,
+    }
+}
+variant! {
+    /// Complete code default without assigning an arbitrary account owner.
+    pub enum AccountCode {
+        /// Complete captured runtime bytes in hexadecimal.
+        Runtime(String),
+        /// EIP-7702 implementation address.
+        Delegation(String),
+        /// Known empty code.
+        Empty,
+        /// Explicitly unobserved code.
+        Unknown,
     }
 }
 record! {

@@ -17,6 +17,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+#[cfg(test)]
+mod copy_tests;
 mod join;
 mod reads;
 
@@ -83,16 +85,45 @@ pub enum ByteStateKind {
 
 /// Cheap immutable state handle. Equality uses collision-checked interning.
 #[derive(Clone)]
-pub struct ByteStateId(pub(super) Arc<StateNode<ByteStateKind>>);
-static INTERN: OnceLock<Mutex<Interner<ByteStateKind>>> = OnceLock::new();
+pub struct ByteStateId(Arc<StateNode<ByteStateData>>);
+
+// Byte-only metadata shares the existing allocation. Interning must hash and
+// compare exactly the original kind, excluding this derived immutable count.
+struct ByteStateData {
+    kind: ByteStateKind,
+    copy_leaves: usize,
+}
+impl PartialEq for ByteStateData {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+impl Eq for ByteStateData {}
+impl Hash for ByteStateData {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+    }
+}
+
+static INTERN: OnceLock<Mutex<Interner<ByteStateData>>> = OnceLock::new();
 impl ByteStateId {
     fn intern(kind: ByteStateKind, nodes: usize, depth: usize) -> Self {
+        let copy_leaves = match &kind {
+            ByteStateKind::Ite {
+                then_state,
+                else_state,
+                ..
+            } => then_state
+                .copy_leaves()
+                .saturating_add(else_state.copy_leaves()),
+            _ => 1,
+        };
         Self(
             INTERN
                 .get_or_init(|| Mutex::new(Interner::default()))
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .intern(kind, nodes, depth),
+                .intern(ByteStateData { kind, copy_leaves }, nodes, depth),
         )
     }
     fn build(
@@ -322,7 +353,21 @@ impl ByteStateId {
             state::check(self.nodes(), self.depth(), limits)?;
             return Ok(self.clone());
         }
-        let source = source.canonicalize();
+        self.copy_canonical(dst, source.canonicalize(), len, limits)
+    }
+    // Canonicalization depends only on the immutable source view. Distributing
+    // over target branches must still check each target's own identity/history.
+    fn copy_canonical(
+        &self,
+        dst: ExprId,
+        source: ByteView,
+        len: ExprId,
+        limits: StateLimits,
+    ) -> Result<Self, StateError> {
+        if len.as_constant() == Some(U256::ZERO) {
+            state::check(self.nodes(), self.depth(), limits)?;
+            return Ok(self.clone());
+        }
         if source.state == *self && source.offset == dst && source.length == len {
             state::check(self.nodes(), self.depth(), limits)?;
             return Ok(self.clone());
@@ -333,8 +378,9 @@ impl ByteStateId {
             else_state,
         } = self.kind()
         {
-            let yes = then_state.copy(dst.clone(), source.clone(), len.clone(), limits)?;
-            let no = else_state.copy(dst, source, len, limits)?;
+            let yes =
+                then_state.copy_canonical(dst.clone(), source.clone(), len.clone(), limits)?;
+            let no = else_state.copy_canonical(dst, source, len, limits)?;
             return yes.join_guarded(&no, condition.clone(), limits);
         }
         let previous = match self.kind() {
@@ -421,6 +467,27 @@ impl ByteStateId {
         state::check(self.nodes(), self.depth(), limits)?;
         state::check(other.nodes(), other.depth(), limits)?;
         state::check(selector.nodes(), selector.depth(), limits)?;
+        fn branches(root: &ByteStateId) -> Option<(&ExprId, &ByteStateId, &ByteStateId)> {
+            match root.kind() {
+                ByteStateKind::Ite {
+                    condition,
+                    then_state,
+                    else_state,
+                } => Some((condition, then_state, else_state)),
+                _ => None,
+            }
+        }
+        if let Some((guard, yes, no)) = state::guarded::shared_branch(
+            self,
+            other,
+            selector.clone(),
+            branches(self),
+            branches(other),
+            limits,
+            |state| (state.nodes(), state.depth()),
+        )? {
+            return yes.join_guarded(no, guard, limits);
+        }
         if let Some(joined) = self.join_update(other, selector.clone(), limits)? {
             return Ok(joined);
         }
@@ -440,7 +507,7 @@ impl ByteStateId {
     }
     /// Read-only node kind for flat protocol export and state inspection.
     pub fn kind(&self) -> &ByteStateKind {
-        &self.0.kind
+        &self.0.kind.kind
     }
     /// Process-private graph identity; reports must remap this to a local index.
     pub fn id(&self) -> u64 {
@@ -449,6 +516,11 @@ impl ByteStateId {
     /// Conservative graph retention work; logical ranges are never counted as bytes.
     pub fn nodes(&self) -> usize {
         self.0.nodes
+    }
+    /// Saturating non-Ite occurrences reached by COPY's top-level distribution.
+    /// Shared children count once per incoming path; update history is separate.
+    pub(crate) fn copy_leaves(&self) -> usize {
+        self.0.kind.copy_leaves
     }
     /// Dependency depth, including scalar offsets and guards.
     pub fn depth(&self) -> usize {
@@ -508,6 +580,97 @@ impl Serialize for ByteStateId {
         super::SymbolicGraph::bytes(self, super::GraphLimits::default())
             .map_err(serde::ser::Error::custom)?
             .serialize(s)
+    }
+}
+
+#[cfg(test)]
+mod copy_metric_tests {
+    use super::*;
+
+    #[test]
+    fn cached_payload_preserves_the_exact_kind_hash_stream_and_equality() {
+        #[derive(Default)]
+        struct HashBytes(Vec<u8>);
+        impl Hasher for HashBytes {
+            fn finish(&self) -> u64 {
+                0
+            }
+            fn write(&mut self, bytes: &[u8]) {
+                self.0.extend_from_slice(bytes);
+            }
+        }
+        let kind = ByteStateKind::Ite {
+            condition: ExprId::fresh().unwrap(),
+            then_state: ByteStateId::zero(),
+            else_state: ByteStateId::exact(Arc::from([1])),
+        };
+        let data = ByteStateData {
+            kind: kind.clone(),
+            copy_leaves: 2,
+        };
+        let other = ByteStateData {
+            kind: kind.clone(),
+            copy_leaves: usize::MAX,
+        };
+        assert!(data == other);
+        assert!(
+            data != ByteStateData {
+                kind: ByteStateKind::Zero,
+                copy_leaves: 2
+            }
+        );
+        let mut original = HashBytes::default();
+        let mut cached = HashBytes::default();
+        let mut different_metric = HashBytes::default();
+        kind.hash(&mut original);
+        data.hash(&mut cached);
+        other.hash(&mut different_metric);
+        assert_eq!(original.0, cached.0);
+        assert_eq!(original.0, different_metric.0);
+    }
+
+    #[test]
+    fn copy_leaf_occurrences_saturate_without_wrapping_or_bypassing_state_limits() {
+        let mut root = ByteStateId::zero();
+        let condition = ExprId::fresh().unwrap();
+        // Private intern fixtures bypass join simplification and build's limit
+        // rejection, reaching overflow with only one allocation per level.
+        for _ in 0..=usize::BITS {
+            let expected = root.copy_leaves().saturating_add(root.copy_leaves());
+            let (nodes, depth) = state::metrics([
+                (root.nodes(), root.depth()),
+                (root.nodes(), root.depth()),
+                (condition.nodes(), condition.depth()),
+            ]);
+            root = ByteStateId::intern(
+                ByteStateKind::Ite {
+                    condition: condition.clone(),
+                    then_state: root.clone(),
+                    else_state: root,
+                },
+                nodes,
+                depth,
+            );
+            assert_eq!(root.copy_leaves(), expected);
+            assert!(root.copy_leaves() <= root.nodes());
+        }
+        assert_eq!(root.copy_leaves(), usize::MAX);
+        assert_eq!(root.copy_leaves().saturating_mul(8), usize::MAX);
+        assert_eq!(
+            state::check(
+                root.nodes(),
+                root.depth(),
+                StateLimits {
+                    max_nodes: usize::MAX,
+                    max_depth: usize::MAX
+                }
+            ),
+            Err(StateError::Limit {
+                nodes: root.nodes(),
+                depth: root.depth()
+            })
+        );
+        assert!(!crate::resource::WorkBudget::new(usize::MAX - 1).charge(root.copy_leaves()));
     }
 }
 

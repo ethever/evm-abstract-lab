@@ -1,10 +1,10 @@
 //! Caller-independent saturation for known recursion and unknown interactions.
 //!
-//! A table entry retains numerical bounds and finite stack equalities, not an SMT valuation
-//! and not a stack-depth unrolling. Every live block and separate summary invocation gets
-//! independent array roots. A caller subscription keeps its own continuation
-//! and rollback checkpoint. Known bytecode, repeated environment interactions,
-//! and their mutually recursive calls therefore use the same worklist.
+//! A table entry retains numerical bounds and finite stack equalities; recursion uses
+//! worklist saturation rather than stack-depth unrolling. Every live block and separate
+//! summary invocation gets independent symbolic state roots. A caller subscription keeps
+//! its own continuation and rollback checkpoint. Known bytecode, repeated environment
+//! interactions, and their mutually recursive calls therefore use the same worklist.
 
 use super::{
     Execution, ExecutionFrontier, StorageReadPolicy, Successor, TransferContext, WorkBudget,
@@ -30,9 +30,11 @@ use alloy_primitives::{Address, keccak256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+mod coarse_retry;
 mod context;
 mod cycles;
 mod environment;
+mod loop_bound;
 mod payload;
 mod projection;
 mod recursion;
@@ -42,6 +44,7 @@ mod storage_observations;
 #[cfg(test)]
 mod tests;
 
+pub(in crate::analysis) use loop_bound::LoopBound;
 use payload::{form, instantiate, join, semantic_eq};
 pub(in crate::analysis) use recursion::is_recursive_entry;
 
@@ -107,6 +110,8 @@ struct Node {
     /// Callee entries stay in the separate procedure dependency graph.
     successors: BTreeSet<usize>,
     loop_head: bool,
+    /// Promotion belongs to the node, across incoming joins and fresh roots.
+    runtime_retry: coarse_retry::RuntimeRetry,
 }
 
 struct Procedure {
@@ -258,10 +263,10 @@ impl Table {
                     break;
                 }
                 let mut returned = payload.clone();
-                // Static execution has an identity Store effect, including
-                // initial-read roots shared with the caller's historical values.
+                // Static execution preserves data and historical read roots,
+                // while nested zero-value calls can add EIP-161 touches.
                 let output_store = if payload.active().key.is_static {
-                    Ok(payload.store.clone())
+                    Ok(output.store.apply_static_touches(&payload.store))
                 } else {
                     output.store.instantiate(domain)
                 };
@@ -317,7 +322,7 @@ impl Table {
                 result.frontiers.extend(execution.frontiers);
             }
         }
-        // Every frontier retains its actual numerical/SMT procedure state;
+        // Every frontier retains its actual numerical and relational procedure state;
         // successful discovered outputs remain useful on an interrupted solve.
         result.frontiers.extend(
             solver

@@ -1,4 +1,6 @@
 //! Independent issue-13 acceptance regressions across call/store/SSA boundaries.
+#[path = "issue13_review/joint.rs"]
+mod joint;
 #[path = "summaries/oracle.rs"]
 mod oracle;
 
@@ -8,7 +10,6 @@ use evm_abstract::{
     domain::{
         AbstractValue, Domain,
         provenance::{Origin, OriginSet, Provenance},
-        relational::CheckResult,
         symbolic::{ExprId, ExprKind, SlotStateId, SlotStateKind},
     },
     ssa,
@@ -109,6 +110,343 @@ fn counter_route(
 
 #[test]
 fn shared_implementation_transient_storage_is_isolated_between_proxies() {
+    use evm_abstract::domain::{
+        identity::Symbol,
+        symbolic::{ExprError, ExprLimits, SourceId},
+    };
+    use std::collections::BTreeMap;
+
+    // Only ITE denotation is used here. All other terms retain their complete
+    // identity, including word-valued guards and captured source snapshots.
+    fn specialize_ites(
+        term: &ExprId,
+        choices: &BTreeMap<ExprId, bool>,
+        limits: ExprLimits,
+    ) -> Result<ExprId, ExprError> {
+        fn visit(
+            term: &ExprId,
+            choices: &BTreeMap<ExprId, bool>,
+            limits: ExprLimits,
+            original: ExprLimits,
+            visits: &mut usize,
+            depth: usize,
+        ) -> Result<ExprId, ExprError> {
+            *visits += 1;
+            if *visits > original.max_nodes || depth > original.max_depth {
+                return Err(ExprError::Limit {
+                    nodes: *visits,
+                    depth,
+                });
+            }
+            let ExprKind::Ite {
+                condition,
+                then_value,
+                else_value,
+            } = term.kind()
+            else {
+                return Ok(term.clone());
+            };
+            let mut descend = |value| visit(value, choices, limits, original, visits, depth + 1);
+            if let Some(nonzero) = choices.get(condition) {
+                descend(if *nonzero { then_value } else { else_value })
+            } else {
+                let condition = descend(condition)?;
+                let yes = descend(then_value)?;
+                let no = descend(else_value)?;
+                ExprId::ite(condition, yes, no, limits)
+            }
+        }
+        let original = ExprLimits {
+            max_nodes: term.nodes(),
+            max_depth: term.depth(),
+        };
+        if original.max_nodes > limits.max_nodes || original.max_depth > limits.max_depth {
+            return Err(ExprError::Limit {
+                nodes: term.nodes(),
+                depth: term.depth(),
+            });
+        }
+        let result = visit(term, choices, limits, original, &mut 0, 1)?;
+        if result.nodes() > original.max_nodes || result.depth() > original.max_depth {
+            return Err(ExprError::Limit {
+                nodes: result.nodes(),
+                depth: result.depth(),
+            });
+        }
+        Ok(result)
+    }
+
+    // Factoring can move an old counter root into the current read's guard.
+    // Only new, target-disjoint Fresh selectors may expose that exact history.
+    fn increment_cofactor(current: &ExprId, target: &ExprId, limits: ExprLimits) -> bool {
+        if [current, target]
+            .iter()
+            .any(|term| term.nodes() > limits.max_nodes || term.depth() > limits.max_depth)
+        {
+            return false;
+        }
+        let ExprKind::Operation { opcode: op, args } = target.kind() else {
+            return false;
+        };
+        let [amount, read] = args.as_slice() else {
+            return false;
+        };
+        if *op != opcode::ADD || amount.as_constant() != Some(U256::from(1)) {
+            return false;
+        }
+        let (
+            ExprKind::Ite {
+                condition: current_guard,
+                then_value: current_yes,
+                else_value: current_no,
+            },
+            ExprKind::Ite {
+                condition: target_guard,
+                then_value: target_yes,
+                else_value: target_no,
+            },
+        ) = (current.kind(), read.kind())
+        else {
+            return false;
+        };
+        if current_yes != target_yes || current_no != target_no {
+            return false;
+        }
+        let target_fresh = target.fresh_leaves();
+        let mut pending = vec![(current_guard, BTreeMap::<ExprId, bool>::new(), 1)];
+        let mut visits = 0;
+        while let Some((guard, choices, depth)) = pending.pop() {
+            // Count paths in the original expanded tree; node-only deduplication
+            // could discard a different consistent selector assignment.
+            visits += 1;
+            if visits > current_guard.nodes() || depth > current_guard.depth() {
+                return false;
+            }
+            if guard == target_guard {
+                let rebuilt = specialize_ites(current, &choices, limits).and_then(|read| {
+                    ExprId::operation(opcode::ADD, &[amount.clone(), read], limits)
+                });
+                match rebuilt {
+                    Ok(increment) if &increment == target => return true,
+                    Ok(_) => {}
+                    Err(_) => return false,
+                }
+            }
+            let ExprKind::Ite {
+                condition,
+                then_value,
+                else_value,
+            } = guard.kind()
+            else {
+                continue;
+            };
+            if !matches!(condition.kind(), ExprKind::Fresh(_)) || target_fresh.contains(condition) {
+                continue;
+            }
+            for (next, nonzero) in [(else_value, false), (then_value, true)] {
+                let mut branch = choices.clone();
+                if let Some(previous) = branch.get(condition) {
+                    if *previous != nonzero {
+                        continue;
+                    }
+                } else {
+                    branch.insert(condition.clone(), nonzero);
+                }
+                pending.push((next, branch, depth + 1));
+            }
+        }
+        false
+    }
+
+    let proof_limits = Domain::default().spec().relations().expressions();
+    let first_guard = ExprId::fresh().unwrap();
+    let second_guard = ExprId::fresh().unwrap();
+    let nested = |yes, no| {
+        ExprId::ite(
+            second_guard.clone(),
+            ExprId::constant(U256::from(yes)),
+            ExprId::constant(U256::from(no)),
+            proof_limits,
+        )
+        .unwrap()
+    };
+    let choices_tree = ExprId::ite(
+        first_guard.clone(),
+        nested(2, 3),
+        nested(4, 5),
+        proof_limits,
+    )
+    .unwrap();
+    let original_tree = choices_tree.clone();
+    assert_eq!(
+        specialize_ites(&choices_tree, &BTreeMap::new(), proof_limits).unwrap(),
+        choices_tree
+    );
+    for (first, second, expected) in [
+        (true, true, 2),
+        (true, false, 3),
+        (false, true, 4),
+        (false, false, 5),
+    ] {
+        let choices =
+            BTreeMap::from([(first_guard.clone(), first), (second_guard.clone(), second)]);
+        assert_eq!(
+            specialize_ites(&choices_tree, &choices, proof_limits)
+                .unwrap()
+                .as_constant(),
+            Some(U256::from(expected))
+        );
+    }
+    let true_guard = BTreeMap::from([(first_guard.clone(), true)]);
+    let data = ExprId::operation(
+        opcode::ADD,
+        &[first_guard.clone(), ExprId::constant(U256::from(1))],
+        proof_limits,
+    )
+    .unwrap();
+    for term in [&first_guard, &data] {
+        assert_eq!(
+            specialize_ites(term, &true_guard, proof_limits).unwrap(),
+            *term
+        );
+    }
+    let input = ExprId::input(13, Symbol::CallValue);
+    let other_input = ExprId::input(14, Symbol::CallValue);
+    let source_read = |namespace| {
+        ExprId::slot_read(
+            SlotStateId::input(SourceId::scoped(input.clone(), U256::from(namespace))),
+            ExprId::constant(U256::ZERO),
+            proof_limits,
+        )
+        .unwrap()
+    };
+    for (left, right) in [
+        (input.clone(), other_input),
+        (source_read(1), source_read(2)),
+    ] {
+        let left = AbstractValue::unknown_byte().with_expression(left);
+        let right = AbstractValue::unknown_byte().with_expression(right);
+        assert_eq!(left.numeric(), right.numeric());
+        assert_ne!(
+            specialize_ites(left.expression().unwrap(), &true_guard, proof_limits).unwrap(),
+            specialize_ites(right.expression().unwrap(), &true_guard, proof_limits).unwrap()
+        );
+    }
+    assert_eq!(
+        specialize_ites(
+            &choices_tree,
+            &true_guard,
+            ExprLimits {
+                max_nodes: choices_tree.nodes() - 1,
+                ..proof_limits
+            },
+        ),
+        Err(ExprError::Limit {
+            nodes: choices_tree.nodes(),
+            depth: choices_tree.depth(),
+        })
+    );
+    assert_eq!(choices_tree, original_tree);
+
+    let read = |guard| {
+        ExprId::ite(
+            guard,
+            ExprId::constant(U256::ZERO),
+            ExprId::constant(U256::from(1)),
+            proof_limits,
+        )
+        .unwrap()
+    };
+    let add = |amount: u64, count| {
+        ExprId::operation(
+            opcode::ADD,
+            &[ExprId::constant(U256::from(amount)), count],
+            proof_limits,
+        )
+        .unwrap()
+    };
+    let old_guard = ExprId::ite(
+        second_guard.clone(),
+        ExprId::constant(U256::from(2)),
+        ExprId::constant(U256::MAX),
+        proof_limits,
+    )
+    .unwrap();
+    let current_read = read(
+        ExprId::ite(
+            first_guard.clone(),
+            old_guard.clone(),
+            source_read(1),
+            proof_limits,
+        )
+        .unwrap(),
+    );
+    let target_read = read(old_guard.clone());
+    let historical_increment = add(1, target_read.clone());
+    assert!(increment_cofactor(
+        &current_read,
+        &historical_increment,
+        proof_limits
+    ));
+    assert_eq!(
+        specialize_ites(&current_read, &true_guard, proof_limits).unwrap(),
+        target_read
+    );
+    // A nonzero word guard keeps its actual value; it is never Booleanized.
+    for (choice, word) in [(true, U256::from(2)), (false, U256::MAX)] {
+        let choices = BTreeMap::from([(first_guard.clone(), true), (second_guard.clone(), choice)]);
+        assert_eq!(
+            specialize_ites(&old_guard, &choices, proof_limits).unwrap(),
+            ExprId::constant(word)
+        );
+        assert_eq!(
+            specialize_ites(&current_read, &choices, proof_limits)
+                .unwrap()
+                .as_constant(),
+            Some(U256::ZERO)
+        );
+    }
+    let reversed = ExprId::ite(
+        old_guard.clone(),
+        ExprId::constant(U256::from(1)),
+        ExprId::constant(U256::ZERO),
+        proof_limits,
+    )
+    .unwrap();
+    for invalid in [
+        add(2, target_read),
+        add(1, reversed),
+        add(1, read(add(1, old_guard))),
+        add(1, read(source_read(2))),
+        add(1, read(ExprId::fresh().unwrap())),
+    ] {
+        assert!(!increment_cofactor(&current_read, &invalid, proof_limits));
+    }
+    // The selector occurs inside opaque target data. Choosing it could leave
+    // that AST unchanged while still erasing target valuations, so reject it.
+    let protected_read = read(
+        ExprId::ite(
+            first_guard.clone(),
+            data.clone(),
+            source_read(1),
+            proof_limits,
+        )
+        .unwrap(),
+    );
+    assert!(!increment_cofactor(
+        &protected_read,
+        &add(1, read(data)),
+        proof_limits
+    ));
+    assert!(!increment_cofactor(
+        &current_read,
+        &historical_increment,
+        ExprLimits {
+            max_nodes: current_read.nodes() - 1,
+            ..proof_limits
+        }
+    ));
+
     let root = format!(
         "{}505f515f55{}505f51600155{}505f5160025500",
         call(0x201, 0),
@@ -129,7 +467,15 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 .insert(address(number), Account::from_hex(code, fork).unwrap())
                 .unwrap();
         }
-        let graph = analyze_world(world.clone(), entry(), ExecutionConfig::default()).unwrap();
+        let graph = analyze_world(
+            world.clone(),
+            entry(),
+            ExecutionConfig {
+                root_terminal_coverage: false,
+                ..ExecutionConfig::default()
+            },
+        )
+        .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         assert_eq!(
             oracle::compare(&world, &entry(), &graph),
@@ -159,7 +505,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             }
         }
         // Inspection uses the unchanged analysis query policy: 1024 nodes,
-        // depth 64, 128 atoms and the finite default provider resource limit.
+        // depth 64 and 128 atoms, with bounded local propagation work.
         let limits = domain.spec().relations();
         assert_eq!(graph.domain_spec().relations(), limits);
         let union = |maximum: u64| {
@@ -252,7 +598,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             .unwrap();
         // The first rejected CALL writes zero, preserving the initial zero
         // slot root. Its later join with the first successful memory load adds
-        // Constant to slot0's source. Subsequent loads retain Memory directly.
+        // Constant to slot0's source. All subsequent loads still include Memory.
         let initial_zero = graph.states()[0]
             .entry
             .store
@@ -364,15 +710,33 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 assert!(read.constants().is_some());
                 assert!(read.contains(U256::from(expected)));
                 assert_eq!(read.numeric(), union(expected).numeric());
-                assert_eq!(
-                    read.provenance(),
-                    if slot == 0 {
-                        &historical_source
-                    } else {
-                        &memory_source
-                    },
-                    "slot {slot}"
+                let origins = read
+                    .provenance()
+                    .origins()
+                    .sources()
+                    .expect("persistent read lost its finite origins");
+                let required = if slot == 0 {
+                    &historical_source
+                } else {
+                    &memory_source
+                };
+                assert!(required.origins().sources().unwrap().is_subset(origins));
+                // Literal operand normalization adds Constant; the slot reader
+                // unions root and pointwise-cache may-origins without changing
+                // numeric facts. Neither source can introduce another origin.
+                assert!(
+                    origins.is_subset(&std::collections::BTreeSet::from([
+                        Origin::Constant,
+                        Origin::Memory,
+                    ])),
+                    "slot {slot} gained an unrelated origin"
                 );
+                assert!(!read.provenance().is_code_address());
+                // These literal counters and MLOAD results carry no immutable
+                // input identity or live block definition. Identity equality
+                // ignores runtime aliases, so check same_identity as well.
+                assert!(read.identity().input().is_none());
+                assert!(!read.same_identity(&read));
                 assert!(!read.symbolic_limit_reached());
                 assert_eq!(
                     read,
@@ -395,19 +759,74 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 .unwrap();
             assert!(persistent_root.nodes() <= limits.max_nodes);
             assert!(persistent_root.depth() <= limits.max_depth);
+            assert!(matches!(initial_root.kind(), SlotStateKind::Zero));
             // Separate CALL results retain real historical ITE roots. Every
             // branch must still contain descending writes to 2, 1, 0 and end
             // at the exact initial zero root; canonical zero writes can vanish.
             for (slot, read) in persistent.iter().enumerate() {
-                let mut pending = vec![(&persistent_root, 3)];
-                let mut visited = std::collections::BTreeSet::new();
-                let mut sources = None;
-                while let Some((state, upper)) = pending.pop() {
-                    if !visited.insert((state.clone(), upper)) {
-                        continue;
-                    }
-                    assert!(visited.len() <= limits.max_nodes);
-                    let source = match state.kind() {
+                let key = ExprId::constant(U256::from(slot));
+                let expression =
+                    ExprId::slot_read(persistent_root.clone(), key.clone(), limits.expressions())
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "{fork:?} state{} slot {slot}: root read: {error:?}",
+                                outcome.state
+                            )
+                        });
+                assert!(read.expression() == Some(&expression));
+                let prove_equal = |choices: &BTreeMap<ExprId, bool>,
+                                   left: &ExprId,
+                                   right: &ExprId,
+                                   leaf: &SlotStateId,
+                                   obligation: &str| {
+                    let specialize = |term: &ExprId| {
+                        specialize_ites(term, choices, limits.expressions()).unwrap_or_else(|error| {
+                            panic!(
+                                "{fork:?} state{} slot {slot} root{} leaf{} {obligation}: ITE specialization: {error:?}; guards={} nodes={} depth={} limits={:?}",
+                                outcome.state, persistent_root.id(), leaf.id(), choices.len(), term.nodes(), term.depth(), limits.expressions()
+                            )
+                        })
+                    };
+                    assert_eq!(
+                        specialize(left),
+                        specialize(right),
+                        "{fork:?} state{} slot {slot} root{} leaf{} {obligation}: structural mismatch; guards={} left nodes={} depth={} right nodes={} depth={}",
+                        outcome.state,
+                        persistent_root.id(),
+                        leaf.id(),
+                        choices.len(),
+                        left.nodes(),
+                        left.depth(),
+                        right.nodes(),
+                        right.depth()
+                    );
+                };
+                // A1's common must-table is not a historical value archive.
+                // Independently pair each leaf with the actual complete root
+                // by ITE denotation under its entire exact selector path. No
+                // payload facts or desired equality are assumed by this proof.
+                let mut pending = vec![(
+                    &persistent_root,
+                    3,
+                    BTreeMap::<ExprId, bool>::new(),
+                    None::<(ExprId, bool, bool)>,
+                    None::<(&SlotStateId, ExprId)>,
+                )];
+                let mut visited = 0;
+                let mut leaves = 0;
+                while let Some((state, upper, choices, conflict, selected)) = pending.pop() {
+                    // Count expanded visits: equal nodes reached by different
+                    // selector paths must never discard each other's guards.
+                    visited += 1;
+                    assert!(
+                        visited <= persistent_root.nodes(),
+                        "{fork:?} state{} slot {slot} root{}: persistent path visits={visited} nodes={} depth={}",
+                        outcome.state,
+                        persistent_root.id(),
+                        persistent_root.nodes(),
+                        persistent_root.depth()
+                    );
+                    match state.kind() {
                         SlotStateKind::Store {
                             previous,
                             key,
@@ -418,54 +837,111 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                             if written == 0 {
                                 assert_eq!(previous, &initial_root);
                             }
-                            if written == slot {
-                                let (_, source) = payload
-                                    .store
-                                    .symbolic_facts(false)
-                                    .find(|(term, _)| *term == value)
-                                    .unwrap();
-                                assert!(!source.symbolic_limit_reached());
-                                assert_eq!(source.symbolic_expression().as_ref(), Some(value));
-                                source.clone()
+                            let selected = if written == slot {
+                                assert!(selected.is_none(), "duplicate persistent slot write");
+                                Some((state, value.clone()))
                             } else {
-                                pending.push((previous, written));
-                                continue;
-                            }
+                                selected
+                            };
+                            // Validate the remaining order and initial root
+                            // even after finding this slot's authoritative write.
+                            pending.push((previous, written, choices, conflict, selected));
+                            continue;
                         }
                         SlotStateKind::Ite {
+                            condition,
                             then_state,
                             else_state,
-                            ..
                         } => {
-                            pending.extend([(then_state, upper), (else_state, upper)]);
+                            for (next, nonzero) in [(then_state, true), (else_state, false)] {
+                                let mut branch = choices.clone();
+                                let mut conflict = conflict.clone();
+                                if let Some(previous) = branch.get(condition) {
+                                    if *previous != nonzero && conflict.is_none() {
+                                        conflict = Some((condition.clone(), *previous, nonzero));
+                                    }
+                                } else {
+                                    branch.insert(condition.clone(), nonzero);
+                                }
+                                // Keep the first opposite choices as an exact
+                                // no-model witness; never overwrite a guard.
+                                pending.push((next, upper, branch, conflict, selected.clone()));
+                            }
                             continue;
                         }
                         SlotStateKind::Zero => {
                             assert_eq!(state, &initial_root);
-                            initial_zero.clone()
                         }
                         SlotStateKind::Input { .. } => panic!("lost initial persistent root"),
-                    };
-                    sources = Some(sources.map_or_else(
-                        || source.clone(),
-                        |previous: AbstractValue| domain.join(&previous, &source),
-                    ));
+                    }
+                    if let Some((condition, previous, nonzero)) = conflict {
+                        assert_ne!(previous, nonzero);
+                        assert_eq!(choices.get(&condition), Some(&previous));
+                        eprintln!(
+                            "{fork:?} state{} slot {slot} root{}: exact contradictory path guard={condition:?}, choices={previous}/{nonzero}",
+                            outcome.state,
+                            persistent_root.id()
+                        );
+                        continue;
+                    }
+                    let (leaf, value) = selected.unwrap_or((state, ExprId::constant(U256::ZERO)));
+                    leaves += 1;
+                    prove_equal(&choices, &expression, &value, leaf, "root/leaf value");
+                    for term in [&key, &value] {
+                        if let Some((_, guarantee)) = payload
+                            .store
+                            .symbolic_facts(false)
+                            .find(|(candidate, _)| *candidate == term)
+                        {
+                            assert!(!guarantee.symbolic_limit_reached());
+                            assert!(guarantee.identity().input().is_none());
+                            assert!(!guarantee.same_identity(guarantee));
+                            assert!(!guarantee.provenance().is_code_address());
+                            assert!(
+                                guarantee
+                                    .provenance()
+                                    .origins()
+                                    .sources()
+                                    .unwrap()
+                                    .is_subset(&std::collections::BTreeSet::from([
+                                        Origin::Constant,
+                                        Origin::Memory,
+                                    ]))
+                            );
+                            // refine_operands may compact away this expression;
+                            // the table key remains authoritative when absent.
+                            if let Some(retained) = guarantee.expression() {
+                                prove_equal(
+                                    &choices,
+                                    term,
+                                    retained,
+                                    leaf,
+                                    "optional operand expression",
+                                );
+                            }
+                            if let Some(constant) = term.as_constant() {
+                                assert!(guarantee.contains(constant));
+                            } else {
+                                // The structural witness equates this term and
+                                // the read on this path. Intersect their numeric
+                                // product bounds over the complete finite read;
+                                // a surviving word is not a path model.
+                                assert!(
+                                    read.constants().unwrap().iter().any(|candidate| {
+                                        read.contains(*candidate) && guarantee.contains(*candidate)
+                                    }),
+                                    "{fork:?} state{} slot {slot} root{} leaf{}: disjoint optional/read numeric products: {:?} / {:?}",
+                                    outcome.state,
+                                    persistent_root.id(),
+                                    leaf.id(),
+                                    guarantee.numeric(),
+                                    read.numeric()
+                                );
+                            }
+                        }
+                    }
                 }
-                let source = sources.unwrap();
-                assert_eq!(read.numeric(), source.numeric());
-                assert_eq!(read.provenance(), source.provenance());
-                assert_eq!(read.identity(), source.identity());
-                assert_eq!(
-                    read.expression(),
-                    Some(
-                        &ExprId::slot_read(
-                            persistent_root.clone(),
-                            ExprId::constant(U256::from(slot)),
-                            limits.expressions(),
-                        )
-                        .unwrap()
-                    )
-                );
+                assert!(leaves > 0, "missing persistent root/leaf witness");
             }
 
             let owners = [0x201, 0x202, 0x300, 0x101];
@@ -614,64 +1090,18 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             assert!(actual_writes.contains(&ExprId::constant(U256::from(1))));
             assert!(actual_writes.contains(&increment));
             // Outputs retain earlier executions of the same joined entry.
-            // Each retained increment must read an actual owner201 input root,
-            // including its historical ITE branches, and add exactly one.
-            assert!(actual_writes.is_subset(&increments));
+            // Each retained increment must read an actual owner201 input root
+            // or an exact target-disjoint ITE cofactor of its current read.
+            let current_read = old_count.symbolic_expression().unwrap();
+            for historical in actual_writes.difference(&increments) {
+                assert!(
+                    increment_cofactor(&current_read, historical, limits.expressions()),
+                    "{fork:?}: missing exact historical increment cofactor: {historical:?}"
+                );
+            }
             assert_eq!(
                 writes(&histories[1]),
                 std::collections::BTreeSet::from([ExprId::constant(U256::from(1))])
-            );
-
-            let equal = |value: &AbstractValue, expected| {
-                ExprId::operation(
-                    opcode::EQ,
-                    &[
-                        value.symbolic_expression().unwrap(),
-                        ExprId::constant(U256::from(expected)),
-                    ],
-                    limits.expressions(),
-                )
-                .unwrap()
-            };
-            let and = |left, right| {
-                ExprId::operation(opcode::AND, &[left, right], limits.expressions()).unwrap()
-            };
-            let not =
-                |value| ExprId::operation(opcode::ISZERO, &[value], limits.expressions()).unwrap();
-            let check = |name, predicate: &ExprId, expected| {
-                let actual = payload
-                    .relations
-                    .can_equal(predicate, U256::from(1), &limits);
-                eprintln!(
-                    "{fork:?} state{} {name}: {actual:?}; nodes={} depth={}",
-                    outcome.state,
-                    predicate.nodes(),
-                    predicate.depth()
-                );
-                // UNKNOWN and solver errors are neither SAT witnesses nor proofs.
-                assert_eq!(actual, expected, "{fork:?} {name}");
-            };
-            let persistent_premise = persistent
-                .iter()
-                .zip([1, 1, 2])
-                .fold(ExprId::constant(U256::from(1)), |p, (v, n)| {
-                    and(p, equal(v, n))
-                });
-            let joint = counters
-                .iter()
-                .zip([2, 1, 0, 0])
-                .fold(persistent_premise.clone(), |p, (v, n)| and(p, equal(v, n)));
-            check(
-                "joint expected storage and counters",
-                &joint,
-                CheckResult::Sat,
-            );
-            // Returned values must determine owner201's paired counter even
-            // without selecting an increment history through counter_route.
-            check(
-                "returned values independently determine owner201 counter",
-                &and(persistent_premise.clone(), not(equal(&counters[0], 2))),
-                CheckResult::Unsat,
             );
 
             let terminal_inputs = persistent[2].expression().unwrap();
@@ -723,57 +1153,26 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 assert!(route.variables().is_subset(&terminal_bindings));
                 route
             });
-            let success = routes
-                .iter()
-                .cloned()
-                .fold(persistent_premise.clone(), &and);
-            check(
-                "all three actual calls succeeded",
-                &success,
-                CheckResult::Sat,
-            );
-            check(
-                "same successful model has all expected counters",
-                &and(success.clone(), joint),
-                CheckResult::Sat,
-            );
-            let wrong = counters.iter().zip([2, 1, 0, 0]).fold(
-                ExprId::constant(U256::ZERO),
-                |p, (v, n)| {
-                    ExprId::operation(opcode::OR, &[p, not(equal(v, n))], limits.expressions())
-                        .unwrap()
-                },
-            );
-            check(
-                "qualified wrong owner counter",
-                &and(success, wrong),
-                CheckResult::Unsat,
-            );
-            let unused_owner_wrong = ExprId::operation(
-                opcode::OR,
-                &[not(equal(&counters[2], 0)), not(equal(&counters[3], 0))],
-                limits.expressions(),
-            )
-            .unwrap();
-            check(
-                "code/caller owner counter contamination",
-                &unused_owner_wrong,
-                CheckResult::Unsat,
-            );
-
-            // Persistent slot1=1 can retain the first CALL's output after the
-            // second CALL is rejected. Preserve that legitimate guarded model.
-            let rejected_second = and(
-                and(
-                    persistent_premise,
-                    and(routes[0].clone(), not(routes[1].clone())),
-                ),
-                equal(&counters[1], 0),
-            );
-            check(
-                "second call rejected with old memory retained",
-                &rejected_second,
-                CheckResult::Sat,
+            // The fixture's full F must be True. A shared exact cover replaces
+            // the large local can_equal acceptance queries: it proves common
+            // positive assignments and every negative control on this SAME
+            // nine-tuple, including returned values without route qualification
+            // and a rejected second CALL retaining the first CALL's memory.
+            let terms = std::array::from_fn(|index| match index {
+                0..=2 => persistent[index].symbolic_expression().unwrap(),
+                3..=6 => counters[index - 3].symbolic_expression().unwrap(),
+                _ => routes[index - 7].clone(),
+            });
+            let cover = joint::verify(&payload.relations, &terms, limits.expressions())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{fork:?} state{} shared joint cover: {error}",
+                        outcome.state
+                    )
+                });
+            eprintln!(
+                "{fork:?} state{} shared joint cover: {} proof nodes, {} terminal vectors",
+                outcome.state, cover.proof_nodes, cover.terminal_vectors
             );
             for (index, owner) in owners.into_iter().enumerate() {
                 assert_eq!(

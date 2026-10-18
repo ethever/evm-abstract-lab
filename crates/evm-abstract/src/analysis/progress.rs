@@ -26,7 +26,7 @@ pub enum Phase {
 }
 
 /// Exclusive monotonic wall-clock time accumulated across all discovery rounds.
-/// These measurements are independent of logical execution work and SMT limits.
+/// These measurements are independent of logical execution work and relation limits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PhaseTimings {
     /// Input/configuration validation and preparation before the first phase switch.

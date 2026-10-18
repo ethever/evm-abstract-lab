@@ -1,7 +1,7 @@
 //! Concrete errors at the CLI's acquisition, analysis and output boundary.
 
 use evm_abstract::{
-    analysis::{ConfigError, RpcAnalysisError},
+    analysis::{ConfigError, RpcAnalysisError, layers::SessionError},
     bytecode::DecodeError,
     ssa::SsaError,
     world::rpc::RpcError,
@@ -18,6 +18,8 @@ pub(crate) enum CliError {
     Decode(DecodeError),
     #[error("{0}")]
     Config(ConfigError),
+    #[error("{0}")]
+    Session(SessionError),
     #[error("{0}")]
     Cancelled(evm_abstract::analysis::control::Cancelled),
     #[error("{0}")]
@@ -67,6 +69,12 @@ impl From<RpcError> for CliError {
 impl From<RpcAnalysisError> for CliError {
     fn from(error: RpcAnalysisError) -> Self {
         match error {
+            RpcAnalysisError::Session(SessionError::Cancelled(error)) => Self::Cancelled(error),
+            RpcAnalysisError::Session(SessionError::Config(error)) => Self::Config(error),
+            RpcAnalysisError::Session(SessionError::World(error)) => {
+                Self::Input(InputError::World(error))
+            }
+            RpcAnalysisError::Session(error) => Self::Session(error),
             RpcAnalysisError::Cancelled(error) => Self::Cancelled(error),
             RpcAnalysisError::Config(error) => Self::Config(error),
             RpcAnalysisError::Rpc(error) => Self::Rpc(error),
@@ -97,3 +105,6 @@ impl From<EnvironmentInputError> for CliError {
         Self::Environment(error)
     }
 }
+
+#[cfg(test)]
+mod tests;

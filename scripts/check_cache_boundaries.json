@@ -41,14 +41,13 @@
         "*evm-abstract-protocol",
         "*evm-abstract-server",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
         "state-backend-*",
-        "smt-*",
-        "native-*",
+        "symbolic-*",
         "example-*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -81,7 +80,7 @@
     },
     {
       "name": "protocol-dependency-closure",
-      "description": "Protocol source changes reach native server and web consumers without invalidating independent analysis and solver crates.",
+      "description": "Protocol source changes reach native server and web consumers without invalidating independent analysis crates.",
       "mutations": [
         {
           "path": "crates/evm-abstract-protocol/src/lib.rs",
@@ -99,11 +98,10 @@
         "*evm-abstract-notation",
         "*evm-abstract-layout",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
-        "native-*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -128,11 +126,10 @@
       "unchanged": [
         "*evm-abstract-protocol",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
-        "native-*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -153,15 +150,14 @@
         "*evm-abstract-notation",
         "*evm-abstract-layout",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
-        "native-*",
         "web-build",
         "web-clippy",
         "web-no-dyn",
         "web-browser*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -192,11 +188,10 @@
         "*evm-abstract-notation",
         "*evm-abstract-layout",
         "*snapshot-state",
-        "*embedded-smt",
-        "*bitwuzla-native",
-        "native-*",
         "cargo-context-*",
-        "cargo-bindgen-environment"
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "lean-proofs"
       ]
     },
     {
@@ -234,6 +229,7 @@
         "web-browser-ssa-values",
         "web-browser-unknown-world",
         "web-browser-known-recursion",
+        "web-browser-root-terminal-coverage",
         "web-browser-inspector-controls",
         "web-browser-storage-table",
         "web-browser-storage-scroll",
@@ -315,6 +311,206 @@
       ],
       "only_changed": [
         "no-dyn-ui"
+      ]
+    },
+    {
+      "name": "lean-proof-source-isolation",
+      "description": "A proof source content edit rebuilds only the standalone Lean checker; documentation reads proof target names, not Lean contents.",
+      "mutations": [
+        {
+          "path": "proofs/NoSmt/Facts.lean",
+          "append": "\n-- Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "lean-proofs"
+      ]
+    },
+    {
+      "name": "no-smt-scale-script-isolation",
+      "description": "A scale script input changes only the independent scripts/JSON contract check, never an engine build or browser check.",
+      "mutations": [
+        {
+          "path": "scripts/benchmark-no-smt-scale.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-smt-scale-contracts"
+      ]
+    },
+    {
+      "name": "no-smt-scale-generator-isolation",
+      "description": "A scale generator input changes only the independent scripts/JSON contract check, never an engine build or browser check.",
+      "mutations": [
+        {
+          "path": "scripts/generate-no-smt-scale-commands.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-smt-scale-contracts"
+      ]
+    },
+    {
+      "name": "no-smt-scale-contract-test-isolation",
+      "description": "A scale contract-test input changes only the independent scripts/JSON contract check, never an engine build or browser check.",
+      "mutations": [
+        {
+          "path": "scripts/test_generate_no_smt_scale_commands.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-smt-scale-contracts"
+      ]
+    },
+    {
+      "name": "no-smt-scale-corpus-isolation",
+      "description": "Benchmark-only fixtures, manifest, commands and captured requests change only the independent scripts/JSON contract check, preserving every Rust and browser closure.",
+      "mutations": [
+        {
+          "path": "examples/no-smt-scale/code-only/unknown-callback.json",
+          "append": "\n"
+        },
+        {
+          "path": "examples/no-smt-scale/manifest.json",
+          "append": "\n"
+        },
+        {
+          "path": "examples/no-smt-scale/commands-e325-native.json",
+          "append": "\n"
+        },
+        {
+          "path": "examples/no-smt-scale/wire14/usdc-original-request.json",
+          "append": "\n"
+        },
+        {
+          "path": "examples/no-smt-scale/wire14/weth-original-request.json",
+          "append": "\n"
+        }
+      ],
+      "only_changed": [
+        "no-smt-scale-contracts"
+      ]
+    },
+    {
+      "name": "no-smt-scale-memory-copy-test-fixture",
+      "description": "A compile-time core test fixture reaches core tests and all-target Clippy/Dylint in every feature configuration while preserving production, formatting and browser inputs.",
+      "mutations": [
+        {
+          "path": "examples/no-smt-scale/code-only/memory-copy.json",
+          "append": "\n"
+        }
+      ],
+      "changed": [
+        "*tests-evm-abstract",
+        "*clippy-evm-abstract",
+        "*no-dyn-evm-abstract",
+        "no-smt-scale-contracts"
+      ],
+      "unchanged": [
+        "*release-build*",
+        "*docs*",
+        "fmt",
+        "no-dyn-fmt",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser*",
+        "cargo-context-*",
+        "cargo-bindgen-environment",
+        "lean-proofs"
+      ]
+    },
+    {
+      "name": "no-smt-scale-loop-test-fixture",
+      "description": "A compile-time core test fixture reaches core tests and all-target Clippy/Dylint in every feature configuration while preserving production, formatting and browser inputs.",
+      "mutations": [
+        {
+          "path": "examples/no-smt-scale/code-only/loop.json",
+          "append": "\n"
+        }
+      ],
+      "changed": [
+        "*tests-evm-abstract",
+        "*clippy-evm-abstract",
+        "*no-dyn-evm-abstract",
+        "no-smt-scale-contracts"
+      ],
+      "unchanged": [
+        "*release-build*",
+        "*docs*",
+        "fmt",
+        "no-dyn-fmt",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser*",
+        "cargo-context-*",
+        "cargo-bindgen-environment",
+        "lean-proofs"
+      ]
+    },
+    {
+      "name": "no-smt-scale-unknown-input-test-fixture",
+      "description": "A compile-time core test fixture reaches core tests and all-target Clippy/Dylint in every feature configuration while preserving production, formatting and browser inputs.",
+      "mutations": [
+        {
+          "path": "examples/no-smt-scale/code-only/unknown-input.json",
+          "append": "\n"
+        }
+      ],
+      "changed": [
+        "*tests-evm-abstract",
+        "*clippy-evm-abstract",
+        "*no-dyn-evm-abstract",
+        "no-smt-scale-contracts"
+      ],
+      "unchanged": [
+        "*release-build*",
+        "*docs*",
+        "fmt",
+        "no-dyn-fmt",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser*",
+        "cargo-context-*",
+        "cargo-bindgen-environment",
+        "lean-proofs"
+      ]
+    },
+    {
+      "name": "browser-wire-helper-isolation",
+      "description": "A private wire oracle edit changes its three exact browser consumers, the registry validator, and browser aggregate only.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_wire_bytes.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-browser-rpc-world",
+        "web-browser-known-recursion",
+        "web-browser-unknown-world",
+        "web-browser-registry",
+        "web-browser"
+      ]
+    },
+    {
+      "name": "root-terminal-coverage-case-isolation",
+      "description": "The terminal-coverage leaf reaches only its own browser case, registry validator and aggregate; existing wire-helper consumers stay isolated.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_root_terminal_coverage.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-browser-root-terminal-coverage",
+        "web-browser-registry",
+        "web-browser"
       ]
     }
   ]

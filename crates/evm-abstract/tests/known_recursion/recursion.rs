@@ -61,6 +61,7 @@ fn mutual_unknown_counter_closes_without_expanding_the_full_call_stack() {
             entry(unknown_input()),
             ExecutionConfig {
                 use_summaries,
+                root_terminal_coverage: false,
                 ..ExecutionConfig::default()
             },
         );

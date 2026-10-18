@@ -33,16 +33,6 @@ variant! {
         ScalarFactError(crate::FactFailure),
         /// ExpressionLimit boundary.
         ExpressionLimit,
-        /// Unsupported boundary.
-        Unsupported(u8),
-        /// ResourceLimit boundary.
-        ResourceLimit,
-        /// SolverUnknown boundary.
-        SolverUnknown(crate::SolverUnknown),
-        /// Native binding or encoding failed, independently of UNKNOWN.
-        SolverError(crate::SolverFailure),
-        /// ModelUnavailable boundary.
-        ModelUnavailable,
     }
 }
 variant! {

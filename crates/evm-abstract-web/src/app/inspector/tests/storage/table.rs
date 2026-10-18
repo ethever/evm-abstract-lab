@@ -1,6 +1,9 @@
 //! Native table geometry, gestures and presentation preferences.
 
-use super::{Drawn, Panel, account, context, entries, frame, rendered_at, storage_report, word};
+use super::{
+    Drawn, Panel, account, context, entries, frame, rendered_at, storage_report,
+    viewport_widget_budget, word,
+};
 use crate::app::{View, inspector::Tab};
 use egui::{Context, Event, FontId, Id, Modifiers, Pos2, Rect, Vec2};
 use evm_abstract_protocol as api;
@@ -355,14 +358,15 @@ fn each_account_and_storage_kind_virtualizes_against_the_outer_viewport() {
                 transient,
                 ..panel(&report)
             };
+            let widget_budget = viewport_widget_budget(&panel);
             let top = panel.expand(&context, &mut time);
             assert!(top.rect("Balance").is_some());
             assert_eq!(top.slots(), 0);
-            assert!(top.widgets < 100, "{}", top.widgets);
+            assert!(top.widgets <= widget_budget, "{}", top.widgets);
             let border = Pos2::new(separator(&context, transient).rect.center().x, 140.0);
             let middle = panel.scroll(&context, &mut time, border, -50_000.0);
             assert!(middle.slots() > 0 && middle.slots() <= 12);
-            assert!(middle.widgets < 100, "{}", middle.widgets);
+            assert!(middle.widgets <= widget_budget, "{}", middle.widgets);
             let offset = egui::scroll_area::State::load(&context, middle.scroll_id)
                 .unwrap()
                 .offset
@@ -382,7 +386,7 @@ fn each_account_and_storage_kind_virtualizes_against_the_outer_viewport() {
             let last = panel.scroll(&context, &mut time, border, -1_000_000.0);
             assert!(last.rect("0x10270f").is_some());
             assert!(last.slots() > 0 && last.slots() <= 12);
-            assert!(last.widgets < 100, "{}", last.widgets);
+            assert!(last.widgets <= widget_budget, "{}", last.widgets);
             assert!(
                 egui::scroll_area::State::load(&context, last.scroll_id)
                     .unwrap()
@@ -471,6 +475,57 @@ impl Workbench {
             .1
     }
 
+    // A metadata row can put the first value below the dock's viewport. Use
+    // wheel input in the measured inspector, and require both column headers
+    // and the value to paint before testing their geometry.
+    fn storage_rect(&mut self, label: &str) -> Rect {
+        let mut drawn = self.draw(vec![]);
+        let bounds = egui::PanelState::load(&self.context, Id::new("world_inspector"))
+            .unwrap()
+            .outer_rect;
+        let row = 21.0_f32.max(
+            self.context
+                .style_of(self.context.theme())
+                .spacing
+                .interact_size
+                .y,
+        );
+        for _ in 0..=(bounds.height() / row).ceil() as usize {
+            let target = drawn
+                .iter()
+                .find(|(text, _)| text == label)
+                .map(|(_, rect)| *rect);
+            if let Some(rect) = target
+                && ["Slot", "Value"]
+                    .iter()
+                    .all(|label| drawn.iter().any(|(text, _)| text == label))
+            {
+                return rect;
+            }
+            let transient = self.workspace.inspector.tab == Tab::Transient;
+            let position = Pos2::new(
+                separator(&self.context, transient).rect.center().x,
+                bounds.bottom() - row * 0.5,
+            );
+            self.draw(vec![
+                Event::PointerMoved(position),
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: Vec2::new(0.0, -row),
+                    modifiers: Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ]);
+            self.draw(vec![Event::PointerGone]);
+            for _ in 0..30 {
+                drawn = self.draw(vec![]);
+            }
+        }
+        panic!(
+            "{label} and table headers never became visible within one inspector viewport ({bounds:?}): {drawn:?}"
+        );
+    }
+
     fn graph_titles(&mut self) -> Vec<(String, Rect)> {
         self.draw(vec![])
             .into_iter()
@@ -541,7 +596,7 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
     workbench.workspace.view = View::Graph;
     workbench.workspace.directory.open = true;
     workbench.draw(vec![]);
-    let before = workbench.rect("0xcafe");
+    let before = workbench.storage_rect("0xcafe");
     let initial_columns = workbench.rect("Value").left() - workbench.rect("Slot").left();
     let panels = ["world_inspector", "world_directory"].map(|name| {
         egui::PanelState::load(&workbench.context, Id::new(name))
@@ -588,7 +643,7 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
     }
     for view in [View::Disassembly, View::Ssa, View::Split, View::Graph] {
         workbench.workspace.view = view;
-        near(workbench.rect("0xcafe").left(), expected);
+        near(workbench.storage_rect("0xcafe").left(), expected);
     }
     workbench.click("Maximize");
     near(
@@ -596,15 +651,15 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
         initial_columns + 70.0,
     );
     workbench.click("Restore");
-    near(workbench.rect("0xcafe").left(), expected);
+    near(workbench.storage_rect("0xcafe").left(), expected);
     workbench.workspace.inspector.tab = Tab::Stack;
     workbench.draw(vec![]);
     workbench.workspace.inspector.tab = Tab::Transient;
-    near(workbench.rect("0xcafe").left(), before.left());
+    near(workbench.storage_rect("0xcafe").left(), before.left());
     workbench.workspace.inspector.tab = Tab::Storage;
-    near(workbench.rect("0xcafe").left(), expected);
+    near(workbench.storage_rect("0xcafe").left(), expected);
     workbench.workspace.selection.state = Some(1);
-    near(workbench.rect("0xcafe").left(), expected);
+    near(workbench.storage_rect("0xcafe").left(), expected);
     workbench.workspace.account = Some(report.accounts[1].address.clone());
     let second = workbench.draw(vec![]);
     assert!(
@@ -612,7 +667,7 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
             .iter()
             .any(|(text, _)| text == &report.accounts[1].address)
     );
-    near(workbench.rect("0xcafe").left(), expected);
+    near(workbench.storage_rect("0xcafe").left(), expected);
     report.metadata.fingerprint = format!("0x{}", "12".repeat(32));
     report.stores[0].accounts[0].storage[0].slot = format!("0x{}", "ff".repeat(32));
     report.stores[0].accounts[0].storage[0].value = word("0xd00d");
@@ -624,9 +679,9 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
             .address
             .clone(),
     );
-    near(workbench.rect("0xd00d").left(), expected);
+    near(workbench.storage_rect("0xd00d").left(), expected);
     workbench.size = Vec2::new(320.0, 600.0);
     workbench.draw(vec![]);
     workbench.size = Vec2::new(1440.0, 1000.0);
-    near(workbench.rect("0xd00d").left(), expected);
+    near(workbench.storage_rect("0xd00d").left(), expected);
 }

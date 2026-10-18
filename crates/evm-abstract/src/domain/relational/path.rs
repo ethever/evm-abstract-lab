@@ -1,5 +1,5 @@
 //! Bounded immutable formulas for guarded joins. Common scalar facts remain in
-//! RelationState; branch formulas preserve the alternatives seen by SMT.
+//! RelationState; branch formulas preserve the alternatives used by local projection.
 
 use super::{
     Constraint, ExprError, ExprId, ExprLimits, QueryReason, RelationLimits, RelationState,
@@ -177,7 +177,7 @@ impl RelationPath {
             .max(selector.depth())
             .saturating_add(1);
         let atoms = left.atoms().saturating_add(right.atoms());
-        if embedded_smt::current_cancellation().is_cancelled() {
+        if analysis_control::current_cancellation().is_cancelled() {
             return Err(QueryReason::Cancelled);
         }
         if nodes > limits.max_nodes || depth > limits.max_depth {
@@ -197,7 +197,7 @@ impl RelationPath {
             atoms,
         })))
     }
-    /// Read-only formula shape for solver/report consumers.
+    /// Read-only formula shape for local/report consumers.
     pub fn kind(&self) -> &RelationPathKind {
         &self.0.kind
     }
@@ -351,7 +351,7 @@ impl Serialize for RelationPath {
             if memo.contains_key(&path.id()) {
                 continue;
             }
-            if embedded_smt::current_cancellation().is_cancelled() {
+            if analysis_control::current_cancellation().is_cancelled() {
                 return Err(serde::ser::Error::custom(ExprError::Cancelled));
             }
             if !ready {

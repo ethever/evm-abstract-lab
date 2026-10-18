@@ -24,7 +24,7 @@
 | [控制流、固定点与敏感性](modules/control-flow.md) | [传播为什么需要重访](routes/theory.md#control-flow) | [状态键、工作队列与合并](routes/implementation.md#control-flow) | [03 CFG](03-cfg.md)、[05 敏感性](05-sensitivity.md) |
 | [值流、φ 与部分 SSA](modules/ssa.md) | [定义来源和覆盖范围](routes/theory.md#ssa) | [执行记录、SSA 构建与渲染](routes/implementation.md#ssa) | [04 SSA](04-ssa.md)，包括[未完成分析](04-ssa.md#7-未完成时按需查看部分-ssa) |
 | [内存与 storage](modules/memory-storage.md) | [字节、槽位及别名](routes/theory.md#memory-storage) | [ByteArray、Store 与读写](routes/implementation.md#memory-storage) | [14 memory](14-memory-model.md)、[16 storage](16-storage-model.md) |
-| [身份、路径条件与 SMT](modules/relations.md) | [关系保留了哪些关联](routes/theory.md#relations) | [表达式、约束与求解接口](routes/implementation.md#relations) | [15 符号关系](15-symbolic-relations.md) |
+| [身份、路径条件与局部推理](modules/relations.md) | [关系保留了哪些关联](routes/theory.md#relations) | [表达式、约束与局部推理接口](routes/implementation.md#relations) | [15 符号关系](15-symbolic-relations.md) |
 | [调用、状态归属与回滚](modules/calls-state.md) | [调用前后哪些状态相连](routes/theory.md#calls-state) | [调用帧、保存点与状态后端](routes/implementation.md#calls-state) | [09 跨合约](09-cross-contract.md)、[11 状态容器](11-state-backends.md) |
 | [快照、复用与代码生命周期](modules/rpc-summaries.md) | [事实与摘要在何时有效](routes/theory.md#rpc-summaries) | [RPC 轮次、摘要和创建](routes/implementation.md#rpc-summaries) | [10 快照与摘要](10-snapshots-summaries-creation.md) |
 | [模型边界与验证](modules/evidence.md) | [结果支持什么结论](routes/theory.md#evidence) | [反例、对照执行与检查](routes/implementation.md#evidence) | [06 边界](06-boundaries.md)、[07 练习](07-exercises.md)、[本地检查](local-ci.md) |

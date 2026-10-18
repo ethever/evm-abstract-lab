@@ -1,8 +1,6 @@
-//! Native checks for conjunction reduction and its guarded/overlap boundaries.
+//! Local conjunction consequences and guarded/overlap boundaries.
 
-use super::super::{
-    CheckResult, Constraint, RelationLimits, RelationState, SmtProvider, ValueQuery,
-};
+use super::super::{CheckResult, Constraint, RelationLimits, RelationState, ValueQuery};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId, StateBinding};
 use crate::domain::{AbstractValue, Domain, NumericValue};
 use alloy_primitives::U256;
@@ -12,9 +10,8 @@ use std::sync::Arc;
 fn c(value: u64) -> ExprId {
     ExprId::constant(U256::from(value))
 }
-fn policy(provider: SmtProvider) -> RelationLimits {
+fn policy() -> RelationLimits {
     RelationLimits {
-        provider,
         max_nodes: 8192,
         max_depth: 128,
         max_constraints: 256,
@@ -27,8 +24,8 @@ fn op(code: u8, args: &[ExprId], limits: RelationLimits) -> ExprId {
 
 #[test]
 fn default_fuel_conjunction_aliases_keep_their_asserted_predicates() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let k = ExprId::fresh().unwrap();
         let q = ExprId::fresh().unwrap();
         let storage = SlotStateId::zero()
@@ -48,21 +45,24 @@ fn default_fuel_conjunction_aliases_keep_their_asserted_predicates() {
                 let mut path = RelationState::default();
                 assert_eq!(
                     path.assume(&guard, equal ^ (negations % 2 != 0), &limits),
-                    CheckResult::Sat,
-                    "{provider:?}"
+                    CheckResult::MayBeFeasible,
+                    "local"
                 );
                 assert_eq!(
-                    path.unique_value(&read, &limits),
-                    ValueQuery::Unique(U256::from(if equal { 9 } else { 7 })),
-                    "{provider:?}, equal={equal}, negations={negations}"
+                    path.local_value(&read, &limits),
+                    ValueQuery::Exact(U256::from(if equal { 9 } else { 7 })),
+                    "local, equal={equal}, negations={negations}"
                 );
                 // A fold must never erase the premise supporting it.
                 assert_eq!(
                     path.can_equal(&equality, U256::from(u8::from(!equal)), &limits),
-                    CheckResult::Unsat,
-                    "{provider:?}"
+                    CheckResult::ProvenImpossible,
+                    "local"
                 );
-                assert_eq!(path.assume(&equality, !equal, &limits), CheckResult::Unsat);
+                assert_eq!(
+                    path.assume(&equality, !equal, &limits),
+                    CheckResult::ProvenImpossible
+                );
             }
         }
     }
@@ -70,8 +70,8 @@ fn default_fuel_conjunction_aliases_keep_their_asserted_predicates() {
 
 #[test]
 fn delayed_input_key_aliases_refine_a_read_with_earlier_numeric_observations() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let length = ExprId::fresh().unwrap();
         let input = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
         let k = ExprId::word_read(
@@ -97,7 +97,7 @@ fn delayed_input_key_aliases_refine_a_read_with_earlier_numeric_observations() {
             let mut path = RelationState::default();
             assert_eq!(
                 path.add_unsigned_bounds(&length, U256::from(64), U256::from(1024), &limits),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
             path.observe(
                 &read,
@@ -115,16 +115,16 @@ fn delayed_input_key_aliases_refine_a_read_with_earlier_numeric_observations() {
             } else {
                 path.assume(&equality, false, &limits)
             };
-            assert_eq!(assumption, CheckResult::Sat, "{provider:?}");
+            assert_eq!(assumption, CheckResult::MayBeFeasible, "local");
             assert_eq!(
-                path.unique_value(&read, &limits),
-                ValueQuery::Unique(U256::from(if equal { 9 } else { 7 })),
-                "{provider:?}, equal={equal}"
+                path.local_value(&read, &limits),
+                ValueQuery::Exact(U256::from(if equal { 9 } else { 7 })),
+                "local, equal={equal}"
             );
             assert_eq!(
                 path.can_equal(&read, U256::from(if equal { 7 } else { 9 }), &limits),
-                CheckResult::Unsat,
-                "{provider:?}"
+                CheckResult::ProvenImpossible,
+                "local"
             );
         }
     }
@@ -132,8 +132,8 @@ fn delayed_input_key_aliases_refine_a_read_with_earlier_numeric_observations() {
 
 #[test]
 fn asserted_input_length_bounds_preserve_the_last_byte_padding_boundary() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         for start in [0, 32] {
             let length = ExprId::fresh().unwrap();
             let input = ByteStateId::observed(
@@ -163,14 +163,14 @@ fn asserted_input_length_bounds_preserve_the_last_byte_padding_boundary() {
                     U256::from(start + 32),
                     &limits
                 ),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
             let full = U256::from_be_bytes([1; 32]);
             for expected in [full, full - U256::from(1)] {
                 assert_eq!(
                     path.can_equal(&word, expected, &limits),
-                    CheckResult::Sat,
-                    "{provider:?}, start={start}"
+                    CheckResult::MayBeFeasible,
+                    "local, start={start}"
                 );
             }
             let mut covered = RelationState::default();
@@ -181,12 +181,12 @@ fn asserted_input_length_bounds_preserve_the_last_byte_padding_boundary() {
                     U256::from(start + 64),
                     &limits
                 ),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
             assert_eq!(
-                covered.unique_value(&word, &limits),
-                ValueQuery::Unique(full),
-                "{provider:?}, start={start}"
+                covered.local_value(&word, &limits),
+                ValueQuery::Exact(full),
+                "local, start={start}"
             );
         }
     }
@@ -194,8 +194,8 @@ fn asserted_input_length_bounds_preserve_the_last_byte_padding_boundary() {
 
 #[test]
 fn retained_inconsistent_equalities_and_ranges_cannot_produce_a_folded_value() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let k = ExprId::fresh().unwrap();
         let q = ExprId::fresh().unwrap();
         let storage = SlotStateId::zero()
@@ -205,7 +205,7 @@ fn retained_inconsistent_equalities_and_ranges_cannot_produce_a_folded_value() {
             .unwrap();
         let read = ExprId::slot_read(storage, k.clone(), limits.expressions()).unwrap();
         // Retained constraints can await checking after imports or joins.
-        // Exercise the native assertions without eager insertion setting bottom.
+        // Exercise retained local constraints before eager insertion marks bottom.
         let equal = RelationState {
             constraints: [
                 Constraint::Equal {
@@ -223,9 +223,9 @@ fn retained_inconsistent_equalities_and_ranges_cannot_produce_a_folded_value() {
         };
         assert!(!equal.bottom);
         assert_eq!(
-            equal.unique_value(&read, &limits),
-            ValueQuery::Infeasible,
-            "{provider:?}"
+            equal.local_value(&read, &limits),
+            ValueQuery::ProvenImpossible,
+            "local"
         );
 
         let length = ExprId::fresh().unwrap();
@@ -261,17 +261,17 @@ fn retained_inconsistent_equalities_and_ranges_cannot_produce_a_folded_value() {
         };
         assert!(!range.bottom);
         assert_eq!(
-            range.unique_value(&hash, &limits),
-            ValueQuery::Infeasible,
-            "{provider:?}"
+            range.local_value(&hash, &limits),
+            ValueQuery::ProvenImpossible,
+            "local"
         );
     }
 }
 
 #[test]
 fn guarded_path_alias_facts_never_become_unconditional_read_rewrites() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let k = ExprId::fresh().unwrap();
         let q = ExprId::fresh().unwrap();
         let selector = ExprId::fresh().unwrap();
@@ -284,30 +284,33 @@ fn guarded_path_alias_facts_never_become_unconditional_read_rewrites() {
         let equality = op(opcode::EQ, &[k, q], limits);
         let mut same = RelationState::default();
         let mut different = RelationState::default();
-        assert_eq!(same.assume(&equality, true, &limits), CheckResult::Sat);
+        assert_eq!(
+            same.assume(&equality, true, &limits),
+            CheckResult::MayBeFeasible
+        );
         assert_eq!(
             different.assume(&equality, false, &limits),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
         let joined = same
             .join_guarded(&different, selector.clone(), &limits)
             .unwrap();
-        assert_eq!(joined.unique_value(&read, &limits), ValueQuery::Multiple);
+        super::bounds_include(joined.local_value(&read, &limits), &[7, 9]);
         for (branch, expected) in [(true, 9), (false, 7)] {
             assert_eq!(
                 joined.can_equal(&read, U256::from(expected), &limits),
-                CheckResult::Sat,
-                "{provider:?}, both guarded valuations survive"
+                CheckResult::MayBeFeasible,
+                "local, both guarded valuations survive"
             );
             let mut selected = joined.clone();
             assert_eq!(
                 selected.assume(&selector, branch, &limits),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
             assert_eq!(
-                selected.unique_value(&read, &limits),
-                ValueQuery::Unique(U256::from(expected)),
-                "{provider:?}, branch={branch}"
+                selected.local_value(&read, &limits),
+                ValueQuery::Exact(U256::from(expected)),
+                "local, branch={branch}"
             );
         }
     }
@@ -315,8 +318,8 @@ fn guarded_path_alias_facts_never_become_unconditional_read_rewrites() {
 
 #[test]
 fn bounded_hash_rewrites_retain_overlap_overflow_and_partial_copy_alternatives() {
-    for provider in [SmtProvider::Z3, SmtProvider::Bitwuzla, SmtProvider::Cvc5] {
-        let limits = policy(provider);
+    {
+        let limits = policy();
         let length = ExprId::fresh().unwrap();
         let input = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
         let original = ByteView::new(input, c(0), length.clone());
@@ -345,7 +348,7 @@ fn bounded_hash_rewrites_retain_overlap_overflow_and_partial_copy_alternatives()
         let mut path = RelationState::default();
         assert_eq!(
             path.add_unsigned_bounds(&length, U256::from(512), U256::from(2048), &limits),
-            CheckResult::Sat
+            CheckResult::MayBeFeasible
         );
         // The same admitted length range has both a disjoint boundary and an
         // overlapping copy. A bound that straddles the guard cannot fold it.
@@ -353,21 +356,21 @@ fn bounded_hash_rewrites_retain_overlap_overflow_and_partial_copy_alternatives()
             let mut boundary = path.clone();
             assert_eq!(
                 boundary.add_equal(&length, &c(sample), &limits),
-                CheckResult::Sat
+                CheckResult::MayBeFeasible
             );
             if disjoint {
                 assert_eq!(
-                    boundary.unique_value(&equality, &limits),
-                    ValueQuery::Unique(U256::from(1))
+                    boundary.local_value(&equality, &limits),
+                    ValueQuery::Exact(U256::from(1))
                 );
             } else {
                 assert_eq!(
                     boundary.can_equal(&equality, U256::ZERO, &limits),
-                    CheckResult::Sat
+                    CheckResult::MayBeFeasible
                 );
                 assert_eq!(
                     boundary.can_equal(&equality, U256::from(1), &limits),
-                    CheckResult::Sat
+                    CheckResult::MayBeFeasible
                 );
             }
         }
@@ -390,8 +393,8 @@ fn bounded_hash_rewrites_retain_overlap_overflow_and_partial_copy_alternatives()
             for expected in [0, 1] {
                 assert_eq!(
                     path.can_equal(&equality, U256::from(expected), &limits),
-                    CheckResult::Sat,
-                    "{provider:?}, invalid whole range or partial source copy; collisions remain possible"
+                    CheckResult::MayBeFeasible,
+                    "local, invalid whole range or partial source copy; collisions remain possible"
                 );
             }
         }

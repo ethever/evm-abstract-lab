@@ -60,9 +60,9 @@ fn native_byte_failures_are_visible_and_fact_export_is_bounded_and_cancellable()
         error.contains("metadata policy") || error.contains("exceeding its policy"),
         "{error}"
     );
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         assert!(serde_json::to_value(ByteArray::unknown()).is_err());
     });
 }

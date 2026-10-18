@@ -145,6 +145,7 @@ pub(crate) fn empty_report() -> AnalysisReport {
         states: vec![],
         stores: vec![],
         outcomes: vec![],
+        root_terminal_coverage: None,
         abstract_summaries: vec![],
         acquisition: None,
         byte_arrays: vec![api::ByteArraySnapshot {
@@ -572,16 +573,18 @@ fn reanalysis_retains_previous_snapshot_and_backend_errors_remain_visible() {
 #[test]
 fn unsupported_schema_is_rejected_and_partial_coverage_is_explicit() {
     let mut workspace = Workspace::default();
-    let mut unsupported = report();
-    unsupported.schema_version += 1;
-    workspace.receive(Ok(AnalyzeReply {
-        result: Ok(unsupported),
-    }));
-    assert!(
-        workspace
-            .accessible_status()
-            .contains("Unsupported response schema")
-    );
+    for version in [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1] {
+        let mut unsupported = report();
+        unsupported.schema_version = version;
+        workspace.receive(Ok(AnalyzeReply {
+            result: Ok(unsupported),
+        }));
+        assert!(
+            workspace
+                .accessible_status()
+                .contains("Unsupported response schema")
+        );
+    }
     let mut partial = report();
     partial.status = AnalysisStatus::Incomplete;
     partial.ssa.complete = false;

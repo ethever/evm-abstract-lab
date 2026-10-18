@@ -17,7 +17,7 @@ use evm_abstract::{
     world::{Account, ByteArray, Entry, World},
 };
 use oracle::address;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Compare observable numeric/provenance unions independently of immutable
 /// execution-history graph layout. Snapshot roots and actual read semantics
@@ -81,7 +81,106 @@ fn relations(analysis: &WorldAnalysis) -> BTreeSet<String> {
         .collect()
 }
 
-fn compare(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
+// Only outcome membership is unordered. Replay may rename runtime leaves, but
+// one injective map must preserve aliases across every row and conditional graph.
+fn same_observable_relations(
+    left: &BTreeSet<String>,
+    right: &BTreeSet<String>,
+    captured_leaves: &BTreeSet<u64>,
+) -> bool {
+    fn match_value(
+        left: &serde_json::Value,
+        right: &serde_json::Value,
+        forward: &mut BTreeMap<u64, u64>,
+        reverse: &mut BTreeMap<u64, u64>,
+    ) -> bool {
+        match (left, right) {
+            (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
+                if left.len() == 1 && left.contains_key("Fresh") {
+                    if right.len() != 1 {
+                        return false;
+                    }
+                    let (Some(left), Some(right)) = (
+                        left["Fresh"].as_u64(),
+                        right.get("Fresh").and_then(serde_json::Value::as_u64),
+                    ) else {
+                        return false;
+                    };
+                    return match (forward.get(&left), reverse.get(&right)) {
+                        (Some(mapped), Some(original)) => *mapped == right && *original == left,
+                        (None, None) => {
+                            forward.insert(left, right);
+                            reverse.insert(right, left);
+                            true
+                        }
+                        _ => false,
+                    };
+                }
+                left.len() == right.len()
+                    && left.iter().all(|(key, value)| {
+                        right
+                            .get(key)
+                            .is_some_and(|other| match_value(value, other, forward, reverse))
+                    })
+            }
+            (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right)
+                        .all(|(value, other)| match_value(value, other, forward, reverse))
+            }
+            _ => left == right,
+        }
+    }
+    fn match_rows(
+        left: &[serde_json::Value],
+        right: &[serde_json::Value],
+        used: &mut [bool],
+        forward: &BTreeMap<u64, u64>,
+        reverse: &BTreeMap<u64, u64>,
+    ) -> bool {
+        let Some((row, remaining)) = left.split_first() else {
+            return true;
+        };
+        for (index, candidate) in right.iter().enumerate() {
+            if used[index] {
+                continue;
+            }
+            // A rejected pairing must not leak its tentative leaf assignments.
+            let mut next_forward = forward.clone();
+            let mut next_reverse = reverse.clone();
+            if match_value(row, candidate, &mut next_forward, &mut next_reverse) {
+                used[index] = true;
+                if match_rows(remaining, right, used, &next_forward, &next_reverse) {
+                    return true;
+                }
+                used[index] = false;
+            }
+        }
+        false
+    }
+    if left.len() != right.len() {
+        return false;
+    }
+    let parse = |rows: &BTreeSet<String>| -> Vec<serde_json::Value> {
+        rows.iter()
+            .map(|row| serde_json::from_str(row).unwrap())
+            .collect()
+    };
+    let left = parse(left);
+    let right = parse(right);
+    let anchors = captured_leaves.iter().map(|id| (*id, *id)).collect();
+    match_rows(
+        &left,
+        &right,
+        &mut vec![false; right.len()],
+        &anchors,
+        &anchors,
+    )
+}
+
+fn checked_analyses(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
     let (world, entry) = fixture(accounts);
     let enabled = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
     let disabled = analyze_world(
@@ -109,10 +208,190 @@ fn compare(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
             OutcomeKind::Return
         );
     }
-    assert_eq!(relations(&enabled), relations(&disabled));
     assert!(disabled.summaries().is_empty());
     assert_eq!(disabled.summary_stats().hits, 0);
     (enabled, disabled)
+}
+
+fn compare(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
+    let (enabled, disabled) = checked_analyses(accounts);
+    assert_eq!(relations(&enabled), relations(&disabled));
+    (enabled, disabled)
+}
+
+fn compare_full_store(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
+    let (enabled, disabled) = checked_analyses(accounts);
+    // The fixture clones one World and concrete Entry. Its saved input sources
+    // stay fixed; only later private runtime leaves may be renamed.
+    let captured = |analysis: &WorldAnalysis| -> BTreeSet<u64> {
+        analysis.states()[0]
+            .entry
+            .active()
+            .saved_store
+            .state()
+            .fresh_leaves()
+            .into_iter()
+            .map(|leaf| {
+                let evm_abstract::domain::symbolic::ExprKind::Fresh(id) = leaf.kind() else {
+                    panic!("fresh_leaves must contain only Fresh source leaves")
+                };
+                *id
+            })
+            .collect()
+    };
+    let captured_leaves = captured(&enabled);
+    assert_eq!(captured_leaves, captured(&disabled));
+    assert!(same_observable_relations(
+        &relations(&enabled),
+        &relations(&disabled),
+        &captured_leaves,
+    ));
+    (enabled, disabled)
+}
+
+#[test]
+fn observable_relation_bijection_preserves_conditional_aliases_and_inputs() {
+    fn row(first: u64, second: u64, length: u64) -> serde_json::Value {
+        let condition = |leaf| {
+            serde_json::json!({
+                "identity_scope": "producer",
+                "nodes": [
+                    {"Fresh": leaf},
+                    {"Input": {"scope": 7, "symbol": "CallValue"}},
+                    {"SlotsInput": {"source": {"token": 1, "namespace": "0x101"}, "bindings": []}},
+                    {"Constant": "0x7"},
+                    {"SlotRead": {"state": 2, "key": 3}},
+                    {"Operation": {"opcode": 0x14, "args": [0, 4]}},
+                    {"Fresh": 99},
+                    {"SlotsInput": {"source": {"token": 6, "namespace": "0x999"}, "bindings": []}},
+                    {"SlotRead": {"state": 7, "key": 3}},
+                    {"Operation": {"opcode": 0x14, "args": [5, 8]}}
+                ]
+            })
+        };
+        let scope = |number| {
+            serde_json::json!({
+                "facts": [{"value": AbstractValue::constant(U256::from(number))}],
+                "conditional": []
+            })
+        };
+        let repeated = serde_json::json!({
+            "condition": condition(second),
+            "then_facts": scope(7_u64),
+            "else_facts": scope(9_u64)
+        });
+        let mut then_facts = scope(7_u64);
+        then_facts["conditional"] = serde_json::json!([repeated.clone()]);
+        let mut else_facts = scope(9_u64);
+        else_facts["conditional"] = serde_json::json!([repeated.clone()]);
+        serde_json::json!(["Return", {
+            "length": AbstractValue::constant(U256::from(length)),
+            "conditional": [{
+                "condition": condition(first), "then_facts": then_facts, "else_facts": else_facts
+            }, repeated]
+        }, {}])
+    }
+    let set = |rows: &[serde_json::Value]| -> BTreeSet<String> {
+        rows.iter()
+            .map(|row| {
+                let mut row = row.clone();
+                observable(&mut row);
+                serde_json::to_string(&row).unwrap()
+            })
+            .collect()
+    };
+    let failure = serde_json::json!(["Failure", {"conditional": []}, {}]);
+    let left = set(&[row(1, 2, 32), row(2, 1, 64), failure.clone()]);
+    // Renaming reverses the raw set order of the Return rows.
+    let right = [row(20, 10, 32), row(10, 20, 64), failure];
+    let captured = BTreeSet::from([99]);
+    let matches =
+        |rows: &[serde_json::Value]| same_observable_relations(&left, &set(rows), &captured);
+    assert!(matches(&right));
+    assert!(same_observable_relations(&set(&right), &left, &captured));
+    fn rename_source(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if fields.len() == 1
+                    && fields.get("Fresh").and_then(serde_json::Value::as_u64) == Some(99)
+                {
+                    fields.insert("Fresh".to_owned(), serde_json::json!(199));
+                } else {
+                    fields.values_mut().for_each(rename_source);
+                }
+            }
+            serde_json::Value::Array(values) => values.iter_mut().for_each(rename_source),
+            _ => {}
+        }
+    }
+    let mut changed_source = right.clone();
+    changed_source.iter_mut().for_each(rename_source);
+    assert!(same_observable_relations(
+        &left,
+        &set(&changed_source),
+        &BTreeSet::new()
+    ));
+    assert!(
+        !matches(&changed_source),
+        "a captured source is not a private runtime leaf"
+    );
+    // Consistent many-to-one renaming must fail even when one leaf is unchanged.
+    assert!(!matches(&[row(1, 1, 32), row(1, 1, 64), right[2].clone()]));
+
+    for (index, pointer) in [
+        (
+            0,
+            "/1/conditional/0/else_facts/conditional/0/condition/nodes/0/Fresh",
+        ),
+        (1, "/1/conditional/0/condition/nodes/0/Fresh"),
+    ] {
+        let mut split = right.clone();
+        *split[index].pointer_mut(pointer).unwrap() = serde_json::json!(30);
+        assert!(!matches(&split), "split alias at {index}:{pointer}");
+    }
+    for (pointer, replacement) in [
+        ("/nodes/5/Operation/opcode", serde_json::json!(0x18)),
+        ("/nodes/1/Input/scope", serde_json::json!(8)),
+        ("/nodes/1/Input/symbol", serde_json::json!("Caller")),
+        (
+            "/nodes/2/SlotsInput/source/namespace",
+            serde_json::json!("0x202"),
+        ),
+        ("/nodes/2/SlotsInput/source/token", serde_json::json!(0)),
+        ("/identity_scope", serde_json::json!("other-producer")),
+    ] {
+        let mut changed = right.clone();
+        *changed[0][1]["conditional"][0]["condition"]
+            .pointer_mut(pointer)
+            .unwrap() = replacement;
+        assert!(!matches(&changed), "condition changed at {pointer}");
+    }
+    let mut numeric = right.clone();
+    numeric[0][1]["length"] =
+        serde_json::to_value(AbstractValue::constant(U256::from(33))).unwrap();
+    assert!(!matches(&numeric));
+    let mut polarity = right.clone();
+    let branch = &mut polarity[0][1]["conditional"][0];
+    let then_facts = branch["then_facts"].clone();
+    branch["then_facts"] = branch["else_facts"].clone();
+    branch["else_facts"] = then_facts;
+    assert!(!matches(&polarity));
+    let mut order = right.clone();
+    order[0][1]["conditional"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    assert!(!matches(&order));
+    let mut operands = right.clone();
+    operands[0][1]["conditional"][0]["condition"]["nodes"][5]["Operation"]["args"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    assert!(!matches(&operands));
+    let mut failure_kind = right.clone();
+    failure_kind[2][0] = serde_json::json!("Return");
+    assert!(!matches(&failure_kind));
+    assert!(!matches(&right[..2]));
 }
 
 #[test]
@@ -201,7 +480,7 @@ fn full_store_value_caller_and_mode_preconditions_produce_misses() {
             call(0xf1, 0x200, 0, 32)
         };
         let caller = format!("{}50{between}{second}5060205ff3", call(0xf1, 0x200, 0, 32));
-        let (enabled, _) = compare(&[(0x101, &caller), (0x200, "345f5260205ff3")]);
+        let (enabled, _) = compare_full_store(&[(0x101, &caller), (0x200, "345f5260205ff3")]);
         let distinct: BTreeSet<_> = enabled
             .summaries()
             .iter()
@@ -220,7 +499,7 @@ fn full_store_value_caller_and_mode_preconditions_produce_misses() {
         call(0xf1, 0x200, 0, 32),
         call(0xf4, 0x200, 0, 32)
     );
-    let (enabled, _) = compare(&[(0x101, &caller), (0x200, "335f5260205ff3")]);
+    let (enabled, _) = compare_full_store(&[(0x101, &caller), (0x200, "335f5260205ff3")]);
     let callers: BTreeSet<_> = enabled
         .summaries()
         .iter()
@@ -276,7 +555,7 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
                 {
                     assert_eq!(
                         RelationState::default().can_equal(&expression, *candidate, &inspection),
-                        CheckResult::Sat
+                        CheckResult::MayBeFeasible
                     );
                 }
                 assert_eq!(
@@ -285,7 +564,7 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
                         U256::from(0xffff),
                         &inspection
                     ),
-                    CheckResult::Unsat
+                    CheckResult::ProvenImpossible
                 );
             }
         }
@@ -349,8 +628,64 @@ fn incomplete_child_chain_never_publishes_a_complete_relation() {
     assert!(analysis.summary_stats().rejected_incomplete > 0);
 }
 
+// Reconstruct the full guard from an actual call entry, including its rollback
+// checkpoint. Both publications and reuse sites must bind to this callee.
+fn read_only_summary_input_at(
+    analysis: &WorldAnalysis,
+    state_id: usize,
+) -> evm_abstract::analysis::SummaryInput {
+    let source = &analysis.states()[state_id];
+    assert_eq!(source.id, state_id);
+    assert!(source.execution_evidence().unwrap().is_current());
+    assert!(source.exit.is_some());
+    assert!(
+        analysis
+            .edges()
+            .iter()
+            .any(|edge| edge.to == state_id && edge.kind == MachineEdgeKind::Call)
+    );
+    let payload = &source.entry;
+    let (frame, _) = payload
+        .call_stack
+        .active_child()
+        .unwrap()
+        .clone()
+        .into_root();
+    assert_eq!(frame.state.key.code_address, address(0x200));
+    assert_eq!(frame.state.key.basic_block_index, 0);
+    assert_eq!(&frame.state.key, source.active());
+    let evm_abstract::world::Code::Runtime(program) =
+        &analysis.world().account(address(0x200)).unwrap().code
+    else {
+        panic!("the read-only callee must have runtime bytecode")
+    };
+    assert_eq!(frame.state.program.as_ref(), Some(program));
+    let config = analysis.config();
+    evm_abstract::analysis::SummaryInput {
+        fork: analysis.world().fork(),
+        snapshot: analysis.world().identity().clone(),
+        world_fingerprint: analysis.world().fingerprint().unwrap(),
+        code_hash: payload
+            .store
+            .raw_account_code(frame.state.key.code_address)
+            .map(alloy_primitives::keccak256),
+        frame,
+        store: payload.store.clone(),
+        environment: analysis.entry().environment.clone(),
+        relations: payload.relations.clone(),
+        remaining_call_depth: config
+            .max_call_depth
+            .saturating_sub(payload.call_stack.depth()),
+        max_call_depth: config.max_call_depth,
+        context_depth: config.analysis.context_depth,
+        max_constants: config.analysis.max_constants,
+        domain_spec: analysis.domain_spec(),
+        max_memory_bytes: config.max_memory_bytes,
+    }
+}
+
 #[test]
-fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
+fn rollback_touch_preconditions_keep_the_original_two_call_sequence_as_misses() {
     let caller = format!(
         "{}50{}{}5000",
         call(0xf1, 0x200, 0, 32),
@@ -358,7 +693,172 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
         call(0xf1, 0x200, 0, 32)
     );
     let (world, entry) = fixture(&[(0x101, &caller), (0x200, "6003565b5f545f5260205ff3")]);
-    let complete = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    let analysis = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    assert_eq!(analysis.status(), Status::Converged);
+    assert!(analysis.frontiers().is_empty());
+    assert_eq!(analysis.summary_stats().hits, 0);
+    assert_eq!(analysis.summary_stats().misses, 2);
+    assert_eq!(analysis.summary_stats().published, 2);
+    assert_eq!(analysis.summary_stats().rejected_incomplete, 0);
+    assert_eq!(analysis.summary_stats().imported_states, 0);
+    assert_eq!(
+        oracle::compare(&world, &entry, &analysis),
+        OutcomeKind::Return
+    );
+    ssa::build_world(&analysis)
+        .unwrap()
+        .verify(&analysis)
+        .unwrap();
+
+    let mut records: Vec<_> = analysis.summaries().iter().collect();
+    records.sort_unstable_by_key(|record| record.source_state);
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(
+            record.input,
+            read_only_summary_input_at(&analysis, record.source_state)
+        );
+        assert!(record.state_count > 1);
+        assert!(record.edge_count > 0);
+        assert!(
+            record
+                .outputs
+                .iter()
+                .any(|output| output.kind == OutcomeKind::Return)
+        );
+        assert!(record.reused_at.is_empty());
+        assert_eq!(
+            record.input.store.touched_in_transaction(address(0x200)),
+            Some(true)
+        );
+        assert_eq!(
+            record
+                .input
+                .frame
+                .state
+                .saved_store
+                .state()
+                .touched_default(),
+            Some(false)
+        );
+    }
+    let first = &records[0].input;
+    let second = &records[1].input;
+    assert_ne!(records[0].source_state, records[1].source_state);
+    assert_ne!(first, second);
+    assert_eq!(
+        analysis.states()[0]
+            .entry
+            .active()
+            .saved_store
+            .state()
+            .touched_in_transaction(address(0x200)),
+        Some(false)
+    );
+    assert_eq!(
+        first
+            .frame
+            .state
+            .saved_store
+            .state()
+            .touched_in_transaction(address(0x200)),
+        Some(false)
+    );
+    assert_eq!(
+        second
+            .frame
+            .state
+            .saved_store
+            .state()
+            .touched_in_transaction(address(0x200)),
+        None
+    );
+
+    // A missing key inherits false; an explicit null retains may-touch. Check
+    // membership separately because JSON indexing maps both cases to null.
+    let first_json = serde_json::to_value(first).unwrap();
+    let second_json = serde_json::to_value(second).unwrap();
+    let touch_key = address(0x200).to_string();
+    let first_touched = first_json
+        .pointer("/frame/state/saved_store/touched")
+        .unwrap()
+        .as_object()
+        .unwrap();
+    let second_touched = second_json
+        .pointer("/frame/state/saved_store/touched")
+        .unwrap()
+        .as_object()
+        .unwrap();
+    assert!(!first_touched.contains_key(&touch_key));
+    assert!(second_touched.contains_key(&touch_key));
+    assert_eq!(
+        second_touched.get(&touch_key),
+        Some(&serde_json::Value::Null)
+    );
+
+    // CALL checkpoints before touching the target. After rejection and success
+    // join, only that saved touch changes; every other input field stays exact.
+    let mut expected = (*first).clone();
+    let mut saved_store = expected.frame.state.saved_store.state().clone();
+    saved_store.may_touch_account(address(0x200));
+    expected.frame.state.saved_store = saved_store.snapshot();
+    assert_eq!(&expected, second);
+}
+
+#[test]
+fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
+    // Warm the rollback touch guard, then retain the same POP/JUMPDEST
+    // separation between the two calls that can share a complete certificate.
+    let caller = format!(
+        "{}50{}{}50{}{}5000",
+        call(0xf1, 0x200, 0, 32),
+        "5b".repeat(12),
+        call(0xf1, 0x200, 0, 32),
+        "5b".repeat(12),
+        call(0xf1, 0x200, 0, 32)
+    );
+    let (world, entry) = fixture(&[(0x101, &caller), (0x200, "6003565b5f545f5260205ff3")]);
+    // Bisect detailed import admission without optional preparation fees.
+    let config = ExecutionConfig {
+        root_terminal_coverage: false,
+        ..ExecutionConfig::default()
+    };
+    let complete = analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    assert_eq!(complete.status(), Status::Converged);
+    assert!(complete.frontiers().is_empty());
+    assert_eq!(complete.summary_stats().misses, 2);
+    assert_eq!(complete.summary_stats().published, 2);
+    let reused = complete
+        .summaries()
+        .iter()
+        .find(|record| !record.reused_at.is_empty())
+        .unwrap();
+    assert!(reused.state_count > 1);
+    assert_eq!(
+        reused.input,
+        read_only_summary_input_at(&complete, reused.source_state)
+    );
+    assert_eq!(
+        reused.input.store.touched_in_transaction(address(0x200)),
+        Some(true)
+    );
+    assert_eq!(
+        reused
+            .input
+            .frame
+            .state
+            .saved_store
+            .state()
+            .touched_in_transaction(address(0x200)),
+        None
+    );
+    for &state_id in &reused.reused_at {
+        assert_ne!(state_id, reused.source_state);
+        assert_eq!(
+            reused.input,
+            read_only_summary_input_at(&complete, state_id)
+        );
+    }
     assert!(complete.summary_stats().hits > 0);
     let certified_states = complete
         .summaries()
@@ -380,7 +880,7 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
             entry.clone(),
             ExecutionConfig {
                 max_work: budget,
-                ..ExecutionConfig::default()
+                ..config.clone()
             },
         )
         .unwrap();
@@ -395,7 +895,7 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
         entry,
         ExecutionConfig {
             max_work: lo - 1,
-            ..ExecutionConfig::default()
+            ..config
         },
     )
     .unwrap();

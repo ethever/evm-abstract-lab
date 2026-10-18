@@ -138,7 +138,7 @@ nix run . -- ssa --file examples/copy-identity.hex --context-depth 0
 | 固定输入符号 | 同一环境为根帧 calldata、caller/origin 等固定输入保留身份 | 身份一致时可跨块保留；不同环境、不同偏移或不相关子帧输入不能混同 |
 | Provenance 来源标签 | 读取建立观察位置的类别，纯运算合并输入来源 | 描述可能来源；两个值同属 Calldata 或 Storage 不证明相等 |
 
-临时复制身份不等于 `%n`，不会序列化进 JSON；传统 `ValueIdentity` 的固定输入名称展示省略环境 scope。Native schema 8 的符号图另行保留 `Input.scope` 与 producer `identity_scope`：同一报告内用它们和输入名称一起辨认固定输入，不能据此推断不同报告中的输入相等，见[符号状态导出](17-symbolic-state.md)。临时身份也不使两个相同抽象摘要自动成为同一个运行时值。当前完整 SSA 在 CFG 完成后生成，不能再将 φ 的来源关系反馈给前面的工作表，替它恢复任意槽位配对、分支约束或内存别名。组件交换的完整边界见[第 12 课](12-product-domains-facts.md)。
+临时复制身份不等于 `%n`，不会序列化进 JSON；传统 `ValueIdentity` 的固定输入名称展示省略环境 scope。Native schema 10 的符号图另行保留 `Input.scope` 与 producer `identity_scope`：同一报告内用它们和输入名称一起辨认固定输入，不能据此推断不同报告中的输入相等，见[符号状态导出](17-symbolic-state.md)。临时身份也不使两个相同抽象摘要自动成为同一个运行时值。当前完整 SSA 在 CFG 完成后生成，不能再将 φ 的来源关系反馈给前面的工作表，替它恢复任意槽位配对、分支约束或内存别名。组件交换的完整边界见[第 12 课](12-product-domains-facts.md)。
 
 ## 4. 循环为什么不需要无限多个名字
 

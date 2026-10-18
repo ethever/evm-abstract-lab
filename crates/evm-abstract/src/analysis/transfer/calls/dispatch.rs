@@ -63,8 +63,7 @@ pub(super) fn target_guard(
     let work = guarded
         .relations
         .work_size()
-        .saturating_add(expression.work_size())
-        .saturating_add(if equal { limits.rlimit as usize } else { 0 });
+        .saturating_add(expression.work_size());
     if !context.budget.charge(work) {
         boundary(result, pc, FrontierReason::Work);
         return None;
@@ -83,10 +82,18 @@ pub(super) fn target_guard(
         }
         return Some(guarded);
     }
-    match guarded.relations.assume_checked(&expression, true, &limits) {
-        Ok(CheckResult::Unsat) => return None,
-        Ok(CheckResult::Sat) => {}
-        Ok(CheckResult::Unknown(QueryReason::Cancelled)) | Err(QueryReason::Cancelled) => {
+    let answer =
+        guarded
+            .relations
+            .assume_checked_budgeted(&expression, true, &limits, context.budget);
+    if context.budget.exhausted() {
+        boundary(result, pc, FrontierReason::Work);
+        return None;
+    }
+    match answer {
+        Ok(CheckResult::ProvenImpossible) => return None,
+        Ok(CheckResult::MayBeFeasible) => {}
+        Ok(CheckResult::Undetermined(QueryReason::Cancelled)) | Err(QueryReason::Cancelled) => {
             boundary(
                 result,
                 pc,
@@ -95,7 +102,7 @@ pub(super) fn target_guard(
             return None;
         }
         Err(reason) => boundary(result, pc, FrontierReason::Relations(reason)),
-        Ok(CheckResult::Unknown(reason)) => result
+        Ok(CheckResult::Undetermined(reason)) => result
             .diagnostics
             .push((pc, DiagnosticKind::RelationalPrecisionLost(reason))),
     }

@@ -10,6 +10,7 @@ mod failure;
 /// The bounded Alloy client/transport framework adapter. Analysis and snapshot
 /// policies stay in the ordinary RPC loader and session modules.
 pub mod framework;
+mod layers;
 mod loader;
 pub use failure::{
     CodeFailure, ConfigurationReason, DelegationFailure, FailureCause, HeaderField, HeaderValue,

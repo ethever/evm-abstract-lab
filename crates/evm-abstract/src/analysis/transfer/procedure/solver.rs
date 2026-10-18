@@ -1,5 +1,6 @@
 //! Joint known/unknown procedure worklist and per-caller return propagation.
 
+use super::coarse_retry::{CoarseRuntime, RuntimeRetry};
 use super::{
     AbstractValue, Arc, BTreeMap, BTreeSet, ByteArray, CallStack, DiagnosticKind, Execution,
     ExecutionFrontier, FrameCode, FrontierReason, Limit, MachineEdgeKind, MachineError,
@@ -164,20 +165,21 @@ impl Solver<'_> {
                 self.node_edge(from, id)?;
             }
             let old = &self.table.nodes[id];
-            let cost = old
-                .payload
-                .work_size()
-                .saturating_add(payload.work_size())
-                .saturating_mul(4);
-            self.reserve(cost)?;
+            let widen = self.node_feedback(id)
+                && old.updates >= self.domain.spec().widening_after_updates();
+            let widened = if let RuntimeRetry::Coarse(coarse) = &old.runtime_retry {
+                coarse.join(&old.payload, &payload, self.domain, self.budget, widen)?
+            } else {
+                let cost = old
+                    .payload
+                    .work_size()
+                    .saturating_add(payload.work_size())
+                    .saturating_mul(4);
+                self.reserve(cost)?;
+                let old = &self.table.nodes[id];
+                join(&old.payload, &payload, self.domain, widen)?
+            };
             let old = &self.table.nodes[id];
-            let widened = join(
-                &old.payload,
-                &payload,
-                self.domain,
-                self.node_feedback(id)
-                    && old.updates >= self.domain.spec().widening_after_updates(),
-            )?;
             if semantic_eq(&widened, &old.payload) {
                 return Ok(id);
             }
@@ -208,6 +210,7 @@ impl Solver<'_> {
                 updates: 0,
                 successors: BTreeSet::new(),
                 loop_head: false,
+                runtime_retry: RuntimeRetry::Fresh,
             });
             self.table.procedures[procedure].nodes.insert(key, id);
             self.counters.states += 1;
@@ -246,28 +249,32 @@ impl Solver<'_> {
                 self.park_pending(reason);
                 break;
             }
-            let payload = match instantiate(&input, self.domain) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    self.frontier_summary(input, error.frontier_reason(), 0);
-                    continue;
+            let execution = match instantiate(&input, self.domain) {
+                Ok(payload) => {
+                    self.counters.transfers += 1;
+                    self.counters.report(self.budget.used());
+                    let execution = if payload.active().code == FrameCode::Unknown {
+                        self.environment(payload)
+                    } else {
+                        execute_inner(
+                            self.world,
+                            self.entry,
+                            payload,
+                            self.config,
+                            self.domain,
+                            self.budget,
+                            self.storage_reads,
+                            true,
+                        )
+                    };
+                    self.retry_runtime(id, &input, execution)
                 }
-            };
-            self.counters.transfers += 1;
-            self.counters.report(self.budget.used());
-            let execution = if payload.active().code == FrameCode::Unknown {
-                self.environment(payload)
-            } else {
-                execute_inner(
-                    self.world,
-                    self.entry,
-                    payload,
-                    self.config,
-                    self.domain,
-                    self.budget,
-                    self.storage_reads,
-                    true,
-                )
+                Err(error) => {
+                    let Some(execution) = self.retry_instantiation(id, &input, error) else {
+                        continue;
+                    };
+                    execution
+                }
             };
             if !execution.executed_pcs.is_empty() {
                 let procedure = self.table.nodes[id].procedure;
@@ -277,6 +284,140 @@ impl Solver<'_> {
             }
             self.accept(id, execution);
         }
+    }
+
+    fn retry_admission(&self) -> Result<(), FrontierReason> {
+        MachineError::check_cancelled().map_err(MachineError::frontier_reason)?;
+        if self.budget.exhausted() {
+            Err(MachineError::work_failure().frontier_reason())
+        } else if self.counters.transfers >= self.config.analysis.max_transfers {
+            Err(FrontierReason::Budget(Limit::Transfers))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// A failed rehydration has no executable checkpoint. Retry only from the
+    /// complete immutable node summary, and retain its original obligation if
+    /// either preparation or the replacement transfer fails.
+    pub(super) fn retry_instantiation(
+        &mut self,
+        id: usize,
+        original: &PayloadSummary,
+        error: MachineError,
+    ) -> Option<Execution> {
+        let retry = (matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
+            && CoarseRuntime::supports(original)
+            && super::coarse_retry::retention_refusal(&error))
+        .then(|| self.execute_coarse(id, original));
+        if let Some(Ok(execution)) = &retry
+            && execution.frontiers.is_empty()
+        {
+            return retry.and_then(Result::ok);
+        }
+        self.frontier_summary(original.clone(), error.frontier_reason(), 0);
+        let interruptions = match retry {
+            Some(Ok(execution)) => execution
+                .frontiers
+                .into_iter()
+                .map(|frontier| frontier.reason)
+                .collect::<Vec<_>>(),
+            Some(Err(reason)) => vec![reason],
+            None => Vec::new(),
+        };
+        for reason in interruptions {
+            if super::coarse_retry::interruption(&reason) {
+                self.frontier_summary(original.clone(), reason, 0);
+            }
+        }
+        None
+    }
+
+    pub(super) fn retry_runtime(
+        &mut self,
+        id: usize,
+        original: &PayloadSummary,
+        mut first: Execution,
+    ) -> Execution {
+        if !matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
+            || !CoarseRuntime::supports(original)
+            || first.retention_failures.is_empty()
+            // A mixed execution has independent mandatory obligations. This
+            // slice admits only complete, raw-typed retention refusals.
+            || first.retention_failures.len() != first.frontiers.len()
+            || first.retention_failures.iter().enumerate()
+                .any(|(index, (frontier, _))| index != *frontier)
+        {
+            return first;
+        }
+        match self.execute_coarse(id, original) {
+            Ok(retry) => super::coarse_retry::reconcile(first, retry),
+            Err(reason) => {
+                if super::coarse_retry::interruption(&reason) {
+                    super::super::boundary(&mut first, 0, reason);
+                }
+                first
+            }
+        }
+    }
+
+    fn execute_coarse(
+        &mut self,
+        id: usize,
+        original: &PayloadSummary,
+    ) -> Result<Execution, FrontierReason> {
+        // Only the attempt bit may survive failed preparation. No execution has
+        // reached accept/publish, and the original immutable checkpoint is used.
+        self.table.nodes[id].runtime_retry = RuntimeRetry::Attempted;
+        let (coarse, bound, payload) = self
+            .retry_admission()
+            .and_then(|()| {
+                CoarseRuntime::prepare(original, self.domain, self.budget)
+                    .map_err(MachineError::frontier_reason)
+            })
+            .and_then(|prepared| {
+                self.retry_admission()?;
+                Ok(prepared)
+            })?;
+        self.counters.transfers += 1;
+        self.counters.report(self.budget.used());
+        let mut retry = execute_inner(
+            self.world,
+            self.entry,
+            payload,
+            self.config,
+            self.domain,
+            self.budget,
+            self.storage_reads,
+            true,
+        );
+        // Cancellation or an exhausted sticky ledger may arrive at the end of
+        // the transfer. Recheck before publishing its bound; the transfer cap
+        // was checked before execution and permits this last allowed transfer.
+        let interruption = MachineError::check_cancelled()
+            .err()
+            .or_else(|| self.budget.exhausted().then(MachineError::work_failure));
+        if let Some(reason) = interruption.map(MachineError::frontier_reason)
+            && !retry
+                .frontiers
+                .iter()
+                .any(|frontier| frontier.reason == reason)
+        {
+            super::super::boundary(&mut retry, 0, reason);
+        }
+        if retry.frontiers.is_empty() {
+            // The coarse transfer covers the full original entry. Commit its
+            // input and receipts together; a failed retry leaves only Attempted.
+            self.table.nodes[id].payload = bound;
+            self.table.nodes[id].runtime_retry = RuntimeRetry::Coarse(coarse);
+            retry.diagnostics.push((
+                0,
+                DiagnosticKind::RelationalPrecisionLost(
+                    crate::domain::relational::QueryReason::ExpressionLimit,
+                ),
+            ));
+        }
+        Ok(retry)
     }
 
     pub(super) fn accept(&mut self, from: usize, execution: Execution) {

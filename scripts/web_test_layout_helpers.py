@@ -6,18 +6,19 @@ import re
 from web_test_graph_helpers import graph_scope
 from web_test_harness import complete_submission, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture
 from web_test_inspector_helpers import hide_inspector
-from web_test_pixels import screenshot_metrics
+from web_test_pixels import screenshot_metrics, text_pixels
 
 
 LAYOUT_FIXTURES = Path(__file__).resolve().parent.parent / "crates/evm-abstract-web/tests/fixtures/layout"
 
 LAYOUT_DEFAULT_LIMITS = {
     "max_states":100_000, "max_transfers":10_000_000, "context_depth":128,
-    "max_constants":512, "max_work":1_000_000_000_000, "max_call_depth":1025,
-    "max_memory_bytes":64*1024*1024, "use_summaries":True, "domain_profile":"Product",
+    "max_constants":512, "max_work":2_000_000_000, "max_call_depth":1025,
+    "max_memory_bytes":64*1024*1024, "use_summaries":True, "root_terminal_coverage":True,
+    "domain_profile":"Product",
     "reduction_rounds":16, "max_facts":4096, "relations_enabled":True,
     "max_constraints":2048, "max_expression_nodes":16_384, "max_expression_depth":256,
-    "smt_provider":"Z3", "smt_rlimit":10_000_000, "rpc_max_accounts":4096,
+    "rpc_max_accounts":4096,
     "rpc_max_requests":1_000_000, "rpc_max_response_bytes":64*1024*1024,
     "rpc_timeout_ms":120_000,
 }
@@ -90,14 +91,88 @@ def layout_entry_form(page, canvas, entry, source_height_offset=0):
         page.keyboard.insert_text(entry["chain_id"])
         rendered_frame(page)
 
+def _layout_execution_limits(page, canvas, output, name, limits):
+    """Select the legacy runtime policy before opening any environment header."""
+    assert limits == {**LAYOUT_DEFAULT_LIMITS, "max_work": limits["max_work"],
+                      "root_terminal_coverage": limits["root_terminal_coverage"]}
+    geometry = {"captures": {}, "targets": []}
+    header_offset = 10
+
+    def save():
+        (output / f"{name}-execution-policy-geometry.json").write_text(json.dumps(geometry, indent=2) + "\n")
+
+    def capture(stage):
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        page.wait_for_timeout(200)
+        png = canvas.screenshot(path=str(output / f"{name}-execution-policy-{stage}.png"))
+        bounds = layout_modal(page, canvas)
+        assert page.viewport_size == {"width": 1440, "height": 1000}
+        assert (0 < bounds[0] < bounds[2] < 1440 and 0 < bounds[1] < bounds[3] < 1000
+                and 750 <= bounds[2] - bounds[0] <= 780), (stage, bounds)
+        region = (bounds[0] + 29, bounds[1] + header_offset, bounds[0] + 95, bounds[3] - 40)
+        captured = {"stage": stage, "modal": bounds, "region": region,
+                    **text_pixels(page, png, region)}
+        geometry["captures"][stage] = captured
+        save()
+        return captured
+
+    def click(captured, row, x, label):
+        top, bottom = captured["rows"][row]
+        bounds = captured["modal"]
+        target = {"stage": captured["stage"], "label": label, "row": [top, bottom],
+                  "x": x, "y": (top + bottom) / 2}
+        geometry["targets"].append(target)
+        save()
+        assert bounds[0] < x < bounds[2] and bounds[1] < top < bottom < bounds[3], target
+        canvas.click(position={"x": x, "y": target["y"]})
+        settle_gesture(page)
+
+    before = capture("before")
+    headers = before["rows"][-6:]
+    assert len(headers) == 6 and all(20 <= second[0] - first[0] <= 26
+                                   for first, second in zip(headers, headers[1:])), before
+    header_offset = headers[0][0] - before["modal"][1] - 2
+    header_positions = [row[0] - before["modal"][1] for row in headers]
+    click(before, len(before["rows"]) - 3, before["modal"][0] + 70, "Execution budget")
+    opened = capture("open")
+    # Same painted-row contract as the root-coverage case: three environment
+    # headers, Execution, five numeric labels, two checkboxes, note, Precision, RPC.
+    assert len(opened["rows"]) == 14, opened
+    assert all(abs(row[0] - opened["modal"][1] - expected) <= 2
+               for row, expected in zip(opened["rows"][:4], header_positions[:4])), opened
+    assert all(20 <= second[0] - first[0] <= 26
+               for first, second in zip(opened["rows"][4:8], opened["rows"][5:9])), opened
+    assert opened["rows"][-2][0] - opened["rows"][3][1] > 150, opened
+    click(opened, 6, opened["modal"][0] + 180, "Logical work")
+    page.keyboard.press("Control+A")
+    page.keyboard.insert_text(str(limits["max_work"]))
+    rendered_frame(page)
+    if limits["root_terminal_coverage"] != LAYOUT_DEFAULT_LIMITS["root_terminal_coverage"]:
+        click(opened, 10, opened["modal"][0] + 70, "Prepare conservative root terminal coverage")
+    applied = capture("applied")
+    assert len(applied["rows"]) == 14, applied
+    assert all(abs(sum(after) / 2 - sum(before) / 2) <= 2
+               for before, after in zip(opened["rows"], applied["rows"])), applied
+    click(applied, 3, applied["modal"][0] + 70, "Execution budget")
+    closed = capture("closed")
+    # Restore the original collapsed layout before the existing entry editor.
+    assert len(closed["rows"]) == 6, closed
+    assert all(abs(row[0] - closed["modal"][1] - expected) <= 2
+               for row, expected in zip(closed["rows"], header_positions)), closed
+
+
 def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_seconds=60, entry=None,
-                      source_height_offset=0):
+                      source_height_offset=0, execution_limits=None):
     # Exercise the real multiline editor as a paste. Typing every byte with a
     # delay would add minutes unrelated to analysis or layout for real runtimes.
     open_input(page)
     page.keyboard.press("Control+A")
     page.keyboard.insert_text(code)
     rendered_frame(page)
+    expected_limits = LAYOUT_DEFAULT_LIMITS if execution_limits is None else execution_limits
+    if execution_limits is not None:
+        _layout_execution_limits(page, canvas, output, name, execution_limits)
     if entry is not None:
         layout_entry_form(page, canvas, entry, source_height_offset)
     canvas.screenshot(path=str(output / f"{name}-input.png"))
@@ -107,6 +182,8 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
     admitted = response.value
     assert posted_bytecode(admitted) == code
     request = admitted.request.post_data_json
+    (output / f"{name}-request.json").write_text(admitted.request.post_data + "\n")
+    assert request["limits"] == expected_limits, request["limits"]
     if entry is not None:
         assert request["environment"]["calldata"] == {"Exact": entry["calldata"]}, request
         if "caller" in entry:
@@ -117,14 +194,12 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
             assert request["input"]["Bytecode"]["address"] == entry["address"], request
         if "chain_id" in entry:
             assert request["environment"]["chain_id"] == entry["chain_id"], request
-        assert request["limits"] == LAYOUT_DEFAULT_LIMITS, request["limits"]
-    (output / f"{name}-request.json").write_text(admitted.request.post_data + "\n")
     result = complete_submission(page, admitted, timeout_seconds)
     assert result.status == 200 and "Ok" in result.json()["result"], result.json()
     report = result.json()["result"]["Ok"]
     assert report["programs"][0]["bytecode"].removeprefix("0x") == code
+    assert report["metadata"]["limits"] == expected_limits
     if entry is not None:
-        assert report["metadata"]["limits"] == LAYOUT_DEFAULT_LIMITS
         environment = report["metadata"]["environment"]
         calldata = report["byte_arrays"][environment["calldata"]]
         expected = bytes.fromhex(entry["calldata"].removeprefix("0x"))

@@ -61,7 +61,7 @@ fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload,
     assert!(
         exit.relations
             .assume(&guard, true, &domain.spec().relations())
-            != crate::domain::relational::CheckResult::Unsat
+            != crate::domain::relational::CheckResult::ProvenImpossible
     );
     let nested = RootFrame {
         state: exit.active().clone(),
@@ -253,9 +253,9 @@ fn replay_failure_and_cancellation_do_not_change_input_or_certificate_snapshots(
     assert_eq!(caller, before);
     assert_eq!(certificate.nodes[0].exit, original);
     assert_eq!(certificate.terminals[0].raw_data, data);
-    let cancellation = embedded_smt::Cancellation::new();
+    let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
-    embedded_smt::with_cancellation(&cancellation, || {
+    analysis_control::with_cancellation(&cancellation, || {
         let mut budget = WorkBudget::new(100_000_000);
         let error = Replay::new(
             &certificate,
@@ -363,9 +363,9 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
         // A successful two-call path permits both independent and coincident
         // valuations. Other return artifacts can describe a rejected call.
         assert!(
-            models
-                .iter()
-                .any(|(_, cases)| cases == &[CheckResult::Sat, CheckResult::Sat]),
+            models.iter().any(
+                |(_, cases)| cases == &[CheckResult::MayBeFeasible, CheckResult::MayBeFeasible]
+            ),
             "actual output witnesses (hits={}): {models:?}",
             result.summary_stats().hits
         );
@@ -401,6 +401,8 @@ fn budget_interrupted_import_is_atomic_and_keeps_all_input_paths_recoverable() {
     let (world, entry) =
         fixtures::fixture(&[(0x101, &caller), (0x200, "6003565b60075f5260205ff3")]);
     let mut config = fixtures::config();
+    // Bisect detailed import admission without optional preparation fees.
+    config.root_terminal_coverage = false;
     config.use_summaries = true;
     let complete = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
     assert_eq!(
