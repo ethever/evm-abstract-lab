@@ -374,6 +374,23 @@ def layout_runtime_coverage(report, metadata):
             "interpretation": "Captured graph coverage and SSA entry reachability are separate; a missing SSA entry path does not prove nonexecution. Historical precision regressions are retained, without a restoration claim."}
 
 
+def _runtime_zoom_percent(status):
+    match = re.search(r"; CFG zoom: ([0-9.]+)%", status)
+    assert match, status
+    return float(match[1])
+
+
+def _runtime_ssa_detail(zoom_percent, previous_detail):
+    # paint.rs::detail_level retains its prior level strictly between 55% and 65%.
+    # scene.rs labels Preview as SSA preview while NodeView::Ssa is selected.
+    assert previous_detail in {"identities", "SSA preview"}
+    if zoom_percent <= 55:
+        return "identities"
+    if zoom_percent >= 65:
+        return "SSA preview"
+    return previous_detail
+
+
 def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereum-weth9","ethereum-uniswap-v2-router02","ethereum-multicall3")):
     results={}
     for name in fixture_names:
@@ -437,6 +454,7 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         pick_graph_instance(page,canvas,chosen["state"])
         canvas.click(position={"x":225,"y":83});settle_gesture(page)
         expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
+        assert _runtime_zoom_percent(page.locator("#analysis-status").text_content()) == 100
         native_focus=node_snapshot(page,canvas,args.output,f"hierarchy-{name}-states-focused")
         selected=re.search(r"Selected (σ[^;]+);",page.locator("#analysis-status").text_content())[1]
         assert selected == symbol("σ",chosen["state"]) and chosen["incoming_complete"] is (report["status"] == "Converged")
@@ -445,26 +463,40 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         for action in ["fit","zoom","focus"]:
             before_scene=scene_counts("States")
             before_status=page.locator("#analysis-status").text_content()[:4096]
+            before_zoom=_runtime_zoom_percent(before_status)
             if action == "fit":page.keyboard.press("f")
             elif action == "zoom":
-                page.mouse.move(700,500);page.mouse.wheel(0,-80)
+                page.mouse.move(700,500);page.keyboard.down("Control");page.mouse.wheel(0,-80);page.keyboard.up("Control")
             else:canvas.click(position={"x":225,"y":83})
             settle_gesture(page)
             scene_path=args.output/f"hierarchy-{name}-states-{action}-scene.json"
             screenshot_path=args.output/f"hierarchy-{name}-states-{action}.png"
             canvas.screenshot(path=str(screenshot_path))
             actual_scene=scene_counts("States")
-            expected_scene={**native_scene,"detail":"SSA preview"}
+            actual_status=page.locator("#analysis-status").text_content()[:4096]
+            actual_zoom=_runtime_zoom_percent(actual_status)
+            expected_scene={**native_scene,"detail":_runtime_ssa_detail(actual_zoom,before_scene["detail"])}
             diff={key:{"before":before_scene.get(key),"expected":expected_scene.get(key),"actual":actual_scene.get(key)}
                   for key in sorted(before_scene.keys() | expected_scene.keys() | actual_scene.keys())
                   if before_scene.get(key) != actual_scene.get(key) or expected_scene.get(key) != actual_scene.get(key)}
             # Fixed scene fields and bounded status keep failures inspectable without copying the report.
             scene_path.write_text(json.dumps({"action":action,"baseline":native_scene,"before":before_scene,
                 "expected":expected_scene,"actual":actual_scene,"diff":diff,
-                "status":{"before":before_status,"actual":page.locator("#analysis-status").text_content()[:4096]},
+                "zoom_percent":{"before":before_zoom,"actual":actual_zoom},
+                "status":{"before":before_status,"actual":actual_status},
                 "filename":str(scene_path),"screenshot":str(screenshot_path)},indent=2)+"\n")
-            assert actual_scene == {**native_scene,"detail":"SSA preview"}, f"{name} {action}: {diff}; see {scene_path} and {screenshot_path}"
+            diagnostic=f"{name} {action}: {diff}; zoom {before_zoom}% -> {actual_zoom}%; see {scene_path} and {screenshot_path}"
+            assert actual_scene == expected_scene, diagnostic
+            if action == "fit" and name in {"ethereum-uniswap-v2-router02","ethereum-multicall3"}:
+                assert actual_zoom <= 55 and actual_scene["detail"] == "identities", diagnostic
+            elif action == "zoom":
+                assert actual_zoom > before_zoom, diagnostic
+            elif action == "focus":
+                assert actual_zoom == 100 and actual_scene["detail"] == "SSA preview", diagnostic
             expect(page.locator("#analysis-status")).to_contain_text(f"Selected {selected};")
+        native_refocus=node_snapshot(page,canvas,args.output,f"hierarchy-{name}-states-refocused")
+        refocus_ink=layout_ink(page,canvas.screenshot(),native_refocus["bounds"])
+        assert refocus_ink["preview_pixels"] > 0, "real-runtime refocus did not restore the chosen SSA instructions"
         graph_mode(page,canvas,"Blocks")
         canvas.click(position={"x":225,"y":83});settle_gesture(page)
         assert scene_counts() == {**scene,"detail":"SSA preview"}
@@ -474,7 +506,8 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         assert source_ink["preview_pixels"] > 0, "source projection lost the chosen SSA preview"
         assert not requests, "runtime focus/fit/zoom/projection triggered another analysis"
         native_scene.update(focused=native_focus,selected_native_state=selected,ssa_instructions=len(chosen["instructions"]),
-                            ssa_ink=ink,source_ink=source_ink,unexpected_task_posts=requests)
+                            ssa_ink=ink,refocused=native_refocus,refocus_ink=refocus_ink,
+                            source_ink=source_ink,unexpected_task_posts=requests)
         assert not errors,errors
         results[name]={"provenance":metadata,"request":request_evidence,"coverage_comparison":coverage,"status":report["status"],
                        "scene":scene,"native_scene":native_scene,"focused":focused,"frontiers":len(report["frontiers"]),
