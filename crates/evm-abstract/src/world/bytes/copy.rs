@@ -255,15 +255,30 @@ fn work(
         .saturating_add(target.conditional.work_size())
         .saturating_mul(4);
     let copies = target.root.copy_leaves();
-    // Capture/canonicalize views and construct checked ordered updates. Only
-    // a selected destination can distribute COPY over multiple root branches.
-    // Guarded reassembly can recursively factor matching previous updates in
-    // join_update; the separate target-history term below still covers that
-    // work and reused allocation checks over retained metadata/root handles.
-    let roots = copies
-        .saturating_mul(source.nodes.saturating_add(1))
-        .saturating_mul(ranges)
-        .saturating_mul(8)
+    // COPY canonicalizes its immutable source once. Keep the old source/range
+    // envelope for that walk, including its failed stopping guard. There are at
+    // most 2*copies-1 target calls; eight logical actions per leaf cover their
+    // new-view scalar guards, shallow builds and new common-Copy frames. Those
+    // scalar fields are bounded additively by source nodes plus range terms,
+    // including numeric-only synthesis and CALL's retained minimum expression.
+    // Old target fields and recursive join_update factoring keep their separate
+    // history fee below. Zero nodes is the empty-return-source sentinel: no COPY
+    // runs in that lane, so preserve its original quote exactly.
+    let source_work = if source.nodes == 0 {
+        copies.saturating_mul(ranges).saturating_mul(8)
+    } else {
+        source
+            .nodes
+            .saturating_add(1)
+            .saturating_mul(ranges)
+            .saturating_mul(8)
+            .saturating_add(
+                copies
+                    .saturating_mul(source.nodes.saturating_add(ranges).saturating_add(1))
+                    .saturating_mul(8),
+            )
+    };
+    let roots = source_work
         .saturating_add(
             target
                 .root
@@ -422,5 +437,7 @@ impl ByteArray {
     }
 }
 
+#[cfg(test)]
+mod canonical_tests;
 #[cfg(test)]
 mod tests;

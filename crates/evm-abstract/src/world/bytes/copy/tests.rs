@@ -1,7 +1,7 @@
 use super::super::*;
 
 #[test]
-fn copy_quotes_change_only_the_selected_occurrence_factor_and_keep_history_fees() {
+fn copy_quotes_pay_source_once_and_additive_occurrences_and_keep_history_fees() {
     let domain = Domain::default();
     let policy = limits(domain).into();
     let c = |n| ExprId::constant(U256::from(n));
@@ -54,6 +54,11 @@ fn copy_quotes_change_only_the_selected_occurrence_factor_and_keep_history_fees(
         (accounts * 6 + 3 + 1) * ranges * 8,
         (source.root.nodes() + 1) * return_ranges * 8,
     ];
+    let per_leaf = [
+        (source.root.nodes() + ranges + 1) * 8,
+        (accounts * 6 + 3 + ranges + 1) * 8,
+        (source.root.nodes() + return_ranges + 1) * 8,
+    ];
     let mut one = flat.clone();
     one.root = history;
     assert!(matches!(one.root.kind(), ByteStateKind::WriteByte { .. }));
@@ -76,14 +81,18 @@ fn copy_quotes_change_only_the_selected_occurrence_factor_and_keep_history_fees(
         selected.root = root;
         let selected_quotes = quotes(&selected);
         for lane in 0..3 {
-            // Identical metadata and retention counts isolate this one factor;
-            // reconstruct the old N-leaf quote from the unchanged one-leaf case.
-            let legacy = nonselected[lane] + (selected.root.nodes() - 1) * units[lane];
+            // Identical metadata and retention counts isolate additive target
+            // occurrence work. The complete source/range product is paid once.
+            let legacy =
+                nonselected[lane] - per_leaf[lane] + (selected.root.nodes() - 1) * units[lane];
             assert_eq!(
                 selected_quotes[lane] - nonselected[lane],
-                (leaves - 1) * units[lane]
+                (leaves - 1) * per_leaf[lane]
             );
-            assert_eq!(legacy - selected_quotes[lane], (13 - leaves) * units[lane]);
+            assert_eq!(
+                legacy - selected_quotes[lane],
+                (13 - 1) * units[lane] - leaves * per_leaf[lane]
+            );
         }
     }
 }

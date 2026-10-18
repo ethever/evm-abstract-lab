@@ -17,6 +17,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+#[cfg(test)]
+mod copy_tests;
 mod join;
 mod reads;
 
@@ -351,7 +353,21 @@ impl ByteStateId {
             state::check(self.nodes(), self.depth(), limits)?;
             return Ok(self.clone());
         }
-        let source = source.canonicalize();
+        self.copy_canonical(dst, source.canonicalize(), len, limits)
+    }
+    // Canonicalization depends only on the immutable source view. Distributing
+    // over target branches must still check each target's own identity/history.
+    fn copy_canonical(
+        &self,
+        dst: ExprId,
+        source: ByteView,
+        len: ExprId,
+        limits: StateLimits,
+    ) -> Result<Self, StateError> {
+        if len.as_constant() == Some(U256::ZERO) {
+            state::check(self.nodes(), self.depth(), limits)?;
+            return Ok(self.clone());
+        }
         if source.state == *self && source.offset == dst && source.length == len {
             state::check(self.nodes(), self.depth(), limits)?;
             return Ok(self.clone());
@@ -362,8 +378,9 @@ impl ByteStateId {
             else_state,
         } = self.kind()
         {
-            let yes = then_state.copy(dst.clone(), source.clone(), len.clone(), limits)?;
-            let no = else_state.copy(dst, source, len, limits)?;
+            let yes =
+                then_state.copy_canonical(dst.clone(), source.clone(), len.clone(), limits)?;
+            let no = else_state.copy_canonical(dst, source, len, limits)?;
             return yes.join_guarded(&no, condition.clone(), limits);
         }
         let previous = match self.kind() {
