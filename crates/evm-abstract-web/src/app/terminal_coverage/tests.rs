@@ -22,14 +22,73 @@ pub(crate) fn report() -> AnalysisReport {
     report.validate().unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.ssa.complete);
-    assert!(report.outcomes.is_empty());
+    // The gas envelope retains entry Failure even before terminal bytecode runs.
+    assert!(!report.outcomes.is_empty());
     assert!(
         report
             .frontiers
             .iter()
             .any(|frontier| frontier.kind == api::FrontierKind::Transfers)
     );
-    assert!(report.root_terminal_coverage.is_some());
+    let coverage = report.root_terminal_coverage.as_ref().unwrap();
+    assert_eq!(coverage.scope, api::RootTerminalScope::AllInputStates);
+    assert_eq!(coverage.trigger, api::RootTerminalTrigger::Transfers);
+    assert_eq!(
+        coverage.outcomes.each_ref().map(|outcome| outcome.kind),
+        [
+            api::OutcomeKind::Return,
+            api::OutcomeKind::Revert,
+            api::OutcomeKind::Failure
+        ]
+    );
+    let entry = &report.states[0];
+    let root = &entry.entry.frames[0];
+    assert_eq!(coverage.input.saved_store, root.rollback_store);
+    assert_eq!(coverage.input.initial_store, entry.entry.store);
+    assert_eq!(coverage.input.program, root.program.unwrap());
+    let saved = &report.stores[root.rollback_store];
+    let api::Expression::SlotsInput(source) = &report.symbolic.nodes[saved.storage_root.node]
+    else {
+        panic!("expected original persistent storage source");
+    };
+    assert_eq!(source.source.token, coverage.input.storage_source);
+    for outcome in &report.outcomes {
+        assert_eq!(outcome.kind, api::OutcomeKind::Failure);
+        assert_eq!(outcome.state, entry.state);
+        let data = &report.byte_arrays[outcome.data];
+        assert_eq!(data.length.unsigned.lower, "0x0");
+        assert_eq!(data.length.unsigned.upper, "0x0");
+        assert!(data.cells.is_empty());
+        assert!(data.values.is_empty());
+        assert!(!data.memory);
+        assert_eq!(data, &report.byte_arrays[coverage.outcomes[2].data]);
+        let store = &report.stores[outcome.store];
+        // Compare every checkpoint field, including code, logs and operand facts.
+        // This entry failure has no effects requiring rollback or account deletion.
+        assert_eq!(store, saved);
+        assert_eq!(store.created_default, Some(false));
+        assert_eq!(store.pending_destruction_default, Some(false));
+        assert_eq!(store.touched_default, Some(false));
+        assert_eq!(store.transient_default.unsigned.lower, "0x0");
+        assert_eq!(store.transient_default.unsigned.upper, "0x0");
+        assert_eq!(
+            report.symbolic.nodes[store.transient_root.node],
+            api::Expression::SlotsZero
+        );
+        assert!(store.transient_facts.is_empty());
+        for account in &store.accounts {
+            assert_eq!(account.created, Some(false));
+            assert_eq!(account.pending_destruction, Some(false));
+            assert_eq!(account.touched, Some(false));
+            assert!(account.transient.is_empty());
+            assert_eq!(account.transient_default.unsigned.lower, "0x0");
+            assert_eq!(account.transient_default.unsigned.upper, "0x0");
+            assert_eq!(
+                report.symbolic.nodes[account.transient_root.node],
+                api::Expression::SlotsZero
+            );
+        }
+    }
     let wire = serde_json::to_vec(&api::AnalyzeReply {
         result: Ok(report.clone()),
     })
@@ -167,7 +226,7 @@ fn attached_native_relation_keeps_partial_detail_and_actual_counts_visible() {
     }
     let live = workspace.accessible_status();
     assert!(live.contains("Incomplete; SSA partial"));
-    assert!(live.contains("0 outcomes"));
+    assert!(live.contains(&format!("{} outcomes", report.outcomes.len())));
     assert!(!live.contains("Converged"));
     assert!(!painted.iter().any(|text| text == "Model converged"));
     let installed = workspace.report.as_ref().unwrap();
@@ -182,6 +241,7 @@ fn attached_native_relation_keeps_partial_detail_and_actual_counts_visible() {
         ),
         detailed
     );
+    assert_eq!(installed, &report);
     workspace.inspector.tab = inspector::Tab::Diagnostics;
     assert!(
         workspace
@@ -197,10 +257,10 @@ fn attached_native_relation_keeps_partial_detail_and_actual_counts_visible() {
         "Return alternative",
         "Revert alternative",
         "Failure alternative",
-        "0 observed outcomes",
     ] {
         assert!(live.contains(expected), "{live}");
     }
+    assert!(live.contains(&format!("{} observed outcomes", report.outcomes.len())));
 }
 
 #[test]

@@ -37,9 +37,21 @@ fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<Event> {
 }
 
 #[test]
-fn all_three_native_alternatives_are_visible_with_no_observed_outcomes() {
-    let report = report();
-    let coverage = report.root_terminal_coverage.as_ref().unwrap();
+fn ui_only_clone_renders_all_three_alternatives_with_no_observed_outcomes() {
+    let native_report = report();
+    assert!(!native_report.outcomes.is_empty());
+    assert!(
+        native_report
+            .outcomes
+            .iter()
+            .all(|outcome| outcome.kind == api::OutcomeKind::Failure)
+    );
+    // This derived clone exercises empty-list rendering only; it is not native
+    // execution evidence. Keep the complete certificate, pools and SSA intact.
+    let mut ui_only_report = native_report.clone();
+    ui_only_report.outcomes.clear();
+    ui_only_report.validate().unwrap();
+    let coverage = ui_only_report.root_terminal_coverage.as_ref().unwrap();
     let context = context();
     let mut time = 0.0;
     let mut inspector = Inspector {
@@ -47,7 +59,7 @@ fn all_three_native_alternatives_are_visible_with_no_observed_outcomes() {
         ..Inspector::default()
     };
     let original_selection = Selection {
-        state: Some(report.cfg[0].id),
+        state: Some(ui_only_report.cfg[0].id),
         pc: Some(0),
         value: None,
     };
@@ -59,7 +71,7 @@ fn all_three_native_alternatives_are_visible_with_no_observed_outcomes() {
             events,
             egui::vec2(1200.0, 1100.0),
             |ui| {
-                inspector.outcomes(ui, &report, &mut selection);
+                inspector.outcomes(ui, &ui_only_report, &mut selection);
             },
         )
     };
@@ -95,14 +107,16 @@ fn all_three_native_alternatives_are_visible_with_no_observed_outcomes() {
     let text = draw(vec![]);
     center(&text, "Failure alternative");
     assert_eq!(selection, original_selection);
-    assert!(report.outcomes.is_empty());
+    assert!(ui_only_report.outcomes.is_empty());
     assert!(
-        report
+        ui_only_report
             .frontiers
             .iter()
             .any(|frontier| frontier.kind == api::FrontierKind::Transfers)
     );
-    assert!(!report.ssa.complete);
+    assert!(!ui_only_report.ssa.complete);
+    ui_only_report.outcomes.clone_from(&native_report.outcomes);
+    assert_eq!(ui_only_report, native_report);
 }
 
 #[test]
