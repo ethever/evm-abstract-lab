@@ -21,13 +21,20 @@ LEAN_BIN=/absolute/path/to/lean-4.30.0/bin/lean \
   bash proofs/check.sh /absolute/path/to/proof-evidence
 ```
 
-The script compiles project modules into the evidence directory, checks 260
+The script compiles 15 public project modules into the evidence directory, checks 296
 public theorem and regression targets with `#print axioms`, and writes `audit.json`
 with source hashes, theorem dependencies and the actual expected-rejection exit.
 Warnings are errors.
-The installed pinned checker passed all 260 targets (248 existing plus 12
-ByteProduct) at proof source `f15bbbfc16b8df2435d533d0132b3ca3cb7aea1d`, with
-old-join rejection exit 1.
+On 2026-10-18, `nix build --no-update-lock-file --no-link --print-out-paths
+--print-build-logs .#checks.x86_64-linux.lean-proofs` at public proof source
+`2c0181de2a9da64818b4eaf1b490f0594102e71b` actually exited **0**, checking all
+296 targets: the unchanged previous 260 plus 20 RootEnvelope and 16
+RootCoverageCapability targets. The audit records old-join rejection exit 1
+and only `Classical.choice`, `Quot.sound` and `propext` dependencies. The same
+proof sources are integrated at `e5f13b82c16798431ad0bf7cbb7cfdb7ef3dc2f3`.
+The earlier 2026-10-18 installed-checker evidence at
+`f15bbbfc16b8df2435d533d0132b3ca3cb7aea1d` covered 260 targets (248 existing
+plus 12 ByteProduct); that is the historical count before the two root modules.
 The deliberately false [OldJoinRejected.lean](../../proofs/counterexamples/OldJoinRejected.lean)
 must fail because `decide` establishes that the old join excludes zero, after its
 Facts import was successfully compiled. An import failure is not accepted.
@@ -58,6 +65,8 @@ library/checker, and the dependency-report audit remain trusted infrastructure.
 | [Effects](../../proofs/NoSmt/Effects.lean) | The protected-owner field envelope; local havoc inclusion, idempotence and closure for any finite allowed local-write trace; proved executable callback store/add/sequence/indirect-call rules and every finite allowed mixed trace, including a repeated indirect-call instance. |
 | [Engine](../../proofs/NoSmt/Engine.lean) | Generic forward simulation and postfixed finite-prefix coverage; proved local Word256 register, load/store, zero-branch, unknown-envelope, checkpoint, touch and rollback transitions; a checked finite certificate for a looping program containing unknown writes and repeated indirect callbacks, with a protected-code invariant and an empty-queue counterexample. |
 | [Lifecycle](../../proofs/NoSmt/Lifecycle.lean) | Three-valued AND/OR, nonce/balance/code emptiness, pending-destruction OR touched-empty decision, definite and optional touch, flag joins, EIP-161 existence projection, static optional-touch completion, ordinary rollback and owner-3 sticky-touch rollback. |
+| [RootEnvelope](../../proofs/NoSmt/RootEnvelope.lean) | Whole-world finalized terminal constructors: one coupled initial/saved/current `Anchored` witness under `JointGamma`, original saved rollback plus future owner-3 touch, complete account deletion and all-owner transaction cleanup. Return uses independent all-account `FinalizedGamma`, including for static inputs. An ordinary unlisted-owner counterexample refutes finite-owner static cleanup; ordered logs and fresh whole-world source extension preserve historical meanings under explicit freshness premises. |
+| [RootCoverageCapability](../../proofs/NoSmt/RootCoverageCapability.lean) | Root-indexed preparation and one-use prepaid publication with supplied admission, trigger and cancellation observations; paid-prefix retention, unchanged attachment ledger/detail, revised-input invalidation and all-original-input scope. Certificate `denotes` uses `finalizedTerminalEnvelope`; the model does not prove Rust ownership, caller observations, resource bounds or EVM closure. |
 | [LateFailure](../../proofs/NoSmt/LateFailure.lean) | Exact entry-only Failure counterexample after an owner-3 touch; saved/current rollback plus account cleanup; may-touch and ordinary-owner controls; Effects word-write restoration before cleanup; finite register ADD/jump suffix identity with normal and failure alternatives. |
 | [Logs](../../proofs/NoSmt/Logs.lean) | Address/code-address/captured-code-hash/mode/PC source identity; old init/runtime collision; separate-source differing arities accepted, equal-source arity mismatch refused, repeated-source payloads aggregated. |
 
@@ -201,6 +210,55 @@ regression contrasts dynamic OutOfGas with sufficient gas and zero-balance
 execution across forks and both summary settings. This instruction-local
 implementation and concrete regression do not discharge its Lean-to-Rust
 opcode, touch-order and gas correspondence obligations.
+
+## Root terminal constructors and publication
+
+`RootEnvelope.FinalizedGamma` relates one complete `World`: every owner has
+zero transient storage and cleared created/pending/touched flags. Persistent
+fields and the ordered finite log sequence are otherwise unconstrained.
+`finalize_in_finalized_gamma` and `finalized_terminal_inclusion` derive this
+relation from the modeled whole-account operations. A static certificate Return
+uses the same independent all-account upper bound while retaining the original
+static input binding; unchanged input values are not required of that upper bound.
+
+`Anchored` and `JointGamma` couple the complete initial, saved and current roots
+under one input valuation. Revert/Failure restore the original RootSaved payload
+and saved logs, merge saved/current/future touchedness only for owner 3, then
+finalize. `rollback_same_world_witness` retains one shared future-sticky choice.
+`unlisted_static_cleanup_counterexample` uses ordinary C = `0x999`, outside
+`[3]`, with C[8] = 7: a possible static touch followed by deletion clears every
+persistent slot, while the wrong finite-owner candidate retains C[8] = 7.
+The mathematical finalizer does not verify the separate Core work on the general
+detailed static finalizer implementation.
+
+`finalization_keeps_ordered_logs` preserves log order and repetitions.
+`finalized_source_extension` installs one complete finalized world at a fresh
+history index and preserves every old complete world. Freshness is a premise;
+actual source allocation, owner scoping, omitted-account defaults, all log
+metadata and `logs_unknown` interpretation remain manual correspondences.
+Word256/address/slot embeddings and finite byte lists do not prove Rust U256 or
+ByteArray source/Word256-length representation.
+
+`RootCoverageCapability.denotes` for a `Certificate` uses
+`finalizedTerminalEnvelope`, whose Return requires `FinalizedGamma` and whose
+Failure also requires empty data. The older `terminalEnvelope` Return = `True`
+and `return_top_contains` are wide constructor primitives, not that certificate
+proof. `all_original_initials` covers every member of the original `JointGamma`;
+`visited_is_not_all_initial` shows why a visited subset cannot replace it.
+
+`ready_fully_prepaid`, `one_use`, `publication_frames` and
+`prepaid_publication_after_work` prove the displayed state-machine transitions:
+paid preparation precedes detail, and attachment can consume ready authority
+after sticky Work exhaustion without changing its ledger or detailed payload.
+Admission and `Guard` Bool values are supplied premises. The model checks both
+captured-payer and current-delivery cancellation, and `revisedInput` discards old
+authority without resetting the ledger. Rust ownership, actual cancellation and
+trigger observations, complete input/revision bindings, quote/allocation/drop
+fee bounds, Rust Gamma, EVM steps, callback and CFG closure remain manual
+obligations. Session `charge(0)` polling is outside the framed attachment step.
+The exact Rust symbols and meaningful regression sources are in
+[correspondence.md](correspondence.md); these constructor/publication results do
+not establish whole Rust/EVM soundness or fully discharge A2.
 
 ## Engine certificate scope
 

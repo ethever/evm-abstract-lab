@@ -83,7 +83,9 @@ Terminal(Γ(I)) ⊆ Γ(Return, dataR, storeR)
 
 允许精度下降，但不能遗漏任何原始输入的终止数据、账户效果、回滚或收尾。这个包含关系的生产对应还需逐项核对真实原始输入、owner/source/history、任意完整 byte view、Store 全字段、static/touch/rollback/finalization，以及一次性已付费的 capability 与取消行为。协议引用校验只验证结构和一致性，不证明整个 Rust 执行器或完整 EVM 数学语义。
 
-已有 kernel 检查只覆盖[局部 Lean 模型](proofs/README.md)及其[手工生产对应](proofs/correspondence.md)。本功能新增的 root capability/proof 回归尚需在最终集成源码上单独核验；不能把既有局部证明或新测试源码的存在，当成新增模型已通过检查。
+2026-10-18，公开证明提交 `2c0181de2a9da64818b4eaf1b490f0594102e71b` 的 `checks.x86_64-linux.lean-proofs` 实际退出 **0**：15 个公开模块的 296 个目标全部通过，包含新增 `RootEnvelope` 的 20 个与 `RootCoverageCapability` 的 16 个目标；旧 join 负例按预期退出 1，公理依赖仅为 `Classical.choice`、`Quot.sound`、`propext`。相同证明源码已集成于 `e5f13b82c16798431ad0bf7cbb7cfdb7ef3dc2f3`。
+
+这些[局部 Lean 模型](proofs/README.md)证明 finalized whole-world 构造、共享原始输入见证的回滚与未来 owner-3 touch、历史扩展，以及带输入/取消守卫的一次性预付发布状态机。证书 `denotes` 使用 `finalizedTerminalEnvelope`/`FinalizedGamma`；旧 Return=True 构造原语不构成这份证书证明。守卫来自调用方 Bool 观察，真实 Rust Gamma、source/owner/log/ByteArray 表示、资源上界与 EVM step/callback/CFG 闭包仍需[手工生产对应](proofs/correspondence.md)，不能据此声称完整 Rust/EVM soundness 或 A2 已全部证明。一般详细 static finalizer 的修复属于独立 Core 工作；最终集成源码的 native、匹配资源浏览器与全仓 Nix 门禁仍待核验。
 
 真实浏览器回归登记为 `root-terminal-coverage`，检查实际表单 POST、default-off、opt-in/None、三项 pool 引用及输入绑定、原有未完成详情和浏览器中的独立 tuple 浏览。源码校验与浏览器运行是两份证据，验收需要匹配的 server、Wasm/JS 资源和最终完整门禁。
 
