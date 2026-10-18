@@ -38,8 +38,8 @@ pub(super) enum Error {
     Unsupported(ExprId),
     #[error("Fresh {0} is observed as a word, not only for truth")]
     WordFresh(u64),
-    #[error(transparent)]
-    Construction(#[from] ExprError),
+    #[error("{0}")]
+    Construction(ExprError),
     #[error("complete assignment did not yield a constant: {0:?}")]
     NotConstant(ExprId),
     #[error("{name}: {values:?}")]
@@ -54,6 +54,12 @@ pub(super) enum Error {
         expected: Box<Values>,
         actual: Box<Values>,
     },
+}
+
+impl From<ExprError> for Error {
+    fn from(error: ExprError) -> Self {
+        Self::Construction(error)
+    }
 }
 
 #[derive(Debug)]

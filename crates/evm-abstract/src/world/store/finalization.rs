@@ -14,8 +14,14 @@ pub(crate) enum FinalizationError {
     Work,
     #[error("transaction finalization cancelled")]
     Cancelled,
-    #[error(transparent)]
-    Store(#[from] StoreError),
+    #[error("{0}")]
+    Store(StoreError),
+}
+
+impl From<StoreError> for FinalizationError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
 }
 
 impl FinalizationError {

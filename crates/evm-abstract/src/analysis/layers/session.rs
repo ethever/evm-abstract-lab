@@ -141,17 +141,17 @@ impl SessionAnalysis {
 #[derive(Debug, Error)]
 pub enum SessionError {
     /// Cooperative cancellation of execution or session preparation.
-    #[error(transparent)]
-    Cancelled(#[from] Cancelled),
+    #[error("{0}")]
+    Cancelled(Cancelled),
     /// Invalid execution configuration or root environment.
-    #[error(transparent)]
-    Config(#[from] ConfigError),
+    #[error("{0}")]
+    Config(ConfigError),
     /// Invalid catalog contents.
-    #[error(transparent)]
-    Catalog(#[from] CatalogError),
+    #[error("{0}")]
+    Catalog(CatalogError),
     /// Rejected atomic initial-fact batch.
-    #[error(transparent)]
-    Facts(#[from] FactError),
+    #[error("{0}")]
+    Facts(FactError),
     /// A fact references bytes that were not supplied to this offline catalog.
     #[error("compiled code {0:?} is missing from the catalog")]
     MissingCode(CodeId),
@@ -162,11 +162,41 @@ pub enum SessionError {
     #[error("entry code conflicts with initial observation at {0}")]
     EntryCode(crate::Address),
     /// Snapshot fork or account invariants failed during initial projection.
-    #[error(transparent)]
-    World(#[from] WorldError),
+    #[error("{0}")]
+    World(WorldError),
     /// An adapter seed may carry header observations, never account state.
     #[error("initial seed must be empty and match the fact snapshot and catalog fork")]
     Seed,
+}
+
+impl From<Cancelled> for SessionError {
+    fn from(error: Cancelled) -> Self {
+        Self::Cancelled(error)
+    }
+}
+
+impl From<ConfigError> for SessionError {
+    fn from(error: ConfigError) -> Self {
+        Self::Config(error)
+    }
+}
+
+impl From<CatalogError> for SessionError {
+    fn from(error: CatalogError) -> Self {
+        Self::Catalog(error)
+    }
+}
+
+impl From<FactError> for SessionError {
+    fn from(error: FactError) -> Self {
+        Self::Facts(error)
+    }
+}
+
+impl From<WorldError> for SessionError {
+    fn from(error: WorldError) -> Self {
+        Self::World(error)
+    }
 }
 
 /// One root execution over a shared code catalog and immutable initial facts.

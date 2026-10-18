@@ -19,7 +19,7 @@ pub(crate) enum CliError {
     #[error("{0}")]
     Config(ConfigError),
     #[error("{0}")]
-    Session(#[source] SessionError),
+    Session(SessionError),
     #[error("{0}")]
     Cancelled(evm_abstract::analysis::control::Cancelled),
     #[error("{0}")]

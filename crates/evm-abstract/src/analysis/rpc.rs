@@ -94,8 +94,8 @@ impl RpcAnalysis {
 #[derive(Debug, Error)]
 pub enum RpcAnalysisError {
     /// Typed immutable observation/catalogue projection failed before execution.
-    #[error(transparent)]
-    Session(#[from] SessionError),
+    #[error("{0}")]
+    Session(SessionError),
     /// Analysis did not start because its parameters were invalid.
     #[error("{0}")]
     Config(ConfigError),
@@ -105,6 +105,12 @@ pub enum RpcAnalysisError {
     /// No valid initial RPC world could be established.
     #[error("{0}")]
     Rpc(RpcError),
+}
+
+impl From<SessionError> for RpcAnalysisError {
+    fn from(error: SessionError) -> Self {
+        Self::Session(error)
+    }
 }
 
 impl From<Cancelled> for RpcAnalysisError {
