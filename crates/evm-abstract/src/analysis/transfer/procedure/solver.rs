@@ -179,6 +179,7 @@ impl Solver<'_> {
                 let old = &self.table.nodes[id];
                 join(&old.payload, &payload, self.domain, widen)?
             };
+            let old = &self.table.nodes[id];
             if semantic_eq(&widened, &old.payload) {
                 return Ok(id);
             }
@@ -302,16 +303,11 @@ impl Solver<'_> {
         if !matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
             || original.active().code != FrameCode::Runtime
             || first.retention_failures.is_empty()
-            || first.frontiers.iter().any(|frontier| {
-                matches!(
-                    frontier.reason,
-                    FrontierReason::Work
-                        | FrontierReason::Budget(_)
-                        | FrontierReason::Relations(
-                            crate::domain::relational::QueryReason::Cancelled
-                        )
-                )
-            })
+            // A mixed execution has independent mandatory obligations. This
+            // slice admits only complete, raw-typed retention refusals.
+            || first.retention_failures.len() != first.frontiers.len()
+            || first.retention_failures.iter().enumerate()
+                .any(|(index, (frontier, _))| index != *frontier)
         {
             return first;
         }
