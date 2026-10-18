@@ -14,6 +14,7 @@ use evm_abstract::domain::{
 use serde_json::Value as Json;
 use std::collections::BTreeSet;
 
+#[path = "native_bytes/decode.rs"]
 mod decode;
 
 struct Graph {
