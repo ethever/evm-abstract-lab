@@ -21,7 +21,7 @@ export LEAN_PATH="$output_dir/olean"
 
 # Std is supplied by the pinned checker. All project imports are compiled here,
 # before the intentional rejection; no Lake resolver or preexisting oleans run.
-modules=(PartialFacts Facts ConditionalFacts Snapshots ReturnLengths NumericCarrier ExactIte Effects Lifecycle Logs Engine LateFailure)
+modules=(PartialFacts Facts ConditionalFacts Snapshots ReturnLengths NumericCarrier ByteProduct ExactIte Effects Lifecycle Logs Engine LateFailure)
 for module in "${modules[@]}"; do
   source="$proof_root/NoSmt/$module.lean"
   "$lean_bin" --root="$proof_root" -DwarningAsError=true \
