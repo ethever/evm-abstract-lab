@@ -1,4 +1,6 @@
 //! Independent issue-13 acceptance regressions across call/store/SSA boundaries.
+#[path = "issue13_review/joint.rs"]
+mod joint;
 #[path = "summaries/oracle.rs"]
 mod oracle;
 
@@ -8,7 +10,6 @@ use evm_abstract::{
     domain::{
         AbstractValue, Domain,
         provenance::{Origin, OriginSet, Provenance},
-        relational::CheckResult,
         symbolic::{ExprId, ExprKind, SlotStateId, SlotStateKind},
     },
     ssa,
@@ -1095,59 +1096,6 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 std::collections::BTreeSet::from([ExprId::constant(U256::from(1))])
             );
 
-            let equal = |value: &AbstractValue, expected| {
-                ExprId::operation(
-                    opcode::EQ,
-                    &[
-                        value.symbolic_expression().unwrap(),
-                        ExprId::constant(U256::from(expected)),
-                    ],
-                    limits.expressions(),
-                )
-                .unwrap()
-            };
-            let and = |left, right| {
-                ExprId::operation(opcode::AND, &[left, right], limits.expressions()).unwrap()
-            };
-            let not =
-                |value| ExprId::operation(opcode::ISZERO, &[value], limits.expressions()).unwrap();
-            let check = |name, predicate: &ExprId, expected| {
-                let actual = payload
-                    .relations
-                    .can_equal(predicate, U256::from(1), &limits);
-                eprintln!(
-                    "{fork:?} state{} {name}: {actual:?}; nodes={} depth={}",
-                    outcome.state,
-                    predicate.nodes(),
-                    predicate.depth()
-                );
-                // MayBeFeasible only means no local contradiction was proved.
-                // The concrete outcomes and exact controls above remain separate checks.
-                assert_eq!(actual, expected, "{fork:?} {name}");
-            };
-            let persistent_premise = persistent
-                .iter()
-                .zip([1, 1, 2])
-                .fold(ExprId::constant(U256::from(1)), |p, (v, n)| {
-                    and(p, equal(v, n))
-                });
-            let joint = counters
-                .iter()
-                .zip([2, 1, 0, 0])
-                .fold(persistent_premise.clone(), |p, (v, n)| and(p, equal(v, n)));
-            check(
-                "joint expected storage and counters",
-                &joint,
-                CheckResult::MayBeFeasible,
-            );
-            // Returned values must determine owner201's paired counter even
-            // without selecting an increment history through counter_route.
-            check(
-                "returned values independently determine owner201 counter",
-                &and(persistent_premise.clone(), not(equal(&counters[0], 2))),
-                CheckResult::ProvenImpossible,
-            );
-
             let terminal_inputs = persistent[2].expression().unwrap();
             assert!(
                 terminal_inputs.nodes() <= limits.max_nodes
@@ -1197,57 +1145,26 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 assert!(route.variables().is_subset(&terminal_bindings));
                 route
             });
-            let success = routes
-                .iter()
-                .cloned()
-                .fold(persistent_premise.clone(), &and);
-            check(
-                "successful call guards remain locally admissible",
-                &success,
-                CheckResult::MayBeFeasible,
-            );
-            check(
-                "successful guards do not locally exclude expected counters",
-                &and(success.clone(), joint),
-                CheckResult::MayBeFeasible,
-            );
-            let wrong = counters.iter().zip([2, 1, 0, 0]).fold(
-                ExprId::constant(U256::ZERO),
-                |p, (v, n)| {
-                    ExprId::operation(opcode::OR, &[p, not(equal(v, n))], limits.expressions())
-                        .unwrap()
-                },
-            );
-            check(
-                "qualified wrong owner counter",
-                &and(success, wrong),
-                CheckResult::ProvenImpossible,
-            );
-            let unused_owner_wrong = ExprId::operation(
-                opcode::OR,
-                &[not(equal(&counters[2], 0)), not(equal(&counters[3], 0))],
-                limits.expressions(),
-            )
-            .unwrap();
-            check(
-                "code/caller owner counter contamination",
-                &unused_owner_wrong,
-                CheckResult::ProvenImpossible,
-            );
-
-            // Persistent slot1=1 can retain the first CALL's output after the
-            // second CALL is rejected. Preserve that legitimate guarded case.
-            let rejected_second = and(
-                and(
-                    persistent_premise,
-                    and(routes[0].clone(), not(routes[1].clone())),
-                ),
-                equal(&counters[1], 0),
-            );
-            check(
-                "second call rejected with old memory retained",
-                &rejected_second,
-                CheckResult::MayBeFeasible,
+            // The fixture's full F must be True. A shared exact cover replaces
+            // the large local can_equal acceptance queries: it proves common
+            // positive assignments and every negative control on this SAME
+            // nine-tuple, including returned values without route qualification
+            // and a rejected second CALL retaining the first CALL's memory.
+            let terms = std::array::from_fn(|index| match index {
+                0..=2 => persistent[index].symbolic_expression().unwrap(),
+                3..=6 => counters[index - 3].symbolic_expression().unwrap(),
+                _ => routes[index - 7].clone(),
+            });
+            let cover = joint::verify(&payload.relations, &terms, limits.expressions())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{fork:?} state{} shared joint cover: {error}",
+                        outcome.state
+                    )
+                });
+            eprintln!(
+                "{fork:?} state{} shared joint cover: {} proof nodes, {} terminal vectors",
+                outcome.state, cover.proof_nodes, cover.terminal_vectors
             );
             for (index, owner) in owners.into_iter().enumerate() {
                 assert_eq!(
