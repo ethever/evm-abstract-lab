@@ -17,11 +17,13 @@ const TWO_BLOCK_RETURN: &str = "6003565b602a5f5260205ff3";
 fn fixture(enabled: bool, is_static: bool, chain: bool) -> (WorldAnalysis, api::AnalyzeRequest) {
     let owner = Address::repeat_byte(0x11);
     let other = Address::repeat_byte(0x22);
-    let mut request = api::AnalyzeRequest::default();
-    request.input = api::AnalysisInput::Bytecode(api::BytecodeInput {
-        bytecode: TWO_BLOCK_RETURN.into(),
-        address: None,
-    });
+    let mut request = api::AnalyzeRequest {
+        input: api::AnalysisInput::Bytecode(api::BytecodeInput {
+            bytecode: TWO_BLOCK_RETURN.into(),
+            address: None,
+        }),
+        ..api::AnalyzeRequest::default()
+    };
     request.limits.max_transfers = 1;
     request.limits.root_terminal_coverage = enabled;
     request.environment.is_static = is_static;
@@ -466,11 +468,13 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
 
 #[test]
 fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_code() {
-    let mut request = api::AnalyzeRequest::default();
-    request.input = api::AnalysisInput::Bytecode(api::BytecodeInput {
-        bytecode: TWO_BLOCK_RETURN.into(),
-        address: None,
-    });
+    let mut request = api::AnalyzeRequest {
+        input: api::AnalysisInput::Bytecode(api::BytecodeInput {
+            bytecode: TWO_BLOCK_RETURN.into(),
+            address: None,
+        }),
+        ..api::AnalyzeRequest::default()
+    };
     request.limits.max_transfers = 1;
     let limits = request.limits.clone();
     assert_eq!(limits.max_work, 2_000_000_000);
@@ -618,11 +622,13 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
     world
         .insert(owner, Account::from_hex(&bytecode, Fork::Osaka).unwrap())
         .unwrap();
-    let mut request = api::AnalyzeRequest::default();
-    request.input = api::AnalysisInput::Bytecode(api::BytecodeInput {
-        bytecode,
-        address: None,
-    });
+    let mut request = api::AnalyzeRequest {
+        input: api::AnalysisInput::Bytecode(api::BytecodeInput {
+            bytecode,
+            address: None,
+        }),
+        ..api::AnalyzeRequest::default()
+    };
     request.limits.root_terminal_coverage = true;
     request.limits.max_expression_nodes = 64;
     let entry = Entry {
