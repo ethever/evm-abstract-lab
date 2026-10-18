@@ -23,32 +23,28 @@ theorem factor_left_shared_left {Index : Type u} {Value : Type v}
     ∀ index, wordIte s (wordIte t (A index) (B index)) (A index) =
       wordIte (wordIte s t 1) (A index) (B index) := by
   intro index
-  have one : ReturnLengths.wordTruth (1 : Word256) = true := rfl
-  cases selected : ReturnLengths.wordTruth s <;> simp [wordIte, selected, one]
+  cases selected : ReturnLengths.wordTruth s <;> simp only [wordIte, selected] <;> rfl
 
 theorem factor_left_shared_right {Index : Type u} {Value : Type v}
     (s t : Word256) (A B : Index → Value) :
     ∀ index, wordIte s (wordIte t (A index) (B index)) (B index) =
       wordIte (wordIte s t 0) (A index) (B index) := by
   intro index
-  have zero : ReturnLengths.wordTruth (0 : Word256) = false := rfl
-  cases selected : ReturnLengths.wordTruth s <;> simp [wordIte, selected, zero]
+  cases selected : ReturnLengths.wordTruth s <;> simp only [wordIte, selected] <;> rfl
 
 theorem factor_right_shared_left {Index : Type u} {Value : Type v}
     (s t : Word256) (A B : Index → Value) :
     ∀ index, wordIte s (A index) (wordIte t (A index) (B index)) =
       wordIte (wordIte s 1 t) (A index) (B index) := by
   intro index
-  have one : ReturnLengths.wordTruth (1 : Word256) = true := rfl
-  cases selected : ReturnLengths.wordTruth s <;> simp [wordIte, selected, one]
+  cases selected : ReturnLengths.wordTruth s <;> simp only [wordIte, selected] <;> rfl
 
 theorem factor_right_shared_right {Index : Type u} {Value : Type v}
     (s t : Word256) (A B : Index → Value) :
     ∀ index, wordIte s (B index) (wordIte t (A index) (B index)) =
       wordIte (wordIte s 0 t) (A index) (B index) := by
   intro index
-  have zero : ReturnLengths.wordTruth (0 : Word256) = false := rfl
-  cases selected : ReturnLengths.wordTruth s <;> simp [wordIte, selected, zero]
+  cases selected : ReturnLengths.wordTruth s <;> simp only [wordIte, selected] <;> rfl
 
 theorem factor_both {Index : Type u} {Value : Type v}
     (s g h : Word256) (A B : Index → Value) :
