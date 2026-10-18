@@ -793,9 +793,9 @@ fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
             })
     );
     let exit = successor.exit.as_ref().expect("known successor executed");
-    // One final outcome must cover ALL three concrete joint assignments. The
-    // witness inspects canonical cells and the rest of this same payload for
-    // cross-field aliases/paths; independent marginal bounds do not suffice.
+    // One final outcome must cover ALL three concrete joint assignments.
+    // The entry is canonical; exact successors and RETURN also carry refreshed
+    // presentation expressions and selected, scoped operand guarantees.
     let outcome = analysis
         .outcomes()
         .iter()
@@ -806,8 +806,17 @@ fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
     returned.active_mut().memory = outcome.data.clone();
     returned.store = outcome.store.clone();
     for (word, call_value) in [(1, 0), (2, 1), (3, 2)] {
+        bounded_promotion::assert_joint_word_witness(&covered.entry, word, domain);
+        for payload in [&successor.entry, exit, &returned] {
+            bounded_promotion::assert_poststep_word_witness(
+                payload,
+                word,
+                call_value,
+                &analysis.states()[0].entry.store,
+                domain,
+            );
+        }
         for payload in [&covered.entry, &successor.entry, exit, &returned] {
-            bounded_promotion::assert_joint_word_witness(payload, word, domain);
             let value = &payload.active().call_value;
             assert_eq!(value, &AbstractValue::from_numeric(value.numeric().clone()));
             assert!(value.contains(U256::from(call_value)));
@@ -824,6 +833,10 @@ fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
             domain,
         )
     );
+    crate::ssa::build_world(&analysis)
+        .unwrap()
+        .verify(&analysis)
+        .unwrap();
 }
 
 #[test]

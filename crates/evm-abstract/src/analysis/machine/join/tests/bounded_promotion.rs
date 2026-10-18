@@ -5,11 +5,12 @@ use crate::{
     analysis::{FrameCode, MachinePayload},
     domain::{
         facts::FactError,
-        relational::QueryReason,
+        relational::{Constraint, QueryReason, RelationLimits, RelationPathKind, RelationState},
         symbolic::{ExprError, StateError},
     },
-    world::{RangeError, StoreError},
+    world::{RangeError, Store, StoreError},
 };
+use revm_bytecode::opcode;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
@@ -109,12 +110,37 @@ fn word_payload(base: &MachinePayload, word: u64, domain: Domain) -> MachinePayl
 /// The same assignment must satisfy the numeric stack and the complete memory,
 /// with no surviving path, guard, input alias or external use of its sources.
 pub(super) fn assert_joint_word_witness(payload: &MachinePayload, word: u64, domain: Domain) {
+    let (assigned, _) = select_canonical_arm(payload, domain);
+    let _ = canonical_word_assignment(&assigned, word, domain);
+    let memory = &assigned.active().memory;
+    assert!(
+        memory
+            .guard_conditions(domain.spec().relations().expressions())
+            .unwrap()
+            .is_empty()
+    );
+    for (expression, value) in memory.symbolic_facts() {
+        let constant = expression
+            .as_constant()
+            .expect("canonical facts contain only literal range operands");
+        assert!(value.contains(constant));
+    }
+    for (_, value) in memory.stored_bytes() {
+        assert!(value.expression().is_none());
+    }
+}
+
+fn select_canonical_arm(
+    payload: &MachinePayload,
+    domain: Domain,
+) -> (MachinePayload, BTreeMap<ExprId, ExprId>) {
     // A later acyclic successor can retain an exact old/canonical disjunction.
     // Choose its incoming canonical arm using the production whole-payload
     // substitution, including all numeric/conditional caches. This supplies a
     // concrete selector assignment without an arbitrary expression evaluator.
     assert!(payload.relations.is_empty());
     let mut assigned = payload.clone();
+    let mut selectors = BTreeMap::new();
     loop {
         let mut root = assigned.active().memory.state_root();
         while let ByteStateKind::Slice { source } = root.kind() {
@@ -126,12 +152,20 @@ pub(super) fn assert_joint_word_witness(payload: &MachinePayload, word: u64, dom
             break;
         };
         assert!(matches!(condition.kind(), ExprKind::Fresh(_)));
+        selectors.insert(condition.clone(), ExprId::constant(U256::ZERO));
         let assignment = BTreeMap::from([(condition.clone(), ExprId::constant(U256::ZERO))]);
         assigned
             .rename_fresh(&assignment, domain.spec().relations().expressions())
             .unwrap();
     }
-    let payload = &assigned;
+    (assigned, selectors)
+}
+
+fn canonical_word_assignment(
+    payload: &MachinePayload,
+    word: u64,
+    domain: Domain,
+) -> BTreeMap<ExprId, ExprId> {
     let word = U256::from(word);
     assert!(payload.relations.is_empty());
     assert_eq!(payload.call_stack.depth(), 1);
@@ -184,6 +218,7 @@ pub(super) fn assert_joint_word_witness(payload: &MachinePayload, word: u64, dom
     assert_eq!(length.as_constant(), Some(U256::from(32)));
     assert!(matches!(source.token().kind(), ExprKind::Fresh(_)));
     let mut independent = BTreeSet::from([source.token().clone()]);
+    let mut assignment = BTreeMap::new();
     for binding in bindings {
         let index = usize::try_from(binding.index).unwrap();
         assert!(matches!(binding.value.kind(), ExprKind::Fresh(_)));
@@ -191,25 +226,16 @@ pub(super) fn assert_joint_word_witness(payload: &MachinePayload, word: u64, dom
         assert!(
             AbstractValue::from_numeric(binding.numeric.clone()).contains(U256::from(bytes[index]))
         );
+        assignment.insert(
+            binding.value.clone(),
+            ExprId::constant(U256::from(bytes[index])),
+        );
     }
     assert_eq!(memory.fresh_leaves(), independent);
     let mut outside = payload.clone();
     outside.active_mut().memory = ByteArray::memory();
     assert!(outside.fresh_leaves().is_disjoint(&independent));
-    assert!(
-        memory
-            .guard_conditions(domain.spec().relations().expressions())
-            .unwrap()
-            .is_empty()
-    );
-    for (expression, value) in memory.symbolic_facts() {
-        let constant = expression
-            .as_constant()
-            .expect("canonical facts contain only literal range operands");
-        assert!(value.contains(constant));
-    }
     for (index, value) in memory.stored_bytes() {
-        assert!(value.expression().is_none());
         assert!(value.contains(U256::from(bytes[index])));
     }
     let concrete = if memory.is_memory() {
@@ -232,6 +258,246 @@ pub(super) fn assert_joint_word_witness(payload: &MachinePayload, word: u64, dom
             .unwrap()
             .covers(&concrete.summary_projection(domain).unwrap(), domain,)
     );
+    assignment
+}
+
+fn exact_local_value(expression: &ExprId, limits: &RelationLimits) -> U256 {
+    match RelationState::default().local_value(expression, limits) {
+        ValueQuery::Exact(value) => value,
+        result => panic!(
+            "grounded local query must be exact: {result:?}; expression={}",
+            serde_json::to_string(expression).unwrap()
+        ),
+    }
+}
+
+fn assert_assigned_cache(
+    value: &AbstractValue,
+    expected: U256,
+    assignment: &BTreeMap<ExprId, ExprId>,
+    limits: &RelationLimits,
+) {
+    assert!(value.contains(expected));
+    if let Some(expression) = value.expression() {
+        assert_eq!(
+            exact_local_value(
+                &expression
+                    .rename_fresh(assignment, limits.expressions())
+                    .unwrap(),
+                limits,
+            ),
+            expected
+        );
+    }
+}
+
+/// Exact successors refresh presentation cells and retain selected operand
+/// facts under literal true. Prove the original metadata under one assignment
+/// before ByteArray renaming can normalize constant-key numeric guarantees.
+pub(super) fn assert_poststep_word_witness(
+    payload: &MachinePayload,
+    word: u64,
+    call_value: u64,
+    original_store: &Store,
+    domain: Domain,
+) {
+    // Only the read-only proof uses enabled local queries. The execution's
+    // disabled relations, two-alternative policy and all budgets stay frozen.
+    let limits = fixtures::config().analysis.relations;
+    let memory = &payload.active().memory;
+    let original_relations = memory.symbolic_relations(&limits).unwrap();
+    let original_guards = memory.guard_conditions(limits.expressions()).unwrap();
+    let (mut assigned, mut assignment) = select_canonical_arm(payload, domain);
+    for guard in &original_guards {
+        match guard.kind() {
+            ExprKind::Fresh(_) => {
+                // Inactive historical selectors also receive a fixed value.
+                assignment.insert(guard.clone(), ExprId::constant(U256::ZERO));
+            }
+            ExprKind::Constant(value) => assert_eq!(*value, U256::ONE),
+            _ => panic!(
+                "unexpected retained guard: {}",
+                serde_json::to_string(guard).unwrap()
+            ),
+        }
+    }
+    for (cell, value) in canonical_word_assignment(&assigned, word, domain) {
+        assert!(assignment.insert(cell, value).is_none());
+    }
+    let guards = assigned
+        .active()
+        .memory
+        .guard_conditions(limits.expressions())
+        .unwrap();
+    assert_eq!(guards, BTreeSet::from([ExprId::constant(U256::ONE)]));
+    let guard = guards.first().unwrap();
+    assert_eq!(guard.nodes(), 1);
+    assert_eq!(guard.depth(), 1);
+    for guard in original_guards {
+        let expected = if matches!(guard.kind(), ExprKind::Fresh(_)) {
+            U256::ZERO
+        } else {
+            U256::ONE
+        };
+        assert_eq!(
+            exact_local_value(
+                &guard
+                    .rename_fresh(&assignment, limits.expressions())
+                    .unwrap(),
+                &limits
+            ),
+            expected
+        );
+    }
+
+    let word_value = U256::from(word);
+    let bytes = word_value.to_be_bytes::<32>();
+    assert_assigned_cache(memory.len(), U256::from(32), &assignment, &limits);
+    assert_assigned_cache(memory.default_byte(), U256::ZERO, &assignment, &limits);
+    for (index, value) in memory.stored_bytes() {
+        assert_assigned_cache(value, U256::from(bytes[index]), &assignment, &limits);
+    }
+    for (expression, value) in memory.symbolic_facts() {
+        let constant = exact_local_value(
+            &expression
+                .rename_fresh(&assignment, limits.expressions())
+                .unwrap(),
+            &limits,
+        );
+        assert_assigned_cache(value, constant, &assignment, &limits);
+    }
+    // These are exact reads from the original root under the SAME cell/selector
+    // assignment, including every byte absent from the presentation cache.
+    for (index, byte) in bytes.into_iter().enumerate() {
+        let read = ExprId::byte_read(
+            memory.state_root().clone(),
+            ExprId::constant(U256::from(index)),
+            limits.expressions(),
+        )
+        .unwrap()
+        .rename_fresh(&assignment, limits.expressions())
+        .unwrap();
+        assert_eq!(exact_local_value(&read, &limits), U256::from(byte));
+    }
+
+    let retained = original_relations
+        .rename_fresh(&assignment, limits.expressions())
+        .unwrap();
+    let mut expressions: Vec<_> = retained
+        .constraints()
+        .flat_map(Constraint::expressions)
+        .collect();
+    let mut pending = vec![retained.path()];
+    while let Some(path) = pending.pop() {
+        match path.kind() {
+            RelationPathKind::True | RelationPathKind::False => {}
+            RelationPathKind::Atoms(atoms) => {
+                expressions.extend(atoms.iter().flat_map(Constraint::expressions));
+            }
+            RelationPathKind::And(children) => pending.extend(children),
+            RelationPathKind::Ite {
+                selector,
+                then_path,
+                else_path,
+            } => {
+                pending.push(if exact_local_value(selector, &limits) == U256::ZERO {
+                    else_path
+                } else {
+                    then_path
+                });
+            }
+        }
+    }
+    // Feasibility alone supplies no witness. Every active original atom and
+    // selector must first have a determined, assumption-free local value.
+    for expression in expressions {
+        let _ = exact_local_value(expression, &limits);
+    }
+    assert_eq!(retained.check(&limits), CheckResult::MayBeFeasible);
+
+    for (value, expected) in [
+        (&payload.active().stack[0], word_value),
+        (&payload.active().call_value, U256::from(call_value)),
+    ] {
+        assert_assigned_cache(value, expected, &assignment, &limits);
+    }
+    let value = &assigned.active().call_value;
+    assert_eq!(value, &AbstractValue::from_numeric(value.numeric().clone()));
+    assert!(value.contains(U256::from(call_value)));
+    assigned
+        .rename_fresh(&assignment, limits.expressions())
+        .unwrap();
+    // Numeric-only scalar cells have no aliases to the independent byte source.
+    assigned.active_mut().stack[0] = AbstractValue::constant(word_value);
+    assigned.active_mut().call_value = fixtures::word(call_value);
+    assert!(
+        assigned
+            .store
+            .summary_projection(domain)
+            .unwrap()
+            .covers(&original_store.summary_projection(domain).unwrap(), domain,)
+    );
+}
+
+#[test]
+fn joint_selector_witness_rejects_a_tuple_with_only_valid_marginals() {
+    let domain = fixtures::config().domain().unwrap();
+    let limits = fixtures::config().analysis.relations;
+    let base = fixtures::payload(domain);
+    let owner = fixtures::address(0x101);
+    let [mut first, mut second] = [1, 2].map(|word| word_payload(&base, word, domain));
+    for (payload, word) in [(&mut first, 1), (&mut second, 2)] {
+        payload
+            .store
+            .write_checked(owner, &fixtures::word(0), &fixtures::word(word), domain)
+            .unwrap();
+    }
+    let joined = first.join(&second, domain).unwrap();
+    let ByteStateKind::Ite { condition, .. } = joined.active().memory.state_root().kind() else {
+        panic!("the complete join must share one selector");
+    };
+    let stack = joined.active().stack[0].symbolic_expression().unwrap();
+    let memory = joined
+        .active()
+        .memory
+        .read_word_checked(&fixtures::word(0), domain)
+        .unwrap()
+        .symbolic_expression()
+        .unwrap();
+    let slot = joined
+        .store
+        .read_checked(owner, &fixtures::word(0), domain)
+        .unwrap()
+        .symbolic_expression()
+        .unwrap();
+    for (selector, selected) in [(1u64, [1u64, 1, 1]), (0, [2, 2, 2])] {
+        let assignment =
+            BTreeMap::from([(condition.clone(), ExprId::constant(U256::from(selector)))]);
+        for tuple in [[1, 1, 1], [2, 2, 2], [1, 2, 1]] {
+            let equalities = [stack.clone(), memory.clone(), slot.clone()]
+                .into_iter()
+                .zip(tuple)
+                .map(|(expression, value)| {
+                    ExprId::operation(
+                        opcode::EQ,
+                        &[expression, ExprId::constant(U256::from(value))],
+                        limits.expressions(),
+                    )
+                    .unwrap()
+                });
+            let joint = equalities
+                .reduce(|left, right| {
+                    ExprId::operation(opcode::AND, &[left, right], limits.expressions()).unwrap()
+                })
+                .unwrap()
+                .rename_fresh(&assignment, limits.expressions())
+                .unwrap();
+            assert_eq!(
+                exact_local_value(&joint, &limits),
+                U256::from(u8::from(tuple == selected))
+            );
+        }
+    }
 }
 
 #[test]
