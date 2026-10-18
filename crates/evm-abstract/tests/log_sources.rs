@@ -3,7 +3,7 @@
 use alloy_primitives::{B256, hex, keccak256};
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{ExecutionConfig, OutcomeKind, Status, analyze_world},
+    analysis::{ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
     domain::{AbstractValue, Domain},
     render,
     world::{AbstractLog, Account, ByteArray, Entry, LogKey, LogSourceKind, Store, World},
@@ -54,6 +54,27 @@ fn factory(initcode: &[u8], repeated_call: bool) -> Vec<u8> {
     bytes
 }
 
+fn analyze_deploy_and_call(initcode: &[u8], owner: Address, repeated_call: bool) -> WorldAnalysis {
+    let child = owner.create(0);
+    let code = factory(initcode, repeated_call);
+    let mut world = World::new(Fork::Osaka, "issue134:log-source");
+    let mut account = Account::from_hex(&hex::encode(&code), world.fork()).unwrap();
+    account.balance = word(100);
+    world.insert(owner, account).unwrap();
+    world.insert(child, Account::absent()).unwrap();
+    // CREATE also covers an initcode-gas failure that returns zero.
+    // A subsequent CALL(0) is empty in this finite fixture, rather than
+    // an unrelated unknown contract that could reenter the factory.
+    world.insert(Address::ZERO, Account::absent()).unwrap();
+    let entry = Entry::concrete(owner, address(0x1000), word(0), ByteArray::empty());
+    let mut config = ExecutionConfig {
+        max_work: 100_000_000,
+        ..ExecutionConfig::default()
+    };
+    config.analysis.relations.enabled = false;
+    analyze_world(world, entry, config).unwrap()
+}
+
 #[test]
 fn actual_init_and_runtime_same_owner_same_pc_keep_distinct_log_arities() {
     for nonempty_data in [false, true] {
@@ -81,23 +102,7 @@ fn actual_init_and_runtime_same_owner_same_pc_keep_distinct_log_arities() {
         let owner = address(0x101);
         let child = owner.create(0);
         for repeated_call in [false, true] {
-            let code = factory(&initcode, repeated_call);
-            let mut world = World::new(Fork::Osaka, "issue134:log-source");
-            let mut account = Account::from_hex(&hex::encode(&code), world.fork()).unwrap();
-            account.balance = word(100);
-            world.insert(owner, account).unwrap();
-            world.insert(child, Account::absent()).unwrap();
-            // CREATE also covers an initcode-gas failure that returns zero.
-            // A subsequent CALL(0) is empty in this finite fixture, rather than
-            // an unrelated unknown contract that could reenter the factory.
-            world.insert(Address::ZERO, Account::absent()).unwrap();
-            let entry = Entry::concrete(owner, address(0x1000), word(0), ByteArray::empty());
-            let mut config = ExecutionConfig {
-                max_work: 100_000_000,
-                ..ExecutionConfig::default()
-            };
-            config.analysis.relations.enabled = false;
-            let analysis = analyze_world(world, entry, config).unwrap();
+            let analysis = analyze_deploy_and_call(&initcode, owner, repeated_call);
             assert_eq!(
                 analysis.status(),
                 Status::Converged,
@@ -171,6 +176,117 @@ fn actual_init_and_runtime_same_owner_same_pc_keep_distinct_log_arities() {
             assert!(text.contains(&keccak256(&runtime).to_string()));
         }
     }
+}
+
+fn assert_actual_pc3_log_control(prefix: &[u8], init_emits_log: bool) {
+    let runtime = hex::decode("5f5f5fa100").unwrap();
+    let initcode = init(&runtime, prefix);
+    let owner = address(0x101);
+    let child = owner.create(0);
+    let analysis = analyze_deploy_and_call(&initcode, owner, false);
+    assert_eq!(
+        analysis.status(),
+        Status::Converged,
+        "{:?}",
+        analysis.frontiers()
+    );
+    assert!(analysis.frontiers().is_empty());
+    let init_key = LogKey {
+        address: child,
+        code_address: child,
+        code_hash: keccak256(&initcode),
+        source_kind: LogSourceKind::Init,
+        pc: 3,
+    };
+    let runtime_key = LogKey {
+        code_hash: keccak256(&runtime),
+        source_kind: LogSourceKind::Runtime,
+        ..init_key.clone()
+    };
+    let keys = if init_emits_log {
+        vec![&init_key, &runtime_key]
+    } else {
+        vec![&runtime_key]
+    };
+    // Keep the original successful-outcome policy; gas-failure outcomes can
+    // legitimately have no logs. All projections below use this same outcome.
+    let (outcome_index, outcome) = analysis
+        .outcomes()
+        .iter()
+        .enumerate()
+        .filter(|(_, outcome)| outcome.kind == OutcomeKind::Return)
+        .find(|(_, outcome)| outcome.store.possible_logs().len() == keys.len())
+        .expect("retain the actual LOG effects after deployment and CALL");
+    let store = &outcome.store;
+    if init_emits_log {
+        assert_ne!(init_key, runtime_key);
+        assert_eq!(
+            store.possible_logs()[&init_key].topics.len(),
+            store.possible_logs()[&runtime_key].topics.len()
+        );
+    }
+    for replay in [
+        store.clone(),
+        store
+            .summary_projection(Domain::default())
+            .unwrap()
+            .instantiate(Domain::default())
+            .unwrap(),
+    ] {
+        assert_eq!(replay.possible_logs().len(), keys.len());
+        assert!(!replay.logs_unknown());
+        assert_eq!(replay.raw_account_code(child), Some(runtime.clone()));
+        if !init_emits_log {
+            assert!(
+                replay
+                    .possible_logs()
+                    .keys()
+                    .all(|key| key.source_kind == LogSourceKind::Runtime)
+            );
+        }
+        for key in &keys {
+            let log = &replay.possible_logs()[*key];
+            assert_eq!(log.topics.len(), 1);
+            assert_eq!(log.topics[0].singleton(), Some(U256::ZERO));
+            assert_eq!(log.data.exact_bytes(), Some(vec![]));
+        }
+    }
+    let native = serde_json::to_value(store).unwrap();
+    let report = serde_json::to_value(render::world::evidence(&analysis).unwrap()).unwrap();
+    for projection in [&native, &report["outcomes"][outcome_index]["store"]] {
+        assert_eq!(projection["logs_unknown"].as_bool(), Some(false));
+        let logs = projection["possible_logs"].as_array().unwrap();
+        assert_eq!(logs.len(), keys.len());
+        if !init_emits_log {
+            assert!(logs.iter().all(|log| log["source_kind"] == "runtime"));
+        }
+        for key in &keys {
+            let mut expected = serde_json::to_value(key).unwrap();
+            let payload = serde_json::to_value(&store.possible_logs()[*key]).unwrap();
+            expected
+                .as_object_mut()
+                .unwrap()
+                .extend(payload.as_object().unwrap().clone());
+            assert!(logs.contains(&expected));
+        }
+    }
+    let text = render::world::text(&analysis);
+    assert_eq!(text.contains("source=Init"), init_emits_log);
+    assert!(text.contains("source=Runtime"));
+    assert!(text.contains(&keccak256(&runtime).to_string()));
+    if init_emits_log {
+        assert!(text.contains(&keccak256(&initcode).to_string()));
+    }
+}
+
+#[test]
+fn actual_init_and_runtime_same_owner_same_pc_same_arity_keep_both_sources() {
+    assert_actual_pc3_log_control(&hex::decode("5f5f5fa1").unwrap(), true);
+}
+
+#[test]
+fn actual_runtime_log_after_init_without_log_has_only_runtime_source() {
+    assert_actual_pc3_log_control(&hex::decode("5f5f5f").unwrap(), false);
 }
 
 #[test]
