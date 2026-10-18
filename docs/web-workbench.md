@@ -100,7 +100,7 @@ V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路�
 | --- | --- |
 | States / `max_states` | 100,000 |
 | Transfers / `max_transfers` | 10,000,000 |
-| Logical work / `max_work` | 1,000,000,000,000 |
+| Logical work / `max_work` | 2,000,000,000 |
 | Call depth / `max_call_depth` | 1,025 |
 | Memory bytes / `max_memory_bytes` | 67,108,864（64 MiB） |
 | Jump context depth / `context_depth` | 128 |
@@ -121,7 +121,7 @@ Web 协议的数值仍受类型可表示范围约束：表中字段均为 `u64`�
 
 任务运行期间保留上一份完整结果，并显示新任务的状态与离散进度；新任务成功后才原子替换结果。输入草稿的编辑不会改变正在查看的报告。取消、失败或迟到的旧请求也不会把旧报告冒充新任务结果。
 
-**Execution budget** 还提供默认关闭的 **Prepare conservative root terminal coverage**。它按原 logical work 预算预付准备费用，可能减少剩余详细传播。附加记录后显示 **Detail incomplete / partial SSA** 与 **Root terminal results conservatively covered**；请求开启而记录为 `None` 时只显示 **Root terminal certificate not attached**。**Outcomes** 中的 **Conservative root terminal coverage** 使用独立的 Return/Revert/Failure alternative 和 **Original input binding**，与已观察结果分开；浏览这些内容不会改选原生状态或重新提交任务。完整语义见[根终止覆盖](19-root-terminal-coverage.md)。
+**Execution budget** 默认勾选 **Prepare conservative root terminal coverage**，与 2,000,000,000 logical work 组成快速保守默认策略。准备费用计入同一预算，可能减少剩余详细传播。详细执行仍为 `Incomplete` 时，附加记录后显示 **Detail incomplete / partial SSA** 与 **Root terminal results conservatively covered**，全部 frontier 保留，CFG 和 SSA 仍可部分完成。详细执行已 `Converged` 时可以没有证书，不显示 **Root terminal certificate not attached**；只有请求开启、详细未完成且无记录时才显示该提示。取消勾选可仅做详细分析。**Outcomes** 中的 **Conservative root terminal coverage** 使用独立的 Return/Revert/Failure alternative 和 **Original input binding**，与已观察结果分开；浏览这些内容不会改选原生状态或重新提交任务。完整语义见[根终止覆盖](19-root-terminal-coverage.md)。
 
 ## 分析耗时
 
@@ -205,7 +205,7 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 
 协议 9 加入 report-local mixed symbolic DAG。scalar refs、byte views、persistent/transient roots 和完整 path guards 在同一目录中共享；range/join 的待处理 payload 引用有限 pending machine pool。前端校验 node sort、依赖顺序和 pool refs，按可见行显示来源、写入和复制范围。typed export error 保留策略与实耗；MemoryPolicy 的未展开输入与 EVM Failure 分开显示。详情见[第 17 课](17-symbolic-state.md)。
 
-版本 15 新增必填布尔 `AnalysisLimits.root_terminal_coverage`（默认 false）与必填可选 `AnalysisReport.root_terminal_coverage`（无记录为 null）。`StoreSnapshot` 在所有报告中增加全局 storage/transient base refs、nonce/code/existence/created/pending-destruction defaults，旧字段继续保留。`InputIdentity.scope` 和新增 snapshot namespace/revision/input scope 均为规范十进制字符串，数字编码、前导零、溢出及未知字段会被拒绝；work、transfer 等计数仍是原整数类型。旧报告不能只改版本号。迁移细节见[wire 15 身份与 Store 契约](19-root-terminal-coverage.md)。
+版本 15 新增必填布尔 `AnalysisLimits.root_terminal_coverage` 与必填可选 `AnalysisReport.root_terminal_coverage`（无记录为 null）；当前用户默认请求显式设置前者为 true，保留旧关闭策略的对照请求显式设置为 false。`StoreSnapshot` 在所有报告中增加全局 storage/transient base refs、nonce/code/existence/created/pending-destruction defaults，旧字段继续保留。`InputIdentity.scope` 和新增 snapshot namespace/revision/input scope 均为规范十进制字符串，数字编码、前导零、溢出及未知字段会被拒绝；work、transfer 等计数仍是原整数类型。旧报告不能只改版本号。迁移细节见[wire 15 身份与 Store 契约](19-root-terminal-coverage.md)。
 
 共享协议版本为 15。版本 14 删除 `AnalysisLimits.smt_provider`、`smt_rlimit` 与原生 solver 诊断枚举；旧请求中的这些字段会在任务入队前明确拒绝，旧报告也不能作为版本 14 安装。表达式、byte/slot 根、路径、scalar facts 和真实精度边界继续保留。 LOG 的 `code_hash` 和 `source_kind` 为必填来源字段，配合 emitter、code account 与 pc 区分初始化和部署后代码；前端面板使用完整身份。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 

@@ -189,7 +189,7 @@ RPC 是精确初始观察的生产者。它在启动时解析区块选择并固�
 
 ## 预算、取消与结果的含义
 
-会话还可按 `ExecutionConfig.root_terminal_coverage` 请求独立的[根终止覆盖](19-root-terminal-coverage.md)，默认 false。记录绑定真实原始 snapshot/revision、storage source、环境、帧和域/执行策略；补事实的新 revision 需要新的权威与执行。显示摘要变宽不扩大记录的输入集合。准备与详细执行共用预算，附加记录不把当前 worklist、frontier 或部分 SSA 改写为闭合。
+会话按 `ExecutionConfig.root_terminal_coverage` 请求独立的[根终止覆盖](19-root-terminal-coverage.md)，默认 true。库自身仍使用 20000000 work，CLI/Web 默认使用 2000000000 work；需要仅做详细分析时显式关闭覆盖。记录绑定真实原始 snapshot/revision、storage source、环境、帧和域/执行策略；补事实的新 revision 需要新的权威与执行。显示摘要变宽不扩大记录的输入集合。准备与详细执行共用预算，附加记录不把当前 worklist、frontier 或部分 SSA 改写为闭合。
 
 同一会话的多次执行共用 `WorkBudget`，状态分配和 transfer 计数也累计；补事实不会重置已花掉的执行额度。RPC 发现循环同样向各轮传递共享账本，采集另外保留自己的累计请求限制。工作量是分析器的逻辑计费，不是 EVM gas 或毫秒数。
 

@@ -107,7 +107,7 @@ flowchart TD
 
 `NumericValue` 默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`AbstractValue` 在数值摘要之外保存来源、角色、独立值身份和符号表达式。CLI 与 Web 共用同一套分析配置：`--max-constants` 默认 512，接受运行平台能表示的任意正 `usize`，配置容量不会直接预分配集合。`--reduction-rounds` 默认 16，`--max-facts` 默认 4096，两者限制临时数值事实交换。
 
-机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过局部表达式与数值事实推理排除已证明矛盾的路径，并将已证明的数值上界投影回执行值。未证明矛盾的路径继续保留。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。表达式节点、深度和关系数量有独立上限，真实的取消、配置与精度边界仍保留类型化原因。`cfg`、`ssa`、`analyze`、`explain` 的 `--max-work` 都默认 1000000000000，覆盖执行、数值与符号工作。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
+机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过局部表达式与数值事实推理排除已证明矛盾的路径，并将已证明的数值上界投影回执行值。未证明矛盾的路径继续保留。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。表达式节点、深度和关系数量有独立上限，真实的取消、配置与精度边界仍保留类型化原因。`cfg`、`ssa`、`analyze`、`explain` 与 Web 的 `max_work` 默认 2000000000，覆盖执行、数值与符号工作，并默认启用保守根终止覆盖；仍可显式设置预算。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
 
 CLI 的数量参数 `--evm.value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`；`--block-number` 接受相同进制写法，范围为 `0` 到 `2^64−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--evm.value 1000`（单位 wei）、`--block-number 26000000`、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
 
@@ -166,7 +166,7 @@ gas 不精确计量，一般 hash 和未知环境采用保守近似，有界关�
 
 ## 浏览器工作台
 
-可用 `--root-terminal-coverage` 请求独立的[根终止覆盖](docs/19-root-terminal-coverage.md)，默认关闭。附加记录联合覆盖原始输入的 Return/Revert/Failure 数据与最终 Store；详细 `Incomplete`、frontier、部分 SSA 和退出码 2 继续保留。
+CLI 与 Web 默认采用快速保守策略：`max_work = 2_000_000_000`，`root_terminal_coverage = true`。独立的[根终止覆盖](docs/19-root-terminal-coverage.md)联合覆盖实际原始输入的 Return/Revert/Failure 数据与最终 Store；详细分析仍可为 `Incomplete`，CFG 与 SSA 仍可部分完成，全部 frontier 和退出码 2 继续保留。用 `--allow-partial-ssa` 查看部分 SSA（`analyze` 还需 `--ssa`）；`--no-root-terminal-coverage` 关闭附加覆盖，仅做详细分析，原有不带值的 `--root-terminal-coverage` 仍兼容。详细分析已 `Converged` 时可以不附证书，这不应显示为缺少证书的告警。
 
 ```bash
 nix run .#web
@@ -178,7 +178,7 @@ nix run .#web
 
 分析链上账户时，使用 `nix run .#web -- --rpc-config http://127.0.0.1:8545` 直接传入 RPC HTTP(S) URL；后端自动创建 **Default RPC** 提供者，无需 JSON 文件。需要多个提供者或自定义名称时，`--rpc-config` 也接受 JSON 配置文件路径。浏览器同时显示提供者的名称和 RPC URL，分析请求只提交其 ID。首次打开时，有提供者则使用第一项自动分析 Ethereum 主网 USDC；未配置提供者则运行分支字节码示例，RPC 提交不可用。RPC 表单还可选择 WETH、USDT、Multicall3、Uniswap V2 Router02、V2 Pair（USDC/WETH）、V2 Factory、V4 PoolManager 或自定义入口地址，切换示例不会自动提交。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)，预置地址与来源见[入口示例](docs/web-workbench.md#使用控件)。
 
-CLI 与 Web 保留全部预算和精度控件，共用同一套较大默认值，并允许显式覆盖；实际分析仍遵循指定的有限预算。完整默认值和 Web 类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 参数见[精度与预算表](docs/05-sensitivity.md#7-实验时分别调整精度与预算)。直接调用 Rust 库时，`Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 与 `RpcInput::new()` 仍使用库自身的较小默认配置。
+CLI 与 Web 保留全部预算和精度控件，共用同一套默认值，并允许显式覆盖；实际分析仍遵循指定的有限预算。完整默认值和 Web 类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 参数见[精度与预算表](docs/05-sensitivity.md#7-实验时分别调整精度与预算)。直接调用 Rust 库时，`Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 与 `RpcInput::new()` 仍使用库自身的配置；`ExecutionConfig::default()` 的 work 预算仍为 20000000，根终止覆盖默认开启。
 
 ## 开发环境与实现入口
 

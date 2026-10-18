@@ -45,7 +45,7 @@ class GeneratorTests(unittest.TestCase):
         git.assert_called_once_with(["git", "rev-parse", "HEAD"], cwd=self.source, text=True)
         return profile
 
-    def test_derivation_only_removes_solver_policy_and_binds_selected_source(self):
+    def test_derivation_preserves_frozen_policy_and_binds_selected_source(self):
         profile = self.generate()
         for field in ["schema", "boundary", "report_adapter"]:
             self.assertEqual(profile[field], self.baseline[field])
@@ -66,19 +66,23 @@ class GeneratorTests(unittest.TestCase):
             if key not in {"provider", "rlimit"}}
         self.assertEqual(profile["expected_native_config"], expected_config)
         self.assertEqual(set(profile["cases"]), set(self.baseline["cases"]))
+        self.assertEqual(len(profile["cases"]), 7)
         for name, case in profile["cases"].items():
             old = deepcopy(self.baseline["cases"][name])
             argv = old.pop("argv")
             new = deepcopy(case)
             actual_argv = new.pop("argv")
             self.assertEqual(new, old)
-            # Preserve every argument/value outside the two obsolete flag pairs.
+            # Preserve every old argument/value and explicitly retain coverage-off.
             omitted = set()
             for flag in ["--smt.provider", "--smt.rlimit"]:
                 position = argv.index(flag)
                 omitted.update([position, position + 1])
             self.assertEqual(actual_argv, [arg for index, arg in enumerate(argv)
-                                         if index not in omitted])
+                                         if index not in omitted] + ["--no-root-terminal-coverage"])
+            self.assertEqual(actual_argv.count("--no-root-terminal-coverage"), 1)
+            self.assertNotIn("--root-terminal-coverage", actual_argv)
+            self.assertEqual(actual_argv[actual_argv.index("--max-work") + 1], "1000000000000")
         interface = profile["interface"]
         self.assertEqual(interface["source_commit"], COMMIT)
         self.assertEqual(interface["versions"], {"native": 10, "wire": 15, "cost": 3})
@@ -127,6 +131,27 @@ class GeneratorTests(unittest.TestCase):
         actual = json.loads(output.read_bytes())
         self.assertEqual(actual["interface"]["source_commit"], COMMIT)
         self.assertEqual(set(actual["cases"]), set(self.baseline["cases"]))
+        self.assertEqual(self.baseline_path.read_bytes(), self.baseline_bytes)
+
+    def test_generated_wire15_requests_preserve_frozen_inputs_and_1t_off_policy(self):
+        originals = {}
+        for name in ("weth", "usdc"):
+            path = ROOT / f"examples/no-smt-scale/wire14/{name}-original-request.json"
+            originals[name] = (path, path.read_bytes())
+        output = self.source / "selected-command-profile.json"
+        requests = self.source / "wire15"
+        with patch("sys.argv", ["generate-no-smt-scale-commands.py", "--interface-source",
+                               str(self.source), "--output", str(output),
+                               "--request-output-dir", str(requests)]), \
+                patch.object(generator.subprocess, "check_output", return_value=COMMIT + "\n"):
+            generator.main()
+        for name, (path, frozen) in originals.items():
+            original = json.loads(frozen)
+            actual = json.loads((requests / f"{name}-wire15-request.json").read_bytes())
+            self.assertIs(actual["limits"].pop("root_terminal_coverage"), False)
+            self.assertEqual(actual, original)
+            self.assertEqual(actual["limits"]["max_work"], 1_000_000_000_000)
+            self.assertEqual(path.read_bytes(), frozen)
         self.assertEqual(self.baseline_path.read_bytes(), self.baseline_bytes)
 
 

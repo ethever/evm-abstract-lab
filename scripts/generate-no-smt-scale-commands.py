@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Bind the frozen offline corpus to an explicitly selected no-SMT CLI source.
 
-This only writes a command profile. It does not build, run analysis, or replace
-the baseline profile. Regenerate it for the final build's exact source commit.
+Only writes a command profile and optional wire 15 requests; never builds or
+runs analysis. Keep outputs separate from frozen baselines. Regenerate the
+profile for the final build's exact source commit.
 """
 
 import argparse
@@ -49,7 +50,7 @@ def generate(repository, source):
     # The CLI prints an Incomplete Report before returning 2. The harness still
     # validates the JSON and keeps external stops and parse failures separate.
     profile["report_exit_codes"] = [0, 2]
-    # Explicitly bind the new default without changing any frozen case argv.
+    # Keep the frozen 1T/coverage-off policy despite consumer defaults changing.
     profile["expected_native_config"]["root_terminal_coverage"] = False
     for key in ("smt_provider", "smt_rlimit"):
         del profile["policy"][key]
@@ -63,17 +64,34 @@ def generate(repository, source):
         for flag in ("--smt.provider", "--smt.rlimit"):
             position = command.index(flag)
             del command[position:position + 2]
+        command.append("--no-root-terminal-coverage")
     return profile
+
+
+def derive_wire15_request(original):
+    """Keep every frozen wire 14 input and limit, explicitly disabling coverage."""
+    request = deepcopy(original)
+    request["limits"]["root_terminal_coverage"] = False
+    return request
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--interface-source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--request-output-dir", type=Path,
+                        help="write separate wire 15 WETH/USDC requests with the frozen 1T/off policy")
     arguments = parser.parse_args()
-    profile = generate(Path(__file__).resolve().parents[1],
-                       arguments.interface_source.resolve(strict=True))
+    repository = Path(__file__).resolve().parents[1]
+    profile = generate(repository, arguments.interface_source.resolve(strict=True))
     arguments.output.write_text(json.dumps(profile, indent=2) + "\n")
+    if arguments.request_output_dir is not None:
+        arguments.request_output_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("weth", "usdc"):
+            original = repository / f"examples/no-smt-scale/wire14/{name}-original-request.json"
+            request = derive_wire15_request(json.loads(original.read_bytes()))
+            output = arguments.request_output_dir / f"{name}-wire15-request.json"
+            output.write_text(json.dumps(request, indent=2) + "\n")
 
 
 if __name__ == "__main__":

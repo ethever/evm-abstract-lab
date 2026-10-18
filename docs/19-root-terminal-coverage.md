@@ -1,6 +1,6 @@
 # 根执行的保守终止覆盖
 
-`--root-terminal-coverage` 请求为原始根输入准备一份独立的终止覆盖记录，默认关闭。Web 在 **Execution budget** 中使用 **Prepare conservative root terminal coverage** 复选框；共享请求字段为 `limits.root_terminal_coverage`，必须是布尔值。
+CLI 与 Web 默认采用快速保守策略：`max_work = 2_000_000_000`，`root_terminal_coverage = true`，在同一预算内为实际原始根输入准备独立的终止覆盖记录。Web 在 **Execution budget** 中默认勾选 **Prepare conservative root terminal coverage**；共享请求字段为 `limits.root_terminal_coverage`，必须是布尔值。CLI 用 `--no-root-terminal-coverage` 关闭附加覆盖，仅做详细分析；原有不带值的 `--root-terminal-coverage` 仍可使用。Rust 库的 `ExecutionConfig::default()` 同样开启覆盖，但保留自身 20000000 的 work 预算。
 
 先分别看两个结果：
 
@@ -9,9 +9,9 @@
 | `status`、frontiers、pending payload、执行记录和部分 SSA | 详细抽象执行实际展开了哪些状态、指令和转移，还有哪些工作未完成？ |
 | 可选 `root_terminal_coverage` | 对绑定的原始根输入，所有可能终止的返回数据与最终事务效果是否由所附保守关系覆盖？ |
 
-附有记录时，详细分析仍可为 `Incomplete`。原始 frontier、pending machine、SSA 覆盖、执行过的 PC、CFG 边与普通 `outcomes` 保留原义；CLI 仍返回 **2**。图上的终止计数只来自详细执行证据。证书中的三个备选项不增加原生状态、边、已观察结果或已执行指令。
+附有记录时，详细分析仍可为 `Incomplete`，CFG 与 SSA 仍可部分完成。原始 frontier、pending machine、SSA 覆盖、执行过的 PC、CFG 边与普通 `outcomes` 保留原义；CLI 仍返回 **2**。查看部分 SSA 时显式加 `--allow-partial-ssa`，`analyze` 还需 `--ssa`。图上的终止计数只来自详细执行证据。证书中的三个备选项不增加原生状态、边、已观察结果或已执行指令，也不闭合 frontier。
 
-开启选项而没有附加记录，只表示 **no certificate attached**。不能从 `None` 推断某个未报告的原因。wire 报告显式使用 `null`；原生 JSON 省略未附加的可选字段。
+详细分析已 `Converged` 时，即使默认开启覆盖也可以没有附加记录；界面与文本不应因此显示 **Root terminal certificate not attached**。详细分析为 `Incomplete` 且没有记录时，只能说明未附加证书，不能从 `None` 推断某个未报告的原因。wire 报告显式使用 `null`；原生 JSON 省略未附加的可选字段。
 
 ## 从同一份原始输入读三个备选项
 
@@ -67,11 +67,11 @@ Return 的全效果包络可以没有显式账户：persistent、余额、nonce�
 
 这些 opaque 身份只能编码为规范十进制**字符串**：`"0"`、`"9007199254740993"`、`"18446744073709551615"` 均有效。JSON number、空串、符号、空格、小数、指数、前导零（如 `"01"`）和超过 `u64::MAX` 的值必须拒绝。不要先经过 JavaScript `Number`，也不要为身份 alpha-renaming 丢失 namespace 的复用关系。状态/转移/work/耗时等统计计数仍保留原来的整数编码；此次迁移只改变这些 opaque identity 字段。
 
-共享类型严格检查必填字段和未知字段。旧 wire 14 请求需要显式补上 `root_terminal_coverage: false`；旧报告还缺少 Store 默认项和字符串身份，不能只改版本号后安装。历史捕获报告、原始请求和基准 profile 继续按原版本保存；当前客户端应构造完整 wire 15 请求。
+共享类型严格检查必填字段和未知字段。当前客户端应构造完整 wire 15 请求，普通用户策略显式使用 `root_terminal_coverage: true`；复现旧基准策略时显式使用 `false`。旧 wire 14 报告还缺少 Store 默认项和字符串身份，不能只改版本号后安装。历史捕获报告、原始请求和基准 profile 继续按原版本保存。
 
 ## 预算与验证范围
 
-准备阶段使用**同一个**执行预算，先完成并支付三个备选项的构造、真实收尾、保留与发布所需工作，然后开始详细传播。准备本身会消耗 work，因此同样配置下可能减少剩余的详细分析工作。没有新增额度、默认上限、预算返还、重置或额外执行轮次。最终只发布已经准备并支付的记录；取消仍由原始执行的取消身份约束。
+准备阶段使用**同一个**执行预算，先完成并支付三个备选项的构造、真实收尾、保留与发布所需工作，然后开始详细传播。准备本身会消耗 work，因此同样配置下可能减少剩余的详细分析工作。准备不会增加额度、返还预算、重置账本或另开执行轮次。2000000000 是可覆盖的用户默认值，不是新增的公开硬上限。最终只发布已经准备并支付的记录；取消仍由原始执行的取消身份约束。
 
 语义验收要求：原始输入集合 `Γ(I)` 中每个具体输入的每个终止结果，都属于同种类 tuple 的联合解释。记完整终止关系为 `Terminal`，要求：
 
@@ -87,6 +87,6 @@ Terminal(Γ(I)) ⊆ Γ(Return, dataR, storeR)
 
 这些[局部 Lean 模型](proofs/README.md)证明 finalized whole-world 构造、共享原始输入见证的回滚与未来 owner-3 touch、历史扩展，以及带输入/取消守卫的一次性预付发布状态机。证书 `denotes` 使用 `finalizedTerminalEnvelope`/`FinalizedGamma`；旧 Return=True 构造原语不构成这份证书证明。守卫来自调用方 Bool 观察，真实 Rust Gamma、source/owner/log/ByteArray 表示、资源上界与 EVM step/callback/CFG 闭包仍需[手工生产对应](proofs/correspondence.md)，不能据此声称完整 Rust/EVM soundness 或 A2 已全部证明。一般详细 static finalizer 的修复属于独立 Core 工作；最终集成源码的 native、匹配资源浏览器与全仓 Nix 门禁仍待核验。
 
-真实浏览器回归登记为 `root-terminal-coverage`，检查实际表单 POST、default-off、opt-in/None、三项 pool 引用及输入绑定、原有未完成详情和浏览器中的独立 tuple 浏览。源码校验与浏览器运行是两份证据，验收需要匹配的 server、Wasm/JS 资源和最终完整门禁。
+真实浏览器回归登记为 `root-terminal-coverage`。当前策略的验收应覆盖实际表单 POST 的默认开启与 2B work、显式关闭、详细 `Converged` 且无证书、三项 pool 引用及输入绑定、原有未完成详情和浏览器中的独立 tuple 浏览。源码校验与浏览器运行是两份证据，验收需要匹配的 server、Wasm/JS 资源和最终完整门禁。
 
-规模实验继续保留[固定七个 case 与原策略](../examples/no-smt-scale/README.md)。新增保守覆盖不代表这些输入已经详细闭合；性能结论须来自相同输入、完整策略和交付边界的实际 opt-in 测量。
+规模实验继续保留[固定七个 case 与原策略](../examples/no-smt-scale/README.md)：work 为 1000000000000，覆盖关闭。[命令生成器](../scripts/generate-no-smt-scale-commands.py)为每个 case 显式加入 `--no-root-terminal-coverage`；可选的 `--request-output-dir` 将 WETH/USDC 的 wire 15 请求写到独立目录，显式设置 `limits.root_terminal_coverage: false`，其余输入与限制不变。历史捕获、hash 和结果不重写。新增保守覆盖不代表这些输入已经详细闭合；性能结论仍需相同输入、完整策略和交付边界的实际测量。
