@@ -16,7 +16,7 @@ pub(super) enum RuntimeRetry {
     #[default]
     Fresh,
     Attempted,
-    Coarse(CoarseRuntime),
+    Coarse(Box<CoarseRuntime>),
 }
 
 /// Publication uses one phase's receipts. A failed coarse transfer cannot
@@ -84,7 +84,7 @@ impl CoarseRuntime {
         original: &PayloadSummary,
         domain: Domain,
         budget: &mut WorkBudget,
-    ) -> Result<(Self, PayloadSummary, MachinePayload), MachineError> {
+    ) -> Result<(Box<Self>, PayloadSummary, MachinePayload), MachineError> {
         if original.active().code != FrameCode::Runtime
             || original
                 .frames
@@ -99,9 +99,14 @@ impl CoarseRuntime {
         // and eventual release. No partial bound escapes refusal.
         let preparation_work = original.work_size().saturating_mul(8);
         let layout_lifetime_work = original.work_size().saturating_mul(2);
+        // One Box allocation and its eventual release are fixed actions;
+        // the layout passes already cover its variable field work.
+        let box_lifetime_work = 2;
         reserve(
             budget,
-            preparation_work.saturating_add(layout_lifetime_work),
+            preparation_work
+                .saturating_add(layout_lifetime_work)
+                .saturating_add(box_lifetime_work),
         )?;
         let projected = erase_guarantees(original.clone())?;
         let layout = loop_bound::restrict(&projected, &projected, domain);
@@ -109,7 +114,7 @@ impl CoarseRuntime {
         reserve(budget, bound.work_size().saturating_mul(4))?;
         let payload = instantiate(&bound, domain)?;
         MachineError::check_cancelled()?;
-        Ok((Self { layout }, bound, payload))
+        Ok((Box::new(Self { layout }), bound, payload))
     }
 
     pub(super) fn join(
