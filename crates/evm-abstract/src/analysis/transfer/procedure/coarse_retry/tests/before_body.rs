@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    analysis::{Continuation, JoinBoundary},
+    analysis::{Continuation, JoinBoundary, MachineEdgeKind},
     domain::{
         relational::{QueryReason, RelationLimits},
         symbolic::{ByteStateKind, ExprError, ExprId, StateError},
@@ -61,13 +61,20 @@ fn raw_failure(h: &Harness) -> MachineError {
 }
 
 #[test]
-fn real_input_binding_limits_promote_before_body_at_small_and_default_caps() {
-    let default_cap = RelationLimits::default().max_nodes;
-    assert_eq!(default_cap, 16_384);
+fn real_input_binding_limits_promote_before_body_at_small_library_and_screen13_caps() {
+    let library_cap = RelationLimits::default().max_nodes;
+    assert_eq!(library_cap, 1024);
+    // Screen13 supplies 16K explicitly; it is not the library default.
+    let screen13_cap = 16_384;
     for (cap, coordinates, values) in [
         (64, 8, vec![0, 1, 3]),
         (
-            default_cap,
+            library_cap,
+            16,
+            (0..=127).filter(|value| *value != 63).collect(),
+        ),
+        (
+            screen13_cap,
             128,
             (0..=127).filter(|value| *value != 63).collect(),
         ),
@@ -78,7 +85,7 @@ fn real_input_binding_limits_promote_before_body_at_small_and_default_caps() {
         assert!(retention_refusal(&error));
         let domain = h.config.domain().unwrap();
         // Every individual coordinate fits the same cap. Only their complete
-        // Input carrier refuses; the default policy itself remains unchanged.
+        // Input carrier refuses; the selected policy itself remains unchanged.
         input_summary(domain, 1, &values)
             .instantiate(domain)
             .unwrap();
@@ -161,8 +168,48 @@ fn prebody_promotion_keeps_the_whole_original_gamma_and_captured_context() {
     let error = raw_failure(&h);
     let execution = h.solver().retry_instantiation(0, &original, error).unwrap();
     assert!(execution.frontiers.is_empty());
-    assert_eq!(execution.successors.len(), 1);
-    let live = &execution.successors[0].payload;
+    // MSTORE's logical-memory envelope preserves a gas-failure sibling in
+    // addition to the continuing child. Require both precise kinds, rather
+    // than discarding the exceptional completion while selecting the witness.
+    let [first, second] = execution.successors.as_slice() else {
+        panic!(
+            "expected one child continuation and one failure, got {} successors",
+            execution.successors.len()
+        );
+    };
+    let (continued, failed) = match (first.kind, second.kind) {
+        (MachineEdgeKind::Intraprocedural(_), MachineEdgeKind::Failure) => (first, second),
+        (MachineEdgeKind::Failure, MachineEdgeKind::Intraprocedural(_)) => (second, first),
+        kinds => panic!("unexpected successor kinds: {kinds:?}"),
+    };
+    assert!(execution.outcomes.is_empty());
+    assert_eq!(execution.completed_calls.len(), 1);
+    let completed = &execution.completed_calls[0];
+    assert_eq!(completed.kind, OutcomeKind::Failure);
+    assert_eq!(completed.output_kind, OutcomeKind::Failure);
+    assert_eq!(completed.data, ByteArray::empty());
+    assert_eq!(completed.output_data, ByteArray::empty());
+    assert_eq!(completed.payload.active().key.basic_block_index, 0);
+    assert!(completed.payload.active().stack.is_empty());
+    assert_eq!(
+        completed.payload.active().memory.len().singleton(),
+        Some(U256::ZERO)
+    );
+    let mut rollback = completed.payload.store.clone();
+    rollback.restore(completed.payload.active().saved_store.clone());
+    assert_eq!(completed.output_store, rollback);
+    assert_eq!(failed.payload.store, rollback);
+    assert_eq!(failed.payload.call_stack.depth(), 1);
+    assert_eq!(failed.payload.active().returndata, ByteArray::empty());
+    assert_eq!(
+        failed.payload.active().stack.last().unwrap().singleton(),
+        Some(U256::ZERO)
+    );
+    assert_eq!(
+        failed.payload.active().saved_store,
+        completed.payload.call_stack.root().state.saved_store
+    );
+    let live = &continued.payload;
     assert_eq!(live.call_stack.depth(), 2);
     let bound = &h.table.nodes[0].payload;
     assert_eq!(bound.frames.len(), original.frames.len());
