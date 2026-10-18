@@ -58,7 +58,9 @@ fn check_entry_gas_failure(
         // cleanup. These fixtures never touch RIPEMD, so no sticky exception
         // may distinguish their rollback from the finalized root checkpoint.
         let mut expected = checkpoint.state().clone();
-        expected.finalize_transaction(Domain::from_spec(result.domain_spec()));
+        expected
+            .finalize_transaction(Domain::from_spec(result.domain_spec()))
+            .unwrap();
         assert_eq!(outcome.store, expected);
     }
 }

@@ -269,12 +269,12 @@ impl Plan {
         receipt
     }
 
-    pub(super) fn apply(
+    pub(super) fn apply<E>(
         self,
         store: &mut Store,
         domain: Domain,
-        interrupt: &mut impl FnMut() -> Result<(), FinalizationError>,
-    ) -> Result<(), FinalizationError> {
+        interrupt: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<(), E> {
         let mut checked_join_input = false;
         for (address, action) in self.actions {
             interrupt()?;

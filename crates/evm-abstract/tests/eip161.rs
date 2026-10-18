@@ -89,7 +89,7 @@ fn only_touched_definitely_empty_accounts_are_definitely_cleared() {
     for number in [0x200, 0x400, 0x500, 0x600, 0x700] {
         store.touch_account(address(number));
     }
-    store.finalize_transaction(domain);
+    store.finalize_transaction(domain).unwrap();
     assert_eq!(store.existence(address(0x200)), Existence::Absent);
     assert_eq!(
         store.existence(address(0x300)),
@@ -106,7 +106,7 @@ fn only_touched_definitely_empty_accounts_are_definitely_cleared() {
         assert_eq!(store.touched_in_transaction(address(number)), Some(false));
     }
     let finalized = store.clone();
-    store.finalize_transaction(domain);
+    store.finalize_transaction(domain).unwrap();
     assert_eq!(
         store, finalized,
         "clearing must not leak into a later transaction"
@@ -126,7 +126,7 @@ fn touch_may_must_joins_and_summary_widening_keep_both_outcomes() {
         assert_eq!(joined.touched_in_transaction(address(0x200)), None);
         assert_eq!(joined.touched_in_transaction(address(0x300)), Some(false));
         let mut finalized = joined.clone();
-        finalized.finalize_transaction(domain);
+        finalized.finalize_transaction(domain).unwrap();
         assert_eq!(finalized.existence(address(0x200)), Existence::Unknown);
         assert_eq!(finalized.existence(address(0x300)), Existence::Present);
         for widen in [false, true] {
@@ -138,7 +138,7 @@ fn touch_may_must_joins_and_summary_widening_keep_both_outcomes() {
             let mut replay = summary.instantiate(domain).unwrap();
             assert_eq!(replay.touched_in_transaction(address(0x200)), None);
             assert_eq!(replay.touched_in_transaction(address(0x300)), Some(false));
-            replay.finalize_transaction(domain);
+            replay.finalize_transaction(domain).unwrap();
             assert_eq!(replay.existence(address(0x200)), Existence::Unknown);
             assert_eq!(replay.existence(address(0x300)), Existence::Present);
         }
@@ -180,7 +180,7 @@ fn snapshots_roll_back_touches_except_the_ripemd_consensus_exception() {
     store.may_touch_account(address(0x400));
     store.restore(saved);
     assert_eq!(store, before);
-    store.finalize_transaction(domain);
+    store.finalize_transaction(domain).unwrap();
     assert_eq!(store.existence(address(0x200)), Existence::Absent);
     assert_eq!(store.existence(address(0x300)), Existence::Present);
 
@@ -214,7 +214,7 @@ fn unknown_effects_preserve_must_touches_and_static_value_state() {
             let mut expected = before;
             expected.may_touch_all();
             assert_eq!(store, expected);
-            store.finalize_transaction(domain);
+            store.finalize_transaction(domain).unwrap();
             assert_eq!(store.existence(address(0x200)), Existence::Absent);
             assert_eq!(store.existence(address(0x300)), Existence::Unknown);
         }
@@ -222,7 +222,7 @@ fn unknown_effects_preserve_must_touches_and_static_value_state() {
     let mut created = Store::new_checked(&world, domain).unwrap();
     created.begin_creation(address(0x300));
     assert_eq!(created.touched_in_transaction(address(0x300)), Some(true));
-    created.finalize_transaction(domain);
+    created.finalize_transaction(domain).unwrap();
     assert_eq!(
         created.existence(address(0x300)),
         Existence::Present,
@@ -232,7 +232,7 @@ fn unknown_effects_preserve_must_touches_and_static_value_state() {
     let mut destroyed = Store::new_checked(&world, domain).unwrap();
     destroyed.selfdestruct(address(0x101), address(0x200), domain);
     assert_eq!(destroyed.touched_in_transaction(address(0x200)), Some(true));
-    destroyed.finalize_transaction(domain);
+    destroyed.finalize_transaction(domain).unwrap();
     assert_eq!(
         destroyed.existence(address(0x200)),
         Existence::Absent,

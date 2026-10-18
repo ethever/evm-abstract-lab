@@ -79,7 +79,9 @@ fn captured_log<'a>(
         Some(false)
     );
     let mut finalized = checkpoint.clone();
-    finalized.finalize_transaction(Domain::from_spec(analysis.domain_spec()));
+    finalized
+        .finalize_transaction(Domain::from_spec(analysis.domain_spec()))
+        .unwrap();
     assert_eq!(&finalized, checkpoint, "no sticky RIPEMD touch here");
     let entry_failure = analysis.outcomes().first().unwrap();
     assert_eq!(entry_failure.kind, OutcomeKind::Failure);

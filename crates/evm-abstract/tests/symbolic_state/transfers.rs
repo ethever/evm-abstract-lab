@@ -302,7 +302,7 @@ fn delegate_echo(revert: bool) {
     let mut failure_store = initial.store.clone();
     failure_store.restore(checkpoint.clone());
     assert_eq!(failure_store, captured);
-    failure_store.finalize_transaction(domain);
+    failure_store.finalize_transaction(domain).unwrap();
     assert!(!failure_store.symbolic_limit_reached());
     // No pending deletion, uncertain touch or transient effect survives restore.
     // Cleanup therefore preserves every field and captured input identity, so

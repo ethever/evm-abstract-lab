@@ -181,7 +181,7 @@ fn delegate_nonce_and_new_owner_deletion_are_covered_at_transaction_end() {
             store.read(c, &word(0), Domain::default()).singleton(),
             Some(U256::from(5))
         );
-        store.finalize_transaction(Domain::default());
+        store.finalize_transaction(Domain::default()).unwrap();
         assert_eq!(store.code(a), Some(&Code::Unknown));
         assert_eq!(store.existence(a), Existence::Unknown);
         assert_eq!(store.created_in_transaction(a), Some(false));

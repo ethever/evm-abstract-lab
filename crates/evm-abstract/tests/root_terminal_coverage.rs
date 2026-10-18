@@ -413,7 +413,7 @@ fn exceptional_finalization_covers_both_future_sticky_three_choices() {
                 future.touch_account(address(3));
             }
             future.restore(saved.clone());
-            future.finalize_transaction(domain);
+            future.finalize_transaction(domain).unwrap();
             let expected_existence = if future_touch {
                 Existence::Absent
             } else {

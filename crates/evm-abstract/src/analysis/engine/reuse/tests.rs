@@ -232,7 +232,7 @@ fn touched_ripemd_inputs_fall_back_to_fresh_failure_and_normal_execution() {
             restored.read(other, &zero, domain),
             saved.read(other, &zero, domain)
         );
-        restored.finalize_transaction(domain);
+        restored.finalize_transaction(domain).unwrap();
         let existence = if may_touch {
             Existence::Unknown
         } else {

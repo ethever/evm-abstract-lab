@@ -809,7 +809,7 @@ fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
     // actual root RETURN commits it; saved_store remains pre-entry rollback history.
     let initial_current_store = &analysis.states()[0].entry.store;
     let mut finalized_store = initial_current_store.clone();
-    finalized_store.finalize_transaction(domain);
+    finalized_store.finalize_transaction(domain).unwrap();
     for (word, call_value) in [(1, 0), (2, 1), (3, 2)] {
         bounded_promotion::assert_joint_word_witness(&covered.entry, word, domain);
         for (stage, payload, expected_store) in [

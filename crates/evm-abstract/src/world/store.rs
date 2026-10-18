@@ -966,11 +966,22 @@ impl Store {
 
     /// Commit deferred EIP-6780 deletion and EIP-161 touched-empty clearing.
     /// Uncertain deletion joins retained/deleted states; untouched empty accounts
-    /// and accounts proven nonempty remain intact.
-    pub fn finalize_transaction(&mut self, domain: Domain) {
-        finalization::Plan::new(self)
-            .apply(self, domain, &mut || Ok(()))
-            .expect("unmetered finalization cannot be interrupted");
+    /// and accounts proven nonempty remain intact. Retention or cancellation
+    /// errors leave the complete Store unchanged.
+    pub fn finalize_transaction(&mut self, domain: Domain) -> Result<(), StoreError> {
+        let limits = domain.spec().relations().expressions();
+        self.check_existing(limits)?;
+        let mut staged = self.clone();
+        finalization::Plan::new(&staged).apply(&mut staged, domain, &mut || {
+            if analysis_control::current_cancellation().is_cancelled() {
+                Err(StoreError::State(StateError::Cancelled))
+            } else {
+                Ok(())
+            }
+        })?;
+        staged.check_existing(limits)?;
+        *self = staged;
+        Ok(())
     }
 
     fn clear_transaction(&mut self) {

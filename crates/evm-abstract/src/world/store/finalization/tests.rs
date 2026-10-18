@@ -244,9 +244,14 @@ fn may_delete_retention_refusal_is_typed_and_never_installs_the_numeric_fallback
     store.check_existing(limits).unwrap();
     assert_eq!(Deletion::at(&store, address(0x200)), Deletion::Join);
 
-    // The unchanged public API demonstrates the existing fallback contract.
+    // The private plan still retains its numerical fallback and failure marker;
+    // the public Result API must refuse it without installing that fallback.
     let mut fallback = store.clone();
-    fallback.finalize_transaction(domain);
+    assert!(fallback.finalize_transaction(domain).is_err());
+    assert_eq!(fallback, store);
+    Plan::new(&fallback)
+        .apply(&mut fallback, domain, &mut || Ok::<(), StoreError>(()))
+        .unwrap();
     assert!(matches!(
         fallback.check_existing(limits),
         Err(StoreError::State(StateError::Limit { .. })
@@ -439,7 +444,11 @@ fn may_delete_does_not_erase_a_transient_retention_failure_during_cleanup() {
     );
     assert_eq!(store, before);
     let mut fallback = before;
-    fallback.finalize_transaction(domain);
+    assert_eq!(fallback.finalize_transaction(domain), Err(error.clone()));
+    assert_eq!(fallback, store);
+    Plan::new(&fallback)
+        .apply(&mut fallback, domain, &mut || Ok::<(), StoreError>(()))
+        .unwrap();
     assert_eq!(
         fallback.check_existing(domain.spec().relations().expressions()),
         Err(error)

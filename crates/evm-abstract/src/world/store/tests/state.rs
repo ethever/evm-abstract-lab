@@ -218,7 +218,7 @@ fn persistent_transient_snapshot_and_creation_reset() {
     );
     store.restore(snapshot);
     assert_eq!(store, before);
-    store.finalize_transaction(domain);
+    store.finalize_transaction(domain).unwrap();
     assert_eq!(
         store.read(address, &k, domain).singleton(),
         Some(U256::from(7))

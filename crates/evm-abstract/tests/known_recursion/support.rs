@@ -279,7 +279,9 @@ pub(super) fn terminals(analysis: &WorldAnalysis, kind: OutcomeKind) -> Vec<&Mac
     // Root completion also finalizes transaction state. These fixtures have no
     // retained RIPEMD touch; that exception cannot excuse other Store changes.
     let mut finalized = checkpoint.clone();
-    finalized.finalize_transaction(Domain::from_spec(analysis.domain_spec()));
+    finalized
+        .finalize_transaction(Domain::from_spec(analysis.domain_spec()))
+        .unwrap();
     assert_eq!(finalized, initial);
     // The engine seeds this outcome before appending executed completions.
     let entry_failure = analysis.outcomes().first().unwrap();
