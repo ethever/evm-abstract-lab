@@ -1,6 +1,9 @@
 //! Source-only regressions; Root owns compilation and execution of these cases.
 
 use super::super::{Solver, Table, form, semantic_eq};
+
+mod controls;
+mod snapshots;
 use super::*;
 use crate::{
     U256,
@@ -133,6 +136,41 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
             crate::domain::relational::QueryReason::ExpressionLimit
         )
     )));
+    let post = &retried.successors[0].payload;
+    let crate::domain::symbolic::ByteStateKind::WriteWord {
+        previous, value, ..
+    } = post.active().memory.state_root().kind()
+    else {
+        panic!("must preserve the coarse input behind the actual write")
+    };
+    assert_eq!(value.as_constant(), Some(U256::from(7)));
+    let before_byte = crate::domain::symbolic::ExprId::byte_read(
+        previous.clone(),
+        crate::domain::symbolic::ExprId::constant(U256::ZERO),
+        Default::default(),
+    )
+    .unwrap();
+    let domain = h.config.domain().unwrap();
+    let current = post
+        .store
+        .read_checked(address(0x101), &word(0), domain)
+        .unwrap();
+    let saved = post
+        .active()
+        .saved_store
+        .state()
+        .read_checked(address(0x101), &word(0), domain)
+        .unwrap();
+    // The entire original finite input has two joint tuples. Use one source
+    // assignment per tuple for the pre-write byte, post-write word and both
+    // current/saved storage versions; no collection of marginal SAT checks.
+    for byte in [1u64, 2] {
+        let mut witness = snapshots::Witness::default();
+        witness.assign(&before_byte, U256::from(byte));
+        witness.assign(value, U256::from(7));
+        witness.assign(current.expression().unwrap(), U256::ZERO);
+        witness.assign(saved.expression().unwrap(), U256::ZERO);
+    }
     h.solver().accept(0, retried);
     assert_eq!(h.table.nodes.len(), 2);
     assert!(
@@ -140,6 +178,37 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
             .nodes
             .keys()
             .any(|(key, _)| key.basic_block_index == 1)
+    );
+}
+
+#[test]
+fn real_worklist_counts_both_attempts_and_only_actually_covered_blocks() {
+    let mut h = Harness::new("525b00");
+    h.solver().run();
+    assert!(h.table.frontiers.is_empty(), "{:?}", h.table.frontiers);
+    assert_eq!(h.counters.transfers, 3);
+    assert_eq!(h.table.nodes.len(), 2);
+    assert_eq!(
+        h.table.procedures[0]
+            .covered_blocks
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert!(
+        h.table.procedures[0]
+            .outputs
+            .contains_key(&OutcomeKind::Return)
+    );
+    assert!(h.table.queue.is_empty() && h.table.queued.is_empty());
+    assert_eq!(
+        h.table
+            .nodes
+            .iter()
+            .filter(|node| matches!(&node.runtime_retry, RuntimeRetry::Coarse(_)))
+            .count(),
+        1
     );
 }
 
