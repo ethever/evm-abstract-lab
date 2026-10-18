@@ -281,12 +281,59 @@ def _tuples(report, binding):
                        "created_default": False, "pending_destruction_default": False,
                        "touched_default": False}
     assert returned == expected_return, (returned, expected_return)
-    for store in [reverted, failed]:
-        assert _rollback_store(report, binding, store) not in independent
-    # The ordinary observed Failure is separate from the two prepared rollbacks.
-    observed, = report["outcomes"]
-    assert observed["kind"] == "Failure"
+    prepared_guards = [_rollback_store(report, binding, store) for store in [reverted, failed]]
+    assert all(guard not in independent for guard in prepared_guards)
+    _observed_failures(report, [*independent, *prepared_guards])
     assert not failed["logs"] and failed["logs_unknown"] is False
+
+
+def _observed_failures(report, independent=()):
+    # Ordinary detail has no certificate. Read the actual saved root and source
+    # from the entry frame, retaining their identities for the rollback oracle.
+    entry, = [state["entry"] for state in report["states"] if state["state"] == 0]
+    root, = entry["frames"]
+    saved = _pool(report, "stores", root["rollback_store"])
+    storage = _node(report, saved["storage_root"], "SlotsInput")
+    binding = {"saved_store": root["rollback_store"], "program": root["program"],
+               "frame": {"code_hash": root["code_hash"]},
+               "storage_source": storage["source"]["token"]}
+    calldata = _pool(report, "byte_arrays", root["calldata"])
+    original = _pool(report, "byte_arrays", report["metadata"]["environment"]["calldata"])
+    original_view = _node(report, original["symbolic"], "View")
+    original_source = _node(report, original_view["state"], "BytesInput")
+    assert _node(report, original_view["offset"], "Constant") == "0x0"
+    assert original_source == {
+        "source": {"token": original_source["source"]["token"], "namespace": "0x0"},
+        "length": original_view["length"], "bindings": []}
+    assert original["length"]["expression"] == original_view["length"]
+    original_refs = [binding["storage_source"], original_view["length"],
+                     original_source["source"]["token"]]
+    independent = [*independent, *(_node(report, ref, "Fresh") for ref in original_refs)]
+    assert all(type(label) is int and 0 <= label < 1 << 64 for label in independent)
+    pre_entry, finalized = 0, 0
+    for outcome in report["outcomes"]:
+        assert set(outcome) == {"state", "kind", "data", "store"}, outcome
+        assert outcome["kind"] == "Failure" and outcome["state"] == 0, outcome
+        data = _pool(report, "byte_arrays", outcome["data"])
+        assert data["memory"] is False
+        _zero(data["length"])
+        view = _node(report, data["symbolic"], "View")
+        assert set(view) == {"state", "offset", "length"}
+        assert _node(report, view["offset"], "Constant") == "0x0"
+        assert _node(report, view["length"], "Constant") == "0x0"
+        assert _node(report, view["state"], "BytesExact") == "0x"
+        expected = {**calldata, "length": saved["transient_default"],
+                    "default": saved["transient_default"], "symbolic": data["symbolic"]}
+        assert data == expected, (data, expected)
+        store = _pool(report, "stores", outcome["store"])
+        # Engine's pre-entry Failure clones the whole saved Store. Every other
+        # observed Failure must match the complete independently finalized root.
+        if store == saved:
+            pre_entry += 1
+        else:
+            assert _rollback_store(report, binding, store) not in independent
+            finalized += 1
+    assert pre_entry > 0 and finalized > 0, (pre_entry, finalized)
 
 
 def _detail(report):
@@ -299,7 +346,7 @@ def _detail(report):
     block, = [block for block in report["ssa"]["blocks"] if block["state"] == 0]
     assert [(item["pc"], item["opcode"], item["progress"]) for item in block["instructions"]] == [
         (0, 0x60, "Completed"), (2, 0x56, "Dispatched")]
-    assert len(report["outcomes"]) == 1 and report["outcomes"][0]["kind"] == "Failure"
+    _observed_failures(report)
     return {**{key: report[key] for key in
                ["status", "transfers", "cfg", "edges", "ssa", "frontiers", "diagnostics", "outcomes"]},
             "pending_machines": len(report["pending_machines"]),
