@@ -4,8 +4,8 @@
 //! every later incoming join uses the same erased guarantees and coarse mode.
 
 use super::{
-    Domain, Execution, FrameCode, MachineError, MachinePayload, PayloadSummary, WorkBudget,
-    instantiate, join, loop_bound, stack_alias::StackAliases,
+    Domain, Execution, FrameCode, FrontierReason, MachineError, MachinePayload, PayloadSummary,
+    WorkBudget, instantiate, join, loop_bound, stack_alias::StackAliases,
 };
 
 #[cfg(test)]
@@ -17,6 +17,27 @@ pub(super) enum RuntimeRetry {
     Fresh,
     Attempted,
     Coarse(Box<CoarseRuntime>),
+}
+
+/// Use the same raw producer policy as post-execute retention receipts, before
+/// MachineError::frontier_reason can erase identity sentinels and other causes.
+pub(super) fn retention_refusal(error: &MachineError) -> bool {
+    use super::super::errors;
+    match error {
+        MachineError::Expression(error) => errors::retention_expression(error).is_some(),
+        MachineError::Bytes(error) => errors::retention_bytes(error).is_some(),
+        MachineError::Store(error) => errors::retention_store(error).is_some(),
+        _ => false,
+    }
+}
+
+pub(super) fn interruption(reason: &FrontierReason) -> bool {
+    matches!(
+        reason,
+        FrontierReason::Work
+            | FrontierReason::Budget(_)
+            | FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+    )
 }
 
 /// Publication uses one phase's receipts. A failed coarse transfer cannot
@@ -42,14 +63,7 @@ pub(super) fn reconcile(mut first: Execution, mut retry: Execution) -> Execution
         // an actual interruption needs an additional original-entry boundary;
         // the original retention frontier already witnesses incompleteness.
         for frontier in retry.frontiers {
-            if matches!(
-                frontier.reason,
-                crate::analysis::FrontierReason::Work
-                    | crate::analysis::FrontierReason::Budget(_)
-                    | crate::analysis::FrontierReason::Relations(
-                        crate::domain::relational::QueryReason::Cancelled
-                    )
-            ) {
+            if interruption(&frontier.reason) {
                 super::super::boundary(&mut first, frontier.pc, frontier.reason);
             }
         }
@@ -80,17 +94,21 @@ fn erase_guarantees(mut input: PayloadSummary) -> Result<PayloadSummary, Machine
 }
 
 impl CoarseRuntime {
+    pub(super) fn supports(original: &PayloadSummary) -> bool {
+        original.active().code == FrameCode::Runtime
+            && original.active().program.is_some()
+            && !original
+                .frames
+                .iter()
+                .any(|frame| frame.code == FrameCode::Unknown)
+    }
+
     pub(super) fn prepare(
         original: &PayloadSummary,
         domain: Domain,
         budget: &mut WorkBudget,
     ) -> Result<(Box<Self>, PayloadSummary, MachinePayload), MachineError> {
-        if original.active().code != FrameCode::Runtime
-            || original
-                .frames
-                .iter()
-                .any(|frame| frame.code == FrameCode::Unknown)
-        {
+        if !Self::supports(original) {
             return Err(MachineError::Shape);
         }
         // Pay for cloning, guarantee erasure, layout projection and the full

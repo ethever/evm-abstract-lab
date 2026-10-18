@@ -249,30 +249,33 @@ impl Solver<'_> {
                 self.park_pending(reason);
                 break;
             }
-            let payload = match instantiate(&input, self.domain) {
-                Ok(payload) => payload,
+            let execution = match instantiate(&input, self.domain) {
+                Ok(payload) => {
+                    self.counters.transfers += 1;
+                    self.counters.report(self.budget.used());
+                    let execution = if payload.active().code == FrameCode::Unknown {
+                        self.environment(payload)
+                    } else {
+                        execute_inner(
+                            self.world,
+                            self.entry,
+                            payload,
+                            self.config,
+                            self.domain,
+                            self.budget,
+                            self.storage_reads,
+                            true,
+                        )
+                    };
+                    self.retry_runtime(id, &input, execution)
+                }
                 Err(error) => {
-                    self.frontier_summary(input, error.frontier_reason(), 0);
-                    continue;
+                    let Some(execution) = self.retry_instantiation(id, &input, error) else {
+                        continue;
+                    };
+                    execution
                 }
             };
-            self.counters.transfers += 1;
-            self.counters.report(self.budget.used());
-            let execution = if payload.active().code == FrameCode::Unknown {
-                self.environment(payload)
-            } else {
-                execute_inner(
-                    self.world,
-                    self.entry,
-                    payload,
-                    self.config,
-                    self.domain,
-                    self.budget,
-                    self.storage_reads,
-                    true,
-                )
-            };
-            let execution = self.retry_runtime(id, &input, execution);
             if !execution.executed_pcs.is_empty() {
                 let procedure = self.table.nodes[id].procedure;
                 self.table.procedures[procedure]
@@ -294,6 +297,42 @@ impl Solver<'_> {
         }
     }
 
+    /// A failed rehydration has no executable checkpoint. Retry only from the
+    /// complete immutable node summary, and retain its original obligation if
+    /// either preparation or the replacement transfer fails.
+    pub(super) fn retry_instantiation(
+        &mut self,
+        id: usize,
+        original: &PayloadSummary,
+        error: MachineError,
+    ) -> Option<Execution> {
+        let retry = (matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
+            && CoarseRuntime::supports(original)
+            && super::coarse_retry::retention_refusal(&error))
+        .then(|| self.execute_coarse(id, original));
+        if let Some(Ok(execution)) = &retry
+            && execution.frontiers.is_empty()
+        {
+            return retry.and_then(Result::ok);
+        }
+        self.frontier_summary(original.clone(), error.frontier_reason(), 0);
+        let interruptions = match retry {
+            Some(Ok(execution)) => execution
+                .frontiers
+                .into_iter()
+                .map(|frontier| frontier.reason)
+                .collect::<Vec<_>>(),
+            Some(Err(reason)) => vec![reason],
+            None => Vec::new(),
+        };
+        for reason in interruptions {
+            if super::coarse_retry::interruption(&reason) {
+                self.frontier_summary(original.clone(), reason, 0);
+            }
+        }
+        None
+    }
+
     pub(super) fn retry_runtime(
         &mut self,
         id: usize,
@@ -301,7 +340,7 @@ impl Solver<'_> {
         mut first: Execution,
     ) -> Execution {
         if !matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
-            || original.active().code != FrameCode::Runtime
+            || !CoarseRuntime::supports(original)
             || first.retention_failures.is_empty()
             // A mixed execution has independent mandatory obligations. This
             // slice admits only complete, raw-typed retention refusals.
@@ -311,10 +350,26 @@ impl Solver<'_> {
         {
             return first;
         }
+        match self.execute_coarse(id, original) {
+            Ok(retry) => super::coarse_retry::reconcile(first, retry),
+            Err(reason) => {
+                if super::coarse_retry::interruption(&reason) {
+                    super::super::boundary(&mut first, 0, reason);
+                }
+                first
+            }
+        }
+    }
+
+    fn execute_coarse(
+        &mut self,
+        id: usize,
+        original: &PayloadSummary,
+    ) -> Result<Execution, FrontierReason> {
         // Only the attempt bit may survive failed preparation. No execution has
         // reached accept/publish, and the original immutable checkpoint is used.
         self.table.nodes[id].runtime_retry = RuntimeRetry::Attempted;
-        let prepared = self
+        let (coarse, bound, payload) = self
             .retry_admission()
             .and_then(|()| {
                 CoarseRuntime::prepare(original, self.domain, self.budget)
@@ -323,14 +378,7 @@ impl Solver<'_> {
             .and_then(|prepared| {
                 self.retry_admission()?;
                 Ok(prepared)
-            });
-        let (coarse, bound, payload) = match prepared {
-            Ok(prepared) => prepared,
-            Err(reason) => {
-                super::super::boundary(&mut first, 0, reason);
-                return first;
-            }
-        };
+            })?;
         self.counters.transfers += 1;
         self.counters.report(self.budget.used());
         let mut retry = execute_inner(
@@ -369,7 +417,7 @@ impl Solver<'_> {
                 ),
             ));
         }
-        super::coarse_retry::reconcile(first, retry)
+        Ok(retry)
     }
 
     pub(super) fn accept(&mut self, from: usize, execution: Execution) {

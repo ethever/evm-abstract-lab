@@ -2,6 +2,7 @@
 
 use super::super::{Solver, Table, form, semantic_eq};
 
+mod before_body;
 mod controls;
 mod snapshots;
 use super::*;
