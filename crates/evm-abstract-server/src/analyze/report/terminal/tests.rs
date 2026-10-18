@@ -4,9 +4,11 @@ use crate::analyze::{input, report};
 use alloy_primitives::{Address, B256, U256};
 use evm_abstract::{
     analysis::{WorldAnalysis, control::Control},
-    domain::AbstractValue,
+    domain::{AbstractValue, Domain},
     world::{Account, Entry, Store, World},
 };
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 // Reuse the core's two-block cap fixture through public execution APIs. The
 // transfer cap interrupts actual detail; no certificate is minted by the test.
@@ -42,6 +44,15 @@ fn fixture(enabled: bool, is_static: bool, chain: bool) -> (WorldAnalysis, api::
         account.nonce = AbstractValue::constant(U256::ONE);
         world.insert(address, account).unwrap();
     }
+    // Storage does not decide EIP-161 emptiness. This MAY-empty owner makes
+    // future sticky address-3 cleanup retain an observable delete/keep root.
+    let mut ripemd = Account::unknown();
+    ripemd
+        .storage
+        .insert(U256::from(7), AbstractValue::constant(U256::from(7)));
+    world
+        .insert(Address::from_word(U256::from(3).into()), ripemd)
+        .unwrap();
     let native = analysis::analyze_world(
         world,
         Entry {
@@ -76,6 +87,136 @@ fn scalar(projected: &api::ValueInfo, native: &AbstractValue) {
         projected.expression.is_some(),
         native.expression().is_some()
     );
+}
+
+// A single traversal names the entire joint tuple, including original sources.
+// Only directory node IDs and producer Fresh labels are renamed. Scoped inputs,
+// source namespaces, every DTO field and all cross-field sharing stay exact.
+fn canonical_joint(mut tuple: Value, graph: &api::SymbolicGraph) -> Value {
+    fn visit(
+        value: &mut Value,
+        graph: &api::SymbolicGraph,
+        ids: &mut BTreeMap<usize, usize>,
+        fresh: &mut BTreeMap<u64, u64>,
+        nodes: &mut Vec<Value>,
+    ) {
+        if value
+            .as_object()
+            .is_some_and(|v| v.len() == 1 && v.contains_key("node"))
+        {
+            let original = usize::try_from(value["node"].as_u64().unwrap()).unwrap();
+            let next = ids.len();
+            let id = *ids.entry(original).or_insert(next);
+            if id == next {
+                nodes.push(Value::Null);
+                let mut node = match &graph.nodes[original] {
+                    api::Expression::Fresh(label) => {
+                        let next = fresh.len() as u64;
+                        json!(api::Expression::Fresh(*fresh.entry(*label).or_insert(next)))
+                    }
+                    node => serde_json::to_value(node).unwrap(),
+                };
+                visit(&mut node, graph, ids, fresh, nodes);
+                nodes[id] = node;
+            }
+            value["node"] = json!(id);
+        } else {
+            match value {
+                Value::Array(values) => {
+                    for value in values {
+                        visit(value, graph, ids, fresh, nodes);
+                    }
+                }
+                Value::Object(values) => {
+                    for value in values.values_mut() {
+                        visit(value, graph, ids, fresh, nodes);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    graph.validate().unwrap();
+    let mut nodes = Vec::new();
+    visit(
+        &mut tuple,
+        graph,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        &mut nodes,
+    );
+    json!([tuple, nodes])
+}
+
+fn report_joint(report: &api::AnalysisReport) -> Value {
+    let coverage = report.root_terminal_coverage.as_ref().unwrap();
+    let input = &coverage.input;
+    let mut environment = serde_json::to_value(&input.environment).unwrap();
+    environment["calldata"] = json!(report.byte_arrays[input.environment.calldata]);
+    let outcomes: Vec<_> = coverage
+        .outcomes
+        .iter()
+        .map(|outcome| {
+            (
+                outcome.kind,
+                &report.stores[outcome.store],
+                &report.byte_arrays[outcome.data],
+            )
+        })
+        .collect();
+    json!([
+        input.storage_source,
+        input.input_scope,
+        report.byte_arrays[input.calldata],
+        input.call_value,
+        report.stores[input.saved_store],
+        report.stores[input.initial_store],
+        outcomes,
+        report.programs,
+        input.frame.is_static,
+        environment
+    ])
+}
+
+fn native_joint(source: &analysis::RootTerminalCoverage, pools: &mut Pools<'_>) -> Value {
+    // Deliberately use a different directory order from report/project. This
+    // oracle selects each actual native leaf, without reusing terminal::project.
+    let mut outcomes: Vec<_> = source
+        .outcomes()
+        .iter()
+        .rev()
+        .map(|outcome| {
+            let store = pools.store(outcome.store()).unwrap();
+            let data = pools.buffer(outcome.data()).unwrap();
+            (
+                outcome.kind(),
+                pools.stores[store].clone(),
+                pools.buffers_dto[data].clone(),
+            )
+        })
+        .collect();
+    outcomes.reverse();
+    let input = source.input();
+    let initial = pools.store(input.initial_store()).unwrap();
+    let saved = pools.store(input.saved_store().state()).unwrap();
+    let calldata = pools.buffer(input.calldata()).unwrap();
+    let call_value = pools.symbolic.value(input.call_value()).unwrap();
+    let storage_source = pools.symbolic.expression(input.storage_source()).unwrap();
+    let environment = environment::project(&input.entry().environment, pools).unwrap();
+    let mut original_environment = serde_json::to_value(&environment).unwrap();
+    original_environment["calldata"] = json!(pools.buffers_dto[environment.calldata]);
+    json!([
+        storage_source,
+        input.input_scope().map(api::DecimalU64),
+        pools.buffers_dto[calldata],
+        call_value,
+        pools.stores[saved],
+        pools.stores[initial],
+        outcomes,
+        pools.programs,
+        input.frame().is_static,
+        original_environment
+    ])
 }
 
 #[test]
@@ -214,10 +355,99 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
         returned.storage_root,
         report.stores[binding.initial_store].storage_root
     );
+    // Rollback alternatives finalize independently: equal sets need not share
+    // cleanup selectors. Match each full Store+data to its own native outcome.
+    let control = Control::default();
+    let mut pools = Pools::new(&control);
+    let expected = native_joint(source, &mut pools);
+    let actual = canonical_joint(report_joint(&report), &report.symbolic);
     assert_eq!(
-        report.stores[coverage.outcomes[1].store],
-        report.stores[coverage.outcomes[2].store]
+        actual,
+        canonical_joint(expected.clone(), &pools.symbolic.graph)
     );
+
+    let ripemd = Address::from_word(U256::from(3).into()).to_string();
+    let account = |store: usize| {
+        report.stores[store]
+            .accounts
+            .iter()
+            .find(|account| account.address == ripemd)
+            .unwrap()
+    };
+    let reverted = account(coverage.outcomes[1].store);
+    let failed = account(coverage.outcomes[2].store);
+    let api::Expression::SlotsIte(reverted_root) =
+        &report.symbolic.nodes[reverted.storage_root.node]
+    else {
+        panic!("observable address-3 rollback cleanup")
+    };
+    let api::Expression::SlotsIte(failed_root) = &report.symbolic.nodes[failed.storage_root.node]
+    else {
+        panic!("observable address-3 failure cleanup")
+    };
+    assert_ne!(reverted_root.condition, failed_root.condition);
+    for which in 0..5 {
+        let mut wrong = report.clone();
+        match which {
+            0 => wrong.stores[coverage.outcomes[2].store]
+                .accounts
+                .retain(|account| account.address != ripemd),
+            1 => {
+                let owner = wrong.stores[coverage.outcomes[2].store]
+                    .accounts
+                    .iter_mut()
+                    .find(|account| account.address == ripemd)
+                    .unwrap();
+                owner
+                    .storage
+                    .iter_mut()
+                    .find(|entry| entry.slot == "0x7")
+                    .unwrap()
+                    .value = value::info(&AbstractValue::constant(U256::from(8)));
+            }
+            2 => {
+                let api::Expression::SlotsIte(root) =
+                    &mut wrong.symbolic.nodes[failed.storage_root.node]
+                else {
+                    unreachable!()
+                };
+                root.condition = reverted_root.condition;
+            }
+            3 => {
+                let api::Expression::SlotsInput(root) =
+                    &mut wrong.symbolic.nodes[returned.storage_root.node]
+                else {
+                    unreachable!()
+                };
+                root.source.token = binding.storage_source;
+            }
+            _ => {
+                let api::Expression::Input(identity) =
+                    &mut wrong.symbolic.nodes[binding.call_value.expression.unwrap().node]
+                else {
+                    unreachable!()
+                };
+                identity.scope = api::DecimalU64(u64::MAX);
+            }
+        }
+        assert_ne!(
+            canonical_joint(report_joint(&wrong), &wrong.symbolic),
+            actual
+        );
+    }
+    let mut changed_native_input = source.input().initial_store().clone();
+    changed_native_input
+        .write_checked(
+            Address::from_word(U256::from(3).into()),
+            &AbstractValue::constant(U256::from(7)),
+            &AbstractValue::constant(U256::from(8)),
+            Domain::from_spec(source.input().domain_spec()),
+        )
+        .unwrap();
+    let changed = pools.store(&changed_native_input).unwrap();
+    let mut wrong_native = expected;
+    wrong_native[5] = serde_json::to_value(&pools.stores[changed]).unwrap();
+    assert_ne!(canonical_joint(wrong_native, &pools.symbolic.graph), actual);
     let failure = &report.byte_arrays[coverage.outcomes[2].data];
     assert_eq!(failure.length.unsigned.upper, "0x0");
     for outcome in &coverage.outcomes[..2] {
@@ -454,6 +684,18 @@ fn chain_identity_and_static_nonselected_account_state_survive_projection() {
     let (native, request) = fixture(true, true, true);
     let report = project(&native, &request);
     let coverage = report.root_terminal_coverage.as_ref().unwrap();
+    let source = native.root_terminal_coverage().unwrap();
+    assert!(source.input().frame().is_static);
+    assert!(coverage.input.frame.is_static);
+    assert!(coverage.input.environment.is_static);
+    assert!(report.metadata.environment.is_static);
+    let control = Control::default();
+    let mut pools = Pools::new(&control);
+    let expected = native_joint(source, &mut pools);
+    assert_eq!(
+        canonical_joint(report_joint(&report), &report.symbolic),
+        canonical_joint(expected, &pools.symbolic.graph)
+    );
     let api::RootTerminalSnapshot::Chain(snapshot) = &coverage.input.snapshot else {
         panic!("chain snapshot")
     };
@@ -463,7 +705,8 @@ fn chain_identity_and_static_nonselected_account_state_survive_projection() {
     let initial = &report.stores[coverage.input.initial_store];
     let returned = &report.stores[coverage.outcomes[0].store];
     let reverted = &report.stores[coverage.outcomes[1].store];
-    for store in [saved, initial, returned, reverted] {
+    let failed = &report.stores[coverage.outcomes[2].store];
+    for store in [saved, initial, reverted, failed] {
         let other = store
             .accounts
             .iter()
@@ -475,8 +718,13 @@ fn chain_identity_and_static_nonselected_account_state_survive_projection() {
         assert_eq!(other.code_kind, api::CodeKind::Runtime);
         assert_eq!(store.storage_root, saved.storage_root);
     }
-    for (before, after) in [(initial, returned), (saved, reverted)] {
-        for account in &before.accounts {
+    for after in [reverted, failed] {
+        for address in [Address::repeat_byte(0x11), Address::repeat_byte(0x22)] {
+            let account = saved
+                .accounts
+                .iter()
+                .find(|account| account.address == address.to_string())
+                .unwrap();
             let mut expected = account.clone();
             expected.created = Some(false);
             expected.pending_destruction = Some(false);
@@ -490,6 +738,33 @@ fn chain_identity_and_static_nonselected_account_state_survive_projection() {
             );
         }
     }
+    // Static success uses the same independent all-account effects as ordinary
+    // success, then real cleanup; original/rollback precision stays above.
+    assert!(returned.accounts.is_empty());
+    assert!(returned.code_default.is_none());
+    assert_eq!(returned.existence_default, api::AccountExistence::Unknown);
+    assert_eq!(returned.balance_default, value::info(&AbstractValue::top()));
+    assert_eq!(returned.nonce_default, value::info(&AbstractValue::top()));
+    assert_eq!(returned.storage_default, value::info(&AbstractValue::top()));
+    assert_eq!(
+        returned.transient_default,
+        value::info(&AbstractValue::constant(U256::ZERO))
+    );
+    assert_eq!(returned.created_default, Some(false));
+    assert_eq!(returned.pending_destruction_default, Some(false));
+    assert_eq!(returned.touched_default, Some(false));
+    assert!(returned.logs.is_empty());
+    assert!(returned.logs_unknown);
+    assert_ne!(returned.storage_root, initial.storage_root);
+    assert_eq!(returned.transient_root, initial.transient_root);
+    assert!(matches!(
+        report.symbolic.nodes[returned.storage_root.node],
+        api::Expression::SlotsInput(_)
+    ));
+    assert_eq!(
+        report.symbolic.nodes[returned.transient_root.node],
+        api::Expression::SlotsZero
+    );
     let mut invalid = report.clone();
     let api::RootTerminalSnapshot::Chain(snapshot) = &mut invalid
         .root_terminal_coverage
