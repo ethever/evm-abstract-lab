@@ -1,3 +1,4 @@
+mod byte_roots;
 mod conditional_normalization;
 
 use super::{EntryAlternatives, JoinBoundary, MachineError};

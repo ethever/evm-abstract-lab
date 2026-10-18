@@ -357,22 +357,11 @@ impl EntryAlternatives {
         selectors: &BTreeSet<ExprId>,
         cyclic: bool,
     ) -> Result<Option<MachinePayload>, MachineError> {
-        let cost = entry
-            .work_size()
-            .saturating_add(incoming.work_size())
-            .saturating_mul(4);
-        if cost == usize::MAX || !budget.charge(cost) {
-            return Err(MachineError::work_failure());
-        }
-        let incoming_content = incoming.content_form()?;
-
-        if entry == incoming || entry.content_form()? == incoming_content {
-            return Ok(None);
-        }
-        if coverage::covers(entry, incoming, domain, budget)? {
-            return Ok(None);
-        }
-        for previous in &self.represented {
+        let mut incoming_content = None;
+        for previous in std::iter::once(entry).chain(self.represented.iter().map(Arc::as_ref)) {
+            if !coverage::same_byte_roots(previous, incoming, budget)? {
+                continue;
+            }
             let cost = previous
                 .work_size()
                 .saturating_add(incoming.work_size())
@@ -380,7 +369,15 @@ impl EntryAlternatives {
             if cost == usize::MAX || !budget.charge(cost) {
                 return Err(MachineError::work_failure());
             }
-            if previous.as_ref() == incoming || previous.content_form()? == incoming_content {
+            // Only a root-matching candidate needs this clone. Reuse it for
+            // later matching candidates; their complete comparisons stay paid.
+            if incoming_content.is_none() {
+                incoming_content = Some(incoming.content_form()?);
+            }
+            let incoming_content = incoming_content
+                .as_ref()
+                .expect("prepared matching content");
+            if previous == incoming || previous.content_form()? == *incoming_content {
                 return Ok(None);
             }
             if coverage::covers(previous, incoming, domain, budget)? {
