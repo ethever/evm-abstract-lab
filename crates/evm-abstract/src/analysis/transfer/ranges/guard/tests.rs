@@ -340,7 +340,6 @@ fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let mut config = ExecutionConfig::default();
     config.analysis.relations.max_nodes = 1;
-    let domain = config.domain().unwrap();
     let leaf = ExprId::input(71, Symbol::CallValue);
     let expression = ExprId::operation(opcode::NOT, &[leaf], Default::default()).unwrap();
     let offset = AbstractValue::top().with_expression(expression);
