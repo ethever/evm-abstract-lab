@@ -19,8 +19,8 @@ SPEC.loader.exec_module(generator)
 WITNESSES = {
     "crates/evm-abstract-cli/src/main.rs": "// Synthetic selected CLI source.\n",
     "crates/evm-abstract-cli/src/symbolic.rs": "// Bounded local facts only.\n",
-    "crates/evm-abstract/src/analysis.rs": "pub const SCHEMA_VERSION: u16 = 9;\n",
-    "crates/evm-abstract-protocol/src/lib.rs": "pub const SCHEMA_VERSION: u16 = 14;\n",
+    "crates/evm-abstract/src/analysis.rs": "pub const SCHEMA_VERSION: u16 = 10;\n",
+    "crates/evm-abstract-protocol/src/lib.rs": "pub const SCHEMA_VERSION: u16 = 15;\n",
     "crates/evm-abstract/src/domain/spec.rs": "cost_version: 3,\n",
 }
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
@@ -60,6 +60,7 @@ class GeneratorTests(unittest.TestCase):
             if key != "relations_enabled":
                 self.assertEqual(mapping[key], self.baseline["policy_mapping"][key])
         expected_config = deepcopy(self.baseline["expected_native_config"])
+        expected_config["root_terminal_coverage"] = False
         expected_config["analysis"]["relations"] = {
             key: value for key, value in expected_config["analysis"]["relations"].items()
             if key not in {"provider", "rlimit"}}
@@ -80,7 +81,7 @@ class GeneratorTests(unittest.TestCase):
                                          if index not in omitted])
         interface = profile["interface"]
         self.assertEqual(interface["source_commit"], COMMIT)
-        self.assertEqual(interface["versions"], {"native": 9, "wire": 14, "cost": 3})
+        self.assertEqual(interface["versions"], {"native": 10, "wire": 15, "cost": 3})
         self.assertEqual(interface["source_witnesses"], {
             name: hashlib.sha256((self.source / name).read_bytes()).hexdigest()
             for name in WITNESSES})
@@ -88,6 +89,8 @@ class GeneratorTests(unittest.TestCase):
 
     def test_obsolete_or_wrong_source_contract_is_rejected_before_git(self):
         bad_sources = [
+            ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 9;", "native"),
+            ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 14;", "wire"),
             ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 8;", "native"),
             ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 13;", "wire"),
             ("crates/evm-abstract/src/domain/spec.rs", "cost_version: 2,", "cost"),

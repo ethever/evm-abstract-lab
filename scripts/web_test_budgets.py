@@ -3,6 +3,7 @@
 from pathlib import Path
 import json
 from web_test_harness import complete_submission, observe_webgpu, open_input, rendered_frame, settle_gesture, webgpu_evidence
+from web_test_layout_helpers import layout_modal
 
 
 def budget_interactions(browser, url: str, output: Path):
@@ -24,6 +25,7 @@ def budget_interactions(browser, url: str, output: Path):
         "rpc_max_requests": 1_000_000,
         "rpc_max_response_bytes": 64 * 1024 * 1024,
         "rpc_timeout_ms": 120_000,
+        "root_terminal_coverage": False,
     }
     page = browser.new_page(viewport={"width": 1440, "height": 1000})
     observe_webgpu(page)
@@ -56,7 +58,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 14
+    assert initial_report["schema_version"] == 15
     assert "max_work" not in initial_report["metadata"]["export_limits"]
     for field, value in defaults.items():
         assert initial_request["limits"][field] == value, (field, initial_request["limits"])
@@ -67,15 +69,19 @@ def budget_interactions(browser, url: str, output: Path):
     page.keyboard.press("Control+A")
     page.keyboard.type("600160020100", delay=5)
     rendered_frame(page)
-    canvas.click(position={"x": 419, "y": 559})  # Execution budget
+    modal = layout_modal(page, canvas)
+    canvas.click(position={"x": modal[0] + 79, "y": modal[1] + 278})  # Execution budget
     settle_gesture(page)
     # Edit actual single-line controls. Values above 2^53 would be rounded
     # by DragValue/f64 or JavaScript Number, so compare raw HTTP with Python ints.
     edited = {"max_work": 9_007_199_254_740_993,
               "max_transfers": 9_007_199_254_740_995,
               "max_states": 500_000}
-    for field, y in [("max_work", 559), ("max_transfers", 536), ("max_states", 513)]:
-        canvas.click(position={"x": 510, "y": y})
+    # New options can recenter the modal. Keep the original five grid rows
+    # relative to its current painted bounds instead of a screen coordinate.
+    for field, y in [("max_work", 347), ("max_transfers", 324), ("max_states", 301)]:
+        modal = layout_modal(page, canvas)
+        canvas.click(position={"x": modal[0] + 170, "y": modal[1] + y})
         page.keyboard.press("Control+A")
         rendered_frame(page)
         page.keyboard.type(str(edited[field]), delay=5)
@@ -90,7 +96,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 14
+    assert report["schema_version"] == 15
     assert report["status"] == "Converged", report["frontiers"]
     assert "max_work" not in report["metadata"]["export_limits"]
     expected = {**defaults, **edited}

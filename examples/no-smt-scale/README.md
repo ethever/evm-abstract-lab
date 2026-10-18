@@ -2,7 +2,7 @@
 
 本目录固定输入、命令策略、外部资源 guard 和报告验收边界，用于比较已有 SMT 基线与当前 no-SMT 分层抽象解释实现。[命令生成器](../../scripts/generate-no-smt-scale-commands.py)生成当前 CLI profile；[benchmark](../../scripts/benchmark-no-smt-scale.py)默认只核对输入，显式传入 `--execute` 才顺序启动已有 ELF。两者都不构建、不访问 RPC；benchmark 不翻译策略、不调用 shell、不计算速度倍数。
 
-基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**；当前接口为 **native9 / wire14 / cost3**。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。Cost3 移除了 SMT 额度预收费，**不能把 Cost2 与 Cost3 的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
+基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**；当前接口为 **native10 / wire15 / cost3**。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。Cost3 移除了 SMT 额度预收费，**不能把 Cost2 与 Cost3 的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
 
 ## 固定输入与事实边界
 
@@ -52,11 +52,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
   --commands "$COMMAND_PROFILE"
 ```
 
-生成器检查 native9/wire14/cost3 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它只删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，保留每个 case 的输入 hash、world、header、未知输入及其余限制。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
+生成器检查 native10/wire15/cost3 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中显式记录新增开关的默认 false；每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
 
 每份 profile 提供完整 `argv`；仅有首参数 `BINARY` 和一个 `WORLD` 两个占位符，同时绑定 input identity、interface commit、完整 policy、policy 到参数的映射、`expected_native_config` 和允许的 Report 退出码。`input_mapping` 仍须对照入口与事实语义审核；harness 不证明任意 argv 实现了声明边界。生成器也不证明 ELF 来源或源码干净，最终构建提交确定后须重新生成匹配 profile。
 
 ## 使用已有 ELF 运行
+
+生成 profile 的 `expected_native_config.root_terminal_coverage` 显式为 false，仅记录新字段的原默认行为；固定七个 case 的 policy、argv、预算、guard 和 captured input 不变。需要研究该选项时另建 opt-in profile、独立记录完整请求与构建身份，不能覆写历史基线或把它加入这七份默认命令。独立证书的语义及 `Incomplete → exit 2` 见[根终止覆盖](../../docs/19-root-terminal-coverage.md)。
 
 构建 metadata JSON 的 `schema` 为 `evm-no-smt-scale-build-v1`，另包含实际 `source_commit`、`source_tree`、`source_dirty`、`artifact_sha256` 和 `build_command` argv 数组。`--binary` 必须是已有可执行 ELF，不能是构建命令或 wrapper。ELF hash 与构建来源声明分别记录；文件 hash 本身不证明编译来源。
 
@@ -92,7 +94,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 
 [`wire14/weth-original-request.json`](wire14/weth-original-request.json)和 [`wire14/usdc-original-request.json`](wire14/usdc-original-request.json)是原捕获请求的显式 schema 派生。仅移除 `/limits/smt_provider`、`/limits/smt_rlimit`，保留 RPC 的 `input.Rpc.provider_id`、固定 block、accounts、caller/value 及任意长度/内容的 Unknown calldata。manifest 记录原始/派生 raw SHA256 和删除 pointer；默认输入检查验证除这两项外请求完全相同。它们仍是 RPC acquisition 请求，不是 offline CLI 输入。
 
-当前 server/Web 使用 wire14，旧请求的 SMT 字段会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
+当前 server/Web 使用 wire15。上述 wire14 文件保留原派生字节与 hash；发送当前请求时还需显式添加 `limits.root_terminal_coverage: false`。旧请求的 SMT 字段仍会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
 
 ## 报告交付、计时与验收
 
@@ -116,3 +118,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 2. 每个 concrete witness 的终止种类、全部 returndata、storage/transient、账户生命周期/余额及有序日志，须由**同一个 abstract outcome 联合覆盖**，不能分别挑选互不相容的投影。
 3. 未知调用须覆盖重复、间接、嵌套重入，不能限定一次 callback、把失败强制成功或遗漏回滚。保守局部效果及 protected-owner callback 路径见 [`procedure/environment.rs`](../../crates/evm-abstract/src/analysis/transfer/procedure/environment.rs)；普通输出、失败、完整效果、原始 frontier 与 closure 都要检查。
 4. 允许更粗精度，但须记录扩大了哪些结果/效果集合；不能通过删除效果或忽略未完成工作降低计数。有限 witness 和局部回归不构成整个 EVM 实现的 soundness 证明。[Lean 证明文档](../../docs/proofs/README.md)限定已检查的局部模型及其[生产对应契约](../../docs/proofs/correspondence.md)，Rust 执行器、worklist 和更丰富的数值域仍有独立对应义务。
+
+## 当前结果与未完成事项
+
+2026-10-18 的 Root Screen14 基线绑定源码 `062b8e18e2f4326100af442ea7d7fb0e124600d1`、原七 case 策略和原始输入。WETH 报告为 Converged；USDC 在 1T work 配置下仍为 Incomplete，保留 **803 个 Work 与 22 个 SummaryWork** 前沿。Root 的严格 JSON 补充验证退出 0 只说明相应交付/结构检查完成；原 runner 的 64 MiB 解析 guard、报告身份和图语义验证范围须继续分别记录。它不构成 USDC 详细闭合，也不能作为新增 root coverage 的运行或性能证据。
+
+Runtime2 的数值精度损失与尚未恢复的 Multicall self-call 细节继续单列为已知问题。浏览器 oracle 从历史 250/50 状态/源码最低数和 5 个 Memory 前沿转向当前 Product 域的执行、联合结果及 typed pending 语义，不等于修复这些问题；Router 仍须保留实际非空 typed pending 的覆盖检查。129 原生状态和 64 个不同源块的独立图压力回归继续负责 UI 规模，不以生产 runtime 当前状态数替代。新增证书的 opt-in 运行尚需 Root 使用匹配构建验证；这里不报告性能收益，也不据此关闭 Issue #134 的全部工作。

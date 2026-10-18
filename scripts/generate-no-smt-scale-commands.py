@@ -25,7 +25,7 @@ def generate(repository, source):
         "cost": "crates/evm-abstract/src/domain/spec.rs",
     }
     texts = {key: (source / path).read_text() for key, path in witnesses.items()}
-    for key, expected in [("native", 9), ("wire", 14)]:
+    for key, expected in [("native", 10), ("wire", 15)]:
         match = re.search(r"pub const SCHEMA_VERSION: u16 = (\d+);", texts[key])
         if match is None or int(match[1]) != expected:
             raise ValueError(f"expected {key} schema {expected}")
@@ -38,7 +38,7 @@ def generate(repository, source):
     profile["interface"] = {
         "name": "no-smt-cli-world",
         "source_commit": commit,
-        "versions": {"native": 9, "wire": 14, "cost": 3},
+        "versions": {"native": 10, "wire": 15, "cost": 3},
         "source_witnesses": {
             path: hashlib.sha256((source / path).read_bytes()).hexdigest()
             for path in witnesses.values()
@@ -49,6 +49,8 @@ def generate(repository, source):
     # The CLI prints an Incomplete Report before returning 2. The harness still
     # validates the JSON and keeps external stops and parse failures separate.
     profile["report_exit_codes"] = [0, 2]
+    # Explicitly bind the new default without changing any frozen case argv.
+    profile["expected_native_config"]["root_terminal_coverage"] = False
     for key in ("smt_provider", "smt_rlimit"):
         del profile["policy"][key]
         del profile["policy_mapping"][key]

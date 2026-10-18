@@ -73,7 +73,11 @@
       "dependencies": [
         "scripts/test-web-browser.py",
         "scripts/web_test_budgets.py",
+        "scripts/web_test_graph_helpers.py",
         "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
         "scripts/web_test_registry.py"
       ]
     },
@@ -318,6 +322,22 @@
         "scripts/web_test_pixels.py",
         "scripts/web_test_registry.py",
         "scripts/web_test_wire_bytes.py"
+      ]
+    },
+    {
+      "id": "root-terminal-coverage",
+      "group": "semantics",
+      "module": "web_test_root_terminal_coverage",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_root_terminal_coverage.py"
       ]
     },
     {

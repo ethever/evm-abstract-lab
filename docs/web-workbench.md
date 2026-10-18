@@ -121,6 +121,8 @@ Web 协议的数值仍受类型可表示范围约束：表中字段均为 `u64`�
 
 任务运行期间保留上一份完整结果，并显示新任务的状态与离散进度；新任务成功后才原子替换结果。输入草稿的编辑不会改变正在查看的报告。取消、失败或迟到的旧请求也不会把旧报告冒充新任务结果。
 
+**Execution budget** 还提供默认关闭的 **Prepare conservative root terminal coverage**。它按原 logical work 预算预付准备费用，可能减少剩余详细传播。附加记录后显示 **Detail incomplete / partial SSA** 与 **Root terminal results conservatively covered**；请求开启而记录为 `None` 时只显示 **Root terminal certificate not attached**。**Outcomes** 中的 **Conservative root terminal coverage** 使用独立的 Return/Revert/Failure alternative 和 **Original input binding**，与已观察结果分开；浏览这些内容不会改选原生状态或重新提交任务。完整语义见[根终止覆盖](19-root-terminal-coverage.md)。
+
 ## 分析耗时
 
 状态栏在提交、排队、运行和获取结果时显示 **Elapsed**。这段时间从提交分析开始，直到当前结果的首次视图准备完成；失败或取消确认后也会冻结。窄窗口同样保留耗时显示。完成后的 **Total wait** 是用户实际等待的时间，切换视图、缩放或查看其他状态不会重新计时。点击状态栏的时间按钮可打开检查器的 **Timing** 页，查看完整分解。
@@ -203,7 +205,9 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 
 协议 9 加入 report-local mixed symbolic DAG。scalar refs、byte views、persistent/transient roots 和完整 path guards 在同一目录中共享；range/join 的待处理 payload 引用有限 pending machine pool。前端校验 node sort、依赖顺序和 pool refs，按可见行显示来源、写入和复制范围。typed export error 保留策略与实耗；MemoryPolicy 的未展开输入与 EVM Failure 分开显示。详情见[第 17 课](17-symbolic-state.md)。
 
-共享协议版本为 14。版本 14 删除 `AnalysisLimits.smt_provider`、`smt_rlimit` 与原生 solver 诊断枚举；旧请求中的这些字段会在任务入队前明确拒绝，旧报告也不能作为版本 14 安装。表达式、byte/slot 根、路径、scalar facts 和真实精度边界继续保留。 LOG 的 `code_hash` 和 `source_kind` 为必填来源字段，配合 emitter、code account 与 pc 区分初始化和部署后代码；前端面板使用完整身份。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
+版本 15 新增必填布尔 `AnalysisLimits.root_terminal_coverage`（默认 false）与必填可选 `AnalysisReport.root_terminal_coverage`（无记录为 null）。`StoreSnapshot` 在所有报告中增加全局 storage/transient base refs、nonce/code/existence/created/pending-destruction defaults，旧字段继续保留。`InputIdentity.scope` 和新增 snapshot namespace/revision/input scope 均为规范十进制字符串，数字编码、前导零、溢出及未知字段会被拒绝；work、transfer 等计数仍是原整数类型。旧报告不能只改版本号。迁移细节见[wire 15 身份与 Store 契约](19-root-terminal-coverage.md)。
+
+共享协议版本为 15。版本 14 删除 `AnalysisLimits.smt_provider`、`smt_rlimit` 与原生 solver 诊断枚举；旧请求中的这些字段会在任务入队前明确拒绝，旧报告也不能作为版本 14 安装。表达式、byte/slot 根、路径、scalar facts 和真实精度边界继续保留。 LOG 的 `code_hash` 和 `source_kind` 为必填来源字段，配合 emitter、code account 与 pc 区分初始化和部署后代码；前端面板使用完整身份。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 
 版本 12 的 `ExportLimits` 保留节点、依赖深度与 exact payload 上限，整份报告 JSON 不设置字节上限；`metadata.export_usage.work` 保存累计 projection work，仅作诊断统计，work 总量不会导致导出失败。导出继续检查取消，错误展示相应策略和实耗，编码取消另保留已写字节。执行分析仍遵守 `AnalysisLimits.max_work`，界面的 Logical work 输入继续控制分析预算。
 
@@ -215,7 +219,7 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 | `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
 
-版本 8 为 `Diagnostic` 增加类型化的 `invalid_opcode` 证据。普通指令保留实际 `opcode`、可选 `mnemonic` 与无效原因，区分 `0xfe (INVALID)`、未定义的 `0xef` 和当前 fork 未启用的 `0x1e (CLZ)`；字节来自诊断状态的当前捕获程序。委托入口单独表示为 `DelegationEntry`，无法核验字节时说明缺失原因，不跳到根程序的合成 PC 0。Diagnostics 保留同 PC 不同抽象状态的每条记录及其跳转；记录数不是不同指令数或失败交易次数。原生 CLI 分析格式独立使用版本 9，字段路径见[第 08 课](08-forks.md#从诊断区分原始操作码)。
+版本 8 为 `Diagnostic` 增加类型化的 `invalid_opcode` 证据。普通指令保留实际 `opcode`、可选 `mnemonic` 与无效原因，区分 `0xfe (INVALID)`、未定义的 `0xef` 和当前 fork 未启用的 `0x1e (CLZ)`；字节来自诊断状态的当前捕获程序。委托入口单独表示为 `DelegationEntry`，无法核验字节时说明缺失原因，不跳到根程序的合成 PC 0。Diagnostics 保留同 PC 不同抽象状态的每条记录及其跳转；记录数不是不同指令数或失败交易次数。原生 CLI 分析格式独立使用版本 10，字段路径见[第 08 课](08-forks.md#从诊断区分原始操作码)。
 
 版本 7 为 `JobSnapshot` 和报告的 `metadata` 增加 `AnalysisTimings`。字段均为 `u64` 纳秒：`queue_ns`、`processing_ns`，以及 `validating_ns`、`pinning_ns`、`acquiring_ns`、`analyzing_ns`、`building_ssa_ns`、`projecting_ns`。阶段耗时互不重复，合计为 `processing_ns`；RPC 展示值为 `pinning_ns + acquiring_ns`。直接调用分析服务函数时队列时间为零。成功、失败或取消后，终态快照的计时冻结；成功报告保留同一份后端计时。用户等待与前端准备属于本次浏览器观察，单独保存，不以浏览器与后端的时钟起点相减计算。
 

@@ -229,6 +229,7 @@
         "web-browser-ssa-values",
         "web-browser-unknown-world",
         "web-browser-known-recursion",
+        "web-browser-root-terminal-coverage",
         "web-browser-inspector-controls",
         "web-browser-storage-table",
         "web-browser-storage-scroll",
@@ -493,6 +494,21 @@
         "web-browser-rpc-world",
         "web-browser-known-recursion",
         "web-browser-unknown-world",
+        "web-browser-registry",
+        "web-browser"
+      ]
+    },
+    {
+      "name": "root-terminal-coverage-case-isolation",
+      "description": "The terminal-coverage leaf reaches only its own browser case, registry validator and aggregate; existing wire-helper consumers stay isolated.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_root_terminal_coverage.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-browser-root-terminal-coverage",
         "web-browser-registry",
         "web-browser"
       ]

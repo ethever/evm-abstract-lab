@@ -85,6 +85,8 @@ python3 scripts/measure-symbolic-state.py \
 
 ## 独立原生投影压力与真实 Multicall 前沿
 
+本节保留当时的捕获图和回放验收数据。后续 no-SMT/Product 实现的 runtime oracle 按当前执行、联合结果与 typed pending 语义核对；这里的历史 250/50 最低数不能作为新版本的执行精度或完成指标。Runtime2 的精度损失、缺少 Multicall self-call 细节仍须独立跟踪。129 状态与 64 个不同源块的独立 UI 压力用例继续保留，当前结果和[根终止覆盖](19-root-terminal-coverage.md)也不覆盖或关闭这些精度问题。
+
 独立的 `long-linear-chain-600` fixture 使用 `bytes.fromhex("5b600160020150") * 600 + b"\x00"`，共 4201 字节。在原生源码 `6a95223b12248b0e615c2fd7e49cfcfd7f969373` 上，实际 Chromium 验证了 600 个原生状态、600 个 Source/SSA 块和 599 条 Fallthrough 边，报告为 Converged、SSA complete、无 frontier。浏览器在 Blocks、States 和 Source SSA 预览间切换，检查全部 600 状态、无隐藏/边界、原生选择与 SSA 指令、缩放和没有新增分析请求。原 128 块用例仍保留。此压力由独立 fixture 提供，不依赖真实合约的共享上下文数量。
 
 原 Multicall3 字节码、1604 字节 aggregate3 calldata、八个输入 item、具体 root 地址和 CHAINID=1、全部默认预算、历史 eth_call 的 1344 字节 ABI 返回见证均保持原样。当前抽象执行的完整机器上下文共享和资源计费会影响捕获图的规模。root 已复核的 6a952 原生基线是 267 状态、286 transfers、56 个唯一 Source 块，停止于三条 Relations / ExpressionLimit 前沿；250 原生状态最低线来自此实际独立测量，Source 最低线继续为 50。本次定向 Chromium 请求取得的真实 API 为 267 原生状态、274 边、286 transfers、56 个 Source 块和 267 个 Current SSA 块；图仍为 Incomplete、SSA partial。三条前沿来自状态 244、248、266，pc 与 range 为空，各引用完整 incoming payload 0、1、2。三份完整 pending payload 的数值/来源、typed DAG、byte view 和 store 引用校验已对同一原始结果实际通过。

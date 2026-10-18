@@ -189,10 +189,12 @@ RPC 是精确初始观察的生产者。它在启动时解析区块选择并固�
 
 ## 预算、取消与结果的含义
 
+会话还可按 `ExecutionConfig.root_terminal_coverage` 请求独立的[根终止覆盖](19-root-terminal-coverage.md)，默认 false。记录绑定真实原始 snapshot/revision、storage source、环境、帧和域/执行策略；补事实的新 revision 需要新的权威与执行。显示摘要变宽不扩大记录的输入集合。准备与详细执行共用预算，附加记录不把当前 worklist、frontier 或部分 SSA 改写为闭合。
+
 同一会话的多次执行共用 `WorkBudget`，状态分配和 transfer 计数也累计；补事实不会重置已花掉的执行额度。RPC 发现循环同样向各轮传递共享账本，采集另外保留自己的累计请求限制。工作量是分析器的逻辑计费，不是 EVM gas 或毫秒数。
 
 `analyze_with_control(&Control)` 提供协作取消，demands 模式也可放在 `Control::scope` 内。执行及返回缓存报告前会检查取消；账本还保留创建时捕获的取消信号。需要整段会话受同一控制时，应在同一 `Control::scope` 内创建并运行它。取消以类型化错误返回，资源额度或语义展开缺口则通过报告 frontier 表达。
 
-当前集成接口的域成本版本为 `cost_version = 3`，原生分析 JSON schema 为 9，Web wire schema 为 14；它们分别描述成本口径与两种报告格式，不是三个分析层的编号。跨版本比较 work 或消费报告时要分别核对。
+当前集成接口的域成本版本为 `cost_version = 3`，原生分析 JSON schema 为 10，Web wire schema 为 15；它们分别描述成本口径与两种报告格式，不是三个分析层的编号。跨版本比较 work 或消费报告时要分别核对。
 
 分层能力的直接价值是明确代码共享、初始知识与执行历史的边界，并提供同一快照的事实细化接口。是否减少真实合约的总耗时和内存，需要在相同输入、精度、预算与 frontier 覆盖下测量；接口本身不构成全部 EVM 行为的形式化证明。
