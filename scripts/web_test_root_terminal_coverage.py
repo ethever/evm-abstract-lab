@@ -505,28 +505,82 @@ def root_terminal_coverage_interactions(context):
     (output / "coverage-default-off-analysis.json").write_text(json.dumps(ordinary, indent=2) + "\n")
 
     execution_open, coverage_enabled = False, False
+    header_offset = None
 
     def submit(name, *, enabled, transfers=1, invalid_numeric=False):
-        nonlocal execution_open, coverage_enabled
+        nonlocal execution_open, coverage_enabled, header_offset
+        geometry = {"captures": {}, "targets": []}
+
+        def save_geometry():
+            (output / f"{name}-geometry.json").write_text(json.dumps(geometry, indent=2) + "\n")
+
+        def capture(stage):
+            page.mouse.move(2, 2)
+            settle_gesture(page)
+            page.wait_for_timeout(200)  # Finish the native collapse/recentering animation.
+            png = canvas.screenshot(path=str(output / f"{stage}.png"))
+            bounds = layout_modal(page, canvas)
+            geometry["captures"][stage] = {"modal": bounds}
+            save_geometry()
+            assert page.viewport_size == {"width": 1440, "height": 1000}
+            assert (0 < bounds[0] < bounds[2] < 1440 and 0 < bounds[1] < bounds[3] < 1000
+                    and 750 <= bounds[2] - bounds[0] <= 780), (stage, bounds)
+            # A narrow label column excludes numeric editor borders/error text.
+            # The footer is outside this strip; the last six collapsed rows are
+            # the six native headers visible in the saved 1440x1000 capture.
+            region = (bounds[0] + 29, bounds[1] + (header_offset or 10),
+                      bounds[0] + 95, bounds[3] - 40)
+            pixels = text_pixels(page, png, region)
+            errors = text_pixels(page, png, (bounds[0] + 10, bounds[1] + 10,
+                                             bounds[2] - 10, bounds[3] - 40))["error_pixels"]
+            captured = {"stage": stage, "modal": bounds, "region": region,
+                        **pixels, "form_error_pixels": errors}
+            geometry["captures"][stage] = captured
+            save_geometry()
+            return captured
+
+        def click(captured, row, x, label):
+            top, bottom = captured["rows"][row]
+            bounds = captured["modal"]
+            target = {"stage": captured["stage"], "label": label, "row": [top, bottom],
+                      "x": x, "y": (top + bottom) / 2}
+            geometry["targets"].append(target)
+            save_geometry()
+            assert bounds[0] < x < bounds[2] and bounds[1] < top < bottom < bounds[3], target
+            _row_click(page, canvas, captured, row, x=x)
+
         open_input(page)
         page.keyboard.press("Control+A")
         page.keyboard.insert_text(RUNTIME)
         rendered_frame(page)
-        modal = layout_modal(page, canvas)
-        # Existing unknown-environment form: Transaction environment is at
-        # +209, followed by three 23-point header rows to Execution budget.
+        form = capture(f"{name}-before-execution")
         if not execution_open:
-            canvas.click(position={"x": modal[0] + 70, "y": modal[1] + 278})
-            settle_gesture(page)
+            headers = form["rows"][-6:]
+            assert len(headers) == 6 and all(20 <= second[0] - first[0] <= 26
+                                           for first, second in zip(headers, headers[1:])), form
+            header_offset = headers[0][0] - form["modal"][1] - 2
+            header_positions = [row[0] - form["modal"][1] for row in headers[:4]]
+            click(form, len(form["rows"]) - 3, form["modal"][0] + 70, "Execution budget")
+            form = capture(f"{name}-execution-expanded")
+            # limits.rs: three environment headers, Execution budget, five
+            # numeric rows, summaries, coverage, explanation, Precision, RPC.
+            # A missing control or a hit on Analyze must fail before editing.
+            assert len(form["rows"]) == 14, form
+            assert all(abs(row[0] - form["modal"][1] - expected) <= 2
+                       for row, expected in zip(form["rows"][:4], header_positions)), form
+            assert form["rows"][-2][0] - form["rows"][3][1] > 150, form
             execution_open = True
-        # Execution grid has five 23-point numeric rows; the new checkbox is
-        # immediately after the existing summary checkbox (Web frozen contract).
+
         def transfer(text):
-            bounds = layout_modal(page, canvas)
-            canvas.click(position={"x": bounds[0] + 160, "y": bounds[1] + 324})
+            assert len(form["rows"]) == 14, form
+            assert 20 <= form["rows"][5][0] - form["rows"][4][0] <= 26, form
+            # The second measured grid label is Transfers; x is inside the
+            # native 180-point value editor, beyond the label column.
+            click(form, 5, form["modal"][0] + 180, "Transfers")
             page.keyboard.press("Control+A")
             page.keyboard.insert_text(text)
             rendered_frame(page)
+
         if invalid_numeric:
             transfer("18446744073709551616")
             before_posts = len(posts)
@@ -534,17 +588,29 @@ def root_terminal_coverage_interactions(context):
             rendered_frame(page)
             page.wait_for_timeout(200)
             assert len(posts) == before_posts, "invalid numeric form admitted a task"
-            canvas.screenshot(path=str(output / "coverage-invalid-numeric-form.png"))
+            invalid = capture("coverage-invalid-numeric-form")
+            assert len(invalid["rows"]) == 14 and invalid["form_error_pixels"] > 20, invalid
+            # The unsupported-u64 error adds a real grid row below Transfers.
+            assert (invalid["rows"][6][0] - invalid["rows"][5][1]
+                    > form["rows"][6][0] - form["rows"][5][1] + 10), invalid
+            form = invalid
         transfer(str(transfers))
+        form = capture(f"{name}-numeric-recovered")
+        assert len(form["rows"]) == 14 and form["form_error_pixels"] == 0, form
+        assert all(20 <= second[0] - first[0] <= 26
+                   for first, second in zip(form["rows"][4:8], form["rows"][5:9])), form
         if enabled != coverage_enabled:
-            bounds = layout_modal(page, canvas)
-            canvas.click(position={"x": bounds[0] + 35, "y": bounds[1] + 439})
-            settle_gesture(page)
+            click(form, 10, form["modal"][0] + 70, "Prepare conservative root terminal coverage")
             coverage_enabled = enabled
-        canvas.screenshot(path=str(output / f"{name}-form.png"))
+        final_form = capture(f"{name}-form")
+        assert len(final_form["rows"]) == 14 and final_form["form_error_pixels"] == 0, final_form
+        assert all(abs(sum(after) / 2 - sum(before) / 2) <= 2
+                   for before, after in zip(form["rows"], final_form["rows"])), final_form
         with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                                   and response.request.method == "POST") as posted:
             page.keyboard.press("Control+Enter")
+        # Preserve the actual form POST even if completion or exact decoding fails.
+        (output / f"{name}-request.json").write_text(posted.value.request.post_data + "\n")
         reply = complete_submission(page, posted.value)
         assert reply.admission_status == 202 and reply.status == 200, reply.json()
         request = json.loads(reply.request.post_data)
@@ -555,7 +621,6 @@ def root_terminal_coverage_interactions(context):
         report = reply.json()["result"]["Ok"]
         assert report["schema_version"] == 15 and report["metadata"]["limits"] == expected["limits"]
         assert report["fork"] == request["fork"] == "Osaka"
-        (output / f"{name}-request.json").write_text(reply.request.post_data + "\n")
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report, request
 
