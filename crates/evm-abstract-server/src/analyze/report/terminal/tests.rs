@@ -572,11 +572,11 @@ fn original_root_frame_requires_the_admitted_runtime_entry_shape() {
 
 #[test]
 fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
-    // Disjoint writes grow the actual complete memory root past its finite
-    // bound. The initial JUMP leaves a second real state for the mismatch case.
+    // Disjoint SSTOREs grow the ordered slot root without memory's optional
+    // byte reader. The initial JUMP leaves a real state for the mismatch case.
     let mut bytecode = String::from("6003565b");
-    for offset in 0..32 {
-        bytecode.push_str(&format!("3461{:04x}52", offset * 32));
+    for slot in 0..32 {
+        bytecode.push_str(&format!("3461{slot:04x}55"));
     }
     bytecode.push_str("00");
     let owner = Address::repeat_byte(0x11);
@@ -591,28 +591,67 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
     });
     request.limits.root_terminal_coverage = true;
     request.limits.max_expression_nodes = 64;
-    let native = analysis::analyze_world(
-        world,
-        Entry {
-            address: owner,
-            environment: input::environment(&request.environment).unwrap(),
-        },
-        input::config(&request.limits).unwrap(),
-    )
-    .unwrap();
+    let entry = Entry {
+        address: owner,
+        environment: input::environment(&request.environment).unwrap(),
+    };
+    let config = input::config(&request.limits).unwrap();
+    let diagnostic = |native: &WorldAnalysis| {
+        format!(
+            "status={:?}, frontiers={:?}, work={}, states={}, executed_pcs={:?}",
+            native.status(),
+            native
+                .frontiers()
+                .iter()
+                .map(|frontier| (frontier.from, frontier.pc, &frontier.reason))
+                .collect::<Vec<_>>(),
+            native.work(),
+            native.states().len(),
+            native
+                .states()
+                .iter()
+                .map(|state| (state.id, &state.executed_pcs))
+                .collect::<Vec<_>>()
+        )
+    };
+    // The same input and node/work bounds must admit preparation before the
+    // write body runs; None alone cannot tell us whether preparation succeeded.
+    let mut admission_config = config.clone();
+    admission_config.analysis.max_transfers = 1;
+    let admitted = analysis::analyze_world(world.clone(), entry.clone(), admission_config).unwrap();
+    assert_eq!(
+        admitted
+            .root_terminal_coverage()
+            .map(|source| source.trigger()),
+        Some(&analysis::RootTerminalTrigger::Transfers),
+        "root preparation control: {}",
+        diagnostic(&admitted)
+    );
+    let native = analysis::analyze_world(world, entry, config).unwrap();
     // Obtain the cause only from the immutable native attachment, never from
     // a flattened frontier category or a manually constructed certificate.
-    let analysis::RootTerminalTrigger::MandatoryRetention { state, pc, kind } =
-        native.root_terminal_coverage().unwrap().trigger()
+    let source = native
+        .root_terminal_coverage()
+        .unwrap_or_else(|| panic!("missing mandatory retention: {}", diagnostic(&native)));
+    let analysis::RootTerminalTrigger::MandatoryRetention { state, pc, kind } = source.trigger()
     else {
-        panic!("expected actual mandatory retention")
+        panic!(
+            "expected actual mandatory retention, got {:?}: {}",
+            source.trigger(),
+            diagnostic(&native)
+        )
     };
-    assert!(
-        native
-            .frontiers()
-            .iter()
-            .any(|frontier| frontier.from == Some(*state) && frontier.pc == Some(*pc))
-    );
+    assert_eq!(*kind, analysis::RootTerminalRetention::State);
+    assert_eq!(source.input().program().bytes().get(*pc), Some(&0x55));
+    assert!(native.states()[*state].executed_pcs.contains(pc));
+    assert!(native.frontiers().iter().any(|frontier| {
+        frontier.from == Some(*state)
+            && frontier.pc == Some(*pc)
+            && frontier.reason
+                == analysis::FrontierReason::Relations(
+                    evm_abstract::domain::relational::QueryReason::ExpressionLimit,
+                )
+    }));
     let report = project(&native, &request);
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     let expected = api::RootTerminalRetentionTrigger {
