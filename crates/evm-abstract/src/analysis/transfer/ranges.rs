@@ -16,7 +16,11 @@ use crate::{
     world::ByteArray,
 };
 
+mod guard;
 mod logical;
+mod retention;
+
+use retention::{Failure, GuardRetention};
 
 struct Partition {
     allowed: Option<MachinePayload>,
@@ -163,39 +167,22 @@ fn allow_memory(
             return false;
         }
     }
-    // Eight pure predicates/arithmetic operations, their argument copies and
-    // retained expressions. Pay from operand metadata before constructing the
-    // guard; neither a logical byte count nor a host-size conversion is work.
-    let guard_work = offset
-        .work_size()
-        .saturating_add(size.work_size())
-        .saturating_add(2)
-        .saturating_mul(16)
-        .saturating_mul(
-            context
-                .domain
-                .capacity()
-                .saturating_mul(context.domain.capacity())
-                .saturating_add(1),
-        );
-    if !context.budget.charge(guard_work) {
-        super::boundary(result, pc, FrontierReason::Work);
-        return false;
-    }
-    let request = RangeRequest {
-        kind: RangeKind::LogicalMemory,
-        offset: super::relations::identify(
-            offset.clone(),
-            context.config.analysis.relations.enabled,
-        ),
-        size: super::relations::identify(size.clone(), context.config.analysis.relations.enabled),
-        limit: AbstractValue::constant(logical::MAX_END),
+    let guard::PreparedGuard {
+        request,
+        condition,
+        retention,
+    } = match guard::build(offset, size, context) {
+        Ok(guard) => guard,
+        Err(_) => {
+            super::boundary(result, pc, FrontierReason::Work);
+            return false;
+        }
     };
-    let condition = memory_condition(&request.offset, &request.size, context.domain);
     if !condition.may_be_zero() {
         return true;
     }
-    let Some(partition) = partition(result, &request, &condition, context, pc) else {
+    let Some(partition) = partition(result, &request, &condition, Some(&retention), context, pc)
+    else {
         return false;
     };
     // The excluded nonempty domain is universally unaffordable under the
@@ -239,7 +226,7 @@ pub(super) fn returndata(
     if !condition.may_be_zero() {
         return true;
     }
-    let Some(partition) = partition(result, &request, &condition, context, pc) else {
+    let Some(partition) = partition(result, &request, &condition, None, context, pc) else {
         return false;
     };
     if let Some(payload) = partition.excluded {
@@ -263,6 +250,7 @@ fn partition(
     result: &mut Execution,
     request: &RangeRequest,
     condition: &AbstractValue,
+    retention: Option<&GuardRetention>,
     context: &mut TransferContext<'_>,
     pc: usize,
 ) -> Option<Partition> {
@@ -284,12 +272,12 @@ fn partition(
                     input
                         .relations
                         .observe(expression, value.numeric(), &limits)
-                        .map_err(FrontierReason::Relations)?;
+                        .map_err(|reason| Failure::plain(FrontierReason::Relations(reason)))?;
                 }
             }
         }
-        let allowed = constrained(&input, condition, true, context)?;
-        let excluded = constrained(&input, condition, false, context)?;
+        let allowed = constrained(&input, condition, true, retention, context)?;
+        let excluded = constrained(&input, condition, false, retention, context)?;
         for reason in [allowed.precision_loss, excluded.precision_loss]
             .into_iter()
             .flatten()
@@ -299,7 +287,7 @@ fn partition(
                 crate::analysis::DiagnosticKind::RelationalPrecisionLost(reason),
             ));
         }
-        Ok::<_, FrontierReason>(Partition {
+        Ok::<_, Failure>(Partition {
             allowed: allowed.payload,
             excluded: excluded.payload,
         })
@@ -325,8 +313,9 @@ fn constrained(
     input: &MachinePayload,
     condition: &AbstractValue,
     nonzero: bool,
+    retention: Option<&GuardRetention>,
     context: &mut TransferContext<'_>,
-) -> Result<Constrained, FrontierReason> {
+) -> Result<Constrained, Failure> {
     if !(if nonzero {
         condition.may_be_nonzero()
     } else {
@@ -340,27 +329,27 @@ fn constrained(
     }
     let expression = condition
         .symbolic_expression()
-        .ok_or(FrontierReason::Relations(QueryReason::ExpressionLimit))?;
+        .ok_or_else(|| Failure::missing_expression(retention))?;
     let limits = context.config.analysis.relations;
     let cost = payload
         .relations
         .work_size()
         .saturating_add(expression.work_size());
     if !context.budget.charge(cost) {
-        return Err(FrontierReason::Work);
+        return Err(Failure::plain(FrontierReason::Work));
     }
     let answer =
         payload
             .relations
             .assume_checked_budgeted(&expression, nonzero, &limits, context.budget);
     if context.budget.exhausted() {
-        return Err(FrontierReason::Work);
+        return Err(Failure::plain(FrontierReason::Work));
     }
     match answer {
         Ok(CheckResult::ProvenImpossible) => Ok(Constrained::exact(None)),
         Ok(CheckResult::MayBeFeasible) => Ok(Constrained::exact(Some(payload))),
         Err(reason) | Ok(CheckResult::Undetermined(reason @ QueryReason::Cancelled)) => {
-            Err(FrontierReason::Relations(reason))
+            Err(Failure::plain(FrontierReason::Relations(reason)))
         }
         // These failures occur after retaining the assumption. The two guarded
         // domains still cover the input without treating UNKNOWN as UNSAT.
@@ -374,15 +363,16 @@ fn constrained(
 fn pending(
     result: &mut Execution,
     pc: usize,
-    reason: FrontierReason,
+    failure: Failure,
     request: RangeRequest,
     condition: AbstractValue,
     nonzero: Option<bool>,
     payload: MachinePayload,
 ) {
+    let index = result.frontiers.len();
     result.frontiers.push(ExecutionFrontier {
         pc,
-        reason: super::boundary_reason(reason),
+        reason: super::boundary_reason(failure.reason),
         target: Some(payload.key()),
         payload: None,
         range: Some(RangeWitness {
@@ -392,10 +382,14 @@ fn pending(
             payload: Arc::new(payload),
         }),
     });
+    if let Some(cause) = failure.retention {
+        result.retention_failures.push((index, cause));
+    }
 }
 
 /// A nonempty access must have a word-rounded U256 end. Empty accesses never
 /// expand memory, including offset MAX. The subtraction stays guarded.
+#[cfg(test)]
 pub(super) fn memory_condition(
     offset: &AbstractValue,
     size: &AbstractValue,
