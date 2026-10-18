@@ -10,8 +10,14 @@ fn copy_quotes_pay_source_once_and_additive_occurrences_and_keep_history_fees() 
     let pair = a
         .join_guarded(&b, ExprId::fresh().unwrap(), policy)
         .unwrap();
-    let nested = pair
+    let third = ByteStateId::exact(Arc::from([0x33]));
+    // Reuse leaves in reverse order, then a distinct byte-0 alternative: all
+    // five occurrences survive exact shared-branch factoring at 13 total nodes.
+    let reversed = b
         .join_guarded(&a, ExprId::fresh().unwrap(), policy)
+        .unwrap();
+    let nested = reversed
+        .join_guarded(&third, ExprId::fresh().unwrap(), policy)
         .unwrap();
     let shared = pair
         .join_guarded(&nested, ExprId::fresh().unwrap(), policy)

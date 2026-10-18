@@ -161,10 +161,13 @@ fn canonical_source_preserves_every_target_guard_and_recursive_history() {
         .join_guarded(&other, ExprId::fresh().unwrap(), policy())
         .unwrap();
     let mut selected = pair.clone();
+    let third = ByteStateId::exact(Arc::from([0x33]));
+    // Rotate distinct byte-0 contents, outside the copy window at 64: no new
+    // leaf equals either immediate child, so shared-branch factoring cannot fire.
     // Shared children still count per incoming path: 2 + 17 = 19 leaves.
-    for _ in 0..17 {
+    for leaf in [&third, &empty, &other].into_iter().cycle().take(17) {
         selected = selected
-            .join_guarded(&empty, ExprId::fresh().unwrap(), policy())
+            .join_guarded(leaf, ExprId::fresh().unwrap(), policy())
             .unwrap();
     }
     assert_eq!(selected.copy_leaves(), 19);
