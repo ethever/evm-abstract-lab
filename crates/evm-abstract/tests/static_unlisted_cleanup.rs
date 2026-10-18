@@ -137,8 +137,10 @@ fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_inpu
     // nonzero storage: storage is not part of the empty-account predicate.
     let unknown_code = Account::from_hex(UNKNOWN_CODE_WITNESS, fork).unwrap().code;
     let entry = Entry::concrete(a, address(0x900), word(0), ByteArray::empty());
-    let mut config = ExecutionConfig::default();
-    config.root_terminal_coverage = false;
+    let config = ExecutionConfig {
+        root_terminal_coverage: false,
+        ..ExecutionConfig::default()
+    };
     assert!(!config.root_terminal_coverage);
     assert_eq!(config.max_work, 20_000_000);
     let report = analysis::analyze_world(world, entry, config).unwrap();

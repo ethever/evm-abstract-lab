@@ -686,9 +686,11 @@ fn unsupported_precompile_preparation_keeps_its_paid_prefix_and_real_return() {
         word(0),
         ByteArray::exact(b"identity"),
     );
-    let mut config = ExecutionConfig::default();
-    // The exact +1 refusal fee is relative to execution without preparation.
-    config.root_terminal_coverage = false;
+    let mut config = ExecutionConfig {
+        // The exact +1 refusal fee is relative to execution without preparation.
+        root_terminal_coverage: false,
+        ..ExecutionConfig::default()
+    };
     let ordinary = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
     config.root_terminal_coverage = true;
     let covered = analysis::analyze_world(world, entry, config).unwrap();
