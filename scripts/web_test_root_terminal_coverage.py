@@ -17,7 +17,7 @@ from web_test_harness import (complete_submission, observe_webgpu, open_input,
 from web_test_inspector_helpers import (inspector_painted_controls, inspector_selected_tab, inspector_title_action,
                                         select_inspector_tab)
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_modal
-from web_test_pixels import text_pixels, workspace_content_bottom
+from web_test_pixels import assert_translation, node_snapshot, text_pixels, workspace_content_bottom
 
 
 RUNTIME = "6003565b602a5f5260205ff3"
@@ -495,7 +495,21 @@ def _schema_control(page, canvas, output, expected_request):
     """Reject an old wire version in the real WASM client, retaining its report."""
     intercepted = []
     status = page.locator("#analysis-status")
-    selected = _selection(status.text_content())
+    before_status = status.text_content()
+    evidence = {"before": {"status": before_status}}
+    evidence_path = output / "coverage-schema-retained-result.json"
+    evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
+    before_card = node_snapshot(page, canvas, output, "coverage-schema-before")
+    before_ink = text_pixels(page, (output / "coverage-schema-before.png").read_bytes(), before_card["bounds"])
+    selected = _selection(before_status)
+    result_ids = re.findall(r"(?:^|; )Job ID: ([^;]+)(?=;|$)", before_status)
+    assert before_status.startswith("Ready: ") and len(result_ids) == 1, before_status
+    result_id = _decimal_identity(result_ids[0])
+    evidence["before"].update(selection=selected, result_job_id=result_id, card=before_card, ink=before_ink)
+    evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
+    posts = []
+    record_post = lambda request: posts.append(request.post_data) if (
+        request.method == "POST" and request.url.endswith("/api/tasks")) else None
 
     def old_schema(route):
         response = route.fetch()
@@ -515,6 +529,7 @@ def _schema_control(page, canvas, output, expected_request):
         intercepted.append(True)
 
     page.route("**/api/tasks/*/result", old_schema)
+    page.on("request", record_post)
     try:
         open_input(page)
         with page.expect_response(lambda response: response.url.endswith("/api/tasks")
@@ -522,13 +537,36 @@ def _schema_control(page, canvas, output, expected_request):
             page.keyboard.press("Control+Enter")
         assert submitted.value.status == 202
         assert json.loads(submitted.value.request.post_data) == expected_request
-        expect(status).to_contain_text("Unsupported response schema", timeout=60000)
+        current_id = _decimal_identity(str(submitted.value.json()["result"]["Ok"]["id"]))
+        try:
+            expect(status).to_contain_text("Unsupported response schema 14; expected 15", timeout=60000)
+        finally:
+            canvas.screenshot(path=str(output / "coverage-schema-rejected.png"))
+        after_status = status.text_content()
+        evidence["after"] = {"status": after_status, "admitted_job_id": current_id, "task_posts": posts}
+        evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        after_card = node_snapshot(page, canvas, output, "coverage-schema-rejected")
+        after_ink = text_pixels(page, (output / "coverage-schema-rejected.png").read_bytes(), after_card["bounds"])
+        evidence["after"].update(card=after_card, ink=after_ink)
+        evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         assert intercepted == [True], intercepted
-        assert _selection(status.text_content()) == selected
-        canvas.screenshot(path=str(output / "coverage-schema-rejected.png"))
+        assert len(posts) == 1 and json.loads(posts[0]) == expected_request, posts
+        assert after_status.startswith("Error: Unsupported response schema 14; expected 15; "), after_status
+        current_ids = re.findall(r"(?:^|; )Current Job ID: ([^;]+)(?=;|$)", after_status)
+        retained_ids = re.findall(r"(?:^|; )Result Job ID: ([^;]+)(?=;|$)", after_status)
+        assert len(current_ids) == len(retained_ids) == 1, after_status
+        assert _decimal_identity(current_ids[0]) == current_id != result_id
+        assert _decimal_identity(retained_ids[0]) == result_id
+        # Error text omits Ready's Selected fields. The retained result ID and
+        # identical selected-card geometry/ink bind that earlier selection here.
+        assert_translation(before_card, after_card, 0, 0, tolerance=1.0)
+        assert after_card["selected_kind"] == before_card["selected_kind"]
+        assert after_ink == before_ink, (before_ink, after_ink)
         return {"received": 14, "expected": 15, "retained_selection": selected,
-                "status": status.text_content(), "control_only": True}
+                "retained_result_job_id": result_id, "current_job_id": current_id,
+                "evidence": evidence, "status": after_status, "control_only": True}
     finally:
+        page.remove_listener("request", record_post)
         page.unroute("**/api/tasks/*/result", old_schema)
 
 
