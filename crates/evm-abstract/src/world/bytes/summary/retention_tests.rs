@@ -367,7 +367,7 @@ fn retention_failures_and_cancellation_never_install_partial_arrays_or_summaries
 
 #[test]
 fn presentation_restoration_preserves_current_value_metadata_and_never_copies_old_bounds() {
-    use crate::domain::{facts::Symbol, provenance::Origin};
+    use crate::domain::{identity::Symbol, provenance::Origin};
 
     let domain = domain(Profile::Product);
     let previous = finite(domain, 0..=255)
@@ -379,7 +379,7 @@ fn presentation_restoration_preserves_current_value_metadata_and_never_copies_ol
         .with_numeric(numeric.clone())
         .with_origin(Origin::Calldata)
         .with_identity(11, 2)
-        .with_symbol(Symbol::new(1), Some(11))
+        .with_symbol(Symbol::CalldataWord(U256::from(1)), Some(11))
         .with_symbolic_limit();
     let restored = restore_presentation(current.clone(), Some(&previous));
     assert_eq!(
