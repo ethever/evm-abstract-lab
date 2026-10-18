@@ -157,7 +157,7 @@ fn range_projection_preserves_kinds_word_limits_and_expression_references_throug
         assert_eq!(
             pools.symbolic.graph.nodes[reference.node],
             api::Expression::Input(api::InputIdentity {
-                scope: u64::MAX,
+                scope: api::DecimalU64(u64::MAX),
                 symbol: api::InputSymbol {
                     kind: api::InputSymbolKind::CalldataWord,
                     index: Some(word.clone()),

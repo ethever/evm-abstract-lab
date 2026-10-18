@@ -206,6 +206,7 @@ pub(super) fn config(
         max_call_depth: host_size(input.max_call_depth, "max_call_depth")?,
         max_memory_bytes: host_size(input.max_memory_bytes, "max_memory_bytes")?,
         use_summaries: input.use_summaries,
+        root_terminal_coverage: input.root_terminal_coverage,
     })
 }
 pub(super) fn rpc(

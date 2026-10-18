@@ -43,6 +43,7 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         max_call_depth: count,
         max_memory_bytes: count,
         use_summaries: false,
+        root_terminal_coverage: true,
         domain_profile: DomainProfile::ConstantsOnly,
         reduction_rounds: count,
         max_facts: count,
@@ -60,6 +61,7 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         ..AnalyzeRequest::default()
     });
     let defaults = AnalysisLimits::default();
+    assert!(!defaults.root_terminal_coverage);
     assert_eq!(defaults.context_depth, 128);
     assert_eq!(defaults.max_work, 1_000_000_000_000);
     assert!(defaults.max_work > u64::from(u32::MAX));
@@ -313,7 +315,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 14);
+    assert_eq!(SCHEMA_VERSION, 15);
 }
 
 #[test]
@@ -577,6 +579,13 @@ fn touch_snapshot(touched: Option<bool>, touched_default: Option<bool>) -> Store
     StoreSnapshot {
         storage_default: zero.clone(),
         transient_default: zero.clone(),
+        storage_root: SlotStateRef { node: 0 },
+        transient_root: SlotStateRef { node: 0 },
+        nonce_default: zero.clone(),
+        code_default: None,
+        existence_default: AccountExistence::Unknown,
+        created_default: Some(false),
+        pending_destruction_default: Some(false),
         balance_default: zero,
         touched_default,
         accounts: vec![account],
@@ -623,4 +632,48 @@ fn missing_touch_fields_are_rejected_instead_of_defaulting_unknown_to_untouched(
         .remove("touched");
     let error = serde_json::from_value::<StoreSnapshot>(missing_account).unwrap_err();
     assert!(error.to_string().contains("missing field: touched"));
+}
+
+#[test]
+fn all_global_store_templates_and_defaults_are_required_strict_fields() {
+    let snapshot = touch_snapshot(None, None);
+    let encoded = serde_json::to_string(&snapshot).unwrap();
+    for (field, value) in [
+        (
+            "storage_root",
+            serde_json::to_string(&snapshot.storage_root).unwrap(),
+        ),
+        (
+            "transient_root",
+            serde_json::to_string(&snapshot.transient_root).unwrap(),
+        ),
+        (
+            "nonce_default",
+            serde_json::to_string(&snapshot.nonce_default).unwrap(),
+        ),
+        ("code_default", "null".into()),
+        ("existence_default", "\"Unknown\"".into()),
+        ("created_default", "false".into()),
+        ("pending_destruction_default", "false".into()),
+    ] {
+        let missing = encoded.replacen(&format!("\"{field}\":{value},"), "", 1);
+        assert_ne!(missing, encoded, "field was not removed: {field}");
+        let error = serde_json::from_str::<StoreSnapshot>(&missing).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field: {field}")),
+            "{error}"
+        );
+    }
+    for code in [
+        AccountCode::Unknown,
+        AccountCode::Empty,
+        AccountCode::Runtime("0x00".into()),
+        AccountCode::Delegation(format!("0x{}", "22".repeat(20))),
+    ] {
+        let mut store = snapshot.clone();
+        store.code_default = Some(code);
+        roundtrip(store);
+    }
 }

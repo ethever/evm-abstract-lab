@@ -246,7 +246,9 @@ impl<'a> Pools<'a> {
             self.symbolic.charge(source.work_size())?;
             // Equal data roots may carry different touch facts and therefore
             // different EIP-161 completion behavior. Compare the whole store.
-            if self.stores_native[id] == *source {
+            let equal = self.stores_native[id] == *source;
+            self.symbolic.charge(0)?;
+            if equal {
                 return Ok(id);
             }
         }
@@ -283,7 +285,33 @@ impl<'a> Pools<'a> {
         self.stores.push(api::StoreSnapshot {
             storage_default: self.symbolic.value(source.global_storage_default())?,
             transient_default: self.symbolic.value(source.global_transient_default())?,
+            storage_root: self.symbolic.slots(source.global_storage_state())?,
+            transient_root: self.symbolic.slots(source.global_transient_state())?,
             balance_default: self.symbolic.value(source.balance_default())?,
+            nonce_default: self.symbolic.value(&source.nonce_default())?,
+            code_default: source
+                .code_default()
+                .map(|code| {
+                    Ok::<_, api::ApiError>(match code {
+                        Code::Runtime(program) => {
+                            self.symbolic.payload(program.bytes().len())?;
+                            api::AccountCode::Runtime(hex::encode_prefixed(program.bytes()))
+                        }
+                        Code::Delegation(target) => {
+                            api::AccountCode::Delegation(target.to_string())
+                        }
+                        Code::Empty => api::AccountCode::Empty,
+                        Code::Unknown => api::AccountCode::Unknown,
+                    })
+                })
+                .transpose()?,
+            existence_default: match source.existence_default() {
+                Existence::Unknown => api::AccountExistence::Unknown,
+                Existence::Present => api::AccountExistence::Present,
+                Existence::Absent => api::AccountExistence::Absent,
+            },
+            created_default: source.created_default(),
+            pending_destruction_default: source.pending_destruction_default(),
             touched_default: source.touched_default(),
             accounts,
             logs,

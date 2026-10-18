@@ -104,7 +104,7 @@ pub(super) fn info(source: &AbstractValue) -> api::ValueInfo {
             .identity()
             .input()
             .map(|identity| api::InputIdentity {
-                scope: identity.scope(),
+                scope: api::DecimalU64(identity.scope()),
                 symbol: symbol(identity.symbol()),
             }),
         expression: None,

@@ -1,4 +1,5 @@
 //! Every graph and pool reference is checked before a consumer follows it.
+mod terminal;
 use crate::{
     AccountState, AnalysisReport, MachineSnapshot, PoolReferenceFailure, PoolReferenceKind,
     ReportValidationFailure, SymbolicGraph, SymbolicReference, SymbolicSort, ValueInfo,
@@ -17,6 +18,14 @@ impl Validation<'_> {
     fn value(&self, value: &ValueInfo) -> Result<(), ReportValidationFailure> {
         if let Some(expr) = value.expression {
             self.root(SymbolicSort::Word, expr.node)?;
+            if let (Some(identity), crate::Expression::Input(expression)) =
+                (&value.identity, &self.graph.nodes[expr.node])
+                && identity != expression
+            {
+                return Err(ReportValidationFailure::RootTerminal(
+                    crate::RootTerminalValidationFailure::InputIdentity,
+                ));
+            }
         }
         Ok(())
     }
@@ -114,21 +123,19 @@ impl Validation<'_> {
             .validate()
             .map_err(ReportValidationFailure::Symbolic)?;
         self.program(self.report.metadata.root_program)?;
-        let env = &self.report.metadata.environment;
-        self.buffer(env.calldata)?;
-        for value in [
-            &env.call_value,
-            &env.gas_price,
-            &env.timestamp,
-            &env.number,
-            &env.prevrandao,
-            &env.gas_limit,
-            &env.chain_id,
-            &env.base_fee,
-            &env.blob_base_fee,
-            &env.blob_count,
-        ] {
-            self.value(value)?;
+        self.environment(&self.report.metadata.environment)?;
+        if let Some(coverage) = &self.report.root_terminal_coverage {
+            self.terminal(coverage)?;
+        }
+        for node in &self.graph.nodes {
+            let bindings = match node {
+                crate::Expression::BytesInput(input) => &input.bindings,
+                crate::Expression::SlotsInput(input) => &input.bindings,
+                _ => continue,
+            };
+            for binding in bindings {
+                self.value(&binding.numeric)?;
+            }
         }
         for bytes in &self.report.byte_arrays {
             for fact in &bytes.symbolic_facts {
@@ -149,6 +156,8 @@ impl Validation<'_> {
             self.account(account)?;
         }
         for store in &self.report.stores {
+            self.root(SymbolicSort::Slots, store.storage_root.node)?;
+            self.root(SymbolicSort::Slots, store.transient_root.node)?;
             for fact in store.storage_facts.iter().chain(&store.transient_facts) {
                 self.root(SymbolicSort::Word, fact.expression.node)?;
                 self.value(&fact.value)?;
@@ -157,6 +166,7 @@ impl Validation<'_> {
                 &store.storage_default,
                 &store.transient_default,
                 &store.balance_default,
+                &store.nonce_default,
             ] {
                 self.value(value)?;
             }

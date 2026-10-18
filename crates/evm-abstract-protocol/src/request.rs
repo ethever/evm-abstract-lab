@@ -184,6 +184,9 @@ record! {
         pub max_memory_bytes: u64,
         /// Enable complete callee summary reuse.
         pub use_summaries: bool,
+        /// Request separate native terminal coverage for the original root input.
+        /// True does not guarantee that a certificate can be attached.
+        pub root_terminal_coverage: bool,
         /// Numeric abstraction.
         pub domain_profile: DomainProfile,
         /// Fact reduction rounds.
@@ -219,6 +222,7 @@ impl Default for AnalysisLimits {
             max_call_depth: 1025,
             max_memory_bytes: 64 * 1024 * 1024,
             use_summaries: true,
+            root_terminal_coverage: false,
             domain_profile: DomainProfile::Product,
             reduction_rounds: 16,
             max_facts: 4096,

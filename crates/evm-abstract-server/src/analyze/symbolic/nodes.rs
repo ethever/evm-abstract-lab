@@ -36,7 +36,7 @@ impl Pool<'_> {
             Root::Expression(expr) => match expr.kind() {
                 ExprKind::Constant(v) => N::Constant(value::word(*v)),
                 ExprKind::Input(v) => N::Input(api::InputIdentity {
-                    scope: v.scope,
+                    scope: api::DecimalU64(v.scope),
                     symbol: value::symbol(v.symbol),
                 }),
                 ExprKind::Fresh(id) => {

@@ -564,6 +564,8 @@ variant! {
         Symbolic(SymbolicReferenceFailure),
         /// Missing pool entry.
         Pool(PoolReferenceFailure),
+        /// Inconsistent independent terminal relation or original input binding.
+        RootTerminal(crate::RootTerminalValidationFailure),
     }
 }
 impl std::fmt::Display for ReportValidationFailure {
@@ -580,6 +582,7 @@ impl std::fmt::Display for ReportValidationFailure {
                 "{:?} reference {} exceeds pool length {}",
                 failure.kind, failure.index, failure.length
             ),
+            Self::RootTerminal(failure) => write!(f, "root terminal binding {failure:?}"),
         }
     }
 }
