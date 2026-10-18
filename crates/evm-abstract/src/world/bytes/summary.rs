@@ -15,6 +15,7 @@ use alloy_primitives::U256;
 use std::{collections::BTreeMap, sync::Arc};
 
 mod layout;
+mod presentation;
 #[cfg(test)]
 mod retention_tests;
 
@@ -327,6 +328,7 @@ impl ByteArraySummary {
             conditional: Default::default(),
             failure: None,
         };
+        let mut bare_cells = false;
         match &self.content {
             Content::Zero => out.default = scalar(&zero(), domain),
             Content::Exact(bytes) => {
@@ -427,27 +429,13 @@ impl ByteArraySummary {
                             .slice(ExprId::constant(U256::ZERO), len, limits(domain).into())?;
                 }
                 out.bytes = cells.clone();
+                bare_cells = !has_constants;
             }
         }
         if let Some(expression) = out.length.expression() {
             out.operands.insert(expression.clone(), out.length.clone());
         }
-        // A numerical presentation cache needs no second copy of the root in
-        // every byte expression. Actual reads attach their state term on demand.
-        for index in out.bytes.keys().copied().collect::<Vec<_>>() {
-            if analysis_control::current_cancellation().is_cancelled() {
-                return Err(ExprError::Cancelled.into());
-            }
-            let value = super::numeric::read(
-                &out.root,
-                &ExprId::constant(U256::from(index)),
-                &out.operands,
-                domain,
-            );
-            let value = restore_presentation(value, out.bytes.get(&index));
-            let value = scalar(&value, domain);
-            out.bytes.insert(index, value);
-        }
+        presentation::refresh(&mut out, bare_cells, domain)?;
         out.check_existing(limits(domain))?;
         Ok(out)
     }
