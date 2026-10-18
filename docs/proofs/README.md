@@ -21,7 +21,7 @@ LEAN_BIN=/absolute/path/to/lean-4.30.0/bin/lean \
   bash proofs/check.sh /absolute/path/to/proof-evidence
 ```
 
-The script compiles project modules into the evidence directory, checks 242
+The script compiles project modules into the evidence directory, checks 248
 public theorem and regression targets with `#print axioms`, and writes `audit.json`
 with source hashes, theorem dependencies and the actual expected-rejection exit.
 Warnings are errors.
@@ -49,6 +49,8 @@ library/checker, and the dependency-report audit remain trusted infrastructure.
 | [ConditionalFacts](../../proofs/NoSmt/ConditionalFacts.lean) | Common-key Gamma conjoined with guarded residual and previous scopes; whole-value residual filtering under unique keys, including a duplicate-shadow counterexample; left/right inclusion with finite Nat-set and BitVec256-set instances; unknown-guard and inactive-EMPTY witnesses; exact recursive pruning that retains active numeric guarantees and all conjunctions; support-checked fresh injection with numeric-derived guard truths. The pruning proof corresponds to the implemented constant-guard normalization; the source correspondence and twelve-level Rust case-preparation regression are listed separately in the contract. |
 | [Snapshots](../../proofs/NoSmt/Snapshots.lean) | Typed snapshot and owner keys; consistent insertion, idempotence, conflict and wrong-snapshot refusal; concretization after injection is the old set intersected with the supplied initial fact; ordered write precedence, nonalias reads, history versions and rollback. |
 | [ReturnLengths](../../proofs/NoSmt/ReturnLengths.lean) | Transparent BitVec256 ITE evaluation and explicit expression/source coherence; same-path whole-length bounds imply guarded arm facts through the existing map/scoped Gamma. Imports retain the whole fact and all ancestor guards, preserve old Gamma, and are neutral under the proved path bound; repeated stamping is semantically idempotent. Checked witnesses cover unknown guards, inactive empty/contradictory arms, a whole-only cache missing leaf implications, fresh old-length-1/new-length-2 sources, and a shared-initial saved/current product admitting `(0,1)` through conservative forgetting and distinct fresh keys, with rollback selecting saved. |
+| [ExactIte](../../proofs/NoSmt/ExactIte.lean) | Five polymorphic pointwise ITE factoring equalities with independent Word256 guards, where nonzero is true. Complete immutable A/B state identity and the full Rust-to-model binding remain manual obligations; resource, depth or node monotonicity and whole-Rust correctness are not proved. |
+| [NumericCarrier](../../proofs/NoSmt/NumericCarrier.lean) | One pointwise equivalence `(x ∈ F ∧ R(c,x)) ↔ R(c,x)`, assuming complete membership `x ∈ F ↔ I(x)` in a nonwrapping unsigned Word256 interval `I` and containment `R(c,x) → I(x)` of the current remaining constraints. It covers finite-only compaction and redundant restoration; density/cardinality detection and the U256-to-model binding remain manual obligations. |
 | [Effects](../../proofs/NoSmt/Effects.lean) | The protected-owner field envelope; local havoc inclusion, idempotence and closure for any finite allowed local-write trace; proved executable callback store/add/sequence/indirect-call rules and every finite allowed mixed trace, including a repeated indirect-call instance. |
 | [Engine](../../proofs/NoSmt/Engine.lean) | Generic forward simulation and postfixed finite-prefix coverage; proved local Word256 register, load/store, zero-branch, unknown-envelope, checkpoint, touch and rollback transitions; a checked finite certificate for a looping program containing unknown writes and repeated indirect callbacks, with a protected-code invariant and an empty-queue counterexample. |
 | [Lifecycle](../../proofs/NoSmt/Lifecycle.lean) | Three-valued AND/OR, nonce/balance/code emptiness, pending-destruction OR touched-empty decision, definite and optional touch, flag joins, EIP-161 existence projection, static optional-touch completion, ordinary rollback and owner-3 sticky-touch rollback. |
@@ -56,9 +58,10 @@ library/checker, and the dependency-report audit remain trusted infrastructure.
 | [Logs](../../proofs/NoSmt/Logs.lean) | Address/code-address/captured-code-hash/mode/PC source identity; old init/runtime collision; separate-source differing arities accepted, equal-source arity mismatch refused, repeated-source payloads aggregated. |
 
 Facts and Snapshots use `Nat` as labels for keys and word values: membership and
-write identity are proved, not arithmetic. ReturnLengths expression values and
-Effects/Engine/LateFailure values and deltas use `BitVec 256`; the ReturnLengths
-saved/current supplement retains Snapshots' Nat-valued cell projection.
+write identity are proved, not arithmetic. ReturnLengths expression values,
+ExactIte guards, NumericCarrier words, and Effects/Engine/LateFailure values and
+deltas use `BitVec 256`; the ReturnLengths saved/current supplement retains
+Snapshots' Nat-valued cell projection.
 `word_add_modulus` proves ADD is modulo `2^256`;
 `maxword_plus_one_is_zero`, `wraparound_callback_storage` and
 `loop_add_wraps_at_actual_transition` check the maximum word overflowing to zero.
