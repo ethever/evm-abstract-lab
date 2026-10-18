@@ -6,6 +6,9 @@ use super::super::{
 use crate::domain::{AbstractValue, Domain, identity::Symbol};
 use alloy_primitives::U256;
 use std::{collections::BTreeMap, sync::Arc};
+
+mod guarded;
+
 fn c(v: u64) -> ExprId {
     ExprId::constant(U256::from(v))
 }
@@ -20,9 +23,14 @@ fn copy_leaves_count_selected_occurrences_without_changing_identity_or_export() 
     let guard = ExprId::fresh().unwrap();
     let pair = a.join_guarded(&b, guard.clone(), limits()).unwrap();
     let nested = pair
-        .join_guarded(&a, ExprId::fresh().unwrap(), limits())
+        .join_guarded(&ByteStateId::zero(), ExprId::fresh().unwrap(), limits())
         .unwrap();
-    let shared = pair
+    // Keep this metric fixture irreducible: the new pair has an independent
+    // guard, and the nested branch's complete alternatives are (pair, zero).
+    let independent_pair = a
+        .join_guarded(&b, ExprId::fresh().unwrap(), limits())
+        .unwrap();
+    let shared = independent_pair
         .join_guarded(&nested, ExprId::fresh().unwrap(), limits())
         .unwrap();
     for (root, leaves, nodes, depth) in [(&pair, 2, 4, 2), (&nested, 3, 7, 3), (&shared, 5, 13, 4)]
@@ -42,7 +50,7 @@ fn copy_leaves_count_selected_occurrences_without_changing_identity_or_export() 
         std::mem::size_of::<Arc<()>>()
     );
     let graph = SymbolicGraph::bytes(&shared, GraphLimits::default()).unwrap();
-    assert_eq!(graph.nodes.len(), 8); // Two exact leaves, three guards, three Ite nodes.
+    assert_eq!(graph.nodes.len(), 11); // Three leaves, four guards, four Ite nodes.
     assert_eq!(
         graph
             .nodes
