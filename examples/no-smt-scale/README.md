@@ -139,7 +139,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 | `weth-fixedstate` | 0 | 3.469958 | 357956 | parse guard 拒绝；`report_delivered=false` |
 | `usdc-fixedstate` | 2 | 99.600695 | 1278392 | parse guard 拒绝；`report_delivered=false` |
 
-原七项 harness 汇总退出 1，保留上述两项 guard 失败；大型 OFF 报告的严格流式补充校验仍待完成，不能借用下表 ON 的已验证状态。CLI 的 exit 2 是 Incomplete 约定，不是崩溃；退出码本身不能替代完整 JSON 校验。
+原七项 harness 汇总仍退出 1，上述两项 parse guard 失败及 `report_delivered=false` 保持不变。两份大型 OFF 原报告的独立严格流式补充校验已完成，校验器实际均退出 0；在不变的每值 64 MiB 上限内，完整检查 JSON 语法、EOF、重复键及每条顶层数组记录。WETH 为 Converged，137 states / 482 transfers / 0 frontier，1 个 summary 的 `closed=true`；USDC 为 Incomplete，231 states / 13714 transfers / 825 frontier（803 Work + 22 SummaryWork，无 Expr frontier），1 个 summary 的 `closed=false`。原报告 SHA256：WETH `7aaeb22388ec8edb1f4bfaaf6d79f1616d0ad58b2990f08a2fef791da54fcec3`；USDC `931df3accaa2e5891f566f9c2344e71a6424ad4649172024abf8254c1c6e3fec`。补充仅针对上述冻结源码的历史 1T/OFF 报告，wall/RSS 沿用原 native 测量，未重新测量；JSON 校验不构成图语义或完整 Rust EVM 证明，当前 2B/ON 默认的同输入验收仍待新测量。CLI 的 exit 2 是 Incomplete 约定，不是崩溃；退出码本身不能替代完整 JSON 校验。
 
 **ON 五项。** 固定策略比较仅向原 argv 追加 `--root-terminal-coverage`，对应有效 config 为 true；USDC 预算曲线另仅将 `max_work` 改为 20M / 200M / 2B，其余输入、限制（含 `max_transfers=10M`）和 guards 不变。下表详细结果来自独立的严格流式补充：五份 native10 JSON 均完整校验至 EOF。补充 runner 实际退出 0 表示交付/结构检查完成；原 whole-report 标志保持原值，V2 scanner 的每记录 64 MiB 上限与整份报告 guard 分别记录。
 
