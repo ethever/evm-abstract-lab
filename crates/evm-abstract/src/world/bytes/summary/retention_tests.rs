@@ -381,7 +381,7 @@ fn presentation_restoration_preserves_current_value_metadata_and_never_copies_ol
         .with_identity(11, 2)
         .with_symbol(Symbol::new(1), Some(11))
         .with_symbolic_limit();
-    let restored = restore_presentation(current.clone(), Some(&previous));
+    let restored = restore_presentation(current.clone(), Some(&previous), domain);
     assert_eq!(
         restored.numeric(),
         &numeric.restore_redundant_finite_from(previous.numeric())
@@ -393,11 +393,40 @@ fn presentation_restoration_preserves_current_value_metadata_and_never_copies_ol
         restored.symbolic_limit_reached(),
         current.symbolic_limit_reached()
     );
-    assert_eq!(restore_presentation(current.clone(), None), current);
+    assert_eq!(restore_presentation(current.clone(), None, domain), current);
     assert_eq!(
-        restore_presentation(restored.clone(), Some(&previous)),
+        restore_presentation(restored.clone(), Some(&previous), domain),
         restored
     );
+}
+
+#[test]
+fn projection_to_a_smaller_capacity_cannot_resurrect_a_discarded_finite_component() {
+    let domain = domain(Profile::Product);
+    let summary = ByteArraySummary {
+        length: AbstractValue::constant(U256::from(1)),
+        memory: false,
+        content: Content::Cells(BTreeMap::from([(0, finite(domain, 0..=255))])),
+    };
+    let compact = summary.instantiate(domain).unwrap();
+    let mut original = compact.clone();
+    original.root = old_root(&summary, limits(domain).into()).unwrap();
+    for smaller in [
+        Domain::default(),
+        Domain::new(NonZeroUsize::new(8).unwrap()),
+    ] {
+        assert_eq!(smaller.capacity(), 8);
+        let projected = compact.summary_projection(smaller).unwrap();
+        assert_eq!(projected, original.summary_projection(smaller).unwrap());
+        let Content::Cells(cells) = projected.content else {
+            panic!("unknown-byte projection")
+        };
+        if smaller.spec().profile() == Profile::Product {
+            assert!(cells.is_empty());
+        } else {
+            assert!(cells[&0].numeric().is_top());
+        }
+    }
 }
 
 #[test]

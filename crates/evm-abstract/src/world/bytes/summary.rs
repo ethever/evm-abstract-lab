@@ -30,10 +30,23 @@ pub(in crate::world) fn scalar(value: &AbstractValue, domain: Domain) -> Abstrac
 // The root is authoritative. A stale presentation cell can supply only a dense
 // finite allocation proved redundant by the newly evaluated interval; no old
 // masks, bounds, congruence, nonzero or metadata enter the current scalar.
-fn restore_presentation(value: AbstractValue, previous: Option<&AbstractValue>) -> AbstractValue {
+fn restore_presentation(
+    value: AbstractValue,
+    previous: Option<&AbstractValue>,
+    domain: Domain,
+) -> AbstractValue {
     let Some(previous) = previous else {
         return value;
     };
+    // Reprojection to a smaller capacity must not resurrect a finite component
+    // that the immediately preceding scalar/profile projection would discard.
+    if previous
+        .finite_constants()
+        .cardinality()
+        .is_some_and(|count| count > domain.capacity())
+    {
+        return value;
+    }
     let numeric = value
         .numeric()
         .restore_redundant_finite_from(previous.numeric());
@@ -185,7 +198,7 @@ impl ByteArray {
                             &reader.read(&self.root, &ExprId::constant(U256::from(index))),
                             domain,
                         );
-                        let value = restore_presentation(value, self.bytes.get(&index));
+                        let value = restore_presentation(value, self.bytes.get(&index), domain);
                         if value.numeric() != AbstractValue::unknown_byte().numeric() {
                             cells.insert(index, value);
                         }
@@ -447,7 +460,7 @@ impl ByteArraySummary {
                 ),
                 domain,
             );
-            let value = restore_presentation(value, out.bytes.get(&index));
+            let value = restore_presentation(value, out.bytes.get(&index), domain);
             out.bytes.insert(index, value);
         }
         out.check_existing(limits(domain))?;
