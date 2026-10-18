@@ -1,6 +1,6 @@
 //! Distribute a proved composite length bound without selecting any guard.
 
-use super::{Branch, ConditionalFacts, Facts, Scope};
+use super::{Branch, ConditionalFacts, Facts, Scope, normalize};
 use crate::{
     domain::{
         AbstractValue,
@@ -110,20 +110,77 @@ impl ByteArray {
         bound.forget_identity();
         bound.forget_expression();
         let mut scope = distribute(expression, &bound);
-        // F proves the composite itself unconditionally. Its leaf implications
-        // remain guarded. An older whole-R fact alone is not an import stamp.
-        scope.facts.insert(expression.clone(), bound);
-        // Match the complete implication tree. Nested stamps stay branch-local
-        // after joins and cannot suppress an unconditional import.
-        if self.conditional.branches.iter().any(|branch| {
-            branch.condition.as_constant() == Some(U256::ONE)
-                && branch.else_facts.facts.is_empty()
-                && branch.else_facts.conditional.branches.is_empty()
-                && branch.then_facts == scope
-        }) {
+        // Compare the entire prefix and implication tree, including an older
+        // unfactored import. A whole-R fact alone is not a composite stamp.
+        let stamped = |conditional: &ConditionalFacts| {
+            self.conditional.branches.iter().any(|branch| {
+                branch.condition.as_constant() == Some(U256::ONE)
+                    && branch.else_facts.facts.is_empty()
+                    && branch.else_facts.conditional.branches.is_empty()
+                    && branch.then_facts.facts.len() == 1
+                    && branch.then_facts.facts.get(expression) == Some(&bound)
+                    && &branch.then_facts.conditional == conditional
+            })
+        };
+        if stamped(&scope.conditional) {
             cancelled()?;
             return Ok(true);
         }
+        if let [branch] = scope.conditional.branches.as_slice() {
+            // Explicitly allocate one of the paid four import passes to Actions:
+            // 2 * (metadata work - outer guard), plus eight constant steps.
+            // The other three cover distribution, both stamp scans and retention.
+            // Cached quotation only; refusal keeps the original complete tree.
+            let normalization_work = scope
+                .conditional
+                .work_size()
+                .saturating_sub(branch.condition.work_size())
+                .saturating_mul(2)
+                .saturating_add(8);
+            // Reserve the whole-R true wrapper's depth in both caller and
+            // native metadata policies before the optional guard can grow.
+            let normalization_limits = ExprLimits {
+                max_depth: limits
+                    .max_depth
+                    .min(crate::domain::symbolic::GraphLimits::default().max_depth)
+                    .saturating_sub(1),
+                ..limits
+            };
+            if normalization_work <= work / 4
+                && scope.conditional.depth <= normalization_limits.max_depth
+            {
+                scope.conditional =
+                    normalize::shared_branches(scope.conditional, normalization_limits).map_err(
+                        |error| match error {
+                            ExprError::Cancelled => QueryReason::Cancelled,
+                            ExprError::Limit { .. } | ExprError::ExportBytes { .. } => {
+                                QueryReason::ExpressionLimit
+                            }
+                            ExprError::Unsupported(opcode) => QueryReason::ScalarFactError(
+                                crate::domain::facts::FactError::UnsupportedOperation(opcode),
+                            ),
+                            ExprError::Arity {
+                                opcode,
+                                expected,
+                                actual,
+                            } => QueryReason::ScalarFactError(
+                                crate::domain::facts::FactError::InvalidOperation {
+                                    opcode,
+                                    expected,
+                                    actual,
+                                },
+                            ),
+                        },
+                    )?;
+                if stamped(&scope.conditional) {
+                    cancelled()?;
+                    return Ok(true);
+                }
+            }
+        }
+        // F proves the composite itself unconditionally. Add its prefix after
+        // factoring so the empty-prefix rule can expose the original ITE.
+        scope.facts.insert(expression.clone(), bound);
         let mut branches = self.conditional.branches.clone();
         branches.push(Arc::new(Branch {
             condition: ExprId::constant(U256::ONE),

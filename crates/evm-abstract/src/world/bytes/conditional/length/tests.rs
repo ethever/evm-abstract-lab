@@ -4,7 +4,7 @@ use super::super::{Branch, ConditionalFacts, Facts, Scope};
 use crate::{
     domain::{
         AbstractValue, Domain,
-        relational::RelationLimits,
+        relational::{QueryReason, RelationLimits, RelationState, ValueQuery},
         symbolic::{ByteStateKind, ExprId},
     },
     resource::WorkBudget,
@@ -144,4 +144,246 @@ fn a_stale_source_cannot_narrow_a_new_copy_and_a_contradictory_arm_keeps_its_sib
         Some(U256::from(0xaa))
     );
     assert!(!budget.exhausted());
+}
+
+fn nested_length_case() -> (ByteArray, AbstractValue, ByteArray, ExprId) {
+    let domain = Domain::default();
+    let limits = RelationLimits::default().expressions();
+    let [s, t] = std::array::from_fn::<_, 2, _>(|_| ExprId::fresh().unwrap());
+    let source = ByteArray::unknown();
+    let mut old = ByteArray::memory();
+    for (offset, byte) in [(32, 0xaa), (64, 0xbb)] {
+        old.write_word(
+            &v(offset),
+            &AbstractValue::constant(U256::from_be_bytes([byte; 32])),
+            128,
+            domain,
+        )
+        .unwrap();
+    }
+    let mut copied = old.clone();
+    copied
+        .copy_return_data(&v(32), &source, &v(16), 128, domain)
+        .unwrap();
+    let mut memory = old
+        .join_guarded(&copied, domain, t.clone(), limits)
+        .unwrap()
+        .join_guarded(&old, domain, s.clone(), limits)
+        .unwrap();
+    let q = ExprId::ite(s.clone(), t.clone(), ExprId::constant(U256::ONE), limits).unwrap();
+    let ByteStateKind::Ite { condition, .. } = memory.state_root().kind() else {
+        panic!("factored content selector");
+    };
+    assert_eq!(condition, &q);
+    // The scalar length retains its original two selectors: R=I(s,I(t,0,L),0).
+    let returned = v(0)
+        .join_guarded(source.len(), domain, t, limits)
+        .unwrap()
+        .join_guarded(&v(0), domain, s, limits)
+        .unwrap();
+    memory.write_word(&v(96), &returned, 128, domain).unwrap();
+    let output = memory.slice(&v(32), &v(96), 128, domain).unwrap();
+    (output, returned, source, q)
+}
+
+#[test]
+fn nested_length_proof_follows_the_derived_content_selector_without_changing_history() {
+    let domain = Domain::default();
+    let limits = RelationLimits::default();
+    let (mut output, returned, source, q) = nested_length_case();
+    let source_snapshot = source.clone();
+    let history = output.clone();
+    let frozen = history.read_byte_checked(&v(1), domain).unwrap();
+    assert!(frozen.contains(U256::ZERO));
+    assert!(frozen.contains(U256::from(0xaa)));
+    let expression = returned.expression().unwrap();
+    let mut relations = RelationState::default();
+    relations
+        .observe(expression, v(1).numeric(), &limits)
+        .unwrap();
+    let ValueQuery::Exact(length) = relations.local_value(expression, &limits) else {
+        panic!("the caller proves the whole returned length");
+    };
+    assert_eq!(length, U256::ONE);
+    let proof = returned.with_numeric(AbstractValue::constant(length).numeric().clone());
+    let mut budget = WorkBudget::new(1_000_000);
+    assert_eq!(
+        output.import_length_bound(&proof, limits.expressions(), &mut budget),
+        Ok(true)
+    );
+    assert_eq!(output.state_root(), history.state_root());
+    assert_eq!(output.len(), history.len());
+    assert_eq!(output.fresh_leaves(), history.fresh_leaves());
+    let context = super::super::Context::new(&output.operands, Some(&output.conditional));
+    let source_length = source.len().expression().unwrap();
+    assert_eq!(
+        context
+            .branch(&q, false)
+            .value(source_length, domain)
+            .unwrap()
+            .singleton(),
+        Some(U256::ONE)
+    );
+    assert!(context.value(source_length, domain).is_none());
+    assert!(
+        context
+            .branch(&q, true)
+            .value(source_length, domain)
+            .is_none()
+    );
+    for at in 1..32 {
+        assert_eq!(
+            output.byte_at(at, domain).singleton(),
+            Some(U256::from(0xaa))
+        );
+    }
+    for at in 32..64 {
+        assert_eq!(
+            output.byte_at(at, domain).singleton(),
+            Some(U256::from(0xbb))
+        );
+    }
+    assert_eq!(
+        output
+            .read_word_checked(&v(64), domain)
+            .unwrap()
+            .singleton(),
+        Some(U256::ONE)
+    );
+    let once = output.clone();
+    assert_eq!(
+        output.import_length_bound(&proof, limits.expressions(), &mut budget),
+        Ok(true)
+    );
+    assert_eq!(output, once);
+    assert_eq!(history.read_byte_checked(&v(1), domain).unwrap(), frozen);
+    assert_eq!(source, source_snapshot);
+
+    // The whole-R prefix and its selected old-source leaf prove nothing about
+    // a newly captured source, even at the same numeric copy coordinates.
+    let replacement = ByteArray::unknown();
+    assert_ne!(replacement.len().expression(), source.len().expression());
+    output
+        .copy_return_data(&v(0), &replacement, &v(16), 128, domain)
+        .unwrap();
+    let byte = output.read_byte_checked(&v(1), domain).unwrap();
+    assert!(byte.contains(U256::ZERO));
+    assert!(byte.contains(U256::from(0xaa)));
+    let ByteStateKind::Copy { source: view, .. } = output.state_root().kind() else {
+        panic!("new immutable source copy");
+    };
+    assert_eq!(&view.state, replacement.state_root());
+    assert_eq!(source, source_snapshot);
+    assert!(!budget.exhausted());
+}
+
+#[test]
+fn optional_length_normalization_preserves_admission_stamps_and_cancellation() {
+    let limits = RelationLimits::default().expressions();
+    let (_, returned, _, _) = nested_length_case();
+    let proof = returned.with_numeric(v(1).numeric().clone());
+    let original = ByteArray::memory();
+    let mut imported = original.clone();
+    let mut paid = WorkBudget::new(super::IMPORT_WORK);
+    assert_eq!(
+        imported.import_length_bound(&proof, limits, &mut paid),
+        Ok(true)
+    );
+    assert!(paid.used() > 0);
+    assert!(!paid.exhausted());
+    // Exact original reservation funds the bounded normalization too. A failed
+    // optional admission neither publishes a partial stamp nor exhausts Work.
+    for capacity in [0, paid.used() - 1, paid.used()] {
+        let mut memory = original.clone();
+        let mut budget = WorkBudget::new(capacity);
+        let admitted = capacity == paid.used();
+        assert_eq!(
+            memory.import_length_bound(&proof, limits, &mut budget),
+            Ok(admitted)
+        );
+        assert_eq!(&memory, if admitted { &imported } else { &original });
+        assert_eq!(budget.used(), if admitted { capacity } else { 0 });
+        assert!(!budget.exhausted());
+    }
+    // A previously complete unfactored stamp stays idempotent as well.
+    let mut bound = proof.clone();
+    bound.forget_identity();
+    bound.forget_expression();
+    let mut scope = super::distribute(proof.expression().unwrap(), &bound);
+    scope
+        .facts
+        .insert(proof.expression().unwrap().clone(), bound);
+    let mut legacy = original.clone();
+    legacy.conditional = ConditionalFacts::from_branches(vec![Arc::new(Branch {
+        condition: ExprId::constant(U256::ONE),
+        then_facts: scope,
+        else_facts: super::empty(),
+    })]);
+    let before = legacy.clone();
+    let mut budget = WorkBudget::new(super::IMPORT_WORK);
+    assert_eq!(
+        legacy.import_length_bound(&proof, limits, &mut budget),
+        Ok(true)
+    );
+    assert_eq!(legacy, before);
+    // Guard growth fits the bare implication tree but not its eventual true
+    // wrapper. Optional normalization must retain the original import here.
+    let selector = ExprId::ite(
+        ExprId::fresh().unwrap(),
+        ExprId::fresh().unwrap(),
+        ExprId::fresh().unwrap(),
+        limits,
+    )
+    .unwrap();
+    let nested = ExprId::ite(
+        ExprId::fresh().unwrap(),
+        ExprId::constant(U256::ZERO),
+        ExprId::fresh().unwrap(),
+        limits,
+    )
+    .unwrap();
+    let expression = ExprId::ite(
+        selector.clone(),
+        nested,
+        ExprId::constant(U256::ZERO),
+        limits,
+    )
+    .unwrap();
+    let shallow = crate::domain::symbolic::ExprLimits {
+        max_depth: expression.depth() + 1,
+        ..limits
+    };
+    let mut refused = original.clone();
+    let mut budget = WorkBudget::new(super::IMPORT_WORK);
+    assert_eq!(
+        refused.import_length_bound(&v(1).with_expression(expression), shallow, &mut budget),
+        Ok(true)
+    );
+    assert_eq!(
+        refused.conditional.branches[0]
+            .then_facts
+            .conditional
+            .branches[0]
+            .condition,
+        selector
+    );
+    refused.conditional.check(shallow).unwrap();
+    let once = imported.clone();
+    let cancellation = analysis_control::Cancellation::new();
+    cancellation.cancel();
+    analysis_control::with_cancellation(&cancellation, || {
+        let mut budget = WorkBudget::new(super::IMPORT_WORK);
+        assert_eq!(
+            imported.import_length_bound(&proof, limits, &mut budget),
+            Err(QueryReason::Cancelled)
+        );
+        assert_eq!(budget.used(), 0);
+    });
+    assert_eq!(imported, once);
+    let mut budget = WorkBudget::new(super::IMPORT_WORK);
+    assert_eq!(
+        imported.import_length_bound(&proof, limits, &mut budget),
+        Ok(true)
+    );
+    assert_eq!(imported.conditional.branches.len(), 1);
 }
