@@ -11,7 +11,6 @@ use alloy_primitives::U256;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 mod memo;
-mod reification;
 pub(in crate::world::bytes) use memo::{CONTEXTS, Preparation, preparation};
 
 /// Resolve the active metadata scopes once per guard environment. Scalar
@@ -148,10 +147,9 @@ impl<'a> Context<'a> {
         self.check().is_err() || self.cache_refused() || self.work_exhausted()
     }
 
-    /// Pay local complete enumeration, when admitted, then quote the actual
-    /// operands on the original ledger. None/oracle keep their old algorithm.
-    /// No payment borrow spans construction or Domain execution; a stopped
-    /// action yields only the checked demand's private stop sentinel.
+    /// Pay each actual Reader transfer on the original demand ledger. The
+    /// payment borrow ends before Domain runs; None/oracle keep their old path.
+    /// A refused action yields only the checked demand's private stop sentinel.
     pub(in crate::world::bytes) fn apply(
         &self,
         domain: Domain,
@@ -159,25 +157,9 @@ impl<'a> Context<'a> {
         args: &[AbstractValue],
     ) -> AbstractValue {
         if self.stopped()
-            || self
-                .demand
-                .as_ref()
-                .is_some_and(|demand| !demand.policy(domain))
-        {
-            return AbstractValue::top();
-        }
-        let temporary = self
-            .demand
-            .as_deref()
-            .and_then(|demand| reification::prepare(domain, op, args, demand, || !self.stopped()));
-        let args = temporary.as_deref().unwrap_or(args);
-        // Empty/non-enumerable preparation can fall back, but its payments
-        // remain spent. Mandatory Work/cancellation can never take that route.
-        if self.stopped()
-            || self
-                .demand
-                .as_ref()
-                .is_some_and(|demand| !demand.pay_reader(|| domain.operation_work(args)))
+            || self.demand.as_ref().is_some_and(|demand| {
+                !demand.policy(domain) || !demand.pay_reader(|| domain.operation_work(args))
+            })
         {
             return AbstractValue::top();
         }
@@ -185,12 +167,7 @@ impl<'a> Context<'a> {
         if let Some(demand) = &self.demand {
             demand.record_reader_call(false);
         }
-        let result = domain.apply(op, args);
-        if temporary.is_some() && self.stopped() {
-            AbstractValue::top()
-        } else {
-            result
-        }
+        domain.apply(op, args)
     }
 
     /// This join is separate from resolve's already-paid source metadata join.
