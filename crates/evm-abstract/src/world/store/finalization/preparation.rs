@@ -41,7 +41,7 @@ impl PreparationWork {
         let mut scoped = 0usize;
         let mut values = 0usize;
         for owner in protected {
-            scoped = scoped.saturating_add(usize::from(!plane.roots.contains_key(owner)));
+            scoped = scoped.saturating_add(usize::from(plane.roots.get(owner).is_none()));
             values = values.saturating_add(value_clone_units(plane.default_at(*owner)));
         }
         for ((owner, _), value) in &plane.slots {
