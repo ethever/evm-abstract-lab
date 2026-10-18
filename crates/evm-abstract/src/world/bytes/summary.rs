@@ -15,6 +15,8 @@ use alloy_primitives::U256;
 use std::{collections::BTreeMap, sync::Arc};
 
 mod layout;
+#[cfg(test)]
+mod retention_tests;
 
 pub(in crate::world) fn scalar(value: &AbstractValue, domain: Domain) -> AbstractValue {
     let projected = domain.project(value);
@@ -349,7 +351,11 @@ impl ByteArraySummary {
                             // component. A nested read would repeat the complete
                             // length/source graph without adding a guarantee.
                             value: ExprId::fresh().ok_or(StateError::IdentityExhausted)?,
-                            numeric: value.numeric().clone(),
+                            // Keep the canonical/presentation cell intact; only
+                            // its executable carrier drops a proved redundant
+                            // finite component, before observed checks its size.
+                            // The original full summary work is still prepaid.
+                            numeric: value.numeric().compact_for_retention(),
                         })
                     })
                     .collect::<Result<Vec<_>, RangeError>>()?;

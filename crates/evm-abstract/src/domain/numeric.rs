@@ -60,6 +60,37 @@ impl NumericValue {
     pub fn constants(&self) -> Option<&BTreeSet<U256>> {
         self.finite.as_values()
     }
+    /// Drop a redundant dense finite component from an executable carrier.
+    ///
+    /// Ordered, unique candidates with checked `max - min + 1 == len` contain
+    /// every word in that closed range. If the remaining interval envelope is
+    /// inside it, the other components already imply membership in the set:
+    /// `gamma(F intersect R) == gamma(R)`. All other fields stay unchanged.
+    ///
+    /// This is a retention boundary, not a canonical form for componentwise
+    /// joins. Do not reduce the result before retaining it: reduction may
+    /// reconstruct the same finite set. The caller pays for its original full
+    /// numeric payload; len, tree endpoints and shared-allocation cloning need
+    /// no candidate scan, enumeration, CRT or additional cache.
+    pub(crate) fn compact_for_retention(&self) -> Self {
+        let Some(values) = self.constants().filter(|values| values.len() > 1) else {
+            return self.clone();
+        };
+        let (Some(min), Some(max)) = (values.first(), values.last()) else {
+            return self.clone();
+        };
+        let span = max
+            .checked_sub(*min)
+            .and_then(|distance| distance.checked_add(U256::from(1)));
+        let (lower, upper) = self.interval.unsigned_bounds();
+        if span != Some(U256::from(values.len())) || lower < *min || upper > *max {
+            return self.clone();
+        }
+        Self {
+            finite: FiniteConstantSet::top(),
+            ..self.clone()
+        }
+    }
     /// 有限常量集合组件；它的 Top 不会抹去其他数值约束。
     pub fn finite_constants(&self) -> &FiniteConstantSet {
         &self.finite
@@ -150,3 +181,6 @@ impl fmt::Display for NumericValue {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
