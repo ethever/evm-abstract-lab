@@ -2,13 +2,44 @@
 use super::*;
 use evm_abstract::{
     Fork,
+    domain::Profile,
     world::{AddressInput, EvmEnvironment},
 };
 
 fn project_world(world: World, address: Address) -> api::AnalysisReport {
-    let mut request = api::AnalyzeRequest::default();
-    // Preserve this native fixture's original work allowance in report metadata.
-    request.limits.max_work = analysis::ExecutionConfig::default().max_work as u64;
+    // Native world fixtures retain the complete library policy in execution and metadata.
+    let config = analysis::ExecutionConfig::default();
+    let request = api::AnalyzeRequest {
+        limits: api::AnalysisLimits {
+            max_states: config.analysis.max_states as u64,
+            max_transfers: config.analysis.max_transfers as u64,
+            context_depth: config.analysis.context_depth as u64,
+            max_constants: config.analysis.max_constants as u64,
+            max_work: config.max_work as u64,
+            max_call_depth: config.max_call_depth as u64,
+            max_memory_bytes: config.max_memory_bytes as u64,
+            use_summaries: config.use_summaries,
+            root_terminal_coverage: config.root_terminal_coverage,
+            domain_profile: match config.analysis.domain_profile {
+                Profile::Product => api::DomainProfile::Product,
+                Profile::ConstantsOnly => api::DomainProfile::ConstantsOnly,
+            },
+            reduction_rounds: config.analysis.reduction_rounds as u64,
+            max_facts: config.analysis.max_facts as u64,
+            relations_enabled: config.analysis.relations.enabled,
+            max_constraints: config.analysis.relations.max_constraints as u64,
+            max_expression_nodes: config.analysis.relations.max_nodes as u64,
+            max_expression_depth: config.analysis.relations.max_depth as u64,
+            // RPC acquisition limits have no native execution counterpart.
+            ..api::AnalysisLimits::default()
+        },
+        ..api::AnalyzeRequest::default()
+    };
+    assert_eq!(
+        serde_json::to_value(input::config(&request.limits).unwrap()).unwrap(),
+        serde_json::to_value(&config).unwrap(),
+        "native world fixture limits must preserve the full library policy"
+    );
     let graph = analysis::analyze_world(
         world,
         Entry {
@@ -19,7 +50,7 @@ fn project_world(world: World, address: Address) -> api::AnalysisReport {
                 ..EvmEnvironment::default()
             },
         },
-        input::config(&request.limits).unwrap(),
+        config,
     )
     .unwrap();
     report::report(
