@@ -740,7 +740,12 @@ impl Engine<'_> {
             let cyclic = match self.joins_cycle(existing, from) {
                 Ok(cyclic) => cyclic,
                 Err(error) => {
-                    self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
+                    let reason = if error == MachineError::Work {
+                        work_reason
+                    } else {
+                        error.frontier_reason()
+                    };
+                    self.frontier_payload(Some(from), reason, successor.payload);
                     return None;
                 }
             };
