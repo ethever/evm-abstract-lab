@@ -58,8 +58,10 @@ fn check(value: &AbstractValue, key: &ExprId, domain: Domain, calls: (usize, usi
     assert!(!actual.same_identity(value));
     assert!(actual.identity().input().is_none());
     assert!(actual.expression().is_none());
-    assert_eq!(reader.word_bytes.len(), 1);
-    assert_eq!(reader.retained_work, key.work_size() + actual.work_size());
+    assert_eq!(
+        reader.cache_stats(),
+        (1, key.work_size() + actual.work_size())
+    );
     counted_union(&mut reader, key, &expected, (0, 0));
     assert_eq!(facts, frozen);
 }

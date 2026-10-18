@@ -166,6 +166,12 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Inspect this Reader's bounded cache without changing its evaluation.
+    #[cfg(test)]
+    pub(super) fn cache_stats(&self) -> (usize, usize) {
+        (self.word_bytes.len(), self.retained_work)
+    }
+
     fn word_byte_union(&mut self, expression: &ExprId) -> AbstractValue {
         if self.context.stopped() {
             return AbstractValue::top();
