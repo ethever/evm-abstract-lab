@@ -580,8 +580,9 @@ mod top_word_byte_union {
             assert!(!scalar_in(&key, &selected, domain).numeric().is_top());
             let expected = original_in_context(&key, &selected, domain);
             let mut reader = Reader::with_context(selected, domain);
-            let calls = if nonzero { (1, 0) } else { (32, 31) };
-            counted_union(&mut reader, &key, &expected, calls);
+            // Selected nonzero facts also narrow the interval to start at one;
+            // that interval does not contain the complete zero-based bit cube.
+            counted_union(&mut reader, &key, &expected, (32, 31));
             counted_union(&mut reader, &key, &expected, (0, 0));
         }
     }
