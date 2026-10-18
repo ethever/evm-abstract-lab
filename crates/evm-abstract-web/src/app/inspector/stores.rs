@@ -5,7 +5,9 @@ use crate::palette;
 use egui::{RichText, Ui, UiBuilder};
 use egui_extras::{Column, TableBuilder};
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::{AccountState, AnalysisReport, StorageEntry, StoreSnapshot, ValueInfo};
+use evm_abstract_protocol::{
+    AccountCode, AccountState, AnalysisReport, StorageEntry, StoreSnapshot, ValueInfo,
+};
 
 mod slots;
 
@@ -192,6 +194,7 @@ fn storage_rows(ui: &mut Ui, entries: &[StorageEntry], transient: bool) {
 
 pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapshot) {
     touch_default(ui, store);
+    defaults(ui, report, store);
     let mut changed = false;
     for account in &store.accounts {
         let initial = report
@@ -349,6 +352,54 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
             });
         });
     }
+}
+
+fn defaults(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapshot) {
+    ui.collapsing("Unlisted accounts and storage bases", |ui| {
+        egui::Grid::new("store_defaults")
+            .num_columns(2)
+            .show(ui, |ui| {
+                value::named(ui, "Persistent slot default", &store.storage_default);
+                value::named(ui, "Transient slot default", &store.transient_default);
+                value::named(ui, "Unlisted account balance", &store.balance_default);
+                value::named(ui, "Unlisted account nonce", &store.nonce_default);
+                value::text(
+                    ui,
+                    "Unlisted account existence",
+                    format!("{:?}", store.existence_default),
+                );
+                match &store.code_default {
+                    None | Some(AccountCode::Unknown) => {
+                        value::text(ui, "Unlisted account code", "Unknown");
+                    }
+                    Some(AccountCode::Empty) => {
+                        value::text(ui, "Unlisted account code", "Empty");
+                    }
+                    Some(AccountCode::Runtime(bytes)) => {
+                        value::text(ui, "Unlisted account code", "Runtime");
+                        value::text(ui, "Runtime bytes", bytes);
+                    }
+                    Some(AccountCode::Delegation(target)) => {
+                        value::text(ui, "Unlisted account code", "Delegation");
+                        value::text(ui, "Delegation implementation", target);
+                    }
+                }
+                value::text(ui, "Unlisted account creation", certainty(store.created_default));
+                value::text(
+                    ui,
+                    "Unlisted account pending destruction",
+                    certainty(store.pending_destruction_default),
+                );
+                value::text(ui, "Unlisted account touch", touch_status(store.touched_default));
+            });
+        ui.label(
+            "Storage bases are scoped by account owner when read. A shared base does not imply equal values for different owners.",
+        );
+        super::symbolic::show(ui, report, store.storage_root.node, "Persistent base template");
+        super::symbolic::show(ui, report, store.transient_root.node, "Transient base template");
+        super::symbolic::facts(ui, &store.storage_facts, "Persistent store facts");
+        super::symbolic::facts(ui, &store.transient_facts, "Transient store facts");
+    });
 }
 
 fn touch_default(ui: &mut Ui, store: &StoreSnapshot) {

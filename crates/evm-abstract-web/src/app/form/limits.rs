@@ -3,7 +3,7 @@
 use crate::controls::{self, Density};
 
 use super::AnalysisForm;
-use egui::Ui;
+use egui::{RichText, Ui};
 use evm_abstract_protocol::DomainProfile;
 use std::{collections::BTreeMap, str::FromStr};
 
@@ -76,6 +76,15 @@ impl AnalysisForm {
             ui.checkbox(
                 &mut self.limits.use_summaries,
                 "Reuse complete callee summaries",
+            );
+            ui.checkbox(
+                &mut self.limits.root_terminal_coverage,
+                "Prepare conservative root terminal coverage",
+            );
+            ui.label(
+                RichText::new("Preparation uses the original logical work budget. Detailed execution and SSA may still be partial.")
+                    .small()
+                    .color(palette::MUTED),
             );
         });
         egui::CollapsingHeader::new("Precision").show(ui, |ui| {

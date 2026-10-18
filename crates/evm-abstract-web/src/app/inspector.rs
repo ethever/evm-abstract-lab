@@ -11,6 +11,7 @@ mod ssa;
 mod stores;
 mod summaries;
 mod symbolic;
+mod terminal;
 mod value;
 
 use super::Selection;
@@ -153,6 +154,19 @@ impl Inspector {
             return format!(
                 "Inspector: Diagnostics{mode} · {}",
                 evidence::diagnostic_summary(report)
+            );
+        }
+        if self.tab == Tab::Outcomes {
+            let coverage = super::terminal_coverage::status(report)
+                .map_or(String::new(), |status| format!(" · {status}"));
+            let alternatives = if report.root_terminal_coverage.is_some() {
+                " · Return alternative · Revert alternative · Failure alternative"
+            } else {
+                ""
+            };
+            return format!(
+                "Inspector: Outcomes{mode}{coverage}{alternatives} · {} observed outcomes",
+                report.outcomes.len()
             );
         }
         let machine = self.machine(report, selection);
@@ -461,6 +475,21 @@ impl Inspector {
     }
 
     fn outcomes(&mut self, ui: &mut Ui, report: &AnalysisReport, selection: &mut Selection) {
+        scroll(ui, "outcome_details", |ui| {
+            terminal::show(ui, report);
+            if super::terminal_coverage::status(report).is_some() {
+                ui.label(RichText::new("Observed terminal outcomes").strong());
+            }
+            self.observed_outcomes(ui, report, selection);
+        });
+    }
+
+    fn observed_outcomes(
+        &mut self,
+        ui: &mut Ui,
+        report: &AnalysisReport,
+        selection: &mut Selection,
+    ) {
         if report.outcomes.is_empty() {
             ui.label("No terminal root outcome recorded. Check coverage frontiers.");
             return;
@@ -504,30 +533,28 @@ impl Inspector {
                 }
             });
         let outcome = &report.outcomes[self.outcome];
-        scroll(ui, "outcome_details", |ui| {
-            if let Some(data) = report.byte_arrays.get(outcome.data) {
-                ui.horizontal(|ui| {
-                    ui.label("Return/revert length");
-                    value::cell(ui, &data.length);
+        if let Some(data) = report.byte_arrays.get(outcome.data) {
+            ui.horizontal(|ui| {
+                ui.label("Return/revert length");
+                value::cell(ui, &data.length);
+            });
+            ui.collapsing("Return/revert bytes", |ui| {
+                ui.allocate_ui(egui::vec2(ui.available_width(), 120.0), |ui| {
+                    buffers::show(ui, report, outcome.data, "Outcome bytes")
                 });
-                ui.collapsing("Return/revert bytes", |ui| {
-                    ui.allocate_ui(egui::vec2(ui.available_width(), 120.0), |ui| {
-                        buffers::show(ui, report, outcome.data, "Outcome bytes")
-                    });
-                });
-            }
-            if let Some(store) = report.stores.get(outcome.store) {
-                ui.label(RichText::new("Finalized store versus initial observations").strong());
-                ui.label(
-                    RichText::new(
-                        "Abstract differences can include joins and refinements as well as writes.",
-                    )
-                    .small()
-                    .color(palette::MUTED),
-                );
-                stores::changes(ui, report, store);
-            }
-        });
+            });
+        }
+        if let Some(store) = report.stores.get(outcome.store) {
+            ui.label(RichText::new("Finalized store versus initial observations").strong());
+            ui.label(
+                RichText::new(
+                    "Abstract differences can include joins and refinements as well as writes.",
+                )
+                .small()
+                .color(palette::MUTED),
+            );
+            stores::changes(ui, report, store);
+        }
     }
 }
 

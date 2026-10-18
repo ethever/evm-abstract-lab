@@ -145,6 +145,7 @@ pub(crate) fn empty_report() -> AnalysisReport {
         states: vec![],
         stores: vec![],
         outcomes: vec![],
+        root_terminal_coverage: None,
         abstract_summaries: vec![],
         acquisition: None,
         byte_arrays: vec![api::ByteArraySnapshot {

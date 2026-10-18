@@ -214,7 +214,14 @@ fn store() -> api::StoreSnapshot {
         transient_facts: vec![],
         storage_default: word("0x0"),
         transient_default: word("0x0"),
+        storage_root: api::SlotStateRef { node: 3 },
+        transient_root: api::SlotStateRef { node: 3 },
         balance_default: word("0x0"),
+        nonce_default: word("0x0"),
+        code_default: None,
+        existence_default: api::AccountExistence::Unknown,
+        created_default: Some(false),
+        pending_destruction_default: Some(false),
         touched_default: Some(false),
         accounts: vec![account()],
         logs: vec![],
@@ -416,7 +423,7 @@ fn rendered(
     rendered_at(context, time, events, egui::vec2(520.0, 240.0), contents)
 }
 
-fn rendered_at(
+pub(super) fn rendered_at(
     context: &egui::Context,
     time: &mut f64,
     events: Vec<egui::Event>,
@@ -819,7 +826,7 @@ fn typed_ssa_error_coordinates_use_symbols_and_preserve_percent_values() {
 fn expression_references_and_u64_names_are_typeset_without_changing_values() {
     let mut observed = word("0x1");
     let input = api::InputIdentity {
-        scope: u64::MAX,
+        scope: api::DecimalU64(u64::MAX),
         symbol: api::InputSymbol {
             kind: api::InputSymbolKind::To,
             index: None,

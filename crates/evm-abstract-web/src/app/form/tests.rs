@@ -209,6 +209,103 @@ fn integer_budget_editor_preserves_values_above_f64_precision_and_old_caps() {
 }
 
 #[test]
+fn root_terminal_checkbox_submits_the_typed_opt_in_for_both_sources() {
+    for source in [Source::Bytecode, Source::Rpc] {
+        let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
+        ctx.global_style_mut(|style| style.animation_time = 0.0);
+        let mut form = AnalysisForm {
+            open: true,
+            source,
+            ..AnalysisForm::default()
+        };
+        if source == Source::Rpc {
+            load_providers(&mut form);
+        } else {
+            form.bytecode.bytecode = "6003565b602a5f5260205ff3".into();
+            form.limits.max_transfers = 1;
+        }
+        assert!(!form.request().limits.root_terminal_coverage);
+        let mut expected = form.request();
+        let size = Vec2::new(1440.0, 1000.0);
+        let output = settle_sized(&ctx, &mut form, size);
+        click_sized(
+            &ctx,
+            &mut form,
+            text_center(&output, "Execution budget"),
+            size,
+        );
+        for enabled in [true, false, true] {
+            let output = settle_sized(&ctx, &mut form, size);
+            let position = visible_label(
+                &output,
+                "Prepare conservative root terminal coverage",
+                Rect::from_min_size(Pos2::ZERO, size),
+            );
+            assert!(click_sized(&ctx, &mut form, position, size).is_none());
+            expected.limits.root_terminal_coverage = enabled;
+            assert_eq!(form.request(), expected);
+        }
+        let (submitted, _) = paint_sized(&ctx, &mut form, vec![enter()], size);
+        let submitted = submitted.unwrap();
+        assert_eq!(submitted, expected);
+        let wire = serde_json::to_string(&submitted).unwrap();
+        assert!(wire.contains("\"root_terminal_coverage\":true"));
+        assert_eq!(
+            serde_json::from_str::<AnalyzeRequest>(&wire).unwrap(),
+            expected
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        if source == Source::Bytecode {
+            let report = evm_abstract_server::analyze::analyze(submitted).unwrap();
+            report.validate().unwrap();
+            assert_eq!(report.metadata.limits, expected.limits);
+            let config = &report.root_terminal_coverage.as_ref().unwrap().input.config;
+            assert!(config.root_terminal_coverage);
+            assert_eq!(config.max_transfers, expected.limits.max_transfers);
+            assert_eq!(config.max_work, expected.limits.max_work);
+        }
+    }
+}
+
+#[test]
+fn root_terminal_checkbox_preserves_invalid_numeric_drafts_and_request_values() {
+    let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
+    ctx.global_style_mut(|style| style.animation_time = 0.0);
+    let mut form = AnalysisForm {
+        open: true,
+        ..AnalysisForm::default()
+    };
+    let output = settle_sized(&ctx, &mut form, Vec2::new(900.0, 700.0));
+    click(&ctx, &mut form, text_center(&output, "Execution budget"));
+    let (_, output) = paint(&ctx, &mut form, vec![]);
+    click(&ctx, &mut form, text_center(&output, "1000000000000"));
+    replace_text(&ctx, &mut form, "invalid");
+    let (_, output) = paint(&ctx, &mut form, vec![]);
+    click(
+        &ctx,
+        &mut form,
+        text_center(&output, "Prepare conservative root terminal coverage"),
+    );
+    assert!(form.request().limits.root_terminal_coverage);
+    assert_eq!(
+        form.request().limits.max_work,
+        AnalysisLimits::default().max_work
+    );
+    assert!(!form.can_submit(false));
+    assert!(frame(&ctx, &mut form, vec![enter()]).is_none());
+    let (_, output) = paint(&ctx, &mut form, vec![]);
+    assert!(click(&ctx, &mut form, text_center(&output, "Analyze")).is_none());
+    let (_, output) = paint(&ctx, &mut form, vec![]);
+    click(&ctx, &mut form, text_center(&output, "invalid"));
+    replace_text(&ctx, &mut form, "18446744073709551615");
+    let request = frame(&ctx, &mut form, vec![enter()]).unwrap();
+    assert!(request.limits.root_terminal_coverage);
+    assert_eq!(request.limits.max_work, u64::MAX);
+}
+
+#[test]
 fn invalid_numeric_draft_blocks_button_and_keyboard_until_corrected() {
     for invalid in ["not a number", "-1", "18446744073709551616"] {
         let ctx = Context::default();
