@@ -876,7 +876,7 @@ fn expression_references_and_u64_names_are_typeset_without_changing_values() {
             "missing {expected}: {visible:?}"
         );
     }
-    assert_eq!(observed.identity.unwrap().scope, u64::MAX);
+    assert_eq!(observed.identity.unwrap().scope, api::DecimalU64(u64::MAX));
     assert_eq!(nodes[1], api::Expression::Fresh(u64::MAX));
 }
 
