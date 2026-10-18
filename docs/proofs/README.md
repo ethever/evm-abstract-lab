@@ -25,8 +25,9 @@ The script compiles project modules into the evidence directory, checks 260
 public theorem and regression targets with `#print axioms`, and writes `audit.json`
 with source hashes, theorem dependencies and the actual expected-rejection exit.
 Warnings are errors.
-The total includes 12 new ByteProduct targets by source count; this source-only
-supplement has not run the checker. The existing 248 targets are retained.
+The installed pinned checker passed all 260 targets (248 existing plus 12
+ByteProduct) at proof source `f15bbbfc16b8df2435d533d0132b3ca3cb7aea1d`, with
+old-join rejection exit 1.
 The deliberately false [OldJoinRejected.lean](../../proofs/counterexamples/OldJoinRejected.lean)
 must fail because `decide` establishes that the old join excludes zero, after its
 Facts import was successfully compiled. An import failure is not accepted.
@@ -37,8 +38,8 @@ declarations, `native_decide`, compiler-trust shortcuts, missing theorem prints,
 models disable implicit parameter invention. Current proofs use `propext`
 (propositional extensionality) and `Quot.sound` (quotient soundness, including
 function extensionality derived through quotients). The audit also permits
-Lean's foundational `Classical.choice`, but the current targets do not
-use it.
+Lean's foundational `Classical.choice`, used by ByteProduct's arithmetic-reference,
+extraction and range targets.
 There is no assumed target-soundness axiom. Lean's kernel, the installed Std
 library/checker, and the dependency-report audit remain trusted infrastructure.
 
