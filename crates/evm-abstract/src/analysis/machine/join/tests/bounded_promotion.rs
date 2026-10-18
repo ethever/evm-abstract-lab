@@ -568,6 +568,7 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
                 payload.active_mut().stack[0] = AbstractValue::top().with_expression(expression);
             }
         }
+        let inputs = (old.clone(), incoming.clone());
         let mut config = fixtures::config();
         config.analysis.relations.max_depth = old.active().memory.state_root().depth();
         let domain = config.domain().unwrap();
@@ -590,14 +591,19 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
                 "{error:?}"
             );
         } else {
+            // check_existing retains the MSTORE cache's ByteRead expressions
+            // before it constructs a combined byte root. Those reads are one
+            // level deeper than the root used to freeze this fixture's limit.
             assert!(
                 matches!(
                     error,
-                    MachineError::Bytes(RangeError::State(StateError::Limit { .. }))
+                    MachineError::Bytes(RangeError::Expression(ExprError::Limit { .. }))
                 ),
                 "{error:?}"
             );
         }
+        assert!(error.permits_bounded_promotion());
+        assert_eq!((&old, &incoming), (&inputs.0, &inputs.1));
         let promoted = alternatives
             .join_entry(
                 &old,
@@ -634,6 +640,7 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
                 .fresh_leaves()
                 .is_disjoint(&incoming.fresh_leaves())
         );
+        assert_eq!((old, incoming), inputs);
     }
 }
 

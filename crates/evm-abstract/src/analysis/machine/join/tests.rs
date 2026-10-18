@@ -804,6 +804,7 @@ fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
         .expect("real RETURN from the known successor");
     let mut returned = exit.clone();
     returned.active_mut().memory = outcome.data.clone();
+    returned.store = outcome.store.clone();
     for (word, call_value) in [(1, 0), (2, 1), (3, 2)] {
         for payload in [&covered.entry, &successor.entry, exit, &returned] {
             bounded_promotion::assert_joint_word_witness(payload, word, domain);
