@@ -224,10 +224,11 @@ impl StoreShape {
 }
 
 /// The genuine initial Store has no pending destruction. Its sole definite
-/// touch belongs to nonempty runtime/delegating code. Static may-touch-all and
-/// future address-3 touch add MAY cleanup only. Thus the finalizer uses its
-/// owner-local no-delete plan: fields and candidate unions are visited once,
-/// plus fixed per-owner zero/root/selector metadata and ordered-map heights.
+/// touch belongs to nonempty runtime/delegating code. Future address-3 touch
+/// adds MAY cleanup only; the independent Return Store has no explicit owners.
+/// Thus the finalizer uses its owner-local no-delete plan: fields and candidate
+/// unions are visited once, plus fixed per-owner zero/root/selector metadata
+/// and ordered-map heights.
 ///
 /// Four field allowances and 256 per owner cover the post-cleanup roots, scalar
 /// unions, new map keys and both planes. 128 ordered passes dominate all four
@@ -381,13 +382,9 @@ fn prepare_with_bytes(
             initial_store: initial.store.clone(),
         },
     };
-    let mut returned = if frame.key.is_static {
-        let mut store = initial.store.clone();
-        store.may_touch_all();
-        store
-    } else {
-        Store::root_terminal_all_effects_checked(domain)?
-    };
+    // Static suffixes can also delete touched, omitted empty owners at cleanup.
+    // Independent all-account effects cover those changes under the same input.
+    let mut returned = Store::root_terminal_all_effects_checked(domain)?;
     let return_data = bytes()?;
     return_data.check_existing(domain.spec().relations().expressions())?;
     let revert_data = bytes()?;
@@ -397,11 +394,7 @@ fn prepare_with_bytes(
     let mut failed = reverted.clone();
     let mut guards = [0; 3];
     for (index, (store, rollback, branch_owners)) in [
-        (
-            &mut returned,
-            None,
-            if frame.key.is_static { owners } else { 0 },
-        ),
+        (&mut returned, None, 0),
         (&mut reverted, Some(&anchor.input.saved_store), owners),
         (&mut failed, Some(&anchor.input.saved_store), owners),
     ]

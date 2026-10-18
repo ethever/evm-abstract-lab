@@ -273,16 +273,111 @@ fn original_rollback_future_three_touch_and_static_data_share_one_input() {
                 let returned = &coverage.outcomes()[0];
                 let mut tuple = JointInput::default();
                 assert!(tuple.storage(coverage.input().initial_store(), entry.address, 7, domain));
-                assert!(tuple.storage(returned.store(), entry.address, 7, domain));
-                assert!(!tuple.storage(returned.store(), entry.address, 31, domain));
+                assert!(tuple.storage(returned.store(), entry.address, 31, domain));
+                assert!(!tuple.storage(
+                    coverage.input().initial_store(),
+                    entry.address,
+                    31,
+                    domain
+                ));
+                assert!(!tuple.storage(returned.store(), entry.address, 7, domain));
                 assert!(tuple.data(returned.data(), &[0xbb, 0xcc]));
-                assert!(!returned.store().logs_unknown());
+                assert!(returned.store().logs_unknown());
                 assert_eq!(
                     returned.store().existence(address(0x303)),
                     Existence::Unknown
                 );
             }
         }
+    }
+}
+
+#[test]
+fn static_return_covers_unlisted_owner_cleanup_under_one_input_valuation() {
+    for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
+        let (world, entry, config, facts) = fixture(fork, true);
+        let domain = config.domain().unwrap();
+        let c = address(0x999);
+        let d = address(0x998);
+        assert!(!world.accounts().contains_key(&c));
+        assert!(!world.accounts().contains_key(&d));
+        let original = transfer::initial(&world, &entry, domain).unwrap();
+        let unchanged = original.clone();
+        let coverage = ready(
+            &original,
+            &world,
+            &entry,
+            &config,
+            &facts,
+            &mut WorkBudget::new(usize::MAX),
+        )
+        .unwrap()
+        .publish(RootTerminalTrigger::States)
+        .unwrap();
+        let input = coverage.input();
+        assert_eq!(input.snapshot(), facts.snapshot());
+        assert_eq!(input.revision(), facts.revision());
+        assert_eq!(input.storage_source(), &world.storage_source_token());
+        assert_eq!(input.input_scope(), entry.environment.input_scope.id());
+        assert_eq!(input.entry(), &entry);
+        assert_eq!(input.config(), &config);
+        assert_eq!(input.frame(), &original.active().key);
+        assert!(input.frame().is_static);
+        assert_eq!(input.program(), original.active().program.as_ref().unwrap());
+        assert_eq!(input.calldata(), &original.active().calldata);
+        assert_eq!(input.call_value(), &original.active().call_value);
+        assert_eq!(input.saved_store(), &original.active().saved_store);
+        assert_eq!(input.initial_store(), &original.store);
+        let returned = &coverage.outcomes()[0];
+        assert_eq!(returned.kind(), OutcomeKind::Return);
+        assert!(returned.store().addresses().is_empty());
+        let source = |store: &Store, owner| match store.slot_root(owner, false).unwrap().kind() {
+            SlotStateKind::Input { source, .. } => source.clone(),
+            _ => panic!("expected an immutable input source"),
+        };
+        assert_eq!(
+            source(input.initial_store(), c),
+            source(input.saved_store().state(), c)
+        );
+        assert_ne!(
+            source(returned.store(), c),
+            source(input.initial_store(), c)
+        );
+        assert_ne!(
+            source(returned.store(), c),
+            source(input.saved_store().state(), c)
+        );
+        assert_ne!(source(returned.store(), c), source(returned.store(), d));
+
+        // Hold the original C[8]=7 and D[8]=11 cells fixed. Separate joint
+        // witnesses admit deletion or retention of either omitted owner; they
+        // cannot be justified by marginal numeric Top or one global delete flag.
+        for (current_c, current_d) in [(0, 0), (0, 11), (7, 0), (7, 11)] {
+            let mut tuple = JointInput::default();
+            for store in [input.initial_store(), input.saved_store().state()] {
+                assert!(tuple.storage(store, c, 7, domain));
+                assert!(tuple.storage(store, d, 11, domain));
+            }
+            assert!(tuple.storage(returned.store(), c, current_c, domain));
+            assert!(tuple.storage(returned.store(), d, current_d, domain));
+            assert!(!tuple.storage(input.initial_store(), c, 0, domain));
+            assert!(!tuple.storage(input.saved_store().state(), c, 0, domain));
+            assert!(!tuple.storage(
+                returned.store(),
+                c,
+                if current_c == 0 { 7 } else { 0 },
+                domain
+            ));
+            assert!(!tuple.storage(
+                returned.store(),
+                d,
+                if current_d == 0 { 11 } else { 0 },
+                domain
+            ));
+        }
+        assert_eq!(original, unchanged);
+        assert_eq!(input.initial_store(), &unchanged.store);
+        assert_eq!(input.saved_store(), &unchanged.active().saved_store);
     }
 }
 
@@ -512,17 +607,21 @@ fn no_delete_finalizer_guard_funds_actual_owner_local_receipts() {
         let saved = &original.active().saved_store;
         let saved_shape = StoreShape::measure(saved.state()).unwrap();
         let owners = world.accounts().len() + 1;
-        for rollback in [false, true] {
-            let mut current = original.store.clone();
+        for (rollback, branch_owners) in [(false, 0), (true, owners)] {
+            let mut current = if rollback {
+                original.store.clone()
+            } else {
+                Store::root_terminal_all_effects_checked(domain).unwrap()
+            };
             if rollback {
                 current.may_touch_account(address(3));
             } else {
-                current.may_touch_all();
+                assert!(current.addresses().is_empty());
             }
             let guard = finalization_bound(
                 StoreShape::measure(&current).unwrap(),
                 rollback.then_some(saved_shape),
-                owners,
+                branch_owners,
             );
             let mut budget = WorkBudget::new(guard);
             current
