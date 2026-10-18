@@ -9,7 +9,9 @@ pub(super) const NOT_ATTACHED: &str = "Root terminal certificate not attached";
 pub(super) fn status(report: &AnalysisReport) -> Option<&'static str> {
     if report.root_terminal_coverage.is_some() {
         Some(COVERED)
-    } else if report.metadata.limits.root_terminal_coverage {
+    } else if report.metadata.limits.root_terminal_coverage
+        && (report.status != AnalysisStatus::Converged || !report.ssa.complete)
+    {
         Some(NOT_ATTACHED)
     } else {
         None

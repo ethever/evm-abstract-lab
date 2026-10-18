@@ -50,6 +50,9 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
             ..api::AnalyzeRequest::default()
         };
         if let Some(max_nodes) = max_nodes {
+            // Keep the strict three-node range-refusal fixture independent of
+            // optional terminal preparation and its prepaid expression work.
+            request.limits.root_terminal_coverage = false;
             request.limits.max_expression_nodes = max_nodes;
         }
         let report = evm_abstract_server::analyze::analyze(request).unwrap();

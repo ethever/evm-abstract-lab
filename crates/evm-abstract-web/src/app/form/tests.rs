@@ -196,7 +196,11 @@ fn integer_budget_editor_preserves_values_above_f64_precision_and_old_caps() {
     let (_, output) = paint(&ctx, &mut form, vec![]);
     click(&ctx, &mut form, text_center(&output, "Execution budget"));
     let (_, output) = paint(&ctx, &mut form, vec![]);
-    click(&ctx, &mut form, text_center(&output, "1000000000000"));
+    click(
+        &ctx,
+        &mut form,
+        text_center(&output, &AnalysisLimits::default().max_work.to_string()),
+    );
     replace_text(&ctx, &mut form, "9007199254740993");
     let (_, output) = paint(&ctx, &mut form, vec![]);
     text_center(&output, "9007199254740993");
@@ -209,7 +213,7 @@ fn integer_budget_editor_preserves_values_above_f64_precision_and_old_caps() {
 }
 
 #[test]
-fn root_terminal_checkbox_submits_the_typed_opt_in_for_both_sources() {
+fn root_terminal_checkbox_submits_the_default_and_explicit_opt_out_for_both_sources() {
     for source in [Source::Bytecode, Source::Rpc] {
         let ctx = Context::default();
         crate::notation::initialize_fonts(&ctx);
@@ -219,13 +223,15 @@ fn root_terminal_checkbox_submits_the_typed_opt_in_for_both_sources() {
             source,
             ..AnalysisForm::default()
         };
+        assert_eq!(form.request().limits, AnalysisLimits::default());
+        assert!(form.request().limits.root_terminal_coverage);
+        assert_eq!(form.request().limits.max_work, 2_000_000_000);
         if source == Source::Rpc {
             load_providers(&mut form);
         } else {
             form.bytecode.bytecode = "6003565b602a5f5260205ff3".into();
             form.limits.max_transfers = 1;
         }
-        assert!(!form.request().limits.root_terminal_coverage);
         let mut expected = form.request();
         let size = Vec2::new(1440.0, 1000.0);
         let output = settle_sized(&ctx, &mut form, size);
@@ -242,28 +248,36 @@ fn root_terminal_checkbox_submits_the_typed_opt_in_for_both_sources() {
                 "Prepare conservative root terminal coverage",
                 Rect::from_min_size(Pos2::ZERO, size),
             );
-            assert!(click_sized(&ctx, &mut form, position, size).is_none());
+            if enabled != expected.limits.root_terminal_coverage {
+                assert!(click_sized(&ctx, &mut form, position, size).is_none());
+            }
             expected.limits.root_terminal_coverage = enabled;
             assert_eq!(form.request(), expected);
-        }
-        let (submitted, _) = paint_sized(&ctx, &mut form, vec![enter()], size);
-        let submitted = submitted.unwrap();
-        assert_eq!(submitted, expected);
-        let wire = serde_json::to_string(&submitted).unwrap();
-        assert!(wire.contains("\"root_terminal_coverage\":true"));
-        assert_eq!(
-            serde_json::from_str::<AnalyzeRequest>(&wire).unwrap(),
-            expected
-        );
-        #[cfg(not(target_arch = "wasm32"))]
-        if source == Source::Bytecode {
-            let report = evm_abstract_server::analyze::analyze(submitted).unwrap();
-            report.validate().unwrap();
-            assert_eq!(report.metadata.limits, expected.limits);
-            let config = &report.root_terminal_coverage.as_ref().unwrap().input.config;
-            assert!(config.root_terminal_coverage);
-            assert_eq!(config.max_transfers, expected.limits.max_transfers);
-            assert_eq!(config.max_work, expected.limits.max_work);
+            let (submitted, _) = paint_sized(&ctx, &mut form, vec![enter()], size);
+            let submitted = submitted.unwrap();
+            assert_eq!(submitted, expected);
+            let wire = serde_json::to_string(&submitted).unwrap();
+            assert!(wire.contains(&format!("\"root_terminal_coverage\":{enabled}")));
+            assert_eq!(
+                serde_json::from_str::<AnalyzeRequest>(&wire).unwrap(),
+                expected
+            );
+            #[cfg(not(target_arch = "wasm32"))]
+            if source == Source::Bytecode {
+                let report = evm_abstract_server::analyze::analyze(submitted).unwrap();
+                report.validate().unwrap();
+                assert_eq!(report.metadata.limits, expected.limits);
+                if enabled {
+                    let config = &report.root_terminal_coverage.as_ref().unwrap().input.config;
+                    assert!(config.root_terminal_coverage);
+                    assert_eq!(config.max_transfers, expected.limits.max_transfers);
+                    assert_eq!(config.max_work, expected.limits.max_work);
+                } else {
+                    assert!(report.root_terminal_coverage.is_none());
+                }
+            }
+            paint_sized(&ctx, &mut form, vec![], size);
+            form.open = true;
         }
     }
 }
@@ -280,23 +294,29 @@ fn root_terminal_checkbox_preserves_invalid_numeric_drafts_and_request_values() 
     let output = settle_sized(&ctx, &mut form, Vec2::new(900.0, 700.0));
     click(&ctx, &mut form, text_center(&output, "Execution budget"));
     let (_, output) = paint(&ctx, &mut form, vec![]);
-    click(&ctx, &mut form, text_center(&output, "1000000000000"));
-    replace_text(&ctx, &mut form, "invalid");
-    let (_, output) = paint(&ctx, &mut form, vec![]);
     click(
         &ctx,
         &mut form,
-        text_center(&output, "Prepare conservative root terminal coverage"),
+        text_center(&output, &AnalysisLimits::default().max_work.to_string()),
     );
-    assert!(form.request().limits.root_terminal_coverage);
-    assert_eq!(
-        form.request().limits.max_work,
-        AnalysisLimits::default().max_work
-    );
-    assert!(!form.can_submit(false));
-    assert!(frame(&ctx, &mut form, vec![enter()]).is_none());
-    let (_, output) = paint(&ctx, &mut form, vec![]);
-    assert!(click(&ctx, &mut form, text_center(&output, "Analyze")).is_none());
+    replace_text(&ctx, &mut form, "invalid");
+    for enabled in [false, true] {
+        let (_, output) = paint(&ctx, &mut form, vec![]);
+        click(
+            &ctx,
+            &mut form,
+            text_center(&output, "Prepare conservative root terminal coverage"),
+        );
+        assert_eq!(form.request().limits.root_terminal_coverage, enabled);
+        assert_eq!(
+            form.request().limits.max_work,
+            AnalysisLimits::default().max_work
+        );
+        assert!(!form.can_submit(false));
+        assert!(frame(&ctx, &mut form, vec![enter()]).is_none());
+        let (_, output) = paint(&ctx, &mut form, vec![]);
+        assert!(click(&ctx, &mut form, text_center(&output, "Analyze")).is_none());
+    }
     let (_, output) = paint(&ctx, &mut form, vec![]);
     click(&ctx, &mut form, text_center(&output, "invalid"));
     replace_text(&ctx, &mut form, "18446744073709551615");
@@ -319,7 +339,11 @@ fn invalid_numeric_draft_blocks_button_and_keyboard_until_corrected() {
         let (_, output) = paint(&ctx, &mut form, vec![]);
         click(&ctx, &mut form, text_center(&output, "Execution budget"));
         let (_, output) = paint(&ctx, &mut form, vec![]);
-        click(&ctx, &mut form, text_center(&output, "1000000000000"));
+        click(
+            &ctx,
+            &mut form,
+            text_center(&output, &AnalysisLimits::default().max_work.to_string()),
+        );
         replace_text(&ctx, &mut form, invalid);
         assert!(frame(&ctx, &mut form, vec![enter()]).is_none(), "{invalid}");
         let (_, output) = paint(&ctx, &mut form, vec![]);
