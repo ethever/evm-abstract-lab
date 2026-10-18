@@ -39,10 +39,53 @@ class _Graph:
             assert all(char in "0123456789abcdef" for char in payload[2:])
 
 
+def _numeric_contains(value, actual):
+    """Check one fixed Word256 against every stored numeric component."""
+    limit = 1 << 256
+    sign = 1 << 255
+
+    def word(encoded):
+        assert isinstance(encoded, str) and encoded.startswith("0x") and 2 < len(encoded) <= 66
+        assert all(char in "0123456789abcdef" for char in encoded[2:])
+        parsed = int(encoded, 16)
+        assert 0 <= parsed < limit
+        return parsed
+
+    assert type(actual) is int and 0 <= actual < limit
+    constants = value["constants"]
+    assert constants is None or isinstance(constants, list)
+    finite = constants is None or actual in [word(item) for item in constants]
+    zero, one = word(value["known_zero"]), word(value["known_one"])
+    unsigned, signed = value["unsigned"], value["signed"]
+    unsigned_lo, unsigned_hi = word(unsigned["lower"]), word(unsigned["upper"])
+    # The server removes the internal sign bias for two-complement wire words.
+    signed_lo, signed_hi = word(signed["lower"]) ^ sign, word(signed["upper"]) ^ sign
+    assert type(value["nonzero"]) is bool
+    congruence = value["congruence"]
+    if congruence == "Any":
+        congruent = True
+    else:
+        assert isinstance(congruence, dict) and len(congruence) == 1
+        if "Exact" in congruence:
+            congruent = actual == word(congruence["Exact"])
+        else:
+            assert set(congruence) == {"Modulo"}
+            modulo = congruence["Modulo"]
+            assert isinstance(modulo, dict) and set(modulo) == {"modulus", "residue"}
+            modulus, residue = word(modulo["modulus"]), word(modulo["residue"])
+            assert 0 < modulus and residue < modulus
+            congruent = actual % modulus == residue
+    return (finite and actual & zero == 0 and actual & one == one
+            and unsigned_lo <= actual <= unsigned_hi
+            and signed_lo <= actual ^ sign <= signed_hi
+            and (not value["nonzero"] or actual != 0) and congruent)
+
+
 def _buffer(report, index, memory, length):
     assert type(index) is int and 0 <= index < len(report["byte_arrays"])
     data = report["byte_arrays"][index]
     assert data["memory"] is memory and data["length"]["constants"] == [hex(length)]
+    assert _numeric_contains(data["length"], length)
     return data
 
 
@@ -57,10 +100,7 @@ def _stored_upper_bounds(data, expected):
         cells[offset] = data["values"][value]
     for offset, byte in enumerate(expected):
         value = cells.get(offset, data["default"])
-        assert value["constants"] is None or byte in [int(word, 16) for word in value["constants"]]
-        assert int(value["unsigned"]["lower"], 16) <= byte <= int(value["unsigned"]["upper"], 16)
-        assert byte & int(value["known_zero"], 16) == 0
-        assert byte & int(value["known_one"], 16) == int(value["known_one"], 16)
+        assert _numeric_contains(value, byte)
 
 
 def assert_return_word42(report, outcome):
