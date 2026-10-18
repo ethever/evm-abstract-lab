@@ -503,14 +503,17 @@ fn prepaid_publish_survives_real_work_exhaustion_but_checks_payer_cancellation()
         ready(&original, &world, &entry, &config, &facts, &mut budget)
     })
     .unwrap();
+    let input = std::ptr::from_ref(prepared.anchor.input.as_ref());
+    let outcomes = prepared.outcomes.as_ptr();
     assert!(!budget.charge(usize::MAX));
     let used = budget.used();
     assert!(budget.exhausted());
-    assert!(
-        analysis_control::with_cancellation(&unrelated, || prepared
-            .publish(RootTerminalTrigger::Work))
-        .is_some()
-    );
+    let coverage = analysis_control::with_cancellation(&unrelated, || {
+        prepared.publish(RootTerminalTrigger::Work)
+    })
+    .unwrap();
+    assert_eq!(std::ptr::from_ref(coverage.input()), input);
+    assert_eq!(coverage.outcomes().as_ptr(), outcomes);
     assert_eq!(budget.used(), used);
     assert!(budget.exhausted());
 

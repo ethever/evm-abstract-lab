@@ -171,8 +171,10 @@ impl RootTerminalOutcome {
 #[derive(Clone, Debug, Serialize)]
 pub struct RootTerminalCoverage {
     pub(in crate::analysis) scope: RootTerminalScope,
-    pub(in crate::analysis) input: RootTerminalInputBinding,
-    pub(in crate::analysis) outcomes: [RootTerminalOutcome; 3],
+    // Preparation allocates these once; publication only moves their ownership.
+    // Keep the captured Stores out of every graph/result stack frame.
+    pub(in crate::analysis) input: Box<RootTerminalInputBinding>,
+    pub(in crate::analysis) outcomes: Box<[RootTerminalOutcome; 3]>,
     pub(in crate::analysis) trigger: RootTerminalTrigger,
 }
 

@@ -71,13 +71,13 @@ impl From<RangeError> for PrepareError {
 /// Neither this authority nor the ready publication capability can be cloned.
 /// Captured Stores include all World assumptions without cloning the World.
 struct RootAnchor {
-    input: RootTerminalInputBinding,
+    input: Box<RootTerminalInputBinding>,
 }
 
 /// Entirely constructed, finalized and lifetime-funded before detail starts.
 pub(super) struct ReadyRoot {
     anchor: RootAnchor,
-    outcomes: [RootTerminalOutcome; 3],
+    outcomes: Box<[RootTerminalOutcome; 3]>,
     permit: CompletionPermit,
 }
 
@@ -365,7 +365,7 @@ fn prepare_with_bytes(
     // Sole authority mint. No recomputed initial Store, input lift or equality
     // check can substitute for the real initialization call at the engine seam.
     let anchor = RootAnchor {
-        input: RootTerminalInputBinding {
+        input: Box::new(RootTerminalInputBinding {
             snapshot: snapshot.clone(),
             revision,
             storage_source: world.storage_source_token(),
@@ -380,7 +380,7 @@ fn prepare_with_bytes(
             call_value: frame.call_value.clone(),
             saved_store: frame.saved_store.clone(),
             initial_store: initial.store.clone(),
-        },
+        }),
     };
     // Static suffixes can also delete touched, omitted empty owners at cleanup.
     // Independent all-account effects cover those changes under the same input.
@@ -416,7 +416,7 @@ fn prepare_with_bytes(
         }
         guards[index] = guard;
     }
-    let outcomes = [
+    let outcomes = Box::new([
         RootTerminalOutcome {
             kind: OutcomeKind::Return,
             data: return_data,
@@ -432,7 +432,7 @@ fn prepare_with_bytes(
             data: ByteArray::empty(),
             store: failed,
         },
-    ];
+    ]);
     let (result_fields, result_code) = outcomes.iter().try_fold(
         (input_fields, input_code),
         |(fields, code), outcome| -> Result<_, PrepareError> {
