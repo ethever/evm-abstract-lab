@@ -11,7 +11,7 @@ def budget_interactions(browser, url: str, output: Path):
     defaults = {
         "max_states": 100_000,
         "max_transfers": 10_000_000,
-        "max_work": 1_000_000_000_000,
+        "max_work": 2_000_000_000,
         "max_call_depth": 1025,
         "max_memory_bytes": 64 * 1024 * 1024,
         "context_depth": 128,
@@ -25,7 +25,7 @@ def budget_interactions(browser, url: str, output: Path):
         "rpc_max_requests": 1_000_000,
         "rpc_max_response_bytes": 64 * 1024 * 1024,
         "rpc_timeout_ms": 120_000,
-        "root_terminal_coverage": False,
+        "root_terminal_coverage": True,
     }
     page = browser.new_page(viewport={"width": 1440, "height": 1000})
     observe_webgpu(page)

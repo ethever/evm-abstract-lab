@@ -1,4 +1,4 @@
-"""Real form opt-in and native terminal tuples, independent of CFG evidence.
+"""Real form coverage controls and native terminal tuples, independent of CFG evidence.
 
 This case runs only with matched server/Wasm assets. Its small two-block input
 uses one transfer deliberately; every other execution/precision default stays
@@ -542,16 +542,19 @@ def root_terminal_coverage_interactions(context):
     assert first.status == 200
     defaults = json.loads(first.request.post_data)
     assert defaults["limits"] == LAYOUT_DEFAULT_LIMITS
-    assert defaults["limits"]["root_terminal_coverage"] is False
+    assert defaults["limits"]["root_terminal_coverage"] is True
     ordinary = first.json()["result"]["Ok"]
     assert ordinary["schema_version"] == 15 and ordinary["root_terminal_coverage"] is None
+    assert ordinary["status"] == "Converged" and ordinary["ssa"]["complete"] is True
+    assert ordinary["frontiers"] == []
     _stores(ordinary)
     canvas, status = page.locator("#evm-canvas"), page.locator("#analysis-status")
     assert COVERED not in status.text_content() and NOT_ATTACHED not in status.text_content()
-    (output / "coverage-default-off-request.json").write_text(first.request.post_data + "\n")
-    (output / "coverage-default-off-analysis.json").write_text(json.dumps(ordinary, indent=2) + "\n")
+    (output / "coverage-default-enabled-request.json").write_text(first.request.post_data + "\n")
+    (output / "coverage-default-enabled-analysis.json").write_text(json.dumps(ordinary, indent=2) + "\n")
+    canvas.screenshot(path=str(output / "coverage-default-enabled-complete.png"))
 
-    execution_open, coverage_enabled = False, False
+    execution_open, coverage_enabled = False, True
     header_offset = None
 
     def submit(name, *, enabled, transfers=1, invalid_numeric=False):
@@ -675,6 +678,7 @@ def root_terminal_coverage_interactions(context):
     assert disabled["root_terminal_coverage"] is None
     prior_detail = _detail(disabled)
     _stores(disabled)
+
     covered, request = submit("coverage-enabled-cap", enabled=True)
     assert _detail(covered) == prior_detail, "attachment changed detailed receipts/CFG/SSA/frontiers/outcomes"
     binding = _binding(covered, request, is_static=False)
@@ -685,27 +689,59 @@ def root_terminal_coverage_interactions(context):
     # Return to the original viewport before editing another actual form.
     inspector_title_action(page, canvas, "Restore", inspector_selected_tab(page, canvas, "Outcomes"))
     resize_view(page, 1440, 1000)
+
+    missing_certificates = []
+
+    def without_certificate(route):
+        response = route.fetch()
+        native_text = response.text()
+        envelope = json.loads(native_text)
+        native = envelope["result"]["Ok"]
+        assert native["metadata"]["limits"]["root_terminal_coverage"] is True
+        assert native["root_terminal_coverage"] is not None and _detail(native) == prior_detail
+        (output / "coverage-missing-certificate-control-native.json").write_text(native_text + "\n")
+        # Explicit client presentation control: preserve real Incomplete detail
+        # and remove only its certificate. This is not a native producer claim.
+        native["root_terminal_coverage"] = None
+        replacement = json.dumps(envelope)
+        headers = dict(response.headers)
+        headers.pop("content-encoding", None)
+        headers.pop("content-length", None)
+        route.fulfill(status=response.status, headers=headers, body=replacement)
+        missing_certificates.append(True)
+
+    page.route("**/api/tasks/*/result", without_certificate)
+    try:
+        missing, _ = submit("coverage-missing-certificate-control", enabled=True)
+        assert missing["root_terminal_coverage"] is None and _detail(missing) == prior_detail
+        assert missing_certificates == [True], missing_certificates
+        expect(status).to_contain_text(NOT_ATTACHED)
+        expect(status).to_contain_text("Incomplete / partial SSA")
+        assert COVERED not in status.text_content()
+        missing_status = status.text_content()
+        canvas.screenshot(path=str(output / "coverage-missing-certificate-control.png"))
+    finally:
+        page.unroute("**/api/tasks/*/result", without_certificate)
+
     complete, complete_request = submit("coverage-enabled-complete", enabled=True,
                                          transfers=LAYOUT_DEFAULT_LIMITS["max_transfers"])
     assert complete_request["limits"]["root_terminal_coverage"] is True
     assert complete["status"] == "Converged" and complete["ssa"]["complete"] is True
     assert complete["frontiers"] == [] and complete["root_terminal_coverage"] is None
-    expect(status).to_contain_text(NOT_ATTACHED)
-    assert COVERED not in status.text_content()
-    assert all(label.strip() == NOT_ATTACHED
-               for label in re.findall(r"Root terminal[^;·]*", status.text_content()))
+    assert COVERED not in status.text_content() and NOT_ATTACHED not in status.text_content()
     negatives = _invalid_requests(page, context.url, request, output)
     static = _static_control(page, context.url, request, output)
     schema = _schema_control(page, canvas, output, complete_request)
-    result = {"default_off": defaults["limits"]["root_terminal_coverage"],
+    result = {"default_enabled": defaults["limits"]["root_terminal_coverage"],
               "attached": {"scope": covered["root_terminal_coverage"]["scope"],
                            "trigger": covered["root_terminal_coverage"]["trigger"],
                            "binding": binding, "inspection": inspect},
               "ordinary_outcome_count": len(covered["outcomes"]),
-              "detail_preserved": prior_detail, "opt_in_converged_certificate": None,
+              "detail_preserved": prior_detail, "enabled_converged_certificate": None,
+              "missing_certificate_control": {"status": missing_status, "control_only": True},
               "rejected_requests": negatives, "static_api_companion": static,
               "schema_control": schema, "renderer": webgpu_evidence(page)}
-    assert len(posts) == 5, posts
+    assert len(posts) == 6, posts
     assert not errors, errors
     (output / "coverage-report.json").write_text(json.dumps(result, indent=2) + "\n")
     page.close()

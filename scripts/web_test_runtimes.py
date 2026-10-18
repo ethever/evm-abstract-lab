@@ -10,6 +10,12 @@ from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout
 from web_test_pixels import layout_ink, node_snapshot
 
 
+# Historical runtime detail/precision oracles retain their explicit 1T/OFF
+# profile. They are separate from the new 2B/ON default acceptance cases.
+RUNTIME_DETAIL_LIMITS = {**LAYOUT_DEFAULT_LIMITS, "max_work": 1_000_000_000_000,
+                         "root_terminal_coverage": False}
+
+
 def _runtime_numeric_contains(value, actual):
     # Keep this local: the runtime cases' exact manifest closure intentionally
     # excludes the separate RPC wire-byte fixture module.
@@ -89,8 +95,8 @@ def layout_runtime_request(request, report, code, metadata):
     assert set(request) == {"input", "fork", "environment", "limits"}
     assert request["input"] == {"Bytecode": {"bytecode": code, "address": entry.get("address")}}
     assert request["fork"] == report["fork"] == entry.get("fork", "Osaka")
-    assert LAYOUT_DEFAULT_LIMITS["root_terminal_coverage"] is False
-    assert request["limits"] == report["metadata"]["limits"] == LAYOUT_DEFAULT_LIMITS
+    assert RUNTIME_DETAIL_LIMITS["max_work"] == 1_000_000_000_000
+    assert request["limits"] == report["metadata"]["limits"] == RUNTIME_DETAIL_LIMITS
     assert request["limits"]["root_terminal_coverage"] is report["metadata"]["limits"]["root_terminal_coverage"] is False
     expected = {"caller": "Unknown", "origin": None, "call_value": "Unknown",
                 "calldata": {"Exact": entry["calldata"]}, "is_static": False,
@@ -399,7 +405,8 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         assert metadata["chain_id"]==1 and metadata["requireCanonical"]
         entry=metadata["browser_entry"]
         print(f"real-runtime analysis start: {name}",flush=True)
-        report=layout_submission(page,canvas,code,args.output,name,timeout_seconds=1800,entry=entry)
+        report=layout_submission(page,canvas,code,args.output,name,timeout_seconds=1800,entry=entry,
+                                 execution_limits=RUNTIME_DETAIL_LIMITS)
         coverage=layout_runtime_coverage(report,metadata)
         (args.output/f"{name}-coverage-comparison.json").write_text(json.dumps(coverage,indent=2)+"\n")
         print(f"real-runtime analysis done: {name} status={report['status']} states={len(report['cfg'])} "
