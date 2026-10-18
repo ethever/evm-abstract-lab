@@ -107,6 +107,7 @@ fn original_policy() -> ExecutionConfig {
         max_call_depth: limit("max_call_depth"),
         max_memory_bytes: limit("max_memory_bytes"),
         use_summaries: limits["use_summaries"].as_bool().unwrap(),
+        root_terminal_coverage: false,
         analysis: Config {
             domain_profile: Profile::Product,
             max_states: limit("max_states"),
