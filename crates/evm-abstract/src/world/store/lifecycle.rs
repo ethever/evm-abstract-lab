@@ -1,6 +1,6 @@
 //! Transaction touch facts and empty-account clearing under EIP-161.
 //!
-//! Option<bool> denotes {false}, {true}, or both. A touch is monotone during
+//! `Option<bool>` denotes {false}, {true}, or both. A touch is monotone during
 //! forward execution, but ordinary child rollback restores the captured facts.
 
 use super::Store;
