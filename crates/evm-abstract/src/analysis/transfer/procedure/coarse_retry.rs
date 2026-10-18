@@ -94,8 +94,15 @@ impl CoarseRuntime {
             return Err(MachineError::Shape);
         }
         // Pay for cloning, guarantee erasure, layout projection and the full
-        // coarse pass before construction. No partial bound escapes refusal.
-        reserve(budget, original.work_size().saturating_mul(8))?;
+        // coarse pass before construction. Layout coordinates come only from
+        // the original summary; two additional passes own its persistent copy
+        // and eventual release. No partial bound escapes refusal.
+        let preparation_work = original.work_size().saturating_mul(8);
+        let layout_lifetime_work = original.work_size().saturating_mul(2);
+        reserve(
+            budget,
+            preparation_work.saturating_add(layout_lifetime_work),
+        )?;
         let projected = erase_guarantees(original.clone())?;
         let layout = loop_bound::restrict(&projected, &projected, domain);
         let bound = loop_bound::coarse(&loop_bound::restrict(&projected, &layout, domain));

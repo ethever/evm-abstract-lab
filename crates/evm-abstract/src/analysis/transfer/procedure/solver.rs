@@ -343,6 +343,20 @@ impl Solver<'_> {
             self.storage_reads,
             true,
         );
+        // Cancellation or an exhausted sticky ledger may arrive at the end of
+        // the transfer. Recheck before publishing its bound; the transfer cap
+        // was checked before execution and permits this last allowed transfer.
+        let interruption = MachineError::check_cancelled()
+            .err()
+            .or_else(|| self.budget.exhausted().then(MachineError::work_failure));
+        if let Some(reason) = interruption.map(MachineError::frontier_reason)
+            && !retry
+                .frontiers
+                .iter()
+                .any(|frontier| frontier.reason == reason)
+        {
+            super::super::boundary(&mut retry, 0, reason);
+        }
         if retry.frontiers.is_empty() {
             // The coarse transfer covers the full original entry. Commit its
             // input and receipts together; a failed retry leaves only Attempted.
