@@ -736,32 +736,47 @@ def root_terminal_coverage_interactions(context):
     missing_certificates = []
 
     def without_certificate(route):
+        job_match = re.search(r"/api/tasks/(0|[1-9][0-9]*)/result\Z", route.request.url)
+        assert job_match, route.request.url
+        job_id = _decimal_identity(job_match[1])
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
         native = envelope["result"]["Ok"]
         assert native["metadata"]["limits"]["root_terminal_coverage"] is True
         assert native["root_terminal_coverage"] is not None and _detail(native) == prior_detail
-        (output / "coverage-missing-certificate-control-native.json").write_text(native_text + "\n")
+        (output / "coverage-missing-certificate-client-control-native.json").write_text(native_text + "\n")
         # Explicit client presentation control: preserve real Incomplete detail
         # and remove only its certificate. This is not a native producer claim.
-        native["root_terminal_coverage"] = None
-        replacement = json.dumps(envelope)
+        ui_envelope = deepcopy(envelope)
+        ui_envelope["result"]["Ok"]["root_terminal_coverage"] = None
+        replacement = json.dumps(ui_envelope)
+        ui = json.loads(replacement)["result"]["Ok"]
+        assert ui == {**native, "root_terminal_coverage": None}, "client control changed other report fields"
+        (output / "coverage-missing-certificate-client-control-ui.json").write_text(replacement + "\n")
         headers = dict(response.headers)
         headers.pop("content-encoding", None)
         headers.pop("content-length", None)
         route.fulfill(status=response.status, headers=headers, body=replacement)
-        missing_certificates.append(True)
+        missing_certificates.append({"request_url": route.request.url, "job_id": job_id,
+                                     "native_text": native_text, "ui_text": replacement})
 
     page.route("**/api/tasks/*/result", without_certificate)
     try:
         missing, _ = submit("coverage-missing-certificate-control", enabled=True)
-        assert missing["root_terminal_coverage"] is None and _detail(missing) == prior_detail
-        assert missing_certificates == [True], missing_certificates
+        # complete_submission reads the native API directly, bypassing this UI route.
+        assert missing["root_terminal_coverage"] is not None and _detail(missing) == prior_detail
+        assert len(missing_certificates) == 1, missing_certificates
+        intercepted, = missing_certificates
+        assert missing == json.loads(intercepted["native_text"])["result"]["Ok"], "same-job native report changed"
+        assert json.loads(intercepted["ui_text"])["result"]["Ok"] == {**missing, "root_terminal_coverage": None}
         expect(status).to_contain_text(NOT_ATTACHED)
         expect(status).to_contain_text("Incomplete / partial SSA")
         assert COVERED not in status.text_content()
         missing_status = status.text_content()
+        job_ids = re.findall(r"(?:^|; )Job ID: ([^;]+)(?=;|$)", missing_status)
+        assert len(job_ids) == 1, missing_status
+        assert _decimal_identity(job_ids[0]) == intercepted["job_id"], intercepted["request_url"]
         canvas.screenshot(path=str(output / "coverage-missing-certificate-control.png"))
     finally:
         page.unroute("**/api/tasks/*/result", without_certificate)
