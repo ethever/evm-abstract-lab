@@ -3,18 +3,22 @@
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{
-        self, ExecutionConfig, FrontierReason, Limit, OutcomeKind, RootTerminalScope,
-        RootTerminalTrigger, Status,
-        layers::AnalysisSession,
+        self, ConfigError, ControlledAnalysisError, ExecutionConfig, FrameCode, FrontierReason,
+        Limit, OutcomeKind, RootTerminalScope, RootTerminalTrigger, Status,
+        control::Control,
+        layers::{AnalysisSession, FactDependency, Observation, RefinementEffect},
+        progress::Observer,
     },
     domain::{
         AbstractValue, Domain,
-        symbolic::{ByteStateKind, ExprId, ExprKind, ExprLimits, SlotStateId, SlotStateKind, SourceId},
+        symbolic::{
+            ByteStateKind, ExprId, ExprKind, ExprLimits, SlotStateId, SlotStateKind, SourceId,
+        },
     },
     ssa::{self, PartialBlockCoverage},
     world::{Account, ByteArray, Code, Entry, Existence, Store, World},
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 const TWO_BLOCK_RETURN: &str = "6003565b602a5f5260205ff3";
 
@@ -35,8 +39,6 @@ fn fixture(fork: Fork) -> (World, Entry, ExecutionConfig) {
         account.nonce = word(1);
         world.insert(address(owner), account).unwrap();
     }
-    world.insert(address(3), Account::empty()).unwrap();
-    world.insert(address(0x303), Account::empty()).unwrap();
     let mut entry = Entry::new(address(0x101));
     entry.environment.caller = address(0x900).into();
     entry.environment.value = word(0);
@@ -50,6 +52,8 @@ fn fixture(fork: Fork) -> (World, Entry, ExecutionConfig) {
 /// A finite witness for the Exact/Input/ordered-slot grammar used below.
 /// Each immutable source gets one assignment across input, saved and output
 /// roots. Unsupported shapes refuse; numerical marginals alone cannot pass.
+/// The finite assignments extend to total sources by choosing zero elsewhere;
+/// every byte below a selected complete data length is explicitly assigned.
 #[derive(Default)]
 struct JointWitness {
     words: BTreeMap<ExprId, U256>,
@@ -109,9 +113,10 @@ impl JointWitness {
         let value = store.read_checked(owner, &word(8), domain).unwrap();
         let expected = U256::from(expected);
         value.contains(expected)
-            && value
-                .expression()
-                .is_some_and(|expression| self.expression(expression, expected))
+            && match value.expression() {
+                Some(expression) => self.expression(expression, expected),
+                None => value.singleton() == Some(expected),
+            }
     }
 
     fn data(&mut self, data: &ByteArray, expected: &[u8]) -> bool {
@@ -179,11 +184,13 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     assert_eq!(input.entry(), &entry);
     assert_eq!(input.entry(), covered.entry());
     assert_eq!(input.domain_spec(), covered.domain_spec());
+    assert_eq!(input.domain_spec(), Domain::default().spec());
     assert_eq!(
         serde_json::to_value(input.config()).unwrap(),
         serde_json::to_value(&config).unwrap()
     );
     assert_eq!(input.frame(), &frame.key);
+    assert_eq!(input.frame().mode, FrameCode::Runtime);
     assert_eq!(input.program(), frame.program.as_ref().unwrap());
     let Code::Runtime(request_program) = &world.accounts()[&entry.address].code else {
         panic!("fixture has runtime code");
@@ -379,4 +386,262 @@ fn one_certificate_admits_two_whole_input_valuations_and_independent_return_effe
     .unwrap();
     assert!(matches!(unsupported.kind(), ExprKind::Ite { .. }));
     assert!(!JointWitness::default().expression(&unsupported, U256::from(1)));
+}
+
+#[test]
+fn exceptional_finalization_covers_both_future_sticky_three_choices() {
+    for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
+        let (mut world, entry, mut config) = fixture(fork);
+        world.insert(address(3), Account::empty()).unwrap();
+        world.insert(address(0x303), Account::empty()).unwrap();
+        config.root_terminal_coverage = true;
+        let analysis = analysis::analyze_world(world, entry.clone(), config).unwrap();
+        let coverage = analysis.root_terminal_coverage().unwrap();
+        let saved = coverage.input().saved_store();
+        let domain = Domain::from_spec(coverage.input().domain_spec());
+        let original = saved.state().clone();
+        for future_touch in [false, true] {
+            // Compose the actual public rollback and finalization operations on
+            // one saved root. These are Store witnesses, not executed CALLs.
+            let mut future = coverage.input().initial_store().clone();
+            future
+                .write_checked(entry.address, &word(8), &word(99), domain)
+                .unwrap();
+            future.write_balance(entry.address, word(1));
+            future.touch_account(address(0x303));
+            if future_touch {
+                future.touch_account(address(3));
+            }
+            future.restore(saved.clone());
+            future.finalize_transaction(domain);
+            let expected_existence = if future_touch {
+                Existence::Absent
+            } else {
+                Existence::Present
+            };
+            assert_eq!(future.existence(address(3)), expected_existence);
+            assert_eq!(future.existence(address(0x303)), Existence::Present);
+            assert_eq!(
+                future.read_balance(entry.address),
+                saved.state().read_balance(entry.address)
+            );
+            for outcome in &coverage.outcomes()[1..] {
+                let store = outcome.store();
+                let mut joint = JointWitness::default();
+                assert!(joint.storage(saved.state(), entry.address, 7, domain));
+                assert!(joint.storage(&future, entry.address, 7, domain));
+                assert!(joint.storage(store, entry.address, 7, domain));
+                assert!(!joint.storage(store, entry.address, 99, domain));
+                // Only presence differs between the two complete empty-account
+                // tuples. Unknown presence admits both; every other field is
+                // fixed to the same empty value, rather than chosen per read.
+                assert_eq!(store.existence(address(3)), Existence::Unknown);
+                assert_eq!(store.existence(address(0x303)), Existence::Present);
+                for owner in [address(3), address(0x303)] {
+                    assert_eq!(store.code(owner), Some(&Code::Empty));
+                    assert_eq!(store.code(owner), future.code(owner));
+                    assert_eq!(store.read_balance(owner).singleton(), Some(U256::ZERO));
+                    assert_eq!(store.nonce(owner).singleton(), Some(U256::ZERO));
+                    for transient in [false, true] {
+                        assert_eq!(
+                            store.slot_root(owner, transient).unwrap(),
+                            SlotStateId::zero()
+                        );
+                        assert_eq!(
+                            store.slot_root(owner, transient).unwrap(),
+                            future.slot_root(owner, transient).unwrap()
+                        );
+                    }
+                    assert_eq!(store.touched_in_transaction(owner), Some(false));
+                    assert_eq!(store.created_in_transaction(owner), Some(false));
+                    assert_eq!(store.pending_destruction(owner), Some(false));
+                }
+                assert_eq!(
+                    store.read_balance(entry.address),
+                    saved.state().read_balance(entry.address)
+                );
+                assert!(!store.logs_unknown());
+                assert!(store.possible_logs().is_empty());
+            }
+        }
+        assert_eq!(saved.state(), &original);
+    }
+}
+
+#[test]
+fn revised_facts_and_independent_requests_capture_fresh_bindings() {
+    let (world, entry, mut config) = fixture(Fork::Osaka);
+    config.root_terminal_coverage = true;
+    let mut session = AnalysisSession::from_world(world, entry, config).unwrap();
+    let old = session.analyze().unwrap();
+    let old_coverage = old.analysis().root_terminal_coverage().unwrap();
+    let snapshot = old.snapshot().clone();
+    assert!(old.dependencies().reads().any(|(dependency, states)| {
+        *dependency == FactDependency::AllInitialState && states.contains(&0)
+    }));
+    assert!(Arc::ptr_eq(&old, &session.analyze().unwrap()));
+    let effect = session
+        .refine(
+            &snapshot,
+            [Observation::Storage {
+                address: address(0x202),
+                slot: U256::from(8),
+                value: U256::from(7),
+            }],
+        )
+        .unwrap();
+    let RefinementEffect::RestartRequired {
+        previous,
+        executed_revision,
+        current,
+        affected_states,
+        ..
+    } = effect
+    else {
+        panic!("a previously unread initial slot must invalidate root capture");
+    };
+    assert_eq!(previous, old.revision());
+    assert_eq!(executed_revision, old.revision());
+    assert_ne!(current, old.revision());
+    assert!(affected_states.contains(&0));
+    let new = session.analyze().unwrap();
+    assert!(!Arc::ptr_eq(&old, &new));
+    let new_coverage = new.analysis().root_terminal_coverage().unwrap();
+    assert_eq!(new_coverage.input().snapshot(), &snapshot);
+    assert_eq!(new_coverage.input().revision(), current);
+    assert_eq!(old_coverage.input().revision(), old.revision());
+    assert_eq!(
+        new_coverage.input().storage_source(),
+        old_coverage.input().storage_source()
+    );
+    assert_ne!(
+        new_coverage.outcomes()[0].store().global_storage_state(),
+        old_coverage.outcomes()[0].store().global_storage_state()
+    );
+    let domain = Domain::from_spec(new_coverage.input().domain_spec());
+    for store in [
+        new_coverage.input().initial_store(),
+        new_coverage.input().saved_store().state(),
+        new_coverage.outcomes()[1].store(),
+        new_coverage.outcomes()[2].store(),
+    ] {
+        let value = store.read_checked(address(0x202), &word(8), domain).unwrap();
+        assert_eq!(value.singleton(), Some(U256::from(7)));
+        assert!(!value.contains(U256::from(1)));
+    }
+    for initial in [1, 7] {
+        let mut joint = JointWitness::default();
+        assert!(joint.storage(
+            old_coverage.input().initial_store(),
+            address(0x202),
+            initial,
+            domain
+        ));
+        assert!(joint.storage(
+            old_coverage.input().saved_store().state(),
+            address(0x202),
+            initial,
+            domain
+        ));
+    }
+
+    // Equal offline labels cannot alias independent worlds or input contexts.
+    let (other_world, mut other_entry, mut other_config) = fixture(Fork::Cancun);
+    other_entry.environment.caller = address(0x901).into();
+    other_entry.environment.value = word(9);
+    other_entry.environment.calldata = ByteArray::exact(&[0xfe, 0xed]);
+    other_config.root_terminal_coverage = true;
+    let other = analysis::analyze_world(other_world, other_entry.clone(), other_config).unwrap();
+    let other_input = other.root_terminal_coverage().unwrap().input();
+    assert_eq!(
+        other_input.snapshot().identity(),
+        old_coverage.input().snapshot().identity()
+    );
+    assert_ne!(other_input.snapshot(), old_coverage.input().snapshot());
+    assert_ne!(
+        other_input.storage_source(),
+        old_coverage.input().storage_source()
+    );
+    assert_ne!(other_input.input_scope(), old_coverage.input().input_scope());
+    assert_eq!(other_input.entry(), &other_entry);
+    assert_eq!(other_input.fork(), Fork::Cancun);
+    assert_eq!(other_input.program().fork(), Fork::Cancun);
+    assert_eq!(other_input.frame().caller, other_entry.environment.caller);
+    assert_eq!(other_input.call_value().singleton(), Some(U256::from(9)));
+    assert_eq!(
+        other_input.calldata().exact_bytes().as_deref(),
+        Some(&[0xfe, 0xed][..])
+    );
+}
+
+#[test]
+fn unsupported_precompile_preparation_keeps_its_paid_prefix_and_real_return() {
+    let world = World::new(Fork::Osaka, "unsupported root preparation");
+    let entry = Entry::concrete(
+        address(4),
+        address(0x900),
+        word(0),
+        ByteArray::exact(b"identity"),
+    );
+    let mut config = ExecutionConfig::default();
+    let ordinary = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    config.root_terminal_coverage = true;
+    let covered = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(covered.status(), Status::Converged);
+    assert!(covered.frontiers().is_empty());
+    assert!(covered.root_terminal_coverage().is_none());
+    assert_eq!(
+        covered.states()[0].entry.active().code,
+        FrameCode::Precompile(address(4))
+    );
+    assert_eq!(covered.transfers(), ordinary.transfers());
+    // prepare_with_bytes reserves one unit before the NotRuntime refusal;
+    // no later preparation stage runs for this genuine native root.
+    assert_eq!(covered.work().checked_sub(ordinary.work()), Some(1));
+    let returns: Vec<_> = covered
+        .outcomes()
+        .iter()
+        .filter(|outcome| outcome.kind == OutcomeKind::Return)
+        .collect();
+    assert_eq!(returns.len(), 1);
+    assert_eq!(
+        returns[0].data.exact_bytes().as_deref(),
+        Some(&b"identity"[..])
+    );
+    ssa::build_world(&covered).unwrap().verify(&covered).unwrap();
+}
+
+#[test]
+fn invalid_or_cancelled_requests_cannot_return_a_certificate() {
+    let (world, entry, mut config) = fixture(Fork::Osaka);
+    config.root_terminal_coverage = true;
+    let mut invalid = entry.clone();
+    invalid.environment.to = address(0xdead).into();
+    assert!(matches!(
+        analysis::analyze_world(world.clone(), invalid, config.clone()),
+        Err(ConfigError::Environment(_))
+    ));
+    let control = Control::new(Observer::default());
+    control.cancellation().cancel();
+    assert!(matches!(
+        analysis::analyze_world_with_control(
+            world.clone(),
+            entry.clone(),
+            config.clone(),
+            &control
+        ),
+        Err(ControlledAnalysisError::Cancelled)
+    ));
+    let mut invalid_config = config.clone();
+    invalid_config.analysis.max_transfers = 0;
+    assert!(matches!(
+        analysis::analyze_world(world.clone(), entry.clone(), invalid_config),
+        Err(ConfigError::Budget)
+    ));
+    let next = analysis::analyze_world(world, entry, config).unwrap();
+    assert_eq!(next.status(), Status::Incomplete);
+    assert_eq!(
+        next.root_terminal_coverage().unwrap().trigger(),
+        &RootTerminalTrigger::Transfers
+    );
 }
