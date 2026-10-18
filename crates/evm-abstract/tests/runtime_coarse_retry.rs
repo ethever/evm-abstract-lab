@@ -11,6 +11,7 @@ mod support;
 mod witness;
 
 use evm_abstract::{
+    U256,
     analysis::{DiagnosticKind, OutcomeKind, Status},
     domain::relational::QueryReason,
     ssa,
@@ -21,7 +22,7 @@ use witness::Assignment;
 #[test]
 fn runtime_return_retries_the_whole_callback_entry() {
     let config = policy();
-    let domain = config.domain().unwrap();
+    let domain = domain(&config);
     fixture::entry_constructor_refusal(domain);
     let code = fixture::recoverable();
     let analysis = run(&code, config);
@@ -38,14 +39,14 @@ fn runtime_return_retries_the_whole_callback_entry() {
     let output = only_output(procedure, OutcomeKind::Return);
     assert_eq!(
         output.store.read(address(B), &word(0), domain).singleton(),
-        Some(42.into())
+        Some(U256::from(42))
     );
     assert_eq!(
         output
             .store
             .read_transient(address(B), &word(0), domain)
             .singleton(),
-        Some(99.into())
+        Some(U256::from(99))
     );
     let mut assignment = Assignment::default();
     assignment.exact_bytes(

@@ -5,11 +5,11 @@ use evm_abstract::{
         ExecutionConfig, FrameCode, OutcomeKind, ProcedureSummary, ProcedureSummaryKind,
         ProcedureSummaryOutput, WorldAnalysis, analyze_world,
     },
-    domain::AbstractValue,
+    domain::{AbstractValue, Domain, DomainSpec},
     world::{Account, ByteArray, Code, Entry, Existence, World},
 };
 use revm_bytecode::opcode;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 pub(super) const U: u64 = 0x201;
 pub(super) const B: u64 = 0x301;
@@ -31,6 +31,19 @@ pub(super) fn policy() -> ExecutionConfig {
     assert_eq!(config.analysis.relations.max_depth, 64);
     assert_eq!(config.max_work, 20_000_000);
     config
+}
+
+pub(super) fn domain(config: &ExecutionConfig) -> Domain {
+    let config = &config.analysis;
+    Domain::from_spec(
+        DomainSpec::new(
+            config.domain_profile,
+            NonZeroUsize::new(config.max_constants).unwrap(),
+            NonZeroUsize::new(config.reduction_rounds).unwrap(),
+            NonZeroUsize::new(config.max_facts).unwrap(),
+        )
+        .with_relations(config.relations),
+    )
 }
 
 #[derive(Clone)]
@@ -104,8 +117,8 @@ pub(super) fn world(code: &Fixture, unknown: Option<&Fixture>) -> World {
     let mut world = World::new(Fork::Osaka, "runtime-coarse-retry:offline-callback");
     let mut account = Account::from_hex(&hex::encode(&code.bytes), world.fork()).unwrap();
     account.balance = word(BALANCE);
-    account.storage.insert(0.into(), word(7));
-    account.storage.insert(1.into(), word(5));
+    account.storage.insert(U256::from(0), word(7));
+    account.storage.insert(U256::from(1), word(5));
     world.insert(address(B), account).unwrap();
     let unknown = if let Some(code) = unknown {
         let mut account = Account::from_hex(&hex::encode(&code.bytes), world.fork()).unwrap();

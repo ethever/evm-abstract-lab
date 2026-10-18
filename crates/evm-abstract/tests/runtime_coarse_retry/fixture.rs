@@ -2,6 +2,7 @@
 
 use super::support::{Assembly, Fixture, NODE_CAP, word};
 use evm_abstract::{
+    U256,
     domain::{
         Domain,
         symbolic::{ByteStateKind, StateError},
@@ -99,7 +100,7 @@ pub(super) fn entry_constructor_refusal(domain: Domain) {
     prefix
         .write_byte(&word(0), &input_bit(domain), 65_536, domain)
         .unwrap();
-    assert_eq!(prefix.len().singleton(), Some(32.into()));
+    assert_eq!(prefix.len().singleton(), Some(U256::from(32)));
     clean(&prefix, domain);
     let mut entry = prefix
         .summary_projection(domain)
@@ -124,8 +125,8 @@ pub(super) fn entry_constructor_refusal(domain: Domain) {
     assert_eq!(bindings.len(), 1);
     assert_eq!(bindings[0].numeric.work_size(), 13);
     assert_eq!(previous.nodes(), 17);
-    assert_eq!(destination.as_constant(), Some(1.into()));
-    assert_eq!(length.as_constant(), Some(31.into()));
+    assert_eq!(destination.as_constant(), Some(U256::from(1)));
+    assert_eq!(length.as_constant(), Some(U256::from(31)));
     assert!(matches!(chunk.state.kind(), ByteStateKind::Exact(bytes) if bytes.as_ref() == [0; 31]));
     assert_eq!(source.state.nodes(), 23);
     assert_eq!(entry.state_root().nodes(), 26);
