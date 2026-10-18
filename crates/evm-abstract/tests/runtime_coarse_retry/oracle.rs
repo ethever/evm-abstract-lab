@@ -22,6 +22,7 @@ struct Trace {
     resumed: usize,
     steps: Vec<(Address, Address, Address, bool, usize)>,
     writes: Vec<(U256, U256)>,
+    transient_writes: Vec<(U256, U256)>,
     callback: Option<(OutcomeKind, Vec<u8>)>,
     transient: Option<U256>,
 }
@@ -43,6 +44,12 @@ impl<CTX: ContextTr> Inspector<CTX, EthInterpreter> for Trace {
             ));
             if interpreter.bytecode.opcode() == opcode::SSTORE {
                 self.writes.push((
+                    interpreter.stack.peek(0).unwrap(),
+                    interpreter.stack.peek(1).unwrap(),
+                ));
+            }
+            if interpreter.bytecode.opcode() == opcode::TSTORE {
+                self.transient_writes.push((
                     interpreter.stack.peek(0).unwrap(),
                     interpreter.stack.peek(1).unwrap(),
                 ));
@@ -77,6 +84,13 @@ pub(super) struct Observation {
 }
 
 impl Observation {
+    pub(super) fn assert_transient_writes(&self) {
+        assert_eq!(
+            self.trace.transient_writes,
+            [(U256::ZERO, U256::from(42)), (U256::ZERO, U256::from(99))]
+        );
+    }
+
     pub(super) fn assert_callback(&self, code: &Fixture, kind: OutcomeKind, expected: u64) {
         assert_eq!(self.kind, kind);
         assert_eq!(self.callback_data, U256::from(expected).to_be_bytes::<32>());

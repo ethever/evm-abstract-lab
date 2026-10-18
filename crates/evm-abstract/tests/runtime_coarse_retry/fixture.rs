@@ -4,8 +4,9 @@ use super::support::{Assembly, Fixture, NODE_CAP, word};
 use evm_abstract::{
     U256,
     domain::{
-        Domain,
-        symbolic::{ByteStateKind, StateError},
+        AbstractValue, Domain,
+        relational::RelationState,
+        symbolic::{ByteStateKind, ExprId, StateError},
     },
     world::{ByteArray, RangeError},
 };
@@ -28,6 +29,62 @@ pub(super) fn recoverable() -> Fixture {
         .push(64)
         .mark("refused")
         .op(opcode::MSTORE)
+        .store(opcode::SSTORE, 0, 42)
+        .store(opcode::TSTORE, 0, 99)
+        .push(42)
+        .push(64)
+        .op(opcode::MSTORE)
+        .exit(opcode::RETURN, 64);
+    a.finish()
+}
+
+pub(super) fn reverting() -> Fixture {
+    let mut a = Assembly::default();
+    bit(&mut a)
+        .push(0)
+        .op(opcode::MSTORE8)
+        .jump("update", false);
+    a.label("update")
+        .store(opcode::SSTORE, 0, 99)
+        .store(opcode::TSTORE, 0, 42)
+        .push(99)
+        .push(64)
+        .mark("refused")
+        .op(opcode::MSTORE)
+        .store(opcode::SSTORE, 0, 42)
+        .store(opcode::TSTORE, 0, 99)
+        .push(99)
+        .push(64)
+        .op(opcode::MSTORE)
+        .exit(opcode::REVERT, 64);
+    a.finish()
+}
+
+pub(super) fn body_limited() -> Fixture {
+    let mut a = Assembly::default();
+    // This guard is independent of the calldata byte: specializing that byte
+    // to zero here would erase the state-growth premise in the body.
+    a.op(opcode::CALLVALUE)
+        .op(opcode::ISZERO)
+        .jump("update", true)
+        .push(99)
+        .push(64)
+        .op(opcode::MSTORE)
+        .exit(opcode::REVERT, 64);
+    a.label("update")
+        .store(opcode::SSTORE, 0, 99)
+        .store(opcode::TSTORE, 0, 42);
+    // Keep one expression and no intervening block/summary between writes.
+    bit(&mut a)
+        .op(opcode::DUP1)
+        .push(0)
+        .op(opcode::MSTORE8)
+        .op(opcode::DUP1)
+        .push(1)
+        .op(opcode::MSTORE8)
+        .push(2)
+        .mark("refused")
+        .op(opcode::MSTORE8)
         .store(opcode::SSTORE, 0, 42)
         .store(opcode::TSTORE, 0, 99)
         .push(42)
@@ -137,4 +194,45 @@ pub(super) fn entry_constructor_refusal(domain: Domain) {
         Err(RangeError::State(StateError::Limit { nodes: 29, depth })) if depth <= 64)
     );
     assert_eq!(entry, before, "refused constructor is atomic");
+}
+
+pub(super) fn body_constructor_refusal(domain: Domain) {
+    let limits = domain.spec().relations();
+    assert_eq!(limits.max_nodes, NODE_CAP);
+    let call_value = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let guard = domain.apply(opcode::ISZERO, &[call_value]);
+    let condition = guard.expression().unwrap();
+    assert_eq!(condition.nodes(), 2);
+    assert!(!guard.symbolic_limit_reached());
+    for nonzero in [false, true] {
+        let mut relations = RelationState::default();
+        relations
+            .assume_checked(condition, nonzero, &limits)
+            .unwrap();
+        assert!(!relations.is_bottom());
+        assert_eq!(relations.constraints().len(), 1);
+        assert_eq!(relations.work_size(), 4);
+    }
+    let mut memory = ByteArray::memory()
+        .summary_projection(domain)
+        .unwrap()
+        .instantiate(domain)
+        .unwrap();
+    assert_eq!(memory.state_root().nodes(), 1);
+    assert_eq!(memory.len().singleton(), Some(U256::ZERO));
+    let bit = input_bit(domain);
+    for (offset, nodes) in [(0, 12), (1, 23)] {
+        memory
+            .write_byte(&word(offset), &bit, 65_536, domain)
+            .unwrap();
+        assert_eq!(memory.state_root().nodes(), nodes);
+        assert_eq!(memory.len().singleton(), Some(U256::from(32)));
+        clean(&memory, domain);
+    }
+    let before = memory.clone();
+    assert!(matches!(memory.write_byte(&word(2), &bit, 65_536, domain),
+        Err(RangeError::State(StateError::Limit { nodes: 34, depth })) if depth <= 64));
+    assert_eq!(memory, before, "refused body constructor is atomic");
+    assert_eq!(bit.expression().unwrap().nodes(), 9);
+    assert!(!bit.symbolic_limit_reached());
 }
