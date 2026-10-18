@@ -5,6 +5,7 @@
 
 mod context;
 mod length;
+mod normalize;
 pub(super) use context::Context;
 pub(super) use context::{CONTEXTS, Preparation, preparation};
 
@@ -162,11 +163,14 @@ impl ConditionalFacts {
         {
             then_facts.conditional
         } else {
-            Self::from_branches(vec![Arc::new(Branch {
+            let original = Self::from_branches(vec![Arc::new(Branch {
                 condition,
                 then_facts,
                 else_facts,
-            })])
+            })]);
+            // Optional factoring cannot hide an original metadata error.
+            original.check(limits)?;
+            normalize::shared_branches(original, limits)?
         };
         out.check(limits)?;
         Ok(out)
