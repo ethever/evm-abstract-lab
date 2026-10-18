@@ -98,10 +98,12 @@ theorem and255_range (value : Word) :
 /-- Connects the Word256 shift/mask operation to the arithmetic reference. -/
 theorem byte_toNat_reference (index value : Word) :
     (byte index value).toNat = byteReference index value := by
+  unfold byte byteReference
   by_cases inside : index.toNat < 32
-  · rw [byte, byteReference, if_pos inside, and255_toNat,
-      BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow]
-  · rw [byte, byteReference, if_neg inside]
+  · simp only [if_pos inside]
+    rw [and255_toNat, BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow]
+  · simp only [if_neg inside]
+    rfl
 
 theorem byte_in_range_eq_extract (index value : Word) (inside : index.toNat < 32) :
     byte index value =
