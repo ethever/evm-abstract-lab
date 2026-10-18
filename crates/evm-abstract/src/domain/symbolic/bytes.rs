@@ -467,6 +467,26 @@ impl ByteStateId {
         state::check(self.nodes(), self.depth(), limits)?;
         state::check(other.nodes(), other.depth(), limits)?;
         state::check(selector.nodes(), selector.depth(), limits)?;
+        fn branches(root: &ByteStateId) -> Option<(&ExprId, &ByteStateId, &ByteStateId)> {
+            match root.kind() {
+                ByteStateKind::Ite {
+                    condition,
+                    then_state,
+                    else_state,
+                } => Some((condition, then_state, else_state)),
+                _ => None,
+            }
+        }
+        if let Some((guard, yes, no)) = state::guarded::shared_branch(
+            self,
+            other,
+            selector.clone(),
+            branches(self),
+            branches(other),
+            limits,
+        )? {
+            return yes.join_guarded(no, guard, limits);
+        }
         if let Some(joined) = self.join_update(other, selector.clone(), limits)? {
             return Ok(joined);
         }

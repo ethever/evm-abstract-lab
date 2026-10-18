@@ -17,6 +17,8 @@ use std::{
 };
 use thiserror::Error;
 
+pub(super) mod guarded;
+
 /// Retention bounds on state metadata, independent of logical byte lengths.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct StateLimits {
