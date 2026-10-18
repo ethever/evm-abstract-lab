@@ -143,17 +143,95 @@ def _binding(report, request, *, is_static):
     assert binding["initial_store"] == original["store"]
     saved = _pool(report, "stores", binding["saved_store"])
     initial = _pool(report, "stores", binding["initial_store"])
-    _top(_pool(report, "byte_arrays", binding["calldata"])["length"])
-    assert _node(report, initial["storage_root"], "SlotsInput")["source"]["token"] == binding["storage_source"]
+    calldata = _pool(report, "byte_arrays", binding["calldata"])
+    _top(calldata["length"])
+    view = _node(report, calldata["symbolic"], "View")
+    assert _node(report, view["offset"], "Constant") == "0x0"
+    assert calldata["length"]["expression"] == view["length"]
+    assert _node(report, view["length"], "Input") == {
+        "scope": scope, "symbol": {"kind": "CalldataLength", "index": None}}
+    assert _node(report, view["state"], "BytesInput") == {
+        "source": {"token": view["length"], "namespace": "0x0"},
+        "length": view["length"], "bindings": []}
+    original_calldata = _pool(report, "byte_arrays", binding["environment"]["calldata"])
+    assert calldata == {**original_calldata,
+                        "length": {**original_calldata["length"], "expression": view["length"]},
+                        "symbolic": calldata["symbolic"]}
+    assert _node(report, initial["storage_root"], "SlotsInput") == {
+        "source": {"token": binding["storage_source"], "namespace": "0x0"}, "bindings": []}
     _node(report, binding["storage_source"])
     _stores(report)
     assert saved["code_default"] is None and initial["code_default"] is None
     return binding
 
 
+def _rollback_store(report, binding, store):
+    """The code-only fixture's saved root plus real sticky owner-3 cleanup.
+
+    Each finalizer allocates its own selector. Check the complete Store under
+    that guard, retaining original source/owner identities and all DTO fields.
+    Anonymous top balance/nonce values have no scalar ITE in Core; their full
+    metadata must still equal the original defaults.
+    """
+    saved = _pool(report, "stores", binding["saved_store"])
+    root, = saved["accounts"]
+    assert root["address"] == OWNER and root["code_kind"] == "Runtime"
+    assert root["program"] == binding["program"]
+    assert root["code_hash"] == binding["frame"]["code_hash"]
+    assert _node(report, root["storage_root"], "SlotsInput") == {
+        "source": {"token": binding["storage_source"], "namespace": hex(int(OWNER, 16) << 8)},
+        "bindings": []}
+    _zero(saved["transient_default"])
+    assert _node(report, saved["transient_root"]) == "SlotsZero"
+    assert _node(report, saved["storage_root"], "SlotsInput") == {
+        "source": {"token": binding["storage_source"], "namespace": "0x0"}, "bindings": []}
+    ripemd = "0x" + "00" * 19 + "03"
+    cleanup, = [account for account in store["accounts"] if account["address"] == ripemd]
+    merged = _node(report, cleanup["storage_root"], "SlotsIte")
+    assert set(merged) == {"condition", "then_state", "else_state"}
+    selector = _node(report, merged["condition"], "Fresh")
+    assert type(selector) is int and 0 <= selector < 1 << 64
+    assert _node(report, merged["then_state"], "SlotsInput") == {
+        "source": {"token": binding["storage_source"], "namespace": "0x300"}, "bindings": []}
+    assert _node(report, merged["else_state"]) == "SlotsZero"
+    expected = deepcopy(saved)
+    for field in ["created_default", "pending_destruction_default", "touched_default"]:
+        expected[field] = False
+    expected["transient_facts"] = []
+    known = {**root, "transient_default": saved["transient_default"],
+             "transient_root": saved["transient_root"], "transient": [],
+             "created": False, "pending_destruction": False, "touched": False}
+    unknown = {
+        "address": ripemd, "existence": "Unknown", "balance": saved["balance_default"],
+        "nonce": saved["nonce_default"], "code_kind": "Unknown", "code_hash": None,
+        "program": None, "delegation_target": None,
+        "storage_default": saved["storage_default"], "storage_root": cleanup["storage_root"],
+        "storage": [], "transient_default": saved["transient_default"],
+        "transient_root": saved["transient_root"], "transient": [],
+        "created": False, "pending_destruction": False, "touched": False}
+    expected["accounts"] = [unknown, known]
+    assert store == expected, (store, expected)
+    return selector
+
+
 def _tuples(report, binding):
     outcomes = report["root_terminal_coverage"]["outcomes"]
     assert [outcome["kind"] for outcome in outcomes] == ["Return", "Revert", "Failure"]
+    saved = _pool(report, "stores", binding["saved_store"])
+    calldata = _pool(report, "byte_arrays", binding["calldata"])
+    # Keep one set of independent source/length identities for the whole tuple.
+    # A cleanup guard cannot also determine terminal bytes or original storage.
+    independent = [_node(report, binding["storage_source"], "Fresh")]
+    original = _pool(report, "byte_arrays", binding["environment"]["calldata"])
+    original_view = _node(report, original["symbolic"], "View")
+    original_source = _node(report, original_view["state"], "BytesInput")
+    assert _node(report, original_view["offset"], "Constant") == "0x0"
+    assert original_source == {
+        "source": {"token": original_source["source"]["token"], "namespace": "0x0"},
+        "length": original_view["length"], "bindings": []}
+    assert original["length"]["expression"] == original_view["length"]
+    independent.extend(_node(report, ref, "Fresh") for ref in
+                       [original_view["length"], original_source["source"]["token"]])
     for outcome in outcomes:
         assert set(outcome) == {"kind", "data", "store"}, outcome
         data = _pool(report, "byte_arrays", outcome["data"])
@@ -161,6 +239,8 @@ def _tuples(report, binding):
         assert data["memory"] is False
         view = _node(report, data["symbolic"], "View")
         _node(report, view["state"])
+        assert set(view) == {"state", "offset", "length"}
+        assert _node(report, view["offset"], "Constant") == "0x0"
         _zero(store["transient_default"])
         assert _node(report, store["transient_root"]) == "SlotsZero"
         assert all(store[field] is False for field in
@@ -168,10 +248,21 @@ def _tuples(report, binding):
         if outcome["kind"] == "Failure":
             _zero(data["length"])
             assert _node(report, view["length"], "Constant") == "0x0"
+            assert _node(report, view["state"], "BytesExact") == "0x"
+            expected = {**calldata, "length": saved["transient_default"],
+                        "default": saved["transient_default"], "symbolic": data["symbolic"]}
         else:
             _top(data["length"])
             assert data["cells"] == []
             assert _node(report, view["state"], "BytesInput")["bindings"] == []
+            source = _node(report, view["state"], "BytesInput")
+            assert source == {"source": {"token": source["source"]["token"], "namespace": "0x0"},
+                              "length": view["length"], "bindings": []}
+            independent.extend(_node(report, ref, "Fresh") for ref in
+                               [view["length"], source["source"]["token"]])
+            expected = {**calldata, "length": {**calldata["length"], "expression": view["length"]},
+                        "symbolic": data["symbolic"]}
+        assert data == expected, (outcome["kind"], data, expected)
     returned, reverted, failed = [_pool(report, "stores", item["store"]) for item in outcomes]
     # Static uses the same deliberately coarse Return upper bound. Its actual
     # input.static remains true; no identity/feasibility claim is made here.
@@ -180,19 +271,22 @@ def _tuples(report, binding):
     for field in ["storage_default", "balance_default", "nonce_default"]:
         _top(returned[field])
     assert returned["storage_root"] != report["stores"][binding["initial_store"]]["storage_root"]
-    assert reverted == failed
-    # Check one actual finalized rollback Store jointly. Optional owner-3
-    # cleanup may widen the entry Failure, so do not demand checkpoint equality.
+    base = _node(report, returned["storage_root"], "SlotsInput")
+    assert base == {"source": {"token": base["source"]["token"], "namespace": "0x0"}, "bindings": []}
+    independent.append(_node(report, base["source"]["token"], "Fresh"))
+    assert all(type(label) is int and 0 <= label < 1 << 64 for label in independent)
+    assert len(set(independent)) == len(independent), independent
+    expected_return = {**saved, "accounts": [], "storage_root": returned["storage_root"],
+                       "logs": [], "logs_unknown": True, "storage_facts": [], "transient_facts": [],
+                       "created_default": False, "pending_destruction_default": False,
+                       "touched_default": False}
+    assert returned == expected_return, (returned, expected_return)
+    for store in [reverted, failed]:
+        assert _rollback_store(report, binding, store) not in independent
+    # The ordinary observed Failure is separate from the two prepared rollbacks.
     observed, = report["outcomes"]
     assert observed["kind"] == "Failure"
     assert not failed["logs"] and failed["logs_unknown"] is False
-    root, = [account for account in failed["accounts"] if account["address"] == OWNER]
-    assert root["code_kind"] == "Runtime" and root["program"] == binding["program"]
-    saved, = [account for account in report["stores"][binding["saved_store"]]["accounts"]
-              if account["address"] == OWNER]
-    for field in ["existence", "balance", "nonce", "code_kind", "code_hash", "program",
-                  "delegation_target", "storage_default", "storage_root", "storage"]:
-        assert root[field] == saved[field], (field, root, saved)
 
 
 def _detail(report):
