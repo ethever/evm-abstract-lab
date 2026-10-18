@@ -123,6 +123,106 @@
       "rgb_sha256": "d83d3f3b59bbc4a7ef7073d6580e78958d2f06e0996329133dbcf2ce910c6fd8",
       "rgb_zlib_base64": "eJzNVfdPk1EU/Q/QMJRgmFYMURDFEZQGRSqyZBVDCIJSokIkgAGZRqtIIqAYSS2ijFaRYY1MFUgoSwRaqoy27FFBwL3+AI998vhskV8xuWned959955373m3BkbmBkbm4VFx8qGpyfnvvkEnDLTIGlp8Mn9wfH568Wdt80uCNLbJRzSfmtr71ptYMj1buwdh1lt3UmSvy5HXas3Uwg/4J2VkrZ6IF5OERHCG4ZRfcATdEpZUjc99RUE6ZCpLlgMBix9VgxWcyW9mzh1mNOXkQv69Mh2G7l5ceAaFRjHBsdkv/Ov5f59dHBidc3HzuZojQHAsVqF9MTPvweMGjvfx3c7u3f3j4EmSJqRcxdlbQrHdDuehiYWWrv4l2jX9o7MrhjKztMMRt6OB+luoTEFpFROZePct9XI2/fQODMPZQx4Bdc1dFiwH1Kqiuhl4YEgkroxfEn945uNDyXOd4KfPJePsngMcrF+9GeuUq3FlcVV9fmEZcJxaoj2nTww04EMMiWqbXjJ334zMiirr6aehqQ18zsalUiTlUjYOYgHCYbxY+HfI1WTrpqAUrcFdnkt7FWrNOmMLndRFZdXITqqNe4mrGgRFFVAOLyaRlIIpEnhCt0xxWts6YsuV46d/qT7ltKS+hTYlN78YnvZObOqQJxSDMBbAE9OzpK8GXg+/XX4IPUPo+MS7r/a72DqRA7TtSL+SSz6hlrsiCUqtmnqPx4JoKALwo8dCnF09jUxtuKFRo5pPbb1KHdoHOf76tGsaO1ExT/9Q1Ip0pFAkYTpAMABZdk4gz4tO7Ee1ZSq6i3eBXUm9VCesl38o/IUllRQZnv7wTNoDeaBfzGozLetGAW5Ku4bK/6Z9ZAXaVraOCIhd9fQHYzNWGj8Xa1SDOvhotX3yTMKzlh60A60k2oaZ22zHbGnuUMAhJCKaHkEB4VYofsJMBG2jTf7HTwnul98ufEi1rSMq4HRurCKS2qZOEEZDDTdaEwT3TUy/xvTBJMGrOezJRVURh+3mS/D2XqVcOYUseUIReGJEAOR4B2MN2eskOp/6Z5LggqNvP9NJkpkj2Mf22LBpS/wFPoSkLxLXlUSiUM2UP21kIkhKBUkMo0Chndt4VpA3AUEAntsc95NPKKdPNYP+1jR20OdPLCwylvgUaOc2kHaZymKzPQG7FCNkaCManjaoLtP+t0ig1dKKOiYiG5zEf5AV4/j/Zqg/Hk5MQgYTjI5PI/+JvtzwNWeoby9aZdAYtGRixiLIL2fSziM=",
       "source_context": "Independent historical browser artifact zg9akxad0n85xgd6ailwg9fdid1lz1lm; original storage-scroll final literal."
+    },
+    "suffix_6": {
+      "text": "\u2026abcdef",
+      "source_png": "storage-table-storage-suffix-6-table.png",
+      "source_png_sha256": "204d02c2cd4144258aae99ce7bbbc0372348eae47eb8098cc4eb7cc689c9935b",
+      "source_bounds": [
+        8,
+        101,
+        62,
+        111
+      ],
+      "mask_size": [
+        54,
+        10
+      ],
+      "ink_bounds": [
+        0,
+        0,
+        54,
+        10
+      ],
+      "mask_sha256": "f3f2b65c34ee7f1d1bd1851b0aeaa7f509d1ccc515cff792b2b718de558c5805",
+      "rgb_sha256": "cd0e41a773b95e22d418c108634a7e9c7a44614261c7e26945e456d9950fa5ef",
+      "rgb_zlib_base64": "eJzjE5blIwVJK2o/ePnF1TuMJF0QVNnQdefpB2JUFpQ3Xr7zHGjRpt1HSbVFBurCUDJcWFHfSaQLr957OXn2Mn4ROTJskVbQosCFRIWhlLwm0AonjyCCKrftOwk08P6Lz0By1qK1fEixDOTefvIeKLV++yEBUXmIlImVy9GzN+4++wgUP335noiUClBQVknnwMkrQJEbD98sX78L2YXAULp2/yVQ6tKtp14BURBBoHag+RAElMIfy/FpBcoaRsCgdnQPBGpMyy2Hx/LZaw819S29g2LuP//UPWkuJGxvPX63//glC1sPBTWDKbOXSciqA8Wnzll+48FroOOtHb2BCuAu7Jw4G+iAuJR8oIHzl288f+Mx3F5FNQOgFfau/gTDsKS69dr9V0BzID6av2wjPJZzi+sgarbuPXHm6gMgA+h+oEpRcLghozNX7k+YsQjCnrt0A9yFwIywYMVmCBsYC/eef1LVMkF2oYNbAH7nmVq7ApXVt0+EBAUwIlZs2A12ISgMfYJiIMrmLdsA9AUkrG4+fINpDtDq0po2CLuhfSLchRCPA0kIArKLKlugLlQ3JCYMa5r74KYBQwZo0apNe+HpMLuoFiK1Ze/x01fuQ8LwwYvPYtKqaOYAY3bCdHgYroebCUyW85dvwmo1WixPm7cSmMb0Teyv3H2x99jF9LwKIDe7sAaYzEAuKaxR1zUHRiWoaNp1FB7LZ68+0NA19/SPAnq/a9IcSI64+ejtgROXLew8gL5o650hLqMGFF+79QDQMQZmDkBx5HQ4fd5KYF4rrWmXlNPQN7UHJmZgFkaJZVdoLC9Zsw3IBaZkoF5gmgEGNZBbXtcJlJo0cwnQUqCDN+8+tmjllgs3n8BdOHvx2jtP3gMDFjkvm9m4HT9/CygIlDp48oqIJChNSsprHjx1BSgINGrJmu1AKXjamz5/FaRAAFoB1AhJTvBYhqdDAI3EG7Q=",
+      "source_context": "Original reviewed browser-run-20261012T095843Z-dd60d5e6 storage Slot suffix-6 complete galley; integrated head e5a6bcdc78fb5afe9be6b518bcef20ac00bef303."
+    },
+    "suffix_13": {
+      "text": "\u20267890190abcdef",
+      "source_png": "storage-table-storage-suffix-13-table.png",
+      "source_png_sha256": "a48d84b7e2f006b41742d6df26917ad41b290c4148e6b04df98e79b9baf9789f",
+      "source_bounds": [
+        8,
+        101,
+        116,
+        111
+      ],
+      "mask_size": [
+        108,
+        10
+      ],
+      "ink_bounds": [
+        0,
+        0,
+        108,
+        10
+      ],
+      "mask_sha256": "8b9dc9c7c872399ea7f0c8aa2c1be3e03610fcb1bd7224af9ffa8b13b9a6dda9",
+      "rgb_sha256": "663dd9425fa0109193cf0c5d4123fc575c118c0c27ccc48947d33f8aa2f781a4",
+      "rgb_zlib_base64": "eJzdlndTlUcUxr8BiTFiYcBLlRqEoIlCdCTWKKKgiApKsYGCJSAwFowIBMjYoqgYNCBRIMRCQFRAQJSuF/DSq9hQ05MPkN+96928YhKIf2Zm553ds7vn3X3O85yzBqONDf53LWJXfO/T395sb0FJdXmtZiQrT2d+1/Xo577B3/9pQfKR08zK1v/sD5yLqeCQiLa+5xibOx8fPpkpjG+PmXgoNaOp8zGH5+s+30u6OnE2t/vxL9gr61snWryn/Ev+jTt4Xr9lp7TM81hRVFbX8+RXtpzLLZT2Ka5z1O0P+WnHwI+RuxOGwzABD2+GYWFpTXnN/WGXmU5y4uQLl64eoVtHlxmsX+63QQy5BT+ytHUJj4jFPvuTZRgTDp6k7+kTYGhkCdqdD396610T7Nuj47AfPpFp6zhN0zN4s6pJuj33bSHAMrthS5QMBBvLaprHGU8CTGYPpKSKqZbeZ02dj9zcF8UlH2MLnX85cOSuhN43xVDLwxFguHXnvv9EdS7b1v9C8kSL1fIAMeTKaRl5dOD/3dYHwsgFWbNm3Vb61Y1d0A9LZm7Bl2nfYJ8w0Qa7nZMrQljhv0nJQ7dZ2o2rA7eIYUWt5l7bAJ1FXn7YZ81b+n1xFUyGY9mXi7Fb2U9taOkXSkEaxFTPQ62Wz1+8zpe/7E8+Ju+CiDgndlpufokwzpzjiXZwAtUBUGrZ0MgKtuBBK6KGNgtbF4zeK9cJYdLEr4cFcJShClkdTcsSwzETLODhtfJ6B2e3nXs+x8PHC7Q8vFR0iwPoj7QE/4mHTtFvf/BDZm7h8fRsddtAUMinAgqxDLKZWk1WYmhm7SzBpwE+56cTHZuMnQ538Q8Oa+x4dLuhjaGJuQOAjzex4VTboj7jMFZ2U3QYJrA+r6DM2Mx+b/xh3U+9dLHwZ03qmRzQQFwyEVXd6wA6ldXkjeExLJY8LKu5r+l+6jproY3jtCp1R1ZekYQlZl/yyNMFMcUtl5WWGbMXg6oIxI6YOGFc4hPIEM/gcL2igX7qmWzsrDyVkQeMrX3Pp7rNxe4XHCZdmVo5KbVMq23uqWnqnjZzgZdvEIiJKJMKhHBYzHkQu+Dn6HFmZy/kowWZtFes2SQxNDZ3ED4R0dnzV+jkXCmWYpENJ+yVCbxB0ycwRC84WRWwWdjxDNXlrujYpJFjiFhKqxrl0NzameukZ12ysHk/ODQCiAi0mEo8eIqUhWcUx6n2xh8SPLxaVouKIQ/rJSVEU73KQyEr5IOT5q4nyIftkoeQh18jRlxV6ngY/8UJVvquDUEsQCFdgbNSYndb+iledKrVnUXldUMuuMQnQAu4mb0YQoDyWi2Gnjr7kMKq0nOJI3H3kQAIjZWxoAlpoB0xvFXXUtvUPWTXslXrWTN/sS/9msYuNA5Lj6dfICFgH29ireDhUAxfCZ+mD5UZ6PNh4MbtwAs9ZD4kpVToc5fn8rVaSodFSR4aqez0PHx+RsfD3PxStY7AyuYyfTaL3ed7i2H9/V7BQ9KCJPbrTallkgN9R5eZFM3SqqaN4dEMN2/fLWYvXq1o11cT0WwnTyciPI0o7qiSv1y+VimmVgaEjhprimDRS72mTxhlXYYtiE5ZlwHQ+UN3ZrdF7af/zlhTA23N8rV2+GCs8SSCxY/YJRZTl3lK8QbIK7gp6zIJmdOSYD9y94Cc2CN3J0oMQcxIZbvnwEH60Bu7h/cafPLW4lFBituf9LLWiAcD1WpdaKQyH8JbdfuAX1AYJOcvcSnH/1bLWXlX2UUsYCZx3xFzgGHU3iQDbVWyRDvwZ0gIYhOOIHCmWnoGc66UGJnKcL9gL55L7qhVivx58uuX78Nb9a0m5i/fh+wSGVU28XZKPvLV63WWNtV1LhTCjrp5uhjoCxxPETwTnZSj6ZxK8BMtY8m/cZv1dJR3J/cCC1vwk5FTIIxERNRlvsWV94SWRZShOjdiiuqWffmGAsO/tPwnGm+6BQ==",
+      "source_context": "Original reviewed browser-run-20261012T095843Z-dd60d5e6 storage Slot suffix-13 complete galley; integrated head e5a6bcdc78fb5afe9be6b518bcef20ac00bef303."
+    },
+    "suffix_8": {
+      "text": "\u202690abcdef",
+      "source_png": "storage-table-storage-suffix-8-table.png",
+      "source_png_sha256": "1bb3c94563974c664e832319c3c02aea0d0904499f544d5b0d50fcd694ac943a",
+      "source_bounds": [
+        8,
+        101,
+        77,
+        111
+      ],
+      "mask_size": [
+        69,
+        10
+      ],
+      "ink_bounds": [
+        0,
+        0,
+        69,
+        10
+      ],
+      "mask_sha256": "400ff596c148f1a88017f63a1ccc0cc31cd655306ba58e6c52950f79415e81b2",
+      "rgb_sha256": "949dbdf8daf157d0501824c3a3b7e4751ec9be066958f3f73b950659fc5a0187",
+      "rgb_zlib_base64": "eJy1VYkzlHEY/g+aGiFqEYvczYRCxlFipCFDmXKkJEepjHPshCkdanQYVFOuDkkzRcqV21r3Wnaxjl05QoeS/oCe3Tdf2zG7TU0z33zz+73fez/P+36r1Fir/udTUctt6x35O9sX9R1NHYMq1bR1TWpbeiVzn6Xzy0rUok6ntPeJoSae+hCXksHIbR3c+oanYDvy+n0854LKcrh/W07lK96flHMqMX1setHYYqsSHeddPpMLX7JyCtXW6XPOZuG8zdGDPg1JFgSjs46ue85m5kC+3dVLaTlt3L5/KKdTdTlPq5rbeoaV61y+cRf9X6tlQNfx2U/3yl7i4OUbiBJc3PdW1HF12ZYTb5YePauD3NDMpkc0SYgPSd/GxKcy6HQKxoGyTC5Z8PYPYUIciYzrlZvAyeOKehI6ufkMjM5CGQQANAw69s6eRBUolzytWa2uC+GtwjJoIh96lJDtZEIaFDTWGzLlNPIGcEhOy4QcB3gOPHxCIJ5p7R7CVYdteTD0OGiMDgB9fDUyt6VyoJ+Ueomlb44z/KzR0KO2IHpefqmhqbWVjdO1vGIKhJwRSM9oc0RMMgypHNiC8FWNXWCUi7vv2MzHkPBTiiBSDkoecAwpoQ/wkHElD555/FHIr+YWURMgwUAhHH94ivQLHpaDw0y79gdFENmEE/Pkk21qLZMHy+Sl5a8Aza9BYe7q4UvXbqGUyBZ9mqNIlYKSCnTmezn1vJYukUpOhkbEYopRFNiClKqbuyFMSpWhg8QA+pGouH7xDPEWJUMzIDhijeZGZAWdo8cTCJ2O/jHGJ7KKSzmPA5pT3dT9U0SffaEwZOlb0LWmpYfQuVVURlxi3sLxOcYKC7BFFTqKD+gBJ9m3H8hJEgRvocdi4URLZxNKePSsFvKqpq7mTiHpe/sfgk74iUQqZ3AltKEcHf/AcEKHPzL9U6AtdjugoICOhMrhnMtCoHUs49+mp0i23PxS9NnK2gn9r28XHItJwhXg4pPfgTB4ABBlzxskb5Y26JuTiUi+2XZ6+j2pbGQ2W+KZi5gLrAhcMVCQ0w4vr23DOTb53PqNZjQ7NMV7/ILRopsFj9kmW0ys7NIvZpNzpNHAE+gYWIRFxTOzg1GCIRqISjVZxgEhkdGxnN+Wc//JS1hZ2++Efo9Qiri4Jp65RFgjonTuM0iOAWTMbRzc+PL/juL/SF2bDbdoxej0Yub1O9hyhBpKaOeLcYW+6MfNBvgAENo+PPmuuLSShA4uuwXyzYb9Vtfa17iy2VBI16BEls/8MvTx7/iRbN9m5ytCQ/lm",
+      "source_context": "Original reviewed browser-run-20261012T095843Z-dd60d5e6 storage Slot suffix-8 complete galley; integrated head e5a6bcdc78fb5afe9be6b518bcef20ac00bef303."
+    },
+    "suffix_11": {
+      "text": "\u202690190abcdef",
+      "source_png": "storage-table-transient-suffix-11-table.png",
+      "source_png_sha256": "dc14467a54091d413efeb4717bf309d900242b72ad4af5c3ad52f66ea8e5075e",
+      "source_bounds": [
+        8,
+        101,
+        101,
+        111
+      ],
+      "mask_size": [
+        93,
+        10
+      ],
+      "ink_bounds": [
+        0,
+        0,
+        93,
+        10
+      ],
+      "mask_sha256": "ff5b7b798e75e4de049ff8445836b31c155ad8d3a08f07e3625c8450b46767cd",
+      "rgb_sha256": "00d70434611d014723b6c560f085777b7bd16f69531a52db66bcf83fd78ec80c",
+      "rgb_zlib_base64": "eJzNVmlTk1cU/ge0HZUCsossKosW2TXAgCyiUGqRWrFFnAIqWFkKKCN2UDql1lZoZBHCJoQAaljLFi3QBJAlCXsChLCI4FKr9gf0eXPjJaWd0HGmM525H8497znnnvuc55z76mwy0vnfr62mO5Srf/ge/PgtfM0sHeDr5hm4oeWXKV+Pza7AuLFDpMXs9PmLomGZ4vEr2cLzpItXqd7J3Xd4cmFu5fXU/LPk9G80XVIzshGWV99JNda2LpV3WhEBcboejplaOtBP+aU1M49+h75ncNJ4m502WMx2MrAEhb0NLFa7/yUs47Mrubcq391iosXG80AIol1nl27SM0/PvA7ZZZ8/+TShWJXKH+3zPpSZzYbewzuI6GPOXVCuvgZcmrAIhBKgt9PBzdrWeXR6uVMoJvqEtEz4/phfbmPvOq5YFYik/ylbXFkB2s30TWxg5u0fqt3su5xiXHCz/jayRVkralsgBIUeh7uX34cNHUITC7vZ5ZfV/A5iMzK9nJF1Y1L5lFffQePAsbS6UR0zl4kJnCH3SaZBEkBaXtOcU3gbMZEY9NdyOfLF32CGyO09Q4RFBJbC8rqZpRdg172fu2lNHV19hMMyGMNgYFRBE8ahUGLlcXiabAEfJuaeID6yDQg+RpTEnSx80tJE5766DBvdrdvp7R70jkBIu8y0CQSkd/xknFS21DMwQWz0jKwZLs090WTLuGKloraZyOAefPe6+0KeUj6tqGlmF3PFU4tRsUkEauhDwiL3uHjj1iAYWrWmgQlFmghbGzvXoNAIHA30CFzyhedIzGW/v+l2e3YRV8/ICnr/w+G43aeRZy1sPugVyyks2TeK4BtxKh4BS6rqJVOL63qN5RusnS2oKSJw77VZ2TpfvZYHF8SH/oebZTgRAjQYOL/0jYonFzQdVWxZg6WwrA6Zh5+I3e3shSaCF/hGClRQWguqAEZnDz/oI6LioPc7FD40MY+jcQqUQ+NKKA1VsJxNvERiNgv6BlX6L+JSoN9iYLEueU5V/a+Dk0Q+cuwUbSIkUMZTUxfI4xSLHY6avcbyDdmwKyNjEoRDU/Dtl85gRLd2Dei8GaqIhntFnU6SyJZoAmuw8NeaCMeV8ZowcjFhmgS98MUwYdgy/6zlfj/aBxFOxiZStkwvvWjq7DVTTWa0p1S+RJuI4MncupIPMCH8VMRFnL9njoQb2oVEBusYtrACCcNJm5AFOfHClTd5MmzBRN0QFrre0zVFkNzCSh1mtkTAPTI6ASXTN7bGQdX8di1s+UsRK/mK5ZdE7pXIweGQsM/ZxdU5BcxsMTCxATMhuHsdVN9uZBYTQAULw5YzCelED9wGx+YgRMelIjHa6XRhgNNifaRiC2kiVKeEW/+Pua1ropscHupu78gCHxAtOj4V2zPn0wn90KogRm3jfVzH0HyXjnpcMC+RT+CRuqYHmi8RDBAc5bvb0oVyv29oCaWDk+d+n8MA9uiJGAwoIEOM6UuE/sKMFYgkFNWqu20YFOhcXBlb2kTDE/N4zgKCP0EtMCWgNzLfBV80MmYLoMv6Pl9XdWh8cgZ8wz+LRRoisYw2ES6LHJLTs1AC+70sDCgD1ZzXaCI1LLfrWrB1dPOBPUqQkHYF25RL3+JTW/cgQ7bHr9DgXn5rLxdmplj137LufwbEpvMci1PFIAA+IDK2MEbLv7PZmNrnlaj/W7ofjuNRI8qY+DSMcSgHxhRk7KM0pIluld+BParGb+2hL5GTxwE8alDiU1f/GJ0zJdwGYlxQVkubCF55JTzy0uEIkVhORjSFhTbRnxzRDIQ=",
+      "source_context": "Original reviewed browser-run-20261012T095843Z-dd60d5e6 transient Slot suffix-11 complete galley; integrated head e5a6bcdc78fb5afe9be6b518bcef20ac00bef303."
     }
   }
 }
