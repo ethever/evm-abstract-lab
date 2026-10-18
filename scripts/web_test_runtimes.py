@@ -443,12 +443,27 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         ink=layout_ink(page,canvas.screenshot(),native_focus["bounds"])
         assert ink["preview_pixels"] > 0, "real-runtime focus did not paint the chosen SSA instructions"
         for action in ["fit","zoom","focus"]:
+            before_scene=scene_counts("States")
+            before_status=page.locator("#analysis-status").text_content()[:4096]
             if action == "fit":page.keyboard.press("f")
             elif action == "zoom":
                 page.mouse.move(700,500);page.mouse.wheel(0,-80)
             else:canvas.click(position={"x":225,"y":83})
             settle_gesture(page)
-            assert scene_counts("States") == {**native_scene,"detail":"SSA preview"}
+            scene_path=args.output/f"hierarchy-{name}-states-{action}-scene.json"
+            screenshot_path=args.output/f"hierarchy-{name}-states-{action}.png"
+            canvas.screenshot(path=str(screenshot_path))
+            actual_scene=scene_counts("States")
+            expected_scene={**native_scene,"detail":"SSA preview"}
+            diff={key:{"before":before_scene.get(key),"expected":expected_scene.get(key),"actual":actual_scene.get(key)}
+                  for key in sorted(before_scene.keys() | expected_scene.keys() | actual_scene.keys())
+                  if before_scene.get(key) != actual_scene.get(key) or expected_scene.get(key) != actual_scene.get(key)}
+            # Fixed scene fields and bounded status keep failures inspectable without copying the report.
+            scene_path.write_text(json.dumps({"action":action,"baseline":native_scene,"before":before_scene,
+                "expected":expected_scene,"actual":actual_scene,"diff":diff,
+                "status":{"before":before_status,"actual":page.locator("#analysis-status").text_content()[:4096]},
+                "filename":str(scene_path),"screenshot":str(screenshot_path)},indent=2)+"\n")
+            assert actual_scene == {**native_scene,"detail":"SSA preview"}, f"{name} {action}: {diff}; see {scene_path} and {screenshot_path}"
             expect(page.locator("#analysis-status")).to_contain_text(f"Selected {selected};")
         graph_mode(page,canvas,"Blocks")
         canvas.click(position={"x":225,"y":83});settle_gesture(page)
