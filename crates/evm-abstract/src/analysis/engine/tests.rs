@@ -125,6 +125,7 @@ fn engine<'a>(
         cache: None,
         procedures: super::transfer::procedure::Table::default(),
         reuse: None,
+        terminal_boundary: super::TerminalBoundary::default(),
     }
 }
 

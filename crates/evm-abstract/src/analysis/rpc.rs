@@ -411,6 +411,12 @@ fn finish(
     acquisition: RpcAcquisition,
     mut discovery: Discovery,
 ) -> RpcAnalysis {
+    // A previous acquisition failure remains authoritative even if a later
+    // execution round stops before revisiting its demand. Disposal was prepaid
+    // by root preparation; provider failures never publish terminal coverage.
+    if !discovery.account_failures.is_empty() || !discovery.storage_failures.is_empty() {
+        analysis.root_terminal_coverage = None;
+    }
     for frontier in &mut analysis.frontiers {
         let failure = match frontier.reason {
             FrontierReason::MissingCode(address) => discovery

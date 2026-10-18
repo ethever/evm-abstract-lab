@@ -1,6 +1,10 @@
 //! 根执行、数值域、状态操作和摘要共同使用的累计工作账本。
 //! 调用者先预留可信上界，再执行整项操作；失败时不能安装半个结果。
 
+mod completion;
+
+pub(crate) use completion::{AdmissionStop, CompletionPermit};
+
 /// 单次分析的累计逻辑工作预算，不等同于 EVM gas。
 #[derive(Debug)]
 pub struct WorkBudget {
@@ -18,6 +22,10 @@ impl WorkBudget {
             exhausted: false,
             cancellation: analysis_control::current_cancellation(),
         }
+    }
+    /// 保留创建账本时的取消身份，不读取调用者当前所在的取消作用域。
+    pub(crate) fn cancellation(&self) -> analysis_control::Cancellation {
+        self.cancellation.clone()
     }
     /// 事务式预留。超限保留此前消费量，并记录中断。
     pub fn charge(&mut self, amount: usize) -> bool {

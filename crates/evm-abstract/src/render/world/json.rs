@@ -1,7 +1,7 @@
 //! Streaming augmentation of the native evidence shape, without to_value trees.
 use super::observation;
 use crate::{
-    analysis::{MachineOutcome, WorldAnalysis},
+    analysis::{MachineOutcome, RootTerminalCoverage, RootTerminalOutcome, WorldAnalysis},
     world::{FingerprintError, Store, World},
 };
 use alloy_primitives::B256;
@@ -28,6 +28,8 @@ enum Extra<'a> {
     Analysis(&'a WorldAnalysis, B256),
     World(&'a World, B256),
     Outcome(&'a MachineOutcome),
+    TerminalCoverage(&'a RootTerminalCoverage),
+    TerminalOutcome(&'a RootTerminalOutcome),
     Store(&'a Store),
 }
 struct Augment<'a, S> {
@@ -54,6 +56,8 @@ impl Serialize for Evidence<'_> {
             Extra::Analysis(v, _) => v.serialize(serializer),
             Extra::World(v, _) => v.serialize(serializer),
             Extra::Outcome(v) => v.serialize(serializer),
+            Extra::TerminalCoverage(v) => v.serialize(serializer),
+            Extra::TerminalOutcome(v) => v.serialize(serializer),
             Extra::Store(v) => v.serialize(serializer),
         }
     }
@@ -69,6 +73,16 @@ impl Serialize for Outcomes<'_> {
     }
 }
 struct CodeHashes<'a>(&'a World);
+struct TerminalOutcomes<'a>(&'a [RootTerminalOutcome; 3]);
+impl Serialize for TerminalOutcomes<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for outcome in self.0 {
+            seq.serialize_element(&Evidence(Extra::TerminalOutcome(outcome)))?;
+        }
+        seq.end()
+    }
+}
 impl Serialize for CodeHashes<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(self.0.accounts().len()))?;
@@ -105,9 +119,23 @@ impl<S: SerializeStruct> SerializeStruct for Fields<'_, S> {
             (Extra::Analysis(analysis, _), "outcomes") => {
                 self.inner.serialize_field(key, &Outcomes(analysis))
             }
+            (Extra::Analysis(analysis, _), "root_terminal_coverage") => {
+                if let Some(coverage) = analysis.root_terminal_coverage() {
+                    self.inner
+                        .serialize_field(key, &Evidence(Extra::TerminalCoverage(coverage)))
+                } else {
+                    self.inner.serialize_field(key, value)
+                }
+            }
+            (Extra::TerminalCoverage(coverage), "outcomes") => self
+                .inner
+                .serialize_field(key, &TerminalOutcomes(coverage.outcomes())),
             (Extra::Outcome(outcome), "store") => self
                 .inner
                 .serialize_field(key, &Evidence(Extra::Store(&outcome.store))),
+            (Extra::TerminalOutcome(outcome), "store") => self
+                .inner
+                .serialize_field(key, &Evidence(Extra::Store(outcome.store()))),
             _ => self.inner.serialize_field(key, value),
         }
     }
@@ -121,7 +149,10 @@ impl<S: SerializeStruct> SerializeStruct for Fields<'_, S> {
             Extra::Store(store) => self
                 .inner
                 .serialize_field("account_observations", &Observations(store))?,
-            Extra::Analysis(_, _) | Extra::Outcome(_) => {}
+            Extra::Analysis(_, _)
+            | Extra::Outcome(_)
+            | Extra::TerminalCoverage(_)
+            | Extra::TerminalOutcome(_) => {}
         }
         self.inner.end()
     }

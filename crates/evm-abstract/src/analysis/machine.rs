@@ -41,6 +41,9 @@ pub struct ExecutionConfig {
     /// Reuse complete callee graph certificates and procedure relations between
     /// outer entries. Recursive closure remains enabled either way.
     pub use_summaries: bool,
+    /// Prepare a separate conservative root terminal relation before detail.
+    /// Detailed status, graph, frontiers and observed outcomes remain independent.
+    pub root_terminal_coverage: bool,
 }
 
 impl Default for ExecutionConfig {
@@ -51,6 +54,7 @@ impl Default for ExecutionConfig {
             max_call_depth: 32,
             max_memory_bytes: 65_536,
             use_summaries: true,
+            root_terminal_coverage: false,
         }
     }
 }
@@ -431,6 +435,8 @@ pub struct WorldAnalysis {
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) frontiers: Vec<MachineFrontier>,
     pub(crate) outcomes: Vec<MachineOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) root_terminal_coverage: Option<super::RootTerminalCoverage>,
     pub(crate) status: Status,
     pub(crate) transfers: usize,
     pub(crate) work: usize,
@@ -442,6 +448,10 @@ pub struct WorldAnalysis {
 }
 
 impl WorldAnalysis {
+    /// Separately prepaid terminal relation for the original entered root.
+    pub fn root_terminal_coverage(&self) -> Option<&super::RootTerminalCoverage> {
+        self.root_terminal_coverage.as_ref()
+    }
     /// Cumulative discovery evidence when this result was acquired through RPC.
     pub fn rpc_acquisition(&self) -> Option<&super::RpcAcquisition> {
         self.rpc_acquisition.as_ref()

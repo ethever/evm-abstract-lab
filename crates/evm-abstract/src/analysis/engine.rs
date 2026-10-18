@@ -44,6 +44,8 @@ use std::{
 };
 
 mod reuse;
+mod terminal;
+use terminal::boundary::Boundary as TerminalBoundary;
 pub(super) use reuse::ExecutionReuse;
 pub use reuse::ReuseStats;
 
@@ -103,11 +105,17 @@ pub(super) fn run_metered(
     counters: &mut Counters,
     storage_reads: transfer::StorageReadPolicy,
 ) -> Result<WorldAnalysis, ConfigError> {
-    run_reusing(world, entry, config, budget, counters, storage_reads, None)
+    run_reusing(
+        world, entry, config, budget, counters, storage_reads, None, None,
+    )
 }
 
 /// Immutable-fact sessions retain pure computation while every run creates a
 /// fresh Store and rollback namespace. Existing callers need no reuse state.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "original execution ledger and immutable session identity are separate inputs"
+)]
 pub(super) fn run_reusing(
     world: World,
     mut entry: Entry,
@@ -116,6 +124,7 @@ pub(super) fn run_reusing(
     counters: &mut Counters,
     storage_reads: transfer::StorageReadPolicy,
     mut reuse: Option<&mut ExecutionReuse>,
+    identity: Option<(&super::layers::SnapshotId, super::layers::FactRevision)>,
 ) -> Result<WorldAnalysis, ConfigError> {
     if let Some(reuse) = &mut reuse {
         reuse.begin();
@@ -147,6 +156,7 @@ pub(super) fn run_reusing(
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
         outcomes: Vec::new(),
+        root_terminal_coverage: None,
         status: Status::Converged,
         transfers: counters.transfers,
         work: 0,
@@ -238,6 +248,30 @@ pub(super) fn run_reusing(
         result.work = budget.used();
         return Ok(result);
     }
+    // This is the only minting point: initial() has actually entered the root,
+    // all entry work is paid, and no mutable machine state has executed yet.
+    // Failed optional admission consumes its paid discovery without poisoning
+    // ordinary execution. A new fact revision always admits from a new initial.
+    let ready_terminal = if result.config.root_terminal_coverage {
+        if let Some(reuse) = &mut reuse {
+            reuse
+                .dependencies
+                .add(0, super::layers::FactDependency::AllInitialState);
+        }
+        terminal::prepare(
+            &initial,
+            &result.world,
+            &result.entry,
+            &result.config,
+            domain,
+            identity,
+            budget,
+        )
+        .ok()
+    } else {
+        None
+    };
+    let terminal_boundary = TerminalBoundary::new(ready_terminal.is_some());
     // 本模型不精确跟踪剩余 gas，先保留入口即失败、Store 不变的保守可能。
     // 这条 outcome 不是 transfer 已执行指令后报告的异常，也不是未完成前沿。
     result.outcomes.push(MachineOutcome {
@@ -277,8 +311,17 @@ pub(super) fn run_reusing(
         selectors: BTreeSet::new(),
         procedures: transfer::procedure::Table::default(),
         reuse,
+        terminal_boundary,
     };
     engine.run();
+    if engine.result.status == Status::Incomplete
+        && let Some(ready) = ready_terminal
+        && let Some(trigger) = std::mem::take(&mut engine.terminal_boundary).into_trigger()
+    {
+        // A constant-size, already-funded move. In particular Work stays
+        // exhausted and consumed work is neither charged nor reset here.
+        engine.result.root_terminal_coverage = ready.publish(trigger);
+    }
     engine.counters.report(engine.budget.used());
     if let Some(reuse) = &mut engine.reuse {
         reuse.dependencies.finish(&engine.result.edges);
@@ -326,6 +369,8 @@ struct Engine<'a> {
     procedures: transfer::procedure::Table,
     /// Session-owned pure deltas and conservative initial-read index.
     reuse: Option<&'a mut ExecutionReuse>,
+    /// Original typed detailed boundary; never inferred from final JSON reasons.
+    terminal_boundary: TerminalBoundary,
 }
 
 /// 当前节点尝试使用摘要后的调度决定，而非子调用的 Return/Revert/Failure。
@@ -339,6 +384,14 @@ enum SummaryAttempt {
 }
 
 impl Engine<'_> {
+    fn observe_terminal_boundary(&mut self, reason: &FrontierReason) {
+        self.terminal_boundary.observe(
+            reason,
+            self.budget.exhausted(),
+            self.counters.states >= self.result.config.analysis.max_states,
+            self.counters.transfers >= self.result.config.analysis.max_transfers,
+        );
+    }
     /// 记录调度层无法继续完成的目标；此处没有具体指令 PC。
     ///
     /// 指令层边界由 `execution` 或 `replay` 携带 PC 记录。frontier 表示分析
@@ -349,6 +402,7 @@ impl Engine<'_> {
         target: Option<super::MachineKey>,
         reason: FrontierReason,
     ) {
+        self.observe_terminal_boundary(&reason);
         self.result.frontiers.push(MachineFrontier {
             from,
             target,
@@ -365,6 +419,7 @@ impl Engine<'_> {
         reason: FrontierReason,
         payload: MachinePayload,
     ) {
+        self.observe_terminal_boundary(&reason);
         self.result.frontiers.push(MachineFrontier {
             from,
             target: Some(payload.key()),
@@ -376,6 +431,7 @@ impl Engine<'_> {
     }
 
     fn stop_queued(&mut self, reason: FrontierReason) {
+        self.observe_terminal_boundary(&reason);
         let pending: Vec<_> = self.queued.iter().copied().collect();
         for id in pending {
             self.frontier(
@@ -391,6 +447,7 @@ impl Engine<'_> {
     /// `id` 已经从 queue 弹出并移除 queued 标记，必须单独纳入；否则结果会
     /// 漏掉刚刚因预算停止的节点。过滤 queued 可排除摘要回放留下的失效队列项。
     fn stop_pending(&mut self, id: usize, reason: FrontierReason) {
+        self.observe_terminal_boundary(&reason);
         let pending: Vec<_> = std::iter::once(id)
             .chain(
                 self.queue
@@ -665,6 +722,7 @@ impl Engine<'_> {
         mut execution: transfer::Execution,
         mut cache: Option<&mut Cache>,
     ) {
+        self.terminal_boundary.retention(id, &execution);
         execution.payload.normalize();
         for completed in &mut execution.completed_calls {
             completed.payload.normalize();
@@ -692,6 +750,7 @@ impl Engine<'_> {
                 range,
                 payload,
             } = frontier;
+            self.observe_terminal_boundary(&reason);
             self.result.frontiers.push(MachineFrontier {
                 from: Some(id),
                 target,
@@ -1023,6 +1082,7 @@ impl Engine<'_> {
         } else {
             reason
         };
+        self.observe_terminal_boundary(&reason);
         self.result.frontiers.push(MachineFrontier {
             from: Some(root),
             target: Some(self.result.states[root].key.clone()),
@@ -1095,6 +1155,7 @@ impl Engine<'_> {
             cache: None,
             procedures: transfer::procedure::Table::default(),
             reuse: None,
+            terminal_boundary: self.terminal_boundary.clone(),
         };
         for (old, new) in &prepared.renaming {
             if staged.selectors.contains(old) {
@@ -1112,6 +1173,7 @@ impl Engine<'_> {
         }
         self.counters.states = staged.counters.states;
         self.result = staged.result;
+        self.terminal_boundary = staged.terminal_boundary;
         self.alternatives = staged.alternatives;
         if let Some(reuse) = &mut self.reuse {
             // Staging owns no reuse index: publish conservative dependencies

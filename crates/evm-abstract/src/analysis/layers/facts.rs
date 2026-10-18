@@ -52,11 +52,23 @@ impl SnapshotId {
     pub fn identity(&self) -> &SnapshotIdentity {
         &self.identity
     }
+
+    /// Exact process-local namespace of an offline snapshot; chain inputs have none.
+    pub fn offline_namespace(&self) -> Option<u64> {
+        self.offline_namespace
+    }
 }
 
 /// Process-local identity of an immutable fact revision, never a chain height.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct FactRevision(u64);
+
+impl FactRevision {
+    /// Exact process-local revision identity, independent of any block height.
+    pub fn value(self) -> u64 {
+        self.0
+    }
+}
 
 /// Missing observations are distinct from every known value, including zero.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

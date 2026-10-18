@@ -16,6 +16,7 @@ mod finalization;
 mod lifecycle;
 mod owner_deletion;
 mod refinement;
+mod root_terminal;
 mod slots;
 mod summary;
 #[cfg(test)]
@@ -748,7 +749,13 @@ impl Store {
     /// Current observed code, including runtime deployed earlier in this transaction.
     /// Omitted accounts and joins of different code observations remain unknown.
     pub fn code(&self, address: Address) -> Option<&Code> {
-        self.codes.get(&address)
+        self.codes.get(&address).or_else(|| self.code_default())
+    }
+
+    /// Unobserved code for every account without an explicit code entry.
+    /// `None` permits any runtime code, delegation marker or empty code.
+    pub fn code_default(&self) -> Option<&Code> {
+        None
     }
 
     /// Structural identity for executable account versions and their lifecycle.
@@ -834,7 +841,12 @@ impl Store {
         self.nonces
             .get(&address)
             .cloned()
-            .unwrap_or_else(AbstractValue::top)
+            .unwrap_or_else(|| self.nonce_default())
+    }
+
+    /// Unconstrained nonce for every account without an explicit nonce entry.
+    pub fn nonce_default(&self) -> AbstractValue {
+        AbstractValue::top()
     }
 
     /// Replace the nonce after a creation attempt or transaction-local update.
@@ -848,7 +860,12 @@ impl Store {
         self.existence
             .get(&address)
             .copied()
-            .unwrap_or(Existence::Unknown)
+            .unwrap_or_else(|| self.existence_default())
+    }
+
+    /// Presence of every account without an explicit existence observation.
+    pub fn existence_default(&self) -> Existence {
+        Existence::Unknown
     }
 
     /// Mark an account present after a value transfer. Zero-value transfers do
@@ -889,7 +906,13 @@ impl Store {
         self.created
             .get(&address)
             .copied()
-            .unwrap_or(self.created_default)
+            .unwrap_or_else(|| self.created_default())
+    }
+
+    /// Creation fact for every account without an explicit transaction entry.
+    /// `None` permits both preexisting and transaction-created lifecycles.
+    pub fn created_default(&self) -> Option<bool> {
+        self.created_default
     }
 
     /// Whether [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) schedules this account for deletion at transaction end.
@@ -898,7 +921,13 @@ impl Store {
         self.pending_destruction
             .get(&address)
             .copied()
-            .unwrap_or(self.pending_destruction_default)
+            .unwrap_or_else(|| self.pending_destruction_default())
+    }
+
+    /// Deferred-deletion fact for every account without an explicit entry.
+    /// `None` permits both retained and deletion-pending lifecycles.
+    pub fn pending_destruction_default(&self) -> Option<bool> {
+        self.pending_destruction_default
     }
 
     /// [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) balance movement and deferred deletion for all supported forks.
@@ -1244,6 +1273,18 @@ impl Store {
     /// Transient default for accounts without a per-account default.
     pub fn global_transient_default(&self) -> &AbstractValue {
         &self.transient.global_default
+    }
+
+    /// Unscoped immutable persistent input template for omitted owners.
+    /// Account reads scope this template by their actual owner address.
+    pub fn global_storage_state(&self) -> &SlotStateId {
+        &self.persistent.base
+    }
+
+    /// Unscoped immutable transient input template for omitted owners.
+    /// This preserves the source identity without allocating a scoped view.
+    pub fn global_transient_state(&self) -> &SlotStateId {
+        &self.transient.base
     }
 
     /// Balance of accounts without an explicit entry.

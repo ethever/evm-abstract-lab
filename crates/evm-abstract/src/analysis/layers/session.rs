@@ -464,6 +464,7 @@ impl AnalysisSession {
             &mut self.counters,
             policy,
             Some(&mut self.reuse),
+            Some((self.facts.snapshot(), self.facts.revision())),
         )?;
         if crate::analysis::MachineError::check_cancelled().is_err() || !self.budget.charge(0) {
             return Err(SessionError::Cancelled(Cancelled));
@@ -507,6 +508,7 @@ impl AnalysisSession {
             counters,
             policy,
             Some(&mut self.reuse),
+            Some((self.facts.snapshot(), self.facts.revision())),
         )?;
         self.has_executed = true;
         self.executed_revision = Some(self.facts.revision());
@@ -534,6 +536,7 @@ impl AnalysisSession {
             &mut self.counters,
             StorageReadPolicy::Abstract,
             Some(&mut self.reuse),
+            Some((self.facts.snapshot(), self.facts.revision())),
         )
     }
 

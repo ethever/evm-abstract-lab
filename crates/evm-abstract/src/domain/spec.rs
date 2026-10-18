@@ -50,6 +50,22 @@ impl DomainSpec {
             relations: super::relational::RelationLimits::default(),
         }
     }
+    /// 冻结的域策略序列化结构版本。
+    pub fn schema_version(self) -> u16 {
+        self.schema_version
+    }
+    /// 数值域中一个字的位宽。
+    pub fn word_bits(self) -> u16 {
+        self.word_bits
+    }
+    /// 冻结的累计工作收费策略版本。
+    pub fn cost_version(self) -> u16 {
+        self.cost_version
+    }
+    /// 表达式与值身份使用的来源追踪策略标识。
+    pub fn provenance_policy(self) -> &'static str {
+        self.provenance_policy
+    }
     /// Freeze the relation limits alongside the numeric component policy.
     pub fn with_relations(mut self, relations: super::relational::RelationLimits) -> Self {
         self.relations = relations;
