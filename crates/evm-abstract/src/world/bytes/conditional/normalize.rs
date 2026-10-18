@@ -229,3 +229,6 @@ pub(super) fn shared_branches(
     out.check(limits)?;
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests;
