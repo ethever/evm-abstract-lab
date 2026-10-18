@@ -26,18 +26,258 @@
       ]
     ],
     "calldata": "0xd06ca61f00000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000003000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000006b175474e89094c44da98b954eedeac495271d0f",
-    "scope": "One exact calldata input in standalone bytecode with symbolic ADDRESS, caller and CALLVALUE. Missing external pair code is covered by closed static unknown envelopes; retained Memory frontiers in the router continuation keep the overall graph incomplete. This does not cover all router entrypoints.",
+    "scope": "One exact getAmountsOut calldata input with symbolic ADDRESS, caller and CALLVALUE. Validate closed static unknown-environment summaries and nonempty typed incoming ExpressionLimit witnesses in the router continuation. Logical memory is not clipped by the physical extraction cap.",
     "expected_status": "Incomplete",
-    "minimum_native_states": 40,
-    "minimum_source_blocks": 35,
-    "expected_frontiers": 5,
-    "expected_frontiers_by_kind": {
-      "Memory": {
-        "count": 5,
-        "reason": "Memory",
-        "detail": "Memory"
-      }
+    "fork": "Osaka",
+    "product_oracle": {
+      "boundary": "incoming",
+      "pending_sources": [
+        {
+          "source_pc": 16489,
+          "source_name": "JUMPI",
+          "edge_kind": "BranchTrue",
+          "target_start_pc": 16491,
+          "deferred_reason": "NotInExecutionEvidence"
+        },
+        {
+          "source_pc": 16573,
+          "source_name": "JUMP",
+          "edge_kind": "Jump",
+          "target_start_pc": 16437
+        }
+      ],
+      "summary_policy": "closed_static_unknown_environment"
+    }
+  },
+  "historical_observations": {
+    "source_commit": "b8e5115ab23eb72143773d0058624f25545dc49c",
+    "artifact_binding_sha256": "dd5a0978e0fd68b7f4bb4d45ef49d96bf36a849d23fcf86d15e990a07f741c74",
+    "request_sha256": "dc1f58b61316dbdec72f499e0c082fa37307dac41e99f028a74a633cfe79fa41",
+    "report_sha256": "df32de5a4121c7f25fbfdec6fd38fc1e2edf372d15b50329657c2bc9fa23bce2",
+    "scope": "Saved b8e native evidence only; this is not acceptance of the candidate source or a claim of restored exploration.",
+    "original_expectations": {
+      "minimum_native_states": 40,
+      "minimum_source_blocks": 35,
+      "expected_frontiers": 5,
+      "expected_frontiers_by_kind": {
+        "Memory": {
+          "count": 5,
+          "reason": "Memory",
+          "detail": "Memory"
+        }
+      },
+      "expected_closed_procedure_summaries": 3
     },
-    "expected_closed_procedure_summaries": 3
+    "b8e_observed": {
+      "status": "Incomplete",
+      "cfg_states": 185,
+      "native_edges": 213,
+      "known_source_blocks": 81,
+      "pending_machines": 2,
+      "current_ssa_entry_reachable_states": 107,
+      "ssa_deferred_edges": [
+        {
+          "edge": 110,
+          "reason": "NotInExecutionEvidence"
+        }
+      ],
+      "root_return_states": [
+        184
+      ],
+      "failed_property_names": [
+        "expected_frontiers",
+        "expected_frontiers_by_kind",
+        "expected_typed_frontier_reasons_and_details",
+        "expected_closed_procedure_summaries"
+      ],
+      "frontiers": [
+        {
+          "frontier": {
+            "from": 174,
+            "pc": null,
+            "kind": "Relations",
+            "reason": {
+              "Relations": "ExpressionLimit"
+            },
+            "detail": "Relations(ExpressionLimit)",
+            "range": null,
+            "payload": 0
+          },
+          "source": {
+            "id": 174,
+            "program": 0,
+            "basic_block": 649,
+            "start_pc": 16553,
+            "frame_depth": 1,
+            "executed_pcs": [
+              16553,
+              16554,
+              16556,
+              16557,
+              16558,
+              16559,
+              16560,
+              16561,
+              16562,
+              16563,
+              16564,
+              16565,
+              16566,
+              16567,
+              16569,
+              16570,
+              16573
+            ]
+          },
+          "ssa": {
+            "state": 174,
+            "coverage": "Current",
+            "incoming_complete": false,
+            "last_instruction": {
+              "pc": 16573,
+              "opcode": 86,
+              "name": "JUMP",
+              "progress": "Dispatched",
+              "fault": false
+            },
+            "instructions_count": 17,
+            "calls": []
+          },
+          "ssa_reachable": false,
+          "outgoing_edges": [
+            {
+              "id": 203,
+              "from": 174,
+              "to": 94,
+              "kind": "Jump"
+            }
+          ],
+          "pending_target": {
+            "program": 0,
+            "basic_block": 638,
+            "frame_depth": 1,
+            "start_pc": 16437
+          }
+        },
+        {
+          "frontier": {
+            "from": 96,
+            "pc": null,
+            "kind": "Relations",
+            "reason": {
+              "Relations": "ExpressionLimit"
+            },
+            "detail": "Relations(ExpressionLimit)",
+            "range": null,
+            "payload": 1
+          },
+          "source": {
+            "id": 96,
+            "program": 0,
+            "basic_block": 641,
+            "start_pc": 16468,
+            "frame_depth": 1,
+            "executed_pcs": [
+              16468,
+              16469,
+              16471,
+              16472,
+              16474,
+              16475,
+              16476,
+              16477,
+              16478,
+              16479,
+              16481,
+              16482,
+              16483,
+              16484,
+              16485,
+              16486,
+              16489
+            ]
+          },
+          "ssa": {
+            "state": 96,
+            "coverage": "Current",
+            "incoming_complete": false,
+            "last_instruction": {
+              "pc": 16489,
+              "opcode": 87,
+              "name": "JUMPI",
+              "progress": "Dispatched",
+              "fault": false
+            },
+            "instructions_count": 17,
+            "calls": []
+          },
+          "ssa_reachable": true,
+          "outgoing_edges": [
+            {
+              "id": 110,
+              "from": 96,
+              "to": 97,
+              "kind": "BranchTrue"
+            },
+            {
+              "id": 111,
+              "from": 96,
+              "to": 178,
+              "kind": "BranchFalse"
+            }
+          ],
+          "pending_target": {
+            "program": 0,
+            "basic_block": 643,
+            "frame_depth": 1,
+            "start_pc": 16491
+          }
+        }
+      ],
+      "closed_summaries": 2,
+      "work": 8370753480,
+      "transfers": 217,
+      "timings": {
+        "queue_ns": 54201,
+        "processing_ns": 2455475635,
+        "validating_ns": 3012416,
+        "pinning_ns": 0,
+        "acquiring_ns": 0,
+        "analyzing_ns": 2125383327,
+        "building_ssa_ns": 26976692,
+        "projecting_ns": 300103200
+      },
+      "call_edges": [
+        {
+          "id": 41,
+          "from": 39,
+          "to": 42,
+          "kind": "Call"
+        },
+        {
+          "id": 42,
+          "from": 39,
+          "to": 43,
+          "kind": "Call"
+        },
+        {
+          "id": 130,
+          "from": 113,
+          "to": 116,
+          "kind": "Call"
+        },
+        {
+          "id": 131,
+          "from": 113,
+          "to": 117,
+          "kind": "Call"
+        }
+      ]
+    },
+    "precision_regressions": [
+      "Earlier Relations(ExpressionLimit) incoming refusals are recorded precision regressions; the raw producer is not established bug-free.",
+      "The historical five Memory and three closed-summary observations remain unmet. Ordinary logical memory no longer uses max_memory_bytes as a logical span cap; never relabel another frontier as Memory."
+    ],
+    "graph_stress": "The original 250-state/50-block UI scale goal is independently covered by the Root-verified 129/64 distinct stack-height graph cases; no fresh run is claimed here."
   }
 }
