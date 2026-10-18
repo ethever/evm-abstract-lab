@@ -34,6 +34,13 @@ def _assert_root_block(report, node, code, instructions):
 
 def _assert_root_outcomes(report, expected):
     """Check every completion; only the named block entries may fail late."""
+    def references(value, target):
+        if isinstance(value,dict):
+            return int(value==target)+sum(references(item,target) for item in value.values())
+        if isinstance(value,list):
+            return sum(references(item,target) for item in value)
+        return 0
+
     observed={state:set() for state in expected}
     details={item['state']:item for item in report['states']}
     nodes=report['symbolic']['nodes']
@@ -51,7 +58,28 @@ def _assert_root_outcomes(report, expected):
         assert next((item['touched'] for item in active['accounts'] if item['address']==ripemd),active['touched_default']) is None
         saved=report['stores'][entry['frames'][0]['rollback_store']]
         store=report['stores'][outcome['store']]
-        assert {key:value for key,value in store.items() if key!='accounts'}=={key:value for key,value in saved.items() if key!='accounts'},outcome
+        if kind=='Return':
+            # UnknownTo calls::initial uses may_touch_all. Finalization prepares
+            # an independent unlisted persistent base, preserving listed owners.
+            assert report['metadata']['environment']['to']=={'Symbolic':{'kind':'To','index':None}},outcome
+            assert active['touched_default'] is None and saved['touched_default'] is False,outcome
+            root_ref=store['storage_root']
+            assert set(root_ref)=={'node'} and type(root_ref['node']) is int and 0<=root_ref['node']<len(nodes),outcome
+            root=nodes[root_ref['node']]
+            assert isinstance(root,dict) and set(root)=={'SlotsInput'},outcome
+            token=root['SlotsInput']['source']['token']
+            assert set(token)=={'node'} and type(token['node']) is int and 0<=token['node']<len(nodes),outcome
+            assert root=={'SlotsInput':{'source':{'token':token,'namespace':'0x0'},'bindings':[]}},outcome
+            fresh=nodes[token['node']]
+            assert isinstance(fresh,dict) and set(fresh)=={'Fresh'},outcome
+            assert type(fresh['Fresh']) is int and fresh['Fresh']>=0,outcome
+            # Check the whole report jointly: neither the root nor its fresh
+            # source may alias saved/known storage, bytes, lengths or guards.
+            assert sum(node==fresh for node in nodes)==1,outcome
+            assert references(report,root_ref)==references(report,token)==1,outcome
+            assert store=={**saved,'storage_root':root_ref},outcome
+        else:
+            assert {key:value for key,value in store.items() if key!='accounts'}=={key:value for key,value in saved.items() if key!='accounts'},outcome
         before={item['address']:item for item in saved['accounts']}
         after={item['address']:item for item in store['accounts']}
         assert all(after.get(address)==account for address,account in before.items()),outcome
@@ -68,7 +96,7 @@ def _assert_root_outcomes(report, expected):
             assert source['source']['token']==original['source']['token']
             assert 'Fresh' in nodes[root['condition']['node']] and nodes[root['else_state']['node']]=='SlotsZero'
             assert account=={'address':ripemd,'existence':'Unknown','balance':saved['balance_default'],
-                             'nonce':saved['balance_default'],'code_kind':'Unknown','code_hash':None,
+                             'nonce':saved['nonce_default'],'code_kind':'Unknown','code_hash':None,
                              'program':None,'delegation_target':None,'storage_default':saved['storage_default'],
                              'storage_root':account['storage_root'],'transient_root':before[report['metadata']['entry_address']]['transient_root'],
                              'storage':[],'transient_default':saved['transient_default'],'transient':[],
