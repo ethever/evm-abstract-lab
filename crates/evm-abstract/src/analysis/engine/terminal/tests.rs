@@ -320,7 +320,10 @@ fn static_return_covers_unlisted_owner_cleanup_under_one_input_valuation() {
         assert_eq!(input.storage_source(), &world.storage_source_token());
         assert_eq!(input.input_scope(), entry.environment.input_scope.id());
         assert_eq!(input.entry(), &entry);
-        assert_eq!(input.config(), &config);
+        assert_eq!(
+            serde_json::to_value(input.config()).unwrap(),
+            serde_json::to_value(&config).unwrap()
+        );
         assert_eq!(input.frame(), &original.active().key);
         assert!(input.frame().is_static);
         assert_eq!(input.program(), original.active().program.as_ref().unwrap());
