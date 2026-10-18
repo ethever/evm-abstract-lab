@@ -21,9 +21,18 @@ fn word(number: u64) -> AbstractValue {
 }
 
 fn fixture(fork: Fork, is_static: bool) -> (World, Entry, ExecutionConfig, layers::StateFacts) {
+    fixture_with_code(fork, is_static, "00")
+}
+
+fn fixture_with_code(
+    fork: Fork,
+    is_static: bool,
+    root_code: &str,
+) -> (World, Entry, ExecutionConfig, layers::StateFacts) {
     let mut world = World::new(fork, "original root terminal preparation");
     for owner in [address(0x101), address(0x202)] {
-        let mut account = Account::from_hex("00", fork).unwrap();
+        let code = if owner == address(0x101) { root_code } else { "00" };
+        let mut account = Account::from_hex(code, fork).unwrap();
         account.storage_unknown = true;
         account.balance = word(10);
         account.nonce = word(1);
@@ -462,13 +471,10 @@ fn checked_bytes_can_decline_after_paid_construction_without_mutating_input() {
 fn raw_code_and_offline_label_growth_are_linear_fee_terms() {
     let mut fees = Vec::new();
     for bytes in [1usize, 1025] {
-        let (mut world, entry, config, _) = fixture(Fork::Osaka, false);
-        world
-            .insert(
-                entry.address,
-                Account::from_hex(&"00".repeat(bytes), world.fork()).unwrap(),
-            )
-            .unwrap();
+        // World observations are immutable. Construct the intended code once
+        // while retaining exactly the same balance, nonce and storage facts.
+        let (world, entry, config, _) =
+            fixture_with_code(Fork::Osaka, false, &"00".repeat(bytes));
         let original = transfer::initial(&world, &entry, config.domain().unwrap()).unwrap();
         for label_len in [8usize, 8192] {
             let facts = layers::StateFacts::new(layers::SnapshotId::offline("x".repeat(label_len)));
