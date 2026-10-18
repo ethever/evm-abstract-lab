@@ -144,6 +144,9 @@ pub(super) fn build(
     let enabled = context.config.analysis.relations.enabled;
     let offset = builder.identify(offset, enabled)?;
     let size = builder.identify(size, enabled)?;
+    // Identification can itself lose a fresh identity; do not attribute that
+    // inherited refusal to a later finite operation in this guard.
+    builder.retention = GuardRetention::new(&offset, &size);
     builder.pay(copy_work(CONSTANT_WORK_SIZE).saturating_mul(2))?;
     let request = RangeRequest {
         kind: RangeKind::LogicalMemory,
