@@ -39,6 +39,8 @@ mod numbers;
 mod partial_ssa;
 #[path = "cli/relations.rs"]
 mod relations;
+#[path = "cli/root_terminal_coverage.rs"]
+mod root_terminal_coverage;
 #[path = "cli/rpc.rs"]
 mod rpc;
 

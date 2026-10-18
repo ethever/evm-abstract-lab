@@ -1,0 +1,219 @@
+//! Opt-in parsing and borrowed native envelopes preserve the complete policy/report.
+
+use super::{Cli, Command, ENTRY};
+use clap::{CommandFactory, Parser};
+use evm_abstract::{
+    analysis::{Analysis, ExecutionConfig, Status, WorldAnalysis},
+    render, ssa,
+};
+use serde_json::Value as Json;
+
+#[test]
+fn coverage_is_a_default_off_boolean_on_every_executing_input_path() {
+    for input in [
+        vec!["cfg", "--hex", "00"],
+        vec!["cfg", "--file", "unused.hex"],
+        vec!["ssa", "--hex", "00"],
+        vec!["ssa", "--file", "unused.hex"],
+        vec!["analyze", "--world", "unused.json", "--evm.to", ENTRY],
+        vec!["analyze", "--rpc", "http://127.0.0.1:1", "--evm.to", ENTRY],
+        vec![
+            "analyze",
+            "--rpc",
+            "http://127.0.0.1:1",
+            "--evm.to",
+            ENTRY,
+            "--no-rpc-discovery",
+        ],
+        vec!["explain", "--hex", "00"],
+        vec!["explain", "--file", "unused.hex"],
+        vec!["explain", "--world", "unused.json", "--evm.to", ENTRY],
+        vec!["explain", "--rpc", "http://127.0.0.1:1", "--evm.to", ENTRY],
+        vec![
+            "explain",
+            "--rpc",
+            "http://127.0.0.1:1",
+            "--evm.to",
+            ENTRY,
+            "--no-rpc-discovery",
+        ],
+    ] {
+        for enabled in [false, true] {
+            let mut arguments = vec!["evm-abstract"];
+            arguments.extend_from_slice(&input);
+            if enabled {
+                arguments.push("--root-terminal-coverage");
+            }
+            let matches = Cli::command().try_get_matches_from(&arguments).unwrap();
+            assert_eq!(
+                matches
+                    .subcommand()
+                    .unwrap()
+                    .1
+                    .get_flag("root_terminal_coverage"),
+                enabled,
+                "{arguments:?}"
+            );
+            assert!(Cli::try_parse_from(&arguments).is_ok());
+        }
+    }
+    assert!(
+        Cli::try_parse_from([
+            "evm-abstract",
+            "disasm",
+            "--hex",
+            "00",
+            "--root-terminal-coverage",
+        ])
+        .is_err()
+    );
+}
+
+fn raw(arguments: &[&str]) -> Analysis {
+    let parsed = Cli::try_parse_from(arguments).unwrap();
+    let (Command::Cfg { args, .. } | Command::Ssa { args, .. }) = parsed.command else {
+        panic!("expected raw analysis")
+    };
+    args.analyze().unwrap()
+}
+
+fn world(arguments: &[&str]) -> WorldAnalysis {
+    let parsed = Cli::try_parse_from(arguments).unwrap();
+    let Command::Analyze { args, .. } = parsed.command else {
+        panic!("expected world analysis")
+    };
+    args.analyze().unwrap()
+}
+
+fn config(arguments: &[&str]) -> ExecutionConfig {
+    if arguments[1] == "analyze" {
+        world(arguments).config().clone()
+    } else {
+        raw(arguments).execution().config().clone()
+    }
+}
+
+#[test]
+fn opting_in_reaches_the_machine_without_replacing_any_other_config_field() {
+    let fixture = format!(
+        "{}/../../examples/worlds/call-return-branch.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    for mut arguments in [
+        vec!["evm-abstract", "cfg", "--hex", "00"],
+        vec!["evm-abstract", "ssa", "--hex", "00"],
+        vec![
+            "evm-abstract",
+            "analyze",
+            "--world",
+            &fixture,
+            "--evm.to",
+            ENTRY,
+            "--no-summaries",
+        ],
+    ] {
+        arguments.extend([
+            "--max-work",
+            "20000000",
+            "--max-call-depth",
+            "5",
+            "--max-memory-bytes",
+            "128",
+            "--max-states",
+            "7",
+            "--max-transfers",
+            "9",
+            "--max-constants",
+            "8",
+            "--reduction-rounds",
+            "2",
+            "--max-facts",
+            "13",
+            "--context-depth",
+            "3",
+            "--max-symbolic-nodes",
+            "256",
+            "--max-symbolic-depth",
+            "16",
+            "--max-relations",
+            "24",
+            "--domain",
+            "constants-only",
+            "--no-relations",
+        ]);
+        let mut expected = config(&arguments);
+        assert!(!expected.root_terminal_coverage);
+        expected.root_terminal_coverage = true;
+        arguments.push("--root-terminal-coverage");
+        assert_eq!(
+            serde_json::to_vec(&config(&arguments)).unwrap(),
+            serde_json::to_vec(&expected).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn native_schema_ten_and_the_entire_certificate_survive_existing_ssa_envelopes() {
+    let analysis = raw(&[
+        "evm-abstract",
+        "cfg",
+        "--hex",
+        "6003565b00",
+        "--max-transfers",
+        "1",
+        "--root-terminal-coverage",
+    ]);
+    assert_eq!(analysis.status(), Status::Incomplete);
+    assert!(analysis.root_terminal_coverage().is_some());
+    let native: Json = serde_json::from_slice(&serde_json::to_vec(&analysis).unwrap()).unwrap();
+    let machine: Json =
+        serde_json::from_slice(&serde_json::to_vec(analysis.execution()).unwrap()).unwrap();
+    let ir = ssa::build_normalized_partial_world(analysis.execution()).unwrap();
+    let forwarded: Json =
+        serde_json::from_str(&crate::json::program(&analysis, &ir).unwrap()).unwrap();
+    assert_eq!(native["schema_version"], 10);
+    assert_eq!(machine["schema_version"], 10);
+    assert_eq!(forwarded["analysis"], native);
+    assert_eq!(forwarded["machine_analysis"], machine);
+    assert_eq!(
+        forwarded["analysis"]["root_terminal_coverage"],
+        forwarded["machine_analysis"]["root_terminal_coverage"]
+    );
+    assert!(forwarded.get("root_terminal_coverage").is_none());
+    assert!(forwarded.get("schema_version").is_none());
+    assert!(forwarded.get("ssa").is_none());
+    assert_eq!(forwarded["partial_ssa"]["frontiers"], machine["frontiers"]);
+
+    let fixture = format!(
+        "{}/../../examples/worlds/call-return-branch.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let analysis = world(&[
+        "evm-abstract",
+        "analyze",
+        "--world",
+        &fixture,
+        "--evm.to",
+        ENTRY,
+        "--max-transfers",
+        "1",
+        "--root-terminal-coverage",
+    ]);
+    assert_eq!(analysis.status(), Status::Incomplete);
+    assert!(analysis.root_terminal_coverage().is_some());
+    let native: Json = serde_json::from_slice(
+        &serde_json::to_vec(&render::world::evidence(&analysis).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let plain: Json = serde_json::from_str(&crate::json::world(&analysis, None).unwrap()).unwrap();
+    let ir = ssa::build_normalized_partial_world(&analysis).unwrap();
+    let forwarded: Json =
+        serde_json::from_str(&crate::json::world(&analysis, Some(&ir)).unwrap()).unwrap();
+    assert_eq!(native["schema_version"], 10);
+    assert_eq!(plain, native);
+    assert_eq!(forwarded["analysis"], native);
+    assert!(forwarded.get("root_terminal_coverage").is_none());
+    assert!(forwarded.get("schema_version").is_none());
+    assert!(forwarded.get("ssa").is_none());
+    assert_eq!(forwarded["partial_ssa"]["frontiers"], native["frontiers"]);
+}

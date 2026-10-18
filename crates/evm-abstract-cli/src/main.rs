@@ -148,6 +148,9 @@ struct WorldArgs {
     /// Disable completed call-summary reuse for oracle comparisons.
     #[arg(long)]
     no_summaries: bool,
+    /// Prepare conservative root terminal coverage; detailed frontiers still exit 2.
+    #[arg(long)]
+    root_terminal_coverage: bool,
     #[command(flatten)]
     evm: EvmArgs,
     /// Maximum live frames, including entry; reaching the cap retains a frontier.
@@ -214,6 +217,9 @@ struct Input {
 
 #[derive(Args)]
 struct AnalysisArgs {
+    /// Prepare conservative root terminal coverage; detailed frontiers still exit 2.
+    #[arg(long)]
+    root_terminal_coverage: bool,
     /// Maximum cumulative execution and domain work.
     #[arg(long, default_value_t = defaults::MAX_WORK)]
     max_work: usize,
@@ -310,6 +316,7 @@ impl AnalysisArgs {
                 max_call_depth: self.max_call_depth,
                 max_memory_bytes: self.max_memory_bytes,
                 use_summaries: true,
+                root_terminal_coverage: self.root_terminal_coverage,
             },
             environment,
         )?)
@@ -374,6 +381,7 @@ impl WorldArgs {
             max_call_depth: self.max_call_depth,
             max_memory_bytes: self.max_memory_bytes,
             use_summaries: !self.no_summaries,
+            root_terminal_coverage: self.root_terminal_coverage,
         };
         match (world, rpc_input) {
             (Some(world), None) => Ok(analysis::analyze_world(world, entry, config)?),
@@ -430,7 +438,7 @@ fn run() -> Result<ExitCode, CliError> {
                                 render::world::normalized_ssa(&analysis, &ir)
                             });
                         }
-                        output
+                        text_with_root_terminal_coverage(output, analysis.root_terminal_coverage())
                     }
                     CfgFormat::Json => json::world(&analysis, ir.as_ref())?,
                     CfgFormat::Dot => render::world::dot(&analysis),
@@ -452,7 +460,10 @@ fn run() -> Result<ExitCode, CliError> {
             let analysis = args.analyze()?;
             (
                 match format {
-                    CfgFormat::Text => render::cfg(&analysis),
+                    CfgFormat::Text => text_with_root_terminal_coverage(
+                        render::cfg(&analysis),
+                        analysis.root_terminal_coverage(),
+                    ),
                     CfgFormat::Json => render::json::pretty(&analysis)?,
                     CfgFormat::Dot => render::dot(&analysis),
                 },
@@ -469,14 +480,20 @@ fn run() -> Result<ExitCode, CliError> {
                 if !allow_partial_ssa {
                     eprintln!(
                         "{}SSA unavailable: analysis frontiers remain",
-                        render::cfg(&analysis)
+                        text_with_root_terminal_coverage(
+                            render::cfg(&analysis),
+                            analysis.root_terminal_coverage(),
+                        )
                     );
                     return Ok(ExitCode::from(2));
                 }
                 let ir = ssa::build_normalized_partial_world(analysis.execution())?;
                 (
                     match format {
-                        TextFormat::Text => render::normalized_ssa(&analysis, &ir),
+                        TextFormat::Text => text_with_root_terminal_coverage(
+                            render::normalized_ssa(&analysis, &ir),
+                            analysis.root_terminal_coverage(),
+                        ),
                         TextFormat::Json => json::program(&analysis, &ir)?,
                     },
                     false,
@@ -485,7 +502,10 @@ fn run() -> Result<ExitCode, CliError> {
                 let ssa = ssa::build_normalized(&analysis)?;
                 (
                     match format {
-                        TextFormat::Text => render::normalized_ssa(&analysis, &ssa),
+                        TextFormat::Text => text_with_root_terminal_coverage(
+                            render::normalized_ssa(&analysis, &ssa),
+                            analysis.root_terminal_coverage(),
+                        ),
                         TextFormat::Json => json::program(&analysis, &ssa)?,
                     },
                     true,
@@ -505,6 +525,26 @@ fn run() -> Result<ExitCode, CliError> {
     } else {
         ExitCode::from(2)
     })
+}
+
+fn text_with_root_terminal_coverage(
+    mut output: String,
+    coverage: Option<&analysis::RootTerminalCoverage>,
+) -> String {
+    if let Some(coverage) = coverage {
+        use std::fmt::Write as _;
+        let outcomes = coverage.outcomes();
+        writeln!(
+            output,
+            "\nRoot terminal coverage (conservative): scope={:?}; alternatives={:?}, {:?}, {:?}\n  Original root input; terminal data and Stores are separate from detailed status, frontiers and SSA.",
+            coverage.scope(),
+            outcomes[0].kind(),
+            outcomes[1].kind(),
+            outcomes[2].kind(),
+        )
+        .expect("writing to a String is infallible");
+    }
+    output
 }
 
 fn main() -> ExitCode {

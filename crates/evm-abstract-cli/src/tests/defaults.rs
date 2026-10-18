@@ -36,6 +36,7 @@ fn assert_policy(actual: &ExecutionConfig, expected: &AnalysisLimits) {
         assert_eq!(actual as u64, expected, "{field}");
     }
     assert_eq!(actual.use_summaries, expected.use_summaries);
+    assert!(!actual.root_terminal_coverage);
     assert_eq!(
         config.domain_profile,
         match expected.domain_profile {
