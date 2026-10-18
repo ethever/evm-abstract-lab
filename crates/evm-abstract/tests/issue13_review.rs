@@ -149,9 +149,10 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             if let Some(nonzero) = choices.get(condition) {
                 descend(if *nonzero { then_value } else { else_value })
             } else {
+                let condition = descend(condition)?;
                 let yes = descend(then_value)?;
                 let no = descend(else_value)?;
-                ExprId::ite(condition.clone(), yes, no, limits)
+                ExprId::ite(condition, yes, no, limits)
             }
         }
         let original = ExprLimits {
@@ -172,6 +173,88 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             });
         }
         Ok(result)
+    }
+
+    // Factoring can move an old counter root into the current read's guard.
+    // Only new, target-disjoint Fresh selectors may expose that exact history.
+    fn increment_cofactor(current: &ExprId, target: &ExprId, limits: ExprLimits) -> bool {
+        if [current, target]
+            .iter()
+            .any(|term| term.nodes() > limits.max_nodes || term.depth() > limits.max_depth)
+        {
+            return false;
+        }
+        let ExprKind::Operation { opcode: op, args } = target.kind() else {
+            return false;
+        };
+        let [amount, read] = args.as_slice() else {
+            return false;
+        };
+        if *op != opcode::ADD || amount.as_constant() != Some(U256::from(1)) {
+            return false;
+        }
+        let (
+            ExprKind::Ite {
+                condition: current_guard,
+                then_value: current_yes,
+                else_value: current_no,
+            },
+            ExprKind::Ite {
+                condition: target_guard,
+                then_value: target_yes,
+                else_value: target_no,
+            },
+        ) = (current.kind(), read.kind())
+        else {
+            return false;
+        };
+        if current_yes != target_yes || current_no != target_no {
+            return false;
+        }
+        let target_fresh = target.fresh_leaves();
+        let mut pending = vec![(current_guard, BTreeMap::<ExprId, bool>::new(), 1)];
+        let mut visits = 0;
+        while let Some((guard, choices, depth)) = pending.pop() {
+            // Count paths in the original expanded tree; node-only deduplication
+            // could discard a different consistent selector assignment.
+            visits += 1;
+            if visits > current_guard.nodes() || depth > current_guard.depth() {
+                return false;
+            }
+            if guard == target_guard {
+                let rebuilt = specialize_ites(current, &choices, limits).and_then(|read| {
+                    ExprId::operation(opcode::ADD, &[amount.clone(), read], limits)
+                });
+                match rebuilt {
+                    Ok(increment) if &increment == target => return true,
+                    Ok(_) => {}
+                    Err(_) => return false,
+                }
+            }
+            let ExprKind::Ite {
+                condition,
+                then_value,
+                else_value,
+            } = guard.kind()
+            else {
+                continue;
+            };
+            if !matches!(condition.kind(), ExprKind::Fresh(_)) || target_fresh.contains(condition) {
+                continue;
+            }
+            for (next, nonzero) in [(else_value, false), (then_value, true)] {
+                let mut branch = choices.clone();
+                if let Some(previous) = branch.get(condition) {
+                    if *previous != nonzero {
+                        continue;
+                    }
+                } else {
+                    branch.insert(condition.clone(), nonzero);
+                }
+                pending.push((next, branch, depth + 1));
+            }
+        }
+        false
     }
 
     let proof_limits = Domain::default().spec().relations().expressions();
@@ -263,6 +346,105 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
         })
     );
     assert_eq!(choices_tree, original_tree);
+
+    let read = |guard| {
+        ExprId::ite(
+            guard,
+            ExprId::constant(U256::ZERO),
+            ExprId::constant(U256::from(1)),
+            proof_limits,
+        )
+        .unwrap()
+    };
+    let add = |amount: u64, count| {
+        ExprId::operation(
+            opcode::ADD,
+            &[ExprId::constant(U256::from(amount)), count],
+            proof_limits,
+        )
+        .unwrap()
+    };
+    let old_guard = ExprId::ite(
+        second_guard.clone(),
+        ExprId::constant(U256::from(2)),
+        ExprId::constant(U256::MAX),
+        proof_limits,
+    )
+    .unwrap();
+    let current_read = read(
+        ExprId::ite(
+            first_guard.clone(),
+            old_guard.clone(),
+            source_read(1),
+            proof_limits,
+        )
+        .unwrap(),
+    );
+    let target_read = read(old_guard.clone());
+    let historical_increment = add(1, target_read.clone());
+    assert!(increment_cofactor(
+        &current_read,
+        &historical_increment,
+        proof_limits
+    ));
+    assert_eq!(
+        specialize_ites(&current_read, &true_guard, proof_limits).unwrap(),
+        target_read
+    );
+    // A nonzero word guard keeps its actual value; it is never Booleanized.
+    for (choice, word) in [(true, U256::from(2)), (false, U256::MAX)] {
+        let choices = BTreeMap::from([(first_guard.clone(), true), (second_guard.clone(), choice)]);
+        assert_eq!(
+            specialize_ites(&old_guard, &choices, proof_limits).unwrap(),
+            ExprId::constant(word)
+        );
+        assert_eq!(
+            specialize_ites(&current_read, &choices, proof_limits)
+                .unwrap()
+                .as_constant(),
+            Some(U256::ZERO)
+        );
+    }
+    let reversed = ExprId::ite(
+        old_guard.clone(),
+        ExprId::constant(U256::from(1)),
+        ExprId::constant(U256::ZERO),
+        proof_limits,
+    )
+    .unwrap();
+    for invalid in [
+        add(2, target_read),
+        add(1, reversed),
+        add(1, read(add(1, old_guard))),
+        add(1, read(source_read(2))),
+        add(1, read(ExprId::fresh().unwrap())),
+    ] {
+        assert!(!increment_cofactor(&current_read, &invalid, proof_limits));
+    }
+    // The selector occurs inside opaque target data. Choosing it could leave
+    // that AST unchanged while still erasing target valuations, so reject it.
+    let protected_read = read(
+        ExprId::ite(
+            first_guard.clone(),
+            data.clone(),
+            source_read(1),
+            proof_limits,
+        )
+        .unwrap(),
+    );
+    assert!(!increment_cofactor(
+        &protected_read,
+        &add(1, read(data)),
+        proof_limits
+    ));
+    assert!(!increment_cofactor(
+        &current_read,
+        &historical_increment,
+        ExprLimits {
+            max_nodes: current_read.nodes() - 1,
+            ..proof_limits
+        }
+    ));
 
     let root = format!(
         "{}505f515f55{}505f51600155{}505f5160025500",
@@ -899,9 +1081,15 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             assert!(actual_writes.contains(&ExprId::constant(U256::from(1))));
             assert!(actual_writes.contains(&increment));
             // Outputs retain earlier executions of the same joined entry.
-            // Each retained increment must read an actual owner201 input root,
-            // including its historical ITE branches, and add exactly one.
-            assert!(actual_writes.is_subset(&increments));
+            // Each retained increment must read an actual owner201 input root
+            // or an exact target-disjoint ITE cofactor of its current read.
+            let current_read = old_count.symbolic_expression().unwrap();
+            for historical in actual_writes.difference(&increments) {
+                assert!(
+                    increment_cofactor(&current_read, historical, limits.expressions()),
+                    "{fork:?}: missing exact historical increment cofactor: {historical:?}"
+                );
+            }
             assert_eq!(
                 writes(&histories[1]),
                 std::collections::BTreeSet::from([ExprId::constant(U256::from(1))])
