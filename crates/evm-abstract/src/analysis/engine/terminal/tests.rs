@@ -484,7 +484,7 @@ fn raw_code_and_offline_label_growth_are_linear_fee_terms() {
         }
     }
     let text_delta = 8192 - 8;
-    for pair in fees.chunks_exact(2) {
+    for pair in fees.as_chunks::<2>().0 {
         assert!(pair[1] >= pair[0] + text_delta * 8);
         assert!(pair[1] <= pair[0] + text_delta * 12);
     }
