@@ -224,6 +224,11 @@ impl<'a> Demand<'a> {
         self.pay(self.reduction_work)
     }
 
+    /// Local algorithm changes belong only to the real prepared Reader payer.
+    pub(super) fn is_budgeted(&self) -> bool {
+        matches!(&self.payer, Payer::Budget(_))
+    }
+
     /// Reader transfers are distinct from Context's intersections and joins.
     /// The reference oracle keeps its old metadata cap without Reader fees.
     pub(super) fn pay_reader(&self, price: impl FnOnce() -> usize) -> bool {

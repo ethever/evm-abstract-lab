@@ -5,6 +5,8 @@ use alloy_primitives::U256;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use std::{collections::BTreeSet, fmt};
 
+mod reification;
+
 /// Intersection of finite candidates, masks, intervals and congruences.
 /// Component Top never means that all other numeric constraints are absent.
 #[derive(Clone, Debug, PartialEq, Eq)]
