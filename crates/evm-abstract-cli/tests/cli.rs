@@ -723,7 +723,9 @@ fn shared_budgets_keep_typed_frontiers_and_exit_two() {
             serde_json::json!({"Relations":"ExpressionLimit"}),
         ),
     ] {
-        let output = analyze(name, &args);
+        let mut detail = args.clone();
+        detail.push("--no-root-terminal-coverage");
+        let output = analyze(name, &detail);
         assert_eq!(
             output.status.code(),
             Some(2),

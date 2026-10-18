@@ -56,12 +56,18 @@ fn policy(report: &Value, world: bool, expected: &AnalysisLimits) {
             assert_eq!(report["config"][name], value, "{name}");
         }
         assert_eq!(report["config"]["use_summaries"], expected.use_summaries);
+        assert_eq!(
+            report["config"]["root_terminal_coverage"],
+            expected.root_terminal_coverage
+        );
     }
 }
 
 #[test]
 fn cfg_ssa_and_world_json_use_the_protocol_web_defaults_in_the_real_engine() {
     let expected = AnalysisLimits::default();
+    assert_eq!(expected.max_work, 2_000_000_000);
+    assert!(expected.root_terminal_coverage);
     let path = format!(
         "{}/../../examples/straight-line.hex",
         env!("CARGO_MANIFEST_DIR")
@@ -78,6 +84,10 @@ fn cfg_ssa_and_world_json_use_the_protocol_web_defaults_in_the_real_engine() {
                 false,
                 &expected,
             );
+            if command == "ssa" {
+                assert_eq!(json["machine_analysis"]["config"]["max_work"], 2_000_000_000);
+                assert_eq!(json["machine_analysis"]["config"]["root_terminal_coverage"], true);
+            }
         }
     }
     let world = report(analyze("call-return-branch", &["--format", "json"]));
@@ -93,6 +103,7 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
         max_states: 4096,
         max_transfers: 100_000,
         max_work: 20_000_000,
+        root_terminal_coverage: false,
         max_call_depth: 32,
         max_memory_bytes: 65_536,
         max_expression_nodes: 1024,
@@ -117,6 +128,7 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
             "100000",
             "--max-work",
             "20000000",
+            "--no-root-terminal-coverage",
             "--max-call-depth",
             "32",
             "--max-memory-bytes",
@@ -161,6 +173,7 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
             "65536",
             "--max-symbolic-nodes",
             "2",
+            "--no-root-terminal-coverage",
         ]);
         assert_eq!(refused.status.code(), Some(2), "{command}");
         let text = String::from_utf8(refused.stdout).unwrap();
@@ -213,6 +226,7 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
         "65536",
         "--max-symbolic-nodes",
         "2",
+        "--no-root-terminal-coverage",
         "--format",
         "json",
     ]);
@@ -240,6 +254,7 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
         "65536",
         "--max-symbolic-nodes",
         "2",
+        "--no-root-terminal-coverage",
         "--allow-partial-ssa",
         "--format",
         "json",

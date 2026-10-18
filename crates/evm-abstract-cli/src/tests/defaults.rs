@@ -36,7 +36,7 @@ fn assert_policy(actual: &ExecutionConfig, expected: &AnalysisLimits) {
         assert_eq!(actual as u64, expected, "{field}");
     }
     assert_eq!(actual.use_summaries, expected.use_summaries);
-    assert!(!actual.root_terminal_coverage);
+    assert_eq!(actual.root_terminal_coverage, expected.root_terminal_coverage);
     assert_eq!(
         config.domain_profile,
         match expected.domain_profile {
@@ -49,6 +49,8 @@ fn assert_policy(actual: &ExecutionConfig, expected: &AnalysisLimits) {
 
 #[test]
 fn raw_hex_file_and_offline_world_execute_with_web_defaults() {
+    assert_eq!(AnalysisLimits::default().max_work, 2_000_000_000);
+    assert!(AnalysisLimits::default().root_terminal_coverage);
     let file = format!(
         "{}/../../examples/straight-line.hex",
         env!("CARGO_MANIFEST_DIR")
@@ -94,6 +96,7 @@ fn explicit_previous_policy_is_not_replaced_by_larger_defaults() {
         max_states: 4096,
         max_transfers: 100_000,
         max_work: 20_000_000,
+        root_terminal_coverage: false,
         max_call_depth: 32,
         max_memory_bytes: 65_536,
         max_expression_nodes: 1024,
@@ -119,6 +122,7 @@ fn explicit_previous_policy_is_not_replaced_by_larger_defaults() {
             "100000",
             "--max-work",
             "20000000",
+            "--no-root-terminal-coverage",
             "--max-call-depth",
             "32",
             "--max-memory-bytes",

@@ -171,10 +171,12 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
             "Transfers",
         ),
     ] {
-        let output = world_command("explain", name, &extra);
+        let mut detail = extra.clone();
+        detail.push("--no-root-terminal-coverage");
+        let output = world_command("explain", name, &detail);
         assert_eq!(output.status.code(), Some(2), "{name} {extra:?}");
         let explanation = text(&output);
-        assert_full_report(&explanation, &world_command("analyze", name, &extra));
+        assert_full_report(&explanation, &world_command("analyze", name, &detail));
         let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
         assert!(disassembly.contains("PUSH") || disassembly.contains("CALL"));
         if extra == ["--max-work", "1"] {
@@ -183,7 +185,7 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
         }
         assert!(explanation.contains("Incomplete") && explanation.contains(frontier));
         if extra == ["--max-symbolic-nodes", "2"] {
-            let mut query = extra.clone();
+            let mut query = detail.clone();
             query.extend(["--format", "json"]);
             let report = world_command("analyze", name, &query);
             assert_eq!(report.status.code(), Some(2));

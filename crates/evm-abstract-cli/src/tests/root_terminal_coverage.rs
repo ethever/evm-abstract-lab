@@ -1,7 +1,8 @@
-//! Opt-in parsing and borrowed native envelopes preserve the complete policy/report.
+//! Default coverage, explicit switches and native envelopes preserve policy/report semantics.
 
 use super::{Cli, Command, ENTRY};
-use clap::{CommandFactory, Parser};
+use crate::RootTerminalCoverageArgs;
+use clap::{CommandFactory, FromArgMatches, Parser, error::ErrorKind};
 use evm_abstract::{
     analysis::{Analysis, ExecutionConfig, Status, WorldAnalysis},
     render, ssa,
@@ -9,7 +10,7 @@ use evm_abstract::{
 use serde_json::Value as Json;
 
 #[test]
-fn coverage_is_a_default_off_boolean_on_every_executing_input_path() {
+fn coverage_defaults_on_and_accepts_only_exclusive_no_value_switches_on_every_input_path() {
     for input in [
         vec!["cfg", "--hex", "00"],
         vec!["cfg", "--file", "unused.hex"],
@@ -38,35 +39,53 @@ fn coverage_is_a_default_off_boolean_on_every_executing_input_path() {
             "--no-rpc-discovery",
         ],
     ] {
-        for enabled in [false, true] {
+        for (flag, enabled) in [
+            (None, true),
+            (Some("--root-terminal-coverage"), true),
+            (Some("--no-root-terminal-coverage"), false),
+        ] {
             let mut arguments = vec!["evm-abstract"];
             arguments.extend_from_slice(&input);
-            if enabled {
-                arguments.push("--root-terminal-coverage");
+            if let Some(flag) = flag {
+                arguments.push(flag);
             }
             let matches = Cli::command().try_get_matches_from(&arguments).unwrap();
+            let matches = matches.subcommand().unwrap().1;
             assert_eq!(
-                matches
-                    .subcommand()
+                RootTerminalCoverageArgs::from_arg_matches(matches)
                     .unwrap()
-                    .1
-                    .get_flag("root_terminal_coverage"),
+                    .enabled(),
                 enabled,
                 "{arguments:?}"
             );
+            assert_eq!(matches.get_one::<usize>("max_work"), Some(&2_000_000_000));
             assert!(Cli::try_parse_from(&arguments).is_ok());
         }
+        for flags in [
+            ["--root-terminal-coverage", "--no-root-terminal-coverage"],
+            ["--no-root-terminal-coverage", "--root-terminal-coverage"],
+        ] {
+            let mut arguments = vec!["evm-abstract"];
+            arguments.extend_from_slice(&input);
+            arguments.extend(flags);
+            let error = Cli::try_parse_from(&arguments).err().unwrap();
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{arguments:?}");
+        }
+        for flag in ["--root-terminal-coverage", "--no-root-terminal-coverage"] {
+            for value in ["true", "false"] {
+                let assignment = format!("{flag}={value}");
+                for flags in [vec![assignment.as_str()], vec![flag, value]] {
+                    let mut arguments = vec!["evm-abstract"];
+                    arguments.extend_from_slice(&input);
+                    arguments.extend(flags);
+                    assert!(Cli::try_parse_from(&arguments).is_err(), "{arguments:?}");
+                }
+            }
+        }
     }
-    assert!(
-        Cli::try_parse_from([
-            "evm-abstract",
-            "disasm",
-            "--hex",
-            "00",
-            "--root-terminal-coverage",
-        ])
-        .is_err()
-    );
+    for flag in ["--root-terminal-coverage", "--no-root-terminal-coverage"] {
+        assert!(Cli::try_parse_from(["evm-abstract", "disasm", "--hex", "00", flag]).is_err());
+    }
 }
 
 fn raw(arguments: &[&str]) -> Analysis {
@@ -94,7 +113,7 @@ fn config(arguments: &[&str]) -> ExecutionConfig {
 }
 
 #[test]
-fn opting_in_reaches_the_machine_without_replacing_any_other_config_field() {
+fn coverage_switches_reach_the_machine_without_replacing_any_other_config_field() {
     let fixture = format!(
         "{}/../../examples/worlds/call-return-branch.json",
         env!("CARGO_MANIFEST_DIR")
@@ -142,9 +161,15 @@ fn opting_in_reaches_the_machine_without_replacing_any_other_config_field() {
             "--no-relations",
         ]);
         let mut expected = config(&arguments);
-        assert!(!expected.root_terminal_coverage);
-        expected.root_terminal_coverage = true;
-        arguments.push("--root-terminal-coverage");
+        assert!(expected.root_terminal_coverage);
+        let mut enabled = arguments.clone();
+        enabled.push("--root-terminal-coverage");
+        assert_eq!(
+            serde_json::to_vec(&config(&enabled)).unwrap(),
+            serde_json::to_vec(&expected).unwrap(),
+        );
+        expected.root_terminal_coverage = false;
+        arguments.push("--no-root-terminal-coverage");
         assert_eq!(
             serde_json::to_vec(&config(&arguments)).unwrap(),
             serde_json::to_vec(&expected).unwrap(),
@@ -153,7 +178,7 @@ fn opting_in_reaches_the_machine_without_replacing_any_other_config_field() {
 }
 
 #[test]
-fn native_schema_ten_and_the_entire_certificate_survive_existing_ssa_envelopes() {
+fn default_coverage_and_the_entire_certificate_survive_existing_ssa_envelopes() {
     let analysis = raw(&[
         "evm-abstract",
         "cfg",
@@ -161,9 +186,10 @@ fn native_schema_ten_and_the_entire_certificate_survive_existing_ssa_envelopes()
         "6003565b00",
         "--max-transfers",
         "1",
-        "--root-terminal-coverage",
     ]);
     assert_eq!(analysis.status(), Status::Incomplete);
+    assert_eq!(analysis.execution().config().max_work, 2_000_000_000);
+    assert!(analysis.execution().config().root_terminal_coverage);
     assert!(analysis.root_terminal_coverage().is_some());
     let native: Json = serde_json::from_slice(&serde_json::to_vec(&analysis).unwrap()).unwrap();
     let machine: Json =
@@ -197,9 +223,10 @@ fn native_schema_ten_and_the_entire_certificate_survive_existing_ssa_envelopes()
         ENTRY,
         "--max-transfers",
         "1",
-        "--root-terminal-coverage",
     ]);
     assert_eq!(analysis.status(), Status::Incomplete);
+    assert_eq!(analysis.config().max_work, 2_000_000_000);
+    assert!(analysis.config().root_terminal_coverage);
     assert!(analysis.root_terminal_coverage().is_some());
     let native: Json = serde_json::from_slice(
         &serde_json::to_vec(&render::world::evidence(&analysis).unwrap()).unwrap(),
@@ -216,4 +243,60 @@ fn native_schema_ten_and_the_entire_certificate_survive_existing_ssa_envelopes()
     assert!(forwarded.get("schema_version").is_none());
     assert!(forwarded.get("ssa").is_none());
     assert_eq!(forwarded["partial_ssa"]["frontiers"], native["frontiers"]);
+}
+
+#[test]
+fn explain_forwards_default_enable_and_disable_to_raw_and_world_execution() {
+    let fixture = format!(
+        "{}/../../examples/worlds/call-return-branch.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    for input in [
+        vec!["--hex", "6003565b00"],
+        vec!["--world", &fixture, "--evm.to", ENTRY],
+        vec!["--world", &fixture, "--evm.to", ENTRY, "--verbose"],
+    ] {
+        for (flag, enabled) in [
+            (None, true),
+            (Some("--root-terminal-coverage"), true),
+            (Some("--no-root-terminal-coverage"), false),
+        ] {
+            let mut arguments = vec!["evm-abstract", "explain", "--max-transfers", "1"];
+            arguments.extend_from_slice(&input);
+            if let Some(flag) = flag {
+                arguments.push(flag);
+            }
+            let parsed = Cli::try_parse_from(&arguments).unwrap();
+            let Command::Explain { args } = parsed.command else {
+                panic!("expected explain")
+            };
+            let (text, complete) = args.run().unwrap();
+            assert!(!complete);
+            assert!(text.contains("Incomplete") && text.contains("Transfers"));
+            assert!(text.contains("SSA unavailable"));
+            assert_eq!(
+                text.matches("Root terminal coverage (conservative)").count(),
+                usize::from(enabled),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn default_enabled_coverage_can_be_absent_when_detail_converges() {
+    for command in ["cfg", "ssa"] {
+        let analysis = raw(&["evm-abstract", command, "--hex", "00"]);
+        assert_eq!(analysis.status(), Status::Converged);
+        assert!(analysis.execution().config().root_terminal_coverage);
+        assert!(analysis.root_terminal_coverage().is_none());
+        let text = render::cfg(&analysis);
+        assert_eq!(
+            crate::text_with_root_terminal_coverage(
+                text.clone(),
+                analysis.root_terminal_coverage(),
+            ),
+            text
+        );
+    }
 }

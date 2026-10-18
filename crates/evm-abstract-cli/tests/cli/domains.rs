@@ -101,7 +101,13 @@ fn zero_fact_policy_is_rejected_before_execution() {
 fn initial_world_budget_is_incomplete_with_an_explicit_source_free_frontier() {
     let output = analyze(
         "call-return-branch",
-        &["--format", "json", "--max-work", "1"],
+        &[
+            "--format",
+            "json",
+            "--max-work",
+            "1",
+            "--no-root-terminal-coverage",
+        ],
     );
     assert_eq!(output.status.code(), Some(2));
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();

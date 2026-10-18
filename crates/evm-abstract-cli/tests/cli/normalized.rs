@@ -106,6 +106,7 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
             "32",
             "--format",
             "json",
+            "--no-root-terminal-coverage",
         ];
         if let Some(work) = &work {
             args.extend(["--max-work", work.as_str()]);
@@ -123,6 +124,7 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
             "32",
             "--max-work",
             &work,
+            "--no-root-terminal-coverage",
             "--format",
             "json",
         ],

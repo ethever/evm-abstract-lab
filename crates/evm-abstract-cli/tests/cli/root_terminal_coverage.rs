@@ -49,7 +49,9 @@ fn certificate_keeps_exit_two_and_the_same_joint_observed_detail_and_partial_ssa
         "--format",
         "json",
     ];
-    let ordinary = report(&run_concrete(&arguments), 2);
+    let mut disabled = arguments.to_vec();
+    disabled.push("--no-root-terminal-coverage");
+    let ordinary = report(&run_concrete(&disabled), 2);
     assert!(ordinary["analysis"].get("root_terminal_coverage").is_none());
     assert!(
         ordinary["machine_analysis"]
@@ -64,7 +66,11 @@ fn certificate_keeps_exit_two_and_the_same_joint_observed_detail_and_partial_ssa
     );
     let mut enabled = arguments.to_vec();
     enabled.push("--root-terminal-coverage");
-    let covered = report(&run_concrete(&enabled), 2);
+    let covered = report(&run_concrete(&arguments), 2);
+    assert_eq!(
+        native::canonical(&covered),
+        native::canonical(&report(&run_concrete(&enabled), 2))
+    );
     for analysis in [&covered["analysis"], &covered["machine_analysis"]] {
         assert_certificate(analysis);
     }
@@ -105,7 +111,6 @@ fn plain_native_and_world_ssa_json_forward_only_core_owned_coverage() {
             JUMP,
             "--max-transfers",
             "1",
-            "--root-terminal-coverage",
             "--format",
             "json",
         ]),
@@ -116,7 +121,7 @@ fn plain_native_and_world_ssa_json_forward_only_core_owned_coverage() {
         vec!["--format", "json"],
         vec!["--format", "json", "--ssa", "--allow-partial-ssa"],
     ] {
-        let mut arguments = vec!["--root-terminal-coverage", "--max-transfers", "1"];
+        let mut arguments = vec!["--max-transfers", "1"];
         arguments.extend(extra);
         let report = report(&analyze("call-return-branch", &arguments), 2);
         let analysis = report.get("analysis").unwrap_or(&report);
@@ -167,7 +172,7 @@ fn text_labels_one_certificate_and_keeps_detail_frontiers_and_partial_ssa() {
             "--verbose",
         ],
     ] {
-        arguments.extend(["--root-terminal-coverage", "--max-transfers", "1"]);
+        arguments.extend(["--max-transfers", "1"]);
         let output = run_concrete(&arguments);
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");
         let text = String::from_utf8(output.stdout).unwrap();
@@ -198,15 +203,19 @@ fn text_labels_one_certificate_and_keeps_detail_frontiers_and_partial_ssa() {
 }
 
 #[test]
-fn default_off_and_enabled_without_an_attachment_keep_the_existing_output_contract() {
+fn default_and_explicit_switches_without_a_certificate_keep_the_existing_output_contract() {
     for extra in [vec![], vec!["--max-work", "1"]] {
         let exit = if extra.is_empty() { 0 } else { 2 };
         let mut arguments = vec!["cfg", "--hex", "00", "--format", "json"];
         arguments.extend_from_slice(&extra);
-        for enabled in [false, true] {
+        for flag in [
+            None,
+            Some("--root-terminal-coverage"),
+            Some("--no-root-terminal-coverage"),
+        ] {
             let mut arguments = arguments.clone();
-            if enabled {
-                arguments.push("--root-terminal-coverage");
+            if let Some(flag) = flag {
+                arguments.push(flag);
             }
             let report = report(&run_concrete(&arguments), exit);
             assert_eq!(report["schema_version"], 10);
@@ -214,56 +223,85 @@ fn default_off_and_enabled_without_an_attachment_keep_the_existing_output_contra
         }
         let mut arguments = vec!["explain", "--hex", "00"];
         arguments.extend_from_slice(&extra);
-        let ordinary = run_concrete(&arguments);
-        arguments.push("--root-terminal-coverage");
         let enabled = run_concrete(&arguments);
+        arguments.push("--no-root-terminal-coverage");
+        let ordinary = run_concrete(&arguments);
         assert_eq!(ordinary.status.code(), Some(exit));
         assert_eq!(enabled.status.code(), Some(exit));
         assert_eq!(enabled.stdout, ordinary.stdout);
         assert_eq!(enabled.stderr, ordinary.stderr);
-        assert!(!String::from_utf8(enabled.stdout).unwrap().contains(NOTE));
+        let text = String::from_utf8(enabled.stdout).unwrap();
+        assert!(!text.contains(NOTE));
+        assert!(!text.contains("not attached"));
     }
 }
 
 #[test]
-fn fixed_rpc_forwards_the_opt_in_with_and_without_discovery() {
+fn fixed_rpc_forwards_default_and_explicit_coverage_with_and_without_discovery() {
     use super::explain::{RpcFixture, RpcServer};
     const BLOCK: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
     std::thread::scope(|scope| {
         for discovery in [false, true] {
-            let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
-            let mut arguments = vec![
-                "analyze",
-                "--rpc",
-                &server.endpoint,
-                "--block-hash",
-                BLOCK,
-                "--evm.to",
-                ENTRY,
-                "--max-transfers",
-                "1",
-                "--root-terminal-coverage",
-                "--format",
-                "json",
-                "--ssa",
-                "--allow-partial-ssa",
-            ];
-            if !discovery {
-                arguments.push("--no-rpc-discovery");
+            for command in ["analyze", "explain"] {
+                for flag in [
+                    None,
+                    Some("--root-terminal-coverage"),
+                    Some("--no-root-terminal-coverage"),
+                ] {
+                    let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
+                    let mut arguments = vec![
+                        command,
+                        "--rpc",
+                        &server.endpoint,
+                        "--block-hash",
+                        BLOCK,
+                        "--evm.to",
+                        ENTRY,
+                        "--max-transfers",
+                        "1",
+                    ];
+                    if let Some(flag) = flag {
+                        arguments.push(flag);
+                    }
+                    if !discovery {
+                        arguments.push("--no-rpc-discovery");
+                    }
+                    let enabled = flag != Some("--no-root-terminal-coverage");
+                    if command == "analyze" {
+                        arguments.extend(["--format", "json", "--ssa", "--allow-partial-ssa"]);
+                        let report = report(&run_concrete(&arguments), 2);
+                        if enabled {
+                            assert_certificate(&report["analysis"]);
+                        } else {
+                            assert!(report["analysis"].get("root_terminal_coverage").is_none());
+                        }
+                        assert_eq!(report["analysis"]["status"], "Incomplete");
+                        assert!(!report["analysis"]["frontiers"].as_array().unwrap().is_empty());
+                        assert_eq!(
+                            report["analysis"]["config"]["root_terminal_coverage"],
+                            enabled
+                        );
+                        assert_eq!(report["analysis"]["config"]["max_work"], 2_000_000_000);
+                        assert_eq!(
+                            report["partial_ssa"]["frontiers"],
+                            report["analysis"]["frontiers"]
+                        );
+                    } else {
+                        let output = run_concrete(&arguments);
+                        assert_eq!(output.status.code(), Some(2));
+                        let text = String::from_utf8(output.stdout).unwrap();
+                        assert!(text.contains("Incomplete") && text.contains("Transfers"));
+                        assert!(text.contains("SSA unavailable"));
+                        assert_eq!(text.matches(NOTE).count(), usize::from(enabled), "{text}");
+                    }
+                    let requests = server.finish();
+                    assert!(
+                        requests
+                            .iter()
+                            .any(|request| request["method"] == "eth_getCode")
+                    );
+                }
             }
-            let report = report(&run_concrete(&arguments), 2);
-            assert_certificate(&report["analysis"]);
-            assert_eq!(report["analysis"]["config"]["root_terminal_coverage"], true);
-            assert_eq!(
-                report["partial_ssa"]["frontiers"],
-                report["analysis"]["frontiers"]
-            );
-            let requests = server.finish();
-            assert!(
-                requests
-                    .iter()
-                    .any(|request| request["method"] == "eth_getCode")
-            );
         }
     });
 }

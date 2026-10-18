@@ -148,9 +148,8 @@ struct WorldArgs {
     /// Disable completed call-summary reuse for oracle comparisons.
     #[arg(long)]
     no_summaries: bool,
-    /// Prepare conservative root terminal coverage; detailed frontiers still exit 2.
-    #[arg(long)]
-    root_terminal_coverage: bool,
+    #[command(flatten)]
+    coverage: RootTerminalCoverageArgs,
     #[command(flatten)]
     evm: EvmArgs,
     /// Maximum live frames, including entry; reaching the cap retains a frontier.
@@ -216,10 +215,27 @@ struct Input {
 }
 
 #[derive(Args)]
-struct AnalysisArgs {
-    /// Prepare conservative root terminal coverage; detailed frontiers still exit 2.
-    #[arg(long)]
+#[group(skip)]
+struct RootTerminalCoverageArgs {
+    /// Enable conservative root terminal coverage (default); detailed frontiers still exit 2.
+    #[arg(long, conflicts_with = "no_root_terminal_coverage")]
     root_terminal_coverage: bool,
+    /// Disable conservative root terminal coverage preparation.
+    #[arg(long, conflicts_with = "root_terminal_coverage")]
+    no_root_terminal_coverage: bool,
+}
+
+impl RootTerminalCoverageArgs {
+    fn enabled(&self) -> bool {
+        // Neither switch has a clap default, so an explicit opt-out stays valid.
+        self.root_terminal_coverage || !self.no_root_terminal_coverage
+    }
+}
+
+#[derive(Args)]
+struct AnalysisArgs {
+    #[command(flatten)]
+    coverage: RootTerminalCoverageArgs,
     /// Maximum cumulative execution and domain work.
     #[arg(long, default_value_t = defaults::MAX_WORK)]
     max_work: usize,
@@ -316,7 +332,7 @@ impl AnalysisArgs {
                 max_call_depth: self.max_call_depth,
                 max_memory_bytes: self.max_memory_bytes,
                 use_summaries: true,
-                root_terminal_coverage: self.root_terminal_coverage,
+                root_terminal_coverage: self.coverage.enabled(),
             },
             environment,
         )?)
@@ -381,7 +397,7 @@ impl WorldArgs {
             max_call_depth: self.max_call_depth,
             max_memory_bytes: self.max_memory_bytes,
             use_summaries: !self.no_summaries,
-            root_terminal_coverage: self.root_terminal_coverage,
+            root_terminal_coverage: self.coverage.enabled(),
         };
         match (world, rpc_input) {
             (Some(world), None) => Ok(analysis::analyze_world(world, entry, config)?),

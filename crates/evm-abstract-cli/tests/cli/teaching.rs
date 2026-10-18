@@ -302,12 +302,14 @@ fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
         ("call-return-branch", vec!["--max-states", "1"]),
         ("call-return-branch", vec!["--max-transfers", "1"]),
     ] {
-        let output = world("explain", name, &extra);
+        let mut detail = extra.clone();
+        detail.push("--no-root-terminal-coverage");
+        let output = world("explain", name, &detail);
         assert_eq!(output.status.code(), Some(2), "{name} {extra:?}");
         let explanation = text(&output);
         assert!(explanation.contains("Incomplete"));
         assert!(explanation.contains("SSA unavailable") && !explanation.contains(VERIFIED));
-        let mut query = extra.clone();
+        let mut query = detail.clone();
         query.extend(["--format", "json"]);
         let report = world("analyze", name, &query);
         assert_eq!(report.status.code(), Some(2));

@@ -2,8 +2,8 @@
 //! 四个输入来源互斥；世界/RPC 复用 analyze 的准入、采集与执行规则。
 
 use crate::{
-    AnalysisArgs, DomainProfile, Input, StorageSlot, WorldArgs, defaults, error::CliError,
-    evm::EvmArgs, number, parse_slot, text_with_root_terminal_coverage,
+    AnalysisArgs, DomainProfile, Input, RootTerminalCoverageArgs, StorageSlot, WorldArgs, defaults,
+    error::CliError, evm::EvmArgs, number, parse_slot, text_with_root_terminal_coverage,
 };
 use clap::{ArgGroup, Args};
 use evm_abstract::{Fork, analysis::Status, render, ssa};
@@ -34,9 +34,8 @@ pub(crate) struct ExplainArgs {
     /// Emit recorded partial SSA when frontiers remain; the exit code stays 2.
     #[arg(long)]
     allow_partial_ssa: bool,
-    /// Prepare conservative root terminal coverage; detailed frontiers still exit 2.
-    #[arg(long)]
-    root_terminal_coverage: bool,
+    #[command(flatten)]
+    coverage: RootTerminalCoverageArgs,
     /// Disable on-demand acquisition of missing RPC code and storage slots.
     #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     no_rpc_discovery: bool,
@@ -123,7 +122,7 @@ impl ExplainArgs {
                 slot: self.slot,
                 fork: self.fork,
                 no_summaries: self.no_summaries,
-                root_terminal_coverage: self.root_terminal_coverage,
+                coverage: self.coverage,
                 evm: self.evm,
                 max_call_depth: self.max_call_depth,
                 max_work: self.max_work,
@@ -155,7 +154,7 @@ impl ExplainArgs {
             ));
         }
         let args = AnalysisArgs {
-            root_terminal_coverage: self.root_terminal_coverage,
+            coverage: self.coverage,
             max_work: self.max_work,
             max_call_depth: self.max_call_depth,
             max_memory_bytes: self.max_memory_bytes,

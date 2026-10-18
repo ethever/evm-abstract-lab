@@ -404,7 +404,13 @@ fn blocked_memory_instruction_is_pending_without_a_normal_result() {
     let world = WorldCode::new("602a60405100");
     let work = super::work_limit_visiting_pc(4, |limit| {
         let work = limit.map(|limit| limit.to_string());
-        let mut args = vec!["--format", "json", "--max-memory-bytes", "32"];
+        let mut args = vec![
+            "--format",
+            "json",
+            "--max-memory-bytes",
+            "32",
+            "--no-root-terminal-coverage",
+        ];
         if let Some(work) = &work {
             args.extend(["--max-work", work.as_str()]);
         }
@@ -422,6 +428,7 @@ fn blocked_memory_instruction_is_pending_without_a_normal_result() {
             "32",
             "--max-work",
             &work,
+            "--no-root-terminal-coverage",
         ],
     ));
     let partial = &json["partial_ssa"];
@@ -466,6 +473,7 @@ fn blocked_memory_instruction_is_pending_without_a_normal_result() {
             "32",
             "--max-work",
             &work,
+            "--no-root-terminal-coverage",
         ];
         args.extend(extra);
         let rendered = text(&world.run("explain", &args), 2);
@@ -484,7 +492,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
     let world = WorldCode::new("600160020160030100");
     let work = super::work_limit_visiting_pc(4, |limit| {
         let work = limit.map(|limit| limit.to_string());
-        let mut args = vec!["--format", "json"];
+        let mut args = vec!["--format", "json", "--no-root-terminal-coverage"];
         if let Some(work) = &work {
             args.extend(["--max-work", work.as_str()]);
         }
@@ -500,6 +508,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "json",
             "--max-work",
             &work,
+            "--no-root-terminal-coverage",
         ],
     ));
     let instructions = json["partial_ssa"]["blocks"][0]["instructions"]
@@ -532,6 +541,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "json",
             "--max-work",
             "0",
+            "--no-root-terminal-coverage",
         ],
     );
     assert_eq!(zero.status.code(), Some(1));
@@ -546,6 +556,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "json",
             "--max-work",
             "1",
+            "--no-root-terminal-coverage",
         ],
     ));
     assert_eq!(empty["analysis"]["config"]["max_work"], 1);
