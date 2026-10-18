@@ -280,13 +280,16 @@ fn text(output: &FullOutput) -> Vec<String> {
 }
 
 #[test]
-fn default_off_is_quiet_and_requested_none_reports_only_absence() {
+fn explicit_off_is_quiet_and_requested_none_reports_only_incomplete_absence() {
     let context = Context::default();
     crate::palette::configure(&context);
     let mut workspace = Workspace::default();
     let mut request = api::AnalyzeRequest::default();
+    request.limits.root_terminal_coverage = false;
     let ordinary = evm_abstract_server::analyze::analyze(request.clone()).unwrap();
     ordinary.validate().unwrap();
+    assert!(!ordinary.metadata.limits.root_terminal_coverage);
+    assert!(ordinary.root_terminal_coverage.is_none());
     workspace.receive(Ok(api::AnalyzeReply {
         result: Ok(ordinary.clone()),
     }));
@@ -298,22 +301,50 @@ fn default_off_is_quiet_and_requested_none_reports_only_absence() {
             .iter()
             .any(|text| text.contains("terminal coverage"))
     );
+    assert_eq!(workspace.report.as_ref().unwrap(), &ordinary);
     request.limits.root_terminal_coverage = true;
-    let ordinary = evm_abstract_server::analyze::analyze(request).unwrap();
+    let ordinary = evm_abstract_server::analyze::analyze(request.clone()).unwrap();
     ordinary.validate().unwrap();
+    assert!(ordinary.metadata.limits.root_terminal_coverage);
+    assert_eq!(ordinary.metadata.limits.max_work, 2_000_000_000);
+    assert_eq!(ordinary.status, api::AnalysisStatus::Converged);
+    assert!(ordinary.ssa.complete);
+    assert!(ordinary.frontiers.is_empty());
     assert!(ordinary.root_terminal_coverage.is_none());
     workspace.receive(Ok(api::AnalyzeReply {
         result: Ok(ordinary.clone()),
     }));
     draw(&context, &mut workspace);
     let painted = text(&draw(&context, &mut workspace));
-    assert_eq!(status(&ordinary), Some(NOT_ATTACHED));
-    assert!(painted.iter().any(|text| text == NOT_ATTACHED));
-    assert!(workspace.accessible_status().contains(NOT_ATTACHED));
+    assert_eq!(status(&ordinary), None);
+    assert!(!painted.iter().any(|text| text == COVERED));
+    assert!(!painted.iter().any(|text| text == NOT_ATTACHED));
+    assert!(!workspace.accessible_status().contains(NOT_ATTACHED));
     assert!(!workspace.accessible_status().contains(COVERED));
     assert!(!workspace.accessible_status().contains("budget exhausted"));
     assert!(!workspace.accessible_status().contains("Experimental"));
     assert_eq!(workspace.report.as_ref().unwrap(), &ordinary);
+
+    request.limits.max_work = 1;
+    let incomplete = evm_abstract_server::analyze::analyze(request).unwrap();
+    incomplete.validate().unwrap();
+    assert!(incomplete.metadata.limits.root_terminal_coverage);
+    assert_eq!(incomplete.metadata.limits.max_work, 1);
+    assert_eq!(incomplete.status, api::AnalysisStatus::Incomplete);
+    assert!(!incomplete.ssa.complete);
+    assert!(!incomplete.frontiers.is_empty());
+    assert!(incomplete.root_terminal_coverage.is_none());
+    workspace.receive(Ok(api::AnalyzeReply {
+        result: Ok(incomplete.clone()),
+    }));
+    draw(&context, &mut workspace);
+    let painted = text(&draw(&context, &mut workspace));
+    assert_eq!(status(&incomplete), Some(NOT_ATTACHED));
+    assert!(painted.iter().any(|text| text == NOT_ATTACHED));
+    assert!(!painted.iter().any(|text| text == COVERED));
+    assert!(workspace.accessible_status().contains(NOT_ATTACHED));
+    assert!(!workspace.accessible_status().contains(COVERED));
+    assert_eq!(workspace.report.as_ref().unwrap(), &incomplete);
 }
 
 #[test]
