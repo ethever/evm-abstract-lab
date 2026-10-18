@@ -16,6 +16,7 @@ pub(in super::super) fn shared_branch<'a, S: Eq>(
     yes_ite: Option<(&ExprId, &'a S, &'a S)>,
     no_ite: Option<(&ExprId, &'a S, &'a S)>,
     limits: StateLimits,
+    shape: impl Fn(&S) -> (usize, usize),
 ) -> Result<Option<(ExprId, &'a S, &'a S)>, StateError> {
     let (then_guard, else_guard, a, b) = match (yes_ite, no_ite) {
         // I(s,I(g,A,B),I(h,A,B)) = I(I(s,g,h),A,B).
@@ -30,8 +31,26 @@ pub(in super::super) fn shared_branch<'a, S: Eq>(
         (_, Some((t, a, b))) if yes == b => (ExprId::constant(U256::ZERO), t.clone(), a, b),
         _ => return Ok(None),
     };
-    // The caller checked the original children first. This bounded constructor
-    // checks the new scalar guard before any normalized state is published.
+    // This is optional normalization: a compound outer selector can make the
+    // factored guard one level deeper even when the original state fits. Use
+    // cached metrics to decline that shape, leaving the original constructor
+    // and its typed cancellation/limit checks in charge of the actual result.
+    let guard_shape = super::metrics([
+        (selector.nodes(), selector.depth()),
+        (then_guard.nodes(), then_guard.depth()),
+        (else_guard.nodes(), else_guard.depth()),
+    ]);
+    let result_shape = super::metrics([guard_shape, shape(a), shape(b)]);
+    let fits = |(nodes, depth): (usize, usize)| {
+        nodes != usize::MAX
+            && depth != usize::MAX
+            && nodes <= limits.max_nodes
+            && depth <= limits.max_depth
+    };
+    if !fits(guard_shape) || !fits(result_shape) {
+        return Ok(None);
+    }
+    // No errors from an attempted bounded construction are suppressed.
     let guard = ExprId::ite(selector, then_guard, else_guard, limits.into())?;
     Ok(Some((guard, a, b)))
 }

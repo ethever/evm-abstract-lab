@@ -484,6 +484,7 @@ impl ByteStateId {
             branches(self),
             branches(other),
             limits,
+            |state| (state.nodes(), state.depth()),
         )? {
             return yes.join_guarded(no, guard, limits);
         }
