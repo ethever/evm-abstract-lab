@@ -210,8 +210,19 @@ pub(super) fn shared_branches(
         then_facts,
         else_facts,
     })]);
-    // Native serialization also bounds work. Preserve an originally admissible
-    // metadata snapshot if the new scalar wrapper would cross that bound.
+    // Native serialization has its own frozen policy, which can be tighter
+    // than the caller's ExprLimits. Compare cached dimensions, without invoking
+    // serialization or swallowing cancellation from a real metadata check.
+    let native = crate::domain::symbolic::GraphLimits::default();
+    let fits_native = |metadata: &ConditionalFacts| {
+        !metadata.limited
+            && metadata.entries.max(metadata.largest_expression) <= native.max_nodes
+            && metadata.depth <= native.max_depth
+            && metadata.work <= native.max_nodes
+    };
+    if fits_native(&original) && !fits_native(&out) {
+        return Ok(original);
+    }
     if out.work > limits.max_nodes && original.work <= limits.max_nodes {
         return Ok(original);
     }
