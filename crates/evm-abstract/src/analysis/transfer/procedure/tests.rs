@@ -87,6 +87,7 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
             entry.clone(),
             crate::analysis::ExecutionConfig {
                 use_summaries,
+                root_terminal_coverage: false,
                 ..Default::default()
             },
         )

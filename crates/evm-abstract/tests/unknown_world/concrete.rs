@@ -88,7 +88,14 @@ fn actual_unknown_to_known_c_write_and_readonly_guard_match_revm() {
         insert(&mut world, A, &a, &[]);
         insert(&mut world, C, &c, &[(0, 5), (1, enabled)]);
         let input = entry(ByteArray::empty());
-        let analysis = run(world.clone(), input.clone());
+        let analysis = run_config(
+            world.clone(),
+            input.clone(),
+            evm_abstract::analysis::ExecutionConfig {
+                root_terminal_coverage: false,
+                ..Default::default()
+            },
+        );
         complete_unknown(&analysis);
         let concrete = oracle::concrete_unknown(&world, U, &u);
         let observed = oracle::execute(&concrete, &input);

@@ -101,7 +101,14 @@ fn unknown_can_call_nonparent_c_and_new_reads_do_not_refresh_old_stack_value() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[(0, 5), (1, 1)]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run_config(
+        world,
+        entry(ByteArray::empty()),
+        evm_abstract::analysis::ExecutionConfig {
+            root_terminal_coverage: false,
+            ..Default::default()
+        },
+    );
     complete_unknown(&analysis);
     let returns = returns(&analysis);
     assert!(

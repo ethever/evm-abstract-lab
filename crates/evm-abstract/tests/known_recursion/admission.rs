@@ -152,9 +152,16 @@ fn changing_calldata_still_folds_real_direct_and_mutual_call_cycles() {
         assert_eq!(observed.output_word(0), U256::from(42));
         assert!(observed.steps.iter().any(|step| step.depth >= 5));
         if !mutual {
-            // This changing-input cycle now closes under the unchanged default
-            // policy. Explicit work-cutoff coverage lives in resources.rs.
-            let default_policy = run(world.clone(), input.clone());
+            // This changing-input cycle closes under the original detailed
+            // budget. Explicit work-cutoff coverage lives in resources.rs.
+            let default_policy = run_config(
+                world.clone(),
+                input.clone(),
+                ExecutionConfig {
+                    root_terminal_coverage: false,
+                    ..ExecutionConfig::default()
+                },
+            );
             assert_eq!(default_policy.config().max_work, 20_000_000);
             assert_eq!(default_policy.config().max_call_depth, 32);
             complete_recursion(&default_policy);
@@ -172,6 +179,7 @@ fn changing_calldata_still_folds_real_direct_and_mutual_call_cycles() {
                 ExecutionConfig {
                     use_summaries,
                     max_work: 100_000_000,
+                    root_terminal_coverage: false,
                     ..ExecutionConfig::default()
                 },
             );

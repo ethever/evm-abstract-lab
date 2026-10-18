@@ -467,7 +467,15 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 .insert(address(number), Account::from_hex(code, fork).unwrap())
                 .unwrap();
         }
-        let graph = analyze_world(world.clone(), entry(), ExecutionConfig::default()).unwrap();
+        let graph = analyze_world(
+            world.clone(),
+            entry(),
+            ExecutionConfig {
+                root_terminal_coverage: false,
+                ..ExecutionConfig::default()
+            },
+        )
+        .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         assert_eq!(
             oracle::compare(&world, &entry(), &graph),

@@ -808,7 +808,19 @@ fn bytecode_without_a_concrete_creator_retains_a_creation_frontier() {
 #[test]
 fn symbolic_targets_and_unbounded_lazy_copy_sizes_keep_their_success_domains() {
     for (code, expected_target) in [("5f5f5f5f5f5f356207a120f100", true), ("365f5f3700", false)] {
-        let result = analyze(code, EvmEnvironment::default(), Profile::Product);
+        let result = analysis::analyze_with_execution_config(
+            Program::from_hex(code).unwrap(),
+            ExecutionConfig {
+                analysis: Config {
+                    domain_profile: Profile::Product,
+                    ..Config::default()
+                },
+                root_terminal_coverage: false,
+                ..ExecutionConfig::default()
+            },
+            EvmEnvironment::default(),
+        )
+        .unwrap();
         if expected_target {
             assert_eq!(result.status(), Status::Converged);
             assert!(result.execution().frontiers().is_empty());
