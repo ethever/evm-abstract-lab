@@ -52,13 +52,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
   --commands "$COMMAND_PROFILE"
 ```
 
-生成器检查 native10/wire15/cost3 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中显式记录新增开关的默认 false；每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
+生成器检查 native10/wire15/cost3 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中记录 `root_terminal_coverage: false`，向新生成的 argv 显式追加 `--no-root-terminal-coverage`，保留原 1T/OFF 对照策略；这不是当前 CLI/Web 的默认值。每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
 
 每份 profile 提供完整 `argv`；仅有首参数 `BINARY` 和一个 `WORLD` 两个占位符，同时绑定 input identity、interface commit、完整 policy、policy 到参数的映射、`expected_native_config` 和允许的 Report 退出码。`input_mapping` 仍须对照入口与事实语义审核；harness 不证明任意 argv 实现了声明边界。生成器也不证明 ELF 来源或源码干净，最终构建提交确定后须重新生成匹配 profile。
 
 ## 使用已有 ELF 运行
 
-生成 profile 的 `expected_native_config.root_terminal_coverage` 显式为 false，仅记录新字段的原默认行为；固定七个 case 的 policy、argv、预算、guard 和 captured input 不变。需要研究该选项时另建 opt-in profile、独立记录完整请求与构建身份，不能覆写历史基线或把它加入这七份默认命令。独立证书的语义及 `Incomplete → exit 2` 见[根终止覆盖](../../docs/19-root-terminal-coverage.md)。
+生成 profile 的 `expected_native_config.root_terminal_coverage` 显式为 false，配合显式 OFF 参数保留固定七项的原 1T 对照策略；已保存的历史 profile、预算、guard 和 captured input 不变。研究覆盖开启或新默认时另建 profile；从当前固定 profile 派生 ON 对照须先移除互斥的 OFF 参数，再显式加入 `--root-terminal-coverage`，独立记录完整请求与构建身份，不能覆写历史基线。独立证书的语义及 `Incomplete → exit 2` 见[根终止覆盖](../../docs/19-root-terminal-coverage.md)。
 
 构建 metadata JSON 的 `schema` 为 `evm-no-smt-scale-build-v1`，另包含实际 `source_commit`、`source_tree`、`source_dirty`、`artifact_sha256` 和 `build_command` argv 数组。`--binary` 必须是已有可执行 ELF，不能是构建命令或 wrapper。ELF hash 与构建来源声明分别记录；文件 hash 本身不证明编译来源。
 
@@ -94,7 +94,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 
 [`wire14/weth-original-request.json`](wire14/weth-original-request.json)和 [`wire14/usdc-original-request.json`](wire14/usdc-original-request.json)是原捕获请求的显式 schema 派生。仅移除 `/limits/smt_provider`、`/limits/smt_rlimit`，保留 RPC 的 `input.Rpc.provider_id`、固定 block、accounts、caller/value 及任意长度/内容的 Unknown calldata。manifest 记录原始/派生 raw SHA256 和删除 pointer；默认输入检查验证除这两项外请求完全相同。它们仍是 RPC acquisition 请求，不是 offline CLI 输入。
 
-当前 server/Web 使用 wire15。上述 wire14 文件保留原派生字节与 hash；发送当前请求时还需显式添加 `limits.root_terminal_coverage: false`。旧请求的 SMT 字段仍会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
+当前 server/Web 使用 wire15。上述 wire14 文件保留原派生字节与 hash；为保留历史 1T/OFF 策略而发送当前请求时，还需显式添加 `limits.root_terminal_coverage: false`；使用新默认则另存相应完整请求，不能改写这些捕获。旧请求的 SMT 字段仍会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
 
 ## 报告交付、计时与验收
 
@@ -123,7 +123,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 
 最终默认选择为快速保守分析：CLI/Web 的 `max_work=2B`，库的 `max_work=20M`，两者均启用根终结覆盖；需要单独验收详细分析时使用显式 OFF。下面保留的是 Screen16 冻结源码和原固定 profile 的结果，不是最终默认配置的同输入验收。表中的 2B 仅改变原 profile 的工作预算，其他分析限制仍是捕获值，不能当作新 CLI/Web 默认的实测数据。最终接口的固定策略 OFF 复测须显式传 `--no-root-terminal-coverage`，不改原始捕获或历史 argv。
 
-冻结源码为干净提交 `e5f13b82c16798431ad0bf7cbb7cfdb7ef3dc2f3`（native10 / wire15 / cost3），CLI ELF SHA256 为 `e52e1086610c290347cf44f66e06b012baeecdca51dde088399a20730c774f7a`；输入 [`manifest.json`](manifest.json) 的原始字节 SHA256 为 `fba0c9099319e6dbe8d646731912e22ca9777885d496679a737f61f8e3ae51f0`。复现时将 `CHECKED_SOURCE` 固定到该提交，按上文使用[命令生成器](../../scripts/generate-no-smt-scale-commands.py)和[离线 runner](../../scripts/benchmark-no-smt-scale.py)，分别保存 OFF 与 ON profile。沿用原 captured world、请求和事实边界：WETH/USDC 分别仅有 1/2 个已观察账户，caller/value/calldata 保持 Unknown，无额外 RPC 或事实注入。
+冻结源码为干净提交 `e5f13b82c16798431ad0bf7cbb7cfdb7ef3dc2f3`（native10 / wire15 / cost3），CLI ELF SHA256 为 `e52e1086610c290347cf44f66e06b012baeecdca51dde088399a20730c774f7a`；输入 [`manifest.json`](manifest.json) 的原始字节 SHA256 为 `fba0c9099319e6dbe8d646731912e22ca9777885d496679a737f61f8e3ae51f0`。复现本节时须使用该冻结提交自身的命令生成器、离线 runner 及其独立 OFF/ON profile；当前[命令生成器](../../scripts/generate-no-smt-scale-commands.py)服务于当前接口，不能把它生成的显式 OFF 参数投给不支持该参数的旧 ELF。沿用原 captured world、请求和事实边界：WETH/USDC 分别仅有 1/2 个已观察账户，caller/value/calldata 保持 Unknown，无额外 RPC 或事实注入。
 
 每行均为同一 ELF 在 CPU 40 上顺序执行的一次离线 screen，无并行的所属 native、构建或浏览器任务。wall 从 ELF exec 到进程回收，包含 native JSON 序列化，排除 acquisition、网络、排队、构建及之后的 Python 解析、流式校验、传输和浏览器处理。原 wall/RSS、host free、轮询和报告 guard 均不变，所有运行均无外部停止。
 
