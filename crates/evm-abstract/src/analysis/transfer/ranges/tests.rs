@@ -730,6 +730,17 @@ mod literal_memory {
                 let guard_work = receipts
                     .iter()
                     .fold(0usize, |work, fee| work.saturating_add(*fee));
+                // A complete independent receipt also rejects a missing or
+                // doubled debit when adjacent one-short cuts have equal prices.
+                let mut guard_budget = WorkBudget::new(config.max_work);
+                let _guard = super::super::guard::build(
+                    &offset,
+                    &size,
+                    &mut context(&config, &mut guard_budget),
+                )
+                .expect("the original 1B allowance funds the complete guard");
+                assert_eq!(guard_budget.used(), guard_work);
+                assert!(!guard_budget.exhausted());
                 let mut result = execution();
                 let before = result.payload.clone();
                 receipts.push(
