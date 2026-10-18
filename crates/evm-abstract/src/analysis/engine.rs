@@ -744,26 +744,15 @@ impl Engine<'_> {
                     return None;
                 }
             };
-            let joined = if self.alternatives[existing].has_loop_bound()
-                || cyclic && self.alternatives[existing].can_widen_loop()
-            {
-                self.alternatives[existing].join_loop(
-                    &self.result.states[existing].entry,
-                    &successor.payload,
-                    &self.result.entry,
-                    self.domain,
-                    self.budget,
-                )
-            } else {
-                self.alternatives[existing].join_cyclic(
-                    &self.result.states[existing].entry,
-                    &successor.payload,
-                    self.domain,
-                    self.budget,
-                    &self.selectors,
-                    cyclic,
-                )
-            };
+            let joined = self.alternatives[existing].join_entry(
+                &self.result.states[existing].entry,
+                &successor.payload,
+                &self.result.entry,
+                self.domain,
+                self.budget,
+                &self.selectors,
+                cyclic,
+            );
             let joined = match joined {
                 Ok(joined) => joined,
                 Err(error) => {
@@ -1119,6 +1108,18 @@ impl Engine<'_> {
         self.counters.states = staged.counters.states;
         self.result = staged.result;
         self.alternatives = staged.alternatives;
+        if let Some(reuse) = &mut self.reuse {
+            // Staging owns no reuse index: publish conservative dependencies
+            // only after the entire import succeeds. The replay copy fee
+            // already covers walking the retained alternatives metadata.
+            for (id, alternatives) in self.alternatives.iter().enumerate() {
+                if alternatives.has_loop_bound() {
+                    reuse
+                        .dependencies
+                        .add(id, super::layers::FactDependency::AllInitialState);
+                }
+            }
+        }
         self.selectors = staged.selectors;
         self.ids = staged.ids;
         self.queue = staged.queue;
@@ -1142,25 +1143,17 @@ impl Engine<'_> {
             // its graph must not merge success with a previously seen failure.
             let entry_key = (key.clone(), node.resume_status);
             let id = if let Some(existing) = self.ids.get(&entry_key).copied() {
-                let joined = if self.alternatives[existing].has_loop_bound() {
-                    self.alternatives[existing].join_loop(
+                let joined = self.alternatives[existing]
+                    .join_entry(
                         &self.result.states[existing].entry,
                         &node.entry,
                         &self.result.entry,
                         self.domain,
                         self.budget,
-                    )
-                } else {
-                    self.alternatives[existing].join_cyclic(
-                        &self.result.states[existing].entry,
-                        &node.entry,
-                        self.domain,
-                        self.budget,
                         &self.selectors,
                         false,
                     )
-                }
-                .map_err(MachineError::frontier_reason)?;
+                    .map_err(MachineError::frontier_reason)?;
                 // Equality is a coverage proof. A whole-state join containing
                 // other alternatives cannot use this certificate's exit alone.
                 let compatible = self.result.states[existing]

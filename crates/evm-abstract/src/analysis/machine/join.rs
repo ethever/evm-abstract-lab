@@ -86,6 +86,29 @@ impl From<StoreError> for MachineError {
 }
 
 impl MachineError {
+    /// Only complete-state precision refusals admit whole-entry projection.
+    /// Frontier classification is deliberately broader and is not eligibility.
+    fn permits_bounded_promotion(&self) -> bool {
+        matches!(
+            self,
+            Self::Alternatives { .. }
+                | Self::Expression(ExprError::Limit { .. })
+                | Self::Bytes(
+                    RangeError::Expression(ExprError::Limit { .. })
+                        | RangeError::State(StateError::Limit { .. })
+                )
+                | Self::Store(
+                    StoreError::Expression(ExprError::Limit { .. })
+                        | StoreError::State(StateError::Limit { .. })
+                        | StoreError::Bytes(
+                            RangeError::Expression(ExprError::Limit { .. })
+                                | RangeError::State(StateError::Limit { .. })
+                        )
+                )
+                | Self::Relations(QueryReason::ExpressionLimit | QueryReason::ConstraintLimit)
+        )
+    }
+
     pub(crate) fn check_cancelled() -> Result<(), Self> {
         if analysis_control::current_cancellation().is_cancelled() {
             Err(Self::Relations(QueryReason::Cancelled))
@@ -301,8 +324,38 @@ impl EntryAlternatives {
         self.has_loop_bound() || self.represented.len() >= 2
     }
 
-    /// Called only for actual feedback, or an already promoted header. Retain
-    /// one canonical bound instead of all historical complete root alternatives.
+    /// Shared policy for propagation and staged replay. Exact acyclic retention
+    /// gets the first attempt; only a typed precision refusal can promote it.
+    /// Failed attempts keep metadata and both operands intact, but never refund
+    /// work. LoopBound owns the single paid coarse materialization retry.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "whole-entry policy shares the execution environment, selectors and ledger"
+    )]
+    pub(crate) fn join_entry(
+        &mut self,
+        entry: &MachinePayload,
+        incoming: &MachinePayload,
+        environment: &crate::world::Entry,
+        domain: Domain,
+        budget: &mut WorkBudget,
+        selectors: &BTreeSet<ExprId>,
+        cyclic: bool,
+    ) -> Result<Option<MachinePayload>, MachineError> {
+        if self.has_loop_bound() || cyclic && self.can_widen_loop() {
+            return self.join_loop(entry, incoming, environment, domain, budget);
+        }
+        match self.join_cyclic(entry, incoming, domain, budget, selectors, cyclic) {
+            Err(error) if !cyclic && error.permits_bounded_promotion() => {
+                checkpoint()?;
+                self.join_loop(entry, incoming, environment, domain, budget)
+            }
+            result => result,
+        }
+    }
+
+    /// Retain one canonical bound instead of historical complete alternatives.
+    /// Admission belongs to join_entry; publication follows full construction.
     pub(crate) fn join_loop(
         &mut self,
         entry: &MachinePayload,

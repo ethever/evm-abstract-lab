@@ -7,6 +7,7 @@ use crate::{
     resource::WorkBudget,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+mod bounded_promotion;
 mod decided_cache;
 mod loop_bound;
 

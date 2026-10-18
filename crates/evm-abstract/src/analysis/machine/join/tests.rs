@@ -1,9 +1,10 @@
+mod bounded_promotion;
 mod byte_roots;
 mod conditional_normalization;
 
-use super::{EntryAlternatives, JoinBoundary, MachineError};
+use super::{EntryAlternatives, MachineError};
 use crate::{
-    analysis::{Continuation, FrontierReason, OutcomeKind, RootFrame, Status, machine::fixtures},
+    analysis::{Continuation, OutcomeKind, RootFrame, Status, machine::fixtures},
     domain::{
         AbstractValue, Domain,
         relational::{CheckResult, ValueQuery},
@@ -746,67 +747,81 @@ fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
     config.analysis.relations.enabled = false;
     let domain = config.domain().unwrap();
     // Three acyclic arms write and retain 1, 2 or 3, then meet at PC 39.
-    // Changing memory rules out scalar-only widening; no feedback admits a
-    // LoopBound before the third genuinely uncovered whole-state input.
-    let code = "348015601457600114601e576003805f526027565b506001805f526027565b6002805f526027565b00";
+    // Changing memory rules out scalar-only widening. The third complete
+    // input promotes the whole entry, then really jumps to PC 43 and returns.
+    let code = "348015601457600114601e576003805f526027565b506001805f526027565b6002805f526027565b602b565b60205ff3";
     let (world, mut entry) = fixtures::fixture(&[(0x101, code)]);
     entry.environment.value = AbstractValue::top();
     let analysis = crate::analysis::analyze_world(world, entry, config).unwrap();
-    assert_eq!(analysis.status(), Status::Incomplete);
-    assert_eq!(analysis.frontiers().len(), 1);
-    let frontier = analysis
-        .frontiers()
-        .iter()
-        .find(|frontier| {
-            matches!(
-                frontier.reason,
-                FrontierReason::StateJoin(JoinBoundary::Alternatives { limit: 2 })
-            )
-        })
-        .expect("explicit whole-state policy frontier");
-    let incoming = frontier
-        .payload
-        .as_ref()
-        .expect("unmerged incoming payload");
-    assert_eq!(frontier.target.as_ref(), Some(&incoming.key()));
-    assert_eq!(incoming.active().stack.len(), 1);
-    assert_eq!(incoming.active().stack[0].singleton(), Some(U256::from(3)));
     assert_eq!(
-        incoming
-            .active()
-            .memory
-            .read_word_checked(&fixtures::word(0), domain)
+        analysis.status(),
+        Status::Converged,
+        "{:?}",
+        analysis.frontiers()
+    );
+    assert!(analysis.frontiers().is_empty());
+    assert!(analysis.states().len() <= 8);
+    assert!(analysis.transfers() <= 16);
+    let at_pc = |pc| {
+        analysis
+            .states()
+            .iter()
+            .find(|state| {
+                state.program().unwrap().blocks()[state.active().basic_block_index].start_pc == pc
+            })
             .unwrap()
-            .singleton(),
-        Some(U256::from(3))
-    );
-    let covered = analysis
-        .states()
-        .iter()
-        .find(|state| state.key == incoming.key())
-        .unwrap();
-    assert!(!covered.entry.active().stack[0].contains(U256::from(3)));
-    assert!(
-        !covered
-            .entry
-            .active()
-            .memory
-            .read_word_checked(&fixtures::word(0), domain)
-            .unwrap()
-            .contains(U256::from(3))
-    );
-    assert_eq!(
-        covered.program().unwrap().blocks()[covered.active().basic_block_index].start_pc,
-        39
-    );
-    assert!(!analysis.edges().iter().any(|edge| edge.from == covered.id));
-    assert!(frontier.from.is_some());
+    };
+    let covered = at_pc(39);
+    let successor = at_pc(43);
     assert!(
         analysis
-            .outcomes()
+            .edges()
             .iter()
-            .any(|outcome| outcome.kind == OutcomeKind::Return),
-        "accepted arms still execute their real STOP"
+            .any(|edge| edge.from == covered.id && edge.to == successor.id)
+    );
+    assert!(
+        analysis
+            .edges()
+            .iter()
+            .filter(|edge| edge.to == covered.id)
+            .all(|edge| {
+                let state = &analysis.states()[edge.from];
+                matches!(
+                    state.program().unwrap().blocks()[state.active().basic_block_index].start_pc,
+                    12 | 20 | 30
+                )
+            })
+    );
+    let exit = successor.exit.as_ref().expect("known successor executed");
+    // One final outcome must cover ALL three concrete joint assignments. The
+    // witness inspects canonical cells and the rest of this same payload for
+    // cross-field aliases/paths; independent marginal bounds do not suffice.
+    let outcome = analysis
+        .outcomes()
+        .iter()
+        .rev()
+        .find(|outcome| outcome.state == successor.id && outcome.kind == OutcomeKind::Return)
+        .expect("real RETURN from the known successor");
+    let mut returned = exit.clone();
+    returned.active_mut().memory = outcome.data.clone();
+    for (word, call_value) in [(1, 0), (2, 1), (3, 2)] {
+        for payload in [&covered.entry, &successor.entry, exit, &returned] {
+            bounded_promotion::assert_joint_word_witness(payload, word, domain);
+            let value = &payload.active().call_value;
+            assert_eq!(value, &AbstractValue::from_numeric(value.numeric().clone()));
+            assert!(value.contains(U256::from(call_value)));
+            assert!(payload.work_size() < 8192);
+        }
+    }
+    assert!(
+        outcome.store.summary_projection(domain).unwrap().covers(
+            &analysis.states()[0]
+                .entry
+                .store
+                .summary_projection(domain)
+                .unwrap(),
+            domain,
+        )
     );
 }
 

@@ -132,7 +132,7 @@ fn main() {
 
 观察中的 `address` 始终是对应事实的所有者。`DELEGATECALL` / `CALLCODE` 可以执行实现账户的代码，却读取调用方的 storage；补入实现账户的同号槽不能代替代理账户的槽。Persistent、transient、历史读取和 rollback 根继续遵守各自的 EVM 生命周期，分层接口没有合并这些身份。
 
-`SessionAnalysis::dependencies()` 返回 `FactDependencies`。它记录可能读取的代码、余额、nonce、存在性、storage 和输入，也包含未观察到的事实、空代码或不存在等负观察，以及保守通配依赖。`FactDependency` 中的 `None` 表示通配，不表示地址或槽为零。目前块级 storage 索引通常保留 owner 并使用通配 slot；交互、摘要和终结状态还可以依赖 `AllInitialState`。普通循环经 `LoopBound` 抽象状态根后也记录 `AllInitialState`，不再仅依赖原先有限的槽观察。`affected_states()` 从直接读取者沿实际图边传播到后继，包括调用与返回。
+`SessionAnalysis::dependencies()` 返回 `FactDependencies`。它记录可能读取的代码、余额、nonce、存在性、storage 和输入，也包含未观察到的事实、空代码或不存在等负观察，以及保守通配依赖。`FactDependency` 中的 `None` 表示通配，不表示地址或槽为零。目前块级 storage 索引通常保留 owner 并使用通配 slot；交互、摘要和终结状态还可以依赖 `AllInitialState`。普通循环，以及无环入口在精确保留状态、表达式、完整路径或 alternatives 达到精度策略边界后，经 `LoopBound` 整体抽象状态根时，也记录 `AllInitialState`，不再仅依赖原先有限的槽观察；该提升仍受完整投影、结构兼容和共享预算限制，不改变补事实后从入口重启的约定。`affected_states()` 从直接读取者沿实际图边传播到后继，包括调用与返回。
 
 这份索引用于解释和计算失效范围。当前没有据此恢复任意“未受影响状态”的有状态继续执行，也不把旧 `Store` 载荷搬到新执行中。通用选择性续跑仍需要另外设计并验证其状态、历史和回滚契约。
 
