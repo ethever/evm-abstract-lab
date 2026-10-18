@@ -139,7 +139,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 | `weth-fixedstate` | 0 | 3.469958 | 357956 | parse guard 拒绝；`report_delivered=false` |
 | `usdc-fixedstate` | 2 | 99.600695 | 1278392 | parse guard 拒绝；`report_delivered=false` |
 
-原七项 harness 汇总仍退出 1，上述两项 parse guard 失败及 `report_delivered=false` 保持不变。两份大型 OFF 原报告的独立严格流式补充校验已完成，校验器实际均退出 0；在不变的每值 64 MiB 上限内，完整检查 JSON 语法、EOF、重复键及每条顶层数组记录。WETH 为 Converged，137 states / 482 transfers / 0 frontier，1 个 summary 的 `closed=true`；USDC 为 Incomplete，231 states / 13714 transfers / 825 frontier（803 Work + 22 SummaryWork，无 Expr frontier），1 个 summary 的 `closed=false`。原报告 SHA256：WETH `7aaeb22388ec8edb1f4bfaaf6d79f1616d0ad58b2990f08a2fef791da54fcec3`；USDC `931df3accaa2e5891f566f9c2344e71a6424ad4649172024abf8254c1c6e3fec`。补充仅针对上述冻结源码的历史 1T/OFF 报告，wall/RSS 沿用原 native 测量，未重新测量；JSON 校验不构成图语义或完整 Rust EVM 证明，当前 2B/ON 默认的同输入验收仍待新测量。CLI 的 exit 2 是 Incomplete 约定，不是崩溃；退出码本身不能替代完整 JSON 校验。
+原七项 harness 汇总仍退出 1，上述两项 parse guard 失败及 `report_delivered=false` 保持不变。两份大型 OFF 原报告的独立严格流式补充校验已完成，校验器实际均退出 0；在不变的每值 64 MiB 上限内，完整检查 JSON 语法、EOF、重复键及每条顶层数组记录。WETH 为 Converged，137 states / 482 transfers / 0 frontier，1 个 summary 的 `closed=true`；USDC 为 Incomplete，231 states / 13714 transfers / 825 frontier（803 Work + 22 SummaryWork，无 Expr frontier），1 个 summary 的 `closed=false`。原报告 SHA256：WETH `7aaeb22388ec8edb1f4bfaaf6d79f1616d0ad58b2990f08a2fef791da54fcec3`；USDC `931df3accaa2e5891f566f9c2344e71a6424ad4649172024abf8254c1c6e3fec`。补充仅针对上述冻结源码的历史 1T/OFF 报告，wall/RSS 沿用原 native 测量，未重新测量；JSON 校验不构成图语义或完整 Rust EVM 证明，当前 2B/ON 默认的同输入验收见[最终集成实测](#最终集成实测)。CLI 的 exit 2 是 Incomplete 约定，不是崩溃；退出码本身不能替代完整 JSON 校验。
 
 **ON 五项。** 固定策略比较仅向原 argv 追加 `--root-terminal-coverage`，对应有效 config 为 true；USDC 预算曲线另仅将 `max_work` 改为 20M / 200M / 2B，其余输入、限制（含 `max_transfers=10M`）和 guards 不变。下表详细结果来自独立的严格流式补充：五份 native10 JSON 均完整校验至 EOF。补充 runner 实际退出 0 表示交付/结构检查完成；原 whole-report 标志保持原值，V2 scanner 的每记录 64 MiB 上限与整份报告 guard 分别记录。
 
@@ -158,3 +158,27 @@ USDC 1T 的 833 个 frontier 为 **811 Work + 22 SummaryWork**，1 个 procedure
 不同预算的耗时体现精度与预算的取舍，不能解释为执行器加速或同精度收益；探索更多状态时 frontier 增多也不能单独说明精度下降。20M 的约 0.023s 仅是上述完整进程边界，USDC 仍为 Incomplete，不表示整个 CFG 闭合或 RPC/Web 响应时间。OFF/ON 的单次 WETH 差异同样不支持统计加速结论。
 
 Runtime2 的数值精度损失与尚未恢复的 Multicall self-call 细节仍单列为已知问题；Router 的非空 typed pending 覆盖及独立 UI 图压力回归也由各自用例验收。
+
+## 最终集成实测
+
+2026-10-18，producer 为干净提交 `9a1a0903345ab695a0471846c0625a5b56c0da93`，tree 为 `d69fc764e7cf58d6d701e8336bbe5e9b5b82a534`（native10 / wire15 / cost3），运行前后均干净；同一冻结 CLI ELF 的 SHA256 为 `6209803ece98e1a92109ba633ffdd681efb21c64cc4900b400bdbb332778b77a`。汇总 `acceptance-summary.json` 的 SHA256 为 `c0b02cce31ae0d4b8ea3901c3dc5745a60c531179eb4dac0cb0ee0c45e5863e8`，绑定完整运行记录及原报告 hash。
+
+CPU 40 独占、顺序执行，共 **9 个独立 native 进程**：五个 code-only 仅复测固定 1T/OFF，未测其默认策略；WETH/USDC 各测当前默认 2B/ON 与固定 1T/OFF。原始 world 字节、caller/value/calldata 的 Unknown 边界及初始 facts 不变。wall 包含 native JSON 输出，排除后续解析、RPC、Web 与构建；补充校验不新增 native 测量，也不重复计入 wall。
+
+| case | policy | native wall（s） | peak RSS（KiB） | status / native exit | states | transfers | frontiers | 根覆盖附件 | 报告字节数 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `unknown-input` | fixed-1T-OFF | 0.010867 | 21,500 | Converged / 0 | 1 | 1 | 0 | None | 213,075 |
+| `dynamic-jump` | fixed-1T-OFF | 0.007564 | 21,500 | Converged / 0 | 3 | 3 | 0 | None | 370,227 |
+| `loop` | fixed-1T-OFF | 0.020849 | 21,500 | Converged / 0 | 7 | 13 | 0 | None | 945,706 |
+| `unknown-callback` | fixed-1T-OFF | 0.105730 | 37,376 | Converged / 0 | 27 | 79 | 0 | None | 9,314,605 |
+| `memory-copy` | fixed-1T-OFF | 0.006041 | 46,000 | Converged / 0 | 1 | 1 | 0 | None | 86,638 |
+| `usdc-fixedstate` | default-2B-ON | 0.793679 | 211,600 | Incomplete / 2 | 138 | 126 | 14 | Some（AllInputStates / Work） | 167,848,568 |
+| `usdc-fixedstate` | fixed-1T-OFF | 99.677762 | 1,278,308 | Incomplete / 2 | 231 | 13,714 | 825 | None | 550,217,349 |
+| `weth-fixedstate` | default-2B-ON | 0.385788 | 94,312 | Incomplete / 2 | 56 | 47 | 10 | Some（AllInputStates / Work） | 70,620,745 |
+| `weth-fixedstate` | fixed-1T-OFF | 3.491552 | 357,288 | Converged / 0 | 137 | 482 | 0 | None | 256,024,873 |
+
+默认两项的 frontier 全为 Work（USDC 14、WETH 10）；详细分析仍为 Incomplete，附件固定为 Return / Revert / Failure 三个联合上界，不隐藏 frontier，不增加已执行 PC、状态或 SSA 覆盖。固定 1T/OFF 的 USDC 保留 825 个 frontier（803 Work + 22 SummaryWork）且无证书；WETH 为 Converged、0 frontier、无证书。
+
+五份 code-only 报告通过原 64 MiB whole-report guard。四份 WETH/USDC 原报告均超过该 guard，原 whole-report guard 与 `report_delivered` 仍为 **false**；四份独立严格流式校验均为 `strict_stream_valid=true`、实际退出 0，保持每条顶层记录 64 MiB 上限。补充 runner 的退出 0 不代表原 consumer 通过，也不证明 Rust/EVM 数学语义。导出仍大，原交付边界未改变。
+
+这些是单次离线 screen；默认 2B/ON 与固定 1T/OFF 是不同精度策略，不能据此声称同精度加速或详细执行闭合。

@@ -85,8 +85,10 @@ Terminal(Γ(I)) ⊆ Γ(Return, dataR, storeR)
 
 2026-10-18，公开证明提交 `2c0181de2a9da64818b4eaf1b490f0594102e71b` 的 `checks.x86_64-linux.lean-proofs` 实际退出 **0**：15 个公开模块的 296 个目标全部通过，包含新增 `RootEnvelope` 的 20 个与 `RootCoverageCapability` 的 16 个目标；旧 join 负例按预期退出 1，公理依赖仅为 `Classical.choice`、`Quot.sound`、`propext`。相同证明源码已集成于 `e5f13b82c16798431ad0bf7cbb7cfdb7ef3dc2f3`。
 
-这些[局部 Lean 模型](proofs/README.md)证明 finalized whole-world 构造、共享原始输入见证的回滚与未来 owner-3 touch、历史扩展，以及带输入/取消守卫的一次性预付发布状态机。证书 `denotes` 使用 `finalizedTerminalEnvelope`/`FinalizedGamma`；旧 Return=True 构造原语不构成这份证书证明。守卫来自调用方 Bool 观察，真实 Rust Gamma、source/owner/log/ByteArray 表示、资源上界与 EVM step/callback/CFG 闭包仍需[手工生产对应](proofs/correspondence.md)，不能据此声称完整 Rust/EVM soundness 或 A2 已全部证明。一般详细 static finalizer 的修复属于独立 Core 工作；最终集成源码的 native、匹配资源浏览器与全仓 Nix 门禁仍待核验。
+这些[局部 Lean 模型](proofs/README.md)证明 finalized whole-world 构造、共享原始输入见证的回滚与未来 owner-3 touch、历史扩展，以及带输入/取消守卫的一次性预付发布状态机。证书 `denotes` 使用 `finalizedTerminalEnvelope`/`FinalizedGamma`；旧 Return=True 构造原语不构成这份证书证明。守卫来自调用方 Bool 观察，真实 Rust Gamma、source/owner/log/ByteArray 表示、计费、allocator 资源上界与 EVM step/callback/CFG 闭包仍需[手工生产对应](proofs/correspondence.md)，不能据此声称完整 Rust/EVM soundness 或 A2 已全部证明。
 
-真实浏览器回归登记为 `root-terminal-coverage`。当前策略的验收应覆盖实际表单 POST 的默认开启与 2B work、显式关闭、详细 `Converged` 且无证书、三项 pool 引用及输入绑定、原有未完成详情和浏览器中的独立 tuple 浏览。源码校验与浏览器运行是两份证据，验收需要匹配的 server、Wasm/JS 资源和最终完整门禁。
+2026-10-18，干净的最终集成提交 `9a1a0903345ab695a0471846c0625a5b56c0da93` 完整执行 `nix flake check --print-build-logs --no-update-lock-file --keep-going`，实际退出 **0**，耗时 **551.799297467 s**。匹配 server、Wasm/JS 资源的浏览器回归 **38/38** 全部通过，包含 `root-terminal-coverage`：实际表单 POST 的默认开启与 2B work、显式关闭、详细 `Converged` 且无证书、三项 pool 引用及输入绑定、原有未完成详情和独立 tuple 浏览。该门禁结果属于上述集成提交；最终文档提交的完整门禁与产品 derivation 一致性由 Root 另行复核。
+
+同提交、同一冻结 CLI ELF 的九次最终离线 native 测量见[最终集成实测](../examples/no-smt-scale/README.md#最终集成实测)。默认 2B/ON 的 WETH/USDC 详细分析仍为 `Incomplete`、native exit 2，保留全部原始 frontier；所附 `AllInputStates` / Work 记录固定包含 Return / Revert / Failure 三个联合上界，不改变详细 status、pending 或 SSA 覆盖。固定 1T/OFF 对照与原 whole-report guard、独立流式校验的边界分别列明。
 
 规模实验继续保留[固定七个 case 与原策略](../examples/no-smt-scale/README.md)：work 为 1000000000000，覆盖关闭。[命令生成器](../scripts/generate-no-smt-scale-commands.py)为每个 case 显式加入 `--no-root-terminal-coverage`；可选的 `--request-output-dir` 将 WETH/USDC 的 wire 15 请求写到独立目录，显式设置 `limits.root_terminal_coverage: false`，其余输入与限制不变。历史捕获、hash 和结果不重写。新增保守覆盖不代表这些输入已经详细闭合；性能结论仍需相同输入、完整策略和交付边界的实际测量。
