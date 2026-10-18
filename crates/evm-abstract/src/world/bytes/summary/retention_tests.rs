@@ -10,7 +10,7 @@ fn domain(profile: Profile) -> Domain {
     Domain::from_spec(
         DomainSpec::new(
             profile,
-            NonZeroUsize::new(256).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
             NonZeroUsize::new(4).unwrap(),
             NonZeroUsize::new(256).unwrap(),
         )
@@ -381,7 +381,7 @@ fn presentation_restoration_preserves_current_value_metadata_and_never_copies_ol
         .with_identity(11, 2)
         .with_symbol(Symbol::new(1), Some(11))
         .with_symbolic_limit();
-    let restored = restore_presentation(current.clone(), Some(&previous), domain);
+    let restored = restore_presentation(current.clone(), Some(&previous));
     assert_eq!(
         restored.numeric(),
         &numeric.restore_redundant_finite_from(previous.numeric())
@@ -393,9 +393,9 @@ fn presentation_restoration_preserves_current_value_metadata_and_never_copies_ol
         restored.symbolic_limit_reached(),
         current.symbolic_limit_reached()
     );
-    assert_eq!(restore_presentation(current.clone(), None, domain), current);
+    assert_eq!(restore_presentation(current.clone(), None), current);
     assert_eq!(
-        restore_presentation(restored.clone(), Some(&previous), domain),
+        restore_presentation(restored.clone(), Some(&previous)),
         restored
     );
 }
