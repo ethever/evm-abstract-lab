@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
     domain::{
-        DomainSpec, NumericValue, Profile, provenance::Origin, relational::RelationLimits,
-        symbolic::StateError,
+        DomainSpec, NumericValue, Profile, facts::UnaryPredicate, provenance::Origin,
+        relational::RelationLimits, symbolic::StateError,
     },
     world::bytes::{limits, summary::ByteArraySummary, summary::Content},
 };
@@ -94,11 +94,16 @@ fn check(summary: &ByteArraySummary, domain: Domain, expected_reads: usize) -> B
 
 #[test]
 fn definite_bounds_reuse_full_carriers_before_restoration_and_current_policy() {
-    let dense = finite(2..=31)
-        .with_origin(Origin::Balance)
+    let mut dense = policy(Profile::Product, 64)
+        .from_facts(&[UnaryPredicate::IsCodeAddress])
+        .unwrap()
+        .with_numeric(finite(2..=31).numeric().clone())
         .with_identity(10, 1)
         .with_expression(ExprId::fresh().unwrap())
         .with_symbolic_limit();
+    dense.set_origin(Origin::Balance);
+    assert!(!dense.provenance().origins().is_top());
+    assert!(dense.provenance().is_code_address());
     let values = BTreeMap::from([
         (0, dense),
         (2, finite([1, 5, 9])), // Holey, nonzero, known bits and mod-4 congruence.
