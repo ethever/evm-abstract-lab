@@ -80,6 +80,7 @@ struct Trial {
     nodes: usize,
     refused: bool,
     work: bool,
+    reader_calls: (usize, usize),
 }
 
 impl Trial {
@@ -133,6 +134,7 @@ fn trial(mut plan: Plan, budget: &mut WorkBudget) -> Trial {
         nodes,
         refused: context.cache_refused(),
         work: context.work_exhausted(),
+        reader_calls: context.reader_calls(),
     }
 }
 
@@ -184,6 +186,76 @@ fn prepared_trial_matches_the_complete_evaluator_and_exact_whole_read_work_bound
             assert!(budget.exhausted());
             assert!(budget.used() >= before);
             assert!(budget.used() < 101 + price);
+        }
+        assert_eq!(memory, frozen);
+    }
+}
+
+#[test]
+fn an_unpaid_final_reader_or_returns_work_without_paying_or_starting_legacy_fallback() {
+    let domain = numeric::numeric_domain(Domain::default());
+    let mut memory = scoped_word(domain);
+    let key = ExprId::fresh().unwrap();
+    let value = AbstractValue::unsigned_range(U256::ONE, U256::from(3))
+        .unwrap()
+        .with_origin(Origin::Storage)
+        .with_expression(key.clone())
+        .with_identity(993_126, 1);
+    memory.root = ByteStateId::zero()
+        .write_byte(
+            ExprId::constant(U256::ZERO),
+            key.clone(),
+            limits(domain).into(),
+        )
+        .unwrap();
+    memory.operands.insert(key, value);
+    let frozen = memory.clone();
+    let expected = memory.read_word_checked(&zero(), domain).unwrap();
+    let mut probe = WorkBudget::new(usize::MAX);
+    let plan = prepare(&memory, domain, &mut probe);
+    let prepared = probe.used();
+    let fallback = plan.fallback_work;
+    let trace = trial(plan, &mut probe);
+    assert_eq!(trace.value, Some(expected.clone()));
+    assert!(!trace.refused && !trace.work);
+    assert_eq!(trace.reader_calls, (1 + 32 + 31, 0));
+    assert!(
+        trace.payments.last().unwrap().0,
+        "the final fee belongs to the final Reader OR"
+    );
+    let price = trace.payments.last().unwrap().1;
+    let prefix = trace.paid() - price;
+    assert_eq!(probe.used(), prepared + prefix + price);
+    for exact in [false, true] {
+        let mut budget = WorkBudget::new(83 + prepared + prefix + price - usize::from(!exact));
+        assert!(budget.charge(83));
+        let plan = prepare(&memory, domain, &mut budget);
+        assert_eq!(plan.fallback_work, fallback);
+        let result = plan.read_word_budgeted(&mut budget).unwrap();
+        if exact {
+            let actual = result.unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual.numeric(), expected.numeric());
+            assert_eq!(actual.provenance(), expected.provenance());
+            assert_eq!(actual.identity(), expected.identity());
+            assert_eq!(actual.expression(), expected.expression());
+            assert_eq!(
+                actual.symbolic_limit_reached(),
+                expected.symbolic_limit_reached()
+            );
+            assert_eq!(budget.used(), 83 + prepared + prefix + price);
+            assert!(!budget.exhausted());
+        } else {
+            assert_eq!(
+                result, None,
+                "the Reader sentinel is never attached or returned as a completed AV"
+            );
+            assert_eq!(
+                budget.used(),
+                83 + prepared + prefix,
+                "mandatory Work pays no fallback"
+            );
+            assert!(budget.exhausted());
         }
         assert_eq!(memory, frozen);
     }
@@ -320,8 +392,13 @@ fn scratch_refusal_after_numeric_work_keeps_that_work_and_pays_the_full_fallback
     );
     assert_eq!(
         refused.payments,
-        full.payments[..full.payments.len() - 1],
+        full.payments[..refused.payments.len()],
         "the final rejected N action pays nothing, including no lifecycle"
+    );
+    assert!(refused.payments.len() < full.payments.len());
+    assert!(
+        !full.payments[refused.payments.len()].0,
+        "the refused N action precedes its metadata payment and later Reader actions"
     );
     let prefix = refused.paid();
     assert!(prefix < full.paid());
@@ -377,7 +454,12 @@ fn scratch_refusal_after_full_retention_drops_the_graph_and_pays_the_original_fa
     assert!(!refused.work);
     assert_eq!(refused.retained_contexts, conditional::CONTEXTS);
     assert!(refused.nodes < full.nodes);
-    assert_eq!(refused.payments, full.payments[..full.payments.len() - 1]);
+    assert_eq!(refused.payments, full.payments[..refused.payments.len()]);
+    assert!(refused.payments.len() < full.payments.len());
+    assert!(
+        !full.payments[refused.payments.len()].0,
+        "the refused N action precedes its metadata payment and later Reader actions"
+    );
     let prefix = refused.paid();
     assert!(prefix > 0);
     assert_eq!(setup.used(), before_trial + prefix);

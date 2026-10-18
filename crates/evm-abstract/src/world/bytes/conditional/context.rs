@@ -147,6 +147,80 @@ impl<'a> Context<'a> {
         self.check().is_err() || self.cache_refused() || self.work_exhausted()
     }
 
+    /// Pay each actual Reader transfer on the original demand ledger. The
+    /// payment borrow ends before Domain runs; None/oracle keep their old path.
+    /// A refused action yields only the checked demand's private stop sentinel.
+    pub(in crate::world::bytes) fn apply(
+        &self,
+        domain: Domain,
+        op: u8,
+        args: &[AbstractValue],
+    ) -> AbstractValue {
+        if self.stopped()
+            || self.demand.as_ref().is_some_and(|demand| {
+                !demand.policy(domain) || !demand.pay_reader(|| domain.operation_work(args))
+            })
+        {
+            return AbstractValue::top();
+        }
+        #[cfg(test)]
+        if let Some(demand) = &self.demand {
+            demand.record_reader_call(false);
+        }
+        domain.apply(op, args)
+    }
+
+    /// This join is separate from resolve's already-paid source metadata join.
+    pub(in crate::world::bytes) fn join(
+        &self,
+        domain: Domain,
+        left: &AbstractValue,
+        right: &AbstractValue,
+    ) -> AbstractValue {
+        if self.stopped()
+            || self.demand.as_ref().is_some_and(|demand| {
+                !demand.policy(domain)
+                    || !demand.pay_reader(|| memo::join_work(domain, left, right))
+            })
+        {
+            return AbstractValue::top();
+        }
+        #[cfg(test)]
+        if let Some(demand) = &self.demand {
+            demand.record_reader_call(true);
+        }
+        domain.join(left, right)
+    }
+
+    #[cfg(test)]
+    pub(in crate::world::bytes) fn reader_calls(&self) -> (usize, usize) {
+        self.demand
+            .as_deref()
+            .expect("prepared context")
+            .reader_calls()
+    }
+
+    #[cfg(test)]
+    pub(in crate::world::bytes) fn reader_join_work(
+        domain: Domain,
+        left: &AbstractValue,
+        right: &AbstractValue,
+    ) -> usize {
+        memo::join_work(domain, left, right)
+    }
+
+    #[cfg(test)]
+    pub(in crate::world::bytes) fn cancel_after_numeric_payments(
+        &self,
+        count: usize,
+        token: analysis_control::Cancellation,
+    ) {
+        self.demand
+            .as_deref()
+            .expect("prepared context")
+            .cancel_after_payments(count, token);
+    }
+
     fn reserve(&self, nodes: usize) -> bool {
         !self.stopped()
             && self

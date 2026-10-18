@@ -53,6 +53,9 @@ pub(super) struct Demand<'a> {
     // Accepted action receipts only: true denotes a numeric primitive.
     #[cfg(test)]
     payments: RefCell<Vec<(bool, usize)>>,
+    // Completed payment checkpoints followed by actual Reader Domain calls.
+    #[cfg(test)]
+    reader_calls: Cell<(usize, usize)>,
 }
 
 impl<'a> Demand<'a> {
@@ -111,6 +114,8 @@ impl<'a> Demand<'a> {
             cancel_after_payments: RefCell::new(None),
             #[cfg(test)]
             payments: RefCell::new(Vec::new()),
+            #[cfg(test)]
+            reader_calls: Cell::new((0, 0)),
         }
     }
 
@@ -217,6 +222,28 @@ impl<'a> Demand<'a> {
 
     pub(super) fn intersect(&self) -> bool {
         self.pay(self.reduction_work)
+    }
+
+    /// Reader transfers are distinct from Context's intersections and joins.
+    /// The reference oracle keeps its old metadata cap without Reader fees.
+    pub(super) fn pay_reader(&self, price: impl FnOnce() -> usize) -> bool {
+        match &self.payer {
+            Payer::Budget(_) => self.pay(price()),
+            #[cfg(test)]
+            Payer::Oracle => true,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn record_reader_call(&self, join: bool) {
+        let (applies, joins) = self.reader_calls.get();
+        self.reader_calls
+            .set((applies + usize::from(!join), joins + usize::from(join)));
+    }
+
+    #[cfg(test)]
+    pub(super) fn reader_calls(&self) -> (usize, usize) {
+        self.reader_calls.get()
     }
 
     pub(super) fn reserve(&self, nodes: usize) -> bool {

@@ -908,6 +908,57 @@ fn constants_only_join_pays_finite_insertions_and_numeric_summary_rebuilding() {
 }
 
 #[test]
+fn scalar_apply_owes_its_original_price_after_context_intersection_and_source_join() {
+    let domain = crate::world::bytes::numeric::numeric_domain(Domain::default());
+    let guard = ExprId::fresh().unwrap();
+    let key = ExprId::fresh().unwrap();
+    let expression = ExprId::operation(
+        revm_bytecode::opcode::ADD,
+        &[key.clone(), ExprId::constant(U256::ONE)],
+        domain.spec().relations().expressions(),
+    )
+    .unwrap();
+    let left = source(range(0, 20), Origin::Calldata).with_identity(993_125, 1);
+    let right = source(range(5, 25), Origin::Storage).with_identity(993_125, 1);
+    let facts = Facts::from([(key.clone(), left.clone())]);
+    let conditional = branches(
+        &guard,
+        Facts::from([(key.clone(), right.clone())]),
+        Facts::new(),
+    );
+    let frozen = (facts.clone(), conditional.clone());
+    let quote = preparation_for(&facts, &conditional, domain);
+    let oracle = Context::new(&facts, Some(&conditional)).branch(&guard, true);
+    let resolved = oracle.value(&key, domain).unwrap();
+    let expected = crate::world::bytes::numeric::scalar_in(&expression, &oracle, domain);
+    let apply = domain.operation_work(&[resolved, constant(1)]);
+    let join = memo::join_work(domain, &left, &right);
+    let trace = trace_for(&facts, &conditional, domain, &quote, |root| {
+        let selected = root.branch(&guard, true);
+        let actual = crate::world::bytes::numeric::scalar_in(&expression, &selected, domain);
+        assert_complete_value(&actual, &expected, &left);
+        assert_eq!(root.reader_calls(), (1, 0));
+        assert_eq!(
+            numeric_work(&root.demand_payments()),
+            quote.reduction_work + join + apply
+        );
+        let repeated = crate::world::bytes::numeric::scalar_in(&expression, &selected, domain);
+        assert_complete_value(&repeated, &expected, &left);
+        assert_eq!(root.reader_calls(), (2, 0));
+    });
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|(number, _)| *number)
+            .map(|(_, work)| *work)
+            .collect::<Vec<_>>(),
+        [quote.reduction_work, join, apply, apply],
+        "cached operand Context I/J pay once; every executed scalar apply pays once"
+    );
+    assert_eq!((facts, conditional), frozen);
+}
+
+#[test]
 fn cancellation_latches_across_all_existing_clones_after_the_cancel_scope_ends() {
     let domain = Domain::default();
     let key = ExprId::fresh().unwrap();

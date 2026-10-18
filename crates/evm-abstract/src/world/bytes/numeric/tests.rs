@@ -1,8 +1,7 @@
 //! Batched evaluation keeps the original values and operand environment.
 
 use super::{
-    Facts, Reader, WORD_CACHE_ENTRIES, WORD_CACHE_WORK, constant, join, numeric_domain, scalar,
-    zero,
+    Facts, Reader, WORD_CACHE_ENTRIES, WORD_CACHE_WORK, constant, numeric_domain, scalar, zero,
 };
 use crate::{
     domain::{
@@ -18,6 +17,10 @@ use std::collections::BTreeMap;
 
 fn expression() -> ExprId {
     ExprId::fresh().unwrap()
+}
+
+fn join(out: Option<AbstractValue>, value: AbstractValue, domain: Domain) -> AbstractValue {
+    out.map_or_else(|| value.clone(), |old| domain.join(&old, &value))
 }
 
 // Keep the original ordered BYTE/join evaluation as a full-value oracle. The
