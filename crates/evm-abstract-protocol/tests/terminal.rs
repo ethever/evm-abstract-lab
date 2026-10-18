@@ -170,14 +170,63 @@ fn terminal_triggers_and_joint_outcomes_use_strict_typed_records_without_state_p
 }
 
 #[test]
-fn opt_in_is_required_on_the_wire_and_defaults_to_false_only_in_rust_defaults() {
-    assert!(!AnalyzeRequest::default().limits.root_terminal_coverage);
+fn omitted_strategy_fields_use_consumer_defaults_and_explicit_opt_out_survives() {
+    let defaults = AnalyzeRequest::default();
+    assert!(defaults.limits.root_terminal_coverage);
+    assert_eq!(defaults.limits.max_work, 2_000_000_000);
+    let encoded = serde_json::to_string(&defaults).unwrap();
+    for fields in [
+        vec!["\"root_terminal_coverage\":true,"],
+        vec!["\"max_work\":2000000000,"],
+        vec!["\"root_terminal_coverage\":true,", "\"max_work\":2000000000,"],
+    ] {
+        let mut missing = encoded.clone();
+        for field in fields {
+            assert!(missing.contains(field));
+            missing = missing.replace(field, "");
+        }
+        assert_eq!(
+            serde_json::from_str::<AnalyzeRequest>(&missing).unwrap(),
+            defaults
+        );
+    }
+    for max_work in [2_000_000_000, 37_000_000] {
+        let mut disabled = defaults.clone();
+        disabled.limits.root_terminal_coverage = false;
+        disabled.limits.max_work = max_work;
+        let encoded = serde_json::to_string(&disabled).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AnalyzeRequest>(&encoded).unwrap(),
+            disabled
+        );
+    }
+    let missing_work = encoded
+        .replace("\"max_work\":2000000000,", "")
+        .replace("\"root_terminal_coverage\":true", "\"root_terminal_coverage\":false");
+    let decoded = serde_json::from_str::<AnalyzeRequest>(&missing_work).unwrap();
+    assert!(!decoded.limits.root_terminal_coverage);
+    assert_eq!(decoded.limits.max_work, 2_000_000_000);
+}
+
+#[test]
+fn strategy_defaults_preserve_strict_field_validation() {
     let encoded = serde_json::to_string(&AnalysisLimits::default()).unwrap();
-    let missing = encoded.replace("\"root_terminal_coverage\":false,", "");
+    for (field, value) in [("max_work", "1"), ("root_terminal_coverage", "false")] {
+        let duplicate = encoded.replacen('{', &format!("{{\"{field}\":{value},"), 1);
+        let error = serde_json::from_str::<AnalysisLimits>(&duplicate).unwrap_err();
+        assert!(error.to_string().contains(&format!("duplicate field: {field}")));
+    }
+    for invalid in [
+        encoded.replace("\"root_terminal_coverage\":true", "\"root_terminal_coverage\":null"),
+        encoded.replace("\"root_terminal_coverage\":true", "\"root_terminal_coverage\":0"),
+        encoded.replace("\"max_work\":2000000000", "\"max_work\":null"),
+    ] {
+        assert!(serde_json::from_str::<AnalysisLimits>(&invalid).is_err());
+    }
+    let missing = encoded.replace("\"max_states\":100000,", "");
     let error = serde_json::from_str::<AnalysisLimits>(&missing).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("missing field: root_terminal_coverage")
-    );
+    assert!(error.to_string().contains("missing field: max_states"));
+    let unknown = encoded.replacen('{', "{\"strategy\":true,", 1);
+    let error = serde_json::from_str::<AnalysisLimits>(&unknown).unwrap_err();
+    assert!(error.to_string().contains("unknown AnalysisLimits field: strategy"));
 }

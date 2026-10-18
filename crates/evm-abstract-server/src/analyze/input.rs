@@ -258,6 +258,24 @@ mod tests {
     }
 
     #[test]
+    fn consumer_strategy_defaults_and_explicit_opt_out_reach_native_configuration() {
+        let mut limits = api::AnalysisLimits::default();
+        let native = config(&limits).unwrap();
+        assert_eq!(limits.max_work, 2_000_000_000);
+        assert_eq!(native.max_work, 2_000_000_000);
+        assert!(limits.root_terminal_coverage);
+        assert!(native.root_terminal_coverage);
+        // Core owns a separate library work policy; consumers do not inherit it.
+        assert_eq!(analysis::ExecutionConfig::default().max_work, 20_000_000);
+
+        limits.max_work = 37_000_000;
+        limits.root_terminal_coverage = false;
+        let native = config(&limits).unwrap();
+        assert_eq!(native.max_work, 37_000_000);
+        assert!(!native.root_terminal_coverage);
+    }
+
+    #[test]
     fn values_above_every_former_server_ceiling_reach_the_native_policy_unchanged() {
         let limits = api::AnalysisLimits {
             max_states: 4_097,

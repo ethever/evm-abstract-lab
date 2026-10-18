@@ -120,8 +120,11 @@ fn local_constant_proofs_survive_an_unrelated_call_depth_frontier() {
 #[test]
 fn incomplete_memory_step_never_acquires_a_value_or_folded_result() {
     let mut input = request("60015f510100");
+    // Preserve the original detailed work ledger used by the admission search.
+    input.limits.root_terminal_coverage = false;
+    input.limits.max_work = 1_000_000_000_000;
     input.limits.max_memory_bytes = 1;
-    // Keep the symbolic recipient and the default expression/work policy:
+    // Keep the symbolic recipient and the original expression/work policy:
     // the host materialization cap does not restrict logical MLOAD expansion.
     let complete = analyze(input.clone()).unwrap();
     assert_eq!(complete.status, api::AnalysisStatus::Converged);

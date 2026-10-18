@@ -609,6 +609,7 @@ fn typed_admission_and_precancelled_requests_never_fabricate_reports() {
 #[test]
 fn source_directory_remains_available_when_work_stops_before_root_state() {
     let mut input = request("602a00");
+    input.limits.root_terminal_coverage = false;
     input.limits.max_work = 1;
     let report = analyze(input).unwrap();
     assert_eq!(report.status, AnalysisStatus::Incomplete);
@@ -837,6 +838,8 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
     let code = format!("{}602062100000f3", "602a6210000052".repeat(20));
     let mut input = request(&code);
     input.limits.max_memory_bytes = 1_048_576 + 32;
+    // Keep the detailed prefix and refusal controls independent of root preparation.
+    input.limits.root_terminal_coverage = false;
     input.limits.max_work = 10_000_000_000;
     input.limits.max_constants = 512;
     let selected_limits = input.limits.clone();

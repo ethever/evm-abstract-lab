@@ -34,6 +34,7 @@ fn bytecode_and_rpc_requests_roundtrip() {
 #[test]
 fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
     let count = 9_007_199_254_740_993_u64;
+    assert!(count > u64::from(u32::MAX));
     let limits = AnalysisLimits {
         max_states: count,
         max_transfers: count,
@@ -60,11 +61,15 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         limits,
         ..AnalyzeRequest::default()
     });
+}
+
+#[test]
+fn consumer_defaults_enable_fast_conservative_coverage() {
     let defaults = AnalysisLimits::default();
-    assert!(!defaults.root_terminal_coverage);
+    assert!(defaults.root_terminal_coverage);
     assert_eq!(defaults.context_depth, 128);
-    assert_eq!(defaults.max_work, 1_000_000_000_000);
-    assert!(defaults.max_work > u64::from(u32::MAX));
+    assert_eq!(defaults.max_work, 2_000_000_000);
+    assert_eq!(AnalyzeRequest::default().limits, defaults);
     roundtrip(defaults);
 }
 

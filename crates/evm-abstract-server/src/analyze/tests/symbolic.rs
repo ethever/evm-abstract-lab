@@ -262,6 +262,7 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
         }),
         ..api::AnalyzeRequest::default()
     };
+    input.limits.root_terminal_coverage = false;
     input.limits.max_expression_nodes = 3;
     let partial = roundtrip(crate::analyze::analyze(input).unwrap());
     assert_eq!(partial.status, api::AnalysisStatus::Incomplete);

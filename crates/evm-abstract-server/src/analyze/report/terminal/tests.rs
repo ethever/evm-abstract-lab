@@ -220,16 +220,17 @@ fn native_joint(source: &analysis::RootTerminalCoverage, pools: &mut Pools<'_>) 
 }
 
 #[test]
-fn default_off_and_opt_in_none_preserve_honest_detail() {
-    assert!(!api::AnalysisLimits::default().root_terminal_coverage);
+fn explicit_opt_out_and_default_converged_none_preserve_honest_detail() {
+    assert!(api::AnalysisLimits::default().root_terminal_coverage);
     assert!(
-        !input::config(&api::AnalysisLimits::default())
+        input::config(&api::AnalysisLimits::default())
             .unwrap()
             .root_terminal_coverage
     );
     let (ordinary, request) = fixture(false, false, false);
     let ordinary = project(&ordinary, &request);
     assert_eq!(ordinary.status, api::AnalysisStatus::Incomplete);
+    assert!(!ordinary.metadata.limits.root_terminal_coverage);
     assert!(ordinary.root_terminal_coverage.is_none());
     let encoded = serde_json::to_string(&ordinary).unwrap();
     let missing = encoded.replace("\"root_terminal_coverage\":null,", "");
@@ -246,8 +247,7 @@ fn default_off_and_opt_in_none_preserve_honest_detail() {
             .iter()
             .any(|frontier| frontier.kind == api::FrontierKind::Transfers)
     );
-    let mut request = api::AnalyzeRequest::default();
-    request.limits.root_terminal_coverage = true;
+    let request = api::AnalyzeRequest::default();
     // A converged real program has no triggering refusal and no certificate.
     let complete = crate::analyze::analyze(request).unwrap();
     assert_eq!(complete.status, api::AnalysisStatus::Converged);
@@ -472,12 +472,36 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
         address: None,
     });
     request.limits.max_transfers = 1;
-    request.limits.root_terminal_coverage = true;
+    let limits = request.limits.clone();
+    assert_eq!(limits.max_work, 2_000_000_000);
+    assert!(limits.root_terminal_coverage);
+    let encoded = serde_json::to_string(&request).unwrap();
+    let legacy = encoded
+        .replace("\"max_work\":2000000000,", "")
+        .replace("\"root_terminal_coverage\":true,", "");
+    assert_ne!(legacy, encoded);
+    let request: api::AnalyzeRequest = serde_json::from_str(&legacy).unwrap();
+    assert_eq!(request.limits, limits);
     let report = crate::analyze::analyze(request).unwrap();
     report.validate().unwrap();
+    assert_eq!(report.status, api::AnalysisStatus::Incomplete);
+    assert!(!report.ssa.complete);
+    assert!(
+        report
+            .frontiers
+            .iter()
+            .any(|frontier| frontier.kind == api::FrontierKind::Transfers)
+    );
+    assert_eq!(report.metadata.limits, limits);
     let coverage = report.root_terminal_coverage.as_ref().unwrap();
     assert_eq!(coverage.trigger, api::RootTerminalTrigger::Transfers);
     let input = &coverage.input;
+    assert_eq!(input.config.max_work, limits.max_work);
+    assert_eq!(input.config.max_transfers, limits.max_transfers);
+    assert_eq!(
+        input.config.root_terminal_coverage,
+        limits.root_terminal_coverage
+    );
     assert_eq!(
         input.environment.to,
         api::AddressValue::Symbolic(value::symbol(evm_abstract::domain::identity::Symbol::To))

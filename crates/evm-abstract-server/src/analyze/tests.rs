@@ -6,6 +6,9 @@ use evm_abstract::{
 };
 
 fn project_world(world: World, address: Address) -> api::AnalysisReport {
+    let mut request = api::AnalyzeRequest::default();
+    // Preserve this native fixture's original work allowance in report metadata.
+    request.limits.max_work = analysis::ExecutionConfig::default().max_work as u64;
     let graph = analysis::analyze_world(
         world,
         Entry {
@@ -16,12 +19,12 @@ fn project_world(world: World, address: Address) -> api::AnalysisReport {
                 ..EvmEnvironment::default()
             },
         },
-        analysis::ExecutionConfig::default(),
+        input::config(&request.limits).unwrap(),
     )
     .unwrap();
     report::report(
         &graph,
-        &api::AnalyzeRequest::default(),
+        &request,
         api::AnalysisScope::RpcWorld,
         &Control::default(),
     )
