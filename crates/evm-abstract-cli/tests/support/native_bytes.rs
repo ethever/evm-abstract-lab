@@ -11,27 +11,22 @@ use evm_abstract::domain::{
         StateBinding,
     },
 };
-use serde::Deserialize;
 use serde_json::Value as Json;
 use std::collections::BTreeSet;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+mod decode;
+
 struct Graph {
     identity_scope: String,
     root: usize,
     nodes: Vec<Node>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Source {
     token: usize,
     namespace: U256,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Binding {
     index: U256,
     value: usize,
@@ -40,8 +35,6 @@ struct Binding {
 
 // This is deliberately the concrete subset observed in the complete captures,
 // not a native-to-protocol converter or an evaluator for symbolic EVM words.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 enum Node {
     Constant(U256),
     SlotsInput {
@@ -323,14 +316,14 @@ impl Graph {
 }
 
 fn read_scalar(value: &Json, scope: &str, limits: ExprLimits) -> Option<Scalar> {
-    let graph: Graph = serde_json::from_value(value.clone()).ok()?;
+    let graph = decode::graph(value)?;
     (graph.identity_scope == scope).then_some(())?;
     let nodes = graph.typed(limits, false)?;
     Some(typed_scalar(&nodes, graph.root)?.clone())
 }
 
 fn literal(value: &Json, scope: &str) -> Option<U256> {
-    let graph: Graph = serde_json::from_value(value.clone()).ok()?;
+    let graph = decode::graph(value)?;
     if graph.identity_scope != scope || graph.root != 0 {
         return None;
     }
@@ -369,7 +362,7 @@ fn read_fact_matches(
 }
 
 fn read_word(data: &Json) -> Option<[u8; 32]> {
-    let graph: Graph = serde_json::from_value(data.get("root")?.clone()).ok()?;
+    let graph = decode::graph(data.get("root")?)?;
     let scope = &graph.identity_scope;
     if !data.get("failure")?.is_null()
         || data.get("memory")?.as_bool()?
