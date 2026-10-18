@@ -184,6 +184,10 @@ fn runtime_body_growth_stays_incomplete_and_preserves_legal_revert() {
         .iter()
         .filter_map(|frontier| frontier.payload.as_deref())
     {
+        assert!(
+            payload.relations.is_empty(),
+            "snapshot assignment requires the complete F to be True"
+        );
         let mut snapshots = Assignment::default();
         snapshots.store(&payload.store, 99, 42, domain);
         snapshots.store(payload.active().saved_store.state(), 7, 0, domain);
