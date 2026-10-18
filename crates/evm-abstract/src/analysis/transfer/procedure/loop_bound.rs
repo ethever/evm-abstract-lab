@@ -59,7 +59,11 @@ fn project(
     Ok(projected)
 }
 
-fn restrict(payload: &PayloadSummary, layout: &PayloadSummary, domain: Domain) -> PayloadSummary {
+pub(super) fn restrict(
+    payload: &PayloadSummary,
+    layout: &PayloadSummary,
+    domain: Domain,
+) -> PayloadSummary {
     let mut out = payload.clone();
     out.store = out.store.project_to_layout(&layout.store, domain);
     for (frame, shape) in out.frames.iter_mut().zip(&layout.frames) {
@@ -76,7 +80,7 @@ fn restrict(payload: &PayloadSummary, layout: &PayloadSummary, domain: Domain) -
     out
 }
 
-fn coarse(payload: &PayloadSummary) -> PayloadSummary {
+pub(super) fn coarse(payload: &PayloadSummary) -> PayloadSummary {
     let mut out = payload.clone();
     let scalar = |value: &mut crate::domain::AbstractValue| {
         let (lower, upper) = value.interval().unsigned_bounds();

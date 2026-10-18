@@ -92,6 +92,15 @@ pub(super) struct Execution {
     pub frontiers: Vec<ExecutionFrontier>,
     pub outcomes: Vec<Outcome>,
     pub completed_calls: Vec<CompletedCall>,
+    /// Raw finite retention failures, indexed into this execution's frontiers.
+    /// Public reasons alone cannot distinguish identity exhaustion or semantics.
+    pub retention_failures: Vec<(usize, RetentionCause)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RetentionCause {
+    Expression,
+    State,
 }
 
 fn empty_execution(payload: MachinePayload) -> Execution {
@@ -105,6 +114,7 @@ fn empty_execution(payload: MachinePayload) -> Execution {
         frontiers: Vec::new(),
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
+        retention_failures: Vec::new(),
     }
 }
 
@@ -168,6 +178,7 @@ fn resume_summary_inner(
         frontiers: Vec::new(),
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
+        retention_failures: Vec::new(),
     };
     let mut context = TransferContext {
         config,
@@ -224,6 +235,24 @@ fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target
     });
 }
 
+fn boundary_bytes(result: &mut Execution, pc: usize, error: crate::world::RangeError) {
+    let cause = errors::retention_bytes(&error);
+    let index = result.frontiers.len();
+    boundary(result, pc, errors::bytes(error));
+    if let Some(cause) = cause {
+        result.retention_failures.push((index, cause));
+    }
+}
+
+fn boundary_store(result: &mut Execution, pc: usize, error: crate::world::StoreError) {
+    let cause = errors::retention_store(&error);
+    let index = result.frontiers.len();
+    boundary(result, pc, errors::store(error));
+    if let Some(cause) = cause {
+        result.retention_failures.push((index, cause));
+    }
+}
+
 fn successor(
     result: &mut Execution,
     mut payload: MachinePayload,
@@ -276,7 +305,7 @@ fn expand_memory(
             .memory
             .expand(offset, size, config.max_memory_bytes, domain)
     {
-        boundary(result, pc, errors::bytes(error));
+        boundary_bytes(result, pc, error);
         return false;
     }
     true
@@ -376,6 +405,7 @@ fn execute_inner(
         frontiers: Vec::new(),
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
+        retention_failures: Vec::new(),
     };
     if !late_failure::at_block_entry(&mut result, context) {
         return result;
@@ -754,7 +784,7 @@ fn execute_inner(
                 ) {
                     Ok(data) => data,
                     Err(error) => {
-                        boundary(&mut result, pc, errors::bytes(error));
+                        boundary_bytes(&mut result, pc, error);
                         return result;
                     }
                 };
@@ -836,7 +866,7 @@ fn execute_inner(
                     )
                 };
                 if let Err(error) = write {
-                    boundary(&mut result, pc, errors::store(error));
+                    boundary_store(&mut result, pc, error);
                     return result;
                 }
             }
@@ -852,7 +882,7 @@ fn execute_inner(
                     memory.write_byte(&args[0], &args[1], config.max_memory_bytes, domain)
                 };
                 if let Err(error) = write {
-                    boundary(&mut result, pc, errors::bytes(error));
+                    boundary_bytes(&mut result, pc, error);
                     return result;
                 }
                 if memory.symbolic_limit_reached() {
@@ -903,7 +933,7 @@ fn execute_inner(
                     config.max_memory_bytes,
                     domain,
                 ) {
-                    boundary(&mut result, pc, errors::bytes(error));
+                    boundary_bytes(&mut result, pc, error);
                     return result;
                 }
             }
@@ -953,7 +983,7 @@ fn execute_inner(
                             match joined {
                                 Ok(source) => source,
                                 Err(error) => {
-                                    boundary(&mut result, pc, errors::bytes(error));
+                                    boundary_bytes(&mut result, pc, error);
                                     return result;
                                 }
                             }
@@ -969,7 +999,7 @@ fn execute_inner(
                     config.max_memory_bytes,
                     domain,
                 ) {
-                    boundary(&mut result, pc, errors::bytes(error));
+                    boundary_bytes(&mut result, pc, error);
                     return result;
                 }
             }
@@ -985,7 +1015,7 @@ fn execute_inner(
                 ) {
                     Ok(data) => data,
                     Err(error) => {
-                        boundary(&mut result, pc, errors::bytes(error));
+                        boundary_bytes(&mut result, pc, error);
                         return result;
                     }
                 };
@@ -1093,7 +1123,7 @@ fn execute_inner(
                                     return result;
                                 }
                                 Err(error) => {
-                                    boundary(&mut result, pc, errors::bytes(error));
+                                    boundary_bytes(&mut result, pc, error);
                                     return result;
                                 }
                             };
@@ -1104,7 +1134,7 @@ fn execute_inner(
                                 return result;
                             }
                             Err(error) => {
-                                boundary(&mut result, pc, errors::bytes(error));
+                                boundary_bytes(&mut result, pc, error);
                                 return result;
                             }
                         }
@@ -1125,7 +1155,7 @@ fn execute_inner(
                         match read {
                             Ok(value) => value,
                             Err(error) => {
-                                boundary(&mut result, pc, errors::store(error));
+                                boundary_store(&mut result, pc, error);
                                 return result;
                             }
                         }
@@ -1177,7 +1207,7 @@ fn execute_inner(
                                     return result;
                                 }
                                 Err(error) => {
-                                    boundary(&mut result, pc, errors::bytes(error));
+                                    boundary_bytes(&mut result, pc, error);
                                     return result;
                                 }
                             };
@@ -1191,7 +1221,7 @@ fn execute_inner(
                                 return result;
                             }
                             Err(error) => {
-                                boundary(&mut result, pc, errors::bytes(error));
+                                boundary_bytes(&mut result, pc, error);
                                 return result;
                             }
                         }
@@ -1211,7 +1241,7 @@ fn execute_inner(
                                 None => return result,
                             },
                             Err(error) => {
-                                boundary(&mut result, pc, errors::bytes(error));
+                                boundary_bytes(&mut result, pc, error);
                                 return result;
                             }
                         }

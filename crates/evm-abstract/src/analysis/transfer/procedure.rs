@@ -30,6 +30,7 @@ use alloy_primitives::{Address, keccak256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+mod coarse_retry;
 mod context;
 mod cycles;
 mod environment;
@@ -109,6 +110,8 @@ struct Node {
     /// Callee entries stay in the separate procedure dependency graph.
     successors: BTreeSet<usize>,
     loop_head: bool,
+    /// Promotion belongs to the node, across incoming joins and fresh roots.
+    runtime_retry: coarse_retry::RuntimeRetry,
 }
 
 struct Procedure {

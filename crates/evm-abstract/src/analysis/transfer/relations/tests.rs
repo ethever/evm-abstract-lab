@@ -32,6 +32,7 @@ fn execution() -> Execution {
         frontiers: Vec::new(),
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
+        retention_failures: Vec::new(),
     }
 }
 
