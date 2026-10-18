@@ -616,6 +616,11 @@ mod literal_memory {
 
     #[test]
     fn unknown_symbolic_and_finite_multi_ranges_keep_full_guard_and_partition_fees() {
+        use crate::analysis::transfer::relations::identify;
+        use revm_bytecode::opcode;
+
+        let quote = 128usize;
+        let copy_work = |work: usize| work.saturating_add(32).saturating_mul(2);
         for capacity in [8, 512] {
             // Keep the private helpers' original 1B allowance; exercise the
             // default enabled relation policy without changing those fixtures.
@@ -624,6 +629,7 @@ mod literal_memory {
                 ..ExecutionConfig::default()
             };
             config.analysis.max_constants = capacity;
+            assert!(config.analysis.relations.enabled);
             let domain = config.domain().unwrap();
             let source = ExprId::fresh().unwrap();
             for (offset, size) in [
@@ -660,18 +666,86 @@ mod literal_memory {
                         640
                     },
                 );
-                // Freeze the complete original guard contract, separately from
-                // the new preflight: no rebate or reduced symbolic reservation.
-                let guard_work =
-                    16 * (offset.work_size() + size.work_size() + 2) * (capacity * capacity + 1);
-                if size.expression().is_none() {
-                    assert_eq!(guard_work, if capacity == 8 { 31_200 } else { 125_829_600 });
-                }
-                for guard_paid in [false, true] {
+                // Builder stages replaced the blanket reservation. Quote their
+                // owners from reference arguments, independently of budget.used().
+                let mut receipts = vec![quote];
+                let [guard_offset, guard_size] = [&offset, &size].map(|input| {
+                    receipts.push(quote);
+                    receipts.push(
+                        copy_work(input.work_size().saturating_add(1))
+                            .saturating_add(literal_memory_singleton_work(input)),
+                    );
+                    identify(input.clone(), config.analysis.relations.enabled)
+                });
+                receipts.push(copy_work(14).saturating_mul(2));
+                let mut operations = 0;
+                let mut apply = |op, args: &[AbstractValue], copied| {
+                    if copied {
+                        receipts.push(quote);
+                        receipts.push(args.iter().fold(0usize, |work, arg| {
+                            work.saturating_add(copy_work(arg.work_size()))
+                        }));
+                    }
+                    receipts.push(quote);
+                    // Product output release: bounded candidates, inline fields,
+                    // provenance and the expanded expression nodes, plus 32.
+                    let candidates = if op == opcode::SUB {
+                        args.iter()
+                            .try_fold(1usize, |tuples, arg| {
+                                arg.finite_constants()
+                                    .cardinality()
+                                    .map(|len| tuples.saturating_mul(len))
+                            })
+                            .unwrap_or(capacity)
+                            .min(capacity)
+                    } else {
+                        2
+                    };
+                    let nodes = args.iter().fold(1usize, |nodes, arg| {
+                        nodes.saturating_add(arg.expression().map_or(1, |expr| expr.nodes()))
+                    });
+                    receipts.push(
+                        candidates
+                            .saturating_add(12)
+                            .saturating_add(crate::domain::provenance::MAX_ORIGINS)
+                            .saturating_add(nodes)
+                            .saturating_add(32),
+                    );
+                    receipts.push(domain.operation_work(args));
+                    operations += 1;
+                    domain.apply_detailed(op, args).value
+                };
+                let bound = value(logical::MAX_END);
+                let empty = apply(opcode::ISZERO, std::slice::from_ref(&guard_size), false);
+                let greater = apply(opcode::GT, &[guard_offset.clone(), bound.clone()], true);
+                let offset_fits = apply(opcode::ISZERO, &[greater], false);
+                let remaining = apply(opcode::SUB, &[bound, guard_offset], true);
+                let greater = apply(opcode::GT, &[guard_size, remaining], true);
+                let size_fits = apply(opcode::ISZERO, &[greater], false);
+                let fits = apply(opcode::AND, &[offset_fits, size_fits], false);
+                let condition = apply(opcode::OR, &[empty, fits], false);
+                assert_eq!(operations, 8);
+                receipts.push(quote);
+                receipts.push(literal_memory_singleton_work(&condition));
+                let guard_work = receipts
+                    .iter()
+                    .fold(0usize, |work, fee| work.saturating_add(*fee));
+                let mut result = execution();
+                let before = result.payload.clone();
+                receipts.push(
+                    before
+                        .work_size()
+                        .saturating_mul(3)
+                        .saturating_add(condition.work_size()),
+                );
+                let mut paid = preflight;
+                for (stage, fee) in receipts.into_iter().enumerate() {
                     let mut result = execution();
                     let before = result.payload.clone();
-                    let limit = preflight + guard_work - usize::from(!guard_paid);
+                    let prior = 7usize;
+                    let limit = prior.saturating_add(paid).saturating_add(fee) - 1;
                     let mut budget = WorkBudget::new(limit);
+                    assert!(budget.charge(prior));
                     assert!(!allow_memory(
                         &mut result,
                         &offset,
@@ -679,17 +753,13 @@ mod literal_memory {
                         &mut context(&config, &mut budget),
                         7,
                     ));
-                    assert_eq!(
-                        budget.used(),
-                        preflight + if guard_paid { guard_work } else { 0 }
-                    );
+                    assert_eq!(budget.used(), prior.saturating_add(paid), "stage {stage}");
                     assert!(budget.exhausted());
                     assert_uninstalled(&result, &before);
                     assert_eq!(result.frontiers.len(), 1);
                     assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+                    paid = paid.saturating_add(fee);
                 }
-                let mut result = execution();
-                let before = result.payload.clone();
                 let mut budget = WorkBudget::new(config.max_work);
                 assert!(allow_memory(
                     &mut result,
