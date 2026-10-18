@@ -279,12 +279,15 @@ fn scalar_constant_sources_and_unselected_ites_pay_their_distinct_joins() {
     let guard = ExprId::fresh().unwrap();
     let left = sourced(1, 12, &yes);
     let right = sourced(4, 16, &no).with_origin(Origin::Calldata);
+    assert!(left.same_identity(&right));
+    assert!(left.identity().input().is_none());
+    assert!(right.identity().input().is_none());
     let expression = ExprId::ite(guard, yes.clone(), no.clone(), ExprLimits::default()).unwrap();
     let facts = Facts::from([(yes, left.clone()), (no, right.clone())]);
     let expected = scalar_in(&expression, &Context::new(&facts, None), domain);
     assert!(
-        expected.same_identity(&left),
-        "the whole scalar join preserves this runtime identity"
+        !expected.same_identity(&left) && !expected.same_identity(&right),
+        "the unresolved scalar join drops runtime-only identity"
     );
     check(
         expression.work_size(),
