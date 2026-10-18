@@ -6,7 +6,7 @@ from playwright.sync_api import expect
 import json
 import math
 import time
-from web_test_graph_helpers import graph_mode, symbol
+from web_test_graph_helpers import graph_mode, graph_scope, pick_graph_instance, symbol
 from web_test_harness import rendered_frame, resize_view, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_fixture, layout_page, layout_submission
 from web_test_pixels import assert_layout_same_geometry, assert_translation, node_snapshot
@@ -277,25 +277,52 @@ def edge_flow_interactions(browser, url: str, output: Path):
     zoom_flow=assert_flow_direction(zoom_frames,"new_incoming",[0,1])
     assert not requests, "selection, animation, zoom or resize reran analysis"
     resize_view(page,1440,1000)
-    loop=layout_submission(page,canvas,"5b6004565b600056",output,"flow-loop")
-    assert loop["status"]=="Converged" and len(loop["edges"])>=128
-    assert {node["start_pc"] for node in loop["cfg"]}=={0,4}
+    # Sixty-four bounded trips insert one zero below the countdown per trip.
+    # Different stack heights retain parallel native edges without relying on
+    # repeated jump sources surviving context canonicalization.
+    loop=layout_submission(page,canvas,"60405b600190035f90600c565b8060025700",output,"flow-loop")
+    assert loop["status"]=="Converged" and loop["ssa"]["complete"]
+    assert len(loop["cfg"])==len(loop["ssa"]["blocks"])==130
+    assert {node["id"] for node in loop["cfg"]}==set(range(130))
+    assert {node["start_pc"] for node in loop["cfg"]}=={0,2,12,17}
     pcs={node["id"]:node["start_pc"] for node in loop["cfg"]}
-    assert {(pcs[edge["from"]],pcs[edge["to"]]) for edge in loop["edges"]}=={(0,4),(4,0)}
+    expected_edges={(0,1,"Fallthrough"),(128,129,"BranchFalse")}
+    expected_edges.update((state,state+1,"Jump" if state%2 else "BranchTrue") for state in range(1,128))
+    assert len(loop["edges"])==129
+    assert {(edge["from"],edge["to"],edge["kind"]) for edge in loop["edges"]}==expected_edges
+    parallel={(source,target):sum(pcs[edge["from"]]==source and pcs[edge["to"]]==target for edge in loop["edges"])
+              for source,target in [(2,12),(12,2)]}
+    assert parallel=={(2,12):64,(12,2):63}
+    for pc in [2,12]:
+        members=[node for node in loop["cfg"] if node["start_pc"]==pc]
+        expected_heights=range(1,65) if pc==2 else range(2,66)
+        assert len(members)==64 and {len(node["entry_stack"]) for node in members}==set(expected_heights)
     graph_mode(page,canvas,"Blocks");page.keyboard.press("f");settle_gesture(page);page.mouse.move(2,2)
+    grouped=graph_scope(page,"Blocks",4,130,130)
+    assert grouped["edges"]==4 and grouped["native_edges"]==129
     card=node_snapshot(page,canvas,output,"flow-loop-before",measure_nodes=True)
-    assert len(card["nodes"])==2,card
-    loop_cards=sorted(card["nodes"],key=lambda bounds:bounds[1])
-    selected=next(node for node in loop["cfg"]
-                  if f"Selected {symbol('σ',node['id'])};" in page.locator("#analysis-status").text_content())
-    selected_index=next(index for index,bounds in enumerate(loop_cards)
-                        if bounds[0]<=card["bounds"][0] and bounds[1]<=card["bounds"][1]
-                        and bounds[2]>=card["bounds"][2] and bounds[3]>=card["bounds"][3])
-    # Either cycle member may be above the other after ELK cycle breaking.
-    # Resolve the upper/lower PCs from the actual selected card, then verify
-    # the typed edge really returns from the lower source to the upper target.
-    upper_pc=selected["start_pc"] if selected_index==0 else 4-selected["start_pc"]
-    lower_pc=4-upper_pc
+    assert len(card["nodes"])==4,card
+    rendered={}
+    status=page.locator("#analysis-status")
+    # Identify the two real cycle cards through native selection. The entry
+    # and STOP cards must not be mistaken for the return edge's endpoints.
+    for bounds in card["nodes"]:
+        canvas.click(position={"x":(bounds[0]+bounds[2])/2,"y":(bounds[1]+bounds[3])/2})
+        settle_gesture(page)
+        selected=next(node for node in loop["cfg"] if f"Selected {symbol('σ',node['id'])};" in status.text_content())
+        rendered[selected["start_pc"]]=bounds
+        if selected["start_pc"] in [2,12]:
+            pick_graph_instance(page,canvas,selected["id"])
+    assert set(rendered)=={0,2,12,17}
+    cycle=sorted(((pc,rendered[pc]) for pc in [2,12]),key=lambda item:item[1][1])
+    (upper_pc,_),(lower_pc,_)=cycle
+    loop_cards=[bounds for _,bounds in cycle]
+    bounds=rendered[2]
+    canvas.click(position={"x":(bounds[0]+bounds[2])/2,"y":(bounds[1]+bounds[3])/2})
+    settle_gesture(page)
+    pick_graph_instance(page,canvas,127,"sigma_127")
+    assert next(node for node in loop["cfg"] if node["id"]==127)["start_pc"]==2
+    page.mouse.move(2,2);settle_gesture(page)
     assert any(pcs[edge["from"]]==lower_pc and pcs[edge["to"]]==upper_pc for edge in loop["edges"])
     leg=loop_return_region(page,canvas.screenshot(),loop_cards)
     assert leg["pixels"]>30 and leg["target_arrow_pixels"]>=2 and leg["region"][3]-leg["region"][1]>25,leg
@@ -307,7 +334,9 @@ def edge_flow_interactions(browser, url: str, output: Path):
     result={"chain_native_states":states,"selected_middle":states[1],"incoming":incoming,"outgoing":outgoing,
             "selected_last":states[3],"old_edges_stop":True,"new_incoming":new_incoming,
             "camera":camera,"zoom_resize_flow":zoom_flow,"loop_return":loop_flow,
-            "loop_original_edges":len(loop["edges"]),"incident_frames":incident,
+            "loop_original_edges":len(loop["edges"]),"loop_grouped":grouped,
+            "loop_parallel_edges":{"forward":parallel[(2,12)],"return":parallel[(12,2)]},
+            "loop_selected_native_state":127,"incident_frames":incident,
             "selection_frames":changed,"zoom_resize_frames":zoom_frames,"loop_frames":returning,
             "renderer":webgpu_evidence(page)}
     (output/"edge-flow-report.json").write_text(json.dumps(result,indent=2)+"\n")
