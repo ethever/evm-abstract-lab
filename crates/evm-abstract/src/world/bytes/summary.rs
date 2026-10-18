@@ -27,6 +27,19 @@ pub(in crate::world) fn scalar(value: &AbstractValue, domain: Domain) -> Abstrac
     }
 }
 
+// The root is authoritative. A stale presentation cell can supply only a dense
+// finite allocation proved redundant by the newly evaluated interval; no old
+// masks, bounds, congruence, nonzero or metadata enter the current scalar.
+fn restore_presentation(value: AbstractValue, previous: Option<&AbstractValue>) -> AbstractValue {
+    let Some(previous) = previous else {
+        return value;
+    };
+    let numeric = value
+        .numeric()
+        .restore_redundant_finite_from(previous.numeric());
+    value.with_numeric(numeric)
+}
+
 pub(in crate::world) fn join_scalar(
     old: &AbstractValue,
     incoming: &AbstractValue,
@@ -172,6 +185,7 @@ impl ByteArray {
                             &reader.read(&self.root, &ExprId::constant(U256::from(index))),
                             domain,
                         );
+                        let value = restore_presentation(value, self.bytes.get(&index));
                         if value.numeric() != AbstractValue::unknown_byte().numeric() {
                             cells.insert(index, value);
                         }
@@ -355,7 +369,13 @@ impl ByteArraySummary {
                             // its executable carrier drops a proved redundant
                             // finite component, before observed checks its size.
                             // The original full summary work is still prepaid.
-                            numeric: value.numeric().compact_for_retention(),
+                            numeric: if domain.spec().profile() == crate::domain::Profile::Product {
+                                value.numeric().compact_for_retention()
+                            } else {
+                                // ConstantsOnly joins inspect finite alone;
+                                // retain its existing executable representation.
+                                value.numeric().clone()
+                            },
                         })
                     })
                     .collect::<Result<Vec<_>, RangeError>>()?;
@@ -418,18 +438,17 @@ impl ByteArraySummary {
             if analysis_control::current_cancellation().is_cancelled() {
                 return Err(ExprError::Cancelled.into());
             }
-            out.bytes.insert(
-                index,
-                scalar(
-                    &super::numeric::read(
-                        &out.root,
-                        &ExprId::constant(U256::from(index)),
-                        &out.operands,
-                        domain,
-                    ),
+            let value = scalar(
+                &super::numeric::read(
+                    &out.root,
+                    &ExprId::constant(U256::from(index)),
+                    &out.operands,
                     domain,
                 ),
+                domain,
             );
+            let value = restore_presentation(value, out.bytes.get(&index));
+            out.bytes.insert(index, value);
         }
         out.check_existing(limits(domain))?;
         Ok(out)

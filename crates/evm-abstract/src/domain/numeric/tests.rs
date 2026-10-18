@@ -24,6 +24,12 @@ fn assert_carrier(original: &NumericValue, drops_finite: bool) -> NumericValue {
         assert!(!original.finite.is_top());
         assert!(compact.finite.is_top());
         assert_eq!(compact.work_size(), 13);
+        let restored = compact.restore_redundant_finite_from(original);
+        assert_eq!(&restored, original);
+        assert!(std::ptr::eq(
+            restored.constants().unwrap(),
+            original.constants().unwrap()
+        ));
     } else {
         assert_eq!(&compact, original);
     }
@@ -241,5 +247,70 @@ fn profile_projection_and_later_reduction_do_not_change_the_carrier_gamma_proof(
             assert_eq!(carrier.contains(candidate), reduced.contains(candidate));
         }
         assert!(carrier.constants().is_none());
+    }
+}
+
+#[test]
+fn restoration_uses_only_current_constraints_and_shares_only_the_old_finite_allocation() {
+    // Deliberately stale old R must contribute no fields to the current result.
+    let previous = NumericValue {
+        bits: KnownBits::exact(U256::from(200)),
+        congruence: Congruence::exact(U256::from(200)),
+        nonzero: false,
+        ..finite((0u64..=255).map(U256::from), range(200, 255))
+    };
+    let current = NumericValue {
+        bits: KnownBits::new(U256::from(1), U256::from(2)).unwrap(),
+        interval: range(4, 31),
+        congruence: Congruence::new(U256::from(3), U256::from(1)).unwrap(),
+        nonzero: true,
+        ..NumericValue::top()
+    };
+    let restored = current.restore_redundant_finite_from(&previous);
+    assert_eq!(restored.bits, current.bits);
+    assert_eq!(restored.interval, current.interval);
+    assert_eq!(restored.congruence, current.congruence);
+    assert_eq!(restored.nonzero, current.nonzero);
+    assert!(std::ptr::eq(
+        restored.constants().unwrap(),
+        previous.constants().unwrap()
+    ));
+    assert_eq!(restored.restore_redundant_finite_from(&previous), restored);
+    assert_eq!(restored.compact_for_retention(), current);
+    for candidate in (0u64..=256).map(U256::from).chain([U256::MAX]) {
+        assert_eq!(restored.contains(candidate), current.contains(candidate));
+    }
+}
+
+#[test]
+fn restoration_refuses_stale_wide_bounds_holes_overflow_and_every_current_finite() {
+    let previous = finite((0u64..=255).map(U256::from), range(0, 255));
+    for interval in [range(0, 511), range(128, 511), Interval::top()] {
+        let current = NumericValue {
+            interval,
+            ..NumericValue::top()
+        };
+        assert_eq!(current.restore_redundant_finite_from(&previous), current);
+    }
+    for current in [
+        finite([1u64, 3, 5].map(U256::from), range(0, 255)),
+        finite((4u64..=7).map(U256::from), range(4, 7)),
+        NumericValue::constant(U256::from(7)),
+    ] {
+        let restored = current.restore_redundant_finite_from(&previous);
+        assert_eq!(restored, current);
+        assert!(std::ptr::eq(
+            restored.constants().unwrap(),
+            current.constants().unwrap()
+        ));
+    }
+    let current = NumericValue::unsigned_range(U256::ZERO, U256::from(11)).unwrap();
+    for previous in [
+        finite([0u64, 1, 2, 3, 8, 9, 10, 11].map(U256::from), range(0, 11)),
+        finite([U256::ZERO, U256::MAX], Interval::top()),
+        NumericValue::constant(U256::ZERO),
+        NumericValue::top(),
+    ] {
+        assert_eq!(current.restore_redundant_finite_from(&previous), current);
     }
 }

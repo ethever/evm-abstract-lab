@@ -73,23 +73,39 @@ impl NumericValue {
     /// numeric payload; len, tree endpoints and shared-allocation cloning need
     /// no candidate scan, enumeration, CRT or additional cache.
     pub(crate) fn compact_for_retention(&self) -> Self {
-        let Some(values) = self.constants().filter(|values| values.len() > 1) else {
-            return self.clone();
-        };
-        let (Some(min), Some(max)) = (values.first(), values.last()) else {
-            return self.clone();
-        };
-        let span = max
-            .checked_sub(*min)
-            .and_then(|distance| distance.checked_add(U256::from(1)));
-        let (lower, upper) = self.interval.unsigned_bounds();
-        if span != Some(U256::from(values.len())) || lower < *min || upper > *max {
+        if !self.interval_covered_by_dense(&self.finite) {
             return self.clone();
         }
         Self {
             finite: FiniteConstantSet::top(),
             ..self.clone()
         }
+    }
+    /// Recover only a redundant presentation finite set after a current read.
+    /// The old numeric product may be stale: only its finite allocation is
+    /// borrowed, and the proof uses this value's current interval. Never replace
+    /// a current finite constraint, even if its other components imply old F.
+    pub(crate) fn restore_redundant_finite_from(&self, previous: &Self) -> Self {
+        if !self.finite.is_top() || !self.interval_covered_by_dense(&previous.finite) {
+            return self.clone();
+        }
+        Self {
+            finite: previous.finite.clone(),
+            ..self.clone()
+        }
+    }
+    fn interval_covered_by_dense(&self, finite: &FiniteConstantSet) -> bool {
+        let Some(values) = finite.as_values().filter(|values| values.len() > 1) else {
+            return false;
+        };
+        let (Some(min), Some(max)) = (values.first(), values.last()) else {
+            return false;
+        };
+        let span = max
+            .checked_sub(*min)
+            .and_then(|distance| distance.checked_add(U256::from(1)));
+        let (lower, upper) = self.interval.unsigned_bounds();
+        span == Some(U256::from(values.len())) && *min <= lower && upper <= *max
     }
     /// 有限常量集合组件；它的 Top 不会抹去其他数值约束。
     pub fn finite_constants(&self) -> &FiniteConstantSet {

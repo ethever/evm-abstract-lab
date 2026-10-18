@@ -141,6 +141,7 @@ fn actual_shallow_observed_constructor_admits_compact_64_binding_carrier_only() 
     assert_eq!(retained[63].numeric, *cells[&63].numeric());
     assert_eq!(summary, frozen);
     assert_eq!(summary.work_size(), original_work);
+    assert_eq!(replay.bytes, *cells);
     assert!(original_work >= replay.work_size());
 }
 
@@ -233,35 +234,60 @@ fn future_byte_and_word_reads_include_values_and_keep_exact_known_controls() {
 fn repeated_projection_join_and_instantiation_keep_canonical_cells_and_work_stable() {
     for profile in [Profile::Product, Profile::ConstantsOnly] {
         let domain = domain(profile);
-        let mut summary = producer_shape(domain);
-        // The producer fixture may contain redundant unknown-byte entries.
-        // Compare to the existing uncompressed round-trip canonical form.
-        let root = old_root(
-            &summary,
-            StateLimits {
-                max_nodes: 16_843,
-                max_depth: 256,
-            },
-        )
-        .unwrap();
-        let mut old = summary.instantiate(domain).unwrap();
-        old.root = root;
-        summary = old.summary_projection(domain).unwrap();
-        let frozen = summary.clone();
-        let work = summary.work_size();
-        for _ in 0..4 {
-            let replay = summary.instantiate(domain).unwrap();
+        let mut inputs = vec![ByteArraySummary {
+            length: finite(domain, [1, 3]),
+            memory: false,
+            content: Content::Cells(BTreeMap::from([
+                (0, finite(domain, 0..=255)),
+                (1, finite(domain, 0..=127)),
+                (2, finite(domain, [0, 1, 2, 3, 8, 9, 10, 11])),
+            ])),
+        }];
+        if profile == Profile::Product {
+            inputs.push(producer_shape(domain));
+        }
+        for mut summary in inputs {
             let Content::Cells(cells) = &summary.content else {
                 panic!("cell fixture")
             };
-            assert_eq!(replay.bytes, *cells);
-            let projected = replay.summary_projection(domain).unwrap();
-            assert_eq!(projected, frozen);
-            assert_eq!(projected.work_size(), work);
-            assert!(projected.covers(&frozen, domain));
-            assert!(frozen.covers(&projected, domain));
-            assert_eq!(frozen.join(&projected, domain, false), frozen);
-            summary = projected;
+            let mut old = summary.instantiate(domain).unwrap();
+            old.root = ByteStateId::observed(
+                SourceId::fresh().unwrap(),
+                old.length.symbolic_expression().unwrap(),
+                cells
+                    .iter()
+                    .map(|(index, value)| StateBinding {
+                        index: U256::from(*index),
+                        value: ExprId::fresh().unwrap(),
+                        numeric: value.numeric().clone(),
+                    })
+                    .collect(),
+                StateLimits {
+                    max_nodes: 16_843,
+                    max_depth: 256,
+                },
+            )
+            .unwrap();
+            // Start from the existing uncompressed round-trip canonical form.
+            // This includes uncertain-length zero padding before compaction.
+            let canonical = old.summary_projection(domain).unwrap();
+            assert_eq!(canonical, summary);
+            let frozen = summary.clone();
+            let work = summary.work_size();
+            for _ in 0..4 {
+                let replay = summary.instantiate(domain).unwrap();
+                let Content::Cells(cells) = &summary.content else {
+                    panic!("cell fixture")
+                };
+                assert_eq!(replay.bytes, *cells);
+                let projected = replay.summary_projection(domain).unwrap();
+                assert_eq!(projected, frozen);
+                assert_eq!(projected.work_size(), work);
+                assert!(projected.covers(&frozen, domain));
+                assert!(frozen.covers(&projected, domain));
+                assert_eq!(frozen.join(&projected, domain, false), frozen);
+                summary = projected;
+            }
         }
     }
 }
@@ -297,6 +323,11 @@ fn instantiations_and_saved_versions_keep_independent_sources_and_old_reads() {
             .unwrap(),
         old_read
     );
+    assert_eq!(saved.summary_projection(domain).unwrap(), summary);
+    let Content::Cells(cells) = current.summary_projection(domain).unwrap().content else {
+        panic!("mixed current content")
+    };
+    assert_eq!(cells[&0].singleton(), Some(U256::from(17)));
 }
 
 #[test]
@@ -332,4 +363,93 @@ fn retention_failures_and_cancellation_never_install_partial_arrays_or_summaries
     });
     assert_eq!(summary, frozen);
     assert_eq!(replay, saved);
+}
+
+#[test]
+fn presentation_restoration_preserves_current_value_metadata_and_never_copies_old_bounds() {
+    use crate::domain::{facts::Symbol, provenance::Origin};
+
+    let domain = domain(Profile::Product);
+    let previous = finite(domain, 0..=255)
+        .with_origin(Origin::Balance)
+        .with_identity(10, 1)
+        .with_expression(ExprId::fresh().unwrap());
+    let numeric = NumericValue::unsigned_range(U256::from(4), U256::from(31)).unwrap();
+    let current = AbstractValue::constant(U256::ZERO)
+        .with_numeric(numeric.clone())
+        .with_origin(Origin::Calldata)
+        .with_identity(11, 2)
+        .with_symbol(Symbol::new(1), Some(11))
+        .with_symbolic_limit();
+    let restored = restore_presentation(current.clone(), Some(&previous));
+    assert_eq!(
+        restored.numeric(),
+        &numeric.restore_redundant_finite_from(previous.numeric())
+    );
+    assert_eq!(restored.provenance(), current.provenance());
+    assert_eq!(restored.identity(), current.identity());
+    assert_eq!(restored.expression(), current.expression());
+    assert_eq!(
+        restored.symbolic_limit_reached(),
+        current.symbolic_limit_reached()
+    );
+    assert_eq!(restore_presentation(current.clone(), None), current);
+    assert_eq!(
+        restore_presentation(restored.clone(), Some(&previous)),
+        restored
+    );
+}
+
+#[test]
+fn projection_checks_current_root_before_using_a_stale_or_missing_presentation_cell() {
+    let domain = domain(Profile::Product);
+    let previous = finite(domain, 0..=255);
+    for current in [
+        AbstractValue::unsigned_range(U256::from(4), U256::from(31)).unwrap(),
+        AbstractValue::unsigned_range(U256::ZERO, U256::from(511)).unwrap(),
+        finite(domain, [1, 3, 5]),
+    ] {
+        let summary = ByteArraySummary {
+            length: AbstractValue::constant(U256::from(1)),
+            memory: false,
+            content: Content::Cells(BTreeMap::from([(0, previous.clone())])),
+        };
+        let mut replay = summary.instantiate(domain).unwrap();
+        replay.root = ByteStateId::observed(
+            SourceId::fresh().unwrap(),
+            ExprId::constant(U256::from(1)),
+            vec![StateBinding {
+                index: U256::ZERO,
+                value: ExprId::fresh().unwrap(),
+                numeric: current.numeric().clone(),
+            }],
+            limits(domain).into(),
+        )
+        .unwrap();
+        let projected = replay.summary_projection(domain).unwrap();
+        let Content::Cells(cells) = &projected.content else {
+            panic!("cell fixture")
+        };
+        let expected = current
+            .numeric()
+            .restore_redundant_finite_from(previous.numeric());
+        assert_eq!(cells[&0].numeric(), &expected);
+        for candidate in (0u64..=512).map(U256::from).chain([U256::MAX]) {
+            assert_eq!(cells[&0].contains(candidate), current.contains(candidate));
+        }
+        assert_eq!(
+            projected
+                .instantiate(domain)
+                .unwrap()
+                .summary_projection(domain)
+                .unwrap(),
+            projected
+        );
+        replay.bytes.clear();
+        let uncached = replay.summary_projection(domain).unwrap();
+        let Content::Cells(cells) = &uncached.content else {
+            panic!("cell fixture")
+        };
+        assert_eq!(cells[&0].numeric(), current.numeric());
+    }
 }
