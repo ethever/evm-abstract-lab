@@ -12,6 +12,7 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
 
+mod full_image;
 mod packing;
 
 type Facts = BTreeMap<ExprId, AbstractValue>;
@@ -193,27 +194,57 @@ impl<'a> Reader<'a> {
             }
             value
         } else {
-            (0..32)
-                .fold(None, |out, j| {
-                    let byte = self.context.apply(
-                        self.domain,
-                        opcode::BYTE,
-                        &[constant(j), scalar.clone()],
-                    );
-                    #[cfg(test)]
-                    if !self.context.stopped() {
-                        tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
-                    }
-                    #[cfg(test)]
-                    let joins = out.is_some();
-                    let value = join(out, byte, self.domain, &self.context);
-                    #[cfg(test)]
-                    if joins && !self.context.stopped() {
-                        tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.1 += 1);
-                    }
-                    Some(value)
-                })
-                .expect("32 bytes")
+            // Enum/policy checks leave finite and congruence-constrained words
+            // on their original path. Fund the fixed mask proof before running
+            // it; a refused mandatory payment must not enter the old loop.
+            let complete = if full_image::candidate(scalar.numeric(), self.domain) {
+                if !self.context.pay_byte_image(self.domain) {
+                    return AbstractValue::top();
+                }
+                full_image::proves(scalar.numeric())
+            } else {
+                false
+            };
+            if complete {
+                // Consume the owned scalar: its variable metadata is moved,
+                // never cloned by the certificate. Only the temporary numeric
+                // layer changes; no fact, expression or state is replaced.
+                let value = self.context.apply(
+                    self.domain,
+                    opcode::BYTE,
+                    &[
+                        constant(0),
+                        scalar.with_numeric(crate::domain::NumericValue::top()),
+                    ],
+                );
+                #[cfg(test)]
+                if !self.context.stopped() {
+                    tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
+                }
+                value
+            } else {
+                (0..32)
+                    .fold(None, |out, j| {
+                        let byte = self.context.apply(
+                            self.domain,
+                            opcode::BYTE,
+                            &[constant(j), scalar.clone()],
+                        );
+                        #[cfg(test)]
+                        if !self.context.stopped() {
+                            tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
+                        }
+                        #[cfg(test)]
+                        let joins = out.is_some();
+                        let value = join(out, byte, self.domain, &self.context);
+                        #[cfg(test)]
+                        if joins && !self.context.stopped() {
+                            tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.1 += 1);
+                        }
+                        Some(value)
+                    })
+                    .expect("32 bytes")
+            }
         };
         if self.context.stopped() {
             return AbstractValue::top();

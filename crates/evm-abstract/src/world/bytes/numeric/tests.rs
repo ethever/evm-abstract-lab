@@ -476,12 +476,17 @@ mod top_word_byte_union {
         for capacity in [8, 512] {
             for (rounds, fact_limit) in [(4, 256), (1, 1)] {
                 let domain = product(capacity, rounds, fact_limit);
-                for value in constrained.iter().chain([&concrete]) {
+                for (index, value) in constrained.iter().chain([&concrete]).enumerate() {
                     let key = expression();
                     let facts = Facts::from([(key.clone(), value.clone())]);
                     let expected = original_union(&key, &facts, domain);
                     let mut reader = Reader::new(&facts, domain);
-                    counted_union(&mut reader, &key, &expected, (32, 31));
+                    let calls = if matches!(index, 0 | 2) {
+                        (1, 0)
+                    } else {
+                        (32, 31)
+                    };
+                    counted_union(&mut reader, &key, &expected, calls);
                     counted_union(&mut reader, &key, &expected, (0, 0));
                 }
             }
@@ -575,7 +580,8 @@ mod top_word_byte_union {
             assert!(!scalar_in(&key, &selected, domain).numeric().is_top());
             let expected = original_in_context(&key, &selected, domain);
             let mut reader = Reader::with_context(selected, domain);
-            counted_union(&mut reader, &key, &expected, (32, 31));
+            let calls = if nonzero { (1, 0) } else { (32, 31) };
+            counted_union(&mut reader, &key, &expected, calls);
             counted_union(&mut reader, &key, &expected, (0, 0));
         }
     }
@@ -598,5 +604,9 @@ mod top_word_byte_union {
             assert_eq!(reader.word_bytes, cache);
             assert_eq!(reader.retained_work, retained);
         });
+    }
+
+    mod full_image {
+        include!("full_image/tests.rs");
     }
 }

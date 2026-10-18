@@ -439,6 +439,167 @@ fn byte_unions_pay_executed_calls_and_complete_warm_hits_owe_no_new_actions() {
 }
 
 #[test]
+fn certified_byte_image_pays_fixed_proof_then_one_transfer_and_no_warm_fee() {
+    let domain = numeric_domain(Domain::default());
+    let key = ExprId::fresh().unwrap();
+    let value = AbstractValue::unknown_address()
+        .with_expression(key.clone())
+        .with_identity(811_037, 10)
+        .with_symbolic_limit();
+    let facts = Facts::from([(key.clone(), value.clone())]);
+    let frozen = facts.clone();
+    let expected = Reader::new(&facts, domain).word_byte_union(&key);
+    let conditional = ConditionalFacts::default();
+    let preparation = quote(key.work_size(), &facts, domain);
+    let transfer = domain.operation_work(&[
+        zero(),
+        value
+            .clone()
+            .with_numeric(crate::domain::NumericValue::top()),
+    ]);
+    let oracle = Context::prepared(&facts, &conditional, domain, preparation.nodes);
+    assert_complete(
+        &Reader::with_context(oracle.clone(), domain).word_byte_union(&key),
+        &expected,
+        &value,
+    );
+    assert!(numeric(&oracle.demand_payments()).is_empty());
+    assert_eq!(oracle.reader_calls(), (1, 0));
+    let mut probe = WorkBudget::new(usize::MAX);
+    let full;
+    {
+        let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut probe)
+            .unwrap()
+            .unwrap();
+        let mut reader = Reader::with_context(root.clone(), domain);
+        assert_complete(&reader.word_byte_union(&key), &expected, &value);
+        assert_eq!(root.reader_calls(), (1, 0));
+        assert_eq!(root.demand_usage(), oracle.demand_usage());
+        full = root.demand_payments();
+        assert_eq!(numeric(&full), [32 * 256, transfer]);
+        let retained = reader.retained_work;
+        assert_complete(&reader.word_byte_union(&key), &expected, &value);
+        assert_eq!(root.demand_payments(), full);
+        assert_eq!(root.reader_calls(), (1, 0));
+        assert_eq!(reader.retained_work, retained);
+        assert_eq!(reader.word_bytes.len(), 1);
+    }
+    assert_eq!(probe.used(), total(&full));
+    let positions: Vec<_> = full
+        .iter()
+        .enumerate()
+        .filter(|(_, (number, _))| *number)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(positions.len(), 2);
+    for (stage, &position) in positions.iter().enumerate() {
+        for exact in [false, true] {
+            let available = total(&full[..position]) + full[position].1 - usize::from(!exact);
+            let mut budget = WorkBudget::new(available);
+            {
+                let root =
+                    Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
+                        .unwrap()
+                        .unwrap();
+                let clone = root.clone();
+                let mut reader = Reader::with_context(root.clone(), domain);
+                let actual = reader.word_byte_union(&key);
+                assert_eq!(
+                    root.demand_payments(),
+                    full[..position + usize::from(exact)]
+                );
+                let complete = stage == 1 && exact;
+                assert_eq!(root.reader_calls(), (usize::from(complete), 0));
+                if complete {
+                    assert_complete(&actual, &expected, &value);
+                    assert!(!root.stopped());
+                    assert_eq!(reader.word_bytes.len(), 1);
+                } else {
+                    assert_eq!(actual, AbstractValue::top());
+                    assert!(root.work_exhausted());
+                    assert!(!root.cache_refused());
+                    assert!(reader.word_bytes.is_empty());
+                    assert_eq!(reader.retained_work, 0);
+                    let trace = root.demand_payments();
+                    let usage = root.demand_usage();
+                    assert!(!clone.pay_byte_image(domain));
+                    assert_eq!(reader.word_byte_union(&key), AbstractValue::top());
+                    assert_eq!(root.demand_payments(), trace);
+                    assert_eq!(root.demand_usage(), usage);
+                    assert_eq!(root.reader_calls(), (0, 0));
+                }
+            }
+            assert_eq!(budget.used(), total(&full[..position + usize::from(exact)]));
+        }
+    }
+    assert_eq!(facts, frozen);
+}
+
+#[test]
+fn certified_byte_image_cancellation_and_full_policy_guard_precede_publication() {
+    let domain = numeric_domain(Domain::default());
+    let key = ExprId::fresh().unwrap();
+    let facts = Facts::from([(key.clone(), AbstractValue::unknown_address())]);
+    let frozen = facts.clone();
+    let conditional = ConditionalFacts::default();
+    let preparation = quote(key.work_size(), &facts, domain);
+    // Stage one is the proof prepayment; stage two is ordinary BYTE payment.
+    for stage in [1, 2] {
+        let token = analysis_control::Cancellation::new();
+        let mut budget = WorkBudget::new(usize::MAX);
+        let paid;
+        {
+            let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
+                .unwrap()
+                .unwrap();
+            root.cancel_after_numeric_payments(stage, token.clone());
+            let clone = root.clone();
+            let mut reader = Reader::with_context(root.clone(), domain);
+            analysis_control::with_cancellation(&token, || {
+                assert_eq!(reader.word_byte_union(&key), AbstractValue::top());
+                assert_eq!(root.check(), Err(ExprError::Cancelled));
+            });
+            assert_eq!(clone.check(), Err(ExprError::Cancelled));
+            assert_eq!(root.reader_calls(), (0, 0));
+            assert_eq!(numeric(&root.demand_payments()).len(), stage);
+            assert!(reader.word_bytes.is_empty());
+            assert_eq!(reader.retained_work, 0);
+            assert!(!root.work_exhausted());
+            assert!(!root.cache_refused());
+            let trace = root.demand_payments();
+            assert!(!clone.pay_byte_image(domain));
+            assert_eq!(reader.word_byte_union(&key), AbstractValue::top());
+            assert_eq!(root.demand_payments(), trace);
+            paid = total(&trace);
+        }
+        assert_eq!(budget.used(), paid);
+        assert!(!budget.exhausted());
+    }
+    let mut budget = WorkBudget::new(usize::MAX);
+    {
+        let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
+            .unwrap()
+            .unwrap();
+        let trace = root.demand_payments();
+        let changed = Domain::from_spec(
+            crate::domain::DomainSpec::new(
+                crate::domain::Profile::Product,
+                NonZeroUsize::new(domain.capacity()).unwrap(),
+                NonZeroUsize::new(domain.spec().reduction_rounds()).unwrap(),
+                NonZeroUsize::new(domain.spec().fact_limit() + 1).unwrap(),
+            )
+            .with_relations(domain.spec().relations()),
+        );
+        assert!(!root.pay_byte_image(changed));
+        assert!(root.cache_refused());
+        assert!(!root.work_exhausted());
+        assert_eq!(root.demand_payments(), trace);
+        assert_eq!(root.reader_calls(), (0, 0));
+    }
+    assert_eq!(facts, frozen);
+}
+
+#[test]
 fn successful_packing_has_no_synthetic_transfers_and_fallback_pays_all_original_shl_or_calls() {
     let domain = numeric_domain(Domain::default());
     let key = ExprId::fresh().unwrap();

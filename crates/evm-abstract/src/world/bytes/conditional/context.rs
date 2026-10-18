@@ -170,6 +170,20 @@ impl<'a> Context<'a> {
         domain.apply(op, args)
     }
 
+    /// Prepay the fixed byte-image mask proof and inline numeric replacement.
+    /// The fixed 32*256 envelope covers masks/bounds, 32 stack-byte probes and
+    /// construction/release of Top's six inline words; no AV payload is copied.
+    /// The owned scalar moves its metadata; the ordinary apply pays its own
+    /// transfer. None is a pure library path; prepaid analysis callers retain
+    /// their old envelope, and the reference oracle owes no Reader fees.
+    pub(in crate::world::bytes) fn pay_byte_image(&self, domain: Domain) -> bool {
+        !self.stopped()
+            && self
+                .demand
+                .as_ref()
+                .is_none_or(|demand| demand.policy(domain) && demand.pay_reader(|| 32 * 256))
+    }
+
     /// This join is separate from resolve's already-paid source metadata join.
     pub(in crate::world::bytes) fn join(
         &self,
