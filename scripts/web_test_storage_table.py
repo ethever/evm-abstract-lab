@@ -265,6 +265,20 @@ def storage_table_interactions(browser, url: str, output: Path):
                   "changed_tail_columns":[min(changed),max(changed)],"rejection":str(error)}
     else:
         raise AssertionError("reviewed complete Value accepted an incorrect last glyph")
+    # The same real analysis also changed the Slot's final digit. Restore its
+    # full width so the complete Slot oracle sees all 66 glyphs, not a suffix.
+    drag_storage_separator(page,wrong,results["storage"]["initial"]["separator"])
+    wrong_full=storage_table_snapshot(page,canvas,output,"storage-table-wrong-last-slot-glyph",tab[3],len(slots))
+    wrong_slot=wrong_full["rows"][-1]["slot"]
+    assert len(storage_glyph_cells(wrong_slot))==len(word),storage_pixel_report(wrong_slot)
+    assert wrong_slot["bounds"][2]-wrong_slot["bounds"][0]>500,storage_pixel_report(wrong_slot)
+    try:
+        assert_storage_literal_pixels(wrong_slot,word)
+    except AssertionError as error:
+        negative["slot"]={"actual_text":wrong_word,"expected_text":word,
+                          "mask_size":wrong_slot["mask_size"],"rejection":str(error)}
+    else:
+        raise AssertionError("reviewed complete Slot accepted an incorrect last glyph")
     assert len(posts)==5,"expected exactly one additional real negative analysis"
     assert not errors,errors
     result=storage_pixel_report({"stores":results,"wrong_last_glyph":negative,

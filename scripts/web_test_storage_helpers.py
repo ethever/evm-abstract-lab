@@ -290,6 +290,10 @@ def assert_storage_literal_pixels(cell, text: str):
         "{0x205f}": ([61,12], "01a9f16f529282cffa2f49e72b9c1686e9ca3d452e2ce788636eaa5c83592176"),
     }
     size,expected=reviewed[text]
+    if text==STORAGE_SLOT_WORD:
+        # The original Slot galley differs by at most one RGB step in the saved
+        # current capture; its red127->128 sample changes the thresholded mask.
+        return assert_storage_reviewed_pixels(cell,"full_slot",text,size,expected)
     if text=="{"+STORAGE_SLOT_WORD+"}":
         # One historical red127 sample rounds to128 in current Chromium.
         # Compare the complete independent raster with the existing <=2 bound.
