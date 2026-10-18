@@ -805,14 +805,24 @@ fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
     let mut returned = exit.clone();
     returned.active_mut().memory = outcome.data.clone();
     returned.store = outcome.store.clone();
+    // Entry and exit retain the entered transaction's current Store. Only the
+    // actual root RETURN commits it; saved_store remains pre-entry rollback history.
+    let initial_current_store = &analysis.states()[0].entry.store;
+    let mut finalized_store = initial_current_store.clone();
+    finalized_store.finalize_transaction(domain);
     for (word, call_value) in [(1, 0), (2, 1), (3, 2)] {
         bounded_promotion::assert_joint_word_witness(&covered.entry, word, domain);
-        for payload in [&successor.entry, exit, &returned] {
+        for (stage, payload, expected_store) in [
+            ("successor-entry", &successor.entry, initial_current_store),
+            ("successor-exit", exit, initial_current_store),
+            ("actual-return", &returned, &finalized_store),
+        ] {
             bounded_promotion::assert_poststep_word_witness(
                 payload,
+                stage,
                 word,
                 call_value,
-                &analysis.states()[0].entry.store,
+                expected_store,
                 domain,
             );
         }
@@ -824,14 +834,11 @@ fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() 
         }
     }
     assert!(
-        outcome.store.summary_projection(domain).unwrap().covers(
-            &analysis.states()[0]
-                .entry
-                .store
-                .summary_projection(domain)
-                .unwrap(),
-            domain,
-        )
+        outcome
+            .store
+            .summary_projection(domain)
+            .unwrap()
+            .covers(&finalized_store.summary_projection(domain).unwrap(), domain,)
     );
     crate::ssa::build_world(&analysis)
         .unwrap()

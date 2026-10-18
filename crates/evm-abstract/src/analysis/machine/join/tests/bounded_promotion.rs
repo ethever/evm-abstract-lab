@@ -296,9 +296,10 @@ fn assert_assigned_cache(
 /// before ByteArray renaming can normalize constant-key numeric guarantees.
 pub(super) fn assert_poststep_word_witness(
     payload: &MachinePayload,
+    stage: &str,
     word: u64,
     call_value: u64,
-    original_store: &Store,
+    expected_store: &Store,
     domain: Domain,
 ) {
     // Only the read-only proof uses enabled local queries. The execution's
@@ -308,6 +309,7 @@ pub(super) fn assert_poststep_word_witness(
     let original_relations = memory.symbolic_relations(&limits).unwrap();
     let original_guards = memory.guard_conditions(limits.expressions()).unwrap();
     let (mut assigned, mut assignment) = select_canonical_arm(payload, domain);
+    let selected_store = assigned.store.clone();
     for guard in &original_guards {
         match guard.kind() {
             ExprKind::Fresh(_) => {
@@ -430,12 +432,19 @@ pub(super) fn assert_poststep_word_witness(
     // Numeric-only scalar cells have no aliases to the independent byte source.
     assigned.active_mut().stack[0] = AbstractValue::constant(word_value);
     assigned.active_mut().call_value = fixtures::word(call_value);
+    // The complete selected Store is the witness for this SAME word/call-value
+    // assignment; byte cells and retained historical guards cannot narrow it.
+    assert_eq!(
+        assigned.store, selected_store,
+        "{stage}: joint assignment changed the Store witness"
+    );
+    let actual = assigned.store.summary_projection(domain).unwrap();
+    let expected = expected_store.summary_projection(domain).unwrap();
     assert!(
-        assigned
-            .store
-            .summary_projection(domain)
-            .unwrap()
-            .covers(&original_store.summary_projection(domain).unwrap(), domain,)
+        actual.covers(&expected, domain),
+        "{stage}: word={word}, call_value={call_value}, is_memory={}, block={}; actual={actual:#?}\nexpected={expected:#?}",
+        payload.active().memory.is_memory(),
+        payload.active().key.basic_block_index,
     );
 }
 
