@@ -8,6 +8,8 @@ use super::{Code, Snapshot, Store, StoreError, lifecycle, owner_deletion::OwnerC
 use crate::{domain::Domain, resource::WorkBudget};
 use alloy_primitives::Address;
 
+mod preparation;
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum FinalizationError {
     #[error("transaction finalization work exhausted")]
@@ -466,6 +468,7 @@ impl Store {
         if let Some(snapshot) = rollback {
             staged.restore(snapshot.clone());
         }
+        staged.prepare_unlisted_finalization_checked(domain, budget)?;
         let footprint = Footprint::measure(&staged, budget)?;
         // Pay address-set construction, lookup/classification and plan disposal
         // before visiting any address; values remain borrowed during emptiness.

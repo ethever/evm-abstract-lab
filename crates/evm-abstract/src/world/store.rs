@@ -972,6 +972,7 @@ impl Store {
         let limits = domain.spec().relations().expressions();
         self.check_existing(limits)?;
         let mut staged = self.clone();
+        staged.prepare_unlisted_finalization(domain)?;
         finalization::Plan::new(&staged).apply(&mut staged, domain, &mut || {
             if analysis_control::current_cancellation().is_cancelled() {
                 Err(StoreError::State(StateError::Cancelled))
