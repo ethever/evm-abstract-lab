@@ -476,11 +476,16 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
     assert_eq!(limits.max_work, 2_000_000_000);
     assert!(limits.root_terminal_coverage);
     let encoded = serde_json::to_string(&request).unwrap();
-    let legacy = encoded
-        .replace("\"max_work\":2000000000,", "")
-        .replace("\"root_terminal_coverage\":true,", "");
-    assert_ne!(legacy, encoded);
-    let request: api::AnalyzeRequest = serde_json::from_str(&legacy).unwrap();
+    for (field, value) in [("max_work", "2000000000"), ("root_terminal_coverage", "true")] {
+        let missing = encoded.replace(&format!("\"{field}\":{value},"), "");
+        assert_ne!(missing, encoded, "field was not removed: {field}");
+        let error = serde_json::from_str::<api::AnalyzeRequest>(&missing).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!("missing field: {field}")),
+            "{error}"
+        );
+    }
+    let request: api::AnalyzeRequest = serde_json::from_str(&encoded).unwrap();
     assert_eq!(request.limits, limits);
     let report = crate::analyze::analyze(request).unwrap();
     report.validate().unwrap();
