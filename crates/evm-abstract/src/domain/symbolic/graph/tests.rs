@@ -465,68 +465,69 @@ fn exported_distinct_identities_do_not_assert_disequality_or_hash_injectivity() 
 
 #[test]
 fn deep_shared_dag_renaming_and_export_use_bounded_host_stack() {
-    std::thread::Builder::new()
-        .stack_size(128 * 1024)
-        .spawn(|| {
-            const STEPS: usize = 2048;
-            let limits = ExprLimits {
-                max_nodes: 4 * STEPS,
-                max_depth: STEPS + 1,
-            };
-            let leaf = ExprId::fresh().unwrap();
-            let one = c(1);
-            // Retain the spine so cleanup does not measure Arc destruction's
-            // unrelated host-stack behavior instead of graph traversal.
-            let mut retained = vec![leaf.clone()];
-            for _ in 0..STEPS {
-                retained.push(
-                    ExprId::operation(
-                        opcode::ADD,
-                        &[retained.last().unwrap().clone(), one.clone()],
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn_scoped(scope, || {
+                const STEPS: usize = 2048;
+                let limits = ExprLimits {
+                    max_nodes: 4 * STEPS,
+                    max_depth: STEPS + 1,
+                };
+                let leaf = ExprId::fresh().unwrap();
+                let one = c(1);
+                // Retain the spine so cleanup does not measure Arc destruction's
+                // unrelated host-stack behavior instead of graph traversal.
+                let mut retained = vec![leaf.clone()];
+                for _ in 0..STEPS {
+                    retained.push(
+                        ExprId::operation(
+                            opcode::ADD,
+                            &[retained.last().unwrap().clone(), one.clone()],
+                            limits,
+                        )
+                        .unwrap(),
+                    );
+                }
+                let root = retained.last().unwrap();
+                let input = ExprId::input(u64::MAX, Symbol::Caller);
+                let mut renamed = root
+                    .rename_fresh(
+                        &[(leaf.clone(), input.clone())].into_iter().collect(),
                         limits,
                     )
-                    .unwrap(),
+                    .unwrap();
+                assert_eq!(
+                    (renamed.nodes(), renamed.depth()),
+                    (2 * STEPS + 1, STEPS + 1)
                 );
-            }
-            let root = retained.last().unwrap();
-            let input = ExprId::input(u64::MAX, Symbol::Caller);
-            let mut renamed = root
-                .rename_fresh(
-                    &[(leaf.clone(), input.clone())].into_iter().collect(),
-                    limits,
-                )
-                .unwrap();
-            assert_eq!(
-                (renamed.nodes(), renamed.depth()),
-                (2 * STEPS + 1, STEPS + 1)
-            );
-            assert_eq!(renamed.inputs(), input.inputs());
-            assert!(renamed.fresh_leaves().is_empty());
-            assert_eq!(root.fresh_leaves(), [leaf].into_iter().collect());
-            let graph = SymbolicGraph::expression(&renamed, limits).unwrap();
-            assert_eq!(graph.nodes.len(), STEPS + 2);
-            assert_eq!(graph.root, STEPS + 1);
-            for (index, node) in graph.nodes.iter().enumerate() {
-                node.visit_edges(|edge| {
-                    let symbolic_structure::Edge::Word(child) = edge else {
-                        panic!("word graph")
-                    };
-                    assert!(child < index);
-                });
-            }
-            let encoded = serde_json::to_value(&graph).unwrap();
-            assert_eq!(encoded["nodes"][0]["Input"]["scope"], u64::MAX);
-            assert_eq!(
-                encoded["nodes"][graph.root]["Operation"]["args"],
-                json!([STEPS, 1])
-            );
-            // Release each rewritten parent while its child is still retained.
-            while let crate::domain::symbolic::ExprKind::Operation { args, .. } = renamed.kind() {
-                renamed = args[0].clone();
-            }
-            while retained.pop().is_some() {}
-        })
-        .unwrap()
-        .join()
-        .unwrap();
+                assert_eq!(renamed.inputs(), input.inputs());
+                assert!(renamed.fresh_leaves().is_empty());
+                assert_eq!(root.fresh_leaves(), [leaf].into_iter().collect());
+                let graph = SymbolicGraph::expression(&renamed, limits).unwrap();
+                assert_eq!(graph.nodes.len(), STEPS + 2);
+                assert_eq!(graph.root, STEPS + 1);
+                for (index, node) in graph.nodes.iter().enumerate() {
+                    node.visit_edges(|edge| {
+                        let symbolic_structure::Edge::Word(child) = edge else {
+                            panic!("word graph")
+                        };
+                        assert!(child < index);
+                    });
+                }
+                let encoded = serde_json::to_value(&graph).unwrap();
+                assert_eq!(encoded["nodes"][0]["Input"]["scope"], u64::MAX);
+                assert_eq!(
+                    encoded["nodes"][graph.root]["Operation"]["args"],
+                    json!([STEPS, 1])
+                );
+                // Release each rewritten parent while its child is still retained.
+                while let crate::domain::symbolic::ExprKind::Operation { args, .. } = renamed.kind()
+                {
+                    renamed = args[0].clone();
+                }
+                while retained.pop().is_some() {}
+            })
+            .unwrap();
+    });
 }
