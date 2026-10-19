@@ -22,6 +22,7 @@ mod symbolic;
 
 pub use evidence::{ExecutionEvidence, InstructionProgress, InstructionValue};
 pub use frame::{ChildFrame, FrameState, RootFrame};
+pub(in crate::analysis) use frame::{Frame, FrameByteKind, FrameMapOrder};
 pub(crate) use join::EntryAlternatives;
 pub use join::{JoinBoundary, MachineError};
 pub use range::{ByteRangeBoundary, RangeKind, RangeRequest, RangeWitness};

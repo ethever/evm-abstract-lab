@@ -45,11 +45,9 @@ fn restrict(
 ) -> PayloadSummary {
     summary.store = summary.store.project_to_layout(&layout.store, domain);
     for (frame, shape) in summary.frames.iter_mut().zip(&layout.frames) {
-        frame.memory = frame.memory.project_to_layout(&shape.memory, domain);
-        frame.calldata = frame.calldata.project_to_layout(&shape.calldata, domain);
-        frame.returndata = frame
-            .returndata
-            .project_to_layout(&shape.returndata, domain);
+        for (bytes, shape) in frame.byte_arrays_mut().into_iter().zip(shape.byte_arrays()) {
+            *bytes = bytes.project_to_layout(shape, domain);
+        }
         frame.saved_store = frame
             .saved_store
             .project_to_layout(&shape.saved_store, domain);
@@ -65,13 +63,10 @@ fn coarse(mut summary: PayloadSummary) -> PayloadSummary {
     };
     summary.store = summary.store.forget_loop_numeric();
     for frame in &mut summary.frames {
-        frame.stack.iter_mut().for_each(scalar);
-        scalar(&mut frame.call_value);
-        scalar(&mut frame.address_operand);
-        scalar(&mut frame.caller_operand);
-        frame.memory = frame.memory.forget_loop_content();
-        frame.calldata = frame.calldata.forget_loop_content();
-        frame.returndata = frame.returndata.forget_loop_content();
+        frame.values_mut().for_each(scalar);
+        for bytes in frame.byte_arrays_mut() {
+            *bytes = bytes.forget_loop_content();
+        }
         frame.saved_store = frame.saved_store.forget_loop_numeric();
     }
     for continuation in &mut summary.continuations {

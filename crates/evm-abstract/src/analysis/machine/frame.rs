@@ -7,13 +7,15 @@ use crate::{
         AbstractValue, Domain,
         symbolic::{ExprId, ExprLimits},
     },
-    world::{ByteArray, Snapshot},
+    world::{AddressInput, ByteArray, Snapshot},
 };
 use serde::Serialize;
 
-/// Execution data and rollback checkpoint shared by root and child frames.
+/// Common frame shape; byte, checkpoint and implicit-operand representations
+/// distinguish executable state from numerical templates.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct FrameState {
+#[serde(rename = "FrameState")]
+pub struct Frame<Bytes, Checkpoint, Operand> {
     /// Structural identity used by the worklist.
     pub key: FrameKey,
     /// Resolved execution mode, without following another delegation pointer.
@@ -23,23 +25,170 @@ pub struct FrameState {
     /// Abstract stack in bottom-to-top order.
     pub stack: Vec<AbstractValue>,
     /// This frame's private memory.
-    pub memory: ByteArray,
+    pub memory: Bytes,
     /// Bytes copied from caller memory at entry, or supplied for the root.
-    pub calldata: ByteArray,
+    pub calldata: Bytes,
     /// This immutable array is the original environment calldata, independent of
     /// whether a callee is later detached as a relative summary root.
     pub environment_calldata: bool,
     /// Full data from the most recently completed child call.
-    pub returndata: ByteArray,
+    pub returndata: Bytes,
     /// CALLVALUE for this context; DELEGATECALL preserves its parent value.
     pub call_value: AbstractValue,
     /// Runtime ADDRESS expression for an abstract owner outside the fixed input vocabulary.
-    pub address_operand: Option<AbstractValue>,
+    pub address_operand: Operand,
     /// Runtime CALLER expression; independent callbacks do not alias the root caller.
-    pub caller_operand: Option<AbstractValue>,
+    pub caller_operand: Operand,
     /// State immediately before entry, including persistent and transient effects.
     /// Root failure also restores this checkpoint.
-    pub saved_store: Snapshot,
+    pub saved_store: Checkpoint,
+}
+
+/// Executable frame data with optional key-implied operands and rollback state.
+pub type FrameState = Frame<ByteArray, Snapshot, Option<AbstractValue>>;
+
+pub(in crate::analysis) enum FrameMapOrder {
+    ScalarsFirst,
+    BytesFirst,
+}
+
+pub(in crate::analysis) enum FrameByteKind {
+    Memory,
+    Calldata,
+    Returndata,
+}
+
+// Only operand iteration differs. Keeping this small expansion over shared
+// parts avoids a visitor trait for optional versus materialized scalars.
+macro_rules! scalar_traversal {
+    ($operand:ty, $operands:ident => $iterate:expr) => {
+        impl<B, C> Frame<B, C, $operand> {
+            pub(crate) fn values(&self) -> impl Iterator<Item = &AbstractValue> {
+                let (values, $operands) = self.scalar_parts();
+                values.chain($iterate)
+            }
+            pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut AbstractValue> {
+                let (values, $operands) = self.scalar_parts_mut();
+                values.chain($iterate)
+            }
+        }
+    };
+}
+scalar_traversal!(Option<AbstractValue>, operands => operands.into_iter().flatten());
+scalar_traversal!(AbstractValue, operands => operands);
+
+impl<Bytes, Checkpoint, Operand> Frame<Bytes, Checkpoint, Operand> {
+    fn scalar_parts(&self) -> (impl Iterator<Item = &AbstractValue>, [&Operand; 2]) {
+        (
+            self.stack.iter().chain([&self.call_value]),
+            [&self.address_operand, &self.caller_operand],
+        )
+    }
+
+    fn scalar_parts_mut(
+        &mut self,
+    ) -> (impl Iterator<Item = &mut AbstractValue>, [&mut Operand; 2]) {
+        (
+            self.stack.iter_mut().chain([&mut self.call_value]),
+            [&mut self.address_operand, &mut self.caller_operand],
+        )
+    }
+
+    pub(in crate::analysis) fn metadata_work(&self) -> usize {
+        self.program
+            .as_ref()
+            .map_or(0, |program| {
+                program
+                    .blocks()
+                    .iter()
+                    .fold(program.byte_len(), |cost, block| {
+                        cost.saturating_add(block.instructions.len())
+                    })
+            })
+            .saturating_add(self.key.jump_history.len())
+    }
+
+    pub(crate) fn byte_arrays(&self) -> [&Bytes; 3] {
+        [&self.memory, &self.calldata, &self.returndata]
+    }
+
+    pub(crate) fn byte_arrays_mut(&mut self) -> [&mut Bytes; 3] {
+        [&mut self.memory, &mut self.calldata, &mut self.returndata]
+    }
+
+    pub(in crate::analysis) fn same_shape(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.code == other.code
+            && self.program == other.program
+            && self.stack.len() == other.stack.len()
+    }
+
+    /// One structural rebuilding path for both unary representation maps (zip
+    /// with self) and binary joins. Callers prepare the stack/aliases first and
+    /// retain their own shape and implicit-operand policy. Order preserves the
+    /// original cancellation/error boundaries and replay's fresh-source order.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "typed component mappings retain operation-specific order and policy"
+    )]
+    pub(in crate::analysis) fn try_zip<B, C, O>(
+        &self,
+        other: &Self,
+        stack: Vec<AbstractValue>,
+        order: FrameMapOrder,
+        mut value: impl FnMut(&AbstractValue, &AbstractValue) -> Result<AbstractValue, MachineError>,
+        mut operand: impl FnMut(&Operand, &Operand, AddressInput) -> Result<O, MachineError>,
+        mut bytes: impl FnMut(&Bytes, &Bytes, FrameByteKind) -> Result<B, MachineError>,
+        checkpoint: impl FnOnce(&Checkpoint, &Checkpoint) -> Result<C, MachineError>,
+    ) -> Result<Frame<B, C, O>, MachineError> {
+        let mut values = || {
+            Ok::<_, MachineError>((
+                value(&self.call_value, &other.call_value)?,
+                operand(
+                    &self.address_operand,
+                    &other.address_operand,
+                    self.key.address_value,
+                )?,
+                operand(&self.caller_operand, &other.caller_operand, self.key.caller)?,
+            ))
+        };
+        let mut arrays = || {
+            Ok::<_, MachineError>([
+                bytes(&self.memory, &other.memory, FrameByteKind::Memory)?,
+                bytes(&self.calldata, &other.calldata, FrameByteKind::Calldata)?,
+                bytes(
+                    &self.returndata,
+                    &other.returndata,
+                    FrameByteKind::Returndata,
+                )?,
+            ])
+        };
+        let ((call_value, address_operand, caller_operand), [memory, calldata, returndata]) =
+            match order {
+                FrameMapOrder::ScalarsFirst => {
+                    let values = values()?;
+                    (values, arrays()?)
+                }
+                FrameMapOrder::BytesFirst => {
+                    let arrays = arrays()?;
+                    (values()?, arrays)
+                }
+            };
+        Ok(Frame {
+            key: self.key.clone(),
+            code: self.code,
+            program: self.program.clone(),
+            stack,
+            memory,
+            calldata,
+            environment_calldata: self.environment_calldata,
+            returndata,
+            call_value,
+            address_operand,
+            caller_operand,
+            saved_store: checkpoint(&self.saved_store, &other.saved_store)?,
+        })
+    }
 }
 
 impl FrameState {
@@ -51,14 +200,7 @@ impl FrameState {
                 self.saved_store
                     .state()
                     .work_size()
-                    .saturating_add(self.key.jump_history.len())
-                    .saturating_add(self.program.as_ref().map_or(0, |program| {
-                        program.byte_len().saturating_add(
-                            program.blocks().iter().fold(0usize, |cost, block| {
-                                cost.saturating_add(block.instructions.len())
-                            }),
-                        )
-                    }))
+                    .saturating_add(self.metadata_work())
                     .saturating_add(3),
                 usize::saturating_add,
             )
@@ -71,75 +213,46 @@ impl FrameState {
         selector: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, MachineError> {
-        if self.key != incoming.key
-            || self.code != incoming.code
-            || self.program != incoming.program
-            || self.environment_calldata != incoming.environment_calldata
-            || self.stack.len() != incoming.stack.len()
+        if !self.same_shape(incoming) || self.environment_calldata != incoming.environment_calldata
         {
             return Err(MachineError::Shape);
         }
-        let mut out = self.clone();
-        out.stack = self
+        let stack = self
             .stack
             .iter()
             .zip(&incoming.stack)
             .map(|(left, right)| join::join_value(left, right, domain, &selector, limits))
             .collect::<Result<_, _>>()?;
-        out.call_value = join::join_value(
-            &self.call_value,
-            &incoming.call_value,
-            domain,
-            &selector,
-            limits,
-        )?;
-        for (output, left, right, implicit) in [
-            (
-                &mut out.address_operand,
-                &self.address_operand,
-                &incoming.address_operand,
-                self.key.address_value,
-            ),
-            (
-                &mut out.caller_operand,
-                &self.caller_operand,
-                &incoming.caller_operand,
-                self.key.caller,
-            ),
-        ] {
-            *output = match (left, right) {
-                (None, None) => None,
+        self.try_zip(
+            incoming,
+            stack,
+            FrameMapOrder::ScalarsFirst,
+            |left, right| join::join_value(left, right, domain, &selector, limits),
+            |left, right, implicit| match (left, right) {
+                (None, None) => Ok(None),
                 _ => {
-                    // None uses the key's implicit EVM value. Without the
-                    // environment scope, symbolic keys cover every address;
-                    // the state-owner namespace is never a concrete fallback.
+                    // None denotes the key's EVM value, never its state-owner
+                    // namespace. Environment materialization belongs to form.
                     let implicit = implicit.value();
-                    Some(join::join_value(
+                    Ok(Some(join::join_value(
                         left.as_ref().unwrap_or(&implicit),
                         right.as_ref().unwrap_or(&implicit),
                         domain,
                         &selector,
                         limits,
-                    )?)
+                    )?))
                 }
-            };
-        }
-        out.memory =
-            self.memory
-                .join_guarded(&incoming.memory, domain, selector.clone(), limits)?;
-        out.calldata =
-            self.calldata
-                .join_guarded(&incoming.calldata, domain, selector.clone(), limits)?;
-        out.returndata =
-            self.returndata
-                .join_guarded(&incoming.returndata, domain, selector.clone(), limits)?;
-        out.saved_store = Snapshot::from_state(self.saved_store.state().join_guarded(
-            incoming.saved_store.state(),
-            domain,
-            selector,
-            limits,
-        )?);
-        Ok(out)
+            },
+            |left, right, _| Ok(left.join_guarded(right, domain, selector.clone(), limits)?),
+            |left, right| {
+                Ok(Snapshot::from_state(left.state().join_guarded(
+                    right.state(),
+                    domain,
+                    selector.clone(),
+                    limits,
+                )?))
+            },
+        )
     }
 }
 

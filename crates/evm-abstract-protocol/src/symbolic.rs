@@ -62,154 +62,33 @@ record! {
         pub numeric: crate::ValueInfo,
     }
 }
-record! {
-    /// Pure EVM operation in pop-argument order.
-    #[derive(std::hash::Hash)]
-    pub struct ExpressionOperation {
-        /// Raw opcode.
-        pub opcode: u8,
-        /// Earlier scalar operands in EVM pop order.
-        pub arguments: Vec<ExpressionRef>,
-    }
+// Retain the strict local record codec while deriving core node field types
+// from the same schema used by native kinds, structural maps and validation.
+macro_rules! wire_record_definition {
+    (record $name:ident, [$(#[$meta:meta])*], { $($field:ident: $role:ident => $wire:ident),* }) => {
+        record! {
+            $(#[$meta])*
+            #[derive(std::hash::Hash)]
+            pub struct $name {
+                $(#[doc = stringify!($wire)] pub $wire: symbolic_structure::$role<structure::Wire>),*
+            }
+        }
+    };
+    (reuse $name:ident, $meta:tt, $fields:tt) => {};
+    (tuple $name:ident, $meta:tt, $fields:tt) => {};
 }
-record! {
-    /// EVM nonzero selects the first paired word.
-    #[derive(std::hash::Hash)]
-    pub struct ExpressionIte {
-        /// Nonzero branch selector.
-        pub condition: ExpressionRef,
-        /// Word selected by nonzero.
-        pub then_value: ExpressionRef,
-        /// Word selected by zero.
-        pub else_value: ExpressionRef,
-    }
+macro_rules! wire_records {
+    ($($sort:ident $native:ident {
+        units $units:tt
+        prefix { $($(#[$pm:meta])* $prefix:ident => $pflat:ident ($($pw:tt)*) $pfields:tt)* }
+        leaves $leaves:tt
+        records { $($(#[$meta:meta])* $record:ident => $flat:ident ($($wire:tt)*) $fields:tt)* }
+    })*) => {
+        $($(wire_record_definition!($($pw)*, [$(#[$pm])*], $pfields);)*)*
+        $($(wire_record_definition!($($wire)*, [$(#[$meta])*], $fields);)*)*
+    };
 }
-record! {
-    /// Byte read, zero extended to Word256.
-    #[derive(std::hash::Hash)]
-    pub struct ByteRead {
-        /// Immutable backing state.
-        pub state: ByteStateRef,
-        /// Mathematical nonwrapping byte index.
-        pub index: ExpressionRef,
-    }
-}
-record! {
-    /// Big-endian word read through a zero-padded bounded view.
-    #[derive(std::hash::Hash)]
-    pub struct WordRead {
-        /// Captured finite view.
-        pub view: ByteViewRef,
-        /// Relative byte offset.
-        pub offset: ExpressionRef,
-    }
-}
-record! {
-    /// Slot read bound to an immutable account and storage plane.
-    #[derive(std::hash::Hash)]
-    pub struct SlotRead {
-        /// Captured slot state.
-        pub state: SlotStateRef,
-        /// Word256 key.
-        pub key: ExpressionRef,
-    }
-}
-record! {
-    /// Immutable finite byte source with complete observations.
-    #[derive(std::hash::Hash)]
-    pub struct BytesInput {
-        /// Source identity.
-        pub source: SymbolicSource,
-        /// Logical length.
-        pub length: ExpressionRef,
-        /// Fixed observed cells, including non-singleton facts.
-        pub bindings: Vec<SymbolicBinding>,
-    }
-}
-record! {
-    /// Ordered byte or big-endian word update.
-    #[derive(std::hash::Hash)]
-    pub struct ByteWrite {
-        /// State before this update.
-        pub previous: ByteStateRef,
-        /// First byte index.
-        pub offset: ExpressionRef,
-        /// Written word expression.
-        pub value: ExpressionRef,
-    }
-}
-record! {
-    /// One lazy range update regardless of logical range size.
-    #[derive(std::hash::Hash)]
-    pub struct ByteCopy {
-        /// Destination before the update.
-        pub previous: ByteStateRef,
-        /// First destination byte index.
-        pub destination: ExpressionRef,
-        /// Captured immutable source view.
-        pub source: ByteViewRef,
-        /// Requested logical copy length.
-        pub length: ExpressionRef,
-    }
-}
-record! {
-    /// One guard selects the paired byte-state alternative.
-    #[derive(std::hash::Hash)]
-    pub struct BytesIte {
-        /// Nonzero branch selector.
-        pub condition: ExpressionRef,
-        /// State selected by nonzero.
-        pub then_state: ByteStateRef,
-        /// State selected by zero.
-        pub else_state: ByteStateRef,
-    }
-}
-record! {
-    /// Fixed storage source and its complete observations.
-    #[derive(std::hash::Hash)]
-    pub struct SlotsInput {
-        /// Account and plane identity.
-        pub source: SymbolicSource,
-        /// Fixed observed cells, including non-singleton facts.
-        pub bindings: Vec<SymbolicBinding>,
-    }
-}
-record! {
-    /// Ordered storage update, including symbolic keys.
-    #[derive(std::hash::Hash)]
-    pub struct SlotWrite {
-        /// State before the update.
-        pub previous: SlotStateRef,
-        /// Word256 key.
-        pub key: ExpressionRef,
-        /// Written value.
-        pub value: ExpressionRef,
-    }
-}
-record! {
-    /// One guard selects the paired storage-state alternative.
-    #[derive(std::hash::Hash)]
-    pub struct SlotsIte {
-        /// Nonzero branch selector.
-        pub condition: ExpressionRef,
-        /// State selected by nonzero.
-        pub then_state: SlotStateRef,
-        /// State selected by zero.
-        pub else_state: SlotStateRef,
-    }
-}
-record! {
-    /// Bounded zero-padded view over an immutable backing state.
-    #[derive(std::hash::Hash)]
-    pub struct ByteView {
-        /// Captured backing state.
-        pub state: ByteStateRef,
-        /// First backing byte index.
-        pub offset: ExpressionRef,
-        /// Logical length including any zero padding.
-        pub length: ExpressionRef,
-    }
-}
+symbolic_structure::with_nodes!(wire_records);
 record! {
     /// Retained zero or nonzero guarantee.
     #[derive(std::hash::Hash)]
@@ -525,6 +404,7 @@ impl std::error::Error for SymbolicReferenceFailure {}
 
 mod references;
 mod report;
+pub mod structure;
 choice! {
     /// Shared report directory containing a rejected reference.
     pub enum PoolReferenceKind {

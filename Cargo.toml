@@ -9,6 +9,7 @@ members = [
     "crates/evm-abstract-server",
     "crates/evm-abstract-web",
     "crates/snapshot-state",
+    "crates/symbolic-structure",
 ]
 exclude = ["lints/no_dyn"]
 resolver = "3"

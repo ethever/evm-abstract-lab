@@ -4,10 +4,11 @@
 //! without executable source identities. Instantiation always creates fresh
 //! roots. Scheduling, retry admission and publication remain with callers.
 
+use super::machine::{Frame, FrameByteKind, FrameMapOrder};
 use crate::{
     analysis::{
-        CallStack, ChildFrame, Continuation, FrameCode, FrameKey, FrameState, MachineError,
-        MachineKey, MachinePayload, RootFrame,
+        CallStack, ChildFrame, Continuation, FrameCode, MachineError, MachineKey, MachinePayload,
+        RootFrame,
     },
     domain::{AbstractValue, Domain, NumericValue, relational::RelationState, symbolic::ExprId},
     resource::WorkBudget,
@@ -31,19 +32,21 @@ pub(super) use transform::StatePart;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FrameSummary {
-    pub(super) key: FrameKey,
-    pub(super) code: FrameCode,
-    pub(super) program: Option<crate::bytecode::Program>,
-    pub(super) stack: Vec<AbstractValue>,
+    pub(super) frame: Frame<ByteArraySummary, StoreSummary, AbstractValue>,
     pub(super) stack_aliases: stack_alias::StackAliases,
-    pub(super) memory: ByteArraySummary,
-    pub(super) calldata: ByteArraySummary,
-    pub(super) environment_calldata: bool,
-    pub(super) returndata: ByteArraySummary,
-    pub(super) call_value: AbstractValue,
-    pub(super) address_operand: AbstractValue,
-    pub(super) caller_operand: AbstractValue,
-    pub(super) saved_store: StoreSummary,
+}
+
+impl std::ops::Deref for FrameSummary {
+    type Target = Frame<ByteArraySummary, StoreSummary, AbstractValue>;
+    fn deref(&self) -> &Self::Target {
+        &self.frame
+    }
+}
+
+impl std::ops::DerefMut for FrameSummary {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.frame
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

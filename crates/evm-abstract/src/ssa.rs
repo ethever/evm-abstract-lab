@@ -6,6 +6,7 @@
 //! 这是便于学习的非最小 SSA：单前驱 φ 也保留，后续可以实现 trivial-φ 消除。
 //! dominance 算法使用 petgraph，`verify` 检查唯一赋值、支配和 φ 边一致性。
 
+pub mod block;
 mod build;
 mod error;
 pub use error::{SsaInvariant, SsaInvariantKind};
@@ -71,6 +72,13 @@ pub struct Instruction {
     pub results: Vec<ValueId>,
     /// 当前指令因无效 opcode 或栈异常终止，此时没有正常栈效果。
     pub fault: bool,
+}
+
+impl Instruction {
+    /// Original uses and retained definitions, excluding bytecode and effect IDs.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut ValueId> {
+        self.operands.iter_mut().chain(&mut self.results)
+    }
 }
 
 /// 一个抽象状态的 SSA；不同上下文会有不同的值名字。

@@ -7,19 +7,19 @@ use evm_abstract::domain::{
 };
 use evm_abstract_protocol as api;
 
-pub(super) fn expressions(atoms: &[Constraint]) -> Vec<&ExprId> {
-    atoms
-        .iter()
-        .flat_map(|atom| match atom {
+pub(super) fn expressions(atoms: &[Constraint]) -> impl Iterator<Item = &ExprId> {
+    atoms.iter().flat_map(|atom| {
+        let (first, second) = match atom {
             Constraint::Truth { expression, .. }
             | Constraint::Range { expression, .. }
             | Constraint::SignedRange { expression, .. }
             | Constraint::Modulo { expression, .. }
             | Constraint::Bits { expression, .. }
-            | Constraint::Members { expression, .. } => vec![expression],
-            Constraint::Equal { left, right } => vec![left, right],
-        })
-        .collect()
+            | Constraint::Members { expression, .. } => (expression, None),
+            Constraint::Equal { left, right } => (left, Some(right)),
+        };
+        std::iter::once(first).chain(second)
+    })
 }
 impl Pool<'_> {
     pub(super) fn constraint(
