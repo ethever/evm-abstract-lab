@@ -30,7 +30,7 @@ fn walk(root: Item, action: &mut impl FnMut(&ExprId)) {
             Item::View(_) => false,
         };
         if !seen {
-            stack.extend(item.dependencies());
+            item.visit_dependencies(|child| stack.push(child));
         }
     }
 }
@@ -102,8 +102,9 @@ impl<'a> Renamer<'a> {
             if !ready {
                 let (nodes, depth) = (item.nodes(), item.depth());
                 self.check(nodes, depth)?;
-                let deps = item.dependencies();
-                stack.expand(item, deps);
+                stack.expand_with(item.clone(), |pending| {
+                    item.visit_dependencies(|child| pending.push(child));
+                });
                 continue;
             }
             let mapped = item.structure().try_map(self)?;

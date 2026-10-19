@@ -1,6 +1,9 @@
 //! Iterative dependency scheduling; memoization and admission remain caller
 //! policies so pointer, structural and contextual identities cannot be mixed.
 
+#[cfg(test)]
+mod tests;
+
 /// An iterative postorder stack, retaining parents until their dependencies
 /// have been processed. Siblings are entered in the supplied order.
 pub struct Postorder<N> {
@@ -13,16 +16,23 @@ impl<N> Postorder<N> {
             pending: vec![(root, false)],
         }
     }
-    /// Retain a parent for exit and enter its ordered dependencies first.
-    /// Callers skip memo hits before expanding; repeated siblings therefore
-    /// retain their existing cancellation and charging boundaries.
-    pub fn expand<I: IntoIterator<Item = N>>(&mut self, node: N, children: I)
-    where
-        I::IntoIter: DoubleEndedIterator,
-    {
+    /// Append an entry directly to the retained stack. Expansion callbacks
+    /// use this for each direct dependency in its original order.
+    pub fn push(&mut self, node: N) {
+        self.pending.push((node, false));
+    }
+    /// Stream dependencies into the retained stack without a child buffer.
+    /// The callback only pushes children; older pending entries stay in place.
+    /// Returns the number of appended edges, including repeated identities.
+    pub fn expand_with(&mut self, node: N, children: impl FnOnce(&mut Self)) -> usize {
         self.pending.push((node, true));
-        self.pending
-            .extend(children.into_iter().rev().map(|child| (child, false)));
+        let start = self.pending.len();
+        children(self);
+        let count = self.pending.len() - start;
+        // Reverse only these children: the parent and older pending siblings
+        // retain their positions, and repeated edges retain their checkpoints.
+        self.pending[start..].reverse();
+        count
     }
 }
 impl<N> Iterator for Postorder<N> {

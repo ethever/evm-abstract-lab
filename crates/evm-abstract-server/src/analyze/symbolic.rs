@@ -41,25 +41,30 @@ impl Root {
             Self::Path(v) => v.depth(),
         }
     }
-    fn children(&self) -> Vec<Self> {
+    fn visit_children(&self, mut action: impl FnMut(Self)) {
         match self {
-            Self::Native(v) => v.dependencies().into_iter().map(Self::Native).collect(),
+            Self::Native(v) => v.visit_dependencies(|child| action(Self::Native(child))),
             Self::Path(v) => match v.kind() {
-                RelationPathKind::True | RelationPathKind::False => vec![],
-                RelationPathKind::Atoms(atoms) => paths::expressions(atoms)
-                    .into_iter()
-                    .map(|e| Self::Native(Handle::Word(e.clone())))
-                    .collect(),
-                RelationPathKind::And(paths) => paths.iter().cloned().map(Self::Path).collect(),
+                RelationPathKind::True | RelationPathKind::False => {}
+                RelationPathKind::Atoms(atoms) => {
+                    for e in paths::expressions(atoms) {
+                        action(Self::Native(Handle::Word(e.clone())));
+                    }
+                }
+                RelationPathKind::And(paths) => {
+                    for path in paths {
+                        action(Self::Path(path.clone()));
+                    }
+                }
                 RelationPathKind::Ite {
                     selector,
                     then_path,
                     else_path,
-                } => vec![
-                    Self::Native(Handle::Word(selector.clone())),
-                    Self::Path(then_path.clone()),
-                    Self::Path(else_path.clone()),
-                ],
+                } => {
+                    action(Self::Native(Handle::Word(selector.clone())));
+                    action(Self::Path(then_path.clone()));
+                    action(Self::Path(else_path.clone()));
+                }
             },
         }
     }
@@ -176,9 +181,10 @@ impl<'a> Pool<'a> {
                 continue;
             }
             if !ready {
-                let children = item.children();
-                self.charge(children.len())?;
-                pending.expand(item, children);
+                let children = pending.expand_with(item.clone(), |pending| {
+                    item.visit_children(|child| pending.push(child));
+                });
+                self.charge(children)?;
                 continue;
             }
             let required = self.graph.nodes.len().saturating_add(1);

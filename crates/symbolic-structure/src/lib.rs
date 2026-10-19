@@ -167,28 +167,40 @@ macro_rules! map_field {
 }
 macro_rules! visit_field {
     (Word, $r:ident, $v:ident, $a:ident) => {
-        $a(Edge::Word($v.clone()));
+        $a(Edge::Word($v.clone()))?;
     };
     (Words, $r:ident, $v:ident, $a:ident) => {
         for v in $v.clone() {
-            $a(Edge::Word(v));
+            $a(Edge::Word(v))?;
         }
     };
     (Bytes, $r:ident, $v:ident, $a:ident) => {
-        $a(Edge::Bytes($v.clone()));
+        $a(Edge::Bytes($v.clone()))?;
     };
     (Slots, $r:ident, $v:ident, $a:ident) => {
-        $a(Edge::Slots($v.clone()));
+        $a(Edge::Slots($v.clone()))?;
     };
     (View, $r:ident, $v:ident, $a:ident) => {
-        $a(Edge::View($v.clone()));
+        $a(Edge::View($v.clone()))?;
     };
     (Source, $r:ident, $v:ident, $a:ident) => {
-        $r::source_words($v, &mut |v| $a(Edge::Word(v)));
+        let mut result = Ok(());
+        $r::source_words($v, &mut |v| {
+            if result.is_ok() {
+                result = $a(Edge::Word(v));
+            }
+        });
+        result?;
     };
     (Bindings, $r:ident, $v:ident, $a:ident) => {
         for b in $v.clone() {
-            $r::binding_words(&b, &mut |v| $a(Edge::Word(v)));
+            let mut result = Ok(());
+            $r::binding_words(&b, &mut |v| {
+                if result.is_ok() {
+                    result = $a(Edge::Word(v));
+                }
+            });
+            result?;
         }
     };
     ($payload:ident, $r:ident, $v:ident, $a:ident) => {
@@ -233,6 +245,14 @@ macro_rules! define_nodes {
             /// Visit direct typed edges in schema field order. No logical byte
             /// ranges expand and no payload/numeric facts are copied.
             pub fn visit_edges(&self, mut action: impl FnMut(Edge<R>)) {
+                self.try_visit_edges(|edge| {
+                    action(edge);
+                    Ok::<_, std::convert::Infallible>(())
+                }).unwrap_or_else(|never| match never {});
+            }
+            /// Visit ordered edges until the consumer returns its first error.
+            /// Borrowed representations advance slice cursors, retaining no list.
+            pub fn try_visit_edges<E>(&self, mut action: impl FnMut(Edge<R>) -> Result<(), E>) -> Result<(), E> {
                 match self {
                     $($( Self::$uflat => {}, )*
                       $( Self::$pflat { $($pf),* } => { $( visit_field!($pr, R, $pf, action); )* }, )*
@@ -242,6 +262,7 @@ macro_rules! define_nodes {
                       }, )*
                     )*
                 }
+                Ok(())
             }
             /// Map every typed operand and payload once while retaining shape.
             pub fn try_map<M: Mapper<R>>(&self, mapper: &mut M) -> Result<Node<M::Output>, M::Error>

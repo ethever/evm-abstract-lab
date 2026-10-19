@@ -133,17 +133,15 @@ impl Handle {
         }
     }
     /// Ordered direct operands, without expanding byte payloads/ranges.
-    pub fn dependencies(&self) -> Vec<Self> {
-        let mut out = Vec::new();
+    pub fn visit_dependencies(&self, mut action: impl FnMut(Self)) {
         self.structure().visit_edges(|edge| {
-            out.push(match edge {
+            action(match edge {
                 Edge::Word(v) => Self::Word(v.clone()),
                 Edge::Bytes(v) => Self::Bytes(v.clone()),
                 Edge::Slots(v) => Self::Slots(v.clone()),
                 Edge::View(v) => Self::View(v.clone()),
             });
         });
-        out
     }
 }
 

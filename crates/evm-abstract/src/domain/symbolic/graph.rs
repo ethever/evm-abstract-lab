@@ -180,8 +180,9 @@ impl Export {
                         max_depth: self.limits.max_depth,
                     },
                 )?;
-                let children = key.dependencies();
-                stack.expand(key, children);
+                stack.expand_with(key.clone(), |pending| {
+                    key.visit_dependencies(|child| pending.push(child));
+                });
                 continue;
             }
             if let Key::Bytes(b) = &key

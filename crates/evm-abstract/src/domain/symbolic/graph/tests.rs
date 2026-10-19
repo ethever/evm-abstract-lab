@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::{process::Command, sync::Arc};
 
 mod serialization;
+mod stream;
 
 fn c(value: u64) -> ExprId {
     ExprId::constant(U256::from(value))

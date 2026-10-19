@@ -65,9 +65,7 @@ fn mapping_preserves_the_envelope_and_both_public_json_layouts() {
         r#"{"state":91,"coverage":"Current","phis":[{"frame":1,"slot":0,"result":1,"inputs":[[73,2],[74,3]]}],"instructions":["#,
         r#"{"pc":12,"opcode":1,"immediate":null,"operands":[2,3],"results":[4],"fault":false,"progress":"Completed","effect_input":2,"effect_result":3"#,
     );
-    let suffix = concat!(
-        r#"],"exit_frames":[[4],[1,4]],"effect":{"result":1,"inputs":[{"transition":73,"effect":4}]},"exit_effect":3,"open_incoming":[75],"incoming_complete":false}"#,
-    );
+    let suffix = r#"],"exit_frames":[[4],[1,4]],"effect":{"result":1,"inputs":[{"transition":73,"effect":4}]},"exit_effect":3,"open_incoming":[75],"incoming_complete":false}"#;
     assert_eq!(
         serde_json::to_string(&source).unwrap(),
         format!("{prefix}}}{suffix}")
