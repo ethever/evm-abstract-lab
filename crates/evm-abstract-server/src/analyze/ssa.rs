@@ -41,6 +41,51 @@ pub(super) fn report(
                         .saturating_add(block.open_incoming.len())
                         .saturating_add(block.exit_frames.iter().map(Vec::len).sum::<usize>()),
                 )?;
+                let instructions = block.try_map_instruction_rows(|index, item| {
+                    checkpoint(control)?;
+                    pool.charge(
+                        item.origin
+                            .operands
+                            .len()
+                            .saturating_add(item.origin.results.len())
+                            .saturating_add(1),
+                    )?;
+                    let source = &item.origin;
+                    let name = graph.states()[block.state]
+                        .program()
+                        .and_then(|program| {
+                            program
+                                .blocks()
+                                .get(graph.states()[block.state].active().basic_block_index)
+                        })
+                        .and_then(|source| source.instructions.get(index))
+                        .map_or("UNKNOWN", |instruction| instruction.name());
+                    Ok(SsaInstruction {
+                        operation: values::operation(&item.operation, name),
+                        pc: source.pc,
+                        opcode: source.opcode,
+                        name: name.into(),
+                        immediate: source.immediate.map(|value| format!("0x{value:x}")),
+                        operands: source.operands.clone(),
+                        results: source.results.clone(),
+                        fault: source.fault,
+                        progress: match item.progress {
+                            analysis::InstructionProgress::Started => InstructionProgress::Started,
+                            analysis::InstructionProgress::OperandsConsumed => {
+                                InstructionProgress::OperandsConsumed
+                            }
+                            analysis::InstructionProgress::Completed => {
+                                InstructionProgress::Completed
+                            }
+                            analysis::InstructionProgress::Dispatched => {
+                                InstructionProgress::Dispatched
+                            }
+                            analysis::InstructionProgress::Faulted => InstructionProgress::Faulted,
+                        },
+                        effect_input: item.effect_input,
+                        effect_result: item.effect_result,
+                    })
+                })?;
                 Ok(SsaBlock {
                     state: block.state,
                     coverage: match block.coverage {
@@ -67,60 +112,7 @@ pub(super) fn report(
                                 .collect(),
                         })
                         .collect(),
-                    instructions: block
-                        .instructions
-                        .iter()
-                        .enumerate()
-                        .map(|(index, item)| {
-                            checkpoint(control)?;
-                            pool.charge(
-                                item.origin
-                                    .operands
-                                    .len()
-                                    .saturating_add(item.origin.results.len())
-                                    .saturating_add(1),
-                            )?;
-                            let source = &item.origin;
-                            let name = graph.states()[block.state]
-                                .program()
-                                .and_then(|program| {
-                                    program
-                                        .blocks()
-                                        .get(graph.states()[block.state].active().basic_block_index)
-                                })
-                                .and_then(|source| source.instructions.get(index))
-                                .map_or("UNKNOWN", |instruction| instruction.name());
-                            Ok(SsaInstruction {
-                                operation: values::operation(&item.operation, name),
-                                pc: source.pc,
-                                opcode: source.opcode,
-                                name: name.into(),
-                                immediate: source.immediate.map(|value| format!("0x{value:x}")),
-                                operands: source.operands.clone(),
-                                results: source.results.clone(),
-                                fault: source.fault,
-                                progress: match item.progress {
-                                    analysis::InstructionProgress::Started => {
-                                        InstructionProgress::Started
-                                    }
-                                    analysis::InstructionProgress::OperandsConsumed => {
-                                        InstructionProgress::OperandsConsumed
-                                    }
-                                    analysis::InstructionProgress::Completed => {
-                                        InstructionProgress::Completed
-                                    }
-                                    analysis::InstructionProgress::Dispatched => {
-                                        InstructionProgress::Dispatched
-                                    }
-                                    analysis::InstructionProgress::Faulted => {
-                                        InstructionProgress::Faulted
-                                    }
-                                },
-                                effect_input: item.effect_input,
-                                effect_result: item.effect_result,
-                            })
-                        })
-                        .collect::<Result<_, ApiError>>()?,
+                    instructions,
                     exit_frames: block.exit_frames.clone(),
                     effect: block.effect.result,
                     effect_inputs: block

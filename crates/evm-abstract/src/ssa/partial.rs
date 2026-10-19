@@ -5,7 +5,7 @@
 //! phases distinguish observed partial effects from completed opcode semantics;
 //! unknown calls never acquire a fabricated result or return transition.
 
-use super::{EffectId, EffectPhi, FramePhi, Instruction, SsaError, Transition, ValueId};
+use super::{EffectId, Instruction, SsaError, Transition};
 use crate::analysis::{
     InstructionProgress, MachineEdgeKind, MachineFrontier, Status, WorldAnalysis,
 };
@@ -43,30 +43,7 @@ pub struct PartialInstruction {
 }
 
 /// A current prefix or a named entry waiting for a supported transfer.
-#[derive(Clone, Debug, Serialize)]
-pub struct PartialWorldBlock {
-    /// Original native machine-state ID.
-    pub state: usize,
-    /// Current, stale, or absent transfer evidence.
-    pub coverage: PartialBlockCoverage,
-    /// Entry parameters whose inputs cover only supported transitions.
-    pub phis: Vec<FramePhi>,
-    /// Recorded attempts; never hypothetical instructions beyond the prefix.
-    pub instructions: Vec<PartialInstruction>,
-    /// Observed stacks, including consumed operands of a pending instruction.
-    /// For stale/unexecuted coverage these name only the current entry; they
-    /// are not an observed exit and cannot support an outgoing transition.
-    pub exit_frames: Vec<Vec<ValueId>>,
-    /// Entry effect bundle with the supported incoming transitions.
-    pub effect: EffectPhi,
-    /// Last observed effect; does not describe execution beyond a frontier.
-    /// A stale/unexecuted block retains only its entry effect here.
-    pub exit_effect: EffectId,
-    /// Original incoming edge IDs that lack a supported SSA transition.
-    pub open_incoming: Vec<usize>,
-    /// Whether the whole analysis and this block's incoming edge coverage are closed.
-    pub incoming_complete: bool,
-}
+pub type PartialWorldBlock = super::block::Block<PartialInstruction>;
 
 /// Why an accumulated graph edge cannot be attached to the current prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

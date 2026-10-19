@@ -85,6 +85,17 @@ pub struct Transition {
     pub result: Option<ValueId>,
 }
 
+impl Transition {
+    /// Value uses and the deferred result definition; edge and effect IDs retain
+    /// their original namespaces even when values are renamed.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut ValueId> {
+        self.operands
+            .iter_mut()
+            .chain(self.stacks.iter_mut().flatten())
+            .chain(&mut self.result)
+    }
+}
+
 /// Verified frame-aware stack and machine-effect SSA.
 #[derive(Clone, Debug, Serialize)]
 pub struct WorldSsa {

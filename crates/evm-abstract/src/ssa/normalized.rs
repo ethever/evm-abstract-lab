@@ -6,10 +6,7 @@
 //! instruction's `origin` is bytecode evidence, never a replacement opcode.
 //! Open-input observations remain visible facts and cannot justify a rewrite.
 
-use super::{
-    DeferredSsaEdge, EffectId, EffectPhi, FramePhi, Instruction, PartialBlockCoverage, SsaError,
-    Transition, ValueId,
-};
+use super::{DeferredSsaEdge, EffectId, Instruction, SsaError, Transition, ValueId};
 use crate::{
     analysis::{Analysis, InstructionProgress, MachineFrontier, Status, WorldAnalysis},
     domain::{NumericValue, provenance::Provenance},
@@ -73,27 +70,7 @@ pub struct NormalizedInstruction {
 }
 
 /// A native machine state; all frame parameters and coverage gaps are retained.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct NormalizedBlock {
-    /// Original native machine-state ID.
-    pub state: usize,
-    /// Currentness of the retained transfer receipt.
-    pub coverage: PartialBlockCoverage,
-    /// All original frame and stack entry parameters.
-    pub phis: Vec<FramePhi>,
-    /// Retained attempts in original program order.
-    pub instructions: Vec<NormalizedInstruction>,
-    /// Observed stacks, or entry-only names for absent or stale coverage.
-    pub exit_frames: Vec<Vec<ValueId>>,
-    /// Entry effect bundle and its supported incoming edges.
-    pub effect: EffectPhi,
-    /// Last observed effect bundle.
-    pub exit_effect: EffectId,
-    /// Native incoming edge IDs without a supported SSA transition.
-    pub open_incoming: Vec<usize>,
-    /// True only when the graph and this state's incoming coverage are closed.
-    pub incoming_complete: bool,
-}
+pub type NormalizedBlock = super::block::Block<NormalizedInstruction>;
 
 /// Where a fact applies. Definition facts cover every input represented by
 /// that SSA definition. State observations describe only its current receipt.
