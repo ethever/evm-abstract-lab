@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod bounded_promotion;
 mod decided_cache;
 mod loop_bound;
+mod replay_evidence;
 
 #[test]
 fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {

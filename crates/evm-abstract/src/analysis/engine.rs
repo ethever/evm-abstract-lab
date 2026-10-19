@@ -171,7 +171,7 @@ pub(super) fn run_reusing(
         rpc_acquisition: None,
         summary_stats: SummaryStats::default(),
         summaries: Vec::new(),
-        procedure_summaries: Vec::new(),
+        procedure_summaries: Default::default(),
     };
     // 输入 lift、Store 与回滚点复制也使用根账本，不让初始化获得免费工作。
     if counters.states >= result.config.analysis.max_states {
@@ -968,6 +968,7 @@ impl Engine<'_> {
 
     /// Clone cost for a temporary import transaction, including retained graph
     /// metadata, certificate records and every state that might be compared.
+    /// Frozen procedure evidence only copies its single shared owner handle.
     fn replay_copy_cost(&self) -> Result<usize, MachineError> {
         MachineError::check_cancelled()?;
         let mut cost = self
@@ -981,7 +982,8 @@ impl Engine<'_> {
             .saturating_add(self.diagnostics.len())
             .saturating_add(self.result.edges.len())
             .saturating_add(self.result.diagnostics.len())
-            .saturating_add(self.result.frontiers.len());
+            .saturating_add(self.result.frontiers.len())
+            .saturating_add(1); // One ProcedureEvidence owner, independent of report size.
         cost = cost.saturating_add(self.selectors.len());
         for state in &self.result.states {
             MachineError::check_cancelled()?;

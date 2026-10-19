@@ -96,10 +96,10 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
         .unwrap();
         assert_eq!(result.status, crate::analysis::Status::Converged);
         assert!(result.frontiers.is_empty());
-        assert!(!result.procedure_summaries.is_empty());
+        assert!(!result.procedure_summaries().is_empty());
         assert!(
             result
-                .procedure_summaries
+                .procedure_summaries()
                 .iter()
                 .all(|record| record.closed)
         );
