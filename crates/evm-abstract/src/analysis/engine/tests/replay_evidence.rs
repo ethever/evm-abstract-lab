@@ -8,7 +8,7 @@ use crate::{
     },
     domain::relational::QueryReason,
 };
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
 fn fixture() -> (WorldAnalysis, usize, usize) {
     // A static unknown call contributes full native procedure evidence before
@@ -148,8 +148,7 @@ fn replay_commit_and_partial_import_refusal_release_the_evidence_writer() {
         let mut engine = engine(result, child, &mut budget, &mut counters);
         let snapshot = engine.result.clone();
         let reports = serde_json::to_value(snapshot.procedure_summaries()).unwrap();
-        let queue = engine.queue.clone();
-        let queued = engine.queued.clone();
+        let worklist = engine.worklist.clone();
         let ids = engine.ids.clone();
         let copy_cost = engine.replay_copy_cost().unwrap();
         let outcome = engine.replay(child, &certificate);
@@ -170,8 +169,7 @@ fn replay_commit_and_partial_import_refusal_release_the_evidence_writer() {
                 assert_eq!(receipt.instruction_values(), before.instruction_values());
                 assert_eq!(receipt.successors(), before.successors());
             }
-            assert_eq!(engine.queue, queue);
-            assert_eq!(engine.queued, queued);
+            assert_eq!(engine.worklist, worklist);
             assert_eq!(engine.ids, ids);
             assert_eq!(engine.result.summary_stats().imported_states, 0);
             assert_eq!(engine.counters.states, original_count + 1);
@@ -190,9 +188,7 @@ fn replay_commit_and_partial_import_refusal_release_the_evidence_writer() {
         // staging owner are gone, ordinary procedure execution can append again.
         drop(snapshot);
         let count = engine.result.procedure_summaries().len();
-        engine.queue = VecDeque::from([unknown]);
-        engine.queued.clear();
-        engine.queued.insert(unknown);
+        engine.worklist = [unknown].into_iter().collect();
         engine.run();
         assert!(engine.result.procedure_summaries().len() > count);
         assert_eq!(

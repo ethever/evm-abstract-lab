@@ -1,8 +1,8 @@
 //! Freeze sparse loop coordinates; forgotten cells flow into their defaults.
 
 use super::{
-    AbstractValue, Address, BTreeSet, Domain, InitialIndependence, OrderedMap, StoreSummary,
-    SummaryPlane, lifecycle, representable_default, sparse,
+    AbstractValue, BTreeSet, Domain, InitialIndependence, OrderedMap, StoreSummary, SummaryPlane,
+    lifecycle, representable_default, sparse,
 };
 
 impl SummaryPlane {

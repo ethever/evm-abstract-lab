@@ -93,7 +93,7 @@ pub(super) fn witness_entry() -> Entry {
 
 /// Replay the captured request's retained execution/domain/retention limits.
 /// Native-provider fields are asserted only as historical raw-capture evidence;
-/// cost_version3 runs local reasoning, so its work is not old SMT timing/fuel.
+/// Current local reasoning uses a different cost policy from old SMT timing/fuel.
 /// Synthetic tests retain the complete library default (depth32/work20M).
 fn original_policy() -> ExecutionConfig {
     let request: Value = serde_json::from_str(ORIGINAL_REQUEST).unwrap();

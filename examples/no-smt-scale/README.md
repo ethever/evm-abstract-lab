@@ -2,7 +2,7 @@
 
 本目录固定输入、命令策略、外部资源 guard 和报告验收边界，用于比较已有 SMT 基线与当前 no-SMT 分层抽象解释实现。[命令生成器](../../scripts/generate-no-smt-scale-commands.py)生成当前 CLI profile；[benchmark](../../scripts/benchmark-no-smt-scale.py)默认只核对输入，显式传入 `--execute` 才顺序启动已有 ELF。两者都不构建、不访问 RPC；benchmark 不翻译策略、不调用 shell、不计算速度倍数。
 
-基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**；当前接口为 **native10 / wire15 / cost3**。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。Cost3 移除了 SMT 额度预收费，**不能把 Cost2 与 Cost3 的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
+基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**；当前接口为 **native10 / wire15 / cost4**。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。Cost3 移除了 SMT 额度预收费；Cost4 调整共享回放证据与规范数值上界的累计收费。**不能把不同 cost 版本的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
 
 ## 固定输入与事实边界
 
@@ -52,7 +52,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
   --commands "$COMMAND_PROFILE"
 ```
 
-生成器检查 native10/wire15/cost3 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中记录 `root_terminal_coverage: false`，向新生成的 argv 显式追加 `--no-root-terminal-coverage`，保留原 1T/OFF 对照策略；这不是当前 CLI/Web 的默认值。每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
+生成器检查 native10/wire15/cost4 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中记录 `root_terminal_coverage: false`，向新生成的 argv 显式追加 `--no-root-terminal-coverage`，保留原 1T/OFF 对照策略；这不是当前 CLI/Web 的默认值。每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
 
 每份 profile 提供完整 `argv`；仅有首参数 `BINARY` 和一个 `WORLD` 两个占位符，同时绑定 input identity、interface commit、完整 policy、policy 到参数的映射、`expected_native_config` 和允许的 Report 退出码。`input_mapping` 仍须对照入口与事实语义审核；harness 不证明任意 argv 实现了声明边界。生成器也不证明 ELF 来源或源码干净，最终构建提交确定后须重新生成匹配 profile。
 

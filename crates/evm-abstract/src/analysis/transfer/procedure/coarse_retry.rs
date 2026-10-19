@@ -81,7 +81,7 @@ pub(super) fn supports(original: &PayloadSummary) -> bool {
             .any(|frame| frame.code == FrameCode::Unknown)
 }
 
-pub(super) fn prepare(
+pub(in crate::analysis) fn prepare(
     original: &PayloadSummary,
     domain: Domain,
     budget: &mut WorkBudget,
