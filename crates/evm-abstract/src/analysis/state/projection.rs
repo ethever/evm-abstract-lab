@@ -82,11 +82,14 @@ impl<'a> Projection<'a> {
         false
     }
 
+    /// Branch callers stop between metadata segments; summary import retains
+    /// its original whole-state traversal even after optional import fails.
+    pub(in crate::analysis) fn stopped(&self) -> bool {
+        !matches!(self.outcome, Ok(true))
+    }
+
     fn expression(&mut self, expression: &ExprId, value: &mut AbstractValue) {
-        if !matches!(self.outcome, Ok(true))
-            || value.singleton().is_some()
-            || self.relations.is_empty()
-        {
+        if self.stopped() || value.singleton().is_some() || self.relations.is_empty() {
             return;
         }
         let summary = matches!(&self.policy, Policy::Summary);
@@ -167,19 +170,22 @@ impl<'a> Projection<'a> {
         let summary = matches!(&self.policy, Policy::Summary);
         bytes.update_values(&mut |value| {
             if summary
-                || !value.expression().is_some_and(|e| {
-                    matches!(
-                        e.kind(),
-                        ExprKind::ByteRead { .. }
-                            | ExprKind::WordRead { .. }
-                            | ExprKind::Keccak { .. }
-                    )
-                })
+                || (!self.stopped()
+                    && !value.expression().is_some_and(|e| {
+                        matches!(
+                            e.kind(),
+                            ExprKind::ByteRead { .. }
+                                | ExprKind::WordRead { .. }
+                                | ExprKind::Keccak { .. }
+                        )
+                    }))
             {
                 self.value(value);
             }
         });
-        bytes.refine_operands(&mut |expression, value| self.expression(expression, value));
+        if summary || !self.stopped() {
+            bytes.refine_operands(&mut |expression, value| self.expression(expression, value));
+        }
     }
 
     pub(in crate::analysis) fn store(&mut self, store: &mut Store) {

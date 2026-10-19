@@ -33,15 +33,21 @@ pub(super) fn refine(
         context.budget,
         Policy::Branch { diagnostics, pc },
     );
-    for frame in payload.call_stack.iter_mut() {
+    'metadata: for frame in payload.call_stack.iter_mut() {
         for value in [&mut frame.address_operand, &mut frame.caller_operand]
             .into_iter()
             .flatten()
         {
             projection.value(value);
+            if projection.stopped() {
+                break 'metadata;
+            }
         }
         for bytes in frame.byte_arrays_mut() {
             projection.bytes(bytes);
+            if projection.stopped() {
+                break 'metadata;
+            }
         }
     }
     if !projection.finish().map_err(MachineError::frontier_reason)? {

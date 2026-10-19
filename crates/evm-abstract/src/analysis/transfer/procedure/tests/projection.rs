@@ -1,5 +1,8 @@
 use crate::{
-    analysis::machine::fixtures::{address, payload, word},
+    analysis::{
+        ExecutionConfig,
+        machine::fixtures::{address, payload, word},
+    },
     domain::{AbstractValue, symbolic::ExprId},
     resource::WorkBudget,
 };

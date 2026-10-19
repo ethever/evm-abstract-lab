@@ -13,8 +13,8 @@ use super::{
 use crate::{
     analysis::{
         CallStack, ChildFrame, Continuation, DiagnosticKind, FrameCode, FrameKey, FrameState,
-        FrontierReason, Limit, MachineEdgeKind, MachineError, MachineKey, MachinePayload,
-        OutcomeKind, RootFrame,
+        FrontierReason, Limit, MachineEdgeKind, MachineError, MachinePayload, OutcomeKind,
+        RootFrame,
         engine::Counters,
         machine::{
             ProcedureSummary, ProcedureSummaryKind, ProcedureSummaryOutput, ProcedureSummaryRecord,
