@@ -3,7 +3,10 @@
 //! Root/operand evaluation precedes projection. Losing path, alias and source
 //! correlations is intentional here and never changes ordinary Store execution.
 
-use super::{AbstractLog, InitialIndependence, LogKey, OrderedMap, Plane, Store, StoreError};
+use super::{
+    AbstractLog, InitialIndependence, LogKey, OrderedMap, Plane, Store, StoreError, lifecycle,
+    sparse,
+};
 use crate::{
     domain::{
         AbstractValue, Domain,
@@ -23,10 +26,6 @@ use alloy_primitives::{Address, U256};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod layout;
-
-pub(super) fn join_flag(left: Option<bool>, right: Option<bool>) -> Option<bool> {
-    if left == right { left } else { None }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SummaryPlane {
@@ -301,41 +300,21 @@ impl SummaryPlane {
     }
 
     fn join(&self, other: &Self, domain: Domain, widen: bool) -> Self {
+        let (defaults, global_default) = sparse::combine(
+            (&self.defaults, &self.global_default),
+            (&other.defaults, &other.global_default),
+            |left, right| join_scalar(left, right, domain, widen),
+        );
         let mut out = Self {
             slots: OrderedMap::new(),
-            defaults: OrderedMap::new(),
-            global_default: join_scalar(&self.global_default, &other.global_default, domain, widen),
+            defaults,
+            global_default,
             initial_independence: self.initial_independence.join(&other.initial_independence),
         };
-        let addresses: BTreeSet<_> = self
-            .defaults
-            .keys()
-            .chain(other.defaults.keys())
-            .copied()
-            .collect();
-        for owner in addresses {
-            let value = join_scalar(
-                self.default_at(owner),
-                other.default_at(owner),
-                domain,
-                widen,
-            );
-            if value != out.global_default {
-                out.defaults.insert(owner, value);
-            }
-        }
-        let keys: BTreeSet<_> = self
-            .slots
-            .keys()
-            .chain(other.slots.keys())
-            .copied()
-            .collect();
-        for (owner, key) in keys {
+        out.slots = sparse::union_with(&self.slots, &other.slots, |&(owner, key)| {
             let value = join_scalar(self.at(owner, key), other.at(owner, key), domain, widen);
-            if value != *out.default_at(owner) {
-                out.slots.insert((owner, key), value);
-            }
-        }
+            (value != *out.default_at(owner)).then_some(value)
+        });
         if widen {
             let owners = out
                 .slots
@@ -448,68 +427,6 @@ impl SummaryPlane {
     }
 }
 
-fn numeric_map(
-    values: &OrderedMap<Address, AbstractValue>,
-    default: &AbstractValue,
-    domain: Domain,
-) -> OrderedMap<Address, AbstractValue> {
-    values
-        .iter()
-        .filter_map(|(owner, value)| {
-            let value = scalar(value, domain);
-            (value != *default).then_some((*owner, value))
-        })
-        .collect()
-}
-
-fn join_numeric_map(
-    left: &OrderedMap<Address, AbstractValue>,
-    left_default: &AbstractValue,
-    right: &OrderedMap<Address, AbstractValue>,
-    right_default: &AbstractValue,
-    domain: Domain,
-    widen: bool,
-) -> OrderedMap<Address, AbstractValue> {
-    let default = join_scalar(left_default, right_default, domain, widen);
-    left.keys()
-        .chain(right.keys())
-        .copied()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .filter_map(|owner| {
-            let value = join_scalar(
-                left.get(&owner).unwrap_or(left_default),
-                right.get(&owner).unwrap_or(right_default),
-                domain,
-                widen,
-            );
-            (value != default).then_some((owner, value))
-        })
-        .collect()
-}
-
-pub(super) fn join_flags(
-    left: &OrderedMap<Address, Option<bool>>,
-    left_default: Option<bool>,
-    right: &OrderedMap<Address, Option<bool>>,
-    right_default: Option<bool>,
-) -> OrderedMap<Address, Option<bool>> {
-    let default = join_flag(left_default, right_default);
-    left.keys()
-        .chain(right.keys())
-        .copied()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .filter_map(|owner| {
-            let value = join_flag(
-                left.get(&owner).copied().unwrap_or(left_default),
-                right.get(&owner).copied().unwrap_or(right_default),
-            );
-            (value != default).then_some((owner, value))
-        })
-        .collect()
-}
-
 impl Store {
     /// Sound whole-payload projection for unknown procedure fixed points.
     pub fn summary_projection(&self, domain: Domain) -> Result<StoreSummary, StoreError> {
@@ -539,41 +456,23 @@ impl Store {
         Ok(StoreSummary {
             persistent: self.persistent.summary_projection(domain)?,
             transient: self.transient.summary_projection(domain)?,
-            balances: numeric_map(&self.balances, &balance_default, domain),
+            balances: sparse::map((&self.balances, &balance_default), |value| {
+                scalar(value, domain)
+            }),
             balance_default,
-            codes: self
-                .codes
-                .iter()
-                .filter(|(_, code)| **code != Code::Unknown)
-                .map(|(owner, code)| (*owner, code.clone()))
-                .collect(),
-            nonces: numeric_map(&self.nonces, &AbstractValue::top(), domain),
-            existence: self
-                .existence
-                .iter()
-                .filter(|(_, value)| **value != Existence::Unknown)
-                .map(|(owner, value)| (*owner, *value))
-                .collect(),
-            created: self
-                .created
-                .iter()
-                .filter(|(_, value)| **value != self.created_default)
-                .map(|(owner, value)| (*owner, *value))
-                .collect(),
+            codes: sparse::map((&self.codes, &Code::Unknown), Clone::clone),
+            nonces: sparse::map((&self.nonces, &AbstractValue::top()), |value| {
+                scalar(value, domain)
+            }),
+            existence: sparse::map((&self.existence, &Existence::Unknown), |value| *value),
+            created: sparse::map((&self.created, &self.created_default), |value| *value),
             created_default: self.created_default,
-            pending_destruction: self
-                .pending_destruction
-                .iter()
-                .filter(|(_, value)| **value != self.pending_destruction_default)
-                .map(|(owner, value)| (*owner, *value))
-                .collect(),
+            pending_destruction: sparse::map(
+                (&self.pending_destruction, &self.pending_destruction_default),
+                |value| *value,
+            ),
             pending_destruction_default: self.pending_destruction_default,
-            touched: self
-                .touched
-                .iter()
-                .filter(|(_, value)| **value != self.touched_default)
-                .map(|(owner, value)| (*owner, *value))
-                .collect(),
+            touched: sparse::map((&self.touched, &self.touched_default), |value| *value),
             touched_default: self.touched_default,
             possible_logs: if self.logs_unknown {
                 OrderedMap::new()
@@ -669,57 +568,50 @@ impl StoreSummary {
         if logs_unknown {
             logs.clear();
         }
+        let join_numeric =
+            |left: &AbstractValue, right: &AbstractValue| join_scalar(left, right, domain, widen);
+        let (balances, balance_default) = sparse::combine(
+            (&self.balances, &self.balance_default),
+            (&other.balances, &other.balance_default),
+            join_numeric,
+        );
+        let (nonces, _) = sparse::combine(
+            (&self.nonces, &AbstractValue::top()),
+            (&other.nonces, &AbstractValue::top()),
+            join_numeric,
+        );
+        let (created, created_default) = sparse::combine(
+            (&self.created, &self.created_default),
+            (&other.created, &other.created_default),
+            lifecycle::join,
+        );
+        let (pending_destruction, pending_destruction_default) = sparse::combine(
+            (&self.pending_destruction, &self.pending_destruction_default),
+            (
+                &other.pending_destruction,
+                &other.pending_destruction_default,
+            ),
+            lifecycle::join,
+        );
+        let (touched, touched_default) = sparse::combine(
+            (&self.touched, &self.touched_default),
+            (&other.touched, &other.touched_default),
+            lifecycle::join,
+        );
         Self {
             persistent: self.persistent.join(&other.persistent, domain, widen),
             transient: self.transient.join(&other.transient, domain, widen),
-            balances: join_numeric_map(
-                &self.balances,
-                &self.balance_default,
-                &other.balances,
-                &other.balance_default,
-                domain,
-                widen,
-            ),
-            balance_default: join_scalar(
-                &self.balance_default,
-                &other.balance_default,
-                domain,
-                widen,
-            ),
+            balances,
+            balance_default,
             codes,
-            nonces: join_numeric_map(
-                &self.nonces,
-                &AbstractValue::top(),
-                &other.nonces,
-                &AbstractValue::top(),
-                domain,
-                widen,
-            ),
+            nonces,
             existence,
-            created: join_flags(
-                &self.created,
-                self.created_default,
-                &other.created,
-                other.created_default,
-            ),
-            created_default: join_flag(self.created_default, other.created_default),
-            pending_destruction: join_flags(
-                &self.pending_destruction,
-                self.pending_destruction_default,
-                &other.pending_destruction,
-                other.pending_destruction_default,
-            ),
-            pending_destruction_default: join_flag(
-                self.pending_destruction_default,
-                other.pending_destruction_default,
-            ),
-            touched: join_flags(
-                &self.touched,
-                self.touched_default,
-                &other.touched,
-                other.touched_default,
-            ),
-            touched_default: join_flag(self.touched_default, other.touched_default),
+            created,
+            created_default,
+            pending_destruction,
+            pending_destruction_default,
+            touched,
+            touched_default,
             possible_logs: logs,
             logs_unknown,
         }
@@ -735,25 +627,11 @@ impl StoreSummary {
     /// Existing must-touches cannot be undone by a widened callee summary.
     pub fn apply_static_touches(&self, input: &Store) -> Store {
         let mut out = input.clone();
-        out.touched_default = super::lifecycle::or(input.touched_default, self.touched_default);
-        out.touched = input
-            .touched
-            .keys()
-            .chain(self.touched.keys())
-            .copied()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter_map(|address| {
-                let touched = super::lifecycle::or(
-                    input.touched_in_transaction(address),
-                    self.touched
-                        .get(&address)
-                        .copied()
-                        .unwrap_or(self.touched_default),
-                );
-                (touched != out.touched_default).then_some((address, touched))
-            })
-            .collect();
+        (out.touched, out.touched_default) = sparse::combine(
+            (&input.touched, &input.touched_default),
+            (&self.touched, &self.touched_default),
+            |left, right| lifecycle::or(*left, *right),
+        );
         out
     }
 

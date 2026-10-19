@@ -18,6 +18,7 @@ mod owner_deletion;
 mod refinement;
 mod root_terminal;
 mod slots;
+mod sparse;
 mod summary;
 #[cfg(test)]
 mod tests;
@@ -204,32 +205,19 @@ impl InitialIndependence {
     }
 
     fn join(&self, other: &Self) -> Self {
-        let mut joined = Self::new(self.global_default && other.global_default);
-        let addresses: BTreeSet<_> = self
-            .defaults
-            .keys()
-            .chain(other.defaults.keys())
-            .copied()
-            .collect();
-        for address in addresses {
-            let independent = self.default_at(address) && other.default_at(address);
-            if independent != joined.global_default {
-                joined.defaults.insert(address, independent);
-            }
-        }
-        let keys: BTreeSet<_> = self
-            .slots
-            .keys()
-            .chain(other.slots.keys())
-            .copied()
-            .collect();
-        for (address, slot) in keys {
-            joined.set_slot(
-                address,
-                slot,
-                self.at(address, slot) && other.at(address, slot),
-            );
-        }
+        let (defaults, global_default) = sparse::combine(
+            (&self.defaults, &self.global_default),
+            (&other.defaults, &other.global_default),
+            |left, right| *left && *right,
+        );
+        let mut joined = Self {
+            defaults,
+            ..Self::new(global_default)
+        };
+        joined.slots = sparse::union_with(&self.slots, &other.slots, |&(address, slot)| {
+            let independent = self.at(address, slot) && other.at(address, slot);
+            (independent != joined.default_at(address)).then_some(independent)
+        });
         joined
     }
 
@@ -394,30 +382,14 @@ impl Plane {
         joined.defaults.clear();
         joined.global_default = domain.join(&self.global_default, &other.global_default);
         joined.initial_independence = self.initial_independence.join(&other.initial_independence);
-        let addresses: BTreeSet<_> = self
-            .defaults
-            .keys()
-            .chain(other.defaults.keys())
-            .copied()
-            .collect();
-        for address in addresses {
-            joined.defaults.insert(
-                address,
-                domain.join(self.default_at(address), other.default_at(address)),
-            );
-        }
-        let keys: BTreeSet<_> = self
-            .slots
-            .keys()
-            .chain(other.slots.keys())
-            .copied()
-            .collect();
-        for (address, slot) in keys {
-            joined.slots.insert(
-                (address, slot),
-                domain.join(self.at(address, slot), other.at(address, slot)),
-            );
-        }
+        // Ordinary caches preserve their explicit entries; summary maps below
+        // canonicalize values equal to the joined fallback instead.
+        joined.defaults = sparse::union_with(&self.defaults, &other.defaults, |address| {
+            Some(domain.join(self.default_at(*address), other.default_at(*address)))
+        });
+        joined.slots = sparse::union_with(&self.slots, &other.slots, |&(address, slot)| {
+            Some(domain.join(self.at(address, slot), other.at(address, slot)))
+        });
         joined
     }
 }
@@ -1071,6 +1043,24 @@ impl Store {
                 possible_logs.insert(key.clone(), log.clone());
             }
         }
+        let (created, created_default) = sparse::combine(
+            (&self.created, &self.created_default),
+            (&other.created, &other.created_default),
+            lifecycle::join,
+        );
+        let (pending_destruction, pending_destruction_default) = sparse::combine(
+            (&self.pending_destruction, &self.pending_destruction_default),
+            (
+                &other.pending_destruction,
+                &other.pending_destruction_default,
+            ),
+            lifecycle::join,
+        );
+        let (touched, touched_default) = sparse::combine(
+            (&self.touched, &self.touched_default),
+            (&other.touched, &other.touched_default),
+            lifecycle::join,
+        );
         Self {
             persistent: self
                 .persistent
@@ -1121,59 +1111,12 @@ impl Store {
                     )
                 })
                 .collect(),
-            created: addresses
-                .iter()
-                .map(|address| {
-                    (
-                        *address,
-                        if self.created_in_transaction(*address)
-                            == other.created_in_transaction(*address)
-                        {
-                            self.created_in_transaction(*address)
-                        } else {
-                            None
-                        },
-                    )
-                })
-                // Omitted entries inherit the joined lifecycle default, which
-                // can be unknown after unobserved creations or deletions.
-                .filter(|(_, value)| {
-                    *value != summary::join_flag(self.created_default, other.created_default)
-                })
-                .collect(),
-            created_default: summary::join_flag(self.created_default, other.created_default),
-            pending_destruction: addresses
-                .iter()
-                .map(|address| {
-                    (
-                        *address,
-                        if self.pending_destruction(*address) == other.pending_destruction(*address)
-                        {
-                            self.pending_destruction(*address)
-                        } else {
-                            None
-                        },
-                    )
-                })
-                .filter(|(_, value)| {
-                    *value
-                        != summary::join_flag(
-                            self.pending_destruction_default,
-                            other.pending_destruction_default,
-                        )
-                })
-                .collect(),
-            pending_destruction_default: summary::join_flag(
-                self.pending_destruction_default,
-                other.pending_destruction_default,
-            ),
-            touched: summary::join_flags(
-                &self.touched,
-                self.touched_default,
-                &other.touched,
-                other.touched_default,
-            ),
-            touched_default: summary::join_flag(self.touched_default, other.touched_default),
+            created,
+            created_default,
+            pending_destruction,
+            pending_destruction_default,
+            touched,
+            touched_default,
             possible_logs,
             logs_unknown,
         }

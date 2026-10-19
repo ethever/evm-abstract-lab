@@ -196,6 +196,12 @@ fn joins_keep_any_path_baseline_dependency_across_owner_and_global_defaults() {
     for left in &variants {
         for right in &variants {
             let joined = left.join(right, domain);
+            let replay = left
+                .summary_projection(domain)
+                .unwrap()
+                .join(&right.summary_projection(domain).unwrap(), domain, false)
+                .instantiate(domain)
+                .unwrap();
             for owner in [address, other] {
                 let mut expected = left.missing_initial_slots(&world, owner, &keys(1, 2));
                 expected.extend(right.missing_initial_slots(&world, owner, &keys(1, 2)));
@@ -203,6 +209,10 @@ fn joins_keep_any_path_baseline_dependency_across_owner_and_global_defaults() {
                 expected.dedup();
                 assert_eq!(
                     joined.missing_initial_slots(&world, owner, &keys(1, 2)),
+                    expected
+                );
+                assert_eq!(
+                    replay.missing_initial_slots(&world, owner, &keys(1, 2)),
                     expected
                 );
             }
