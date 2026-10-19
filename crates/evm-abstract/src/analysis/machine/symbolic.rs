@@ -3,11 +3,11 @@
 
 use super::{FrameState, MachineError, MachinePayload, join::checkpoint};
 use crate::{
+    analysis::state::StatePart,
     domain::{
         AbstractValue,
         symbolic::{ExprId, ExprLimits},
     },
-    world::Snapshot,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,63 +17,16 @@ fn collect_value(value: &AbstractValue, leaves: &mut BTreeSet<ExprId>) {
     }
 }
 
-fn rename_value(
-    value: &mut AbstractValue,
-    map: &BTreeMap<ExprId, ExprId>,
-    limits: ExprLimits,
-) -> Result<(), MachineError> {
-    checkpoint()?;
-    value.forget_identity();
-    if let Some(expression) = value.expression() {
-        *value = value
-            .clone()
-            .with_expression(expression.rename_fresh(map, limits)?);
-    }
-    Ok(())
-}
-
 impl FrameState {
     pub(crate) fn fresh_leaves(&self) -> BTreeSet<ExprId> {
         let mut leaves = self.saved_store.state().fresh_leaves();
-        leaves.extend(self.memory.fresh_leaves());
-        leaves.extend(self.calldata.fresh_leaves());
-        leaves.extend(self.returndata.fresh_leaves());
-        collect_value(&self.call_value, &mut leaves);
-        for value in [&self.address_operand, &self.caller_operand]
-            .into_iter()
-            .flatten()
-        {
-            collect_value(value, &mut leaves);
+        for bytes in self.byte_arrays() {
+            leaves.extend(bytes.fresh_leaves());
         }
-        for value in &self.stack {
+        for value in self.values() {
             collect_value(value, &mut leaves);
         }
         leaves
-    }
-
-    fn rename_fresh(
-        &mut self,
-        map: &BTreeMap<ExprId, ExprId>,
-        limits: ExprLimits,
-    ) -> Result<(), MachineError> {
-        checkpoint()?;
-        for value in &mut self.stack {
-            rename_value(value, map, limits)?;
-        }
-        rename_value(&mut self.call_value, map, limits)?;
-        for value in [&mut self.address_operand, &mut self.caller_operand]
-            .into_iter()
-            .flatten()
-        {
-            rename_value(value, map, limits)?;
-        }
-        self.memory.rename_fresh(map, limits)?;
-        self.calldata.rename_fresh(map, limits)?;
-        self.returndata.rename_fresh(map, limits)?;
-        let mut saved = self.saved_store.state().clone();
-        saved.rename_fresh(map, limits)?;
-        self.saved_store = Snapshot::from_state(saved);
-        Ok(())
     }
 }
 
@@ -100,13 +53,18 @@ impl MachinePayload {
     ) -> Result<(), MachineError> {
         checkpoint()?;
         let mut renamed = self.clone();
-        for frame in renamed.call_stack.iter_mut() {
-            frame.rename_fresh(map, limits)?;
-        }
-        for child in renamed.call_stack.children_mut() {
-            rename_value(&mut child.continuation.output_offset, map, limits)?;
-            rename_value(&mut child.continuation.output_size, map, limits)?;
-        }
+        renamed.call_stack.transform(&mut |part| {
+            match part {
+                StatePart::Value(value) => {
+                    checkpoint()?;
+                    value.forget_identity();
+                    value.rename_fresh(map, limits)?;
+                }
+                StatePart::Bytes(bytes) => bytes.rename_fresh(map, limits)?,
+                StatePart::Store(store) => store.to_mut().rename_fresh(map, limits)?,
+            }
+            Ok(())
+        })?;
         renamed.store.rename_fresh(map, limits)?;
         renamed.relations = renamed.relations.rename_fresh(map, limits)?;
         checkpoint()?;

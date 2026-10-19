@@ -356,7 +356,7 @@ fn expression_retention_refusal_retries_a_complete_coarse_bound() {
 
 #[test]
 fn feedback_fallback_and_runtime_retry_keep_the_same_whole_state_normalization() {
-    use super::super::coarse_retry;
+    use crate::analysis::transfer::procedure::prepare_runtime_retry;
     use crate::domain::relational::RelationLimits;
 
     let domain = Domain::default();
@@ -400,7 +400,7 @@ fn feedback_fallback_and_runtime_retry_keep_the_same_whole_state_normalization()
     let (feedback, feedback_live) =
         LoopBound::new(&input, &input, &entry, smaller, &mut budget).unwrap();
     let (runtime, runtime_bound, runtime_live) =
-        coarse_retry::prepare(&original, smaller, &mut budget).unwrap();
+        prepare_runtime_retry(&original, smaller, &mut budget).unwrap();
     assert!(semantic_eq(&feedback.bound, &runtime_bound));
     for live in [&feedback_live, &runtime_live] {
         assert_ne!(

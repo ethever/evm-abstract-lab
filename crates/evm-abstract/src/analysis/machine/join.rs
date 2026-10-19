@@ -236,31 +236,7 @@ impl MachinePayload {
                 value.forget_expression();
             }
         };
-        for frame in content.call_stack.iter_mut() {
-            checkpoint()?;
-            for value in &mut frame.stack {
-                normalize(value);
-            }
-            normalize(&mut frame.call_value);
-            for value in [&mut frame.address_operand, &mut frame.caller_operand]
-                .into_iter()
-                .flatten()
-            {
-                normalize(value);
-            }
-            frame.memory.update_values(&mut normalize);
-            frame.calldata.update_values(&mut normalize);
-            frame.returndata.update_values(&mut normalize);
-            let mut saved = frame.saved_store.state().clone();
-            saved.update_values(&mut normalize);
-            frame.saved_store = crate::world::Snapshot::from_state(saved);
-        }
-        for child in content.call_stack.children_mut() {
-            checkpoint()?;
-            normalize(&mut child.continuation.output_offset);
-            normalize(&mut child.continuation.output_size);
-        }
-        content.store.update_values(&mut normalize);
+        content.update_values(&mut normalize)?;
         checkpoint()?;
         Ok(content)
     }
@@ -304,7 +280,7 @@ impl MachinePayload {
 pub(crate) struct EntryAlternatives {
     represented: Vec<Arc<MachinePayload>>,
     cycle_widened: bool,
-    loop_bound: Option<crate::analysis::transfer::procedure::LoopBound>,
+    loop_bound: Option<crate::analysis::state::LoopBound>,
 }
 
 impl EntryAlternatives {
@@ -378,7 +354,7 @@ impl EntryAlternatives {
         let updated = if let Some(bound) = &self.loop_bound {
             bound.update(incoming, environment, domain, budget)?
         } else {
-            Some(crate::analysis::transfer::procedure::LoopBound::new(
+            Some(crate::analysis::state::LoopBound::new(
                 entry,
                 incoming,
                 environment,

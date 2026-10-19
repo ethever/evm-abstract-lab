@@ -6,7 +6,11 @@ use crate::world::{AbstractLog, LogKey};
 use alloy_primitives::U256;
 use std::collections::VecDeque;
 
+mod context;
+mod projection;
 mod relation_boundary_probe;
+mod stack_alias;
+mod storage_observations;
 mod worklist;
 
 #[test]

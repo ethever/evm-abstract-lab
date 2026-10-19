@@ -8,7 +8,10 @@ use super::{
 };
 use alloy_primitives::U256;
 use serde::{Serialize, Serializer, ser::SerializeMap};
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 /// Machine value whose independent layers have explicit accessors.
 /// Neither equal sources nor equal numeric summaries create an identity.
@@ -85,6 +88,18 @@ impl AbstractValue {
     pub fn with_expression(mut self, expression: ExprId) -> Self {
         self.expression = Some(expression);
         self
+    }
+    /// Rename only a retained term; numeric facts and immutable input identity
+    /// survive unchanged. A refused term leaves the complete value untouched.
+    pub(crate) fn rename_fresh(
+        &mut self,
+        map: &BTreeMap<ExprId, ExprId>,
+        limits: ExprLimits,
+    ) -> Result<(), ExprError> {
+        if let Some(expression) = &self.expression {
+            self.expression = Some(expression.rename_fresh(map, limits)?);
+        }
+        Ok(())
     }
     /// Forget optional symbolic precision without discarding numeric facts.
     pub fn forget_expression(&mut self) {

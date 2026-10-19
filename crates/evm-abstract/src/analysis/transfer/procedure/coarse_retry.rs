@@ -6,8 +6,8 @@
 use super::{
     Domain, Execution, FrameCode, FrontierReason, MachineError, MachinePayload, PayloadSummary,
     WorkBudget,
-    bounded::{BoundedState, reserve},
 };
+use crate::analysis::state::bounded::{BoundedState, reserve};
 
 #[cfg(test)]
 mod tests;

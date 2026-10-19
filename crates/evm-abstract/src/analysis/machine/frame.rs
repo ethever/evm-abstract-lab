@@ -44,34 +44,24 @@ pub struct FrameState {
 
 impl FrameState {
     pub(crate) fn work_size(&self) -> usize {
-        self.stack.iter().fold(
-            self.memory
-                .work_size()
-                .saturating_add(self.calldata.work_size())
-                .saturating_add(self.returndata.work_size())
-                .saturating_add(self.call_value.work_size())
-                .saturating_add(
-                    self.address_operand
-                        .as_ref()
-                        .map_or(0, AbstractValue::work_size),
-                )
-                .saturating_add(
-                    self.caller_operand
-                        .as_ref()
-                        .map_or(0, AbstractValue::work_size),
-                )
-                .saturating_add(self.saved_store.state().work_size())
-                .saturating_add(self.key.jump_history.len())
-                .saturating_add(self.program.as_ref().map_or(0, |program| {
-                    program.byte_len().saturating_add(
-                        program.blocks().iter().fold(0usize, |cost, block| {
-                            cost.saturating_add(block.instructions.len())
-                        }),
-                    )
-                }))
-                .saturating_add(3),
-            |cost, value| cost.saturating_add(value.work_size()),
-        )
+        self.values()
+            .map(AbstractValue::work_size)
+            .chain(self.byte_arrays().map(ByteArray::work_size))
+            .fold(
+                self.saved_store
+                    .state()
+                    .work_size()
+                    .saturating_add(self.key.jump_history.len())
+                    .saturating_add(self.program.as_ref().map_or(0, |program| {
+                        program.byte_len().saturating_add(
+                            program.blocks().iter().fold(0usize, |cost, block| {
+                                cost.saturating_add(block.instructions.len())
+                            }),
+                        )
+                    }))
+                    .saturating_add(3),
+                usize::saturating_add,
+            )
     }
 
     pub(super) fn join_guarded(

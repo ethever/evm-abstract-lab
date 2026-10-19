@@ -1,11 +1,6 @@
-use super::super::{
-    Counters, Solver, StorageReadPolicy, Table, WorkBudget, form, instantiate, join, semantic_eq,
-};
+use super::super::{form, instantiate, join, semantic_eq};
 use super::*;
-use crate::analysis::{
-    ExecutionConfig,
-    machine::fixtures::{fixture, word},
-};
+use crate::analysis::machine::fixtures::{fixture, word};
 use crate::domain::symbolic::ExprId;
 use alloy_primitives::U256;
 
@@ -17,7 +12,7 @@ fn written_input() -> (
 ) {
     let domain = Domain::default();
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut input = super::super::super::initial(&world, &entry, domain).unwrap();
+    let mut input = crate::analysis::transfer::initial(&world, &entry, domain).unwrap();
     let key = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
     input.active_mut().stack = vec![key.clone()];
     let owner = input.active().key.address;
@@ -338,56 +333,4 @@ fn independent_key_and_later_maybe_aliasing_write_do_not_reuse_the_old_read() {
             .0
             .is_empty()
     );
-}
-
-#[test]
-fn low_work_and_cancel_do_not_install_a_partial_summary() {
-    let (world, entry, input, domain) = written_input();
-    let config = ExecutionConfig::default();
-    let fee = form_work(&input, domain);
-    println!(
-        "STORAGE_OBSERVATION_FORM_FEE work={fee} store_work={}",
-        input.store.work_size()
-    );
-    assert!(fee > 0);
-    let mut table = Table::default();
-    let mut budget = WorkBudget::new(fee - 1);
-    let mut counters = Counters::default();
-    let result = Solver {
-        table: &mut table,
-        world: &world,
-        entry: &entry,
-        config: &config,
-        domain,
-        budget: &mut budget,
-        counters: &mut counters,
-        storage_reads: StorageReadPolicy::Abstract,
-    }
-    .procedure(input.clone());
-    assert_eq!(
-        result.unwrap_err().frontier_reason(),
-        crate::analysis::FrontierReason::Work
-    );
-    assert!(table.nodes.is_empty() && table.procedures.is_empty() && table.subscribers.is_empty());
-    let control = crate::analysis::control::Control::new(Default::default());
-    control.cancellation().cancel();
-    control.scope(|| {
-        assert!(StorageObservations::form(&input, domain).is_err());
-        let mut budget = WorkBudget::new(config.max_work);
-        let result = Solver {
-            table: &mut table,
-            world: &world,
-            entry: &entry,
-            config: &config,
-            domain,
-            budget: &mut budget,
-            counters: &mut counters,
-            storage_reads: StorageReadPolicy::Abstract,
-        }
-        .procedure(input.clone());
-        assert!(result.is_err());
-        assert!(
-            table.nodes.is_empty() && table.procedures.is_empty() && table.subscribers.is_empty()
-        );
-    });
 }

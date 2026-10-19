@@ -104,14 +104,7 @@ impl CallStack {
 
     pub(super) fn forget_identities(&mut self) {
         for frame in self.iter_mut() {
-            for value in &mut frame.stack {
-                value.forget_identity();
-            }
-            frame.call_value.forget_identity();
-            for value in [&mut frame.address_operand, &mut frame.caller_operand]
-                .into_iter()
-                .flatten()
-            {
+            for value in frame.values_mut() {
                 value.forget_identity();
             }
         }

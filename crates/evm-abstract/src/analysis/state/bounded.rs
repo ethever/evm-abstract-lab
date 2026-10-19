@@ -10,12 +10,15 @@ use super::{
 };
 
 #[derive(Clone)]
-pub(super) struct BoundedState {
+pub(in crate::analysis) struct BoundedState {
     layout: PayloadSummary,
     coarse: bool,
 }
 
-pub(super) fn reserve(budget: &mut WorkBudget, cost: usize) -> Result<(), MachineError> {
+pub(in crate::analysis) fn reserve(
+    budget: &mut WorkBudget,
+    cost: usize,
+) -> Result<(), MachineError> {
     MachineError::check_cancelled()?;
     if cost == usize::MAX || !budget.charge(cost) {
         Err(MachineError::work_failure())
@@ -82,7 +85,7 @@ impl BoundedState {
     /// The caller prepays construction and persistent retention. Self-projection
     /// bounds the layout itself instead of retaining an exact byte buffer solely
     /// for its coordinates. Coarse content never replaces these frozen keys.
-    pub(super) fn freeze(
+    pub(in crate::analysis) fn freeze(
         layout: &PayloadSummary,
         coarse: bool,
         domain: Domain,
@@ -93,7 +96,7 @@ impl BoundedState {
         })
     }
 
-    pub(super) fn work_size(&self) -> usize {
+    pub(in crate::analysis) fn work_size(&self) -> usize {
         self.layout.work_size()
     }
 
@@ -124,7 +127,7 @@ impl BoundedState {
     /// Reserve the incoming normalization, joins, projection, persistent copy
     /// and equality traversal together. Feedback may widen the resulting union
     /// under this same reservation before materializing it.
-    pub(super) fn join(
+    pub(in crate::analysis) fn join(
         &self,
         old: &PayloadSummary,
         incoming: &PayloadSummary,
@@ -149,7 +152,7 @@ impl BoundedState {
     /// Consuming the policy stages a mode transition until its complete summary
     /// and independent roots succeed. The caller has prepaid normalization; each
     /// instantiation is reserved separately, including the one coarse fallback.
-    pub(super) fn materialize(
+    pub(in crate::analysis) fn materialize(
         mut self,
         summary: PayloadSummary,
         domain: Domain,

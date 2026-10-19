@@ -198,17 +198,7 @@ fn finish_refine(
     Ok(true)
 }
 
-/// Establish a new runtime value without confusing separate executions of a PC.
-pub(super) fn identify(value: AbstractValue, enabled: bool) -> AbstractValue {
-    if enabled
-        && value.singleton().is_none()
-        && value.expression().is_none()
-        && let Some(expression) = ExprId::fresh()
-    {
-        return value.with_expression(expression);
-    }
-    value
-}
+pub(super) use crate::analysis::state::identify;
 
 /// Each successor owns its assumptions; the predecessor remains unchanged.
 pub(super) fn branch(

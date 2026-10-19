@@ -7,18 +7,6 @@ use crate::domain::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-fn rename(
-    value: &mut AbstractValue,
-    map: &BTreeMap<ExprId, ExprId>,
-    limits: ExprLimits,
-) -> Result<(), StoreError> {
-    if let Some(expression) = value.expression() {
-        *value = value
-            .clone()
-            .with_expression(expression.rename_fresh(map, limits)?);
-    }
-    Ok(())
-}
 impl Store {
     /// Import proved numeric guarantees using the immutable original term keys.
     /// Compact operand values need not retain an optional expression themselves.
@@ -67,7 +55,7 @@ impl Store {
                 .collect::<Vec<_>>()
             {
                 let mut value = value;
-                rename(&mut value, map, limits)?;
+                value.rename_fresh(map, limits)?;
                 plane.slots.insert(key, value);
             }
             for (key, value) in plane
@@ -77,14 +65,14 @@ impl Store {
                 .collect::<Vec<_>>()
             {
                 let mut value = value;
-                rename(&mut value, map, limits)?;
+                value.rename_fresh(map, limits)?;
                 plane.defaults.insert(key, value);
             }
-            rename(&mut plane.global_default, map, limits)?;
+            plane.global_default.rename_fresh(map, limits)?;
             let previous = std::mem::take(&mut plane.operands);
             for (e, v) in previous {
                 let mut v = v;
-                rename(&mut v, map, limits)?;
+                v.rename_fresh(map, limits)?;
                 crate::world::bytes::operands::remember(
                     &mut plane.operands,
                     e.rename_fresh(map, limits)?,
@@ -101,7 +89,7 @@ impl Store {
             .collect::<Vec<_>>()
         {
             let mut v = value;
-            rename(&mut v, map, limits)?;
+            v.rename_fresh(map, limits)?;
             out.balances.insert(address, v);
         }
         for (address, value) in out
@@ -111,10 +99,10 @@ impl Store {
             .collect::<Vec<_>>()
         {
             let mut v = value;
-            rename(&mut v, map, limits)?;
+            v.rename_fresh(map, limits)?;
             out.nonces.insert(address, v);
         }
-        rename(&mut out.balance_default, map, limits)?;
+        out.balance_default.rename_fresh(map, limits)?;
         for (key, log) in out
             .possible_logs
             .iter()
@@ -123,7 +111,7 @@ impl Store {
         {
             let mut log = log;
             for topic in &mut log.topics {
-                rename(topic, map, limits)?;
+                topic.rename_fresh(map, limits)?;
             }
             log.data.rename_fresh(map, limits)?;
             out.possible_logs.insert(key, log);

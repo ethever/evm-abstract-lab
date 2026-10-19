@@ -22,6 +22,7 @@ mod machine;
 pub mod progress;
 mod rpc;
 mod single;
+mod state;
 mod summary;
 mod terminal;
 mod transfer;

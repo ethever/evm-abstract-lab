@@ -17,8 +17,9 @@ impl Solver<'_> {
             self.domain,
             &self.config.analysis.relations,
             self.budget,
+            super::projection::Policy::Summary,
         );
-        projection.payload(&mut refined);
+        projection.payload(&mut refined)?;
         projection.finish()?;
         let history_work = refined.call_stack.iter().fold(0usize, |work, frame| {
             work.saturating_add(if frame.code == FrameCode::Unknown {

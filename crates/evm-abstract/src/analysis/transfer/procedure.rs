@@ -21,33 +21,30 @@ use crate::{
         },
         worklist::{Worklist, transfer_stop},
     },
-    domain::{AbstractValue, Domain, NumericValue, relational::RelationState},
-    world::{
-        AddressInput, ByteArray, ByteArraySummary, Code, Entry, Snapshot, Store, StoreSummary,
-        World,
-    },
+    domain::{AbstractValue, Domain},
+    world::{AddressInput, ByteArray, ByteArraySummary, Code, Entry, Store, StoreSummary, World},
 };
 use alloy_primitives::{Address, keccak256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-mod bounded;
 mod coarse_retry;
-mod context;
 mod cycles;
 mod environment;
-mod loop_bound;
-mod payload;
-mod projection;
 mod recursion;
 mod solver;
-mod stack_alias;
-mod storage_observations;
 #[cfg(test)]
 mod tests;
 
-pub(in crate::analysis) use loop_bound::LoopBound;
-use payload::{form, instantiate, join, semantic_eq};
+#[cfg(test)]
+use crate::analysis::state::stack_alias;
+use crate::analysis::state::{
+    PayloadSummary, context,
+    payload::{self, form, instantiate, join, semantic_eq},
+    projection, storage_observations,
+};
+#[cfg(test)]
+pub(in crate::analysis) use coarse_retry::prepare as prepare_runtime_retry;
 pub(in crate::analysis) use recursion::is_recursive_entry;
 
 /// This is an internal owner namespace, never an observed account address.
@@ -73,35 +70,6 @@ pub(super) fn owner_namespace(world: &World, store: &Store) -> Address {
             *byte = 0xff;
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FrameSummary {
-    key: FrameKey,
-    code: FrameCode,
-    program: Option<crate::bytecode::Program>,
-    stack: Vec<AbstractValue>,
-    stack_aliases: stack_alias::StackAliases,
-    memory: ByteArraySummary,
-    calldata: ByteArraySummary,
-    environment_calldata: bool,
-    returndata: ByteArraySummary,
-    call_value: AbstractValue,
-    address_operand: AbstractValue,
-    caller_operand: AbstractValue,
-    saved_store: StoreSummary,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PayloadSummary {
-    frames: Vec<FrameSummary>,
-    continuations: Vec<Continuation>,
-    store: StoreSummary,
-    storage_observations: storage_observations::StorageObservations,
-    /// Canonical retained-object and independent-instantiation charge.
-    work: usize,
-    /// Procedure location only; this is never a witness for the joined invariant.
-    location: MachineKey,
 }
 
 struct Node {

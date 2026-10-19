@@ -3,7 +3,7 @@
 use super::{
     AbstractValue, ByteArray, CallStack, ChildFrame, Continuation, Domain, Entry, FrameCode,
     FrameState, FrameSummary, MachineError, MachinePayload, NumericValue, PayloadSummary,
-    RelationState, RootFrame, Snapshot, relations, stack_alias::StackAliases,
+    RelationState, RootFrame, Snapshot, identify, stack_alias::StackAliases,
 };
 
 fn scalar(value: &AbstractValue) -> AbstractValue {
@@ -29,14 +29,14 @@ fn join_scalar(
 }
 
 impl PayloadSummary {
-    pub(super) fn active(&self) -> &FrameSummary {
+    pub(in crate::analysis) fn active(&self) -> &FrameSummary {
         self.frames.last().expect("nonempty relative stack")
     }
-    pub(super) fn work_size(&self) -> usize {
+    pub(in crate::analysis) fn work_size(&self) -> usize {
         self.work
     }
 
-    pub(super) fn measure_work(&self) -> usize {
+    pub(in crate::analysis) fn measure_work(&self) -> usize {
         let store_work = self.store.work_size();
         let observation_work = self
             .storage_observations
@@ -81,7 +81,7 @@ impl PayloadSummary {
 /// Tree lookup/allocation and numeric Eq are reserved before alias formation.
 /// Numeric Eq short-circuits unequal finite lengths; equal bounds have equal
 /// numeric traversal sizes. Source expression comparison is never required.
-pub(super) fn alias_form_work(payload: &MachinePayload) -> usize {
+pub(in crate::analysis) fn alias_form_work(payload: &MachinePayload) -> usize {
     payload.call_stack.iter().fold(0usize, |work, frame| {
         if frame.code == FrameCode::Unknown {
             work
@@ -94,7 +94,7 @@ pub(super) fn alias_form_work(payload: &MachinePayload) -> usize {
     })
 }
 
-pub(super) fn form(
+pub(in crate::analysis) fn form(
     payload: &MachinePayload,
     entry: &Entry,
     domain: Domain,
@@ -186,7 +186,7 @@ pub(super) fn form(
     Ok(summary)
 }
 
-pub(super) fn join(
+pub(in crate::analysis) fn join(
     old: &PayloadSummary,
     next: &PayloadSummary,
     domain: Domain,
@@ -244,7 +244,7 @@ pub(super) fn join(
     Ok(out)
 }
 
-pub(super) fn semantic_eq(left: &PayloadSummary, right: &PayloadSummary) -> bool {
+pub(in crate::analysis) fn semantic_eq(left: &PayloadSummary, right: &PayloadSummary) -> bool {
     left.frames == right.frames
         && left.continuations == right.continuations
         && left.store == right.store
@@ -253,7 +253,7 @@ pub(super) fn semantic_eq(left: &PayloadSummary, right: &PayloadSummary) -> bool
 
 /// Summaries are not executable arrays. Each invocation gets independent source
 /// variables; only its own retained stack classes share scalar expressions.
-pub(super) fn instantiate(
+pub(in crate::analysis) fn instantiate(
     payload: &PayloadSummary,
     domain: Domain,
 ) -> Result<MachinePayload, MachineError> {
@@ -272,15 +272,12 @@ pub(super) fn instantiate(
                 calldata: frame.calldata.instantiate(domain)?,
                 environment_calldata: frame.environment_calldata,
                 returndata: frame.returndata.instantiate(domain)?,
-                call_value: relations::identify(
-                    frame.call_value.clone(),
-                    domain.spec().relations().enabled,
-                ),
-                address_operand: Some(relations::identify(
+                call_value: identify(frame.call_value.clone(), domain.spec().relations().enabled),
+                address_operand: Some(identify(
                     frame.address_operand.clone(),
                     domain.spec().relations().enabled,
                 )),
-                caller_operand: Some(relations::identify(
+                caller_operand: Some(identify(
                     frame.caller_operand.clone(),
                     domain.spec().relations().enabled,
                 )),
