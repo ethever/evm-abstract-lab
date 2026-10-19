@@ -10,7 +10,8 @@ use evm_abstract::{
         AbstractValue,
         relational::{Constraint, RelationPath, RelationPathKind, RelationState},
         symbolic::{
-            ByteStateId, ByteStateKind, ByteView, ExprId, ExprKind, SlotStateId, SlotStateKind,
+            ByteStateId, ByteView, ExprId, SlotStateId,
+            structure::{Handle, Postorder},
         },
     },
 };
@@ -19,130 +20,43 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
-    Expression(ExprId),
-    Bytes(ByteStateId),
-    Slots(SlotStateId),
-    View(ByteView),
+    Native(Handle),
     Path(usize),
 }
 #[derive(Clone)]
 enum Root {
-    Expression(ExprId),
-    Bytes(ByteStateId),
-    Slots(SlotStateId),
-    View(ByteView),
+    Native(Handle),
     Path(RelationPath),
 }
 impl Root {
     fn key(&self) -> Key {
         match self {
-            Self::Expression(v) => Key::Expression(v.clone()),
-            Self::Bytes(v) => Key::Bytes(v.clone()),
-            Self::Slots(v) => Key::Slots(v.clone()),
-            Self::View(v) => Key::View(v.clone()),
+            Self::Native(v) => Key::Native(v.clone()),
             Self::Path(v) => Key::Path(v.id()),
         }
     }
     fn depth(&self) -> usize {
         match self {
-            Self::Expression(v) => v.depth(),
-            Self::Bytes(v) => v.depth(),
-            Self::Slots(v) => v.depth(),
-            Self::View(v) => v.depth(),
+            Self::Native(v) => v.depth(),
             Self::Path(v) => v.depth(),
         }
     }
     fn children(&self) -> Vec<Self> {
-        let e = |v: &ExprId| Self::Expression(v.clone());
         match self {
-            Self::Expression(v) => match v.kind() {
-                ExprKind::Operation { args, .. } => args.iter().map(e).collect(),
-                ExprKind::Ite {
-                    condition,
-                    then_value,
-                    else_value,
-                } => vec![e(condition), e(then_value), e(else_value)],
-                ExprKind::ByteRead { state, index } => vec![Self::Bytes(state.clone()), e(index)],
-                ExprKind::WordRead { view, offset } => vec![Self::View(view.clone()), e(offset)],
-                ExprKind::SlotRead { state, key } => vec![Self::Slots(state.clone()), e(key)],
-                ExprKind::Keccak { input } => vec![Self::View(input.clone())],
-                ExprKind::Constant(_) | ExprKind::Input(_) | ExprKind::Fresh(_) => vec![],
-            },
-            Self::Bytes(v) => match v.kind() {
-                ByteStateKind::Input {
-                    source,
-                    length,
-                    bindings,
-                } => std::iter::once(e(source.token()))
-                    .chain(std::iter::once(e(length)))
-                    .chain(bindings.iter().map(|b| e(&b.value)))
-                    .collect(),
-                ByteStateKind::WriteByte {
-                    previous,
-                    offset,
-                    value,
-                }
-                | ByteStateKind::WriteWord {
-                    previous,
-                    offset,
-                    value,
-                } => vec![Self::Bytes(previous.clone()), e(offset), e(value)],
-                ByteStateKind::Copy {
-                    previous,
-                    destination,
-                    source,
-                    length,
-                } => vec![
-                    Self::Bytes(previous.clone()),
-                    e(destination),
-                    Self::View(source.clone()),
-                    e(length),
-                ],
-                ByteStateKind::Slice { source } => vec![Self::View(source.clone())],
-                ByteStateKind::Ite {
-                    condition,
-                    then_state,
-                    else_state,
-                } => vec![
-                    e(condition),
-                    Self::Bytes(then_state.clone()),
-                    Self::Bytes(else_state.clone()),
-                ],
-                ByteStateKind::Zero | ByteStateKind::Exact(_) => vec![],
-            },
-            Self::Slots(v) => match v.kind() {
-                SlotStateKind::Input { source, bindings } => std::iter::once(e(source.token()))
-                    .chain(bindings.iter().map(|b| e(&b.value)))
-                    .collect(),
-                SlotStateKind::Store {
-                    previous,
-                    key,
-                    value,
-                } => vec![Self::Slots(previous.clone()), e(key), e(value)],
-                SlotStateKind::Ite {
-                    condition,
-                    then_state,
-                    else_state,
-                } => vec![
-                    e(condition),
-                    Self::Slots(then_state.clone()),
-                    Self::Slots(else_state.clone()),
-                ],
-                SlotStateKind::Zero => vec![],
-            },
-            Self::View(v) => vec![Self::Bytes(v.state.clone()), e(&v.offset), e(&v.length)],
+            Self::Native(v) => v.dependencies().into_iter().map(Self::Native).collect(),
             Self::Path(v) => match v.kind() {
                 RelationPathKind::True | RelationPathKind::False => vec![],
-                RelationPathKind::Atoms(atoms) => {
-                    paths::expressions(atoms).into_iter().map(e).collect()
-                }
+                RelationPathKind::Atoms(atoms) => paths::expressions(atoms)
+                    .into_iter()
+                    .map(|e| Self::Native(Handle::Word(e.clone())))
+                    .collect(),
                 RelationPathKind::And(paths) => paths.iter().cloned().map(Self::Path).collect(),
                 RelationPathKind::Ite {
                     selector,
                     then_path,
                     else_path,
                 } => vec![
-                    e(selector),
+                    Self::Native(Handle::Word(selector.clone())),
                     Self::Path(then_path.clone()),
                     Self::Path(else_path.clone()),
                 ],
@@ -223,22 +137,22 @@ impl<'a> Pool<'a> {
     }
     fn e(&self, v: &ExprId) -> api::ExpressionRef {
         api::ExpressionRef {
-            node: self.index(Root::Expression(v.clone())),
+            node: self.index(Root::Native(Handle::Word(v.clone()))),
         }
     }
     fn b(&self, v: &ByteStateId) -> api::ByteStateRef {
         api::ByteStateRef {
-            node: self.index(Root::Bytes(v.clone())),
+            node: self.index(Root::Native(Handle::Bytes(v.clone()))),
         }
     }
     fn s(&self, v: &SlotStateId) -> api::SlotStateRef {
         api::SlotStateRef {
-            node: self.index(Root::Slots(v.clone())),
+            node: self.index(Root::Native(Handle::Slots(v.clone()))),
         }
     }
     fn v(&self, v: &ByteView) -> api::ByteViewRef {
         api::ByteViewRef {
-            node: self.index(Root::View(v.clone())),
+            node: self.index(Root::Native(Handle::View(v.clone()))),
         }
     }
     fn p(&self, v: &RelationPath) -> api::PathRef {
@@ -254,8 +168,8 @@ impl<'a> Pool<'a> {
         if let Some(index) = self.memo.get(&root.key()) {
             return Ok(*index);
         }
-        let mut pending = vec![(root.clone(), false)];
-        while let Some((item, ready)) = pending.pop() {
+        let mut pending = Postorder::new(root.clone());
+        while let Some((item, ready)) = pending.next() {
             self.charge(1)?;
             let key = item.key();
             if self.memo.contains_key(&key) {
@@ -264,8 +178,7 @@ impl<'a> Pool<'a> {
             if !ready {
                 let children = item.children();
                 self.charge(children.len())?;
-                pending.push((item, true));
-                pending.extend(children.into_iter().rev().map(|child| (child, false)));
+                pending.expand(item, children);
                 continue;
             }
             let required = self.graph.nodes.len().saturating_add(1);
@@ -285,17 +198,17 @@ impl<'a> Pool<'a> {
     }
     pub fn expression(&mut self, source: &ExprId) -> Result<api::ExpressionRef, api::ApiError> {
         Ok(api::ExpressionRef {
-            node: self.intern(Root::Expression(source.clone()))?,
+            node: self.intern(Root::Native(Handle::Word(source.clone())))?,
         })
     }
     pub fn slots(&mut self, source: &SlotStateId) -> Result<api::SlotStateRef, api::ApiError> {
         Ok(api::SlotStateRef {
-            node: self.intern(Root::Slots(source.clone()))?,
+            node: self.intern(Root::Native(Handle::Slots(source.clone())))?,
         })
     }
     pub fn view(&mut self, source: &ByteView) -> Result<api::ByteViewRef, api::ApiError> {
         Ok(api::ByteViewRef {
-            node: self.intern(Root::View(source.clone()))?,
+            node: self.intern(Root::Native(Handle::View(source.clone())))?,
         })
     }
     pub fn path(&mut self, source: &RelationPath) -> Result<api::PathRef, api::ApiError> {

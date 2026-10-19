@@ -1,0 +1,17 @@
+[package]
+name                   = "symbolic-structure"
+description            = "Typed structure and ordered traversal of mixed symbolic EVM DAGs"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[features]
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -413,3 +413,99 @@ fn symbolic_export_limits_and_cancellation_are_typed_without_changing_native_val
     assert_eq!(detail.written, None);
     assert_eq!(source, retained);
 }
+
+#[test]
+fn mixed_projection_keeps_binding_scopes_sharing_fresh_numbers_and_work() {
+    use alloy_primitives::U256;
+    use evm_abstract::domain::{
+        AbstractValue, Domain,
+        identity::Symbol,
+        relational::{CheckResult, RelationLimits, RelationState},
+        symbolic::{
+            ByteStateId, ByteView, ExprId, SlotStateId, SourceId, StateBinding, StateLimits,
+        },
+    };
+    let control = Control::default();
+    let mut pool = super::super::symbolic::Pool::new(&control);
+    let token = ExprId::fresh().unwrap();
+    let length = ExprId::input(u64::MAX, Symbol::CalldataLength);
+    let cell = ExprId::fresh().unwrap();
+    let numeric = Domain::default()
+        .join(
+            &AbstractValue::constant(U256::from(7)),
+            &AbstractValue::constant(U256::from(9)),
+        )
+        .numeric()
+        .clone();
+    let binding = StateBinding {
+        index: U256::from(2),
+        value: cell.clone(),
+        numeric,
+    };
+    let source = SourceId::scoped(token.clone(), U256::from(0x123));
+    let bytes = ByteStateId::observed(
+        source.clone(),
+        length.clone(),
+        vec![binding.clone()],
+        StateLimits::default(),
+    )
+    .unwrap();
+    let view = ByteView::new(bytes, ExprId::constant(U256::ZERO), length.clone());
+    let root = pool.view(&view).unwrap();
+    assert_eq!(root.node, 5);
+    assert_eq!(
+        pool.usage,
+        api::ExportUsage {
+            nodes: 6,
+            exact_bytes: 0,
+            work: 23
+        }
+    );
+    assert_eq!(pool.view(&view).unwrap(), root);
+    assert_eq!(pool.usage.work, 24);
+    assert_eq!(pool.graph.nodes[0], api::Expression::Fresh(0));
+    assert_eq!(pool.graph.nodes[2], api::Expression::Fresh(1));
+    let api::Expression::BytesInput(input) = &pool.graph.nodes[3] else {
+        panic!("source input")
+    };
+    assert_eq!(input.source.namespace, "0x123");
+    assert_eq!(input.source.token.node, 0);
+    assert_eq!(input.length.node, 1);
+    assert_eq!(input.bindings[0].value.node, 2);
+    assert_eq!(
+        input.bindings[0].numeric.constants,
+        Some(vec!["0x7".into(), "0x9".into()])
+    );
+    assert_eq!(input.bindings[0].numeric.expression, None);
+    let api::Expression::Input(identity) = &pool.graph.nodes[1] else {
+        panic!("scoped length")
+    };
+    assert_eq!(identity.scope, api::DecimalU64(u64::MAX));
+    let slots = SlotStateId::observed(source, vec![binding], StateLimits::default()).unwrap();
+    let slots = pool.slots(&slots).unwrap();
+    let api::Expression::SlotsInput(input) = &pool.graph.nodes[slots.node] else {
+        panic!("storage source")
+    };
+    assert_eq!(input.source.token.node, 0);
+    assert_eq!(input.source.namespace, "0x123");
+    assert_eq!(input.bindings[0].value.node, 2);
+
+    let mut relations = RelationState::default();
+    assert_eq!(
+        relations.add_equal(&cell, &length, &RelationLimits::default()),
+        CheckResult::MayBeFeasible
+    );
+    let path = pool.relations(&relations).unwrap();
+    assert_eq!(pool.relations(&relations).unwrap(), path);
+    assert!(
+        pool.graph
+            .nodes
+            .iter()
+            .any(|node| matches!(node, api::Expression::PathAtoms(_)))
+    );
+    pool.graph.validate().unwrap();
+    let encoded = serde_json::to_vec(&pool.graph).unwrap();
+    let parsed: api::SymbolicGraph = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(parsed, pool.graph);
+    parsed.validate().unwrap();
+}

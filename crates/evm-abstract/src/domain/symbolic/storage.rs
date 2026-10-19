@@ -1,49 +1,12 @@
 //! Immutable ordered Word256 storage states, shared across checkpoints.
 
 use super::{
-    ExprError, ExprId, ExprLimits, SourceId, StateBinding, StateError, StateLimits,
+    ExprId, SourceId, StateBinding, StateError, StateLimits,
     state::{self, Interner, StateNode},
 };
-use serde::{Serialize, Serializer};
-use std::{
-    cmp::Ordering,
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-    hash::{Hash, Hasher},
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::sync::{Arc, Mutex, OnceLock};
 
-/// Read-only storage node; account and plane identity live in its source.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
-pub enum SlotStateKind {
-    /// Known initial all-zero storage, including a new transient plane.
-    Zero,
-    /// Fixed snapshot source with optional observed initial cells.
-    Input {
-        /// Immutable source identity or captured bounded view.
-        source: SourceId,
-        /// Initial observed cells, preserving their symbolic and numeric facts.
-        bindings: Vec<StateBinding>,
-    },
-    /// One ordered write, for both concrete and symbolic keys.
-    Store {
-        /// Previous immutable snapshot, before this write.
-        previous: SlotStateId,
-        /// Word256 storage key.
-        key: ExprId,
-        /// Word expression for the written or observed value.
-        value: ExprId,
-    },
-    /// Paired branch alternatives, selected by nonzero=true.
-    Ite {
-        /// Nonzero EVM condition selecting the first alternative.
-        condition: ExprId,
-        /// Immutable state chosen when the condition is nonzero.
-        then_state: SlotStateId,
-        /// Immutable state chosen when the condition is zero.
-        else_state: SlotStateId,
-    },
-}
+pub use super::structure::SlotStateKind;
 /// Immutable, structurally interned storage state handle.
 #[derive(Clone)]
 pub struct SlotStateId(pub(super) Arc<StateNode<SlotStateKind>>);
@@ -266,71 +229,5 @@ impl SlotStateId {
     pub fn kind(&self) -> &SlotStateKind {
         &self.0.kind
     }
-    /// Private graph id, remapped by each report.
-    pub fn id(&self) -> u64 {
-        self.0.id
-    }
-    /// Conservative retained metadata work.
-    pub fn nodes(&self) -> usize {
-        self.0.nodes
-    }
-    /// Maximum dependency depth.
-    pub fn depth(&self) -> usize {
-        self.0.depth
-    }
-    /// Work estimate for graph operations.
-    pub fn work_size(&self) -> usize {
-        self.nodes()
-    }
-    /// Runtime identities from keys, values, guards and source tokens.
-    pub fn fresh_leaves(&self) -> BTreeSet<ExprId> {
-        super::walk::slots_fresh(self)
-    }
-    /// Capture-avoiding whole-graph rename.
-    pub fn rename_fresh(
-        &self,
-        map: &BTreeMap<ExprId, ExprId>,
-        limits: ExprLimits,
-    ) -> Result<Self, ExprError> {
-        super::walk::Renamer::new(map, limits).slots(self)
-    }
 }
-impl PartialEq for SlotStateId {
-    fn eq(&self, other: &Self) -> bool {
-        self.id() == other.id()
-    }
-}
-impl Eq for SlotStateId {}
-impl PartialOrd for SlotStateId {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for SlotStateId {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.id().cmp(&other.id())
-    }
-}
-impl Hash for SlotStateId {
-    fn hash<H: Hasher>(&self, s: &mut H) {
-        self.id().hash(s);
-    }
-}
-impl fmt::Debug for SlotStateId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "SlotStateId {{ id: {}, nodes: {}, depth: {} }}",
-            self.id(),
-            self.nodes(),
-            self.depth()
-        )
-    }
-}
-impl Serialize for SlotStateId {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        super::SymbolicGraph::slots(self, super::GraphLimits::default())
-            .map_err(serde::ser::Error::custom)?
-            .serialize(s)
-    }
-}
+state::state_handle!(SlotStateId, slots, slots_fresh);

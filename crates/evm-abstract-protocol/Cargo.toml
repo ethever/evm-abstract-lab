@@ -9,6 +9,7 @@ repository.workspace   = true
 
 [dependencies]
 serde.workspace = true
+symbolic-structure = { path = "../symbolic-structure" }
 
 [dev-dependencies]
 serde_json.workspace = true

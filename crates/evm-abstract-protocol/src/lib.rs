@@ -1,6 +1,6 @@
 //! Versioned data exchanged by the native analyzer and the browser workbench.
 //!
-//! This crate depends only on serde and contains no execution engine, networking
+//! This crate uses serde and an engine-independent structural schema, with no execution engine, networking
 //! or GUI code. IDs refer to native machine states and edges throughout the
 //! graph and SSA; byte offsets are never used as state identities. Word values
 //! are lossless hexadecimal strings rather than JavaScript floating point numbers.

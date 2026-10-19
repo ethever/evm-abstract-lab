@@ -187,6 +187,86 @@ pub(super) struct StateNode<K> {
     pub nodes: usize,
     pub depth: usize,
 }
+
+// Byte and slot handles share interner identity and cached metadata, rather
+// than ExprId's structural/fingerprint comparison. Keep this boundary explicit
+// while sharing traversal, renaming and flat-export plumbing for both handles.
+macro_rules! state_handle {
+    ($handle:ident, $graph:ident, $fresh:ident) => {
+        impl $handle {
+            /// Process-private interner identity, remapped by each export.
+            pub fn id(&self) -> u64 {
+                self.0.id
+            }
+            /// Cached conservative metadata work, independent of logical ranges.
+            pub fn nodes(&self) -> usize {
+                self.0.nodes
+            }
+            /// Cached scalar/state dependency depth.
+            pub fn depth(&self) -> usize {
+                self.0.depth
+            }
+            /// Work estimate for graph retention and traversal.
+            pub fn work_size(&self) -> usize {
+                self.nodes()
+            }
+            /// Runtime leaves, including hidden source identities and guards.
+            pub fn fresh_leaves(&self) -> std::collections::BTreeSet<super::ExprId> {
+                super::walk::$fresh(self)
+            }
+            /// Capture-avoiding whole-graph rename with shared sort memoization.
+            pub fn rename_fresh(
+                &self,
+                map: &std::collections::BTreeMap<super::ExprId, super::ExprId>,
+                limits: super::ExprLimits,
+            ) -> Result<Self, super::ExprError> {
+                super::walk::Renamer::new(map, limits).$graph(self)
+            }
+        }
+        impl PartialEq for $handle {
+            fn eq(&self, other: &Self) -> bool {
+                self.id() == other.id()
+            }
+        }
+        impl Eq for $handle {}
+        impl PartialOrd for $handle {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for $handle {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.id().cmp(&other.id())
+            }
+        }
+        impl std::hash::Hash for $handle {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                std::hash::Hash::hash(&self.id(), state);
+            }
+        }
+        impl std::fmt::Debug for $handle {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    concat!(stringify!($handle), " {{ id: {}, nodes: {}, depth: {} }}"),
+                    self.id(),
+                    self.nodes(),
+                    self.depth()
+                )
+            }
+        }
+        impl serde::Serialize for $handle {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serde::Serialize::serialize(
+                    &super::SymbolicGraph::$graph(self, super::GraphLimits::default())
+                        .map_err(serde::ser::Error::custom)?,
+                    serializer,
+                )
+            }
+        }
+    };
+}
+pub(super) use state_handle;
 static NEXT_NODE: AtomicU64 = AtomicU64::new(1);
 
 /// Weak caches do not retain previous snapshots or source expressions.

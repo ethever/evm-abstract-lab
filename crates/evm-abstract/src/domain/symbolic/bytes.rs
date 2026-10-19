@@ -8,11 +8,9 @@ use super::{
     state::{self, Interner, StateNode},
 };
 use alloy_primitives::U256;
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 use std::{
-    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
-    fmt,
     hash::{Hash, Hasher},
     sync::{Arc, Mutex, OnceLock},
 };
@@ -22,66 +20,7 @@ mod copy_tests;
 mod join;
 mod reads;
 
-/// Read-only byte state node. Dependencies always reference earlier snapshots.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
-pub enum ByteStateKind {
-    /// Unbounded zero array, used by fresh memory.
-    Zero,
-    /// Immutable source array; reads at or past length are zero.
-    Input {
-        /// Immutable source identity or captured bounded view.
-        source: SourceId,
-        /// Logical length, independent of materialized storage.
-        length: ExprId,
-        /// Initial observed cells, preserving their symbolic and numeric facts.
-        bindings: Vec<StateBinding>,
-    },
-    /// Exact finite bytes with zero padding.
-    Exact(Arc<[u8]>),
-    /// Low eight bits written to one address.
-    WriteByte {
-        /// Previous immutable snapshot, before this write.
-        previous: ByteStateId,
-        /// First byte address, with nonwrapping read semantics.
-        offset: ExprId,
-        /// Word expression for the written or observed value.
-        value: ExprId,
-    },
-    /// Big-endian 32-byte write, without address wraparound.
-    WriteWord {
-        /// Previous immutable snapshot, before this write.
-        previous: ByteStateId,
-        /// First byte address, with nonwrapping read semantics.
-        offset: ExprId,
-        /// Word expression for the written or observed value.
-        value: ExprId,
-    },
-    /// Ordered range update; source is captured before this update.
-    Copy {
-        /// Previous immutable snapshot, before this write.
-        previous: ByteStateId,
-        /// First destination byte address.
-        destination: ExprId,
-        /// Immutable source identity or captured bounded view.
-        source: ByteView,
-        /// Logical length, independent of materialized storage.
-        length: ExprId,
-    },
-    /// Zero-based array for a bounded source view, preserving its padding.
-    Slice {
-        /// Captured bounded source view.
-        source: ByteView,
-    },
-    /// Paired branch alternatives, selected by nonzero=true.
-    Ite {
-        /// Nonzero EVM condition selecting the first alternative.
-        condition: ExprId,
-        /// Immutable state chosen when the condition is nonzero.
-        then_state: ByteStateId,
-        /// Immutable state chosen when the condition is zero.
-        else_state: ByteStateId,
-    },
-}
+pub use super::structure::ByteStateKind;
 
 /// Cheap immutable state handle. Equality uses collision-checked interning.
 #[derive(Clone)]
@@ -509,79 +448,13 @@ impl ByteStateId {
     pub fn kind(&self) -> &ByteStateKind {
         &self.0.kind.kind
     }
-    /// Process-private graph identity; reports must remap this to a local index.
-    pub fn id(&self) -> u64 {
-        self.0.id
-    }
-    /// Conservative graph retention work; logical ranges are never counted as bytes.
-    pub fn nodes(&self) -> usize {
-        self.0.nodes
-    }
     /// Saturating non-Ite occurrences reached by COPY's top-level distribution.
     /// Shared children count once per incoming path; update history is separate.
     pub(crate) fn copy_leaves(&self) -> usize {
         self.0.kind.copy_leaves
     }
-    /// Dependency depth, including scalar offsets and guards.
-    pub fn depth(&self) -> usize {
-        self.0.depth
-    }
-    /// Retention/traversal estimate independent of logical range length.
-    pub fn work_size(&self) -> usize {
-        self.nodes()
-    }
-    /// All runtime symbols, including hidden source identities.
-    pub fn fresh_leaves(&self) -> BTreeSet<ExprId> {
-        super::walk::state_fresh(self)
-    }
-    /// Rename the entire immutable graph with shared memoization.
-    pub fn rename_fresh(
-        &self,
-        map: &BTreeMap<ExprId, ExprId>,
-        limits: ExprLimits,
-    ) -> Result<Self, ExprError> {
-        super::walk::Renamer::new(map, limits).bytes(self)
-    }
 }
-impl PartialEq for ByteStateId {
-    fn eq(&self, other: &Self) -> bool {
-        self.id() == other.id()
-    }
-}
-impl Eq for ByteStateId {}
-impl PartialOrd for ByteStateId {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for ByteStateId {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.id().cmp(&other.id())
-    }
-}
-impl Hash for ByteStateId {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id().hash(state);
-    }
-}
-impl fmt::Debug for ByteStateId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "ByteStateId {{ id: {}, nodes: {}, depth: {} }}",
-            self.id(),
-            self.nodes(),
-            self.depth()
-        )
-    }
-}
-impl Serialize for ByteStateId {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        super::SymbolicGraph::bytes(self, super::GraphLimits::default())
-            .map_err(serde::ser::Error::custom)?
-            .serialize(s)
-    }
-}
+state::state_handle!(ByteStateId, bytes, state_fresh);
 
 #[cfg(test)]
 mod copy_metric_tests {

@@ -480,6 +480,119 @@ fn mixed_graph_checks_sorts_and_backward_dependencies() {
 }
 
 #[test]
+fn observed_binding_edges_include_numeric_references_in_stored_order() {
+    let mut numeric = touch_snapshot(None, None).accounts[0].balance.clone();
+    numeric.expression = Some(ExpressionRef { node: 1 });
+    let binding = SymbolicBinding {
+        index: "0x2".into(),
+        value: ExpressionRef { node: 2 },
+        numeric,
+    };
+    let source = SymbolicSource {
+        token: ExpressionRef { node: 0 },
+        namespace: "0x123".into(),
+    };
+    let mut graph = SymbolicGraph {
+        nodes: vec![
+            Expression::Fresh(0),
+            Expression::Constant("0x20".into()),
+            Expression::Fresh(1),
+            Expression::BytesZero,
+            Expression::BytesInput(BytesInput {
+                source: source.clone(),
+                length: ExpressionRef { node: 1 },
+                bindings: vec![binding.clone()],
+            }),
+            Expression::SlotsInput(SlotsInput {
+                source,
+                bindings: vec![binding],
+            }),
+            Expression::View(ByteView {
+                state: ByteStateRef { node: 3 },
+                offset: ExpressionRef { node: 0 },
+                length: ExpressionRef { node: 1 },
+            }),
+            Expression::Copy(ByteCopy {
+                previous: ByteStateRef { node: 4 },
+                destination: ExpressionRef { node: 2 },
+                source: ByteViewRef { node: 6 },
+                length: ExpressionRef { node: 1 },
+            }),
+        ],
+    };
+    let word = |node| SymbolicReference {
+        sort: SymbolicSort::Word,
+        node,
+    };
+    assert_eq!(
+        graph.nodes[4].references(),
+        vec![word(0), word(1), word(2), word(1)]
+    );
+    assert_eq!(graph.nodes[5].references(), vec![word(0), word(2), word(1)]);
+    assert_eq!(
+        graph.nodes[7].references(),
+        vec![
+            SymbolicReference {
+                sort: SymbolicSort::Bytes,
+                node: 4
+            },
+            word(2),
+            SymbolicReference {
+                sort: SymbolicSort::View,
+                node: 6
+            },
+            word(1),
+        ]
+    );
+    graph.validate().unwrap();
+    roundtrip(graph.clone());
+    let Expression::BytesInput(input) = &mut graph.nodes[4] else {
+        unreachable!()
+    };
+    input.bindings[0].numeric.expression = Some(ExpressionRef { node: 3 });
+    let error = graph.validate().unwrap_err();
+    assert_eq!(
+        (
+            error.owner,
+            error.node,
+            error.expected,
+            error.actual,
+            error.forward
+        ),
+        (
+            Some(4),
+            3,
+            SymbolicSort::Word,
+            Some(SymbolicSort::Bytes),
+            false
+        )
+    );
+    let Expression::BytesInput(input) = &mut graph.nodes[4] else {
+        unreachable!()
+    };
+    input.bindings[0].numeric.expression = Some(ExpressionRef { node: 4 });
+    assert!(graph.validate().unwrap_err().forward);
+    let mut missing = serde_json::to_value(&graph.nodes[4]).unwrap();
+    missing["BytesInput"]
+        .as_object_mut()
+        .unwrap()
+        .remove("length");
+    assert!(
+        serde_json::from_value::<Expression>(missing)
+            .unwrap_err()
+            .to_string()
+            .contains("missing field: length")
+    );
+    let duplicate = r#"{"WriteByte":{"previous":{"node":0},"offset":{"node":1},"value":{"node":2},"value":{"node":3}}}"#;
+    assert!(
+        serde_json::from_str::<Expression>(duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate field: value")
+    );
+}
+
+#[test]
 fn procedure_summary_wire_requires_entry_kind_and_nullable_root() {
     for kind in [
         ProcedureSummaryKind::UnknownEnvironment,
