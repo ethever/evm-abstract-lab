@@ -1,11 +1,12 @@
 //! Joint known/unknown procedure worklist and per-caller return propagation.
 
-use super::coarse_retry::{CoarseRuntime, RuntimeRetry};
+use super::coarse_retry::{self, RuntimeRetry};
 use super::{
     AbstractValue, Arc, BTreeMap, BTreeSet, ByteArray, CallStack, DiagnosticKind, Execution,
     ExecutionFrontier, FrameCode, FrontierReason, Limit, MachineEdgeKind, MachineError,
     MachinePayload, Node, OutcomeKind, Output, PayloadSummary, Procedure, RootFrame, Solver, Store,
     Subscriber, execute_inner, form, instantiate, join, resume_summary_inner, semantic_eq,
+    transfer_stop,
 };
 
 impl Solver<'_> {
@@ -16,8 +17,9 @@ impl Solver<'_> {
             self.domain,
             &self.config.analysis.relations,
             self.budget,
+            super::projection::Policy::Summary,
         );
-        projection.payload(&mut refined);
+        projection.payload(&mut refined)?;
         projection.finish()?;
         let history_work = refined.call_stack.iter().fold(0usize, |work, frame| {
             work.saturating_add(if frame.code == FrameCode::Unknown {
@@ -82,7 +84,7 @@ impl Solver<'_> {
     }
 
     pub(super) fn park_pending(&mut self, reason: FrontierReason) {
-        let pending = self.table.queued.iter().copied().collect::<Vec<_>>();
+        let pending = self.table.worklist.pending().collect::<Vec<_>>();
         for pending in pending {
             self.frontier_summary(self.table.nodes[pending].payload.clone(), reason.clone(), 0);
         }
@@ -219,25 +221,17 @@ impl Solver<'_> {
             }
             id
         };
-        if self.table.queued.insert(id) {
-            self.table.queue.push_back(id);
-        }
+        self.table.worklist.enqueue(id);
         Ok(id)
     }
 
     pub(super) fn run(&mut self) {
-        while let Some(id) = self.table.queue.pop_front() {
-            if !self.table.queued.remove(&id) {
-                continue;
-            }
-            if self.counters.transfers >= self.config.analysis.max_transfers
-                || self.budget.exhausted()
-            {
-                let reason = if self.budget.exhausted() {
-                    MachineError::work_failure().frontier_reason()
-                } else {
-                    FrontierReason::Budget(Limit::Transfers)
-                };
+        while let Some(id) = self.table.worklist.pop_front() {
+            if let Some(reason) = transfer_stop(
+                self.counters.transfers,
+                self.config.analysis.max_transfers,
+                self.budget,
+            ) {
                 self.frontier_summary(self.table.nodes[id].payload.clone(), reason.clone(), 0);
                 self.park_pending(reason);
                 break;
@@ -307,7 +301,7 @@ impl Solver<'_> {
         error: MachineError,
     ) -> Option<Execution> {
         let retry = (matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
-            && CoarseRuntime::supports(original)
+            && coarse_retry::supports(original)
             && super::coarse_retry::retention_refusal(&error))
         .then(|| self.execute_coarse(id, original));
         if let Some(Ok(execution)) = &retry
@@ -340,7 +334,7 @@ impl Solver<'_> {
         mut first: Execution,
     ) -> Execution {
         if !matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
-            || !CoarseRuntime::supports(original)
+            || !coarse_retry::supports(original)
             || first.retention_failures.is_empty()
             // A mixed execution has independent mandatory obligations. This
             // slice admits only complete, raw-typed retention refusals.
@@ -372,7 +366,7 @@ impl Solver<'_> {
         let (coarse, bound, payload) = self
             .retry_admission()
             .and_then(|()| {
-                CoarseRuntime::prepare(original, self.domain, self.budget)
+                coarse_retry::prepare(original, self.domain, self.budget)
                     .map_err(MachineError::frontier_reason)
             })
             .and_then(|prepared| {
@@ -635,7 +629,7 @@ impl Solver<'_> {
                     .store
                     .clone()
             } else {
-                child.saved_store
+                child.frame.saved_store
             };
             // Changing the active frame and Store invalidates current-read templates.
             resumed.storage_observations = Default::default();

@@ -21,61 +21,32 @@ pub(super) fn normalize(
     let mut blocks = Vec::with_capacity(raw.blocks().len());
     for block in raw.blocks() {
         crate::ssa::checkpoint()?;
-        let mut phis = block.phis.clone();
-        for phi in &mut phis {
-            phi.result = names[phi.result];
-            for (_, value) in &mut phi.inputs {
-                *value = names[*value];
-            }
-        }
-        let instructions = block
-            .instructions
-            .iter()
-            .map(|step| {
-                let mut origin = step.instruction.clone();
-                remap(&mut origin.operands, &names);
-                remap(&mut origin.results, &names);
-                let operation = NormalizedOperation::Opcode {
-                    opcode: origin.opcode,
-                    operands: origin
-                        .operands
-                        .iter()
-                        .copied()
-                        .map(ValueOperand::Value)
-                        .collect(),
-                };
-                NormalizedInstruction {
-                    origin,
-                    progress: step.progress,
-                    effect_input: step.effect_input,
-                    effect_result: step.effect_result,
-                    operation,
-                }
+        let mut block = block.try_map_instructions(|_, step| {
+            let mut origin = step.instruction.clone();
+            remap(origin.values_mut(), &names);
+            let operation = NormalizedOperation::Opcode {
+                opcode: origin.opcode,
+                operands: origin
+                    .operands
+                    .iter()
+                    .copied()
+                    .map(ValueOperand::Value)
+                    .collect(),
+            };
+            Ok::<_, SsaError>(NormalizedInstruction {
+                origin,
+                progress: step.progress,
+                effect_input: step.effect_input,
+                effect_result: step.effect_result,
+                operation,
             })
-            .collect();
-        let mut exit_frames = block.exit_frames.clone();
-        for stack in &mut exit_frames {
-            remap(stack, &names);
-        }
-        blocks.push(NormalizedBlock {
-            state: block.state,
-            coverage: block.coverage,
-            phis,
-            instructions,
-            exit_frames,
-            effect: block.effect.clone(),
-            exit_effect: block.exit_effect,
-            open_incoming: block.open_incoming.clone(),
-            incoming_complete: block.incoming_complete,
-        });
+        })?;
+        remap(block.frame_values_mut(), &names);
+        blocks.push(block);
     }
     let mut transitions = raw.transitions().to_vec();
     for transition in &mut transitions {
-        remap(&mut transition.operands, &names);
-        for stack in &mut transition.stacks {
-            remap(stack, &names);
-        }
-        transition.result = transition.result.map(|value| names[value]);
+        remap(transition.values_mut(), &names);
     }
     let mut facts = observed_facts(&blocks, &transitions, analysis, complete)?;
     let mut known = vec![None; mappings.len()];
@@ -140,32 +111,8 @@ fn allocate(raw: &PartialWorldSsa) -> Result<(Vec<ValueId>, Vec<ValueMapping>), 
     let mut mappings = Vec::with_capacity(raw.value_count());
     for block in raw.blocks() {
         crate::ssa::checkpoint()?;
-        for phi in &block.phis {
-            register(
-                &mut names,
-                &mut mappings,
-                phi.result,
-                ValueOrigin::Phi {
-                    state: block.state,
-                    frame: phi.frame,
-                    slot: phi.slot,
-                },
-            )?;
-        }
-        for (index, step) in block.instructions.iter().enumerate() {
-            for value in &step.instruction.results {
-                register(
-                    &mut names,
-                    &mut mappings,
-                    *value,
-                    ValueOrigin::Instruction {
-                        state: block.state,
-                        index,
-                        pc: step.instruction.pc,
-                        opcode: step.instruction.opcode,
-                    },
-                )?;
-            }
+        for (value, origin) in block.definitions(|step| &step.instruction) {
+            register(&mut names, &mut mappings, value, origin)?;
         }
     }
     for transition in raw.transitions() {
@@ -210,7 +157,7 @@ fn register(
     Ok(())
 }
 
-fn remap(values: &mut [ValueId], names: &[ValueId]) {
+fn remap<'a>(values: impl IntoIterator<Item = &'a mut ValueId>, names: &[ValueId]) {
     for value in values {
         *value = names[*value];
     }

@@ -25,6 +25,7 @@ mod materialize;
 mod reads;
 mod state;
 mod storage;
+pub mod structure;
 #[cfg(test)]
 mod tests;
 mod walk;
@@ -66,58 +67,7 @@ pub struct InputAtom {
     pub symbol: Symbol,
 }
 
-/// Read-only structural expression used by typed reports and solver encoders.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub enum ExprKind {
-    /// Exact 256-bit word.
-    Constant(U256),
-    /// Scoped immutable environment input.
-    Input(InputAtom),
-    /// Fresh runtime identity; not a concrete value.
-    Fresh(#[serde(skip)] u64),
-    /// A pure EVM operation in pop-argument order.
-    Operation {
-        /// Raw opcode.
-        opcode: u8,
-        /// Structurally retained operands.
-        args: Vec<ExprId>,
-    },
-    /// Nonzero EVM condition chooses the first alternative.
-    Ite {
-        /// Nonzero EVM condition selecting the first alternative.
-        condition: ExprId,
-        /// Word chosen when the condition is nonzero.
-        then_value: ExprId,
-        /// Word chosen when the condition is zero.
-        else_value: ExprId,
-    },
-    /// Read a byte, zero extended to Word256, from an immutable state.
-    ByteRead {
-        /// Immutable backing-state reference.
-        state: ByteStateId,
-        /// Byte address as a Word256 expression.
-        index: ExprId,
-    },
-    /// Big-endian 32-byte read at a relative offset in a bounded view.
-    WordRead {
-        /// Bounded zero-padded source sequence.
-        view: ByteView,
-        /// Relative first byte address.
-        offset: ExprId,
-    },
-    /// Read an immutable storage state at a Word256 key.
-    SlotRead {
-        /// Immutable backing-state reference.
-        state: SlotStateId,
-        /// Word256 storage key.
-        key: ExprId,
-    },
-    /// Keccak of the complete bounded, zero-padded sequence.
-    Keccak {
-        /// Complete bounded sequence passed to Keccak.
-        input: ByteView,
-    },
-}
+pub use structure::ExprKind;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 struct Node {
     kind: ExprKind,

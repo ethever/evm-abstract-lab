@@ -44,7 +44,7 @@ fn default_product_and_constants_only_have_observable_precision_differences() {
     for json in [&product, &baseline] {
         assert_eq!(json["status"], "Converged");
         assert_eq!(json["domain_spec"]["word_bits"], 256);
-        assert_eq!(json["domain_spec"]["cost_version"], 3);
+        assert_eq!(json["domain_spec"]["cost_version"], 4);
         assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
         assert_eq!(
             json["domain_spec"]["provenance_policy"],

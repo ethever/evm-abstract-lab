@@ -89,10 +89,21 @@ impl MachineError {
     /// Only complete-state precision refusals admit whole-entry projection.
     /// Frontier classification is deliberately broader and is not eligibility.
     fn permits_bounded_promotion(&self) -> bool {
+        self.permits_bound_coarsening()
+            || matches!(
+                self,
+                Self::Alternatives { .. }
+                    | Self::Relations(QueryReason::ExpressionLimit | QueryReason::ConstraintLimit)
+            )
+    }
+
+    /// Coarsening an admitted bound handles retained expression/array capacity.
+    /// Runtime admission separately requires finite raw producer limits; this
+    /// fallback policy cannot grant permission to retry an execution.
+    pub(in crate::analysis) fn permits_bound_coarsening(&self) -> bool {
         matches!(
             self,
-            Self::Alternatives { .. }
-                | Self::Expression(ExprError::Limit { .. })
+            Self::Expression(ExprError::Limit { .. })
                 | Self::Bytes(
                     RangeError::Expression(ExprError::Limit { .. })
                         | RangeError::State(StateError::Limit { .. })
@@ -105,7 +116,6 @@ impl MachineError {
                                 | RangeError::State(StateError::Limit { .. })
                         )
                 )
-                | Self::Relations(QueryReason::ExpressionLimit | QueryReason::ConstraintLimit)
         )
     }
 
@@ -226,31 +236,7 @@ impl MachinePayload {
                 value.forget_expression();
             }
         };
-        for frame in content.call_stack.iter_mut() {
-            checkpoint()?;
-            for value in &mut frame.stack {
-                normalize(value);
-            }
-            normalize(&mut frame.call_value);
-            for value in [&mut frame.address_operand, &mut frame.caller_operand]
-                .into_iter()
-                .flatten()
-            {
-                normalize(value);
-            }
-            frame.memory.update_values(&mut normalize);
-            frame.calldata.update_values(&mut normalize);
-            frame.returndata.update_values(&mut normalize);
-            let mut saved = frame.saved_store.state().clone();
-            saved.update_values(&mut normalize);
-            frame.saved_store = crate::world::Snapshot::from_state(saved);
-        }
-        for child in content.call_stack.children_mut() {
-            checkpoint()?;
-            normalize(&mut child.continuation.output_offset);
-            normalize(&mut child.continuation.output_size);
-        }
-        content.store.update_values(&mut normalize);
+        content.update_values(&mut normalize)?;
         checkpoint()?;
         Ok(content)
     }
@@ -294,7 +280,7 @@ impl MachinePayload {
 pub(crate) struct EntryAlternatives {
     represented: Vec<Arc<MachinePayload>>,
     cycle_widened: bool,
-    loop_bound: Option<crate::analysis::transfer::procedure::LoopBound>,
+    loop_bound: Option<crate::analysis::state::LoopBound>,
 }
 
 impl EntryAlternatives {
@@ -327,7 +313,8 @@ impl EntryAlternatives {
     /// Shared policy for propagation and staged replay. Exact acyclic retention
     /// gets the first attempt; only a typed precision refusal can promote it.
     /// Failed attempts keep metadata and both operands intact, but never refund
-    /// work. LoopBound owns the single paid coarse materialization retry.
+    /// work. The persistent bounded representation owns the paid materialization
+    /// fallback, independently of this admission and publication policy.
     #[expect(
         clippy::too_many_arguments,
         reason = "whole-entry policy shares the execution environment, selectors and ledger"
@@ -367,7 +354,7 @@ impl EntryAlternatives {
         let updated = if let Some(bound) = &self.loop_bound {
             bound.update(incoming, environment, domain, budget)?
         } else {
-            Some(crate::analysis::transfer::procedure::LoopBound::new(
+            Some(crate::analysis::state::LoopBound::new(
                 entry,
                 incoming,
                 environment,

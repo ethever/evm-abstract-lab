@@ -37,7 +37,7 @@ struct Observation {
 /// No expression, root or historical payload survives in this template.
 /// Persistent is the only plane, so it is implicit in every stable key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct StorageObservations(Vec<Observation>);
+pub(in crate::analysis) struct StorageObservations(Vec<Observation>);
 
 // slot_read may compare the requested key while traversing a bounded root. This
 // local product covers those structural comparisons; unrelated code and accounts
@@ -166,7 +166,7 @@ fn drop_read_error(error: StoreError) -> Result<(), MachineError> {
 }
 
 /// Prepay bounded key/root comparisons and, only when relevant, local fact import.
-pub(super) fn form_work(payload: &MachinePayload, domain: Domain) -> usize {
+pub(in crate::analysis) fn form_work(payload: &MachinePayload, domain: Domain) -> usize {
     if !in_scope(payload, domain) {
         return 0;
     }
@@ -206,7 +206,10 @@ pub(super) fn form_work(payload: &MachinePayload, domain: Domain) -> usize {
 }
 
 impl StorageObservations {
-    pub(super) fn form(payload: &MachinePayload, domain: Domain) -> Result<Self, MachineError> {
+    pub(in crate::analysis) fn form(
+        payload: &MachinePayload,
+        domain: Domain,
+    ) -> Result<Self, MachineError> {
         MachineError::check_cancelled()?;
         if !in_scope(payload, domain) {
             return Ok(Self::default());
@@ -251,7 +254,7 @@ impl StorageObservations {
         Ok(Self(observations))
     }
 
-    pub(super) fn join(
+    pub(in crate::analysis) fn join(
         &self,
         next: &Self,
         domain: Domain,
@@ -305,7 +308,11 @@ impl StorageObservations {
     }
 
     /// Prepay all retained numeric work, but reconstruct each equal alias fact once.
-    pub(super) fn work_size(&self, stack: &[AbstractValue], aliases: &StackAliases) -> usize {
+    pub(in crate::analysis) fn work_size(
+        &self,
+        stack: &[AbstractValue],
+        aliases: &StackAliases,
+    ) -> usize {
         let installations: Vec<_> = (0..self.0.len())
             .filter(|&index| self.needs_install(index, aliases))
             .collect();
@@ -341,7 +348,7 @@ impl StorageObservations {
         })
     }
 
-    pub(super) fn install(
+    pub(in crate::analysis) fn install(
         &self,
         payload: &mut MachinePayload,
         aliases: &StackAliases,

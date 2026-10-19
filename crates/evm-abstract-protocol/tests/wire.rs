@@ -480,6 +480,274 @@ fn mixed_graph_checks_sorts_and_backward_dependencies() {
 }
 
 #[test]
+fn observed_binding_edges_include_numeric_references_in_stored_order() {
+    let mut numeric = touch_snapshot(None, None).accounts[0].balance.clone();
+    numeric.expression = Some(ExpressionRef { node: 1 });
+    let binding = SymbolicBinding {
+        index: "0x2".into(),
+        value: ExpressionRef { node: 2 },
+        numeric,
+    };
+    let source = SymbolicSource {
+        token: ExpressionRef { node: 0 },
+        namespace: "0x123".into(),
+    };
+    let mut graph = SymbolicGraph {
+        nodes: vec![
+            Expression::Fresh(0),
+            Expression::Constant("0x20".into()),
+            Expression::Fresh(1),
+            Expression::BytesZero,
+            Expression::BytesInput(BytesInput {
+                source: source.clone(),
+                length: ExpressionRef { node: 1 },
+                bindings: vec![binding.clone()],
+            }),
+            Expression::SlotsInput(SlotsInput {
+                source,
+                bindings: vec![binding],
+            }),
+            Expression::View(ByteView {
+                state: ByteStateRef { node: 3 },
+                offset: ExpressionRef { node: 0 },
+                length: ExpressionRef { node: 1 },
+            }),
+            Expression::Copy(ByteCopy {
+                previous: ByteStateRef { node: 4 },
+                destination: ExpressionRef { node: 2 },
+                source: ByteViewRef { node: 6 },
+                length: ExpressionRef { node: 1 },
+            }),
+        ],
+    };
+    let word = |node| SymbolicReference {
+        sort: SymbolicSort::Word,
+        node,
+    };
+    assert_eq!(
+        graph.nodes[4].references(),
+        vec![word(0), word(1), word(2), word(1)]
+    );
+    assert_eq!(graph.nodes[5].references(), vec![word(0), word(2), word(1)]);
+    assert_eq!(
+        graph.nodes[7].references(),
+        vec![
+            SymbolicReference {
+                sort: SymbolicSort::Bytes,
+                node: 4
+            },
+            word(2),
+            SymbolicReference {
+                sort: SymbolicSort::View,
+                node: 6
+            },
+            word(1),
+        ]
+    );
+    graph.validate().unwrap();
+    roundtrip(graph.clone());
+    let Expression::BytesInput(input) = &mut graph.nodes[4] else {
+        unreachable!()
+    };
+    input.bindings[0].numeric.expression = Some(ExpressionRef { node: 3 });
+    let error = graph.validate().unwrap_err();
+    assert_eq!(
+        (
+            error.owner,
+            error.node,
+            error.expected,
+            error.actual,
+            error.forward
+        ),
+        (
+            Some(4),
+            3,
+            SymbolicSort::Word,
+            Some(SymbolicSort::Bytes),
+            false
+        )
+    );
+    let Expression::BytesInput(input) = &mut graph.nodes[4] else {
+        unreachable!()
+    };
+    input.bindings[0].numeric.expression = Some(ExpressionRef { node: 4 });
+    assert!(graph.validate().unwrap_err().forward);
+    let mut missing = serde_json::to_value(&graph.nodes[4]).unwrap();
+    missing["BytesInput"]
+        .as_object_mut()
+        .unwrap()
+        .remove("length");
+    assert!(
+        serde_json::from_value::<Expression>(missing)
+            .unwrap_err()
+            .to_string()
+            .contains("missing field: length")
+    );
+    let duplicate = r#"{"WriteByte":{"previous":{"node":0},"offset":{"node":1},"value":{"node":2},"value":{"node":3}}}"#;
+    assert!(
+        serde_json::from_str::<Expression>(duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate field: value")
+    );
+}
+
+#[test]
+fn wide_binding_validation_streams_borrowed_edges_and_keeps_the_first_failure() {
+    let mut numeric = touch_snapshot(None, None).accounts[0].balance.clone();
+    numeric.expression = Some(ExpressionRef { node: 0 });
+    let mut graph = SymbolicGraph {
+        nodes: vec![
+            Expression::Fresh(0),
+            Expression::Fresh(1),
+            Expression::BytesZero,
+            Expression::BytesInput(BytesInput {
+                source: SymbolicSource {
+                    token: ExpressionRef { node: 0 },
+                    namespace: "0x123".into(),
+                },
+                length: ExpressionRef { node: 1 },
+                bindings: vec![
+                    SymbolicBinding {
+                        index: "0x0".into(),
+                        value: ExpressionRef { node: 1 },
+                        numeric,
+                    };
+                    4096
+                ],
+            }),
+        ],
+    };
+    graph.validate().unwrap();
+    let Expression::BytesInput(input) = &graph.nodes[3] else {
+        unreachable!()
+    };
+    let mut visits = 0;
+    let stopped = graph.nodes[3].structure().unwrap().try_visit_edges(|edge| {
+        visits += 1;
+        let symbolic_structure::Edge::Word(expression) = edge else {
+            panic!("word operands")
+        };
+        if visits == 3 {
+            assert!(std::ptr::eq(expression, &input.bindings[0].value));
+        }
+        if visits == 4 {
+            assert!(std::ptr::eq(
+                expression,
+                input.bindings[0].numeric.expression.as_ref().unwrap()
+            ));
+            return Err("stop at first numeric edge");
+        }
+        Ok(())
+    });
+    assert_eq!(stopped, Err("stop at first numeric edge"));
+    assert_eq!(visits, 4);
+
+    let Expression::BytesInput(input) = &mut graph.nodes[3] else {
+        unreachable!()
+    };
+    input.bindings[0].numeric.expression = Some(ExpressionRef { node: 2 });
+    input.bindings.last_mut().unwrap().value.node = usize::MAX;
+    let error = graph.validate().unwrap_err();
+    assert_eq!(
+        (
+            error.owner,
+            error.node,
+            error.expected,
+            error.actual,
+            error.forward
+        ),
+        (
+            Some(3),
+            2,
+            SymbolicSort::Word,
+            Some(SymbolicSort::Bytes),
+            false
+        )
+    );
+}
+
+#[test]
+fn path_reference_stream_preserves_the_first_invalid_operand_and_sort() {
+    let word = |node| ExpressionRef { node };
+    let path = |node| PathRef { node };
+    let mut graph = SymbolicGraph {
+        nodes: vec![
+            Expression::Fresh(0),
+            Expression::PathTrue,
+            Expression::PathAtoms(vec![PathConstraint::Equal(PathEquality {
+                left: word(0),
+                right: word(0),
+            })]),
+            Expression::PathIte(PathIte {
+                selector: word(0),
+                then_path: path(2),
+                else_path: path(1),
+            }),
+            Expression::PathAnd(vec![path(3), path(1)]),
+        ],
+    };
+    graph.validate().unwrap();
+    assert_eq!(
+        graph.nodes[3].references(),
+        vec![
+            SymbolicReference {
+                sort: SymbolicSort::Word,
+                node: 0
+            },
+            SymbolicReference {
+                sort: SymbolicSort::Path,
+                node: 2
+            },
+            SymbolicReference {
+                sort: SymbolicSort::Path,
+                node: 1
+            },
+        ]
+    );
+    for (invalid, node, expected, actual) in [
+        (
+            Expression::PathAtoms(vec![PathConstraint::Equal(PathEquality {
+                left: word(1),
+                right: word(usize::MAX),
+            })]),
+            1,
+            SymbolicSort::Word,
+            SymbolicSort::Path,
+        ),
+        (
+            Expression::PathIte(PathIte {
+                selector: word(0),
+                then_path: path(0),
+                else_path: path(usize::MAX),
+            }),
+            0,
+            SymbolicSort::Path,
+            SymbolicSort::Word,
+        ),
+        (
+            Expression::PathAnd(vec![path(0), path(usize::MAX)]),
+            0,
+            SymbolicSort::Path,
+            SymbolicSort::Word,
+        ),
+    ] {
+        graph.nodes[2] = invalid;
+        let error = graph.validate().unwrap_err();
+        assert_eq!(
+            (
+                error.owner,
+                error.node,
+                error.expected,
+                error.actual,
+                error.forward
+            ),
+            (Some(2), node, expected, Some(actual), false)
+        );
+    }
+}
+
+#[test]
 fn procedure_summary_wire_requires_entry_kind_and_nullable_root() {
     for kind in [
         ProcedureSummaryKind::UnknownEnvironment,

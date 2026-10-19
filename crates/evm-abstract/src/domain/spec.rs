@@ -43,8 +43,8 @@ impl DomainSpec {
             capacity,
             reduction_rounds,
             fact_limit,
-            // Version 3 charges bounded local propagation instead of native fuel.
-            cost_version: 3,
+            // Version 4 accounts for shared replay evidence and canonical bounds.
+            cost_version: 4,
             widening_after_updates: 2,
             provenance_policy: "scoped-expressions-and-value-identities-v3",
             relations: super::relational::RelationLimits::default(),

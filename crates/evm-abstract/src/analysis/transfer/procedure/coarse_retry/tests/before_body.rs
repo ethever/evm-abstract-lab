@@ -90,7 +90,7 @@ fn real_input_binding_limits_promote_before_body_at_small_library_and_screen13_c
             .instantiate(domain)
             .unwrap();
         let mut quote = WorkBudget::new(h.config.max_work);
-        let (_, bound, live) = CoarseRuntime::prepare(&original, domain, &mut quote).unwrap();
+        let (_, bound, live) = prepare(&original, domain, &mut quote).unwrap();
         assert!(bound.work_size() < original.work_size());
         let ByteStateKind::Input { bindings, .. } = live.active().calldata.state_root().kind()
         else {
@@ -447,7 +447,7 @@ fn prebody_work_cancel_and_transfer_refusals_keep_original_evidence() {
         let error = raw_failure(&h);
         let original = h.table.nodes[0].payload.clone();
         let mut quote = WorkBudget::new(h.config.max_work);
-        CoarseRuntime::prepare(&original, h.config.domain().unwrap(), &mut quote).unwrap();
+        prepare(&original, h.config.domain().unwrap(), &mut quote).unwrap();
         let allowance = quote.used() - usize::from(!finish_preparation);
         let remaining = h.config.max_work - h.budget.used();
         assert!(h.budget.charge(remaining - allowance));
@@ -530,7 +530,7 @@ fn prebody_coarse_mode_and_frozen_layout_survive_fresh_incoming_ids() {
         .unwrap();
     assert_eq!(execution.successors.len(), 1);
     let layout = match &h.table.nodes[0].runtime_retry {
-        RuntimeRetry::Coarse(coarse) => coarse.layout.clone(),
+        RuntimeRetry::Coarse(coarse) => coarse.layout().clone(),
         _ => panic!("must have promoted before the body"),
     };
     for _ in 0..3 {
@@ -545,7 +545,7 @@ fn prebody_coarse_mode_and_frozen_layout_survive_fresh_incoming_ids() {
         let RuntimeRetry::Coarse(coarse) = &node.runtime_retry else {
             panic!("incoming identities renewed Fresh")
         };
-        assert!(semantic_eq(&layout, &coarse.layout));
+        assert!(semantic_eq(&layout, coarse.layout()));
         let live = instantiate(&node.payload, h.config.domain().unwrap()).unwrap();
         let ByteStateKind::Input { bindings, .. } = live.active().calldata.state_root().kind()
         else {

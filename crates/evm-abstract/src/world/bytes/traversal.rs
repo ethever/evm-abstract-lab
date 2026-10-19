@@ -68,18 +68,6 @@ pub(super) fn expressions(root: &ByteStateId) -> Vec<ExprId> {
     }
     out
 }
-fn rename_value(
-    value: &mut AbstractValue,
-    map: &BTreeMap<ExprId, ExprId>,
-    limits: ExprLimits,
-) -> Result<(), RangeError> {
-    if let Some(expression) = value.expression() {
-        *value = value
-            .clone()
-            .with_expression(expression.rename_fresh(map, limits)?);
-    }
-    Ok(())
-}
 impl ByteArray {
     /// All fresh leaves, including hidden input/source tokens and range operands.
     pub fn fresh_leaves(&self) -> BTreeSet<ExprId> {
@@ -109,15 +97,15 @@ impl ByteArray {
                 ))
             })
             .collect::<Result<_, RangeError>>()?;
-        rename_value(&mut out.length, map, limits)?;
-        rename_value(&mut out.default, map, limits)?;
+        out.length.rename_fresh(map, limits)?;
+        out.default.rename_fresh(map, limits)?;
         for v in out.bytes.values_mut() {
-            rename_value(v, map, limits)?;
+            v.rename_fresh(map, limits)?;
         }
         out.operands.clear();
         for (e, v) in &self.operands {
             let mut v = v.clone();
-            rename_value(&mut v, map, limits)?;
+            v.rename_fresh(map, limits)?;
             super::operands::remember(
                 &mut out.operands,
                 e.rename_fresh(map, limits)?,
@@ -129,7 +117,7 @@ impl ByteArray {
         out.conditional = self.conditional.map(&mut |expression, value| {
             let mut value = value.cloned();
             if let Some(value) = &mut value {
-                rename_value(value, map, limits)?;
+                value.rename_fresh(map, limits)?;
             }
             Ok((expression.rename_fresh(map, limits)?, value))
         })?;

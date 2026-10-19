@@ -10,6 +10,10 @@ use crate::{
 };
 use alloy_primitives::{Address, U256};
 
+pub(super) fn join(left: &Option<bool>, right: &Option<bool>) -> Option<bool> {
+    if left == right { *left } else { None }
+}
+
 pub(super) fn and(left: Option<bool>, right: Option<bool>) -> Option<bool> {
     match (left, right) {
         (Some(false), _) | (_, Some(false)) => Some(false),

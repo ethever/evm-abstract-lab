@@ -99,7 +99,7 @@ fn coarse_entry_has_common_witnesses_for_all_original_joint_tuples_and_rolls_bac
     let original = form(&input, &entry, domain).unwrap();
     assert!(original.active().stack_aliases.same_class(0, 1));
     let mut budget = WorkBudget::new(config.max_work);
-    let (_, bound, live) = CoarseRuntime::prepare(&original, domain, &mut budget).unwrap();
+    let (_, bound, live) = prepare(&original, domain, &mut budget).unwrap();
     assert_eq!(live.key().frames, input.key().frames);
     assert_eq!(live.active().program, input.active().program);
     assert_eq!(

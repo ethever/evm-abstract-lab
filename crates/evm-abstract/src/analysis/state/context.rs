@@ -10,7 +10,7 @@ use super::{BTreeSet, MachineError};
 #[cfg(test)]
 mod tests;
 
-pub(super) fn work_size(length: usize) -> usize {
+pub(in crate::analysis) fn work_size(length: usize) -> usize {
     let levels = usize::try_from(length.max(1).ilog2())
         .unwrap_or(usize::MAX)
         .saturating_add(1);
@@ -19,7 +19,7 @@ pub(super) fn work_size(length: usize) -> usize {
     length.saturating_mul(levels).saturating_mul(8)
 }
 
-pub(super) fn canonical(history: &[usize]) -> Result<Vec<usize>, MachineError> {
+pub(in crate::analysis) fn canonical(history: &[usize]) -> Result<Vec<usize>, MachineError> {
     let mut seen = BTreeSet::new();
     let mut output = Vec::new();
     for source in history.iter().rev() {

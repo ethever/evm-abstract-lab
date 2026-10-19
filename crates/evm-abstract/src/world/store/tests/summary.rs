@@ -16,6 +16,48 @@ fn word(value: u64) -> AbstractValue {
 }
 
 #[test]
+fn unlisted_lifecycle_owners_keep_the_same_runtime_and_summary_union() {
+    let (world, _, _) = fixture();
+    let domain = Domain::default();
+    let owner = Address::repeat_byte(0xee);
+    let unlisted = Address::repeat_byte(0xef);
+    let mut left = Store::new(&world);
+    left.created_default = None;
+    left.created.insert(owner, Some(true));
+    left.pending_destruction.insert(owner, Some(true));
+    let mut right = Store::new(&world);
+    right.created_default = Some(true);
+    right.pending_destruction_default = None;
+    right.pending_destruction.insert(owner, Some(true));
+    let first = left.summary_projection(domain).unwrap();
+    let second = right.summary_projection(domain).unwrap();
+    for (left, right) in [(&left, &right), (&right, &left)] {
+        let runtime = left
+            .join_guarded(
+                right,
+                domain,
+                ExprId::fresh().unwrap(),
+                ExprLimits::default(),
+            )
+            .unwrap();
+        let summary = left.summary_projection(domain).unwrap().join(
+            &right.summary_projection(domain).unwrap(),
+            domain,
+            false,
+        );
+        let replay = summary.instantiate(domain).unwrap();
+        assert!(summary.covers(&first, domain) && summary.covers(&second, domain));
+        for state in [&runtime, &replay] {
+            assert_eq!(state.created_in_transaction(owner), Some(true));
+            assert_eq!(state.pending_destruction(owner), Some(true));
+            assert_eq!(state.created_in_transaction(unlisted), None);
+            assert_eq!(state.pending_destruction(unlisted), None);
+        }
+        assert_eq!(runtime.summary_projection(domain).unwrap(), summary);
+    }
+}
+
+#[test]
 fn numerical_projection_compresses_storage_history_under_a_smaller_replay_limit() {
     let (world, a, _) = fixture();
     let domain = Domain::default();

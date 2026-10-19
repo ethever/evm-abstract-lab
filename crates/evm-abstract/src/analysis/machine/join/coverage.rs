@@ -13,7 +13,6 @@ use crate::{
         symbolic::{ExprId, ExprLimits},
     },
     resource::WorkBudget,
-    world::Snapshot,
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -69,31 +68,7 @@ fn shape(payload: &MachinePayload) -> Result<(MachinePayload, Vec<Option<ExprId>
         value.forget_expression();
         value.forget_identity();
     };
-    for frame in copy.call_stack.iter_mut() {
-        checkpoint()?;
-        for value in &mut frame.stack {
-            erase(value);
-        }
-        erase(&mut frame.call_value);
-        for value in [&mut frame.address_operand, &mut frame.caller_operand]
-            .into_iter()
-            .flatten()
-        {
-            erase(value);
-        }
-        frame.memory.update_values(&mut erase);
-        frame.calldata.update_values(&mut erase);
-        frame.returndata.update_values(&mut erase);
-        let mut saved = frame.saved_store.state().clone();
-        saved.update_values(&mut erase);
-        frame.saved_store = Snapshot::from_state(saved);
-    }
-    for child in copy.call_stack.children_mut() {
-        checkpoint()?;
-        erase(&mut child.continuation.output_offset);
-        erase(&mut child.continuation.output_size);
-    }
-    copy.store.update_values(&mut erase);
+    copy.update_values(&mut erase)?;
     copy.relations = RelationState::default();
     checkpoint()?;
     Ok((copy, expressions))

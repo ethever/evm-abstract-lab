@@ -31,14 +31,8 @@ pub(super) fn against_raw(
     let definitions = ir
         .blocks
         .iter()
-        .flat_map(|block| {
-            block.phis.iter().map(|phi| phi.result).chain(
-                block
-                    .instructions
-                    .iter()
-                    .flat_map(|step| step.origin.results.iter().copied()),
-            )
-        })
+        .flat_map(|block| block.definitions(|step| &step.origin))
+        .map(|(value, _)| value)
         .chain(
             ir.transitions
                 .iter()

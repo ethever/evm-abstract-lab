@@ -1,4 +1,4 @@
-use super::{MachineError, Projection};
+use super::{MachineError, Policy, Projection};
 use crate::{
     analysis::{
         ExecutionConfig,
@@ -29,6 +29,151 @@ fn bounded_relations(expressions: &[ExprId], limits: &RelationLimits) -> Relatio
 }
 
 #[test]
+fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
+    let domain = Domain::default();
+    let limits = RelationLimits::default();
+    let expression = ExprId::fresh().unwrap();
+    let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
+    let raw = AbstractValue::top().with_expression(expression.clone());
+    let fee = expression.work_size()
+        + relations.work_size()
+        + domain.refinement_work(&raw, relations.len());
+    for summary in [false, true] {
+        let mut budget = WorkBudget::new(2 * fee);
+        let mut diagnostics = Vec::new();
+        let policy = if summary {
+            Policy::Summary
+        } else {
+            Policy::Branch {
+                diagnostics: &mut diagnostics,
+                pc: 17,
+            }
+        };
+        let mut projection = Projection::new(&relations, domain, &limits, &mut budget, policy);
+        for _ in 0..2 {
+            let mut value = raw.clone();
+            projection.value(&mut value);
+            assert_eq!(
+                value.interval().unsigned_bounds(),
+                (U256::from(5), U256::from(15))
+            );
+            assert_eq!(value.expression(), raw.expression());
+        }
+        assert_eq!(projection.finish(), Ok(true));
+        assert_eq!(budget.used(), if summary { fee } else { 2 * fee });
+        assert!(diagnostics.is_empty());
+
+        let mut contradictory = AbstractValue::unsigned_range(U256::from(20), U256::from(30))
+            .unwrap()
+            .with_expression(expression.clone());
+        let before = contradictory.clone();
+        let mut budget = WorkBudget::new(usize::MAX);
+        let policy = if summary {
+            Policy::Summary
+        } else {
+            Policy::Branch {
+                diagnostics: &mut diagnostics,
+                pc: 17,
+            }
+        };
+        let mut projection = Projection::new(&relations, domain, &limits, &mut budget, policy);
+        projection.value(&mut contradictory);
+        assert_eq!(projection.finish(), Ok(summary));
+        assert_eq!(contradictory, before);
+        assert!(diagnostics.is_empty());
+    }
+}
+
+#[test]
+fn whole_projection_and_independent_replay_preserve_distinct_rollback_versions() {
+    use crate::analysis::{ChildFrame, Continuation, machine::fixtures::fixture, state, transfer};
+    let domain = Domain::default();
+    let (world, entry) = fixture(&[(0x101, "00")]);
+    let mut input = transfer::initial(&world, &entry, domain).unwrap();
+    let expression = ExprId::fresh().unwrap();
+    let value = AbstractValue::top().with_expression(expression.clone());
+    let owner = address(0x101);
+    input
+        .store
+        .write_checked(owner, &word(1), &value, domain)
+        .unwrap();
+    input.active_mut().stack = vec![value.clone()];
+    input.active_mut().saved_store = input.store.snapshot();
+    input
+        .store
+        .write_checked(owner, &word(1), &word(77), domain)
+        .unwrap();
+    let mut child = input.active().clone();
+    child.key.caller = address(0x202).into();
+    child.caller_operand = Some(word(0x202));
+    child.saved_store = input.store.snapshot();
+    input.call_stack.push_child(ChildFrame {
+        state: child,
+        continuation: Continuation {
+            return_block: None,
+            output_offset: value.clone(),
+            output_size: word(32),
+            creation: None,
+        },
+    });
+    input
+        .store
+        .write_checked(owner, &word(1), &value, domain)
+        .unwrap();
+    input.relations = bounded_relations(&[expression], &domain.spec().relations());
+    let original = input.clone();
+    let limits = domain.spec().relations();
+    let mut budget = WorkBudget::new(usize::MAX);
+    let mut refined = input.clone();
+    let mut projection = Projection::new(
+        &input.relations,
+        domain,
+        &limits,
+        &mut budget,
+        Policy::Summary,
+    );
+    projection.payload(&mut refined).unwrap();
+    assert_eq!(projection.finish(), Ok(true));
+    assert_eq!(
+        refined.store.slot_root(owner, false),
+        original.store.slot_root(owner, false)
+    );
+    let bound = state::form(&refined, &entry, domain).unwrap();
+    let mut replay = state::instantiate(&bound, domain).unwrap();
+    let independent = state::instantiate(&bound, domain).unwrap();
+    assert_ne!(
+        replay.store.slot_root(owner, false),
+        independent.store.slot_root(owner, false)
+    );
+    assert_eq!(replay.active().key.caller, address(0x202).into());
+    assert_eq!(
+        replay
+            .store
+            .read(owner, &word(1), domain)
+            .interval()
+            .unsigned_bounds(),
+        (U256::from(5), U256::from(15))
+    );
+    let child_saved = replay.active().saved_store.clone();
+    replay.store.restore(child_saved);
+    assert_eq!(
+        replay.store.read(owner, &word(1), domain).singleton(),
+        Some(U256::from(77))
+    );
+    let root_saved = replay.call_stack.root().state.saved_store.clone();
+    replay.store.restore(root_saved);
+    assert_eq!(
+        replay
+            .store
+            .read(owner, &word(1), domain)
+            .interval()
+            .unsigned_bounds(),
+        (U256::from(5), U256::from(15))
+    );
+    assert_eq!(input, original);
+}
+
+#[test]
 fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
     let domain = Domain::default();
     let limits = RelationLimits::default();
@@ -45,7 +190,7 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
         (1, AbstractValue::top(), 5),
     ];
     let mut budget = WorkBudget::new(usize::MAX);
-    let mut projection = Projection::new(&relations, domain, &limits, &mut budget);
+    let mut projection = Projection::new(&relations, domain, &limits, &mut budget, Policy::Summary);
     let mut expected_work = 0;
     for (index, value, lower) in cases {
         let original = value.with_expression(expressions[index].clone());
@@ -84,7 +229,8 @@ fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
     let fee = admission + domain.refinement_work(&original, relations.len());
     for maximum in [fee, fee - 1] {
         let mut budget = WorkBudget::new(maximum);
-        let mut projection = Projection::new(&relations, domain, &limits, &mut budget);
+        let mut projection =
+            Projection::new(&relations, domain, &limits, &mut budget, Policy::Summary);
         let mut value = original.clone();
         projection.value(&mut value);
         assert_eq!(projection.relations_work_size_scans, 1);
@@ -114,7 +260,8 @@ fn concrete_values_and_empty_relations_do_not_scan() {
     let empty = RelationState::default();
     for relations in [&relations, &empty] {
         let mut budget = WorkBudget::new(0);
-        let mut projection = Projection::new(relations, domain, &limits, &mut budget);
+        let mut projection =
+            Projection::new(relations, domain, &limits, &mut budget, Policy::Summary);
         assert_eq!(projection.relations_work_size_scans, 0);
         let mut values = vec![
             AbstractValue::constant(U256::ONE).with_expression(expression.clone()),
@@ -165,8 +312,14 @@ fn call_guard_survives_a_stored_word_projection_without_fixing_high_bits() {
         .unwrap();
     let mut refined = input.clone();
     let mut budget = WorkBudget::new(config.max_work);
-    let mut projection = Projection::new(&input.relations, domain, limits, &mut budget);
-    projection.payload(&mut refined);
+    let mut projection = Projection::new(
+        &input.relations,
+        domain,
+        limits,
+        &mut budget,
+        Policy::Summary,
+    );
+    projection.payload(&mut refined).unwrap();
     projection.finish().unwrap();
     let summary = refined.store.summary_projection(domain).unwrap();
     let replay = summary.instantiate(domain).unwrap();
@@ -209,98 +362,13 @@ fn failed_projection_preserves_original_path_and_roots() {
         domain,
         &config.analysis.relations,
         &mut budget,
+        Policy::Summary,
     );
-    projection.payload(&mut refined);
+    projection.payload(&mut refined).unwrap();
     assert!(projection.finish().is_err());
     assert_eq!(original, input);
     assert_eq!(
         original.store.slot_root(address(0x101), false),
         refined.store.slot_root(address(0x101), false)
-    );
-}
-
-#[test]
-fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations() {
-    use crate::analysis::machine::fixtures::fixture;
-    use crate::analysis::{
-        ChildFrame, Continuation,
-        engine::Counters,
-        transfer::{
-            StorageReadPolicy,
-            procedure::{Solver, Table, payload::instantiate},
-        },
-    };
-    let (world, entry) = fixture(&[(0x101, "00")]);
-    let config = ExecutionConfig::default();
-    let domain = config.domain().unwrap();
-    let mut input = payload(domain);
-    let mut table = Table::default();
-    let mut budget = WorkBudget::new(config.max_work);
-    let mut counters = Counters::default();
-    let mut solver = Solver {
-        table: &mut table,
-        world: &world,
-        entry: &entry,
-        config: &config,
-        domain,
-        budget: &mut budget,
-        counters: &mut counters,
-        storage_reads: StorageReadPolicy::Abstract,
-    };
-    let parent = solver.procedure(input.clone()).unwrap();
-    let from = solver.table.procedures[parent].entry;
-    let expression = ExprId::fresh().unwrap();
-    input.store.write(
-        address(0x101),
-        &word(1),
-        &AbstractValue::top().with_expression(expression.clone()),
-        domain,
-    );
-    let mask = (U256::ONE << 160usize) - U256::ONE;
-    let projected = ExprId::operation(
-        opcode::AND,
-        &[expression, ExprId::constant(mask)],
-        config.analysis.relations.expressions(),
-    )
-    .unwrap();
-    let equal = ExprId::operation(
-        opcode::EQ,
-        &[projected, ExprId::constant(U256::from(0x101))],
-        config.analysis.relations.expressions(),
-    )
-    .unwrap();
-    input
-        .relations
-        .assume_checked(&equal, true, &config.analysis.relations)
-        .unwrap();
-    let mut child = input.active().clone();
-    child.key.caller = address(0x101).into();
-    child.caller_operand = Some(AbstractValue::constant(U256::from(0x101)));
-    input.call_stack.push_child(ChildFrame {
-        state: child,
-        continuation: Continuation {
-            return_block: None,
-            output_offset: word(0),
-            output_size: word(0),
-            creation: None,
-        },
-    });
-    solver.subscribe(from, input).unwrap();
-    let callee = solver.table.subscribers[0].callee;
-    assert_ne!(callee, parent);
-    let replay = instantiate(
-        &solver.table.nodes[solver.table.procedures[callee].entry].payload,
-        domain,
-    )
-    .unwrap();
-    let read = replay.store.read(address(0x101), &word(1), domain);
-    assert!(read.contains((U256::MAX & !mask) | U256::from(0x101)));
-    assert_eq!(
-        domain.address_projection(&read).singleton(),
-        Some(U256::from(0x101))
-    );
-    assert!(
-        replay.relations.is_empty(),
-        "only the proved numeric consequence is replayed"
     );
 }

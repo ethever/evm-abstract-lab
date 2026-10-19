@@ -4,8 +4,14 @@ use super::*;
 use crate::analysis::machine::fixtures::{address, fixture, word};
 use crate::world::{AbstractLog, LogKey};
 use alloy_primitives::U256;
+use std::collections::VecDeque;
 
+mod context;
+mod projection;
 mod relation_boundary_probe;
+mod stack_alias;
+mod storage_observations;
+mod worklist;
 
 #[test]
 fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory() {
@@ -94,10 +100,10 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
         .unwrap();
         assert_eq!(result.status, crate::analysis::Status::Converged);
         assert!(result.frontiers.is_empty());
-        assert!(!result.procedure_summaries.is_empty());
+        assert!(!result.procedure_summaries().is_empty());
         assert!(
             result
-                .procedure_summaries
+                .procedure_summaries()
                 .iter()
                 .all(|record| record.closed)
         );

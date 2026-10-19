@@ -21,7 +21,7 @@ WITNESSES = {
     "crates/evm-abstract-cli/src/symbolic.rs": "// Bounded local facts only.\n",
     "crates/evm-abstract/src/analysis.rs": "pub const SCHEMA_VERSION: u16 = 10;\n",
     "crates/evm-abstract-protocol/src/lib.rs": "pub const SCHEMA_VERSION: u16 = 15;\n",
-    "crates/evm-abstract/src/domain/spec.rs": "cost_version: 3,\n",
+    "crates/evm-abstract/src/domain/spec.rs": "cost_version: 4,\n",
 }
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
@@ -85,7 +85,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(actual_argv[actual_argv.index("--max-work") + 1], "1000000000000")
         interface = profile["interface"]
         self.assertEqual(interface["source_commit"], COMMIT)
-        self.assertEqual(interface["versions"], {"native": 10, "wire": 15, "cost": 3})
+        self.assertEqual(interface["versions"], {"native": 10, "wire": 15, "cost": 4})
         self.assertEqual(interface["source_witnesses"], {
             name: hashlib.sha256((self.source / name).read_bytes()).hexdigest()
             for name in WITNESSES})
@@ -98,6 +98,7 @@ class GeneratorTests(unittest.TestCase):
             ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 8;", "native"),
             ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 13;", "wire"),
             ("crates/evm-abstract/src/domain/spec.rs", "cost_version: 2,", "cost"),
+            ("crates/evm-abstract/src/domain/spec.rs", "cost_version: 3,", "cost"),
         ] + [("crates/evm-abstract-cli/src/symbolic.rs", field, "solver policy")
              for field in ["smt_provider", "smt_rlimit", "embedded_smt"]]
         for name, text, error in bad_sources:

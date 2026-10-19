@@ -8,7 +8,8 @@ use crate::{
     world::{AddressInput, ByteArray, Entry, Store, World},
 };
 use alloy_primitives::{Address, B256, U256};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
+use std::sync::Arc;
 
 mod evidence;
 #[cfg(test)]
@@ -21,6 +22,7 @@ mod symbolic;
 
 pub use evidence::{ExecutionEvidence, InstructionProgress, InstructionValue};
 pub use frame::{ChildFrame, FrameState, RootFrame};
+pub(in crate::analysis) use frame::{Frame, FrameByteKind, FrameMapOrder};
 pub(crate) use join::EntryAlternatives;
 pub use join::{JoinBoundary, MachineError};
 pub use range::{ByteRangeBoundary, RangeKind, RangeRequest, RangeWitness};
@@ -422,6 +424,39 @@ pub struct ProcedureSummaryRecord {
     pub reused: usize,
 }
 
+/// The running engine is the sole writer; returning WorldAnalysis ends append.
+/// Replay shares retained reports while staging graph changes, never appending,
+/// and drops one owner before ordinary execution resumes. These report roots
+/// never supply executable procedure inputs or outputs.
+#[derive(Debug, Default)]
+pub(super) struct ProcedureEvidence(Arc<Vec<ProcedureSummaryRecord>>);
+
+impl Clone for ProcedureEvidence {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl ProcedureEvidence {
+    fn as_slice(&self) -> &[ProcedureSummaryRecord] {
+        self.0.as_slice()
+    }
+
+    pub(super) fn push(&mut self, record: ProcedureSummaryRecord) {
+        // Replay never appends. Requiring the unique writer prevents an
+        // accidental copy-on-write clone of every retained Store and buffer.
+        Arc::get_mut(&mut self.0)
+            .expect("procedure evidence is appended outside replay staging")
+            .push(record);
+    }
+}
+
+impl Serialize for ProcedureEvidence {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.as_slice().serialize(serializer)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 /// Read-only transaction-wide graph, effects, diagnostics and incomplete frontiers.
 pub struct WorldAnalysis {
@@ -444,7 +479,7 @@ pub struct WorldAnalysis {
     pub(crate) rpc_acquisition: Option<super::RpcAcquisition>,
     pub(crate) summary_stats: super::summary::SummaryStats,
     pub(crate) summaries: Vec<super::summary::SummaryRecord>,
-    pub(crate) procedure_summaries: Vec<ProcedureSummaryRecord>,
+    pub(super) procedure_summaries: ProcedureEvidence,
 }
 
 impl WorldAnalysis {
@@ -471,7 +506,7 @@ impl WorldAnalysis {
     }
     /// Whole-state closure evidence for the unknown/known procedure worklist.
     pub fn procedure_summaries(&self) -> &[ProcedureSummaryRecord] {
-        &self.procedure_summaries
+        self.procedure_summaries.as_slice()
     }
     /// Fixed input world, including fork and snapshot provenance.
     pub fn world(&self) -> &World {

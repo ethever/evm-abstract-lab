@@ -4,16 +4,16 @@
 
 use super::{MachineError, checkpoint};
 use crate::{
-    analysis::MachinePayload,
+    analysis::{MachinePayload, state::StatePart},
     domain::{
         AbstractValue, Domain, NumericValue,
         symbolic::{ExprId, ExprLimits},
     },
     resource::WorkBudget,
-    world::Snapshot,
 };
 use alloy_primitives::U256;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
@@ -43,28 +43,14 @@ fn form(
     let mut result = payload.clone();
     result.relations.forget();
     result.store = result.store.widening_form(domain, limits)?;
-    for frame in result.call_stack.iter_mut() {
-        checkpoint()?;
-        for value in &mut frame.stack {
-            scalar(value);
+    result.call_stack.transform(&mut |part| {
+        match part {
+            StatePart::Value(value) => scalar(value),
+            StatePart::Bytes(bytes) => *bytes = bytes.widening_form(domain, limits)?,
+            StatePart::Store(store) => *store = Cow::Owned(store.widening_form(domain, limits)?),
         }
-        scalar(&mut frame.call_value);
-        for value in [&mut frame.address_operand, &mut frame.caller_operand]
-            .into_iter()
-            .flatten()
-        {
-            scalar(value);
-        }
-        frame.memory = frame.memory.widening_form(domain, limits)?;
-        frame.calldata = frame.calldata.widening_form(domain, limits)?;
-        frame.returndata = frame.returndata.widening_form(domain, limits)?;
-        frame.saved_store =
-            Snapshot::from_state(frame.saved_store.state().widening_form(domain, limits)?);
-    }
-    for child in result.call_stack.children_mut() {
-        scalar(&mut child.continuation.output_offset);
-        scalar(&mut child.continuation.output_size);
-    }
+        Ok(())
+    })?;
     result.content_form()
 }
 

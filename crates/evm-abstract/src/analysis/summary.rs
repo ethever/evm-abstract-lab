@@ -11,6 +11,7 @@ use super::{
     CallStack, Diagnostic, FrontierReason, InstructionProgress, InstructionValue, MachineEdge,
     MachinePayload, OutcomeKind, RootFrame, WorldAnalysis,
     transfer::{CompletedCall, WorkBudget},
+    worklist::Worklist,
 };
 use crate::{
     Fork,
@@ -396,7 +397,7 @@ impl Cache {
         &mut self,
         analysis: &mut WorldAnalysis,
         edges: &BTreeSet<MachineEdge>,
-        queued: &BTreeSet<usize>,
+        worklist: &Worklist,
         diagnostics: &BTreeSet<Diagnostic>,
         completed_calls: &[Vec<CompletedCall>],
         budget: &mut WorkBudget,
@@ -433,7 +434,7 @@ impl Cache {
             match capture(
                 analysis,
                 edges,
-                queued,
+                worklist,
                 diagnostics,
                 completed_calls,
                 &candidate,
@@ -535,7 +536,7 @@ fn relative(payload: &MachinePayload, prefix: usize) -> MachinePayload {
 fn capture(
     analysis: &WorldAnalysis,
     edges: &BTreeSet<MachineEdge>,
-    queued: &BTreeSet<usize>,
+    worklist: &Worklist,
     diagnostics: &BTreeSet<Diagnostic>,
     completed_calls: &[Vec<CompletedCall>],
     candidate: &Candidate,
@@ -559,7 +560,7 @@ fn capture(
         ) {
             return Capture::Work;
         }
-        if queued.contains(&id)
+        if worklist.contains(&id)
             || analysis.states[id].exit.is_none()
             || analysis.states[id]
                 .execution_evidence()

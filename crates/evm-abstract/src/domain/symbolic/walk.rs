@@ -1,110 +1,23 @@
 //! Complete scalar/state graph traversal and capture-avoiding replay renaming.
 
 use super::{
-    ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprKind, ExprLimits, SlotStateId,
-    SlotStateKind, StateBinding,
+    ByteStateId, ByteView, ExprError, ExprId, ExprKind, ExprLimits, InputAtom, SlotStateId,
+    SourceId, StateBinding,
+    structure::{Borrowed, Handle as Item, Mapper, Native, Node, Postorder},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use alloy_primitives::U256;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
-#[derive(Clone)]
-enum Item {
-    Expr(ExprId),
-    Bytes(ByteStateId),
-    Slots(SlotStateId),
-    View(ByteView),
-}
-fn children(item: &Item) -> Vec<Item> {
-    let expr = |e: &ExprId| Item::Expr(e.clone());
-    match item {
-        Item::Expr(e) => match e.kind() {
-            ExprKind::Operation { args, .. } => args.iter().map(expr).collect(),
-            ExprKind::Ite {
-                condition,
-                then_value,
-                else_value,
-            } => vec![expr(condition), expr(then_value), expr(else_value)],
-            ExprKind::ByteRead { state, index } => vec![Item::Bytes(state.clone()), expr(index)],
-            ExprKind::WordRead { view, offset } => vec![Item::View(view.clone()), expr(offset)],
-            ExprKind::SlotRead { state, key } => vec![Item::Slots(state.clone()), expr(key)],
-            ExprKind::Keccak { input } => vec![Item::View(input.clone())],
-            _ => Vec::new(),
-        },
-        Item::Bytes(s) => match s.kind() {
-            ByteStateKind::Zero | ByteStateKind::Exact(_) => Vec::new(),
-            ByteStateKind::Input {
-                source,
-                length,
-                bindings,
-            } => std::iter::once(expr(source.token()))
-                .chain(std::iter::once(expr(length)))
-                .chain(bindings.iter().map(|b| expr(&b.value)))
-                .collect(),
-            ByteStateKind::WriteByte {
-                previous,
-                offset,
-                value,
-            }
-            | ByteStateKind::WriteWord {
-                previous,
-                offset,
-                value,
-            } => vec![Item::Bytes(previous.clone()), expr(offset), expr(value)],
-            ByteStateKind::Copy {
-                previous,
-                destination,
-                source,
-                length,
-            } => vec![
-                Item::Bytes(previous.clone()),
-                expr(destination),
-                Item::View(source.clone()),
-                expr(length),
-            ],
-            ByteStateKind::Slice { source } => vec![Item::View(source.clone())],
-            ByteStateKind::Ite {
-                condition,
-                then_state,
-                else_state,
-            } => vec![
-                expr(condition),
-                Item::Bytes(then_state.clone()),
-                Item::Bytes(else_state.clone()),
-            ],
-        },
-        Item::Slots(s) => match s.kind() {
-            SlotStateKind::Zero => Vec::new(),
-            SlotStateKind::Input { source, bindings } => std::iter::once(expr(source.token()))
-                .chain(bindings.iter().map(|b| expr(&b.value)))
-                .collect(),
-            SlotStateKind::Store {
-                previous,
-                key,
-                value,
-            } => vec![Item::Slots(previous.clone()), expr(key), expr(value)],
-            SlotStateKind::Ite {
-                condition,
-                then_state,
-                else_state,
-            } => vec![
-                expr(condition),
-                Item::Slots(then_state.clone()),
-                Item::Slots(else_state.clone()),
-            ],
-        },
-        Item::View(v) => vec![
-            Item::Bytes(v.state.clone()),
-            expr(&v.offset),
-            expr(&v.length),
-        ],
-    }
-}
 fn walk(root: Item, action: &mut impl FnMut(&ExprId)) {
     let mut stack = vec![root];
     let mut expressions = BTreeSet::new();
     let mut states = BTreeSet::new();
     while let Some(item) = stack.pop() {
         let seen = match &item {
-            Item::Expr(e) => {
+            Item::Word(e) => {
                 if !expressions.insert(e.clone()) {
                     true
                 } else {
@@ -117,12 +30,12 @@ fn walk(root: Item, action: &mut impl FnMut(&ExprId)) {
             Item::View(_) => false,
         };
         if !seen {
-            stack.extend(children(&item));
+            item.visit_dependencies(|child| stack.push(child));
         }
     }
 }
 pub(super) fn visit(root: &ExprId, action: &mut impl FnMut(&ExprId)) {
-    walk(Item::Expr(root.clone()), action);
+    walk(Item::Word(root.clone()), action);
 }
 fn fresh(root: Item) -> BTreeSet<ExprId> {
     let mut out = BTreeSet::new();
@@ -169,7 +82,7 @@ impl<'a> Renamer<'a> {
     }
     fn known(&self, item: &Item) -> bool {
         match item {
-            Item::Expr(e) => self.expressions.contains_key(e),
+            Item::Word(e) => self.expressions.contains_key(e),
             Item::Bytes(s) => self.bytes.contains_key(s),
             Item::Slots(s) => self.slots.contains_key(s),
             Item::View(v) => {
@@ -181,145 +94,129 @@ impl<'a> Renamer<'a> {
     }
     /// Iterative postorder avoids call-stack recursion even with large caller limits.
     fn prepare(&mut self, root: Item) -> Result<(), ExprError> {
-        let mut stack = vec![(root, false)];
-        while let Some((item, ready)) = stack.pop() {
+        let mut stack = Postorder::new(root);
+        while let Some((item, ready)) = stack.next() {
             if self.known(&item) {
                 continue;
             }
             if !ready {
-                let (nodes, depth) = match &item {
-                    Item::Expr(e) => (e.nodes(), e.depth()),
-                    Item::Bytes(s) => (s.nodes(), s.depth()),
-                    Item::Slots(s) => (s.nodes(), s.depth()),
-                    Item::View(v) => (v.nodes(), v.depth()),
-                };
+                let (nodes, depth) = (item.nodes(), item.depth());
                 self.check(nodes, depth)?;
-                let deps = children(&item);
-                stack.push((item, true));
-                stack.extend(deps.into_iter().rev().map(|dep| (dep, false)));
+                stack.expand_with(item.clone(), |pending| {
+                    item.visit_dependencies(|child| pending.push(child));
+                });
                 continue;
             }
-            match item {
-                Item::Expr(e) => {
-                    let renamed = match e.kind() {
-                        ExprKind::Constant(_) | ExprKind::Input(_) => e.clone(),
-                        ExprKind::Fresh(_) => self
-                            .replacements
-                            .get(&e)
+            let mapped = item.structure().try_map(self)?;
+            // Structural mapping is shared; interpretation remains here so
+            // folding, view canonicalization and state limits stay authoritative.
+            let renamed = match mapped {
+                Node::Constant(_) | Node::Input(_) => item.clone(),
+                Node::Fresh(_) => {
+                    let Item::Word(e) = &item else {
+                        unreachable!("word leaf")
+                    };
+                    Item::Word(
+                        self.replacements
+                            .get(e)
                             .cloned()
                             .unwrap_or_else(|| e.clone()),
-                        ExprKind::Operation { opcode, args } => ExprId::operation(
-                            *opcode,
-                            &args.iter().map(|a| self.e(a)).collect::<Vec<_>>(),
-                            self.limits,
-                        )?,
-                        ExprKind::Ite {
-                            condition,
-                            then_value,
-                            else_value,
-                        } => ExprId::ite(
-                            self.e(condition),
-                            self.e(then_value),
-                            self.e(else_value),
-                            self.limits,
-                        )?,
-                        ExprKind::ByteRead { state, index } => {
-                            ExprId::byte_read(self.b(state), self.e(index), self.limits)?
-                        }
-                        ExprKind::WordRead { view, offset } => {
-                            ExprId::word_read(self.v(view), self.e(offset), self.limits)?
-                        }
-                        ExprKind::SlotRead { state, key } => {
-                            ExprId::slot_read(self.s(state), self.e(key), self.limits)?
-                        }
-                        ExprKind::Keccak { input } => ExprId::keccak(self.v(input), self.limits)?,
-                    };
-                    super::state::check(renamed.nodes(), renamed.depth(), self.limits.into())?;
-                    self.expressions.insert(e, renamed);
+                    )
                 }
-                Item::Bytes(s) => {
-                    let limits = self.limits.into();
-                    let renamed = match s.kind() {
-                        ByteStateKind::Zero => ByteStateId::zero(),
-                        ByteStateKind::Exact(bytes) => ByteStateId::exact(Arc::clone(bytes)),
-                        ByteStateKind::Input {
-                            source,
-                            length,
-                            bindings,
-                        } => ByteStateId::observed(
-                            source.renamed(self.e(source.token())),
-                            self.e(length),
-                            self.bindings(bindings),
-                            limits,
-                        )?,
-                        ByteStateKind::WriteByte {
-                            previous,
-                            offset,
-                            value,
-                        } => self
-                            .b(previous)
-                            .write_byte(self.e(offset), self.e(value), limits)?,
-                        ByteStateKind::WriteWord {
-                            previous,
-                            offset,
-                            value,
-                        } => self
-                            .b(previous)
-                            .write_word(self.e(offset), self.e(value), limits)?,
-                        ByteStateKind::Copy {
-                            previous,
-                            destination,
-                            source,
-                            length,
-                        } => self.b(previous).copy(
-                            self.e(destination),
-                            self.v(source),
-                            self.e(length),
-                            limits,
-                        )?,
-                        ByteStateKind::Slice { source } => {
-                            let source = self.v(source);
-                            source.state.slice(source.offset, source.length, limits)?
-                        }
-                        ByteStateKind::Ite {
-                            condition,
-                            then_state,
-                            else_state,
-                        } => self.b(then_state).join_guarded(
-                            &self.b(else_state),
-                            self.e(condition),
-                            limits,
-                        )?,
-                    };
-                    self.bytes.insert(s, renamed);
+                Node::Operation { opcode, args } => {
+                    Item::Word(ExprId::operation(opcode, &args, self.limits)?)
                 }
-                Item::Slots(s) => {
-                    let limits = self.limits.into();
-                    let renamed = match s.kind() {
-                        SlotStateKind::Zero => SlotStateId::zero(),
-                        SlotStateKind::Input { source, bindings } => SlotStateId::observed(
-                            source.renamed(self.e(source.token())),
-                            self.bindings(bindings),
-                            limits,
-                        )?,
-                        SlotStateKind::Store {
-                            previous,
-                            key,
-                            value,
-                        } => self.s(previous).store(self.e(key), self.e(value), limits)?,
-                        SlotStateKind::Ite {
-                            condition,
-                            then_state,
-                            else_state,
-                        } => self.s(then_state).join_guarded(
-                            &self.s(else_state),
-                            self.e(condition),
-                            limits,
-                        )?,
-                    };
-                    self.slots.insert(s, renamed);
+                Node::Ite {
+                    condition,
+                    then_value,
+                    else_value,
+                } => Item::Word(ExprId::ite(condition, then_value, else_value, self.limits)?),
+                Node::ByteRead { state, index } => {
+                    Item::Word(ExprId::byte_read(state, index, self.limits)?)
                 }
-                Item::View(_) => {}
+                Node::WordRead { view, offset } => {
+                    Item::Word(ExprId::word_read(view, offset, self.limits)?)
+                }
+                Node::SlotRead { state, key } => {
+                    Item::Word(ExprId::slot_read(state, key, self.limits)?)
+                }
+                Node::Keccak { input } => Item::Word(ExprId::keccak(input, self.limits)?),
+                Node::BytesZero => Item::Bytes(ByteStateId::zero()),
+                Node::BytesExact(bytes) => Item::Bytes(ByteStateId::exact(bytes)),
+                Node::BytesInput {
+                    source,
+                    length,
+                    bindings,
+                } => Item::Bytes(ByteStateId::observed(
+                    source,
+                    length,
+                    bindings,
+                    self.limits.into(),
+                )?),
+                Node::WriteByte {
+                    previous,
+                    offset,
+                    value,
+                } => Item::Bytes(previous.write_byte(offset, value, self.limits.into())?),
+                Node::WriteWord {
+                    previous,
+                    offset,
+                    value,
+                } => Item::Bytes(previous.write_word(offset, value, self.limits.into())?),
+                Node::Copy {
+                    previous,
+                    destination,
+                    source,
+                    length,
+                } => Item::Bytes(previous.copy(destination, source, length, self.limits.into())?),
+                Node::Slice { source } => Item::Bytes(source.state.slice(
+                    source.offset,
+                    source.length,
+                    self.limits.into(),
+                )?),
+                Node::BytesIte {
+                    condition,
+                    then_state,
+                    else_state,
+                } => Item::Bytes(then_state.join_guarded(
+                    &else_state,
+                    condition,
+                    self.limits.into(),
+                )?),
+                Node::SlotsZero => Item::Slots(SlotStateId::zero()),
+                Node::SlotsInput { source, bindings } => {
+                    Item::Slots(SlotStateId::observed(source, bindings, self.limits.into())?)
+                }
+                Node::Store {
+                    previous,
+                    key,
+                    value,
+                } => Item::Slots(previous.store(key, value, self.limits.into())?),
+                Node::SlotsIte {
+                    condition,
+                    then_state,
+                    else_state,
+                } => Item::Slots(then_state.join_guarded(
+                    &else_state,
+                    condition,
+                    self.limits.into(),
+                )?),
+                // Views are reconstructed on demand from the three memo tables,
+                // as before; they do not acquire a separate retention/work cost.
+                Node::View { .. } => continue,
+            };
+            match (item, renamed) {
+                (Item::Word(old), Item::Word(new)) => {
+                    super::state::check(new.nodes(), new.depth(), self.limits.into())?;
+                    self.expressions.insert(old, new);
+                }
+                (Item::Bytes(old), Item::Bytes(new)) => {
+                    self.bytes.insert(old, new);
+                }
+                (Item::Slots(old), Item::Slots(new)) => {
+                    self.slots.insert(old, new);
+                }
+                _ => unreachable!("structural mapping preserves result sorts"),
             }
         }
         Ok(())
@@ -339,18 +236,8 @@ impl<'a> Renamer<'a> {
     fn v(&self, v: &ByteView) -> ByteView {
         ByteView::new(self.b(&v.state), self.e(&v.offset), self.e(&v.length)).canonicalize()
     }
-    fn bindings(&self, bindings: &[StateBinding]) -> Vec<StateBinding> {
-        bindings
-            .iter()
-            .map(|b| StateBinding {
-                index: b.index,
-                value: self.e(&b.value),
-                numeric: b.numeric.clone(),
-            })
-            .collect()
-    }
     pub fn expression(&mut self, e: &ExprId) -> Result<ExprId, ExprError> {
-        self.prepare(Item::Expr(e.clone()))?;
+        self.prepare(Item::Word(e.clone()))?;
         Ok(self.e(e))
     }
     pub fn bytes(&mut self, b: &ByteStateId) -> Result<ByteStateId, ExprError> {
@@ -366,4 +253,42 @@ impl<'a> Renamer<'a> {
         Ok(self.v(v))
     }
 }
-use std::sync::Arc;
+
+impl<'a> Mapper<Borrowed<'a>> for Renamer<'_> {
+    type Output = Native;
+    type Error = ExprError;
+    fn word(&mut self, value: &&ExprId) -> Result<ExprId, ExprError> {
+        Ok(self.e(value))
+    }
+    fn bytes(&mut self, value: &&ByteStateId) -> Result<ByteStateId, ExprError> {
+        Ok(self.b(value))
+    }
+    fn slots(&mut self, value: &&SlotStateId) -> Result<SlotStateId, ExprError> {
+        Ok(self.s(value))
+    }
+    fn view(&mut self, value: &&ByteView) -> Result<ByteView, ExprError> {
+        Ok(self.v(value))
+    }
+    fn constant(&mut self, value: &&U256) -> Result<U256, ExprError> {
+        Ok(**value)
+    }
+    fn input(&mut self, value: &&InputAtom) -> Result<InputAtom, ExprError> {
+        Ok(**value)
+    }
+    fn fresh(&mut self, value: u64) -> Result<u64, ExprError> {
+        Ok(value)
+    }
+    fn exact(&mut self, value: &&Arc<[u8]>) -> Result<Arc<[u8]>, ExprError> {
+        Ok(Arc::clone(value))
+    }
+    fn source(&mut self, value: &&SourceId) -> Result<SourceId, ExprError> {
+        Ok(value.renamed(self.e(value.token())))
+    }
+    fn binding(&mut self, value: &&StateBinding) -> Result<StateBinding, ExprError> {
+        Ok(StateBinding {
+            index: value.index,
+            value: self.e(&value.value),
+            numeric: value.numeric.clone(),
+        })
+    }
+}

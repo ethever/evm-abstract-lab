@@ -1,15 +1,16 @@
 //! Cancellation and real exhaustion retain every queued input with its cause.
 
-use super::{Cache, Counters, Engine, SummaryAttempt, run_world};
+use super::{Cache, Counters, Engine, SummaryAttempt, Worklist, run_world};
 use crate::{
     analysis::{FrontierReason, Status, WorldAnalysis, machine::fixtures, summary::Certificate},
     domain::relational::QueryReason,
     resource::WorkBudget,
 };
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 mod bounded_promotion;
 mod decided_cache;
 mod loop_bound;
+mod replay_evidence;
 
 #[test]
 fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {
@@ -101,7 +102,7 @@ fn engine<'a>(
         .iter()
         .map(|state| ((state.key.clone(), state.resume_status), state.id))
         .collect();
-    let pending: BTreeSet<_> = (0..result.states.len()).filter(|id| *id != child).collect();
+    let worklist = (0..result.states.len()).filter(|id| *id != child).collect();
     let alternatives = result
         .states
         .iter()
@@ -117,8 +118,7 @@ fn engine<'a>(
         alternatives,
         selectors: BTreeSet::new(),
         ids,
-        queue: VecDeque::from_iter(pending.iter().copied()),
-        queued: pending,
+        worklist,
         edges: BTreeSet::new(),
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new(); count],
@@ -140,9 +140,8 @@ fn assert_pending(engine: &Engine<'_>, child: usize, reason: &FrontierReason) {
         })
         .collect();
     let mut expected: Vec<_> = engine
-        .queued
-        .iter()
-        .copied()
+        .worklist
+        .pending()
         .chain(std::iter::once(child))
         .map(|id| engine.result.states[id].key.clone())
         .collect();
@@ -254,13 +253,10 @@ fn pending_frames_prefer_deeper_calls_and_keep_fifo_within_a_depth() {
     let mut budget = WorkBudget::new(100_000_000);
     let mut counters = Counters::default();
     let mut engine = engine(result, child, &mut budget, &mut counters);
-    engine.queue.push_back(child);
-    engine.queued.insert(child);
+    engine.worklist.enqueue(child);
     assert_eq!(engine.next_pending().unwrap(), Some(child));
-    engine.queued.remove(&child);
     for id in shallow {
         assert_eq!(engine.next_pending().unwrap(), Some(id));
-        engine.queued.remove(&id);
     }
     assert_eq!(engine.next_pending().unwrap(), None);
     assert!(engine.budget.used() > 0);
@@ -275,10 +271,8 @@ fn interrupted_queue_scan_retains_every_input_and_its_exact_cause() {
             let mut budget = WorkBudget::new(if cancelled { 100_000_000 } else { 0 });
             let mut counters = Counters::default();
             let mut engine = engine(result, child, &mut budget, &mut counters);
-            engine.queue.push_back(child);
-            engine.queued.insert(child);
-            let queue = engine.queue.clone();
-            let queued = engine.queued.clone();
+            engine.worklist.enqueue(child);
+            let worklist = engine.worklist.clone();
             let entries: Vec<_> = engine
                 .result
                 .states
@@ -290,8 +284,7 @@ fn interrupted_queue_scan_retains_every_input_and_its_exact_cause() {
             }
             engine.run();
             assert_eq!(engine.result.status(), Status::Incomplete);
-            assert_eq!(engine.queue, queue);
-            assert_eq!(engine.queued, queued);
+            assert_eq!(engine.worklist, worklist);
             assert_eq!(engine.result.frontiers.len(), entries.len());
             let expected = if cancelled {
                 FrontierReason::Relations(QueryReason::Cancelled)

@@ -1,8 +1,8 @@
 //! Freeze sparse loop coordinates; forgotten cells flow into their defaults.
 
 use super::{
-    AbstractValue, Address, BTreeSet, Domain, InitialIndependence, OrderedMap, StoreSummary,
-    SummaryPlane, join_flag, representable_default,
+    AbstractValue, BTreeSet, Domain, InitialIndependence, OrderedMap, StoreSummary, SummaryPlane,
+    lifecycle, representable_default, sparse,
 };
 
 impl SummaryPlane {
@@ -60,49 +60,6 @@ impl SummaryPlane {
     }
 }
 
-fn numeric_layout(
-    values: &OrderedMap<Address, AbstractValue>,
-    default: &AbstractValue,
-    layout: &OrderedMap<Address, AbstractValue>,
-    domain: Domain,
-) -> (OrderedMap<Address, AbstractValue>, AbstractValue) {
-    let mut upper = default.clone();
-    for (owner, value) in values {
-        if layout.get(owner).is_none() {
-            upper = domain.join(&upper, value);
-        }
-    }
-    let retained = layout
-        .keys()
-        .filter_map(|owner| {
-            let value = values.get(owner).unwrap_or(default);
-            (*value != upper).then_some((*owner, value.clone()))
-        })
-        .collect();
-    (retained, upper)
-}
-
-fn flag_layout(
-    values: &OrderedMap<Address, Option<bool>>,
-    default: Option<bool>,
-    layout: &OrderedMap<Address, Option<bool>>,
-) -> (OrderedMap<Address, Option<bool>>, Option<bool>) {
-    let mut upper = default;
-    for (owner, value) in values {
-        if layout.get(owner).is_none() {
-            upper = join_flag(upper, *value);
-        }
-    }
-    let retained = layout
-        .keys()
-        .filter_map(|owner| {
-            let value = values.get(owner).copied().unwrap_or(default);
-            (value != upper).then_some((*owner, value))
-        })
-        .collect();
-    (retained, upper)
-}
-
 impl StoreSummary {
     /// A complete coarse envelope when retaining numerical cell expressions is
     /// refused. Control-relevant code/lifecycle variants remain represented.
@@ -132,11 +89,10 @@ impl StoreSummary {
             .persistent
             .project_to_layout(&layout.persistent, domain);
         out.transient = self.transient.project_to_layout(&layout.transient, domain);
-        (out.balances, out.balance_default) = numeric_layout(
-            &self.balances,
-            &self.balance_default,
+        (out.balances, out.balance_default) = sparse::project(
+            (&self.balances, &self.balance_default),
             &layout.balances,
-            domain,
+            |left, right| domain.join(left, right),
         );
         // Unlisted nonces already have Top as their complete upper bound.
         out.nonces
@@ -147,15 +103,21 @@ impl StoreSummary {
             .retain(|owner, _| layout.codes.get(owner).is_some());
         out.existence
             .retain(|owner, _| layout.existence.get(owner).is_some());
-        (out.created, out.created_default) =
-            flag_layout(&self.created, self.created_default, &layout.created);
-        (out.pending_destruction, out.pending_destruction_default) = flag_layout(
-            &self.pending_destruction,
-            self.pending_destruction_default,
-            &layout.pending_destruction,
+        (out.created, out.created_default) = sparse::project(
+            (&self.created, &self.created_default),
+            &layout.created,
+            lifecycle::join,
         );
-        (out.touched, out.touched_default) =
-            flag_layout(&self.touched, self.touched_default, &layout.touched);
+        (out.pending_destruction, out.pending_destruction_default) = sparse::project(
+            (&self.pending_destruction, &self.pending_destruction_default),
+            &layout.pending_destruction,
+            lifecycle::join,
+        );
+        (out.touched, out.touched_default) = sparse::project(
+            (&self.touched, &self.touched_default),
+            &layout.touched,
+            lifecycle::join,
+        );
         if self
             .possible_logs
             .keys()

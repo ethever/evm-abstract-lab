@@ -59,13 +59,13 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 与自身或已表示的完整替代合并可以吸收。覆盖判断核对完整载荷，必要时用有界查询检查标量和路径保证；UNKNOWN 不能证明覆盖。重复相同覆盖通过规范化减少根的增长，不能仅因内部版本号增加就判定内容改变。
 
-普通循环反馈由 [`Engine::successor`](../crates/evm-abstract/src/analysis/engine.rs) 根据实际图中的回路识别；同一入口出现重复增长后，[`EntryAlternatives::join_loop`](../crates/evm-abstract/src/analysis/machine/join.rs) 将其提升为 [`LoopBound`](../crates/evm-abstract/src/analysis/transfer/procedure/loop_bound.rs)。它保存一份固定布局和数值整机上界，后续输入都更新这份上界。反复到达同一个 pc 本身不足以宣告固定点。
+普通循环反馈由 [`Engine::successor`](../crates/evm-abstract/src/analysis/engine.rs) 根据实际图中的回路识别；同一入口出现重复增长后，[`EntryAlternatives::join_loop`](../crates/evm-abstract/src/analysis/machine/join.rs) 将其提升为 [`LoopBound`](../crates/evm-abstract/src/analysis/state/loop_bound.rs)。它持有数值整机上界，并与过程保留失败重试共用 [`BoundedState`](../crates/evm-abstract/src/analysis/state/bounded.rs) 的冻结布局、规范化及独立物化机制。后续输入都更新这份上界；重试准入和结果发布仍由各自调用方负责。反复到达同一个 pc 本身不足以宣告固定点。
 
 首次扩大用已有入口和新输入确定布局：包括帧与 continuation 的结构、选定的账户/槽键、各帧 memory/calldata/returndata 的字节坐标，以及每个回滚 Store 的独立布局。后续出现的新位置不继续增加坐标，而由 [`StoreSummary::project_to_layout`](../crates/evm-abstract/src/world/store/summary/layout.rs) 和 [`ByteArraySummary::project_to_layout`](../crates/evm-abstract/src/world/bytes/summary/layout.rs) 归入默认上界。Store 的布局外写入需要扩大相应 owner 或全局默认值；未知 owner/key 的写入还必须覆盖所有可能别名的已选单元和默认区域。字节数组未保留的单元为任意字节，不能解释成零。内容与逻辑长度分别概括，代码与账户生命周期还受结构键约束。
 
 投影从 byte/slot 根取得数值上界，随后舍弃旧表达式、写入历史、来源身份、路径公式及跨组件关联。当前实现同时忘掉可选栈别名类和 storage 观察关联，避免仍引用已被抹去的根。保留的是数值约束、控制结构和可能效果的包络；日志摘要不是精确的有限事件序列，`logs_unknown` 也不表示没有日志。这里不能沿用普通 guarded join 对所有字段精确配对的读法。
 
-[`payload::instantiate`](../crates/evm-abstract/src/analysis/transfer/procedure/payload.rs) 为每个缓冲区、当前 Store 和各帧保存的 Store 分别实例化；未知部分使用独立的新来源。历史读取按原先捕获的版本解释；投影后不能把它与新当前根强制设为相同。初始快照事实也不能覆盖执行中的写入。独立化会丢失关联，但不能把当前状态与回滚状态合成一份：失败返回仍须恢复保存的版本。
+[`payload::instantiate`](../crates/evm-abstract/src/analysis/state/payload.rs) 为每个缓冲区、当前 Store 和各帧保存的 Store 分别实例化；未知部分使用独立的新来源。历史读取按原先捕获的版本解释；投影后不能把它与新当前根强制设为相同。初始快照事实也不能覆盖执行中的写入。独立化会丢失关联，但不能把当前状态与回滚状态合成一份：失败返回仍须恢复保存的版本。
 
 `LoopBound::update` 先将输入限制到冻结布局，join 后比较规范化的**完整上界**，再决定是否扩大并实例化。比较不使用新生成的 `SourceId` / `ExprId`，也不把某个数值组件相等当作覆盖。只有新上界与执行载荷都构造成功、结构键检查通过，入口才安装结果并清除历史完整 cases；上界扩大后需重新调度。摘要证书导入已有循环入口时也走这份上界。会话将这种根抽象记为 `AllInitialState` 依赖，不能继续只依赖原先少数已观察槽。
 

@@ -1,5 +1,6 @@
 //! Production projection/replay, independent snapshots and non-layout effects.
 
+use super::super::instantiate;
 use super::*;
 use crate::{
     analysis::{machine::fixtures, transfer},
@@ -131,7 +132,10 @@ fn later_locations_flow_into_defaults_and_do_not_grow_the_loop_layout() {
             .read(owner, &fixtures::word(999), domain)
             .contains(U256::from(99))
     );
-    assert_eq!(wider.layout.store, bound.layout.store);
+    assert_eq!(
+        wider.representation.layout().store,
+        bound.representation.layout().store
+    );
     let mut another = live.clone();
     another
         .store
@@ -348,4 +352,121 @@ fn expression_retention_refusal_retries_a_complete_coarse_bound() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn feedback_fallback_and_runtime_retry_keep_the_same_whole_state_normalization() {
+    use crate::analysis::transfer::procedure::prepare_runtime_retry;
+    use crate::domain::relational::RelationLimits;
+
+    let domain = Domain::default();
+    let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
+    let owner = fixtures::address(0x101);
+    let mut input = transfer::initial(&world, &entry, domain).unwrap();
+    let saved = domain.join(&fixtures::word(3), &fixtures::word(5));
+    let current = domain.join(&fixtures::word(7), &fixtures::word(9));
+    for key in 0..8 {
+        input
+            .store
+            .write_checked(owner, &fixtures::word(key), &saved, domain)
+            .unwrap();
+    }
+    input.active_mut().saved_store = input.store.snapshot();
+    for key in 0..8 {
+        input
+            .store
+            .write_checked(owner, &fixtures::word(key), &current, domain)
+            .unwrap();
+    }
+    let key = domain
+        .join(&fixtures::word(0), &fixtures::word(1))
+        .with_expression(ExprId::fresh().unwrap());
+    input
+        .store
+        .write_checked(owner, &key, &fixtures::word(7), domain)
+        .unwrap();
+    input.active_mut().stack = vec![key.clone(), key];
+    input.normalize();
+    let smaller = Domain::from_spec(domain.spec().with_relations(RelationLimits {
+        max_nodes: 24,
+        ..domain.spec().relations()
+    }));
+    let original = form(&input, &entry, smaller).unwrap();
+    let before = input.clone();
+    assert!(original.active().stack_aliases.same_class(0, 1));
+    assert!(instantiate(&original, smaller).is_err());
+
+    let mut budget = WorkBudget::new(1_000_000_000_000);
+    let (feedback, feedback_live) =
+        LoopBound::new(&input, &input, &entry, smaller, &mut budget).unwrap();
+    let (runtime, runtime_bound, runtime_live) =
+        prepare_runtime_retry(&original, smaller, &mut budget).unwrap();
+    assert!(semantic_eq(&feedback.bound, &runtime_bound));
+    for live in [&feedback_live, &runtime_live] {
+        assert_ne!(
+            live.store.slot_root(owner, false).unwrap(),
+            live.active()
+                .saved_store
+                .state()
+                .slot_root(owner, false)
+                .unwrap()
+        );
+        assert_ne!(
+            live.active().stack[0].expression(),
+            live.active().stack[1].expression()
+        );
+        assert!(live.relations.is_empty());
+        for key in 0..8 {
+            for value in [3, 5] {
+                assert!(
+                    live.active()
+                        .saved_store
+                        .state()
+                        .read(owner, &fixtures::word(key), smaller)
+                        .contains(U256::from(value))
+                );
+            }
+            for value in [7, 9] {
+                assert!(
+                    live.store
+                        .read(owner, &fixtures::word(key), smaller)
+                        .contains(U256::from(value))
+                );
+            }
+        }
+    }
+
+    // Each later input recovers aliases and a current-root observation under a
+    // fresh key, and adds a location outside the frozen layout. Neither path
+    // may restore those guarantees or mistake them for a larger coarse bound.
+    for _ in 0..3 {
+        let mut incoming = feedback_live.clone();
+        let key = domain
+            .join(&fixtures::word(0), &fixtures::word(1))
+            .with_expression(ExprId::fresh().unwrap());
+        incoming
+            .store
+            .write_checked(owner, &fixtures::word(999), &fixtures::word(99), domain)
+            .unwrap();
+        incoming
+            .store
+            .write_checked(owner, &key, &fixtures::word(11), domain)
+            .unwrap();
+        incoming.active_mut().stack = vec![key.clone(), key];
+        let summary = form(&incoming, &entry, smaller).unwrap();
+        assert!(summary.active().stack_aliases.same_class(0, 1));
+        assert_ne!(summary.storage_observations, Default::default());
+        let joined = runtime
+            .join(&runtime_bound, &summary, smaller, &mut budget, false)
+            .unwrap();
+        assert!(semantic_eq(&runtime_bound, &joined));
+        assert!(
+            feedback
+                .update(&incoming, &entry, smaller, &mut budget)
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(input, before);
+    assert_eq!(form(&input, &entry, smaller).unwrap(), original);
 }

@@ -1,6 +1,6 @@
 //! Finite must-equalities between stack positions, without retained expressions.
 
-use super::{AbstractValue, BTreeMap, MachineError, relations};
+use super::{AbstractValue, BTreeMap, MachineError, identify};
 
 #[cfg(test)]
 mod tests;
@@ -8,14 +8,14 @@ mod tests;
 /// Each class is labelled by its first position; singleton positions label themselves.
 /// Mixed numeric bounds on one node deliberately lose their alias guarantee.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct StackAliases(Vec<usize>);
+pub(in crate::analysis) struct StackAliases(Vec<usize>);
 
 impl StackAliases {
     const MAX_STACK: usize = 1024;
 
     /// Prepaid logical work for retained labels, two tree passes, copying and
     /// intersection. Length and tree depth are available without graph traversal.
-    pub(super) fn work_for_len(len: usize) -> usize {
+    pub(in crate::analysis) fn work_for_len(len: usize) -> usize {
         let levels = usize::try_from(len.max(1).ilog2())
             .unwrap_or(usize::MAX)
             .saturating_add(1);
@@ -23,17 +23,20 @@ impl StackAliases {
             .saturating_mul(16)
     }
 
-    pub(super) fn work_size(&self) -> usize {
+    pub(in crate::analysis) fn work_size(&self) -> usize {
         Self::work_for_len(self.0.len())
     }
 
     /// Only membership in this partition is evidence; absent positions never alias.
-    pub(super) fn same_class(&self, left: usize, right: usize) -> bool {
+    pub(in crate::analysis) fn same_class(&self, left: usize, right: usize) -> bool {
         matches!((self.0.get(left), self.0.get(right)), (Some(a), Some(b)) if a == b)
     }
 
     /// Caller reserves tree work and numeric comparison work before entering.
-    pub(super) fn form(stack: &[AbstractValue], enabled: bool) -> Result<Self, MachineError> {
+    pub(in crate::analysis) fn form(
+        stack: &[AbstractValue],
+        enabled: bool,
+    ) -> Result<Self, MachineError> {
         MachineError::check_cancelled()?;
         if stack.len() > Self::MAX_STACK {
             return Err(MachineError::Shape);
@@ -67,7 +70,7 @@ impl StackAliases {
 
     /// Intersection of equivalence relations; leader numbers are local to each
     /// partition, so equal guarantees survive even when the leaders differ.
-    pub(super) fn intersect(&self, other: &Self) -> Result<Self, MachineError> {
+    pub(in crate::analysis) fn intersect(&self, other: &Self) -> Result<Self, MachineError> {
         MachineError::check_cancelled()?;
         if self.0.len() != other.0.len() {
             return Err(MachineError::Shape);
@@ -83,7 +86,7 @@ impl StackAliases {
 
     /// A fresh leader per invocation, sharing only its expression. Every stack
     /// position keeps its own numerical bound, including mixed-bound singletons.
-    pub(super) fn instantiate(
+    pub(in crate::analysis) fn instantiate(
         &self,
         stack: &[AbstractValue],
         enabled: bool,
@@ -100,11 +103,11 @@ impl StackAliases {
             }
             let value = if enabled && leader < position {
                 output[leader].expression().map_or_else(
-                    || relations::identify(value.clone(), enabled),
+                    || identify(value.clone(), enabled),
                     |expression| value.clone().with_expression(expression.clone()),
                 )
             } else {
-                relations::identify(value.clone(), enabled)
+                identify(value.clone(), enabled)
             };
             output.push(value);
         }
