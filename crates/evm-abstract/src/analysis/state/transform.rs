@@ -3,7 +3,7 @@
 //! Scalar updates use the world's scoped-value APIs and cannot rename roots.
 
 use crate::{
-    analysis::{CallStack, FrameState, MachineError, MachinePayload},
+    analysis::{CallStack, MachineError, MachinePayload},
     domain::AbstractValue,
     world::{ByteArray, Snapshot, Store},
 };
@@ -23,32 +23,6 @@ impl StatePart<'_, '_> {
             Self::Bytes(bytes) => bytes.update_values(update),
             Self::Store(store) => store.to_mut().update_values(update),
         }
-    }
-}
-
-impl FrameState {
-    pub(crate) fn values(&self) -> impl Iterator<Item = &AbstractValue> {
-        self.stack
-            .iter()
-            .chain([&self.call_value])
-            .chain(self.address_operand.iter())
-            .chain(self.caller_operand.iter())
-    }
-
-    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut AbstractValue> {
-        self.stack
-            .iter_mut()
-            .chain([&mut self.call_value])
-            .chain(self.address_operand.iter_mut())
-            .chain(self.caller_operand.iter_mut())
-    }
-
-    pub(crate) fn byte_arrays(&self) -> [&ByteArray; 3] {
-        [&self.memory, &self.calldata, &self.returndata]
-    }
-
-    pub(crate) fn byte_arrays_mut(&mut self) -> [&mut ByteArray; 3] {
-        [&mut self.memory, &mut self.calldata, &mut self.returndata]
     }
 }
 

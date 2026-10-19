@@ -170,6 +170,8 @@ fn one_selector_pairs_every_frame_value_root_checkpoint_and_continuation() {
         frame.calldata = ByteArray::exact(&[marker as u8]);
         frame.returndata = ByteArray::exact(&[marker as u8, 1]);
         frame.call_value = fixtures::word(marker);
+        frame.address_operand = Some(fixtures::word(marker + 0x100));
+        frame.caller_operand = Some(fixtures::word(marker + 0x200));
         frame.saved_store = saved;
         let child = RootFrame {
             state: frame.clone(),
@@ -188,6 +190,14 @@ fn one_selector_pairs_every_frame_value_root_checkpoint_and_continuation() {
     for frame in joined.call_stack.iter() {
         assert_eq!(scalar_guard(&frame.stack[0]), selector);
         assert_eq!(scalar_guard(&frame.call_value), selector);
+        assert_eq!(
+            scalar_guard(frame.address_operand.as_ref().unwrap()),
+            selector
+        );
+        assert_eq!(
+            scalar_guard(frame.caller_operand.as_ref().unwrap()),
+            selector
+        );
         for bytes in [&frame.memory, &frame.calldata, &frame.returndata] {
             assert_eq!(bytes_guard(bytes), selector);
         }

@@ -1,9 +1,9 @@
 //! Canonical numerical bounds, finite stack aliases and independent instances.
 
 use super::{
-    AbstractValue, ByteArray, CallStack, ChildFrame, Continuation, Domain, Entry, FrameCode,
-    FrameState, FrameSummary, MachineError, MachinePayload, NumericValue, PayloadSummary,
-    RelationState, RootFrame, Snapshot, identify, stack_alias::StackAliases,
+    AbstractValue, ByteArray, CallStack, ChildFrame, Continuation, Domain, Entry, FrameByteKind,
+    FrameCode, FrameMapOrder, FrameSummary, MachineError, MachinePayload, NumericValue,
+    PayloadSummary, RelationState, RootFrame, Snapshot, identify, stack_alias::StackAliases,
 };
 
 fn scalar(value: &AbstractValue) -> AbstractValue {
@@ -44,25 +44,14 @@ impl PayloadSummary {
         let frames = self.frames.iter().fold(
             store_work.saturating_add(observation_work),
             |work, frame| {
-                let program = frame.program.as_ref().map_or(0, |program| {
-                    program
-                        .blocks()
-                        .iter()
-                        .fold(program.byte_len(), |work, block| {
-                            work.saturating_add(block.instructions.len())
-                        })
-                });
-                frame.stack.iter().fold(
-                    work.saturating_add(frame.memory.work_size())
-                        .saturating_add(frame.calldata.work_size())
-                        .saturating_add(frame.returndata.work_size())
+                frame.values().fold(
+                    frame
+                        .byte_arrays()
+                        .into_iter()
+                        .fold(work, |work, bytes| work.saturating_add(bytes.work_size()))
                         .saturating_add(frame.saved_store.work_size())
-                        .saturating_add(frame.call_value.work_size().saturating_mul(2))
-                        .saturating_add(frame.address_operand.work_size().saturating_mul(2))
-                        .saturating_add(frame.caller_operand.work_size().saturating_mul(2))
-                        .saturating_add(frame.key.jump_history.len())
                         .saturating_add(frame.stack_aliases.work_size())
-                        .saturating_add(program)
+                        .saturating_add(frame.metadata_work())
                         .saturating_add(4),
                     |work, value| work.saturating_add(value.work_size().saturating_mul(2)),
                 )
@@ -102,67 +91,59 @@ pub(in crate::analysis) fn form(
     MachineError::check_cancelled()?;
     let storage_observations =
         super::storage_observations::StorageObservations::form(payload, domain)?;
-    let frames =
-        payload
-            .call_stack
-            .iter()
-            .map(|frame| {
-                let mut key = frame.key.clone();
-                let unknown = frame.code == FrameCode::Unknown;
-                key.jump_history = if unknown {
-                    Vec::new()
-                } else {
-                    super::context::canonical(&key.jump_history)?
-                };
-                let stack = if unknown {
-                    Vec::new()
-                } else {
-                    frame.stack.iter().map(scalar).collect()
-                };
-                let stack_aliases = StackAliases::form(
-                    if unknown { &[] } else { &frame.stack },
-                    domain.spec().relations().enabled,
-                )?;
-                key.stack_height = stack.len();
-                if unknown {
-                    key.basic_block_index = 0;
-                }
-                Ok(FrameSummary {
-                    key,
-                    code: frame.code,
-                    program: frame.program.clone(),
-                    stack,
-                    stack_aliases,
-                    memory: if unknown {
-                        ByteArray::memory().summary_projection(domain)?
+    let frames = payload
+        .call_stack
+        .iter()
+        .map(|frame| {
+            let unknown = frame.code == FrameCode::Unknown;
+            let history = if unknown {
+                Vec::new()
+            } else {
+                super::context::canonical(&frame.key.jump_history)?
+            };
+            let stack = if unknown {
+                Vec::new()
+            } else {
+                frame.stack.iter().map(scalar).collect()
+            };
+            let stack_aliases = StackAliases::form(
+                if unknown { &[] } else { &frame.stack },
+                domain.spec().relations().enabled,
+            )?;
+            let mut summary = frame.try_zip(
+                frame,
+                stack,
+                FrameMapOrder::BytesFirst,
+                |value, _| Ok(scalar(value)),
+                |value, _, implicit| {
+                    Ok(scalar(&value.clone().unwrap_or_else(|| {
+                        entry.environment.address_value(implicit)
+                    })))
+                },
+                |bytes, _, kind| {
+                    Ok(if unknown {
+                        match kind {
+                            FrameByteKind::Memory => ByteArray::memory(),
+                            _ => ByteArray::empty(),
+                        }
+                        .summary_projection(domain)?
                     } else {
-                        frame.memory.summary_projection(domain)?
-                    },
-                    calldata: if unknown {
-                        ByteArray::empty().summary_projection(domain)?
-                    } else {
-                        frame.calldata.summary_projection(domain)?
-                    },
-                    environment_calldata: frame.environment_calldata,
-                    returndata: if unknown {
-                        ByteArray::empty().summary_projection(domain)?
-                    } else {
-                        frame.returndata.summary_projection(domain)?
-                    },
-                    call_value: scalar(&frame.call_value),
-                    address_operand: scalar(&frame.address_operand.clone().unwrap_or_else(|| {
-                        entry.environment.address_value(frame.key.address_value)
-                    })),
-                    caller_operand: scalar(
-                        &frame
-                            .caller_operand
-                            .clone()
-                            .unwrap_or_else(|| entry.environment.address_value(frame.key.caller)),
-                    ),
-                    saved_store: frame.saved_store.state().summary_projection(domain)?,
-                })
+                        bytes.summary_projection(domain)?
+                    })
+                },
+                |saved, _| Ok(saved.state().summary_projection(domain)?),
+            )?;
+            summary.key.jump_history = history;
+            summary.key.stack_height = summary.stack.len();
+            if unknown {
+                summary.key.basic_block_index = 0;
+            }
+            Ok(FrameSummary {
+                frame: summary,
+                stack_aliases,
             })
-            .collect::<Result<Vec<_>, MachineError>>()?;
+        })
+        .collect::<Result<Vec<_>, MachineError>>()?;
     let continuations = payload
         .call_stack
         .children()
@@ -197,35 +178,37 @@ pub(in crate::analysis) fn join(
     {
         return Err(MachineError::Shape);
     }
-    let mut out = old.clone();
-    out.store = old.store.join(&next.store, domain, widen);
-    out.storage_observations =
+    let store = old.store.join(&next.store, domain, widen);
+    let storage_observations =
         old.storage_observations
             .join(&next.storage_observations, domain, widen)?;
-    for ((output, left), right) in out.frames.iter_mut().zip(&old.frames).zip(&next.frames) {
-        if left.key != right.key
-            || left.code != right.code
-            || left.program != right.program
-            || left.stack.len() != right.stack.len()
-        {
+    let mut frames = Vec::with_capacity(old.frames.len());
+    for (left, right) in old.frames.iter().zip(&next.frames) {
+        if !left.same_shape(right) {
             return Err(MachineError::Shape);
         }
-        for ((output, left), right) in output.stack.iter_mut().zip(&left.stack).zip(&right.stack) {
-            *output = join_scalar(left, right, domain, widen);
-        }
-        output.stack_aliases = left.stack_aliases.intersect(&right.stack_aliases)?;
-        output.call_value = join_scalar(&left.call_value, &right.call_value, domain, widen);
-        output.address_operand =
-            join_scalar(&left.address_operand, &right.address_operand, domain, widen);
-        output.caller_operand =
-            join_scalar(&left.caller_operand, &right.caller_operand, domain, widen);
-        output.memory = left.memory.join(&right.memory, domain, widen);
-        output.calldata = left.calldata.join(&right.calldata, domain, widen);
-        output.returndata = left.returndata.join(&right.returndata, domain, widen);
-        output.saved_store = left.saved_store.join(&right.saved_store, domain, widen);
+        let stack = left
+            .stack
+            .iter()
+            .zip(&right.stack)
+            .map(|(left, right)| join_scalar(left, right, domain, widen))
+            .collect();
+        let stack_aliases = left.stack_aliases.intersect(&right.stack_aliases)?;
+        frames.push(FrameSummary {
+            frame: left.try_zip(
+                right,
+                stack,
+                FrameMapOrder::ScalarsFirst,
+                |left, right| Ok(join_scalar(left, right, domain, widen)),
+                |left, right, _| Ok(join_scalar(left, right, domain, widen)),
+                |left, right, _| Ok(left.join(right, domain, widen)),
+                |left, right| Ok(left.join(right, domain, widen)),
+            )?,
+            stack_aliases,
+        });
     }
-    for ((output, left), right) in out
-        .continuations
+    let mut continuations = old.continuations.clone();
+    for ((output, left), right) in continuations
         .iter_mut()
         .zip(&old.continuations)
         .zip(&next.continuations)
@@ -237,6 +220,14 @@ pub(in crate::analysis) fn join(
             join_scalar(&left.output_offset, &right.output_offset, domain, widen);
         output.output_size = join_scalar(&left.output_size, &right.output_size, domain, widen);
     }
+    let mut out = PayloadSummary {
+        frames,
+        continuations,
+        store,
+        storage_observations,
+        work: 0,
+        location: old.location.clone(),
+    };
     // The erased histories must not remain a permanent replay cost. The new
     // whole bound itself supplies the conservative construction/traversal size.
     out.work = out.measure_work();
@@ -261,28 +252,16 @@ pub(in crate::analysis) fn instantiate(
         .frames
         .iter()
         .map(|frame| {
-            Ok(FrameState {
-                key: frame.key.clone(),
-                code: frame.code,
-                program: frame.program.clone(),
-                stack: frame
-                    .stack_aliases
-                    .instantiate(&frame.stack, domain.spec().relations().enabled)?,
-                memory: frame.memory.instantiate(domain)?,
-                calldata: frame.calldata.instantiate(domain)?,
-                environment_calldata: frame.environment_calldata,
-                returndata: frame.returndata.instantiate(domain)?,
-                call_value: identify(frame.call_value.clone(), domain.spec().relations().enabled),
-                address_operand: Some(identify(
-                    frame.address_operand.clone(),
-                    domain.spec().relations().enabled,
-                )),
-                caller_operand: Some(identify(
-                    frame.caller_operand.clone(),
-                    domain.spec().relations().enabled,
-                )),
-                saved_store: Snapshot::from_state(frame.saved_store.instantiate(domain)?),
-            })
+            let enabled = domain.spec().relations().enabled;
+            frame.try_zip(
+                frame,
+                frame.stack_aliases.instantiate(&frame.stack, enabled)?,
+                FrameMapOrder::BytesFirst,
+                |value, _| Ok(identify(value.clone(), enabled)),
+                |value, _, _| Ok(Some(identify(value.clone(), enabled))),
+                |bytes, _, _| Ok(bytes.instantiate(domain)?),
+                |saved, _| Ok(Snapshot::from_state(saved.instantiate(domain)?)),
+            )
         })
         .collect::<Result<Vec<_>, MachineError>>()?;
     let mut frames = frames.into_iter();

@@ -629,7 +629,7 @@ impl Solver<'_> {
                     .store
                     .clone()
             } else {
-                child.saved_store
+                child.frame.saved_store
             };
             // Changing the active frame and Store invalidates current-read templates.
             resumed.storage_observations = Default::default();
