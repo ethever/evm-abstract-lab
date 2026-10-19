@@ -1,6 +1,6 @@
 //! Joint known/unknown procedure worklist and per-caller return propagation.
 
-use super::coarse_retry::{CoarseRuntime, RuntimeRetry};
+use super::coarse_retry::{self, RuntimeRetry};
 use super::{
     AbstractValue, Arc, BTreeMap, BTreeSet, ByteArray, CallStack, DiagnosticKind, Execution,
     ExecutionFrontier, FrameCode, FrontierReason, Limit, MachineEdgeKind, MachineError,
@@ -300,7 +300,7 @@ impl Solver<'_> {
         error: MachineError,
     ) -> Option<Execution> {
         let retry = (matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
-            && CoarseRuntime::supports(original)
+            && coarse_retry::supports(original)
             && super::coarse_retry::retention_refusal(&error))
         .then(|| self.execute_coarse(id, original));
         if let Some(Ok(execution)) = &retry
@@ -333,7 +333,7 @@ impl Solver<'_> {
         mut first: Execution,
     ) -> Execution {
         if !matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
-            || !CoarseRuntime::supports(original)
+            || !coarse_retry::supports(original)
             || first.retention_failures.is_empty()
             // A mixed execution has independent mandatory obligations. This
             // slice admits only complete, raw-typed retention refusals.
@@ -365,7 +365,7 @@ impl Solver<'_> {
         let (coarse, bound, payload) = self
             .retry_admission()
             .and_then(|()| {
-                CoarseRuntime::prepare(original, self.domain, self.budget)
+                coarse_retry::prepare(original, self.domain, self.budget)
                     .map_err(MachineError::frontier_reason)
             })
             .and_then(|prepared| {

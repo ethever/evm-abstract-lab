@@ -1,11 +1,12 @@
 //! One persistent whole-entry retention promotion per real Runtime node.
 //!
-//! The bound lives in Node.payload. This adapter owns only its frozen layout;
-//! every later incoming join uses the same erased guarantees and coarse mode.
+//! The bound lives in Node.payload; BoundedState owns its persistent policy.
+//! This adapter admits retries and reconciles complete execution phases.
 
 use super::{
     Domain, Execution, FrameCode, FrontierReason, MachineError, MachinePayload, PayloadSummary,
-    WorkBudget, instantiate, join, loop_bound, stack_alias::StackAliases,
+    WorkBudget,
+    bounded::{BoundedState, reserve},
 };
 
 #[cfg(test)]
@@ -16,7 +17,7 @@ pub(super) enum RuntimeRetry {
     #[default]
     Fresh,
     Attempted,
-    Coarse(Box<CoarseRuntime>),
+    Coarse(Box<BoundedState>),
 }
 
 /// Use the same raw producer policy as post-execute retention receipts, before
@@ -71,96 +72,40 @@ pub(super) fn reconcile(mut first: Execution, mut retry: Execution) -> Execution
     }
 }
 
-pub(super) struct CoarseRuntime {
-    layout: PayloadSummary,
+pub(super) fn supports(original: &PayloadSummary) -> bool {
+    original.active().code == FrameCode::Runtime
+        && original.active().program.is_some()
+        && !original
+            .frames
+            .iter()
+            .any(|frame| frame.code == FrameCode::Unknown)
 }
 
-fn reserve(budget: &mut WorkBudget, work: usize) -> Result<(), MachineError> {
-    MachineError::check_cancelled()?;
-    if work == usize::MAX || !budget.charge(work) {
-        Err(MachineError::work_failure())
-    } else {
-        Ok(())
+pub(super) fn prepare(
+    original: &PayloadSummary,
+    domain: Domain,
+    budget: &mut WorkBudget,
+) -> Result<(Box<BoundedState>, PayloadSummary, MachinePayload), MachineError> {
+    if !supports(original) {
+        return Err(MachineError::Shape);
     }
-}
-
-fn erase_guarantees(mut input: PayloadSummary) -> Result<PayloadSummary, MachineError> {
-    input.storage_observations = Default::default();
-    for frame in &mut input.frames {
-        frame.stack_aliases = StackAliases::form(&frame.stack, false)?;
-    }
-    input.work = input.measure_work();
-    Ok(input)
-}
-
-impl CoarseRuntime {
-    pub(super) fn supports(original: &PayloadSummary) -> bool {
-        original.active().code == FrameCode::Runtime
-            && original.active().program.is_some()
-            && !original
-                .frames
-                .iter()
-                .any(|frame| frame.code == FrameCode::Unknown)
-    }
-
-    pub(super) fn prepare(
-        original: &PayloadSummary,
-        domain: Domain,
-        budget: &mut WorkBudget,
-    ) -> Result<(Box<Self>, PayloadSummary, MachinePayload), MachineError> {
-        if !Self::supports(original) {
-            return Err(MachineError::Shape);
-        }
-        // Pay for cloning, guarantee erasure, layout projection and the full
-        // coarse pass before construction. Layout coordinates come only from
-        // the original summary; two additional passes own its persistent copy
-        // and eventual release. No partial bound escapes refusal.
-        let preparation_work = original.work_size().saturating_mul(8);
-        let layout_lifetime_work = original.work_size().saturating_mul(2);
-        // One Box allocation and its eventual release are fixed actions;
-        // the layout passes already cover its variable field work.
-        let box_lifetime_work = 2;
-        reserve(
-            budget,
-            preparation_work
-                .saturating_add(layout_lifetime_work)
-                .saturating_add(box_lifetime_work),
-        )?;
-        let projected = erase_guarantees(original.clone())?;
-        let layout = loop_bound::restrict(&projected, &projected, domain);
-        let bound = loop_bound::coarse(&loop_bound::restrict(&projected, &layout, domain));
-        reserve(budget, bound.work_size().saturating_mul(4))?;
-        let payload = instantiate(&bound, domain)?;
-        MachineError::check_cancelled()?;
-        Ok((Box::new(Self { layout }), bound, payload))
-    }
-
-    pub(super) fn join(
-        &self,
-        old: &PayloadSummary,
-        incoming: &PayloadSummary,
-        domain: Domain,
-        budget: &mut WorkBudget,
-        widen: bool,
-    ) -> Result<PayloadSummary, MachineError> {
-        // The shared summary traversal bound covers both normalization passes,
-        // joins, fixed-coordinate projection and the resulting Eq traversal.
-        reserve(
-            budget,
-            self.layout
-                .work_size()
-                .saturating_add(old.work_size())
-                .saturating_add(incoming.work_size())
-                .saturating_mul(8),
-        )?;
-        let incoming = self.normalize(erase_guarantees(incoming.clone())?, domain);
-        let joined = join(old, &incoming, domain, widen)?;
-        let result = self.normalize(joined, domain);
-        MachineError::check_cancelled()?;
-        Ok(result)
-    }
-
-    fn normalize(&self, input: PayloadSummary, domain: Domain) -> PayloadSummary {
-        loop_bound::coarse(&loop_bound::restrict(&input, &self.layout, domain))
-    }
+    // Pay for cloning, guarantee erasure, layout projection and the full
+    // coarse pass before construction. Layout coordinates come only from
+    // the original summary; two additional passes own its persistent copy
+    // and eventual release. No partial bound escapes refusal.
+    let preparation_work = original.work_size().saturating_mul(8);
+    let layout_lifetime_work = original.work_size().saturating_mul(2);
+    // One Box allocation and its eventual release are fixed actions;
+    // the layout passes already cover its variable field work.
+    let box_lifetime_work = 2;
+    reserve(
+        budget,
+        preparation_work
+            .saturating_add(layout_lifetime_work)
+            .saturating_add(box_lifetime_work),
+    )?;
+    let representation = BoundedState::freeze(original, true, domain)?;
+    let (representation, bound, payload) =
+        representation.materialize(original.clone(), domain, budget)?;
+    Ok((Box::new(representation), bound, payload))
 }

@@ -31,6 +31,7 @@ use alloy_primitives::{Address, keccak256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod bounded;
 mod coarse_retry;
 mod context;
 mod cycles;

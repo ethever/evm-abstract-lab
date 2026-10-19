@@ -198,7 +198,7 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
     let retry = h.retry(first);
     assert!(retry.frontiers.is_empty());
     let layout = match &h.table.nodes[0].runtime_retry {
-        RuntimeRetry::Coarse(coarse) => coarse.layout.clone(),
+        RuntimeRetry::Coarse(coarse) => coarse.layout().clone(),
         _ => panic!("must have promoted"),
     };
     let shared = h
@@ -224,7 +224,7 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
         let RuntimeRetry::Coarse(coarse) = &node.runtime_retry else {
             panic!("mode reset on growth")
         };
-        assert!(semantic_eq(&layout, &coarse.layout));
+        assert!(semantic_eq(&layout, coarse.layout()));
         let roundtrip = form(
             &instantiate(&node.payload, h.config.domain().unwrap()).unwrap(),
             &h.entry,
@@ -324,7 +324,7 @@ fn reification_and_retry_interruptions_neither_refund_work_nor_install_partial_b
         let progress = first.instruction_progress.clone();
         let alternatives = first.outcomes.len();
         let mut quote = WorkBudget::new(h.config.max_work);
-        CoarseRuntime::prepare(&original, h.config.domain().unwrap(), &mut quote).unwrap();
+        prepare(&original, h.config.domain().unwrap(), &mut quote).unwrap();
         let allowance = quote.used() - usize::from(!finish_preparation);
         let remaining = h.config.max_work - h.budget.used();
         assert!(h.budget.charge(remaining - allowance));

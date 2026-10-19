@@ -1,6 +1,6 @@
 //! Source-only regressions; Root owns compilation and execution of these cases.
 
-use super::super::{Solver, Table, form, semantic_eq};
+use super::super::{Solver, Table, form, instantiate, semantic_eq};
 
 mod before_body;
 mod controls;
