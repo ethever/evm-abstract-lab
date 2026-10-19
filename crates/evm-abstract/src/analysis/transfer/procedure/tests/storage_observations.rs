@@ -9,7 +9,6 @@ use crate::{
     analysis::{MachinePayload, transfer},
     domain::{AbstractValue, Domain},
 };
-use alloy_primitives::U256;
 
 fn written_input() -> (
     crate::world::World,

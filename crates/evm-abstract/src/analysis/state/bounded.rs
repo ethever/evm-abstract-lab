@@ -105,7 +105,7 @@ impl BoundedState {
     }
 
     #[cfg(test)]
-    pub(super) fn layout(&self) -> &PayloadSummary {
+    pub(in crate::analysis) fn layout(&self) -> &PayloadSummary {
         &self.layout
     }
 

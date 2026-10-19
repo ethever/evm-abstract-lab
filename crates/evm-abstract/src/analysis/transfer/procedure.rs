@@ -8,7 +8,7 @@
 
 use super::{
     Execution, ExecutionFrontier, StorageReadPolicy, Successor, TransferContext, WorkBudget,
-    boundary_on, calls, execute_inner, relations, resume_summary_inner, zero,
+    boundary_on, calls, execute_inner, resume_summary_inner, zero,
 };
 use crate::{
     analysis::{
