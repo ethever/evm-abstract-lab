@@ -21,7 +21,7 @@
 //!
 //! 阅读时保持三条不变量：同一结构键的入口摘要只通过 join 扩大；已观察到的边
 //! 只增加；任何没有完成的展开都留下 frontier，不能冒充已完成的空结果。
-//! `queue` 保存 FIFO 调度记录，`queued` 才表示哪些节点当前仍需处理。
+//! `worklist` 统一保存 FIFO 调度记录与当前仍需处理的节点。
 //! 最终状态由是否存在 frontier 决定，仅队列排空不足以证明 `Converged`。
 
 use super::{
@@ -33,13 +33,14 @@ use super::{
     },
     summary::{Cache, Certificate, Prepared, Replay},
     transfer::{self, CompletedCall, Successor, WorkBudget},
+    worklist::{Worklist, transfer_stop},
 };
 use crate::{
     domain::{Domain, symbolic::ExprId},
     world::{Entry, World},
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
@@ -308,8 +309,7 @@ pub(super) fn run_reusing(
         counters,
         storage_reads,
         ids: BTreeMap::from([((key, None), 0)]),
-        queue: VecDeque::from([0]),
-        queued: BTreeSet::from([0]),
+        worklist: [0].into_iter().collect(),
         edges: BTreeSet::new(),
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new()],
@@ -359,10 +359,8 @@ struct Engine<'a> {
     /// resumed by a call. Intraprocedural successors use None again;
     /// neither recursion depth nor arbitrary stack values become new keys.
     ids: BTreeMap<(super::MachineKey, Option<bool>), usize>,
-    /// FIFO 调度记录；摘要回放可能满足已排队节点，因此这里允许残留失效项。
-    queue: VecDeque<usize>,
-    /// 当前仍需处理的节点集合，用于去重和判断 queue 项是否仍有效。
-    queued: BTreeSet<usize>,
+    /// 待处理义务及 FIFO 记录；摘要回放满足节点后可保留失效记录。
+    worklist: Worklist,
     /// 已观察到的转移边，按结构排序去重；重访节点时不会删除旧边。
     edges: BTreeSet<MachineEdge>,
     /// 按状态、PC 和种类去重的程序诊断，与未完成分析的 frontier 分开保存。
@@ -439,7 +437,7 @@ impl Engine<'_> {
 
     fn stop_queued(&mut self, reason: FrontierReason) {
         self.observe_terminal_boundary(&reason);
-        let pending: Vec<_> = self.queued.iter().copied().collect();
+        let pending: Vec<_> = self.worklist.pending().collect();
         for id in pending {
             self.frontier(
                 None,
@@ -451,17 +449,12 @@ impl Engine<'_> {
 
     /// 全局预算耗尽时，留下本轮节点和其余有效待处理节点的未完成证据。
     ///
-    /// `id` 已经从 queue 弹出并移除 queued 标记，必须单独纳入；否则结果会
-    /// 漏掉刚刚因预算停止的节点。过滤 queued 可排除摘要回放留下的失效队列项。
+    /// `id` 已经从 worklist 取出，必须单独纳入；否则结果会漏掉刚刚因预算
+    /// 停止的节点。in_order 排除摘要回放满足后留下的失效队列项。
     fn stop_pending(&mut self, id: usize, reason: FrontierReason) {
         self.observe_terminal_boundary(&reason);
         let pending: Vec<_> = std::iter::once(id)
-            .chain(
-                self.queue
-                    .iter()
-                    .copied()
-                    .filter(|id| self.queued.contains(id)),
-            )
+            .chain(self.worklist.in_order())
             .collect();
         for pending in pending {
             self.frontier(
@@ -476,24 +469,9 @@ impl Engine<'_> {
     /// A caller's immediate rejection and later return then meet before that
     /// caller executes. Same-depth nodes retain their existing FIFO order.
     fn next_pending(&mut self) -> Result<Option<usize>, MachineError> {
-        if self.queued.is_empty() {
-            return Ok(None);
-        }
-        let cost = self.queue.len().saturating_mul(2).saturating_add(1);
-        if cost == usize::MAX || !self.budget.charge(cost) {
-            return Err(MachineError::work_failure());
-        }
-        let mut choice = None;
-        let mut depth = 0;
-        for (position, id) in self.queue.iter().enumerate() {
-            MachineError::check_cancelled()?;
-            let candidate_depth = self.result.states[*id].entry.call_stack.depth();
-            if self.queued.contains(id) && candidate_depth > depth {
-                choice = Some(position);
-                depth = candidate_depth;
-            }
-        }
-        Ok(choice.and_then(|position| self.queue.remove(position)))
+        self.worklist.pop_deepest(self.budget, |id| {
+            self.result.states[id].entry.call_stack.depth()
+        })
     }
 
     /// 反复处理入口摘要有新信息的节点，并在结束时整理对外结果。
@@ -511,19 +489,11 @@ impl Engine<'_> {
                 }
             };
             self.counters.report(self.budget.used());
-            // 回放可能已经用证书满足这个节点，只移除了其 queued 标记。
-            // 物理队列里的旧编号仍可存在；没有标记时跳过，不重复执行已满足节点。
-            if !self.queued.remove(&id) {
-                continue;
-            }
-            if self.result.transfers >= self.result.config.analysis.max_transfers
-                || self.budget.exhausted()
-            {
-                let reason = if self.budget.exhausted() {
-                    MachineError::work_failure().frontier_reason()
-                } else {
-                    FrontierReason::Budget(Limit::Transfers)
-                };
+            if let Some(reason) = transfer_stop(
+                self.result.transfers,
+                self.result.config.analysis.max_transfers,
+                self.budget,
+            ) {
                 self.stop_pending(id, reason);
                 break;
             }
@@ -599,7 +569,7 @@ impl Engine<'_> {
                 cache.publish_closed(
                     &mut self.result,
                     &self.edges,
-                    &self.queued,
+                    &self.worklist,
                     &self.diagnostics,
                     &self.completed_calls,
                     self.budget,
@@ -837,25 +807,8 @@ impl Engine<'_> {
                 }
             };
             if let Some(joined) = joined {
-                if self.alternatives[existing].has_loop_bound()
-                    && let Some(reuse) = &mut self.reuse
-                {
-                    reuse
-                        .dependencies
-                        .add(existing, super::layers::FactDependency::AllInitialState);
-                }
-                if !self.alternatives[existing].has_loop_bound() {
-                    let mut previous = self.result.states[existing].entry.fresh_leaves();
-                    previous.extend(successor.payload.fresh_leaves());
-                    self.selectors
-                        .extend(joined.fresh_leaves().difference(&previous).cloned());
-                }
-                self.alternatives[existing].retain(successor.payload);
-                self.result.states[existing].entry = joined;
-                self.result.states[existing].invalidate_execution();
-                if self.queued.insert(existing) {
-                    self.queue.push_back(existing);
-                }
+                self.install_join(existing, successor.payload, joined);
+                self.worklist.enqueue(existing);
             }
             existing
         } else {
@@ -892,8 +845,7 @@ impl Engine<'_> {
             self.counters.states += 1;
             self.completed_calls.push(Vec::new());
             self.alternatives.push(alternatives);
-            self.queue.push_back(id);
-            self.queued.insert(id);
+            self.worklist.enqueue(id);
             id
         };
         // 即使入口没有变，也观察到了一条有效转移；不能因“不重访”而漏掉这条边。
@@ -904,6 +856,28 @@ impl Engine<'_> {
         });
         self.record_successor(from, to, successor.kind);
         Some(to)
+    }
+
+    /// Ordinary propagation and replay install the same changed input and
+    /// invalidate its old execution. Replay separately decides whether its
+    /// certificate satisfies the new obligation or execution must be scheduled.
+    fn install_join(&mut self, id: usize, incoming: MachinePayload, joined: MachinePayload) {
+        if self.alternatives[id].has_loop_bound()
+            && let Some(reuse) = &mut self.reuse
+        {
+            reuse
+                .dependencies
+                .add(id, super::layers::FactDependency::AllInitialState);
+        }
+        if !self.alternatives[id].has_loop_bound() {
+            let mut previous = self.result.states[id].entry.fresh_leaves();
+            previous.extend(incoming.fresh_leaves());
+            self.selectors
+                .extend(joined.fresh_leaves().difference(&previous).cloned());
+        }
+        self.alternatives[id].retain(incoming);
+        self.result.states[id].entry = joined;
+        self.result.states[id].invalidate_execution();
     }
 
     fn call_resume_status(&self, from: usize, successor: &Successor) -> Option<bool> {
@@ -1002,8 +976,7 @@ impl Engine<'_> {
             .work_size()
             .saturating_add(self.result.entry.environment.work_size())
             .saturating_add(self.ids.len())
-            .saturating_add(self.queue.len())
-            .saturating_add(self.queued.len())
+            .saturating_add(self.worklist.work_size())
             .saturating_add(self.edges.len())
             .saturating_add(self.diagnostics.len())
             .saturating_add(self.result.edges.len())
@@ -1154,8 +1127,7 @@ impl Engine<'_> {
             alternatives: self.alternatives.clone(),
             selectors: self.selectors.clone(),
             ids: self.ids.clone(),
-            queue: self.queue.clone(),
-            queued: self.queued.clone(),
+            worklist: self.worklist.clone(),
             edges: self.edges.clone(),
             diagnostics: self.diagnostics.clone(),
             completed_calls: self.completed_calls.clone(),
@@ -1196,8 +1168,7 @@ impl Engine<'_> {
         }
         self.selectors = staged.selectors;
         self.ids = staged.ids;
-        self.queue = staged.queue;
-        self.queued = staged.queued;
+        self.worklist = staged.worklist;
         self.edges = staged.edges;
         self.diagnostics = staged.diagnostics;
         self.completed_calls = staged.completed_calls;
@@ -1236,25 +1207,10 @@ impl Engine<'_> {
                     .and_then(|entry| Ok(entry == node.entry.content_form()?))
                     .map_err(MachineError::frontier_reason)?;
                 if let Some(joined) = joined {
-                    if self.alternatives[existing].has_loop_bound()
-                        && let Some(reuse) = &mut self.reuse
-                    {
-                        reuse
-                            .dependencies
-                            .add(existing, super::layers::FactDependency::AllInitialState);
-                    }
-                    if !self.alternatives[existing].has_loop_bound() {
-                        let mut previous = self.result.states[existing].entry.fresh_leaves();
-                        previous.extend(node.entry.fresh_leaves());
-                        self.selectors
-                            .extend(joined.fresh_leaves().difference(&previous).cloned());
-                    }
-                    self.alternatives[existing].retain(node.entry.clone());
-                    self.result.states[existing].entry = joined;
-                    self.result.states[existing].invalidate_execution();
+                    self.install_join(existing, node.entry.clone(), joined);
                 }
                 if compatible {
-                    self.queued.remove(&existing);
+                    self.worklist.satisfy(existing);
                     self.result.states[existing].exit = Some(node.exit);
                     self.result.states[existing].exit_stack = node.exit_stack;
                     self.result.states[existing].executed_pcs = node.executed_pcs;
@@ -1263,8 +1219,8 @@ impl Engine<'_> {
                         node.instruction_values,
                     ));
                     self.completed_calls[existing] = node.completed_calls;
-                } else if self.queued.insert(existing) {
-                    self.queue.push_back(existing);
+                } else {
+                    self.worklist.enqueue(existing);
                 }
                 existing
             } else {

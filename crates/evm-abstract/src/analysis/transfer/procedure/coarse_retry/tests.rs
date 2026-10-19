@@ -202,7 +202,7 @@ fn real_worklist_counts_both_attempts_and_only_actually_covered_blocks() {
             .outputs
             .contains_key(&OutcomeKind::Return)
     );
-    assert!(h.table.queue.is_empty() && h.table.queued.is_empty());
+    assert_eq!(h.table.worklist.work_size(), 0);
     assert_eq!(
         h.table
             .nodes

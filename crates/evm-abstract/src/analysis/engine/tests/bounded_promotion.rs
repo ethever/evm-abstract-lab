@@ -102,8 +102,7 @@ fn successor_promotes_invalidates_reexecutes_and_keeps_canonical_roots_bounded()
     };
     let mut engine = engine(result, target, &mut budget, &mut counters);
     engine.reuse = Some(&mut reuse);
-    engine.queue.clear();
-    engine.queued.clear();
+    engine.worklist = Worklist::default();
     let kind = MachineEdgeKind::Intraprocedural(EdgeKind::Jump);
     assert_eq!(
         engine.successor(
@@ -145,8 +144,15 @@ fn successor_promotes_invalidates_reexecutes_and_keeps_canonical_roots_bounded()
             .unwrap()
             .is_current()
     );
-    assert!(engine.queued.contains(&target));
-    assert_eq!(engine.queue.iter().filter(|id| **id == target).count(), 1);
+    assert!(engine.worklist.contains(&target));
+    assert_eq!(
+        engine
+            .worklist
+            .in_order()
+            .filter(|id| *id == target)
+            .count(),
+        1
+    );
     let roots = engine.result.states[target].entry.fresh_leaves();
     let work = engine.result.states[target].entry.work_size();
     engine.run();
@@ -172,7 +178,7 @@ fn successor_promotes_invalidates_reexecutes_and_keeps_canonical_roots_bounded()
         );
         assert_eq!(engine.result.states[target].entry.fresh_leaves(), roots);
         assert_eq!(engine.result.states[target].entry.work_size(), work);
-        assert!(!engine.queued.contains(&target));
+        assert!(!engine.worklist.contains(&target));
     }
     assert_eq!(engine.result.states.len(), 2);
 }
@@ -188,8 +194,7 @@ fn replay_keeps_same_key_resume_partitions_and_reexecutes_incompatible_certifica
     };
     let mut engine = engine(result, target, &mut budget, &mut counters);
     engine.reuse = Some(&mut reuse);
-    engine.queue.clear();
-    engine.queued.clear();
+    engine.worklist = Worklist::default();
     let failed = with_word(&first, 9, engine.domain);
     let certificate = certificate(vec![
         node(first.clone(), Some(true), 71),
@@ -232,9 +237,9 @@ fn replay_keeps_same_key_resume_partitions_and_reexecutes_incompatible_certifica
             .unwrap()
             .is_current()
     );
-    assert!(engine.queued.contains(&success));
-    assert!(!engine.queued.contains(&failure));
-    assert!(!engine.queued.contains(&target));
+    assert!(engine.worklist.contains(&success));
+    assert!(!engine.worklist.contains(&failure));
+    assert!(!engine.worklist.contains(&target));
     engine.run();
     assert_eq!(engine.result.status(), Status::Converged);
     assert!(engine.result.frontiers.is_empty());
@@ -255,7 +260,7 @@ fn successor_work_refusal_keeps_old_entry_proof_and_full_incoming_frontier() {
         let mut budget = WorkBudget::new(0);
         let mut counters = Counters::default();
         let mut engine = engine(result, target, &mut budget, &mut counters);
-        let queue = engine.queue.clone();
+        let worklist = engine.worklist.clone();
         let before = engine.alternatives[target].work_size();
         assert!(
             engine
@@ -272,7 +277,7 @@ fn successor_work_refusal_keeps_old_entry_proof_and_full_incoming_frontier() {
         assert_eq!(engine.result.states[target].entry, first);
         assert_eq!(engine.alternatives[target].work_size(), before);
         assert!(!engine.alternatives[target].has_loop_bound());
-        assert_eq!(engine.queue, queue);
+        assert_eq!(engine.worklist, worklist);
         assert!(engine.edges.is_empty());
         let frontier = engine.result.frontiers.last().unwrap();
         assert_eq!(frontier.reason, reason);
@@ -318,7 +323,7 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
         engine.alternatives[child] = super::super::EntryAlternatives::new(&first);
         engine.alternatives[child].retain(second);
         let before_work = engine.alternatives[child].work_size();
-        let queue = engine.queue.clone();
+        let worklist = engine.worklist.clone();
         let count = engine.result.states.len();
         if reject_after_promotion {
             assert_eq!(
@@ -331,7 +336,7 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
             assert_eq!(engine.alternatives[child].work_size(), before_work);
             assert!(!engine.alternatives[child].has_loop_bound());
             assert!(!has_initial_dependency(&engine, child));
-            assert_eq!(engine.queue, queue);
+            assert_eq!(engine.worklist, worklist);
             assert_eq!(engine.result.summary_stats.imported_states, 0);
             assert_eq!(
                 engine.result.frontiers.last().unwrap().payload.as_deref(),
@@ -341,7 +346,7 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
             engine.replay(child, &certificate).unwrap();
             assert!(engine.alternatives[child].has_loop_bound());
             assert!(has_initial_dependency(&engine, child));
-            assert!(engine.queued.contains(&child));
+            assert!(engine.worklist.contains(&child));
             assert_ne!(engine.result.states[child].executed_pcs, vec![usize::MAX]);
             assert!(
                 !engine.result.states[child]
@@ -358,4 +363,65 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
         assert_eq!(engine.result.states.len(), count);
         assert!(engine.budget.used() > 0);
     }
+}
+
+#[test]
+fn replay_satisfaction_then_growth_keeps_fifo_position_cost_and_stop_coverage() {
+    let (result, target, [first, second, _]) = fixture();
+    let mut budget = WorkBudget::new(100_000_000);
+    let mut counters = Counters::default();
+    let mut engine = engine(result, target, &mut budget, &mut counters);
+    engine.worklist = [target, 0].into_iter().collect();
+    let certificate = certificate(vec![node(first, None, 73)]);
+    let prepared = Prepared {
+        nodes: certificate.nodes.clone(),
+        terminals: Vec::new(),
+        renaming: BTreeMap::new(),
+    };
+    engine.install_replay(&certificate, prepared).unwrap();
+    assert!(!engine.worklist.contains(&target));
+    assert_eq!(engine.worklist.work_size(), 3);
+    assert_eq!(
+        engine.successor(
+            0,
+            Successor {
+                payload: second,
+                kind: MachineEdgeKind::Intraprocedural(EdgeKind::Jump),
+            },
+            FrontierReason::Work,
+        ),
+        Some(target),
+    );
+    assert!(
+        !engine.result.states[target]
+            .execution_evidence()
+            .unwrap()
+            .is_current()
+    );
+    // Reactivation makes the older record eligible again. Neither compacting
+    // it nor moving it behind state 0 preserves the established schedule/fee.
+    assert_eq!(engine.worklist.work_size(), 5);
+    let used = engine.budget.used();
+    assert_eq!(engine.next_pending().unwrap(), Some(target));
+    assert_eq!(engine.budget.used() - used, 7);
+    let reason = FrontierReason::Budget(crate::analysis::Limit::Transfers);
+    engine.stop_pending(target, reason.clone());
+    assert_eq!(engine.result.frontiers.len(), 2);
+    assert_eq!(
+        engine
+            .result
+            .frontiers
+            .iter()
+            .map(|frontier| {
+                assert_eq!(frontier.reason, reason);
+                assert_eq!(frontier.from, None);
+                frontier.target.clone().unwrap()
+            })
+            .collect::<Vec<_>>(),
+        [target, 0].map(|id| engine.result.states[id].key.clone()),
+    );
+    assert_eq!(engine.next_pending().unwrap(), Some(0));
+    let used = engine.budget.used();
+    assert_eq!(engine.next_pending().unwrap(), None);
+    assert_eq!(engine.budget.used(), used);
 }

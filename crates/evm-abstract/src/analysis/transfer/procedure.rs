@@ -19,6 +19,7 @@ use crate::{
         machine::{
             ProcedureSummary, ProcedureSummaryKind, ProcedureSummaryOutput, ProcedureSummaryRecord,
         },
+        worklist::{Worklist, transfer_stop},
     },
     domain::{AbstractValue, Domain, NumericValue, relational::RelationState},
     world::{
@@ -27,7 +28,7 @@ use crate::{
     },
 };
 use alloy_primitives::{Address, keccak256};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod coarse_retry;
@@ -156,8 +157,7 @@ pub(in crate::analysis) struct Table {
     nodes: Vec<Node>,
     subscribers: Vec<Subscriber>,
     subscribers_by_key: BTreeMap<(usize, usize), usize>,
-    queue: VecDeque<usize>,
-    queued: BTreeSet<usize>,
+    worklist: Worklist,
     frontiers: Vec<ExecutionFrontier>,
     /// Query precision losses in this relation, reported at the outer summary
     /// site instead of assigning callback PCs to an invented Unknown opcode.
@@ -236,7 +236,7 @@ impl Table {
         if kind == ProcedureSummaryKind::KnownRecursion
             && let Some(root) = root
             && solver.table.procedures[root].outputs.is_empty()
-            && solver.table.queue.is_empty()
+            && solver.table.worklist.is_empty()
             && solver.table.frontiers.is_empty()
         {
             // Folding physical depth cannot certify empty finite behavior.
@@ -403,9 +403,7 @@ impl Table {
                 Vec::new()
             }
         };
-        let closed = solver.table.queue.is_empty()
-            && solver.table.queued.is_empty()
-            && result.frontiers.is_empty();
+        let closed = solver.table.worklist.is_empty() && result.frontiers.is_empty();
         let record = ProcedureSummaryRecord {
             source_state,
             kind,

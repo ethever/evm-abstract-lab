@@ -4,8 +4,10 @@ use super::*;
 use crate::analysis::machine::fixtures::{address, fixture, word};
 use crate::world::{AbstractLog, LogKey};
 use alloy_primitives::U256;
+use std::collections::VecDeque;
 
 mod relation_boundary_probe;
+mod worklist;
 
 #[test]
 fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory() {

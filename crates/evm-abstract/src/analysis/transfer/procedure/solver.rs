@@ -6,6 +6,7 @@ use super::{
     ExecutionFrontier, FrameCode, FrontierReason, Limit, MachineEdgeKind, MachineError,
     MachinePayload, Node, OutcomeKind, Output, PayloadSummary, Procedure, RootFrame, Solver, Store,
     Subscriber, execute_inner, form, instantiate, join, resume_summary_inner, semantic_eq,
+    transfer_stop,
 };
 
 impl Solver<'_> {
@@ -82,7 +83,7 @@ impl Solver<'_> {
     }
 
     pub(super) fn park_pending(&mut self, reason: FrontierReason) {
-        let pending = self.table.queued.iter().copied().collect::<Vec<_>>();
+        let pending = self.table.worklist.pending().collect::<Vec<_>>();
         for pending in pending {
             self.frontier_summary(self.table.nodes[pending].payload.clone(), reason.clone(), 0);
         }
@@ -219,25 +220,17 @@ impl Solver<'_> {
             }
             id
         };
-        if self.table.queued.insert(id) {
-            self.table.queue.push_back(id);
-        }
+        self.table.worklist.enqueue(id);
         Ok(id)
     }
 
     pub(super) fn run(&mut self) {
-        while let Some(id) = self.table.queue.pop_front() {
-            if !self.table.queued.remove(&id) {
-                continue;
-            }
-            if self.counters.transfers >= self.config.analysis.max_transfers
-                || self.budget.exhausted()
-            {
-                let reason = if self.budget.exhausted() {
-                    MachineError::work_failure().frontier_reason()
-                } else {
-                    FrontierReason::Budget(Limit::Transfers)
-                };
+        while let Some(id) = self.table.worklist.pop_front() {
+            if let Some(reason) = transfer_stop(
+                self.counters.transfers,
+                self.config.analysis.max_transfers,
+                self.budget,
+            ) {
                 self.frontier_summary(self.table.nodes[id].payload.clone(), reason.clone(), 0);
                 self.park_pending(reason);
                 break;
