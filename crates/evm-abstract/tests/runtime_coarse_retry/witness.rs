@@ -6,7 +6,7 @@ use super::support::{B, BALANCE, U, address, word};
 use alloy_primitives::U256;
 use evm_abstract::{
     domain::{
-        Domain, NumericValue,
+        Domain, WordObservation,
         symbolic::{ByteStateKind, ExprId, ExprKind, SlotStateId, SlotStateKind, SourceId},
     },
     world::{ByteArray, Store},
@@ -20,7 +20,7 @@ pub(super) struct Assignment {
 }
 
 impl Assignment {
-    fn choose(numeric: &NumericValue) -> U256 {
+    fn choose(numeric: &WordObservation) -> U256 {
         let value = numeric
             .finite_constants()
             .as_values()
