@@ -3,7 +3,6 @@ use crate::analysis::MachinePayload;
 use crate::analysis::transfer::Execution;
 use crate::domain::ValueAlgebra;
 use crate::world::ByteArray;
-use crate::world::Store;
 use crate::{
     Fork,
     analysis::{
@@ -69,7 +68,8 @@ fn relative_failure_restores_effects_without_finalizing_and_normal_execution_con
             &entry,
             input.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
             true,
@@ -115,7 +115,8 @@ fn precompile_root_has_a_post_touch_failure_before_native_dispatch() {
         &entry,
         input,
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut WorkBudget::new(config.max_work),
         StorageReadPolicy::Abstract,
         false,
@@ -159,7 +160,8 @@ fn metered_inspection_refusal_and_sticky_exhaustion_leave_input_unchanged() {
             &entry,
             input.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
             false,
@@ -187,7 +189,8 @@ fn checked_completion_refusal_cannot_install_the_extra_failure() {
         &entry,
         input.clone(),
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
         false,
@@ -209,7 +212,8 @@ fn cancellation_stays_typed_and_never_becomes_an_evm_failure() {
             &entry,
             input.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
             false,

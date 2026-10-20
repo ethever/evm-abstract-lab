@@ -5,7 +5,6 @@ use crate::analysis::transfer::Execution;
 use crate::domain::AbstractValue;
 use crate::domain::ValueAlgebra;
 use crate::world::ByteArray;
-use crate::world::Store;
 
 use super::*;
 use crate::{
@@ -108,7 +107,12 @@ pub(in crate::analysis::transfer::precompile) fn admission_receipts(
     assert!(reserve(&mut budget, completion.total()).is_some());
     let construction_ready = budget.used();
     let data = [
-        success_data(&payload.active().calldata, id, config.domain().unwrap()).unwrap(),
+        success_data(
+            &payload.active().calldata,
+            id,
+            ValueAlgebra::new(&config.domain().unwrap()),
+        )
+        .unwrap(),
         ByteArray::unknown_checked().unwrap(),
         ByteArray::empty(),
     ];
@@ -466,8 +470,12 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
         .calldata
         .check_existing(domain.spec().relations().expressions())
         .unwrap();
-    let error =
-        success_data(&payload.active().calldata, &PrecompileId::Bn254Add, domain).unwrap_err();
+    let error = success_data(
+        &payload.active().calldata,
+        &PrecompileId::Bn254Add,
+        ValueAlgebra::new(&domain),
+    )
+    .unwrap_err();
     let reason = super::super::super::errors::bytes(error);
     assert_eq!(
         reason,
@@ -497,10 +505,14 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
     let payload = native_input_payload(4, ByteArray::empty(), &config);
     limited.analysis.relations.max_nodes = 1;
     let domain = limited.domain().unwrap();
-    success_data(&payload.active().calldata, &PrecompileId::Identity, domain)
-        .unwrap()
-        .check_existing(domain.spec().relations().expressions())
-        .unwrap();
+    success_data(
+        &payload.active().calldata,
+        &PrecompileId::Identity,
+        ValueAlgebra::new(&domain),
+    )
+    .unwrap()
+    .check_existing(domain.spec().relations().expressions())
+    .unwrap();
     assert!(
         ByteArray::unknown()
             .check_existing(domain.spec().relations().expressions())

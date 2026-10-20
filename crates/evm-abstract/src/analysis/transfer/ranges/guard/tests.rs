@@ -1,7 +1,6 @@
 use super::{
-    AbstractValue, Builder, CONSTANT_WORK_SIZE, Domain, GuardRetention, QUOTE_WORK, RangeKind,
-    TransferContext, build, copy_work, literal_memory_singleton_work, logical, output_release_work,
-    release_work,
+    Builder, CONSTANT_WORK_SIZE, GuardRetention, QUOTE_WORK, RangeKind, TransferContext, build,
+    copy_work, literal_memory_singleton_work, logical, output_release_work, release_work,
 };
 use crate::domain::ValueAlgebra;
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
         transfer::{RetentionCause, boundary, empty_execution, initial},
     },
     domain::{
-        Profile, Reduction,
+        AbstractValue, Domain, Profile, Reduction,
         identity::Symbol,
         provenance::Origin,
         relational::QueryReason,
@@ -123,7 +122,7 @@ fn all_eight_paid_operations_preserve_the_original_values_in_both_profiles() {
                 );
                 let mut budget = WorkBudget::new(usize::MAX);
                 let mut builder = Builder {
-                    domain,
+                    domain: ValueAlgebra::new(&domain),
                     budget: &mut budget,
                     retention: GuardRetention::new(&offset, &size),
                 };
@@ -213,7 +212,7 @@ fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
     );
     assert_eq!(domain.operation_work(&[left.clone(), right.clone()]), 1);
     let mut builder = Builder {
-        domain,
+        domain: ValueAlgebra::new(&domain),
         budget: &mut budget,
         retention: GuardRetention::new(&left, &right),
     };

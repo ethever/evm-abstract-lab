@@ -1,5 +1,4 @@
 use super::{byte_work, operation_work};
-use crate::analysis::transfer::Execution;
 use crate::domain::ValueAlgebra;
 use crate::{
     Fork,
@@ -106,7 +105,7 @@ fn selected_fee_precedes_touch_and_noneligible_quotes_are_exactly_original() {
                 .work_size()
                 .saturating_add(frame.calldata.work_size())
                 .saturating_add(frame.returndata.work_size()),
-            selected,
+            ValueAlgebra::new(&selected),
         )
         .saturating_add(
             32usize.saturating_mul(selected.operation_work(&[constant(0), value.clone()])),

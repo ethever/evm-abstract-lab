@@ -6,7 +6,6 @@ use crate::domain::AbstractValue;
 use crate::domain::Domain;
 use crate::domain::ValueAlgebra;
 use crate::world::ByteArray;
-use crate::world::Store;
 
 use super::*;
 use crate::{
@@ -374,7 +373,7 @@ fn signature_success_buffers_cover_empty_and_word_and_report_typed_limits() {
     let config = config();
     let input = ByteArray::unknown();
     for id in [PrecompileId::EcRec, PrecompileId::P256Verify] {
-        let data = success_data(&input, &id, config.domain().unwrap()).unwrap();
+        let data = success_data(&input, &id, ValueAlgebra::new(&config.domain().unwrap())).unwrap();
         assert!(data.len().contains(U256::ZERO));
         assert!(data.len().contains(U256::from(32)));
         assert_contains(&data, &[], config.domain().unwrap());

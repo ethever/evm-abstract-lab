@@ -461,7 +461,7 @@ fn root_may_delete_retention_refusal_emits_a_typed_frontier_without_an_outcome()
     let mut budget = WorkBudget::new(config.max_work);
     let transfer_algebra = ValueAlgebra::new(Domain::default());
     let mut transfer = context(&config, &mut budget, transfer_algebra.borrowed());
-    transfer.domain = domain;
+    transfer.domain = ValueAlgebra::new(&domain);
     transfer.procedure = false;
     finish(
         &mut result,
@@ -783,7 +783,7 @@ fn zero_size_literal_does_not_bypass_an_invalid_root_in_failure_completion() {
     let mut budget = WorkBudget::new(config.max_work);
     let transfer_algebra = ValueAlgebra::new(Domain::default());
     let mut transfer = context(&config, &mut budget, transfer_algebra.borrowed());
-    transfer.domain = domain;
+    transfer.domain = ValueAlgebra::new(&domain);
     transfer.procedure = false;
     assert!(!super::super::memory(
         &mut result,

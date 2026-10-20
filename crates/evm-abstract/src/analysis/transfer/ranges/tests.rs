@@ -308,7 +308,7 @@ mod literal_memory {
             transfer::{Execution, TransferContext, WorkBudget},
         },
         domain::{
-            AbstractValue, Domain, DomainSpec, Profile, ReductionStatus,
+            AbstractValue, Domain, DomainSpec, Profile, ReductionStatus, ValueAlgebra,
             facts::{UnaryPredicate, WordBounds},
             relational::{Constraint, QueryReason},
             symbolic::ExprId,
