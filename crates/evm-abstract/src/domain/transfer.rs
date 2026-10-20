@@ -70,7 +70,14 @@ pub(super) fn apply(
         nonzero: false,
     };
     let mut reduced = reduce(value);
-    if !relation_available {
+    if !relation_available
+        && !matches!(
+            reduced.status,
+            super::ReductionStatus::WorkLimit
+                | super::ReductionStatus::Cancelled
+                | super::ReductionStatus::KernelFailure
+        )
+    {
         reduced.status = super::ReductionStatus::FactLimit;
     }
     reduced

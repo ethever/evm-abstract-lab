@@ -1404,6 +1404,9 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                             crate::domain::ReductionStatus::RoundLimit
                                 | crate::domain::ReductionStatus::FactLimit
                                 | crate::domain::ReductionStatus::SymbolicLimit
+                                | crate::domain::ReductionStatus::WorkLimit
+                                | crate::domain::ReductionStatus::Cancelled
+                                | crate::domain::ReductionStatus::KernelFailure
                         ) {
                             result
                                 .diagnostics

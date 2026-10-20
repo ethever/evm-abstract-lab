@@ -600,7 +600,13 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         if work == usize::MAX || !budget.charge(work) {
             return Err(WorkExhausted);
         }
-        Ok(self.apply_detailed(op, args))
+        let cancellation = budget.cancellation();
+        let result =
+            analysis_control::with_cancellation(&cancellation, || self.apply_detailed(op, args));
+        if !budget.charge(0) {
+            return Err(WorkExhausted);
+        }
+        Ok(result)
     }
     /// Numeric address truncation does not assert account presence.
     pub fn address_projection(&self, value: &EvmValue<D::Element>) -> EvmValue<D::Element> {

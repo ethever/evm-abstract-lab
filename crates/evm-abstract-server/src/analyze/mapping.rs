@@ -144,6 +144,9 @@ pub(super) fn reduction(
         N::Empty => P::Empty,
         N::OriginConflict => P::OriginConflict,
         N::SymbolicLimit => P::SymbolicLimit,
+        N::WorkLimit => P::WorkLimit,
+        N::Cancelled => P::Cancelled,
+        N::KernelFailure => P::KernelFailure,
     })
 }
 pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol::FrontierDetails {

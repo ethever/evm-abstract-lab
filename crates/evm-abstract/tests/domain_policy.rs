@@ -253,18 +253,27 @@ fn successive_fact_rounds_materialize_a_real_cross_domain_chain() {
 }
 
 #[test]
-fn fact_capacity_stops_feedback_even_with_an_unbounded_round_setting() {
+fn fact_capacity_and_unquotable_work_stop_feedback_at_distinct_boundaries() {
     let value =
         Domain::default().apply(opcode::BYTE, &[AbstractValue::top(), AbstractValue::top()]);
-    let tiny = domain(Profile::Product, 1, usize::MAX, 1);
-    for _ in 0..16 {
-        let stopped = tiny.reduce(&value);
-        assert_eq!(stopped.status, ReductionStatus::FactLimit);
-        assert_eq!(stopped.rounds, 0);
-        assert_eq!(stopped.value, value);
-        assert!(stopped.value.contains(U256::ZERO));
-        assert!(stopped.value.contains(U256::from(255)));
-        assert!(!stopped.value.contains(U256::from(256)));
+    for (rounds, status) in [
+        (1, ReductionStatus::FactLimit),
+        (8, ReductionStatus::FactLimit),
+        (64_000, ReductionStatus::FactLimit),
+        // A step-count overflow cannot be quoted or paid. Refuse it before
+        // executing rules; it is distinct from the later fact-capacity stop.
+        (usize::MAX, ReductionStatus::WorkLimit),
+    ] {
+        let tiny = domain(Profile::Product, 1, rounds, 1);
+        for _ in 0..16 {
+            let stopped = tiny.reduce(&value);
+            assert_eq!(stopped.status, status);
+            assert_eq!(stopped.rounds, 0);
+            assert_eq!(stopped.value, value);
+            assert!(stopped.value.contains(U256::ZERO));
+            assert!(stopped.value.contains(U256::from(255)));
+            assert!(!stopped.value.contains(U256::from(256)));
+        }
     }
 }
 
