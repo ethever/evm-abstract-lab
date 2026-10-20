@@ -84,7 +84,17 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
             .numeric()
             .constrain(&bounds.observation())
             .map_or(0, |numeric| algebra.numeric_reduction_work(&numeric));
-        let fee = comparison + import + closure;
+        // Clearing an inherited symbolic limit is an independent query on the
+        // actual refined result; import/closure does not prepay that decision.
+        let singleton_work = if feasible {
+            let expected = domain
+                .reduce(&AbstractValue::unsigned_range(U256::from(3), U256::from(5)).unwrap());
+            domain.project(&expected.value).singleton_work()
+        } else {
+            0
+        };
+        let import_and_closure = comparison + import + closure;
+        let fee = import_and_closure + singleton_work;
         let mut budget = WorkBudget::new(fee);
         let mut value = before.clone();
         assert_eq!(
@@ -116,13 +126,13 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
         assert_eq!(budget.used(), fee);
         assert!(!budget.exhausted());
 
-        let mut budget = WorkBudget::new(fee - 1);
+        let mut budget = WorkBudget::new(import_and_closure - 1);
         let mut value = before.clone();
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
                 &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
-                ValueQuery::Bounds(Box::new(bounds)),
+                ValueQuery::Bounds(Box::new(bounds.clone())),
             ),
             Err(FrontierReason::Work)
         );
@@ -130,6 +140,22 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
         let paid_prefix = comparison + if feasible { import } else { 0 };
         assert_eq!(budget.used(), paid_prefix);
         assert!(budget.exhausted());
+
+        if feasible {
+            let mut budget = WorkBudget::new(fee - 1);
+            let mut value = before.clone();
+            assert_eq!(
+                super::super::finish_refine(
+                    &mut value,
+                    &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
+                    ValueQuery::Bounds(Box::new(bounds)),
+                ),
+                Err(FrontierReason::Work)
+            );
+            assert_eq!(value, before);
+            assert_eq!(budget.used(), import_and_closure);
+            assert!(budget.exhausted());
+        }
     }
 }
 
