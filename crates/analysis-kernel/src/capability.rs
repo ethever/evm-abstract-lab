@@ -9,10 +9,17 @@ pub trait Capability {
     type Key: Clone + Ord;
     /// Typed answer, independent of other families' carriers.
     type Value: Clone;
-    /// Conservative key clone/comparison traversal work.
+    /// Allocation-free conservative quote for key clone/comparison and drop.
     fn key_work(key: &Self::Key) -> usize;
-    /// Conservative answer clone/traversal work.
+    /// Allocation-free conservative quote for answer clone/traversal work.
     fn value_work(value: &Self::Value) -> usize;
+    /// Allocation-free conservative quote for destroying a retained answer.
+    /// Include traversal/deallocation of the entire possibly last-owned payload.
+    /// Arc/shared-handle carriers whose clone quote covers only their handle must
+    /// override this method; reclamation may release the last deep payload owner.
+    fn drop_work(value: &Self::Value) -> usize {
+        Self::value_work(value)
+    }
 }
 
 /// Computation pending, explicit absence and semantic values are different states.
@@ -60,6 +67,11 @@ pub(crate) struct Cell<V> {
     pub(crate) state: Availability<V>,
 }
 
+pub(crate) struct ScopeCells<K, V> {
+    pub(crate) directory: FactId,
+    pub(crate) cells: BTreeMap<K, Cell<V>>,
+}
+
 /// One explicitly routed provider/aggregation table with a declared update order.
 ///
 /// Multiple instances of the same query family are distinct routes. There is no
@@ -68,17 +80,18 @@ pub(crate) struct Cell<V> {
 pub struct Channel<Q: Capability, P: PublicationPolicy<Value = Q::Value>> {
     pub(crate) epoch: crate::Epoch,
     pub(crate) directory: FactId,
-    pub(crate) cells: BTreeMap<Scoped<Q::Key>, Cell<Q::Value>>,
+    pub(crate) scopes: BTreeMap<Scope, ScopeCells<Q::Key, Q::Value>>,
+    pub(crate) len: usize,
     pub(crate) policy: P,
 }
 impl<Q: Capability, P: PublicationPolicy<Value = Q::Value>> Channel<Q, P> {
     /// Number of interned keys, including still-pending negative reads.
     pub fn len(&self) -> usize {
-        self.cells.len()
+        self.len
     }
     /// Whether this route has no interned keys.
     pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
+        self.len == 0
     }
     /// Frozen publication policy; changing policy requires a different scope/route.
     pub fn policy(&self) -> &P {
@@ -107,4 +120,16 @@ pub trait Charges {
     type Error;
     /// Reserve a conservative computation bound before executing a rule.
     fn charge(&mut self, work: usize) -> Result<(), Self::Error>;
+}
+
+/// Read a stable generation route without adopting its numeric scope identity as
+/// a semantic assumption. A stale selection is Pending until its owner replaces it.
+pub trait ReadGeneration {
+    /// Typed identity/meter failure of the client context.
+    type Error;
+    /// Track the route even when its selected generation is stale.
+    fn current_generation(
+        &mut self,
+        entry: &crate::GenerationEntry,
+    ) -> Result<Answer<Scope>, Self::Error>;
 }

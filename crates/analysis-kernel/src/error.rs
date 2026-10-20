@@ -23,6 +23,11 @@ pub enum KernelError<S> {
     WrongEpoch,
     /// A scope has been retired or is not owned by this kernel.
     InactiveScope,
+    /// The selected generation lost an external semantic assumption. Discard
+    /// obsolete runs/tokens and let its stable owner seed and replace it.
+    StaleGeneration,
+    /// Typed payload reclamation requires an already retired scope.
+    ScopeNotRetired,
     /// A descending rule attempted to refine another input generation.
     WrongScope,
     /// A checked counter cannot advance without reuse.
@@ -54,6 +59,8 @@ impl<S: fmt::Display> fmt::Display for KernelError<S> {
             Self::CostOverflow => f.write_str("analysis work bound overflowed"),
             Self::WrongEpoch => f.write_str("handle belongs to another analysis epoch"),
             Self::InactiveScope => f.write_str("input generation is inactive"),
+            Self::StaleGeneration => f.write_str("selected generation needs fresh input"),
+            Self::ScopeNotRetired => f.write_str("channel scope is still active"),
             Self::WrongScope => f.write_str("descending reduction crossed input generations"),
             Self::VersionExhausted => f.write_str("analysis version space exhausted"),
             Self::InvalidJob => f.write_str("invalid or retired analysis job"),
