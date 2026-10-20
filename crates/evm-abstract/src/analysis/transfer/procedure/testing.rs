@@ -186,10 +186,6 @@ pub(super) fn execute_inner(
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "preserved default fixture call convention"
-)]
 pub(in crate::analysis) fn execute(
     world: &World,
     entry: &Entry,

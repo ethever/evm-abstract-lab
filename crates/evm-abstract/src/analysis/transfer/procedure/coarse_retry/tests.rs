@@ -166,7 +166,7 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
     for byte in [1u64, 2] {
         let mut witness = snapshots::Witness::default();
         witness.assign(&before_byte, U256::from(byte));
-        witness.assign(&value, U256::from(7));
+        witness.assign(value, U256::from(7));
         witness.assign(current.expression().unwrap(), U256::ZERO);
         witness.assign(saved.expression().unwrap(), U256::ZERO);
     }

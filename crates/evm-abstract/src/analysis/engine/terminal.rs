@@ -493,6 +493,10 @@ pub(super) fn prepare(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "default admission fixture preserves the existing byte constructor injection"
+)]
 fn prepare_with_bytes(
     initial: &crate::analysis::MachinePayload,
     world: &crate::world::World,

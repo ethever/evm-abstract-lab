@@ -147,7 +147,7 @@ impl JointInput {
                 length,
                 bindings,
             } if bindings.is_empty() => {
-                self.expression(&length, U256::from(expected.len()))
+                self.expression(length, U256::from(expected.len()))
                     && expected.iter().enumerate().all(|(index, byte)| {
                         Self::assign(
                             &mut self.cells,
