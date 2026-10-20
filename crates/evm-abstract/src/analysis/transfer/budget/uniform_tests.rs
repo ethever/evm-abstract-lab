@@ -1,6 +1,6 @@
 //! A more precise BYTE policy must keep its per-index facts and paid work.
 
-use super::{operation_work_budgeted, quotation_work};
+use super::{OperationQuote, operation_work_budgeted, quotation_work};
 use crate::{
     Fork,
     analysis::{
@@ -10,7 +10,7 @@ use crate::{
     bytecode::Program,
     domain::{
         Domain, DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue,
-        ValueAlgebra, symbolic::ExprId,
+        SingletonProof, ValueAlgebra, symbolic::ExprId,
     },
     resource::WorkBudget,
     world::{ByteArray, EvmAccount, EvmEntry, EvmWorld},
@@ -20,6 +20,13 @@ use revm_bytecode::opcode;
 use std::cell::Cell;
 
 const EXTRA_WORK: usize = 4096;
+
+// MSTORE owns its complete writer fee; it prepares no external target or size.
+fn writer_work(quote: OperationQuote<'_>) -> usize {
+    assert!(quote.targets.is_none());
+    assert_eq!(quote.size, SingletonProof::NotQueried);
+    quote.work
+}
 
 #[derive(Debug, Default)]
 struct BytePolicy<const PRECISE: bool> {
@@ -251,6 +258,7 @@ fn precise_first_mstore_quotes_real_indices_and_reserves_each_phase_once() {
             &entry,
             budget,
         )
+        .map(writer_work)
     };
     let mut refused = WorkBudget::new(prepare - 1);
     assert!(quote(&mut refused).is_err());
@@ -309,6 +317,7 @@ fn assert_cancelled_write<const PRECISE: bool>() {
         &entry,
         &mut budget,
     )
+    .map(writer_work)
     .unwrap();
     let total = budget.used() + work;
     let mut memory = ByteArray::memory();
@@ -377,6 +386,7 @@ fn uniform_certificate_uses_the_injected_full_fee_or_honestly_refuses() {
                 &entry,
                 budget,
             )
+            .map(writer_work)
         };
         let mut budget = WorkBudget::new(config.max_work);
         let quoted = quote(&mut budget);
@@ -460,6 +470,7 @@ fn assert_transfer_write<const PRECISE: bool>() {
         &entry,
         &mut quote_budget,
     )
+    .map(writer_work)
     .unwrap();
     let mut expected = payload.clone();
     expected.active_mut().stack.clear();

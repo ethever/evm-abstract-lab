@@ -78,9 +78,8 @@ impl<N: WordElement> EvmValue<N> {
     /// source, identity and expression layers retain the same semantic value.
     pub(crate) fn with_numeric(mut self, numeric: N) -> Self {
         self.numeric = numeric;
-        if self.symbolic_limit && self.singleton().is_some() {
-            self.symbolic_limit = false;
-        }
+        // Clearing optional diagnostics does not justify opaque discovery.
+        // Callers with a proof about this replacement use the variant below.
         self
     }
     /// Install a replacement using an already obtained singleton answer for

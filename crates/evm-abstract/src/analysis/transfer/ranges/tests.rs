@@ -308,7 +308,8 @@ mod literal_memory {
             transfer::{Execution, TransferContext, WorkBudget},
         },
         domain::{
-            AbstractValue, Domain, DomainSpec, Profile, ReductionStatus, ValueAlgebra,
+            AbstractValue, Domain, DomainSpec, Profile, ReductionStatus, SingletonProof,
+            ValueAlgebra,
             facts::{UnaryPredicate, WordBounds},
             relational::{Constraint, QueryReason},
             symbolic::ExprId,
@@ -316,7 +317,7 @@ mod literal_memory {
     };
 
     use super::super::{
-        LITERAL_MEMORY_BOUNDS_WORK, LITERAL_MEMORY_METADATA_WORK, allow_memory,
+        LITERAL_MEMORY_BOUNDS_WORK, LITERAL_MEMORY_METADATA_WORK, RangeQueries, allow_memory,
         literal_memory_singleton_work, logical, memory_condition,
     };
 
@@ -678,7 +679,12 @@ mod literal_memory {
         use revm_bytecode::opcode;
 
         let quote = 128usize;
-        let copy_work = |work: usize| work.saturating_add(32).saturating_mul(2);
+        let copy_work = |value: &AbstractValue| {
+            value
+                .clone_work()
+                .saturating_add(value.work_size())
+                .saturating_add(32)
+        };
         for capacity in [8, 512] {
             // Keep the private helpers' original 1B allowance; exercise the
             // default enabled relation policy without changing those fixtures.
@@ -726,23 +732,37 @@ mod literal_memory {
                 );
                 // Builder stages replaced the blanket reservation. Quote their
                 // owners from reference arguments, independently of budget.used().
+                let queries = RangeQueries {
+                    size: SingletonProof::Answer(size.singleton()),
+                    offset: if size.singleton().is_some() {
+                        SingletonProof::Answer(offset.singleton())
+                    } else {
+                        SingletonProof::NotQueried
+                    },
+                };
                 let mut receipts = vec![quote];
-                let [guard_offset, guard_size] = [&offset, &size].map(|input| {
-                    receipts.push(quote);
-                    receipts.push(
-                        copy_work(input.work_size().saturating_add(1))
-                            .saturating_add(literal_memory_singleton_work(input)),
-                    );
-                    identify(input.clone(), config.analysis.relations.enabled)
-                });
-                receipts.push(copy_work(14).saturating_mul(2));
+                let [guard_offset, guard_size] = [(&offset, queries.offset), (&size, queries.size)]
+                    .map(|(input, proof)| {
+                        receipts.push(quote);
+                        receipts.push(copy_work(input).saturating_add(2));
+                        if input.expression().is_none() && proof == SingletonProof::NotQueried {
+                            receipts.push(literal_memory_singleton_work(input));
+                        }
+                        identify(input.clone(), config.analysis.relations.enabled)
+                    });
+                receipts.push(
+                    ValueAlgebra::new(&domain)
+                        .literal_quote_work(logical::MAX_END)
+                        .saturating_mul(2),
+                );
                 let mut operations = 0;
                 let mut apply = |op, args: &[AbstractValue], copied| {
                     if copied {
                         receipts.push(quote);
-                        receipts.push(args.iter().fold(0usize, |work, arg| {
-                            work.saturating_add(copy_work(arg.work_size()))
-                        }));
+                        receipts.push(
+                            args.iter()
+                                .fold(0usize, |work, arg| work.saturating_add(copy_work(arg))),
+                        );
                     }
                     receipts.push(quote);
                     // Product output release: bounded candidates, inline fields,
@@ -769,7 +789,7 @@ mod literal_memory {
                             .saturating_add(nodes)
                             .saturating_add(32),
                     );
-                    receipts.push(domain.operation_work(args));
+                    receipts.push(ValueAlgebra::new(&domain).operation_work_for(op, args));
                     operations += 1;
                     domain.apply_detailed(op, args).value
                 };
@@ -783,17 +803,16 @@ mod literal_memory {
                 let fits = apply(opcode::AND, &[offset_fits, size_fits], false);
                 let condition = apply(opcode::OR, &[empty, fits], false);
                 assert_eq!(operations, 8);
-                receipts.push(quote);
-                receipts.push(literal_memory_singleton_work(&condition));
                 let guard_work = receipts
                     .iter()
                     .fold(0usize, |work, fee| work.saturating_add(*fee));
                 // A complete independent receipt also rejects a missing or
                 // doubled debit when adjacent one-short cuts have equal prices.
                 let mut guard_budget = WorkBudget::new(config.max_work);
-                let _guard = super::super::guard::build(
+                let _guard = super::super::guard::build_after_queries(
                     &offset,
                     &size,
+                    queries,
                     &mut context(
                         &config,
                         &mut guard_budget,
@@ -803,6 +822,7 @@ mod literal_memory {
                 .expect("the original 1B allowance funds the complete guard");
                 assert_eq!(guard_budget.used(), guard_work);
                 assert!(!guard_budget.exhausted());
+                receipts.push(condition.numeric().work_size().saturating_mul(2));
                 let mut result = execution();
                 let before = result.payload.clone();
                 receipts.push(
