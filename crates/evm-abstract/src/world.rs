@@ -7,7 +7,7 @@
 
 #[cfg(test)]
 use crate::domain::AbstractValue;
-use crate::domain::{EvmNumericAlgebra, ValueAlgebra, WordElement};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 mod bytes;
 pub mod environment;
 mod initial;
@@ -505,9 +505,3 @@ pub type Account = EvmAccount<crate::domain::NumericValue>;
 pub type World = EvmWorld<crate::domain::NumericValue>;
 /// Default numeric-carrier compatibility alias.
 pub type Entry = EvmEntry<crate::domain::NumericValue>;
-
-impl EvmWorld<crate::domain::NumericValue> {
-    pub(crate) fn projection_work(&self, domain: crate::domain::Domain) -> usize {
-        self.projection_work_with(ValueAlgebra::new(domain).borrowed())
-    }
-}

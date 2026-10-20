@@ -5,9 +5,11 @@ use super::{
     refinement::{Node, walk},
 };
 use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::ValueAlgebra;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    EvmValue, ValueAlgebra,
+    EvmValue,
     symbolic::{ByteStateKind, ExprError, ExprId, ExprLimits, SlotStateKind},
 };
 use alloy_primitives::U256;
@@ -133,6 +135,7 @@ impl<N: WordElement> EvmByteArray<N> {
     }
 }
 
+#[cfg(test)]
 impl EvmByteArray<crate::domain::NumericValue> {
     /// Default numeric-policy compatibility wrapper.
     pub(crate) fn widening_form(

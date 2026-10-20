@@ -442,6 +442,7 @@ mod canonical_tests;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 impl EvmByteArray<crate::domain::NumericValue> {
     /// Default numeric-policy compatibility wrapper.
     pub(crate) fn copy_work(

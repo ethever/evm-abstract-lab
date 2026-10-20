@@ -267,6 +267,7 @@ impl<N: WordElement> EvmByteArray<N> {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 impl EvmByteArray<crate::domain::NumericValue> {
     /// Default numeric-policy compatibility wrapper.
     pub(crate) fn slice_work(

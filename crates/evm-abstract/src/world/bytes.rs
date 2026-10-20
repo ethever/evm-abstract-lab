@@ -1130,6 +1130,7 @@ impl EvmByteArray<crate::domain::NumericValue> {
         )
     }
     /// Default numeric-policy compatibility wrapper.
+    #[cfg(test)]
     pub(crate) fn write_word_budgeted(
         &mut self,
         offset: &EvmValue<crate::domain::NumericValue>,
@@ -1147,6 +1148,7 @@ impl EvmByteArray<crate::domain::NumericValue> {
         )
     }
     /// Default numeric-policy compatibility wrapper.
+    #[cfg(test)]
     pub(crate) fn write_byte_budgeted(
         &mut self,
         offset: &EvmValue<crate::domain::NumericValue>,
@@ -1239,6 +1241,7 @@ impl EvmByteArray<crate::domain::NumericValue> {
         self.word_numeric_work_with(_offset, crate::domain::ValueAlgebra::new(domain).borrowed())
     }
     /// Default numeric-policy compatibility wrapper.
+    #[cfg(test)]
     pub(crate) fn project(&self, domain: crate::domain::Domain) -> Self {
         self.project_with(crate::domain::ValueAlgebra::new(domain).borrowed())
     }

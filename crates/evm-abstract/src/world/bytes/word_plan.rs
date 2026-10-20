@@ -3,13 +3,13 @@
 use super::{EvmByteArray, RangeError, conditional, expr, limits, numeric, operands, reads};
 use crate::domain::AlgebraRef;
 #[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
+use crate::domain::{AbstractValue, Domain, ValueAlgebra};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 #[cfg(test)]
 use crate::world::ByteArray;
 use crate::{
     domain::{
-        EvmValue, ValueAlgebra,
+        EvmValue,
         symbolic::{
             ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprKind, SlotStateId,
             SlotStateKind, StateBinding,
@@ -43,16 +43,18 @@ pub(crate) struct Plan<
     fallback_work: usize,
 }
 
-// Generic plans retain the original borrowed D. Only the legacy Domain wrapper
-// owns its small policy, keeping the source-compatible deferred read API.
+// Production plans borrow the original D. Private default-carrier test helpers
+// own their small Domain policy for deferred reads.
 enum PlanPolicy<'a, D: EvmNumericAlgebra> {
     Borrowed(AlgebraRef<'a, D>),
+    #[cfg(test)]
     Owned(ValueAlgebra<D>),
 }
 impl<D: EvmNumericAlgebra> PlanPolicy<'_, D> {
     fn view(&self) -> AlgebraRef<'_, D> {
         match self {
             Self::Borrowed(domain) => *domain,
+            #[cfg(test)]
             Self::Owned(domain) => domain.borrowed(),
         }
     }
@@ -499,6 +501,7 @@ impl<N: WordElement> EvmByteArray<N> {
         self.prepare_word_read_policy(offset, PlanPolicy::Borrowed(domain), budget)
     }
 }
+#[cfg(test)]
 impl EvmByteArray<crate::domain::NumericValue> {
     pub(crate) fn prepare_word_read(
         &self,

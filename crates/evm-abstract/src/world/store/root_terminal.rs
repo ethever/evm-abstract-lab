@@ -61,6 +61,7 @@ impl<N: WordElement> EvmStore<N> {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 impl EvmStore<crate::domain::NumericValue> {
     /// Default numeric-policy compatibility wrapper.
     pub(crate) fn root_terminal_all_effects_checked(

@@ -154,6 +154,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
     }
 }
 
+#[cfg(test)]
 impl EvmStoreSummary<crate::domain::NumericValue> {
     /// Default numeric-policy compatibility wrapper.
     pub(crate) fn project_to_layout(&self, layout: &Self, domain: crate::domain::Domain) -> Self {

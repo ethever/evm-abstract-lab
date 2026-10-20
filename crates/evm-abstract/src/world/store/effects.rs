@@ -224,6 +224,7 @@ impl EvmStore<crate::domain::NumericValue> {
         )
     }
     /// Default numeric-policy compatibility wrapper.
+    #[cfg(test)]
     pub(crate) fn unknown_effects(
         &mut self,
         protected: &BTreeSet<Address>,

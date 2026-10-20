@@ -150,6 +150,7 @@ impl<N: WordElement> EvmStore<N> {
     }
 }
 
+#[cfg(test)]
 impl EvmStore<crate::domain::NumericValue> {
     /// Default numeric-policy compatibility wrapper.
     pub(crate) fn widening_form(

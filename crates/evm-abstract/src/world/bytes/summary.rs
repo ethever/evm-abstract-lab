@@ -9,7 +9,7 @@ use crate::domain::AlgebraRef;
 use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    EvmValue, ValueAlgebra,
+    EvmValue,
     symbolic::{
         ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, SlotStateId, SourceId,
         StateBinding, StateError,

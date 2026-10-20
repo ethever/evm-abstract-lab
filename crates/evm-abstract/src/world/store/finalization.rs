@@ -614,6 +614,7 @@ mod tests;
 #[cfg(test)]
 mod unlisted;
 
+#[cfg(test)]
 impl EvmStore<crate::domain::NumericValue> {
     /// Default numeric-policy compatibility wrapper.
     pub(crate) fn finalize_transaction_checked(

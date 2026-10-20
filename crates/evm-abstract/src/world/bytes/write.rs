@@ -183,6 +183,7 @@ impl<N: WordElement> EvmByteArray<N> {
     }
 }
 
+#[cfg(test)]
 impl EvmByteArray<crate::domain::NumericValue> {
     /// Default numeric-policy compatibility wrapper.
     pub(crate) fn uniform_word_write_work(

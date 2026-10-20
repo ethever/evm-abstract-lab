@@ -447,43 +447,4 @@ impl AddressInput {
     pub fn value(self) -> crate::domain::AbstractValue {
         self.value_with::<crate::domain::NumericValue>()
     }
-    pub(crate) fn scoped_value(self, scope: Option<u64>) -> crate::domain::AbstractValue {
-        self.scoped_value_with::<crate::domain::NumericValue>(scope)
-    }
-}
-impl GasInput {
-    pub(crate) fn value(self) -> crate::domain::AbstractValue {
-        self.value_with::<crate::domain::NumericValue>()
-    }
-}
-
-impl EvmBlobHashes<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn get(
-        &self,
-        index: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-        scope: Option<u64>,
-    ) -> EvmValue<crate::domain::NumericValue> {
-        self.get_with(
-            index,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            scope,
-        )
-    }
-}
-
-impl EvmEnvironmentValues<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn projection_work(&self, domain: crate::domain::Domain) -> usize {
-        self.projection_work_with(crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn block_hash(
-        &self,
-        index: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> EvmValue<crate::domain::NumericValue> {
-        self.block_hash_with(index, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
 }

@@ -1,6 +1,6 @@
 //! A loop retains a fixed set of byte coordinates, with unknown other cells.
 
-use super::{COPY_FACT_LIMIT, Content, EvmByteArraySummary, EvmValue, ValueAlgebra};
+use super::{COPY_FACT_LIMIT, Content, EvmByteArraySummary, EvmValue};
 use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 
@@ -64,12 +64,5 @@ impl<N: WordElement> EvmByteArraySummary<N> {
                 Content::<N>::Cells(cells)
             },
         }
-    }
-}
-
-impl EvmByteArraySummary<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn project_to_layout(&self, layout: &Self, _domain: crate::domain::Domain) -> Self {
-        self.project_to_layout_with(layout, ValueAlgebra::new(_domain).borrowed())
     }
 }
