@@ -10,7 +10,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use super::{EvmExecution, TransferContext, boundary};
+use super::{EvmExecution, TransferContext, boundary, query};
 use crate::{
     analysis::{EvmMachinePayload, FrontierReason},
     domain::{
@@ -78,21 +78,21 @@ fn prepare_refine<D: EvmNumericAlgebra>(
     relations: &RelationState,
     context: &mut TransferContext<'_, D>,
 ) -> Result<PreparedRefinement, FrontierReason> {
-    if analysis_control::current_cancellation().is_cancelled() {
-        return Err(FrontierReason::Relations(QueryReason::Cancelled));
-    }
-    if !context.budget.charge(0) {
-        return Err(FrontierReason::Work);
-    }
+    query::checkpoint(context.budget)?;
     let limits = context.config.analysis.relations;
-    if !limits.enabled || value.singleton().is_some() {
+    if !limits.enabled || relations.is_bottom() {
         return Ok(PreparedRefinement::Done(!relations.is_bottom()));
     }
+    // Without a retained term there is no relational refinement to attempt.
+    // In particular, consuming a literal in POP needs no numeric discovery.
     let Some(expression) = value.expression().cloned() else {
         return Ok(PreparedRefinement::Done(true));
     };
     let has_state_semantics = expression.has_state_semantics();
     if relations.is_empty() && !has_state_semantics {
+        return Ok(PreparedRefinement::Done(true));
+    }
+    if query::singleton(value.numeric(), context.budget)?.is_some() {
         return Ok(PreparedRefinement::Done(true));
     }
     // Constraints on another independent input cannot make this value unique.
@@ -105,13 +105,29 @@ fn prepare_refine<D: EvmNumericAlgebra>(
     if !has_state_semantics && !relations.relevant(&expression) {
         return Ok(PreparedRefinement::Done(true));
     }
-    match relations
-        .refine_numeric_budgeted_with(&expression, value, context.domain, &limits, context.budget)
-        .map_err(|_| FrontierReason::Work)?
-    {
+    let answer = relations.refine_numeric_budgeted_with(
+        &expression,
+        value,
+        context.domain,
+        &limits,
+        context.budget,
+    );
+    query::checkpoint(context.budget)?;
+    match answer.map_err(|_| FrontierReason::Work)? {
         EvmScalarQuery::Refined { numeric, complete } => {
-            *value = value.clone().with_numeric(*numeric);
-            if complete || value.singleton().is_some() {
+            // The scalar envelope paid for import/reduction, not this caller's
+            // query on the opaque result. Reuse its answer when installing it.
+            let singleton = if !complete || value.symbolic_limit_reached() {
+                query::singleton(numeric.as_ref(), context.budget)?
+            } else {
+                None
+            };
+            let refined = value
+                .clone()
+                .with_numeric_after_singleton(*numeric, singleton);
+            query::checkpoint(context.budget)?;
+            *value = refined;
+            if complete || singleton.is_some() {
                 return Ok(PreparedRefinement::Done(true));
             }
         }
@@ -139,12 +155,11 @@ fn local_refine<D: EvmNumericAlgebra>(
     let limits = context.config.analysis.relations;
     let answer =
         relations.local_value_budgeted_with(expression, &limits, context.budget, context.domain);
-    if context.budget.exhausted() {
-        return Err(FrontierReason::Work);
-    }
+    query::checkpoint(context.budget)?;
     context
         .query_cache
         .remember(relations, expression, &limits, &answer, context.budget);
+    query::checkpoint(context.budget)?;
     finish_refine(value, context, answer)
 }
 
@@ -157,8 +172,13 @@ fn finish_refine<D: EvmNumericAlgebra>(
     match answer {
         EvmValueQuery::Exact(exact) => {
             if value.contains(exact) {
-                *value = value.clone().with_numeric(D::Element::constant(exact));
+                let refined = value
+                    .clone()
+                    .with_numeric_after_singleton(D::Element::constant(exact), Some(exact));
+                query::checkpoint(context.budget)?;
+                *value = refined;
             } else {
+                query::checkpoint(context.budget)?;
                 return Ok(false);
             }
         }
@@ -173,28 +193,41 @@ fn finish_refine<D: EvmNumericAlgebra>(
             ) {
                 return Err(FrontierReason::Work);
             }
-            if bounds.is_top() || value.numeric() == bounds.as_ref() {
+            let unchanged = bounds.is_top() || value.numeric() == bounds.as_ref();
+            query::checkpoint(context.budget)?;
+            if unchanged {
                 return Ok(true);
             }
             let metadata_work = value
                 .work_size()
                 .saturating_sub(value.numeric().work_size());
-            let Some(numeric) = context.domain.intersect_numeric_with_payment(
+            let numeric = context.domain.intersect_numeric_with_payment(
                 value.numeric(),
                 bounds.as_ref(),
                 metadata_work,
                 |work| {
+                    query::checkpoint(context.budget)?;
                     if work != usize::MAX && context.budget.charge(work) {
-                        Ok(())
+                        query::checkpoint(context.budget)
                     } else {
                         Err(FrontierReason::Work)
                     }
                 },
-            )?
-            else {
+            );
+            query::checkpoint(context.budget)?;
+            let Some(numeric) = numeric? else {
                 return Ok(false);
             };
-            *value = value.clone().with_numeric(numeric);
+            let singleton = if value.symbolic_limit_reached() {
+                query::singleton(&numeric, context.budget)?
+            } else {
+                None
+            };
+            let refined = value
+                .clone()
+                .with_numeric_after_singleton(numeric, singleton);
+            query::checkpoint(context.budget)?;
+            *value = refined;
         }
         EvmValueQuery::ProvenImpossible => return Ok(false),
         EvmValueQuery::Undetermined(reason) => return Err(FrontierReason::Relations(reason)),
@@ -212,23 +245,38 @@ pub(super) fn branch<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> Option<EvmMachinePayload<D::Element>> {
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary(result, pc, reason);
+        return None;
+    }
     if !context.budget.charge(result.payload.work_size()) {
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
     let mut payload = result.payload.clone();
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary(result, pc, reason);
+        return None;
+    }
     let limits = context.config.analysis.relations;
     if !limits.enabled {
         return Some(payload);
     }
-    // The numerical layer has already selected the only feasible edge. Its
-    // constant condition supplies no additional relational information.
-    if condition.singleton().is_some() {
-        return Some(payload);
-    }
-    let Some(expression) = condition.symbolic_expression() else {
+    let Some(expression) = condition.expression().cloned() else {
         return Some(payload);
     };
+    // The numerical layer has already selected the only feasible edge. Its
+    // constant condition supplies no additional relational information.
+    let singleton = match query::singleton(condition.numeric(), context.budget) {
+        Ok(singleton) => singleton,
+        Err(reason) => {
+            boundary(result, pc, reason);
+            return None;
+        }
+    };
+    if singleton.is_some() {
+        return Some(payload);
+    }
     let values = payload
         .active()
         .stack
@@ -258,8 +306,8 @@ pub(super) fn branch<D: EvmNumericAlgebra>(
         context.budget,
         context.domain,
     );
-    if context.budget.exhausted() {
-        boundary(result, pc, FrontierReason::Work);
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary(result, pc, reason);
         return None;
     }
     let guard_retained = match checked {
@@ -305,6 +353,10 @@ pub(super) fn branch<D: EvmNumericAlgebra>(
                 return None;
             }
         }
+    }
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary(result, pc, reason);
+        return None;
     }
     Some(payload)
 }

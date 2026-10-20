@@ -78,7 +78,21 @@ impl<N: WordElement> EvmValue<N> {
     /// source, identity and expression layers retain the same semantic value.
     pub(crate) fn with_numeric(mut self, numeric: N) -> Self {
         self.numeric = numeric;
-        if self.singleton().is_some() {
+        if self.symbolic_limit && self.singleton().is_some() {
+            self.symbolic_limit = false;
+        }
+        self
+    }
+    /// Install a replacement using an already obtained singleton answer for
+    /// that exact numeric element. Reuse the proof instead of querying again.
+    /// `None` may conservatively retain an inherited symbolic limit.
+    pub(crate) fn with_numeric_after_singleton(
+        mut self,
+        numeric: N,
+        singleton: Option<U256>,
+    ) -> Self {
+        self.numeric = numeric;
+        if singleton.is_some() {
             self.symbolic_limit = false;
         }
         self
@@ -222,7 +236,8 @@ impl<N: WordElement> EvmValue<N> {
     pub fn contains(&self, value: U256) -> bool {
         self.numeric.contains(value)
     }
-    /// Exact numeric singleton, regardless of the finite component.
+    /// Exact numeric singleton, regardless of the finite component. Pure and
+    /// caller-funded; copying/retaining this value does not fund the query.
     pub fn singleton(&self) -> Option<U256> {
         self.numeric.singleton()
     }
@@ -234,7 +249,8 @@ impl<N: WordElement> EvmValue<N> {
     pub fn may_be_nonzero(&self) -> bool {
         self.numeric.may_be_nonzero()
     }
-    /// Numeric copy cost plus source metadata and a cached expression-traversal bound.
+    /// Numeric structural bound plus source metadata and a cached expression
+    /// traversal bound. Independent singleton queries use `singleton_work`.
     pub fn work_size(&self) -> usize {
         self.numeric
             .work_size()

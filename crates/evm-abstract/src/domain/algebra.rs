@@ -76,7 +76,10 @@ impl<N: WordElement> NumericReduction<N> {
 /// Reduction consequences hold only in the current immutable input generation.
 /// Operations use EVM pop order and Word256 wrapping semantics; unsupported pure
 /// operations return a sound upper approximation rather than an invented value.
-/// All methods are caller-precharged by the public work quotation methods.
+/// Pure methods are caller-funded. Metered callers prepay the corresponding
+/// complete operation quote. That envelope owns every query inside the quoted
+/// operation, including facade metadata decisions; it does not fund independent
+/// queries on operands before the operation or on its returned element later.
 pub trait EvmNumericAlgebra: Debug {
     /// The actual executable numeric element, not a report-only adapter.
     type Element: WordElement;
@@ -121,7 +124,10 @@ pub trait EvmNumericAlgebra: Debug {
                 )
         })
     }
-    /// Upper bound for numeric transfer and its dependency/reduction work.
+    /// Complete envelope for numeric transfer, dependency/reduction work and
+    /// the facade's singleton/symbolic-expression queries inside `apply_detailed`
+    /// or `observe_byte`. Include queries on the actual result. Do not separately
+    /// charge their `singleton_work` again inside this prepaid operation.
     fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
     where
         Self::Element: 'a;
@@ -159,7 +165,9 @@ pub trait EvmNumericAlgebra: Debug {
     }
     /// Upper bound for policy projection beyond ordinary input cloning.
     fn projection_work(&self, value: &Self::Element) -> usize;
-    /// Upper bound for guarantee import and reduction.
+    /// Complete guarantee-import/reduction envelope, including queries/copies
+    /// inside `constrain`, import and reduction. Queries by the caller on the
+    /// returned element require their own payment.
     fn refinement_work(&self, value: &Self::Element, facts: usize) -> usize;
     /// Optional import-only reservation for staged refinement. `finite_values`
     /// bounds actual input/member payload visits; `expression_work` is the
@@ -375,6 +383,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
             .map_or(spec, |relations| spec.with_relations(relations))
     }
     /// Refine existing custom state; never rebuild it through an exported snapshot.
+    /// Pure/caller-funded, including `constrain`'s internal queries and reduction.
     pub fn constrain_numeric(
         &self,
         value: &D::Element,
@@ -554,14 +563,21 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
                 .apply_numeric_borrowed(op, args.iter().map(EvmValue::numeric))
         };
         let mut reduced = numeric.into_value();
-        reduced.value.symbolic_limit = args.iter().any(EvmValue::symbolic_limit_reached)
-            && reduced.value.singleton().is_none();
+        let limits = self.spec().relations();
+        let inherited_limit = args.iter().any(EvmValue::symbolic_limit_reached);
+        // One discovery belongs to the enclosing operation envelope. Reuse it
+        // for both metadata decisions instead of executing the query twice.
+        let singleton = exact.or_else(|| {
+            (inherited_limit || limits.enabled)
+                .then(|| reduced.value.singleton())
+                .flatten()
+        });
+        reduced.value.symbolic_limit = inherited_limit && singleton.is_none();
         if supported {
             reduced.value.provenance = EvmValue::transfer_provenance(args);
         }
-        let limits = self.spec().relations();
         if limits.enabled
-            && reduced.value.singleton().is_none()
+            && singleton.is_none()
             && let Some(expressions) = args
                 .iter()
                 .map(EvmValue::symbolic_expression)
@@ -570,7 +586,9 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
             match symbolic::ExprId::operation(op, &expressions, limits.expressions()) {
                 Ok(expression) => {
                     if let Some(exact) = expression.as_constant() {
-                        reduced.value = reduced.value.with_numeric(D::Element::constant(exact));
+                        reduced.value = reduced
+                            .value
+                            .with_numeric_after_singleton(D::Element::constant(exact), Some(exact));
                         reduced.value.forget_expression();
                     } else {
                         reduced.value = reduced.value.with_expression(expression);
@@ -828,6 +846,7 @@ impl EvmNumericAlgebra for Domain {
 impl<D: EvmNumericAlgebra> AlgebraRef<'_, D> {
     /// Pay import and then actual-input closure, or the unchanged custom whole
     /// quote. The callback preserves the caller's local/root refusal semantics.
+    /// The caller checks cancellation after return before installing the result.
     pub(crate) fn intersect_numeric_with_payment<E>(
         self,
         left: &D::Element,
