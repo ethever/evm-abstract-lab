@@ -250,6 +250,33 @@ pub(super) fn evaluate<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     if context.stopped() {
         return Ok(None);
     }
+    let expression = expression(root, length, offset, context, domain);
+    context.check()?;
+    if context.stopped() {
+        return Ok(None);
+    }
+    let expression = expression?;
+    // A summary may retain an unsupported whole-word predicate for precisely
+    // this normalized read. Different roots, padding and overlapping writes
+    // produce different terms and cannot use the old guarantee.
+    if let Some(value) = context.retained_word(&expression, domain) {
+        return Ok(Some(numeric::attach(value, expression)));
+    }
+    let numeric = numeric::Reader::<N, D>::with_context(context.clone(), domain).word(root, offset);
+    context.check()?;
+    if context.stopped() {
+        return Ok(None);
+    }
+    Ok(Some(numeric::attach(numeric, expression)))
+}
+
+pub(super) fn expression<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    root: &ByteStateId,
+    length: Option<&EvmValue<N>>,
+    offset: &ExprId,
+    context: &conditional::Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<ExprId, RangeError> {
     let view = if let Some(length) = length {
         ByteView::new(
             root.clone(),
@@ -270,24 +297,13 @@ pub(super) fn evaluate<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             ExprId::constant(U256::from(32)),
         )
     };
-    let expression = reads::word_expression(
+    Ok(reads::word_expression(
         view,
         ExprId::constant(U256::ZERO),
         context,
         domain,
         limits(domain),
-    );
-    context.check()?;
-    if context.stopped() {
-        return Ok(None);
-    }
-    let expression = expression?;
-    let numeric = numeric::Reader::<N, D>::with_context(context.clone(), domain).word(root, offset);
-    context.check()?;
-    if context.stopped() {
-        return Ok(None);
-    }
-    Ok(Some(numeric::attach(numeric, expression)))
+    )?)
 }
 
 #[cfg(test)]

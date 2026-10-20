@@ -86,10 +86,47 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
         numeric: &N,
         observation: &crate::domain::WordObservation,
     ) -> bool {
+        self.pay_extra(numeric.import_binding_work(observation))
+    }
+
+    /// An additional singleton proof beyond a failed optional interval view.
+    /// The quote is inspected and paid before the custom query is invoked.
+    pub(in crate::world::bytes) fn prove_singleton(&self, value: &EvmValue<N>) -> Option<U256> {
+        self.pay_extra(value.singleton_work())
+            .then(|| value.singleton())
+            .flatten()
+    }
+
+    pub(in crate::world::bytes) fn retained_word(
+        &self,
+        expression: &ExprId,
+        domain: AlgebraRef<'_, D>,
+    ) -> Option<EvmValue<N>> {
+        if !matches!(
+            expression.kind(),
+            crate::domain::symbolic::ExprKind::WordRead { .. }
+        ) {
+            return None;
+        }
+        let mut work = 0usize;
+        let mut retained = false;
+        for facts in std::iter::once(self.facts).chain(self.active.iter().copied()) {
+            if let Some(value) = self.fact(facts, expression) {
+                retained |= value.numeric().requires_retained_binding();
+                work = work.saturating_add(value.clone_work());
+            }
+        }
+        // Quote every actual payload copy before resolve/memo can clone it.
+        // The ordinary context still selects/intersects the same active scopes.
+        (retained && self.pay_extra(work))
+            .then(|| self.value(expression, domain))
+            .flatten()
+    }
+
+    fn pay_extra(&self, work: usize) -> bool {
         if self.stopped() {
             return false;
         }
-        let work = numeric.import_binding_work(observation);
         // Zero is the old raw NumericValue materialization already funded by
         // the caller. Do not add a payment/cancellation receipt for that case.
         if work == 0 {

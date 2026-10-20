@@ -71,6 +71,7 @@ fn producer_shape(domain: Domain) -> ByteArraySummary {
     ByteArraySummary {
         length: AbstractValue::from_numeric(NumericValue::constant(U256::from(64))),
         memory: false,
+        words: Default::default(),
         content: Content::Cells(
             (0..64)
                 .map(|index| {
@@ -188,6 +189,7 @@ fn actual_84_binding_dense_carrier_shrinks_without_changing_the_policy() {
     let summary = ByteArraySummary {
         length: AbstractValue::from_numeric(NumericValue::constant(U256::from(84))),
         memory: false,
+        words: Default::default(),
         content: Content::Cells((0..84).map(|index| (index, dense.clone())).collect()),
     };
     assert_eq!(
@@ -239,6 +241,7 @@ fn future_byte_and_word_reads_include_values_and_keep_exact_known_controls() {
     let controlled = ByteArraySummary {
         length: AbstractValue::constant(U256::from(32)),
         memory: false,
+        words: Default::default(),
         content: Content::Cells(
             (0..32)
                 .map(|index| {
@@ -276,6 +279,7 @@ fn repeated_projection_join_and_instantiation_keep_canonical_cells_and_work_stab
         let mut inputs = vec![ByteArraySummary {
             length: finite(domain, [1, 3]),
             memory: false,
+            words: Default::default(),
             content: Content::Cells(BTreeMap::from([
                 (0, finite(domain, 0..=255)),
                 (1, finite(domain, 0..=127)),
@@ -445,6 +449,7 @@ fn projection_to_a_smaller_capacity_cannot_resurrect_a_discarded_finite_componen
     let summary = ByteArraySummary {
         length: AbstractValue::constant(U256::from(1)),
         memory: false,
+        words: Default::default(),
         content: Content::Cells(BTreeMap::from([(0, finite(domain, 0..=255))])),
     };
     let compact = summary.instantiate(domain).unwrap();
@@ -484,6 +489,7 @@ fn projection_checks_current_root_before_using_a_stale_or_missing_presentation_c
         let summary = ByteArraySummary {
             length: AbstractValue::constant(U256::from(1)),
             memory: false,
+            words: Default::default(),
             content: Content::Cells(BTreeMap::from([(0, previous.clone())])),
         };
         let mut replay = summary.instantiate(domain).unwrap();

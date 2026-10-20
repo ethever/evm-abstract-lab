@@ -607,11 +607,7 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
             ..
         } = state.kind()
             && super::reads::same_offset(written, offset, &context, domain)
-            && scalar_in(offset, &context, domain)
-                .interval()
-                .unsigned_bounds()
-                .1
-                <= U256::MAX - U256::from(31)
+            && super::reads::nonwrapping_word(offset, &context, domain)
         {
             return scalar_in(value, &context, domain);
         }

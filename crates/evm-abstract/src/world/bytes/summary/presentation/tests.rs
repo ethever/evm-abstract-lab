@@ -31,6 +31,7 @@ fn cells(length: AbstractValue, values: BTreeMap<usize, AbstractValue>) -> ByteA
     ByteArraySummary {
         length,
         memory: false,
+        words: Default::default(),
         content: Content::Cells(values),
     }
 }
@@ -232,6 +233,7 @@ fn chunks_exact_zero_and_nonbyte_content_keep_the_original_reader_paths() {
         let summary = ByteArraySummary {
             length: finite([0]),
             memory: false,
+            words: Default::default(),
             content,
         };
         let reads = if matches!(summary.content, Content::Exact(_)) {

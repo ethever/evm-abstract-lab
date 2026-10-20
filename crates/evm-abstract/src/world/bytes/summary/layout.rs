@@ -13,6 +13,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
             length: EvmValue::<N>::unsigned_range(lower, upper)
                 .expect("summary length bounds are ordered"),
             memory: self.memory,
+            words: Default::default(),
             content: if upper == alloy_primitives::U256::ZERO {
                 Content::<N>::Zero
             } else {
@@ -51,6 +52,12 @@ impl<N: WordElement> EvmByteArraySummary<N> {
         Self {
             length: self.length.clone(),
             memory: self.memory,
+            words: self
+                .words
+                .iter()
+                .filter(|(index, _)| layout.words.contains_key(index))
+                .map(|(index, value)| (*index, value.clone()))
+                .collect(),
             content: if zero_with {
                 Content::<N>::Zero
             } else {

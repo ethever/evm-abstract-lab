@@ -6,6 +6,22 @@ use crate::domain::symbolic::{ByteStateKind, ByteView, ExprError, ExprId, ExprLi
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use alloy_primitives::U256;
 
+/// The optional interval view may omit an exact custom singleton. Preserve the
+/// old sufficient proof and fee first; only a new numeric proof pays extra.
+pub(super) fn nonwrapping_word<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    at: &ExprId,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
+) -> bool {
+    let value = numeric::scalar_in(at, context, domain);
+    let last_start = U256::MAX - U256::from(31);
+    value.interval().unsigned_bounds().1 <= last_start
+        || at
+            .as_constant()
+            .or_else(|| context.prove_singleton(&value))
+            .is_some_and(|offset| offset <= last_start)
+}
+
 /// Resolve a complete word demand without constructing wrapping ADD terms.
 /// All bounds belong to the caller's current guard environment. Returning None
 /// preserves the view for bytewise evaluation of partial or padded windows.
@@ -19,22 +35,31 @@ pub(super) fn view_word_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>
     let relative = numeric::scalar_in(at, context, domain);
     let offset = numeric::scalar_in(&view.offset, context, domain);
     let length = numeric::scalar_in(&view.length, context, domain);
-    let last = relative
-        .interval()
-        .unsigned_bounds()
-        .1
-        .checked_add(U256::from(31))?;
-    if last >= crate::world::unsigned_bounds(&length).0 {
+    let upper = at
+        .as_constant()
+        .unwrap_or_else(|| relative.interval().unsigned_bounds().1);
+    let last = upper.checked_add(U256::from(31))?;
+    let length_lower = view
+        .length
+        .as_constant()
+        .unwrap_or_else(|| crate::world::unsigned_bounds(&length).0);
+    if last >= length_lower {
         return None;
     }
-    crate::world::unsigned_bounds(&offset).1.checked_add(last)?;
-    if relative.singleton() == Some(U256::ZERO) {
+    view.offset
+        .as_constant()
+        .unwrap_or_else(|| crate::world::unsigned_bounds(&offset).1)
+        .checked_add(last)?;
+    if at.as_constant().or_else(|| relative.singleton()) == Some(U256::ZERO) {
         Some(view.offset.clone())
-    } else if offset.singleton() == Some(U256::ZERO) {
+    } else if view.offset.as_constant().or_else(|| offset.singleton()) == Some(U256::ZERO) {
         Some(at.clone())
     } else {
         Some(ExprId::constant(
-            offset.singleton()?.checked_add(relative.singleton()?)?,
+            view.offset
+                .as_constant()
+                .or_else(|| offset.singleton())?
+                .checked_add(at.as_constant().or_else(|| relative.singleton())?)?,
         ))
     }
 }
@@ -51,10 +76,8 @@ pub(super) fn copy_word_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>
 ) -> Option<ExprId> {
     let domain = numeric::numeric_domain_with(domain);
     let offset = numeric::scalar_in(at, context, domain);
-    offset
-        .interval()
-        .unsigned_bounds()
-        .1
+    at.as_constant()
+        .unwrap_or_else(|| offset.interval().unsigned_bounds().1)
         .checked_add(U256::from(31))?;
     let relative = if at == destination {
         U256::ZERO
@@ -63,11 +86,12 @@ pub(super) fn copy_word_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>
             .singleton()?
             .checked_sub(numeric::scalar_in(destination, context, domain).singleton()?)?
     };
-    if relative.checked_add(U256::from(31))?
-        >= numeric::scalar_in(length, context, domain)
-            .interval()
-            .unsigned_bounds()
-            .0
+    let end = relative.checked_add(U256::from(31))?;
+    let length_value = numeric::scalar_in(length, context, domain);
+    if end
+        >= length
+            .as_constant()
+            .unwrap_or_else(|| length_value.interval().unsigned_bounds().0)
     {
         return None;
     }

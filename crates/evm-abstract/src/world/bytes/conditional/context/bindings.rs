@@ -1,10 +1,11 @@
-//! Extra binding-hook work on the same caller ledger as a prepaid word read.
+//! Extra custom work on the same caller ledger as a prepaid word read.
 
 use crate::{domain::symbolic::ExprError, resource::WorkBudget};
 use std::cell::{Cell, RefCell};
 
 /// The original complete-read fee already funds ordinary actions. A stack-owned
-/// payer funds only extra custom binding work, without another ledger or cache.
+/// payer funds extra custom binding, copy and proof work, without another ledger
+/// or cache.
 pub(in crate::world::bytes) struct BindingBudget<'a> {
     budget: RefCell<&'a mut WorkBudget>,
     exhausted: Cell<bool>,

@@ -1021,7 +1021,7 @@ impl<N: WordElement> EvmByteArray<N> {
                 work = work.saturating_add(domain.projection_work(value));
             }
         });
-        work
+        work.saturating_add(self.retained_word_projection_work_with(domain, work))
     }
 }
 

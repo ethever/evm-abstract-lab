@@ -19,6 +19,8 @@ use std::{cell::Cell, collections::BTreeMap, fmt};
 
 static BINDING_IMPORTS: crate::test_instrumentation::Counter<usize> =
     crate::test_instrumentation::Counter::new(0);
+static SINGLETON_QUERIES: crate::test_instrumentation::Counter<usize> =
+    crate::test_instrumentation::Counter::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Word {
@@ -108,6 +110,7 @@ impl WordElement for Word {
         self.lower <= word && word <= self.upper && (!self.odd || word.bit(0))
     }
     fn singleton(&self) -> Option<U256> {
+        SINGLETON_QUERIES.update(|count| *count += 1);
         (self.lower == self.upper).then_some(self.lower)
     }
     fn is_top(&self) -> bool {
@@ -275,6 +278,158 @@ fn custom_word_survives_memory_history_and_summary_instantiation() {
     assert_ne!(first.state_root(), second.state_root());
     assert_eq!(summary, first.summary_projection_with(domain).unwrap());
     assert!(policy.numeric_algebra().applies.get() > 0);
+}
+
+#[test]
+fn full_hull_custom_word_keeps_identity_without_complete_standard_views() {
+    let algebra = ValueAlgebra::new(Words::new("whole word"));
+    let domain = algebra.borrowed();
+    let original = EvmValue::from_numeric(Word {
+        lower: U256::ZERO,
+        upper: U256::MAX,
+        odd: true,
+    });
+    assert!(original.numeric().observation().is_top());
+    assert!(original.interval().is_top());
+    assert_eq!(original.constants(), None);
+    assert!(!original.numeric().is_top());
+    let mut memory = EvmByteArray::memory();
+    memory
+        .write_word_with(&literal(0), &original, 4096, domain)
+        .unwrap();
+    assert_odd(&memory.read_word_with(&literal(0), domain));
+    let summary = memory.summary_projection_with(domain).unwrap();
+    let first = summary.instantiate_with(domain).unwrap();
+    let second = summary.instantiate_with(domain).unwrap();
+    assert_odd(&first.read_word_with(&literal(0), domain));
+    assert_odd(&second.read_word_with(&literal(0), domain));
+    assert_ne!(first.state_root(), second.state_root());
+    assert_eq!(summary, first.summary_projection_with(domain).unwrap());
+    assert!(summary.work_size() >= first.work_size());
+    let joined = summary.join_with(&summary, domain, false);
+    assert_eq!(joined, summary);
+    assert_odd(
+        &joined
+            .instantiate_with(domain)
+            .unwrap()
+            .read_word_with(&literal(0), domain),
+    );
+    let mut unaligned = EvmByteArray::memory();
+    unaligned
+        .write_word_with(&literal(7), &original, 4096, domain)
+        .unwrap();
+    assert_odd(
+        &unaligned
+            .summary_projection_with(domain)
+            .unwrap()
+            .instantiate_with(domain)
+            .unwrap()
+            .read_word_with(&literal(7), domain),
+    );
+    let complete = unaligned
+        .slice_with(&literal(7), &literal(32), 4096, domain)
+        .unwrap();
+    assert_odd(&complete.read_word_with(&literal(0), domain));
+    assert_odd(
+        &complete
+            .summary_projection_with(domain)
+            .unwrap()
+            .instantiate_with(domain)
+            .unwrap()
+            .read_word_with(&literal(0), domain),
+    );
+
+    // A whole-word predicate cannot survive a real partial overwrite: word 1
+    // is allowed before the write, and word 2 is allowed afterwards.
+    let mut changed = first.clone();
+    changed
+        .write_byte_with(&literal(31), &literal(2), 4096, domain)
+        .unwrap();
+    assert!(
+        changed
+            .read_word_with(&literal(0), domain)
+            .contains(U256::from(2))
+    );
+    let mut aliased = first.clone();
+    let at = ExprId::fresh().unwrap();
+    aliased.root = aliased
+        .root
+        .write_byte(
+            at.clone(),
+            ExprId::constant(U256::from(2)),
+            super::limits(domain).into(),
+        )
+        .unwrap();
+    aliased.operands.insert(
+        at,
+        EvmValue::from_numeric(Word::bounds(U256::ZERO, U256::from(31))),
+    );
+    assert!(
+        aliased
+            .read_word_with(&literal(0), domain)
+            .contains(U256::from(2))
+    );
+    assert!(
+        aliased
+            .summary_projection_with(domain)
+            .unwrap()
+            .instantiate_with(domain)
+            .unwrap()
+            .read_word_with(&literal(0), domain)
+            .contains(U256::from(2))
+    );
+    let changed = changed
+        .summary_projection_with(domain)
+        .unwrap()
+        .instantiate_with(domain)
+        .unwrap();
+    assert!(
+        changed
+            .read_word_with(&literal(0), domain)
+            .contains(U256::from(2))
+    );
+    // Truncating the low byte of allowed word 1, then padding, can yield zero.
+    let padded = first
+        .slice_with(&literal(0), &literal(31), 4096, domain)
+        .unwrap();
+    assert!(
+        padded
+            .read_word_with(&literal(0), domain)
+            .contains(U256::ZERO)
+    );
+    assert!(
+        padded
+            .summary_projection_with(domain)
+            .unwrap()
+            .instantiate_with(domain)
+            .unwrap()
+            .read_word_with(&literal(0), domain)
+            .contains(U256::ZERO)
+    );
+}
+
+#[test]
+fn additional_nonwrapping_singleton_proof_is_paid_before_the_custom_query() {
+    let _queries = SINGLETON_QUERIES.scope();
+    let algebra = ValueAlgebra::new(Words::new("word bound payment"));
+    let domain = algebra.borrowed();
+    let at = ExprId::fresh().unwrap();
+    let value = literal(0);
+    let fee = value.singleton_work();
+    let facts = BTreeMap::from([(at.clone(), value)]);
+    let conditional = conditional::ConditionalFacts::default();
+    for (funded, allowance) in [(false, fee - 1), (true, fee)] {
+        SINGLETON_QUERIES.replace(0);
+        let mut budget = WorkBudget::new(allowance);
+        let payer = conditional::BindingBudget::new(&mut budget);
+        let context = conditional::Context::prepaid(&facts, Some(&conditional), domain, &payer);
+        assert_eq!(
+            super::reads::nonwrapping_word(&at, &context, domain),
+            funded
+        );
+        assert_eq!(context.work_exhausted(), !funded);
+        assert_eq!(SINGLETON_QUERIES.replace(0), usize::from(funded));
+    }
 }
 
 #[test]
@@ -701,4 +856,46 @@ fn word_plan_reserves_the_heavy_offset_snapshot_before_cloning_it() {
         HEAVY_CLONES.replace(0) > 0,
         "funded snapshot did not exercise custom Clone"
     );
+}
+
+#[test]
+fn retained_word_lookup_pays_before_copying_the_actual_custom_payload() {
+    use crate::domain::symbolic::{ByteStateId, ByteView, SourceId};
+    let _scope = HEAVY_CLONES.scope();
+    let algebra = ValueAlgebra::new(HeavyWords::default());
+    let domain = algebra.borrowed();
+    let expression = ExprId::word_read(
+        ByteView::new(
+            ByteStateId::input(SourceId::fresh().unwrap(), ExprId::constant(U256::from(32))),
+            ExprId::constant(U256::ZERO),
+            ExprId::constant(U256::from(32)),
+        ),
+        ExprId::constant(U256::ZERO),
+        super::limits(domain),
+    )
+    .unwrap();
+    let value = EvmValue::from_numeric(Heavy {
+        word: Word {
+            lower: U256::ZERO,
+            upper: U256::MAX,
+            odd: true,
+        },
+        payload: vec![7; 64 * 1024],
+    });
+    let fee = value.clone_work();
+    let facts = BTreeMap::from([(expression.clone(), value)]);
+    let conditional = conditional::ConditionalFacts::default();
+    for (funded, allowance) in [(false, fee - 1), (true, fee)] {
+        let mut budget = WorkBudget::new(allowance);
+        let payer = conditional::BindingBudget::new(&mut budget);
+        let context = conditional::Context::prepaid(&facts, Some(&conditional), domain, &payer);
+        HEAVY_CLONES.replace(0);
+        let value = context.retained_word(&expression, domain);
+        assert_eq!(value.is_some(), funded);
+        assert_eq!(context.work_exhausted(), !funded);
+        assert_eq!(HEAVY_CLONES.replace(0), usize::from(funded));
+        if let Some(value) = value {
+            assert!(value.numeric().word.odd);
+        }
+    }
 }

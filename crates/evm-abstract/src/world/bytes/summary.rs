@@ -22,6 +22,7 @@ mod layout;
 mod presentation;
 #[cfg(test)]
 mod retention_tests;
+mod words;
 
 pub(in crate::world) fn scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     value: &EvmValue<N>,
@@ -151,9 +152,37 @@ pub struct EvmByteArraySummary<N: WordElement> {
     length: EvmValue<N>,
     memory: bool,
     content: Content<N>,
+    // Unsupported predicates of complete fixed word windows. Scalar payloads
+    // contain no old root identity; instantiation binds them to its fresh root.
+    words: BTreeMap<usize, EvmValue<N>>,
 }
 
 impl<N: WordElement> EvmByteArray<N> {
+    pub(super) fn retained_word_projection_work_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+        projection: usize,
+    ) -> usize {
+        if !words::needed(self) {
+            return 0;
+        }
+        let scalar = self
+            .operands
+            .values()
+            .chain([&self.length, &self.default])
+            .fold(0usize, |work, value| {
+                work.saturating_add(value.singleton_work())
+                    .saturating_add(value.clone_work())
+            });
+        // At most one complete demand per 32 retained bytes. The existing
+        // full-read and projection quotes cover evaluation and scalar policy;
+        // custom query/copy fees cover the additional retained word payloads.
+        self.word_numeric_work_with(&self.length, domain)
+            .saturating_add(projection)
+            .saturating_add(scalar)
+            .saturating_mul(COPY_FACT_LIMIT / 32)
+    }
+
     /// Evaluate the complete content graph before forgetting its correlations.
     pub fn summary_projection_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
@@ -217,6 +246,7 @@ impl<N: WordElement> EvmByteArray<N> {
             length: scalar(&self.length, domain),
             memory: self.memory,
             content,
+            words: words::project(self, domain)?,
         })
     }
 }
@@ -290,6 +320,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
             .saturating_add(content_work)
             .saturating_add(length_work.saturating_mul(2))
             .saturating_add(14)
+            .saturating_add(words::work(&self.words, content_work, length_nodes))
     }
 
     /// Complete numerical union. Widening affects growing word fields only.
@@ -326,6 +357,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
             length: join_scalar(&self.length, &other.length, domain, widen),
             memory: self.memory && other.memory,
             content,
+            words: words::join(&self.words, &other.words, domain, widen),
         }
     }
 
@@ -482,6 +514,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
             out.operands.insert(expression.clone(), out.length.clone());
         }
         presentation::refresh(&mut out, bare_cells, domain)?;
+        words::instantiate(&self.words, &mut out, domain)?;
         out.check_existing(limits(domain))?;
         Ok(out)
     }
