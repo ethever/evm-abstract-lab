@@ -1,0 +1,2785 @@
+{
+  "schema": "trait-cooperation-performance-v1",
+  "platform": "x86_64-linux",
+  "runs": 84,
+  "pairs": 42,
+  "repetitions_per_cell": 3,
+  "artifacts": {
+    "A": {
+      "source_commit": "c81b04e96cbab358a52c519285ca6f8ddef2b063",
+      "source_tree": "6f4a04c2954d48ffd69586b09786ead5fae00f49",
+      "source_clean": true,
+      "elf_sha256": "708cda782175cc36ed03764acf993c3dca1437c80c1daa1d696e772d3334cb1a",
+      "nix": {
+        "drv": "/nix/store/i4rzkvri6m9p91iain65j92dcgjh5sjl-evm-abstract-cli-0.4.0.drv",
+        "out": "/nix/store/39gllyj6wrkcskkf4l7qyw873626ipsp-evm-abstract-cli-0.4.0"
+      },
+      "cost_version": 4
+    },
+    "B": {
+      "source_commit": "20505f19efe8cae5d2472d347a2e65b1ec5a830d",
+      "source_tree": "293f8eb927e610031b8ef48e08bed67606c333dd",
+      "source_clean": true,
+      "elf_sha256": "401939a53dad58ee2d5c323ce613376d7ed5ee08eaedff7d47dd9b3eb8a8ab32",
+      "nix": {
+        "drv": "/nix/store/6vls3ihds3113n1kq9hw18qdkhysl1j9-evm-abstract-cli-0.4.0.drv",
+        "out": "/nix/store/d9j33c0h3jrqx1a2bmk8jyp12m39nckp-evm-abstract-cli-0.4.0"
+      },
+      "cost_version": 5
+    }
+  },
+  "profiles": {
+    "default-2b-on": {
+      "config": {
+        "analysis": {
+          "domain_profile": "product",
+          "reduction_rounds": 16,
+          "max_facts": 4096,
+          "relations": {
+            "enabled": true,
+            "max_constraints": 2048,
+            "max_nodes": 16384,
+            "max_depth": 256
+          },
+          "max_constants": 512,
+          "context_depth": 128,
+          "max_states": 100000,
+          "max_transfers": 10000000
+        },
+        "max_work": 2000000000,
+        "max_call_depth": 1025,
+        "max_memory_bytes": 67108864,
+        "use_summaries": true,
+        "root_terminal_coverage": true
+      },
+      "argv_templates": {
+        "unknown-input": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "2000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--root-terminal-coverage"
+        ],
+        "dynamic-jump": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "2000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--root-terminal-coverage"
+        ],
+        "loop": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "2000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--root-terminal-coverage"
+        ],
+        "unknown-callback": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "2000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--root-terminal-coverage"
+        ],
+        "memory-copy": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "2000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--root-terminal-coverage"
+        ],
+        "weth-fixedstate": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+          "--format",
+          "json",
+          "--evm.coinbase",
+          "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+          "--evm.timestamp",
+          "0x6acda8f3",
+          "--evm.number",
+          "0x18f7d5e",
+          "--evm.prevrandao",
+          "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+          "--evm.gas-limit",
+          "0x3938700",
+          "--evm.chain-id",
+          "0x1",
+          "--evm.basefee",
+          "0x40800d1",
+          "--evm.blob-basefee",
+          "0x3d73da",
+          "--evm.block-hash",
+          "0x18f7d5d:0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "2000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--root-terminal-coverage"
+        ],
+        "usdc-fixedstate": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "--format",
+          "json",
+          "--evm.coinbase",
+          "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+          "--evm.timestamp",
+          "0x6acda8f3",
+          "--evm.number",
+          "0x18f7d5e",
+          "--evm.prevrandao",
+          "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+          "--evm.gas-limit",
+          "0x3938700",
+          "--evm.chain-id",
+          "0x1",
+          "--evm.basefee",
+          "0x40800d1",
+          "--evm.blob-basefee",
+          "0x3d73da",
+          "--evm.block-hash",
+          "0x18f7d5d:0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "2000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--root-terminal-coverage"
+        ]
+      }
+    },
+    "fixed-1t-off": {
+      "config": {
+        "analysis": {
+          "domain_profile": "product",
+          "reduction_rounds": 16,
+          "max_facts": 4096,
+          "relations": {
+            "enabled": true,
+            "max_constraints": 2048,
+            "max_nodes": 16384,
+            "max_depth": 256
+          },
+          "max_constants": 512,
+          "context_depth": 128,
+          "max_states": 100000,
+          "max_transfers": 10000000
+        },
+        "max_work": 1000000000000,
+        "max_call_depth": 1025,
+        "max_memory_bytes": 67108864,
+        "use_summaries": true,
+        "root_terminal_coverage": false
+      },
+      "argv_templates": {
+        "unknown-input": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "1000000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--no-root-terminal-coverage"
+        ],
+        "dynamic-jump": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "1000000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--no-root-terminal-coverage"
+        ],
+        "loop": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "1000000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--no-root-terminal-coverage"
+        ],
+        "unknown-callback": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "1000000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--no-root-terminal-coverage"
+        ],
+        "memory-copy": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0x0000000000000000000000000000000000000101",
+          "--format",
+          "json",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "1000000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--no-root-terminal-coverage"
+        ],
+        "weth-fixedstate": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+          "--format",
+          "json",
+          "--evm.coinbase",
+          "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+          "--evm.timestamp",
+          "0x6acda8f3",
+          "--evm.number",
+          "0x18f7d5e",
+          "--evm.prevrandao",
+          "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+          "--evm.gas-limit",
+          "0x3938700",
+          "--evm.chain-id",
+          "0x1",
+          "--evm.basefee",
+          "0x40800d1",
+          "--evm.blob-basefee",
+          "0x3d73da",
+          "--evm.block-hash",
+          "0x18f7d5d:0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "1000000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--no-root-terminal-coverage"
+        ],
+        "usdc-fixedstate": [
+          "BINARY",
+          "analyze",
+          "--world",
+          "WORLD",
+          "--evm.to",
+          "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "--format",
+          "json",
+          "--evm.coinbase",
+          "0x85C2E985A4fb5c3fF25eE27Ee424abd851E4cB33",
+          "--evm.timestamp",
+          "0x6acda8f3",
+          "--evm.number",
+          "0x18f7d5e",
+          "--evm.prevrandao",
+          "0x6dd5bdb6b04951066eadd075313e5fbd67082d5ca52f1212d493ca3b1277824c",
+          "--evm.gas-limit",
+          "0x3938700",
+          "--evm.chain-id",
+          "0x1",
+          "--evm.basefee",
+          "0x40800d1",
+          "--evm.blob-basefee",
+          "0x3d73da",
+          "--evm.block-hash",
+          "0x18f7d5d:0xe1e6c8589f57a55664b6de7fd07ab42eea0b0dd8f2862e0002f69aaf5fa7806a",
+          "--max-states",
+          "100000",
+          "--max-transfers",
+          "10000000",
+          "--context-depth",
+          "128",
+          "--max-constants",
+          "512",
+          "--max-work",
+          "1000000000000",
+          "--max-call-depth",
+          "1025",
+          "--max-memory-bytes",
+          "67108864",
+          "--reduction-rounds",
+          "16",
+          "--max-facts",
+          "4096",
+          "--max-relations",
+          "2048",
+          "--max-symbolic-nodes",
+          "16384",
+          "--max-symbolic-depth",
+          "256",
+          "--domain",
+          "product",
+          "--no-root-terminal-coverage"
+        ]
+      }
+    }
+  },
+  "input_identity_sha256": {
+    "unknown-input": "f230b7576eeba3698a8d831cbb7cf635b004c326641c52da317e10ed3acb3fb3",
+    "dynamic-jump": "6683d88dde0a49bef6826cd85ffc79b124f783b16e420993fbb33cbdcba3321a",
+    "loop": "88e3e41d76635094f3632e2a82623c5d9cc3f03233a7f40cd0e41c267e521796",
+    "unknown-callback": "9d6d9e4606d8661fecd8c7de62eba1014ef00c2792fd4993fdca415a8896af58",
+    "memory-copy": "67674232223c0542f397a5debe72a0c963e72c930399135bf9a0a998fa83384b",
+    "weth-fixedstate": "525555fae01c70189b0968cbaf725e71f6bf1231cb8fccbfb1dca38e270e7290",
+    "usdc-fixedstate": "587ef8ca29696479efbea9ae668c922ab834e01e5e98bc65d0daae37585faa5e"
+  },
+  "guards": {
+    "unknown-input": {
+      "timeout_seconds": 30,
+      "rss_limit_kib": 2097152,
+      "host_available_floor_kib": 20971520,
+      "poll_seconds": 0.25,
+      "report_parse_limit_bytes": 67108864
+    },
+    "dynamic-jump": {
+      "timeout_seconds": 30,
+      "rss_limit_kib": 2097152,
+      "host_available_floor_kib": 20971520,
+      "poll_seconds": 0.25,
+      "report_parse_limit_bytes": 67108864
+    },
+    "loop": {
+      "timeout_seconds": 30,
+      "rss_limit_kib": 2097152,
+      "host_available_floor_kib": 20971520,
+      "poll_seconds": 0.25,
+      "report_parse_limit_bytes": 67108864
+    },
+    "unknown-callback": {
+      "timeout_seconds": 30,
+      "rss_limit_kib": 2097152,
+      "host_available_floor_kib": 20971520,
+      "poll_seconds": 0.25,
+      "report_parse_limit_bytes": 67108864
+    },
+    "memory-copy": {
+      "timeout_seconds": 30,
+      "rss_limit_kib": 2097152,
+      "host_available_floor_kib": 20971520,
+      "poll_seconds": 0.25,
+      "report_parse_limit_bytes": 67108864
+    },
+    "weth-fixedstate": {
+      "timeout_seconds": 60,
+      "rss_limit_kib": 8388608,
+      "host_available_floor_kib": 20971520,
+      "poll_seconds": 0.25,
+      "report_parse_limit_bytes": 67108864
+    },
+    "usdc-fixedstate": {
+      "timeout_seconds": 120,
+      "rss_limit_kib": 8388608,
+      "host_available_floor_kib": 20971520,
+      "poll_seconds": 0.25,
+      "report_parse_limit_bytes": 67108864
+    }
+  },
+  "host": {
+    "cpu_affinity": [
+      40
+    ],
+    "output_filesystem": "ext4 for both roles",
+    "no_concurrent_task_builds_or_tests": true,
+    "existing_node_services_unchanged": true
+  },
+  "measurement": {
+    "timer": "native exec through JSON serialization and process reaping",
+    "native_terminations": {
+      "normal_exit": 66,
+      "process_error": 18
+    },
+    "strict_stream_valid_reports": 84,
+    "whole_report_guard_passes": 63,
+    "whole_report_guard_failures": 21,
+    "whole_report_guard_bytes": 67108864,
+    "record_stream_guard_bytes": 67108864,
+    "guard_failures_reclassified_as_success": false,
+    "cross_version_work_ratios_used": false,
+    "whole_program_semantic_inclusion": "not established by this benchmark; component/concrete regression evidence is documented separately"
+  },
+  "cells": [
+    {
+      "profile": "default-2b-on",
+      "case": "unknown-input",
+      "A": {
+        "wall_median_seconds": 0.01016401732340455,
+        "wall_samples_seconds": [
+          0.010173359885811806,
+          0.008784185163676739,
+          0.01016401732340455
+        ],
+        "rss_median_kib": 23576,
+        "stdout_median_bytes": 213071,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 1,
+            "outcomes": 4
+          },
+          "transfers": 1,
+          "work": 25412223,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 3,
+            "Return": 1
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "000-default-2b-on-unknown-input-pair1-A",
+            "sha256": "35d6141e5d15eedeefbb2d14c0a745021ff7d800d7a43b39e47c6e12bc1049eb",
+            "bytes": 213071,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "003-default-2b-on-unknown-input-pair2-A",
+            "sha256": "d69c38a95583441b7d5d4412cee96e3273b9df512eb0bb47a4200d7a2095d6e6",
+            "bytes": 213071,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "004-default-2b-on-unknown-input-pair3-A",
+            "sha256": "123604e1e87e52b819f62de22ac62f51964bebf263f8b92a7998716bd3d76ca2",
+            "bytes": 213071,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.010209204163402319,
+        "wall_samples_seconds": [
+          0.010209204163402319,
+          0.010342394933104515,
+          0.006533061619848013
+        ],
+        "rss_median_kib": 23576,
+        "stdout_median_bytes": 213071,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 1,
+            "outcomes": 4
+          },
+          "transfers": 1,
+          "work": 18357264,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 3,
+            "Return": 1
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "001-default-2b-on-unknown-input-pair1-B",
+            "sha256": "af71b7537546870c4e5d27d86b6be97ef317a5b3fb5e4746c4c25751003e245e",
+            "bytes": 213071,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "002-default-2b-on-unknown-input-pair2-B",
+            "sha256": "6bbb4d8a739d4b9f9c9e9b1d2a82f65831095d750cf60b0427d7e39be352e549",
+            "bytes": 213071,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "005-default-2b-on-unknown-input-pair3-B",
+            "sha256": "e34659471f2e66d5366992b82e16e7fcf81e36fdf3f68a63265e9cdec0b029af",
+            "bytes": 213071,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "default-2b-on",
+      "case": "dynamic-jump",
+      "A": {
+        "wall_median_seconds": 0.012419949751347303,
+        "wall_samples_seconds": [
+          0.012620415072888136,
+          0.01064943429082632,
+          0.012419949751347303
+        ],
+        "rss_median_kib": 23820,
+        "stdout_median_bytes": 370223,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 3,
+            "edges": 2,
+            "diagnostics": 1,
+            "outcomes": 8
+          },
+          "transfers": 3,
+          "work": 35125472,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "\"UnknownJump\"": 1
+          },
+          "detailed_outcomes": {
+            "Failure": 6,
+            "Return": 2
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "007-default-2b-on-dynamic-jump-pair1-A",
+            "sha256": "a71422afe4f030b48ea049f586b8b26cea3d5958e8a4948c4eb5d852174a856b",
+            "bytes": 370223,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "008-default-2b-on-dynamic-jump-pair2-A",
+            "sha256": "7dba7b99002fce0ef394c76cc93960611d6b240adc5c5430ea5f15571c926f3c",
+            "bytes": 370223,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "011-default-2b-on-dynamic-jump-pair3-A",
+            "sha256": "ad10284d21b794868036028f575b4c49dfd034cda9acb337628cd4283c59dd01",
+            "bytes": 370223,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.011255733668804169,
+        "wall_samples_seconds": [
+          0.00733909010887146,
+          0.011255733668804169,
+          0.013791605364531279
+        ],
+        "rss_median_kib": 23576,
+        "stdout_median_bytes": 370223,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 3,
+            "edges": 2,
+            "diagnostics": 1,
+            "outcomes": 8
+          },
+          "transfers": 3,
+          "work": 30165628,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "\"UnknownJump\"": 1
+          },
+          "detailed_outcomes": {
+            "Failure": 6,
+            "Return": 2
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "006-default-2b-on-dynamic-jump-pair1-B",
+            "sha256": "07e5bba9acc85d9babd6e529de5bc08ef3f8dc64df4b406bdc14b99dc060fbdd",
+            "bytes": 370223,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "009-default-2b-on-dynamic-jump-pair2-B",
+            "sha256": "144bcd5da3be29c38f63f2d04c31a277911b4c3f6b9d864f0e651ec1e5c9a3d5",
+            "bytes": 370223,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "010-default-2b-on-dynamic-jump-pair3-B",
+            "sha256": "70b15f8f16d49e1f469da511943d1737bb0b645f7f4e02ae3f3ecd8a7708c46c",
+            "bytes": 370223,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "default-2b-on",
+      "case": "loop",
+      "A": {
+        "wall_median_seconds": 0.02182091400027275,
+        "wall_samples_seconds": [
+          0.02182091400027275,
+          0.02511150809004903,
+          0.018025525845587254
+        ],
+        "rss_median_kib": 23608,
+        "stdout_median_bytes": 945822,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 7,
+            "edges": 7,
+            "outcomes": 13
+          },
+          "transfers": 13,
+          "work": 361238383,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 9,
+            "Return": 4
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "012-default-2b-on-loop-pair1-A",
+            "sha256": "24dc5164e222c68e269ed310bbb63ec2f61896934099fe5eb3e278187621890f",
+            "bytes": 945822,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "015-default-2b-on-loop-pair2-A",
+            "sha256": "2eeda991c45b31e25c36cc08468cc0162cc15936d5cb595c4a093177b2a91e9c",
+            "bytes": 945822,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "016-default-2b-on-loop-pair3-A",
+            "sha256": "158a941316b89ecf41308eb0ceda4c48e43cac232e8888ffd2128c900b005be4",
+            "bytes": 945822,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.0174958691932261,
+        "wall_samples_seconds": [
+          0.0174958691932261,
+          0.014769387897104025,
+          0.026781557127833366
+        ],
+        "rss_median_kib": 23576,
+        "stdout_median_bytes": 945821,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 7,
+            "edges": 7,
+            "outcomes": 13
+          },
+          "transfers": 13,
+          "work": 75931705,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 9,
+            "Return": 4
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "013-default-2b-on-loop-pair1-B",
+            "sha256": "17b84ce20a82ab0dec6f0ccabb1317bcd8f391c63ccb59b051794c180793bcae",
+            "bytes": 945821,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "014-default-2b-on-loop-pair2-B",
+            "sha256": "8693361047b58c07e0af15f2f04c230c40b6baef4bbea4ebcfddd096ca60cc9c",
+            "bytes": 945821,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "017-default-2b-on-loop-pair3-B",
+            "sha256": "a2ac66f902a25683f9a8a59dd484dbd7e2c66a5edeec0afb729744a383b6ecb7",
+            "bytes": 945821,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "default-2b-on",
+      "case": "unknown-callback",
+      "A": {
+        "wall_median_seconds": 0.11936431471258402,
+        "wall_samples_seconds": [
+          0.12343780370429158,
+          0.11629392625764012,
+          0.11936431471258402
+        ],
+        "rss_median_kib": 37584,
+        "stdout_median_bytes": 9314813,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 27,
+            "edges": 53,
+            "diagnostics": 3,
+            "outcomes": 16,
+            "summaries": 18,
+            "procedure_summaries": 2
+          },
+          "transfers": 79,
+          "work": 518667491,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 3
+          },
+          "detailed_outcomes": {
+            "Failure": 13,
+            "Return": 3
+          },
+          "summary_closed_counts": {
+            "summaries:None": 18,
+            "procedure_summaries:True": 2
+          },
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "019-default-2b-on-unknown-callback-pair1-A",
+            "sha256": "0e46f22fce060006b7751c7af0172e76de7cb20813127150727fa2f2123f1e0e",
+            "bytes": 9314813,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "020-default-2b-on-unknown-callback-pair2-A",
+            "sha256": "fb6fc6126d6015c0801c08798640b4fc73c6e1fe09a412ad3082c5a62e5ee80a",
+            "bytes": 9314813,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "023-default-2b-on-unknown-callback-pair3-A",
+            "sha256": "48461ae8088c7f6bff2807f367f953ad3097d8c1aded38a524ccbacbaf3a601f",
+            "bytes": 9314813,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.1289057550020516,
+        "wall_samples_seconds": [
+          0.1289057550020516,
+          0.13096174178645015,
+          0.11869688099250197
+        ],
+        "rss_median_kib": 43124,
+        "stdout_median_bytes": 10653813,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 27,
+            "edges": 53,
+            "diagnostics": 3,
+            "outcomes": 16,
+            "summaries": 18,
+            "procedure_summaries": 3
+          },
+          "transfers": 81,
+          "work": 647383378,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 3
+          },
+          "detailed_outcomes": {
+            "Failure": 13,
+            "Return": 3
+          },
+          "summary_closed_counts": {
+            "summaries:None": 18,
+            "procedure_summaries:True": 3
+          },
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "018-default-2b-on-unknown-callback-pair1-B",
+            "sha256": "411375b693db120a656ba5523de32b2f0d9431feea33eef3dd9d9c6184b27685",
+            "bytes": 10653813,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "021-default-2b-on-unknown-callback-pair2-B",
+            "sha256": "6375bc409c11b2c4e55a0972b5d9e70916063eef28d63b2d0dcbe1b4d73113bc",
+            "bytes": 10653813,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "022-default-2b-on-unknown-callback-pair3-B",
+            "sha256": "c48ba7c046c42b78d6bfb7c0344246cc17cfe6d8aca10df673653560491e756d",
+            "bytes": 10653813,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "default-2b-on",
+      "case": "memory-copy",
+      "A": {
+        "wall_median_seconds": 0.009965622797608376,
+        "wall_samples_seconds": [
+          0.006977885961532593,
+          0.009965622797608376,
+          0.010938634630292654
+        ],
+        "rss_median_kib": 23600,
+        "stdout_median_bytes": 86635,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 1,
+            "outcomes": 5
+          },
+          "transfers": 1,
+          "work": 38055354,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 4,
+            "Return": 1
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "024-default-2b-on-memory-copy-pair1-A",
+            "sha256": "23149a4fef0c44c5f122625d2f41d280e94db2031c80ffa8b1c20c9a9f8d1dd3",
+            "bytes": 86635,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "027-default-2b-on-memory-copy-pair2-A",
+            "sha256": "9862fd4eedd518f2cbc23fbf5ee8470aa61a17f3cb4be21ef62bfb46b797a9e1",
+            "bytes": 86635,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "028-default-2b-on-memory-copy-pair3-A",
+            "sha256": "991459ea974b1ca81b8d7aab44ce1d9853da6d70c0b68fb4f76e748eb89d9515",
+            "bytes": 86635,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.010683587286621332,
+        "wall_samples_seconds": [
+          0.008441498968750238,
+          0.011474157217890024,
+          0.010683587286621332
+        ],
+        "rss_median_kib": 23564,
+        "stdout_median_bytes": 86635,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 1,
+            "outcomes": 5
+          },
+          "transfers": 1,
+          "work": 39558280,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 4,
+            "Return": 1
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "025-default-2b-on-memory-copy-pair1-B",
+            "sha256": "d09f0cb6f4c5ec2850045428b1f004b205bc3dc5eb801d90c30044f9b115fe23",
+            "bytes": 86635,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "026-default-2b-on-memory-copy-pair2-B",
+            "sha256": "d7903b89e0a35c5252b8418b7526079881a25259cf3df45d3dc9c4113f964d0d",
+            "bytes": 86635,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "029-default-2b-on-memory-copy-pair3-B",
+            "sha256": "7ecea42e40b58bb8392db652c0368d02c29e552b6f1b468613089defc698fc7d",
+            "bytes": 86635,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "default-2b-on",
+      "case": "weth-fixedstate",
+      "A": {
+        "wall_median_seconds": 0.3775718938559294,
+        "wall_samples_seconds": [
+          0.3838253440335393,
+          0.3775718938559294,
+          0.37717047007754445
+        ],
+        "rss_median_kib": 94280,
+        "stdout_median_bytes": 70620745,
+        "native_exits": [
+          2,
+          2,
+          2
+        ],
+        "terminations": [
+          "process_error",
+          "process_error",
+          "process_error"
+        ],
+        "whole_report_guard_passes": 0,
+        "semantic_summary": {
+          "status": "Incomplete",
+          "arrays": {
+            "states": 56,
+            "edges": 55,
+            "diagnostics": 3,
+            "frontiers": 10,
+            "outcomes": 64
+          },
+          "transfers": 47,
+          "work": 1985706880,
+          "frontier_reasons": {
+            "\"Work\"": 10
+          },
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 3
+          },
+          "detailed_outcomes": {
+            "Failure": 54,
+            "Return": 3,
+            "Revert": 7
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": true,
+            "scope": "AllInputStates",
+            "trigger": "Work",
+            "kinds": [
+              "Return",
+              "Revert",
+              "Failure"
+            ],
+            "shape_and_binding_checked": true,
+            "detailed_status_upgraded": false,
+            "semantic_gamma_inclusion_proved": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "031-default-2b-on-weth-fixedstate-pair1-A",
+            "sha256": "d78e7ca86e6728f084d41ddde47f272c6b3c4106a61bba8d515206bec289039b",
+            "bytes": 70620745,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "032-default-2b-on-weth-fixedstate-pair2-A",
+            "sha256": "6e837f2dcabc33cc2aab64a80e6302a6b8355e6af0a1cfe0a68a164694626265",
+            "bytes": 70620745,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "035-default-2b-on-weth-fixedstate-pair3-A",
+            "sha256": "a7e82f157b98c815c613a5d4b23ea40bc039254ec3fdc94a8dff1447a04c2673",
+            "bytes": 70620745,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.3017368377186358,
+        "wall_samples_seconds": [
+          0.3230283032171428,
+          0.2998563349246979,
+          0.3017368377186358
+        ],
+        "rss_median_kib": 75956,
+        "stdout_median_bytes": 55127735,
+        "native_exits": [
+          2,
+          2,
+          2
+        ],
+        "terminations": [
+          "process_error",
+          "process_error",
+          "process_error"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Incomplete",
+          "arrays": {
+            "states": 45,
+            "edges": 44,
+            "diagnostics": 2,
+            "frontiers": 9,
+            "outcomes": 52
+          },
+          "transfers": 38,
+          "work": 1999557125,
+          "frontier_reasons": {
+            "\"Work\"": 9
+          },
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 2
+          },
+          "detailed_outcomes": {
+            "Failure": 44,
+            "Return": 3,
+            "Revert": 5
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": true,
+            "scope": "AllInputStates",
+            "trigger": "Work",
+            "kinds": [
+              "Return",
+              "Revert",
+              "Failure"
+            ],
+            "shape_and_binding_checked": true,
+            "detailed_status_upgraded": false,
+            "semantic_gamma_inclusion_proved": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "030-default-2b-on-weth-fixedstate-pair1-B",
+            "sha256": "d4c986d14f3d5ba6240cca722512c93268a0894a0c718b7805b8783b24fd8bd2",
+            "bytes": 55127735,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "033-default-2b-on-weth-fixedstate-pair2-B",
+            "sha256": "5a69847ccb0fc19083477a51a39fb2957b7409217cb2154cca0794dd78bac98c",
+            "bytes": 55127735,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "034-default-2b-on-weth-fixedstate-pair3-B",
+            "sha256": "7549ac8b37ad252a1ef60f1465368e747e08099707387f0ccaa75903b2c32a4b",
+            "bytes": 55127735,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "default-2b-on",
+      "case": "usdc-fixedstate",
+      "A": {
+        "wall_median_seconds": 0.7631402830593288,
+        "wall_samples_seconds": [
+          0.7631402830593288,
+          0.7650956227444112,
+          0.755476163700223
+        ],
+        "rss_median_kib": 211272,
+        "stdout_median_bytes": 167848568,
+        "native_exits": [
+          2,
+          2,
+          2
+        ],
+        "terminations": [
+          "process_error",
+          "process_error",
+          "process_error"
+        ],
+        "whole_report_guard_passes": 0,
+        "semantic_summary": {
+          "status": "Incomplete",
+          "arrays": {
+            "states": 138,
+            "edges": 143,
+            "diagnostics": 6,
+            "frontiers": 14,
+            "outcomes": 84,
+            "summaries": 1
+          },
+          "transfers": 126,
+          "work": 1999953670,
+          "frontier_reasons": {
+            "\"Work\"": 14
+          },
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 6
+          },
+          "detailed_outcomes": {
+            "Failure": 73,
+            "Revert": 10,
+            "Return": 1
+          },
+          "summary_closed_counts": {
+            "summaries:None": 1
+          },
+          "root_terminal_coverage": {
+            "present": true,
+            "scope": "AllInputStates",
+            "trigger": "Work",
+            "kinds": [
+              "Return",
+              "Revert",
+              "Failure"
+            ],
+            "shape_and_binding_checked": true,
+            "detailed_status_upgraded": false,
+            "semantic_gamma_inclusion_proved": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "036-default-2b-on-usdc-fixedstate-pair1-A",
+            "sha256": "ae019fd1951b6dc3385b68f33675dcbe23271052da0afcfe56036d836aadbf41",
+            "bytes": 167848568,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "039-default-2b-on-usdc-fixedstate-pair2-A",
+            "sha256": "0080c00328a0864d30c1b640c48915f03baf791466602ac15bda83c80ca9dafb",
+            "bytes": 167848568,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "040-default-2b-on-usdc-fixedstate-pair3-A",
+            "sha256": "eacc77ed2fe14c6e2f1c5853847b36993cc70d0aae477548faf9478997db5950",
+            "bytes": 167848568,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.5351637420244515,
+        "wall_samples_seconds": [
+          0.5556233688257635,
+          0.5351637420244515,
+          0.5180594176054001
+        ],
+        "rss_median_kib": 151800,
+        "stdout_median_bytes": 118207014,
+        "native_exits": [
+          2,
+          2,
+          2
+        ],
+        "terminations": [
+          "process_error",
+          "process_error",
+          "process_error"
+        ],
+        "whole_report_guard_passes": 0,
+        "semantic_summary": {
+          "status": "Incomplete",
+          "arrays": {
+            "states": 107,
+            "edges": 111,
+            "frontiers": 14,
+            "outcomes": 42,
+            "summaries": 1
+          },
+          "transfers": 94,
+          "work": 1992030061,
+          "frontier_reasons": {
+            "\"Work\"": 14
+          },
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 35,
+            "Revert": 7
+          },
+          "summary_closed_counts": {
+            "summaries:None": 1
+          },
+          "root_terminal_coverage": {
+            "present": true,
+            "scope": "AllInputStates",
+            "trigger": "Work",
+            "kinds": [
+              "Return",
+              "Revert",
+              "Failure"
+            ],
+            "shape_and_binding_checked": true,
+            "detailed_status_upgraded": false,
+            "semantic_gamma_inclusion_proved": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "037-default-2b-on-usdc-fixedstate-pair1-B",
+            "sha256": "f4a0dff0e4ef57426452a804696bdd8bfb99cdc4779783c7e7abe3190f9d5bde",
+            "bytes": 118207014,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "038-default-2b-on-usdc-fixedstate-pair2-B",
+            "sha256": "45c3efd129bb5386333d72fcd6db40208d5af28d23900a77c7f4a519ec3e3ecc",
+            "bytes": 118207014,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "041-default-2b-on-usdc-fixedstate-pair3-B",
+            "sha256": "988997d8813521dbb0485b0ead4e24f14c602a484a4998645aceb0c4c6d0c48e",
+            "bytes": 118207014,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          }
+        ]
+      }
+    },
+    {
+      "profile": "fixed-1t-off",
+      "case": "unknown-input",
+      "A": {
+        "wall_median_seconds": 0.010188207030296326,
+        "wall_samples_seconds": [
+          0.010188207030296326,
+          0.006588842254132032,
+          0.010242409072816372
+        ],
+        "rss_median_kib": 23576,
+        "stdout_median_bytes": 213075,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 1,
+            "outcomes": 4
+          },
+          "transfers": 1,
+          "work": 21502296,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 3,
+            "Return": 1
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "043-fixed-1t-off-unknown-input-pair1-A",
+            "sha256": "3f0ca3b677e10a2149468fcc067ae1f3a3a187e3dcd7f602dfa8960b3376aca3",
+            "bytes": 213075,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "044-fixed-1t-off-unknown-input-pair2-A",
+            "sha256": "6af63c6a7b10489915ab56f2d5c51a9dfa88dca53523d8b7996b3ae65e9595bc",
+            "bytes": 213075,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "047-fixed-1t-off-unknown-input-pair3-A",
+            "sha256": "5960b112028ed6a91b91da70330723357e861308d78cfcced7df04d08a8b5ac8",
+            "bytes": 213075,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.008263031020760536,
+        "wall_samples_seconds": [
+          0.00989818386733532,
+          0.008010414894670248,
+          0.008263031020760536
+        ],
+        "rss_median_kib": 23576,
+        "stdout_median_bytes": 213075,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 1,
+            "outcomes": 4
+          },
+          "transfers": 1,
+          "work": 14447337,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 3,
+            "Return": 1
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "042-fixed-1t-off-unknown-input-pair1-B",
+            "sha256": "e7b98a20fa34a3f9a9b596dee2fc66de95c6a62deb3964c3e44db9f01421bb89",
+            "bytes": 213075,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "045-fixed-1t-off-unknown-input-pair2-B",
+            "sha256": "a938873bb6582f6bb3cf4888324654ecf87f852f65bdb0e27fa7a046eabc4810",
+            "bytes": 213075,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "046-fixed-1t-off-unknown-input-pair3-B",
+            "sha256": "5dd7d777c70dac1c4a15106a403b1f96e59b0528dbc1aacf14f15b80eb66e6b9",
+            "bytes": 213075,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "fixed-1t-off",
+      "case": "dynamic-jump",
+      "A": {
+        "wall_median_seconds": 0.01235572062432766,
+        "wall_samples_seconds": [
+          0.011049744207412004,
+          0.01235572062432766,
+          0.013117254711687565
+        ],
+        "rss_median_kib": 23572,
+        "stdout_median_bytes": 370227,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 3,
+            "edges": 2,
+            "diagnostics": 1,
+            "outcomes": 8
+          },
+          "transfers": 3,
+          "work": 31215301,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "\"UnknownJump\"": 1
+          },
+          "detailed_outcomes": {
+            "Failure": 6,
+            "Return": 2
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "048-fixed-1t-off-dynamic-jump-pair1-A",
+            "sha256": "3df929979a7ca8f231991c679da710a37043dfa461b924b2aeae4b5d1a055f22",
+            "bytes": 370227,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "051-fixed-1t-off-dynamic-jump-pair2-A",
+            "sha256": "bd581cf98e57f2e25e31fc613bb31f3fdf1679896d9e182cfb0bc9f9c6c185cf",
+            "bytes": 370227,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "052-fixed-1t-off-dynamic-jump-pair3-A",
+            "sha256": "8edb61df604beca53947a7a98788c05a87e2f6fca9e8e60b5990a292f742a749",
+            "bytes": 370227,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.012097394093871117,
+        "wall_samples_seconds": [
+          0.011342993006110191,
+          0.012097394093871117,
+          0.012824518140405416
+        ],
+        "rss_median_kib": 23576,
+        "stdout_median_bytes": 370227,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 3,
+            "edges": 2,
+            "diagnostics": 1,
+            "outcomes": 8
+          },
+          "transfers": 3,
+          "work": 26255457,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "\"UnknownJump\"": 1
+          },
+          "detailed_outcomes": {
+            "Failure": 6,
+            "Return": 2
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "049-fixed-1t-off-dynamic-jump-pair1-B",
+            "sha256": "d410ec7ab1aa0eb2275c4465ea000f31d7f37a24ab54b66667f1ac9104279bc0",
+            "bytes": 370227,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "050-fixed-1t-off-dynamic-jump-pair2-B",
+            "sha256": "11a45bab79567fe49d9c044f2f53300c71d1ce6c267fe8d0308af51a2755f473",
+            "bytes": 370227,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "053-fixed-1t-off-dynamic-jump-pair3-B",
+            "sha256": "c2201be401524e8b65a758047d06ea1b93e3d4f68ef4f6bbd318307e554f092b",
+            "bytes": 370227,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "fixed-1t-off",
+      "case": "loop",
+      "A": {
+        "wall_median_seconds": 0.019210285041481256,
+        "wall_samples_seconds": [
+          0.013807320967316628,
+          0.019210285041481256,
+          0.023178785108029842
+        ],
+        "rss_median_kib": 23600,
+        "stdout_median_bytes": 945706,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 7,
+            "edges": 7,
+            "outcomes": 13
+          },
+          "transfers": 13,
+          "work": 357327874,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 9,
+            "Return": 4
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "055-fixed-1t-off-loop-pair1-A",
+            "sha256": "11b67d38703b7da17c93966b83a8757d9e0c07be454a26489689b2081ce19bdc",
+            "bytes": 945706,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "056-fixed-1t-off-loop-pair2-A",
+            "sha256": "918b1fee0f6c70717ba750beeadec4c761fb030cab171211cf60c819dd527fad",
+            "bytes": 945706,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "059-fixed-1t-off-loop-pair3-A",
+            "sha256": "7fbd3d457a199e2fee3ee6c7dc277104fafede34c958b3997631805c04dfe0d6",
+            "bytes": 945706,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.02404925413429737,
+        "wall_samples_seconds": [
+          0.02404925413429737,
+          0.025436992291361094,
+          0.020284695085138083
+        ],
+        "rss_median_kib": 23604,
+        "stdout_median_bytes": 945705,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 7,
+            "edges": 7,
+            "outcomes": 13
+          },
+          "transfers": 13,
+          "work": 72021196,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 9,
+            "Return": 4
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "054-fixed-1t-off-loop-pair1-B",
+            "sha256": "c450dec3b6a58ee55d519bfa865d315ac8df0af82e50c7050761b05192372e30",
+            "bytes": 945705,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "057-fixed-1t-off-loop-pair2-B",
+            "sha256": "5808f1e8a39543adbddc49b60c4ea49b865c4b12c6df776374725386e252a3ec",
+            "bytes": 945705,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "058-fixed-1t-off-loop-pair3-B",
+            "sha256": "730f9497ed848e0570e85be6dcdae1001cf9bbe71eb3da88513df7743e486516",
+            "bytes": 945705,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "fixed-1t-off",
+      "case": "unknown-callback",
+      "A": {
+        "wall_median_seconds": 0.11898611532524228,
+        "wall_samples_seconds": [
+          0.1248802999034524,
+          0.11898611532524228,
+          0.11815556697547436
+        ],
+        "rss_median_kib": 37724,
+        "stdout_median_bytes": 9314605,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 27,
+            "edges": 53,
+            "diagnostics": 3,
+            "outcomes": 16,
+            "summaries": 18,
+            "procedure_summaries": 2
+          },
+          "transfers": 79,
+          "work": 515034040,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 3
+          },
+          "detailed_outcomes": {
+            "Failure": 13,
+            "Return": 3
+          },
+          "summary_closed_counts": {
+            "summaries:None": 18,
+            "procedure_summaries:True": 2
+          },
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "060-fixed-1t-off-unknown-callback-pair1-A",
+            "sha256": "7f33c9b95c85baae8caa0112aebb815b8b99d8fb12751154db2c5e8ff77ec093",
+            "bytes": 9314605,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "063-fixed-1t-off-unknown-callback-pair2-A",
+            "sha256": "eb57c7c852c9c41fec55f99c61342e7c415f854983ee1d8612804c9f87d449b4",
+            "bytes": 9314605,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "064-fixed-1t-off-unknown-callback-pair3-A",
+            "sha256": "5398459665575ac7847cf2324857af43d519c61a212b63f4501b92cd4a73158e",
+            "bytes": 9314605,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.1327665220014751,
+        "wall_samples_seconds": [
+          0.134271418210119,
+          0.13059208495542407,
+          0.1327665220014751
+        ],
+        "rss_median_kib": 42552,
+        "stdout_median_bytes": 10653605,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 27,
+            "edges": 53,
+            "diagnostics": 3,
+            "outcomes": 16,
+            "summaries": 18,
+            "procedure_summaries": 3
+          },
+          "transfers": 81,
+          "work": 647574426,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 3
+          },
+          "detailed_outcomes": {
+            "Failure": 13,
+            "Return": 3
+          },
+          "summary_closed_counts": {
+            "summaries:None": 18,
+            "procedure_summaries:True": 3
+          },
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "061-fixed-1t-off-unknown-callback-pair1-B",
+            "sha256": "a98e16b340725a04385f7425a87bb198036f23e7a35c6705b50e21ae305e3ca8",
+            "bytes": 10653605,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "062-fixed-1t-off-unknown-callback-pair2-B",
+            "sha256": "e48dda38895f33e1e5c362f1190c2cdb8584edb3630f0b8749f2ddcbaaca0137",
+            "bytes": 10653605,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "065-fixed-1t-off-unknown-callback-pair3-B",
+            "sha256": "aab924023bcc779224e0b9ee3f90ffcce075a219937b6cc7da2e440d376e5c8e",
+            "bytes": 10653605,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "fixed-1t-off",
+      "case": "memory-copy",
+      "A": {
+        "wall_median_seconds": 0.009026164188981056,
+        "wall_samples_seconds": [
+          0.008798250928521156,
+          0.009026164188981056,
+          0.010049703065305948
+        ],
+        "rss_median_kib": 23576,
+        "stdout_median_bytes": 86638,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 1,
+            "outcomes": 5
+          },
+          "transfers": 1,
+          "work": 34145415,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 4,
+            "Return": 1
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "067-fixed-1t-off-memory-copy-pair1-A",
+            "sha256": "04d7cfd13da0b5437601a9de16a677e0d6b4f6a0718cef622e1c8ccd797c8f01",
+            "bytes": 86638,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "068-fixed-1t-off-memory-copy-pair2-A",
+            "sha256": "5d55e2e4f9122f5e5cbe0d451b0656a03c15169257c689036e493e9e3d6d6ae7",
+            "bytes": 86638,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "071-fixed-1t-off-memory-copy-pair3-A",
+            "sha256": "fe050bfa47b1c7bd04088169a29c047b383f5b63fe60603e55532228e893b313",
+            "bytes": 86638,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 0.010058656800538301,
+        "wall_samples_seconds": [
+          0.011270902119576931,
+          0.010058656800538301,
+          0.009785816073417664
+        ],
+        "rss_median_kib": 23576,
+        "stdout_median_bytes": 86638,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 3,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 1,
+            "outcomes": 5
+          },
+          "transfers": 1,
+          "work": 35648341,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {},
+          "detailed_outcomes": {
+            "Failure": 4,
+            "Return": 1
+          },
+          "summary_closed_counts": {},
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "066-fixed-1t-off-memory-copy-pair1-B",
+            "sha256": "ecc923a7977ff852ea8ee964e55d7d5d9cfb212117026b975bbefd8e3c4f287b",
+            "bytes": 86638,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "069-fixed-1t-off-memory-copy-pair2-B",
+            "sha256": "a253e958eb9dbe6bd0990fdf3c3c0073d9caeaf785681c5c003f0043376a4964",
+            "bytes": 86638,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          },
+          {
+            "run_id": "070-fixed-1t-off-memory-copy-pair3-B",
+            "sha256": "100cb02f708cc4f33ce7c205d0fa24b4657393b0bdd602ecbb24dfdd2999b146",
+            "bytes": 86638,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": true
+          }
+        ]
+      }
+    },
+    {
+      "profile": "fixed-1t-off",
+      "case": "weth-fixedstate",
+      "A": {
+        "wall_median_seconds": 3.3964077471755445,
+        "wall_samples_seconds": [
+          3.3964077471755445,
+          3.4143357537686825,
+          3.392585985828191
+        ],
+        "rss_median_kib": 358332,
+        "stdout_median_bytes": 256024873,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 0,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 137,
+            "edges": 160,
+            "diagnostics": 91,
+            "outcomes": 244,
+            "summaries": 19,
+            "procedure_summaries": 1
+          },
+          "transfers": 482,
+          "work": 36338509174,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 91
+          },
+          "detailed_outcomes": {
+            "Failure": 213,
+            "Return": 16,
+            "Revert": 15
+          },
+          "summary_closed_counts": {
+            "summaries:None": 19,
+            "procedure_summaries:True": 1
+          },
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "072-fixed-1t-off-weth-fixedstate-pair1-A",
+            "sha256": "f293f1ac47ed54c559ed8a938000a1b212bb5791e67b444f25163fbe83cba65a",
+            "bytes": 256024873,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "075-fixed-1t-off-weth-fixedstate-pair2-A",
+            "sha256": "a67304f519c1553ca1cf30bb1c16ac2f695c339225b51f310399dcabd44a5e6c",
+            "bytes": 256024873,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "076-fixed-1t-off-weth-fixedstate-pair3-A",
+            "sha256": "af588573240028c47ad02bc07574e4da22cf01634d221f45509b71a2ef679cee",
+            "bytes": 256024873,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 3.6815125388093293,
+        "wall_samples_seconds": [
+          3.716413743328303,
+          3.6815125388093293,
+          3.6323102610185742
+        ],
+        "rss_median_kib": 359724,
+        "stdout_median_bytes": 256024873,
+        "native_exits": [
+          0,
+          0,
+          0
+        ],
+        "terminations": [
+          "normal_exit",
+          "normal_exit",
+          "normal_exit"
+        ],
+        "whole_report_guard_passes": 0,
+        "semantic_summary": {
+          "status": "Converged",
+          "arrays": {
+            "states": 137,
+            "edges": 160,
+            "diagnostics": 91,
+            "outcomes": 244,
+            "summaries": 19,
+            "procedure_summaries": 1
+          },
+          "transfers": 484,
+          "work": 36244266491,
+          "frontier_reasons": {},
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 91
+          },
+          "detailed_outcomes": {
+            "Failure": 213,
+            "Return": 16,
+            "Revert": 15
+          },
+          "summary_closed_counts": {
+            "summaries:None": 19,
+            "procedure_summaries:True": 1
+          },
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "073-fixed-1t-off-weth-fixedstate-pair1-B",
+            "sha256": "b71f71d77cf79b998cf31207605aed83eeeb9b367955f4b41f4a489ef2edb376",
+            "bytes": 256024873,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "074-fixed-1t-off-weth-fixedstate-pair2-B",
+            "sha256": "0dba8273611a6365d09af57a8dbf87e19091985a23dce8bae93419c51edca38e",
+            "bytes": 256024873,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "077-fixed-1t-off-weth-fixedstate-pair3-B",
+            "sha256": "ea166e25173da6431fb9bf8813e3fec7fb59b428a4c7a8373ed707f7e7dbc3ed",
+            "bytes": 256024873,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          }
+        ]
+      }
+    },
+    {
+      "profile": "fixed-1t-off",
+      "case": "usdc-fixedstate",
+      "A": {
+        "wall_median_seconds": 97.5892139179632,
+        "wall_samples_seconds": [
+          97.5892139179632,
+          97.54414944117889,
+          97.80528548639268
+        ],
+        "rss_median_kib": 1280620,
+        "stdout_median_bytes": 550217349,
+        "native_exits": [
+          2,
+          2,
+          2
+        ],
+        "terminations": [
+          "process_error",
+          "process_error",
+          "process_error"
+        ],
+        "whole_report_guard_passes": 0,
+        "semantic_summary": {
+          "status": "Incomplete",
+          "arrays": {
+            "states": 231,
+            "edges": 300,
+            "diagnostics": 40,
+            "frontiers": 825,
+            "outcomes": 84,
+            "summaries": 19,
+            "procedure_summaries": 1
+          },
+          "transfers": 13714,
+          "work": 999999952785,
+          "frontier_reasons": {
+            "\"Work\"": 803,
+            "\"SummaryWork\"": 22
+          },
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 40
+          },
+          "detailed_outcomes": {
+            "Failure": 73,
+            "Revert": 10,
+            "Return": 1
+          },
+          "summary_closed_counts": {
+            "summaries:None": 19,
+            "procedure_summaries:False": 1
+          },
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "079-fixed-1t-off-usdc-fixedstate-pair1-A",
+            "sha256": "268988f60bc243db6a6468771ca43ae16644f0119cea37299f07e86fd5758669",
+            "bytes": 550217349,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "080-fixed-1t-off-usdc-fixedstate-pair2-A",
+            "sha256": "4db95c96c3513438ba7a2dd60b778365d94cb3ae38ccb6b93a4fb324a11aac94",
+            "bytes": 550217349,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "083-fixed-1t-off-usdc-fixedstate-pair3-A",
+            "sha256": "74059775f722d713e5285297aaf2f748ba333d82a05fdba8f0ebec21580f8da6",
+            "bytes": 550217349,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          }
+        ]
+      },
+      "B": {
+        "wall_median_seconds": 94.96779491426423,
+        "wall_samples_seconds": [
+          94.96779491426423,
+          94.8710110313259,
+          95.1261852029711
+        ],
+        "rss_median_kib": 1388580,
+        "stdout_median_bytes": 654880032,
+        "native_exits": [
+          2,
+          2,
+          2
+        ],
+        "terminations": [
+          "process_error",
+          "process_error",
+          "process_error"
+        ],
+        "whole_report_guard_passes": 0,
+        "semantic_summary": {
+          "status": "Incomplete",
+          "arrays": {
+            "states": 231,
+            "edges": 300,
+            "diagnostics": 40,
+            "frontiers": 919,
+            "outcomes": 84,
+            "summaries": 19,
+            "procedure_summaries": 1
+          },
+          "transfers": 13989,
+          "work": 999999999751,
+          "frontier_reasons": {
+            "\"Work\"": 919
+          },
+          "diagnostic_kinds": {
+            "{\"RelationalPrecisionLost\": \"ExpressionLimit\"}": 40
+          },
+          "detailed_outcomes": {
+            "Failure": 73,
+            "Revert": 10,
+            "Return": 1
+          },
+          "summary_closed_counts": {
+            "summaries:None": 19,
+            "procedure_summaries:False": 1
+          },
+          "root_terminal_coverage": {
+            "present": false
+          }
+        },
+        "reports": [
+          {
+            "run_id": "078-fixed-1t-off-usdc-fixedstate-pair1-B",
+            "sha256": "751fc65eaa3223761b984bcf6b334fa16ebf0490865a96be44571f7267c03bed",
+            "bytes": 654880032,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "081-fixed-1t-off-usdc-fixedstate-pair2-B",
+            "sha256": "b1cbe7e41a6693ea2debd2212e001e458b8de79b91fba9ce2ecdf6fe3c59f1c4",
+            "bytes": 654880032,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          },
+          {
+            "run_id": "082-fixed-1t-off-usdc-fixedstate-pair3-B",
+            "sha256": "9d6d4eaea6376c74fd60abb1c9fd21f074ec800ad3b9828c9aecf536ff00888e",
+            "bytes": 654880032,
+            "strict_stream_valid": true,
+            "whole_report_guard_passed": false
+          }
+        ]
+      }
+    }
+  ],
+  "same_cost_repair_diagnostic": {
+    "before_commit": "2e5addf9c4d069f46337f4a44859eb941e180cd4",
+    "after_commit": "20505f19efe8cae5d2472d347a2e65b1ec5a830d",
+    "weth_seconds": [
+      7.370274133980274,
+      3.664528497029096
+    ],
+    "weth_complete_field_review": "Only one consistent process namespace and /work differed; all other fields, including ordering, retained facts, diagnostics, outcomes and closure, matched. Work remained visible:49926037341 ->36244266491.",
+    "usdc_before": {
+      "termination": "external_timeout",
+      "seconds": 120.19360855827108,
+      "report": false
+    },
+    "usdc_after": {
+      "termination": "process_error",
+      "native_exit": 2,
+      "seconds": 94.05776909319684,
+      "status": "Incomplete",
+      "strict_stream_valid": true
+    },
+    "scope": "one diagnostic pair per case, not substituted for the final84"
+  },
+  "evidence_sha256": {
+    "frozen_plan": "ed85e3b1cd4330894ef5346b4e26283c07f6d88e2d451cd370376546f70c2cb1",
+    "native_summary": "b4296b09d76fd9a25ba93b4ef79c3da7f3a7882e84d99d72d6c8312e1f6642de",
+    "complete_inspection": "7c22ca6fea015d7644ff4f17bd96219de330e50ff3fd706f25e1660ff05949a2",
+    "native_schedule_complete": "b92d798cdc9126b8c1cf60ca497705b42090180858d14bad39231981b03fa967"
+  }
+}

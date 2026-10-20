@@ -188,6 +188,8 @@ EVM 返回的详细 `Status::Converged` 与 `Status::Incomplete` 应连同诊断
 
 数值操作与观察导入还有自己的实际操作数/上下文报价协议，直接以当前 [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)、[默认域实现](../crates/evm-abstract/src/domain/product.rs)和[工作预算](../crates/evm-abstract/src/resource.rs)的契约为准。自定义策略若使用受计费的 literal 构造路径，需要为 `literal_quote_work` 显式提供可信的构造与释放成本上界；其默认值为 `usize::MAX`，会在构造前保守拒绝。发布按单次更新原子安装；成功的先前事实和已支付工作可以在之后中断时保留，整个异构任务不承诺一起回滚。具体语义回滚仍由 EVM 适配器负责。
 
+整字拼接也是可选的策略能力：`pack_word_numeric` 只有在能够替代同一策略的逐字节求值、保留额外约束与必需规则时才应返回结果。本地求值按顺序折叠，世界读取按平衡树合并；同一能力会被两处使用，等价声明需要分别覆盖这两个调用约定。受计费调用方先取得并支付 `pack_word_work`；没有报价时使用普通运算路径。返回载体的单值查询另按 `singleton_work` 付费，不能从默认载体查询便宜推断自定义载体也便宜。无账本的纯库调用仍由调用者承担费用，缺少报价不代表免费。默认域的 byte-cube 优化和相关验证见[性能与验收记录](trait-cooperation-validation.md)。
+
 ## 当前反馈端口和可信语义边界
 
 当前 EVM 反馈词汇就是 [`StackFacts`](../crates/evm-abstract/src/analysis/cooperation/facts.rs)：对活动帧从栈底计数的槽发布 `WordObservation` 保证，或显式证明该代不可达。解释器通过实际 `D` 把它们用于分离输入视图，保留载体和元数据。槽越界、错误 scope、失效代际或无效事实返回类型化失败。
@@ -196,4 +198,4 @@ EVM 返回的详细 `Status::Converged` 与 `Status::Incomplete` 应连同诊断
 
 Rust 检查类型、路由和借用，`Registered` 明确接受下降发布权限及其语义契约。组件作者仍需保证：事实对同一固定前提下的所有具体执行成立；join/widening 覆盖输入；局部合取保持共同具体含义；等价判定不会隐藏语义变化；报价覆盖实际工作。任意黑盒代码不会因为实现 Trait 就自动可靠。
 
-本例只实现一条有明确按位语义证明的规则，验证普通 EVM 反馈与两个移除对照。更广的闭包、代际、中断、递归摘要和载体边界证据及仍待完成的集成验收，见[验证记录](trait-cooperation-validation.md)。示例通过不能替代根集成的完整检查。
+本例只实现一条有明确按位语义证明的规则，验证普通 EVM 反馈与两个移除对照。更广的闭包、代际、中断、递归摘要、载体边界及对应提交的集成验收范围，见[验证记录](trait-cooperation-validation.md)。示例通过不能替代根集成的完整检查。
