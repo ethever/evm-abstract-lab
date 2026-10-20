@@ -57,6 +57,8 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 [代码与初始事实分层](docs/18-layered-analysis.md)介绍如何先只提供代码，再向同一快照注入观察并继续分析。可检查的数学性质及其与生产代码的对应边界见[形式化证明](docs/proofs/README.md)。
 
+要用 Rust 组合自己的数值域或独立分析组件，读[公开 Trait 协作指南](docs/trait-cooperation.md)。它从可运行的离线客户端开始，说明强类型事实、自动依赖调度、代际收缩和生产 EVM 反馈怎样共用同一个内核与工作预算。
+
 ## 从单段代码到多个合约
 
 单段 `.hex` 适合学习局部计算。跨合约的 `explain` 和 `analyze` 入口使用**世界文件**（world JSON）：把多个账户的代码、初始存储和其他已知事实放在一起，通过 `--evm.to` 指定 root frame 的目标。下面显式固定 caller、value 和 calldata 来重放教学场景；省略它们时使用符号输入。
