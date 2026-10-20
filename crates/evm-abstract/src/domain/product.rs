@@ -308,6 +308,15 @@ impl Domain {
     }
 
     pub(super) fn numeric_refinement_work(self, value: &NumericValue, facts: usize) -> usize {
+        self.numeric_refinement_work_with(value, facts, None)
+    }
+
+    pub(super) fn numeric_refinement_work_with(
+        self,
+        value: &NumericValue,
+        facts: usize,
+        closure_work: Option<usize>,
+    ) -> usize {
         let atoms = self.capacity().saturating_add(32);
         // Refinement cannot grow an existing finite cover. After the first
         // scalar pass its remaining candidates imply every exported summary;
@@ -336,7 +345,9 @@ impl Domain {
         } else {
             self.capacity().max(value.finite.work_size())
         };
-        let closure = self.numeric_closure_work(finite, rounds);
+        // A custom closure owns its complete allowance; built-in convergence
+        // shortcuts cannot clip it. Import/copy work remains outside that cap.
+        let closure = closure_work.unwrap_or_else(|| self.numeric_closure_work(finite, rounds));
         let facts = facts
             .saturating_add(1)
             .min(self.spec().fact_limit().saturating_add(1));
@@ -499,6 +510,14 @@ impl Domain {
         self,
         args: impl Iterator<Item = &'a NumericValue>,
     ) -> usize {
+        self.numeric_operation_work_with(args, None)
+    }
+
+    pub(super) fn numeric_operation_work_with<'a>(
+        self,
+        args: impl Iterator<Item = &'a NumericValue>,
+        closure_work: Option<usize>,
+    ) -> usize {
         let (tuples, all_finite, size, len, shapes, dyadic) = args.fold(
             (1usize, true, 0usize, 0usize, 0u8, true),
             |(tuples, all, size, len, shapes, dyadic), v| {
@@ -546,7 +565,9 @@ impl Domain {
         };
         tuples
             .saturating_add(4096)
-            .saturating_add(self.numeric_closure_work(self.capacity(), rounds))
+            .saturating_add(
+                closure_work.unwrap_or_else(|| self.numeric_closure_work(self.capacity(), rounds)),
+            )
             .saturating_add(size)
     }
 }

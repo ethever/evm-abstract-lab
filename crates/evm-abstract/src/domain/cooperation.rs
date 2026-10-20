@@ -18,13 +18,17 @@ use analysis_kernel::{
 
 mod bits;
 mod bounds;
+mod cost;
 mod policy;
 mod scalar;
 #[cfg(test)]
 mod tests;
+mod work;
 pub use bits::{BoundsToMask, KeepMasks};
 pub use bounds::{KeepBounds, MaskToBounds};
+pub use cost::{BoundedWork, ComposedWork, ProductWork, RuleWork};
 pub use policy::ProductAlgebra;
+pub use work::Precharged;
 
 #[cfg(test)]
 pub(super) static PROTOCOL_WORK: crate::test_instrumentation::Counter<(usize, usize, usize)> =
@@ -208,22 +212,6 @@ pub type ProductChannels = Cons<
     >,
 >;
 
-/// A reservation carved from the caller's already-paid numeric operation.
-/// It bounds kernel overhead too; it is not a fresh root execution ledger.
-pub struct Precharged {
-    remaining: usize,
-}
-impl Meter for Precharged {
-    type Stop = WorkExhausted;
-    fn reserve(&mut self, amount: usize) -> Result<(), WorkExhausted> {
-        self.remaining = self.remaining.checked_sub(amount).ok_or(WorkExhausted)?;
-        Ok(())
-    }
-    fn checkpoint(&self) -> Result<(), WorkExhausted> {
-        Ok(())
-    }
-}
-
 /// Registered seed task, admitted exactly once in a fresh fixed-input scope.
 pub struct SeedInput {
     scope: Scope,
@@ -259,21 +247,13 @@ where
     }
 }
 
-pub(super) fn close<M, R>(
-    domain: Domain,
-    value: NumericValue,
-    masks: M,
-    bounds: R,
-) -> NumericReduction<NumericValue>
-where
-    M: Copy,
-    R: Copy,
-    for<'r, 'k> M: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
-    for<'r, 'k> R: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
-{
-    close_order(domain, value, masks, bounds, true)
+pub(super) fn close(domain: Domain, value: NumericValue) -> NumericReduction<NumericValue> {
+    // This convergence proof belongs only to this exact built-in assembly.
+    let work = domain.numeric_refinement_work(&value, 0);
+    close_with_work(domain, value, BoundsToMask, MaskToBounds, work)
 }
 
+#[cfg(test)]
 fn close_order<M, R>(
     domain: Domain,
     value: NumericValue,
@@ -282,20 +262,69 @@ fn close_order<M, R>(
     mask_first: bool,
 ) -> NumericReduction<NumericValue>
 where
+    M: Copy + RuleWork,
+    R: Copy + RuleWork,
+    for<'r, 'k> M: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
+    for<'r, 'k> R: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
+{
+    let work = ComposedWork.closure_work(
+        domain.spec(),
+        &masks,
+        &bounds,
+        domain.capacity().max(value.finite.work_size()),
+    );
+    close_order_with_work(domain, value, masks, bounds, mask_first, work)
+}
+
+pub(super) fn close_with_work<M, R>(
+    domain: Domain,
+    value: NumericValue,
+    masks: M,
+    bounds: R,
+    work: usize,
+) -> NumericReduction<NumericValue>
+where
     M: Copy,
     R: Copy,
     for<'r, 'k> M: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
     for<'r, 'k> R: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
 {
-    // All semantic work and dependency allocation was reserved at the facade.
-    let mut paid = Precharged {
-        remaining: domain.numeric_refinement_work(&value, 0),
+    close_order_with_work(domain, value, masks, bounds, true, work)
+}
+
+fn close_order_with_work<M, R>(
+    domain: Domain,
+    value: NumericValue,
+    masks: M,
+    bounds: R,
+    mask_first: bool,
+    work: usize,
+) -> NumericReduction<NumericValue>
+where
+    M: Copy,
+    R: Copy,
+    for<'r, 'k> M: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
+    for<'r, 'k> R: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
+{
+    let Some(cap) = domain
+        .spec()
+        .reduction_rounds()
+        .checked_mul(3)
+        .and_then(|steps| steps.checked_add(1))
+        .filter(|_| work != usize::MAX)
+    else {
+        return limited(value, ReductionStatus::WorkLimit);
     };
+    // All semantic work and dependency allocation was reserved at the facade.
+    let mut paid = Precharged::new(work);
+    if let Err(error) = paid.checkpoint() {
+        return limited(value, paid.failure_status(&KernelError::Stopped(error)));
+    }
     #[cfg(test)]
-    let prepaid = paid.remaining;
+    let prepaid = paid.remaining();
     let mut kernel = match Kernel::<ProductTask>::new() {
         Ok(k) => k,
-        Err(_) => return limited(value, ReductionStatus::RoundLimit),
+        Err(_) => return limited(value, ReductionStatus::WorkLimit),
     };
     let setup = (|| {
         let scope = kernel.scope(
@@ -335,8 +364,9 @@ where
         kernel.seal_scope(scope, &mut paid)?;
         Ok::<_, KernelError<WorkExhausted>>(Cons::new(a, Cons::new(b, Cons::new(c, Nil))))
     })();
-    let Ok(mut channels) = setup else {
-        return limited(value, ReductionStatus::RoundLimit);
+    let mut channels = match setup {
+        Ok(channels) => channels,
+        Err(error) => return limited(value, paid.failure_status(&error)),
     };
     let mut rules = Pair::new(
         Registered::new(Seed),
@@ -348,37 +378,35 @@ where
             ),
         ),
     );
-    let cap = domain
-        .spec()
-        .reduction_rounds()
-        .saturating_mul(3)
-        .saturating_add(1);
     let result = analysis_kernel::solve(&mut kernel, &mut rules, &mut channels, &mut paid, cap);
     #[cfg(test)]
     PROTOCOL_WORK.update(|stats| {
         *stats = (
-            prepaid - paid.remaining,
+            prepaid - paid.remaining(),
             kernel.dependency_count(),
             result.as_ref().map_or(0, |r| r.steps),
         )
     });
     let scalar = rules.right.right.right.rule();
-    let status = match result {
-        Ok(ref report) if report.closure == Closure::Closed => ReductionStatus::Stable,
-        Ok(_) => ReductionStatus::RoundLimit,
-        Err(analysis_kernel::SolveError::Analyzer(Either::Right(Either::Right(
-            Either::Right(RuleError::Fact(ref e)),
-        )))) => super::reduce::error_status(e),
-        Err(analysis_kernel::SolveError::Analyzer(Either::Right(Either::Right(Either::Left(
-            RuleError::Fact(ref e),
-        ))))) => super::reduce::error_status(e),
-        Err(analysis_kernel::SolveError::Analyzer(Either::Right(Either::Left(
-            RuleError::Fact(ref e),
-        )))) => super::reduce::error_status(e),
-        Err(analysis_kernel::SolveError::Analyzer(Either::Left(RuleError::Fact(ref e)))) => {
-            super::reduce::error_status(e)
+    // A rule may return a semantic error after catching a meter refusal. The
+    // operation's sticky work/cancellation stop still takes precedence.
+    let status = if let Err(error) = paid.checkpoint() {
+        paid.failure_status(&KernelError::Stopped(error))
+    } else {
+        match result {
+            Ok(ref report) if report.closure == Closure::Closed => ReductionStatus::Stable,
+            Ok(_) => ReductionStatus::RoundLimit,
+            Err(analysis_kernel::SolveError::Analyzer(
+                Either::Right(Either::Right(Either::Right(ref error)))
+                | Either::Right(Either::Right(Either::Left(ref error)))
+                | Either::Right(Either::Left(ref error))
+                | Either::Left(ref error),
+            )) => match error {
+                RuleError::Fact(error) => super::reduce::error_status(error),
+                RuleError::Kernel(error) => paid.failure_status(error),
+            },
+            Err(analysis_kernel::SolveError::Kernel(ref error)) => paid.failure_status(error),
         }
-        Err(_) => ReductionStatus::RoundLimit,
     };
     NumericReduction {
         value: scalar.value.clone(),

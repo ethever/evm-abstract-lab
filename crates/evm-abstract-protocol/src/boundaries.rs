@@ -14,6 +14,12 @@ choice! {
         OriginConflict,
         /// SymbolicLimit boundary.
         SymbolicLimit,
+        /// The prepaid reduction work allowance was exhausted.
+        WorkLimit,
+        /// The operation owner cancelled reduction.
+        Cancelled,
+        /// A kernel protocol failure prevented reduction closure.
+        KernelFailure,
     }
 }
 variant! {
