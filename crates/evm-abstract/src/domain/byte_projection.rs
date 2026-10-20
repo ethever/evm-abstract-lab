@@ -115,15 +115,24 @@ pub(super) fn full_byte_image(value: &NumericValue) -> bool {
 /// The fixed fee covers 32 four-limb certificates, concatenation and the bounded
 /// interval allocations. Each input member gets one mask test. Output subsets
 /// need fixed-word arithmetic and BTreeSet insertion/comparison/allocation; a
-/// binary-tree height bound overpays the actual B-tree. Overflow refuses.
+/// binary-tree height bound overpays the actual B-tree. Singleton queries add
+/// their existing discovery/validation envelope before execution. Overflow refuses.
 pub(super) fn pack_work(domain: Domain, bytes: &[&NumericValue; 32]) -> usize {
     let mut fee = 1024usize + 32 * 256;
     let mut free = 0;
     for byte in bytes {
         fee = fee.saturating_add(byte.finite.work_size().saturating_mul(32));
-        free += (!(byte.bits.zero() | byte.bits.one()) & U256::from(255)).count_ones();
-        if domain.spec().profile() == Profile::ConstantsOnly {
+        let query = if domain.spec().profile() == Profile::ConstantsOnly {
+            byte.finite.cardinality() == Some(1)
+        } else {
+            singleton_query_needed(byte)
+        };
+        if query {
             fee = fee.saturating_add(crate::domain::WordElement::singleton_work(*byte));
+            // This branch either returns a validated literal or declines; it
+            // cannot contribute free bits to a successfully packed word.
+        } else {
+            free += (!(byte.bits.zero() | byte.bits.one()) & U256::from(255)).count_ones();
         }
     }
     if let Some(count) = cube_count(free, domain.capacity()) {
@@ -131,6 +140,25 @@ pub(super) fn pack_work(domain: Domain, bytes: &[&NumericValue; 32]) -> usize {
         fee = fee.saturating_add(count.saturating_mul(512 + 64 * height));
     }
     fee
+}
+
+/// Cached candidate tags only, shared by quotation and execution. The existing
+/// cube certificate already validates exact masks with Top/singleton finite
+/// data and dyadic/exact congruence. Keep that cheap path for canonical literals.
+/// Other singleton candidates need full own-constraint membership validation,
+/// including raw finite supersets and nonpower modulo, under singleton_work.
+fn singleton_query_needed(value: &NumericValue) -> bool {
+    if value.bits.singleton().is_some() {
+        value.finite.cardinality().is_some_and(|len| len > 1)
+            || value
+                .congruence
+                .modulus_residue()
+                .is_some_and(|(modulus, _)| !modulus.is_power_of_two())
+    } else {
+        value.finite.cardinality() == Some(1)
+            || value.interval.singleton().is_some()
+            || value.congruence.singleton().is_some()
+    }
 }
 
 fn cube_count(free: usize, capacity: usize) -> Option<usize> {
@@ -194,7 +222,11 @@ pub(super) fn pack_numeric(domain: Domain, bytes: &[&NumericValue; 32]) -> Optio
     }
     let (mut zero, mut one) = (U256::ZERO, U256::ZERO);
     for (i, byte) in bytes.iter().enumerate() {
-        let bits = byte_cube(byte)?;
+        let bits = if singleton_query_needed(byte) {
+            KnownBits::exact(U256::from(u8::try_from(byte.singleton()?).ok()?))
+        } else {
+            byte_cube(byte)?
+        };
         let shift = (31 - i) * 8;
         zero |= (bits.zero() & U256::from(255)) << shift;
         one |= bits.one() << shift;

@@ -184,8 +184,6 @@ fn constrained_counterexamples_are_not_cube_certificates() {
     truncated.interval = Interval::new_unsigned(U256::ZERO, U256::from(254)).unwrap();
     let mut wrong_prefix = cube(0xe0, 0, false);
     wrong_prefix.congruence = Congruence::new(U256::from(64), U256::ZERO).unwrap();
-    let mut singleton_congruence = NumericValue::unknown_byte();
-    singleton_congruence.congruence = Congruence::exact(U256::from(32));
     let mut signed = NumericValue::unknown_byte();
     let sign = U256::ONE << 255usize;
     signed.interval = Interval::new_signed(sign + U256::ONE, sign + U256::from(255)).unwrap();
@@ -199,7 +197,6 @@ fn constrained_counterexamples_are_not_cube_certificates() {
         odd_congruence,
         truncated,
         wrong_prefix,
-        singleton_congruence,
         signed,
         superset,
         NumericValue::top(),
@@ -212,6 +209,207 @@ fn constrained_counterexamples_are_not_cube_certificates() {
                 .is_none()
         );
     }
+}
+
+fn singleton_forms(exact: U256) -> [NumericValue; 7] {
+    let interval = NumericValue::unsigned_range(exact, exact).unwrap();
+    let mut bits = NumericValue::top();
+    bits.bits = KnownBits::exact(exact);
+    let mut congruence = NumericValue::top();
+    congruence.congruence = Congruence::exact(exact);
+    let mut finite = NumericValue::top();
+    finite.finite = FiniteConstantSet::constant(exact);
+    let mut superset = bits.clone();
+    superset.finite =
+        FiniteConstantSet::try_from_values(BTreeSet::from([exact, exact ^ U256::ONE])).unwrap();
+    let mut interval_modulo = interval.clone();
+    interval_modulo.congruence = Congruence::new(U256::from(3), exact % U256::from(3)).unwrap();
+    let mut bits_modulo = bits.clone();
+    bits_modulo.congruence = interval_modulo.congruence.clone();
+    [
+        interval,
+        bits,
+        congruence,
+        finite,
+        superset,
+        interval_modulo,
+        bits_modulo,
+    ]
+}
+
+#[test]
+fn product_component_singletons_keep_the_existing_concrete_packing_admission() {
+    for domain in [
+        policy(Profile::Product, 512, 16, 4096),
+        policy(Profile::Product, 1, 1, 1),
+    ] {
+        for exact in [0u8, 7, 127, 128, 255] {
+            for value in singleton_forms(U256::from(exact)) {
+                assert_eq!(value.singleton(), Some(U256::from(exact)));
+                let bytes: [_; 32] = std::array::from_fn(|_| value.clone());
+                assert_eq!(
+                    equivalent(domain, &bytes),
+                    NumericValue::constant(U256::from_be_bytes([exact; 32]))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn component_singletons_mix_with_certified_cubes_without_losing_constraints() {
+    for capacity in [1, 8, 512] {
+        let domain = policy(Profile::Product, capacity, 16, 4096);
+        let mut bytes = std::array::from_fn(|_| {
+            NumericValue::unsigned_range(U256::from(7), U256::from(7)).unwrap()
+        });
+        bytes[0] = cube(0x81, 0x24, false);
+        bytes[31] = captured()[31].clone();
+        equivalent(domain, &bytes);
+
+        // This exact congruence is not a nonconstant cube certificate; it is
+        // the established validated-singleton case, with the same raw input.
+        let mut bytes = captured();
+        bytes[31] = NumericValue::unknown_byte();
+        bytes[31].congruence = Congruence::exact(U256::from(32));
+        let packed = equivalent(domain, &bytes);
+        assert_eq!(packed.known_bits().one() & U256::from(255), U256::from(32));
+        assert_eq!(
+            packed.known_bits().zero() & U256::from(255),
+            U256::from(223)
+        );
+    }
+}
+
+#[test]
+fn singleton_candidates_must_satisfy_every_own_constraint() {
+    let domain = policy(Profile::Product, 512, 16, 4096);
+    let seven = U256::from(7);
+    let eight = U256::from(8);
+    let mut wrong_modulo = NumericValue::unsigned_range(seven, seven).unwrap();
+    wrong_modulo.congruence = Congruence::new(U256::from(3), U256::ZERO).unwrap();
+    let mut wrong_bits = NumericValue::unsigned_range(seven, seven).unwrap();
+    wrong_bits.bits = KnownBits::exact(eight);
+    let mut wrong_finite = NumericValue::constant(seven);
+    wrong_finite.bits = KnownBits::exact(eight);
+    let mut wrong_exact = NumericValue::unsigned_range(eight, eight).unwrap();
+    wrong_exact.congruence = Congruence::exact(seven);
+    let mut excluded_zero = NumericValue::unsigned_range(U256::ZERO, U256::ZERO).unwrap();
+    excluded_zero.nonzero = true;
+    let mut missing_member = NumericValue::unsigned_range(seven, seven).unwrap();
+    missing_member.finite =
+        FiniteConstantSet::try_from_values(BTreeSet::from([U256::from(6), eight])).unwrap();
+    let mut bits_modulo = NumericValue::top();
+    bits_modulo.bits = KnownBits::exact(seven);
+    bits_modulo.congruence = wrong_modulo.congruence.clone();
+    for invalid in [
+        wrong_modulo,
+        wrong_bits,
+        wrong_finite,
+        wrong_exact,
+        excluded_zero,
+        missing_member,
+        bits_modulo,
+    ] {
+        assert_eq!(invalid.singleton(), None);
+        let bytes: [_; 32] = std::array::from_fn(|_| invalid.clone());
+        assert!(
+            domain
+                .pack_word_numeric(&std::array::from_fn(|i| &bytes[i]))
+                .is_none()
+        );
+    }
+    // Interval itself excludes reversed bounds; contradictions above are
+    // representable intersections of individually valid numeric components.
+    assert!(NumericValue::unsigned_range(eight, seven).is_none());
+}
+
+#[test]
+fn wide_singletons_and_constants_only_without_finite_literals_still_decline() {
+    let product = policy(Profile::Product, 512, 16, 4096);
+    let constants = policy(Profile::ConstantsOnly, 512, 16, 4096);
+    for exact in [U256::from(256), U256::MAX] {
+        for value in singleton_forms(exact) {
+            assert_eq!(value.singleton(), Some(exact));
+            let bytes: [_; 32] = std::array::from_fn(|_| value.clone());
+            for domain in [product, constants] {
+                assert!(
+                    domain
+                        .pack_word_numeric(&std::array::from_fn(|i| &bytes[i]))
+                        .is_none()
+                );
+            }
+        }
+    }
+    for value in singleton_forms(U256::from(7)) {
+        let bytes: [_; 32] = std::array::from_fn(|_| value.clone());
+        if value.finite.cardinality() == Some(1) {
+            equivalent(constants, &bytes);
+        } else {
+            assert!(
+                constants
+                    .pack_word_numeric(&std::array::from_fn(|i| &bytes[i]))
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[test]
+fn singleton_quotes_fund_discovery_without_changing_the_captured_cube_fees() {
+    use crate::domain::WordElement;
+    let domain = policy(Profile::Product, 512, 16, 4096);
+    let unknown: [_; 32] = std::array::from_fn(|_| NumericValue::unknown_byte());
+    assert_eq!(
+        domain.pack_word_work(&std::array::from_fn(|i| &unknown[i])),
+        Some(10_240)
+    );
+    let captured = captured();
+    assert_eq!(
+        domain.pack_word_work(&std::array::from_fn(|i| &captured[i])),
+        Some(10_464)
+    );
+    let canonical: [_; 32] = std::array::from_fn(|_| NumericValue::constant(U256::from(7)));
+    let canonical_fee = domain
+        .pack_word_work(&std::array::from_fn(|i| &canonical[i]))
+        .unwrap();
+    assert_eq!(canonical_fee, 10_816);
+    for (value, query) in singleton_forms(U256::from(7))
+        .into_iter()
+        .zip([true, false, true, true, true, true, true])
+    {
+        let bytes: [_; 32] = std::array::from_fn(|_| value.clone());
+        let fee = domain
+            .pack_word_work(&std::array::from_fn(|i| &bytes[i]))
+            .unwrap();
+        // Hold input cardinality/output fixed to isolate the paid query. The
+        // superset case also adds its independent existing input-member fee.
+        let members = 32 * (value.finite.work_size() - 1) * 32;
+        let discovery = if query {
+            32 * value.singleton_work()
+        } else {
+            0
+        };
+        assert_eq!(fee, canonical_fee + members + discovery);
+    }
+}
+
+#[test]
+fn output_quote_overflow_still_refuses_before_finite_construction() {
+    let domain = policy(
+        Profile::Product,
+        1usize << (usize::BITS - 1),
+        16,
+        usize::MAX,
+    );
+    let bytes: [_; 32] = std::array::from_fn(|i| {
+        let remaining = (usize::BITS as usize - 1).saturating_sub(8 * i).min(8);
+        cube(((1u16 << remaining) - 1) as u8, 0, false)
+    });
+    assert_eq!(
+        domain.pack_word_work(&std::array::from_fn(|i| &bytes[i])),
+        Some(usize::MAX)
+    );
 }
 
 #[test]
