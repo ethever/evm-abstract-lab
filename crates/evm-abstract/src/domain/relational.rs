@@ -607,6 +607,7 @@ impl RelationState {
     /// Production projection pays local work to the existing root ledger.
     /// A refused ledger reservation leaves the mathematical result uninstalled;
     /// callers distinguish it through `budget.exhausted()` before applying it.
+    #[cfg(test)]
     pub(crate) fn local_value_budgeted(
         &self,
         expression: &ExprId,
@@ -620,6 +621,7 @@ impl RelationState {
             super::ValueAlgebra::new(super::Domain::default()).borrowed(),
         )
     }
+    #[cfg(test)]
     pub(crate) fn can_equal_budgeted(
         &self,
         expression: &ExprId,
@@ -635,6 +637,7 @@ impl RelationState {
             super::ValueAlgebra::new(super::Domain::default()).borrowed(),
         )
     }
+    #[cfg(test)]
     pub(crate) fn assume_checked_budgeted(
         &mut self,
         expression: &ExprId,

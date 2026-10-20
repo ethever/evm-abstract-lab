@@ -6,7 +6,7 @@ use crate::{
         machine::fixtures::{address, payload, word},
     },
     domain::{
-        AbstractValue, Domain, NumericValue,
+        AbstractValue, Domain, NumericValue, WordElement, WordObservation,
         relational::{RelationLimits, RelationState},
         symbolic::ExprId,
     },
@@ -29,6 +29,29 @@ fn bounded_relations(expressions: &[ExprId], limits: &RelationLimits) -> Relatio
     relations
 }
 
+// This fixture's retained scalar fact is exactly the range5..15. Derive its
+// detached intersection independently, then use the two public quote phases;
+// no Projection execution or measured total is used as the reference.
+fn refinement_fees(
+    relations: &RelationState,
+    expression: &ExprId,
+    value: &AbstractValue,
+    domain: Domain,
+) -> (usize, usize) {
+    let algebra = ValueAlgebra::new(domain);
+    let view = algebra.borrowed();
+    let import = relations
+        .refinement_import_work_with(expression, value, view)
+        .unwrap();
+    let imported = value
+        .numeric()
+        .constrain(&WordObservation::unsigned_range(U256::from(5), U256::from(15)).unwrap());
+    (
+        import,
+        imported.map_or(0, |numeric| view.numeric_reduction_work(&numeric)),
+    )
+}
+
 #[test]
 fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
     let domain = Domain::default();
@@ -37,9 +60,8 @@ fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
     let expression = ExprId::fresh().unwrap();
     let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
     let raw = AbstractValue::top().with_expression(expression.clone());
-    let fee = expression.work_size()
-        + relations.work_size()
-        + domain.refinement_work(&raw, relations.len());
+    let (import, closure) = refinement_fees(&relations, &expression, &raw, domain);
+    let fee = expression.work_size() + relations.work_size() + import + closure;
     for summary in [false, true] {
         let mut budget = WorkBudget::new(2 * fee);
         let mut diagnostics = Vec::new();
@@ -207,11 +229,10 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
     let mut expected_work = 0;
     for (index, value, lower) in cases {
         let original = value.with_expression(expressions[index].clone());
-        // These are the existing admission and refinement charges, even when
-        // only the old numeric bound (rather than the expression) changes.
-        expected_work += expressions[index].work_size()
-            + relation_work
-            + domain.refinement_work(&original, relations.len());
+        // Every uncached request pays its own namespace and actual two-phase
+        // refinement, even when only the numeric input changes.
+        let (import, closure) = refinement_fees(&relations, &expressions[index], &original, domain);
+        expected_work += expressions[index].work_size() + relation_work + import + closure;
         let mut value = original.clone();
         projection.value(&mut value);
         assert_eq!(
@@ -239,8 +260,10 @@ fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
     let expression = ExprId::fresh().unwrap();
     let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
     let original = AbstractValue::top().with_expression(expression.clone());
-    let admission = expression.work_size() + relations.work_size();
-    let fee = admission + domain.refinement_work(&original, relations.len());
+    let (import, closure) = refinement_fees(&relations, &expression, &original, domain);
+    // A closure refusal retains both completed first-phase payments.
+    let admission = expression.work_size() + relations.work_size() + import;
+    let fee = admission + closure;
     for maximum in [fee, fee - 1] {
         let mut budget = WorkBudget::new(maximum);
         let mut projection = Projection::new(

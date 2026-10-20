@@ -97,10 +97,6 @@ impl Domain {
     fn algebra(&self) -> AlgebraRef<'_, Self> {
         ValueAlgebra::new(self)
     }
-    /// Initialization projection work beyond input copying.
-    pub(crate) fn projection_work(self, value: &AbstractValue) -> usize {
-        self.algebra().projection_work(value)
-    }
     /// Project representation under this frozen policy.
     pub fn project(self, value: &AbstractValue) -> AbstractValue {
         self.algebra().project(value)
@@ -117,6 +113,7 @@ impl Domain {
         self.algebra().reduce(value)
     }
     /// Global acceleration, retaining shared metadata contracts.
+    #[cfg(test)]
     pub(crate) fn widen(self, old: &AbstractValue, next: &AbstractValue) -> AbstractValue {
         self.algebra().widen(old, next)
     }
@@ -150,6 +147,7 @@ impl Domain {
         self.algebra().operation_work(args)
     }
     /// Guard import/reduction work, excluding already paid input copying.
+    #[cfg(test)]
     pub(crate) fn refinement_work(self, value: &AbstractValue, facts: usize) -> usize {
         self.algebra().refinement_work(value, facts)
     }

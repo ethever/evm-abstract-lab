@@ -181,6 +181,10 @@ impl EvmNumericAlgebra for Policy<'_> {
             |cost, value| cost.saturating_add(value.work_size().saturating_mul(8)),
         )
     }
+    fn literal_quote_work(&self, _literal: U256) -> usize {
+        // Fixed literal fields/empty payload and common metadata, including drop.
+        64
+    }
     fn projection_work(&self, value: &ExcludingWord) -> usize {
         value.work_size()
     }

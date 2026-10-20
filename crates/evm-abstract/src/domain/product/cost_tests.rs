@@ -6,6 +6,8 @@ use crate::{
         cooperation::{self, BoundsToMask, MaskToBounds, ProductAlgebra, RuleError},
         interval::Interval,
         known_bits::KnownBits,
+        relational::{CheckResult, EvmScalarQuery, RelationLimits, RelationState},
+        symbolic::ExprId,
     },
     resource::WorkBudget,
 };
@@ -326,6 +328,15 @@ fn quotes_saturate_and_cancellation_precedes_all_cooperative_work() {
             domain.numeric_refinement_work(&NumericValue::top(), usize::MAX),
             usize::MAX
         );
+        let mut maximum = WorkBudget::new(usize::MAX);
+        let args = [AbstractValue::top(), AbstractValue::constant(U256::from(7))];
+        assert!(
+            domain
+                .apply_budgeted(opcode::ADD, &args, &mut maximum)
+                .is_err()
+        );
+        assert_eq!(maximum.used(), 0);
+        assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
     }
     let domain = Domain::default();
     let args = [AbstractValue::top(), AbstractValue::constant(U256::from(7))];
@@ -410,6 +421,130 @@ fn borrowed_default_finite_operations_remove_actual_materialization_and_restore_
 }
 
 #[test]
+fn opcode_quotes_pay_real_closed_jobs_and_decline_at_byte_capacity_boundaries() {
+    let _counter = cooperation::PROTOCOL_WORK.scope();
+    for capacity in [1, 2, 8, 255, 256, 512] {
+        for rounds in [1, 2, 4, 8] {
+            let policy = domain(capacity, rounds);
+            let algebra = ValueAlgebra::new(policy);
+            for (op, args) in [
+                (
+                    opcode::BYTE,
+                    vec![AbstractValue::constant(U256::ZERO), AbstractValue::top()],
+                ),
+                (
+                    opcode::BYTE,
+                    vec![
+                        AbstractValue::constant(U256::from(31)),
+                        AbstractValue::top(),
+                    ],
+                ),
+                (
+                    opcode::AND,
+                    vec![
+                        AbstractValue::top(),
+                        AbstractValue::constant(U256::from(255)),
+                    ],
+                ),
+                (opcode::NOT, vec![AbstractValue::top()]),
+                (opcode::ISZERO, vec![AbstractValue::top()]),
+                (
+                    opcode::ADD,
+                    vec![AbstractValue::constant(U256::from(7)), AbstractValue::top()],
+                ),
+                (
+                    opcode::SUB,
+                    vec![AbstractValue::top(), AbstractValue::constant(U256::from(7))],
+                ),
+            ] {
+                let quote = algebra.operation_work_for(op, &args);
+                assert!(quote <= algebra.operation_work(&args));
+                let mut budget = WorkBudget::new(quote);
+                assert!(budget.charge(quote));
+                cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                let actual = algebra.apply_detailed(op, &args);
+                assert!(cooperation::PROTOCOL_WORK.get().0 <= quote);
+                if capacity < 256 || !matches!(op, opcode::BYTE | opcode::AND) {
+                    assert_eq!(actual.status, ReductionStatus::Stable);
+                    assert_eq!(actual.rounds, 1);
+                    assert_eq!(cooperation::PROTOCOL_WORK.get().2, 4);
+                }
+            }
+        }
+    }
+    let policy = ValueAlgebra::new(Domain::default());
+    let args = [AbstractValue::constant(U256::ZERO), AbstractValue::top()];
+    assert!(
+        policy.operation_work_for(opcode::BYTE, &args)
+            < policy.operation_work_for(opcode::MUL, &args)
+    );
+    let overflow = [
+        AbstractValue::constant(U256::from(32)),
+        AbstractValue::top(),
+    ];
+    assert_eq!(
+        policy.operation_work_for(opcode::BYTE, &overflow),
+        policy.operation_work(&overflow)
+    );
+}
+
+#[test]
+fn address_cube_eq_literal_quote_keeps_four_real_jobs_and_declines_other_shapes() {
+    let _counter = cooperation::PROTOCOL_WORK.scope();
+    let max = U256::MAX >> 96usize;
+    for capacity in [1, 2, 8, 512] {
+        for rounds in [1, 4, 8] {
+            let algebra = ValueAlgebra::new(domain(capacity, rounds));
+            for literal in [U256::ZERO, U256::from(3), max] {
+                for reverse in [false, true] {
+                    let mut args = [
+                        AbstractValue::unknown_address(),
+                        AbstractValue::constant(literal),
+                    ];
+                    if reverse {
+                        args.reverse();
+                    }
+                    let quote = algebra.operation_work_for(opcode::EQ, &args);
+                    assert!(quote <= algebra.operation_work(&args));
+                    cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                    let result = algebra.apply_detailed(opcode::EQ, &args);
+                    assert_eq!(result.status, ReductionStatus::Stable);
+                    assert_eq!(result.rounds, 1);
+                    assert_eq!(cooperation::PROTOCOL_WORK.get().2, 4);
+                    assert!(cooperation::PROTOCOL_WORK.get().0 <= quote);
+                    assert!(result.value.contains(U256::ZERO) && result.value.contains(U256::ONE));
+                }
+            }
+        }
+    }
+    let algebra = ValueAlgebra::new(Domain::default());
+    for cube in [
+        NumericValue::unknown_byte(),
+        NumericValue {
+            nonzero: true,
+            ..NumericValue::unknown_address()
+        },
+    ] {
+        let args = [
+            AbstractValue::from_numeric(cube),
+            AbstractValue::constant(U256::from(3)),
+        ];
+        assert_eq!(
+            algebra.operation_work_for(opcode::EQ, &args),
+            algebra.operation_work(&args)
+        );
+    }
+    let outside = [
+        AbstractValue::unknown_address(),
+        AbstractValue::constant(max + U256::ONE),
+    ];
+    assert_eq!(
+        algebra.operation_work_for(opcode::EQ, &outside),
+        algebra.operation_work(&outside)
+    );
+}
+
+#[test]
 fn borrowed_numeric_entry_preserves_owned_transfer_results_and_limits() {
     for profile in [Profile::ConstantsOnly, Profile::Product] {
         for capacity in [1, 8, 512] {
@@ -422,6 +557,10 @@ fn borrowed_numeric_entry_preserves_owned_transfer_results_and_limits() {
             for value in [
                 NumericValue::constant(U256::from(7)),
                 finite(2),
+                NumericValue {
+                    nonzero: true,
+                    ..finite(3)
+                },
                 NumericValue {
                     finite: FiniteConstantSet::try_from_values(
                         [U256::ONE, U256::from(2)].into_iter().collect(),
@@ -474,6 +613,34 @@ fn borrowed_finite_transfer_preserves_stricter_singletons_and_source_metadata() 
     assert_eq!(result.singleton(), Some(U256::from(5)));
     assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
     assert!(result.provenance().is_top());
+}
+
+#[test]
+fn borrowed_iszero_uses_nonzero_guarantees_beyond_the_raw_finite_cover() {
+    let _copies = crate::domain::algebra::OPERAND_COPIES.scope();
+    let policy = Domain::default();
+    let input = NumericValue {
+        nonzero: true,
+        ..finite(3)
+    };
+    assert!(input.constants().unwrap().contains(&U256::ZERO));
+    assert!(!input.contains(U256::ZERO));
+    assert_eq!(input.singleton(), None);
+    let owned = policy.apply_numeric(opcode::ISZERO, std::slice::from_ref(&input));
+    let borrowed = policy.apply_numeric_borrowed(opcode::ISZERO, std::iter::once(&input));
+    assert_eq!(owned.value, borrowed.value);
+    assert_eq!(owned.status, borrowed.status);
+    assert_eq!(borrowed.value.singleton(), Some(U256::ZERO));
+    for word in [U256::ONE, U256::from(2)] {
+        assert!(input.contains(word));
+        assert!(borrowed.value.contains(crate::domain::evaluate(
+            opcode::ISZERO,
+            word,
+            U256::ZERO,
+            U256::ZERO
+        )));
+    }
+    assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -593,7 +760,7 @@ impl EvmNumericAlgebra for DeepPolicy {
         0
     }
     fn refinement_work(&self, value: &DeepWord, _: usize) -> usize {
-        value.work_size() + 1024
+        value.work_size().saturating_mul(16).saturating_add(1024)
     }
 }
 
@@ -613,6 +780,10 @@ fn backward_compatible_custom_materialization_remains_paid_before_deep_copies() 
     });
     let view = domain.borrowed().without_relations();
     let quote = view.operation_work(&args);
+    assert_eq!(
+        view.operation_work_for_refs(opcode::ADD, &[&args[0], &args[1]]),
+        quote
+    );
     assert!(quote >= 2 * (4096 + 2048));
     assert_eq!(copies.get(), 0);
     let mut denied = WorkBudget::new(quote - 1);
@@ -630,4 +801,165 @@ fn backward_compatible_custom_materialization_remains_paid_before_deep_copies() 
     assert_eq!(copies.get(), 2);
     assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 2);
     assert_eq!(domain.numeric_algebra().calls.get(), 1);
+}
+
+#[test]
+fn staged_scalar_refusal_keeps_paid_prefix_without_running_required_rules() {
+    let _counter = cooperation::PROTOCOL_WORK.scope();
+    let algebra = ValueAlgebra::new(Domain::default());
+    let domain = algebra.borrowed();
+    let limits = RelationLimits::default();
+    let x = ExprId::fresh().unwrap();
+    let mut state = RelationState::default();
+    assert_eq!(
+        state.assume_checked(&x, true, &limits).unwrap(),
+        CheckResult::MayBeFeasible
+    );
+    let input = AbstractValue::top().with_expression(x.clone());
+    let before = input.clone();
+    let imported = NumericValue {
+        nonzero: true,
+        ..NumericValue::top()
+    };
+    let closure = domain.numeric_reduction_work(&imported);
+    let mut full = WorkBudget::new(20_000_000);
+    let actual = state
+        .refine_numeric_budgeted_with(&x, &input, domain, &limits, &mut full)
+        .unwrap();
+    assert_eq!(
+        actual,
+        state.refine_numeric_with(&x, input.numeric(), domain, &limits)
+    );
+    assert_eq!(cooperation::PROTOCOL_WORK.get().2, 4);
+    let import = full.used().checked_sub(closure).unwrap();
+    assert!(import > 0 && full.used() < domain.refinement_work(&input, state.len()));
+    for (budget_size, paid_prefix) in [(import - 1, 0), (import + closure - 1, import)] {
+        cooperation::PROTOCOL_WORK.set((0, 0, 0));
+        let mut denied = WorkBudget::new(budget_size);
+        assert!(
+            state
+                .refine_numeric_budgeted_with(&x, &input, domain, &limits, &mut denied)
+                .is_err()
+        );
+        assert_eq!(denied.used(), paid_prefix);
+        assert!(denied.exhausted());
+        assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+        assert_eq!(input, before);
+    }
+    let mut exact = WorkBudget::new(import + closure);
+    assert_eq!(
+        state
+            .refine_numeric_budgeted_with(&x, &input, domain, &limits, &mut exact)
+            .unwrap(),
+        actual
+    );
+    assert_eq!(exact.used(), import + closure);
+    assert!(!exact.exhausted());
+    let token = analysis_control::Cancellation::new();
+    let mut cancelled =
+        analysis_control::with_cancellation(&token, || WorkBudget::new(import + closure));
+    token.cancel();
+    cooperation::PROTOCOL_WORK.set((0, 0, 0));
+    assert!(
+        state
+            .refine_numeric_budgeted_with(&x, &input, domain, &limits, &mut cancelled)
+            .is_err()
+    );
+    assert_eq!(cancelled.used(), 0);
+    assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+    let saturated = ValueAlgebra::new(self::domain(usize::MAX, usize::MAX));
+    let mut maximum = WorkBudget::new(usize::MAX);
+    assert!(
+        state
+            .refine_numeric_budgeted_with(&x, &input, saturated.borrowed(), &limits, &mut maximum)
+            .is_err()
+    );
+    assert_eq!(maximum.used(), 0);
+    assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+}
+
+#[test]
+fn staged_fact_payload_quotes_distinguish_equal_counts_and_skip_unperformed_closure() {
+    let _counter = cooperation::PROTOCOL_WORK.scope();
+    let algebra = ValueAlgebra::new(domain(8, 4));
+    let domain = algebra.borrowed();
+    let limits = RelationLimits::default();
+    let x = ExprId::fresh().unwrap();
+    let input = AbstractValue::top().with_expression(x.clone());
+    let mut fees = Vec::new();
+    for size in [2, 128] {
+        let mut state = RelationState::default();
+        state.observe(&x, &finite(size), &limits).unwrap();
+        assert_eq!(state.len(), 1);
+        let mut paid = WorkBudget::new(20_000_000);
+        let result = state
+            .refine_numeric_budgeted_with(&x, &input, domain, &limits, &mut paid)
+            .unwrap();
+        assert_eq!(
+            result,
+            state.refine_numeric_with(&x, input.numeric(), domain, &limits)
+        );
+        assert!(
+            matches!(result,EvmScalarQuery::Refined{ref numeric,..} if (0..size).all(|word|numeric.contains(U256::from(word))))
+        );
+        fees.push(paid.used());
+    }
+    assert!(
+        fees[1] > fees[0],
+        "one Members atom must pay its entire actual payload"
+    );
+    let y = ExprId::fresh().unwrap();
+    let mut equal = RelationState::default();
+    assert_eq!(equal.add_equal(&x, &y, &limits), CheckResult::MayBeFeasible);
+    cooperation::PROTOCOL_WORK.set((0, 0, 0));
+    let mut paid = WorkBudget::new(20_000_000);
+    assert_eq!(
+        equal
+            .refine_numeric_budgeted_with(&x, &input, domain, &limits, &mut paid)
+            .unwrap(),
+        EvmScalarQuery::Unchanged
+    );
+    assert!(paid.used() < domain.refinement_work(&input, equal.len()));
+    assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+}
+
+#[test]
+fn custom_scalar_backend_keeps_one_whole_quote_and_never_clones_while_quoting() {
+    let copies = Rc::new(Cell::new(0));
+    let input = crate::domain::EvmValue::from_numeric(DeepWord {
+        numeric: NumericValue::constant(U256::from(7)),
+        payload: vec![9; 4096],
+        copies: Rc::clone(&copies),
+    });
+    let x = ExprId::fresh().unwrap();
+    let limits = RelationLimits::default();
+    let mut state = RelationState::default();
+    state.assume_checked(&x, true, &limits).unwrap();
+    let policy = ValueAlgebra::new(DeepPolicy {
+        calls: Cell::new(0),
+    });
+    let domain = policy.borrowed();
+    let whole = domain.refinement_work(&input, state.len());
+    assert_eq!(copies.get(), 0);
+    let mut denied = WorkBudget::new(whole - 1);
+    assert!(
+        state
+            .refine_numeric_budgeted_with(&x, &input, domain, &limits, &mut denied)
+            .is_err()
+    );
+    assert_eq!(copies.get(), 0);
+    assert_eq!(denied.used(), 0);
+    let mut paid = WorkBudget::new(whole);
+    let result = state
+        .refine_numeric_budgeted_with(&x, &input, domain, &limits, &mut paid)
+        .unwrap();
+    assert!(
+        matches!(result,EvmScalarQuery::Refined{ref numeric,..} if numeric.singleton()==Some(U256::from(7)))
+    );
+    assert_eq!(
+        paid.used(),
+        whole,
+        "custom whole quote must not acquire a second closure charge"
+    );
+    assert!(copies.get() > 0);
 }

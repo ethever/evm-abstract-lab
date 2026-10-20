@@ -110,6 +110,10 @@ impl EvmNumericAlgebra for BitsAlgebra {
     {
         64 * 1024
     }
+    fn literal_quote_work(&self, _literal: U256) -> usize {
+        // Fixed literal fields/empty payload and common metadata, including drop.
+        64
+    }
     fn projection_work(&self, _value: &Bits) -> usize {
         8
     }

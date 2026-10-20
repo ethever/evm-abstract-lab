@@ -20,10 +20,18 @@ pub(super) fn target_guard<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> Option<EvmMachinePayload<D::Element>> {
+    if !context.budget.charge(
+        projected
+            .clone_work()
+            .saturating_add(candidate.clone_work()),
+    ) {
+        boundary(result, pc, FrontierReason::Work);
+        return None;
+    }
     let operands = [projected.clone(), candidate.clone()];
     if !context
         .budget
-        .charge(context.domain.operation_work(&operands))
+        .charge(context.domain.operation_work_for(opcode::EQ, &operands))
     {
         boundary(result, pc, FrontierReason::Work);
         return None;

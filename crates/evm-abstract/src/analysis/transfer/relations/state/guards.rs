@@ -63,18 +63,16 @@ fn apply<D: EvmNumericAlgebra>(
             return Err(FrontierReason::Work);
         }
         let value = EvmValue::<D::Element>::top();
-        if !context
-            .budget
-            .charge(domain.refinement_work(&value, relations.len()))
+        let truth = match relations
+            .refine_numeric_budgeted_with(
+                condition,
+                &value,
+                domain,
+                &context.config.analysis.relations,
+                context.budget,
+            )
+            .map_err(|_| FrontierReason::Work)?
         {
-            return Err(FrontierReason::Work);
-        }
-        let truth = match relations.refine_numeric_with(
-            condition,
-            value.numeric(),
-            domain,
-            &context.config.analysis.relations,
-        ) {
             EvmScalarQuery::Refined { numeric, .. } => {
                 if !numeric.may_be_zero() {
                     Some(true)

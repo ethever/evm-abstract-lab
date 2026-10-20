@@ -78,6 +78,10 @@ impl EvmNumericAlgebra for Algebra {
     {
         args.count().saturating_add(1).saturating_mul(32)
     }
+    fn literal_quote_work(&self, _literal: U256) -> usize {
+        // Fixed literal fields/empty payload and common metadata, including drop.
+        64
+    }
     fn projection_work(&self, value: &ExcludingWord) -> usize {
         value.work_size()
     }

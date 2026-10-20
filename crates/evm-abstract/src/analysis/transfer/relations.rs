@@ -105,13 +105,10 @@ fn prepare_refine<D: EvmNumericAlgebra>(
     if !has_state_semantics && !relations.relevant(&expression) {
         return Ok(PreparedRefinement::Done(true));
     }
-    if !context
-        .budget
-        .charge(context.domain.refinement_work(value, relations.len()))
+    match relations
+        .refine_numeric_budgeted_with(&expression, value, context.domain, &limits, context.budget)
+        .map_err(|_| FrontierReason::Work)?
     {
-        return Err(FrontierReason::Work);
-    }
-    match relations.refine_numeric_with(&expression, value.numeric(), context.domain, &limits) {
         EvmScalarQuery::Refined { numeric, complete } => {
             *value = value.clone().with_numeric(*numeric);
             if complete || value.singleton().is_some() {
@@ -179,17 +176,22 @@ fn finish_refine<D: EvmNumericAlgebra>(
             if bounds.is_top() || value.numeric() == bounds.as_ref() {
                 return Ok(true);
             }
-            if !context
-                .budget
-                .charge(context.domain.refinement_work(value, 1))
-            {
-                return Err(FrontierReason::Work);
-            }
-            let Some(numeric) = crate::domain::relational::intersect_numeric(
+            let metadata_work = value
+                .work_size()
+                .saturating_sub(value.numeric().work_size());
+            let Some(numeric) = context.domain.intersect_numeric_with_payment(
                 value.numeric(),
                 bounds.as_ref(),
-                context.domain,
-            ) else {
+                metadata_work,
+                |work| {
+                    if work != usize::MAX && context.budget.charge(work) {
+                        Ok(())
+                    } else {
+                        Err(FrontierReason::Work)
+                    }
+                },
+            )?
+            else {
                 return Ok(false);
             };
             *value = value.clone().with_numeric(numeric);

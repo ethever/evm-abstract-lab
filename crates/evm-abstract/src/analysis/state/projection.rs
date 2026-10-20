@@ -4,7 +4,7 @@
 //! Summary import memoizes numerical upper bounds; branch metadata keeps its
 //! feasibility checks and precision diagnostics. Both share query accounting.
 
-use crate::domain::{EvmNumericAlgebra, WordElement};
+use crate::domain::EvmNumericAlgebra;
 
 use super::{
     AlgebraRef, EvmByteArray, EvmMachinePayload, EvmValue, MachineError, RelationState, WorkBudget,
@@ -32,6 +32,8 @@ pub(in crate::analysis) enum Policy<'a> {
     },
 }
 
+type ProjectionCache<N> = BTreeMap<ExprId, Vec<(N, Option<N>)>>;
+
 pub(in crate::analysis) struct Projection<'a, D: EvmNumericAlgebra> {
     relations: &'a RelationState,
     relations_work_size: Option<usize>,
@@ -40,7 +42,7 @@ pub(in crate::analysis) struct Projection<'a, D: EvmNumericAlgebra> {
     domain: AlgebraRef<'a, D>,
     limits: &'a RelationLimits,
     budget: &'a mut WorkBudget,
-    cache: BTreeMap<ExprId, Vec<(D::Element, Option<D::Element>)>>,
+    cache: ProjectionCache<D::Element>,
     policy: Policy<'a>,
     /// False is a proved infeasible branch; summary import never rejects a path.
     outcome: Result<bool, MachineError>,
@@ -118,16 +120,29 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
         } else {
             self.relations.relevant(expression)
         };
-        if !relevant || !self.reserve(self.domain.refinement_work(value, self.relations.len())) {
+        if !relevant {
             return;
         }
-        let old = summary.then(|| value.numeric().clone());
-        let refined = match self.relations.refine_numeric_with(
+        let answer = match self.relations.refine_numeric_budgeted_with(
             expression,
-            value.numeric(),
+            value,
             self.domain,
             self.limits,
+            self.budget,
         ) {
+            Ok(answer) => answer,
+            Err(_) => {
+                self.outcome = Err(if summary {
+                    MachineError::work_failure()
+                } else {
+                    MachineError::Work
+                });
+                return;
+            }
+        };
+        // The import/whole reservation precedes this optional cache copy too.
+        let old = summary.then(|| value.numeric().clone());
+        let refined = match answer {
             EvmScalarQuery::Refined { numeric, .. } => Some(*numeric),
             EvmScalarQuery::Infeasible if !summary => {
                 self.outcome = Ok(false);

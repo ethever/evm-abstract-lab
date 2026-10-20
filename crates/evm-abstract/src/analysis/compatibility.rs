@@ -111,6 +111,10 @@ impl EvmNumericAlgebra for NumericProbe<'_> {
         EvmNumericAlgebra::operation_work(&self.domain, args)
     }
 
+    fn literal_quote_work(&self, literal: U256) -> usize {
+        EvmNumericAlgebra::literal_quote_work(&self.domain, literal)
+    }
+
     fn projection_work(&self, value: &NumericValue) -> usize {
         EvmNumericAlgebra::projection_work(&self.domain, value)
     }

@@ -69,6 +69,9 @@ impl Work<'_> {
         if self.cancellation.is_cancelled() {
             return Err(Stop::Pending(QueryReason::Cancelled));
         }
+        if amount == usize::MAX {
+            return Err(Stop::Pending(QueryReason::ExpressionLimit));
+        }
         if let Some(ledger) = self.ledger.as_mut() {
             // Optional precision may stop without exhausting the shared ledger.
             // The later charge is still transactional if cancellation races.
@@ -256,12 +259,13 @@ impl<'a, 'ledger, 'policy, D: EvmNumericAlgebra> Engine<'a, 'ledger, 'policy, D>
         if let Some(value) = singleton_meet::meet_with(left, right, self.domain, self.work)? {
             return Ok(value);
         }
-        let cost = self
-            .domain
-            .refinement_work(&EvmValue::from_numeric(left.clone()), 1)
-            .saturating_add(right.work_size());
-        self.work.prepay(cost)?;
-        super::intersect_numeric(left, right, self.domain).ok_or(Stop::Bottom)
+        // Keep the existing right-side observation payment. The selected
+        // backend either retains its whole quote or reserves detached import
+        // followed by closure of the actual intersection, before either runs.
+        self.work.prepay(right.work_size())?;
+        self.domain
+            .intersect_numeric_with_payment(left, right, 1, |work| self.work.prepay(work))?
+            .ok_or(Stop::Bottom)
     }
 
     fn known(&mut self, expression: &ExprId) -> LocalResult<D::Element> {
@@ -391,6 +395,12 @@ impl<'a, 'ledger, 'policy, D: EvmNumericAlgebra> Engine<'a, 'ledger, 'policy, D>
     }
 
     fn atom(&mut self, atom: &Constraint) -> LocalResult<()> {
+        if let Constraint::Members { values, .. } = atom {
+            // direct() owns a Word256 set: pay its one deep payload clone
+            // before translating the matching subject, not after allocation.
+            self.work
+                .prepay(values.len().saturating_mul(4).saturating_add(8))?;
+        }
         self.work.charge(
             atom.expressions()
                 .iter()
@@ -838,7 +848,8 @@ impl<'a, 'ledger, 'policy, D: EvmNumericAlgebra> Engine<'a, 'ledger, 'policy, D>
             .cloned()
             .map(EvmValue::from_numeric)
             .collect::<Vec<_>>();
-        self.work.prepay(self.domain.operation_work(&args))?;
+        self.work
+            .prepay(self.domain.operation_work_for(op, &args))?;
         Ok(self.domain.apply(op, &args).numeric().clone())
     }
 

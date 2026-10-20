@@ -97,6 +97,7 @@ fn selected_fee_precedes_touch_and_noneligible_quotes_are_exactly_original() {
         (constant(0), args[1].clone(), constants),
     ] {
         let frame = execution.payload.active();
+        let passes = ValueAlgebra::new(&selected).memory_write_passes(&offset, &value, 32);
         let original = byte_work(
             &[&offset, &value],
             32,
@@ -107,9 +108,14 @@ fn selected_fee_precedes_touch_and_noneligible_quotes_are_exactly_original() {
                 .saturating_add(frame.returndata.work_size()),
             ValueAlgebra::new(&selected),
         )
-        .saturating_add(
-            32usize.saturating_mul(selected.operation_work(&[constant(0), value.clone()])),
-        );
+        .saturating_add(passes.saturating_mul((0..32).fold(0usize, |work, index| {
+            let literal = crate::U256::from(index);
+            let index = constant(index);
+            let domain = ValueAlgebra::new(&selected);
+            work.saturating_add(domain.literal_quote_work(literal))
+                .saturating_add(domain.operation_work_for_refs(opcode::BYTE, &[&index, &value]))
+        })))
+        .saturating_add(passes.saturating_mul(32).saturating_mul(value.clone_work()));
         assert_eq!(
             frame
                 .memory

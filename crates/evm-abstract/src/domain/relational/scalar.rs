@@ -265,36 +265,43 @@ impl RelationState {
         limits: &RelationLimits,
         budget: &mut crate::resource::WorkBudget,
     ) -> Result<EvmScalarQuery<D::Element>, crate::domain::WorkExhausted> {
-        let (facts, finite, structural) = self.scalar_import_shape(expression, value.numeric());
-        let staged = domain.numeric_algebra().refinement_import_work(
-            value.numeric(),
-            facts,
-            finite,
-            structural,
-        );
-        let work = staged.map_or_else(
-            || domain.refinement_work(value, self.len()),
-            |work| {
-                work.saturating_add(
-                    value
-                        .work_size()
-                        .saturating_sub(value.numeric().work_size()),
-                )
-            },
-        );
-        if budget.exhausted() || !budget.charge(work) {
+        let staged = self.refinement_import_work_with(expression, value, domain);
+        let work = staged.unwrap_or_else(|| domain.refinement_work(value, self.len()));
+        if work == usize::MAX || budget.exhausted() || !budget.charge(work) {
             return Err(crate::domain::WorkExhausted);
         }
         let prepared = match self.prepare_scalar(expression, value.numeric(), domain, limits) {
             Ok(prepared) => prepared,
             Err(answer) => return Ok(answer),
         };
-        if staged.is_some()
-            && !budget.charge(domain.numeric_reduction_work(prepared.value.numeric()))
-        {
-            return Err(crate::domain::WorkExhausted);
+        if staged.is_some() {
+            let closure = domain.numeric_reduction_work(prepared.value.numeric());
+            if closure == usize::MAX || !budget.charge(closure) {
+                return Err(crate::domain::WorkExhausted);
+            }
         }
         Ok(Self::finish_scalar(prepared, domain))
+    }
+
+    /// Borrowed first-phase quote. Closure is quoted separately after detached
+    /// import; None retains the selected custom backend's whole reservation.
+    pub fn refinement_import_work_with<D: EvmNumericAlgebra>(
+        &self,
+        expression: &ExprId,
+        value: &EvmValue<D::Element>,
+        domain: AlgebraRef<'_, D>,
+    ) -> Option<usize> {
+        let (facts, finite, structural) = self.scalar_import_shape(expression, value.numeric());
+        domain
+            .numeric_algebra()
+            .refinement_import_work(value.numeric(), facts, finite, structural)
+            .map(|work| {
+                work.saturating_add(
+                    value
+                        .work_size()
+                        .saturating_sub(value.numeric().work_size()),
+                )
+            })
     }
 
     fn scalar_import_shape<N: WordElement>(

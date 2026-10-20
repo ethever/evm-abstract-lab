@@ -1,7 +1,7 @@
 //! Private default numeric primitives. These never call the metadata facade.
 
 use super::{
-    Domain, FiniteConstantSet, NumericReduction, NumericValue, Profile, WordElement,
+    Domain, EvmValue, FiniteConstantSet, NumericReduction, NumericValue, Profile, WordElement,
     known_bits::KnownBits, query,
 };
 use alloy_primitives::U256;
@@ -22,6 +22,41 @@ pub(super) fn finite(finite: FiniteConstantSet) -> NumericValue {
 }
 
 impl Domain {
+    pub(super) fn numeric_memory_write_passes(
+        self,
+        offset: &EvmValue<NumericValue>,
+        value: &EvmValue<NumericValue>,
+        width: usize,
+    ) -> usize {
+        let numeric = value.numeric();
+        // These are exactly singleton()'s candidate tags, without its possibly
+        // expensive membership/modulo validation. No candidate means the writer
+        // cannot enter its singleton-provenance loop.
+        let candidate = numeric.finite.cardinality() == Some(1)
+            || numeric.bits.singleton().is_some()
+            || numeric.interval.singleton().is_some()
+            || numeric.congruence.singleton().is_some();
+        let constant_origin = value
+            .provenance()
+            .origins()
+            .sources()
+            .is_some_and(|origins| {
+                origins.len() == 1 && origins.contains(&super::provenance::Origin::Constant)
+            })
+            && !value.provenance().is_code_address();
+        let source_pass = usize::from(candidate && !constant_origin);
+        // NumericValue cloning/normalized offset retain this raw complete set.
+        // A single last-key lookup bounds every host conversion and width add.
+        let cached = offset.constants().is_some_and(|values| {
+            values.last().is_none_or(|last| {
+                usize::try_from(*last)
+                    .ok()
+                    .and_then(|start| start.checked_add(width.saturating_sub(1)))
+                    .is_some()
+            })
+        });
+        source_pass + usize::from(!cached)
+    }
     pub(super) fn numeric_project(self, value: &NumericValue) -> NumericValue {
         if self.spec().profile() == Profile::Product {
             let mut out = value.clone();
@@ -195,6 +230,11 @@ impl Domain {
         let operands = &operands[..expected];
         if self.numeric_borrowed_copy_work(operands.iter().copied()) == 0 {
             if self.spec().profile() == Profile::Product {
+                if op == opcode::ISZERO && (!first.may_be_zero() || !first.may_be_nonzero()) {
+                    return NumericReduction::stable(NumericValue::constant(U256::from(u8::from(
+                        !first.may_be_nonzero(),
+                    ))));
+                }
                 // A raw finite cover can carry a stricter singleton in another
                 // component. Preserve transfer's exact-scalar check before using
                 // its otherwise equivalent complete finite enumeration shortcut.
@@ -386,6 +426,75 @@ impl Domain {
             .saturating_add(bounds.saturating_mul(bounds_runs))
     }
 
+    pub(super) fn numeric_operation_work_for<'a>(
+        self,
+        op: u8,
+        args: impl Iterator<Item = &'a NumericValue>,
+    ) -> usize {
+        let mut args = args.fuse();
+        let a = args.next();
+        let b = args.next();
+        let c = args.next();
+        let quote = self.numeric_operation_work(a.into_iter().chain(b).chain(c).chain(args));
+        if self.spec().profile() != Profile::Product || quote == usize::MAX {
+            return quote;
+        }
+        let closed = match (a, b, c) {
+            (Some(a), None, None) if a.is_top() && matches!(op, opcode::NOT | opcode::ISZERO) => {
+                // NOT yields Top; ISZERO yields the already aligned boolean
+                // product (finite two or finite Top at capacity one).
+                Some((
+                    3,
+                    if op == opcode::ISZERO {
+                        self.capacity().min(2)
+                    } else {
+                        1
+                    },
+                ))
+            }
+            (Some(a), Some(b), None) => {
+                let literal_top =
+                    (canonical_literal(a) && b.is_top()) || (a.is_top() && canonical_literal(b));
+                if literal_top && matches!(op, opcode::ADD | opcode::SUB) {
+                    // Translating all Word256 values by a literal is a bijection;
+                    // all three component transfers are Top, with no facts to add.
+                    Some((2, 1))
+                } else if self.capacity() < 256
+                    && ((op == opcode::BYTE
+                        && canonical_literal(a)
+                        && a.finite
+                            .singleton()
+                            .is_some_and(|index| index < U256::from(32))
+                        && b.is_top())
+                        || (op == opcode::AND
+                            && a.is_top()
+                            && canonical_literal(b)
+                            && b.finite.singleton() == Some(U256::from(255))))
+                {
+                    // The unconstrained-byte cube is already aligned, and its
+                    // 256 values cannot be reconstructed at this capacity.
+                    Some((2, 1))
+                } else if op == opcode::EQ && (address_literal_eq(a, b) || address_literal_eq(b, a))
+                {
+                    // Each component admits the literal in the complete address
+                    // cube, so EQ's finite/mask/range outputs are the same
+                    // already aligned boolean. No comparison rule is removed.
+                    Some((3, self.capacity().min(2)))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some((old_rounds, finite)) = closed {
+            quote
+                .saturating_sub(self.numeric_closure_work(self.capacity(), Some(old_rounds)))
+                .saturating_add(self.numeric_closure_work(finite, Some(1)))
+        } else {
+            quote
+        }
+    }
+
     pub(super) fn numeric_operation_work<'a>(
         self,
         args: impl Iterator<Item = &'a NumericValue>,
@@ -451,6 +560,20 @@ fn canonical_literal(value: &NumericValue) -> bool {
             && value.congruence.singleton() == Some(word)
             && value.nonzero == (word != U256::ZERO)
     })
+}
+
+fn address_literal_eq(cube: &NumericValue, literal: &NumericValue) -> bool {
+    let max = U256::MAX >> 96usize;
+    let sign = U256::ONE << 255usize;
+    cube.finite.is_top()
+        && cube.congruence.is_top()
+        && !cube.nonzero
+        && cube.bits.zero() == !max
+        && cube.bits.one() == U256::ZERO
+        && cube.interval.unsigned_bounds() == (U256::ZERO, max)
+        && cube.interval.signed_bounds() == (sign, sign + max)
+        && canonical_literal(literal)
+        && literal.finite.singleton().is_some_and(|word| word <= max)
 }
 
 fn stable_scalar(domain: Domain, value: &NumericValue) -> bool {

@@ -19,11 +19,11 @@ pub(super) static OPERAND_COPIES: crate::test_instrumentation::Counter<usize> =
 pub(super) fn clone_numeric_operands<'a, N: WordElement + 'a>(
     args: impl Iterator<Item = &'a N>,
 ) -> Vec<N> {
-    args.map(|value| {
+    args.inspect(|_| {
         #[cfg(test)]
         OPERAND_COPIES.update(|copies| *copies += 1);
-        value.clone()
     })
+    .cloned()
     .collect()
 }
 
@@ -125,6 +125,38 @@ pub trait EvmNumericAlgebra: Debug {
     fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
     where
         Self::Element: 'a;
+    /// Opcode-aware quotation for already-precharged callers. The compatible
+    /// default retains an existing custom policy's whole-operation envelope.
+    fn operation_work_for<'a>(
+        &self,
+        _op: u8,
+        args: impl Iterator<Item = &'a Self::Element>,
+    ) -> usize
+    where
+        Self::Element: 'a,
+    {
+        self.operation_work(args)
+    }
+    /// Construct and release a full literal operand. Opaque constructors need
+    /// an explicit bound; unknown work refuses before constructing the value.
+    fn literal_quote_work(&self, _literal: U256) -> usize {
+        usize::MAX
+    }
+    /// Complete BYTE quotes (numeric and facade operand work) are identical
+    /// for all literal indices0..31 and the same retained word.
+    fn byte_quotes_uniform(&self) -> bool {
+        false
+    }
+    /// Upper bound on width-sized arithmetic passes in the shared memory writer.
+    /// Opaque elements retain both possible passes without inspecting their state.
+    fn memory_write_passes(
+        &self,
+        _offset: &EvmValue<Self::Element>,
+        _value: &EvmValue<Self::Element>,
+        _width: usize,
+    ) -> usize {
+        2
+    }
     /// Upper bound for policy projection beyond ordinary input cloning.
     fn projection_work(&self, value: &Self::Element) -> usize;
     /// Upper bound for guarantee import and reduction.
@@ -223,6 +255,26 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
         Self::Element: 'a,
     {
         D::operation_work(self, args)
+    }
+    fn operation_work_for<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    where
+        Self::Element: 'a,
+    {
+        D::operation_work_for(self, op, args)
+    }
+    fn literal_quote_work(&self, literal: U256) -> usize {
+        D::literal_quote_work(self, literal)
+    }
+    fn byte_quotes_uniform(&self) -> bool {
+        D::byte_quotes_uniform(self)
+    }
+    fn memory_write_passes(
+        &self,
+        offset: &EvmValue<Self::Element>,
+        value: &EvmValue<Self::Element>,
+        width: usize,
+    ) -> usize {
+        D::memory_write_passes(self, offset, value, width)
     }
     fn projection_work(&self, value: &Self::Element) -> usize {
         D::projection_work(self, value)
@@ -518,7 +570,8 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         args: &[EvmValue<D::Element>],
         budget: &mut crate::resource::WorkBudget,
     ) -> Result<EvmReduction<D::Element>, WorkExhausted> {
-        if !budget.charge(self.operation_work(args)) {
+        let work = self.operation_work(args);
+        if work == usize::MAX || !budget.charge(work) {
             return Err(WorkExhausted);
         }
         Ok(self.apply_detailed(op, args))
@@ -552,8 +605,56 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     }
     /// Numeric plus expression/metadata work quotation; no work is run here.
     pub fn operation_work(&self, args: &[EvmValue<D::Element>]) -> usize {
+        self.operation_envelope(
+            args.iter(),
+            self.numeric
+                .operation_work(args.iter().map(EvmValue::numeric)),
+        )
+    }
+    /// Contextual quotation without operand copies or candidate enumeration.
+    pub fn operation_work_for(&self, op: u8, args: &[EvmValue<D::Element>]) -> usize {
+        self.operation_envelope(
+            args.iter(),
+            self.numeric
+                .operation_work_for(op, args.iter().map(EvmValue::numeric)),
+        )
+    }
+    /// Internal quote view for a fixed mix of existing and synthetic operands;
+    /// callers retain the values, so quoting never clones their numeric payloads.
+    pub(crate) fn operation_work_for_refs(&self, op: u8, args: &[&EvmValue<D::Element>]) -> usize {
+        self.operation_envelope(
+            args.iter().copied(),
+            self.numeric
+                .operation_work_for(op, args.iter().map(|value| value.numeric())),
+        )
+    }
+    /// Reservation for constructing and releasing an actual literal operand.
+    pub fn literal_quote_work(&self, literal: U256) -> usize {
+        self.numeric.literal_quote_work(literal)
+    }
+    /// Domain-owned guarantee for the fixed-width BYTE batch.
+    pub(crate) fn byte_quotes_uniform(&self) -> bool {
+        self.numeric.byte_quotes_uniform()
+    }
+    /// Backend-owned bound on the memory writer's existing arithmetic passes.
+    pub(crate) fn memory_write_passes(
+        &self,
+        offset: &EvmValue<D::Element>,
+        value: &EvmValue<D::Element>,
+        width: usize,
+    ) -> usize {
+        self.numeric.memory_write_passes(offset, value, width)
+    }
+    fn operation_envelope<'a>(
+        &self,
+        args: impl Iterator<Item = &'a EvmValue<D::Element>> + Clone,
+        numeric: usize,
+    ) -> usize
+    where
+        D::Element: 'a,
+    {
         let symbolic = if self.spec().relations().enabled {
-            args.iter()
+            args.clone()
                 .fold(1usize, |cost, value| {
                     cost.saturating_add(value.expression().map_or(1, symbolic::ExprId::nodes))
                 })
@@ -561,10 +662,9 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         } else {
             0
         };
-        self.numeric
-            .operation_work(args.iter().map(EvmValue::numeric))
+        numeric
             .saturating_add(symbolic)
-            .saturating_add(self.numeric.operand_work(args.iter()))
+            .saturating_add(self.numeric.operand_work(args))
     }
     /// Numeric policy-projection work beyond existing copying.
     pub fn projection_work(&self, value: &EvmValue<D::Element>) -> usize {
@@ -628,6 +728,29 @@ impl EvmNumericAlgebra for Domain {
     }
     fn operation_work<'a>(&self, args: impl Iterator<Item = &'a NumericValue>) -> usize {
         self.numeric_operation_work(args)
+    }
+    fn operation_work_for<'a>(
+        &self,
+        op: u8,
+        args: impl Iterator<Item = &'a NumericValue>,
+    ) -> usize {
+        self.numeric_operation_work_for(op, args)
+    }
+    fn literal_quote_work(&self, _literal: U256) -> usize {
+        // Singleton containers/Arc and disposal, four-limb mask/range/congruence
+        // construction and common literal metadata fit this fixed envelope.
+        64
+    }
+    fn byte_quotes_uniform(&self) -> bool {
+        true
+    }
+    fn memory_write_passes(
+        &self,
+        offset: &EvmValue<NumericValue>,
+        value: &EvmValue<NumericValue>,
+        width: usize,
+    ) -> usize {
+        self.numeric_memory_write_passes(offset, value, width)
     }
     fn projection_work(&self, value: &NumericValue) -> usize {
         self.numeric_projection_work(value)

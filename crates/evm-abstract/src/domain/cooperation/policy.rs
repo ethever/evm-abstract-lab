@@ -66,6 +66,10 @@ where
     fn operation_work<'a>(&self, args: impl Iterator<Item = &'a NumericValue>) -> usize {
         self.domain.numeric_operation_work(args)
     }
+    fn literal_quote_work(&self, literal: crate::U256) -> usize {
+        // Rules do not replace this assembly's NumericValue literal factory.
+        self.domain.literal_quote_work(literal)
+    }
     fn projection_work(&self, v: &NumericValue) -> usize {
         self.domain.numeric_projection_work(v)
     }

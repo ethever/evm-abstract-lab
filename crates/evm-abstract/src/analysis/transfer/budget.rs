@@ -8,12 +8,82 @@ use crate::{
     analysis::ExecutionConfig,
     bytecode::Program,
     domain::{AlgebraRef, EvmValue},
+    resource::WorkBudget,
     world::{Code, EvmStore},
 };
 use revm_bytecode::opcode;
 
 #[cfg(test)]
+mod cost_tests;
+#[cfg(test)]
 mod tests;
+
+/// Literal construction for quotation is a separate paid phase. A uniform
+/// declaration permits one quote; opaque policies price all actual indices.
+pub(super) fn quotation_work<D: EvmNumericAlgebra>(
+    result: &EvmExecution<D::Element>,
+    op: u8,
+    args: &[EvmValue<D::Element>],
+    domain: AlgebraRef<'_, D>,
+) -> usize {
+    match op {
+        opcode::MSTORE
+            if result
+                .payload
+                .active()
+                .memory
+                .uniform_word_write_work_with(&args[0], &args[1], domain)
+                .is_some() =>
+        {
+            0
+        }
+        opcode::MSTORE | opcode::MSTORE8
+            if domain.memory_write_passes(
+                &args[0],
+                &args[1],
+                if op == opcode::MSTORE { 32 } else { 1 },
+            ) == 0 =>
+        {
+            0
+        }
+        opcode::MSTORE if domain.byte_quotes_uniform() => {
+            domain.literal_quote_work(crate::U256::ZERO)
+        }
+        opcode::MSTORE => (0..32).fold(0usize, |work, index| {
+            work.saturating_add(domain.literal_quote_work(crate::U256::from(index)))
+        }),
+        opcode::MSTORE8 => domain.literal_quote_work(crate::U256::from(255)),
+        _ => 0,
+    }
+}
+
+/// Reserve temporary operand construction before computing the real operation
+/// quote. Refusal never constructs N or changes a memory/store payload.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "same explicit metered operation inputs as the transfer dispatcher"
+)]
+pub(super) fn operation_work_budgeted<D: EvmNumericAlgebra>(
+    result: &EvmExecution<D::Element>,
+    op: u8,
+    args: &[EvmValue<D::Element>],
+    program: &Program,
+    domain: AlgebraRef<'_, D>,
+    config: &ExecutionConfig,
+    entry: &crate::world::EvmEntry<D::Element>,
+    budget: &mut WorkBudget,
+) -> Result<usize, crate::domain::WorkExhausted> {
+    let prepare = quotation_work(result, op, args, domain);
+    if prepare == usize::MAX || budget.exhausted() || !budget.charge(prepare) {
+        return Err(crate::domain::WorkExhausted);
+    }
+    let work = operation_work(result, op, args, program, domain, config, entry);
+    if work == usize::MAX {
+        Err(crate::domain::WorkExhausted)
+    } else {
+        Ok(work)
+    }
+}
 
 pub(super) fn arithmetic_work<N: WordElement>(args: &[EvmValue<N>]) -> usize {
     args.iter()
@@ -54,6 +124,7 @@ pub(super) fn byte_work<D: EvmNumericAlgebra>(
     )
 }
 
+// The caller prepays quotation_work before entering this unbudgeted calculator.
 pub(super) fn operation_work<D: EvmNumericAlgebra>(
     result: &EvmExecution<D::Element>,
     op: u8,
@@ -152,16 +223,58 @@ pub(super) fn operation_work<D: EvmNumericAlgebra>(
             .work_size()
             .saturating_add(environment.projection_work_with(domain)),
         opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain),
-        opcode::MSTORE => byte_work(&args.iter().collect::<Vec<_>>(), 32, array_size, domain)
-            .saturating_add(32usize.saturating_mul(domain.operation_work(&[
-                EvmValue::<D::Element>::constant(crate::U256::ZERO),
-                args[1].clone(),
-            ]))),
-        opcode::MSTORE8 => byte_work(&args.iter().collect::<Vec<_>>(), 1, array_size, domain)
-            .saturating_add(domain.operation_work(&[
-                args[1].clone(),
-                EvmValue::<D::Element>::constant(crate::U256::from(255)),
-            ])),
+        opcode::MSTORE => {
+            let passes = domain.memory_write_passes(&args[0], &args[1], 32);
+            if passes == 0 {
+                return byte_work(&[&args[0], &args[1]], 32, array_size, domain);
+            }
+            let literals = (0..32).fold(0usize, |work, index| {
+                work.saturating_add(domain.literal_quote_work(crate::U256::from(index)))
+            });
+            if literals == usize::MAX {
+                return usize::MAX;
+            }
+            let operations = if domain.byte_quotes_uniform() {
+                let index = EvmValue::<D::Element>::constant(crate::U256::ZERO);
+                32usize.saturating_mul(
+                    domain.operation_work_for_refs(opcode::BYTE, &[&index, &args[1]]),
+                )
+            } else {
+                (0..32).fold(0usize, |work, index| {
+                    let index = EvmValue::<D::Element>::constant(crate::U256::from(index));
+                    work.saturating_add(
+                        domain.operation_work_for_refs(opcode::BYTE, &[&index, &args[1]]),
+                    )
+                })
+            };
+            byte_work(&[&args[0], &args[1]], 32, array_size, domain).saturating_add(
+                passes
+                    .saturating_mul(literals.saturating_add(operations))
+                    // The writer builds one owned value argument per BYTE,
+                    // before the numeric facade's separately quoted slice copy.
+                    .saturating_add(
+                        passes
+                            .saturating_mul(32)
+                            .saturating_mul(args[1].clone_work()),
+                    ),
+            )
+        }
+        opcode::MSTORE8 => {
+            let passes = domain.memory_write_passes(&args[0], &args[1], 1);
+            if passes == 0 {
+                return byte_work(&[&args[0], &args[1]], 1, array_size, domain);
+            }
+            let literal = domain.literal_quote_work(crate::U256::from(255));
+            if literal == usize::MAX {
+                return usize::MAX;
+            }
+            let mask = EvmValue::<D::Element>::constant(crate::U256::from(255));
+            byte_work(&[&args[0], &args[1]], 1, array_size, domain).saturating_add(
+                passes.saturating_mul(literal.saturating_add(args[1].clone_work()).saturating_add(
+                    domain.operation_work_for_refs(opcode::AND, &[&args[1], &mask]),
+                )),
+            )
+        }
         opcode::EXTCODEHASH => {
             external_code_work(&result.payload.store, &args[0], domain, false, entry)
         }
@@ -182,7 +295,7 @@ pub(super) fn operation_work<D: EvmNumericAlgebra>(
             .store
             .work_size()
             .saturating_add(domain.operation_work(&[]).saturating_mul(2)),
-        0x01..=0x0b | 0x10..=0x1e => domain.operation_work(args),
+        0x01..=0x0b | 0x10..=0x1e => domain.operation_work_for(op, args),
         _ => 1,
     }
 }

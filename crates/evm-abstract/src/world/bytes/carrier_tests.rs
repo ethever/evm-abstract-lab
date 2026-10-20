@@ -231,6 +231,10 @@ impl EvmNumericAlgebra for Words {
             work.saturating_add(value.work_size())
         })
     }
+    fn literal_quote_work(&self, _literal: U256) -> usize {
+        // Fixed literal fields/empty payload and common metadata, including drop.
+        64
+    }
     fn projection_work(&self, _value: &Word) -> usize {
         64
     }
@@ -982,6 +986,10 @@ impl EvmNumericAlgebra for HeavyWords {
         args.fold(1024usize, |work, value| {
             work.saturating_add(value.work_size())
         })
+    }
+    fn literal_quote_work(&self, _literal: U256) -> usize {
+        // Fixed literal fields/empty payload and common metadata, including drop.
+        64
     }
     fn projection_work(&self, value: &Heavy) -> usize {
         value.work_size()

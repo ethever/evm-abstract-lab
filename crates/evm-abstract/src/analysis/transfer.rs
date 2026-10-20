@@ -52,7 +52,7 @@ mod resource_tests;
 mod scalar_retention_tests;
 
 pub(super) use crate::resource::WorkBudget;
-use budget::{byte_work, operation_work};
+use budget::{byte_work, operation_work_budgeted};
 use calls::{call, failure, finish};
 
 struct TransferContext<'a, D: EvmNumericAlgebra> {
@@ -572,8 +572,14 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
             return result;
         }
         if let Some(value) = instruction.immediate {
+            let construction = domain.literal_quote_work(value);
+            if construction == usize::MAX || !context.budget.charge(construction) {
+                boundary(&mut result, pc, FrontierReason::Work);
+                return result;
+            }
             let value = EvmValue::<D::Element>::constant(value);
-            // The receipt owns a numeric copy even on this early PUSH path.
+            // Preserve the separately paid receipt copy from the transfer
+            // resource lane; neither reservation publishes a partial result.
             if !context.budget.charge(value.clone_work()) {
                 boundary(&mut result, pc, FrontierReason::Work);
                 return result;
@@ -682,9 +688,23 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                 return result;
             }
         }
-        if !context.budget.charge(operation_work(
-            &result, op, &args, program, domain, config, entry,
-        )) {
+        let work = match operation_work_budgeted(
+            &result,
+            op,
+            &args,
+            program,
+            domain,
+            config,
+            entry,
+            context.budget,
+        ) {
+            Ok(work) => work,
+            Err(_) => {
+                boundary(&mut result, pc, FrontierReason::Work);
+                return result;
+            }
+        };
+        if !context.budget.charge(work) {
             boundary(&mut result, pc, FrontierReason::Work);
             return result;
         }

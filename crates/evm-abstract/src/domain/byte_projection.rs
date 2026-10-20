@@ -6,12 +6,16 @@
 //! uses Domain::apply, including all finite and exact scalar inputs here.
 
 use super::{
-    AbstractValue, Domain, FiniteConstantSet, NumericValue, Profile, congruence::Congruence,
-    interval::Interval, known_bits::KnownBits,
+    Domain, FiniteConstantSet, NumericValue, Profile, congruence::Congruence, interval::Interval,
+    known_bits::KnownBits,
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+#[cfg(test)]
+use super::AbstractValue;
+
+#[cfg(test)]
 impl Domain {
     /// Compatibility entrypoint; numeric primitives never re-enter this facade.
     pub(crate) fn observe_byte(&self, op: u8, args: &[AbstractValue]) -> AbstractValue {
@@ -75,6 +79,7 @@ fn projection_side(
 }
 
 // The legacy facade still gates this shortcut on its effective expression policy.
+#[cfg(test)]
 fn projection_scalar(domain: Domain, op: u8, args: &[AbstractValue]) -> Option<&AbstractValue> {
     if domain.spec().relations().enabled {
         return None;

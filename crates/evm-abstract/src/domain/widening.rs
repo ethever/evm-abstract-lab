@@ -4,11 +4,13 @@
 //! Bits independent of those prefixes, such as a fixed low-160-bit address,
 //! remain guarantees of the widened input.
 
+#[cfg(test)]
 use super::{AbstractValue, Domain};
 
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 impl Domain {
     pub(crate) fn widen_procedure(
         self,
