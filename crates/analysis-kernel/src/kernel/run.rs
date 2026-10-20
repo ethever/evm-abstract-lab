@@ -13,10 +13,12 @@ use std::marker::PhantomData;
 /// allows existing public result fields to retain their concrete representation;
 /// all semantic updates must use [`Run::publish_prepared`]. Copying metadata is
 /// only for detached snapshots: each active graph has one authoritative value.
+/// The marker follows `V`'s ownership and auto traits without storing or dropping
+/// a value. Cloning metadata does not require `V: Clone`.
 pub struct SlotMeta<V> {
     id: FactId,
     scope: Scope,
-    marker: PhantomData<fn() -> V>,
+    marker: PhantomData<V>,
 }
 impl<V> Clone for SlotMeta<V> {
     /// Copy a constant-size handle into a paid detached snapshot, not its value.

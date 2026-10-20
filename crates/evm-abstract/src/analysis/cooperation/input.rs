@@ -87,7 +87,8 @@ impl<N: WordElement> Input<N> {
 }
 
 /// Read-only, single-assignment production inputs, indexed by their own scope.
-pub struct Inputs<N: WordElement>(PhantomData<fn() -> N>);
+/// The type marker follows the numeric element's ownership and auto traits.
+pub struct Inputs<N: WordElement>(PhantomData<N>);
 
 impl<N: WordElement> Capability for Inputs<N> {
     type Key = ();
@@ -114,7 +115,8 @@ pub struct InputAlreadyInitialized;
 /// This is an immutable source protocol, not an ascending state-join policy.
 /// The direction flag enforces registered, same-generation initialization;
 /// valid seeded sources never combine with another value.
-pub struct ImmutableInputPolicy<N: WordElement>(PhantomData<fn() -> N>);
+/// The policy marker follows the numeric element's ownership and auto traits.
+pub struct ImmutableInputPolicy<N: WordElement>(PhantomData<N>);
 
 impl<N: WordElement> Default for ImmutableInputPolicy<N> {
     fn default() -> Self {

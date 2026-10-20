@@ -24,7 +24,7 @@ use analysis_kernel::{
     Analyzer, Availability, Context, GenerationEntry, KernelError, LocalClosure, RunningJob,
     ScopeKey, Version,
 };
-use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 /// A bound alias only: semantic implementations use the existing kernel traits.
 pub(in crate::analysis) trait Composition<N: WordElement, E>:
@@ -98,7 +98,6 @@ pub(in crate::analysis) struct Cooperation<N: WordElement, X: InputTasks + Extra
     next_context: u64,
     failure: Option<CooperationError<E>>,
     pub interrupted: bool,
-    marker: PhantomData<fn() -> N>,
 }
 
 pub(in crate::analysis) type Empty = public::Extension<public::NoExtension, public::NoTasks>;
@@ -112,7 +111,6 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             next_context: 2,
             failure: None,
             interrupted: false,
-            marker: PhantomData,
         }
     }
 

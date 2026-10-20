@@ -1,7 +1,7 @@
 //! Typed query families, explicit provider routes and directed publication.
 
 use crate::{Scope, Scoped, Version, algebra::PublicationPolicy, kernel::FactId};
-use std::{collections::BTreeMap, marker::PhantomData};
+use std::collections::BTreeMap;
 
 /// A semantic query family; it does not expose a provider's representation.
 pub trait Capability {
@@ -70,7 +70,6 @@ pub struct Channel<Q: Capability, P: PublicationPolicy<Value = Q::Value>> {
     pub(crate) directory: FactId,
     pub(crate) cells: BTreeMap<Scoped<Q::Key>, Cell<Q::Value>>,
     pub(crate) policy: P,
-    pub(crate) marker: PhantomData<fn() -> Q>,
 }
 impl<Q: Capability, P: PublicationPolicy<Value = Q::Value>> Channel<Q, P> {
     /// Number of interned keys, including still-pending negative reads.

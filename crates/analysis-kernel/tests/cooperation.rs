@@ -13,6 +13,8 @@ mod contracts;
 mod cycle;
 #[path = "cooperation/generations.rs"]
 mod generations;
+#[path = "cooperation/markers.rs"]
+mod markers;
 #[path = "cooperation/protocol.rs"]
 mod protocol;
 #[path = "cooperation/staging.rs"]

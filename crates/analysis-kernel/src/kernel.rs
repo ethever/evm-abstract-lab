@@ -9,7 +9,6 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    marker::PhantomData,
     sync::Arc,
 };
 
@@ -379,7 +378,6 @@ impl<J> Kernel<J> {
             directory,
             cells: BTreeMap::new(),
             policy,
-            marker: PhantomData,
         })
     }
     /// Register and queue one independently implemented job.

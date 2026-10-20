@@ -9,7 +9,8 @@ use std::{fmt, marker::PhantomData};
 /// Select the first provider in a static store list.
 pub struct Here;
 /// Select a provider in the tail, with an explicit nested path.
-pub struct There<P>(PhantomData<fn() -> P>);
+/// The marker follows the tail path's ownership and auto traits.
+pub struct There<P>(PhantomData<P>);
 /// End of a statically composed provider list.
 #[derive(Default)]
 pub struct Nil;
