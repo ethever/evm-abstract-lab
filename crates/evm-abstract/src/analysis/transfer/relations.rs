@@ -188,7 +188,7 @@ fn finish_refine<D: EvmNumericAlgebra>(
             }
             let Some(numeric) = crate::domain::relational::intersect_numeric(
                 value.numeric(),
-                &bounds,
+                bounds.as_ref(),
                 context.domain,
             ) else {
                 return Ok(false);

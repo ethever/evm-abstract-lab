@@ -40,7 +40,7 @@ pub(super) fn refine<D: EvmNumericAlgebra>(
             .into_iter()
             .flatten()
         {
-            projection.value_with(value);
+            projection.value(value);
             if projection.stopped() {
                 break 'metadata;
             }

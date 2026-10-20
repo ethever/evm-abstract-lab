@@ -1163,21 +1163,21 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                     opcode::RETURNDATASIZE => frame.returndata.len().clone(),
                     opcode::MSIZE => frame.memory.len().clone(),
                     opcode::CALLDATALOAD => {
-                        let plan =
-                            match frame
-                                .calldata
-                                .prepare_word_read(&args[0], domain, context.budget)
-                            {
-                                Ok(Some(plan)) => plan,
-                                Ok(None) => {
-                                    boundary(&mut result, pc, FrontierReason::Work);
-                                    return result;
-                                }
-                                Err(error) => {
-                                    boundary_bytes(&mut result, pc, error);
-                                    return result;
-                                }
-                            };
+                        let plan = match frame.calldata.prepare_word_read_with(
+                            &args[0],
+                            domain,
+                            context.budget,
+                        ) {
+                            Ok(Some(plan)) => plan,
+                            Ok(None) => {
+                                boundary(&mut result, pc, FrontierReason::Work);
+                                return result;
+                            }
+                            Err(error) => {
+                                boundary_bytes(&mut result, pc, error);
+                                return result;
+                            }
+                        };
                         match plan.read_word_budgeted(context.budget) {
                             Ok(Some(value)) => value,
                             Ok(None) => {
@@ -1248,21 +1248,21 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                             .unwrap_or_else(EvmValue::<D::Element>::top)
                     }),
                     opcode::MLOAD => {
-                        let plan =
-                            match frame
-                                .memory
-                                .prepare_word_read(&args[0], domain, context.budget)
-                            {
-                                Ok(Some(plan)) => plan,
-                                Ok(None) => {
-                                    boundary(&mut result, pc, FrontierReason::Work);
-                                    return result;
-                                }
-                                Err(error) => {
-                                    boundary_bytes(&mut result, pc, error);
-                                    return result;
-                                }
-                            };
+                        let plan = match frame.memory.prepare_word_read_with(
+                            &args[0],
+                            domain,
+                            context.budget,
+                        ) {
+                            Ok(Some(plan)) => plan,
+                            Ok(None) => {
+                                boundary(&mut result, pc, FrontierReason::Work);
+                                return result;
+                            }
+                            Err(error) => {
+                                boundary_bytes(&mut result, pc, error);
+                                return result;
+                            }
+                        };
                         if !touch_memory(&mut result, &args[0], &constant(32), context, pc) {
                             return result;
                         }
