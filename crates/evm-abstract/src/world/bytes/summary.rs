@@ -411,6 +411,12 @@ impl<N: WordElement> EvmByteArraySummary<N> {
                 for binding in &bindings {
                     let index = usize::try_from(binding.index).expect("cell index was usize");
                     let value = cells.get(&index).expect("binding was formed from cell");
+                    if !value.numeric().requires_retained_binding() {
+                        // The immutable binding already contains the complete
+                        // default conjunction. Only unsupported guarantees need
+                        // a new nonliteral executable operand fact.
+                        continue;
+                    }
                     let numeric = if domain.spec().profile() == crate::domain::Profile::Product {
                         value.numeric().compact_for_retention()
                     } else {

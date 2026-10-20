@@ -6,6 +6,39 @@ use crate::domain::{
 };
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
+#[test]
+fn complete_default_observations_need_no_nonliteral_cell_sidecars() {
+    let domain = Domain::default();
+    let mut left = super::super::ByteArray::memory();
+    let mut right = super::super::ByteArray::memory();
+    for (memory, word) in [(&mut left, 1), (&mut right, 2)] {
+        memory
+            .write_word(
+                &AbstractValue::constant(U256::ZERO),
+                &AbstractValue::constant(U256::from(word)),
+                4096,
+                domain,
+            )
+            .unwrap();
+    }
+    assert!(!left.len().numeric().requires_retained_binding());
+    let summary = left.summary_projection(domain).unwrap().join(
+        &right.summary_projection(domain).unwrap(),
+        domain,
+        false,
+    );
+    let replay = summary.instantiate(domain).unwrap();
+    assert!(
+        replay
+            .symbolic_facts()
+            .all(|(expression, _)| expression.as_constant().is_some())
+    );
+    let read = replay.read_word(&AbstractValue::constant(U256::ZERO), domain);
+    for word in [1, 2] {
+        assert!(read.contains(U256::from(word)));
+    }
+}
+
 fn domain(profile: Profile) -> Domain {
     Domain::from_spec(
         DomainSpec::new(

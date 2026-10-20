@@ -33,6 +33,13 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
     fn from_observation(observation: &WordObservation) -> Self;
     /// Export guarantees about this same word.
     fn observation(&self) -> WordObservation;
+    /// Whether an immutable observation binding also needs this actual element.
+    /// False promises that the observation expresses the complete scalar set;
+    /// arbitrary custom predicates conservatively retain their executable N.
+    /// This capability is constant work: no export, query, traversal or clone.
+    fn requires_retained_binding(&self) -> bool {
+        true
+    }
     /// Refine this element by sound guarantees, preserving custom constraints.
     /// A default refusal to gain precision is sound and leaves the element intact.
     fn constrain(&self, observation: &WordObservation) -> Result<Self, FactError> {
@@ -166,6 +173,10 @@ impl WordElement for NumericValue {
     }
     fn observation(&self) -> WordObservation {
         self.into()
+    }
+    fn requires_retained_binding(&self) -> bool {
+        // WordObservation retains every component of the default conjunction.
+        false
     }
     fn constrain(&self, observation: &WordObservation) -> Result<Self, FactError> {
         Ok(self.observation().meet(observation)?.numeric())
