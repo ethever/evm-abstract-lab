@@ -21,6 +21,7 @@ mod reference;
 use analysis_kernel::{Availability, Closure, KernelError, Reachable, Scoped, SolveError, solve};
 use driver::Harness;
 use language::{ContextId, Interval, PROGRAM, Pc, Stop};
+use std::collections::BTreeSet;
 
 fn range(lo: u8, hi: u8) -> language::State {
     Reachable::Value(Interval { lo, hi })
@@ -44,12 +45,16 @@ fn client_interpreter_closes_branches_and_loops_with_two_feedback_removal_contro
                 reference::covers(snapshot, PROGRAM, words, parities);
             }
             let [even, one, unknown, empty] = snapshots;
+            assert_eq!(one.edges, BTreeSet::from([(Pc::Entry, Pc::Fault)]));
             assert_eq!(one.returned, Reachable::Bottom);
             assert_eq!(one.faulted, range(1, 1));
             assert_eq!(unknown.states[Pc::Entry as usize], range(0, 7));
             assert_eq!(unknown.parities[Pc::Entry as usize], 0b11);
             assert_eq!(unknown.returned, range(6, 7));
             assert_eq!(unknown.faulted, range(1, 1));
+            assert!(unknown.edges.contains(&(Pc::Step, Pc::Head)));
+            assert!(unknown.edges.contains(&(Pc::Head, Pc::Return)));
+            assert!(empty.edges.is_empty(), "other scopes cannot supply edges");
             assert!(empty.states.iter().all(|s| *s == Reachable::Bottom));
             assert_eq!(
                 (empty.returned, empty.faulted),
@@ -59,6 +64,7 @@ fn client_interpreter_closes_branches_and_loops_with_two_feedback_removal_contro
                 assert_eq!(even.returned, range(6, 6));
                 assert_eq!(even.faulted, Reachable::Bottom);
                 assert_eq!(even.parities[Pc::Head as usize], 0b01);
+                assert!(!even.edges.contains(&(Pc::Entry, Pc::Fault)));
                 assert!(
                     !h.analyzers
                         .right
@@ -82,6 +88,31 @@ fn client_interpreter_closes_branches_and_loops_with_two_feedback_removal_contro
             assert_eq!(h.solve(512).steps, 0, "repeated joins must stabilize");
         }
     }
+}
+
+#[test]
+#[should_panic(expected = "missing abstract edge Step -> Head")]
+fn concrete_edge_oracle_rejects_a_removed_backedge_despite_another_scopes_copy() {
+    let mut h = Harness::new(true, true, false);
+    let scope = h.invocation(ContextId(30), 0b0000_0101);
+    let other = h.invocation(ContextId(31), 0xff);
+    assert_eq!(h.solve(512).closure, Closure::Closed);
+    // Corrupt only one scope's edge trace; all node facts remain intact.
+    assert!(
+        h.analyzers
+            .right
+            .left
+            .edges
+            .remove(&Scoped::new(scope, (Pc::Step, Pc::Head)))
+    );
+    assert!(
+        h.analyzers
+            .right
+            .left
+            .edges
+            .contains(&Scoped::new(other, (Pc::Step, Pc::Head)))
+    );
+    reference::covers(&h.snapshot(scope), PROGRAM, 0b0000_0101, true);
 }
 
 #[test]

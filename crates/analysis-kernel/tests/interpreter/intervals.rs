@@ -14,6 +14,7 @@ pub struct Interpreter {
     pub import_parities: bool,
     pub reverse: bool,
     pub admitted: BTreeSet<Scoped<Pc>>,
+    pub edges: BTreeSet<Scoped<(Pc, Pc)>>,
     pub trace: Vec<(Scoped<Pc>, Availability<State>)>,
 }
 impl Interpreter {
@@ -114,7 +115,12 @@ where
             if state == Reachable::Bottom {
                 continue;
             }
+            // Prepay bounded scoped-key comparisons and tree allocation. An
+            // edge witnesses a successful contribution, even if its join is equal.
+            cx.run()
+                .reserve(self.edges.len().saturating_add(1).saturating_mul(16))?;
             <_ as Accepts<States>>::accept(cx, Scoped::new(at.scope, pc), state)?;
+            self.edges.insert(Scoped::new(at.scope, (at.pc, pc)));
             let (kernel, meter) = cx.run().parts();
             self.discover(
                 At {

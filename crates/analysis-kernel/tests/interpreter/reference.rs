@@ -48,6 +48,10 @@ pub fn covers(snapshot: &Snapshot, program: Program, inputs: u8, check_parity: b
         }
     }
     for (pc, word, next, value) in edges {
+        assert!(
+            snapshot.edges.contains(&(pc, next)),
+            "missing abstract edge {pc:?} -> {next:?}"
+        );
         contains(&snapshot.states[pc as usize], word);
         contains(&snapshot.states[next as usize], value);
     }

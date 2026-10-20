@@ -111,6 +111,7 @@ impl Harness {
                         import_parities,
                         reverse,
                         admitted: BTreeSet::new(),
+                        edges: BTreeSet::new(),
                         trace: Vec::new(),
                     },
                     Parity {
@@ -171,6 +172,26 @@ impl Harness {
             .kernel
             .begin(self.seeds[&scope], &mut self.meter)
             .unwrap();
+        // Pay for scanning the client trace and copying only this scope's edges.
+        run.reserve(
+            self.analyzers
+                .right
+                .left
+                .edges
+                .len()
+                .saturating_add(1)
+                .saturating_mul(16),
+        )
+        .unwrap();
+        let edges = self
+            .analyzers
+            .right
+            .left
+            .edges
+            .iter()
+            .filter(|edge| edge.scope == scope)
+            .map(|edge| edge.key)
+            .collect();
         let states = std::array::from_fn(|i| {
             run.query(&mut self.stores.head, Scoped::new(scope, POINTS[i]))
                 .unwrap()
@@ -205,6 +226,7 @@ impl Harness {
         run.finish(LocalClosure::Stable).unwrap();
         assert_eq!(self.kernel.closure(), Closure::Closed);
         Snapshot {
+            edges,
             states,
             parities,
             returned,
@@ -214,6 +236,7 @@ impl Harness {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct Snapshot {
+    pub edges: BTreeSet<(Pc, Pc)>,
     pub states: [State; 5],
     pub parities: [u8; 5],
     pub returned: State,
