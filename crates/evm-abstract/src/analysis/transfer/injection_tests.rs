@@ -57,7 +57,8 @@ impl WordElement for Bits {
         self.0 == KnownBits::top()
     }
     fn work_size(&self) -> usize {
-        8
+        // Includes the fixed-size observation export, not just the eight limbs.
+        64
     }
 }
 
@@ -93,14 +94,17 @@ impl EvmNumericAlgebra for BitsAlgebra {
         let args = args.iter().map(|value| value.0).collect::<Vec<_>>();
         NumericReduction::stable(Bits(KnownBits::transfer(op, &args)))
     }
-    fn operation_work(&self, _args: &[Bits]) -> usize {
+    fn operation_work<'a>(&self, _args: impl Iterator<Item = &'a Bits>) -> usize
+    where
+        Bits: 'a,
+    {
         64 * 1024
     }
     fn projection_work(&self, _value: &Bits) -> usize {
         8
     }
     fn refinement_work(&self, _value: &Bits, facts: usize) -> usize {
-        facts.saturating_add(1) * 256
+        facts.saturating_add(1).saturating_mul(256)
     }
 }
 
