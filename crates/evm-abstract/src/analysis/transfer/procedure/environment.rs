@@ -1,14 +1,23 @@
 //! Arbitrary local effects and repeatable ordinary calls into protected owners.
 
+use super::Composition;
+use crate::analysis::engine::{ContextPolicy, PartitionPolicy};
+use crate::domain::EvmNumericAlgebra;
+
 use super::{
-    AbstractValue, AddressInput, BTreeSet, ByteArray, ChildFrame, Code, Continuation, Execution,
-    FrameCode, FrameKey, FrameState, FrontierReason, MachineEdgeKind, MachineError, MachinePayload,
-    OutcomeKind, Solver, StorageReadPolicy, Successor, TransferContext, boundary_on, calls,
-    keccak256, zero,
+    AddressInput, BTreeSet, Code, EvmByteArray, EvmChildFrame, EvmContinuation, EvmExecution,
+    EvmFrameState, EvmMachinePayload, EvmSolver, EvmSuccessor, EvmValue, FrameCode, FrameKey,
+    FrontierReason, MachineEdgeKind, MachineError, OutcomeKind, StorageReadPolicy, TransferContext,
+    boundary_on, calls, keccak256, zero,
 };
 
-impl Solver<'_> {
-    pub(super) fn environment(&mut self, mut payload: MachinePayload) -> Execution {
+impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
+    EvmSolver<'_, D, C, P, X, E>
+{
+    pub(super) fn environment(
+        &mut self,
+        mut payload: EvmMachinePayload<D::Element>,
+    ) -> EvmExecution<D::Element> {
         let mut result = super::super::empty_execution(payload.clone());
         let protected = self
             .world
@@ -32,7 +41,7 @@ impl Solver<'_> {
         if let Err(error) =
             payload
                 .store
-                .unknown_effects(&protected, Some(owner), is_static, self.domain)
+                .unknown_effects_with(&protected, Some(owner), is_static, self.domain)
         {
             boundary_on(
                 &mut result,
@@ -42,7 +51,7 @@ impl Solver<'_> {
             );
             return result;
         }
-        let data = match ByteArray::unknown_checked() {
+        let data = match EvmByteArray::unknown_checked() {
             Ok(data) => data,
             Err(error) => {
                 boundary_on(
@@ -75,7 +84,7 @@ impl Solver<'_> {
                     payload.clone(),
                     kind,
                     if kind == OutcomeKind::Failure {
-                        ByteArray::empty()
+                        EvmByteArray::empty()
                     } else {
                         data.clone()
                     },
@@ -128,7 +137,7 @@ impl Solver<'_> {
                     boundary_on(&mut result, 0, error.frontier_reason(), payload.key());
                     return result;
                 }
-                let calldata = match ByteArray::unknown_checked() {
+                let calldata = match EvmByteArray::unknown_checked() {
                     Ok(data) => data,
                     Err(error) => {
                         boundary_on(
@@ -146,8 +155,8 @@ impl Solver<'_> {
                     AddressInput::Concrete(target)
                 };
                 let mut callback = payload.clone();
-                callback.call_stack.push_child(ChildFrame {
-                    state: FrameState {
+                callback.call_stack.push_child(EvmChildFrame {
+                    state: EvmFrameState {
                         key: FrameKey {
                             code_address,
                             code_hash: program.as_ref().map_or_else(
@@ -166,20 +175,16 @@ impl Solver<'_> {
                         code,
                         program: program.clone(),
                         stack: Vec::new(),
-                        memory: ByteArray::memory(),
+                        memory: EvmByteArray::memory(),
                         calldata,
                         environment_calldata: false,
-                        returndata: ByteArray::empty(),
-                        call_value: if is_static {
-                            zero()
-                        } else {
-                            AbstractValue::top()
-                        },
+                        returndata: EvmByteArray::empty(),
+                        call_value: if is_static { zero() } else { EvmValue::top() },
                         address_operand: None,
-                        caller_operand: Some(AbstractValue::unknown_address()),
+                        caller_operand: Some(EvmValue::unknown_address()),
                         saved_store: payload.store.snapshot(),
                     },
-                    continuation: Continuation {
+                    continuation: EvmContinuation {
                         return_block: Some(0),
                         output_offset: zero(),
                         output_size: zero(),
@@ -187,7 +192,7 @@ impl Solver<'_> {
                     },
                 });
                 callback.normalize();
-                result.successors.push(Successor {
+                result.successors.push(EvmSuccessor {
                     payload: callback,
                     kind: MachineEdgeKind::Call,
                 });

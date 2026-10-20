@@ -31,7 +31,8 @@ fn harness(code: &str, cap: usize, coordinates: usize, values: &[u8]) -> Harness
     config.analysis.relations.max_nodes = cap;
     config.analysis.max_constants = 128;
     let domain = config.domain().unwrap();
-    let mut seed = transfer::initial(&world, &entry, domain).unwrap();
+    let mut seed =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     seed.active_mut().stack = vec![word(7), word(0)];
     seed.active_mut().key.jump_history = vec![3, 7, 11];
     seed.normalize();
@@ -137,7 +138,10 @@ fn prebody_promotion_keeps_the_whole_original_gamma_and_captured_context() {
     let mut h = harness("525b00", 256, 32, &[0, 1, 3]);
     let domain = h.config.domain().unwrap();
     let owner = address(0x101);
-    let mut store = transfer::initial(&h.world, &h.entry, domain).unwrap().store;
+    let mut store =
+        crate::analysis::transfer::procedure::testing::initial(&h.world, &h.entry, domain)
+            .unwrap()
+            .store;
     store
         .write_checked(owner, &word(0), &domain.join(&word(3), &word(5)), domain)
         .unwrap();

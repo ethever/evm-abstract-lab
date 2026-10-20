@@ -235,7 +235,7 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
             .join(
                 &node.payload,
                 &roundtrip,
-                h.config.domain().unwrap(),
+                crate::domain::ValueAlgebra::new(h.config.domain().unwrap()).borrowed(),
                 &mut h.budget,
                 false,
             )

@@ -7,15 +7,17 @@
 //! executor. Reuse materializes the certified graph for the new caller so the
 //! instruction graph and world SSA retain every call and return boundary.
 
+use crate::domain::{NumericValue, WordElement};
+
 use super::{
-    CallStack, Diagnostic, FrontierReason, InstructionProgress, InstructionValue, MachineEdge,
-    MachinePayload, OutcomeKind, RootFrame, WorldAnalysis,
-    transfer::{CompletedCall, WorkBudget},
-    worklist::Worklist,
+    Diagnostic, EvmCallStack, EvmInstructionValue, EvmMachinePayload, EvmRootFrame,
+    EvmWorldAnalysis, FrontierReason, InstructionProgress, MachineEdge, OutcomeKind,
+    transfer::{EvmCompletedCall, WorkBudget},
+    worklist::runtime::Runtime,
 };
 use crate::{
     Fork,
-    world::{ByteArray, EvmEnvironment, SnapshotIdentity, Store},
+    world::{EvmByteArray, EvmEnvironmentValues, EvmStore, SnapshotIdentity},
 };
 use alloy_primitives::{B256, keccak256};
 use serde::Serialize;
@@ -25,7 +27,9 @@ use std::{
 };
 
 mod replay;
-pub(super) use replay::{Prepared, Replay};
+#[cfg(test)]
+pub(super) use replay::Prepared;
+pub(super) use replay::{EvmPrepared, EvmReplay};
 
 fn reserve(budget: &mut WorkBudget, cost: usize) -> bool {
     cost != usize::MAX && budget.charge(cost)
@@ -44,9 +48,9 @@ pub(super) fn summary_boundary() -> FrontierReason {
 /// Equality, rather than a hash-only lookup or an inferred read set, is the
 /// reuse guard. The complete store includes code overlays, nonce, lifecycle,
 /// transient state, balances and logs. Consequently changes to any of these
-/// observations produce a miss. Cache ownership is local to one fixed world.
+/// observations produce a miss. EvmCache<N, Tag> ownership is local to one fixed world.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct SummaryInput {
+pub struct EvmSummaryInput<N: WordElement> {
     /// Fork under which all runtime and initcode instructions were decoded.
     pub fork: Fork,
     /// Typed offline or block-hash-pinned snapshot identity.
@@ -56,11 +60,11 @@ pub struct SummaryInput {
     /// Hash of the current executable account bytes, after code overlay changes.
     pub code_hash: Option<B256>,
     /// Callee state represented as the root of its relative certificate stack.
-    pub frame: RootFrame,
+    pub frame: EvmRootFrame<N>,
     /// Complete transaction store on entry, including rollback preconditions.
-    pub store: Store,
+    pub store: EvmStore<N>,
     /// Complete immutable transaction and block environment.
-    pub environment: EvmEnvironment,
+    pub environment: EvmEnvironmentValues<N>,
     /// Complete caller-qualified constraints on input expressions.
     pub relations: crate::domain::relational::RelationState,
     /// Available additional call depth; recursion cannot gain a fresh budget.
@@ -77,7 +81,7 @@ pub struct SummaryInput {
     pub max_memory_bytes: usize,
 }
 
-impl SummaryInput {
+impl<N: WordElement> EvmSummaryInput<N> {
     pub(super) fn work_size(&self) -> usize {
         self.frame
             .state
@@ -91,24 +95,24 @@ impl SummaryInput {
 
 /// One terminal possibility in a complete abstract-input-to-effects relation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct SummaryOutput {
+pub struct EvmSummaryOutput<N: WordElement> {
     /// Child completion category; revert and failure restore its saved store.
     pub kind: OutcomeKind,
     /// Full child returndata, before the caller's requested-prefix copy.
-    pub data: ByteArray,
+    pub data: EvmByteArray<N>,
     /// Committed or rolled-back transaction state before caller resumption.
-    pub store: Store,
+    pub store: EvmStore<N>,
 }
 
 /// Public evidence for an immutable, fully closed call summary.
 #[derive(Clone, Debug, Serialize)]
-pub struct SummaryRecord {
-    /// Entry state from which this complete certificate was obtained.
+pub struct EvmSummaryRecord<N: WordElement> {
+    /// EvmEntry<N> state from which this complete certificate was obtained.
     pub source_state: usize,
     /// Exact input and immutable world/code binding.
-    pub input: SummaryInput,
+    pub input: EvmSummaryInput<N>,
     /// Return, revert and failure possibilities, including store effects.
-    pub outputs: Vec<SummaryOutput>,
+    pub outputs: Vec<EvmSummaryOutput<N>>,
     /// Number of child-relative machine states in its graph certificate.
     pub state_count: usize,
     /// Internal and terminal edges covered by its graph certificate.
@@ -133,19 +137,20 @@ pub struct SummaryStats {
 }
 
 #[derive(Clone)]
-pub(super) struct Node {
-    pub entry: MachinePayload,
+pub(super) struct EvmNode<N: WordElement, Tag: Clone + Ord = Option<bool>> {
+    pub entry: EvmMachinePayload<N>,
     pub resume_status: Option<bool>,
-    pub exit: MachinePayload,
-    pub exit_stack: Vec<crate::domain::AbstractValue>,
+    pub partition: Tag,
+    pub exit: EvmMachinePayload<N>,
+    pub exit_stack: Vec<crate::domain::EvmValue<N>>,
     pub executed_pcs: Vec<usize>,
     pub instruction_progress: Vec<InstructionProgress>,
-    pub instruction_values: Arc<[InstructionValue]>,
+    pub instruction_values: Arc<[EvmInstructionValue<N>]>,
     pub diagnostics: Vec<Diagnostic>,
-    pub completed_calls: Vec<CompletedCall>,
+    pub completed_calls: Vec<EvmCompletedCall<N>>,
 }
 
-impl Node {
+impl<N: WordElement, Tag: Clone + Ord> EvmNode<N, Tag> {
     pub fn work_size(&self) -> usize {
         let cost = self
             .entry
@@ -168,7 +173,7 @@ impl Node {
     }
 }
 
-pub(super) fn call_work(call: &CompletedCall) -> usize {
+pub(super) fn call_work<N: WordElement>(call: &EvmCompletedCall<N>) -> usize {
     call.payload
         .work_size()
         .saturating_add(call.data.work_size())
@@ -177,15 +182,15 @@ pub(super) fn call_work(call: &CompletedCall) -> usize {
 }
 
 #[derive(Clone)]
-pub(super) struct Terminal {
+pub(super) struct EvmTerminal<N: WordElement> {
     pub from: usize,
-    pub output: SummaryOutput,
-    pub payload: MachinePayload,
+    pub output: EvmSummaryOutput<N>,
+    pub payload: EvmMachinePayload<N>,
     pub raw_kind: OutcomeKind,
-    pub raw_data: ByteArray,
+    pub raw_data: EvmByteArray<N>,
 }
 
-impl Terminal {
+impl<N: WordElement> EvmTerminal<N> {
     pub fn work_size(&self) -> usize {
         self.payload
             .work_size()
@@ -197,27 +202,27 @@ impl Terminal {
 }
 
 #[derive(Clone)]
-pub(super) struct Certificate {
+pub(super) struct EvmCertificate<N: WordElement, Tag: Clone + Ord = Option<bool>> {
     pub record: usize,
-    pub nodes: Vec<Node>,
+    pub nodes: Vec<EvmNode<N, Tag>>,
     pub edges: Vec<MachineEdge>,
-    pub terminals: Vec<Terminal>,
+    pub terminals: Vec<EvmTerminal<N>>,
 }
 
-struct Candidate {
+struct EvmCandidate<N: WordElement> {
     state: usize,
-    input: SummaryInput,
+    input: EvmSummaryInput<N>,
 }
 
-pub(super) struct Cache {
+pub(super) struct EvmCache<N: WordElement, Tag: Clone + Ord = Option<bool>> {
     fingerprint: Option<B256>,
     fingerprint_unavailable: bool,
     pub call_entries: BTreeSet<usize>,
-    candidates: Vec<Candidate>,
-    certificates: Vec<Certificate>,
+    candidates: Vec<EvmCandidate<N>>,
+    certificates: Vec<EvmCertificate<N, Tag>>,
 }
 
-impl Cache {
+impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
     pub fn new() -> Self {
         Self {
             fingerprint: None,
@@ -230,10 +235,10 @@ impl Cache {
 
     pub fn input(
         &mut self,
-        analysis: &WorldAnalysis,
+        analysis: &EvmWorldAnalysis<N>,
         state: usize,
         budget: &mut WorkBudget,
-    ) -> Result<Option<SummaryInput>, FrontierReason> {
+    ) -> Result<Option<EvmSummaryInput<N>>, FrontierReason> {
         if analysis_control::current_cancellation().is_cancelled() {
             return Err(summary_boundary());
         }
@@ -301,7 +306,7 @@ impl Cache {
             .expect("summary inputs start at child frames")
             .clone()
             .into_root();
-        Ok(Some(SummaryInput {
+        Ok(Some(EvmSummaryInput {
             fork: analysis.world.fork(),
             snapshot: analysis.world.identity().clone(),
             world_fingerprint: fingerprint,
@@ -320,21 +325,15 @@ impl Cache {
             max_call_depth: analysis.config.max_call_depth,
             context_depth: analysis.config.analysis.context_depth,
             max_constants: analysis.config.analysis.max_constants,
-            domain_spec: analysis
-                .config
-                .domain()
-                .map_err(|_| {
-                    FrontierReason::Relations(crate::domain::relational::QueryReason::Configuration)
-                })?
-                .spec(),
+            domain_spec: analysis.domain_spec(),
             max_memory_bytes: analysis.config.max_memory_bytes,
         }))
     }
 
     pub fn lookup(
         &self,
-        input: &SummaryInput,
-        analysis: &WorldAnalysis,
+        input: &EvmSummaryInput<N>,
+        analysis: &EvmWorldAnalysis<N>,
         budget: &mut WorkBudget,
     ) -> Result<Option<usize>, ()> {
         for (index, certificate) in self.certificates.iter().enumerate() {
@@ -354,7 +353,12 @@ impl Cache {
         Ok(None)
     }
 
-    pub fn begin(&mut self, state: usize, input: SummaryInput, budget: &mut WorkBudget) -> bool {
+    pub fn begin(
+        &mut self,
+        state: usize,
+        input: EvmSummaryInput<N>,
+        budget: &mut WorkBudget,
+    ) -> bool {
         if !reserve(budget, input.work_size()) {
             return false;
         }
@@ -377,15 +381,15 @@ impl Cache {
                 }
             }
         }
-        self.candidates.push(Candidate { state, input });
+        self.candidates.push(EvmCandidate { state, input });
         true
     }
 
-    pub fn certificate(&self, index: usize) -> &Certificate {
+    pub fn certificate(&self, index: usize) -> &EvmCertificate<N, Tag> {
         &self.certificates[index]
     }
 
-    pub fn pending_target(&self, analysis: &WorldAnalysis) -> Option<super::MachineKey> {
+    pub fn pending_target(&self, analysis: &EvmWorldAnalysis<N>) -> Option<super::MachineKey> {
         self.candidates
             .first()
             .map(|candidate| analysis.states[candidate.state].key.clone())
@@ -393,13 +397,18 @@ impl Cache {
 
     /// Check closure against the same queue and frontiers as normal execution.
     /// A changed source input is never certified under its older precondition.
-    pub fn publish_closed(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "whole graph, precision partitions and shared ledger"
+    )]
+    pub fn publish_closed<T>(
         &mut self,
-        analysis: &mut WorldAnalysis,
+        analysis: &mut EvmWorldAnalysis<N>,
         edges: &BTreeSet<MachineEdge>,
-        worklist: &Worklist,
+        worklist: &Runtime<T>,
         diagnostics: &BTreeSet<Diagnostic>,
-        completed_calls: &[Vec<CompletedCall>],
+        completed_calls: &[Vec<EvmCompletedCall<N>>],
+        partitions: &[Tag],
         budget: &mut WorkBudget,
     ) -> bool {
         let candidates = std::mem::take(&mut self.candidates);
@@ -437,19 +446,20 @@ impl Cache {
                 worklist,
                 diagnostics,
                 completed_calls,
+                partitions,
                 &candidate,
                 budget,
             ) {
-                Capture::Pending => self.candidates.push(candidate),
-                Capture::Uncertifiable => {
+                EvmCapture::Pending => self.candidates.push(candidate),
+                EvmCapture::Uncertifiable => {
                     analysis.summary_stats.rejected_incomplete += 1;
                 }
-                Capture::Work => {
+                EvmCapture::Work => {
                     self.candidates.push(candidate);
                     self.candidates.extend(iter);
                     return false;
                 }
-                Capture::Complete(mut certificate) => {
+                EvmCapture::Complete(mut certificate) => {
                     // Another call may have closed the same exact relation.
                     // Keep one immutable certificate and avoid widening outputs.
                     let mut duplicate = false;
@@ -484,7 +494,7 @@ impl Cache {
                         return false;
                     }
                     let record = analysis.summaries.len();
-                    analysis.summaries.push(SummaryRecord {
+                    analysis.summaries.push(EvmSummaryRecord {
                         source_state: candidate.state,
                         input: candidate.input,
                         outputs: certificate
@@ -508,40 +518,45 @@ impl Cache {
         true
     }
 
-    pub fn finish(self, analysis: &mut WorldAnalysis) {
+    pub fn finish(self, analysis: &mut EvmWorldAnalysis<N>) {
         analysis.summary_stats.rejected_incomplete += self.candidates.len();
     }
 }
 
-enum Capture {
+enum EvmCapture<N: WordElement, Tag: Clone + Ord = Option<bool>> {
     Pending,
     Work,
     Uncertifiable,
-    Complete(Certificate),
+    Complete(EvmCertificate<N, Tag>),
 }
 
-fn relative(payload: &MachinePayload, prefix: usize) -> MachinePayload {
+fn relative<N: WordElement>(payload: &EvmMachinePayload<N>, prefix: usize) -> EvmMachinePayload<N> {
     if prefix == 0 {
         return payload.clone();
     }
     let children = payload.call_stack.children();
     let (root, _) = children[prefix - 1].clone().into_root();
-    MachinePayload {
+    EvmMachinePayload {
         relations: payload.relations.clone(),
-        call_stack: CallStack::from_parts(root, children[prefix..].to_vec()),
+        call_stack: EvmCallStack::from_parts(root, children[prefix..].to_vec()),
         store: payload.store.clone(),
     }
 }
 
-fn capture(
-    analysis: &WorldAnalysis,
+#[expect(
+    clippy::too_many_arguments,
+    reason = "complete certificate evidence and precision partition"
+)]
+fn capture<N: WordElement, Tag: Clone + Ord, T>(
+    analysis: &EvmWorldAnalysis<N>,
     edges: &BTreeSet<MachineEdge>,
-    worklist: &Worklist,
+    worklist: &Runtime<T>,
     diagnostics: &BTreeSet<Diagnostic>,
-    completed_calls: &[Vec<CompletedCall>],
-    candidate: &Candidate,
+    completed_calls: &[Vec<EvmCompletedCall<N>>],
+    partitions: &[Tag],
+    candidate: &EvmCandidate<N>,
     budget: &mut WorkBudget,
-) -> Capture {
+) -> EvmCapture<N, Tag> {
     let depth = analysis.states[candidate.state].entry.call_stack.depth();
     let mut queue = VecDeque::from([candidate.state]);
     let mut reached = BTreeSet::new();
@@ -558,9 +573,9 @@ fn capture(
                 .saturating_add(analysis.frontiers.len())
                 .saturating_add(1),
         ) {
-            return Capture::Work;
+            return EvmCapture::Work;
         }
-        if worklist.contains(&id)
+        if worklist.contains_world(&id)
             || analysis.states[id].exit.is_none()
             || analysis.states[id]
                 .execution_evidence()
@@ -570,7 +585,7 @@ fn capture(
                 .iter()
                 .any(|frontier| frontier.from == Some(id))
         {
-            return Capture::Pending;
+            return EvmCapture::Pending;
         }
         for edge in edges.iter().filter(|edge| edge.from == id) {
             if matches!(edge.kind, super::MachineEdgeKind::Summary(_)) {
@@ -579,7 +594,7 @@ fn capture(
                 // Replaying this graph would erase its abstraction provenance.
                 // Keep ordinary execution and let the shared procedure table
                 // supply a fresh, correctly qualified summary at the new site.
-                return Capture::Uncertifiable;
+                return EvmCapture::Uncertifiable;
             }
             if analysis.states[edge.to].entry.call_stack.depth() >= depth {
                 internal.push(edge.clone());
@@ -589,7 +604,7 @@ fn capture(
             }
         }
     }
-    // Entry first makes the certificate portable without an extra root map.
+    // EvmEntry<N> first makes the certificate portable without an extra root map.
     let ordered: Vec<_> = std::iter::once(candidate.state)
         .chain(reached.iter().copied().filter(|id| *id != candidate.state))
         .collect();
@@ -604,7 +619,7 @@ fn capture(
             let state = &analysis.states[*id];
             let cost = cost
                 .saturating_add(state.entry.work_size())
-                .saturating_add(state.exit.as_ref().map_or(0, MachinePayload::work_size))
+                .saturating_add(state.exit.as_ref().map_or(0, EvmMachinePayload::work_size))
                 .saturating_add(state.executed_pcs.len())
                 .saturating_add(diagnostics.len())
                 .saturating_add(
@@ -629,15 +644,16 @@ fn capture(
         },
     );
     if !reserve(budget, cost) {
-        return Capture::Work;
+        return EvmCapture::Work;
     }
     let nodes = ordered
         .iter()
         .map(|id| {
             let state = &analysis.states[*id];
-            Node {
+            EvmNode {
                 entry: relative(&state.entry, depth - 1),
                 resume_status: state.resume_status,
+                partition: partitions[*id].clone(),
                 exit: relative(
                     state.exit.as_ref().expect("closure checked exit"),
                     depth - 1,
@@ -685,12 +701,12 @@ fn capture(
             .iter()
             .filter(|call| call.payload.call_stack.depth() == depth)
         {
-            terminals.push(Terminal {
+            terminals.push(EvmTerminal {
                 from: ids[&state],
                 payload: relative(&call.payload, depth - 1),
                 raw_kind: call.kind,
                 raw_data: call.data.clone(),
-                output: SummaryOutput {
+                output: EvmSummaryOutput {
                     kind: call.output_kind,
                     data: call.output_data.clone(),
                     store: call.output_store.clone(),
@@ -698,10 +714,25 @@ fn capture(
             });
         }
     }
-    Capture::Complete(Certificate {
+    EvmCapture::Complete(EvmCertificate {
         record: 0,
         nodes,
         edges,
         terminals,
     })
 }
+
+/// Default numeric carrier for exact summary inputs.
+pub type SummaryInput = EvmSummaryInput<NumericValue>;
+/// Default numeric carrier for exact summary outcomes.
+pub type SummaryOutput = EvmSummaryOutput<NumericValue>;
+/// Default numeric carrier for closed exact summary evidence.
+pub type SummaryRecord = EvmSummaryRecord<NumericValue>;
+#[cfg(test)]
+pub(super) type Node = EvmNode<NumericValue>;
+#[cfg(test)]
+pub(super) type Terminal = EvmTerminal<NumericValue>;
+#[cfg(test)]
+pub(super) type Certificate = EvmCertificate<NumericValue>;
+#[cfg(test)]
+pub(super) type Cache = EvmCache<NumericValue>;

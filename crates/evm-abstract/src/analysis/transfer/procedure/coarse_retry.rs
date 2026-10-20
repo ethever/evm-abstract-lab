@@ -1,23 +1,25 @@
 //! One persistent whole-entry retention promotion per real Runtime node.
 //!
-//! The bound lives in Node.payload; BoundedState owns its persistent policy.
+//! The bound lives in EvmNode<N>.payload; EvmBoundedState<N> owns its persistent policy.
 //! This adapter admits retries and reconciles complete execution phases.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::{
-    Domain, Execution, FrameCode, FrontierReason, MachineError, MachinePayload, PayloadSummary,
-    WorkBudget,
+    AlgebraRef, EvmExecution, EvmMachinePayload, EvmPayloadSummary, FrameCode, FrontierReason,
+    MachineError, WorkBudget,
 };
-use crate::analysis::state::bounded::{BoundedState, reserve};
+use crate::analysis::state::bounded::{EvmBoundedState, reserve};
 
 #[cfg(test)]
 mod tests;
 
 #[derive(Default)]
-pub(super) enum RuntimeRetry {
+pub(super) enum EvmRuntimeRetry<N: WordElement> {
     #[default]
     Fresh,
     Attempted,
-    Coarse(Box<BoundedState>),
+    Coarse(Box<EvmBoundedState<N>>),
 }
 
 /// Use the same raw producer policy as post-execute retention receipts, before
@@ -43,7 +45,10 @@ pub(super) fn interruption(reason: &FrontierReason) -> bool {
 
 /// Publication uses one phase's receipts. A failed coarse transfer cannot
 /// invalidate legal alternatives or obligations from the precise attempt.
-pub(super) fn reconcile(mut first: Execution, mut retry: Execution) -> Execution {
+pub(super) fn reconcile<N: WordElement>(
+    mut first: EvmExecution<N>,
+    mut retry: EvmExecution<N>,
+) -> EvmExecution<N> {
     if retry.frontiers.is_empty() {
         let superseded = first
             .retention_failures
@@ -72,7 +77,7 @@ pub(super) fn reconcile(mut first: Execution, mut retry: Execution) -> Execution
     }
 }
 
-pub(super) fn supports(original: &PayloadSummary) -> bool {
+pub(super) fn supports<N: WordElement>(original: &EvmPayloadSummary<N>) -> bool {
     original.active().code == FrameCode::Runtime
         && original.active().program.is_some()
         && !original
@@ -81,11 +86,17 @@ pub(super) fn supports(original: &PayloadSummary) -> bool {
             .any(|frame| frame.code == FrameCode::Unknown)
 }
 
-pub(in crate::analysis) fn prepare(
-    original: &PayloadSummary,
-    domain: Domain,
+pub(super) struct Prepared<N: WordElement> {
+    pub representation: Box<EvmBoundedState<N>>,
+    pub bound: EvmPayloadSummary<N>,
+    pub payload: EvmMachinePayload<N>,
+}
+
+pub(in crate::analysis) fn prepare_with<D: EvmNumericAlgebra>(
+    original: &EvmPayloadSummary<D::Element>,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
-) -> Result<(Box<BoundedState>, PayloadSummary, MachinePayload), MachineError> {
+) -> Result<Prepared<D::Element>, MachineError> {
     if !supports(original) {
         return Err(MachineError::Shape);
     }
@@ -104,8 +115,39 @@ pub(in crate::analysis) fn prepare(
             .saturating_add(layout_lifetime_work)
             .saturating_add(box_lifetime_work),
     )?;
-    let representation = BoundedState::freeze(original, true, domain)?;
+    let representation = EvmBoundedState::freeze(original, true, domain)?;
     let (representation, bound, payload) =
         representation.materialize(original.clone(), domain, budget)?;
-    Ok((Box::new(representation), bound, payload))
+    Ok(Prepared {
+        representation: Box::new(representation),
+        bound,
+        payload,
+    })
 }
+
+#[cfg(test)]
+type RuntimeRetry = EvmRuntimeRetry<crate::domain::NumericValue>;
+
+#[cfg(test)]
+pub(in crate::analysis) fn prepare(
+    original: &crate::analysis::state::PayloadSummary,
+    domain: crate::domain::Domain,
+    budget: &mut WorkBudget,
+) -> Result<
+    (
+        Box<crate::analysis::state::bounded::EvmBoundedState<crate::domain::NumericValue>>,
+        crate::analysis::state::PayloadSummary,
+        crate::analysis::MachinePayload,
+    ),
+    MachineError,
+> {
+    prepare_with(
+        original,
+        crate::domain::ValueAlgebra::new(domain).borrowed(),
+        budget,
+    )
+    .map(|prepared| (prepared.representation, prepared.bound, prepared.payload))
+}
+
+#[cfg(test)]
+use super::{Domain, Execution};

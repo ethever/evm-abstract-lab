@@ -25,29 +25,49 @@
 //! 最终状态由是否存在 frontier 决定，仅队列排空不足以证明 `Converged`。
 
 use super::{
-    ConfigError, Diagnostic, Limit, Status, SummaryStats,
+    ConfigError, Diagnostic, Limit, Status, SummaryStats, WorldAnalysis,
     machine::{
-        EntryAlternatives, ExecutionConfig, ExecutionEvidence, FrontierReason, MachineEdge,
-        MachineEdgeKind, MachineError, MachineFrontier, MachineOutcome, MachinePayload,
-        MachineState, OutcomeKind, WorldAnalysis,
+        EvmEntryAlternatives, EvmExecutionEvidence, EvmMachineFrontier, EvmMachineOutcome,
+        EvmMachinePayload, EvmMachineState, EvmWorldAnalysis, ExecutionConfig, FrontierReason,
+        MachineEdge, MachineEdgeKind, MachineError, OutcomeKind,
     },
-    summary::{Cache, Certificate, Prepared, Replay},
-    transfer::{self, CompletedCall, Successor, WorkBudget},
-    worklist::{Worklist, transfer_stop},
+    summary::{EvmCache, EvmCertificate, EvmPrepared, EvmReplay},
+    transfer::{self, EvmCompletedCall, EvmSuccessor, WorkBudget},
+    worklist::{
+        MachineMeter, kernel_failure,
+        runtime::{Runtime, TaskKind},
+        transfer_stop,
+    },
 };
+use crate::world::{Entry, World};
+
 use crate::{
-    domain::{Domain, symbolic::ExprId},
-    world::{Entry, World},
+    domain::{AlgebraRef, EvmNumericAlgebra, ValueAlgebra, WordElement, symbolic::ExprId},
+    world::{EvmEntry, EvmWorld},
 };
+use analysis_kernel::{Availability, Change, RunningJob, SlotMeta};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
+pub(in crate::analysis) mod cooperation;
+pub(in crate::analysis) mod policy;
+use super::cooperation::ExtraStores;
+use super::cooperation::{
+    CooperationError, EvmContext, Extension, InputTasks, LocalInput, Point, PointKind,
+};
+use analysis_kernel::Analyzer;
+use cooperation::{Borrowed, Composition, Cooperation, Empty};
 mod reuse;
 mod terminal;
-pub(super) use reuse::ExecutionReuse;
+pub use policy::ContextPolicy as EvmContextPolicy;
+pub use policy::{
+    Arrival, ContextInsensitive, ContextPolicy, EnginePolicies, FirstResumeStatus,
+    MergeResumeStatus, PartitionPolicy, RecentDistinctJumps,
+};
 pub use reuse::ReuseStats;
+pub(super) use reuse::{EvmExecutionReuse, ExecutionReuse};
 use terminal::boundary::Boundary as TerminalBoundary;
 
 /// 从固定世界、入口上下文和执行策略建立初始机器，并运行同一事务的工作表。
@@ -118,22 +138,135 @@ pub(super) fn run_metered(
     )
 }
 
-/// Immutable-fact sessions retain pure computation while every run creates a
-/// fresh Store and rollback namespace. Existing callers need no reuse state.
+/// Execute the existing default session through the injected generic engine.
 #[expect(
     clippy::too_many_arguments,
-    reason = "original execution ledger and immutable session identity are separate inputs"
+    reason = "session ledger and immutable identity"
 )]
 pub(super) fn run_reusing(
     world: World,
-    mut entry: Entry,
+    entry: Entry,
     config: ExecutionConfig,
     budget: &mut WorkBudget,
     counters: &mut Counters,
     storage_reads: transfer::StorageReadPolicy,
-    mut reuse: Option<&mut ExecutionReuse>,
+    reuse: Option<&mut ExecutionReuse>,
     identity: Option<(&super::layers::SnapshotId, super::layers::FactRevision)>,
 ) -> Result<WorldAnalysis, ConfigError> {
+    let domain = ValueAlgebra::new(config.domain()?);
+    let policies: EnginePolicies = EnginePolicies::default();
+    run_reusing_with(
+        world,
+        entry,
+        config,
+        domain.borrowed(),
+        &policies,
+        budget,
+        counters,
+        storage_reads,
+        reuse,
+        identity,
+        Cooperation::new(Empty::default()),
+    )
+    .map_err(default_cooperation_error)
+}
+
+/// Execute an injected numeric algebra and frozen precision policies directly.
+pub(super) fn run_world_with<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy>(
+    world: EvmWorld<D::Element>,
+    entry: EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    domain: AlgebraRef<'_, D>,
+    policies: &EnginePolicies<C, P>,
+    observer: &super::progress::Observer,
+) -> Result<EvmWorldAnalysis<D::Element>, ConfigError> {
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut counters = Counters::with_observer(observer);
+    run_reusing_with(
+        world,
+        entry,
+        config,
+        domain,
+        policies,
+        &mut budget,
+        &mut counters,
+        transfer::StorageReadPolicy::Abstract,
+        None,
+        None,
+        Cooperation::new(Empty::default()),
+    )
+    .map_err(default_cooperation_error)
+}
+
+/// Join the real interpreter with a caller-owned static analyzer assembly.
+pub(super) fn run_world_cooperating<D, C, P, A, S, F, E>(
+    world: EvmWorld<D::Element>,
+    entry: EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    domain: AlgebraRef<'_, D>,
+    policies: &EnginePolicies<C, P>,
+    extension: &mut Extension<A, S, F>,
+    observer: &super::progress::Observer,
+) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>>
+where
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: InputTasks,
+    F: ExtraStores,
+    for<'r, 'k, 'm> A:
+        Analyzer<EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores>, Task = S::Task, Error = E>,
+{
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut counters = Counters::with_observer(observer);
+    run_reusing_with(
+        world,
+        entry,
+        config,
+        domain,
+        policies,
+        &mut budget,
+        &mut counters,
+        transfer::StorageReadPolicy::Abstract,
+        None,
+        None,
+        Cooperation::new(Borrowed(extension)),
+    )
+}
+
+fn default_cooperation_error(error: CooperationError<std::convert::Infallible>) -> ConfigError {
+    match error {
+        CooperationError::Config(error) => error,
+        CooperationError::Extension(never) => match never {},
+        _ => unreachable!("empty extension performs no cooperation operations"),
+    }
+}
+
+/// Immutable-fact sessions retain pure computation while every run creates a
+/// fresh EvmStore<D::Element> and rollback namespace. Existing callers need no reuse state.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "original execution ledger and immutable session identity are separate inputs"
+)]
+fn run_reusing_with<
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    X: Composition<D::Element, E>,
+    E,
+>(
+    world: EvmWorld<D::Element>,
+    mut entry: EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    domain: AlgebraRef<'_, D>,
+    policies: &EnginePolicies<C, P>,
+    budget: &mut WorkBudget,
+    counters: &mut Counters,
+    storage_reads: transfer::StorageReadPolicy,
+    mut reuse: Option<&mut EvmExecutionReuse<D::Element>>,
+    identity: Option<(&super::layers::SnapshotId, super::layers::FactRevision)>,
+    cooperation: Cooperation<D::Element, X, E>,
+) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>> {
     if let Some(reuse) = &mut reuse {
         reuse.begin();
         reuse
@@ -142,18 +275,23 @@ pub(super) fn run_reusing(
     }
     counters.observer.phase(super::progress::Phase::Analyzing);
     world.apply_snapshot_environment(&mut entry.environment);
-    entry.environment.validate()?;
+    entry.environment.validate().map_err(ConfigError::from)?;
     if let Some(observed) = entry.environment.to.as_concrete()
         && observed != entry.address
     {
-        return Err(crate::world::environment::EnvironmentError::Destination {
-            expected: entry.address,
-            observed,
-        }
-        .into());
+        return Err(
+            ConfigError::from(crate::world::environment::EnvironmentError::Destination {
+                expected: entry.address,
+                observed,
+            })
+            .into(),
+        );
     }
-    let domain = config.domain()?;
-    let mut result = WorldAnalysis {
+    config.analysis.validated_spec()?;
+    if config.max_work == 0 || config.max_call_depth == 0 || config.max_memory_bytes == 0 {
+        return Err(ConfigError::Budget.into());
+    }
+    let mut result = EvmWorldAnalysis {
         world,
         entry,
         config,
@@ -173,9 +311,9 @@ pub(super) fn run_reusing(
         summaries: Vec::new(),
         procedure_summaries: Default::default(),
     };
-    // 输入 lift、Store 与回滚点复制也使用根账本，不让初始化获得免费工作。
+    // 输入 lift、EvmStore<D::Element> 与回滚点复制也使用根账本，不让初始化获得免费工作。
     if counters.states >= result.config.analysis.max_states {
-        result.frontiers.push(MachineFrontier {
+        result.frontiers.push(EvmMachineFrontier {
             from: None,
             target: None,
             pc: None,
@@ -191,12 +329,12 @@ pub(super) fn run_reusing(
         .world
         .work_size()
         .saturating_add(result.entry.environment.work_size())
-        .saturating_add(result.world.projection_work(domain))
-        .saturating_add(result.entry.environment.projection_work(domain))
+        .saturating_add(result.world.projection_work_with(domain))
+        .saturating_add(result.entry.environment.projection_work_with(domain))
         .saturating_mul(4);
     // 饱和后已不能证明预留的是可信上界，即使用户给了 usize::MAX 预算。
     if initial_work == usize::MAX || !budget.charge(initial_work) {
-        result.frontiers.push(MachineFrontier {
+        result.frontiers.push(EvmMachineFrontier {
             from: None,
             target: None,
             pc: None,
@@ -211,7 +349,7 @@ pub(super) fn run_reusing(
     let initial = match transfer::initial(&result.world, &result.entry, domain) {
         Ok(payload) => payload,
         Err(reason) => {
-            result.frontiers.push(MachineFrontier {
+            result.frontiers.push(EvmMachineFrontier {
                 from: None,
                 target: None,
                 pc: None,
@@ -225,7 +363,7 @@ pub(super) fn run_reusing(
         }
     };
     if !budget.charge(initial.work_size()) {
-        result.frontiers.push(MachineFrontier {
+        result.frontiers.push(EvmMachineFrontier {
             from: None,
             target: Some(initial.key()),
             pc: None,
@@ -237,14 +375,14 @@ pub(super) fn run_reusing(
         result.work = budget.used();
         return Ok(result);
     }
-    let alternatives = EntryAlternatives::new(&initial);
+    let alternatives = EvmEntryAlternatives::new(&initial);
     if let Some(reuse) = &mut reuse {
         reuse.record_dependencies(0, &initial);
     }
     if storage_reads == transfer::StorageReadPolicy::Discover
         && initial.active().code == super::FrameCode::Unknown
     {
-        result.frontiers.push(MachineFrontier {
+        result.frontiers.push(EvmMachineFrontier {
             from: None,
             target: Some(initial.key()),
             pc: Some(0),
@@ -266,7 +404,7 @@ pub(super) fn run_reusing(
                 .dependencies
                 .add(0, super::layers::FactDependency::AllInitialState);
         }
-        terminal::prepare(
+        terminal::prepare_with(
             &initial,
             &result.world,
             &result.entry,
@@ -280,17 +418,17 @@ pub(super) fn run_reusing(
         None
     };
     let terminal_boundary = TerminalBoundary::new(ready_terminal.is_some());
-    // 本模型不精确跟踪剩余 gas，先保留入口即失败、Store 不变的保守可能。
+    // 本模型不精确跟踪剩余 gas，先保留入口即失败、EvmStore<D::Element> 不变的保守可能。
     // 这条 outcome 不是 transfer 已执行指令后报告的异常，也不是未完成前沿。
-    result.outcomes.push(MachineOutcome {
+    result.outcomes.push(EvmMachineOutcome {
         state: 0,
         kind: OutcomeKind::Failure,
-        data: crate::world::ByteArray::empty(),
+        data: crate::world::EvmByteArray::empty(),
         store: initial.call_stack.root().state.saved_store.state().clone(),
     });
     // S0 是状态表中的第一个节点。后续编号按发现顺序分配，不按基本块或 PC 排序。
     let key = initial.key();
-    result.states.push(MachineState {
+    result.states.push(EvmMachineState {
         id: 0,
         key: key.clone(),
         entry: initial,
@@ -301,22 +439,55 @@ pub(super) fn run_reusing(
         resume_status: None,
     });
     counters.states += 1;
-    let cache = result.config.use_summaries.then(Cache::new);
-    let mut engine = Engine {
+    let cache = (result.config.use_summaries && !X::ENABLED).then(EvmCache::new);
+    let runtime = Runtime::new(budget).and_then(|mut runtime| {
+        let scope = runtime.world;
+        let input = runtime
+            .kernel()
+            .slot(scope, &mut MachineMeter(budget))
+            .map_err(kernel_failure)?;
+        runtime.register_world(0, result.states[0].entry.call_stack.depth(), budget)?;
+        Ok((runtime, input))
+    });
+    let (runtime, input) = match runtime {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            result.frontiers.push(EvmMachineFrontier {
+                from: None,
+                target: Some(result.states[0].key.clone()),
+                pc: None,
+                reason: error.frontier_reason(),
+                range: None,
+                payload: None,
+            });
+            result.status = Status::Incomplete;
+            result.work = budget.used();
+            return Ok(result);
+        }
+    };
+    let mut engine = EvmEngine {
         result,
         domain,
+        policies,
         budget,
         counters,
         storage_reads,
-        ids: BTreeMap::from([((key, None), 0)]),
-        worklist: [0].into_iter().collect(),
+        ids: BTreeMap::from([((key, policies.partition.classify(Arrival::default())), 0)]),
+        partitions: vec![policies.partition.classify(Arrival::default())],
+        runtime,
+        cooperation: Some(cooperation),
+        inputs: vec![input],
+        active: None,
+        active_node: None,
+        #[cfg(test)]
+        test_driver: None,
         edges: BTreeSet::new(),
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new()],
         cache,
         alternatives: vec![alternatives],
         selectors: BTreeSet::new(),
-        procedures: transfer::procedure::Table::default(),
+        procedures: transfer::procedure::EvmTable::default(),
         reuse,
         terminal_boundary,
     };
@@ -333,6 +504,25 @@ pub(super) fn run_reusing(
     if let Some(reuse) = &mut engine.reuse {
         reuse.dependencies.finish(&engine.result.edges);
     }
+    if let Some(error) = engine
+        .cooperation
+        .as_mut()
+        .and_then(Cooperation::take_failure)
+    {
+        return Err(error);
+    }
+    if X::ENABLED
+        && !engine.runtime.closed()
+        && engine.result.frontiers.is_empty()
+        && !engine
+            .cooperation
+            .as_ref()
+            .is_some_and(|cooperation| cooperation.interrupted)
+    {
+        return Err(CooperationError::Unfinished(
+            engine.runtime.kernel().closure(),
+        ));
+    }
     Ok(engine.result)
 }
 
@@ -340,11 +530,19 @@ pub(super) fn run_reusing(
 ///
 /// `result.states` 保存节点内容，`ids` 提供按结构键查找节点的索引；待处理队列
 /// 只保存节点编号。分支、循环、嵌套调用和摘要导入都汇入这同一张固定点图。
-struct Engine<'a> {
+struct EvmEngine<
+    'a,
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    X: Composition<D::Element, E>,
+    E,
+> {
     /// 对外返回的分析结果；状态入口可继续 join，出口保存最近一次转换的证据。
-    result: WorldAnalysis,
+    result: EvmWorldAnalysis<D::Element>,
     /// 所有普通转换、join 和摘要回放共用的有限值域及其容量规则。
-    domain: Domain,
+    domain: AlgebraRef<'a, D>,
+    policies: &'a EnginePolicies<C, P>,
     /// 入口复制、执行、join、摘要比较/认证/导入共用的累计工作账本。
     budget: &'a mut WorkBudget,
     /// Prior RPC refinement rounds also consume state and transfer capacity.
@@ -352,30 +550,42 @@ struct Engine<'a> {
     /// 是否在 RPC refinement 中把缺失的初始槽观测记录为请求边界。
     storage_reads: transfer::StorageReadPolicy,
     /// 完整 payload 备选的覆盖证据；独立字段的数值 widening 不证明状态覆盖。
-    alternatives: Vec<EntryAlternatives>,
+    alternatives: Vec<EvmEntryAlternatives<D::Element>>,
     /// Only selectors allocated by a machine join, never source/observation IDs.
     selectors: BTreeSet<ExprId>,
     /// Structural entries, with a bounded status partition for the first block
     /// resumed by a call. Intraprocedural successors use None again;
     /// neither recursion depth nor arbitrary stack values become new keys.
-    ids: BTreeMap<(super::MachineKey, Option<bool>), usize>,
+    ids: BTreeMap<(super::MachineKey, P::Class), usize>,
+    partitions: Vec<P::Class>,
     /// 待处理义务及 FIFO 记录；摘要回放满足节点后可保留失效记录。
-    worklist: Worklist,
+    runtime: Runtime<<X as InputTasks>::Task>,
+    cooperation: Option<Cooperation<D::Element, X, E>>,
+    inputs: Vec<SlotMeta<EvmMachinePayload<D::Element>>>,
+    active: Option<RunningJob>,
+    active_node: Option<usize>,
+    #[cfg(test)]
+    test_driver: Option<analysis_kernel::JobId>,
     /// 已观察到的转移边，按结构排序去重；重访节点时不会删除旧边。
     edges: BTreeSet<MachineEdge>,
     /// 按状态、PC 和种类去重的程序诊断，与未完成分析的 frontier 分开保存。
     diagnostics: BTreeSet<Diagnostic>,
     /// 与 `result.states` 按编号对齐的子调用终结证据，供摘要认证使用。
     /// 保存 caller join 之前的原始终结和状态效果，不能从已汇合的返回节点逆推。
-    completed_calls: Vec<Vec<CompletedCall>>,
+    completed_calls: Vec<Vec<EvmCompletedCall<D::Element>>>,
     /// 可选的完整 callee 图证书缓存；关闭摘要时普通工作表路径仍然成立。
-    cache: Option<Cache>,
+    cache: Option<EvmCache<D::Element, P::Class>>,
     /// Known/unknown procedure inputs, outputs and retained return continuations.
-    procedures: transfer::procedure::Table,
+    procedures: transfer::procedure::EvmTable<D::Element, P::Class>,
     /// Session-owned pure deltas and conservative initial-read index.
-    reuse: Option<&'a mut ExecutionReuse>,
+    reuse: Option<&'a mut EvmExecutionReuse<D::Element>>,
     /// Original typed detailed boundary; never inferred from final JSON reasons.
     terminal_boundary: TerminalBoundary,
+}
+
+struct WorldWork<N: WordElement> {
+    id: usize,
+    payload: EvmMachinePayload<N>,
 }
 
 /// 当前节点尝试使用摘要后的调度决定，而非子调用的 Return/Revert/Failure。
@@ -388,7 +598,25 @@ enum SummaryAttempt {
     Interrupted(FrontierReason),
 }
 
-impl Engine<'_> {
+impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
+    EvmEngine<'_, D, C, P, X, E>
+{
+    #[cfg(test)]
+    fn test_admission(&mut self) -> Result<(), MachineError> {
+        if self.active.is_none()
+            && let Some(driver) = self.test_driver
+        {
+            self.active = Some(
+                self.runtime
+                    .kernel()
+                    .begin(driver, &mut MachineMeter(self.budget))
+                    .map_err(kernel_failure)?
+                    .suspend(),
+            );
+        }
+        Ok(())
+    }
+
     fn observe_terminal_boundary(&mut self, reason: &FrontierReason) {
         self.terminal_boundary.observe(
             reason,
@@ -408,7 +636,7 @@ impl Engine<'_> {
         reason: FrontierReason,
     ) {
         self.observe_terminal_boundary(&reason);
-        self.result.frontiers.push(MachineFrontier {
+        self.result.frontiers.push(EvmMachineFrontier {
             from,
             target,
             pc: None,
@@ -422,10 +650,10 @@ impl Engine<'_> {
         &mut self,
         from: Option<usize>,
         reason: FrontierReason,
-        payload: MachinePayload,
+        payload: EvmMachinePayload<D::Element>,
     ) {
         self.observe_terminal_boundary(&reason);
-        self.result.frontiers.push(MachineFrontier {
+        self.result.frontiers.push(EvmMachineFrontier {
             from,
             target: Some(payload.key()),
             pc: None,
@@ -437,7 +665,7 @@ impl Engine<'_> {
 
     fn stop_queued(&mut self, reason: FrontierReason) {
         self.observe_terminal_boundary(&reason);
-        let pending: Vec<_> = self.worklist.pending().collect();
+        let pending: Vec<_> = self.runtime.pending_world().collect();
         for id in pending {
             self.frontier(
                 None,
@@ -454,7 +682,7 @@ impl Engine<'_> {
     fn stop_pending(&mut self, id: usize, reason: FrontierReason) {
         self.observe_terminal_boundary(&reason);
         let pending: Vec<_> = std::iter::once(id)
-            .chain(self.worklist.in_order())
+            .chain(self.runtime.pending_world())
             .collect();
         for pending in pending {
             self.frontier(
@@ -468,10 +696,86 @@ impl Engine<'_> {
     /// Finish deeper callees before propagating their callers' pending unions.
     /// A caller's immediate rejection and later return then meet before that
     /// caller executes. Same-depth nodes retain their existing FIFO order.
-    fn next_pending(&mut self) -> Result<Option<usize>, MachineError> {
-        self.worklist.pop_deepest(self.budget, |id| {
-            self.result.states[id].entry.call_stack.depth()
-        })
+    fn next_input(&mut self) -> Result<Option<WorldWork<D::Element>>, MachineError> {
+        loop {
+            let Some((task, token)) = self.runtime.next(false, self.budget)? else {
+                return Ok(None);
+            };
+            if matches!(&task.0, TaskKind::Extension(_)) {
+                let cooperation = self.cooperation.as_mut().ok_or(MachineError::Shape)?;
+                if let Err(error) =
+                    cooperation.evaluate(&mut self.runtime, task, token, self.budget)
+                {
+                    return Err(cooperation.stop(error, self.budget));
+                }
+                continue;
+            }
+            let TaskKind::World { node: id, .. } = &task.0 else {
+                return Err(MachineError::Shape);
+            };
+            let id = *id;
+            self.active = Some(token);
+            self.active_node = Some(id);
+            let state = &self.result.states[id];
+            let answer = self.runtime.with_run(
+                self.active.as_mut().ok_or(MachineError::Shape)?,
+                self.budget,
+                |run| {
+                    run.read_slot(&self.inputs[id], &state.entry, state.entry.work_size())
+                        .map_err(kernel_failure)
+                },
+            )?;
+            let Availability::Value(input) = answer.state else {
+                return Err(MachineError::Shape);
+            };
+            let cooperation = self.cooperation.as_mut().ok_or(MachineError::Shape)?;
+            let view = cooperation
+                .input(
+                    Point {
+                        namespace: 0,
+                        kind: PointKind::World,
+                        index: id,
+                    },
+                    answer.version,
+                    0,
+                    None,
+                    input,
+                    self.domain,
+                    &mut self.runtime,
+                    self.active.as_mut().ok_or(MachineError::Shape)?,
+                    self.budget,
+                )
+                .map_err(|error| cooperation.stop(error, self.budget))?;
+            match view {
+                LocalInput::Reachable { payload, limited } => {
+                    let work = limited.len().saturating_mul(16);
+                    if !self.budget.charge(work) {
+                        return Err(MachineError::work_failure());
+                    }
+                    for status in limited {
+                        self.diagnostics.insert(Diagnostic {
+                            state: id,
+                            pc: 0,
+                            kind: super::DiagnosticKind::FactExchangeLimited(status),
+                        });
+                    }
+                    return Ok(Some(WorldWork { id, payload }));
+                }
+                LocalInput::Unreachable => {
+                    if !self.budget.charge(self.result.states[id].entry.work_size()) {
+                        return Err(MachineError::work_failure());
+                    }
+                    let state = &mut self.result.states[id];
+                    state.exit = Some(state.entry.clone());
+                    state.exit_stack = Vec::new();
+                    state.executed_pcs = Vec::new();
+                    state.execution_evidence =
+                        Some(EvmExecutionEvidence::new(Vec::new(), Vec::new()));
+                    self.runtime
+                        .finish(self.active.take().ok_or(MachineError::Shape)?, self.budget)?;
+                }
+            }
+        }
     }
 
     /// 反复处理入口摘要有新信息的节点，并在结束时整理对外结果。
@@ -479,12 +783,22 @@ impl Engine<'_> {
     /// 普通执行与摘要复用最终都更新同一状态表。一次完成的 transfer 不代表
     /// 节点永远完成：后续 join 若扩大入口，`successor` 会让它重新参与传播。
     fn run(&mut self) {
+        #[cfg(test)]
+        if self.test_driver.is_some()
+            && let Some(token) = self.active.take()
+        {
+            let _ = self.runtime.finish(token, self.budget);
+        }
         loop {
-            let id = match self.next_pending() {
-                Ok(Some(id)) => id,
+            let WorldWork { id, payload: input } = match self.next_input() {
+                Ok(Some(work)) => work,
                 Ok(None) => break,
                 Err(error) => {
-                    self.stop_queued(error.frontier_reason());
+                    if let Some(id) = self.active_node.take() {
+                        self.stop_pending(id, error.frontier_reason());
+                    } else {
+                        self.stop_queued(error.frontier_reason());
+                    }
                     break;
                 }
             };
@@ -495,11 +809,6 @@ impl Engine<'_> {
                 self.budget,
             ) {
                 self.stop_pending(id, reason);
-                break;
-            }
-            // 先为本轮入口载荷的处理计费；深调用或缓存命中都不能获得新预算。
-            if !self.budget.charge(self.result.states[id].entry.work_size()) {
-                self.stop_pending(id, MachineError::work_failure().frontier_reason());
                 break;
             }
             // 暂时移出 cache，使它与 &mut self 能同时用于传播和认证。
@@ -534,16 +843,22 @@ impl Engine<'_> {
             let reused = matches!(attempt, SummaryAttempt::Hit);
             if !reused {
                 let execution = if relative_procedure {
-                    let (execution, evidence) = self.procedures.execute(
+                    let (execution, evidence) = self.procedures.execute_with(
                         id,
                         &self.result.world,
                         &self.result.entry,
-                        self.result.states[id].entry.clone(),
+                        input,
                         &self.result.config,
                         self.domain,
+                        self.policies,
                         self.budget,
                         self.counters,
                         self.storage_reads,
+                        &mut self.runtime,
+                        self.active.as_mut().expect("World evaluation is suspended"),
+                        self.cooperation
+                            .as_mut()
+                            .expect("composition is owned by this run"),
                     );
                     self.result.transfers = self.counters.transfers;
                     self.result.procedure_summaries.push(evidence);
@@ -551,7 +866,7 @@ impl Engine<'_> {
                 } else {
                     self.result.transfers += 1;
                     self.counters.transfers += 1;
-                    match self.ordinary_execution(id) {
+                    match self.ordinary_execution(id, input) {
                         Ok(execution) => execution,
                         Err(error) => {
                             self.cache = cache;
@@ -569,13 +884,21 @@ impl Engine<'_> {
                 cache.publish_closed(
                     &mut self.result,
                     &self.edges,
-                    &self.worklist,
+                    &self.runtime,
                     &self.diagnostics,
                     &self.completed_calls,
+                    &self.partitions,
                     self.budget,
                 )
             });
             self.cache = cache;
+            if let Some(token) = self.active.take()
+                && let Err(error) = self.runtime.finish(token, self.budget)
+            {
+                self.stop_pending(id, error.frontier_reason());
+                break;
+            }
+            self.active_node = None;
             if !published {
                 let target = self
                     .cache
@@ -592,7 +915,7 @@ impl Engine<'_> {
             cache.finish(&mut self.result);
         }
         // 摘要中断也可能直接离开循环，因此用 frontier 判定完整性，不用队列长度。
-        self.result.status = if self.result.frontiers.is_empty() {
+        self.result.status = if self.result.frontiers.is_empty() && self.runtime.closed() {
             Status::Converged
         } else {
             Status::Incomplete
@@ -602,7 +925,11 @@ impl Engine<'_> {
         self.result.work = self.budget.used();
     }
 
-    fn ordinary_execution(&mut self, id: usize) -> Result<transfer::Execution, MachineError> {
+    fn ordinary_execution(
+        &mut self,
+        id: usize,
+        payload: EvmMachinePayload<D::Element>,
+    ) -> Result<transfer::EvmExecution<D::Element>, MachineError> {
         let input = &self.result.states[id].entry;
         if let Some(reuse) = &mut self.reuse
             && let Some(execution) = reuse.lookup(input, self.budget)?
@@ -612,9 +939,10 @@ impl Engine<'_> {
         let execution = transfer::execute(
             &self.result.world,
             &self.result.entry,
-            input.clone(),
+            payload,
             &self.result.config,
             self.domain,
+            &self.policies.context,
             self.budget,
             self.storage_reads,
         );
@@ -626,9 +954,13 @@ impl Engine<'_> {
 
     /// 只在普通子调用入口尝试完整图证书；CREATE initcode 不走此复用途径。
     ///
-    /// 匹配需要当前 callee、世界、Store 和分析策略的完整输入相等。未命中时
+    /// 匹配需要当前 callee、世界、EvmStore<D::Element> 和分析策略的完整输入相等。未命中时
     /// 登记认证候选并继续普通执行；输入构造、查找或导入耗尽预算则留下前沿。
-    fn try_summary(&mut self, id: usize, cache: &mut Cache) -> SummaryAttempt {
+    fn try_summary(
+        &mut self,
+        id: usize,
+        cache: &mut EvmCache<D::Element, P::Class>,
+    ) -> SummaryAttempt {
         if !cache.call_entries.contains(&id)
             || !self.result.states[id]
                 .entry
@@ -696,8 +1028,8 @@ impl Engine<'_> {
     fn execution(
         &mut self,
         id: usize,
-        mut execution: transfer::Execution,
-        mut cache: Option<&mut Cache>,
+        mut execution: transfer::EvmExecution<D::Element>,
+        mut cache: Option<&mut EvmCache<D::Element, P::Class>>,
     ) {
         self.terminal_boundary.retention(id, &execution);
         execution.payload.normalize();
@@ -706,7 +1038,7 @@ impl Engine<'_> {
         }
         self.result.states[id].exit_stack = execution.payload.active().stack.clone();
         self.result.states[id].executed_pcs = execution.executed_pcs;
-        self.result.states[id].execution_evidence = Some(ExecutionEvidence::new(
+        self.result.states[id].execution_evidence = Some(EvmExecutionEvidence::new(
             execution.instruction_progress,
             execution.instruction_values,
         ));
@@ -720,7 +1052,7 @@ impl Engine<'_> {
             });
         }
         for frontier in execution.frontiers {
-            let super::transfer::ExecutionFrontier {
+            let super::transfer::EvmExecutionFrontier {
                 pc,
                 reason,
                 target,
@@ -728,7 +1060,7 @@ impl Engine<'_> {
                 payload,
             } = frontier;
             self.observe_terminal_boundary(&reason);
-            self.result.frontiers.push(MachineFrontier {
+            self.result.frontiers.push(EvmMachineFrontier {
                 from: Some(id),
                 target,
                 pc: Some(pc),
@@ -739,7 +1071,7 @@ impl Engine<'_> {
             });
         }
         for outcome in execution.outcomes {
-            self.result.outcomes.push(MachineOutcome {
+            self.result.outcomes.push(EvmMachineOutcome {
                 state: id,
                 kind: outcome.kind,
                 data: outcome.data,
@@ -765,13 +1097,21 @@ impl Engine<'_> {
     fn successor(
         &mut self,
         from: usize,
-        mut successor: Successor,
+        mut successor: EvmSuccessor<D::Element>,
         work_reason: FrontierReason,
     ) -> Option<usize> {
         successor.payload.normalize();
         let key = successor.payload.key();
+        #[cfg(test)]
+        if let Err(error) = self.test_admission() {
+            self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
+            return None;
+        }
         let resume_status = self.call_resume_status(from, &successor);
-        let entry_key = (key.clone(), resume_status);
+        let entry_key = (
+            key.clone(),
+            self.policies.partition.classify(Arrival { resume_status }),
+        );
         let to = if let Some(existing) = self.ids.get(&entry_key).copied() {
             let cyclic = match self.joins_cycle(existing, from) {
                 Ok(cyclic) => cyclic,
@@ -785,7 +1125,16 @@ impl Engine<'_> {
                     return None;
                 }
             };
-            let joined = self.alternatives[existing].join_entry(
+            if !self.budget.charge(
+                self.alternatives[existing]
+                    .work_size()
+                    .saturating_add(successor.payload.work_size()),
+            ) {
+                self.frontier_payload(Some(from), work_reason, successor.payload);
+                return None;
+            }
+            let mut alternatives = self.alternatives[existing].clone();
+            let joined = alternatives.join_entry(
                 &self.result.states[existing].entry,
                 &successor.payload,
                 &self.result.entry,
@@ -806,9 +1155,11 @@ impl Engine<'_> {
                     return None;
                 }
             };
-            if let Some(joined) = joined {
-                self.install_join(existing, successor.payload, joined);
-                self.worklist.enqueue(existing);
+            if let Err(error) =
+                self.install_join(existing, successor.payload.clone(), joined, alternatives)
+            {
+                self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
+                return None;
             }
             existing
         } else {
@@ -828,11 +1179,33 @@ impl Engine<'_> {
                 self.frontier_payload(Some(from), reason, successor.payload);
                 return None;
             }
-            let alternatives = EntryAlternatives::new(&successor.payload);
+            let alternatives = EvmEntryAlternatives::new(&successor.payload);
             // states 与 completed_calls 同时追加，保证后者始终可用同一节点编号索引。
             let id = self.result.states.len();
+            let scope = self.runtime.world;
+            let registered = self
+                .runtime
+                .kernel()
+                .slot(scope, &mut MachineMeter(self.budget))
+                .map_err(kernel_failure)
+                .and_then(|slot| {
+                    self.runtime.register_world(
+                        id,
+                        successor.payload.call_stack.depth(),
+                        self.budget,
+                    )?;
+                    Ok(slot)
+                });
+            let slot = match registered {
+                Ok(slot) => slot,
+                Err(error) => {
+                    self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
+                    return None;
+                }
+            };
+            self.partitions.push(entry_key.1.clone());
             self.ids.insert(entry_key, id);
-            self.result.states.push(MachineState {
+            self.result.states.push(EvmMachineState {
                 id,
                 key,
                 entry: successor.payload,
@@ -845,7 +1218,7 @@ impl Engine<'_> {
             self.counters.states += 1;
             self.completed_calls.push(Vec::new());
             self.alternatives.push(alternatives);
-            self.worklist.enqueue(id);
+            self.inputs.push(slot);
             id
         };
         // 即使入口没有变，也观察到了一条有效转移；不能因“不重访”而漏掉这条边。
@@ -859,28 +1232,80 @@ impl Engine<'_> {
     }
 
     /// Ordinary propagation and replay install the same changed input and
-    /// invalidate its old execution. Replay separately decides whether its
+    /// invalidate its old execution. EvmReplay<D::Element> separately decides whether its
     /// certificate satisfies the new obligation or execution must be scheduled.
-    fn install_join(&mut self, id: usize, incoming: MachinePayload, joined: MachinePayload) {
-        if self.alternatives[id].has_loop_bound()
-            && let Some(reuse) = &mut self.reuse
+    fn install_join(
+        &mut self,
+        id: usize,
+        incoming: EvmMachinePayload<D::Element>,
+        joined: Option<EvmMachinePayload<D::Element>>,
+        mut alternatives: EvmEntryAlternatives<D::Element>,
+    ) -> Result<(), MachineError> {
+        // None is the state adapter's whole-input coverage proof. It has not
+        // changed admission metadata; retaining that covered contribution again
+        // would grow the historical alternatives without semantic growth.
+        if joined.is_none() {
+            return Ok(());
+        }
+        let work = self.result.states[id]
+            .entry
+            .work_size()
+            .saturating_add(incoming.work_size())
+            .saturating_add(joined.as_ref().map_or(0, EvmMachinePayload::work_size))
+            .saturating_add(alternatives.work_size())
+            .saturating_add(self.selectors.len())
+            .saturating_mul(4);
+        if work == usize::MAX || !self.budget.charge(work) {
+            return Err(MachineError::work_failure());
+        }
+        let mut selectors = self.selectors.clone();
+        if let Some(joined) = &joined
+            && !alternatives.has_loop_bound()
         {
+            let mut previous = self.result.states[id].entry.fresh_leaves();
+            previous.extend(incoming.fresh_leaves());
+            selectors.extend(joined.fresh_leaves().difference(&previous).cloned());
+        }
+        alternatives.retain(incoming);
+        let changed = if joined.is_some() {
+            Change::Changed
+        } else {
+            Change::Unchanged
+        };
+        let bounded = alternatives.has_loop_bound();
+        let state = &mut self.result.states[id];
+        let current_alternatives = &mut self.alternatives[id];
+        let current_selectors = &mut self.selectors;
+        // The infallible installation includes coverage/frozen mode and old
+        // receipt invalidation, after the kernel reserves every wake/version.
+        self.runtime.with_run(
+            self.active.as_mut().ok_or(MachineError::Shape)?,
+            self.budget,
+            |run| {
+                run.publish_prepared_with(&self.inputs[id], changed, work, || {
+                    *current_alternatives = alternatives;
+                    *current_selectors = selectors;
+                    if let Some(joined) = joined {
+                        state.entry = joined;
+                        state.invalidate_execution();
+                    }
+                })
+                .map_err(kernel_failure)
+            },
+        )?;
+        if bounded && let Some(reuse) = &mut self.reuse {
             reuse
                 .dependencies
                 .add(id, super::layers::FactDependency::AllInitialState);
         }
-        if !self.alternatives[id].has_loop_bound() {
-            let mut previous = self.result.states[id].entry.fresh_leaves();
-            previous.extend(incoming.fresh_leaves());
-            self.selectors
-                .extend(joined.fresh_leaves().difference(&previous).cloned());
-        }
-        self.alternatives[id].retain(incoming);
-        self.result.states[id].entry = joined;
-        self.result.states[id].invalidate_execution();
+        Ok(())
     }
 
-    fn call_resume_status(&self, from: usize, successor: &Successor) -> Option<bool> {
+    fn call_resume_status(
+        &self,
+        from: usize,
+        successor: &EvmSuccessor<D::Element>,
+    ) -> Option<bool> {
         if !matches!(
             successor.kind,
             MachineEdgeKind::Return
@@ -977,7 +1402,7 @@ impl Engine<'_> {
             .work_size()
             .saturating_add(self.result.entry.environment.work_size())
             .saturating_add(self.ids.len())
-            .saturating_add(self.worklist.work_size())
+            .saturating_add(self.runtime.work_size())
             .saturating_add(self.edges.len())
             .saturating_add(self.diagnostics.len())
             .saturating_add(self.result.edges.len())
@@ -989,7 +1414,7 @@ impl Engine<'_> {
             MachineError::check_cancelled()?;
             cost = cost
                 .saturating_add(state.entry.work_size())
-                .saturating_add(state.exit.as_ref().map_or(0, MachinePayload::work_size))
+                .saturating_add(state.exit.as_ref().map_or(0, EvmMachinePayload::work_size))
                 .saturating_add(state.executed_pcs.len())
                 .saturating_add(state.key.frames.iter().fold(0usize, |cost, frame| {
                     cost.saturating_add(frame.jump_history.len().saturating_add(1))
@@ -1057,7 +1482,7 @@ impl Engine<'_> {
         &mut self,
         root: usize,
         reason: FrontierReason,
-        pending: Arc<MachinePayload>,
+        pending: Arc<EvmMachinePayload<D::Element>>,
     ) -> FrontierReason {
         let reason = if reason == FrontierReason::Work {
             FrontierReason::SummaryWork
@@ -1065,7 +1490,7 @@ impl Engine<'_> {
             reason
         };
         self.observe_terminal_boundary(&reason);
-        self.result.frontiers.push(MachineFrontier {
+        self.result.frontiers.push(EvmMachineFrontier {
             from: Some(root),
             target: Some(self.result.states[root].key.clone()),
             pc: None,
@@ -1079,7 +1504,14 @@ impl Engine<'_> {
     /// Rename the complete certificate, then import into a temporary graph. The
     /// shared ledger remains consumed on failure, but no partial graph, stale
     /// receipt replacement or half-renamed state is installed in the analysis.
-    fn replay(&mut self, root: usize, certificate: &Certificate) -> Result<(), FrontierReason> {
+    fn replay(
+        &mut self,
+        root: usize,
+        certificate: &EvmCertificate<D::Element, P::Class>,
+    ) -> Result<(), FrontierReason> {
+        #[cfg(test)]
+        self.test_admission()
+            .map_err(MachineError::frontier_reason)?;
         let cost = match self.replay_copy_cost() {
             Ok(cost) => cost,
             Err(error) => {
@@ -1102,13 +1534,13 @@ impl Engine<'_> {
             return Err(reason);
         }
         let pending = Arc::new(self.result.states[root].entry.clone());
-        let prepared = match Replay::new(
+        let prepared = match EvmReplay::new(
             certificate,
             &self.result.states[root].entry,
             self.budget,
             self.result.config.analysis.relations.expressions(),
         )
-        .and_then(|replay| replay.prepare(self.budget))
+        .and_then(|replay| replay.prepare(self.budget, self.domain))
         {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -1120,21 +1552,33 @@ impl Engine<'_> {
             transfers: self.counters.transfers,
             observer: self.counters.observer.clone(),
         };
-        let mut staged = Engine {
+        let runtime = match self.runtime.fork(self.budget) {
+            Ok(runtime) => runtime,
+            Err(error) => return Err(self.replay_failure(root, error.frontier_reason(), pending)),
+        };
+        let mut staged: EvmEngine<'_, D, C, P, X, E> = EvmEngine {
             result: self.result.clone(),
             domain: self.domain,
+            policies: self.policies,
             budget: self.budget,
             counters: &mut counters,
             storage_reads: self.storage_reads,
             alternatives: self.alternatives.clone(),
             selectors: self.selectors.clone(),
             ids: self.ids.clone(),
-            worklist: self.worklist.clone(),
+            partitions: self.partitions.clone(),
+            runtime,
+            cooperation: None,
+            inputs: self.inputs.clone(),
+            active: self.active.take(),
+            active_node: self.active_node,
+            #[cfg(test)]
+            test_driver: self.test_driver,
             edges: self.edges.clone(),
             diagnostics: self.diagnostics.clone(),
             completed_calls: self.completed_calls.clone(),
             cache: None,
-            procedures: transfer::procedure::Table::default(),
+            procedures: transfer::procedure::EvmTable::default(),
             reuse: None,
             terminal_boundary: self.terminal_boundary.clone(),
         };
@@ -1149,13 +1593,41 @@ impl Engine<'_> {
             // RPC re-execution cannot regain even failed temporary allocation
             // capacity. Only graph contents/receipts are rolled back.
             self.counters.states = staged.counters.states;
+            self.active = staged.active.take();
             drop(staged);
             return Err(self.replay_failure(root, reason, pending));
         }
         self.counters.states = staged.counters.states;
-        self.result = staged.result;
-        self.terminal_boundary = staged.terminal_boundary;
-        self.alternatives = staged.alternatives;
+        self.active = staged.active.take();
+        let EvmEngine {
+            result,
+            terminal_boundary,
+            alternatives,
+            selectors,
+            ids,
+            partitions,
+            runtime,
+            inputs,
+            edges,
+            diagnostics,
+            completed_calls,
+            ..
+        } = staged;
+        let commit = self.runtime.commit(runtime, self.budget, || {
+            self.result = result;
+            self.terminal_boundary = terminal_boundary;
+            self.alternatives = alternatives;
+            self.selectors = selectors;
+            self.ids = ids;
+            self.partitions = partitions;
+            self.inputs = inputs;
+            self.edges = edges;
+            self.diagnostics = diagnostics;
+            self.completed_calls = completed_calls;
+        });
+        if let Err(error) = commit {
+            return Err(self.replay_failure(root, error.frontier_reason(), pending));
+        }
         if let Some(reuse) = &mut self.reuse {
             // Staging owns no reuse index: publish conservative dependencies
             // only after the entire import succeeds. The replay copy fee
@@ -1168,29 +1640,27 @@ impl Engine<'_> {
                 }
             }
         }
-        self.selectors = staged.selectors;
-        self.ids = staged.ids;
-        self.worklist = staged.worklist;
-        self.edges = staged.edges;
-        self.diagnostics = staged.diagnostics;
-        self.completed_calls = staged.completed_calls;
         Ok(())
     }
 
     /// This method only mutates a temporary Engine owned by replay().
     fn install_replay(
         &mut self,
-        certificate: &Certificate,
-        prepared: Prepared,
+        certificate: &EvmCertificate<D::Element, P::Class>,
+        prepared: EvmPrepared<D::Element, P::Class>,
     ) -> Result<(), FrontierReason> {
+        #[cfg(test)]
+        self.test_admission()
+            .map_err(MachineError::frontier_reason)?;
         let mut ids = Vec::new();
         for node in prepared.nodes {
             let key = node.entry.key();
             // Preserve the certified call continuation partition. Replaying
             // its graph must not merge success with a previously seen failure.
-            let entry_key = (key.clone(), node.resume_status);
+            let entry_key = (key.clone(), node.partition.clone());
             let id = if let Some(existing) = self.ids.get(&entry_key).copied() {
-                let joined = self.alternatives[existing]
+                let mut alternatives = self.alternatives[existing].clone();
+                let joined = alternatives
                     .join_entry(
                         &self.result.states[existing].entry,
                         &node.entry,
@@ -1208,21 +1678,28 @@ impl Engine<'_> {
                     .content_form()
                     .and_then(|entry| Ok(entry == node.entry.content_form()?))
                     .map_err(MachineError::frontier_reason)?;
-                if let Some(joined) = joined {
-                    self.install_join(existing, node.entry.clone(), joined);
-                }
+                self.install_join(existing, node.entry.clone(), joined, alternatives)
+                    .map_err(MachineError::frontier_reason)?;
                 if compatible {
-                    self.worklist.satisfy(existing);
+                    let state = &self.result.states[existing];
+                    self.runtime
+                        .satisfy_world(
+                            existing,
+                            &self.inputs[existing],
+                            &state.entry,
+                            state.entry.work_size(),
+                            self.budget,
+                        )
+                        .map_err(MachineError::frontier_reason)?;
                     self.result.states[existing].exit = Some(node.exit);
                     self.result.states[existing].exit_stack = node.exit_stack;
                     self.result.states[existing].executed_pcs = node.executed_pcs;
-                    self.result.states[existing].execution_evidence = Some(ExecutionEvidence::new(
-                        node.instruction_progress,
-                        node.instruction_values,
-                    ));
+                    self.result.states[existing].execution_evidence =
+                        Some(EvmExecutionEvidence::new(
+                            node.instruction_progress,
+                            node.instruction_values,
+                        ));
                     self.completed_calls[existing] = node.completed_calls;
-                } else {
-                    self.worklist.enqueue(existing);
                 }
                 existing
             } else {
@@ -1234,16 +1711,28 @@ impl Engine<'_> {
                     return Err(super::summary::summary_boundary());
                 }
                 let id = self.result.states.len();
-                self.alternatives.push(EntryAlternatives::new(&node.entry));
+                let scope = self.runtime.world;
+                let input = self
+                    .runtime
+                    .kernel()
+                    .slot(scope, &mut MachineMeter(self.budget))
+                    .map_err(kernel_failure)
+                    .map_err(MachineError::frontier_reason)?;
+                self.runtime
+                    .register_world(id, node.entry.call_stack.depth(), self.budget)
+                    .map_err(MachineError::frontier_reason)?;
+                self.alternatives
+                    .push(EvmEntryAlternatives::new(&node.entry));
+                self.partitions.push(entry_key.1.clone());
                 self.ids.insert(entry_key, id);
-                self.result.states.push(MachineState {
+                self.result.states.push(EvmMachineState {
                     id,
                     key,
                     entry: node.entry,
                     exit: Some(node.exit),
                     exit_stack: node.exit_stack,
                     executed_pcs: node.executed_pcs,
-                    execution_evidence: Some(ExecutionEvidence::new(
+                    execution_evidence: Some(EvmExecutionEvidence::new(
                         node.instruction_progress,
                         node.instruction_values,
                     )),
@@ -1251,6 +1740,17 @@ impl Engine<'_> {
                 });
                 self.counters.states += 1;
                 self.completed_calls.push(node.completed_calls);
+                self.inputs.push(input);
+                let state = &self.result.states[id];
+                self.runtime
+                    .satisfy_world(
+                        id,
+                        &self.inputs[id],
+                        &state.entry,
+                        state.entry.work_size(),
+                        self.budget,
+                    )
+                    .map_err(MachineError::frontier_reason)?;
                 id
             };
             for mut diagnostic in node.diagnostics {
@@ -1319,3 +1819,16 @@ impl Engine<'_> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+type Engine<'a> = EvmEngine<
+    'a,
+    crate::domain::Domain,
+    RecentDistinctJumps,
+    FirstResumeStatus,
+    Empty,
+    std::convert::Infallible,
+>;
+
+#[cfg(test)]
+use super::{machine::EntryAlternatives, summary::Cache, transfer::Successor};

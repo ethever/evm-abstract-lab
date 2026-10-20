@@ -1,9 +1,11 @@
 //! Track actual detail stops as they occur; publication never scans an unpaid
 //! finished graph or reconstructs finite failure identity from public reasons.
 
+use crate::domain::WordElement;
+
 use crate::analysis::{
     FrontierReason, Limit, RootTerminalRetention, RootTerminalTrigger,
-    transfer::{Execution, RetentionCause},
+    transfer::{EvmExecution, RetentionCause},
 };
 
 #[cfg(test)]
@@ -64,7 +66,11 @@ impl Boundary {
 
     /// Raw finite retention is already classified by checked transfer errors.
     /// execute() has completed its local retries before returning this record.
-    pub(in crate::analysis::engine) fn retention(&mut self, state: usize, execution: &Execution) {
+    pub(in crate::analysis::engine) fn retention<N: WordElement>(
+        &mut self,
+        state: usize,
+        execution: &EvmExecution<N>,
+    ) {
         if !self.enabled || self.trigger.is_some() {
             return;
         }

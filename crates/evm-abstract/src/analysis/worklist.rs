@@ -7,7 +7,8 @@
 
 use super::{FrontierReason, Limit, MachineError};
 use crate::resource::WorkBudget;
-use std::collections::{BTreeSet, VecDeque};
+
+pub(in crate::analysis) mod runtime;
 
 /// Both fixed points admit a popped node before preparing its payload. Keep
 /// cancellation/work exhaustion ahead of the transfer cap when both apply.
@@ -27,95 +28,73 @@ pub(super) fn transfer_stop(
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct Worklist {
-    queue: VecDeque<usize>,
-    pending: BTreeSet<usize>,
+/// Opaque borrowed transaction ledger used by production capability contexts.
+/// Construction remains interpreter-owned; every component uses this same payer.
+pub struct MachineMeter<'a>(pub(in crate::analysis) &'a mut WorkBudget);
+
+impl analysis_kernel::Meter for MachineMeter<'_> {
+    type Stop = MachineError;
+
+    fn reserve(&mut self, cost: usize) -> Result<(), Self::Stop> {
+        MachineError::check_cancelled()?;
+        if cost == usize::MAX || !self.0.charge(cost) {
+            Err(MachineError::work_failure())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn checkpoint(&self) -> Result<(), Self::Stop> {
+        MachineError::check_cancelled()?;
+        if self.0.exhausted() {
+            Err(MachineError::work_failure())
+        } else {
+            Ok(())
+        }
+    }
 }
 
+/// Map protocol/resource failures without treating an interruption as bottom.
+pub(super) fn kernel_failure(error: analysis_kernel::KernelError<MachineError>) -> MachineError {
+    use analysis_kernel::KernelError;
+    match error {
+        KernelError::Stopped(stop) => stop,
+        KernelError::CostOverflow => MachineError::work_failure(),
+        KernelError::VersionExhausted => MachineError::IdentityExhausted,
+        _ => MachineError::Shape,
+    }
+}
+
+/// EVM compatibility view of the kernel's single FIFO/pending implementation.
+#[cfg(test)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Worklist(analysis_kernel::worklist::Worklist<usize>);
+
+#[cfg(test)]
 impl Worklist {
-    /// Call only for a new node or an input whose semantic bound changed.
-    pub(super) fn enqueue(&mut self, id: usize) {
-        if self.pending.insert(id) {
-            self.queue.push_back(id);
-        }
-    }
-
     pub(super) fn satisfy(&mut self, id: usize) {
-        self.pending.remove(&id);
+        self.0.satisfy(id);
     }
 
-    pub(super) fn contains(&self, id: &usize) -> bool {
-        self.pending.contains(id)
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.pending.is_empty()
-    }
-
-    /// Sorted node order for parking; partitions with equal public keys stay distinct.
     pub(super) fn pending(&self) -> impl Iterator<Item = usize> + '_ {
-        self.pending.iter().copied()
+        self.0.pending()
     }
 
-    /// Preserve FIFO occurrences for the engine's interrupted-current frontier.
-    pub(super) fn in_order(&self) -> impl Iterator<Item = usize> + '_ {
-        self.queue.iter().copied().filter(|id| self.contains(id))
-    }
-
-    pub(super) fn work_size(&self) -> usize {
-        self.queue.len().saturating_add(self.pending.len())
-    }
-
-    pub(super) fn pop_front(&mut self) -> Option<usize> {
-        while let Some(id) = self.queue.pop_front() {
-            if self.pending.remove(&id) {
-                return Some(id);
-            }
-        }
-        None
-    }
-
-    /// Complete deeper callees first, keeping FIFO order at each positive depth.
-    /// Charge and check cancellation over physical records, including stale ones;
-    /// an interrupted selection leaves the entire scheduling state untouched.
     pub(super) fn pop_deepest(
         &mut self,
         budget: &mut WorkBudget,
-        depth_of: impl Fn(usize) -> usize,
+        depth: impl Fn(usize) -> usize,
     ) -> Result<Option<usize>, MachineError> {
-        if self.is_empty() {
-            return Ok(None);
-        }
-        let cost = self.queue.len().saturating_mul(2).saturating_add(1);
-        if cost == usize::MAX || !budget.charge(cost) {
-            return Err(MachineError::work_failure());
-        }
-        let mut choice = None;
-        let mut depth = 0;
-        for (position, id) in self.queue.iter().enumerate() {
-            MachineError::check_cancelled()?;
-            let candidate_depth = depth_of(*id);
-            if self.contains(id) && candidate_depth > depth {
-                choice = Some(position);
-                depth = candidate_depth;
-            }
-        }
-        Ok(choice
-            .and_then(|position| self.queue.remove(position))
-            .inspect(|id| {
-                self.satisfy(*id);
-            }))
+        self.0
+            .pop_deepest(&mut MachineMeter(budget), depth)
+            .map_err(kernel_failure)
     }
 }
 
+#[cfg(test)]
 impl FromIterator<usize> for Worklist {
     fn from_iter<T: IntoIterator<Item = usize>>(iter: T) -> Self {
-        let mut worklist = Self::default();
-        for id in iter {
-            worklist.enqueue(id);
-        }
-        worklist
+        Self(iter.into_iter().collect())
     }
 }
 

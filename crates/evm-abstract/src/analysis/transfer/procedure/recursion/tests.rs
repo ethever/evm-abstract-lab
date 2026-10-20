@@ -272,7 +272,8 @@ fn procedure_table_without_any_terminal_retains_an_explicit_frontier() {
     let (world, entry) = fixture(&[(0x101, "5b5f56")]);
     let config = ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let input = transfer::initial(&world, &entry, domain).unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     assert!(!super::is_recursive_entry(&input));
     let key = input.key();
     let program = input.active().program.clone().expect("real loop bytecode");

@@ -21,16 +21,14 @@ fn with_solver(test: impl FnOnce(&mut Solver<'_>)) {
     let mut table = Table::default();
     let mut counters = Counters::default();
     let mut budget = WorkBudget::new(config.max_work);
-    test(&mut Solver {
-        table: &mut table,
-        world: &world,
-        entry: &entry,
-        config: &config,
-        domain: config.domain().unwrap(),
-        budget: &mut budget,
-        counters: &mut counters,
-        storage_reads: StorageReadPolicy::Abstract,
-    });
+    test(&mut table.solver(
+        &world,
+        &entry,
+        &config,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    ));
 }
 
 fn input(solver: &Solver<'_>, block: usize, value: u64) -> MachinePayload {
@@ -146,7 +144,7 @@ fn unavailable_new_edge_keeps_the_real_input_frontier_without_installing_a_node(
         let procedure = solver.procedure(input(solver, 0, 0)).unwrap();
         let entry = solver.table.procedures[procedure].entry;
         let payload = input(solver, 1, 7);
-        let summary = super::super::form(&payload, solver.entry, solver.domain).unwrap();
+        let summary = super::super::payload::form(&payload, solver.entry, solver.domain).unwrap();
         let mut insufficient = WorkBudget::new(summary.work_size());
         std::mem::swap(solver.budget, &mut insufficient);
         let nodes = solver.table.nodes.len();

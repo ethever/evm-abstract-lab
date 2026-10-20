@@ -1,6 +1,6 @@
 //! Source-only regressions; Root owns compilation and execution of these cases.
 
-use super::super::{Solver, Table, form, instantiate, semantic_eq};
+use super::super::{Solver, Table, execute_inner, form, instantiate, semantic_eq};
 
 mod before_body;
 mod controls;
@@ -12,7 +12,7 @@ use crate::{
         DiagnosticKind, ExecutionConfig, FrontierReason, InstructionProgress, Limit, OutcomeKind,
         engine::Counters,
         machine::fixtures::{self, address, word},
-        transfer::{self, RetentionCause, StorageReadPolicy, execute_inner},
+        transfer::{self, RetentionCause, StorageReadPolicy},
     },
     world::{Entry, World},
 };
@@ -31,7 +31,8 @@ impl Harness {
         let (world, entry) = fixtures::fixture(&[(0x101, code)]);
         let mut config = fixtures::config();
         let domain = config.domain().unwrap();
-        let mut input = transfer::initial(&world, &entry, domain).unwrap();
+        let mut input =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let byte = domain.join(&word(1), &word(2));
         input
             .active_mut()
@@ -59,17 +60,14 @@ impl Harness {
     }
 
     fn solver(&mut self) -> Solver<'_> {
-        let domain = self.config.domain().unwrap();
-        Solver {
-            table: &mut self.table,
-            world: &self.world,
-            entry: &self.entry,
-            config: &self.config,
-            domain,
-            budget: &mut self.budget,
-            counters: &mut self.counters,
-            storage_reads: StorageReadPolicy::Abstract,
-        }
+        self.table.solver(
+            &self.world,
+            &self.entry,
+            &self.config,
+            &mut self.budget,
+            &mut self.counters,
+            StorageReadPolicy::Abstract,
+        )
     }
 
     fn first(&mut self) -> Execution {
@@ -168,7 +166,7 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
     for byte in [1u64, 2] {
         let mut witness = snapshots::Witness::default();
         witness.assign(&before_byte, U256::from(byte));
-        witness.assign(value, U256::from(7));
+        witness.assign(&value, U256::from(7));
         witness.assign(current.expression().unwrap(), U256::ZERO);
         witness.assign(saved.expression().unwrap(), U256::ZERO);
     }
@@ -202,7 +200,7 @@ fn real_worklist_counts_both_attempts_and_only_actually_covered_blocks() {
             .outputs
             .contains_key(&OutcomeKind::Return)
     );
-    assert_eq!(h.table.worklist.work_size(), 0);
+    assert!(h.table.runtime.relative_closed());
     assert_eq!(
         h.table
             .nodes

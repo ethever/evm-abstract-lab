@@ -89,6 +89,7 @@ fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload,
     let node = Node {
         entry: entry.clone(),
         resume_status: Some(true),
+        partition: Some(true),
         exit: exit.clone(),
         exit_stack: vec![historical],
         executed_pcs: vec![0],
@@ -160,7 +161,12 @@ fn replay_renames_all_hidden_sources_roots_history_and_outputs_with_one_map() {
     assert!(!old_tokens.is_empty());
     assert!(old_tokens.iter().all(|token| map.contains_key(token)));
     let expected: BTreeSet<_> = old_tokens.iter().map(|token| map[token].clone()).collect();
-    let prepared = replay.prepare(&mut budget).unwrap();
+    let prepared = replay
+        .prepare(
+            &mut budget,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+        .unwrap();
     let node = &prepared.nodes[0];
     assert_eq!(node.resume_status, Some(true));
     assert_eq!(
@@ -216,7 +222,12 @@ fn replay_renames_all_hidden_sources_roots_history_and_outputs_with_one_map() {
     )
     .unwrap();
     let second_map = replay.renaming.clone();
-    let second = replay.prepare(&mut budget).unwrap();
+    let second = replay
+        .prepare(
+            &mut budget,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+        .unwrap();
     assert!(
         map.values()
             .all(|token| !second_map.values().any(|other| token == other))
@@ -249,7 +260,14 @@ fn replay_failure_and_cancellation_do_not_change_input_or_certificate_snapshots(
         max_depth: 1,
     };
     let replay = Replay::new(&certificate, &caller, &mut budget, limits).unwrap();
-    assert!(replay.prepare(&mut budget).is_err());
+    assert!(
+        replay
+            .prepare(
+                &mut budget,
+                crate::domain::ValueAlgebra::new(domain).borrowed()
+            )
+            .is_err()
+    );
     assert_eq!(caller, before);
     assert_eq!(certificate.nodes[0].exit, original);
     assert_eq!(certificate.terminals[0].raw_data, data);

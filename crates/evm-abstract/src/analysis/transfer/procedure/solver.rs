@@ -1,16 +1,28 @@
 //! Joint known/unknown procedure worklist and per-caller return propagation.
 
-use super::coarse_retry::{self, RuntimeRetry};
+use super::Composition;
+use super::admission::SummaryAdmission;
+use crate::analysis::engine::{Arrival, ContextPolicy, PartitionPolicy};
+use crate::analysis::worklist::{MachineMeter, kernel_failure, runtime::TaskKind};
+use crate::domain::EvmNumericAlgebra;
+use analysis_kernel::{Availability, Change, PublishError, Version};
+
+use super::coarse_retry::{self, EvmRuntimeRetry};
 use super::{
-    AbstractValue, Arc, BTreeMap, BTreeSet, ByteArray, CallStack, DiagnosticKind, Execution,
-    ExecutionFrontier, FrameCode, FrontierReason, Limit, MachineEdgeKind, MachineError,
-    MachinePayload, Node, OutcomeKind, Output, PayloadSummary, Procedure, RootFrame, Solver, Store,
-    Subscriber, execute_inner, form, instantiate, join, resume_summary_inner, semantic_eq,
-    transfer_stop,
+    Arc, BTreeMap, BTreeSet, DiagnosticKind, EvmByteArray, EvmCallStack, EvmExecution,
+    EvmExecutionFrontier, EvmMachinePayload, EvmNode, EvmOutput, EvmPayloadSummary, EvmProcedure,
+    EvmRootFrame, EvmSolver, EvmStore, EvmSubscriber, EvmValue, FrameCode, FrontierReason, Limit,
+    MachineEdgeKind, MachineError, OutcomeKind, execute_inner_with, instantiate_with,
+    resume_summary_inner, semantic_eq, transfer_stop,
 };
 
-impl Solver<'_> {
-    fn form(&mut self, payload: &MachinePayload) -> Result<PayloadSummary, MachineError> {
+impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
+    EvmSolver<'_, D, C, P, X, E>
+{
+    fn form(
+        &mut self,
+        payload: &EvmMachinePayload<D::Element>,
+    ) -> Result<EvmPayloadSummary<D::Element>, MachineError> {
         let mut refined = payload.clone();
         let mut projection = super::projection::Projection::new(
             &payload.relations,
@@ -25,7 +37,9 @@ impl Solver<'_> {
             work.saturating_add(if frame.code == FrameCode::Unknown {
                 0
             } else {
-                super::context::work_size(frame.key.jump_history.len())
+                self.policies
+                    .context
+                    .normalization_work(frame.key.jump_history.len())
             })
         });
         self.reserve(
@@ -36,7 +50,12 @@ impl Solver<'_> {
                     self.domain,
                 )),
         )?;
-        form(&refined, self.entry, self.domain)
+        for frame in refined.call_stack.iter_mut() {
+            if frame.code != FrameCode::Unknown {
+                self.policies.context.normalize(&mut frame.key.jump_history);
+            }
+        }
+        super::payload::form_normalized(&refined, self.entry, self.domain)
     }
 
     pub(super) fn reserve(&mut self, cost: usize) -> Result<(), MachineError> {
@@ -48,8 +67,13 @@ impl Solver<'_> {
         }
     }
 
-    pub(super) fn frontier(&mut self, payload: MachinePayload, reason: FrontierReason, pc: usize) {
-        self.table.frontiers.push(ExecutionFrontier {
+    pub(super) fn frontier(
+        &mut self,
+        payload: EvmMachinePayload<D::Element>,
+        reason: FrontierReason,
+        pc: usize,
+    ) {
+        self.table.frontiers.push(EvmExecutionFrontier {
             pc,
             reason,
             target: Some(payload.key()),
@@ -58,51 +82,80 @@ impl Solver<'_> {
         });
     }
 
-    pub(super) fn frontier_summary(
+    fn frontier_ref(
         &mut self,
-        payload: PayloadSummary,
+        payload: &EvmPayloadSummary<D::Element>,
         reason: FrontierReason,
         pc: usize,
     ) {
-        // A pre-join input cannot witness the current invariant. Materialize
-        // its complete current bound only when the shared ledger permits it;
-        // a location without payload is honest evidence when construction fails.
-        let current = self
-            .reserve(payload.work_size().saturating_mul(4))
-            .and_then(|()| instantiate(&payload, self.domain))
-            .ok();
-        let target = current
-            .as_ref()
-            .map_or(payload.location, MachinePayload::key);
-        self.table.frontiers.push(ExecutionFrontier {
-            pc,
+        let frontier = parked_bound(payload, reason, pc, self.domain, self.budget);
+        self.table.frontiers.push(frontier);
+    }
+
+    #[cfg(test)]
+    pub(super) fn frontier_summary(
+        &mut self,
+        payload: EvmPayloadSummary<D::Element>,
+        reason: FrontierReason,
+        pc: usize,
+    ) {
+        self.frontier_ref(&payload, reason, pc);
+    }
+
+    pub(super) fn frontier_node(&mut self, id: usize, reason: FrontierReason, pc: usize) {
+        let frontier = parked_bound(
+            &self.table.nodes[id].payload,
             reason,
-            target: Some(target),
-            range: None,
-            payload: current.map(Arc::new),
-        });
+            pc,
+            self.domain,
+            self.budget,
+        );
+        self.table.frontiers.push(frontier);
+    }
+
+    fn frontier_subscriber(&mut self, id: usize, reason: FrontierReason, pc: usize) {
+        let frontier = parked_bound(
+            &self.table.subscribers[id].payload,
+            reason,
+            pc,
+            self.domain,
+            self.budget,
+        );
+        self.table.frontiers.push(frontier);
     }
 
     pub(super) fn park_pending(&mut self, reason: FrontierReason) {
-        let pending = self.table.worklist.pending().collect::<Vec<_>>();
-        for pending in pending {
-            self.frontier_summary(self.table.nodes[pending].payload.clone(), reason.clone(), 0);
+        let pending = self.runtime.pending_relative().collect::<Vec<_>>();
+        for task in pending {
+            match task {
+                TaskKind::Body(id) => self.frontier_node(id, reason.clone(), 0),
+                TaskKind::Resume(id) => self.frontier_subscriber(id, reason.clone(), 0),
+                _ => {}
+            }
         }
     }
 
-    pub(super) fn procedure(&mut self, payload: MachinePayload) -> Result<usize, MachineError> {
+    pub(super) fn procedure(
+        &mut self,
+        payload: EvmMachinePayload<D::Element>,
+    ) -> Result<usize, MachineError> {
         self.procedure_from(payload, None)
     }
 
     fn procedure_from(
         &mut self,
-        payload: MachinePayload,
+        payload: EvmMachinePayload<D::Element>,
         from: Option<usize>,
     ) -> Result<usize, MachineError> {
         self.reserve(payload.work_size().saturating_mul(4))?;
         let payload = self.form(&payload)?;
         let key = payload.active().key.clone();
-        if let Some(id) = self.table.procedures_by_key.get(&key).copied() {
+        if let Some(id) = self
+            .table
+            .procedures_by_key
+            .get(&(self.namespace, key.clone()))
+            .copied()
+        {
             self.table.reused += 1;
             if let Some(from) = from {
                 self.call_dependency(from, id)?;
@@ -114,12 +167,21 @@ impl Solver<'_> {
         if self.counters.states >= self.config.analysis.max_states {
             return Err(MachineError::States);
         }
-        self.table.procedures_by_key.insert(key.clone(), id);
-        self.table.procedures.push(Procedure {
+        let scope = self.runtime.relative;
+        let output = self
+            .runtime
+            .kernel()
+            .slot(scope, &mut MachineMeter(self.budget))
+            .map_err(kernel_failure)?;
+        self.table
+            .procedures_by_key
+            .insert((self.namespace, key.clone()), id);
+        self.table.procedures.push(EvmProcedure {
             frame: key,
             entry: self.table.nodes.len(),
             nodes: BTreeMap::new(),
             outputs: BTreeMap::new(),
+            output,
             subscribers: Vec::new(),
             dependencies: BTreeSet::new(),
             recursive: false,
@@ -133,7 +195,9 @@ impl Solver<'_> {
                 .procedures
                 .pop()
                 .expect("just allocated procedure");
-            self.table.procedures_by_key.remove(&failed.frame);
+            self.table
+                .procedures_by_key
+                .remove(&(self.namespace, failed.frame));
             return Err(error);
         }
         if let Some(from) = from {
@@ -145,7 +209,7 @@ impl Solver<'_> {
     pub(super) fn enqueue(
         &mut self,
         procedure: usize,
-        payload: MachinePayload,
+        payload: EvmMachinePayload<D::Element>,
         resume_status: Option<bool>,
         from: usize,
     ) -> Result<usize, MachineError> {
@@ -157,11 +221,14 @@ impl Solver<'_> {
     pub(super) fn enqueue_summary(
         &mut self,
         procedure: usize,
-        payload: PayloadSummary,
+        payload: EvmPayloadSummary<D::Element>,
         resume_status: Option<bool>,
         from: Option<usize>,
     ) -> Result<usize, MachineError> {
-        let key = (payload.active().key.clone(), resume_status);
+        let key = (
+            payload.active().key.clone(),
+            self.policies.partition.classify(Arrival { resume_status }),
+        );
         let id = if let Some(id) = self.table.procedures[procedure].nodes.get(&key).copied() {
             if let Some(from) = from {
                 self.node_edge(from, id)?;
@@ -169,25 +236,60 @@ impl Solver<'_> {
             let old = &self.table.nodes[id];
             let widen = self.node_feedback(id)
                 && old.updates >= self.domain.spec().widening_after_updates();
-            let widened = if let RuntimeRetry::Coarse(coarse) = &old.runtime_retry {
-                coarse.join(&old.payload, &payload, self.domain, self.budget, widen)?
+            if let EvmRuntimeRetry::Coarse(coarse) = &old.runtime_retry {
+                let widened =
+                    coarse.join(&old.payload, &payload, self.domain, self.budget, widen)?;
+                let changed = !semantic_eq(&widened, &old.payload);
+                let updates = if changed {
+                    old.updates
+                        .checked_add(1)
+                        .ok_or(MachineError::IdentityExhausted)?
+                } else {
+                    old.updates
+                };
+                let work = widened.work_size().saturating_add(1);
+                let old = &mut self.table.nodes[id];
+                self.runtime.with_run(
+                    self.active.as_mut().unwrap_or(self.caller),
+                    self.budget,
+                    |run| {
+                        run.publish_prepared_parts(
+                            &old.input,
+                            &mut old.payload,
+                            widened,
+                            &mut old.updates,
+                            updates,
+                            if changed {
+                                Change::Changed
+                            } else {
+                                Change::Unchanged
+                            },
+                            work,
+                        )
+                        .map_err(kernel_failure)
+                    },
+                )?;
             } else {
-                let cost = old
-                    .payload
-                    .work_size()
-                    .saturating_add(payload.work_size())
-                    .saturating_mul(4);
-                self.reserve(cost)?;
-                let old = &self.table.nodes[id];
-                join(&old.payload, &payload, self.domain, widen)?
-            };
-            let old = &self.table.nodes[id];
-            if semantic_eq(&widened, &old.payload) {
-                return Ok(id);
+                let old = &mut self.table.nodes[id];
+                let policy = SummaryAdmission {
+                    domain: self.domain,
+                    widen,
+                };
+                self.runtime.with_run(
+                    self.active.as_mut().unwrap_or(self.caller),
+                    self.budget,
+                    |run| {
+                        run.admit(
+                            &old.input,
+                            &mut old.payload,
+                            &mut old.updates,
+                            &payload,
+                            &policy,
+                        )
+                        .map_err(admission_failure)
+                    },
+                )?;
             }
-            let old = &mut self.table.nodes[id];
-            old.payload = widened;
-            old.updates += 1;
             id
         } else {
             if self.counters.states >= self.config.analysis.max_states {
@@ -206,13 +308,23 @@ impl Solver<'_> {
                     .saturating_add(usize::from(from.is_some())),
             )?;
             let id = self.table.nodes.len();
-            self.table.nodes.push(Node {
+            let scope = self.runtime.relative;
+            let input = self
+                .runtime
+                .kernel()
+                .slot(scope, &mut MachineMeter(self.budget))
+                .map_err(kernel_failure)?;
+            self.runtime
+                .register_relative(TaskKind::Body(id), self.budget)?;
+            self.table.nodes.push(EvmNode {
                 procedure,
+                input,
                 payload,
                 updates: 0,
                 successors: BTreeSet::new(),
                 loop_head: false,
-                runtime_retry: RuntimeRetry::Fresh,
+                runtime_retry: EvmRuntimeRetry::Fresh,
+                excluded: false,
             });
             self.table.procedures[procedure].nodes.insert(key, id);
             self.counters.states += 1;
@@ -221,63 +333,151 @@ impl Solver<'_> {
             }
             id
         };
-        self.table.worklist.enqueue(id);
         Ok(id)
     }
 
     pub(super) fn run(&mut self) {
-        while let Some(id) = self.table.worklist.pop_front() {
-            if let Some(reason) = transfer_stop(
-                self.counters.transfers,
-                self.config.analysis.max_transfers,
-                self.budget,
-            ) {
-                self.frontier_summary(self.table.nodes[id].payload.clone(), reason.clone(), 0);
-                self.park_pending(reason);
-                break;
-            }
-            let input = self.table.nodes[id].payload.clone();
-            if let Err(error) = self.reserve(input.work_size().saturating_mul(4)) {
-                let reason = error.frontier_reason();
-                self.frontier_summary(input, reason.clone(), 0);
-                self.park_pending(reason);
-                break;
-            }
-            let execution = match instantiate(&input, self.domain) {
-                Ok(payload) => {
-                    self.counters.transfers += 1;
-                    self.counters.report(self.budget.used());
-                    let execution = if payload.active().code == FrameCode::Unknown {
-                        self.environment(payload)
-                    } else {
-                        execute_inner(
-                            self.world,
-                            self.entry,
-                            payload,
-                            self.config,
-                            self.domain,
-                            self.budget,
-                            self.storage_reads,
-                            true,
-                        )
-                    };
-                    self.retry_runtime(id, &input, execution)
-                }
+        loop {
+            let (task, token) = match self.runtime.next(true, self.budget) {
+                Ok(Some(work)) => work,
+                Ok(None) => break,
                 Err(error) => {
-                    let Some(execution) = self.retry_instantiation(id, &input, error) else {
-                        continue;
-                    };
-                    execution
+                    self.park_pending(error.frontier_reason());
+                    break;
                 }
             };
-            if !execution.executed_pcs.is_empty() {
-                let procedure = self.table.nodes[id].procedure;
-                self.table.procedures[procedure]
-                    .covered_blocks
-                    .insert(self.table.nodes[id].payload.active().key.basic_block_index);
+            self.active = Some(token);
+            let result = match &task.0 {
+                TaskKind::Body(id) => self.step(*id),
+                TaskKind::Resume(subscriber) => match self.resume(*subscriber) {
+                    Ok(complete) => complete,
+                    Err(error) => {
+                        let reason = error.frontier_reason();
+                        self.frontier_subscriber(*subscriber, reason.clone(), 0);
+                        self.park_pending(reason);
+                        false
+                    }
+                },
+                TaskKind::Extension(_) => {
+                    let token = self.active.take().expect("external evaluation admitted");
+                    if let Err(error) =
+                        self.cooperation
+                            .evaluate(self.runtime, task, token, self.budget)
+                    {
+                        let error = self.cooperation.stop(error, self.budget);
+                        self.park_pending(error.frontier_reason());
+                        false
+                    } else {
+                        true
+                    }
+                }
+                TaskKind::World { .. } | TaskKind::Seed(_) => {
+                    unreachable!("uninitialized or foreign task")
+                }
+            };
+            if !result {
+                break;
             }
-            self.accept(id, execution);
+            if let Some(token) = self.active.take()
+                && let Err(error) = self.runtime.finish(token, self.budget)
+            {
+                self.park_pending(error.frontier_reason());
+                break;
+            }
         }
+    }
+
+    /// Perform one admitted body obligation under the transaction ledger.
+    ///
+    /// Scheduling owns the popped identity. Every interrupted preparation
+    /// retains its current bound before the remaining obligations are parked;
+    /// callers can therefore share this step with other tracked task families
+    /// without losing the currently executing procedure state.
+    pub(super) fn step(&mut self, id: usize) -> bool {
+        if let Some(reason) = transfer_stop(
+            self.counters.transfers,
+            self.config.analysis.max_transfers,
+            self.budget,
+        ) {
+            self.frontier_node(id, reason.clone(), 0);
+            self.park_pending(reason);
+            return false;
+        }
+        let work = self.table.nodes[id].payload.work_size().saturating_mul(4);
+        if let Err(error) = self.reserve(work) {
+            let reason = error.frontier_reason();
+            self.frontier_node(id, reason.clone(), 0);
+            self.park_pending(reason);
+            return false;
+        }
+        let input = self.table.nodes[id].payload.clone();
+        let execution = match instantiate_with(&input, self.domain) {
+            Ok(payload) => {
+                let payload = match self.cooperative_input(id, payload, 0) {
+                    Ok(Some(payload)) => payload,
+                    Ok(None) => {
+                        return self.track_input(id).is_ok();
+                    }
+                    Err(error) => {
+                        let reason = error.frontier_reason();
+                        self.frontier_ref(&input, reason.clone(), 0);
+                        self.park_pending(reason);
+                        return false;
+                    }
+                };
+                self.counters.transfers += 1;
+                self.counters.report(self.budget.used());
+                let execution = if payload.active().code == FrameCode::Unknown {
+                    self.environment(payload)
+                } else {
+                    execute_inner_with(
+                        self.world,
+                        self.entry,
+                        payload,
+                        self.config,
+                        self.domain,
+                        &self.policies.context,
+                        self.budget,
+                        self.storage_reads,
+                        true,
+                    )
+                };
+                self.retry_runtime(id, &input, execution)
+            }
+            Err(error) => {
+                let Some(execution) = self.retry_instantiation(id, &input, error) else {
+                    return true;
+                };
+                execution
+            }
+        };
+        // No other body runs during this interpreter step. A successful
+        // retention promotion has already executed its new covering bound, so
+        // subscribe to that bound now; subsequent outgoing joins still wake us.
+        let version = match self.track_input(id) {
+            Ok(version) => version,
+            Err(error) => {
+                let reason = error.frontier_reason();
+                self.frontier_node(id, reason.clone(), 0);
+                self.park_pending(reason);
+                return false;
+            }
+        };
+        self.producer = Some(super::Producer {
+            kind: 0,
+            id,
+            case: 0,
+            input: version,
+            other: None,
+        });
+        if !execution.executed_pcs.is_empty() {
+            let procedure = self.table.nodes[id].procedure;
+            self.table.procedures[procedure]
+                .covered_blocks
+                .insert(self.table.nodes[id].payload.active().key.basic_block_index);
+        }
+        self.accept(id, execution);
+        true
     }
 
     fn retry_admission(&self) -> Result<(), FrontierReason> {
@@ -297,10 +497,10 @@ impl Solver<'_> {
     pub(super) fn retry_instantiation(
         &mut self,
         id: usize,
-        original: &PayloadSummary,
+        original: &EvmPayloadSummary<D::Element>,
         error: MachineError,
-    ) -> Option<Execution> {
-        let retry = (matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
+    ) -> Option<EvmExecution<D::Element>> {
+        let retry = (matches!(&self.table.nodes[id].runtime_retry, EvmRuntimeRetry::Fresh)
             && coarse_retry::supports(original)
             && super::coarse_retry::retention_refusal(&error))
         .then(|| self.execute_coarse(id, original));
@@ -309,7 +509,7 @@ impl Solver<'_> {
         {
             return retry.and_then(Result::ok);
         }
-        self.frontier_summary(original.clone(), error.frontier_reason(), 0);
+        self.frontier_ref(original, error.frontier_reason(), 0);
         let interruptions = match retry {
             Some(Ok(execution)) => execution
                 .frontiers
@@ -321,7 +521,7 @@ impl Solver<'_> {
         };
         for reason in interruptions {
             if super::coarse_retry::interruption(&reason) {
-                self.frontier_summary(original.clone(), reason, 0);
+                self.frontier_ref(original, reason, 0);
             }
         }
         None
@@ -330,10 +530,10 @@ impl Solver<'_> {
     pub(super) fn retry_runtime(
         &mut self,
         id: usize,
-        original: &PayloadSummary,
-        mut first: Execution,
-    ) -> Execution {
-        if !matches!(&self.table.nodes[id].runtime_retry, RuntimeRetry::Fresh)
+        original: &EvmPayloadSummary<D::Element>,
+        mut first: EvmExecution<D::Element>,
+    ) -> EvmExecution<D::Element> {
+        if !matches!(&self.table.nodes[id].runtime_retry, EvmRuntimeRetry::Fresh)
             || !coarse_retry::supports(original)
             || first.retention_failures.is_empty()
             // A mixed execution has independent mandatory obligations. This
@@ -358,15 +558,19 @@ impl Solver<'_> {
     fn execute_coarse(
         &mut self,
         id: usize,
-        original: &PayloadSummary,
-    ) -> Result<Execution, FrontierReason> {
+        original: &EvmPayloadSummary<D::Element>,
+    ) -> Result<EvmExecution<D::Element>, FrontierReason> {
         // Only the attempt bit may survive failed preparation. No execution has
         // reached accept/publish, and the original immutable checkpoint is used.
-        self.table.nodes[id].runtime_retry = RuntimeRetry::Attempted;
-        let (coarse, bound, payload) = self
+        self.table.nodes[id].runtime_retry = EvmRuntimeRetry::Attempted;
+        let coarse_retry::Prepared {
+            representation: coarse,
+            bound,
+            payload,
+        } = self
             .retry_admission()
             .and_then(|()| {
-                coarse_retry::prepare(original, self.domain, self.budget)
+                coarse_retry::prepare_with(original, self.domain, self.budget)
                     .map_err(MachineError::frontier_reason)
             })
             .and_then(|prepared| {
@@ -375,12 +579,24 @@ impl Solver<'_> {
             })?;
         self.counters.transfers += 1;
         self.counters.report(self.budget.used());
-        let mut retry = execute_inner(
+        let payload = match self
+            .cooperative_input(id, payload, 1)
+            .map_err(MachineError::frontier_reason)?
+        {
+            Some(payload) => payload,
+            None => {
+                return Ok(super::super::empty_execution(
+                    instantiate_with(&bound, self.domain).map_err(MachineError::frontier_reason)?,
+                ));
+            }
+        };
+        let mut retry = execute_inner_with(
             self.world,
             self.entry,
             payload,
             self.config,
             self.domain,
+            &self.policies.context,
             self.budget,
             self.storage_reads,
             true,
@@ -402,8 +618,21 @@ impl Solver<'_> {
         if retry.frontiers.is_empty() {
             // The coarse transfer covers the full original entry. Commit its
             // input and receipts together; a failed retry leaves only Attempted.
-            self.table.nodes[id].payload = bound;
-            self.table.nodes[id].runtime_retry = RuntimeRetry::Coarse(coarse);
+            let work = bound.work_size().saturating_add(coarse.work_size());
+            let node = &mut self.table.nodes[id];
+            self.runtime
+                .with_run(
+                    self.active.as_mut().unwrap_or(self.caller),
+                    self.budget,
+                    |run| {
+                        run.publish_prepared_with(&node.input, Change::Changed, work, || {
+                            node.payload = bound;
+                            node.runtime_retry = EvmRuntimeRetry::Coarse(coarse);
+                        })
+                        .map_err(kernel_failure)
+                    },
+                )
+                .map_err(MachineError::frontier_reason)?;
             retry.diagnostics.push((
                 0,
                 DiagnosticKind::RelationalPrecisionLost(
@@ -414,7 +643,7 @@ impl Solver<'_> {
         Ok(retry)
     }
 
-    pub(super) fn accept(&mut self, from: usize, execution: Execution) {
+    pub(super) fn accept(&mut self, from: usize, execution: EvmExecution<D::Element>) {
         let procedure = self.table.nodes[from].procedure;
         self.table
             .precision_losses
@@ -424,14 +653,25 @@ impl Solver<'_> {
         self.table.frontiers.extend(execution.frontiers);
         for outcome in execution.outcomes {
             if let Err(error) = self.publish(procedure, outcome.kind, outcome.data, outcome.store) {
-                self.frontier_summary(
-                    self.table.nodes[from].payload.clone(),
-                    error.frontier_reason(),
-                    0,
-                );
+                self.frontier_node(from, error.frontier_reason(), 0);
             }
         }
-        for successor in execution.successors {
+        for (ordinal, mut successor) in execution.successors.into_iter().enumerate() {
+            if X::ENABLED {
+                if let Err(error) = self.reserve(successor.payload.work_size()) {
+                    self.frontier(successor.payload, error.frontier_reason(), 0);
+                    continue;
+                }
+                let original = successor.payload.clone();
+                match self.incoming(successor.payload, successor.kind, ordinal) {
+                    Ok(Some(payload)) => successor.payload = payload,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        self.frontier(original, error.frontier_reason(), 0);
+                        continue;
+                    }
+                }
+            }
             let original = successor.payload.clone();
             let operation = if successor.kind == MachineEdgeKind::Call {
                 self.subscribe(from, successor.payload)
@@ -448,7 +688,7 @@ impl Solver<'_> {
                         .active()
                         .stack
                         .last()
-                        .and_then(AbstractValue::singleton)
+                        .and_then(EvmValue::singleton)
                         .filter(|status| *status <= alloy_primitives::U256::ONE)
                         .map(|status| status == alloy_primitives::U256::ONE)
                 } else {
@@ -469,11 +709,11 @@ impl Solver<'_> {
     pub(super) fn subscribe(
         &mut self,
         from: usize,
-        payload: MachinePayload,
+        payload: EvmMachinePayload<D::Element>,
     ) -> Result<(), MachineError> {
         self.reserve(payload.work_size().saturating_mul(4))?;
-        let callee_payload = MachinePayload {
-            call_stack: CallStack::new(RootFrame {
+        let callee_payload = EvmMachinePayload {
+            call_stack: EvmCallStack::new(EvmRootFrame {
                 state: payload.active().clone(),
             }),
             store: payload.store.clone(),
@@ -482,53 +722,54 @@ impl Solver<'_> {
         let callee = self.procedure_from(callee_payload, Some(from))?;
         let payload = self.form(&payload)?;
         let key = (from, callee);
-        let subscription =
-            if let Some(subscription) = self.table.subscribers_by_key.get(&key).copied() {
-                self.reserve(
-                    self.table.subscribers[subscription]
-                        .payload
-                        .work_size()
-                        .saturating_add(payload.work_size())
-                        .saturating_mul(4),
-                )?;
-                let old = &self.table.subscribers[subscription];
-                let grown = join(
-                    &old.payload,
-                    &payload,
-                    self.domain,
-                    self.node_feedback(from)
-                        && old.updates >= self.domain.spec().widening_after_updates(),
-                )?;
-                if semantic_eq(&grown, &old.payload) {
-                    return Ok(());
-                }
-                let old = &mut self.table.subscribers[subscription];
-                old.payload = grown;
-                old.updates += 1;
-                old.delivered.clear();
-                subscription
-            } else {
-                self.reserve(payload.work_size())?;
-                let subscription = self.table.subscribers.len();
-                self.table.subscribers.push(Subscriber {
-                    from,
-                    callee,
-                    payload,
-                    updates: 0,
-                    delivered: BTreeMap::new(),
-                });
-                self.table.subscribers_by_key.insert(key, subscription);
-                self.table.procedures[callee].subscribers.push(subscription);
-                subscription
+        if let Some(subscription) = self.table.subscribers_by_key.get(&key).copied() {
+            let widen = self.node_feedback(from)
+                && self.table.subscribers[subscription].updates
+                    >= self.domain.spec().widening_after_updates();
+            let old = &mut self.table.subscribers[subscription];
+            let policy = SummaryAdmission {
+                domain: self.domain,
+                widen,
             };
-        let kinds = self.table.procedures[callee]
-            .outputs
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        for kind in kinds {
-            self.deliver(subscription, kind)?;
+            self.runtime.with_run(
+                self.active.as_mut().unwrap_or(self.caller),
+                self.budget,
+                |run| {
+                    run.admit(
+                        &old.input,
+                        &mut old.payload,
+                        &mut old.updates,
+                        &payload,
+                        &policy,
+                    )
+                    .map_err(admission_failure)
+                },
+            )?;
+        } else {
+            self.reserve(payload.work_size().saturating_add(3))?;
+            let subscription = self.table.subscribers.len();
+            let scope = self.runtime.relative;
+            let input = self
+                .runtime
+                .kernel()
+                .slot(scope, &mut MachineMeter(self.budget))
+                .map_err(kernel_failure)?;
+            self.runtime
+                .register_relative(TaskKind::Resume(subscription), self.budget)?;
+            self.table.subscribers.push(EvmSubscriber {
+                from,
+                callee,
+                payload,
+                input,
+                updates: 0,
+                delivered: BTreeMap::new(),
+            });
+            self.table.subscribers_by_key.insert(key, subscription);
+            self.table.procedures[callee].subscribers.push(subscription);
         }
+        // Resume reads both slots before using either. Kernel publications wake
+        // it for caller-template growth as well as output growth; no manual
+        // eager delivery recursion or generation-only receipt can lose a caller.
         Ok(())
     }
 
@@ -536,8 +777,8 @@ impl Solver<'_> {
         &mut self,
         procedure: usize,
         kind: OutcomeKind,
-        data: ByteArray,
-        store: Store,
+        data: EvmByteArray<D::Element>,
+        store: EvmStore<D::Element>,
     ) -> Result<(), MachineError> {
         self.reserve(
             store
@@ -545,58 +786,146 @@ impl Solver<'_> {
                 .saturating_add(data.work_size())
                 .saturating_mul(4),
         )?;
-        let store = store.summary_projection(self.domain)?;
-        let data = data.summary_projection(self.domain)?;
+        let store = store.summary_projection_with(self.domain)?;
+        let data = data.summary_projection_with(self.domain)?;
+        let old_work = self.table.procedures[procedure]
+            .outputs
+            .get(&kind)
+            .map_or(0, |old| old.work);
+        self.reserve(old_work.saturating_mul(4))?;
         let output = if let Some(old) = self.table.procedures[procedure].outputs.get(&kind) {
             let feedback = self.table.procedures[procedure].recursive
                 || self.table.procedures[procedure].local_cycle;
             let widen = feedback && old.generation > self.domain.spec().widening_after_updates();
-            let joined_store = old.store.join(&store, self.domain, widen);
-            let joined_data = old.data.join(&data, self.domain, widen);
+            let joined_store = old.store.join_with(&store, self.domain, widen);
+            let joined_data = old.data.join_with(&data, self.domain, widen);
             if old.store == joined_store && old.data == joined_data {
                 return Ok(());
             }
             let work = joined_store
                 .work_size()
                 .saturating_add(joined_data.work_size());
-            Output {
+            EvmOutput {
                 store: joined_store,
                 data: joined_data,
                 work,
-                generation: old.generation + 1,
+                generation: old
+                    .generation
+                    .checked_add(1)
+                    .ok_or(MachineError::IdentityExhausted)?,
             }
         } else {
             let work = store.work_size().saturating_add(data.work_size());
-            Output {
+            EvmOutput {
                 store,
                 data,
                 work,
                 generation: 1,
             }
         };
-        self.table.procedures[procedure]
+        let output_work = self.table.procedures[procedure]
             .outputs
-            .insert(kind, output);
-        self.table.procedures[procedure].output_updates += 1;
-        let subscribers = self.table.procedures[procedure].subscribers.clone();
-        for subscriber in subscribers {
-            self.deliver(subscriber, kind)?;
-        }
+            .values()
+            .fold(output.work.saturating_add(1), |work, old| {
+                work.saturating_add(old.work)
+            });
+        self.reserve(output_work)?;
+        let mut outputs = self.table.procedures[procedure].outputs.clone();
+        outputs.insert(kind, output);
+        let old = &mut self.table.procedures[procedure];
+        let updates = old
+            .output_updates
+            .checked_add(1)
+            .ok_or(MachineError::IdentityExhausted)?;
+        self.runtime.with_run(
+            self.active.as_mut().unwrap_or(self.caller),
+            self.budget,
+            |run| {
+                run.publish_prepared_parts(
+                    &old.output,
+                    &mut old.outputs,
+                    outputs,
+                    &mut old.output_updates,
+                    updates,
+                    Change::Changed,
+                    output_work,
+                )
+                .map_err(kernel_failure)
+            },
+        )?;
         Ok(())
+    }
+
+    fn resume(&mut self, subscriber: usize) -> Result<bool, MachineError> {
+        let subscription = &self.table.subscribers[subscriber];
+        let procedure = &self.table.procedures[subscription.callee];
+        let work = procedure
+            .outputs
+            .values()
+            .fold(1usize, |work, output| work.saturating_add(output.work));
+        let (template, outputs) = self.runtime.with_run(
+            self.active.as_mut().expect("admitted Resume"),
+            self.budget,
+            |run| {
+                let template = run
+                    .read_slot(
+                        &subscription.input,
+                        &subscription.payload,
+                        subscription.payload.work_size(),
+                    )
+                    .map_err(kernel_failure)?;
+                let outputs = run
+                    .read_slot(&procedure.output, &procedure.outputs, work)
+                    .map_err(kernel_failure)?;
+                Ok((template, outputs))
+            },
+        )?;
+        let Availability::Value(template_payload) = template.state else {
+            return Err(MachineError::Shape);
+        };
+        let outputs_version = outputs.version;
+        let Availability::Value(outputs) = outputs.state else {
+            return Err(MachineError::Shape);
+        };
+        for (kind, output) in outputs {
+            self.producer = Some(super::Producer {
+                kind: 1,
+                id: subscriber,
+                case: match kind {
+                    OutcomeKind::Return => 0,
+                    OutcomeKind::Revert => 1,
+                    OutcomeKind::Failure => 2,
+                },
+                input: template.version,
+                other: Some(outputs_version),
+            });
+            if !self.deliver(
+                subscriber,
+                kind,
+                template.version,
+                &template_payload,
+                &output,
+            )? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub(super) fn deliver(
         &mut self,
         subscriber: usize,
         kind: OutcomeKind,
-    ) -> Result<(), MachineError> {
+        template_version: Version,
+        template: &EvmPayloadSummary<D::Element>,
+        output: &EvmOutput<D::Element>,
+    ) -> Result<bool, MachineError> {
         let subscription = &self.table.subscribers[subscriber];
-        let output = &self.table.procedures[subscription.callee].outputs[&kind];
-        if subscription.delivered.get(&kind).copied() == Some(output.generation) {
-            return Ok(());
+        let stamp = (template_version, output.generation);
+        if subscription.delivered.get(&kind).copied() == Some(stamp) {
+            return Ok(true);
         }
         let from = subscription.from;
-        let generation = output.generation;
         if subscription.payload.frames.len() == 2
             && subscription.payload.frames[0].code == FrameCode::Unknown
             && subscription.payload.continuations[0].creation.is_none()
@@ -625,37 +954,31 @@ impl Solver<'_> {
             resumed.continuations.pop();
             resumed.location.frames.pop();
             resumed.store = if kind == OutcomeKind::Return {
-                self.table.procedures[subscription.callee].outputs[&kind]
-                    .store
-                    .clone()
+                output.store.clone()
             } else {
                 child.frame.saved_store
             };
-            // Changing the active frame and Store invalidates current-read templates.
+            // Changing the active frame and EvmStore<D::Element> invalidates current-read templates.
             resumed.storage_observations = Default::default();
             resumed.work = resumed.measure_work();
+            self.enqueue_summary(self.table.nodes[from].procedure, resumed, None, Some(from))?;
             self.table.subscribers[subscriber]
                 .delivered
-                .insert(kind, generation);
+                .insert(kind, stamp);
             self.table.propagations += 1;
-            return self
-                .enqueue_summary(self.table.nodes[from].procedure, resumed, None, Some(from))
-                .map(|_| ());
+            return Ok(true);
         }
-        let template = subscription.payload.clone();
-        let store = output.store.clone();
-        let data = output.data.clone();
         self.reserve(
             template
                 .work_size()
                 .saturating_add(output.work)
                 .saturating_mul(4),
         )?;
-        let mut payload = instantiate(&template, self.domain)?;
+        let mut payload = instantiate_with(template, self.domain)?;
         // Installed constraints still refer only to the old immutable snapshot.
-        // Never reinstall those read bounds after replacing the Store.
-        payload.store = store.instantiate(self.domain)?;
-        let data = data.instantiate(self.domain)?;
+        // Never reinstall those read bounds after replacing the EvmStore<D::Element>.
+        payload.store = output.store.instantiate_with(self.domain)?;
+        let data = output.data.instantiate_with(self.domain)?;
         let execution = resume_summary_inner(
             payload,
             kind,
@@ -665,11 +988,48 @@ impl Solver<'_> {
             self.budget,
             true,
         );
+        let before = self.table.frontiers.len();
+        self.accept(from, execution);
+        if self.table.frontiers.len() != before {
+            return Ok(false);
+        }
         self.table.subscribers[subscriber]
             .delivered
-            .insert(kind, generation);
+            .insert(kind, stamp);
         self.table.propagations += 1;
-        self.accept(from, execution);
-        Ok(())
+        Ok(true)
+    }
+}
+
+fn admission_failure(error: PublishError<MachineError, MachineError>) -> MachineError {
+    match error {
+        PublishError::Policy(error) => error,
+        PublishError::Kernel(error) => kernel_failure(error),
+    }
+}
+
+/// A stopped solve exports the already retained location. Construct a native N
+/// witness only after paying its complete materialization; never deep-clone a
+/// summary merely to discover that the exhausted root ledger cannot afford it.
+fn parked_bound<D: EvmNumericAlgebra>(
+    summary: &EvmPayloadSummary<D::Element>,
+    reason: FrontierReason,
+    pc: usize,
+    domain: crate::domain::AlgebraRef<'_, D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> EvmExecutionFrontier<D::Element> {
+    let current =
+        crate::analysis::state::bounded::reserve(budget, summary.work_size().saturating_mul(4))
+            .and_then(|()| instantiate_with(summary, domain))
+            .ok();
+    let target = current
+        .as_ref()
+        .map_or_else(|| summary.location.clone(), EvmMachinePayload::key);
+    EvmExecutionFrontier {
+        pc,
+        reason,
+        target: Some(target),
+        range: None,
+        payload: current.map(Arc::new),
     }
 }

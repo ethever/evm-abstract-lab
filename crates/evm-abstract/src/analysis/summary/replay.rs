@@ -1,11 +1,13 @@
 //! Instantiate every scalar, source and state root before installing any graph.
 //! One map belongs to one replay; certified snapshots are never mutated.
 
-use super::{Certificate, Node, Terminal};
+use crate::domain::{AlgebraRef, EvmNumericAlgebra, WordElement};
+
+use super::{EvmCertificate, EvmNode, EvmTerminal};
 use crate::{
-    analysis::{CallStack, Continuation, MachineError, MachinePayload},
+    analysis::{EvmCallStack, EvmContinuation, EvmMachinePayload, MachineError},
     domain::{
-        AbstractValue,
+        EvmValue,
         symbolic::{ExprId, ExprLimits},
     },
     resource::WorkBudget,
@@ -15,16 +17,16 @@ use std::{
     sync::Arc,
 };
 
-pub(in crate::analysis) struct Prepared {
-    pub nodes: Vec<Node>,
-    pub terminals: Vec<Terminal>,
+pub(in crate::analysis) struct EvmPrepared<N: WordElement, Tag: Clone + Ord = Option<bool>> {
+    pub nodes: Vec<EvmNode<N, Tag>>,
+    pub terminals: Vec<EvmTerminal<N>>,
     pub renaming: BTreeMap<ExprId, ExprId>,
 }
 
-pub(in crate::analysis) struct Replay<'a> {
-    certificate: &'a Certificate,
-    prefix: CallStack,
-    continuation: Continuation,
+pub(in crate::analysis) struct EvmReplay<'a, N: WordElement, Tag: Clone + Ord = Option<bool>> {
+    certificate: &'a EvmCertificate<N, Tag>,
+    prefix: EvmCallStack<N>,
+    continuation: EvmContinuation<N>,
     prefix_cost: usize,
     renaming: BTreeMap<ExprId, ExprId>,
     limits: ExprLimits,
@@ -38,10 +40,10 @@ fn charge(budget: &mut WorkBudget, cost: usize) -> Result<(), MachineError> {
     }
 }
 
-impl<'a> Replay<'a> {
+impl<'a, N: WordElement, Tag: Clone + Ord> EvmReplay<'a, N, Tag> {
     pub fn new(
-        certificate: &'a Certificate,
-        payload: &MachinePayload,
+        certificate: &'a EvmCertificate<N, Tag>,
+        payload: &EvmMachinePayload<N>,
         budget: &mut WorkBudget,
         limits: ExprLimits,
     ) -> Result<Self, MachineError> {
@@ -98,9 +100,13 @@ impl<'a> Replay<'a> {
         })
     }
 
-    fn payload(&self, relative: &MachinePayload) -> Result<MachinePayload, MachineError> {
+    fn payload<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        relative: &EvmMachinePayload<N>,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmMachinePayload<N>, MachineError> {
         let mut relative = relative.clone();
-        relative.rename_fresh(&self.renaming, self.limits)?;
+        relative.rename_fresh_with(&self.renaming, self.limits, domain)?;
         let mut call_stack = self.prefix.clone();
         call_stack.push_child(
             relative
@@ -112,7 +118,7 @@ impl<'a> Replay<'a> {
         for child in relative.call_stack.children() {
             call_stack.push_child(child.clone());
         }
-        let mut result = MachinePayload {
+        let mut result = EvmMachinePayload {
             relations: relative.relations,
             call_stack,
             store: relative.store,
@@ -121,7 +127,7 @@ impl<'a> Replay<'a> {
         Ok(result)
     }
 
-    fn value(&self, value: &mut AbstractValue) -> Result<(), MachineError> {
+    fn value(&self, value: &mut EvmValue<N>) -> Result<(), MachineError> {
         value.forget_identity();
         if let Some(expression) = value.expression() {
             *value = value
@@ -131,7 +137,12 @@ impl<'a> Replay<'a> {
         Ok(())
     }
 
-    fn node(&self, source: &Node, budget: &mut WorkBudget) -> Result<Node, MachineError> {
+    fn node<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        source: &EvmNode<N, Tag>,
+        budget: &mut WorkBudget,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmNode<N, Tag>, MachineError> {
         let cost = source
             .work_size()
             .saturating_add(
@@ -149,17 +160,20 @@ impl<'a> Replay<'a> {
         for call in &source.completed_calls {
             charge(budget, 0)?;
             let mut call = call.clone();
-            call.payload = self.payload(&call.payload)?;
-            call.data.rename_fresh(&self.renaming, self.limits)?;
-            call.output_data.rename_fresh(&self.renaming, self.limits)?;
+            call.payload = self.payload(&call.payload, domain)?;
+            call.data
+                .rename_fresh_with(&self.renaming, self.limits, domain)?;
+            call.output_data
+                .rename_fresh_with(&self.renaming, self.limits, domain)?;
             call.output_store
-                .rename_fresh(&self.renaming, self.limits)?;
+                .rename_fresh_with(&self.renaming, self.limits, domain)?;
             completed_calls.push(call);
         }
-        Ok(Node {
-            entry: self.payload(&source.entry)?,
+        Ok(EvmNode {
+            entry: self.payload(&source.entry, domain)?,
             resume_status: source.resume_status,
-            exit: self.payload(&source.exit)?,
+            partition: source.partition.clone(),
+            exit: self.payload(&source.exit, domain)?,
             exit_stack,
             executed_pcs: source.executed_pcs.clone(),
             instruction_progress: source.instruction_progress.clone(),
@@ -170,11 +184,12 @@ impl<'a> Replay<'a> {
         })
     }
 
-    fn terminal(
+    fn terminal<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        source: &Terminal,
+        source: &EvmTerminal<N>,
         budget: &mut WorkBudget,
-    ) -> Result<Terminal, MachineError> {
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmTerminal<N>, MachineError> {
         charge(
             budget,
             source
@@ -183,23 +198,27 @@ impl<'a> Replay<'a> {
                 .saturating_mul(4),
         )?;
         let mut terminal = source.clone();
-        terminal.payload = self.payload(&terminal.payload)?;
+        terminal.payload = self.payload(&terminal.payload, domain)?;
         terminal
             .raw_data
-            .rename_fresh(&self.renaming, self.limits)?;
+            .rename_fresh_with(&self.renaming, self.limits, domain)?;
         terminal
             .output
             .data
-            .rename_fresh(&self.renaming, self.limits)?;
+            .rename_fresh_with(&self.renaming, self.limits, domain)?;
         terminal
             .output
             .store
-            .rename_fresh(&self.renaming, self.limits)?;
+            .rename_fresh_with(&self.renaming, self.limits, domain)?;
         Ok(terminal)
     }
 
     /// Any renaming or allocation failure drops this entire temporary graph.
-    pub fn prepare(self, budget: &mut WorkBudget) -> Result<Prepared, MachineError> {
+    pub fn prepare<D: EvmNumericAlgebra<Element = N>>(
+        self,
+        budget: &mut WorkBudget,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmPrepared<N, Tag>, MachineError> {
         charge(
             budget,
             self.certificate
@@ -211,16 +230,16 @@ impl<'a> Replay<'a> {
             .certificate
             .nodes
             .iter()
-            .map(|node| self.node(node, budget))
+            .map(|node| self.node(node, budget, domain))
             .collect::<Result<_, _>>()?;
         let terminals = self
             .certificate
             .terminals
             .iter()
-            .map(|terminal| self.terminal(terminal, budget))
+            .map(|terminal| self.terminal(terminal, budget, domain))
             .collect::<Result<_, _>>()?;
         charge(budget, 0)?;
-        Ok(Prepared {
+        Ok(EvmPrepared {
             nodes,
             terminals,
             renaming: self.renaming,
@@ -228,7 +247,7 @@ impl<'a> Replay<'a> {
     }
 }
 
-fn collect_value(value: &AbstractValue, into: &mut BTreeSet<ExprId>) {
+fn collect_value<N: WordElement>(value: &EvmValue<N>, into: &mut BTreeSet<ExprId>) {
     if let Some(expression) = value.expression() {
         into.extend(expression.fresh_leaves());
     }
@@ -236,3 +255,8 @@ fn collect_value(value: &AbstractValue, into: &mut BTreeSet<ExprId>) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::analysis) type Prepared = EvmPrepared<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type Replay<'a> = EvmReplay<'a, crate::domain::NumericValue>;

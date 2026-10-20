@@ -3,12 +3,18 @@
 //! A private bytecode function can have many acyclic callers. Those joins must
 //! retain finite return addresses; only proven feedback needs acceleration.
 
-use super::{BTreeMap, BTreeSet, MachineError, Solver};
+use super::Composition;
+use crate::analysis::engine::{ContextPolicy, PartitionPolicy};
+use crate::domain::EvmNumericAlgebra;
+
+use super::{BTreeMap, BTreeSet, EvmSolver, MachineError};
 
 #[cfg(test)]
 mod tests;
 
-impl Solver<'_> {
+impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
+    EvmSolver<'_, D, C, P, X, E>
+{
     pub(super) fn node_edge(&mut self, from: usize, to: usize) -> Result<(), MachineError> {
         if self.table.nodes[from].procedure != self.table.nodes[to].procedure {
             return Err(MachineError::Shape);

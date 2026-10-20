@@ -60,6 +60,7 @@ fn node(entry: MachinePayload, resume_status: Option<bool>, marker: u64) -> Node
     Node {
         entry,
         resume_status,
+        partition: resume_status,
         exit,
         exit_stack: vec![fixtures::word(marker)],
         executed_pcs: vec![usize::MAX],
@@ -100,9 +101,20 @@ fn successor_promotes_invalidates_reexecutes_and_keeps_canonical_roots_bounded()
         states: result.states.len(),
         ..Default::default()
     };
-    let mut engine = engine(result, target, &mut budget, &mut counters);
+    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+    let precision_policies: super::super::EnginePolicies = Default::default();
+
+    let mut engine = engine(
+        result,
+        target,
+        &mut budget,
+        &mut counters,
+        &numeric_policy,
+        &precision_policies,
+    );
     engine.reuse = Some(&mut reuse);
-    engine.worklist = Worklist::default();
+    engine.reset_pending(&[]);
     let kind = MachineEdgeKind::Intraprocedural(EdgeKind::Jump);
     assert_eq!(
         engine.successor(
@@ -144,11 +156,11 @@ fn successor_promotes_invalidates_reexecutes_and_keeps_canonical_roots_bounded()
             .unwrap()
             .is_current()
     );
-    assert!(engine.worklist.contains(&target));
+    assert!(engine.runtime.contains_world(&target));
     assert_eq!(
         engine
-            .worklist
-            .in_order()
+            .runtime
+            .pending_world()
             .filter(|id| *id == target)
             .count(),
         1
@@ -178,7 +190,7 @@ fn successor_promotes_invalidates_reexecutes_and_keeps_canonical_roots_bounded()
         );
         assert_eq!(engine.result.states[target].entry.fresh_leaves(), roots);
         assert_eq!(engine.result.states[target].entry.work_size(), work);
-        assert!(!engine.worklist.contains(&target));
+        assert!(!engine.runtime.contains_world(&target));
     }
     assert_eq!(engine.result.states.len(), 2);
 }
@@ -192,10 +204,21 @@ fn replay_keeps_same_key_resume_partitions_and_reexecutes_incompatible_certifica
         states: result.states.len(),
         ..Default::default()
     };
-    let mut engine = engine(result, target, &mut budget, &mut counters);
+    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+    let precision_policies: super::super::EnginePolicies = Default::default();
+
+    let mut engine = engine(
+        result,
+        target,
+        &mut budget,
+        &mut counters,
+        &numeric_policy,
+        &precision_policies,
+    );
     engine.reuse = Some(&mut reuse);
-    engine.worklist = Worklist::default();
-    let failed = with_word(&first, 9, engine.domain);
+    engine.reset_pending(&[]);
+    let failed = with_word(&first, 9, **engine.domain.numeric_algebra());
     let certificate = certificate(vec![
         node(first.clone(), Some(true), 71),
         node(failed.clone(), Some(false), 72),
@@ -237,9 +260,9 @@ fn replay_keeps_same_key_resume_partitions_and_reexecutes_incompatible_certifica
             .unwrap()
             .is_current()
     );
-    assert!(engine.worklist.contains(&success));
-    assert!(!engine.worklist.contains(&failure));
-    assert!(!engine.worklist.contains(&target));
+    assert!(engine.runtime.contains_world(&success));
+    assert!(!engine.runtime.contains_world(&failure));
+    assert!(!engine.runtime.contains_world(&target));
     engine.run();
     assert_eq!(engine.result.status(), Status::Converged);
     assert!(engine.result.frontiers.is_empty());
@@ -259,8 +282,19 @@ fn successor_work_refusal_keeps_old_entry_proof_and_full_incoming_frontier() {
         let (result, target, [first, _, third]) = fixture();
         let mut budget = WorkBudget::new(0);
         let mut counters = Counters::default();
-        let mut engine = engine(result, target, &mut budget, &mut counters);
-        let worklist = engine.worklist.clone();
+        let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+        let precision_policies: super::super::EnginePolicies = Default::default();
+
+        let mut engine = engine(
+            result,
+            target,
+            &mut budget,
+            &mut counters,
+            &numeric_policy,
+            &precision_policies,
+        );
+        let worklist = engine.runtime.queue_snapshot();
         let before = engine.alternatives[target].work_size();
         assert!(
             engine
@@ -277,7 +311,7 @@ fn successor_work_refusal_keeps_old_entry_proof_and_full_incoming_frontier() {
         assert_eq!(engine.result.states[target].entry, first);
         assert_eq!(engine.alternatives[target].work_size(), before);
         assert!(!engine.alternatives[target].has_loop_bound());
-        assert_eq!(engine.worklist, worklist);
+        assert_eq!(engine.runtime.queue_snapshot(), worklist);
         assert!(engine.edges.is_empty());
         let frontier = engine.result.frontiers.last().unwrap();
         assert_eq!(frontier.reason, reason);
@@ -295,7 +329,9 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
         let first = with_word(&result.states[child].entry, 1, domain);
         let second = with_word(&first, 2, domain);
         let third = with_word(&first, 3, domain);
-        let exact = first.join(&second, domain).unwrap();
+        let exact = first
+            .join(&second, crate::domain::ValueAlgebra::new(domain).borrowed())
+            .unwrap();
         result.states[child].entry = exact.clone();
         result.states[child].key = exact.key();
         let mut relative = third.clone();
@@ -318,12 +354,23 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
             states: result.states.len(),
             ..Default::default()
         };
-        let mut engine = engine(result, child, &mut budget, &mut counters);
+        let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+        let precision_policies: super::super::EnginePolicies = Default::default();
+
+        let mut engine = engine(
+            result,
+            child,
+            &mut budget,
+            &mut counters,
+            &numeric_policy,
+            &precision_policies,
+        );
         engine.reuse = Some(&mut reuse);
         engine.alternatives[child] = super::super::EntryAlternatives::new(&first);
         engine.alternatives[child].retain(second);
         let before_work = engine.alternatives[child].work_size();
-        let worklist = engine.worklist.clone();
+        let worklist = engine.runtime.queue_snapshot();
         let count = engine.result.states.len();
         if reject_after_promotion {
             assert_eq!(
@@ -336,7 +383,7 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
             assert_eq!(engine.alternatives[child].work_size(), before_work);
             assert!(!engine.alternatives[child].has_loop_bound());
             assert!(!has_initial_dependency(&engine, child));
-            assert_eq!(engine.worklist, worklist);
+            assert_eq!(engine.runtime.queue_snapshot(), worklist);
             assert_eq!(engine.result.summary_stats.imported_states, 0);
             assert_eq!(
                 engine.result.frontiers.last().unwrap().payload.as_deref(),
@@ -346,7 +393,7 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
             engine.replay(child, &certificate).unwrap();
             assert!(engine.alternatives[child].has_loop_bound());
             assert!(has_initial_dependency(&engine, child));
-            assert!(engine.worklist.contains(&child));
+            assert!(engine.runtime.contains_world(&child));
             assert_ne!(engine.result.states[child].executed_pcs, vec![usize::MAX]);
             assert!(
                 !engine.result.states[child]
@@ -370,8 +417,19 @@ fn replay_satisfaction_then_growth_keeps_fifo_position_cost_and_stop_coverage() 
     let (result, target, [first, second, _]) = fixture();
     let mut budget = WorkBudget::new(100_000_000);
     let mut counters = Counters::default();
-    let mut engine = engine(result, target, &mut budget, &mut counters);
-    engine.worklist = [target, 0].into_iter().collect();
+    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+    let precision_policies: super::super::EnginePolicies = Default::default();
+
+    let mut engine = engine(
+        result,
+        target,
+        &mut budget,
+        &mut counters,
+        &numeric_policy,
+        &precision_policies,
+    );
+    engine.reset_pending(&[target, 0]);
     let certificate = certificate(vec![node(first, None, 73)]);
     let prepared = Prepared {
         nodes: certificate.nodes.clone(),
@@ -379,8 +437,8 @@ fn replay_satisfaction_then_growth_keeps_fifo_position_cost_and_stop_coverage() 
         renaming: BTreeMap::new(),
     };
     engine.install_replay(&certificate, prepared).unwrap();
-    assert!(!engine.worklist.contains(&target));
-    assert_eq!(engine.worklist.work_size(), 3);
+    assert!(!engine.runtime.contains_world(&target));
+    assert_eq!(engine.runtime.queue_work_size(), 4);
     assert_eq!(
         engine.successor(
             0,
@@ -400,10 +458,13 @@ fn replay_satisfaction_then_growth_keeps_fifo_position_cost_and_stop_coverage() 
     );
     // Reactivation makes the older record eligible again. Neither compacting
     // it nor moving it behind state 0 preserves the established schedule/fee.
-    assert_eq!(engine.worklist.work_size(), 5);
+    assert_eq!(engine.runtime.queue_work_size(), 6);
+    let scan = engine.runtime.scan_work();
     let used = engine.budget.used();
     assert_eq!(engine.next_pending().unwrap(), Some(target));
-    assert_eq!(engine.budget.used() - used, 7);
+    // The scan includes stale records and the fixture's retained driver. Four
+    // additional actions retain the task handle, begin, resume and finish the selected kernel job.
+    assert_eq!(engine.budget.used() - used, scan + 4);
     let reason = FrontierReason::Budget(crate::analysis::Limit::Transfers);
     engine.stop_pending(target, reason.clone());
     assert_eq!(engine.result.frontiers.len(), 2);

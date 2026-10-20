@@ -1,6 +1,6 @@
 //! Session-owned reuse of deterministic stack blocks across initial revisions.
 //!
-//! A memo never owns a Store, rollback snapshot, call frame or outcome. Its
+//! A memo never owns a EvmStore<N>, rollback snapshot, call frame or outcome. Its
 //! positive opcode list excludes initial reads, memory, calls and lifecycle.
 //! Constant stacks and an empty relation input avoid allocating or equating
 //! independent symbolic choices. RIPEMD must be untouched to exclude the
@@ -8,16 +8,18 @@
 //! changes only its active stack/control key. Stateful dependencies therefore
 //! enter through exact input values, rather than by patching historical roots.
 
+use crate::domain::{NumericValue, WordElement};
+
 use crate::{
     U256,
     analysis::{
-        FrameCode, FrameKey, InstructionProgress, InstructionValue, MachineEdgeKind, MachineError,
-        MachinePayload,
+        EvmInstructionValue, EvmMachinePayload, FrameCode, FrameKey, InstructionProgress,
+        MachineEdgeKind, MachineError,
         layers::{CodeCatalog, CodeMode, FactDependencies},
-        transfer::{Execution, Successor},
+        transfer::{EvmExecution, EvmSuccessor},
     },
     bytecode::Program,
-    domain::AbstractValue,
+    domain::EvmValue,
     resource::WorkBudget,
 };
 use alloy_primitives::Address;
@@ -29,7 +31,7 @@ use std::{collections::BTreeMap, sync::Arc};
 // This prepaid metadata allowance never replaces any full-signature fee.
 const ELIGIBILITY_WORK: usize = 16 + 16 * (usize::BITS as usize + 1);
 
-// Match late_failure's bound for this same fixed-width Store query: at most
+// Match late_failure's bound for this same fixed-width EvmStore<N> query: at most
 // usize::BITS + 1 levels, 11 comparisons per node, rounded up for bookkeeping.
 // Pay independently before the getter, even when a full signature cannot fit.
 const TOUCH_QUERY_WORK: usize = (usize::BITS as usize + 1) * 16;
@@ -52,13 +54,13 @@ struct Key {
 }
 
 #[derive(Clone)]
-struct StackDelta {
+struct EvmStackDelta<N: WordElement> {
     key: FrameKey,
-    stack: Vec<AbstractValue>,
+    stack: Vec<EvmValue<N>>,
 }
 
-impl StackDelta {
-    fn extract(input: &MachinePayload, output: &MachinePayload) -> Option<Self> {
+impl<N: WordElement> EvmStackDelta<N> {
+    fn extract(input: &EvmMachinePayload<N>, output: &EvmMachinePayload<N>) -> Option<Self> {
         let mut normalized = output.clone();
         normalized.normalize();
         let delta = Self {
@@ -70,12 +72,12 @@ impl StackDelta {
         expected.active_mut().stack = delta.stack.clone();
         expected.normalize();
         // Refuse a future transfer change that mutates memory, relations,
-        // suspended frames, runtime Store or any rollback checkpoint.
+        // suspended frames, runtime EvmStore<N> or any rollback checkpoint.
         (expected == normalized && delta.stack.iter().all(|v| v.singleton().is_some()))
             .then_some(delta)
     }
 
-    fn apply(&self, input: &MachinePayload) -> MachinePayload {
+    fn apply(&self, input: &EvmMachinePayload<N>) -> EvmMachinePayload<N> {
         let mut output = input.clone();
         output.active_mut().key = self.key.clone();
         output.active_mut().stack = self.stack.clone();
@@ -90,18 +92,18 @@ impl StackDelta {
     }
 }
 
-struct Memo {
+struct EvmMemo<N: WordElement> {
     program: Program,
-    input_stack: Vec<AbstractValue>,
-    exit: StackDelta,
-    successors: Vec<(StackDelta, MachineEdgeKind)>,
+    input_stack: Vec<EvmValue<N>>,
+    exit: EvmStackDelta<N>,
+    successors: Vec<(EvmStackDelta<N>, MachineEdgeKind)>,
     pcs: Vec<usize>,
     progress: Vec<InstructionProgress>,
-    values: Vec<InstructionValue>,
+    values: Vec<EvmInstructionValue<N>>,
     retained_bytes: usize,
 }
 
-impl Memo {
+impl<N: WordElement> EvmMemo<N> {
     fn work_size(&self) -> usize {
         self.successors.iter().fold(
             self.exit
@@ -121,8 +123,8 @@ impl Memo {
         )
     }
 
-    fn apply(&self, input: &MachinePayload) -> Execution {
-        Execution {
+    fn apply(&self, input: &EvmMachinePayload<N>) -> EvmExecution<N> {
+        EvmExecution {
             payload: self.exit.apply(input),
             executed_pcs: self.pcs.clone(),
             instruction_progress: self.progress.clone(),
@@ -130,7 +132,7 @@ impl Memo {
             successors: self
                 .successors
                 .iter()
-                .map(|(delta, kind)| Successor {
+                .map(|(delta, kind)| EvmSuccessor {
                     payload: delta.apply(input),
                     kind: *kind,
                 })
@@ -144,18 +146,18 @@ impl Memo {
     }
 }
 
-pub(in crate::analysis) struct ExecutionReuse {
+pub(in crate::analysis) struct EvmExecutionReuse<N: WordElement> {
     catalog: Arc<CodeCatalog>,
     max_entries: usize,
     max_work: usize,
     max_retained_bytes: usize,
     retained_bytes: usize,
-    memo: BTreeMap<Key, Memo>,
+    memo: BTreeMap<Key, EvmMemo<N>>,
     pub dependencies: FactDependencies,
     stats: ReuseStats,
 }
 
-impl ExecutionReuse {
+impl<N: WordElement> EvmExecutionReuse<N> {
     /// Private to a session with fixed fork, entry environment and config.
     pub fn new(
         catalog: Arc<CodeCatalog>,
@@ -196,13 +198,13 @@ impl ExecutionReuse {
         self.stats
     }
 
-    pub fn record_dependencies(&mut self, id: usize, input: &MachinePayload) {
+    pub fn record_dependencies(&mut self, id: usize, input: &EvmMachinePayload<N>) {
         self.dependencies.record(id, input, &self.catalog);
     }
 
     /// Read metadata only, after paying ELIGIBILITY_WORK. The original paid key
     /// still checks full Program equality, frame identity and every stack value.
-    fn eligible(&self, input: &MachinePayload) -> bool {
+    fn eligible(&self, input: &EvmMachinePayload<N>) -> bool {
         let frame = input.active();
         frame.code == FrameCode::Runtime
             && input.relations.is_empty()
@@ -216,13 +218,13 @@ impl ExecutionReuse {
 
     /// After paying TOUCH_QUERY_WORK, exclude the input-dependent Failure that
     /// ordinary transfer emits alongside normal execution for Some(true)/None.
-    /// Memo::apply has no outcomes, so only known-untouched inputs are reusable.
-    fn untouched_ripemd(input: &MachinePayload) -> bool {
+    /// EvmMemo::apply has no outcomes, so only known-untouched inputs are reusable.
+    fn untouched_ripemd(input: &EvmMachinePayload<N>) -> bool {
         let ripemd = Address::from_word(U256::from(3).into());
         input.store.touched_in_transaction(ripemd) == Some(false)
     }
 
-    fn key(&self, input: &MachinePayload) -> Option<Key> {
+    fn key(&self, input: &EvmMachinePayload<N>) -> Option<Key> {
         let frame = input.active();
         if frame.code != FrameCode::Runtime || !input.relations.is_empty() {
             return None;
@@ -244,12 +246,12 @@ impl ExecutionReuse {
             stack: frame
                 .stack
                 .iter()
-                .map(AbstractValue::singleton)
+                .map(EvmValue::singleton)
                 .collect::<Option<_>>()?,
         })
     }
 
-    fn signature_work(&self, input: &MachinePayload) -> usize {
+    fn signature_work(&self, input: &EvmMachinePayload<N>) -> usize {
         let frame = input.active();
         // Prepay allocation/equality before key(). BTree nodes may compare
         // multiple full variable-width keys at every level; include all three
@@ -274,9 +276,9 @@ impl ExecutionReuse {
             && budget.charge(work)
     }
 
-    fn retained_bound(input: &MachinePayload, execution: &Execution) -> usize {
-        let scalar_unit_bytes = std::mem::size_of::<AbstractValue>().max(256);
-        let stack_bytes = |payload: &MachinePayload| {
+    fn retained_bound(input: &EvmMachinePayload<N>, execution: &EvmExecution<N>) -> usize {
+        let scalar_unit_bytes = std::mem::size_of::<EvmValue<N>>().max(256);
+        let stack_bytes = |payload: &EvmMachinePayload<N>| {
             payload.active().stack.iter().fold(
                 std::mem::size_of::<FrameKey>().saturating_add(
                     payload
@@ -323,7 +325,7 @@ impl ExecutionReuse {
                     .saturating_add(execution.instruction_values.iter().fold(
                         0usize,
                         |cost, value| {
-                            cost.saturating_add(std::mem::size_of::<InstructionValue>())
+                            cost.saturating_add(std::mem::size_of::<EvmInstructionValue<N>>())
                                 .saturating_add(
                                     value
                                         .numeric()
@@ -343,7 +345,7 @@ impl ExecutionReuse {
         // shared with the catalog, but counting its bytes here is conservative.
         // This limits memo retention, not total process RSS or executor memory.
         bytes.saturating_add(
-            std::mem::size_of::<Memo>()
+            std::mem::size_of::<EvmMemo<N>>()
                 .saturating_add(std::mem::size_of::<Key>())
                 .saturating_add(2 * std::mem::size_of::<usize>())
                 .saturating_mul(16),
@@ -352,9 +354,9 @@ impl ExecutionReuse {
 
     pub fn lookup(
         &mut self,
-        input: &MachinePayload,
+        input: &EvmMachinePayload<N>,
         budget: &mut WorkBudget,
-    ) -> Result<Option<Execution>, MachineError> {
+    ) -> Result<Option<EvmExecution<N>>, MachineError> {
         MachineError::check_cancelled()?;
         if !budget.charge(0) {
             return Err(MachineError::work_failure());
@@ -433,8 +435,8 @@ impl ExecutionReuse {
 
     pub fn remember(
         &mut self,
-        input: &MachinePayload,
-        execution: &Execution,
+        input: &EvmMachinePayload<N>,
+        execution: &EvmExecution<N>,
         budget: &mut WorkBudget,
     ) {
         if self.max_entries == 0 {
@@ -470,7 +472,7 @@ impl ExecutionReuse {
         let retained_bytes = Self::retained_bound(input, execution);
         let previous = self.memo.get(&key);
         let previous_bytes = previous.map_or(0, |memo| memo.retained_bytes);
-        let release_work = previous.map_or(0, Memo::work_size);
+        let release_work = previous.map_or(0, EvmMemo::work_size);
         let next_bytes = self
             .retained_bytes
             .saturating_sub(previous_bytes)
@@ -509,18 +511,18 @@ impl ExecutionReuse {
         if !self.optional_charge(budget, cost) {
             return;
         }
-        let Some(exit) = StackDelta::extract(input, &execution.payload) else {
+        let Some(exit) = EvmStackDelta::extract(input, &execution.payload) else {
             return;
         };
         let Some(successors) = execution
             .successors
             .iter()
-            .map(|s| StackDelta::extract(input, &s.payload).map(|delta| (delta, s.kind)))
+            .map(|s| EvmStackDelta::extract(input, &s.payload).map(|delta| (delta, s.kind)))
             .collect::<Option<Vec<_>>>()
         else {
             return;
         };
-        let memo = Memo {
+        let memo = EvmMemo {
             program: input
                 .active()
                 .program
@@ -543,3 +545,8 @@ impl ExecutionReuse {
 
 #[cfg(test)]
 mod tests;
+
+pub(in crate::analysis) type ExecutionReuse = EvmExecutionReuse<NumericValue>;
+
+#[cfg(test)]
+use crate::domain::AbstractValue;
