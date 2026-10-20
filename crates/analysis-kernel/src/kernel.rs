@@ -4,7 +4,7 @@ use crate::{
     Capability, Channel, Closure, Epoch, IdentityExhausted, KernelError, Open, Scope, ScopeKey,
     Scoped, Version,
     algebra::PublicationPolicy,
-    capability::{Availability, Cell},
+    capability::{Availability, Cell, ScopeCells},
     worklist::Worklist,
 };
 use std::{
@@ -12,6 +12,9 @@ use std::{
     sync::Arc,
 };
 
+mod assumptions;
+mod changes;
+mod reclaim;
 mod report;
 mod run;
 mod snapshot;
@@ -57,6 +60,8 @@ struct Fact {
     ready: bool,
     readers: BTreeSet<JobId>,
     providers: BTreeSet<JobId>,
+    // Reverse semantic assumptions, separate from ordinary wake dependencies.
+    assumptions: BTreeSet<Scope>,
     // A selector's current scope is lifecycle metadata shared by every handle.
     // Keeping it here also gives a fork its own authoritative staged selection.
     selected: Option<Scope>,
@@ -70,6 +75,7 @@ impl Fact {
             ready,
             readers: BTreeSet::new(),
             providers: BTreeSet::new(),
+            assumptions: BTreeSet::new(),
             selected: None,
         }
     }
@@ -86,8 +92,10 @@ enum JobState {
 struct Job<J> {
     id: JobId,
     scope: Scope,
-    task: Arc<J>,
+    // Retired identities remain checked tombstones without owning task data.
+    task: Option<Arc<J>>,
     reads: BTreeMap<FactId, Version>,
+    provides: BTreeSet<FactId>,
     state: JobState,
     evaluation: Version,
     evaluation_birth: Epoch,
@@ -100,8 +108,12 @@ struct Generation {
     active: bool,
     sealed: bool,
     jobs: BTreeSet<JobId>,
+    facts: BTreeSet<FactId>,
+    assumptions: BTreeSet<FactId>,
     entry: Option<FactId>,
     entry_owner: bool,
+    // Only selected generations acquire this automatic invalidation contract.
+    stale: bool,
 }
 #[derive(Clone)]
 struct Obligation {
@@ -151,7 +163,8 @@ pub(crate) fn reserve<M: Meter>(meter: &mut M, cost: usize) -> Result<(), Kernel
         return Err(KernelError::CostOverflow);
     }
     meter.checkpoint().map_err(KernelError::Stopped)?;
-    meter.reserve(cost).map_err(KernelError::Stopped)
+    meter.reserve(cost).map_err(KernelError::Stopped)?;
+    meter.checkpoint().map_err(KernelError::Stopped)
 }
 fn tree_work(len: usize) -> usize {
     len.saturating_add(1).ilog2() as usize + 2
@@ -202,7 +215,14 @@ impl<J> Kernel<J> {
         if job.id != id || job.state == JobState::Retired {
             return Err(KernelError::InvalidJob);
         }
-        self.check_scope(job.scope)
+        self.check_usable_scope(job.scope)
+    }
+    fn check_usable_scope<S>(&self, scope: Scope) -> Result<(), KernelError<S>> {
+        self.check_scope(scope)?;
+        if self.scopes[scope.index].stale {
+            return Err(KernelError::StaleGeneration);
+        }
+        Ok(())
     }
     fn check_fact<S>(&self, id: FactId) -> Result<(), KernelError<S>> {
         if id.epoch != self.epoch {
@@ -224,6 +244,9 @@ impl<J> Kernel<J> {
             index: self.facts.len(),
         };
         self.facts.push(Fact::new(id, scope, ready));
+        if let Some(scope) = scope {
+            self.scopes[scope.index].facts.insert(id);
+        }
         self.touch();
         id
     }
@@ -256,8 +279,11 @@ impl<J> Kernel<J> {
             active: true,
             sealed: false,
             jobs: BTreeSet::new(),
+            facts: [head].into_iter().collect(),
+            assumptions: BTreeSet::new(),
             entry: None,
             entry_owner: false,
+            stale: false,
         });
         self.scope_ids.insert(key, scope);
         Ok(scope)
@@ -295,75 +321,11 @@ impl<J> Kernel<J> {
         }
         let head = self.scopes[scope.index].head;
         let work = self.retirement_work(scope, meter)?;
-        self.prepare_changes(&[head], meter, work)?;
+        let changes = self.prepare_changes(&[head], &[head], meter, work)?;
         self.install_retirement(scope);
-        self.install_changes(&[head]);
+        self.install_changes(changes);
         self.release_generation(scope);
         Ok(())
-    }
-    fn retirement_work<M: Meter>(
-        &self,
-        scope: Scope,
-        meter: &mut M,
-    ) -> Result<usize, KernelError<M::Stop>> {
-        let jobs = &self.scopes[scope.index].jobs;
-        // Quote edge removals only after paying the per-job metadata scan.
-        reserve(
-            meter,
-            jobs.len()
-                .saturating_add(self.facts.len())
-                .saturating_add(1),
-        )?;
-        let head = self.scopes[scope.index].head;
-        let cleanup = self.facts.iter().fold(0usize, |cost, fact| {
-            cost.saturating_add(fact.providers.len()).saturating_add(
-                if fact.scope == Some(scope) || fact.id == head {
-                    fact.readers
-                        .len()
-                        .saturating_mul(tree_work(self.facts.len()).saturating_add(2))
-                } else {
-                    0
-                },
-            )
-        });
-        Ok(jobs
-            .iter()
-            .fold(cleanup.saturating_add(self.facts.len()), |cost, id| {
-                cost.saturating_add(tree_work(self.worklist.len()))
-                    .saturating_add(
-                        self.jobs[id.index]
-                            .reads
-                            .len()
-                            .saturating_mul(tree_work(self.jobs.len()).saturating_add(2)),
-                    )
-            }))
-    }
-    fn install_retirement(&mut self, scope: Scope) {
-        self.scopes[scope.index].active = false;
-        for id in &self.scopes[scope.index].jobs {
-            let job = &mut self.jobs[id.index];
-            job.state = JobState::Retired;
-            self.worklist.satisfy(*id);
-            for (fact, _) in std::mem::take(&mut job.reads) {
-                self.facts[fact.index].readers.remove(id);
-            }
-        }
-        self.touch();
-    }
-    fn release_generation(&mut self, scope: Scope) {
-        let head = self.scopes[scope.index].head;
-        for fact in &mut self.facts {
-            // Retiring a producer does not retract any already published global
-            // contribution, but its provider bookkeeping no longer has a role.
-            fact.providers
-                .retain(|id| self.jobs[id.index].scope != scope);
-            if fact.scope == Some(scope) || fact.id == head {
-                for reader in std::mem::take(&mut fact.readers) {
-                    self.jobs[reader.index].reads.remove(&fact.id);
-                }
-            }
-        }
-        self.touch();
     }
     /// Construct an explicitly routed typed channel, including its directory fact.
     pub fn channel<Q: Capability, P: PublicationPolicy<Value = Q::Value>, M: Meter>(
@@ -376,24 +338,29 @@ impl<J> Kernel<J> {
         Ok(Channel {
             epoch: self.epoch,
             directory,
-            cells: BTreeMap::new(),
+            scopes: BTreeMap::new(),
+            len: 0,
             policy,
         })
     }
     /// Register and queue one independently implemented job.
     ///
     /// Task data is moved, not deeply cloned. Its construction belongs to the
-    /// adapter's ledger; this call accounts the retained handle and graph data.
+    /// adapter's ledger, including eventual deep destruction (also on refusal,
+    /// retirement or abandoned forks). This call pays handle/graph operations;
+    /// the kernel cannot infer the destruction cost of an opaque `J`.
     pub fn register<M: Meter>(
         &mut self,
         scope: Scope,
         task: J,
         meter: &mut M,
     ) -> Result<JobId, KernelError<M::Stop>> {
-        self.check_scope(scope)?;
+        self.check_usable_scope(scope)?;
         reserve(
             meter,
-            7 + tree_work(self.scopes[scope.index].jobs.len()) + self.worklist.enqueue_work(),
+            7usize
+                .saturating_add(tree_work(self.scopes[scope.index].jobs.len()))
+                .saturating_add(self.worklist.enqueue_work()),
         )?;
         let id = JobId {
             epoch: self.epoch,
@@ -403,8 +370,9 @@ impl<J> Kernel<J> {
         self.jobs.push(Job {
             id,
             scope,
-            task: Arc::new(task),
+            task: Some(Arc::new(task)),
             reads: BTreeMap::new(),
+            provides: BTreeSet::new(),
             state: JobState::Idle,
             evaluation: Version::default(),
             evaluation_birth: self.allocation,
@@ -418,7 +386,10 @@ impl<J> Kernel<J> {
     /// Borrow task data without copying an application carrier.
     pub fn task<S>(&self, id: JobId) -> Result<&J, KernelError<S>> {
         self.check_job(id)?;
-        Ok(&self.jobs[id.index].task)
+        self.jobs[id.index]
+            .task
+            .as_deref()
+            .ok_or(KernelError::InvalidJob)
     }
     /// Retain a constant-size task handle for evaluation while metadata mutates.
     pub fn task_handle<M: Meter>(
@@ -428,7 +399,11 @@ impl<J> Kernel<J> {
     ) -> Result<Arc<J>, KernelError<M::Stop>> {
         self.check_job(id)?;
         reserve(meter, 1)?;
-        Ok(Arc::clone(&self.jobs[id.index].task))
+        let task = self.jobs[id.index]
+            .task
+            .as_ref()
+            .ok_or(KernelError::InvalidJob)?;
+        Ok(Arc::clone(task))
     }
     /// Scope of a live job, including admitted/in-flight jobs.
     pub fn job_scope<S>(&self, id: JobId) -> Result<Scope, KernelError<S>> {
@@ -460,8 +435,10 @@ impl<J> Kernel<J> {
             return Ok(None);
         }
         let jobs = &self.jobs;
+        let scopes = &self.scopes;
         let id = self.worklist.pop_eligible(meter, |id| {
             matches!(jobs[id.index].state, JobState::Idle | JobState::Interrupted)
+                && !scopes[jobs[id.index].scope.index].stale
         })?;
         if let Some(id) = id {
             self.jobs[id.index].state = JobState::Admitted;
@@ -469,16 +446,19 @@ impl<J> Kernel<J> {
         }
         Ok(id)
     }
-    /// Metered atomic deepest selection with FIFO ties and retained stale records.
+    /// Metered atomic deepest selection over live obligations, with FIFO ties.
     pub fn next_deepest<M: Meter>(
         &mut self,
         meter: &mut M,
         depth: impl Fn(&J) -> usize,
     ) -> Result<Option<JobId>, KernelError<M::Stop>> {
         let jobs = &self.jobs;
+        let scopes = &self.scopes;
         let id = self.worklist.pop_deepest(meter, |id| {
-            if matches!(jobs[id.index].state, JobState::Idle | JobState::Interrupted) {
-                depth(&jobs[id.index].task)
+            if matches!(jobs[id.index].state, JobState::Idle | JobState::Interrupted)
+                && !scopes[jobs[id.index].scope.index].stale
+            {
+                depth(jobs[id.index].task.as_deref().expect("live job task"))
             } else {
                 0
             }
@@ -506,7 +486,12 @@ impl<J> Kernel<J> {
             .evaluation
             .next()
             .ok_or(KernelError::VersionExhausted)?;
-        reserve(meter, 1)?;
+        let work = if self.jobs[id.index].state == JobState::Admitted {
+            1
+        } else {
+            self.worklist.removal_work().saturating_add(1)
+        };
+        reserve(meter, work)?;
         // next() already removed the admitted occurrence. A later publication
         // may have queued a *new* obligation while the task awaited begin().
         if self.jobs[id.index].state != JobState::Admitted {
@@ -525,9 +510,49 @@ impl<J> Kernel<J> {
             finished: false,
         })
     }
-    /// Physical queue metadata for adapter-owned replay-copy/accounting.
+    /// Live queue metadata for adapter-owned replay-copy/accounting.
     pub fn worklist(&self) -> &Worklist<JobId> {
         &self.worklist
+    }
+
+    fn check_channel<Q: Capability, P: PublicationPolicy<Value = Q::Value>, S>(
+        &self,
+        channel: &Channel<Q, P>,
+    ) -> Result<(), KernelError<S>> {
+        if channel.epoch != self.epoch {
+            return Err(KernelError::WrongEpoch);
+        }
+        self.check_fact(channel.directory)
+    }
+
+    fn channel_scope<Q: Capability, P: PublicationPolicy<Value = Q::Value>, M: Meter>(
+        &mut self,
+        channel: &mut Channel<Q, P>,
+        scope: Scope,
+        meter: &mut M,
+    ) -> Result<FactId, KernelError<M::Stop>> {
+        self.check_channel(channel)?;
+        self.check_usable_scope(scope)?;
+        reserve(meter, tree_work(channel.scopes.len()))?;
+        if let Some(table) = channel.scopes.get(&scope) {
+            return Ok(table.directory);
+        }
+        reserve(
+            meter,
+            5usize
+                .saturating_add(tree_work(channel.scopes.len()))
+                .saturating_add(tree_work(self.scopes[scope.index].facts.len())),
+        )?;
+        meter.checkpoint().map_err(KernelError::Stopped)?;
+        let directory = self.push_fact(Some(scope), true);
+        channel.scopes.insert(
+            scope,
+            ScopeCells {
+                directory,
+                cells: BTreeMap::new(),
+            },
+        );
+        Ok(directory)
     }
 
     pub(crate) fn intern<Q: Capability, P: PublicationPolicy<Value = Q::Value>, M: Meter>(
@@ -536,34 +561,42 @@ impl<J> Kernel<J> {
         key: &Scoped<Q::Key>,
         meter: &mut M,
     ) -> Result<FactId, KernelError<M::Stop>> {
-        if channel.epoch != self.epoch {
-            return Err(KernelError::WrongEpoch);
-        }
-        self.check_fact(channel.directory)?;
-        self.check_scope(key.scope)?;
+        self.channel_scope(channel, key.scope, meter)?;
+        let table = channel
+            .scopes
+            .get(&key.scope)
+            .expect("interned scope table");
         reserve(
             meter,
-            tree_work(channel.cells.len())
+            tree_work(table.cells.len())
                 .saturating_mul(Q::key_work(&key.key).max(1))
                 .saturating_mul(3),
         )?;
-        if let Some(cell) = channel.cells.get(key) {
+        if let Some(cell) = table.cells.get(&key.key) {
             return Ok(cell.id);
         }
         reserve(
             meter,
             5usize
-                .saturating_add(tree_work(channel.cells.len()))
-                .saturating_add(Q::key_work(&key.key)),
+                .saturating_add(tree_work(table.cells.len()))
+                .saturating_add(Q::key_work(&key.key))
+                .saturating_add(tree_work(self.scopes[key.scope.index].facts.len())),
         )?;
+        meter.checkpoint().map_err(KernelError::Stopped)?;
         let id = self.push_fact(Some(key.scope), false);
-        channel.cells.insert(
-            key.clone(),
-            Cell {
-                id,
-                state: Availability::Pending,
-            },
-        );
+        channel
+            .scopes
+            .get_mut(&key.scope)
+            .expect("interned scope table")
+            .cells
+            .insert(
+                key.key.clone(),
+                Cell {
+                    id,
+                    state: Availability::Pending,
+                },
+            );
+        channel.len += 1;
         Ok(id)
     }
     /// Register a provider for a requested slot, including after its first read.
@@ -587,9 +620,11 @@ impl<J> Kernel<J> {
             meter,
             tree_work(self.facts[id.index].providers.len())
                 .saturating_add(self.worklist.enqueue_work())
+                .saturating_add(tree_work(self.jobs[provider.index].provides.len()))
                 .saturating_add(1),
         )?;
         self.facts[id.index].providers.insert(provider);
+        self.jobs[provider.index].provides.insert(id);
         self.worklist.enqueue(provider);
         self.touch();
         Ok(())
@@ -629,56 +664,13 @@ impl<J> Kernel<J> {
         self.observe(job, self.scopes[scope.index].head, meter)?;
         self.observe(job, id, meter)
     }
-    fn prepare_changes<M: Meter>(
-        &self,
-        ids: &[FactId],
-        meter: &mut M,
-        extra: usize,
-    ) -> Result<(), KernelError<M::Stop>> {
-        let mut cost = extra;
-        // Include all possible wakes before installing any value/version. Repeated
-        // readers across two facts are deliberately over-reserved, never omitted.
-        let total_wakes = ids.iter().fold(0usize, |sum, id| {
-            sum.saturating_add(self.facts.get(id.index).map_or(0, |f| f.readers.len()))
-        });
-        let enqueue = tree_work(self.worklist.len().saturating_add(total_wakes))
-            .saturating_add(1)
-            .saturating_add(tree_work(self.jobs.len()))
-            .saturating_add(2);
-        for id in ids {
-            self.check_fact(*id)?;
-            if self.facts[id.index].version.next().is_none() {
-                return Err(KernelError::VersionExhausted);
-            }
-            cost = cost
-                .saturating_add(self.facts[id.index].readers.len().saturating_mul(enqueue))
-                .saturating_add(1);
-        }
-        reserve(meter, cost)
-    }
-    fn install_changes(&mut self, ids: &[FactId]) {
-        for id in ids {
-            let fact = &mut self.facts[id.index];
-            fact.version = fact.version.next().expect("preflight checked versions");
-            fact.ready = true;
-            for reader in &fact.readers {
-                self.stats.wake_attempts = self.stats.wake_attempts.saturating_add(1);
-                let job = &mut self.jobs[reader.index];
-                if job.state == JobState::Retired || !self.scopes[job.scope.index].active {
-                    continue;
-                }
-                self.worklist.enqueue(*reader);
-            }
-        }
-        self.touch();
-    }
     /// Open an adapter-owned semantic frontier independently of queue contents.
     pub fn obligation<M: Meter>(
         &mut self,
         scope: Scope,
         meter: &mut M,
     ) -> Result<ObligationId, KernelError<M::Stop>> {
-        self.check_scope(scope)?;
+        self.check_usable_scope(scope)?;
         reserve(meter, 2)?;
         let id = ObligationId {
             epoch: self.epoch,
@@ -737,7 +729,10 @@ impl<J> Kernel<J> {
             ..Open::default()
         };
         for job in &self.jobs {
-            if !self.scopes[job.scope.index].active || !selected(job) {
+            if !self.scopes[job.scope.index].active
+                || self.scopes[job.scope.index].stale
+                || !selected(job)
+            {
                 continue;
             }
             match job.state {
@@ -757,6 +752,7 @@ impl<J> Kernel<J> {
                     && fact.readers.iter().any(|id| {
                         self.jobs[id.index].state != JobState::Retired
                             && self.scopes[self.jobs[id.index].scope.index].active
+                            && !self.scopes[self.jobs[id.index].scope.index].stale
                             && selected(&self.jobs[id.index])
                     })
             })
@@ -767,6 +763,11 @@ impl<J> Kernel<J> {
             .filter(|g| g.active && !g.sealed && scope.is_none_or(|s| s == g.scope))
             .count();
         open.obligations = self
+            .scopes
+            .iter()
+            .filter(|g| g.active && g.stale && scope.is_none_or(|s| s == g.scope))
+            .count();
+        open.obligations += self
             .obligations
             .iter()
             .filter(|o| {

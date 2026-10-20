@@ -54,17 +54,17 @@ impl<J> Kernel<J> {
             .fold(0usize, |n, f| {
                 n.saturating_add(f.readers.len())
                     .saturating_add(f.providers.len())
+                    .saturating_add(f.assumptions.len())
             })
-            .saturating_add(
-                self.jobs
-                    .iter()
-                    .fold(0usize, |n, j| n.saturating_add(j.reads.len())),
-            )
-            .saturating_add(
-                self.scopes
-                    .iter()
-                    .fold(0usize, |n, s| n.saturating_add(s.jobs.len())),
-            )
+            .saturating_add(self.jobs.iter().fold(0usize, |n, j| {
+                n.saturating_add(j.reads.len())
+                    .saturating_add(j.provides.len())
+            }))
+            .saturating_add(self.scopes.iter().fold(0usize, |n, s| {
+                n.saturating_add(s.jobs.len())
+                    .saturating_add(s.facts.len())
+                    .saturating_add(s.assumptions.len())
+            }))
             .saturating_add(self.scope_ids.len())
             .saturating_add(self.obligations.len())
             .saturating_add(self.worklist.work_size())
@@ -90,8 +90,9 @@ impl<J> Kernel<J> {
                     .map(|j| Job {
                         id: j.id,
                         scope: j.scope,
-                        task: Arc::clone(&j.task),
+                        task: j.task.as_ref().map(Arc::clone),
                         reads: j.reads.clone(),
+                        provides: j.provides.clone(),
                         state: j.state,
                         evaluation: j.evaluation,
                         evaluation_birth: j.evaluation_birth,
@@ -152,17 +153,17 @@ impl<J> Kernel<J> {
             .fold(0usize, |n, f| {
                 n.saturating_add(f.readers.len())
                     .saturating_add(f.providers.len())
+                    .saturating_add(f.assumptions.len())
             })
-            .saturating_add(
-                self.jobs
-                    .iter()
-                    .fold(0usize, |n, j| n.saturating_add(j.reads.len())),
-            )
-            .saturating_add(
-                self.scopes
-                    .iter()
-                    .fold(0usize, |n, s| n.saturating_add(s.jobs.len())),
-            )
+            .saturating_add(self.jobs.iter().fold(0usize, |n, j| {
+                n.saturating_add(j.reads.len())
+                    .saturating_add(j.provides.len())
+            }))
+            .saturating_add(self.scopes.iter().fold(0usize, |n, s| {
+                n.saturating_add(s.jobs.len())
+                    .saturating_add(s.facts.len())
+                    .saturating_add(s.assumptions.len())
+            }))
             .saturating_add(self.scope_ids.len())
             .saturating_add(self.obligations.len())
             .saturating_add(self.worklist.work_size())

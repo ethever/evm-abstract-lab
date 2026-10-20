@@ -2,7 +2,8 @@
 
 use crate::{
     Accepts, Answer, Capability, Change, Channel, Charges, Kernel, KernelError, LocalClosure,
-    Meter, PublishError, Read, Run, Scoped, SolveError, SolveReport, algebra::PublicationPolicy,
+    Meter, PublishError, Read, ReadGeneration, Run, Scope, Scoped, SolveError, SolveReport,
+    algebra::PublicationPolicy,
 };
 use std::{fmt, marker::PhantomData};
 
@@ -89,6 +90,15 @@ impl<'r, 'k, J, M: Meter, S> Context<'r, 'k, J, M, S> {
     /// Access shared tracked operations and the original root ledger.
     pub fn run(&mut self) -> &mut Run<'k, J, M> {
         self.run
+    }
+}
+impl<J, M: Meter, S> ReadGeneration for Context<'_, '_, J, M, S> {
+    type Error = KernelError<M::Stop>;
+    fn current_generation(
+        &mut self,
+        entry: &crate::GenerationEntry,
+    ) -> Result<Answer<Scope>, Self::Error> {
+        self.run.current_generation(entry)
     }
 }
 impl<J, M, S, Q, P, Path> Read<Q, Path> for Context<'_, '_, J, M, S>
