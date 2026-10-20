@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/analysis-control",
+    "crates/analysis-kernel",
     "crates/evm-abstract",
     "crates/evm-abstract-cli",
     "crates/evm-abstract-layout",

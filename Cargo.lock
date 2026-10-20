@@ -693,6 +693,10 @@ name = "analysis-control"
 version = "0.4.0"
 
 [[package]]
+name = "analysis-kernel"
+version = "0.4.0"
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2598,6 +2602,7 @@ dependencies = [
  "alloy",
  "alloy-primitives",
  "analysis-control",
+ "analysis-kernel",
  "evm-abstract-notation",
  "num-bigint",
  "num-integer",
