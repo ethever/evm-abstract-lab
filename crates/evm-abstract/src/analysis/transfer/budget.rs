@@ -17,9 +17,11 @@ use revm_bytecode::opcode;
 mod cost_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod uniform_tests;
 
-/// Literal construction for quotation is a separate paid phase. A uniform
-/// declaration permits one quote; opaque policies price all actual indices.
+/// Literal construction for quotation is a separate paid phase. A certified
+/// fresh-word fee needs no temporary operands; other policies price real indices.
 pub(super) fn quotation_work<D: EvmNumericAlgebra>(
     result: &EvmExecution<D::Element>,
     op: u8,
@@ -35,6 +37,8 @@ pub(super) fn quotation_work<D: EvmNumericAlgebra>(
                 .uniform_word_write_work_with(&args[0], &args[1], domain)
                 .is_some() =>
         {
+            // The injected algebra owns this cached-only complete quote,
+            // including all literal construction in the certified writer.
             0
         }
         opcode::MSTORE | opcode::MSTORE8

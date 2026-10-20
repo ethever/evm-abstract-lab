@@ -336,8 +336,8 @@ impl<N: WordElement> EvmByteArray<N> {
     ) -> Result<EvmValue<N>, RangeError> {
         self.read_byte_with_numeric(offset, domain, None)
     }
-    // Only A1's writer may share the complete numeric projection. Preparation,
-    // authoritative expression construction and checks still run for each byte.
+    // Only a certified writer may share the complete numeric projection. Each
+    // byte still prepares facts, constructs its expression and runs checks.
     fn read_byte_with_numeric<D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
