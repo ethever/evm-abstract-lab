@@ -112,7 +112,23 @@ where
         self.domain.numeric_refinement_work_with(
             v,
             facts,
-            Some(self.closure_work(v.finite.work_size())),
+            Some(self.closure_work(v.finite.work_size().max(facts))),
+        )
+    }
+    fn refinement_import_work(
+        &self,
+        v: &NumericValue,
+        facts: usize,
+        finite_values: usize,
+        expression_work: usize,
+    ) -> Option<usize> {
+        // This assembly retains Domain's import implementation, but its rules
+        // may cost more on the imported payload than on the original input.
+        // Pay import first, then quote the actual result through this policy;
+        // an atom count alone cannot bound a new MemberOf payload's rule work.
+        Some(
+            self.domain
+                .numeric_import_work(v, facts, finite_values, expression_work),
         )
     }
     fn observe_byte_numeric(&self, op: u8, args: &[NumericValue]) -> NumericValue {

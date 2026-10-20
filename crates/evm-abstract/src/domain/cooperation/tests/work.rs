@@ -112,7 +112,7 @@ fn exact_custom_operation_quote_is_atomic_and_stays_on_the_original_root_budget(
 }
 
 #[test]
-fn composed_refinement_quote_pays_the_custom_closure_once() {
+fn composed_refinement_pays_import_then_the_actual_custom_closure_once() {
     use crate::domain::{
         relational::{CheckResult, EvmScalarQuery, RelationLimits, RelationState},
         symbolic::ExprId,
@@ -138,13 +138,15 @@ fn composed_refinement_quote_pays_the_custom_closure_once() {
             .unwrap(),
         CheckResult::MayBeFeasible
     );
-    assert!(
-        relations
-            .refinement_import_work_with(&expression, &input, domain)
-            .is_none()
-    );
-    let quote = domain.refinement_work(&input, relations.len());
-    let mut denied = WorkBudget::new(quote - 1);
+    let import = relations
+        .refinement_import_work_with(&expression, &input, domain)
+        .unwrap();
+    let imported = NumericValue {
+        nonzero: true,
+        ..NumericValue::top()
+    };
+    let quote = import + domain.numeric_reduction_work(&imported);
+    let mut denied = WorkBudget::new(import - 1);
     assert!(
         relations
             .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut denied)
@@ -152,6 +154,18 @@ fn composed_refinement_quote_pays_the_custom_closure_once() {
     );
     assert_eq!(calls.get(), 0);
     assert_eq!(denied.used(), 0);
+    let mut denied_closure = WorkBudget::new(quote - 1);
+    assert!(
+        relations
+            .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut denied_closure)
+            .is_err()
+    );
+    assert_eq!(
+        denied_closure.used(),
+        import,
+        "failed closure admission retains the import charge"
+    );
+    assert_eq!(calls.get(), 0);
     let mut exact = WorkBudget::new(quote);
     let result = relations
         .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut exact)
@@ -163,8 +177,94 @@ fn composed_refinement_quote_pays_the_custom_closure_once() {
     assert_eq!(
         exact.used(),
         quote,
-        "custom refinement must not acquire a second root allowance"
+        "import and closure must spend the same original root ledger"
     );
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PayloadFee<'a>(&'a Cell<usize>);
+impl RuleWork for PayloadFee<'_> {
+    fn evaluation_work(&self, _: DomainSpec, finite: usize) -> usize {
+        finite
+            .saturating_mul(100_000)
+            .saturating_add(super::super::cost::query_work(finite.saturating_add(8)))
+    }
+}
+impl<Cx> Reduction<Cx> for PayloadFee<'_>
+where
+    Cx: Read<Scalars, ScalarRoute, Error = KernelError<WorkExhausted>>
+        + Charges<Error = KernelError<WorkExhausted>>,
+{
+    type Task = Scope;
+    type Error = RuleError;
+    fn reduce(&mut self, scope: &Scope, cx: &mut Cx) -> Result<LocalClosure, RuleError> {
+        let answer = cx.query(Scoped::new(*scope, ()))?;
+        if let Availability::Value(value) = answer.state {
+            let fee = value.finite.work_size().saturating_mul(100_000);
+            cx.charge(fee)?;
+            self.0.set(self.0.get() + fee);
+        }
+        Ok(LocalClosure::Stable)
+    }
+}
+
+#[test]
+fn payload_dependent_rule_work_is_paid_after_import_and_before_rule_execution() {
+    use crate::domain::{
+        relational::{EvmScalarQuery, RelationLimits, RelationState},
+        symbolic::ExprId,
+    };
+    let _counter = super::super::PROTOCOL_WORK.scope();
+    for size in [8, 128] {
+        let spent = Cell::new(0);
+        let algebra = ValueAlgebra::new(ProductAlgebra::new(
+            spec(4, 4096),
+            PayloadFee(&spent),
+            KeepBounds,
+        ));
+        let domain = algebra.borrowed();
+        let expression = ExprId::fresh().unwrap();
+        let input = AbstractValue::top().with_expression(expression.clone());
+        let imported = NumericValue {
+            finite: FiniteConstantSet::try_from_values((0..size).map(U256::from).collect())
+                .unwrap(),
+            ..NumericValue::top()
+        };
+        let limits = RelationLimits::default();
+        let mut relations = RelationState::default();
+        relations.observe(&expression, &imported, &limits).unwrap();
+        let import = relations
+            .refinement_import_work_with(&expression, &input, domain)
+            .unwrap();
+        let closure = domain.numeric_reduction_work(&imported);
+        let total = import + closure;
+        let mut denied = WorkBudget::new(total - 1);
+        assert!(
+            relations
+                .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut denied)
+                .is_err()
+        );
+        assert_eq!(
+            spent.get(),
+            0,
+            "the larger actual payload must be paid before the rule sees it"
+        );
+        assert_eq!(denied.used(), import);
+        let mut exact = WorkBudget::new(total);
+        let result = relations
+            .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut exact)
+            .unwrap();
+        assert!(
+            matches!(result, EvmScalarQuery::Refined { ref numeric, .. } if (0..size).all(|word| numeric.contains(U256::from(word))))
+        );
+        assert!(spent.get() >= size * 100_000);
+        assert!(
+            spent.get() <= exact.used(),
+            "a private meter cannot fund uncharged component work"
+        );
+        assert!(super::super::PROTOCOL_WORK.get().0 <= closure);
+        assert_eq!(exact.used(), total);
+    }
 }
 
 #[test]
