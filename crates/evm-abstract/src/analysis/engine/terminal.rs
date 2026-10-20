@@ -1,7 +1,7 @@
 //! Prepare the original root's terminal relation before detailed execution.
 //!
 //! This module is reachable only from the engine's paid `initial()` seam. The
-//! owned anchor is authority from that seam, not a EvmStore<N>/EvmWorld<N> equality test or
+//! owned anchor is authority from that seam, not an `EvmStore<N>`/`EvmWorld<N>` equality test or
 //! a hash recovered from a later state. Every optional stage checks its complete
 //! fee before charging, and every actual finalizer uses the original ledger.
 
@@ -71,7 +71,7 @@ impl From<RangeError> for PrepareError {
 }
 
 /// Neither this authority nor the ready publication capability can be cloned.
-/// Captured Stores include all EvmWorld<N> assumptions without cloning the EvmWorld<N>.
+/// Captured Stores include all `EvmWorld<N>` assumptions without cloning the `EvmWorld<N>`.
 struct EvmRootAnchor<N: WordElement> {
     input: Box<EvmRootTerminalInputBinding<N>>,
 }
@@ -108,7 +108,7 @@ impl<N: WordElement> EvmReadyRoot<N> {
     }
 }
 
-/// Called only between the real paid root initialization and states[0] install.
+/// Called only between the real paid root initialization and `states[0]` install.
 pub(super) fn prepare_with<D: EvmNumericAlgebra>(
     initial: &EvmMachinePayload<D::Element>,
     world: &EvmWorld<D::Element>,
@@ -228,9 +228,9 @@ impl StoreShape {
     }
 }
 
-/// The genuine initial EvmStore<N> has no pending destruction. Its sole definite
+/// The genuine initial `EvmStore<N>` has no pending destruction. Its sole definite
 /// touch belongs to nonempty runtime/delegating code. Future address-3 touch
-/// adds MAY cleanup only; the independent Return EvmStore<N> has no explicit owners.
+/// adds MAY cleanup only; the independent Return `EvmStore<N>` has no explicit owners.
 /// Thus the finalizer uses its owner-local no-delete plan: fields and candidate
 /// unions are visited once, plus fixed per-owner zero/root/selector metadata
 /// and ordered-map heights.

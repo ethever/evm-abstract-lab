@@ -1,6 +1,6 @@
 //! One persistent whole-entry retention promotion per real Runtime node.
 //!
-//! The bound lives in EvmNode<N>.payload; EvmBoundedState<N> owns its persistent policy.
+//! The bound lives in `EvmNode<N>.payload`; `EvmBoundedState<N>` owns its persistent policy.
 //! This adapter admits retries and reconciles complete execution phases.
 
 use crate::domain::{EvmNumericAlgebra, WordElement};

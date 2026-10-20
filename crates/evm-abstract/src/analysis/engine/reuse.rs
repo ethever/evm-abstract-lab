@@ -1,6 +1,6 @@
 //! Session-owned reuse of deterministic stack blocks across initial revisions.
 //!
-//! A memo never owns a EvmStore<N>, rollback snapshot, call frame or outcome. Its
+//! A memo never owns an `EvmStore<N>`, rollback snapshot, call frame or outcome. Its
 //! positive opcode list excludes initial reads, memory, calls and lifecycle.
 //! Constant stacks and an empty relation input avoid allocating or equating
 //! independent symbolic choices. RIPEMD must be untouched to exclude the

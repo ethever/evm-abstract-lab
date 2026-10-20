@@ -48,7 +48,7 @@ pub(super) fn summary_boundary() -> FrontierReason {
 /// Equality, rather than a hash-only lookup or an inferred read set, is the
 /// reuse guard. The complete store includes code overlays, nonce, lifecycle,
 /// transient state, balances and logs. Consequently changes to any of these
-/// observations produce a miss. EvmCache<N, Tag> ownership is local to one fixed world.
+/// observations produce a miss. `EvmCache<N, Tag>` ownership is local to one fixed world.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmSummaryInput<N: WordElement> {
     /// Fork under which all runtime and initcode instructions were decoded.
@@ -107,7 +107,7 @@ pub struct EvmSummaryOutput<N: WordElement> {
 /// Public evidence for an immutable, fully closed call summary.
 #[derive(Clone, Debug, Serialize)]
 pub struct EvmSummaryRecord<N: WordElement> {
-    /// EvmEntry<N> state from which this complete certificate was obtained.
+    /// `EvmEntry<N>` state from which this complete certificate was obtained.
     pub source_state: usize,
     /// Exact input and immutable world/code binding.
     pub input: EvmSummaryInput<N>,

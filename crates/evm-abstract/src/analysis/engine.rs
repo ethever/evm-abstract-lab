@@ -243,7 +243,7 @@ fn default_cooperation_error(error: CooperationError<std::convert::Infallible>) 
 }
 
 /// Immutable-fact sessions retain pure computation while every run creates a
-/// fresh EvmStore<D::Element> and rollback namespace. Existing callers need no reuse state.
+/// fresh `EvmStore<D::Element>` and rollback namespace. Existing callers need no reuse state.
 #[expect(
     clippy::too_many_arguments,
     reason = "original execution ledger and immutable session identity are separate inputs"
@@ -954,7 +954,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
 
     /// 只在普通子调用入口尝试完整图证书；CREATE initcode 不走此复用途径。
     ///
-    /// 匹配需要当前 callee、世界、EvmStore<D::Element> 和分析策略的完整输入相等。未命中时
+    /// 匹配需要当前 callee、世界、`EvmStore<D::Element>` 和分析策略的完整输入相等。未命中时
     /// 登记认证候选并继续普通执行；输入构造、查找或导入耗尽预算则留下前沿。
     fn try_summary(
         &mut self,
@@ -1232,7 +1232,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
     }
 
     /// Ordinary propagation and replay install the same changed input and
-    /// invalidate its old execution. EvmReplay<D::Element> separately decides whether its
+    /// invalidate its old execution. `EvmReplay<D::Element>` separately decides whether its
     /// certificate satisfies the new obligation or execution must be scheduled.
     fn install_join(
         &mut self,
