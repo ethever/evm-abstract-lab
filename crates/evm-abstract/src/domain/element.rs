@@ -20,6 +20,11 @@ static CONGRUENCE_TOP: LazyLock<Congruence> = LazyLock::new(Congruence::top);
 /// `WordObservation` is an explicit sound projection, not a lossless round-trip
 /// promise for arbitrary custom predicates. Executable state retains `Self`.
 pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
+    /// Include this element's actual `Serialize` payload under `numeric` in
+    /// native value reports, even for Top. Custom carriers default to retaining
+    /// it; opting out promises the standard views satisfy the native contract.
+    /// Immutable source observations deliberately remain a separate boundary.
+    const SERIALIZE_NATIVE_PAYLOAD: bool = true;
     /// No constraint on the represented word.
     fn top() -> Self;
     /// Exactly this literal, independently of policy/capacity.
@@ -40,6 +45,24 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
             });
         }
         Ok(self.clone())
+    }
+    /// Materialize an immutable binding when this executable element belongs to
+    /// the SAME binding expression. Preserve custom/path-refined guarantees and
+    /// optionally import the observation. Refusal retains this element; this
+    /// boundary never reports a contradiction or replaces `constrain`'s law.
+    /// Without an executable element for that expression, use `from_observation`.
+    fn import_binding(&self, observation: &WordObservation) -> Self {
+        self.constrain(observation).unwrap_or_else(|_| self.clone())
+    }
+    /// Additional work beyond the reader's already-funded fixed raw-binding
+    /// materialization and retention. Pay BEFORE `import_binding`. Quotation
+    /// only inspects cached sizes, covering attempted constraint work and a
+    /// fallback copy; override if a custom implementation needs a larger bound.
+    fn import_binding_work(&self, observation: &WordObservation) -> usize {
+        self.work_size()
+            .saturating_add(observation.work_size())
+            .saturating_mul(256)
+            .saturating_add(self.clone_work())
     }
     /// Numeric format of one unobserved byte.
     fn unknown_byte() -> Self {
@@ -92,7 +115,8 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
     /// Whether this element has no numeric constraints. A conservative false is valid.
     fn is_top(&self) -> bool;
     /// Retained/copy/query work bound, including observation construction and
-    /// retention. A custom export cannot inspect or allocate more than this quote.
+    /// retention and enabled native serialization. These traversals/allocations
+    /// must fit the quote; obtaining it must not perform them.
     fn work_size(&self) -> usize;
     /// Cost of copying this numeric payload, quoted without doing the copy.
     /// Deep custom storage must be included; metadata wrappers are separate.
@@ -120,6 +144,8 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
 }
 
 impl WordElement for NumericValue {
+    // Preserve the exact legacy default value JSON, including the Top string.
+    const SERIALIZE_NATIVE_PAYLOAD: bool = false;
     fn top() -> Self {
         Self::top()
     }
@@ -143,6 +169,16 @@ impl WordElement for NumericValue {
     }
     fn constrain(&self, observation: &WordObservation) -> Result<Self, FactError> {
         Ok(self.observation().meet(observation)?.numeric())
+    }
+    fn import_binding(&self, observation: &WordObservation) -> Self {
+        // This explicit binding boundary restores the authoritative default raw
+        // representation. General refinement above still preserves old facts.
+        observation.numeric()
+    }
+    fn import_binding_work(&self, _observation: &WordObservation) -> usize {
+        // Only the existing fixed inline/shared-handle materialization is used;
+        // no meet, normalization, candidate scan or additional copying occurs.
+        0
     }
     fn constants(&self) -> Option<&BTreeSet<U256>> {
         self.constants()
@@ -208,3 +244,6 @@ impl WordElement for NumericValue {
         self.restore_redundant_finite_from(previous)
     }
 }
+
+#[cfg(test)]
+mod tests;

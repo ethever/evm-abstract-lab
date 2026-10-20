@@ -259,7 +259,8 @@ impl<N: WordElement> EvmValue<N> {
 }
 impl<N: WordElement> Serialize for EvmValue<N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.numeric_top()
+        if !N::SERIALIZE_NATIVE_PAYLOAD
+            && self.numeric_top()
             && self.provenance == Provenance::top()
             && self.identity.persistent_empty()
             && self.expression.is_none()
@@ -268,6 +269,9 @@ impl<N: WordElement> Serialize for EvmValue<N> {
             return serializer.serialize_str("Top");
         }
         let mut map = serializer.serialize_map(None)?;
+        if N::SERIALIZE_NATIVE_PAYLOAD {
+            map.serialize_entry("numeric", &self.numeric)?;
+        }
         if let Some(constants) = self.numeric.constants() {
             map.serialize_entry("Constants", constants)?;
         }

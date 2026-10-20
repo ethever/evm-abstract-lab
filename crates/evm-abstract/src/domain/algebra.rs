@@ -430,9 +430,13 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         out.provenance = out.provenance.with_code_address_role();
         out
     }
-    /// Precharged numeric byte observation with ordinary metadata transfer.
+    /// Precharged byte observation. Only binary BYTE/AND enter the optional
+    /// numeric hook; other operations/arities retain ordinary apply metadata.
     pub fn observe_byte(&self, op: u8, args: &[EvmValue<D::Element>]) -> EvmValue<D::Element> {
-        if self.spec().relations().enabled {
+        if self.spec().relations().enabled
+            || !matches!(op, opcode::BYTE | opcode::AND)
+            || args.len() != 2
+        {
             return self.apply(op, args);
         }
         let numeric = self.numeric.observe_byte_numeric(

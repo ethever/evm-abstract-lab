@@ -84,6 +84,7 @@ impl WordElement for Word {
 struct Policy {
     spec: DomainSpec,
     calls: Cell<usize>,
+    byte_calls: Cell<usize>,
 }
 impl Policy {
     fn new() -> Self {
@@ -94,6 +95,7 @@ impl Policy {
         Self {
             spec: Domain::default().spec().with_relations(limits),
             calls: Cell::new(0),
+            byte_calls: Cell::new(0),
         }
     }
 }
@@ -126,6 +128,14 @@ impl EvmNumericAlgebra for Policy {
     }
     fn apply_numeric(&self, op: u8, args: &[Word]) -> NumericReduction<Word> {
         self.calls.set(self.calls.get() + 1);
+        let expected = match op {
+            opcode::ISZERO | opcode::NOT | opcode::CLZ => 1,
+            opcode::ADDMOD | opcode::MULMOD => 3,
+            _ => 2,
+        };
+        if !matches!(op,0x01..=0x0b|0x10..=0x1e) || args.len() != expected {
+            return NumericReduction::stable(Word::top());
+        }
         let value =
             if let Some(exact) = args.iter().map(Word::singleton).collect::<Option<Vec<_>>>() {
                 Word::constant(crate::domain::evaluate(
@@ -138,6 +148,10 @@ impl EvmNumericAlgebra for Policy {
                 Word::top()
             };
         NumericReduction::stable(value)
+    }
+    fn observe_byte_numeric(&self, op: u8, args: &[Word]) -> Word {
+        self.byte_calls.set(self.byte_calls.get() + 1);
+        self.apply_numeric(op, args).value
     }
     fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
         args.fold(1024usize, |n, v| n.saturating_add(v.work_size()))
@@ -198,6 +212,7 @@ fn borrowed_recursive_overlay_keeps_the_original_noncopy_policy() {
     let policy = Policy {
         spec: Domain::default().spec(),
         calls: Cell::new(0),
+        byte_calls: Cell::new(0),
     };
     let domain = ValueAlgebra::new(policy);
     let view = domain.borrowed();
@@ -291,4 +306,58 @@ fn procedure_acceleration_keeps_default_metadata_policy_when_numeric_is_already_
     let result =
         constants.widen_procedure(&crate::domain::AbstractValue::constant(U256::ONE), &next);
     assert_eq!(result, crate::domain::AbstractValue::top());
+}
+
+#[test]
+fn byte_observation_rejects_invalid_arity_before_the_custom_hook() {
+    let domain = ValueAlgebra::new(Policy::new());
+    let operand = EvmValue::<Word>::constant(U256::from(42));
+    for (op, args) in [
+        (
+            opcode::BYTE,
+            vec![operand.clone(), operand.clone(), operand.clone()],
+        ),
+        (opcode::BYTE, vec![]),
+        (opcode::AND, vec![operand.clone()]),
+        (opcode::ADD, vec![operand.clone(), operand.clone()]),
+        (0xfe, vec![operand.clone(), operand.clone()]),
+    ] {
+        let expected = domain.apply(op, &args);
+        let calls = domain.numeric_algebra().calls.get();
+        let quote = domain.operation_work(&args);
+        let observed = domain.observe_byte(op, &args);
+        assert_eq!(observed, expected);
+        assert_eq!(domain.numeric_algebra().byte_calls.get(), 0);
+        assert_eq!(
+            domain.numeric_algebra().calls.get(),
+            calls + 1,
+            "ordinary fallback must keep the actual custom D"
+        );
+        assert_eq!(domain.operation_work(&args), quote);
+    }
+    let args = [EvmValue::<Word>::constant(U256::from(31)), operand];
+    let observed = domain.observe_byte(opcode::BYTE, &args);
+    assert_eq!(observed.singleton(), Some(U256::from(42)));
+    assert_eq!(domain.numeric_algebra().byte_calls.get(), 1);
+}
+
+#[test]
+fn invalid_byte_arity_preserves_ordinary_default_provenance_and_limits() {
+    use crate::domain::{AbstractValue, provenance::Provenance};
+    for policy in [
+        Domain::default(),
+        Domain::new(std::num::NonZeroUsize::new(8).unwrap()),
+    ] {
+        let domain = ValueAlgebra::new(policy);
+        let view = domain.borrowed().without_relations();
+        let args = [
+            AbstractValue::constant(U256::ZERO),
+            AbstractValue::unknown_address().with_symbolic_limit(),
+            AbstractValue::constant(U256::ZERO),
+        ];
+        let value = view.observe_byte(opcode::BYTE, &args);
+        assert_eq!(value, view.apply(opcode::BYTE, &args));
+        assert_eq!(value.provenance(), &Provenance::top());
+        assert!(value.symbolic_limit_reached());
+    }
 }
