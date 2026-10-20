@@ -7,7 +7,7 @@
 use crate::{
     U256,
     analysis::FrontierReason,
-    domain::{WordElement, relational::QueryReason},
+    domain::{SingletonProof, WordElement, relational::QueryReason},
     resource::WorkBudget,
 };
 
@@ -30,6 +30,24 @@ pub(super) fn singleton<N: WordElement>(
     // but do not let that result reach metadata decisions or executable state.
     checkpoint(budget)?;
     Ok(answer)
+}
+
+/// Metadata changes do not invalidate a proof about the same immutable N.
+/// Reusing either answer requires no new query or payment.
+pub(super) fn resolve<N: WordElement>(
+    value: &N,
+    proof: &mut SingletonProof,
+    budget: &mut WorkBudget,
+) -> Result<Option<U256>, FrontierReason> {
+    checkpoint(budget)?;
+    match *proof {
+        SingletonProof::Answer(answer) => Ok(answer),
+        SingletonProof::NotQueried => {
+            let answer = singleton(value, budget)?;
+            *proof = SingletonProof::Answer(answer);
+            Ok(answer)
+        }
+    }
 }
 
 pub(super) fn checkpoint(budget: &WorkBudget) -> Result<(), FrontierReason> {

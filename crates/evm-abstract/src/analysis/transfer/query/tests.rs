@@ -29,6 +29,9 @@ pub(in crate::analysis::transfer) struct Receipt {
     pub cancel_on_query: bool,
     pub cancel_on_constrain: bool,
     pub cancel_on_reduce: bool,
+    pub literal_fee: usize,
+    pub cancel_on_apply: bool,
+    pub query_tag: Option<u64>,
 }
 
 pub(in crate::analysis::transfer) static RECEIPT: Counter<Receipt> = Counter::new(Receipt {
@@ -40,7 +43,12 @@ pub(in crate::analysis::transfer) static RECEIPT: Counter<Receipt> = Counter::ne
     cancel_on_query: false,
     cancel_on_constrain: false,
     cancel_on_reduce: false,
+    literal_fee: 64,
+    cancel_on_apply: false,
+    query_tag: None,
 });
+
+pub(in crate::analysis::transfer) static LITERALS: Counter<usize> = Counter::new(0);
 
 /// A range with an unexported exclusion and no finite/bits/range trait views.
 #[derive(Clone, Debug, Serialize)]
@@ -50,6 +58,10 @@ pub(in crate::analysis::transfer) struct Word {
     pub excluded: Option<U256>,
     #[serde(skip)]
     pub cancel_query_owner: Option<analysis_control::Cancellation>,
+    #[serde(skip)]
+    pub cancel_quote_owner: Option<analysis_control::Cancellation>,
+    #[serde(skip)]
+    pub query_tag: Option<u64>,
 }
 
 // Instrumentation does not change the represented concrete set.
@@ -83,9 +95,12 @@ impl WordElement for Word {
             upper: U256::MAX,
             excluded: None,
             cancel_query_owner: None,
+            cancel_quote_owner: None,
+            query_tag: None,
         }
     }
     fn constant(word: U256) -> Self {
+        LITERALS.update(|count| *count += 1);
         Self {
             lower: word,
             upper: word,
@@ -119,6 +134,8 @@ impl WordElement for Word {
             upper: self.upper.min(upper),
             excluded: self.excluded,
             cancel_query_owner: self.cancel_query_owner.clone(),
+            cancel_quote_owner: self.cancel_quote_owner.clone(),
+            query_tag: self.query_tag,
         };
         if let Some(values) = facts.constants() {
             let mut retained = values.iter().copied().filter(|word| self.contains(*word));
@@ -142,7 +159,11 @@ impl WordElement for Word {
     }
     fn singleton(&self) -> Option<U256> {
         RECEIPT.update(|receipt| {
-            if receipt.watched == self.exact() {
+            if receipt.watched == self.exact()
+                && receipt
+                    .query_tag
+                    .is_none_or(|tag| self.query_tag == Some(tag))
+            {
                 receipt.queries += 1;
                 if receipt.cancel_on_query {
                     analysis_control::current_cancellation().cancel();
@@ -157,7 +178,11 @@ impl WordElement for Word {
     fn singleton_work(&self) -> usize {
         let mut fee = 64;
         RECEIPT.update(|receipt| {
-            if receipt.watched == self.exact() {
+            if receipt.watched == self.exact()
+                && receipt
+                    .query_tag
+                    .is_none_or(|tag| self.query_tag == Some(tag))
+            {
                 receipt.quotes += 1;
                 fee = receipt.fee;
                 if receipt.cancel_on_quote {
@@ -165,6 +190,9 @@ impl WordElement for Word {
                 }
             }
         });
+        if let Some(owner) = &self.cancel_quote_owner {
+            owner.cancel();
+        }
         fee
     }
     fn is_top(&self) -> bool {
@@ -222,6 +250,11 @@ impl EvmNumericAlgebra for Policy {
         NumericReduction::stable(value.clone())
     }
     fn apply_numeric(&self, _op: u8, _args: &[Word]) -> NumericReduction<Word> {
+        RECEIPT.update(|receipt| {
+            if receipt.cancel_on_apply {
+                analysis_control::current_cancellation().cancel();
+            }
+        });
         NumericReduction::stable(Word::top())
     }
     fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
@@ -232,7 +265,9 @@ impl EvmNumericAlgebra for Policy {
         })
     }
     fn literal_quote_work(&self, _literal: U256) -> usize {
-        64
+        let mut fee = 64;
+        RECEIPT.update(|receipt| fee = receipt.literal_fee);
+        fee
     }
     fn projection_work(&self, value: &Word) -> usize {
         value.work_size()

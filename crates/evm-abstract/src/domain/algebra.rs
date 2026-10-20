@@ -12,6 +12,15 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::fmt::Debug;
 
+/// A result proof travels with the unchanged numeric element. An absent query
+/// is distinct from a completed discovery that found no singleton.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SingletonProof {
+    #[default]
+    NotQueried,
+    Answer(Option<U256>),
+}
+
 #[cfg(test)]
 pub(super) static OPERAND_COPIES: crate::test_instrumentation::Counter<usize> =
     crate::test_instrumentation::Counter::new(0);
@@ -436,7 +445,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         left: &EvmValue<D::Element>,
         right: &EvmValue<D::Element>,
     ) -> EvmValue<D::Element> {
-        let mut out = EvmValue {
+        EvmValue {
             numeric: self.numeric.join_numeric(left.numeric(), right.numeric()),
             provenance: left.provenance.join(&right.provenance),
             identity: left.identity.join(&right.identity),
@@ -446,11 +455,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
                 .filter(|e| Some(*e) == right.expression.as_ref())
                 .cloned(),
             symbolic_limit: left.symbolic_limit || right.symbolic_limit,
-        };
-        if out.singleton().is_some() {
-            out.symbolic_limit = false;
         }
-        out
     }
     /// Sound global acceleration; local descending reducers never call this.
     pub fn widen(
@@ -473,8 +478,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         let mut out = next.copy_metadata(numeric);
         out.identity = old.identity.join(&next.identity);
         out.provenance = old.provenance.join(&next.provenance);
-        out.symbolic_limit =
-            (old.symbolic_limit || next.symbolic_limit) && out.singleton().is_none();
+        out.symbolic_limit = old.symbolic_limit || next.symbolic_limit;
         if old.expression != next.expression {
             out.forget_expression();
         }
@@ -541,6 +545,15 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         op: u8,
         args: &[EvmValue<D::Element>],
     ) -> EvmReduction<D::Element> {
+        self.apply_detailed_with_singleton(op, args).0
+    }
+    /// Reuse the actual result discovery owned by the complete operation fee.
+    /// The proof is updated if expression folding installs a different literal.
+    pub(crate) fn apply_detailed_with_singleton(
+        &self,
+        op: u8,
+        args: &[EvmValue<D::Element>],
+    ) -> (EvmReduction<D::Element>, SingletonProof) {
         let expected = match op {
             opcode::ISZERO | opcode::NOT | opcode::CLZ => 1,
             opcode::ADDMOD | opcode::MULMOD => 3,
@@ -567,11 +580,17 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         let inherited_limit = args.iter().any(EvmValue::symbolic_limit_reached);
         // One discovery belongs to the enclosing operation envelope. Reuse it
         // for both metadata decisions instead of executing the query twice.
-        let singleton = exact.or_else(|| {
-            (inherited_limit || limits.enabled)
-                .then(|| reduced.value.singleton())
-                .flatten()
-        });
+        let mut proof = if let Some(exact) = exact {
+            SingletonProof::Answer(Some(exact))
+        } else if inherited_limit || limits.enabled {
+            SingletonProof::Answer(reduced.value.singleton())
+        } else {
+            SingletonProof::NotQueried
+        };
+        let singleton = match proof {
+            SingletonProof::Answer(answer) => answer,
+            SingletonProof::NotQueried => None,
+        };
         reduced.value.symbolic_limit = inherited_limit && singleton.is_none();
         if supported {
             reduced.value.provenance = EvmValue::transfer_provenance(args);
@@ -586,6 +605,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
             match symbolic::ExprId::operation(op, &expressions, limits.expressions()) {
                 Ok(expression) => {
                     if let Some(exact) = expression.as_constant() {
+                        proof = SingletonProof::Answer(Some(exact));
                         reduced.value = reduced
                             .value
                             .with_numeric_after_singleton(D::Element::constant(exact), Some(exact));
@@ -605,7 +625,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
                 }
             }
         }
-        reduced
+        (reduced, proof)
     }
     /// Use exactly the caller's root ledger; refusal returns no partial result.
     pub fn apply_budgeted(

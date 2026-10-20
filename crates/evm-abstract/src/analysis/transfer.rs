@@ -352,22 +352,16 @@ fn code_bytes<N: WordElement>(store: &EvmStore<N>, target: Address) -> Option<Ve
 
 fn environment_targets<D: EvmNumericAlgebra>(
     value: &EvmValue<D::Element>,
+    values: Option<&candidates::Candidates<'_>>,
     domain: AlgebraRef<'_, D>,
     entry: &EvmEntry<D::Element>,
     mut read: impl FnMut(Address) -> EvmValue<D::Element>,
 ) -> EvmValue<D::Element> {
     let symbolic_owner = entry.environment.to.as_concrete().is_none();
-    if symbolic_owner
-        && value.identity().same_identity(
-            entry
-                .environment
-                .address_value(entry.environment.to)
-                .identity(),
-        )
-    {
+    if candidates::is_self(value, entry) {
         return read(entry.address);
     }
-    let Some(values) = complete_candidates(value) else {
+    let Some(values) = values else {
         return EvmValue::<D::Element>::top();
     };
     values
@@ -686,8 +680,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
             }
         }
         if matches!(op, opcode::MLOAD | opcode::CALLDATALOAD) {
-            let scan = complete_candidates(&args[0])
-                .map_or(1, |s| s.len())
+            let scan = candidates::count(&args[0])
                 .saturating_mul(32)
                 .saturating_mul(domain.capacity().saturating_add(32));
             if !context.budget.charge(scan) {
@@ -695,7 +688,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                 return result;
             }
         }
-        let work = match operation_work_budgeted(
+        let quote = match operation_work_budgeted(
             &result,
             op,
             &args,
@@ -705,13 +698,13 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
             entry,
             context.budget,
         ) {
-            Ok(work) => work,
-            Err(_) => {
-                boundary(&mut result, pc, FrontierReason::Work);
+            Ok(quote) => quote,
+            Err(reason) => {
+                boundary(&mut result, pc, reason);
                 return result;
             }
         };
-        if !context.budget.charge(work) {
+        if !context.budget.charge(quote.work) {
             boundary(&mut result, pc, FrontierReason::Work);
             return result;
         }
@@ -1042,19 +1035,13 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                     return result;
                 }
                 let symbolic_owner = entry.environment.to.as_concrete().is_none();
-                let exact_self = symbolic_owner
-                    && args[0].identity().same_identity(
-                        entry
-                            .environment
-                            .address_value(entry.environment.to)
-                            .identity(),
-                    );
+                let exact_self = candidates::is_self(&args[0], entry);
                 let source = if exact_self {
                     code_bytes(&result.payload.store, entry.address)
                         .map(|bytes| EvmByteArray::<D::Element>::exact(&bytes))
                         .unwrap_or_else(EvmByteArray::<D::Element>::unknown)
                 } else {
-                    match complete_candidates(&args[0]) {
+                    match quote.targets.as_ref() {
                         Some(targets) => {
                             let mut sources = targets.iter().map(|target| {
                                 let target = address(*target);
@@ -1290,40 +1277,55 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         }
                     }
                     opcode::SELFBALANCE => result.payload.store.read_balance(frame.key.address),
-                    opcode::BALANCE => environment_targets(&args[0], domain, entry, |address| {
-                        result.payload.store.read_balance(address)
-                    }),
-                    opcode::EXTCODESIZE => environment_targets(&args[0], domain, entry, |target| {
-                        match result.payload.store.code(target) {
+                    opcode::BALANCE => environment_targets(
+                        &args[0],
+                        quote.targets.as_ref(),
+                        domain,
+                        entry,
+                        |address| result.payload.store.read_balance(address),
+                    ),
+                    opcode::EXTCODESIZE => environment_targets(
+                        &args[0],
+                        quote.targets.as_ref(),
+                        domain,
+                        entry,
+                        |target| match result.payload.store.code(target) {
                             Some(Code::Runtime(program)) => constant(program.byte_len()),
                             Some(Code::Delegation(_)) => constant(23),
                             Some(Code::Empty) => zero(),
                             _ => EvmValue::<D::Element>::top(),
-                        }
-                    }),
-                    opcode::EXTCODEHASH => environment_targets(&args[0], domain, entry, |target| {
-                        code_bytes(&result.payload.store, target)
-                            .map(|bytes| {
-                                let hash = EvmValue::<D::Element>::constant(U256::from_be_slice(
-                                    keccak256(&bytes).as_slice(),
-                                ));
-                                if !bytes.is_empty() {
-                                    return hash;
-                                }
-                                let balance = result.payload.store.read_balance(target);
-                                let nonce = result.payload.store.nonce(target);
-                                let may_be_empty = balance.may_be_zero() && nonce.may_be_zero();
-                                let may_exist = balance.may_be_nonzero() || nonce.may_be_nonzero();
-                                if may_be_empty && may_exist {
-                                    domain.join(&hash, &zero())
-                                } else if may_be_empty {
-                                    zero()
-                                } else {
-                                    hash
-                                }
-                            })
-                            .unwrap_or_else(EvmValue::<D::Element>::top)
-                    }),
+                        },
+                    ),
+                    opcode::EXTCODEHASH => environment_targets(
+                        &args[0],
+                        quote.targets.as_ref(),
+                        domain,
+                        entry,
+                        |target| {
+                            code_bytes(&result.payload.store, target)
+                                .map(|bytes| {
+                                    let hash = EvmValue::<D::Element>::constant(
+                                        U256::from_be_slice(keccak256(&bytes).as_slice()),
+                                    );
+                                    if !bytes.is_empty() {
+                                        return hash;
+                                    }
+                                    let balance = result.payload.store.read_balance(target);
+                                    let nonce = result.payload.store.nonce(target);
+                                    let may_be_empty = balance.may_be_zero() && nonce.may_be_zero();
+                                    let may_exist =
+                                        balance.may_be_nonzero() || nonce.may_be_nonzero();
+                                    if may_be_empty && may_exist {
+                                        domain.join(&hash, &zero())
+                                    } else if may_be_empty {
+                                        zero()
+                                    } else {
+                                        hash
+                                    }
+                                })
+                                .unwrap_or_else(EvmValue::<D::Element>::top)
+                        },
+                    ),
                     opcode::MLOAD => {
                         let plan = match frame.memory.prepare_word_read_with(
                             &args[0],
@@ -1356,7 +1358,15 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         }
                     }
                     opcode::KECCAK256 => {
-                        if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
+                        if !ranges::memory_after_size(
+                            &mut result,
+                            &args[0],
+                            &args[1],
+                            quote.size,
+                            context,
+                            pc,
+                        ) || !expand_memory(&mut result, &args[0], &args[1], context, pc)
+                        {
                             return result;
                         }
                         match result.payload.active().memory.slice_with(
