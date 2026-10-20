@@ -289,6 +289,15 @@ impl<J, M: Meter> Run<'_, J, M> {
             .cells
             .get(&key.key)
             .expect("interned typed cell");
+        if !matches!(cell.state, Availability::Pending)
+            && !self.kernel.observe_producers(self.job, id, self.meter)?
+        {
+            return Ok(Answer {
+                state: Availability::Pending,
+                version: self.kernel.facts[id.index].version,
+                scope: key.scope,
+            });
+        }
         let clone_work = match &cell.state {
             Availability::Value(value) => Q::value_work(value),
             _ => 1,
@@ -319,66 +328,75 @@ impl<J, M: Meter> Run<'_, J, M> {
     ) -> Result<Change, PublishError<P::Error, M::Stop>> {
         self.write_scope::<P>(key.scope)?;
         let id = self.kernel.intern(channel, &key, self.meter)?;
-        let cell = channel
-            .scopes
-            .get(&key.scope)
-            .expect("interned scope table")
-            .cells
-            .get(&key.key)
-            .expect("interned typed cell");
-        let next = if let Availability::Value(old) = &cell.state {
+        let table = &channel.scopes[&key.scope];
+        let cell = table.cells.get(&key.key).expect("interned typed cell");
+        let (next, numerical) = if let Availability::Value(old) = &cell.state {
             reserve(self.meter, channel.policy.work(old, &incoming))?;
             let next = channel
                 .policy
                 .combine(old, &incoming)
                 .map_err(PublishError::Policy)?;
-            if channel.policy.equivalent(old, &next) {
-                return Ok(Change::Unchanged);
-            }
-            next
+            let changed = !channel.policy.equivalent(old, &next);
+            (next, changed)
         } else {
-            incoming
+            (incoming, true)
         };
-        let old_drop_work = match &cell.state {
-            Availability::Value(value) => Q::drop_work(value),
-            _ => 0,
-        };
+        let coverage = self.kernel.prepare_coverage(self.job, id, self.meter)?;
+        if !numerical && coverage.is_none() {
+            return Ok(Change::Unchanged);
+        }
+        let new_family = coverage.as_ref().is_some_and(|update| update.new_family);
         let first = matches!(cell.state, Availability::Pending);
-        let directory = channel.scopes[&key.scope].directory;
-        let changes = if first {
-            &[id, directory][..]
+        let directory = table.directory;
+        let ids = [id, directory];
+        let changes = if first || new_family {
+            &ids[..]
         } else {
-            &[id][..]
+            &ids[..1]
         };
-        // First descending values wake Pending readers; they do not invalidate
-        // value assumptions. A newly resolved directory member is real topology.
-        let semantic = if !P::DESCENDING {
+        // New families enlarge declared semantic coverage once. A known family's
+        // new generation only restores availability, never a growth wave.
+        let semantic = if new_family {
+            &ids[..]
+        } else if P::DESCENDING {
+            if first { &ids[1..] } else { &[] }
+        } else if numerical {
             changes
-        } else if first {
-            &[directory][..]
         } else {
             &[]
         };
-        let changes = self.kernel.prepare_changes(
-            changes,
-            semantic,
-            self.meter,
-            Q::value_work(&next)
-                .saturating_add(old_drop_work)
-                .saturating_add(1),
-        )?;
-        channel
-            .scopes
-            .get_mut(&key.scope)
-            .expect("interned scope table")
-            .cells
-            .get_mut(&key.key)
-            .expect("interned typed cell")
-            .state = Availability::Value(next);
+        let value_work = if numerical {
+            let drop_work = match &cell.state {
+                Availability::Value(old) => Q::drop_work(old),
+                _ => 0,
+            };
+            Q::value_work(&next).saturating_add(drop_work)
+        } else {
+            0
+        };
+        let work = value_work
+            .saturating_add(coverage.as_ref().map_or(0, |update| update.work))
+            .saturating_add(1);
+        let changes = self
+            .kernel
+            .prepare_changes(changes, semantic, self.meter, work)?;
+        if numerical {
+            channel
+                .scopes
+                .get_mut(&key.scope)
+                .expect("interned scope table")
+                .cells
+                .get_mut(&key.key)
+                .expect("interned typed cell")
+                .state = Availability::Value(next);
+        }
+        self.kernel.install_coverage(coverage);
         self.kernel.install_changes(changes);
         Ok(Change::Changed)
     }
-    /// Resolve a pending negative answer; existing values cannot be retracted.
+    /// Resolve a pending answer as covering absence; values cannot be retracted.
+    /// A replaced producer may renew its family coverage without erasing a
+    /// retained aggregate Value. Ordinary attempts to erase a Value still fail.
     pub fn resolve_absent<Q: Capability, P: PublicationPolicy<Value = Q::Value>>(
         &mut self,
         channel: &mut Channel<Q, P>,
@@ -386,39 +404,56 @@ impl<J, M: Meter> Run<'_, J, M> {
     ) -> Result<Change, KernelError<M::Stop>> {
         self.write_scope::<P>(key.scope)?;
         let id = self.kernel.intern(channel, &key, self.meter)?;
-        match &channel
-            .scopes
-            .get(&key.scope)
-            .expect("interned scope table")
-            .cells
-            .get(&key.key)
-            .expect("interned typed cell")
-            .state
-        {
-            Availability::Value(_) => return Err(KernelError::CannotErase),
-            Availability::Absent => return Ok(Change::Unchanged),
-            Availability::Pending => {}
+        let table = &channel.scopes[&key.scope];
+        let state = &table.cells[&key.key].state;
+        let coverage = self.kernel.prepare_coverage(self.job, id, self.meter)?;
+        match state {
+            Availability::Value(_) if coverage.is_none() => return Err(KernelError::CannotErase),
+            Availability::Absent if coverage.is_none() => return Ok(Change::Unchanged),
+            _ => {}
         }
-        let directory = channel.scopes[&key.scope].directory;
-        let changes = [id, directory];
+        let first = matches!(state, Availability::Pending);
+        let new_family = coverage.as_ref().is_some_and(|update| update.new_family);
+        let ids = [id, table.directory];
+        let changes = if first || new_family {
+            &ids[..]
+        } else {
+            &ids[..1]
+        };
+        let semantic = if new_family {
+            &ids[..]
+        } else if first {
+            &ids[1..]
+        } else {
+            &[]
+        };
+        let work = coverage
+            .as_ref()
+            .map_or(1, |update| update.work.saturating_add(1));
         let changes = self
             .kernel
-            .prepare_changes(&changes, &[directory], self.meter, 1)?;
-        channel
-            .scopes
-            .get_mut(&key.scope)
-            .expect("interned scope table")
-            .cells
-            .get_mut(&key.key)
-            .expect("interned typed cell")
-            .state = Availability::Absent;
+            .prepare_changes(changes, semantic, self.meter, work)?;
+        // Covering absence from a new source generation may renew its declared
+        // family without erasing an aggregate value retained from other inputs.
+        if first {
+            channel
+                .scopes
+                .get_mut(&key.scope)
+                .expect("interned scope table")
+                .cells
+                .get_mut(&key.key)
+                .expect("interned typed cell")
+                .state = Availability::Absent;
+        }
+        self.kernel.install_coverage(coverage);
         self.kernel.install_changes(changes);
         Ok(Change::Changed)
     }
     /// Enumerate resolved keys while tracking directory and generation changes.
     /// Pending query interning alone does not create a resolved directory member.
     /// A stale source returns recoverable `StaleGeneration`: this Vec API cannot
-    /// represent Pending membership. Wait for its stable entry owner to replace it.
+    /// represent Pending membership. Uncovered declared producers similarly
+    /// return `PendingCoverage` until their current selections republish.
     pub fn keys<Q: Capability, P: PublicationPolicy<Value = Q::Value>>(
         &mut self,
         channel: &mut Channel<Q, P>,
@@ -435,15 +470,39 @@ impl<J, M: Meter> Run<'_, J, M> {
         let directory = self.kernel.channel_scope(channel, scope, self.meter)?;
         self.kernel.observe(self.job, directory, self.meter)?;
         let table = &channel.scopes[&scope];
-        reserve(self.meter, table.cells.len().saturating_add(1))?;
-        let mut cost = table.cells.len().saturating_add(1);
+        reserve(
+            self.meter,
+            table.cells.len().saturating_mul(2).saturating_add(1),
+        )?;
+        let mut cost = table.cells.len().saturating_mul(2).saturating_add(1);
         for (key, cell) in &table.cells {
             if !matches!(cell.state, Availability::Pending) {
                 cost = cost.saturating_add(Q::key_work(key)).saturating_add(1);
             }
         }
+        for cell in table
+            .cells
+            .values()
+            .filter(|cell| !matches!(cell.state, Availability::Pending))
+        {
+            self.kernel.observe(self.job, cell.id, self.meter)?;
+            if !self
+                .kernel
+                .observe_producers(self.job, cell.id, self.meter)?
+            {
+                return Err(KernelError::PendingCoverage);
+            }
+        }
         reserve(self.meter, cost)?;
         self.kernel.assume(self.job, directory, scope, self.meter)?;
+        for cell in table
+            .cells
+            .values()
+            .filter(|cell| !matches!(cell.state, Availability::Pending))
+        {
+            self.kernel
+                .assume_producers(self.job, cell.id, self.meter)?;
+        }
         Ok(table
             .cells
             .iter()
@@ -455,12 +514,19 @@ impl<J, M: Meter> Run<'_, J, M> {
     /// tracks both wake dependencies and cumulative selected-generation premises.
     /// The adapter must compare this version with the version used to construct
     /// its immutable input snapshot; a new version cannot bless an old payload.
-    /// Stale source coverage is refused because Version has no Pending variant.
+    /// Stale source scopes return `StaleGeneration`; unmet declared producer
+    /// coverage returns `PendingCoverage` because Version cannot represent Pending.
     pub fn observe_slot<V>(&mut self, slot: &SlotMeta<V>) -> Result<Version, KernelError<M::Stop>> {
         self.live()?;
         self.kernel
             .observe_scoped(self.job, slot.id, slot.scope, self.meter)?;
         self.kernel.check_usable_scope(slot.scope)?;
+        if !self
+            .kernel
+            .observe_producers(self.job, slot.id, self.meter)?
+        {
+            return Err(KernelError::PendingCoverage);
+        }
         self.kernel
             .assume(self.job, slot.id, slot.scope, self.meter)?;
         Ok(self.kernel.facts[slot.id.index].version)
@@ -477,6 +543,16 @@ impl<J, M: Meter> Run<'_, J, M> {
         self.kernel
             .observe_scoped(self.job, slot.id, slot.scope, self.meter)?;
         if self.kernel.scopes[slot.scope.index].stale {
+            return Ok(Answer {
+                state: Availability::Pending,
+                version: self.kernel.facts[slot.id.index].version,
+                scope: slot.scope,
+            });
+        }
+        if !self
+            .kernel
+            .observe_producers(self.job, slot.id, self.meter)?
+        {
             return Ok(Answer {
                 state: Availability::Pending,
                 version: self.kernel.facts[slot.id.index].version,
@@ -600,7 +676,8 @@ impl<J, M: Meter> Run<'_, J, M> {
     ///
     /// Prepare against immutable live inputs first. `install` cannot fail and
     /// must install the prepared value and all corresponding evidence together.
-    /// Unchanged may update nonsemantic metadata without advancing the version.
+    /// Unchanged may update nonsemantic metadata. Renewed producer coverage may
+    /// still advance the visible version and wake readers, without numerical growth.
     /// This covers typed failures/cancellation, not panics or allocation failure.
     pub fn publish_prepared_with<V>(
         &mut self,
@@ -613,24 +690,38 @@ impl<J, M: Meter> Run<'_, J, M> {
         self.kernel.check_scope(slot.scope)?;
         self.kernel.check_fact(slot.id)?;
         self.kernel.check_usable_scope(slot.scope)?;
-        let changes = if changed == Change::Changed {
-            Some(
-                self.kernel
-                    .prepare_changes(&[slot.id], &[slot.id], self.meter, install_work)?,
-            )
+        let coverage = self
+            .kernel
+            .prepare_coverage(self.job, slot.id, self.meter)?;
+        let visible = changed == Change::Changed || coverage.is_some();
+        let semantic =
+            changed == Change::Changed || coverage.as_ref().is_some_and(|update| update.new_family);
+        let install_work =
+            install_work.saturating_add(coverage.as_ref().map_or(0, |update| update.work));
+        let ids = [slot.id];
+        let changes = if visible {
+            Some(self.kernel.prepare_changes(
+                &ids,
+                if semantic { &ids } else { &[] },
+                self.meter,
+                install_work,
+            )?)
         } else {
             reserve(self.meter, install_work)?;
-            self.meter.checkpoint().map_err(KernelError::Stopped)?;
             None
         };
         install();
+        self.kernel.install_coverage(coverage);
         if let Some(changes) = changes {
             self.kernel.install_changes(changes);
         } else {
-            // Nonsemantic adapter evidence still invalidates a fork snapshot.
             self.kernel.touch();
         }
-        Ok(changed)
+        Ok(if visible {
+            Change::Changed
+        } else {
+            Change::Unchanged
+        })
     }
 
     /// Install a prepared whole value and its detached admission metadata.
@@ -672,11 +763,14 @@ impl<J, M: Meter> Run<'_, J, M> {
         self.kernel.check_scope(slot.scope)?;
         self.kernel.check_fact(slot.id)?;
         if changed == Change::Unchanged {
-            return Ok(changed);
+            // Preserve the promised old representation, while still renewing
+            // producer coverage and notifying readers when it became usable.
+            return self.publish_prepared_with(slot, changed, 0, || {});
         }
         self.publish_prepared_with(slot, changed, install_work, || *current = next)
     }
-    /// Current version of a checked external slot, for certificate guards.
+    /// Untracked version lookup for certificate guards. This does not observe or
+    /// certify semantic availability; use tracked reads for producer validity.
     pub fn slot_version<V>(&self, slot: &SlotMeta<V>) -> Result<Version, KernelError<M::Stop>> {
         self.live()?;
         self.kernel.check_fact(slot.id)?;
@@ -684,8 +778,10 @@ impl<J, M: Meter> Run<'_, J, M> {
     }
     /// Satisfy this evaluation; self-dirty publications retain their queued rerun.
     pub fn finish(mut self, closure: LocalClosure) -> Result<(), KernelError<M::Stop>> {
-        self.live()?;
+        // Completion still consults the root ledger when a callback invalidated
+        // itself. Do not hide a real stop behind the recoverable stale boundary.
         reserve(self.meter, 1)?;
+        self.live()?;
         let job = &mut self.kernel.jobs[self.job.index];
         job.state = JobState::Idle;
         job.limited |= closure == LocalClosure::Limited;

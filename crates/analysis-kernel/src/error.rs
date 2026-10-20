@@ -26,6 +26,9 @@ pub enum KernelError<S> {
     /// The selected generation lost an external semantic assumption. Discard
     /// obsolete runs/tokens and let its stable owner seed and replace it.
     StaleGeneration,
+    /// A declared stable producer has not covered its currently selected input.
+    /// Metadata-only reads cannot represent its Pending answer as a Version.
+    PendingCoverage,
     /// Typed payload reclamation requires an already retired scope.
     ScopeNotRetired,
     /// A descending rule attempted to refine another input generation.
@@ -60,6 +63,7 @@ impl<S: fmt::Display> fmt::Display for KernelError<S> {
             Self::WrongEpoch => f.write_str("handle belongs to another analysis epoch"),
             Self::InactiveScope => f.write_str("input generation is inactive"),
             Self::StaleGeneration => f.write_str("selected generation needs fresh input"),
+            Self::PendingCoverage => f.write_str("declared producer coverage is pending"),
             Self::ScopeNotRetired => f.write_str("channel scope is still active"),
             Self::WrongScope => f.write_str("descending reduction crossed input generations"),
             Self::VersionExhausted => f.write_str("analysis version space exhausted"),
