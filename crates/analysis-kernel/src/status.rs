@@ -23,7 +23,7 @@ pub struct Open {
     pub missing: usize,
     /// Generations whose job/provider admission has not been sealed.
     pub unsealed: usize,
-    /// Adapter-reported uncovered semantic obligations.
+    /// Adapter-reported uncovered behavior and stale selected generations.
     pub obligations: usize,
 }
 

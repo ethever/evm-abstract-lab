@@ -23,7 +23,9 @@ pub mod worklist;
 
 pub use admission::{AdmissionPolicy, Prepared};
 pub use algebra::{Ascending, Descending, JoinPolicy, Lift, Product, Reachable, RefinePolicy};
-pub use capability::{Accepts, Answer, Availability, Capability, Change, Channel, Charges, Read};
+pub use capability::{
+    Accepts, Answer, Availability, Capability, Change, Channel, Charges, Read, ReadGeneration,
+};
 pub use cooperation::{
     Analyzer, Cons, Context, Either, Here, Nil, Pair, Reduction, Registered, Select, There, solve,
 };

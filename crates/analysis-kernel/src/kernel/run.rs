@@ -15,6 +15,7 @@ use std::marker::PhantomData;
 /// only for detached snapshots: each active graph has one authoritative value.
 /// The marker follows `V`'s ownership and auto traits without storing or dropping
 /// a value. Cloning metadata does not require `V: Clone`.
+#[derive(Debug, PartialEq, Eq)]
 pub struct SlotMeta<V> {
     id: FactId,
     scope: Scope,
@@ -54,7 +55,7 @@ pub struct RunningJob {
 /// Read this entry before reading local guarantees. Historical scopes are never
 /// joined into it. Clones share the authoritative selector in the same graph;
 /// a detached fork has its own staged selection behind that same checked handle.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GenerationEntry {
     slot: SlotMeta<Scope>,
 }
@@ -96,8 +97,8 @@ impl<J> Kernel<J> {
         initial: Scope,
         meter: &mut M,
     ) -> Result<GenerationEntry, KernelError<M::Stop>> {
-        self.check_scope(owner)?;
-        self.check_scope(initial)?;
+        self.check_usable_scope(owner)?;
+        self.check_usable_scope(initial)?;
         if owner == initial {
             return Err(KernelError::WrongScope);
         }
@@ -131,6 +132,39 @@ impl<J> Kernel<J> {
         Ok(current)
     }
 
+    /// Metered validity check of the authoritative selected generation. A stale
+    /// selection remains replaceable; unchanged input stamps cannot reuse its
+    /// narrowed guarantees. This inspection does not adopt a semantic assumption.
+    pub fn generation_stale<M: Meter>(
+        &self,
+        entry: &GenerationEntry,
+        meter: &mut M,
+    ) -> Result<bool, KernelError<M::Stop>> {
+        reserve(meter, 3)?;
+        let scope = self.selected_generation(entry)?;
+        Ok(self.scopes[scope.index].stale)
+    }
+
+    /// Checked metered status for callbacks retaining a scope rather than its
+    /// entry. Known retired scopes are obsolete too; foreign/aborted identities
+    /// are rejected. Budget and cancellation failures remain typed failures.
+    pub fn scope_stale<M: Meter>(
+        &self,
+        scope: Scope,
+        meter: &mut M,
+    ) -> Result<bool, KernelError<M::Stop>> {
+        reserve(meter, 3)?;
+        if scope.epoch != self.epoch {
+            return Err(KernelError::WrongEpoch);
+        }
+        let generation = self
+            .scopes
+            .get(scope.index)
+            .filter(|g| g.scope == scope)
+            .ok_or(KernelError::InactiveScope)?;
+        Ok(!generation.active || generation.stale)
+    }
+
     /// Register metadata for an already initialized external semantic value.
     /// The adapter accounts constructing/retaining that value before this call.
     pub fn slot<V, M: Meter>(
@@ -138,8 +172,11 @@ impl<J> Kernel<J> {
         scope: Scope,
         meter: &mut M,
     ) -> Result<SlotMeta<V>, KernelError<M::Stop>> {
-        self.check_scope(scope)?;
-        reserve(meter, 3)?;
+        self.check_usable_scope(scope)?;
+        reserve(
+            meter,
+            3usize.saturating_add(super::tree_work(self.scopes[scope.index].facts.len())),
+        )?;
         let id = self.push_fact(Some(scope), true);
         Ok(SlotMeta {
             id,
@@ -212,7 +249,7 @@ impl<J, M: Meter> Run<'_, J, M> {
     }
     fn write_scope<P: PublicationPolicy>(&self, scope: Scope) -> Result<(), KernelError<M::Stop>> {
         self.live()?;
-        self.kernel.check_scope(scope)?;
+        self.kernel.check_usable_scope(scope)?;
         if P::DESCENDING {
             if !self.reduction {
                 return Err(KernelError::UnregisteredReduction);
@@ -224,21 +261,42 @@ impl<J, M: Meter> Run<'_, J, M> {
         Ok(())
     }
     /// Query a typed route, tracking pending and explicit negative answers too.
+    /// External stale generations yield Pending, never their retained guarantees.
     pub fn query<Q: Capability, P: PublicationPolicy<Value = Q::Value>>(
         &mut self,
         channel: &mut Channel<Q, P>,
         key: Scoped<Q::Key>,
     ) -> Result<Answer<Q::Value>, KernelError<M::Stop>> {
         self.live()?;
+        self.kernel.check_channel(channel)?;
+        self.kernel.check_scope(key.scope)?;
+        if self.kernel.scopes[key.scope.index].stale {
+            let head = self.kernel.scopes[key.scope.index].head;
+            self.kernel.observe(self.job, head, self.meter)?;
+            return Ok(Answer {
+                state: Availability::Pending,
+                version: self.kernel.facts[head.index].version,
+                scope: key.scope,
+            });
+        }
         let id = self.kernel.intern(channel, &key, self.meter)?;
         self.kernel
             .observe_scoped(self.job, id, key.scope, self.meter)?;
-        let cell = channel.cells.get(&key).expect("interned typed cell");
+        let cell = channel
+            .scopes
+            .get(&key.scope)
+            .expect("interned scope table")
+            .cells
+            .get(&key.key)
+            .expect("interned typed cell");
         let clone_work = match &cell.state {
             Availability::Value(value) => Q::value_work(value),
             _ => 1,
         };
         reserve(self.meter, clone_work)?;
+        if matches!(cell.state, Availability::Value(_)) {
+            self.kernel.assume(self.job, id, key.scope, self.meter)?;
+        }
         Ok(Answer {
             state: cell.state.clone(),
             version: self.kernel.facts[id.index].version,
@@ -249,6 +307,9 @@ impl<J, M: Meter> Run<'_, J, M> {
     ///
     /// Policy preparation is paid first. Then value, semantic version, first-key
     /// directory change and reader wakes are reserved and installed together.
+    /// Replacement also prepays the retained old value's `Capability::drop_work`.
+    /// Caller/policy preparation quotes own incoming/prepared temporaries, including
+    /// their destruction on refusal or equivalence; installation quotes live data.
     /// Interning a previously absent pending slot is a separate atomic operation.
     pub fn publish<Q: Capability, P: PublicationPolicy<Value = Q::Value>>(
         &mut self,
@@ -258,7 +319,13 @@ impl<J, M: Meter> Run<'_, J, M> {
     ) -> Result<Change, PublishError<P::Error, M::Stop>> {
         self.write_scope::<P>(key.scope)?;
         let id = self.kernel.intern(channel, &key, self.meter)?;
-        let cell = channel.cells.get(&key).expect("interned typed cell");
+        let cell = channel
+            .scopes
+            .get(&key.scope)
+            .expect("interned scope table")
+            .cells
+            .get(&key.key)
+            .expect("interned typed cell");
         let next = if let Availability::Value(old) = &cell.state {
             reserve(self.meter, channel.policy.work(old, &incoming))?;
             let next = channel
@@ -272,17 +339,40 @@ impl<J, M: Meter> Run<'_, J, M> {
         } else {
             incoming
         };
+        let old_drop_work = match &cell.state {
+            Availability::Value(value) => Q::drop_work(value),
+            _ => 0,
+        };
         let first = matches!(cell.state, Availability::Pending);
+        let directory = channel.scopes[&key.scope].directory;
         let changes = if first {
-            &[id, channel.directory][..]
+            &[id, directory][..]
         } else {
             &[id][..]
         };
-        self.kernel
-            .prepare_changes(changes, self.meter, Q::value_work(&next).saturating_add(1))?;
+        // First descending values wake Pending readers; they do not invalidate
+        // value assumptions. A newly resolved directory member is real topology.
+        let semantic = if !P::DESCENDING {
+            changes
+        } else if first {
+            &[directory][..]
+        } else {
+            &[]
+        };
+        let changes = self.kernel.prepare_changes(
+            changes,
+            semantic,
+            self.meter,
+            Q::value_work(&next)
+                .saturating_add(old_drop_work)
+                .saturating_add(1),
+        )?;
         channel
+            .scopes
+            .get_mut(&key.scope)
+            .expect("interned scope table")
             .cells
-            .get_mut(&key)
+            .get_mut(&key.key)
             .expect("interned typed cell")
             .state = Availability::Value(next);
         self.kernel.install_changes(changes);
@@ -296,53 +386,86 @@ impl<J, M: Meter> Run<'_, J, M> {
     ) -> Result<Change, KernelError<M::Stop>> {
         self.write_scope::<P>(key.scope)?;
         let id = self.kernel.intern(channel, &key, self.meter)?;
-        match &channel.cells.get(&key).expect("interned typed cell").state {
+        match &channel
+            .scopes
+            .get(&key.scope)
+            .expect("interned scope table")
+            .cells
+            .get(&key.key)
+            .expect("interned typed cell")
+            .state
+        {
             Availability::Value(_) => return Err(KernelError::CannotErase),
             Availability::Absent => return Ok(Change::Unchanged),
             Availability::Pending => {}
         }
-        let changes = [id, channel.directory];
-        self.kernel.prepare_changes(&changes, self.meter, 1)?;
+        let directory = channel.scopes[&key.scope].directory;
+        let changes = [id, directory];
+        let changes = self
+            .kernel
+            .prepare_changes(&changes, &[directory], self.meter, 1)?;
         channel
+            .scopes
+            .get_mut(&key.scope)
+            .expect("interned scope table")
             .cells
-            .get_mut(&key)
+            .get_mut(&key.key)
             .expect("interned typed cell")
             .state = Availability::Absent;
-        self.kernel.install_changes(&changes);
+        self.kernel.install_changes(changes);
         Ok(Change::Changed)
     }
     /// Enumerate resolved keys while tracking directory and generation changes.
     /// Pending query interning alone does not create a resolved directory member.
+    /// A stale source returns recoverable `StaleGeneration`: this Vec API cannot
+    /// represent Pending membership. Wait for its stable entry owner to replace it.
     pub fn keys<Q: Capability, P: PublicationPolicy<Value = Q::Value>>(
         &mut self,
         channel: &mut Channel<Q, P>,
         scope: Scope,
     ) -> Result<Vec<Q::Key>, KernelError<M::Stop>> {
         self.live()?;
-        if channel.epoch != self.kernel.epoch {
-            return Err(KernelError::WrongEpoch);
-        }
+        self.kernel.check_channel(channel)?;
+        self.kernel.check_scope(scope)?;
         self.kernel
-            .observe_scoped(self.job, channel.directory, scope, self.meter)?;
-        // Pay the metadata scan before quoting key retention. Collection below
-        // scans again and clones keys only after its own full reservation.
-        reserve(self.meter, channel.cells.len().saturating_add(1))?;
-        let mut cost = channel.cells.len().saturating_add(1);
-        for (key, cell) in &channel.cells {
-            if key.scope == scope && !matches!(cell.state, Availability::Pending) {
-                cost = cost.saturating_add(Q::key_work(&key.key)).saturating_add(1);
+            .observe(self.job, self.kernel.scopes[scope.index].head, self.meter)?;
+        // Vec keys has no Pending variant: refuse this obsolete enumeration
+        // explicitly rather than presenting stale membership as a usable set.
+        self.kernel.check_usable_scope(scope)?;
+        let directory = self.kernel.channel_scope(channel, scope, self.meter)?;
+        self.kernel.observe(self.job, directory, self.meter)?;
+        let table = &channel.scopes[&scope];
+        reserve(self.meter, table.cells.len().saturating_add(1))?;
+        let mut cost = table.cells.len().saturating_add(1);
+        for (key, cell) in &table.cells {
+            if !matches!(cell.state, Availability::Pending) {
+                cost = cost.saturating_add(Q::key_work(key)).saturating_add(1);
             }
         }
         reserve(self.meter, cost)?;
-        Ok(channel
+        self.kernel.assume(self.job, directory, scope, self.meter)?;
+        Ok(table
             .cells
             .iter()
-            .filter(|(key, cell)| {
-                key.scope == scope && !matches!(cell.state, Availability::Pending)
-            })
-            .map(|(key, _)| key.key.clone())
+            .filter(|(_, cell)| !matches!(cell.state, Availability::Pending))
+            .map(|(key, _)| key.clone())
             .collect())
     }
+    /// Observe initialized external metadata without cloning its value. This
+    /// tracks both wake dependencies and cumulative selected-generation premises.
+    /// The adapter must compare this version with the version used to construct
+    /// its immutable input snapshot; a new version cannot bless an old payload.
+    /// Stale source coverage is refused because Version has no Pending variant.
+    pub fn observe_slot<V>(&mut self, slot: &SlotMeta<V>) -> Result<Version, KernelError<M::Stop>> {
+        self.live()?;
+        self.kernel
+            .observe_scoped(self.job, slot.id, slot.scope, self.meter)?;
+        self.kernel.check_usable_scope(slot.scope)?;
+        self.kernel
+            .assume(self.job, slot.id, slot.scope, self.meter)?;
+        Ok(self.kernel.facts[slot.id.index].version)
+    }
+
     /// Track and copy an initialized external value after reserving its clone work.
     pub fn read_slot<V: Clone>(
         &mut self,
@@ -353,7 +476,16 @@ impl<J, M: Meter> Run<'_, J, M> {
         self.live()?;
         self.kernel
             .observe_scoped(self.job, slot.id, slot.scope, self.meter)?;
+        if self.kernel.scopes[slot.scope.index].stale {
+            return Ok(Answer {
+                state: Availability::Pending,
+                version: self.kernel.facts[slot.id.index].version,
+                scope: slot.scope,
+            });
+        }
         reserve(self.meter, clone_work)?;
+        self.kernel
+            .assume(self.job, slot.id, slot.scope, self.meter)?;
         Ok(Answer {
             state: Availability::Value(value.clone()),
             version: self.kernel.facts[slot.id.index].version,
@@ -362,12 +494,26 @@ impl<J, M: Meter> Run<'_, J, M> {
     }
     /// Discover the current input generation and depend on its stable selector.
     /// Consumers must reread this entry after a wake before using local facts.
+    /// Selection identity is a routing dependency; stale selections yield Pending.
     pub fn current_generation(
         &mut self,
         entry: &GenerationEntry,
     ) -> Result<Answer<Scope>, KernelError<M::Stop>> {
+        self.live()?;
         let current = self.kernel.selected_generation(entry)?;
-        self.read_slot(&entry.slot, &current, 1)
+        self.kernel
+            .observe_scoped(self.job, entry.slot.id, entry.slot.scope, self.meter)?;
+        reserve(self.meter, 1)?;
+        let state = if self.kernel.scopes[current.index].stale {
+            Availability::Pending
+        } else {
+            Availability::Value(current)
+        };
+        Ok(Answer {
+            state,
+            version: self.kernel.facts[entry.slot.id.index].version,
+            scope: entry.slot.scope,
+        })
     }
 
     /// Atomically switch a seeded selector and retire the old fixed-input scope.
@@ -385,7 +531,7 @@ impl<J, M: Meter> Run<'_, J, M> {
     ) -> Result<Change, KernelError<M::Stop>> {
         self.live()?;
         let old = self.kernel.selected_generation(entry)?;
-        self.kernel.check_scope(next)?;
+        self.kernel.check_usable_scope(next)?;
         if old == next {
             return Ok(Change::Unchanged);
         }
@@ -408,13 +554,17 @@ impl<J, M: Meter> Run<'_, J, M> {
         }
         let changes = [entry.slot.id, self.kernel.scopes[old.index].head];
         let retire_work = self.kernel.retirement_work(old, self.meter)?;
-        self.kernel
-            .prepare_changes(&changes, self.meter, retire_work.saturating_add(3))?;
+        let changes = self.kernel.prepare_changes(
+            &changes,
+            &[self.kernel.scopes[old.index].head],
+            self.meter,
+            retire_work.saturating_add(3),
+        )?;
         self.kernel.facts[entry.slot.id.index].selected = Some(next);
         self.kernel.scopes[old.index].entry = None;
         self.kernel.scopes[next.index].entry = Some(entry.slot.id);
         self.kernel.install_retirement(old);
-        self.kernel.install_changes(&changes);
+        self.kernel.install_changes(changes);
         self.kernel.release_generation(old);
         Ok(Change::Changed)
     }
@@ -462,18 +612,22 @@ impl<J, M: Meter> Run<'_, J, M> {
         self.live()?;
         self.kernel.check_scope(slot.scope)?;
         self.kernel.check_fact(slot.id)?;
-        if changed == Change::Changed {
-            self.kernel
-                .prepare_changes(&[slot.id], self.meter, install_work)?;
+        self.kernel.check_usable_scope(slot.scope)?;
+        let changes = if changed == Change::Changed {
+            Some(
+                self.kernel
+                    .prepare_changes(&[slot.id], &[slot.id], self.meter, install_work)?,
+            )
         } else {
             reserve(self.meter, install_work)?;
-        }
+            self.meter.checkpoint().map_err(KernelError::Stopped)?;
+            None
+        };
         install();
-        if changed == Change::Changed {
-            self.kernel.install_changes(&[slot.id]);
+        if let Some(changes) = changes {
+            self.kernel.install_changes(changes);
         } else {
-            // A detached adapter's nonsemantic metadata changed, so a previously
-            // forked graph must not later overwrite it with an older snapshot.
+            // Nonsemantic adapter evidence still invalidates a fork snapshot.
             self.kernel.touch();
         }
         Ok(changed)
