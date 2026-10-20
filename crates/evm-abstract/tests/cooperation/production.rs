@@ -1,4 +1,5 @@
 use super::{
+    carrier::ExcludingWord,
     fixtures::*,
     policy::{Calls, Policy},
 };
@@ -6,7 +7,7 @@ use alloy_primitives::U256;
 use evm_abstract::{
     analysis::{
         Arrival, ContextPolicy, EnginePolicies, ExecutionConfig, OutcomeKind, PartitionPolicy,
-        Status, analyze_world_with,
+        ProcedureSummaryKind, Status, analyze_world_with,
     },
     domain::ValueAlgebra,
     render::world::evidence_with,
@@ -86,9 +87,24 @@ fn semantic_exclusion_survives_delegate_checkpoint_and_controls_the_actual_cfg()
     assert!(calls.arithmetic.load(Ordering::Relaxed) > 0);
     let json = serde_json::to_value(evidence_with(&result).unwrap()).unwrap();
     assert_eq!(json["status"], "Converged");
+    let expected = serde_json::to_value(ExcludingWord::except(U256::from(42))).unwrap();
+    fn contains_numeric(json: &serde_json::Value, expected: &serde_json::Value) -> bool {
+        match json {
+            serde_json::Value::Object(fields) => {
+                fields.get("numeric") == Some(expected)
+                    || fields
+                        .values()
+                        .any(|value| contains_numeric(value, expected))
+            }
+            serde_json::Value::Array(values) => {
+                values.iter().any(|value| contains_numeric(value, expected))
+            }
+            _ => false,
+        }
+    }
     assert!(
-        json.to_string().contains("excluded"),
-        "native report must serialize the real custom carrier"
+        contains_numeric(&json, &expected),
+        "native numeric payload must retain the actual excluded42 predicate"
     );
 
     // Same DomainSpec and D type, different immutable semantics. Reusing the
@@ -96,6 +112,7 @@ fn semantic_exclusion_survives_delegate_checkpoint_and_controls_the_actual_cfg()
     let coarse_calls = Calls::default();
     let mut coarse = Policy::new(&coarse_calls);
     coarse.exclusion_queries = false;
+    coarse.retain_exclusions = false;
     let coarse = ValueAlgebra::new(coarse);
     assert_eq!(algebra.spec(), coarse.spec());
     let control = analyze_world_with(world, entry(), config(), &coarse, &policies()).unwrap();
@@ -137,13 +154,40 @@ fn singleton_without_constants_resolves_self_call_and_preserves_custom_recursive
         result
             .procedure_summaries()
             .iter()
+            .all(|record| record.kind == ProcedureSummaryKind::KnownRecursion),
+        "an exact native singleton target must not acquire an unknown-target remainder"
+    );
+    assert!(
+        result
+            .procedure_summaries()
+            .iter()
             .all(|record| record.closed)
     );
+    for state in result.states() {
+        let value = state
+            .entry
+            .store
+            .read_with(address(OWNER), &word(0), algebra.borrowed());
+        eprintln!(
+            "recursive carrier state code={:?} pcs={:?}: {}",
+            state.active().code_address,
+            state.executed_pcs,
+            value.numeric()
+        );
+    }
     for record in result.procedure_summaries() {
         for procedure in &record.procedures {
             assert_eq!(procedure.frame.address, address(OWNER));
             assert_eq!(procedure.frame.code_address, address(OWNER));
             for output in &procedure.outputs {
+                eprintln!(
+                    "recursive carrier summary {:?}: {}",
+                    output.kind,
+                    output
+                        .store
+                        .read_with(address(OWNER), &word(0), algebra.borrowed())
+                        .numeric()
+                );
                 assert!(
                     !output
                         .store
@@ -164,6 +208,15 @@ fn singleton_without_constants_resolves_self_call_and_preserves_custom_recursive
         .iter()
         .filter(|outcome| outcome.kind == OutcomeKind::Return)
     {
+        eprintln!(
+            "recursive carrier terminal state={} kind={:?}: {}",
+            outcome.state,
+            outcome.kind,
+            outcome
+                .store
+                .read_with(address(OWNER), &word(0), algebra.borrowed())
+                .numeric()
+        );
         assert_eq!(
             outcome
                 .data

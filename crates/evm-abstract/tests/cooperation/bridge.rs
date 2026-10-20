@@ -1,4 +1,6 @@
 //! Public EVM -> external analyzer -> EVM -> analyzer production feedback.
+#[path = "bridge/extra.rs"]
+mod extra;
 #[path = "bridge/fixture.rs"]
 mod fixture;
 #[path = "bridge/rule.rs"]
@@ -9,11 +11,16 @@ use super::{
     policy::{Calls, Policy},
 };
 use alloy_primitives::U256;
-use analysis_kernel::{Change, KernelError, Registered};
+use analysis_kernel::{Change, Registered};
 use evm_abstract::{
     analysis::{
-        EnginePolicies, ExecutionConfig, OutcomeKind, Status,
-        cooperation::{CooperationError, Extension, Point, PointKind, analyze_world_cooperating},
+        EnginePolicies, ExecutionConfig, FrontierReason, OutcomeKind, Status,
+        control::Control,
+        cooperation::{
+            CooperationError, Extension, Point, PointKind, analyze_world_cooperating,
+            analyze_world_cooperating_with_control,
+        },
+        progress::Observer,
     },
     domain::ValueAlgebra,
 };
@@ -186,7 +193,7 @@ fn recursive_summary_growth_reseeds_external_subjects_and_preserves_the_joint_fi
 }
 
 #[test]
-fn external_work_refusal_is_a_typed_joint_interruption_and_never_a_converged_report() {
+fn external_work_refusal_retains_incomplete_pending_effects_and_differs_from_cancellation() {
     let fixture = fixture::guarded(false);
     let calls = Calls::default();
     let mut policy = Policy::new(&calls);
@@ -200,20 +207,57 @@ fn external_work_refusal_is_a_typed_joint_interruption_and_never_a_converged_rep
     let result = analyze_world_cooperating(
         fixtures::world(&fixture.code),
         fixtures::entry(),
-        config(),
+        ExecutionConfig {
+            root_terminal_coverage: true,
+            ..config()
+        },
         &algebra,
         &EnginePolicies::default(),
         &mut external,
+    )
+    .expect("ordinary shared Work retains the partial native report");
+    assert_eq!(result.status(), Status::Incomplete);
+    assert!(result.work() <= config().max_work);
+    assert!(!result.frontiers().is_empty());
+    assert!(
+        result
+            .frontiers()
+            .iter()
+            .all(|f| f.reason == FrontierReason::Work)
     );
     assert!(
-        matches!(
-            result,
-            Err(CooperationError::Extension(rule::Failure::Infrastructure(
-                KernelError::Stopped(_)
-            )))
-        ),
-        "shared-ledger refusal must remain typed and cannot return a complete EVM result"
+        result
+            .frontiers()
+            .iter()
+            .any(|f| f.payload.is_some() || f.target.is_some() || f.from.is_some()),
+        "the unexpanded EVM continuation must remain attributable"
     );
+    assert!(
+        result
+            .outcomes()
+            .iter()
+            .all(|outcome| outcome.kind == OutcomeKind::Failure),
+        "earlier EVM gas failures are valid; unfinished feedback cannot prove a later Return/Revert"
+    );
+    for failure in result.outcomes() {
+        assert_eq!(failure.data.len().singleton(), Some(U256::ZERO));
+        assert!(failure.store.possible_logs().is_empty());
+        assert!(
+            !failure
+                .store
+                .read_with(
+                    fixtures::address(fixtures::OWNER),
+                    &fixtures::word(0),
+                    algebra.borrowed()
+                )
+                .contains(U256::from(42))
+        );
+    }
+    // v5 ad-hoc cooperating entry has no AnalysisSession snapshot/revision.
+    // terminal::prepare refuses MissingIdentity before preparing coverage even
+    // when enabled. Keep that absence explicit; never invent AllInputStates
+    // evidence from the partial graph. Session coverage has separate regressions.
+    assert!(result.root_terminal_coverage().is_none());
     assert!(
         external
             .analyzer
@@ -223,4 +267,21 @@ fn external_work_refusal_is_a_typed_joint_interruption_and_never_a_converged_rep
             .any(|(_, change)| *change == Change::Changed),
         "interruption must occur after useful feedback, not just fail initialization"
     );
+
+    let control = Control::new(Observer::default());
+    control.cancellation().cancel();
+    let mut cancelled = Extension::new(Registered::new(rule::Rule::default()));
+    assert!(matches!(
+        analyze_world_cooperating_with_control(
+            fixtures::world(&fixture.code),
+            fixtures::entry(),
+            config(),
+            &algebra,
+            &EnginePolicies::default(),
+            &mut cancelled,
+            &control,
+        ),
+        Err(CooperationError::Cancelled)
+    ));
+    assert!(cancelled.analyzer.rule().subjects.is_empty());
 }

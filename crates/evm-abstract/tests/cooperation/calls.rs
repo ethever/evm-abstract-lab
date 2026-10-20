@@ -14,7 +14,9 @@ use evm_abstract::{
 
 #[test]
 fn semantic_singleton_without_finite_constants_resolves_call_and_keeps_code_owner_context() {
-    let code = hex::decode("60205f5f5f5f6102015af15060205ff3").unwrap();
+    // Keep CALL's status at offset64 instead of POP: a rejected/failed call
+    // legitimately leaves the initially zero output area unchanged.
+    let code = hex::decode("60205f5f5f5f6102015af160405260605ff3").unwrap();
     let mut world = world(&code);
     let mut callee = EvmAccount::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap();
     callee.balance = word(1_000_000);
@@ -53,14 +55,50 @@ fn semantic_singleton_without_finite_constants_resolves_call_and_keeps_code_owne
         .filter(|outcome| outcome.kind == OutcomeKind::Return)
         .collect();
     assert!(!returns.is_empty());
+    let mut successes = 0;
+    let mut failures = 0;
+    for outcome in &returns {
+        let status = outcome
+            .data
+            .read_word_with(&word(64), algebra.borrowed())
+            .singleton();
+        let data = outcome
+            .data
+            .read_word_with(&word(0), algebra.borrowed())
+            .singleton();
+        eprintln!("CALL joint result: status={status:?}, output={data:?}");
+        match status {
+            Some(status) if status == U256::ONE => {
+                successes += 1;
+                assert_eq!(
+                    data,
+                    Some(U256::from(42)),
+                    "successful known CALL must retain its data"
+                );
+            }
+            Some(status) if status == U256::ZERO => {
+                failures += 1;
+                assert_eq!(
+                    data,
+                    Some(U256::ZERO),
+                    "failed CALL has not written the output area"
+                );
+            }
+            other => {
+                panic!("known CALL must keep return data paired with its resume status: {other:?}")
+            }
+        }
+    }
+    assert!(
+        successes > 0,
+        "no successful42 path is a production regression"
+    );
+    assert!(
+        failures > 0,
+        "unknown GAS includes an insufficient-gas alternative"
+    );
+    super::oracle::assert_call_status_witnesses(&code, &hex::decode("602a5f5260205ff3").unwrap());
     for outcome in returns {
-        assert_eq!(
-            outcome
-                .data
-                .read_word_with(&word(0), algebra.borrowed())
-                .singleton(),
-            Some(U256::from(42))
-        );
         assert!(
             !outcome
                 .store

@@ -187,3 +187,61 @@ fn equal_context_numbers_in_two_kernel_epochs_do_not_share_channels() {
     );
     run.finish(LocalClosure::Stable).unwrap();
 }
+
+#[test]
+fn generation_selector_has_one_owner_and_clones_observe_authoritative_replacement() {
+    let mut meter = Ledger::default();
+    let mut kernel = Kernel::<()>::new().unwrap();
+    let owner = scope(&mut kernel, &mut meter, 81, 0);
+    let other_owner = scope(&mut kernel, &mut meter, 82, 0);
+    let old = scope(&mut kernel, &mut meter, 83, 1);
+    let other = scope(&mut kernel, &mut meter, 83, 2);
+    let next = scope(&mut kernel, &mut meter, 83, 3);
+    for generation in [old, other, next] {
+        kernel.seal_scope(generation, &mut meter).unwrap();
+    }
+    let mut entry = kernel.generation_entry(owner, old, &mut meter).unwrap();
+    let cloned = entry.clone();
+    assert!(matches!(
+        kernel.generation_entry(other_owner, old, &mut meter),
+        Err(KernelError::GenerationInUse)
+    ));
+    assert_eq!(
+        kernel.retire_scope(old, &mut meter),
+        Err(KernelError::GenerationInUse)
+    );
+    assert_eq!(
+        kernel.retire_scope(owner, &mut meter),
+        Err(KernelError::GenerationInUse)
+    );
+    let other_entry = kernel
+        .generation_entry(other_owner, other, &mut meter)
+        .unwrap();
+    let writer = kernel.register(owner, (), &mut meter).unwrap();
+    let mut run = kernel.begin(writer, &mut meter).unwrap();
+    let before = run.current_generation(&entry).unwrap();
+    assert_eq!(
+        run.replace_generation(&mut entry, other),
+        Err(KernelError::GenerationInUse)
+    );
+    assert_eq!(run.current_generation(&cloned).unwrap(), before);
+    assert_eq!(
+        run.current_generation(&other_entry).unwrap().value(),
+        Some(&other)
+    );
+    run.replace_generation(&mut entry, next).unwrap();
+    assert_eq!(
+        run.current_generation(&cloned).unwrap().value(),
+        Some(&next)
+    );
+    assert_eq!(run.current_generation(&entry).unwrap().value(), Some(&next));
+    run.finish(LocalClosure::Stable).unwrap();
+    assert_eq!(
+        kernel.scope(old.key(), &mut meter),
+        Err(KernelError::InactiveScope)
+    );
+    assert_eq!(
+        kernel.retire_scope(next, &mut meter),
+        Err(KernelError::GenerationInUse)
+    );
+}

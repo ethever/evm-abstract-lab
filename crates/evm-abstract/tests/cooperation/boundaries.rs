@@ -58,23 +58,22 @@ fn actual_custom_values_survive_word_storage_saved_current_and_summary_boundarie
     let view = algebra.borrowed();
     let world = world(&[opcode::STOP]);
     let original = EvmValue::from_numeric(ExcludingWord::except(U256::from(42)));
+    assert!(!original.numeric().is_top());
+    assert!(original.numeric().observation().is_top());
+    let mut retained = Vec::new();
     let mut memory = EvmByteArray::memory();
     memory
         .write_word_with(&word(0), &original, 65_536, view)
         .unwrap();
-    assert!(
-        !memory
-            .read_word_with(&word(0), view)
-            .contains(U256::from(42))
-    );
+    retained.push(("whole word memory", memory.read_word_with(&word(0), view)));
     let memory_summary = memory.summary_projection_with(view).unwrap();
     let memory_copy = memory_summary.instantiate_with(view).unwrap();
-    assert!(
-        !memory_copy
-            .read_word_with(&word(0), view)
-            .contains(U256::from(42))
-    );
+    retained.push(("memory summary", memory_copy.read_word_with(&word(0), view)));
     let mut store = EvmStore::new_with(&world, view);
+    retained.push((
+        "initial persistent",
+        store.read_with(address(OWNER), &word(0), view),
+    ));
     store.write_with(address(OWNER), &word(1), &original, view);
     store.write_transient_with(address(OWNER), &word(2), &original, view);
     let checkpoint = store.snapshot();
@@ -85,28 +84,36 @@ fn actual_custom_values_survive_word_storage_saved_current_and_summary_boundarie
     );
     store.restore(checkpoint);
     for slot in [0, 1] {
-        assert!(
-            !store
-                .read_with(address(OWNER), &word(slot), view)
-                .contains(U256::from(42))
-        );
+        retained.push((
+            "restored persistent",
+            store.read_with(address(OWNER), &word(slot), view),
+        ));
     }
-    assert!(
-        !store
-            .read_transient_with(address(OWNER), &word(2), view)
-            .contains(U256::from(42))
-    );
+    retained.push((
+        "restored transient",
+        store.read_transient_with(address(OWNER), &word(2), view),
+    ));
     let summary = store.summary_projection_with(view).unwrap();
     let copy = summary.instantiate_with(view).unwrap();
+    retained.push((
+        "persistent summary",
+        copy.read_with(address(OWNER), &word(1), view),
+    ));
+    retained.push((
+        "transient summary",
+        copy.read_transient_with(address(OWNER), &word(2), view),
+    ));
+    for (boundary, value) in &retained {
+        eprintln!("carrier boundary {boundary}: {}", value.numeric());
+    }
+    let lost: Vec<_> = retained
+        .iter()
+        .filter(|(_, value)| value.contains(U256::from(42)))
+        .map(|(boundary, _)| *boundary)
+        .collect();
     assert!(
-        !copy
-            .read_with(address(OWNER), &word(1), view)
-            .contains(U256::from(42))
-    );
-    assert!(
-        !copy
-            .read_transient_with(address(OWNER), &word(2), view)
-            .contains(U256::from(42))
+        lost.is_empty(),
+        "native excluded predicate lost at {lost:?}"
     );
 }
 

@@ -20,6 +20,7 @@ pub struct Policy<'a> {
     pub configuration: Vec<u8>,
     pub calls: &'a Calls,
     pub exclusion_queries: bool,
+    pub retain_exclusions: bool,
 }
 impl<'a> Policy<'a> {
     pub fn new(calls: &'a Calls) -> Self {
@@ -27,6 +28,7 @@ impl<'a> Policy<'a> {
             configuration: vec![17; 257],
             calls,
             exclusion_queries: true,
+            retain_exclusions: true,
         }
     }
     fn transfer(&self, op: u8, args: &[ExcludingWord]) -> ExcludingWord {
@@ -136,7 +138,14 @@ impl EvmNumericAlgebra for Policy<'_> {
     }
     fn project_numeric(&self, value: &ExcludingWord) -> ExcludingWord {
         self.calls.projections.fetch_add(1, Ordering::Relaxed);
-        value.clone()
+        if self.retain_exclusions {
+            value.clone()
+        } else {
+            // Explicit sound coarsening for the production ablation. Merely
+            // disabling EQ's fast consequence is insufficient: generic relation
+            // reasoning may still use the native carrier's contains/constrain.
+            ExcludingWord::from_observation(&value.observation())
+        }
     }
     fn join_numeric(&self, a: &ExcludingWord, b: &ExcludingWord) -> ExcludingWord {
         self.calls.joins.fetch_add(1, Ordering::Relaxed);

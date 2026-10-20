@@ -17,6 +17,121 @@ mod support {
 #[path = "../known_recursion/oracle.rs"]
 mod concrete;
 
+fn concrete_input(
+    code: &[u8],
+    callee: Option<&[u8]>,
+) -> (evm_abstract::world::World, evm_abstract::world::Entry) {
+    use evm_abstract::{
+        Fork,
+        world::{Account, ByteArray, Entry, World},
+    };
+    let mut world = World::new(Fork::Osaka, "downstream concrete witness");
+    for (owner, code) in [(fixtures::OWNER, Some(code)), (fixtures::CALLEE, callee)] {
+        let Some(code) = code else {
+            continue;
+        };
+        let mut account =
+            Account::from_hex(&alloy_primitives::hex::encode(code), Fork::Osaka).unwrap();
+        account.balance = support::word(1_000_000);
+        account.storage_unknown = false;
+        if owner == fixtures::OWNER {
+            account
+                .storage
+                .insert(alloy_primitives::U256::ZERO, support::word(41));
+        }
+        world.insert(support::address(owner), account).unwrap();
+    }
+    let entry = Entry::concrete(
+        support::address(fixtures::OWNER),
+        support::address(0x900),
+        support::word(0),
+        ByteArray::empty(),
+    );
+    (world, entry)
+}
+
+pub fn assert_call_status_witnesses(code: &[u8], callee: &[u8]) {
+    use alloy_primitives::U256;
+    use evm_abstract::analysis::{ExecutionConfig, OutcomeKind, Status, analyze_world};
+    let (world, entry) = concrete_input(code, Some(callee));
+    let success = concrete::execute(&world, &entry);
+    assert_eq!(success.kind, OutcomeKind::Return);
+    assert_eq!(success.output_word(64), U256::ONE);
+    assert_eq!(success.output_word(0), U256::from(42));
+    assert!(success.steps.iter().any(|s| s.depth == 2
+        && s.code == support::address(fixtures::CALLEE)
+        && s.opcode == revm_bytecode::opcode::RETURN));
+    // Zero gas forwarded into a nonempty callee fails locally, while the root
+    // has enough transaction gas to observe status0 and its untouched memory.
+    let mut failed_code = code.to_vec();
+    let gas = failed_code
+        .iter()
+        .position(|op| *op == revm_bytecode::opcode::GAS)
+        .unwrap();
+    failed_code[gas] = revm_bytecode::opcode::PUSH0;
+    let (failed_world, failed_entry) = concrete_input(&failed_code, Some(callee));
+    let failure = concrete::execute(&failed_world, &failed_entry);
+    assert_eq!(failure.kind, OutcomeKind::Return);
+    assert_eq!(failure.output_word(64), U256::ZERO);
+    assert_eq!(failure.output_word(0), U256::ZERO);
+    eprintln!(
+        "revm CALL witnesses: forwarded GAS -> (status1,data42); forwarded0 -> (status0,data0)"
+    );
+    let result = analyze_world(
+        world,
+        entry,
+        ExecutionConfig {
+            max_work: 1_000_000_000,
+            root_terminal_coverage: false,
+            ..ExecutionConfig::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.status(), Status::Converged);
+    success.covers(&result);
+    failure.covers(&result);
+    concrete::unchanged(&result, &[fixtures::OWNER, fixtures::CALLEE]);
+}
+
+pub fn assert_guard_coverage(
+    code: &[u8],
+    result: &evm_abstract::analysis::EvmWorldAnalysis<super::carrier::ExcludingWord>,
+    algebra: &evm_abstract::domain::ValueAlgebra<Policy<'_>>,
+) {
+    use alloy_primitives::U256;
+    let (world, entry) = concrete_input(code, None);
+    let witness = concrete::execute(&world, &entry);
+    assert_eq!(witness.kind, evm_abstract::analysis::OutcomeKind::Return);
+    assert_eq!(witness.output_word(0), U256::ONE);
+    assert!(witness.logs.is_empty());
+    assert!(
+        result.outcomes().iter().any(|o| {
+            o.kind == witness.kind
+                && o.data.len().contains(U256::from(witness.data.len()))
+                && witness.data.iter().enumerate().all(|(i, b)| {
+                    o.data
+                        .byte_at_with(i, algebra.borrowed())
+                        .contains(U256::from(*b))
+                })
+                && witness.storage.iter().all(|((owner, slot), v)| {
+                    o.store
+                        .read_with(
+                            *owner,
+                            &evm_abstract::domain::EvmValue::constant(*slot),
+                            algebra.borrowed(),
+                        )
+                        .contains(*v)
+                })
+                && witness
+                    .balances
+                    .iter()
+                    .all(|(owner, v)| o.store.read_balance(*owner).contains(*v))
+                && o.store.possible_logs().is_empty()
+        }),
+        "one joint custom outcome must cover the concrete data, storage, balances and logs"
+    );
+}
+
 #[test]
 fn one_custom_outcome_covers_the_concrete_parent_and_rolled_back_delegate_subtree() {
     use alloy_primitives::{U256, hex};

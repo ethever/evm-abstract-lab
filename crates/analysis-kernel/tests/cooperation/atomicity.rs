@@ -1,7 +1,51 @@
 use super::support::{Ledger, Maximum, Numbers, Stop, scope};
 use analysis_kernel::{
-    Ascending, Availability, Change, Closure, Kernel, KernelError, LocalClosure, Scoped,
+    Analyzer, Ascending, Availability, Change, Closure, Kernel, KernelError, LocalClosure, Nil,
+    Scoped, SolveError, solve,
 };
+use std::convert::Infallible;
+
+struct NoOp;
+impl<Cx> Analyzer<Cx> for NoOp {
+    type Task = ();
+    type Error = Infallible;
+    fn evaluate(&mut self, _: &(), _: &mut Cx) -> Result<LocalClosure, Infallible> {
+        Ok(LocalClosure::Stable)
+    }
+}
+
+#[test]
+fn zero_step_and_empty_queue_closure_reports_still_pay_and_observe_cancellation() {
+    let mut meter = Ledger::default();
+    let mut kernel = Kernel::new().unwrap();
+    let used = meter.used;
+    let report = solve(&mut kernel, &mut NoOp, &mut Nil, &mut meter, 0).unwrap();
+    assert_eq!(report.closure, Closure::Closed);
+    assert!(
+        meter.used > used,
+        "closure traversal cannot be a free report after work exhaustion"
+    );
+    meter.deny_next = true;
+    assert_eq!(
+        solve(&mut kernel, &mut NoOp, &mut Nil, &mut meter, 0),
+        Err(SolveError::Kernel(KernelError::Stopped(Stop::Work)))
+    );
+    meter.cancelled = true;
+    assert_eq!(
+        solve(&mut kernel, &mut NoOp, &mut Nil, &mut meter, 0),
+        Err(SolveError::Kernel(KernelError::Stopped(Stop::Cancelled)))
+    );
+    meter.cancelled = false;
+    let pending = scope(&mut kernel, &mut meter, 84, 1);
+    kernel.register(pending, (), &mut meter).unwrap();
+    kernel.seal_scope(pending, &mut meter).unwrap();
+    meter.deny_next = true;
+    assert_eq!(
+        solve(&mut kernel, &mut NoOp, &mut Nil, &mut meter, 0),
+        Err(SolveError::Kernel(KernelError::Stopped(Stop::Work)))
+    );
+    assert!(matches!(kernel.closure(), Closure::Open(open) if open.pending == 1));
+}
 
 #[test]
 fn earlier_sound_publication_survives_a_later_failure_in_the_same_job() {
