@@ -14,8 +14,19 @@ use serde::Serialize;
 use std::{cell::Cell, collections::BTreeSet, fmt};
 
 /// This carrier has no finite set or fixed product. Exact words are known bits.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct Bits(KnownBits);
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Bits(KnownBits, Vec<U256>);
+
+thread_local! {
+    static NUMERIC_CLONES: Cell<usize> = const { Cell::new(0) };
+}
+
+impl Clone for Bits {
+    fn clone(&self) -> Self {
+        NUMERIC_CLONES.set(NUMERIC_CLONES.get() + 1);
+        Self(self.0, self.1.clone())
+    }
+}
 
 impl fmt::Display for Bits {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -25,13 +36,13 @@ impl fmt::Display for Bits {
 
 impl WordElement for Bits {
     fn top() -> Self {
-        Self(KnownBits::top())
+        Self(KnownBits::top(), Vec::new())
     }
     fn constant(word: U256) -> Self {
-        Self(KnownBits::exact(word))
+        Self(KnownBits::exact(word), Vec::new())
     }
     fn from_observation(observation: &WordObservation) -> Self {
-        Self(*observation.known_bits())
+        Self(*observation.known_bits(), Vec::new())
     }
     fn observation(&self) -> WordObservation {
         WordObservation::bits(self.0)
@@ -58,7 +69,7 @@ impl WordElement for Bits {
     }
     fn work_size(&self) -> usize {
         // Includes the fixed-size observation export, not just the eight limbs.
-        64
+        64usize.saturating_add(self.1.len())
     }
 }
 
@@ -78,7 +89,7 @@ impl EvmNumericAlgebra for BitsAlgebra {
         value.clone()
     }
     fn join_numeric(&self, left: &Bits, right: &Bits) -> Bits {
-        Bits(left.0.join(&right.0))
+        Bits(left.0.join(&right.0), Vec::new())
     }
     fn widen_numeric(&self, old: &Bits, next: &Bits) -> Bits {
         self.join_numeric(old, next)
@@ -92,7 +103,7 @@ impl EvmNumericAlgebra for BitsAlgebra {
     fn apply_numeric(&self, op: u8, args: &[Bits]) -> NumericReduction<Bits> {
         self.operations.set(self.operations.get() + 1);
         let args = args.iter().map(|value| value.0).collect::<Vec<_>>();
-        NumericReduction::stable(Bits(KnownBits::transfer(op, &args)))
+        NumericReduction::stable(Bits(KnownBits::transfer(op, &args), Vec::new()))
     }
     fn operation_work<'a>(&self, _args: impl Iterator<Item = &'a Bits>) -> usize
     where
@@ -413,4 +424,83 @@ fn native_identity_keeps_the_injected_byte_carrier() {
             Some(U256::from(expected))
         );
     }
+}
+
+#[test]
+fn declined_failure_reservation_never_clones_an_owned_numeric_payload() {
+    let (config, algebra) = setup();
+    let mut world = EvmWorld::new(Fork::Osaka, "injected clone tariff");
+    world.insert(owner(), account("00")).unwrap();
+    let entry = EvmEntry::new(owner());
+    let mut input = initial(&world, &entry, algebra.borrowed()).unwrap();
+    input
+        .active_mut()
+        .stack
+        .push(EvmValue::constant(U256::from(7)));
+    input
+        .store
+        .touch_account(Address::from_word(U256::from(3).into()));
+
+    // Measure the actual completion path on the identical light carrier first.
+    let mut control = empty_execution(input.clone());
+    let mut budget = WorkBudget::new(config.max_work);
+    NUMERIC_CLONES.set(0);
+    let accepted = {
+        let mut context = TransferContext {
+            config: &config,
+            domain: algebra.borrowed(),
+            budget: &mut budget,
+            root_address: None,
+            input_scope: None,
+            query_cache: Default::default(),
+            procedure: false,
+            discover_code: false,
+        };
+        late_failure::at_block_entry(&mut control, &mut context)
+    };
+    assert!(accepted);
+    assert!(control.frontiers.is_empty());
+    assert_eq!(control.outcomes.len(), 1);
+    assert_eq!(control.outcomes[0].kind, OutcomeKind::Failure);
+    assert!(NUMERIC_CLONES.get() > 0);
+    let allowance = budget.used();
+    assert!(allowance < 1_000_000);
+
+    // The custom element's quote alone now exceeds that entire paid allowance.
+    // All allocations and setup occur before resetting the clone instrument.
+    let owned_words = allowance + 1;
+    input.active_mut().stack[0] = EvmValue::constant(U256::from(7)).with_numeric(Bits(
+        KnownBits::exact(U256::from(7)),
+        vec![U256::ZERO; owned_words],
+    ));
+    let mut refused = empty_execution(input);
+    let mut budget = WorkBudget::new(allowance);
+    NUMERIC_CLONES.set(0);
+    let accepted = {
+        let mut context = TransferContext {
+            config: &config,
+            domain: algebra.borrowed(),
+            budget: &mut budget,
+            root_address: None,
+            input_scope: None,
+            query_cache: Default::default(),
+            procedure: false,
+            discover_code: false,
+        };
+        late_failure::at_block_entry(&mut refused, &mut context)
+    };
+    assert!(!accepted);
+    assert!(budget.exhausted());
+    assert_eq!(NUMERIC_CLONES.get(), 0);
+    assert!(refused.outcomes.is_empty());
+    assert_eq!(refused.frontiers.len(), 1);
+    assert_eq!(refused.frontiers[0].reason, FrontierReason::Work);
+    assert_eq!(
+        refused.payload.active().stack[0].numeric().1.len(),
+        owned_words
+    );
+    assert_eq!(
+        refused.payload.active().stack[0].singleton(),
+        Some(U256::from(7))
+    );
 }

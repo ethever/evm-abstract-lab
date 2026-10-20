@@ -63,13 +63,7 @@ pub(super) fn applicable<N: WordElement>(payload: &EvmMachinePayload<N>) -> bool
 }
 
 fn value_clone_work<N: WordElement>(value: &EvmValue<N>) -> usize {
-    VALUE_INLINE_WORK.saturating_add(
-        value
-            .provenance()
-            .origins()
-            .work_size()
-            .saturating_mul(MAP_ENTRY_WORK),
-    )
+    value.clone_work()
 }
 
 /// Only directly owned metadata is copied: Exact data, finite candidates,

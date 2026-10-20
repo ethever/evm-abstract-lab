@@ -53,13 +53,7 @@ const FRAME_FIXED_WORK: usize = 12; // Program/EvmSnapshot handles, mode and hea
 const CONSTRAINT_INLINE_WORK: usize = 16; // fixed words and up to two Expr handles
 
 fn value_clone_work<N: WordElement>(value: &EvmValue<N>) -> usize {
-    VALUE_INLINE_WORK.saturating_add(
-        value
-            .provenance()
-            .origins()
-            .work_size()
-            .saturating_mul(MAP_ENTRY_WORK),
-    )
+    value.clone_work()
 }
 
 fn array_work<N: WordElement>(array: &EvmByteArray<N>, budget: &mut WorkBudget) -> Option<usize> {

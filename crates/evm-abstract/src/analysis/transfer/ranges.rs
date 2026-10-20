@@ -78,33 +78,9 @@ pub(super) fn memory_copy<D: EvmNumericAlgebra>(
 const LITERAL_MEMORY_METADATA_WORK: usize = 32 * 4;
 const LITERAL_MEMORY_BOUNDS_WORK: usize = 32 * 4;
 
-/// Quote the original singleton query from metadata only, after paying for this
-/// quote. No candidate, set iteration, expression traversal or operand copy.
+/// The domain owns numeric query tariffs; the caller prepays before querying.
 fn literal_memory_singleton_work<N: WordElement>(value: &EvmValue<N>) -> usize {
-    let limbs = 4;
-    let finite = value.finite_constants().cardinality().map_or(0, |len| {
-        // A nonleaf root has >= 2 children; other internal nodes have >= 6
-        // (hence >= 4). For h levels, len >= 2 * 4^(h-1) - 1. Use ceil(len/2)
-        // without overflowing len+1; its base-4 log bounds the height. Below
-        // eleven keys the tree must be a leaf. len=1 visits one level/one key.
-        let levels = if len < 11 {
-            1
-        } else {
-            1 + (len / 2 + len % 2).ilog2() as usize / 2
-        };
-        // NumericValue::singleton uses first() only at len=1, then contains()
-        // validates the candidate, including when another component supplied it.
-        let first = if len == 1 { 8 * limbs } else { 0 };
-        let contains = levels * (len.min(11) * (6 * limbs + 8) + 8 * limbs);
-        first + contains
-    });
-    // Top returns Some((1, 0)); Exact returns None. Only Modulo executes `%`.
-    let modulo = !value.congruence().is_top() && value.congruence().modulus_residue().is_some();
-    // 128 actions/limb cover all other singleton selection/validation, copied
-    // scalar words and the zero test. Each tree comparison costs <= 6/limb + 8,
-    // plus 8/limb per node. Only Modulo needs the pinned ruint 256*limbs^2
-    // remainder bound (normalization, reciprocal, quotient/carry corrections).
-    128 * limbs + finite + usize::from(modulo) * 256 * limbs * limbs
+    value.singleton_work()
 }
 
 /// Inspect only bounded scalar facts; retained graphs and payloads stay shared.
