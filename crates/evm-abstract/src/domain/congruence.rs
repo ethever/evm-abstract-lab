@@ -44,7 +44,11 @@ impl Congruence {
         if modulus == U256::from(1) {
             return Some(Self::top());
         }
-        let residue = residue % modulus;
+        let residue = if modulus.is_power_of_two() {
+            residue & (modulus - U256::from(1))
+        } else {
+            residue % modulus
+        };
         if residue.checked_add(modulus).is_none() {
             Some(Self::exact(residue))
         } else {
@@ -58,9 +62,20 @@ impl Congruence {
         let Some(first) = values.next() else {
             return Self::top();
         };
-        values.fold(Self::exact(first), |left, value| {
-            left.join(&Self::exact(value))
-        })
+        let mut modulus = U256::ZERO;
+        for value in values {
+            // first 是最小值，差不回绕。旧 join 的余数 r 与 first 模 g 同余，
+            // 因此 gcd(g, value-r) = gcd(g, value-first)，无需逐次规范化余数。
+            modulus = gcd(modulus, value - first);
+            if modulus == U256::from(1) {
+                return Self::top();
+            }
+        }
+        if modulus == U256::ZERO {
+            Self::exact(first)
+        } else {
+            Self::new(modulus, first).expect("gcd is nonzero")
+        }
     }
 
     /// 是否为模 1 的无限制类。
@@ -402,13 +417,18 @@ impl Congruence {
     }
 }
 
-fn gcd(mut a: U256, mut b: U256) -> U256 {
-    while b != U256::ZERO {
-        let remainder = a % b;
-        a = b;
-        b = remainder;
+fn gcd(a: U256, b: U256) -> U256 {
+    if a == U256::ZERO {
+        return b;
     }
-    a
+    if b == U256::ZERO {
+        return a;
+    }
+    if a.is_power_of_two() || b.is_power_of_two() {
+        // 先排除零，避免把 trailing_zeros 的 256 哨兵当作移位量。
+        return U256::from(1) << a.trailing_zeros().min(b.trailing_zeros());
+    }
+    a.gcd(b)
 }
 
 fn unsigned(value: U256) -> BigUint {
