@@ -34,10 +34,11 @@ impl<'a> Policy<'a> {
     fn transfer(&self, op: u8, args: &[ExcludingWord]) -> ExcludingWord {
         let first = args.first();
         let second = args.get(1);
-        if let Some(a) = first {
-            if op == opcode::ISZERO && !a.contains(U256::ZERO) {
-                return ExcludingWord::constant(U256::ZERO);
-            }
+        if let Some(a) = first
+            && op == opcode::ISZERO
+            && !a.contains(U256::ZERO)
+        {
+            return ExcludingWord::constant(U256::ZERO);
         }
         if let (Some(a), Some(b)) = (first, second) {
             if self.exclusion_queries
